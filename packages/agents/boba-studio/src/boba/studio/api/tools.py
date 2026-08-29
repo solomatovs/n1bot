@@ -19,13 +19,12 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, ClassVar
-from uuid import UUID
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.chat.profiles import ChatProfiles
-from boba.chat.threads import DataRejectedError, DataUnavailableError, ThreadOwnership
 from boba.identity.context import (
     CallContext,
     Scope,
@@ -52,14 +51,13 @@ from boba.toolrun.registry import ToolRegistry
 from boba.workflow import ToolFacts
 from boba.workflow_engine.catalog import CatalogBuilder
 
-__all__ = ["ThreadsSource", "ToolCallBody", "ToolCallReply", "ToolCalling"]
+__all__ = ["ToolCallBody", "ToolCallReply", "ToolCalling"]
 
 logger = logging.getLogger(__name__)
 
 RegistrySource = Callable[[], Awaitable[ToolRegistry]]
 """Реестр инструментов приложения; собирается контейнером на первый запрос."""
 
-ThreadsSource = Callable[[], ThreadOwnership]
 """Владение тредами: реализует слой данных хоста, зовётся на вызов."""
 
 LocksSource = Callable[[], LiveLocks]
@@ -71,7 +69,6 @@ class ToolCallBody(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    thread_id: UUID
     profile: str = Field(min_length=1)
     intent: str = Field(min_length=1, max_length=ToolIntent.MAX_CHARS)
     args: Mapping[str, Any] = Field(default_factory=dict)
@@ -106,13 +103,11 @@ class ToolCalling:
         self,
         registry: RegistrySource,
         profiles: ChatProfiles,
-        threads: ThreadsSource,
         locks: LocksSource,
         heartbeat_sec: float,
     ) -> None:
         self._registry = registry
         self._profiles = profiles
-        self._threads = threads
         self._locks = locks
         self._heartbeat_sec = heartbeat_sec
 
@@ -145,11 +140,11 @@ class ToolCalling:
     ) -> ToolCallReply:
         identity = ApiIdentity.resolve(current_user, body.profile, self._profiles)
 
-        thread_id = str(body.thread_id)
-        await self._own_thread(identity.subject.login, thread_id)
+        # вызов живёт в своей области job: тредов чата у studio нет
+        job_id = str(uuid4())
 
         invoker = await self._invoker(identity.subject)
-        context = identity.context(Scope.chat(thread_id))
+        context = identity.context(Scope.job(job_id))
 
         # тред занят ходом или другим вызовом — 409 с именем держателя
         locks = self._locks()
@@ -166,17 +161,6 @@ class ToolCalling:
         keeper = LockKeeper(locks, lock, context.cancellation, self._heartbeat_sec)
         async with keeper:
             return await self._run(invoker, name, body, context)
-
-    async def _own_thread(self, login: str, thread_id: str) -> None:
-        try:
-            author = await self._threads().get_thread_author(thread_id)
-        except DataRejectedError as exc:
-            raise HTTPException(status_code=404, detail="Thread not found") from exc
-        except DataUnavailableError as exc:
-            raise HTTPException(status_code=503, detail="Data layer is down") from exc
-
-        if author != login:
-            raise HTTPException(status_code=404, detail="Thread not found")
 
     async def _invoker(self, subject: Subject) -> ToolInvoker:
         registry = await self._registry()

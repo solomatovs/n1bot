@@ -45,7 +45,7 @@ TESTS_DIR = str(Path(__file__).resolve().parent)
 
 needs_bwrap = pytest.mark.skipif(
     shutil.which("bwrap") is None or not (ROOTFS / "bin" / "sh").exists(),
-    reason="нет bwrap или артефактов песочницы (собрать: make deps)",
+    reason="нет bwrap или артефактов песочницы (собрать: make fetch sandbox)",
 )
 needs_userns = pytest.mark.skipif(
     os.geteuid() == 0, reason="под root user namespace ведёт себя иначе"

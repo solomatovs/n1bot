@@ -11,7 +11,7 @@ dependencies = [
     "boba-connections==0.0.14.dev9",
     "boba-toolkit==0.0.14.dev9",
     "boba-db-clickhouse==0.0.14.dev9",
-    "clickhouse-connect",
+    "clickhouse-connect[async]",
     "pydantic>=2.10,<2.11",
 ]
 

@@ -26,12 +26,17 @@ class StudioProcess:
     """Дочерний процесс студии на порту стенда с временным каталогом сборки."""
 
     PORT: ClassVar[int] = 8613
+    REPO: ClassVar[Path] = Path(__file__).resolve().parents[4]
     STARTUP_SEC: ClassVar[float] = 120.0
     STOP_SEC: ClassVar[float] = 30.0
 
     def __init__(self, app_root: Path) -> None:
+        base = self.REPO / "compose" / "studio"
         env = dict(os.environ)
-        env["BOBA_STUDIO_PORT"] = str(self.PORT)
+        env["BOBA_BASE"] = str(base)
+        env["BOBA_DATA"] = str(base / "data")
+        env["BOBA_CONFIG_PATH"] = str(base / "conf" / "config.toml")
+        env["BOBA_PORT"] = str(self.PORT)
         env["BOBA_INSTANCE_ID"] = "testhost"
         env["BOBA_APP_ROOT"] = str(app_root)
         env["BOBA_WORKFLOW_PAGE"] = "built"

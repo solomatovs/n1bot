@@ -1637,11 +1637,11 @@ class TestWorkflowTools:
         )
         module_feed.call(call, expect, timeout_sec=TURN_TIMEOUT_SEC * 2)
 
-    def test_run_from_chat_is_visible_on_the_studio_page(
+    def test_run_from_chat_stays_in_the_chat_schema(
         self, module_feed: ToolFeed, browser: Browser
     ) -> None:
-        """Запуск вёл процесс chainlit; страница studio — другой процесс — видит его
-        в списке и показывает итоговый статус по снимку из базы."""
+        """Приложения разделены по хранению: запуск, сделанный из чата, лежит в схеме
+        чата и на странице studio (схема automation) не появляется."""
         stand = module_feed.stand
         context = browser.new_context(viewport={"width": 1280, "height": 900})
         context.add_cookies(login_cookies(stand))
@@ -1652,11 +1652,10 @@ class TestWorkflowTools:
                 f"{stand.config.base_url}/workflow/observe",
                 wait_until="domcontentloaded",
             )
+            expect(page.locator(PageSelector.BRAND)).to_contain_text("Workflow")
+            page.wait_for_timeout(1500)
             runs = page.locator(PageSelector.LIST_ITEM, has_text="ui-flow")
-            expect(runs.first).to_be_visible()
-            runs.first.click()
-            expect(page.locator(PageSelector.RUN_STATUS)).to_have_text("done")
-            expect(page.locator(PageSelector.TASK_NODE)).to_have_count(2)
+            expect(runs).to_have_count(0)
         finally:
             context.close()
 

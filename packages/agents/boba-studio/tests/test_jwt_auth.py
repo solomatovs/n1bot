@@ -7,7 +7,8 @@ import time
 import jwt
 import pytest
 
-from boba.identity.api import AuthenticatedUser, PersistedUsers
+from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
+from boba.identity.signin import SignedIn
 from boba.studio.api.jwt_auth import JwtAuthenticator
 
 pytestmark = pytest.mark.anyio
@@ -15,7 +16,7 @@ pytestmark = pytest.mark.anyio
 SECRET = "stand-secret"
 
 
-class Users(PersistedUsers):
+class Users(PersistedUsers, UsersUpsert):
     """Строки users стенда в памяти: считает обращения."""
 
     def __init__(self) -> None:
@@ -27,6 +28,15 @@ class Users(PersistedUsers):
     async def get_user(self, identifier: str) -> AuthenticatedUser | None:
         self.asked.append(identifier)
         return self.rows.get(identifier)
+
+    async def ensure_user(self, signed: SignedIn) -> AuthenticatedUser:
+        created = AuthenticatedUser(
+            id=str(100 + len(self.rows)),
+            identifier=signed.identifier,
+            metadata=signed.metadata,
+        )
+        self.rows[signed.identifier] = created
+        return created
 
 
 def _token(secret: str, **claims: object) -> str:
@@ -72,11 +82,17 @@ async def test_bad_tokens_are_refused_before_users(token: str) -> None:
         raise AssertionError(f"users must not be consulted: {users.asked}")
 
 
-async def test_unknown_identifier_is_refused() -> None:
+async def test_unknown_identifier_gets_a_users_row() -> None:
+    """Токен выдан другим приложением на той же основе: строка users заводится при
+    первом обращении, роли берутся из токена.
+    """
     users = Users()
-    token = _token(SECRET, identifier="stranger")
-    if await JwtAuthenticator(SECRET, lambda: users).user_of_token(token) is not None:
-        raise AssertionError("a sign-in without a users row must not authenticate")
+    token = _token(SECRET, identifier="stranger", metadata={"roles": ["DEV"]})
+    user = await JwtAuthenticator(SECRET, lambda: users).user_of_token(token)
+    assert user is not None
+    assert user.identifier == "stranger"
+    assert "stranger" in users.rows
+    assert user.roles == frozenset({"DEV"})
 
 
 def test_empty_secret_is_a_build_error() -> None:

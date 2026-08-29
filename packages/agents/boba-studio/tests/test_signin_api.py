@@ -106,7 +106,6 @@ async def client() -> AsyncIterator[AsyncClient]:
     access = ApiAccess(
         JwtAuthenticator(SECRET, lambda: users),
         COOKIE,
-        NoRefs.store,  # type: ignore[arg-type]
         lambda: users,
     )
     app = ApiApp.build(NoRefs.refs(), access, _profiles(), wiring)

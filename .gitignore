@@ -33,14 +33,13 @@ packages/**/dist/
 !/build/test/
 /build/test/*
 !/build/test/bobacheck.py
+!/build/scripts/
+!/build/rootfs/
 !/build/conf/
 /build/conf/*
-!/build/conf/boba.env
-!/build/conf/boba-chainlit.service
-!/build/conf/README.md
-!/build/conf/pip.conf.example
-!/build/conf/uv.toml.example
-!/build/conf/cgroup-init.sh
+!/build/conf/common/
+!/build/conf/chainlit/
+!/build/conf/studio/
 !/build/conf/semgrep-boba/
 
 # статика фронта: кладётся make webassets, в образ идёт из build/src/webassets

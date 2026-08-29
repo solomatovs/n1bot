@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 from typing import Any
-from uuid import uuid4
 
 import pytest
 from chainlit.auth import create_jwt
@@ -22,8 +21,8 @@ from boba.access import ProfileGrant, RoleConfig, ToolAccess
 from boba.chainlit.infra.config import AppConfig
 from boba.chat.profiles import ChatProfiles
 from boba.db.postgres import AsyncPostgresPool
-from boba.identity.context import CallContext, HumanInitiator, Scope, ScopeKind
-from boba.identity.locks import LockMode, LockPurpose, MemoryLiveLocks
+from boba.identity.context import CallContext, HumanInitiator, ScopeKind
+from boba.identity.locks import MemoryLiveLocks
 from boba.runtime.plugins import CallSurface
 from boba.runtime.users import UsersTable
 from boba.studio.api.auth import ApiAuth, TokenReader
@@ -111,7 +110,6 @@ def _calling(probe: Probe, seed: Seed, app_config: AppConfig) -> ToolCalling:
     return ToolCalling(
         registry,
         _profiles(app_config),
-        lambda: seed.layer,
         lambda: MemoryLiveLocks("test:0", 20),
         1.0,
     )
@@ -126,7 +124,6 @@ def _tester(seed: Seed, app_config: AppConfig) -> PersistedUser:
 
 def _body(seed: Seed, app_config: AppConfig, **extra: Any) -> ToolCallBody:
     fields: dict[str, Any] = {
-        "thread_id": seed.thread_id,
         "profile": _profile(app_config),
         "intent": "probe the context",
         "args": {"query": "x"},
@@ -160,10 +157,7 @@ class TestServe:
             raise AssertionError(context.subject)
         if not context.subject.roles >= frozenset(_roles(app_config)):
             raise AssertionError(context.subject)
-        if (
-            context.scope.kind is not ScopeKind.CHAT
-            or context.scope.id != seeded.thread_id
-        ):
+        if context.scope.kind is not ScopeKind.JOB:
             raise AssertionError(context.scope)
 
         if CallContext.peek() is not None:
@@ -177,20 +171,6 @@ class TestServe:
         with pytest.raises(HTTPException) as caught:
             await _calling(Probe(), seeded, app_config).serve(
                 "canvas_open", _body(seeded, app_config), ChainlitUsers.of(user)
-            )
-
-        if caught.value.status_code != 404:
-            raise AssertionError(caught.value.status_code)
-
-    async def test_foreign_thread_is_not_found(
-        self, seeded: Seed, app_config: AppConfig
-    ) -> None:
-        user = _tester(seeded, app_config)
-        body = _body(seeded, app_config, thread_id=str(uuid4()))
-
-        with pytest.raises(HTTPException) as caught:
-            await _calling(Probe(), seeded, app_config).serve(
-                "probe", body, ChainlitUsers.of(user)
             )
 
         if caught.value.status_code != 404:
@@ -306,35 +286,10 @@ class TestAuthenticator:
         if await authenticator.user_of_token("not-a-token") is not None:
             raise AssertionError("garbage token must not authenticate")
 
+        # токен другого приложения на той же основе: строка users заводится здесь
         stranger = User(identifier="nobody-in-users", metadata={})
-        if await authenticator.user_of_token(create_jwt(stranger)) is not None:
-            raise AssertionError("a sign-in without a users row must not authenticate")
-
-
-class TestBusyThread:
-    """Вызов инструмента в занятом треде — 409 с именем держателя."""
-
-    async def test_call_is_refused_while_the_thread_is_held(
-        self, seeded: Seed, app_config: AppConfig
-    ) -> None:
-        locks = MemoryLiveLocks("node1-chainlit", 20)
-        probe = Probe()
-
-        async def registry() -> ToolRegistry:
-            return _registry(probe, app_config)
-
-        calling = ToolCalling(
-            registry, _profiles(app_config), lambda: seeded.layer, lambda: locks, 1.0
-        )
-        await locks.acquire(
-            Scope.chat(seeded.thread_id), LockMode.EXCLUSIVE, LockPurpose.TURN, 1
-        )
-        user = ChainlitUsers.of(_tester(seeded, app_config))
-
-        with pytest.raises(HTTPException) as caught:
-            await calling.serve("probe", _body(seeded, app_config), user)
-
-        if caught.value.status_code != 409:
-            raise AssertionError(caught.value.status_code)
-        if "node1-chainlit is running a turn" not in str(caught.value.detail):
-            raise AssertionError(caught.value.detail)
+        created = await authenticator.user_of_token(create_jwt(stranger))
+        if created is None:
+            raise AssertionError("a token of a peer application must sign in")
+        if created.identifier != "nobody-in-users":
+            raise AssertionError(created.identifier)

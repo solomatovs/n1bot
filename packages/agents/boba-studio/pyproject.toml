@@ -26,6 +26,17 @@ dependencies = [
     "boba-sandbox==0.0.14.dev9",
 ]
 
+[project.optional-dependencies]
+tools = [
+    "boba-tool-shell==0.0.14.dev9",
+    "boba-tool-chart==0.0.14.dev9",
+    "boba-tool-web==0.0.14.dev9",
+    "boba-tool-doc==0.0.14.dev9",
+    "boba-tool-postgres==0.0.14.dev9",
+    "boba-tool-clickhouse==0.0.14.dev9",
+    "boba-tool-knowledge==0.0.14.dev9",
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["boba*"]

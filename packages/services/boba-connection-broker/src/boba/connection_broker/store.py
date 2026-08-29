@@ -405,8 +405,8 @@ class ConnectionStore(ConnectionRepository):
                 src_kind_id
             from
                 {grants}
-            where
-                src_kind = %(src_kind)s
+            where 1=1
+                and src_kind = %(src_kind)s
                 and tgt_kind = %(tgt_kind)s
                 and tgt_kind_id = %(user_id)s
             """

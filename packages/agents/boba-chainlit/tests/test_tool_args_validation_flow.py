@@ -50,7 +50,7 @@ pytestmark = [
     pytest.mark.anyio,
     pytest.mark.skipif(
         shutil.which("bwrap") is None or not _ROOTFS_IMAGE.exists(),
-        reason="нет bwrap или артефактов песочницы (собрать: make deps)",
+        reason="нет bwrap или артефактов песочницы (собрать: make fetch sandbox)",
     ),
     pytest.mark.skipif(
         not _cgroup_delegated(),

@@ -10,7 +10,6 @@ import pytest
 from chainlit.user import PersistedUser
 from conftest import (
     ChainlitUsers,
-    NoThreads,
     NoUsers,
     Seed,
     StubAuthenticator,
@@ -93,7 +92,6 @@ def app(store: WorkflowStore, user: PersistedUser, app_config: AppConfig) -> Fas
     access = ApiAccess(
         StubAuthenticator(ChainlitUsers.of(user)),
         StubAuthenticator.COOKIE,
-        NoThreads.source,
         NoUsers.source,
     )
     return ApiApp.build(

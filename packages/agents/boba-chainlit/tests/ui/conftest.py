@@ -37,6 +37,7 @@ from boba.connections.http import HttpProfile
 from boba.connections.profile import GrantTarget
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.session import UserMetadataField
+from boba.runtime.config import DataLayerConfig
 from boba.settings import bind, build_app_config
 from boba.workflow_engine.store import WorkflowConfig, WorkflowStore
 from ui.chat_page import ChatPage
@@ -109,7 +110,16 @@ async def _ensure_database(name: str) -> None:
     await _ensure_extensions(app_config, name)
     await _drop_connections(built, app_config, name)
     await _drop_workflow_data(built, app_config, name)
-    await _forget_studio_profiles(app_config, name)
+    await _forget_studio_profiles(app_config.data_layer.db_schema, app_config, name)
+
+    # у studio свой конфиг и своя схема: её таблицы тоже начинают с чистого листа
+    studio_built = build_app_config(
+        config_path=StandPaths.STUDIO_BASE_CONFIG.under(REPO_ROOT)
+    )
+    automation = bind(studio_built, path="automation", model=DataLayerConfig)
+    await _drop_connections(studio_built, app_config, name)
+    await _drop_workflow_data(studio_built, app_config, name)
+    await _forget_studio_profiles(automation.db_schema, app_config, name)
 
 
 async def _drop_connections(built: Any, app_config: AppConfig, name: str) -> None:
@@ -154,7 +164,9 @@ async def _drop_workflow_data(built: Any, app_config: AppConfig, name: str) -> N
         await pool.close()
 
 
-async def _forget_studio_profiles(app_config: AppConfig, name: str) -> None:
+async def _forget_studio_profiles(
+    schema: str, app_config: AppConfig, name: str
+) -> None:
     """Выбор профиля studio хранится на пользователе и пережил бы прогон: сессия
     начинается с профиля по умолчанию."""
     postgres = app_config.data_layer.postgres.model_copy(update={"dbname": name})
@@ -164,7 +176,7 @@ async def _forget_studio_profiles(app_config: AppConfig, name: str) -> None:
         async with pool.cursor() as cur:
             await cur.execute(
                 sql.SQL("update {}.users set meta = meta - %s where meta ? %s").format(
-                    sql.Identifier(app_config.data_layer.db_schema)
+                    sql.Identifier(schema)
                 ),
                 (UserMetadataField.STUDIO_PROFILE, UserMetadataField.STUDIO_PROFILE),
             )

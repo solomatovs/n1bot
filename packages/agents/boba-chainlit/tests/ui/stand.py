@@ -45,7 +45,10 @@ class StandError(Exception):
 class StandPaths(StrEnum):
     """Пути репозитория, которые стенд подставляет вместо рантайма релиза."""
 
-    BASE_CONFIG = "compose/conf/config.toml"
+    BASE_CONFIG = "compose/chainlit/conf/config.toml"
+    STUDIO_BASE_CONFIG = "compose/studio/conf/config.toml"
+    CHAINLIT_BASE = "compose/chainlit"
+    STUDIO_BASE = "compose/studio"
     ASSETS = "compose/chainlit"
     SANDBOX = "build/src/sandbox"
     PACKAGES = "packages"
@@ -140,6 +143,26 @@ class StandConfig:
         return self.workdir / "config.toml"
 
     @property
+    def studio_config_path(self) -> Path:
+        return self.workdir / "studio.toml"
+
+    def config_path_of(self, app: StandApp) -> Path:
+        if app is StandApp.CHAINLIT:
+            return self.config_path
+
+        return self.studio_config_path
+
+    def port_of(self, app: StandApp) -> int:
+        if app is StandApp.CHAINLIT:
+            return self.chainlit_port
+
+        return self.studio_port
+
+    def data_dir_of(self, app: StandApp) -> Path:
+        """Данные приложения стенда: образы workspace, журналы, kerberos-кэши."""
+        return self.workdir / app.value / "data"
+
+    @property
     def base_url(self) -> str:
         return StandUrl.of(self.app_port, self.url_prefix)
 
@@ -176,24 +199,34 @@ class StandConfig:
         return found
 
     def write(self) -> Path:
-        """Кладёт конфиг стенда в рабочий каталог и отдаёт его путь."""
-        base = StandPaths.BASE_CONFIG.under(REPO_ROOT)
+        """Кладёт конфиги стенда — чата и studio — в рабочий каталог и отдаёт путь
+        конфига чата.
+        """
+        self.workdir.mkdir(parents=True, exist_ok=True)
+        for app in StandApp:
+            self._write_doc(app)
+
+        return self.config_path
+
+    def _write_doc(self, app: StandApp) -> None:
+        """Рабочий конфиг приложения с правками стенда: у studio нет секций чата,
+        правки их пропускают.
+        """
+        base = app.base_config.under(REPO_ROOT)
         with base.open("rb") as handle:
             doc: dict[str, Any] = tomllib.load(handle)
 
         self._use_fake_llm(doc)
         self._use_test_profiles(doc)
         self._use_test_database(doc)
-        self._use_local_storage(doc)
+        self._use_local_storage(doc, app)
         self._use_local_auth(doc)
         self._use_studio(doc)
         self._disable_sandbox_tools(doc)
         self._drop_cgroup_limits(doc)
         self._shrink_pools(doc)
 
-        self.workdir.mkdir(parents=True, exist_ok=True)
-        self.config_path.write_text(TomlText.dumps(doc), encoding="utf-8")
-        return self.config_path
+        self.config_path_of(app).write_text(TomlText.dumps(doc), encoding="utf-8")
 
     @staticmethod
     def _shrink_pools(doc: MutableMapping[str, Any]) -> None:
@@ -202,18 +235,25 @@ class StandConfig:
         pool["min_size"] = 1
         pool["max_size"] = 6
 
-    def env(self) -> dict[str, str]:
-        """Окружение дочернего процесса: пути стенда вместо рантайма релиза."""
+    def env_of(self, app: StandApp) -> dict[str, str]:
+        """Окружение процесса приложения: свой корень, конфиг, данные и порт — те же
+        переменные, что у контейнеров, с разными значениями.
+        """
+        data_dir = self.data_dir_of(app)
+        for name in ("workspace", "tool-logs", "dump", "krb"):
+            (data_dir / name).mkdir(parents=True, exist_ok=True)
+
         env = dict(os.environ)
-        env["BOBA_CONFIG_PATH"] = str(self.config_path)
+        env["BOBA_BASE"] = str(app.base.under(REPO_ROOT))
+        env["BOBA_DATA"] = str(data_dir)
+        env["BOBA_CONFIG_PATH"] = str(self.config_path_of(app))
         env["BOBA_RUNTIME"] = str(self.workdir)
         env["BOBA_SANDBOX"] = str(StandPaths.SANDBOX.under(REPO_ROOT))
         env["BOBA_ASSETS"] = str(StandPaths.ASSETS.under(REPO_ROOT))
         env["BOBA_BIND_CODE"] = f"{StandPaths.PACKAGES.under(REPO_ROOT)}:/opt/src"
         env["BOBA_SANDBOX_PYTHONPATH"] = "/opt/site"
         env["BOBA_CGROUP_BASE"] = "/sys/fs/cgroup/boba"
-        env["BOBA_PORT"] = str(self.chainlit_port)
-        env["BOBA_STUDIO_PORT"] = str(self.studio_port)
+        env["BOBA_PORT"] = str(self.port_of(app))
         env["BOBA_INSTANCE_ID"] = f"stand{self.app_port}"
         env["BOBA_URL_PREFIX"] = self.url_prefix
         env["PGGSSENCMODE"] = "disable"
@@ -315,14 +355,15 @@ class StandConfig:
         """
         doc["postgres"]["dbname"] = self.db_name
 
-    def _use_local_storage(self, doc: MutableMapping[str, Any]) -> None:
-        files_dir = self.workdir / "files"
+    def _use_local_storage(self, doc: MutableMapping[str, Any], app: StandApp) -> None:
+        files_dir = self.workdir / app.value / "files"
         files_dir.mkdir(parents=True, exist_ok=True)
-        storage = doc["storage"]
-        storage["kind"] = "local"
-        storage["files_dir"] = str(files_dir)
+        if "storage" in doc:
+            storage = doc["storage"]
+            storage["kind"] = "local"
+            storage["files_dir"] = str(files_dir)
 
-        journal_dir = self.workdir / "tool-logs"
+        journal_dir = self.workdir / app.value / "tool-logs"
         journal_dir.mkdir(parents=True, exist_ok=True)
         doc["stream_journal"]["dir"] = str(journal_dir)
 
@@ -365,6 +406,9 @@ class StandConfig:
     @staticmethod
     def _use_studio(doc: MutableMapping[str, Any]) -> None:
         """Студия стенда: сборка страницы из dist конфига, слушает только loopback."""
+        if "studio" not in doc:
+            return
+
         doc["studio"]["host"] = StandUrl.HOST.value
         doc["studio"]["page"] = "built"
 
@@ -409,6 +453,41 @@ class StandConfig:
                 del profile[key]
 
 
+class StandApp(StrEnum):
+    """Приложения стенда: у каждого свой корень рантайма, конфиг, данные и порт."""
+
+    CHAINLIT = "chainlit"
+    STUDIO = "studio"
+
+    @property
+    def module(self) -> str:
+        if self is StandApp.CHAINLIT:
+            return "boba.chainlit.main"
+
+        return "boba.studio"
+
+    @property
+    def base(self) -> StandPaths:
+        if self is StandApp.CHAINLIT:
+            return StandPaths.CHAINLIT_BASE
+
+        return StandPaths.STUDIO_BASE
+
+    @property
+    def base_config(self) -> StandPaths:
+        if self is StandApp.CHAINLIT:
+            return StandPaths.BASE_CONFIG
+
+        return StandPaths.STUDIO_BASE_CONFIG
+
+    @property
+    def log(self) -> StandLog:
+        if self is StandApp.CHAINLIT:
+            return StandLog.CHAINLIT
+
+        return StandLog.STUDIO
+
+
 class StandLog(StrEnum):
     """Логи процессов стенда рядом с логом chainlit."""
 
@@ -450,9 +529,8 @@ class StandProcess:
 
     def _start(self, boot_timeout_sec: float) -> None:
         self.config.write()
-        env = self.config.env()
-        self.process = self._spawn("boba.chainlit.main", env, StandLog.CHAINLIT)
-        self.studio = self._spawn("boba.studio", env, StandLog.STUDIO)
+        self.process = self._spawn(StandApp.CHAINLIT)
+        self.studio = self._spawn(StandApp.STUDIO)
 
         deadline = time.monotonic() + boot_timeout_sec
         prefix = self.config.url_prefix
@@ -473,9 +551,10 @@ class StandProcess:
         self.front = FrontDoor(self.config.app_port, routes)
         self.front.start()
 
-    def _spawn(
-        self, module: str, env: Mapping[str, str], log: StandLog
-    ) -> subprocess.Popen[bytes]:
+    def _spawn(self, app: StandApp) -> subprocess.Popen[bytes]:
+        module = app.module
+        env = self.config.env_of(app)
+        log = app.log
         handle = log.path_of(self.log_path).open("wb")
 
         return subprocess.Popen(  # noqa: S603

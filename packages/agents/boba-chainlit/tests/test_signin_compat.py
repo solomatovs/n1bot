@@ -8,7 +8,7 @@ import pytest
 from chainlit.user import User as ChainlitUser
 
 from boba.chainlit.infra.config import AppConfig
-from boba.identity.api import AuthenticatedUser, PersistedUsers
+from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
 from boba.identity.signin import SignedIn
 from boba.studio.api.jwt_auth import JwtAuthenticator, JwtIssuer
 
@@ -20,13 +20,18 @@ def chainlit_context() -> None:
     """Токены не зависят от сессии chainlit."""
 
 
-class OneUser(PersistedUsers):
+class OneUser(PersistedUsers, UsersUpsert):
     async def get_user(self, identifier: str) -> AuthenticatedUser | None:
         return AuthenticatedUser(id="5", identifier=identifier, metadata={})
 
+    async def ensure_user(self, signed: SignedIn) -> AuthenticatedUser:
+        return AuthenticatedUser(
+            id="5", identifier=signed.identifier, metadata=signed.metadata
+        )
+
 
 def _secret(app_config: AppConfig) -> str:
-    secret = app_config.studio.auth_secret
+    secret = app_config.session.auth_secret
     os.environ["CHAINLIT_AUTH_SECRET"] = secret
     return secret
 

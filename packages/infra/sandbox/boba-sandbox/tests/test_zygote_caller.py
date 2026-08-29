@@ -47,7 +47,7 @@ ROOTFS_IMAGE = SANDBOX / "rootfs.ext4"
 
 needs_sandbox = pytest.mark.skipif(
     shutil.which("bwrap") is None or not ROOTFS_IMAGE.exists(),
-    reason="нет bwrap или артефактов песочницы (собрать: make deps)",
+    reason="нет bwrap или артефактов песочницы (собрать: make fetch sandbox)",
 )
 needs_userns = pytest.mark.skipif(
     os.geteuid() == 0, reason="под root user namespace ведёт себя иначе"
@@ -581,7 +581,7 @@ class TestWorkspaceImages:
 
 needs_rootfs_image = pytest.mark.skipif(
     not ROOTFS_IMAGE.exists() or shutil.which("fuse2fs") is None,
-    reason="нет rootfs.ext4 или fuse2fs (собрать: make sandbox-image)",
+    reason="нет rootfs.ext4 или fuse2fs (собрать: make sandbox)",
 )
 
 

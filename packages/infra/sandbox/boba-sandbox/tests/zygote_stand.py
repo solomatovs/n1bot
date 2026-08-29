@@ -25,7 +25,7 @@ REPO = Path(__file__).resolve().parents[5]
 SANDBOX = REPO / "build" / "src" / "sandbox"
 ROOTFS = SANDBOX / "rootfs"
 ROOTFS_IMAGE = SANDBOX / "rootfs.ext4"
-DEPLOY_BIN = REPO / "compose" / "third" / "bin"
+DEPLOY_BIN = REPO / "compose" / "chainlit" / "third" / "bin"
 """Каталог бинарей развёртывания: тот же, что объявлен в конфиге приложения."""
 
 
@@ -104,7 +104,7 @@ class SandboxStand:
         запись группе, — TrustedBinaries такой каталог не принимает.
         """
         if not cls.FUSE2FS.exists():
-            msg = f"нет {cls.FUSE2FS}: собери развёртывание — make sandbox-image"
+            msg = f"нет {cls.FUSE2FS}: собери развёртывание — make sandbox"
             raise RuntimeError(msg)
 
         return str(cls.FUSE2FS)

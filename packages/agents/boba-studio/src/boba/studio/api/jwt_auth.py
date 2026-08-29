@@ -11,12 +11,17 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, Protocol
 
 import jwt
 from fastapi import Response
 
-from boba.identity.api import AuthenticatedUser, Authenticator, PersistedUsers
+from boba.identity.api import (
+    AuthenticatedUser,
+    Authenticator,
+    PersistedUsers,
+    UsersUpsert,
+)
 from boba.identity.context import DelegatedTicket
 from boba.identity.signin import SignedIn
 
@@ -35,12 +40,16 @@ class JwtClaim(StrEnum):
     IAT = "iat"
 
 
+class JwtUsers(PersistedUsers, UsersUpsert, Protocol):
+    """Строки users приложения для входа по токену: найти либо завести."""
+
+
 class JwtAuthenticator(Authenticator):
     """Токен JWT chainlit -> пользователь входа со строкой users."""
 
     ALGORITHM: ClassVar[str] = "HS256"
 
-    def __init__(self, secret: str, users: Callable[[], PersistedUsers]) -> None:
+    def __init__(self, secret: str, users: Callable[[], JwtUsers]) -> None:
         if not secret:
             msg = "jwt secret is empty: CHAINLIT_AUTH_SECRET is required"
             raise ValueError(msg)
@@ -74,14 +83,20 @@ class JwtAuthenticator(Authenticator):
         if not isinstance(identifier, str) or not identifier:
             return None
 
+        metadata = self._metadata_of(claims)
         stored = await self._users().get_user(identifier)
         if stored is None:
-            return None
+            # токен выдан другим приложением на той же основе: строка users заводится
+            # здесь при первом обращении, входить заново не нужно
+            signed = SignedIn(
+                identifier=identifier, display_name=identifier, metadata=metadata
+            )
+            stored = await self._users().ensure_user(signed)
 
         return AuthenticatedUser(
             id=stored.id,
             identifier=stored.identifier,
-            metadata=self._metadata_of(claims),
+            metadata=metadata,
         )
 
     @classmethod
