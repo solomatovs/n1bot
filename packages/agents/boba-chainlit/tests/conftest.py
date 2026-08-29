@@ -54,7 +54,7 @@ from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.user_connections import StoreRef, TicketsRef
 from boba.connections.kerberos import DelegationMode
 from boba.db.postgres import AsyncPostgresPool
-from boba.identity.api import AuthenticatedUser, Authenticator
+from boba.identity.api import AuthenticatedUser, Authenticator, UserSettingsStore
 from boba.identity.context import (
     CallContext,
     ChatInitiator,
@@ -640,6 +640,15 @@ class NoThreads:
     @staticmethod
     def source() -> ThreadOwnership:
         msg = "thread ownership is not part of this stand"
+        raise RuntimeError(msg)
+
+
+class NoUsers:
+    """Хранилище пользователей стендам API без /me не нужно."""
+
+    @staticmethod
+    def source() -> UserSettingsStore:
+        msg = "users store is not part of this stand"
         raise RuntimeError(msg)
 
 

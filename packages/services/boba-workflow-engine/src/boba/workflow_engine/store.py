@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, ClassVar
 from uuid import UUID
 
 import psycopg
@@ -29,8 +29,10 @@ from boba.db.postgres import AsyncPostgresPool, PostgresError
 from boba.workflow import RunState, RunStatus, WorkflowSpec
 from boba.workflow.ports import WorkflowRepository
 from boba.workflow.records import (
+    DraftKey,
     StoredRun,
     StoredWorkflow,
+    WorkflowDraft,
     WorkflowNotFoundError,
     WorkflowStoreError,
 )
@@ -80,6 +82,8 @@ class WorkflowConfig(BaseModel):
 class WorkflowStore(WorkflowRepository):
     """CRUD над workflows/workflow_runs; всё чтение и запись — под владельцем."""
 
+    DRAFTS_TABLE: ClassVar[str] = "workflow_drafts"
+
     def __init__(
         self,
         cfg: WorkflowConfig,
@@ -100,6 +104,9 @@ class WorkflowStore(WorkflowRepository):
 
     def _runs(self) -> sql.Identifier:
         return sql.Identifier(self._cfg.db_schema, self._cfg.runs_table)
+
+    def _drafts(self) -> sql.Identifier:
+        return sql.Identifier(self._cfg.db_schema, self.DRAFTS_TABLE)
 
     @asynccontextmanager
     async def _guarded(self, action: str) -> AsyncGenerator[None, None]:
@@ -172,6 +179,19 @@ class WorkflowStore(WorkflowRepository):
                 )
                 """
             ).format(runs=self._runs(), workflows=self._workflows()),
+            sql.SQL(
+                """
+                create table if not exists {drafts} (
+                    user_id    integer not null,
+                    key        text not null,
+                    revision   integer not null default 1,
+                    spec       text not null,
+                    layout     jsonb not null default '{{}}'::jsonb,
+                    updated_at timestamptz not null default now(),
+                    primary key (user_id, key)
+                )
+                """
+            ).format(drafts=self._drafts()),
             sql.SQL(
                 """
                 create index if not exists idx_workflow_runs_user
@@ -254,6 +274,79 @@ class WorkflowStore(WorkflowRepository):
 
     async def get(self, user_id: int, workflow_id: int) -> StoredWorkflow:
         return await self._one_workflow(user_id, sql.SQL("w.id = %(key)s"), workflow_id)
+
+    async def put_draft(
+        self, user_id: int, key: DraftKey, spec: str, layout: Mapping[str, Any]
+    ) -> WorkflowDraft:
+        query = sql.SQL(
+            """
+            insert into {drafts} (user_id, key, spec, layout)
+            values (%(user_id)s, %(key)s, %(spec)s, %(layout)s)
+            on conflict (user_id, key) do update set
+                revision   = {drafts}.revision + 1,
+                spec       = excluded.spec,
+                layout     = excluded.layout,
+                updated_at = now()
+            returning
+                key, user_id, revision, spec, layout, updated_at
+            """
+        ).format(drafts=self._drafts())
+        params = {
+            "user_id": user_id,
+            "key": key.render(),
+            "spec": spec,
+            "layout": Jsonb(dict(layout)),
+        }
+
+        pool = await self._pool()
+        async with self._guarded("put_draft"), pool.dict_cursor() as cur:
+            await cur.execute(query, params)
+            row = await cur.fetchone()
+
+        if row is None:
+            msg = f"draft {key.render()!r} was not saved"
+            raise WorkflowStoreError(msg)
+
+        return WorkflowDraft.model_validate(dict(row))
+
+    async def get_draft(self, user_id: int, key: DraftKey) -> WorkflowDraft:
+        query = sql.SQL(
+            """
+            select
+                key, user_id, revision, spec, layout, updated_at
+            from
+                {drafts}
+            where 1=1
+                and user_id = %(user_id)s
+                and key = %(key)s
+            """
+        ).format(drafts=self._drafts())
+
+        pool = await self._pool()
+        async with self._guarded("get_draft"), pool.dict_cursor() as cur:
+            await cur.execute(query, {"user_id": user_id, "key": key.render()})
+            row = await cur.fetchone()
+
+        if row is None:
+            msg = f"draft {key.render()!r} not found"
+            raise WorkflowNotFoundError(msg)
+
+        return WorkflowDraft.model_validate(dict(row))
+
+    async def drop_draft(self, user_id: int, key: DraftKey) -> bool:
+        query = sql.SQL(
+            """
+            delete from {drafts}
+            where 1=1
+                and user_id = %(user_id)s
+                and key = %(key)s
+            """
+        ).format(drafts=self._drafts())
+
+        pool = await self._pool()
+        async with self._guarded("drop_draft"), pool.dict_cursor() as cur:
+            await cur.execute(query, {"user_id": user_id, "key": key.render()})
+            return cur.rowcount > 0
 
     async def get_by_name(self, user_id: int, name: str) -> StoredWorkflow:
         return await self._one_workflow(user_id, sql.SQL("w.name = %(key)s"), name)

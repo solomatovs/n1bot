@@ -68,6 +68,7 @@ class StudioHost:
             authenticator=JwtAuthenticator(config.studio.auth_secret, lambda: table),
             cookie=config.studio.cookie,
             threads=lambda: table,
+            users=lambda: table,
         )
         api = ApiApp.build(
             providers.runtime_refs(),

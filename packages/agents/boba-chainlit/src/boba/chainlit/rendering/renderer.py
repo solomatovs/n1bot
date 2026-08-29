@@ -27,8 +27,10 @@ from boba.messaging import (
     AnswerInterrupted,
     AnswerToken,
     CanvasChanged,
+    ElementRemoved,
     ElementShown,
     Envelope,
+    FeedbackChanged,
     MessageBus,
     MessageKind,
     ModelAnswered,
@@ -87,6 +89,14 @@ class RenderSurface(Protocol):
         """Шлёт элемент ленты во все живые вкладки треда."""
 
     @abstractmethod
+    async def remove_element(self, element_id: str) -> None:
+        """Убирает элемент из ленты во всех живых вкладках треда."""
+
+    @abstractmethod
+    async def refresh_step(self, step_id: str) -> None:
+        """Перечитывает шаг из истории и обновляет его во всех вкладках треда."""
+
+    @abstractmethod
     async def task_start(self) -> None:
         """Включает индикатор хода во всех вкладках треда."""
 
@@ -110,6 +120,12 @@ class NoSurface(RenderSurface):
         return None
 
     async def send_element(self, element: ElementDict) -> None:
+        return None
+
+    async def remove_element(self, element_id: str) -> None:
+        return None
+
+    async def refresh_step(self, step_id: str) -> None:
         return None
 
     async def task_start(self) -> None:
@@ -227,6 +243,8 @@ class ChatRenderer:
             MessageKind.CANVAS_CHANGED: self._on_canvas_changed,
             MessageKind.THREAD_REWOUND: self._on_thread_rewound,
             MessageKind.ELEMENT_SHOWN: self._on_element_shown,
+            MessageKind.ELEMENT_REMOVED: self._on_element_removed,
+            MessageKind.FEEDBACK_CHANGED: self._on_feedback_changed,
             MessageKind.SIGNIN_REFRESH_REQUESTED: self._on_signin_refresh,
         }
 
@@ -337,6 +355,12 @@ class ChatRenderer:
         raw = await self._payloads.get(message.element)
         element = ShownElement.model_validate(raw)
         await self._surface.send_element(element.to_element())
+
+    async def _on_element_removed(self, message: ElementRemoved) -> None:
+        await self._surface.remove_element(message.element_id)
+
+    async def _on_feedback_changed(self, message: FeedbackChanged) -> None:
+        await self._surface.refresh_step(message.step_id)
 
     async def _on_signin_refresh(self, message: SignInRefreshRequested) -> None:
         await self._surface.window_message({"type": SignalType.KERBEROS_REFRESH})

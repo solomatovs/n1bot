@@ -16,7 +16,13 @@ from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chat.threads import DataRejectedError, DataUnavailableError
 from boba.identity.context import Scope
 from boba.identity.session import UserMetadataField
-from boba.messaging import Envelope, MemoryMessageBus, ThreadChanged
+from boba.messaging import (
+    ElementRemoved,
+    Envelope,
+    FeedbackChanged,
+    MemoryMessageBus,
+    ThreadChanged,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -366,3 +372,57 @@ async def test_thread_changes_are_published_to_the_user_scope(
         (thread_id, "updated", "renamed"),
         (thread_id, "deleted", ""),
     ]
+
+
+async def test_feedback_and_element_removal_reach_the_thread_scope(
+    layer: PostgresDataLayer,
+    seeded: Seed,
+    data_bus: MemoryMessageBus,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Оценка ответа и удаление вложения уходят в область треда: вкладки на всех
+    инстансах обновляют шаг и убирают элемент.
+    """
+    seen: list[Envelope] = []
+
+    async def collect(envelope: Envelope) -> None:
+        seen.append(envelope)
+
+    leave = data_bus.subscribe(Scope.chat(seeded.thread_id), collect)
+    try:
+        feedback_id = await layer.upsert_feedback(
+            FeedbackPayload(
+                forId=seeded.answer_step_id,
+                threadId=seeded.thread_id,
+                value=1,
+                comment="nice",
+            )
+        )
+        assert await layer.delete_feedback(feedback_id) is True
+        assert await layer.delete_feedback(feedback_id) is False
+
+        use_session(monkeypatch, user_id=seeded.user.id, thread_id=seeded.thread_id)
+        element = Text(name="note.txt", content="x", display="inline")
+        element.id = str(uuid4())
+        element.thread_id = seeded.thread_id
+        element.for_id = seeded.answer_step_id
+        await layer.create_element(element)
+        await layer.delete_element(element.id, seeded.thread_id)
+    finally:
+        leave()
+
+    kinds = [envelope.message.kind.value for envelope in seen]
+    assert kinds == ["feedback_changed", "feedback_changed", "element_removed"]
+    first = seen[0].message
+    assert isinstance(first, FeedbackChanged)
+    assert (first.step_id, first.value, first.comment) == (
+        seeded.answer_step_id,
+        1,
+        "nice",
+    )
+    second = seen[1].message
+    assert isinstance(second, FeedbackChanged)
+    assert second.value is None
+    third = seen[2].message
+    assert isinstance(third, ElementRemoved)
+    assert third.element_id == element.id

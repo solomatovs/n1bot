@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from studio_stand import NoRefs, StubAuthenticator
+from studio_stand import MemoryUsers, NoRefs, StubAuthenticator
 
 from boba.chat.openai import OpenAiConfig
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
@@ -63,6 +63,7 @@ async def _client(user: AuthenticatedUser | None) -> AsyncClient:
         StubAuthenticator(user),
         StubAuthenticator.COOKIE,
         NoRefs.store,  # type: ignore[arg-type]
+        MemoryUsers(user).source,
     )
     app = ApiApp.build(NoRefs.refs(), access, _profiles(), None)
 
@@ -149,3 +150,27 @@ async def test_connection_schema_describes_kinds_and_secrets(
     assert auth["discriminator"]["propertyName"] == "method"
     bearer = schema["$defs"]["BearerAuth"]["properties"]["token"]
     assert bearer["format"] == "password"
+
+
+async def test_profile_choice_is_stored_and_reported_without_a_query(
+    reader: AsyncClient,
+) -> None:
+    """PUT /me/profile запоминает выбор на пользователе: /me без ?profile= отдаёт его,
+    недоступный ролям профиль отвергается.
+    """
+    me = await reader.get(f"{ApiVersion.V1}{AccountUrl.ME}")
+    assert me.json()["profile"] == "general"
+
+    hidden = await reader.put(
+        f"{ApiVersion.V1}{AccountUrl.PROFILE}", json={"profile": "admin", "sid": "s1"}
+    )
+    assert hidden.status_code == 403
+
+    chosen = await reader.put(
+        f"{ApiVersion.V1}{AccountUrl.PROFILE}", json={"profile": "general", "sid": "s1"}
+    )
+    assert chosen.status_code == 200, chosen.text
+    assert chosen.json()["profile"] == "general"
+
+    again = await reader.get(f"{ApiVersion.V1}{AccountUrl.ME}")
+    assert again.json()["profile"] == "general"

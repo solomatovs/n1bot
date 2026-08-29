@@ -30,6 +30,8 @@ __all__ = [
     "AuthenticatedUser",
     "Authenticator",
     "PersistedUsers",
+    "StudioProfiles",
+    "UserSettingsStore",
     "UsersUpsert",
 ]
 
@@ -121,3 +123,14 @@ class PersistedUsers(Protocol):
     @abstractmethod
     async def get_user(self, identifier: str) -> AuthenticatedUser | None:
         """None — вход ещё не заводил строку users."""
+
+
+class StudioProfiles(Protocol):
+    """Выбранный пользователем профиль studio в metadata его строки users."""
+
+    @abstractmethod
+    async def set_studio_profile(self, user_id: int, profile: str) -> None: ...
+
+
+class UserSettingsStore(PersistedUsers, StudioProfiles, Protocol):
+    """Что нужно ресурсу /me: строка пользователя и запись выбранного профиля."""

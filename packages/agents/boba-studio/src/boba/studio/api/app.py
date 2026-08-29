@@ -13,7 +13,7 @@ from boba.identity.api import Authenticator
 from boba.runtime.config import StudioPath
 from boba.runtime.http import DomainErrorMiddleware
 from boba.runtime.refs import RuntimeRefs
-from boba.studio.api.account import AccountApi
+from boba.studio.api.account import AccountApi, UsersSource
 from boba.studio.api.auth import ApiAuth, TokenReader
 from boba.studio.api.connections import ConnectionsApi
 from boba.studio.api.signin import SignInApi, SignInWiring
@@ -33,6 +33,7 @@ class ApiAccess:
     authenticator: Authenticator
     cookie: str
     threads: ThreadsSource
+    users: UsersSource
 
 
 class ApiApp:
@@ -61,7 +62,7 @@ class ApiApp:
         if signin is not None:
             SignInApi(signin).mount(router)
 
-        AccountApi(profiles).mount(router)
+        AccountApi(profiles, access.users, refs.message_bus).mount(router)
         ConnectionsApi(
             refs.connection_store, profiles, refs.sso_tickets, refs.message_bus
         ).mount(router)

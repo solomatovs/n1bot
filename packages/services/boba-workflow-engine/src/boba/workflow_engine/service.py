@@ -42,6 +42,7 @@ from boba.messaging import (
     StopRequested,
     StreamAppended,
     WorkflowChanged,
+    WorkflowDraftChanged,
 )
 from boba.toolkit.result import ToolResult
 from boba.toolrun.invoke import ToolInvoker
@@ -56,7 +57,13 @@ from boba.workflow import (
 )
 from boba.workflow.events import RunSnapshot
 from boba.workflow.ports import RunSink
-from boba.workflow.records import StoredRun, StoredWorkflow, WorkflowNotFoundError
+from boba.workflow.records import (
+    DraftKey,
+    StoredRun,
+    StoredWorkflow,
+    WorkflowDraft,
+    WorkflowNotFoundError,
+)
 from boba.workflow_engine.catalog import CatalogBuilder
 from boba.workflow_engine.runner import WorkflowRunner
 from boba.workflow_engine.store import WorkflowStore
@@ -253,7 +260,55 @@ class WorkflowService:
         )
         await self._bus.publish(Scope.user(subject.user_id), changed, LockToken.local())
 
+        # сохранённое становится истиной: черновик вкладок этого workflow снимается
+        await self.drop_draft(subject, DraftKey.of_workflow(saved.id), "")
+
         return saved
+
+    async def put_draft(
+        self,
+        subject: Subject,
+        key: DraftKey,
+        spec: str,
+        layout: Mapping[str, Any],
+        by_sid: str,
+    ) -> WorkflowDraft:
+        """Пишет общий черновик билдера без проверки спеки — она правится по ходу — и
+        сообщает вкладкам пользователя новую revision.
+        """
+        draft = await self._store.put_draft(subject.user_id, key, spec, layout)
+        await self._draft_changed(
+            subject.user_id, key, draft.revision, by_sid, ChangeAction.UPDATED
+        )
+
+        return draft
+
+    async def get_draft(self, subject: Subject, key: DraftKey) -> WorkflowDraft:
+        try:
+            return await self._store.get_draft(subject.user_id, key)
+        except WorkflowNotFoundError as exc:
+            raise WorkflowError(WorkflowRefusal.NOT_FOUND, str(exc)) from exc
+
+    async def drop_draft(self, subject: Subject, key: DraftKey, by_sid: str) -> bool:
+        dropped = await self._store.drop_draft(subject.user_id, key)
+        if not dropped:
+            return False
+
+        await self._draft_changed(subject.user_id, key, 0, by_sid, ChangeAction.DELETED)
+        return True
+
+    async def _draft_changed(
+        self,
+        user_id: int,
+        key: DraftKey,
+        revision: int,
+        by_sid: str,
+        action: ChangeAction,
+    ) -> None:
+        message = WorkflowDraftChanged(
+            key=key.render(), revision=revision, by_sid=by_sid, action=action
+        )
+        await self._bus.publish(Scope.user(user_id), message, LockToken.local())
 
     async def list_workflows(self, subject: Subject) -> Sequence[StoredWorkflow]:
         return await self._store.list_for(subject.user_id)

@@ -195,6 +195,17 @@ export const StoredWorkflowSchema = z.object({
 });
 export type StoredWorkflow = z.infer<typeof StoredWorkflowSchema>;
 
+/** Черновик билдера, общий для вкладок пользователя: последняя запись побеждает. */
+export const WorkflowDraftSchema = z.object({
+  key: z.string(),
+  user_id: z.number().int(),
+  revision: z.number().int(),
+  spec: z.string(),
+  layout: z.record(z.unknown()),
+  updated_at: z.string(),
+});
+export type WorkflowDraft = z.infer<typeof WorkflowDraftSchema>;
+
 export const InitiatorSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("chat"), thread_id: z.string(), turn_id: z.string() }),
   z.object({ kind: z.literal("llm"), thread_id: z.string(), tool_call_id: z.string() }),
@@ -359,6 +370,18 @@ export const UserEventSchema = z.discriminatedUnion("kind", [
     workflow_id: z.number(),
     name: z.string(),
     action: z.enum(["created", "updated", "deleted"]),
+  }),
+  z.object({
+    kind: z.literal("workflow_draft_changed"),
+    key: z.string(),
+    revision: z.number().int(),
+    by_sid: z.string(),
+    action: z.enum(["created", "updated", "deleted"]),
+  }),
+  z.object({
+    kind: z.literal("studio_profile_changed"),
+    profile: z.string(),
+    by_sid: z.string(),
   }),
   z.object({
     kind: z.literal("connections_changed"),

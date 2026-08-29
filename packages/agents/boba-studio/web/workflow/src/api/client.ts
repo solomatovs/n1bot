@@ -9,6 +9,7 @@ import {
   StoppedSchema,
   StoredRunSchema,
   StoredWorkflowSchema,
+  WorkflowDraftSchema,
   ChannelViewSchema,
   StreamSliceSchema,
   ToolCatalogSchema,
@@ -17,6 +18,7 @@ import {
   type RunState,
   type StoredRun,
   type StoredWorkflow,
+  type WorkflowDraft,
   type ChannelView,
   type StreamSlice,
   type ToolCatalog,
@@ -132,6 +134,11 @@ export class WorkflowApi {
     return this.call("get", "/v1/me", {}, undefined, undefined, MeSchema);
   }
 
+  /** Выбор профиля на пользователе; sid — сокет этой вкладки, чтобы не применять своё же. */
+  setProfile(name: string, sid: string): Promise<Me> {
+    return this.call("put", "/v1/me/profile", {}, undefined, { profile: name, sid }, MeSchema);
+  }
+
   profiles(): Promise<ProfileView[]> {
     return this.call("get", "/v1/profiles", {}, undefined, undefined, ProfileViewSchema.array());
   }
@@ -199,6 +206,29 @@ export class WorkflowApi {
 
   save(spec: string, layout: Record<string, unknown>): Promise<StoredWorkflow> {
     return this.call("post", "/v1/workflows", {}, undefined, { spec, layout }, StoredWorkflowSchema);
+  }
+
+  /** Черновик билдера по ключу; нет черновика — null. */
+  async getDraft(key: string): Promise<WorkflowDraft | null> {
+    try {
+      return await this.call("get", "/v1/workflows/drafts/{key}", { key }, undefined, undefined, WorkflowDraftSchema);
+    } catch (error: unknown) {
+      if (error instanceof ApiError && error.status === 404) {
+        return null;
+      }
+
+      throw error;
+    }
+  }
+
+  /** Запись черновика; sid — сокет этой вкладки, чтобы не применять своё же изменение. */
+  putDraft(key: string, spec: string, layout: Record<string, unknown>, sid: string): Promise<WorkflowDraft> {
+    return this.call("put", "/v1/workflows/drafts/{key}", { key }, undefined, { spec, layout, sid }, WorkflowDraftSchema);
+  }
+
+  async dropDraft(key: string, sid: string): Promise<boolean> {
+    const reply = await this.call("delete", "/v1/workflows/drafts/{key}", { key }, { sid }, undefined, DeletedSchema);
+    return reply.deleted;
   }
 
   async remove(id: number): Promise<boolean> {

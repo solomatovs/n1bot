@@ -34,6 +34,7 @@ class AccountUrl(StrEnum):
     """Кто вошёл и какие профили ему видны."""
 
     ME = "/me"
+    PROFILE = "/me/profile"
     PROFILES = "/profiles"
 
 
@@ -60,6 +61,7 @@ class WorkflowUrl(StrEnum):
     VALIDATE = "/workflows/validate"
     WORKFLOWS = "/workflows"
     WORKFLOW = "/workflows/{workflow_id}"
+    DRAFT = "/workflows/drafts/{key}"
     RUN = "/workflows/{workflow_id}/run"
     RUNS = "/workflow-runs"
     RUN_ONE = "/workflow-runs/{run_id}"

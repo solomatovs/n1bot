@@ -17,9 +17,9 @@ from psycopg import sql
 from boba.access import ProfileGrant, RoleConfig, ToolAccess
 from boba.cancellation import StopReason
 from boba.db.postgres import AsyncPostgresPool
-from boba.identity.context import CallContext, LlmInitiator, ScopeKind, Subject
+from boba.identity.context import CallContext, LlmInitiator, Scope, ScopeKind, Subject
 from boba.identity.locks import MemoryLiveLocks, RunLocking
-from boba.messaging import MemoryMessageBus
+from boba.messaging import Envelope, MemoryMessageBus, WorkflowDraftChanged
 from boba.runtime.commands import CommandRunner
 from boba.runtime.plugins import CallSurface
 from boba.toolkit.calls import ScriptCall, ToolCallViews
@@ -36,6 +36,7 @@ from boba.toolrun.intent import ToolIntentField
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.run_log import ToolRunLogger
 from boba.workflow import RunStatus, TaskStatus
+from boba.workflow.records import DraftKey
 from boba.workflow_engine.service import (
     StopOutcome,
     WorkflowError,
@@ -482,3 +483,46 @@ class TestTools:
         )
         assert isinstance(missing.artifact, ErrorResult)
         assert missing.artifact.error_kind == WorkflowRefusal.NOT_FOUND
+
+
+async def test_draft_changes_reach_the_user_scope_and_save_drops_the_draft(
+    service: WorkflowService, context: CallContext
+) -> None:
+    """Правка черновика уходит вкладкам пользователя с revision и sid автора; Save
+    делает сохранённое истиной и снимает черновик.
+    """
+    seen: list[Envelope] = []
+
+    async def collect(envelope: Envelope) -> None:
+        seen.append(envelope)
+
+    leave = service.bus.subscribe(Scope.user(context.subject.user_id), collect)
+    try:
+        stored = await service.save(context.subject, PARALLEL, {})
+        key = DraftKey.of_workflow(stored.id)
+        draft = await service.put_draft(
+            context.subject, key, "name: broken\n", {"positions": {}}, "sid-1"
+        )
+        assert draft.revision == 1
+        assert (await service.get_draft(context.subject, key)).spec == "name: broken\n"
+
+        await service.save(context.subject, PARALLEL, {})
+        with pytest.raises(WorkflowError):
+            await service.get_draft(context.subject, key)
+    finally:
+        leave()
+
+    drafts: list[tuple[str, int, str, str]] = []
+    for envelope in seen:
+        message = envelope.message
+        if not isinstance(message, WorkflowDraftChanged):
+            continue
+
+        drafts.append(
+            (message.key, message.revision, message.by_sid, message.action.value)
+        )
+
+    assert drafts == [
+        (key.render(), 1, "sid-1", "updated"),
+        (key.render(), 0, "", "deleted"),
+    ]

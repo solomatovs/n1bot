@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { UserEventSchema } from "../model/workflow";
 import { BUS_STATE, busStateOf, lampStatus, streamEventOf } from "./socket";
 
 describe("lampStatus", () => {
@@ -49,5 +50,22 @@ describe("streamEventOf", () => {
     });
     expect(streamEventOf({ run_id: "run-1" })).toBeNull();
     expect(streamEventOf(null)).toBeNull();
+  });
+});
+
+describe("UserEventSchema", () => {
+  it("accepts a draft change and keeps its author socket", () => {
+    const parsed = UserEventSchema.parse({
+      kind: "workflow_draft_changed",
+      key: "workflow:7",
+      revision: 3,
+      by_sid: "sid-1",
+      action: "updated",
+    });
+    expect(parsed.kind).toBe("workflow_draft_changed");
+    if (parsed.kind === "workflow_draft_changed") {
+      expect(parsed.by_sid).toBe("sid-1");
+      expect(parsed.revision).toBe(3);
+    }
   });
 });

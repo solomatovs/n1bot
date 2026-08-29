@@ -8,7 +8,14 @@ import secrets as std_secrets
 from collections.abc import AsyncIterator
 
 import pytest
-from conftest import ChainlitUsers, NoThreads, Seed, StubAuthenticator, StubRefs
+from conftest import (
+    ChainlitUsers,
+    NoThreads,
+    NoUsers,
+    Seed,
+    StubAuthenticator,
+    StubRefs,
+)
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from psycopg import sql
@@ -106,6 +113,7 @@ async def client(
         StubAuthenticator(ChainlitUsers.of(seeded.user)),
         StubAuthenticator.COOKIE,
         NoThreads.source,
+        NoUsers.source,
     )
     app: FastAPI = ApiApp.build(
         StubRefs.of(lambda: store, lambda: None),

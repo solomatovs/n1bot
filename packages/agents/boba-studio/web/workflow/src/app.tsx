@@ -65,11 +65,43 @@ export function App(): ReactElement {
   const socket = useRef<RunSocket | null>(null);
   socket.current ??= new RunSocket(urls);
   const [profile, setProfile] = useState(() => readProfile());
-  const chooseProfile = useCallback((name: string) => {
+  const liveSocket = socket.current;
+
+  const adopt = useCallback((name: string) => {
     writeProfile(name);
     setProfile(name);
   }, []);
-  const liveSocket = socket.current;
+
+  // выбор хранится на пользователе: свой сохраняем на сервере, чужой приходит из шины
+  const chooseProfile = useCallback(
+    (name: string) => {
+      adopt(name);
+      void new WorkflowApi(urls, name).setProfile(name, liveSocket.id).catch(() => undefined);
+    },
+    [adopt, urls, liveSocket],
+  );
+
+  // при входе на страницу — профиль пользователя с сервера, а не кэш браузера
+  useEffect(() => {
+    void new WorkflowApi(urls)
+      .me()
+      .then((me) => {
+        adopt(me.profile);
+      })
+      .catch(() => undefined);
+  }, [urls, adopt]);
+
+  useEffect(
+    () =>
+      liveSocket.onUser((event) => {
+        if (event.kind !== "studio_profile_changed" || event.by_sid === liveSocket.id) {
+          return;
+        }
+
+        adopt(event.profile);
+      }),
+    [liveSocket, adopt],
+  );
   const services = useMemo<Services>(
     () => ({ urls, api: new WorkflowApi(urls, profile), socket: liveSocket, chooseProfile }),
     [urls, profile, liveSocket, chooseProfile],

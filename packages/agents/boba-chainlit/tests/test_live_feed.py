@@ -24,7 +24,9 @@ from boba.identity.context import Scope
 from boba.identity.locks import LockMode, LockPurpose
 from boba.identity.run import RunRegistry
 from boba.messaging import (
+    ElementRemoved,
     Envelope,
+    FeedbackChanged,
     LockToken,
     Notice,
     NoticeLevel,
@@ -356,17 +358,27 @@ async def test_stream_growth_is_published_through_the_pump(
 
 
 class RecordingSurface(NoSurface):
-    """Поверхность в тестах: считает перечитывания ленты и копит элементы."""
+    """Поверхность в тестах: считает перечитывания ленты, копит элементы, удаления
+    и обновлённые шаги.
+    """
 
     def __init__(self) -> None:
         self.resumed = 0
         self.elements: list[ElementDict] = []
+        self.removed: list[str] = []
+        self.refreshed: list[str] = []
 
     async def resume_thread(self) -> None:
         self.resumed += 1
 
     async def send_element(self, element: ElementDict) -> None:
         self.elements.append(element)
+
+    async def remove_element(self, element_id: str) -> None:
+        self.removed.append(element_id)
+
+    async def refresh_step(self, step_id: str) -> None:
+        self.refreshed.append(step_id)
 
 
 ELEMENT = {
@@ -405,6 +417,13 @@ async def test_rewind_and_elements_reach_the_viewer_instance(
 
     await holder.bus.publish(scope, ThreadRewound(turn_id=TURN), LockToken.local())
     await _until(lambda: surface.resumed == 1, "viewer re-read the thread")
+
+    removed = ElementRemoved(element_id="el-old")
+    await holder.bus.publish(scope, removed, LockToken.local())
+    feedback = FeedbackChanged(step_id="answer-0", value=1, comment="ok")
+    await holder.bus.publish(scope, feedback, LockToken.local())
+    await _until(lambda: surface.refreshed == ["answer-0"], "viewer refreshed the step")
+    assert surface.removed == ["el-old"]
 
     lock = await holder.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, 1)
     feed = TurnFeed(holder.bus, holder.payloads, scope, TURN, lock.token)

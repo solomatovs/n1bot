@@ -1,5 +1,5 @@
 import { Code2, Play, Save, ShieldCheck } from "lucide-react";
-import { type ReactElement, useCallback, useMemo, useState } from "react";
+import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { z } from "zod";
 
@@ -30,9 +30,25 @@ import {
   type EditableWorkflow,
   type SpecIssue,
 } from "../model/spec";
-import type { StoredWorkflow, ToolCatalog } from "../model/workflow";
+import type { StoredWorkflow, ToolCatalog, WorkflowDraft } from "../model/workflow";
 
 const EMPTY: EditableWorkflow = { name: "new-workflow", description: "", tasks: [], edges: [] };
+
+/** Пауза перед отправкой черновика: серия правок уходит одной записью. */
+const DRAFT_DEBOUNCE_MS = 300;
+
+/** Ключ черновика: сохранённый workflow по id, новый — по uuid из адреса вкладки. */
+function draftKeyOf(workflowId: string | undefined, draftParam: string | null): string {
+  if (workflowId !== undefined) {
+    return `workflow:${workflowId}`;
+  }
+
+  if (draftParam !== null) {
+    return `new:${draftParam}`;
+  }
+
+  return "";
+}
 
 const LayoutSchema = z.object({
   positions: z.record(z.object({ x: z.number(), y: z.number() })),
@@ -52,6 +68,7 @@ function noticeOf(state: unknown): string {
 type Loaded = {
   catalog: ToolCatalog;
   stored: StoredWorkflow | null;
+  draft: WorkflowDraft | null;
 };
 
 /** Сцена Build: пусто без выбора, иначе билдер выбранного или нового workflow. */
@@ -59,16 +76,27 @@ export function BuildPage(): ReactElement {
   const { workflowId } = useParams();
   const { api } = useServices();
   const location = useLocation();
+  const navigate = useNavigate();
   const isNew = location.pathname.endsWith("/build/new");
+  const draftParam = new URLSearchParams(location.search).get("draft");
+  const draftKey = draftKeyOf(workflowId, draftParam);
+
+  // новый workflow получает uuid черновика в адресе: вторая вкладка по нему же его и откроет
+  useEffect(() => {
+    if (isNew && draftParam === null) {
+      void navigate(`/build/new?draft=${crypto.randomUUID()}`, { replace: true });
+    }
+  }, [isNew, draftParam, navigate]);
 
   const load = useCallback(async (): Promise<Loaded> => {
     const catalog = await api.catalog();
+    const draft = draftKey === "" ? null : await api.getDraft(draftKey);
     if (workflowId === undefined) {
-      return { catalog, stored: null };
+      return { catalog, stored: null, draft };
     }
 
-    return { catalog, stored: await api.getWorkflow(Number(workflowId)) };
-  }, [api, workflowId]);
+    return { catalog, stored: await api.getWorkflow(Number(workflowId)), draft };
+  }, [api, workflowId, draftKey]);
   const [loaded] = useLoadable(load);
 
   if (workflowId === undefined && !isNew) {
@@ -85,7 +113,9 @@ export function BuildPage(): ReactElement {
   return (
     <Async
       state={loaded}
-      render={({ catalog, stored }) => <Builder key={stored?.id ?? "new"} catalog={catalog} stored={stored} />}
+      render={({ catalog, stored, draft }) => (
+        <Builder key={draftKey} catalog={catalog} stored={stored} draft={draft} draftKey={draftKey} />
+      )}
     />
   );
 }
@@ -93,9 +123,16 @@ export function BuildPage(): ReactElement {
 type BuilderProps = {
   catalog: ToolCatalog;
   stored: StoredWorkflow | null;
+  draft: WorkflowDraft | null;
+  draftKey: string;
 };
 
-function initialWorkflow(stored: StoredWorkflow | null): EditableWorkflow {
+/** Черновик главнее сохранённого: он и есть то, что вкладки правят сейчас. */
+function initialWorkflow(stored: StoredWorkflow | null, draft: WorkflowDraft | null): EditableWorkflow {
+  if (draft !== null) {
+    return parseSpecText(draft.spec);
+  }
+
   if (stored === null) {
     return EMPTY;
   }
@@ -122,27 +159,40 @@ function autoPositions(workflow: EditableWorkflow, catalog: ToolCatalog): TaskPo
   );
 }
 
-function initialPositions(
-  stored: StoredWorkflow | null,
-  workflow: EditableWorkflow,
-  catalog: ToolCatalog,
-): TaskPositions {
-  const saved = stored === null ? null : LayoutSchema.safeParse(stored.layout);
+/** Позиции из раскладки, если в ней есть каждая задача; иначе автораскладка. */
+function positionsOf(layout: unknown, workflow: EditableWorkflow, catalog: ToolCatalog): TaskPositions {
+  const saved = LayoutSchema.safeParse(layout);
   const names = workflow.tasks.map((task) => task.name);
-  if (saved?.success === true && names.every((name) => name in saved.data.positions)) {
+  if (saved.success && names.every((name) => name in saved.data.positions)) {
     return saved.data.positions;
   }
 
   return autoPositions(workflow, catalog);
 }
 
-function Builder({ catalog, stored }: BuilderProps): ReactElement {
-  const { api } = useServices();
+function initialPositions(
+  stored: StoredWorkflow | null,
+  draft: WorkflowDraft | null,
+  workflow: EditableWorkflow,
+  catalog: ToolCatalog,
+): TaskPositions {
+  if (draft !== null) {
+    return positionsOf(draft.layout, workflow, catalog);
+  }
+
+  return positionsOf(stored?.layout ?? null, workflow, catalog);
+}
+
+function Builder({ catalog, stored, draft, draftKey }: BuilderProps): ReactElement {
+  const { api, socket } = useServices();
   const shell = useShellData();
   const navigate = useNavigate();
   const location = useLocation();
-  const [workflow, setWorkflow] = useState<EditableWorkflow>(() => initialWorkflow(stored));
-  const [positions, setPositions] = useState<TaskPositions>(() => initialPositions(stored, workflow, catalog));
+  const [workflow, setWorkflow] = useState<EditableWorkflow>(() => initialWorkflow(stored, draft));
+  const [positions, setPositions] = useState<TaskPositions>(() => initialPositions(stored, draft, workflow, catalog));
+  const revision = useRef(draft?.revision ?? 0);
+  const remote = useRef(false);
+  const untouched = useRef(true);
   const [selected, setSelected] = useState<string | null>(null);
   const [yamlMode, setYamlMode] = useState(false);
   const [yamlText, setYamlText] = useState("");
@@ -168,6 +218,83 @@ function Builder({ catalog, stored }: BuilderProps): ReactElement {
     setNotice(text);
     setFailed(isError);
   }, []);
+
+  // своя правка уходит черновиком через паузу; пришедшая с шины обратно не отправляется
+  useEffect(() => {
+    if (untouched.current) {
+      untouched.current = false;
+      return;
+    }
+
+    if (remote.current) {
+      remote.current = false;
+      return;
+    }
+
+    if (draftKey === "") {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void api.putDraft(draftKey, renderSpecText(workflow), { positions }, socket.id).then(
+        (saved) => {
+          revision.current = Math.max(revision.current, saved.revision);
+        },
+        (error: unknown) => {
+          report(`draft not shared: ${errorText(error)}`, true);
+        },
+      );
+    }, DRAFT_DEBOUNCE_MS);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [workflow, positions, api, socket, draftKey, report]);
+
+  // чужая правка черновика: перечитать и применить, если она новее нашей
+  useEffect(
+    () =>
+      socket.onUser((event) => {
+        if (event.kind !== "workflow_draft_changed" || event.key !== draftKey) {
+          return;
+        }
+
+        if (event.by_sid !== "" && event.by_sid === socket.id) {
+          return;
+        }
+
+        if (event.action === "deleted") {
+          if (stored === null) {
+            return;
+          }
+
+          void api.getWorkflow(stored.id).then((fresh) => {
+            const parsed = parseSpecText(fresh.spec);
+            remote.current = true;
+            revision.current = 0;
+            setWorkflow(parsed);
+            setPositions(positionsOf(fresh.layout, parsed, catalog));
+          });
+          return;
+        }
+
+        if (event.revision <= revision.current) {
+          return;
+        }
+
+        void api.getDraft(draftKey).then((fresh) => {
+          if (fresh === null || fresh.revision <= revision.current) {
+            return;
+          }
+
+          const parsed = parseSpecText(fresh.spec);
+          remote.current = true;
+          revision.current = fresh.revision;
+          setWorkflow(parsed);
+          setPositions(positionsOf(fresh.layout, parsed, catalog));
+        });
+      }),
+    [socket, api, draftKey, stored, catalog],
+  );
 
   const toggleYaml = useCallback(() => {
     if (!yamlMode) {
@@ -233,12 +360,14 @@ function Builder({ catalog, stored }: BuilderProps): ReactElement {
       report(text, false);
       shell.reload();
       if (stored === null) {
+        // черновик нового workflow свою роль сыграл: дальше вкладки правят сохранённый
+        await api.dropDraft(draftKey, socket.id);
         await navigate(`/build/${saved.id}`, { replace: true, state: { notice: text } });
       }
     } catch (error: unknown) {
       remember(error);
     }
-  }, [api, specText, positions, remember, report, navigate, stored, shell]);
+  }, [api, specText, positions, remember, report, navigate, stored, shell, draftKey, socket]);
 
   const run = useCallback(async () => {
     if (savedId === null) {

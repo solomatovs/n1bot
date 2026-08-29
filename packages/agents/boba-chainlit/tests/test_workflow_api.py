@@ -8,7 +8,14 @@ from uuid import uuid4
 
 import pytest
 from chainlit.user import PersistedUser
-from conftest import ChainlitUsers, NoThreads, Seed, StubAuthenticator, StubRefs
+from conftest import (
+    ChainlitUsers,
+    NoThreads,
+    NoUsers,
+    Seed,
+    StubAuthenticator,
+    StubRefs,
+)
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from psycopg import sql
@@ -87,6 +94,7 @@ def app(store: WorkflowStore, user: PersistedUser, app_config: AppConfig) -> Fas
         StubAuthenticator(ChainlitUsers.of(user)),
         StubAuthenticator.COOKIE,
         NoThreads.source,
+        NoUsers.source,
     )
     return ApiApp.build(
         StubRefs.services(registry, source), access, _profiles(app_config), None
@@ -303,3 +311,39 @@ async def test_abandoned_runs_are_closed_on_startup_and_stop_is_honest(
         await store.get_run(subject.user_id, foreign.id)
     ).state.status is RunStatus.FAILED
     assert await mine.stop(subject, orphan.id) is StopOutcome.FINISHED
+
+
+async def test_draft_round_trip(client: AsyncClient, app_config: AppConfig) -> None:
+    """Черновик билдера: 404 до записи, PUT растит revision, DELETE снимает."""
+    profile = _profile_of(app_config)
+    key = "new:0f3b2a10-1111-4222-8333-444455556666"
+
+    missing = await client.get(
+        f"/v1/workflows/drafts/{key}", params={"profile": profile}
+    )
+    assert missing.status_code == 404
+
+    bad = await client.get("/v1/workflows/drafts/nope", params={"profile": profile})
+    assert bad.status_code == 400
+
+    body = {"spec": "name: draft\n", "layout": {"positions": {}}, "sid": "sid-1"}
+    first = await client.put(
+        f"/v1/workflows/drafts/{key}", params={"profile": profile}, json=body
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["revision"] == 1
+
+    second = await client.put(
+        f"/v1/workflows/drafts/{key}", params={"profile": profile}, json=body
+    )
+    assert second.json()["revision"] == 2
+
+    found = await client.get(f"/v1/workflows/drafts/{key}", params={"profile": profile})
+    assert found.json()["spec"] == "name: draft\n"
+
+    dropped = await client.delete(
+        f"/v1/workflows/drafts/{key}", params={"profile": profile, "sid": "sid-1"}
+    )
+    assert dropped.json() == {"deleted": True}
+    gone = await client.get(f"/v1/workflows/drafts/{key}", params={"profile": profile})
+    assert gone.status_code == 404

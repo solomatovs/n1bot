@@ -48,15 +48,24 @@ from boba.identity.context import Scope
 from boba.identity.errors import InternalServiceError
 from boba.identity.locks import RunLocking
 from boba.identity.session import UserMetadataField
-from boba.messaging import LockToken, PayloadStore, StopRequested, ThreadRewound
+from boba.messaging import (
+    ChatSettingsChanged,
+    LockToken,
+    PayloadStore,
+    StopRequested,
+    ThreadRewound,
+)
 from boba.runtime import providers as runtime
 from boba.runtime.bus import PgMessageBus
 from boba.runtime.di import Container, Depends, di_inject
 from boba.runtime.locks import PgLiveLocks
 from chainlit.auth.cookie import clear_auth_cookie
 from chainlit.config import config as chainlit_config
+from chainlit.context import ChainlitContext, context_var
 from chainlit.data.base import BaseDataLayer
+from chainlit.emitter import ChainlitEmitter
 from chainlit.input_widget import Tab
+from chainlit.session import WebsocketSession
 from chainlit.types import ThreadDict
 from chainlit.utils import wrap_user_function
 
@@ -229,6 +238,50 @@ async def _reset_session_container() -> None:
     session.remember(Container.SESSION_KEY, None)
 
 
+class SettingsRefresh:
+    """Чужая вкладка пользователя после сохранения настроек: если она на том же
+    профиле — свежие metadata в сессию, агент заново и панель заново.
+    """
+
+    @staticmethod
+    async def apply(socket: WebsocketSession, profile: str) -> None:
+        root = Container.root
+        if root is None:
+            raise InternalServiceError(
+                internal_detail="DI container is not initialised", user_detail=None
+            )
+
+        registry = root.resolved(chat_profiles_registry)
+        app_config = root.resolved(get_app_config)
+        token = context_var.set(ChainlitContext(socket, ChainlitEmitter(socket)))
+        try:
+            session = current_session()
+            selected = registry.resolve(session.chat_profile, session.roles)
+            if selected.name != profile:
+                return
+
+            await SettingsRefresh._adopt_metadata(
+                session, root.resolved(chainlit_data_layer)
+            )
+            await _reset_session_container()
+            if tabs := _session_settings(app_config, registry):
+                await cl.ChatSettings(tabs).send()
+        finally:
+            context_var.reset(token)
+
+    @staticmethod
+    async def _adopt_metadata(session: ChainlitSession, layer: BaseDataLayer) -> None:
+        fresh = await layer.get_user(session.identifier)
+        user = session.user
+        if fresh is None or user is None:
+            return
+
+        user.metadata = dict(fresh.metadata or {})
+
+
+UserRoom.on_settings(SettingsRefresh.apply)
+
+
 def _session_settings(app_config: AppConfig, registry: ChatProfiles) -> list[Tab]:
     """Вкладки панели настроек сессии; пусто — профиль ничего не открывает."""
     panel = SettingsPanel(
@@ -300,6 +353,12 @@ async def on_settings_update(
 
     _refresh_session_user_meta(selected.name, overrides)
     await _reset_session_container()
+
+    # остальные вкладки пользователя узнают о настройках из его области
+    changed = ChatSettingsChanged(
+        profile=selected.name, by_session=current_session().id
+    )
+    await _root_bus().publish(Scope.user(int(user_id)), changed, LockToken.local())
 
     logger.info(
         "llm settings saved: profile=%s, overrides=%s",

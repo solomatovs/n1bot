@@ -36,7 +36,9 @@ from boba.connections.clickhouse import ClickHouseConfig
 from boba.connections.http import HttpProfile
 from boba.connections.profile import GrantTarget
 from boba.db.postgres import AsyncPostgresPool
+from boba.identity.session import UserMetadataField
 from boba.settings import bind, build_app_config
+from boba.workflow_engine.store import WorkflowConfig, WorkflowStore
 from ui.chat_page import ChatPage
 from ui.fake_llm import FakeRoute, serve
 from ui.socket_log import SocketLog
@@ -106,6 +108,8 @@ async def _ensure_database(name: str) -> None:
 
     await _ensure_extensions(app_config, name)
     await _drop_connections(built, app_config, name)
+    await _drop_workflow_data(built, app_config, name)
+    await _forget_studio_profiles(app_config, name)
 
 
 async def _drop_connections(built: Any, app_config: AppConfig, name: str) -> None:
@@ -123,6 +127,51 @@ async def _drop_connections(built: Any, app_config: AppConfig, name: str) -> Non
                         sql.Identifier(connections.db_schema, table)
                     )
                 )
+    finally:
+        await pool.close()
+
+
+async def _drop_workflow_data(built: Any, app_config: AppConfig, name: str) -> None:
+    """Сносит workflow, запуски и черновики прошлых прогонов: списки страницы должны
+    начинаться с чистого листа, таблицы приложение пересоздаёт на старте."""
+    workflow = bind(built, path="workflow", model=WorkflowConfig)
+    postgres = app_config.data_layer.postgres.model_copy(update={"dbname": name})
+    pool = AsyncPostgresPool(postgres)
+    await pool.open()
+    try:
+        async with pool.cursor() as cur:
+            for table in (
+                workflow.runs_table,
+                WorkflowStore.DRAFTS_TABLE,
+                workflow.table,
+            ):
+                await cur.execute(
+                    sql.SQL("drop table if exists {} cascade").format(
+                        sql.Identifier(workflow.db_schema, table)
+                    )
+                )
+    finally:
+        await pool.close()
+
+
+async def _forget_studio_profiles(app_config: AppConfig, name: str) -> None:
+    """Выбор профиля studio хранится на пользователе и пережил бы прогон: сессия
+    начинается с профиля по умолчанию."""
+    postgres = app_config.data_layer.postgres.model_copy(update={"dbname": name})
+    pool = AsyncPostgresPool(postgres)
+    await pool.open()
+    try:
+        async with pool.cursor() as cur:
+            await cur.execute(
+                sql.SQL("update {}.users set meta = meta - %s where meta ? %s").format(
+                    sql.Identifier(app_config.data_layer.db_schema)
+                ),
+                (UserMetadataField.STUDIO_PROFILE, UserMetadataField.STUDIO_PROFILE),
+            )
+    except Exception as exc:
+        # таблицы users ещё нет у чистой базы: приложение создаст её на старте
+        if "does not exist" not in str(exc):
+            raise
     finally:
         await pool.close()
 

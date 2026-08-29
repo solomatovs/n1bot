@@ -15,7 +15,7 @@ from boba.chat.threads import ThreadOwnership
 from boba.identity.api import (
     AuthenticatedUser,
     Authenticator,
-    PersistedUsers,
+    UserSettingsStore,
     UsersUpsert,
 )
 from boba.identity.locks import MemoryLiveLocks
@@ -56,7 +56,7 @@ class OpenApiDocument:
 
     @classmethod
     def render(cls) -> dict[str, Any]:
-        access = ApiAccess(NoOne(), cls.COOKIE, cls._no_threads)
+        access = ApiAccess(NoOne(), cls.COOKIE, cls._no_threads, cls._no_users)
         app = ApiApp.build(cls._refs(), access, cls._profiles(), cls._signin())
 
         return app.openapi()
@@ -85,7 +85,7 @@ class OpenApiDocument:
         )
 
     @classmethod
-    def _no_users(cls) -> PersistedUsers:
+    def _no_users(cls) -> UserSettingsStore:
         msg = "users table is not part of the schema stand"
         raise RuntimeError(msg)
 

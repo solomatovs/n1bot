@@ -12,7 +12,12 @@ from studio_stand import NoRefs
 from boba.chat.openai import OpenAiConfig
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.chat.provider import OpenAiChatConfig
-from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
+from boba.identity.api import (
+    AuthenticatedUser,
+    PersistedUsers,
+    StudioProfiles,
+    UsersUpsert,
+)
 from boba.identity.roles import RoleExcludeConfig, RoleMappingConfig
 from boba.identity.signin import SignedIn
 from boba.runtime.auth_config import LocalAuthConfig
@@ -28,7 +33,7 @@ SECRET = "stand-secret-of-at-least-32-bytes-long"
 COOKIE = "access_token"
 
 
-class Users(PersistedUsers, UsersUpsert):
+class Users(PersistedUsers, UsersUpsert, StudioProfiles):
     """Строки users стенда в памяти: id выдаётся по порядку входа."""
 
     def __init__(self) -> None:
@@ -46,6 +51,9 @@ class Users(PersistedUsers, UsersUpsert):
         )
         self.rows[signed.identifier] = row
         return row
+
+    async def set_studio_profile(self, user_id: int, profile: str) -> None:
+        return None
 
     async def get_user(self, identifier: str) -> AuthenticatedUser | None:
         return self.rows.get(identifier)
@@ -99,6 +107,7 @@ async def client() -> AsyncIterator[AsyncClient]:
         JwtAuthenticator(SECRET, lambda: users),
         COOKIE,
         NoRefs.store,  # type: ignore[arg-type]
+        lambda: users,
     )
     app = ApiApp.build(NoRefs.refs(), access, _profiles(), wiring)
     async with AsyncClient(
