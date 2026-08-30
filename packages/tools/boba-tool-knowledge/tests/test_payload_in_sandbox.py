@@ -16,12 +16,12 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
-from conftest import needs_sandbox, needs_userns, sandbox_profile
 
 from boba.sandbox import (
     SandboxToolConfig,
 )
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
+from boba.stand.sandbox import needs_sandbox, needs_userns, sandbox_profile
 from boba.toolkit.launcher import LauncherError, ToolOutcome
 from boba.toolkit.protocol import ReplyError, ReplyOk, ToolCommand
 

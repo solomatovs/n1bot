@@ -6,7 +6,8 @@ import os
 
 import pytest
 from langchain_core.messages import HumanMessage
-from zygote_stand import ROOTFS_IMAGE, ProfileFields
+
+from boba.stand.zygote import ROOTFS_IMAGE, ProfileFields
 
 _ROOT = "/tmp/boba-rootfs"  # noqa: S108
 """Точка, куда цепочка лаунчера смонтировала корень."""

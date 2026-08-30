@@ -16,5 +16,5 @@ build/*/src/sandbox
 build/*/src/wheels
 
 # страница workflow: зависимости ставит и сборку делает стадия web-build
-packages/agents/boba-chainlit/web/workflow/node_modules
-packages/agents/boba-chainlit/assets/public/workflow
+packages/agents/boba-studio/web/workflow/node_modules
+packages/agents/boba-studio/assets/workflow

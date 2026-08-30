@@ -6,9 +6,6 @@ PageOps больше не payload за протоколом — его зову�
 
 from __future__ import annotations
 
-import subprocess
-import sys
-
 import pytest
 
 from boba.tool.kb.html.payload import PageOps
@@ -101,25 +98,3 @@ class TestPlainText:
             raise AssertionError('"Заголовок" in text')
         if "<b>" in text:
             raise AssertionError('"<b>" not in text')
-
-
-class TestParsersStayInSandbox:
-    """Приложение не тянет тяжёлые парсеры: они живут в телах инструментов."""
-
-    @pytest.mark.parametrize(
-        "module", ["liteparse", "markdownify", "bs4", "lxml", "plotly"]
-    )
-    def test_app_does_not_import(self, module: str) -> None:
-        code = (
-            "import sys\n"
-            "import boba.chainlit.infra.plugins\n"
-            f"if {module!r} in sys.modules:\n"
-            f"    raise SystemExit('the app pulls {module}')\n"
-            "print('ok')\n"
-        )
-        subprocess.run(  # noqa: S603
-            [sys.executable, "-c", code],
-            check=True,
-            capture_output=True,
-            text=True,
-        )

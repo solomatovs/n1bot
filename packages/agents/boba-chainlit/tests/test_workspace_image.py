@@ -12,18 +12,18 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from zygote_stand import ROOTFS_IMAGE, ProfileFields, SandboxStand, ZygoteStand
 
+from boba.canvas.storage import StorageError, StorageNotFoundError
 from boba.chainlit.data.storage import (
     ImageStorageClient,
     LocalStorageClient,
     StorageClient,
     StorageFactory,
 )
-from boba.canvas.storage import StorageError, StorageNotFoundError
 from boba.chainlit.infra.config import LocalStorageConfig
 from boba.sandbox.profile import SandboxProfile
 from boba.sandbox.runner import SandboxMountError
+from boba.stand.zygote import ROOTFS_IMAGE, ProfileFields, SandboxStand, ZygoteStand
 from boba.tool.shell.tools import BashToolConfig, build_bash_tool
 from boba.toolkit.result import ShellResult
 from boba.workspace.binaries import TrustedBinaries

@@ -5,10 +5,10 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from fake_toolmod import FakeConfig
 from pydantic import SecretStr
 
 from boba.sandbox.wrap import ToolProcessWrap, WrapErrorKind
+from boba.stand.fake_toolmod import FakeConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.launcher import (
     LaunchOutcome,
@@ -36,7 +36,7 @@ def fresh_tool():
     """Свежий tool-объект: guard_all подменяет тела на месте."""
     from importlib import reload
 
-    import fake_toolmod
+    from boba.stand import fake_toolmod
 
     reload(fake_toolmod)
     return ToolMain.toolset(fake_toolmod.fake_echo)[0]
@@ -88,8 +88,8 @@ class TestSandboxMode:
         command = launcher.commands[0]
         if "-m" not in command.argv:
             raise AssertionError('"-m" in command.argv')
-        if "fake_toolmod" not in command.argv:
-            raise AssertionError('"fake_toolmod" in command.argv')
+        if "boba.stand.fake_toolmod" not in command.argv:
+            raise AssertionError('"boba.stand.fake_toolmod" in command.argv')
         if "--text" not in command.argv:
             raise AssertionError('"--text" in command.argv')
         if "t0ken" in " ".join(command.argv):

@@ -41,7 +41,7 @@ _run_bandit() {
 
 _run_semgrep() {
   echo "== semgrep =="
-  # правила скачиваются в build/src (как остальные артефакты) и в git
+  # правила скачиваются в sec/semgrep (как остальные артефакты) и в git
   # не попадают: обновляются через sec.sh rules
   SEMGREP_SEND_METRICS=off "$_uv" tool run --system-certs semgrep \
     scan --config="$_sec_dir/sec/semgrep" --metrics=off \
@@ -78,7 +78,7 @@ PY
 
   echo "== bandit: без порогов, вместе с тестами =="
   "$_uv" tool run --system-certs bandit                     \
-    -q -r "$_sec_dir/packages" "$_sec_dir/build/test"       \
+    -q -r "$_sec_dir/packages" "$_sec_dir/build/chainlit/test" "$_sec_dir/build/studio/test"       \
     --exclude '**/.venv/**' -f json 2>/dev/null > "$_bandit_json" || true
 
   python3 - "$_bandit_json" <<'PY'

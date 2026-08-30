@@ -21,7 +21,7 @@ from boba.sandbox.zygote import (
     ZygoteToolCaller,
 )
 
-REPO = Path(__file__).resolve().parents[5]
+REPO = Path(__file__).resolve().parents[6]
 SANDBOX = REPO / "build" / "chainlit" / "src" / "sandbox"
 ROOTFS = SANDBOX / "rootfs"
 ROOTFS_IMAGE = SANDBOX / "rootfs.ext4"

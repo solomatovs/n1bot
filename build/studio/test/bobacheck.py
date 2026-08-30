@@ -5,11 +5,10 @@
 
 Запускается с окружением установки (make test):
   set -a; . conf/boba.env; set +a
-  python3 test/bobacheck.py --app chainlit|studio --names <файл со списком имён пакетов boba>
+  python3 test/bobacheck.py --names <файл со списком имён пакетов boba>
 
 Список имён пакетов берётся из образа (app/packages.txt); если его нет —
-сканируются исходники (--packages). Проверки моделей чата идут только для chainlit,
-страницы workflow — только для studio.
+сканируются исходники (--packages).
 """
 
 import argparse
@@ -23,7 +22,6 @@ import sys
 os.environ.setdefault("CHAINLIT_APP_ROOT", "/tmp")
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--app", choices=["chainlit", "studio"], required=True)
 parser.add_argument(
     "--names", default=None, help="файл со списком имён пакетов boba (строка = имя)"
 )
@@ -34,7 +32,7 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-APP = args.app
+APP = "studio"
 PACKAGES_DIR = args.packages
 NAMES_FILE = args.names
 BASE_DIR = os.environ["BOBA_BASE"]

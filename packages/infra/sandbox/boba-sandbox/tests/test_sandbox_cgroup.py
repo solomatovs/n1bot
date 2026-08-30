@@ -10,10 +10,10 @@ import sys
 from uuid import uuid4
 
 import pytest
-from zygote_stand import ROOTFS_IMAGE, ProfileFields
 
 from boba.sandbox.cgroup import CgroupError, CgroupManager, GroupLimits
 from boba.sandbox.profile import SandboxProfile
+from boba.stand.zygote import ROOTFS_IMAGE, ProfileFields
 from boba.workspace.launcher import ResourceLimits
 
 

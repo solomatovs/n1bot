@@ -32,7 +32,7 @@ packages/**/dist/
 /build/*/test/__pycache__/
 /sec/semgrep/
 
-# статика фронта: кладётся make webassets, в образ идёт из build/src/webassets
+# статика фронта: кладёт make fetch, в образ идёт из build/<app>/src/webassets
 packages/agents/boba-chainlit/assets/public/vendor/
 
 # страница workflow: зависимости, кэши и сборка (собирает Dockerfile / make web)

@@ -4,6 +4,6 @@
 .git/
 release/
 compose/
-build/src/
+build/*/src/
 node_modules/
 *.min.js

@@ -7,8 +7,8 @@ import shutil
 from typing import Any
 
 import pytest
-from zygote_stand import SandboxStand, ZygoteStand
 
+from boba.stand.zygote import SandboxStand, ZygoteStand
 from boba.toolkit.channels import JournalChannel, ToolChannel, WrapChannel
 from boba.toolkit.stream import (
     ChannelSinks,

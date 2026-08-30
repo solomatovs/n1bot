@@ -19,7 +19,6 @@ from uuid import uuid4
 
 import pytest
 from omegaconf import DictConfig, OmegaConf
-from zygote_stand import ZygoteStand
 
 from boba.sandbox import SandboxProfile, SandboxToolConfig
 from boba.sandbox.zygote import (
@@ -29,6 +28,7 @@ from boba.sandbox.zygote import (
     ZygoteToolCaller,
 )
 from boba.settings import bind
+from boba.stand.zygote import ZygoteStand
 
 needs_bwrap = pytest.mark.skipif(shutil.which("bwrap") is None, reason="нет bubblewrap")
 needs_userns = pytest.mark.skipif(

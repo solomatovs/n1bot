@@ -52,9 +52,9 @@ GLIBC_IMAGE     ?= dmp/glibc:2.28
 GCC_IMAGE       ?= dmp/gcc:8.5.0
 PYTHON_IMAGE    ?= dmp/python:$(PYTHON_VERSION)-dist
 NODE_IMAGE      ?= dmp/nodejs:22
-BASE_IMAGE      := boba-base:$(PYTHON_VERSION)
-BWRAP_IMAGE     := boba-bwrap:$(PYTHON_VERSION)
-FUSE_IMAGE      := boba-fuse2fs:$(PYTHON_VERSION)
+BASE_IMAGE      := boba-base-$(APP):$(PYTHON_VERSION)
+BWRAP_IMAGE     := boba-bwrap-$(APP):$(PYTHON_VERSION)
+FUSE_IMAGE      := boba-fuse2fs-$(APP):$(PYTHON_VERSION)
 ROOTFS_IMAGE    := boba-sandbox-image-$(APP):$(PYTHON_VERSION)
 SANDBOX_DIR     := $(DEPS_DIR)/sandbox
 # нативное окружение liteparse: office/растр/pdf он конвертирует этими программами
@@ -90,8 +90,6 @@ FASTEMBED_STAMPS := $(foreach m,$(EMBED_MODELS),$(DEPS_DIR)/fastembed/.$(subst /
 
 # статика фронта: KaTeX (формулы), Inter (шрифт UI), mermaid (диаграммы) вместо CDN
 WEBASSETS_DIR   := $(DEPS_DIR)/webassets
-ASSETS_DIR      := $(SRC_DIR)/packages/agents/boba-chainlit/assets
-ASSETS_VENDOR   := $(ASSETS_DIR)/public/vendor
 KATEX_VERSION   ?= 0.16.22
 KATEX_URL       ?= https://github.com/KaTeX/KaTeX/releases/download/v$(KATEX_VERSION)/katex.tar.gz
 INTER_VERSION   ?= 5.3.0
@@ -244,10 +242,7 @@ version-check:
 
 .PHONY: fetch
 fetch: $(INPUTS)
-	@rm -rf "$(ASSETS_VENDOR)"
-	mkdir -p "$(dir $(ASSETS_VENDOR))"
-	cp -a "$(WEBASSETS_DIR)" "$(ASSETS_VENDOR)"
-	du -sh $(DEPS_DIR)/*
+	@du -sh $(DEPS_DIR)/*
 
 $(BWRAP_TARBALL):
 	@$(call fetch,$(BWRAP_URL),$@)
@@ -308,7 +303,7 @@ base: $(UV_BIN)
 	    echo "PYTHON_VERSION=$(PYTHON_VERSION), а пакетам нужен python >=$(REQUIRES_PY)" >&2
 	    exit 1
 	fi
-	$(call docker-stage,base,$(BASE_IMAGE),--tag boba-base:latest)
+	$(call docker-stage,base,$(BASE_IMAGE),--tag boba-base-$(APP):latest)
 
 # --- offline: песочница, образы, релиз ------------------------------------------
 
@@ -344,7 +339,7 @@ test: build
 	export BOBA_BASE="$(DEST_DIR)" BOBA_VERSION="$(VERSION)"
 	envsubst '$${BOBA_BASE} $${BOBA_VERSION}' < "$(CONF_DIR)/boba.env" > "$$env_file"
 	docker run --rm -i --env-file "$$env_file" --entrypoint sh $(IMAGE) \
-	    -c '"$$PYTHONHOME/bin/python3" - --app $(APP) --names "$(DEST_DIR)/app/packages.txt"' < "$(TEST_DIR)/bobacheck.py"
+	    -c '"$$PYTHONHOME/bin/python3" - --names "$(DEST_DIR)/app/packages.txt"' < "$(TEST_DIR)/bobacheck.py"
 
 # что обязано лежать в дереве установки
 RELEASE_PARTS_common := sandbox/rootfs.ext4 sandbox/workspace.ext4 third/bin/bwrap third/bin/fuse2fs \

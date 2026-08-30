@@ -51,9 +51,9 @@ PYTHON_VERSION  ?= 3.11
 GLIBC_IMAGE     ?= dmp/glibc:2.28
 GCC_IMAGE       ?= dmp/gcc:8.5.0
 PYTHON_IMAGE    ?= dmp/python:$(PYTHON_VERSION)-dist
-BASE_IMAGE      := boba-base:$(PYTHON_VERSION)
-BWRAP_IMAGE     := boba-bwrap:$(PYTHON_VERSION)
-FUSE_IMAGE      := boba-fuse2fs:$(PYTHON_VERSION)
+BASE_IMAGE      := boba-base-$(APP):$(PYTHON_VERSION)
+BWRAP_IMAGE     := boba-bwrap-$(APP):$(PYTHON_VERSION)
+FUSE_IMAGE      := boba-fuse2fs-$(APP):$(PYTHON_VERSION)
 ROOTFS_IMAGE    := boba-sandbox-image-$(APP):$(PYTHON_VERSION)
 SANDBOX_DIR     := $(DEPS_DIR)/sandbox
 # нативное окружение liteparse: office/растр/pdf он конвертирует этими программами
@@ -304,7 +304,7 @@ base: $(UV_BIN)
 	    echo "PYTHON_VERSION=$(PYTHON_VERSION), а пакетам нужен python >=$(REQUIRES_PY)" >&2
 	    exit 1
 	fi
-	$(call docker-stage,base,$(BASE_IMAGE),--tag boba-base:latest)
+	$(call docker-stage,base,$(BASE_IMAGE),--tag boba-base-$(APP):latest)
 
 # --- offline: песочница, образы, релиз ------------------------------------------
 
@@ -340,7 +340,7 @@ test: build
 	export BOBA_BASE="$(DEST_DIR)" BOBA_VERSION="$(VERSION)"
 	envsubst '$${BOBA_BASE} $${BOBA_VERSION}' < "$(CONF_DIR)/boba.env" > "$$env_file"
 	docker run --rm -i --env-file "$$env_file" --entrypoint sh $(IMAGE) \
-	    -c '"$$PYTHONHOME/bin/python3" - --app $(APP) --names "$(DEST_DIR)/app/packages.txt"' < "$(TEST_DIR)/bobacheck.py"
+	    -c '"$$PYTHONHOME/bin/python3" - --names "$(DEST_DIR)/app/packages.txt"' < "$(TEST_DIR)/bobacheck.py"
 
 # что обязано лежать в дереве установки
 RELEASE_PARTS_common := sandbox/rootfs.ext4 sandbox/workspace.ext4 third/bin/bwrap third/bin/fuse2fs \

@@ -32,11 +32,6 @@ def stand_db(stand_database: str) -> StandDatabase:
     return StandDatabase(StandApp.STUDIO, stand_database)
 
 
-@pytest.fixture(autouse=True)
-def chainlit_context() -> None:
-    """Стенд живёт отдельным процессом: сессия приложения в тесте не нужна."""
-
-
 @pytest.fixture(scope="session")
 def stand_workdir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return tmp_path_factory.mktemp("boba-stand")
