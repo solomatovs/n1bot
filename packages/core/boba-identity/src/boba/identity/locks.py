@@ -17,7 +17,7 @@ from abc import abstractmethod
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
+from typing import ClassVar, Protocol
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -154,9 +154,13 @@ class LiveLocks(Protocol):
     держателей и уборка протухших.
     """
 
+    SYSTEM_USER: ClassVar[UUID] = UUID(int=0)
+    """user_id захвата от имени приложения: уборка ходов умерших держателей."""
+
+
     @abstractmethod
     async def acquire(
-        self, scope: Scope, mode: LockMode, purpose: LockPurpose, user_id: int
+        self, scope: Scope, mode: LockMode, purpose: LockPurpose, user_id: UUID
     ) -> LiveLock:
         """Захватывает область в режиме mode; занятую живым держателем отвергает
         LockBusyError.
@@ -299,7 +303,7 @@ class MemoryLiveLocks(LiveLocks):
         )
 
     async def acquire(
-        self, scope: Scope, mode: LockMode, purpose: LockPurpose, user_id: int
+        self, scope: Scope, mode: LockMode, purpose: LockPurpose, user_id: UUID
     ) -> LiveLock:
         self._drop_stale(scope)
 

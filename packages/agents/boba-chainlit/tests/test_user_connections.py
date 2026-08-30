@@ -12,6 +12,7 @@ import secrets as std_secrets
 import shutil
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import pytest
 from chainlit.user import PersistedUser
@@ -218,7 +219,7 @@ async def test_granted_connection_is_visible_and_works(
 ) -> None:
     user = await Session.user(layer, "conn-owner")
     connection_id = await store.add("main", service_pg)
-    await store.grant(connection_id, GrantTarget.user(int(user.id)))
+    await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     Session.enter(user)
 
     targets = await Call.ok(pg_tools["pg_connection_list"])
@@ -260,7 +261,7 @@ async def test_stranger_sees_nothing(
     owner = await Session.user(layer, "conn-owner-2")
     stranger = await Session.user(layer, "conn-stranger")
     connection_id = await store.add("main", service_pg)
-    await store.grant(connection_id, GrantTarget.user(int(owner.id)))
+    await store.grant(connection_id, GrantTarget.user(UUID(owner.id)))
     Session.enter(stranger)
 
     targets = await Call.ok(pg_tools["pg_connection_list"])
@@ -282,7 +283,7 @@ async def test_revoke_applies_to_the_next_call(
 ) -> None:
     user = await Session.user(layer, "conn-revoked")
     connection_id = await store.add("main", service_pg)
-    target = GrantTarget.user(int(user.id))
+    target = GrantTarget.user(UUID(user.id))
     await store.grant(connection_id, target)
     Session.enter(user)
 
@@ -306,8 +307,8 @@ async def test_ambiguous_name_is_refused(
     user = await Session.user(layer, "conn-ambiguous")
     first = await store.add("main", service_pg)
     second = await store.add("main", service_pg)
-    await store.grant(first, GrantTarget.user(int(user.id)))
-    await store.grant(second, GrantTarget.user(int(user.id)))
+    await store.grant(first, GrantTarget.user(UUID(user.id)))
+    await store.grant(second, GrantTarget.user(UUID(user.id)))
     Session.enter(user)
 
     targets = await Call.ok(pg_tools["pg_connection_list"])
@@ -334,7 +335,7 @@ async def test_delegated_connection_runs_as_the_session_principal(
         update={"auth": DelegatedAuth(method="kerberos_delegated")}
     )
     connection_id = await store.add("mine", delegated)
-    await store.grant(connection_id, GrantTarget.user(int(user.id)))
+    await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     Session.enter_sso(user, SERVICE_PRINCIPAL, sso[1])
 
     result = await Call.ok(
@@ -357,7 +358,7 @@ async def test_delegated_connection_refuses_local_login(
         update={"auth": DelegatedAuth(method="kerberos_delegated")}
     )
     connection_id = await store.add("mine", delegated)
-    await store.grant(connection_id, GrantTarget.user(int(user.id)))
+    await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     Session.enter(user)
 
     with pytest.raises(RefusalError) as caught:
@@ -386,7 +387,7 @@ async def test_unreachable_database_is_reported_by_the_body(
         }
     )
     connection_id = await store.add("dead", dead)
-    await store.grant(connection_id, GrantTarget.user(int(user.id)))
+    await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     Session.enter(user)
 
     with pytest.raises(PayloadFailureError) as caught:
@@ -449,7 +450,7 @@ async def test_web_negotiate_connection_authenticates_as_the_principal(
         ),
     )
     connection_id = await store.add("ch-http", row)
-    await store.grant(connection_id, GrantTarget.user(int(user.id)))
+    await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     Session.enter_sso(user, SERVICE_PRINCIPAL, sso[1])
 
     result = await Call.ok(

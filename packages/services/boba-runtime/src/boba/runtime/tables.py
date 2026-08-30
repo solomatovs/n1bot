@@ -44,7 +44,6 @@ class UsersColumn(StrEnum):
     """Колонки users; имена совпадают с полями строки User в data layer."""
 
     ID = "id"
-    UUID = "user_uuid"
     IDENTIFIER = "identifier"
     CREATED_AT = "created_at"
     META = "meta"

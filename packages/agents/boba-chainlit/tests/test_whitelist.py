@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 import pytest
 
 from boba.connections.http import HttpProfile
@@ -18,7 +20,7 @@ def chainlit_context() -> None:
     """Чистая логика: сессия приложения не нужна."""
 
 
-def _row(row_id: int, name: str, base_url: str) -> StoredConnection:
+def _row(row_id: UUID, name: str, base_url: str) -> StoredConnection:
     return StoredConnection(
         id=row_id, name=name, profile=HttpProfile(base_url=base_url, ssl_verify=False)
     )
@@ -30,7 +32,7 @@ def _whitelist(*rows: StoredConnection) -> ConnectionWhitelist:
 
 class TestPick:
     def test_name_is_matched_exactly(self) -> None:
-        whitelist = _whitelist(_row(1, "confl", "https://wiki.example.com"))
+        whitelist = _whitelist(_row(UUID(int=1), "confl", "https://wiki.example.com"))
         picked = whitelist.pick("confl")
         if picked is None or picked.key != "confl":
             raise AssertionError(f"name must match exactly: {picked}")
@@ -39,8 +41,8 @@ class TestPick:
 
     def test_duplicate_name_is_ambiguous(self) -> None:
         whitelist = _whitelist(
-            _row(1, "confl", "https://wiki.example.com"),
-            _row(2, "confl", "https://*.example.com"),
+            _row(UUID(int=1), "confl", "https://wiki.example.com"),
+            _row(UUID(int=2), "confl", "https://*.example.com"),
         )
         if "confl" not in whitelist.ambiguous or whitelist.profiles:
             raise AssertionError("duplicate name must be ambiguous and unlisted")

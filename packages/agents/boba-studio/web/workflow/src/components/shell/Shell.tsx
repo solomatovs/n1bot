@@ -80,7 +80,7 @@ export function Shell({ mode }: Props): ReactElement {
   useEffect(closeList, [closeList, runId, workflowId, mode]);
 
   const currentRun = runs.find((run) => run.id === runId) ?? null;
-  const currentWorkflow = workflows.find((item) => String(item.id) === workflowId) ?? null;
+  const currentWorkflow = workflows.find((item) => item.id === workflowId) ?? null;
 
   return (
     <ShellDataContext.Provider value={data}>

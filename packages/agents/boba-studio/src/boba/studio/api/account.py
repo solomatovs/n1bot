@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from typing import ClassVar
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -47,7 +48,7 @@ class Me(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    id: int
+    id: UUID
     login: str
     roles: Sequence[str]
     profile: str
@@ -137,9 +138,9 @@ class AccountApi:
         if body.profile not in self._profiles.visible_for(user.roles):
             raise HTTPException(status_code=403, detail="profile is not available")
 
-        await self._users().set_studio_profile(int(user.id), body.profile)
+        await self._users().set_studio_profile(UUID(user.id), body.profile)
         changed = StudioProfileChanged(profile=body.profile, by_sid=body.sid)
-        await self._bus().publish(Scope.user(int(user.id)), changed, LockToken.local())
+        await self._bus().publish(Scope.user(UUID(user.id)), changed, LockToken.local())
 
         return self._me_of(user, body.profile)
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, ClassVar
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
 from pydantic import (
@@ -102,7 +103,7 @@ class ConnectionView(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    id: int
+    id: UUID
     name: str
     kind: ConnectionKind
     mine: bool
@@ -166,7 +167,7 @@ class ConnectionsApi:
         self._bus = bus
 
     async def _changed(
-        self, subject: Subject, connection_id: int, name: str, action: ChangeAction
+        self, subject: Subject, connection_id: UUID, name: str, action: ChangeAction
     ) -> None:
         """Сообщает ленте соединений пользователя на всех инстансах об изменении."""
         message = ConnectionsChanged(
@@ -241,7 +242,7 @@ class ConnectionsApi:
 
     async def replace(
         self,
-        connection_id: int,
+        connection_id: UUID,
         body: ConnectionBody,
         current_user: CurrentUser,
         profile: str | None = None,
@@ -264,7 +265,7 @@ class ConnectionsApi:
         return ConnectionView.of(row, mine=True)
 
     async def delete(
-        self, connection_id: int, current_user: CurrentUser, profile: str | None = None
+        self, connection_id: UUID, current_user: CurrentUser, profile: str | None = None
     ) -> ConnectionDeleted:
         subject = self._subject(current_user, profile)
         store = self._resolved()
@@ -291,7 +292,7 @@ class ConnectionsApi:
         return await self._probe(identity).probe(body.profile)
 
     async def check_stored(
-        self, connection_id: int, current_user: CurrentUser, profile: str | None = None
+        self, connection_id: UUID, current_user: CurrentUser, profile: str | None = None
     ) -> ProbeResult:
         """Пробное соединение по сохранённой строке: видимой пользователю."""
         identity = ApiIdentity.resolve(current_user, profile, self._profiles)
@@ -337,14 +338,14 @@ class ConnectionsApi:
         return rows
 
     @staticmethod
-    async def _owned(store: ConnectionStore, subject: Subject) -> frozenset[int]:
+    async def _owned(store: ConnectionStore, subject: Subject) -> frozenset[UUID]:
         try:
             return await store.owned_ids(subject.user_id)
         except ConnectionStoreError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     async def _require_owned(
-        self, store: ConnectionStore, subject: Subject, connection_id: int
+        self, store: ConnectionStore, subject: Subject, connection_id: UUID
     ) -> None:
         """404 — не видно пользователю, 403 — видно, но общее."""
         owned = await self._owned(store, subject)
@@ -366,7 +367,7 @@ class ConnectionsApi:
         store: ConnectionStore,
         subject: Subject,
         name: str,
-        except_id: int | None,
+        except_id: UUID | None,
     ) -> None:
         """Имя уникально среди видимых: инструменты выбирают соединение по имени."""
         visible = await self._visible(store, subject, list(ConnectionKind))

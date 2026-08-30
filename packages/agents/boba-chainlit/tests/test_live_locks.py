@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Sequence
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from psycopg import sql
@@ -84,8 +84,8 @@ async def test_only_one_of_concurrent_holders_gets_the_scope(
     scope = Scope.workflow(uuid4())
 
     results = await asyncio.gather(
-        first.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.RUN, 1),
-        second.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.RUN, 1),
+        first.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.RUN, UUID(int=1)),
+        second.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.RUN, UUID(int=1)),
         return_exceptions=True,
     )
 
@@ -99,11 +99,11 @@ async def test_only_one_of_concurrent_holders_gets_the_scope(
 async def test_shared_and_exclusive_matrix(stands: tuple[Stand, Stand]) -> None:
     first, second = stands
     scope = Scope.chat(str(uuid4()))
-    await first.locks.acquire(scope, LockMode.SHARED, LockPurpose.CLEANUP, 1)
-    await second.locks.acquire(scope, LockMode.SHARED, LockPurpose.CLEANUP, 2)
+    await first.locks.acquire(scope, LockMode.SHARED, LockPurpose.CLEANUP, UUID(int=1))
+    await second.locks.acquire(scope, LockMode.SHARED, LockPurpose.CLEANUP, UUID(int=2))
 
     with pytest.raises(LockBusyError):
-        await first.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, 1)
+        await first.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=1))
 
     assert len(await first.locks.holders_of(scope)) == 2
 
@@ -113,14 +113,14 @@ async def test_stale_lock_expires_by_ttl_and_lost_heartbeat_returns_false(
 ) -> None:
     first, second = stands
     scope = Scope.chat(str(uuid4()))
-    lock = await first.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, 1)
+    lock = await first.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=1))
 
     with pytest.raises(LockBusyError):
-        await second.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, 2)
+        await second.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=2))
 
     await asyncio.sleep(TTL_SEC + 0.3)
 
-    taken = await second.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, 2)
+    taken = await second.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=2))
     assert taken.holder == "node2-studio"
     assert await first.locks.heartbeat(lock.token) is False
     assert await second.locks.heartbeat(taken.token) is True
@@ -135,7 +135,7 @@ async def test_publish_is_fenced_by_the_lock_token(stands: tuple[Stand, Stand]) 
     with pytest.raises(LockLostError):
         await first.bus.publish(scope, changed, LockToken.local())
 
-    lock = await first.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.RUN, 1)
+    lock = await first.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.RUN, UUID(int=1))
     assert await first.bus.publish(scope, changed, lock.token) == 1
 
     await first.locks.release(lock.token)
@@ -148,7 +148,7 @@ async def test_reaper_removes_stale_locks_and_dead_instances(
 ) -> None:
     first, second = stands
     scope = Scope.workflow(uuid4())
-    await second.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.RUN, 1)
+    await second.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.RUN, UUID(int=1))
     seen: list[StaleLock] = []
 
     async def on_stale(stale: Sequence[StaleLock]) -> None:
@@ -194,6 +194,6 @@ async def test_instance_registration_survives_a_postgres_restart(
     await LockReaper(first.locks, 1.0, on_stale, on_sweep).sweep()
 
     scope = Scope.chat(str(uuid4()))
-    lock = await first.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, 1)
+    lock = await first.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=1))
     assert lock.holder == first.locks.instance
     await first.locks.release(lock.token)

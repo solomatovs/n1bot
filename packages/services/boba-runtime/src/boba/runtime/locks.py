@@ -91,7 +91,7 @@ class PgLiveLocks(LiveLocks):
             raise LockStoreError(msg) from exc
 
     async def acquire(
-        self, scope: Scope, mode: LockMode, purpose: LockPurpose, user_id: int
+        self, scope: Scope, mode: LockMode, purpose: LockPurpose, user_id: UUID
     ) -> LiveLock:
         scope_id = self._scope_id(scope)
         token = LockToken.local()

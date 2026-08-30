@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 import pytest
 from psycopg import sql
 
@@ -44,7 +46,7 @@ async def test_setup_creates_the_schema_and_users_round_trip(users: UsersTable) 
     assert found.id == created.id
     assert found.metadata.get("roles") == ["DEV"]
 
-    await users.set_studio_profile(int(created.id), "search")
+    await users.set_studio_profile(UUID(created.id), "search")
     again = await users.get_user("reader")
     assert again is not None
     assert again.metadata.get(UserMetadataField.STUDIO_PROFILE) == "search"

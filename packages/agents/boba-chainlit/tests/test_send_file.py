@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import cast
+from uuid import UUID
 
 import pytest
 from conftest import use_context, use_session
@@ -79,7 +80,7 @@ class TestRefusal:
 
     @pytest.mark.anyio
     async def test_without_active_turn(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        use_session(monkeypatch, user_id="7", thread_id=THREAD)
+        use_session(monkeypatch, user_id=str(UUID(int=7)), thread_id=THREAD)
 
         refusal = await self._attach(f"/workspace/{THREAD}/upload/report.pdf")
         if refusal.error_kind != "no_turn":

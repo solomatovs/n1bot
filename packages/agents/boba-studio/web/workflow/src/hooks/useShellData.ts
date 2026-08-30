@@ -22,6 +22,6 @@ export function useShellData(): ShellData {
   return data;
 }
 
-export function runsOfWorkflow(runs: StoredRun[], workflowId: number): StoredRun[] {
+export function runsOfWorkflow(runs: StoredRun[], workflowId: string): StoredRun[] {
   return runs.filter((run) => run.workflow_id === workflowId);
 }

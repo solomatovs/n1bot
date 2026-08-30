@@ -11,6 +11,7 @@ import base64
 import secrets as std_secrets
 from pathlib import Path
 from typing import Annotated, Any
+from uuid import UUID
 
 import krb5
 import pytest
@@ -312,8 +313,8 @@ async def test_only_requested_profile_is_shipped(
     user = await Session.user(layer, "hook-plain", Session.local_metadata())
     first = await store.add("alpha", plain)
     second = await store.add("beta", plain)
-    await store.grant(first, GrantTarget.user(int(user.id)))
-    await store.grant(second, GrantTarget.user(int(user.id)))
+    await store.grant(first, GrantTarget.user(UUID(user.id)))
+    await store.grant(second, GrantTarget.user(UUID(user.id)))
     Session.enter(user, dict(user.metadata))
 
     cfg = await Capture.config(Capture.tool(raw_config, store, None), "alpha")
@@ -337,7 +338,7 @@ async def test_client_label_names_the_user_and_the_tool(
         update={"auth": TrustAuth(method="trust", user="boba")}
     )
     user = await Session.user(layer, "hook-label", Session.local_metadata())
-    await store.grant(await store.add("alpha", plain), GrantTarget.user(int(user.id)))
+    await store.grant(await store.add("alpha", plain), GrantTarget.user(UUID(user.id)))
     Session.enter(user, dict(user.metadata))
 
     cfg = await Capture.config(Capture.tool(raw_config, store, None), "alpha")
@@ -360,7 +361,7 @@ async def test_unrequested_call_ships_names_only(
     )
     user = await Session.user(layer, "hook-names", Session.local_metadata())
     connection_id = await store.add("alpha", plain)
-    await store.grant(connection_id, GrantTarget.user(int(user.id)))
+    await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     Session.enter(user, dict(user.metadata))
 
     cfg = await Capture.config(Capture.tool(raw_config, store, None), "nothing")
@@ -380,7 +381,7 @@ async def test_keytab_row_ships_a_service_ticket_only(
 ) -> None:
     user = await Session.user(layer, "hook-keytab", Session.local_metadata())
     connection_id = await store.add("main", service_pg)
-    await store.grant(connection_id, GrantTarget.user(int(user.id)))
+    await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     Session.enter(user, dict(user.metadata))
 
     cfg = await Capture.config(Capture.tool(raw_config, store, None), "main")
@@ -409,7 +410,7 @@ async def test_delegated_row_uses_the_session_principal(
     sso_meta = Session.sso_metadata(SERVICE_PRINCIPAL, sso[1][SERVICE_PRINCIPAL])
     user = await Session.user(layer, "hook-sso", sso_meta)
     connection_id = await store.add("main", delegated_pg)
-    await store.grant(connection_id, GrantTarget.user(int(user.id)))
+    await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     Session.enter(user, sso_meta)
 
     cfg = await Capture.config(Capture.tool(raw_config, store, sso[0]), "main")
@@ -474,7 +475,7 @@ async def test_delegated_row_refuses_session_without_sso(
 ) -> None:
     user = await Session.user(layer, "hook-local", Session.local_metadata())
     connection_id = await store.add("main", delegated_pg)
-    await store.grant(connection_id, GrantTarget.user(int(user.id)))
+    await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     Session.enter(user, dict(user.metadata))
 
     with pytest.raises(RefusalError) as caught:
@@ -497,7 +498,7 @@ async def test_delegated_row_refuses_unknown_principal(
     )
     user = await Session.user(layer, "hook-no-ticket", sso_meta)
     connection_id = await store.add("main", delegated_pg)
-    await store.grant(connection_id, GrantTarget.user(int(user.id)))
+    await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     Session.enter(user, sso_meta)
 
     with pytest.raises(RefusalError) as caught:
@@ -516,7 +517,7 @@ async def test_delegated_row_refuses_without_sso_configured(
     sso_meta = Session.sso_metadata(SERVICE_PRINCIPAL, "sealed-unused")
     user = await Session.user(layer, "hook-no-sso", sso_meta)
     connection_id = await store.add("main", delegated_pg)
-    await store.grant(connection_id, GrantTarget.user(int(user.id)))
+    await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     Session.enter(user, sso_meta)
 
     with pytest.raises(RefusalError) as caught:
@@ -538,7 +539,7 @@ async def test_stale_users_row_does_not_grant_a_local_login(
     sso_meta = Session.sso_metadata(SERVICE_PRINCIPAL, sso[1][SERVICE_PRINCIPAL])
     user = await Session.user(layer, "hook-stale", sso_meta)
     connection_id = await store.add("main", delegated_pg)
-    await store.grant(connection_id, GrantTarget.user(int(user.id)))
+    await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     Session.enter(user, Session.local_metadata())
 
     with pytest.raises(RefusalError) as caught:
@@ -560,7 +561,7 @@ async def test_login_label_must_match_its_principal(
     forged = Session.sso_metadata(READER_PRINCIPAL, sso[1][SERVICE_PRINCIPAL])
     user = await Session.user(layer, "hook-forged", forged)
     connection_id = await store.add("main", delegated_pg)
-    await store.grant(connection_id, GrantTarget.user(int(user.id)))
+    await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     Session.enter(user, forged)
 
     with pytest.raises(RefusalError) as caught:

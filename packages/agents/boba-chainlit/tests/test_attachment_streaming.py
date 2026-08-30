@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from types import TracebackType
 from typing import Any, ClassVar, Self
+from uuid import UUID
 
 import pytest
 import uvicorn
@@ -30,7 +31,7 @@ from boba.chainlit.infra.session import ChainlitSession
 pytestmark = pytest.mark.anyio
 
 THREAD_ID = "1f000000-0000-4000-8000-000000000abc"
-USER_ID = 7
+USER_ID = str(UUID(int=7))
 FILE_NAME = "big.bin"
 UPLOAD_LOGGER = "boba.chainlit.data.upload"
 

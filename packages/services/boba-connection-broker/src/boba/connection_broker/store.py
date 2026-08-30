@@ -18,6 +18,7 @@ import logging
 from collections.abc import AsyncGenerator, Iterable, Sequence
 from contextlib import asynccontextmanager
 from typing import Any, ClassVar
+from uuid import UUID
 
 import psycopg
 from psycopg import sql
@@ -73,7 +74,7 @@ class ConnectionsConfig(BaseModel):
         description='Postgres-профиль ссылкой: connection = "${postgres}".',
     )
     db_schema: str = Field(
-        default="chainlit",
+        min_length=1,
         description="Схема postgres, в которой живут таблицы.",
     )
     table: str = Field(
@@ -206,7 +207,7 @@ class ConnectionStore(ConnectionRepository):
             sql.SQL(
                 """
                 create table if not exists {connections} (
-                    id   integer generated always as identity primary key,
+                    id   uuid primary key default gen_random_uuid(),
                     name text not null,
                     data jsonb not null default '{{}}'::jsonb
                 )
@@ -225,7 +226,7 @@ class ConnectionStore(ConnectionRepository):
             sql.SQL(
                 """
                 create table if not exists {roles} (
-                    id        integer generated always as identity primary key,
+                    id        uuid primary key default gen_random_uuid(),
                     role      varchar not null unique,
                     create_at timestamptz not null default now()
                 )
@@ -236,11 +237,11 @@ class ConnectionStore(ConnectionRepository):
             sql.SQL(
                 """
                 create table if not exists {grants} (
-                    id          integer generated always as identity primary key,
+                    id          uuid primary key default gen_random_uuid(),
                     src_kind    varchar not null,
-                    src_kind_id integer not null,
+                    src_kind_id uuid not null,
                     tgt_kind    varchar not null,
-                    tgt_kind_id integer not null,
+                    tgt_kind_id uuid not null,
                     unique (src_kind, src_kind_id, tgt_kind, tgt_kind_id)
                 )
                 """
@@ -284,7 +285,7 @@ class ConnectionStore(ConnectionRepository):
         async with self._guarded("sync roles"), pool.cursor() as cur:
             await cur.executemany(query, rows)
 
-    async def add(self, name: str, profile: ConnectionProfile) -> int:
+    async def add(self, name: str, profile: ConnectionProfile) -> UUID:
         """Новая строка connections; уникальность имени — забота вызывающего."""
         payload = self._cipher.encrypt(profile)
         query = sql.SQL(
@@ -314,11 +315,11 @@ class ConnectionStore(ConnectionRepository):
             msg = f"connections: row {name!r} was not saved"
             raise ConnectionStoreError(msg)
 
-        return int(row[0])
+        return UUID(str(row[0]))
 
     async def add_owned(
-        self, name: str, profile: ConnectionProfile, user_id: int
-    ) -> int:
+        self, name: str, profile: ConnectionProfile, user_id: UUID
+    ) -> UUID:
         """Строка и личный грант одной транзакцией: личный грант и есть владение."""
         payload = self._cipher.encrypt(profile)
         insert_row = sql.SQL(
@@ -364,7 +365,7 @@ class ConnectionStore(ConnectionRepository):
                 msg = f"connections: row {name!r} was not saved"
                 raise ConnectionStoreError(msg)
 
-            connection_id = int(row[0])
+            connection_id = UUID(str(row[0]))
             await cur.execute(
                 insert_grant,
                 self._grant_params(connection_id, GrantTarget.user(user_id)),
@@ -373,7 +374,7 @@ class ConnectionStore(ConnectionRepository):
         return connection_id
 
     async def update(
-        self, connection_id: int, name: str, profile: ConnectionProfile
+        self, connection_id: UUID, name: str, profile: ConnectionProfile
     ) -> bool:
         """Полная замена имени и профиля; False — строки не было."""
         payload = self._cipher.encrypt(profile)
@@ -397,7 +398,7 @@ class ConnectionStore(ConnectionRepository):
             await cur.execute(query, params)
             return cur.rowcount > 0
 
-    async def owned_ids(self, user_id: int) -> frozenset[int]:
+    async def owned_ids(self, user_id: UUID) -> frozenset[UUID]:
         """Соединения с личным грантом пользователя: их он правит и удаляет сам."""
         query = sql.SQL(
             """
@@ -424,13 +425,13 @@ class ConnectionStore(ConnectionRepository):
             await cur.execute(query, params)
             rows = await cur.fetchall()
 
-        ids: set[int] = set()
+        ids: set[UUID] = set()
         for row in rows:
-            ids.add(int(row[0]))
+            ids.add(UUID(str(row[0])))
 
         return frozenset(ids)
 
-    async def get(self, connection_id: int) -> StoredConnection:
+    async def get(self, connection_id: UUID) -> StoredConnection:
         query = sql.SQL(
             """
             select
@@ -467,7 +468,7 @@ class ConnectionStore(ConnectionRepository):
             from
                 {connections}
             order by
-                id
+                name
             """
         ).format(
             connections=self._table(),
@@ -480,7 +481,7 @@ class ConnectionStore(ConnectionRepository):
 
         return list(map(self._stored, rows))
 
-    async def remove(self, connection_id: int) -> bool:
+    async def remove(self, connection_id: UUID) -> bool:
         """Удаляет строку вместе с её грантами; False — строки не было."""
         drop_grants = sql.SQL(
             """
@@ -511,7 +512,7 @@ class ConnectionStore(ConnectionRepository):
             await cur.execute(drop_row, params)
             return cur.rowcount > 0
 
-    async def roles(self) -> dict[str, int]:
+    async def roles(self) -> dict[str, UUID]:
         query = sql.SQL(
             """
             select
@@ -520,7 +521,7 @@ class ConnectionStore(ConnectionRepository):
             from
                 {roles}
             order by
-                id
+                role
             """
         ).format(
             roles=self._roles(),
@@ -531,13 +532,13 @@ class ConnectionStore(ConnectionRepository):
             await cur.execute(query)
             fetched = await cur.fetchall()
 
-        by_name: dict[str, int] = {}
+        by_name: dict[str, UUID] = {}
         for row in fetched:
-            by_name[row[0]] = int(row[1])
+            by_name[row[0]] = UUID(str(row[1]))
 
         return by_name
 
-    async def grant(self, connection_id: int, target: GrantTarget) -> int:
+    async def grant(self, connection_id: UUID, target: GrantTarget) -> UUID:
         query = sql.SQL(
             """
             insert into {grants} (
@@ -574,9 +575,9 @@ class ConnectionStore(ConnectionRepository):
             )
             raise ConnectionStoreError(msg)
 
-        return int(row[0])
+        return UUID(str(row[0]))
 
-    async def revoke(self, connection_id: int, target: GrantTarget) -> bool:
+    async def revoke(self, connection_id: UUID, target: GrantTarget) -> bool:
         query = sql.SQL(
             """
             delete from
@@ -597,7 +598,7 @@ class ConnectionStore(ConnectionRepository):
             await cur.execute(query, params)
             return cur.rowcount > 0
 
-    async def grants_of(self, connection_id: int) -> Sequence[GrantTarget]:
+    async def grants_of(self, connection_id: UUID) -> Sequence[GrantTarget]:
         query = sql.SQL(
             """
             select
@@ -609,7 +610,8 @@ class ConnectionStore(ConnectionRepository):
                 src_kind = %(src_kind)s
                 and src_kind_id = %(src_kind_id)s
             order by
-                id
+                tgt_kind,
+                tgt_kind_id
             """
         ).format(
             grants=self._grants(),
@@ -626,7 +628,7 @@ class ConnectionStore(ConnectionRepository):
 
         targets: list[GrantTarget] = []
         for row in fetched:
-            targets.append(GrantTarget(kind=GrantKind(row[0]), id=int(row[1])))
+            targets.append(GrantTarget(kind=GrantKind(row[0]), id=UUID(str(row[1]))))
 
         return targets
 
@@ -687,7 +689,7 @@ class ConnectionStore(ConnectionRepository):
             where
                 c.data ->> 'kind' = %(kind)s
             order by
-                c.id
+                c.name
             """
         ).format(
             connections=self._table(),
@@ -711,7 +713,7 @@ class ConnectionStore(ConnectionRepository):
         return list(map(self._stored, rows))
 
     @staticmethod
-    def _grant_params(connection_id: int, target: GrantTarget) -> dict[str, Any]:
+    def _grant_params(connection_id: UUID, target: GrantTarget) -> dict[str, Any]:
         return {
             "src_kind": GrantKind.CONNECTIONS.value,
             "src_kind_id": connection_id,
@@ -732,4 +734,4 @@ class ConnectionStore(ConnectionRepository):
             )
             raise ConnectionStoreError(msg) from None
 
-        return StoredConnection(id=int(row["id"]), name=row["name"], profile=profile)
+        return StoredConnection(id=UUID(str(row["id"])), name=row["name"], profile=profile)

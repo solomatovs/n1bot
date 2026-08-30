@@ -15,7 +15,7 @@ export const SignInSchema = z.object({
 });
 
 export const MeSchema = z.object({
-  id: z.number(),
+  id: z.string().uuid(),
   login: z.string(),
   roles: z.array(z.string()),
   profile: z.string(),
@@ -42,7 +42,7 @@ export const ConnectionProfileSchema = z.object({ kind: ConnectionKindSchema }).
 export type ConnectionProfile = z.infer<typeof ConnectionProfileSchema>;
 
 export const ConnectionViewSchema = z.object({
-  id: z.number(),
+  id: z.string().uuid(),
   name: z.string(),
   kind: ConnectionKindSchema,
   mine: z.boolean(),

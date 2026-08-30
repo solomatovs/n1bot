@@ -110,7 +110,7 @@ class UserRoom:
     PREFIX: ClassVar[str] = "user:"
 
     @classmethod
-    def of(cls, user_id: int) -> str:
+    def of(cls, user_id: UUID) -> str:
         return f"{cls.PREFIX}{user_id}"
 
 
@@ -140,8 +140,8 @@ class WorkflowNamespace(socketio.AsyncNamespace):
         self._subjects: dict[str, Subject] = {}
         self._leaves: dict[UUID, Callable[[], None]] = {}
         self._rooms: dict[UUID, set[str]] = {}
-        self._user_leaves: dict[int, Unsubscribe] = {}
-        self._user_rooms: dict[int, set[str]] = {}
+        self._user_leaves: dict[UUID, Unsubscribe] = {}
+        self._user_rooms: dict[UUID, set[str]] = {}
 
     async def on_connect(self, sid: str, environ: dict[str, Any], auth: Any) -> None:
         user = await self._authenticate(environ)
@@ -163,7 +163,7 @@ class WorkflowNamespace(socketio.AsyncNamespace):
             to=sid,
         )
 
-    async def _join_user(self, sid: str, user_id: int) -> None:
+    async def _join_user(self, sid: str, user_id: UUID) -> None:
         """Сажает сокет в комнату пользователя и подписывает её на его область."""
         await self.enter_room(sid, UserRoom.of(user_id))
         self._user_rooms.setdefault(user_id, set()).add(sid)
@@ -185,7 +185,7 @@ class WorkflowNamespace(socketio.AsyncNamespace):
         scope = Scope.user(user_id)
         self._user_leaves[user_id] = service.bus.subscribe(scope, deliver)
 
-    def _leave_user(self, user_id: int, sid: str) -> None:
+    def _leave_user(self, user_id: UUID, sid: str) -> None:
         sids = self._user_rooms.get(user_id)
         if sids is None:
             return

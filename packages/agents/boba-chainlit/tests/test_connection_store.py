@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import secrets as std_secrets
+from uuid import UUID
 
 import pytest
 from conftest import FakeSecret
@@ -27,6 +28,7 @@ from boba.connections.postgres import (
 from boba.connections.profile import (
     ConnectionKind,
     ConnectionNotFoundError,
+    GrantKind,
     GrantTarget,
 )
 from boba.connections.secrets import SecretCryptoError
@@ -73,7 +75,7 @@ def _web(token: str) -> HttpProfile:
     )
 
 
-def _subject(user_id: int, roles: list[str]) -> Subject:
+def _subject(user_id: UUID, roles: list[str]) -> Subject:
     return Subject(
         user_id=user_id, login=f"user-{user_id}", roles=frozenset(roles), profile="test"
     )
@@ -197,12 +199,12 @@ async def test_foreign_key_cannot_read_rows(
 
 async def test_get_unknown_raises(store: ConnectionStore) -> None:
     with pytest.raises(ConnectionNotFoundError):
-        await store.get(10_000)
+        await store.get(UUID(int=10_000))
 
 
 async def test_remove_drops_row_and_grants(store: ConnectionStore) -> None:
     connection_id = await store.add("main", _pg(FakeSecret.DB))
-    await store.grant(connection_id, GrantTarget.user(1))
+    await store.grant(connection_id, GrantTarget.user(UUID(int=1)))
 
     if not await store.remove(connection_id):
         raise AssertionError("remove must report the dropped row")
@@ -234,17 +236,17 @@ async def test_grant_revoke_listing(store: ConnectionStore) -> None:
     roles = await store.roles()
     connection_id = await store.add("main", _pg(FakeSecret.DB))
 
-    await store.grant(connection_id, GrantTarget.user(5))
+    await store.grant(connection_id, GrantTarget.user(UUID(int=5)))
     await store.grant(connection_id, GrantTarget.role(roles["read"]))
-    await store.grant(connection_id, GrantTarget.user(5))
+    await store.grant(connection_id, GrantTarget.user(UUID(int=5)))
 
-    granted = list(await store.grants_of(connection_id))
-    if granted != [GrantTarget.user(5), GrantTarget.role(roles["read"])]:
+    granted = {(t.kind, t.id) for t in await store.grants_of(connection_id)}
+    if granted != {(GrantKind.USERS, UUID(int=5)), (GrantKind.ROLES, roles["read"])}:
         raise AssertionError(f"unexpected grants: {granted}")
 
-    if not await store.revoke(connection_id, GrantTarget.user(5)):
+    if not await store.revoke(connection_id, GrantTarget.user(UUID(int=5))):
         raise AssertionError("revoke must report the dropped link")
-    if await store.revoke(connection_id, GrantTarget.user(5)):
+    if await store.revoke(connection_id, GrantTarget.user(UUID(int=5))):
         raise AssertionError("second revoke must find nothing")
 
     if list(await store.grants_of(connection_id)) != [GrantTarget.role(roles["read"])]:
@@ -262,15 +264,15 @@ async def test_for_subject_by_user_role_and_kind(store: ConnectionStore) -> None
     web = await store.add("confl", _web(FakeSecret.HTTP_BEARER))
     ch = await store.add("ch", _ch())
 
-    await store.grant(personal, GrantTarget.user(1))
+    await store.grant(personal, GrantTarget.user(UUID(int=1)))
     await store.grant(shared, GrantTarget.role(roles["read"]))
     await store.grant(other_role, GrantTarget.role(roles["wrt"]))
-    await store.grant(web, GrantTarget.user(1))
-    await store.grant(ch, GrantTarget.user(1))
+    await store.grant(web, GrantTarget.user(UUID(int=1)))
+    await store.grant(ch, GrantTarget.user(UUID(int=1)))
 
-    reader = _subject(1, ["read"])
+    reader = _subject(UUID(int=1), ["read"])
     pg_rows = await store.for_subject(reader, ConnectionKind.POSTGRES)
-    if [row.id for row in pg_rows] != [personal, shared]:
+    if {row.id for row in pg_rows} != {personal, shared}:
         raise AssertionError(f"reader must see personal and role rows: {pg_rows}")
 
     web_rows = await store.for_subject(reader, ConnectionKind.WEB)
@@ -281,11 +283,11 @@ async def test_for_subject_by_user_role_and_kind(store: ConnectionStore) -> None
     if [row.id for row in ch_rows] != [ch]:
         raise AssertionError("clickhouse rows must be selectable")
 
-    stranger = _subject(2, [])
+    stranger = _subject(UUID(int=2), [])
     if await store.for_subject(stranger, ConnectionKind.POSTGRES):
         raise AssertionError("stranger must see nothing")
 
-    writer = _subject(2, ["wrt"])
+    writer = _subject(UUID(int=2), ["wrt"])
     if [row.id for row in await store.for_subject(writer, ConnectionKind.POSTGRES)] != [
         other_role
     ]:
@@ -301,10 +303,10 @@ async def test_for_subject_lists_doubly_granted_row_once(
     await store.sync_roles(["read"])
     roles = await store.roles()
     connection_id = await store.add("main", _pg(FakeSecret.DB))
-    await store.grant(connection_id, GrantTarget.user(1))
+    await store.grant(connection_id, GrantTarget.user(UUID(int=1)))
     await store.grant(connection_id, GrantTarget.role(roles["read"]))
 
-    rows = await store.for_subject(_subject(1, ["read"]), ConnectionKind.POSTGRES)
+    rows = await store.for_subject(_subject(UUID(int=1), ["read"]), ConnectionKind.POSTGRES)
 
     if [row.id for row in rows] != [connection_id]:
         raise AssertionError("row granted twice must be listed once")
@@ -312,13 +314,13 @@ async def test_for_subject_lists_doubly_granted_row_once(
 
 async def test_revoke_takes_effect_immediately(store: ConnectionStore) -> None:
     connection_id = await store.add("main", _pg(FakeSecret.DB))
-    await store.grant(connection_id, GrantTarget.user(1))
-    subject = _subject(1, [])
+    await store.grant(connection_id, GrantTarget.user(UUID(int=1)))
+    subject = _subject(UUID(int=1), [])
 
     if not await store.for_subject(subject, ConnectionKind.POSTGRES):
         raise AssertionError("granted row must be visible")
 
-    await store.revoke(connection_id, GrantTarget.user(1))
+    await store.revoke(connection_id, GrantTarget.user(UUID(int=1)))
 
     if await store.for_subject(subject, ConnectionKind.POSTGRES):
         raise AssertionError("revoked row must disappear without restart")

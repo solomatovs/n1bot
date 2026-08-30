@@ -4,6 +4,7 @@ import tempfile
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, ClassVar
+from uuid import UUID
 
 import pytest
 from chainlit.auth import get_current_user
@@ -24,7 +25,7 @@ CHUNK = 64 * 1024
 class FakeUser:
     """Пользователь сессии: роуту нужны только identifier и id."""
 
-    def __init__(self, identifier: str = "ivanov", user_id: int = 7) -> None:
+    def __init__(self, identifier: str = "ivanov", user_id: UUID = UUID(int=7)) -> None:
         self.identifier = identifier
         self.id = user_id
 
@@ -410,7 +411,7 @@ async def test_foreign_session_is_rejected(
     client_app: FastAPI,
     session: FakeSession,
 ):
-    client_app.dependency_overrides[get_current_user] = lambda: FakeUser("petrov", 8)
+    client_app.dependency_overrides[get_current_user] = lambda: FakeUser("petrov", UUID(int=8))
 
     async with transport(client_app) as client:
         response = await client.post(

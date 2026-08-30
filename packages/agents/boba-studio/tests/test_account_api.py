@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from uuid import UUID
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -47,7 +48,7 @@ def _profiles() -> ChatProfiles:
 
 def _user(roles: list[str]) -> AuthenticatedUser:
     return AuthenticatedUser(
-        id="7",
+        id=str(UUID(int=7)),
         identifier="reader",
         metadata={
             "roles": roles,
@@ -90,7 +91,7 @@ async def test_me_reports_subject_and_sign_in(reader: AsyncClient) -> None:
 
     assert reply.status_code == 200, reply.text
     assert reply.json() == {
-        "id": 7,
+        "id": str(UUID(int=7)),
         "login": "reader",
         "roles": ["DEV"],
         "profile": "general",

@@ -70,12 +70,6 @@ class Codec:
         return None
 
     @staticmethod
-    def int_str_opt(value: int | None) -> str | None:
-        if value is None:
-            return None
-        return str(value)
-
-    @staticmethod
     def iso(value: datetime) -> str:
         return value.isoformat()
 
@@ -145,10 +139,9 @@ class User(Row):
     """Пользователь chainlit."""
 
     identifier: str
-    user_uuid: UUID = field(default_factory=uuid4)
+    id: UUID = field(default_factory=uuid4)
     created_at: datetime = field(default_factory=Codec.now)
     meta: dict[str, Any] = field(default_factory=dict, metadata={"jsonb": True})
-    id: int = field(default=0, metadata={"db_generated": True})
 
     @staticmethod
     def get_table_name(schema: str) -> sql.Identifier:
@@ -176,8 +169,7 @@ class User(Row):
             sql.SQL(
                 """
                 create table if not exists {table} (
-                    id         integer generated always as identity primary key,
-                    user_uuid  uuid not null unique,
+                    id         uuid primary key default gen_random_uuid(),
                     identifier text not null unique,
                     created_at timestamptz not null,
                     meta       jsonb not null default '{{}}'::jsonb
@@ -202,7 +194,7 @@ class Thread(Row):
     id: UUID = field(default_factory=uuid4)
     created_at: datetime = field(default_factory=Codec.now)
     name: str | None = None
-    user_id: int | None = None
+    user_id: UUID | None = None
     tags: list[str] | None = None
     meta: dict[str, Any] | None = field(default=None, metadata={"jsonb": True})
 
@@ -220,7 +212,7 @@ class Thread(Row):
             id=Codec.uuid_str(self.id),
             createdAt=Codec.iso(self.created_at),
             name=self.name,
-            userId=Codec.int_str_opt(self.user_id),
+            userId=Codec.uuid_str_opt(self.user_id),
             userIdentifier=user_identifier,
             tags=self.tags,
             metadata=self.meta,
@@ -238,7 +230,7 @@ class Thread(Row):
                     id         uuid primary key,
                     created_at timestamptz not null,
                     name       text,
-                    user_id    integer,
+                    user_id    uuid,
                     tags       text[],
                     meta       jsonb
                 )

@@ -9,6 +9,7 @@ from __future__ import annotations
 from abc import abstractmethod
 from collections.abc import Iterable, Mapping
 from typing import Protocol
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
@@ -129,7 +130,7 @@ class StudioProfiles(Protocol):
     """Выбранный пользователем профиль studio в metadata его строки users."""
 
     @abstractmethod
-    async def set_studio_profile(self, user_id: int, profile: str) -> None: ...
+    async def set_studio_profile(self, user_id: UUID, profile: str) -> None: ...
 
 
 class UserSettingsStore(PersistedUsers, StudioProfiles, Protocol):

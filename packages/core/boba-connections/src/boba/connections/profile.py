@@ -12,6 +12,7 @@ from abc import abstractmethod
 from collections.abc import Iterable, Sequence
 from enum import StrEnum
 from typing import Annotated, Protocol, TypeAlias
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -73,7 +74,7 @@ class GrantTarget(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     kind: GrantKind
-    id: int
+    id: UUID
 
     @field_validator("kind")
     @classmethod
@@ -85,11 +86,11 @@ class GrantTarget(BaseModel):
         return value
 
     @classmethod
-    def user(cls, user_id: int) -> GrantTarget:
+    def user(cls, user_id: UUID) -> GrantTarget:
         return cls(kind=GrantKind.USERS, id=user_id)
 
     @classmethod
-    def role(cls, role_id: int) -> GrantTarget:
+    def role(cls, role_id: UUID) -> GrantTarget:
         return cls(kind=GrantKind.ROLES, id=role_id)
 
 
@@ -98,7 +99,7 @@ class StoredConnection(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    id: int
+    id: UUID
     name: str
     profile: ConnectionProfile
 
@@ -117,41 +118,41 @@ class ConnectionRepository(Protocol):
     async def sync_roles(self, names: Iterable[str]) -> None: ...
 
     @abstractmethod
-    async def add(self, name: str, profile: ConnectionProfile) -> int: ...
+    async def add(self, name: str, profile: ConnectionProfile) -> UUID: ...
 
     @abstractmethod
     async def add_owned(
-        self, name: str, profile: ConnectionProfile, user_id: int
-    ) -> int: ...
+        self, name: str, profile: ConnectionProfile, user_id: UUID
+    ) -> UUID: ...
 
     @abstractmethod
     async def update(
-        self, connection_id: int, name: str, profile: ConnectionProfile
+        self, connection_id: UUID, name: str, profile: ConnectionProfile
     ) -> bool: ...
 
     @abstractmethod
-    async def owned_ids(self, user_id: int) -> frozenset[int]: ...
+    async def owned_ids(self, user_id: UUID) -> frozenset[UUID]: ...
 
     @abstractmethod
-    async def get(self, connection_id: int) -> StoredConnection: ...
+    async def get(self, connection_id: UUID) -> StoredConnection: ...
 
     @abstractmethod
     async def list_all(self) -> Sequence[StoredConnection]: ...
 
     @abstractmethod
-    async def remove(self, connection_id: int) -> bool: ...
+    async def remove(self, connection_id: UUID) -> bool: ...
 
     @abstractmethod
-    async def roles(self) -> dict[str, int]: ...
+    async def roles(self) -> dict[str, UUID]: ...
 
     @abstractmethod
-    async def grant(self, connection_id: int, target: GrantTarget) -> int: ...
+    async def grant(self, connection_id: UUID, target: GrantTarget) -> UUID: ...
 
     @abstractmethod
-    async def revoke(self, connection_id: int, target: GrantTarget) -> bool: ...
+    async def revoke(self, connection_id: UUID, target: GrantTarget) -> bool: ...
 
     @abstractmethod
-    async def grants_of(self, connection_id: int) -> Sequence[GrantTarget]: ...
+    async def grants_of(self, connection_id: UUID) -> Sequence[GrantTarget]: ...
 
     @abstractmethod
     async def for_subject(

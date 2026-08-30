@@ -18,6 +18,7 @@ import secrets as std_secrets
 import shutil
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import krb5
 import pytest
@@ -305,7 +306,7 @@ async def _granted(
     profile: ConnectionProfile,
 ) -> None:
     connection_id = await store.add(name, profile)
-    await store.grant(connection_id, GrantTarget.user(int(session.id)))
+    await store.grant(connection_id, GrantTarget.user(UUID(session.id)))
 
 
 @pytest.fixture
@@ -425,7 +426,7 @@ async def test_revoked_connection_stops_working_at_once(
     delegated_pg: PostgresConfig,
 ) -> None:
     connection_id = await store.add("pg-me", delegated_pg)
-    target = GrantTarget.user(int(session.id))
+    target = GrantTarget.user(UUID(session.id))
     await store.grant(connection_id, target)
 
     await Call.ok(pg_tools["pg_query"], connection_name="pg-me", sql="select 1 as one")

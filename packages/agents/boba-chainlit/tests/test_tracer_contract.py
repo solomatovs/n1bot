@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from typing import Any, ClassVar
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -35,7 +35,7 @@ from boba.chainlit.chat.turn import TurnState
 pytestmark = pytest.mark.anyio
 
 THREAD = "7f0d2d1c-6a63-4d0e-9a0e-0d7d6c9a1f42"
-USER = "7"
+USER = str(UUID(int=7))
 CALL_ID = "call_stream_logs"
 TOOL_NAME = "stream_logs_usage"
 

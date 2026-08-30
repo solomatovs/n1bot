@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Annotated, Any
+from uuid import UUID
 
 import pytest
 from conftest import TEST_PROFILE, use_context
@@ -54,8 +55,8 @@ pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 SCHEMA = "workflow_service_test"
 ROLE = "wf"
-OWNER = 7
-STRANGER = 8
+OWNER = UUID(int=7)
+STRANGER = UUID(int=8)
 THREAD = "wf-thread"
 
 

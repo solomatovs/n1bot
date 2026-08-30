@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import socketio
@@ -145,7 +145,7 @@ def context(
     return use_context(
         monkeypatch,
         thread_id="socket-thread",
-        user_id=int(user.id),
+        user_id=UUID(user.id),
         roles=[*_roles(app_config), ROLE],
         profile=_profile(app_config),
     )
@@ -491,7 +491,7 @@ async def test_stream_events_reach_the_run_room(
 
     # запуск отпустил область: публикуем от имени нового держателя
     scope = Scope.workflow(run_id)
-    lock = await service.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.RUN, 1)
+    lock = await service.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.RUN, UUID(int=1))
     try:
         message = StreamAppended(
             call_id="call-1", channel="tool_stdout", size=12, closed=False, note=""

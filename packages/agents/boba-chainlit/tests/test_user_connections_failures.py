@@ -11,6 +11,7 @@ import base64
 import secrets as std_secrets
 from pathlib import Path
 from typing import Annotated, Any
+from uuid import UUID
 
 import krb5
 import pytest
@@ -343,9 +344,9 @@ def _expect(result: ErrorResult, kind: str, *phrases: str) -> None:
 
 async def _grant_delegated(
     store: ConnectionStore, delegated_pg: PostgresConfig, user: PersistedUser
-) -> int:
+) -> UUID:
     connection_id = await store.add("main", delegated_pg)
-    await store.grant(connection_id, GrantTarget.user(int(user.id)))
+    await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     return connection_id
 
 
@@ -603,7 +604,7 @@ class TestNoConnections:
             row = await cur.fetchone()
         if row is None:
             raise AssertionError("row must be inserted")
-        await store.grant(int(row[0]), GrantTarget.user(int(user.id)))
+        await store.grant(UUID(str(row[0])), GrantTarget.user(UUID(user.id)))
         Session.enter(user, Session.local())
 
         result = await Guarded.failure(
@@ -624,7 +625,7 @@ class TestNoConnections:
             }
         )
         connection_id = await store.add("main", secret)
-        await store.grant(connection_id, GrantTarget.user(int(user.id)))
+        await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
         Session.enter(user, Session.local())
 
         cfg = ConnectionsConfig(enable=True, db_schema=SCHEMA, encryption_key=_key())
@@ -672,7 +673,7 @@ class TestNoConnections:
             row = await cur.fetchone()
         if row is None:
             raise AssertionError("row must be inserted")
-        await store.grant(int(row[0]), GrantTarget.user(int(user.id)))
+        await store.grant(UUID(str(row[0])), GrantTarget.user(UUID(user.id)))
         Session.enter(user, Session.local())
 
         result = await Guarded.failure(
@@ -691,7 +692,7 @@ class TestNoConnections:
         )
         user = await Session.user(layer, "f-keytab", Session.local())
         row = service_pg.model_copy(update={"auth": missing})
-        await store.grant(await store.add("main", row), GrantTarget.user(int(user.id)))
+        await store.grant(await store.add("main", row), GrantTarget.user(UUID(user.id)))
         Session.enter(user, Session.local())
 
         result = await Guarded.failure(
@@ -705,7 +706,7 @@ class TestNoConnections:
     ) -> None:
         user = await Session.user(layer, "f-web", Session.local())
         row = HttpProfile(ssl_verify=False)
-        await store.grant(await store.add("blank", row), GrantTarget.user(int(user.id)))
+        await store.grant(await store.add("blank", row), GrantTarget.user(UUID(user.id)))
         Session.enter(user, Session.local())
 
         result = await Guarded.failure(
@@ -725,7 +726,7 @@ class TestNoConnections:
     ) -> None:
         user = await Session.user(layer, "f-web-host", Session.local())
         row = HttpProfile(base_url="https://*.example.com", ssl_verify=False)
-        await store.grant(await store.add("lab", row), GrantTarget.user(int(user.id)))
+        await store.grant(await store.add("lab", row), GrantTarget.user(UUID(user.id)))
         Session.enter(user, Session.local())
 
         result = await Guarded.failure(

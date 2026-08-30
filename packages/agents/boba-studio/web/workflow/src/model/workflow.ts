@@ -184,8 +184,8 @@ export const RunStateSchema = z.object({
 export type RunState = z.infer<typeof RunStateSchema>;
 
 export const StoredWorkflowSchema = z.object({
-  id: z.number().int(),
-  user_id: z.number().int(),
+  id: z.string().uuid(),
+  user_id: z.string().uuid(),
   name: z.string(),
   spec: z.string(),
   tools: z.array(z.string()),
@@ -198,7 +198,7 @@ export type StoredWorkflow = z.infer<typeof StoredWorkflowSchema>;
 /** Черновик билдера, общий для вкладок пользователя: последняя запись побеждает. */
 export const WorkflowDraftSchema = z.object({
   key: z.string(),
-  user_id: z.number().int(),
+  user_id: z.string().uuid(),
   revision: z.number().int(),
   spec: z.string(),
   layout: z.record(z.unknown()),
@@ -216,8 +216,8 @@ export type Initiator = z.infer<typeof InitiatorSchema>;
 
 export const StoredRunSchema = z.object({
   id: z.string().uuid(),
-  workflow_id: z.number().int().nullable(),
-  user_id: z.number().int(),
+  workflow_id: z.string().uuid().nullable(),
+  user_id: z.string().uuid(),
   initiator: InitiatorSchema,
   profile: z.string(),
   state: RunStateSchema,
@@ -361,13 +361,13 @@ export const UserEventSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("run_list_changed"),
     run_id: z.string(),
-    workflow_id: z.number().nullable(),
+    workflow_id: z.string().uuid().nullable(),
     workflow_name: z.string(),
     status: z.string(),
   }),
   z.object({
     kind: z.literal("workflow_changed"),
-    workflow_id: z.number(),
+    workflow_id: z.string().uuid(),
     name: z.string(),
     action: z.enum(["created", "updated", "deleted"]),
   }),
@@ -385,7 +385,7 @@ export const UserEventSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("connections_changed"),
-    connection_id: z.number(),
+    connection_id: z.string().uuid(),
     name: z.string(),
     action: z.enum(["created", "updated", "deleted"]),
   }),

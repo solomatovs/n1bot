@@ -24,7 +24,8 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 from test_canvas_e2e import (
     BASE,
-    USER_ID,
+    LOGIN,
+    _user_id_of,
     anyio_backend,
     app_server,
     panel,
@@ -95,7 +96,7 @@ async def _seed_history(config: AppConfig, thread_id: str) -> None:
         await pool.close()
 
 
-async def _seed_thread_and_button(config: AppConfig, thread_id: str) -> None:
+async def _seed_thread_and_button(config: AppConfig, owner: str, thread_id: str) -> None:
     """Тред пользователя и элемент кнопки потока — в data layer."""
     dl = config.data_layer
     pool = AsyncPostgresPool(
@@ -153,7 +154,7 @@ async def _seed_thread_and_button(config: AppConfig, thread_id: str) -> None:
                 {
                     "id": uuid.UUID(thread_id),
                     "name": "e2e stream",
-                    "user_id": int(USER_ID),
+                    "user_id": uuid.UUID(owner),
                 },
             )
             await conn.execute(
@@ -173,13 +174,13 @@ async def _seed_thread_and_button(config: AppConfig, thread_id: str) -> None:
         await pool.close()
 
 
-def _seed_journals(config: AppConfig, thread_id: str) -> None:
+def _seed_journals(config: AppConfig, owner: str, thread_id: str) -> None:
     """Журналы вызовов — в служебный том до старта работы приложения с ним."""
     journal_cfg = config.stream_journal
     vault = DirVault(journal_cfg.dir)
     journal = StreamJournal(vault, reserve_bytes=0)
 
-    key = StreamKey(user_id=USER_ID, thread_id=thread_id, call_id=CALL_ID)
+    key = StreamKey(user_id=owner, thread_id=thread_id, call_id=CALL_ID)
     recorder = journal.recorder(
         key, "bash", ToolChannel.STDOUT, lambda: None, frozenset()
     )
@@ -200,7 +201,7 @@ def _seed_journals(config: AppConfig, thread_id: str) -> None:
     errors.feed(f"{ERR_LINE}\n".encode())
     errors.close("rc=0")
 
-    live_key = StreamKey(user_id=USER_ID, thread_id=thread_id, call_id=LIVE_CALL_ID)
+    live_key = StreamKey(user_id=owner, thread_id=thread_id, call_id=LIVE_CALL_ID)
     live = journal.recorder(
         live_key, "bash", ToolChannel.STDOUT, lambda: None, frozenset()
     )
@@ -209,7 +210,7 @@ def _seed_journals(config: AppConfig, thread_id: str) -> None:
     # живой журнал не закрывается: вызов «ещё идёт» с точки зрения чтения
 
     # короткий живой журнал: содержимое не заполняет окно, прокручивать нечего
-    short_key = StreamKey(user_id=USER_ID, thread_id=thread_id, call_id=SHORT_CALL_ID)
+    short_key = StreamKey(user_id=owner, thread_id=thread_id, call_id=SHORT_CALL_ID)
     short = journal.recorder(
         short_key, "bash", ToolChannel.STDOUT, lambda: None, frozenset()
     )
@@ -218,21 +219,22 @@ def _seed_journals(config: AppConfig, thread_id: str) -> None:
 
 
 @pytest.fixture(scope="module")
-async def stream_thread(panel: Any) -> tuple[Any, str]:
+async def stream_thread(panel: Any) -> tuple[Any, str, str]:
     """Тред с шагом bash, кнопкой потока и журналом; страница открыта на нём."""
     show, _, _thread, _act = panel
     del show
 
     config = _config()
+    owner = await _user_id_of(config, LOGIN[0])
     thread_id = str(uuid.uuid4())
     await _seed_history(config, thread_id)
-    await _seed_thread_and_button(config, thread_id)
-    _seed_journals(config, thread_id)
+    await _seed_thread_and_button(config, owner, thread_id)
+    _seed_journals(config, owner, thread_id)
 
     page = await panel_page(panel)
     await page.goto(f"{BASE}/thread/{thread_id}")
     await page.wait_for_selector('[id^="step-"]', timeout=15000)
-    return page, thread_id
+    return page, thread_id, owner
 
 
 async def panel_page(panel: Any) -> Any:
@@ -258,7 +260,7 @@ async def _open_step(page: Any) -> Any:
 
 async def test_stream_button_lives_in_the_step_header(stream_thread: Any) -> None:
     """Кнопка потока — внутри строки заголовка шага, а не в его содержимом."""
-    page, _thread_id = stream_thread
+    page, _thread_id, _owner = stream_thread
     trigger = await _open_step(page)
 
     button = trigger.locator('[aria-label="Show tool output"]')
@@ -268,7 +270,7 @@ async def test_stream_button_lives_in_the_step_header(stream_thread: Any) -> Non
 
 async def test_click_opens_the_journal_from_the_start(stream_thread: Any) -> None:
     """Открытие потока — окно с offset 0: первая строка файла на экране."""
-    page, _thread_id = stream_thread
+    page, _thread_id, _owner = stream_thread
     trigger = await _open_step(page)
 
     await trigger.locator('[aria-label="Show tool output"]').click()
@@ -283,7 +285,7 @@ async def test_click_opens_the_journal_from_the_start(stream_thread: Any) -> Non
 
 async def test_jump_to_end_and_back(stream_thread: Any) -> None:
     """«В конец файла» показывает хвост, «в начало файла» возвращает к нулю."""
-    page, _thread_id = stream_thread
+    page, _thread_id, _owner = stream_thread
     side = page.locator("#side-view-content")
 
     await side.locator('button[aria-label*="Go to the file end"]').click()
@@ -309,7 +311,7 @@ async def test_panel_and_fullscreen_share_the_button_set(
     Полноэкранный режим — CSS-оверлей того же DOM-узла: сцена помечается
     data-full, а не рисуется отдельным диалогом.
     """
-    page, _thread_id = stream_thread
+    page, _thread_id, _owner = stream_thread
     side = page.locator("#side-view-content")
 
     labels = await page.evaluate(
@@ -360,7 +362,7 @@ async def _scroll_to_bottom(page: Any) -> None:
 
 async def test_scrolling_down_loads_next_windows(stream_thread: Any) -> None:
     """Непрерывная прокрутка: у нижней кромки подгружается следующее окно."""
-    page, _thread_id = stream_thread
+    page, _thread_id, _owner = stream_thread
     trigger = await _open_step(page)
     await trigger.locator('[aria-label="Show tool output"]').click()
     await page.wait_for_timeout(3000)
@@ -385,7 +387,7 @@ async def test_scrolling_down_works_on_a_live_journal(
     stream_thread: Any, panel: Any
 ) -> None:
     """Живой (незакрытый) журнал, открытый с начала, тоже листается вниз."""
-    page, _thread_id = stream_thread
+    page, _thread_id, _owner = stream_thread
 
     act = panel[3]
     side = await act("canvas_stream", {"call_id": LIVE_CALL_ID})
@@ -405,7 +407,7 @@ async def test_scrolling_down_works_on_a_live_journal(
 
 async def test_elements_are_served_without_cache(stream_thread: Any) -> None:
     """Кастом-элементы отдаются с no-cache: правка .jsx видна без hard reload."""
-    page, _thread_id = stream_thread
+    page, _thread_id, _owner = stream_thread
 
     cache_control = await page.evaluate(
         """async () => {
@@ -428,7 +430,7 @@ async def test_dom_stays_bounded_on_a_long_scroll(stream_thread: Any) -> None:
     Цепочка окон подрезается с дальнего края — сколько ни мотай, в браузере
     живёт не больше горстки окон; верх загруженного уезжает от начала файла.
     """
-    page, _thread_id = stream_thread
+    page, _thread_id, _owner = stream_thread
     trigger = await _open_step(page)
     await trigger.locator('[aria-label="Show tool output"]').click()
     await page.wait_for_timeout(3000)
@@ -455,10 +457,10 @@ async def test_dom_stays_bounded_on_a_long_scroll(stream_thread: Any) -> None:
         raise AssertionError("верх загруженного не вытеснился")
 
 
-def _append_live(config: AppConfig, thread_id: str, marker: str, lines: int) -> None:
+def _append_live(config: AppConfig, owner: str, thread_id: str, marker: str, lines: int) -> None:
     """Дописать строки в живой журнал: как это делает инструмент из песочницы."""
     journal = StreamJournal(DirVault(config.stream_journal.dir), reserve_bytes=0)
-    key = StreamKey(user_id=USER_ID, thread_id=thread_id, call_id=LIVE_CALL_ID)
+    key = StreamKey(user_id=owner, thread_id=thread_id, call_id=LIVE_CALL_ID)
     recorder = journal.recorder(
         key, "bash", ToolChannel.STDOUT, lambda: None, frozenset()
     )
@@ -555,7 +557,7 @@ async def test_channel_tabs_switch_the_shown_channel(
     Сверяются оба состояния: отметка активной вкладки и текст окна — до
     клика в панели виден stdout, после клика stderr, и наоборот.
     """
-    page, _thread_id = stream_thread
+    page, _thread_id, _owner = stream_thread
     act = panel[3]
     await act("canvas_stream", {"call_id": CALL_ID})
 
@@ -602,7 +604,7 @@ async def test_channel_tabs_keep_the_fullscreen_mode(
     Режим показа принадлежит панели, а не содержимому: метка на её узле
     переживает смену канала. Сбрасывает режим только «Закрыть» или Escape.
     """
-    page, _thread_id = stream_thread
+    page, _thread_id, _owner = stream_thread
     act = panel[3]
     side = await act("canvas_stream", {"call_id": CALL_ID})
 
@@ -670,7 +672,7 @@ async def test_live_tail_follows_new_output(stream_thread: Any, panel: Any) -> N
     Содержимое по сокету не едет — приходит сигнал слежения, фронт сам
     запрашивает окно после текущего и дописывает сегмент.
     """
-    page, thread_id = stream_thread
+    page, thread_id, owner = stream_thread
     side = await _open_live_tail(panel)
 
     # штамп на DOM-узлах: пересоздание панели стёрло бы его
@@ -682,7 +684,7 @@ async def test_live_tail_follows_new_output(stream_thread: Any, panel: Any) -> N
         }"""
     )
 
-    _append_live(_config(), thread_id, "F", 40)
+    _append_live(_config(), owner, thread_id, "F", 40)
 
     if not await _wait_text(side, "F00039,row"):
         raise AssertionError("долив хвоста не пришёл в панель")
@@ -710,7 +712,7 @@ async def test_scrolled_up_view_is_frozen(stream_thread: Any, panel: Any) -> Non
     Сигналы слежения приходят, но фронт не тянет окна и не трогает DOM;
     докрутка обратно в самый низ возобновляет follow.
     """
-    page, thread_id = stream_thread
+    page, thread_id, owner = stream_thread
     side = await _open_live_tail(panel)
 
     # уходим от хвоста: три экрана вверх
@@ -733,7 +735,7 @@ async def test_scrolled_up_view_is_frozen(stream_thread: Any, panel: Any) -> Non
     )
 
     calls = _WindowCalls(page)
-    _append_live(_config(), thread_id, "Z", 40)
+    _append_live(_config(), owner, thread_id, "Z", 40)
     await page.wait_for_timeout(4000)
 
     after = await page.evaluate(
@@ -763,7 +765,7 @@ async def test_scrolled_up_view_is_frozen(stream_thread: Any, panel: Any) -> Non
 
 async def test_fullscreen_survives_live_output(stream_thread: Any, panel: Any) -> None:
     """Полный экран не сворачивается при доливе: рендерится только содержимое."""
-    page, thread_id = stream_thread
+    page, thread_id, owner = stream_thread
     side = await _open_live_tail(panel)
 
     await side.locator('button[aria-label="Fullscreen"]').click()
@@ -777,7 +779,7 @@ async def test_fullscreen_survives_live_output(stream_thread: Any, panel: Any) -
         }"""
     )
 
-    _append_live(_config(), thread_id, "W", 40)
+    _append_live(_config(), owner, thread_id, "W", 40)
 
     if not await _wait_text(side, "W00039,row"):
         raise AssertionError("долив не дошёл до полноэкранного режима")
@@ -802,7 +804,7 @@ async def test_fullscreen_survives_live_output(stream_thread: Any, panel: Any) -
 
 async def test_font_buttons_resize_the_text(stream_thread: Any, panel: Any) -> None:
     """Кнопки размера шрифта: больше, меньше, сброс — на pre окна."""
-    page, _thread_id = stream_thread
+    page, _thread_id, _owner = stream_thread
     side = await _open_live_tail(panel)
 
     read = "() => document.querySelector('#side-view-content pre').style.fontSize"
@@ -830,7 +832,7 @@ async def test_download_button_saves_the_journal(
     stream_thread: Any, panel: Any
 ) -> None:
     """Скачивание отдаёт файл журнала файловым роутом, не через DOM."""
-    page, _thread_id = stream_thread
+    page, _thread_id, _owner = stream_thread
     side = await _open_live_tail(panel)
 
     async with page.expect_download() as pending:
@@ -849,7 +851,7 @@ async def test_status_line_shows_the_window_position(
     stream_thread: Any, panel: Any
 ) -> None:
     """Статусная строка: границы окна, размер файла и running у живого вызова."""
-    _page, _thread_id = stream_thread
+    _page, _thread_id, _owner = stream_thread
     act = panel[3]
     side = await act("canvas_stream", {"call_id": LIVE_CALL_ID})
 
@@ -867,13 +869,13 @@ async def test_live_follow_works_in_fullscreen(stream_thread: Any, panel: Any) -
     Проверяется реальная геометрия, а не только пометка разворачивания:
     сцена обязана занимать всё окно и во время долива.
     """
-    page, thread_id = stream_thread
+    page, thread_id, owner = stream_thread
     side = await _open_live_tail(panel)
 
     await side.locator('button[aria-label="Fullscreen"]').first.click()
     await page.wait_for_timeout(500)
 
-    _append_live(_config(), thread_id, "G", 40)
+    _append_live(_config(), owner, thread_id, "G", 40)
     if not await _wait_text(side, "G00039,row"):
         raise AssertionError("хвост не долился в полноэкранном режиме")
 
@@ -909,7 +911,7 @@ async def test_live_follow_works_in_fullscreen(stream_thread: Any, panel: Any) -
 
 async def test_journal_fullscreen_covers_the_window(stream_thread: Any) -> None:
     """Журнал вызова тоже разворачивается на всё окно, а не в рамку панели."""
-    page, _thread_id = stream_thread
+    page, _thread_id, _owner = stream_thread
     trigger = await _open_step(page)
     await trigger.locator('[aria-label="Show tool output"]').click()
     await page.wait_for_timeout(3000)
@@ -950,7 +952,7 @@ async def test_journal_windows_are_walkable_in_fullscreen(
     stream_thread: Any,
 ) -> None:
     """В полном экране журнал листается теми же кнопками, что и в панели."""
-    page, _thread_id = stream_thread
+    page, _thread_id, _owner = stream_thread
     trigger = await _open_step(page)
     await trigger.locator('[aria-label="Show tool output"]').click()
     await page.wait_for_timeout(3000)
@@ -975,10 +977,10 @@ async def test_journal_windows_are_walkable_in_fullscreen(
         raise AssertionError("«в начало» не сработало в полном экране")
 
 
-def _append_short(config: AppConfig, thread_id: str, marker: str, lines: int) -> None:
+def _append_short(config: AppConfig, owner: str, thread_id: str, marker: str, lines: int) -> None:
     """Дописать строки в короткий живой журнал."""
     journal = StreamJournal(DirVault(config.stream_journal.dir), reserve_bytes=0)
-    key = StreamKey(user_id=USER_ID, thread_id=thread_id, call_id=SHORT_CALL_ID)
+    key = StreamKey(user_id=owner, thread_id=thread_id, call_id=SHORT_CALL_ID)
     recorder = journal.recorder(
         key, "bash", ToolChannel.STDOUT, lambda: None, frozenset()
     )
@@ -998,14 +1000,14 @@ async def test_short_live_output_streams_without_scrolling(
     вовсе — следование за хвостом не должно зависеть от того, поскроллил
     ли пользователь: окно и так показывает конец файла.
     """
-    page, thread_id = stream_thread
+    page, thread_id, owner = stream_thread
     act = panel[3]
 
     side = await act("canvas_stream", {"call_id": SHORT_CALL_ID})
     if "H00000,row" not in await _stage_text(page):
         raise AssertionError("короткий журнал не открылся")
 
-    _append_short(_config(), thread_id, "T", 20)
+    _append_short(_config(), owner, thread_id, "T", 20)
 
     if not await _wait_text(side, "T00019,row"):
         raise AssertionError("живой вывод не долился без прокрутки пользователем")
@@ -1021,7 +1023,7 @@ async def test_growing_live_output_keeps_catching_up(
     за хвостом на каждой порции — раньше оно отставало от размера файла и
     больше не догоняло, показывая старые строки при растущем счётчике.
     """
-    page, thread_id = stream_thread
+    page, thread_id, owner = stream_thread
     act = panel[3]
 
     side = await act("canvas_stream", {"call_id": SHORT_CALL_ID})
@@ -1030,7 +1032,7 @@ async def test_growing_live_output_keeps_catching_up(
 
     config = _config()
     for round_index in range(4):
-        _append_short(config, thread_id, f"R{round_index}", 25)
+        _append_short(config, owner, thread_id, f"R{round_index}", 25)
         marker = f"R{round_index}00024,row"
         if not await _wait_text(side, marker, timeout_sec=20.0):
             raise AssertionError(

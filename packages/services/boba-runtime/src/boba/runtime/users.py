@@ -8,7 +8,7 @@ DataRejectedError — треда нет или у него нет автора.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from psycopg import sql
 from psycopg.rows import tuple_row
@@ -64,8 +64,7 @@ class UsersTable(PersistedUsers, ThreadOwnership, UsersUpsert, StudioProfiles):
             sql.SQL(
                 """
                 create table if not exists {users} (
-                    {id}         integer generated always as identity primary key,
-                    {uuid}       uuid not null unique,
+                    {id}         uuid primary key default gen_random_uuid(),
                     {identifier} text not null unique,
                     {created_at} timestamptz not null default now(),
                     {meta}       jsonb not null default '{{}}'::jsonb
@@ -74,7 +73,6 @@ class UsersTable(PersistedUsers, ThreadOwnership, UsersUpsert, StudioProfiles):
             ).format(
                 users=ChatTable.USERS.under(self._schema),
                 id=UsersColumn.ID.ident(),
-                uuid=UsersColumn.UUID.ident(),
                 identifier=UsersColumn.IDENTIFIER.ident(),
                 created_at=UsersColumn.CREATED_AT.ident(),
                 meta=UsersColumn.META.ident(),
@@ -129,7 +127,7 @@ class UsersTable(PersistedUsers, ThreadOwnership, UsersUpsert, StudioProfiles):
 
         return AuthenticatedUser(id=str(row[0]), identifier=row[1], metadata=metadata)
 
-    async def set_studio_profile(self, user_id: int, profile: str) -> None:
+    async def set_studio_profile(self, user_id: UUID, profile: str) -> None:
         query = sql.SQL(
             """
             update {users} set
@@ -162,13 +160,11 @@ class UsersTable(PersistedUsers, ThreadOwnership, UsersUpsert, StudioProfiles):
         query = sql.SQL(
             """
             insert into {users} (
-                {uuid},
                 {identifier},
                 {created_at},
                 {meta}
             )
             values (
-                %(uuid)s,
                 %(identifier)s,
                 %(created_at)s,
                 %(meta)s
@@ -183,13 +179,11 @@ class UsersTable(PersistedUsers, ThreadOwnership, UsersUpsert, StudioProfiles):
         ).format(
             users=ChatTable.USERS.under(self._schema),
             id=UsersColumn.ID.ident(),
-            uuid=UsersColumn.UUID.ident(),
             identifier=UsersColumn.IDENTIFIER.ident(),
             created_at=UsersColumn.CREATED_AT.ident(),
             meta=UsersColumn.META.ident(),
         )
         params = {
-            "uuid": uuid4(),
             "identifier": signed.identifier,
             "created_at": datetime.now(UTC),
             "meta": Jsonb(metadata),

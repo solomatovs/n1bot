@@ -30,42 +30,42 @@ class WorkflowRepository(Protocol):
 
     @abstractmethod
     async def save(
-        self, user_id: int, spec: WorkflowSpec, layout: Mapping[str, Any]
+        self, user_id: UUID, spec: WorkflowSpec, layout: Mapping[str, Any]
     ) -> StoredWorkflow: ...
 
     @abstractmethod
-    async def get(self, user_id: int, workflow_id: int) -> StoredWorkflow: ...
+    async def get(self, user_id: UUID, workflow_id: UUID) -> StoredWorkflow: ...
 
     @abstractmethod
-    async def get_by_name(self, user_id: int, name: str) -> StoredWorkflow: ...
+    async def get_by_name(self, user_id: UUID, name: str) -> StoredWorkflow: ...
 
     @abstractmethod
-    async def list_for(self, user_id: int) -> Sequence[StoredWorkflow]: ...
+    async def list_for(self, user_id: UUID) -> Sequence[StoredWorkflow]: ...
 
     @abstractmethod
-    async def delete(self, user_id: int, workflow_id: int) -> bool: ...
+    async def delete(self, user_id: UUID, workflow_id: UUID) -> bool: ...
 
     @abstractmethod
     async def put_draft(
-        self, user_id: int, key: DraftKey, spec: str, layout: Mapping[str, Any]
+        self, user_id: UUID, key: DraftKey, spec: str, layout: Mapping[str, Any]
     ) -> WorkflowDraft:
         """Пишет черновик пользователя под ключом; revision растёт на единицу."""
         ...
 
     @abstractmethod
-    async def get_draft(self, user_id: int, key: DraftKey) -> WorkflowDraft:
+    async def get_draft(self, user_id: UUID, key: DraftKey) -> WorkflowDraft:
         """Черновик пользователя; нет — WorkflowNotFoundError."""
         ...
 
     @abstractmethod
-    async def drop_draft(self, user_id: int, key: DraftKey) -> bool: ...
+    async def drop_draft(self, user_id: UUID, key: DraftKey) -> bool: ...
 
     @abstractmethod
     async def start_run(  # noqa: PLR0913 — запуск описывается всеми полями сразу
         self,
         run_id: UUID,
-        workflow_id: int | None,
-        user_id: int,
+        workflow_id: UUID | None,
+        user_id: UUID,
         initiator: Mapping[str, Any],
         profile: str,
         state: RunState,
@@ -76,7 +76,7 @@ class WorkflowRepository(Protocol):
     async def update_run(self, run_id: UUID, state: RunState) -> None: ...
 
     @abstractmethod
-    async def get_run(self, user_id: int, run_id: UUID) -> StoredRun: ...
+    async def get_run(self, user_id: UUID, run_id: UUID) -> StoredRun: ...
 
     @abstractmethod
-    async def list_runs(self, user_id: int, limit: int) -> Sequence[StoredRun]: ...
+    async def list_runs(self, user_id: UUID, limit: int) -> Sequence[StoredRun]: ...

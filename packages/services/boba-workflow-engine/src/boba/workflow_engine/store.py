@@ -59,7 +59,7 @@ class WorkflowConfig(BaseModel):
         description='Postgres-профиль ссылкой: connection = "${postgres}".',
     )
     db_schema: str = Field(
-        default="chainlit",
+        min_length=1,
         description="Схема postgres, в которой живут таблицы.",
     )
     table: str = Field(
@@ -151,8 +151,8 @@ class WorkflowStore(WorkflowRepository):
             sql.SQL(
                 """
                 create table if not exists {workflows} (
-                    id         integer generated always as identity primary key,
-                    user_id    integer not null,
+                    id         uuid primary key default gen_random_uuid(),
+                    user_id    uuid not null,
                     name       text not null,
                     spec       text not null,
                     tools      text[] not null default '{{}}',
@@ -167,8 +167,8 @@ class WorkflowStore(WorkflowRepository):
                 """
                 create table if not exists {runs} (
                     id          uuid primary key,
-                    workflow_id integer references {workflows} (id) on delete set null,
-                    user_id     integer not null,
+                    workflow_id uuid references {workflows} (id) on delete set null,
+                    user_id     uuid not null,
                     initiator   jsonb not null,
                     profile     text not null,
                     status      text not null,
@@ -182,7 +182,7 @@ class WorkflowStore(WorkflowRepository):
             sql.SQL(
                 """
                 create table if not exists {drafts} (
-                    user_id    integer not null,
+                    user_id    uuid not null,
                     key        text not null,
                     revision   integer not null default 1,
                     spec       text not null,
@@ -225,7 +225,7 @@ class WorkflowStore(WorkflowRepository):
         )
 
     async def save(
-        self, user_id: int, spec: WorkflowSpec, layout: Mapping[str, Any]
+        self, user_id: UUID, spec: WorkflowSpec, layout: Mapping[str, Any]
     ) -> StoredWorkflow:
         """Создаёт или переписывает определение владельца с этим именем."""
         query = sql.SQL(
@@ -272,11 +272,11 @@ class WorkflowStore(WorkflowRepository):
 
         return StoredWorkflow.model_validate(dict(row))
 
-    async def get(self, user_id: int, workflow_id: int) -> StoredWorkflow:
+    async def get(self, user_id: UUID, workflow_id: UUID) -> StoredWorkflow:
         return await self._one_workflow(user_id, sql.SQL("w.id = %(key)s"), workflow_id)
 
     async def put_draft(
-        self, user_id: int, key: DraftKey, spec: str, layout: Mapping[str, Any]
+        self, user_id: UUID, key: DraftKey, spec: str, layout: Mapping[str, Any]
     ) -> WorkflowDraft:
         query = sql.SQL(
             """
@@ -309,7 +309,7 @@ class WorkflowStore(WorkflowRepository):
 
         return WorkflowDraft.model_validate(dict(row))
 
-    async def get_draft(self, user_id: int, key: DraftKey) -> WorkflowDraft:
+    async def get_draft(self, user_id: UUID, key: DraftKey) -> WorkflowDraft:
         query = sql.SQL(
             """
             select
@@ -333,7 +333,7 @@ class WorkflowStore(WorkflowRepository):
 
         return WorkflowDraft.model_validate(dict(row))
 
-    async def drop_draft(self, user_id: int, key: DraftKey) -> bool:
+    async def drop_draft(self, user_id: UUID, key: DraftKey) -> bool:
         query = sql.SQL(
             """
             delete from {drafts}
@@ -348,10 +348,10 @@ class WorkflowStore(WorkflowRepository):
             await cur.execute(query, {"user_id": user_id, "key": key.render()})
             return cur.rowcount > 0
 
-    async def get_by_name(self, user_id: int, name: str) -> StoredWorkflow:
+    async def get_by_name(self, user_id: UUID, name: str) -> StoredWorkflow:
         return await self._one_workflow(user_id, sql.SQL("w.name = %(key)s"), name)
 
-    async def list_for(self, user_id: int) -> Sequence[StoredWorkflow]:
+    async def list_for(self, user_id: UUID) -> Sequence[StoredWorkflow]:
         query = sql.SQL(
             """
             select
@@ -376,7 +376,7 @@ class WorkflowStore(WorkflowRepository):
 
         return found
 
-    async def delete(self, user_id: int, workflow_id: int) -> bool:
+    async def delete(self, user_id: UUID, workflow_id: UUID) -> bool:
         """Удаляет определение владельца; False — такого не было."""
         query = sql.SQL(
             """
@@ -395,8 +395,8 @@ class WorkflowStore(WorkflowRepository):
     async def start_run(  # noqa: PLR0913 — запуск описывается всеми полями сразу
         self,
         run_id: UUID,
-        workflow_id: int | None,
-        user_id: int,
+        workflow_id: UUID | None,
+        user_id: UUID,
         initiator: Mapping[str, Any],
         profile: str,
         state: RunState,
@@ -468,7 +468,7 @@ class WorkflowStore(WorkflowRepository):
                 msg = f"workflow: run {run_id} not found"
                 raise WorkflowNotFoundError(msg)
 
-    async def get_run(self, user_id: int, run_id: UUID) -> StoredRun:
+    async def get_run(self, user_id: UUID, run_id: UUID) -> StoredRun:
         query = sql.SQL(
             """
             select
@@ -518,7 +518,7 @@ class WorkflowStore(WorkflowRepository):
 
         return StoredRun.model_validate(dict(row))
 
-    async def list_runs(self, user_id: int, limit: int) -> Sequence[StoredRun]:
+    async def list_runs(self, user_id: UUID, limit: int) -> Sequence[StoredRun]:
         query = sql.SQL(
             """
             select
@@ -606,7 +606,7 @@ class WorkflowStore(WorkflowRepository):
         return found
 
     async def _one_workflow(
-        self, user_id: int, where: sql.Composable, key: object
+        self, user_id: UUID, where: sql.Composable, key: object
     ) -> StoredWorkflow:
         query = sql.SQL(
             """
