@@ -34,6 +34,7 @@ from boba.runtime.locks import LockReaper, PgLiveLocks
 from boba.runtime.payloads import PgPayloadStore
 from boba.runtime.plugins import PluginMeta, PluginTable, ToolLoader
 from boba.runtime.refs import RuntimeRefs
+from boba.runtime.threads import ThreadsTable
 from boba.runtime.turns import StaleTurnCloser
 from boba.runtime.users import UsersTable
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
@@ -315,6 +316,13 @@ def users_table(
 ) -> UsersTable:
     """Строки users и авторы тредов той же схемы, что у data layer чата."""
     return UsersTable(config.data_layer.postgres, config.data_layer.db_schema)
+
+
+def threads_table(
+    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+) -> ThreadsTable:
+    """Строки threads той же схемы, что у data layer чата."""
+    return ThreadsTable(config.data_layer.postgres, config.data_layer.db_schema)
 
 
 def auth_service(

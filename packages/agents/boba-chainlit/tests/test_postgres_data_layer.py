@@ -13,7 +13,9 @@ from chainlit_stand import Seed, use_session
 
 from boba.canvas.keys import ObjectKey
 from boba.chainlit.data.data_layer import PostgresDataLayer
+from boba.chainlit.infra.config import AppConfig
 from boba.chat.threads import DataRejectedError, DataUnavailableError
+from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import Scope
 from boba.identity.session import UserMetadataField
 from boba.messaging import (
@@ -23,12 +25,16 @@ from boba.messaging import (
     MemoryMessageBus,
     ThreadChanged,
 )
+from boba.runtime.elements import ChatTables
 
 pytestmark = pytest.mark.anyio
 
 
-async def test_setup_is_idempotent(layer: PostgresDataLayer):
-    await layer.setup()
+async def test_setup_is_idempotent(
+    app_config: AppConfig, pool: AsyncPostgresPool, layer: PostgresDataLayer
+):
+    schema = app_config.data_layer.db_schema
+    await ChatTables.of(app_config.data_layer.postgres, schema, pool).setup()
 
 
 async def test_create_and_get_user(layer: PostgresDataLayer):

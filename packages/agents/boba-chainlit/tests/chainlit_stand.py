@@ -63,6 +63,7 @@ from boba.llm.bridge import ProviderChatModel
 from boba.llm.openai_chat import OpenAiChatProvider
 from boba.messaging import LockToken, MemoryMessageBus, MemoryPayloadStore
 from boba.messaging.bus import ListenerState, StaticBusWatch
+from boba.runtime.elements import ChatTables
 from boba.runtime.refs import RuntimeRefs
 from boba.stand.context import TEST_PROFILE as TEST_PROFILE
 from boba.stand.context import TEST_TURN as TEST_TURN
@@ -176,16 +177,19 @@ async def layer(
         await conn.execute(
             sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema))
         )
+    tables = ChatTables.of(app_config.data_layer.postgres, schema, pool)
+    await tables.setup()
     data_layer = PostgresDataLayer(
-        pool,
-        schema=schema,
+        users=tables.users,
+        threads=tables.threads,
+        elements=tables.elements,
+        feedbacks=tables.feedbacks,
         storage=storage,
         feed=TranscriptFeed(thread_messages),
         links=AttachmentLinks(app_config.storage.public_prefix),
         sessions=ChainlitSessions(),
         bus=data_bus,
     )
-    await data_layer.setup()
     return data_layer
 
 

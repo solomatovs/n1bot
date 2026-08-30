@@ -1,43 +1,46 @@
-"""PostgresDataLayer chainlit: оболочка диалога, сообщения хранит checkpointer."""
+"""PostgresDataLayer chainlit: адаптер BaseDataLayer над портами хранилища чата.
+
+Строки users/threads/elements/feedbacks — у сервиса (порты UserRows, ChatThreads,
+ElementStore, FeedbackStore); здесь только перевод в словари chainlit, тела вложений
+в хранилище файлов и оповещение шины. Сообщения диалога хранит checkpointer.
+
+Ошибки:
+DataLayerError — контракт слоя данных: чужое пакуется data_boundary.
+"""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
-from typing import Any, ClassVar, Protocol
-from uuid import UUID
+from datetime import UTC, datetime
+from typing import Any, Protocol, TypeVar
+from uuid import UUID, uuid4
 
 import aiofiles
 import aiofiles.os
-from psycopg import sql
-from psycopg.errors import InsufficientPrivilege
-from psycopg.rows import class_row, tuple_row
-from psycopg.types.json import Jsonb
-from pydantic import BaseModel, ConfigDict
 
 from boba.canvas.journal import StreamJournalError, StreamJournalHub
 from boba.canvas.keys import ElementProps, ObjectKey
-from boba.chainlit.data.models import (
-    Codec,
-    Element,
-    Feedback,
-    Row,
-    Thread,
-    User,
-)
 from boba.chainlit.data.storage import StorageClient
 from boba.chainlit.domain.fields import ElementField, StepField, ThreadField
 from boba.chainlit.domain.keys import AttachmentLinks
 from boba.chat.threads import (
+    ChatThreads,
     DataBrokenError,
     DataRejectedError,
     DataUnavailableError,
+    ElementStore,
+    FeedbackStore,
+    StoredElement,
+    StoredFeedback,
+    StoredThread,
     ThreadOwnership,
+    ThreadUpsert,
     data_boundary,
 )
-from boba.db.postgres import AsyncPostgresPool
+from boba.identity.api import StoredUser, UserRows
 from boba.identity.context import Scope
-from boba.identity.session import SessionSource, UserMetadataField
+from boba.identity.session import SessionSource
 from boba.messaging import (
     AnyMessage,
     ChangeAction,
@@ -58,6 +61,7 @@ from chainlit.types import (
     Feedback as FeedbackPayload,
 )
 from chainlit.types import (
+    FeedbackDict,
     PageInfo,
     PaginatedResponse,
     Pagination,
@@ -71,6 +75,8 @@ __all__ = [
     "AttachmentDataLayer",
     "PostgresDataLayer",
 ]
+
+_T = TypeVar("_T")
 
 
 class ThreadFeed(Protocol):
@@ -107,52 +113,207 @@ class AttachmentDataLayer(BaseDataLayer, ABC):
         return layer
 
 
-class ThreadUpsert(BaseModel):
-    """Итог upsert треда: владелец, имя и создана ли строка только что."""
+class Codec:
+    """Перевод значений между словарями chainlit и строками сервиса."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    @staticmethod
+    def require(value: _T | None) -> _T:
+        if value is None:
+            raise DataBrokenError("codec", "required value is missing")
 
-    user_id: UUID | None
-    name: str
-    inserted: bool
+        return value
 
-    @property
-    def action(self) -> ChangeAction:
-        if self.inserted:
+    @staticmethod
+    def uuid(value: str | None) -> UUID:
+        return UUID(Codec.require(value))
+
+    @staticmethod
+    def uuid_opt(value: str | None) -> UUID | None:
+        if value is None:
+            return None
+
+        return UUID(value)
+
+    @staticmethod
+    def uuid_str(value: UUID) -> str:
+        return str(value)
+
+    @staticmethod
+    def uuid_str_opt(value: UUID | None) -> str | None:
+        if value is None:
+            return None
+
+        return str(value)
+
+    @staticmethod
+    def iso(value: datetime) -> str:
+        return value.isoformat()
+
+    @staticmethod
+    def now() -> datetime:
+        return datetime.now(UTC)
+
+    @staticmethod
+    def text_opt(value: str) -> str | None:
+        """Пустая строка сервиса — отсутствующее поле словаря chainlit."""
+        if not value:
+            return None
+
+        return value
+
+    @staticmethod
+    def text(value: str | None) -> str:
+        if value is None:
+            return ""
+
+        return value
+
+
+class ThreadDicts:
+    """Строки сервиса -> словари chainlit: тред и пользователь."""
+
+    @staticmethod
+    def thread(
+        stored: StoredThread,
+        user_identifier: str | None,
+        steps: list[StepDict],
+        elements: list[ElementDict],
+    ) -> ThreadDict:
+        tags = None
+        if stored.tags:
+            tags = list(stored.tags)
+
+        return ThreadDict(
+            id=Codec.uuid_str(stored.id),
+            createdAt=Codec.iso(stored.created_at),
+            name=Codec.text_opt(stored.name),
+            userId=Codec.uuid_str_opt(stored.user_id),
+            userIdentifier=user_identifier,
+            tags=tags,
+            metadata=dict(stored.meta),
+            steps=steps,
+            elements=elements,
+        )
+
+    @staticmethod
+    def user(stored: StoredUser) -> PersistedUser:
+        return PersistedUser(
+            id=str(stored.id),
+            identifier=stored.identifier,
+            createdAt=Codec.iso(stored.created_at),
+            metadata=dict(stored.meta),
+        )
+
+    @staticmethod
+    def action(inserted: bool) -> ChangeAction:
+        if inserted:
             return ChangeAction.CREATED
 
         return ChangeAction.UPDATED
 
-    @classmethod
-    def of(cls, row: tuple[Any, ...]) -> ThreadUpsert:
-        user_id = None
-        if row[0] is not None:
-            user_id = UUID(str(row[0]))
 
-        name = ""
-        if row[1] is not None:
-            name = str(row[1])
+class ElementDicts:
+    """Словарь элемента chainlit <-> строка elements сервиса."""
 
-        return cls(user_id=user_id, name=name, inserted=bool(row[2]))
+    @staticmethod
+    def stored(data: ElementDict) -> StoredElement:
+        props = data.get(ElementField.PROPS)
+        if props is None:
+            props = {}
+
+        return StoredElement(
+            id=Codec.uuid(data.get(ElementField.ID)),
+            thread_id=Codec.uuid_opt(data.get(ElementField.THREAD_ID)),
+            for_id=Codec.uuid_opt(data.get(ElementField.FOR_ID)),
+            type=Codec.require(data.get(ElementField.TYPE)),
+            chainlit_key=Codec.text(data.get(ElementField.CHAINLIT_KEY)),
+            name=Codec.require(data.get(ElementField.NAME)),
+            display=Codec.require(data.get(ElementField.DISPLAY)),
+            size=Codec.text(data.get(ElementField.SIZE)),
+            language=Codec.text(data.get(ElementField.LANGUAGE)),
+            page=data.get(ElementField.PAGE),
+            props=props,
+            mime=Codec.text(data.get(ElementField.MIME)),
+        )
+
+    @staticmethod
+    def dict_of(stored: StoredElement) -> ElementDict:
+        props = None
+        if stored.props:
+            props = dict(stored.props)
+
+        data: dict[str, Any] = {
+            ElementField.ID: Codec.uuid_str(stored.id),
+            ElementField.THREAD_ID: Codec.uuid_str_opt(stored.thread_id),
+            ElementField.TYPE: stored.type,
+            ElementField.CHAINLIT_KEY: Codec.text_opt(stored.chainlit_key),
+            ElementField.NAME: stored.name,
+            ElementField.DISPLAY: stored.display,
+            ElementField.SIZE: Codec.text_opt(stored.size),
+            ElementField.LANGUAGE: Codec.text_opt(stored.language),
+            ElementField.PAGE: stored.page,
+            ElementField.PROPS: props,
+            ElementField.FOR_ID: Codec.uuid_str_opt(stored.for_id),
+            ElementField.MIME: Codec.text_opt(stored.mime),
+        }
+        element: ElementDict = data  # type: ignore[assignment]
+
+        return element
+
+
+class FeedbackDicts:
+    """Оценка chainlit <-> строка feedbacks сервиса."""
+
+    @staticmethod
+    def stored(payload: FeedbackPayload) -> StoredFeedback:
+        feedback_id = Codec.uuid_opt(payload.id)
+        if feedback_id is None:
+            feedback_id = uuid4()
+
+        return StoredFeedback(
+            id=feedback_id,
+            for_id=Codec.uuid(payload.forId),
+            thread_id=Codec.uuid_opt(payload.threadId),
+            value=payload.value,
+            comment=Codec.text(payload.comment),
+        )
+
+    @staticmethod
+    def dict_of(stored: StoredFeedback) -> FeedbackDict:
+        return FeedbackDict(
+            forId=Codec.uuid_str(stored.for_id),
+            id=Codec.uuid_str(stored.id),
+            value=FeedbackDicts._value(stored.value),
+            comment=Codec.text_opt(stored.comment),
+        )
+
+    @staticmethod
+    def _value(value: int) -> Any:
+        if value not in (0, 1):
+            raise DataBrokenError("feedback", f"feedback value {value} is not 0 or 1")
+
+        return value
 
 
 class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
-    """Хранилище chainlit (users/threads/elements/feedbacks) на psycopg-пуле."""
-
-    _MODELS: ClassVar[tuple[type[Row], ...]] = (User, Thread, Element, Feedback)
+    """Хранилище chainlit над портами сервиса: словари, тела вложений, оповещения."""
 
     def __init__(  # noqa: PLR0913 — зависимости слоя вносятся сборкой
         self,
-        pool: AsyncPostgresPool,
-        schema: str,
+        users: UserRows,
+        threads: ChatThreads,
+        elements: ElementStore,
+        feedbacks: FeedbackStore,
         storage: StorageClient,
         feed: ThreadFeed,
         links: AttachmentLinks,
         sessions: SessionSource,
         bus: MessageBus,
     ) -> None:
-        self._pool = pool
-        self._schema = schema
+        self._users = users
+        self._threads = threads
+        self._elements = elements
+        self._feedbacks = feedbacks
         self._storage = storage
         self._feed = feed
         self._links = links
@@ -168,95 +329,19 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
         return self._storage
 
     @data_boundary
-    async def setup(self) -> None:
-        async with self._pool.connection() as conn:
-            try:
-                async with conn.transaction():
-                    await conn.execute(
-                        sql.SQL("create schema if not exists {}").format(
-                            sql.Identifier(self._schema)
-                        )
-                    )
-            except InsufficientPrivilege:
-                logger.info(
-                    "no permission for CREATE SCHEMA %r, "
-                    "assuming an administrator created it",
-                    self._schema,
-                )
-            for model in self._MODELS:
-                async with conn.transaction():
-                    for stmt in model.ddl(self._schema):
-                        await conn.execute(stmt)
-
-    @data_boundary
     async def get_user(self, identifier: str) -> PersistedUser | None:
-        query = sql.SQL(
-            """
-            select
-                {cols}
-            from
-                {users}
-            where
-                identifier = %s
-            limit
-                1
-            """
-        ).format(
-            cols=User.all_columns(),
-            users=User.get_table_name(self._schema),
-        )
-
-        try:
-            async with (
-                self._pool.connection() as conn,
-                conn.cursor(row_factory=class_row(User)) as cur,
-            ):
-                await cur.execute(query, (identifier,))
-                row = await cur.fetchone()
-        except Exception as e:
-            raise DataUnavailableError("get_user", str(e)) from e
-
-        if row is None:
+        stored = await self._users.stored(identifier)
+        if stored is None:
             return None
-        return row.to_persisted()
+
+        return ThreadDicts.user(stored)
 
     @data_boundary
     async def create_user(self, user: ChainlitUser) -> PersistedUser | None:
-        model = User.from_chainlit(user)
-        model.meta.pop(UserMetadataField.TICKET, None)
-        query = sql.SQL(
-            """
-            insert into {users} (
-                {insert_cols}
-            )
-            values (
-                {ph}
-            )
-            on conflict (identifier) do update set
-                meta = coalesce({users}.meta, '{{}}'::jsonb) || excluded.meta
-            returning
-                {cols}
-            """
-        ).format(
-            users=User.get_table_name(self._schema),
-            insert_cols=User.insert_columns(),
-            ph=User.insert_placeholders(),
-            cols=User.all_columns(),
-        )
-        try:
-            async with (
-                self._pool.connection() as conn,
-                conn.cursor(row_factory=class_row(User)) as cur,
-            ):
-                await cur.execute(query, model.all_params())
-                row = await cur.fetchone()
-        except Exception as e:
-            raise DataUnavailableError("create_user", str(e)) from e
+        # копия metadata: строка правит своё поле, а не словарь вызывающего
+        stored = await self._users.upsert(user.identifier, dict(user.metadata))
 
-        if row is None:
-            return None
-
-        return row.to_persisted()
+        return ThreadDicts.user(stored)
 
     @data_boundary
     async def update_user_llm_settings(
@@ -266,111 +351,32 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
         values: Mapping[str, Any],
     ) -> None:
         """Настройки LLM пользователя для профиля; пустые значения снимают ключ."""
-        if values:
-            query = sql.SQL(
-                """
-                update {users}
-                set meta = jsonb_set(
-                    jsonb_set(
-                        coalesce(meta, '{{}}'::jsonb),
-                        '{{llm}}',
-                        coalesce(meta -> 'llm', '{{}}'::jsonb)
-                    ),
-                    %(path)s,
-                    %(values)s
-                )
-                where id = %(id)s
-                """
-            ).format(users=User.get_table_name(self._schema))
-            params: dict[str, Any] = {
-                "id": user_id,
-                "path": [UserMetadataField.LLM, profile],
-                "values": Jsonb(dict(values)),
-            }
-        else:
-            query = sql.SQL(
-                """
-                update {users}
-                set meta = coalesce(meta, '{{}}'::jsonb) #- %(path)s
-                where id = %(id)s
-                """
-            ).format(users=User.get_table_name(self._schema))
-            params = {
-                "id": user_id,
-                "path": [UserMetadataField.LLM, profile],
-            }
-
-        try:
-            async with self._pool.connection() as conn:
-                await conn.execute(query, params)
-        except Exception as e:
-            raise DataUnavailableError("update_user_llm_settings", str(e)) from e
+        await self._users.set_llm_settings(user_id, profile, values)
 
     @data_boundary
     async def upsert_feedback(self, feedback: FeedbackPayload) -> str:
-        model = Feedback.from_payload(feedback)
-        query = sql.SQL(
-            """
-            insert into {feedbacks} (
-                {cols}
-            )
-            values (
-                {ph}
-            )
-            on conflict (id) do update set
-                {asg}
-            """
-        ).format(
-            feedbacks=Feedback.get_table_name(self._schema),
-            cols=Feedback.all_columns(),
-            ph=Feedback.all_placeholders(),
-            asg=Feedback.all_assignments(exclude=("id",)),
-        )
-        try:
-            async with self._pool.connection() as conn:
-                await conn.execute(query, model.all_params())
-        except Exception as e:
-            raise DataUnavailableError("upsert_feedback", str(e)) from e
-
-        comment = ""
-        if model.comment:
-            comment = model.comment
+        stored = FeedbackDicts.stored(feedback)
+        await self._feedbacks.upsert(stored)
 
         await self._chat_changed(
-            model.thread_id,
+            stored.thread_id,
             FeedbackChanged(
-                step_id=Codec.uuid_str(model.for_id), value=model.value, comment=comment
+                step_id=Codec.uuid_str(stored.for_id),
+                value=stored.value,
+                comment=stored.comment,
             ),
         )
-        return Codec.uuid_str(model.id)
+        return Codec.uuid_str(stored.id)
 
     @data_boundary
     async def delete_feedback(self, feedback_id: str) -> bool:
-        query = sql.SQL(
-            """
-            delete from
-                {feedbacks}
-            where
-                id = %(id)s
-            returning
-                thread_id,
-                for_id
-            """
-        ).format(
-            feedbacks=Feedback.get_table_name(self._schema),
-        )
-        try:
-            async with self._pool.connection() as conn:
-                cursor = await conn.execute(query, {"id": UUID(feedback_id)})
-                row = await cursor.fetchone()
-        except Exception as e:
-            raise DataUnavailableError("delete_feedback", str(e)) from e
-
-        if row is None:
+        deleted = await self._feedbacks.delete(UUID(feedback_id))
+        if deleted is None:
             return False
 
         await self._chat_changed(
-            row[0], FeedbackChanged(step_id=Codec.uuid_str(row[1]), value=None)
+            deleted.thread_id,
+            FeedbackChanged(step_id=Codec.uuid_str(deleted.for_id), value=None),
         )
         return True
 
@@ -444,6 +450,7 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
             raise DataUnavailableError("create_element", str(e)) from e
 
     async def _create_element(self, element: ChainlitElement) -> None:
+        """Строка описания, затем тело; тело не залилось — строка снимается."""
         user_id = self._session_user_id()
 
         mime = element.mime or "application/octet-stream"
@@ -451,64 +458,25 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
         data = element.to_dict()
         data[ElementField.MIME] = mime
 
-        model = Element.from_chainlit(data)
-        query = sql.SQL(
-            """
-            insert into {elements} (
-                {cols}
-            )
-            values (
-                {ph}
-            )
-            on conflict (id) do update set
-                {asg}
-            """
-        ).format(
-            elements=Element.get_table_name(self._schema),
-            cols=Element.all_columns(),
-            ph=Element.all_placeholders(),
-            asg=Element.all_assignments(exclude=("id",)),
-        )
+        stored = ElementDicts.stored(data)
         object_key = ObjectKey.build(
             user_id, element.thread_id, element.name, element.id
         ).render()
-        async with self._pool.connection() as conn, conn.transaction():
-            await conn.execute(query, model.all_params())
+
+        await self._elements.upsert(stored)
+        try:
             await self._store_element_body(element, object_key, mime)
+        except Exception:
+            await self._elements.delete(stored.id)
+            raise
 
     @data_boundary
     async def get_element(self, thread_id: str, element_id: str) -> ElementDict | None:
-        query = sql.SQL(
-            """
-            select
-                {cols}
-            from
-                {elements}
-            where
-                thread_id = %(thread_id)s
-                and id = %(id)s
-            """
-        ).format(
-            cols=Element.all_columns(),
-            elements=Element.get_table_name(self._schema),
-        )
-
-        try:
-            async with (
-                self._pool.connection() as conn,
-                conn.cursor(row_factory=class_row(Element)) as cur,
-            ):
-                await cur.execute(
-                    query, {"thread_id": UUID(thread_id), "id": UUID(element_id)}
-                )
-                row = await cur.fetchone()
-        except Exception as e:
-            raise DataUnavailableError("get_element", str(e)) from e
-
-        if row is None:
+        stored = await self._elements.get(UUID(thread_id), UUID(element_id))
+        if stored is None:
             return None
 
-        element = row.to_chainlit()
+        element = ElementDicts.dict_of(stored)
         self._sign_element_url(element)
         return element
 
@@ -517,40 +485,24 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
     async def delete_element(
         self, element_id: str, thread_id: str | None = None
     ) -> None:
-        query = sql.SQL(
-            """
-            delete from
-                {table}
-            where
-                id = %s
-            returning
-                thread_id,
-                name
-            """
-        ).format(
-            table=Element.get_table_name(self._schema),
-        )
+        """Сначала тело в хранилище, потом строка: строка без тела не остаётся."""
+        found = await self._elements.find(UUID(element_id))
+        if found is None:
+            return
 
-        try:
-            async with (
-                self._pool.connection() as conn,
-                conn.transaction(),
-                conn.cursor(row_factory=tuple_row) as cur,
-            ):
-                await cur.execute(query, (UUID(element_id),))
-                row = await cur.fetchone()
-                if row and row[0]:
-                    user_id = self._session_user_id()
-                    await self._storage.delete_file(
-                        object_key=ObjectKey.build(
-                            user_id, row[0], row[1], element_id
-                        ).render(),
-                    )
-        except Exception as e:
-            raise DataUnavailableError("delete_element", str(e)) from e
+        if found.thread_id is not None:
+            user_id = self._session_user_id()
+            key = ObjectKey.build(user_id, str(found.thread_id), found.name, element_id)
+            try:
+                await self._storage.delete_file(object_key=key.render())
+            except Exception as e:
+                raise DataUnavailableError("delete_element", str(e)) from e
 
-        if row and row[0]:
-            await self._chat_changed(row[0], ElementRemoved(element_id=element_id))
+        await self._elements.delete(found.id)
+
+        if found.thread_id is not None:
+            removed = ElementRemoved(element_id=element_id)
+            await self._chat_changed(found.thread_id, removed)
 
     @data_boundary
     async def create_step(self, step_dict: StepDict) -> None:
@@ -563,33 +515,9 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
     @queue_until_user_message()
     @data_boundary
     async def delete_step(self, step_id: str) -> None:
-        feedbacks_query = sql.SQL(
-            """
-            delete from
-                {feedbacks}
-            where
-                for_id = %s
-            """
-        ).format(
-            feedbacks=Feedback.get_table_name(self._schema),
-        )
-        elements_query = sql.SQL(
-            """
-            delete from
-                {elements}
-            where
-                for_id = %s
-            """
-        ).format(
-            elements=Element.get_table_name(self._schema),
-        )
-        params = (UUID(step_id),)
-        try:
-            async with self._pool.connection() as conn, conn.transaction():
-                await conn.execute(feedbacks_query, params)
-                await conn.execute(elements_query, params)
-        except Exception as e:
-            raise DataUnavailableError("delete_step", str(e)) from e
+        step = UUID(step_id)
+        await self._feedbacks.delete_of_step(step)
+        await self._elements.delete_of_step(step)
 
     @data_boundary
     async def get_favorite_steps(self, user_id: str) -> list[StepDict]:
@@ -597,137 +525,43 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
 
     @data_boundary
     async def get_thread_author(self, thread_id: str) -> str:
-        query = sql.SQL(
-            """
-            select
-                u.identifier
-            from
-                {threads} t
-                inner join {users} u on t.user_id = u.id
-            where
-                t.id = %(id)s
-            """
-        ).format(
-            threads=Thread.get_table_name(self._schema),
-            users=User.get_table_name(self._schema),
-        )
-        try:
-            async with (
-                self._pool.connection() as conn,
-                conn.cursor(row_factory=tuple_row) as cur,
-            ):
-                await cur.execute(query, {"id": UUID(thread_id)})
-                row = await cur.fetchone()
-        except Exception as e:
-            raise DataUnavailableError("get_thread_author", str(e)) from e
-
-        if row and row[0] is not None:
-            return row[0]
-
-        raise DataRejectedError(
-            "get_thread_author", f"no author for thread {thread_id}"
-        )
+        return await self._threads.get_thread_author(thread_id)
 
     @data_boundary
     async def get_thread(self, thread_id: str) -> ThreadDict | None:
-        thread_query = sql.SQL(
-            """
-            select
-                {cols}
-            from
-                {threads}
-            where
-                id = %s
-            """
-        ).format(
-            cols=Thread.all_columns(),
-            threads=Thread.get_table_name(self._schema),
-        )
-        feedbacks_query = sql.SQL(
-            """
-            select
-                {cols}
-            from
-                {feedbacks}
-            where
-                thread_id = %s
-            """
-        ).format(
-            cols=Feedback.all_columns(),
-            feedbacks=Feedback.get_table_name(self._schema),
-        )
-        elements_query = sql.SQL(
-            """
-            select
-                {cols}
-            from
-                {elements}
-            where
-                thread_id = %s
-            """
-        ).format(
-            cols=Element.all_columns(),
-            elements=Element.get_table_name(self._schema),
-        )
-        identifier_query = sql.SQL(
-            """
-            select
-                identifier
-            from
-                {users}
-            where
-                id = %s
-            """
-        ).format(
-            users=User.get_table_name(self._schema),
-        )
+        tid = UUID(thread_id)
+        stored = await self._threads.get(tid)
+        if stored is None:
+            return None
 
-        try:
-            async with self._pool.connection() as conn, conn.transaction():
-                tid = UUID(thread_id)
-
-                async with conn.cursor(row_factory=class_row(Thread)) as cur:
-                    await cur.execute(thread_query, (tid,))
-                    thread_row = await cur.fetchone()
-
-                if thread_row is None:
-                    return None
-
-                user_identifier: str | None = None
-                if thread_row.user_id is not None:
-                    async with conn.cursor(row_factory=tuple_row) as cur:
-                        await cur.execute(identifier_query, (thread_row.user_id,))
-                        identifier_row = await cur.fetchone()
-                        if identifier_row is not None:
-                            user_identifier = identifier_row[0]
-
-                async with conn.cursor(row_factory=class_row(Feedback)) as cur:
-                    await cur.execute(feedbacks_query, (tid,))
-                    feedback_rows = await cur.fetchall()
-
-                async with conn.cursor(row_factory=class_row(Element)) as cur:
-                    await cur.execute(elements_query, (tid,))
-                    element_rows = await cur.fetchall()
-        except Exception as e:
-            raise DataUnavailableError("get_thread", str(e)) from e
+        user_identifier = await self._identifier_of(stored.user_id)
+        feedback_rows = await self._feedbacks.list_of_thread(tid)
+        element_rows = await self._elements.list_of_thread(tid)
 
         steps = list(await self._feed.steps(thread_id, user_identifier))
         feedback_by_step = {
-            Codec.uuid_str(f.for_id): f.to_chainlit() for f in feedback_rows
+            Codec.uuid_str(f.for_id): FeedbackDicts.dict_of(f) for f in feedback_rows
         }
         for step in steps:
             step[StepField.FEEDBACK] = feedback_by_step.get(step.get(StepField.ID, ""))
 
-        elements: list[ElementDict] = [e.to_chainlit() for e in element_rows]
+        elements: list[ElementDict] = [ElementDicts.dict_of(e) for e in element_rows]
 
-        thread = thread_row.to_chainlit(
-            user_identifier=user_identifier,
-            steps=steps,
-            elements=elements,
-        )
+        thread = ThreadDicts.thread(stored, user_identifier, steps, elements)
         self._sign_element_urls(thread)
 
         return thread
+
+    async def _identifier_of(self, user_id: UUID | None) -> str | None:
+        """Логин владельца треда; None — тред без владельца или строки уже нет."""
+        if user_id is None:
+            return None
+
+        stored = await self._users.stored_by_id(user_id)
+        if stored is None:
+            return None
+
+        return stored.identifier
 
     @data_boundary
     async def update_thread(
@@ -749,116 +583,36 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
         if user_id:
             user_id_value = UUID(user_id)
 
-        params = {
-            "id": UUID(thread_id),
-            "created_at": Codec.now(),
-            "name": name_value,
-            "user_id": user_id_value,
-            "tags": tags,
-            "meta_set": Jsonb(meta_set),
-            "meta_del": meta_del,
-        }
-        query = sql.SQL(
-            """
-            insert into {threads} as t (
-                id,
-                created_at,
-                name,
-                user_id,
-                tags,
-                meta
+        upsert = await self._threads.upsert(
+            ThreadUpsert(
+                id=UUID(thread_id),
+                name=name_value,
+                user_id=user_id_value,
+                tags=tags,
+                meta_set=meta_set,
+                meta_del=meta_del,
             )
-            values (
-                %(id)s,
-                %(created_at)s,
-                %(name)s,
-                %(user_id)s,
-                %(tags)s,
-                %(meta_set)s
-            )
-            on conflict (id) do update set
-                name             = COALESCE(excluded.name,              t.name),
-                user_id          = COALESCE(excluded.user_id,           t.user_id),
-                tags             = COALESCE(excluded.tags,              t.tags),
-                meta             = (COALESCE(t.meta, '{{}}'::jsonb) - %(meta_del)s::text[]) || %(meta_set)s::jsonb
-            returning
-                user_id,
-                name,
-                (xmax = 0) as inserted
-            """  # noqa: E501
-        ).format(
-            threads=Thread.get_table_name(self._schema),
         )
-        try:
-            async with self._pool.connection() as conn:
-                cursor = await conn.execute(query, params)
-                row = await cursor.fetchone()
-        except Exception as e:
-            raise DataUnavailableError("update_thread", str(e)) from e
-
-        if row is None:
-            raise DataUnavailableError("update_thread", "upsert returned no row")
-
-        upsert = ThreadUpsert.of(row)
         # список тредов меняют только создание и имя; правки метаданных списку не видны
         if not upsert.inserted and name is None:
             return
 
         await self._thread_changed(
-            upsert.user_id, thread_id, upsert.name, upsert.action
+            upsert.user_id, thread_id, upsert.name, ThreadDicts.action(upsert.inserted)
         )
 
     @data_boundary
     async def delete_thread(self, thread_id: str) -> None:
-        feedbacks_query = sql.SQL(
-            """
-            delete from
-                {feedbacks}
-            where
-                thread_id = %(tid)s
-            """
-        ).format(
-            feedbacks=Feedback.get_table_name(self._schema),
-        )
-        elements_query = sql.SQL(
-            """
-            delete from
-                {elements}
-            where
-                thread_id = %(tid)s
-            """
-        ).format(
-            elements=Element.get_table_name(self._schema),
-        )
-        thread_query = sql.SQL(
-            """
-            delete from
-                {threads}
-            where
-                id = %(tid)s
-            returning
-                user_id
-            """
-        ).format(
-            threads=Thread.get_table_name(self._schema),
-        )
-        params = {"tid": UUID(thread_id)}
-        try:
-            async with self._pool.connection() as conn, conn.transaction():
-                await conn.execute(feedbacks_query, params)
-                await conn.execute(elements_query, params)
-                cursor = await conn.execute(thread_query, params)
-                owner = await cursor.fetchone()
-        except Exception as e:
-            raise DataUnavailableError("delete_thread", str(e)) from e
+        tid = UUID(thread_id)
+        await self._feedbacks.delete_of_thread(tid)
+        await self._elements.delete_of_thread(tid)
+        owner = await self._threads.delete(tid)
 
         self._purge_stream_journal(owner, thread_id)
-        if owner is not None and owner[0] is not None:
-            await self._thread_changed(
-                UUID(str(owner[0])), thread_id, "", ChangeAction.DELETED
-            )
+        if owner is not None:
+            await self._thread_changed(owner, thread_id, "", ChangeAction.DELETED)
 
-    async def _chat_changed(self, thread_id: object, message: AnyMessage) -> None:
+    async def _chat_changed(self, thread_id: UUID | None, message: AnyMessage) -> None:
         """Сообщает вкладкам треда на всех инстансах об изменении в его ленте;
         запись без треда никому не показана.
         """
@@ -881,12 +635,12 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
         await self._bus.publish(Scope.user(user_id), message, LockToken.local())
 
     @staticmethod
-    def _purge_stream_journal(owner: tuple[Any, ...] | None, thread_id: str) -> None:
+    def _purge_stream_journal(owner: UUID | None, thread_id: str) -> None:
         """Журналы вывода инструментов умирают вместе с тредом.
 
         Сбой уборки не отменяет удаление треда — журнал доберёт ротация.
         """
-        if owner is None or owner[0] is None:
+        if owner is None:
             return
 
         journal = StreamJournalHub.get()
@@ -894,7 +648,7 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
             return
 
         try:
-            journal.purge_thread(str(owner[0]), thread_id)
+            journal.purge_thread(str(owner), thread_id)
         except StreamJournalError:
             logger.warning(
                 "stream journal purge failed for thread %s",
@@ -911,59 +665,13 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
         if not filters.userId:
             raise DataRejectedError("list_threads", "userId is required")
 
-        query = sql.SQL(
-            """
-            select
-                {cols_t}
-            from
-                {threads}
-            where
-                user_id = %(user_id)s
-            order by
-                created_at desc
-            limit
-                %(limit)s
-            """
-        ).format(
-            cols_t=Thread.all_columns(),
-            threads=Thread.get_table_name(self._schema),
-        )
-        identifier_query = sql.SQL(
-            """
-            select
-                identifier
-            from
-                {users}
-            where
-                id = %(user_id)s
-            """
-        ).format(
-            users=User.get_table_name(self._schema),
-        )
-
         user_id = UUID(filters.userId)
-        try:
-            async with self._pool.connection() as conn:
-                async with conn.cursor(row_factory=tuple_row) as cur:
-                    await cur.execute(identifier_query, {"user_id": user_id})
-                    identifier_row = await cur.fetchone()
-
-                async with conn.cursor(row_factory=class_row(Thread)) as cur:
-                    await cur.execute(
-                        query,
-                        {"user_id": user_id, "limit": pagination.first + 1},
-                    )
-                    rows = await cur.fetchall()
-        except Exception as e:
-            raise DataUnavailableError("list_threads", str(e)) from e
-
-        user_identifier = None
-        if identifier_row is not None:
-            user_identifier = identifier_row[0]
+        user_identifier = await self._identifier_of(user_id)
+        rows = await self._threads.list_of(user_id, pagination.first + 1)
 
         has_next = len(rows) > pagination.first
         page = [
-            t.to_chainlit(user_identifier=user_identifier, steps=[], elements=[])
+            ThreadDicts.thread(t, user_identifier, [], [])
             for t in rows[: pagination.first]
         ]
 

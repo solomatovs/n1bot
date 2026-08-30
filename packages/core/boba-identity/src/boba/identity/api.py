@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from collections.abc import Iterable, Mapping
-from typing import Protocol
+from datetime import datetime
+from typing import Any, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -31,7 +32,9 @@ __all__ = [
     "AuthenticatedUser",
     "Authenticator",
     "PersistedUsers",
+    "StoredUser",
     "StudioProfiles",
+    "UserRows",
     "UserSettingsStore",
     "UsersUpsert",
 ]
@@ -101,6 +104,44 @@ class ApiSubject(BaseModel):
             credential=self.credential,
             cancellation=RunCancellation(),
         )
+
+
+class StoredUser(BaseModel):
+    """Строка users как её хранит база: id, логин, время создания и metadata."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: UUID
+    identifier: str
+    created_at: datetime
+    meta: Mapping[str, Any] = {}
+
+    def authenticated(self) -> AuthenticatedUser:
+        return AuthenticatedUser(
+            id=str(self.id), identifier=self.identifier, metadata=self.meta
+        )
+
+
+class UserRows(Protocol):
+    """Строки users целиком: чтение по логину и id, upsert, настройки LLM профиля."""
+
+    @abstractmethod
+    async def stored(self, identifier: str) -> StoredUser | None:
+        """None — строки с таким логином нет."""
+
+    @abstractmethod
+    async def stored_by_id(self, user_id: UUID) -> StoredUser | None:
+        """None — строки с таким id нет."""
+
+    @abstractmethod
+    async def upsert(self, identifier: str, meta: Mapping[str, Any]) -> StoredUser:
+        """Новая строка либо metadata поверх прежней."""
+
+    @abstractmethod
+    async def set_llm_settings(
+        self, user_id: UUID, profile: str, values: Mapping[str, Any]
+    ) -> None:
+        """Настройки LLM профиля в metadata; пустые значения снимают ключ профиля."""
 
 
 class Authenticator(Protocol):

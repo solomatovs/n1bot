@@ -63,6 +63,7 @@ from boba.llm.openai import OpenAiHttp
 from boba.runtime import providers as runtime
 from boba.runtime.bus import PgMessageBus
 from boba.runtime.di import Depends
+from boba.runtime.elements import ChatTables
 from boba.toolrun.registry import ToolRegistry
 
 
@@ -278,16 +279,19 @@ async def chainlit_data_layer(
     )
     await pool.open()
     try:
+        tables = ChatTables.of(cfg.postgres, cfg.db_schema, pool)
+        await tables.setup()
         layer = PostgresDataLayer(
-            pool,
-            schema=cfg.db_schema,
+            users=tables.users,
+            threads=tables.threads,
+            elements=tables.elements,
+            feedbacks=tables.feedbacks,
             storage=storage,
             feed=TranscriptFeed(CheckpointMessages(saver)),
             links=AttachmentLinks(storage_cfg.public_prefix),
             sessions=session_source(),
             bus=bus,
         )
-        await layer.setup()
         yield layer
     finally:
         await pool.close()
