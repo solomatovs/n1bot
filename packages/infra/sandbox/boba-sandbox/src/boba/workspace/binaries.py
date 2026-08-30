@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import stat as stat_module
 from enum import StrEnum
+from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -86,24 +87,24 @@ class TrustedBinaries(BaseModel):
 
     def _locate(self, binary: SandboxBinary) -> str | None:
         for directory in self.dirs:
-            candidate = os.path.join(directory, binary.value)
+            candidate = Path(directory) / binary.value
             if not self._executable(candidate):
                 continue
 
-            self._check_trusted(candidate, directory)
-            return candidate
+            self._check_trusted(candidate, Path(directory))
+            return str(candidate)
 
         return None
 
     @staticmethod
-    def _executable(path: str) -> bool:
-        if not os.path.isfile(path):
+    def _executable(path: Path) -> bool:
+        if not path.is_file():
             return False
 
         return os.access(path, os.X_OK)
 
     @classmethod
-    def _check_trusted(cls, path: str, root: str) -> None:
+    def _check_trusted(cls, path: Path, root: Path) -> None:
         """Проверка идёт от файла вверх до объявленного каталога включительно.
 
         Выше root не поднимаемся: этот каталог администратор назвал доверенным
@@ -111,14 +112,14 @@ class TrustedBinaries(BaseModel):
         сравниваем разыменованной: объявить каталог через симлинк (release/current)
         — обычное дело, а путь до файла уже разыменован.
         """
-        real = os.path.realpath(path)
-        boundary = os.path.realpath(root)
+        real = path.resolve()
+        boundary = root.resolve()
         cls._check_protected(real)
         cls._check_protected(boundary)
 
-        directory = os.path.dirname(real)
+        directory = real.parent
         while directory != boundary:
-            parent = os.path.dirname(directory)
+            parent = directory.parent
             if parent == directory:
                 return
 
@@ -126,10 +127,10 @@ class TrustedBinaries(BaseModel):
             directory = parent
 
     @classmethod
-    def _check_protected(cls, path: str) -> None:
+    def _check_protected(cls, path: Path) -> None:
         """Владельца не проверяем: в userns хостовые uid видны как nobody."""
         try:
-            info = os.stat(path)
+            info = path.stat()
         except OSError as exc:
             msg = f"trusted binaries: cannot stat {path}: {exc}"
             raise UntrustedBinaryError(msg) from exc

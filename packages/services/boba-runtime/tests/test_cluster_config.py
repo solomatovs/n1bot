@@ -11,7 +11,6 @@ from boba.runtime.config import AppName, ClusterConfig
 def _cluster(**overrides: object) -> ClusterConfig:
     values: dict[str, object] = {
         "node_id": "node1",
-        "db_schema": "live",
         "host": "host-a",
         "lock_ttl_sec": 20,
         "heartbeat_sec": 6,

@@ -22,14 +22,27 @@ from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.db.pgvector.schema import KbSchema
 from boba.identity.directory import UserDirectory
-from boba.identity.locks import RunLocking, StaleLock
+from boba.identity.locks import LiveLocks, MemoryLiveLocks, RunLocking, StaleLock
 from boba.identity.sso import RefreshSignal
 from boba.identity.token import CookieSpec
 from boba.ldap import Ldap3Directory
+from boba.messaging import (
+    ListenerState,
+    MemoryMessageBus,
+    MemoryPayloadStore,
+    MessageBus,
+    PayloadStore,
+    StaticBusWatch,
+)
 from boba.messaging.bus import BusWatch
 from boba.runtime.bus import PgMessageBus
 from boba.runtime.commands import CommandRunner
-from boba.runtime.config import AppName, RawConfig, RuntimeConfig
+from boba.runtime.config import (
+    AppName,
+    LocalMessagingConfig,
+    RawConfig,
+    RuntimeConfig,
+)
 from boba.runtime.di import Container, Depends
 from boba.runtime.journal import DirVault, StreamJournal
 from boba.runtime.locks import LockReaper, PgLiveLocks
@@ -77,13 +90,18 @@ async def message_bus(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
     app: Annotated[AppName, Depends(app_name)],
     instance: Annotated[str, Depends(instance_name)],
-) -> AsyncGenerator[PgMessageBus, None]:
-    """Поднимает шину процесса: готовит таблицы, запускает слушателя на всё время
-    работы и останавливает его при закрытии контейнера.
+) -> AsyncGenerator[MessageBus, None]:
+    """Поднимает шину процесса по секции [messaging]: local живёт в памяти одного
+    инстанса, postgres готовит таблицы, запускает слушателя на всё время работы и
+    останавливает его при закрытии контейнера.
     """
+    if isinstance(config.messaging, LocalMessagingConfig):
+        yield MemoryMessageBus(instance)
+        return
+
     bus = PgMessageBus(
-        config.data_layer.postgres,
-        config.cluster.db_schema,
+        config.messaging.postgres,
+        config.messaging.db_schema,
         instance,
         app,
         config.cluster,
@@ -99,12 +117,16 @@ async def message_bus(
 
 async def payload_store(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
-    bus: Annotated[PgMessageBus, Depends(message_bus)],
-) -> PgPayloadStore:
-    """Хранилище тел сообщений в live_payloads; схему готовит шина, поэтому она
-    поднимается первой, таблицу — само хранилище.
+    bus: Annotated[MessageBus, Depends(message_bus)],
+) -> PayloadStore:
+    """Хранилище тел сообщений: при local — в памяти рядом с шиной, при postgres —
+    в live_payloads; схему готовит шина, поэтому она поднимается первой, таблицу —
+    само хранилище.
     """
-    store = PgPayloadStore(config.data_layer.postgres, config.cluster.db_schema)
+    if isinstance(config.messaging, LocalMessagingConfig):
+        return MemoryPayloadStore()
+
+    store = PgPayloadStore(config.messaging.postgres, config.messaging.db_schema)
     await store.setup()
 
     return store
@@ -163,12 +185,16 @@ def credential_source_ref() -> KerberosCredentialSource:
 
 def bus_watch_ref() -> BusWatch:
     """Возвращает слушателя шины процесса, по которому страница показывает состояние
-    живой связи.
+    живой связи; у шины в памяти сетевой подписки нет — связь всегда живая.
     """
-    return _root().resolved(message_bus).listener
+    bus = _root().resolved(message_bus)
+    if isinstance(bus, PgMessageBus):
+        return bus.listener
+
+    return StaticBusWatch(ListenerState.LISTENING)
 
 
-def message_bus_ref() -> PgMessageBus:
+def message_bus_ref() -> MessageBus:
     """Шина процесса для обвязок инструментов; зовётся на каждый вызов."""
     return _root().resolved(message_bus)
 
@@ -253,15 +279,18 @@ async def live_locks(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
     instance: Annotated[str, Depends(instance_name)],
     app: Annotated[AppName, Depends(app_name)],
-    bus: Annotated[PgMessageBus, Depends(message_bus)],
-) -> PgLiveLocks:
-    """Блокировки областей процесса; live_instances готовит шина, поэтому она
-    поднимается первой, live_locks создаёт хранилище само, инстанс регистрируется
-    здесь и дальше подтверждается сторожем.
+    bus: Annotated[MessageBus, Depends(message_bus)],
+) -> LiveLocks:
+    """Блокировки областей процесса; при local они живут в памяти, при postgres
+    live_instances готовит шина, поэтому она поднимается первой, live_locks создаёт
+    хранилище само, инстанс регистрируется здесь и дальше подтверждается сторожем.
     """
+    if isinstance(config.messaging, LocalMessagingConfig):
+        return MemoryLiveLocks(instance, config.cluster.lock_ttl_sec)
+
     locks = PgLiveLocks(
-        config.data_layer.postgres,
-        config.cluster.db_schema,
+        config.messaging.postgres,
+        config.messaging.db_schema,
         instance,
         app,
         config.cluster,
@@ -271,7 +300,7 @@ async def live_locks(
     return locks
 
 
-def live_locks_ref() -> PgLiveLocks:
+def live_locks_ref() -> LiveLocks:
     """Блокировки для обвязок инструментов; зовётся на каждый вызов."""
     return _root().resolved(live_locks)
 
@@ -279,8 +308,8 @@ def live_locks_ref() -> PgLiveLocks:
 def workflow_service(
     store: Annotated[WorkflowStore | None, Depends(workflow_store)],
     instance: Annotated[str, Depends(instance_name)],
-    bus: Annotated[PgMessageBus, Depends(message_bus)],
-    locks: Annotated[PgLiveLocks, Depends(live_locks)],
+    bus: Annotated[MessageBus, Depends(message_bus)],
+    locks: Annotated[LiveLocks, Depends(live_locks)],
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
 ) -> WorkflowService | None:
     """Сервис workflow; события запусков уходят в шину процесса под блокировкой."""
@@ -385,15 +414,31 @@ def auth_service(
 
 async def lock_reaper(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
-    locks: Annotated[PgLiveLocks, Depends(live_locks)],
+    locks: Annotated[LiveLocks, Depends(live_locks)],
     service: Annotated[WorkflowService | None, Depends(workflow_service)],
-    bus: Annotated[PgMessageBus, Depends(message_bus)],
-    payloads: Annotated[PgPayloadStore, Depends(payload_store)],
-) -> AsyncGenerator[LockReaper, None]:
+    bus: Annotated[MessageBus, Depends(message_bus)],
+    payloads: Annotated[PayloadStore, Depends(payload_store)],
+) -> AsyncGenerator[LockReaper | None, None]:
     """Запускает сторожа блокировок на всё время работы: он закрывает ходы и запуски
     без держателя, следит за очередью уведомлений и убирает старые события; при
-    остановке снимает блокировки инстанса.
+    остановке снимает блокировки инстанса. При local сторож не поднимается:
+    протухшие блокировки памяти снимает ленивый reap при захвате, ретенции нет.
     """
+    if isinstance(config.messaging, LocalMessagingConfig):
+        yield None
+        return
+
+    if not isinstance(locks, PgLiveLocks):
+        msg = "lock reaper requires postgres live locks"
+        raise RuntimeError(msg)
+
+    if not isinstance(bus, PgMessageBus):
+        msg = "lock reaper requires the postgres message bus"
+        raise RuntimeError(msg)
+
+    if not isinstance(payloads, PgPayloadStore):
+        msg = "lock reaper requires the postgres payload store"
+        raise RuntimeError(msg)
 
     async def on_stale(stale: Sequence[StaleLock]) -> None:
         for lock in stale:
@@ -441,7 +486,7 @@ async def lock_reaper(
 
 
 def command_runner(
-    bus: Annotated[PgMessageBus, Depends(message_bus)],
+    bus: Annotated[MessageBus, Depends(message_bus)],
     instance: Annotated[str, Depends(instance_name)],
 ) -> CommandRunner:
     """Запускает исполнителя команд шины для запусков и ходов этого процесса."""
@@ -452,7 +497,7 @@ def command_runner(
 
 async def session_keeper(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
-    bus: Annotated[PgMessageBus, Depends(message_bus)],
+    bus: Annotated[MessageBus, Depends(message_bus)],
     sessions: Annotated[LiveSessions, Depends(live_sessions)],
     tokens: Annotated[JwtTokens, Depends(session_tokens)],
 ) -> AsyncGenerator[SessionKeeper, None]:

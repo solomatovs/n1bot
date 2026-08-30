@@ -49,9 +49,9 @@ def publish_refresh(
 ) -> None:
     """Сигнал обновления входа в область пользователя — как из обвязки инструментов."""
     cfg = config.data_layer.postgres.model_copy(update={"dbname": db_name})
-    # шина живёт в схеме [cluster], а не в схеме данных приложения
+    # шина живёт в схеме [messaging], а не в схеме данных приложения
     bus = PgMessageBus(
-        cfg, config.cluster.db_schema, "ui-test", AppName.STUDIO, config.cluster
+        cfg, config.pg_messaging().db_schema, "ui-test", AppName.STUDIO, config.cluster
     )
 
     async def run() -> None:

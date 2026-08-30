@@ -29,9 +29,9 @@ __all__ = [
     "ApiSubject",
     "AuthenticatedUser",
     "Authenticator",
+    "ChosenProfiles",
     "PersistedUsers",
     "StoredUser",
-    "StudioProfiles",
     "UserRows",
     "UserSettingsStore",
     "UsersColumn",
@@ -158,12 +158,12 @@ class PersistedUsers(Protocol):
         """None — вход ещё не заводил строку users."""
 
 
-class StudioProfiles(Protocol):
-    """Выбранный пользователем профиль studio в metadata его строки users."""
+class ChosenProfiles(Protocol):
+    """Выбранный пользователем профиль в metadata его строки users."""
 
     @abstractmethod
     async def set_studio_profile(self, user_id: UUID, profile: str) -> None: ...
 
 
-class UserSettingsStore(PersistedUsers, StudioProfiles, Protocol):
+class UserSettingsStore(PersistedUsers, ChosenProfiles, Protocol):
     """Что нужно ресурсу /me: строка пользователя и запись выбранного профиля."""

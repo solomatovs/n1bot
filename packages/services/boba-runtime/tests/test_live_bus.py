@@ -83,7 +83,7 @@ async def _bus(
     )
     bus = PgMessageBus(
         cfg,
-        runtime_config.cluster.db_schema,
+        runtime_config.pg_messaging().db_schema,
         name,
         AppName.STUDIO,
         runtime_config.cluster,

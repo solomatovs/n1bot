@@ -47,22 +47,21 @@ from boba.chat.profiles import (
 )
 from boba.identity.context import Scope
 from boba.identity.errors import InternalServiceError
-from boba.identity.locks import RunLocking
+from boba.identity.locks import LiveLocks, RunLocking
 from boba.identity.session import UserMetadataField
 from boba.identity.token import CookieSpec
 from boba.messaging import (
     ChatSettingsChanged,
     LockToken,
+    MessageBus,
     PayloadStore,
     StopRequested,
     ThreadRewound,
 )
 from boba.runtime import providers as runtime
-from boba.runtime.bus import PgMessageBus
 from boba.runtime.config import RuntimeConfig
 from boba.runtime.di import Container, Depends, di_inject
 from boba.runtime.http import SessionCookie
-from boba.runtime.locks import PgLiveLocks
 from chainlit.config import config as chainlit_config
 from chainlit.context import ChainlitContext, context_var
 from chainlit.data.base import BaseDataLayer
@@ -85,9 +84,9 @@ async def on_message(  # noqa: PLR0913
     ],
     data_layer: Annotated[BaseDataLayer, Depends(chainlit_data_layer)],
     selected: Annotated[SelectedProfile, Depends(session_profile, scope="session")],
-    bus: Annotated[PgMessageBus, Depends(runtime.message_bus)],
+    bus: Annotated[MessageBus, Depends(runtime.message_bus)],
     payloads: Annotated[PayloadStore, Depends(runtime.payload_store)],
-    locks: Annotated[PgLiveLocks, Depends(runtime.live_locks)],
+    locks: Annotated[LiveLocks, Depends(runtime.live_locks)],
     app_config: Annotated[AppConfig, Depends(get_app_config)],
 ):
     session = current_session()
@@ -157,7 +156,7 @@ async def on_message(  # noqa: PLR0913
 chainlit_config.code.on_message = wrap_user_function(on_message)
 
 
-def _root_bus() -> PgMessageBus:
+def _root_bus() -> MessageBus:
     """Шина процесса из корневого контейнера для обработчиков без DI-инъекции."""
     root = Container.root
     if root is None:
@@ -405,7 +404,7 @@ def _session_cookie() -> SessionCookie:
 @cl.on_stop
 @di_inject
 async def on_stop(
-    bus: Annotated[PgMessageBus, Depends(runtime.message_bus)],
+    bus: Annotated[MessageBus, Depends(runtime.message_bus)],
     instance: Annotated[str, Depends(runtime.instance_name)],
 ):
     """Кнопка Stop: свой ход обрывается сразу, чужой получает команду через шину."""

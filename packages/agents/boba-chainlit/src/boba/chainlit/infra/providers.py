@@ -58,8 +58,8 @@ from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
 from boba.llm.generation import GeneratorFactory
 from boba.llm.local import OnnxChatRuntime
 from boba.llm.openai import OpenAiHttp
+from boba.messaging import MessageBus
 from boba.runtime import providers as runtime
-from boba.runtime.bus import PgMessageBus
 from boba.runtime.di import Depends
 from boba.runtime.elements import ChatTables
 from boba.runtime.users import UsersTable
@@ -264,7 +264,7 @@ async def chainlit_data_layer(  # noqa: PLR0913 — слой данных соб
     storage_cfg: Annotated[LocalStorageConfig, Depends(get_local_storage_config)],
     storage: Annotated[StorageClient, Depends(storage_provider)],
     saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
-    bus: Annotated[PgMessageBus, Depends(runtime.message_bus)],
+    bus: Annotated[MessageBus, Depends(runtime.message_bus)],
     users: Annotated[UsersTable, Depends(runtime.users_table)],
     sessions: Annotated[SessionSource, Depends(session_source)],
 ) -> AsyncIterator[PostgresDataLayer]:

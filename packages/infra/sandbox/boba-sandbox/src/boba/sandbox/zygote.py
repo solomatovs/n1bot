@@ -32,6 +32,7 @@ from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from pathlib import Path
 from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -964,7 +965,7 @@ class ZygoteMounts:
         if "{" in directory:
             return
 
-        if os.path.isdir(directory):
+        if Path(directory).is_dir():
             return
 
         msg = f"zygote: images directory {directory!r} does not exist on the host"
@@ -1351,7 +1352,9 @@ class ZygoteToolCaller(ToolLauncher):
         leaf = manager.acquire(group)
 
         try:
-            return self._call(command, argv_tail, sinks, cgroup_leaf=leaf, kind=kind)
+            return self._call(
+                command, argv_tail, sinks, cgroup_leaf=str(leaf), kind=kind
+            )
         finally:
             if note := manager.throttling(leaf):
                 logger.warning("zygote[%s]: %s", self._tool, note)

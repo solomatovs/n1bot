@@ -7,6 +7,7 @@ import contextlib
 import os
 import subprocess
 import sys
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -171,7 +172,7 @@ needs_delegation = pytest.mark.skipif(
 def base():
     path = os.path.join(_DELEGATED_PARENT, f"boba-pytest-{uuid4().hex[:8]}")
     yield path
-    CgroupManager._prepared.pop(path, None)
+    CgroupManager._prepared.pop(Path(path), None)
     with contextlib.suppress(OSError):
         os.rmdir(path)
 
@@ -180,10 +181,9 @@ class TestCgroupManager:
     """Живой cgroup: leaf создаётся, лимиты записываются, уборка полная."""
 
     @staticmethod
-    def _knob(leaf: str, name: str) -> str:
-        path = os.path.realpath(os.path.join(leaf, name))
-        with open(path) as f:
-            return f.read().strip()
+    def _knob(leaf: Path, name: str) -> str:
+        path = (leaf / name).resolve()
+        return path.read_text().strip()
 
     @needs_delegation
     def test_acquire_writes_limits_and_release_removes(self, base: str) -> None:
@@ -212,8 +212,8 @@ class TestCgroupManager:
                 raise AssertionError('self._knob(leaf, "memory.oom.group") == "1"')
         finally:
             manager.release(leaf)
-        if os.path.exists(leaf):
-            raise AssertionError("not os.path.exists(leaf)")
+        if leaf.exists():
+            raise AssertionError("not leaf.exists()")
 
     @needs_delegation
     def test_absent_knobs_stay_at_kernel_defaults(self, base: str) -> None:
@@ -226,8 +226,8 @@ class TestCgroupManager:
             if self._knob(leaf, "cpu.max").split()[0] != "max":
                 raise AssertionError('self._knob(leaf, "cpu.max").split()[0] == "max"')
             # memory-контроллер не запрошен — даже не включался в базе
-            if os.path.exists(os.path.join(leaf, "memory.max")):
-                raise AssertionError('not os.path.exists(os.path.join(leaf, "memory.m…')
+            if (leaf / "memory.max").exists():
+                raise AssertionError('not (leaf / "memory.max").exists()')
         finally:
             manager.release(leaf)
 
@@ -236,7 +236,7 @@ class TestCgroupManager:
         """Ребёнок входит в leaf; release добивает его через cgroup.kill."""
         manager = CgroupManager(base)
         leaf = manager.acquire(GroupLimits(cpu_weight=100))
-        procs = os.path.join(leaf, "cgroup.procs")
+        procs = leaf / "cgroup.procs"
 
         def enter() -> None:
             fd = os.open(procs, os.O_WRONLY)
@@ -260,8 +260,8 @@ class TestCgroupManager:
             proc.wait(timeout=10)
         if proc.returncode == 0:
             raise AssertionError("cgroup.kill должен был убить ребёнка")
-        if os.path.exists(leaf):
-            raise AssertionError("not os.path.exists(leaf)")
+        if leaf.exists():
+            raise AssertionError("not leaf.exists()")
 
 
 class TestOomScoreAdj:
@@ -309,6 +309,6 @@ class TestProbe:
             cgroup_base="/sys/fs/cgroup/nonexistent/forbidden",
             group_cpu_percent=100,
         )
-        CgroupManager._prepared.pop("/sys/fs/cgroup/nonexistent/forbidden", None)
+        CgroupManager._prepared.pop(Path("/sys/fs/cgroup/nonexistent/forbidden"), None)
         with pytest.raises(CgroupError, match="sandbox profile 'broken'"):
             CgroupManager.probe_profiles({"broken": profile})
