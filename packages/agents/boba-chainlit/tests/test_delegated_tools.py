@@ -30,9 +30,11 @@ from psycopg import sql
 from pydantic import SecretStr
 from test_tools_integration import Call, ToolSetup
 
+from boba.auth.credentials import KerberosCredentialSource
 from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.infra.kerberos_refresh import ChatRefreshSignal
+from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connection_broker.user_connections import UserConnections
 from boba.connections.clickhouse import ClickHouseConfig
@@ -54,7 +56,6 @@ from boba.messaging import MemoryMessageBus
 from boba.runtime.plugins import ToolBridge
 from boba.sandbox.wrap import ToolProcessWrap
 from boba.sandbox.zygote import ZygoteRegistry
-from boba.config import bind
 from boba.stand.site import Stand
 from boba.tool.ch.tools import ChToolConfig
 from boba.tool.pg.tools import PgToolConfig
@@ -245,10 +246,11 @@ class Tools:
         UserConnections.bind_all(
             functions,
             lambda: store,
-            lambda: tickets,
+            lambda: KerberosCredentialSource(
+                tickets, ChatRefreshSignal(lambda: MemoryMessageBus("test"))
+            ),
             spec,
             resolve,
-            ChatRefreshSignal(lambda: MemoryMessageBus("test")),
         )
         InjectedConfig.bind_all(functions, resolve)
 

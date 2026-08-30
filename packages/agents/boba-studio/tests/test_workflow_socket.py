@@ -305,6 +305,7 @@ async def test_run_events_reach_a_namespace_on_another_instance(  # noqa: PLR091
         await bus.start()
         locks = PgLiveLocks(cfg, schema, name, AppName.STUDIO, cluster)
         locks._pool_ref = pool
+        await locks.setup()
         await locks.register_instance()
         return bus, locks
 
@@ -430,6 +431,7 @@ async def test_user_events_reach_the_room_over_postgres(  # noqa: PLR0913
         studio_config.cluster,
     )
     locks._pool_ref = pool
+    await locks.setup()
     await locks.register_instance()
     service = WorkflowService(
         store, registry, "node1-studio", bus, RunLocking(locks=locks, heartbeat_sec=1.0)

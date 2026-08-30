@@ -31,7 +31,6 @@ from boba.connections.marks import UserConnectionsSpec
 from boba.connections.profile import ConnectionKind
 from boba.connections.whitelist import ConnectionKeying
 from boba.identity.context import CallContext
-from boba.identity.sso import RefreshSignal
 from boba.runtime.refs import RuntimeRefs
 from boba.sandbox import (
     BindSpec,
@@ -233,14 +232,12 @@ class ToolLoader:
         raw_config: DictConfig,
         plugins: Mapping[str, ToolPlugin],
         refs: RuntimeRefs,
-        refresh: RefreshSignal,
         grant_check: GrantCheck,
     ) -> None:
         self._raw = raw_config
         self._plugins = plugins
         self._store_ref = refs.connection_store
-        self._tickets_ref = refs.sso_tickets
-        self._refresh = refresh
+        self._credentials_ref = refs.credentials
         self._grant_check = grant_check
 
     def load(self) -> ToolRegistry:
@@ -358,13 +355,12 @@ class ToolLoader:
             UserConnections.bind_all(
                 functions,
                 self._store_ref,
-                self._tickets_ref,
+                self._credentials_ref,
                 plugin.connections,
                 resolve,
-                self._refresh,
             )
 
-        ServiceTickets.bind_all(functions, resolve)
+        ServiceTickets.bind_all(functions, self._credentials_ref, resolve)
         InjectedConfig.bind_all(functions, resolve)
 
         return functions

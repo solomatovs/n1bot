@@ -17,6 +17,7 @@ from boba.connections.kerberos import (
     DelegatedAuth,
     DelegationMode,
     KeytabAuth,
+    SignInTicket,
     TicketAuth,
 )
 from boba.krb import (
@@ -28,7 +29,6 @@ from boba.krb import (
     KerberosWorkspace,
     KeytabCredentials,
     ServiceTicketIssuer,
-    SignInTicket,
     TicketCredentials,
 )
 from boba.stand.site import Stand

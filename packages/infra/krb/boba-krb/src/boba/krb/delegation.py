@@ -26,11 +26,11 @@ from boba.connections.kerberos import (
     Delegation,
     DelegationMode,
     ForwardedDelegation,
+    SignInTicket,
 )
 from boba.krb.credentials import CcacheLifetime, KerberosEnv
 from boba.krb.errors import GssErrors, InvalidTokenError, KeytabError
 from boba.krb.pac import PacGroupSids
-from boba.krb.ticket import SignInTicket
 
 __all__ = ["SpnegoAcceptor", "SpnegoIdentity", "TicketCapture"]
 

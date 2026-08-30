@@ -9,6 +9,7 @@ from __future__ import annotations
 from abc import abstractmethod
 from collections.abc import Iterable, Mapping
 from datetime import datetime
+from enum import StrEnum
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -35,6 +36,7 @@ __all__ = [
     "StoredUser",
     "StudioProfiles",
     "UserRows",
+    "UsersColumn",
     "UserSettingsStore",
     "UsersUpsert",
 ]
@@ -104,6 +106,15 @@ class ApiSubject(BaseModel):
             credential=self.credential,
             cancellation=RunCancellation(),
         )
+
+
+class UsersColumn(StrEnum):
+    """Колонки users."""
+
+    ID = "id"
+    IDENTIFIER = "identifier"
+    CREATED_AT = "created_at"
+    META = "meta"
 
 
 class StoredUser(BaseModel):

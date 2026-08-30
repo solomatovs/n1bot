@@ -20,16 +20,18 @@ from psycopg.rows import tuple_row
 from psycopg.types.json import Jsonb
 
 from boba.chat.threads import (
+    ChatTable,
     ChatThreads,
     DataRejectedError,
     DataUnavailableError,
     StoredThread,
+    ThreadsColumn,
     ThreadUpsert,
     ThreadUpserted,
 )
 from boba.connections.postgres import PostgresConfig
-from boba.db.postgres import AsyncPostgresPool
-from boba.runtime.tables import ChatTable, ThreadsColumn, UsersColumn
+from boba.db.postgres import AsyncPostgresPool, SqlNames
+from boba.identity.api import UsersColumn
 
 __all__ = ["ThreadsTable"]
 
@@ -54,17 +56,17 @@ class ThreadsTable(ChatThreads):
         return self._pool_ref
 
     def _threads(self) -> sql.Identifier:
-        return ChatTable.THREADS.under(self._schema)
+        return SqlNames.table(self._schema, ChatTable.THREADS)
 
     def _row_columns(self) -> sql.Composed:
         return sql.SQL(", ").join(
             [
-                ThreadsColumn.ID.ident(),
-                ThreadsColumn.CREATED_AT.ident(),
-                ThreadsColumn.NAME.ident(),
-                ThreadsColumn.USER_ID.ident(),
-                ThreadsColumn.TAGS.ident(),
-                ThreadsColumn.META.ident(),
+                SqlNames.ident(ThreadsColumn.ID),
+                SqlNames.ident(ThreadsColumn.CREATED_AT),
+                SqlNames.ident(ThreadsColumn.NAME),
+                SqlNames.ident(ThreadsColumn.USER_ID),
+                SqlNames.ident(ThreadsColumn.TAGS),
+                SqlNames.ident(ThreadsColumn.META),
             ]
         )
 
@@ -107,19 +109,22 @@ class ThreadsTable(ChatThreads):
                 """
             ).format(
                 threads=self._threads(),
-                id=ThreadsColumn.ID.ident(),
-                created_at=ThreadsColumn.CREATED_AT.ident(),
-                name=ThreadsColumn.NAME.ident(),
-                user_id=ThreadsColumn.USER_ID.ident(),
-                tags=ThreadsColumn.TAGS.ident(),
-                meta=ThreadsColumn.META.ident(),
+                id=SqlNames.ident(ThreadsColumn.ID),
+                created_at=SqlNames.ident(ThreadsColumn.CREATED_AT),
+                name=SqlNames.ident(ThreadsColumn.NAME),
+                user_id=SqlNames.ident(ThreadsColumn.USER_ID),
+                tags=SqlNames.ident(ThreadsColumn.TAGS),
+                meta=SqlNames.ident(ThreadsColumn.META),
             ),
             sql.SQL(
                 """
                 create index if not exists idx_threads_user_id
                     on {threads} ({user_id})
                 """
-            ).format(threads=self._threads(), user_id=ThreadsColumn.USER_ID.ident()),
+            ).format(
+                threads=self._threads(),
+                user_id=SqlNames.ident(ThreadsColumn.USER_ID),
+            ),
         )
         try:
             pool = await self._pool()
@@ -135,7 +140,7 @@ class ThreadsTable(ChatThreads):
         ).format(
             cols=self._row_columns(),
             threads=self._threads(),
-            id=ThreadsColumn.ID.ident(),
+            id=SqlNames.ident(ThreadsColumn.ID),
         )
         try:
             pool = await self._pool()
@@ -185,12 +190,12 @@ class ThreadsTable(ChatThreads):
             """
         ).format(
             threads=self._threads(),
-            id=ThreadsColumn.ID.ident(),
-            created_at=ThreadsColumn.CREATED_AT.ident(),
-            name=ThreadsColumn.NAME.ident(),
-            user_id=ThreadsColumn.USER_ID.ident(),
-            tags=ThreadsColumn.TAGS.ident(),
-            meta=ThreadsColumn.META.ident(),
+            id=SqlNames.ident(ThreadsColumn.ID),
+            created_at=SqlNames.ident(ThreadsColumn.CREATED_AT),
+            name=SqlNames.ident(ThreadsColumn.NAME),
+            user_id=SqlNames.ident(ThreadsColumn.USER_ID),
+            tags=SqlNames.ident(ThreadsColumn.TAGS),
+            meta=SqlNames.ident(ThreadsColumn.META),
         )
 
         tags = None
@@ -231,8 +236,8 @@ class ThreadsTable(ChatThreads):
             "delete from {threads} where {id} = %(id)s returning {user_id}"
         ).format(
             threads=self._threads(),
-            id=ThreadsColumn.ID.ident(),
-            user_id=ThreadsColumn.USER_ID.ident(),
+            id=SqlNames.ident(ThreadsColumn.ID),
+            user_id=SqlNames.ident(ThreadsColumn.USER_ID),
         )
         try:
             pool = await self._pool()
@@ -267,8 +272,8 @@ class ThreadsTable(ChatThreads):
         ).format(
             cols=self._row_columns(),
             threads=self._threads(),
-            user_id=ThreadsColumn.USER_ID.ident(),
-            created_at=ThreadsColumn.CREATED_AT.ident(),
+            user_id=SqlNames.ident(ThreadsColumn.USER_ID),
+            created_at=SqlNames.ident(ThreadsColumn.CREATED_AT),
         )
         try:
             pool = await self._pool()
@@ -296,12 +301,12 @@ class ThreadsTable(ChatThreads):
                 t.{thread_id} = %(id)s
             """
         ).format(
-            identifier=UsersColumn.IDENTIFIER.ident(),
+            identifier=SqlNames.ident(UsersColumn.IDENTIFIER),
             threads=self._threads(),
-            users=ChatTable.USERS.under(self._schema),
-            user_id=ThreadsColumn.USER_ID.ident(),
-            id=UsersColumn.ID.ident(),
-            thread_id=ThreadsColumn.ID.ident(),
+            users=SqlNames.table(self._schema, ChatTable.USERS),
+            user_id=SqlNames.ident(ThreadsColumn.USER_ID),
+            id=SqlNames.ident(UsersColumn.ID),
+            thread_id=SqlNames.ident(ThreadsColumn.ID),
         )
 
         try:

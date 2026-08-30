@@ -20,10 +20,11 @@ from psycopg.types.json import Json
 from pydantic import BaseModel
 
 from boba.connections.postgres import PostgresConfig
-from boba.db.postgres import AsyncPostgresPool, PostgresError
+from boba.db.postgres import AsyncPostgresPool, PostgresError, SqlNames
 from boba.identity.context import Scope
 from boba.messaging import PayloadMissingError, PayloadRef, PayloadStore
-from boba.runtime.tables import ChatTable, LivePayloadsColumn
+from boba.messaging.bus import LivePayloadsColumn, LiveTable
+from boba.runtime.bus import ScopeKindCheck
 
 __all__ = ["PayloadBody", "PayloadStoreError", "PgPayloadStore"]
 
@@ -75,7 +76,51 @@ class PgPayloadStore(PayloadStore):
         return self._pool_ref
 
     def _table(self) -> sql.Identifier:
-        return ChatTable.LIVE_PAYLOADS.under(self._schema)
+        return SqlNames.table(self._schema, LiveTable.PAYLOADS)
+
+    async def setup(self) -> None:
+        """Создаёт live_payloads; схему готовит шина."""
+        ddl = (
+            sql.SQL(
+                """
+                create unlogged table if not exists {payloads} (
+                    {scope_kind} text not null,
+                    {scope_id}   uuid not null,
+                    {id}         uuid primary key,
+                    {body}       json not null,
+                    {at}         timestamptz not null default now()
+                )
+                """
+            ).format(
+                payloads=self._table(),
+                **{column.value: SqlNames.ident(column) for column in LivePayloadsColumn},
+            ),
+            sql.SQL(
+                """
+                alter table {payloads}
+                    alter column {body} type json using {body}::text::json
+                """
+            ).format(payloads=self._table(), body=SqlNames.ident(LivePayloadsColumn.BODY)),
+            sql.SQL(
+                """
+                create index if not exists idx_live_payloads_scope
+                on {payloads} ({scope_kind}, {scope_id})
+                """
+            ).format(
+                payloads=self._table(),
+                scope_kind=SqlNames.ident(LivePayloadsColumn.SCOPE_KIND),
+                scope_id=SqlNames.ident(LivePayloadsColumn.SCOPE_ID),
+            ),
+            ScopeKindCheck.of(self._schema, LiveTable.PAYLOADS),
+        )
+        pool = await self._pool()
+        try:
+            async with pool.connection() as conn, conn.transaction():
+                for statement in ddl:
+                    await conn.execute(statement, prepare=False)
+        except (psycopg.Error, PostgresError) as exc:
+            msg = "payload store: setup failed"
+            raise PayloadStoreError(msg) from exc
 
     @staticmethod
     def _scope_id(scope: Scope) -> UUID:
@@ -98,10 +143,10 @@ class PgPayloadStore(PayloadStore):
                         """
                     ).format(
                         payloads=self._table(),
-                        scope_kind=LivePayloadsColumn.SCOPE_KIND.ident(),
-                        scope_id=LivePayloadsColumn.SCOPE_ID.ident(),
-                        id=LivePayloadsColumn.ID.ident(),
-                        body=LivePayloadsColumn.BODY.ident(),
+                        scope_kind=SqlNames.ident(LivePayloadsColumn.SCOPE_KIND),
+                        scope_id=SqlNames.ident(LivePayloadsColumn.SCOPE_ID),
+                        id=SqlNames.ident(LivePayloadsColumn.ID),
+                        body=SqlNames.ident(LivePayloadsColumn.BODY),
                     ),
                     {
                         "scope_kind": scope.kind.value,
@@ -132,10 +177,10 @@ class PgPayloadStore(PayloadStore):
                         """
                     ).format(
                         payloads=self._table(),
-                        body=LivePayloadsColumn.BODY.ident(),
-                        id=LivePayloadsColumn.ID.ident(),
-                        scope_kind=LivePayloadsColumn.SCOPE_KIND.ident(),
-                        scope_id=LivePayloadsColumn.SCOPE_ID.ident(),
+                        body=SqlNames.ident(LivePayloadsColumn.BODY),
+                        id=SqlNames.ident(LivePayloadsColumn.ID),
+                        scope_kind=SqlNames.ident(LivePayloadsColumn.SCOPE_KIND),
+                        scope_id=SqlNames.ident(LivePayloadsColumn.SCOPE_ID),
                     ),
                     {
                         "id": UUID(ref.id),
@@ -169,8 +214,8 @@ class PgPayloadStore(PayloadStore):
                         """
                     ).format(
                         payloads=self._table(),
-                        scope_kind=LivePayloadsColumn.SCOPE_KIND.ident(),
-                        scope_id=LivePayloadsColumn.SCOPE_ID.ident(),
+                        scope_kind=SqlNames.ident(LivePayloadsColumn.SCOPE_KIND),
+                        scope_id=SqlNames.ident(LivePayloadsColumn.SCOPE_ID),
                     ),
                     {"scope_kind": scope.kind.value, "scope_id": self._scope_id(scope)},
                     prepare=False,
@@ -193,7 +238,7 @@ class PgPayloadStore(PayloadStore):
                         delete from {payloads}
                         where {at} + make_interval(secs => %(age)s) < now()
                         """
-                    ).format(payloads=self._table(), at=LivePayloadsColumn.AT.ident()),
+                    ).format(payloads=self._table(), at=SqlNames.ident(LivePayloadsColumn.AT)),
                     {"age": max_age_sec},
                     prepare=False,
                 )

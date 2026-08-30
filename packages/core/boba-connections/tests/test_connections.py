@@ -334,8 +334,8 @@ class TestConnectionsConfig:
         cfg = ConnectionsConfig(db_schema="chainlit")
         if cfg.enable is not False:
             raise AssertionError("cfg.enable is False")
-        if (cfg.db_schema, cfg.table) != ("chainlit", "connections"):
-            raise AssertionError('(cfg.db_schema, cfg.table) == ("chainlit", "connect…')
+        if cfg.db_schema != "chainlit":
+            raise AssertionError('cfg.db_schema == "chainlit"')
 
 
 class TestGrantTarget:

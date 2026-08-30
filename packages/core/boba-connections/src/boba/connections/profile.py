@@ -9,7 +9,7 @@ ConnectionNotFoundError — нет строки с таким id.
 from __future__ import annotations
 
 from abc import abstractmethod
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from enum import StrEnum
 from typing import Annotated, Protocol, TypeAlias
 from uuid import UUID
@@ -27,9 +27,14 @@ __all__ = [
     "ConnectionProfile",
     "ConnectionRepository",
     "ConnectionStoreError",
+    "ConnectionTable",
+    "ConnectionsColumn",
     "GrantKind",
     "GrantTarget",
+    "GrantsColumn",
+    "RolesColumn",
     "StoredConnection",
+    "StoredRole",
 ]
 
 
@@ -66,6 +71,57 @@ class GrantKind(StrEnum):
     CONNECTIONS = "connections"
     ROLES = "roles"
     USERS = "users"
+
+
+class ConnectionTable(StrEnum):
+    """Таблицы соединений: строки, роли и гранты «источник — субъект»."""
+
+    CONNECTIONS = "connections"
+    ROLES = "roles"
+    GRANTS = "grants"
+
+
+class ConnectionsColumn(StrEnum):
+    """Колонки connections; профиль лежит шифротекстом в data."""
+
+    ID = "id"
+    NAME = "name"
+    DATA = "data"
+
+
+class RolesColumn(StrEnum):
+    """Колонки roles."""
+
+    ID = "id"
+    ROLE = "role"
+    CREATED_AT = "create_at"
+
+
+class GrantsColumn(StrEnum):
+    """Колонки grants: источник (соединение) и субъект (пользователь или роль)."""
+
+    ID = "id"
+    SRC_KIND = "src_kind"
+    SRC_KIND_ID = "src_kind_id"
+    TGT_KIND = "tgt_kind"
+    TGT_KIND_ID = "tgt_kind_id"
+
+
+class StoredRole(BaseModel):
+    """Строка roles: имя роли и её id для грантов."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: UUID
+    name: str
+
+    @staticmethod
+    def by_name(roles: Iterable[StoredRole]) -> Mapping[str, UUID]:
+        index: dict[str, UUID] = {}
+        for role in roles:
+            index[role.name] = role.id
+
+        return index
 
 
 class GrantTarget(BaseModel):
@@ -143,7 +199,7 @@ class ConnectionRepository(Protocol):
     async def remove(self, connection_id: UUID) -> bool: ...
 
     @abstractmethod
-    async def roles(self) -> dict[str, UUID]: ...
+    async def roles(self) -> Sequence[StoredRole]: ...
 
     @abstractmethod
     async def grant(self, connection_id: UUID, target: GrantTarget) -> UUID: ...

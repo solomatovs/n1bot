@@ -36,9 +36,9 @@ __all__ = ["anyio_backend", "app_server", "panel"]
 from boba.canvas.journal import StreamKey
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
+from boba.config import bind, build_app_config
 from boba.db.postgres import AsyncPostgresPool
 from boba.runtime.journal import DirVault, StreamJournal
-from boba.config import bind, build_app_config
 from boba.toolkit.channels import ToolChannel
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]

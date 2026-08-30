@@ -131,16 +131,17 @@ async def _user_id_of(config: Any, identifier: str) -> str:
     """users.id пользователя стенда по логину: владелец тредов и журналов."""
     from psycopg import sql
 
-    from boba.db.postgres import AsyncPostgresPool
-    from boba.runtime.tables import ChatTable, UsersColumn
+    from boba.chat.threads import ChatTable
+    from boba.db.postgres import AsyncPostgresPool, SqlNames
+    from boba.identity.api import UsersColumn
 
     pool = AsyncPostgresPool(config.data_layer.postgres)
     await pool.open()
     try:
         query = sql.SQL("select {id} from {users} where {identifier} = %s").format(
-            id=UsersColumn.ID.ident(),
-            users=ChatTable.USERS.under(config.data_layer.db_schema),
-            identifier=UsersColumn.IDENTIFIER.ident(),
+            id=SqlNames.ident(UsersColumn.ID),
+            users=SqlNames.table(config.data_layer.db_schema, ChatTable.USERS),
+            identifier=SqlNames.ident(UsersColumn.IDENTIFIER),
         )
         async with pool.connection() as conn:
             cursor = await conn.execute(query, (identifier,))

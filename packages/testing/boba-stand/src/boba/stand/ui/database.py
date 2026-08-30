@@ -16,17 +16,18 @@ from typing import Any, ClassVar
 from psycopg import sql
 from psycopg.errors import InsufficientPrivilege
 
+from boba.config import bind, build_app_config
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connections.clickhouse import ClickHouseConfig
 from boba.connections.http import HttpProfile
 from boba.connections.postgres.config import PostgresConfig
-from boba.connections.profile import GrantTarget
-from boba.db.postgres import AsyncPostgresPool
+from boba.connections.profile import ConnectionTable, GrantTarget, StoredRole
+from boba.db.postgres import AsyncPostgresPool, SqlNames
 from boba.identity.session import UserMetadataField
 from boba.runtime.config import DataLayerConfig
-from boba.config import bind, build_app_config
 from boba.stand.ui.stand import REPO_ROOT, StandApp, StandConfig, StandError, StandUrl
-from boba.workflow_engine.store import WorkflowConfig, WorkflowStore
+from boba.workflow.records import WorkflowTable
+from boba.workflow_engine.store import WorkflowConfig
 
 
 class StandExtension(StrEnum):
@@ -91,11 +92,16 @@ class StandDatabase:
         connections = bind(self._built, path="connections", model=ConnectionsConfig)
         workflow = bind(self._built, path="workflow", model=WorkflowConfig)
         async with self._pool() as pool, pool.cursor() as cur:
-            for table in (connections.grants_table, connections.table):
-                await cur.execute(self._drop(connections.db_schema, table))
+            for table in (ConnectionTable.GRANTS, ConnectionTable.CONNECTIONS):
+                await cur.execute(self._drop(connections.db_schema, table.value))
 
-            for table in (workflow.runs_table, WorkflowStore.DRAFTS_TABLE, workflow.table):
-                await cur.execute(self._drop(workflow.db_schema, table))
+            workflow_tables = (
+                WorkflowTable.RUNS,
+                WorkflowTable.DRAFTS,
+                WorkflowTable.WORKFLOWS,
+            )
+            for table in workflow_tables:
+                await cur.execute(self._drop(workflow.db_schema, table.value))
 
         await self._forget_studio_profiles()
 
@@ -194,10 +200,14 @@ class StandDatabase:
             # строки прошлых прогонов могут не проходить нынешний валидатор
             # профиля, поэтому чистятся мимо стора
             async with pool.cursor() as cur:
-                for table in (connections.grants_table, connections.table):
-                    await cur.execute(sql.SQL("delete from {}").format(sql.Identifier(connections.db_schema, table)))
+                for table in (ConnectionTable.GRANTS, ConnectionTable.CONNECTIONS):
+                    await cur.execute(
+                        sql.SQL("delete from {}").format(
+                            SqlNames.table(connections.db_schema, table)
+                        )
+                    )
 
-            roles = await store.roles()
+            roles = StoredRole.by_name(await store.roles())
             targets: list[GrantTarget] = []
             for role_names in StandConfig.STAND_ROLES.values():
                 for role in role_names:

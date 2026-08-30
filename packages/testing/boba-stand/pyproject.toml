@@ -10,6 +10,7 @@ requires-python = ">=3.11,<4"
 dependencies = [
     "boba-connection-broker==0.0.14.dev9",
     "boba-sandbox==0.0.14.dev9",
+    "boba-workflow==0.0.14.dev9",
     "boba-workflow-engine==0.0.14.dev9",
     "boba-config==0.0.14.dev9",
     "boba-identity==0.0.14.dev9",

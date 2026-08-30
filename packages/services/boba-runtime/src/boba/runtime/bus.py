@@ -24,14 +24,14 @@ from uuid import UUID
 
 import psycopg
 from psycopg import sql
-from psycopg.errors import InsufficientPrivilege
 from psycopg.rows import DictRow
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from boba.connections.postgres import PostgresConfig
-from boba.db.postgres import AsyncPostgresPool, PostgresError
+from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresSchema, SqlNames
 from boba.identity.context import Scope, ScopeKind
+from boba.identity.locks import LiveLocksColumn
 from boba.messaging import (
     AnyCommand,
     AnyMessage,
@@ -48,15 +48,16 @@ from boba.messaging import (
     MessageTooLargeError,
     Unsubscribe,
 )
-from boba.messaging.bus import BusWatch, ListenerState, StateListener
-from boba.runtime.config import AppName, ClusterConfig
-from boba.runtime.tables import (
-    ChatTable,
+from boba.messaging.bus import (
+    BusWatch,
+    ListenerState,
     LiveChannel,
     LiveCommandsColumn,
     LiveEventsColumn,
-    LiveLocksColumn,
+    LiveTable,
+    StateListener,
 )
+from boba.runtime.config import AppName, ClusterConfig
 
 __all__ = [
     "LiveListener",
@@ -101,6 +102,25 @@ class Pointer(BaseModel):
 
 PointerHandler = Callable[[Pointer], Awaitable[None]]
 ReconnectHandler = Callable[[], Awaitable[None]]
+
+
+class ScopeKindCheck:
+    """Check-ограничение на вид области: одно и то же у всех live-таблиц."""
+
+    KINDS: ClassVar[tuple[str, ...]] = ("chat", "workflow", "job", "user")
+
+    @classmethod
+    def of(cls, schema: str, table: LiveTable) -> sql.Composed:
+        constraint = sql.Identifier(f"{table.value}_scope_kind_check")
+        kinds = sql.SQL(", ").join([sql.Literal(kind) for kind in cls.KINDS])
+
+        return sql.SQL(
+            """
+            alter table {table}
+                drop constraint if exists {constraint},
+                add constraint {constraint} check (scope_kind in ({kinds}))
+            """
+        ).format(table=SqlNames.table(schema, table), constraint=constraint, kinds=kinds)
 
 
 class LiveListener(BusWatch):
@@ -352,12 +372,12 @@ class PgMessageBus(MessageBus):
 
         return self._pool_ref
 
-    def _table(self, table: ChatTable) -> sql.Identifier:
-        return table.under(self._schema)
+    def _table(self, table: LiveTable) -> sql.Identifier:
+        return SqlNames.table(self._schema, table)
 
     async def setup(self) -> None:
-        """Создаёт таблицы шины и регистрирует инстанс в live_instances; зовётся на
-        старте процесса.
+        """Создаёт схему и таблицы шины (live_instances, live_events, live_commands);
+        live_locks и live_payloads создают их владельцы после шины.
         """
         pool = await self._pool()
 
@@ -369,16 +389,7 @@ class PgMessageBus(MessageBus):
                     {"key": self.SETUP_LOCK},
                     prepare=False,
                 )
-                try:
-                    async with conn.transaction():
-                        await conn.execute(
-                            sql.SQL("create schema if not exists {schema}").format(
-                                schema=sql.Identifier(self._schema)
-                            ),
-                            prepare=False,
-                        )
-                except InsufficientPrivilege:
-                    logger.info("no permission for create schema %r", self._schema)
+                await PostgresSchema.ensure(conn, self._schema)
 
                 for query in self._ddl():
                     await conn.execute(query, prepare=False)
@@ -389,7 +400,7 @@ class PgMessageBus(MessageBus):
         logger.info("message bus ready: instance %s", self._instance)
 
     def _ddl(self) -> tuple[sql.Composed, ...]:
-        instances = self._table(ChatTable.LIVE_INSTANCES)
+        instances = self._table(LiveTable.INSTANCES)
         return (
             sql.SQL(
                 """
@@ -416,7 +427,7 @@ class PgMessageBus(MessageBus):
                     primary key (scope_kind, scope_id, seq)
                 )
                 """
-            ).format(events=self._table(ChatTable.LIVE_EVENTS)),
+            ).format(events=self._table(LiveTable.EVENTS)),
             sql.SQL(
                 """
                 create unlogged table if not exists {commands} (
@@ -432,93 +443,28 @@ class PgMessageBus(MessageBus):
                     taken_at    timestamptz
                 )
                 """
-            ).format(commands=self._table(ChatTable.LIVE_COMMANDS)),
+            ).format(commands=self._table(LiveTable.COMMANDS)),
             sql.SQL(
                 """
                 alter table {commands}
                     drop constraint if exists live_commands_by_instance_fkey,
                     drop constraint if exists live_commands_taken_by_fkey
                 """
-            ).format(commands=self._table(ChatTable.LIVE_COMMANDS)),
+            ).format(commands=self._table(LiveTable.COMMANDS)),
             sql.SQL(
                 """
                 create index if not exists idx_live_commands_scope
                 on {commands} (scope_kind, scope_id)
                 """
-            ).format(commands=self._table(ChatTable.LIVE_COMMANDS)),
-            sql.SQL(
-                """
-                create unlogged table if not exists {locks} (
-                    scope_kind   text not null
-                        check (scope_kind in ('chat', 'workflow', 'job', 'user')),
-                    scope_id     uuid not null,
-                    mode         text not null check (mode in ('exclusive', 'shared')),
-                    holder       text not null
-                        references {instances} (instance_id) on delete cascade,
-                    token        uuid not null,
-                    purpose      text not null
-                        check (purpose in ('turn', 'run', 'tool_call', 'cleanup')),
-                    user_id      uuid not null,
-                    acquired_at  timestamptz not null default now(),
-                    heartbeat_at timestamptz not null default now(),
-                    ttl_sec      integer not null check (ttl_sec > 0),
-                    primary key (scope_kind, scope_id, token)
-                )
-                """
-            ).format(locks=self._table(ChatTable.LIVE_LOCKS), instances=instances),
-            sql.SQL(
-                """
-                create index if not exists idx_live_locks_scope
-                on {locks} (scope_kind, scope_id)
-                """
-            ).format(locks=self._table(ChatTable.LIVE_LOCKS)),
-            sql.SQL(
-                """
-                create unlogged table if not exists {payloads} (
-                    scope_kind text not null
-                        check (scope_kind in ('chat', 'workflow', 'job', 'user')),
-                    scope_id   uuid not null,
-                    id         uuid primary key,
-                    body       json not null,
-                    at         timestamptz not null default now()
-                )
-                """
-            ).format(payloads=self._table(ChatTable.LIVE_PAYLOADS)),
-            sql.SQL(
-                """
-                alter table {payloads}
-                    alter column body type json using body::text::json
-                """
-            ).format(payloads=self._table(ChatTable.LIVE_PAYLOADS)),
-            sql.SQL(
-                """
-                create index if not exists idx_live_payloads_scope
-                on {payloads} (scope_kind, scope_id)
-                """
-            ).format(payloads=self._table(ChatTable.LIVE_PAYLOADS)),
+            ).format(commands=self._table(LiveTable.COMMANDS)),
             *self._scope_kind_checks(),
         )
 
     def _scope_kind_checks(self) -> tuple[sql.Composed, ...]:
         """Перечень видов областей в check-ограничениях уже созданных таблиц."""
         checks: list[sql.Composed] = []
-        for table in (
-            ChatTable.LIVE_EVENTS,
-            ChatTable.LIVE_COMMANDS,
-            ChatTable.LIVE_LOCKS,
-            ChatTable.LIVE_PAYLOADS,
-        ):
-            constraint = sql.Identifier(f"{table.value}_scope_kind_check")
-            checks.append(
-                sql.SQL(
-                    """
-                    alter table {table}
-                        drop constraint if exists {constraint},
-                        add constraint {constraint}
-                            check (scope_kind in ('chat', 'workflow', 'job', 'user'))
-                    """
-                ).format(table=self._table(table), constraint=constraint)
-            )
+        for table in (LiveTable.EVENTS, LiveTable.COMMANDS):
+            checks.append(ScopeKindCheck.of(self._schema, table))
 
         return tuple(checks)
 
@@ -575,13 +521,13 @@ class PgMessageBus(MessageBus):
                         returning {seq}
                         """
                     ).format(
-                        events=self._table(ChatTable.LIVE_EVENTS),
-                        scope_kind=LiveEventsColumn.SCOPE_KIND.ident(),
-                        scope_id=LiveEventsColumn.SCOPE_ID.ident(),
-                        seq=LiveEventsColumn.SEQ.ident(),
-                        kind=LiveEventsColumn.KIND.ident(),
-                        origin=LiveEventsColumn.ORIGIN.ident(),
-                        body=LiveEventsColumn.BODY.ident(),
+                        events=self._table(LiveTable.EVENTS),
+                        scope_kind=SqlNames.ident(LiveEventsColumn.SCOPE_KIND),
+                        scope_id=SqlNames.ident(LiveEventsColumn.SCOPE_ID),
+                        seq=SqlNames.ident(LiveEventsColumn.SEQ),
+                        kind=SqlNames.ident(LiveEventsColumn.KIND),
+                        origin=SqlNames.ident(LiveEventsColumn.ORIGIN),
+                        body=SqlNames.ident(LiveEventsColumn.BODY),
                     ),
                     {
                         "scope_kind": scope.kind.value,
@@ -638,12 +584,12 @@ class PgMessageBus(MessageBus):
                     and {heartbeat} + make_interval(secs => {ttl}) >= now()
                 """
             ).format(
-                locks=self._table(ChatTable.LIVE_LOCKS),
-                scope_kind=LiveLocksColumn.SCOPE_KIND.ident(),
-                scope_id=LiveLocksColumn.SCOPE_ID.ident(),
-                token=LiveLocksColumn.TOKEN.ident(),
-                heartbeat=LiveLocksColumn.HEARTBEAT_AT.ident(),
-                ttl=LiveLocksColumn.TTL_SEC.ident(),
+                locks=self._table(LiveTable.LOCKS),
+                scope_kind=SqlNames.ident(LiveLocksColumn.SCOPE_KIND),
+                scope_id=SqlNames.ident(LiveLocksColumn.SCOPE_ID),
+                token=SqlNames.ident(LiveLocksColumn.TOKEN),
+                heartbeat=SqlNames.ident(LiveLocksColumn.HEARTBEAT_AT),
+                ttl=SqlNames.ident(LiveLocksColumn.TTL_SEC),
             ),
             {
                 "scope_kind": scope.kind.value,
@@ -684,13 +630,13 @@ class PgMessageBus(MessageBus):
                         returning {id}
                         """
                     ).format(
-                        commands=self._table(ChatTable.LIVE_COMMANDS),
-                        scope_kind=LiveCommandsColumn.SCOPE_KIND.ident(),
-                        scope_id=LiveCommandsColumn.SCOPE_ID.ident(),
-                        action=LiveCommandsColumn.ACTION.ident(),
-                        body=LiveCommandsColumn.BODY.ident(),
-                        by_instance=LiveCommandsColumn.BY_INSTANCE.ident(),
-                        id=LiveCommandsColumn.ID.ident(),
+                        commands=self._table(LiveTable.COMMANDS),
+                        scope_kind=SqlNames.ident(LiveCommandsColumn.SCOPE_KIND),
+                        scope_id=SqlNames.ident(LiveCommandsColumn.SCOPE_ID),
+                        action=SqlNames.ident(LiveCommandsColumn.ACTION),
+                        body=SqlNames.ident(LiveCommandsColumn.BODY),
+                        by_instance=SqlNames.ident(LiveCommandsColumn.BY_INSTANCE),
+                        id=SqlNames.ident(LiveCommandsColumn.ID),
                     ),
                     {
                         "scope_kind": scope.kind.value,
@@ -779,10 +725,10 @@ class PgMessageBus(MessageBus):
                             and {taken_by} is null
                         """
                     ).format(
-                        commands=self._table(ChatTable.LIVE_COMMANDS),
-                        taken_by=LiveCommandsColumn.TAKEN_BY.ident(),
-                        taken_at=LiveCommandsColumn.TAKEN_AT.ident(),
-                        id=LiveCommandsColumn.ID.ident(),
+                        commands=self._table(LiveTable.COMMANDS),
+                        taken_by=SqlNames.ident(LiveCommandsColumn.TAKEN_BY),
+                        taken_at=SqlNames.ident(LiveCommandsColumn.TAKEN_AT),
+                        id=SqlNames.ident(LiveCommandsColumn.ID),
                     ),
                     {"instance": instance, "id": command_id},
                     prepare=False,
@@ -808,9 +754,9 @@ class PgMessageBus(MessageBus):
                             and {scope_id} = %(scope_id)s
                         """
                     ).format(
-                        events=self._table(ChatTable.LIVE_EVENTS),
-                        scope_kind=LiveEventsColumn.SCOPE_KIND.ident(),
-                        scope_id=LiveEventsColumn.SCOPE_ID.ident(),
+                        events=self._table(LiveTable.EVENTS),
+                        scope_kind=SqlNames.ident(LiveEventsColumn.SCOPE_KIND),
+                        scope_id=SqlNames.ident(LiveEventsColumn.SCOPE_ID),
                     ),
                     params,
                     prepare=False,
@@ -825,9 +771,9 @@ class PgMessageBus(MessageBus):
                            and {scope_id} = %(scope_id)s
                         """
                     ).format(
-                        commands=self._table(ChatTable.LIVE_COMMANDS),
-                        scope_kind=LiveCommandsColumn.SCOPE_KIND.ident(),
-                        scope_id=LiveCommandsColumn.SCOPE_ID.ident(),
+                        commands=self._table(LiveTable.COMMANDS),
+                        scope_kind=SqlNames.ident(LiveCommandsColumn.SCOPE_KIND),
+                        scope_id=SqlNames.ident(LiveCommandsColumn.SCOPE_ID),
                     ),
                     params,
                     prepare=False,
@@ -877,10 +823,10 @@ class PgMessageBus(MessageBus):
                          )
                         """
                     ).format(
-                        events=self._table(ChatTable.LIVE_EVENTS),
-                        scope_kind=LiveEventsColumn.SCOPE_KIND.ident(),
-                        scope_id=LiveEventsColumn.SCOPE_ID.ident(),
-                        at=LiveEventsColumn.AT.ident(),
+                        events=self._table(LiveTable.EVENTS),
+                        scope_kind=SqlNames.ident(LiveEventsColumn.SCOPE_KIND),
+                        scope_id=SqlNames.ident(LiveEventsColumn.SCOPE_ID),
+                        at=SqlNames.ident(LiveEventsColumn.AT),
                     ),
                     {"age": max_age_sec},
                     prepare=False,
@@ -894,8 +840,8 @@ class PgMessageBus(MessageBus):
                         and {at} + make_interval(secs => %(age)s) < now()
                         """
                     ).format(
-                        commands=self._table(ChatTable.LIVE_COMMANDS),
-                        at=LiveCommandsColumn.AT.ident(),
+                        commands=self._table(LiveTable.COMMANDS),
+                        at=SqlNames.ident(LiveCommandsColumn.AT),
                     ),
                     {"age": max_age_sec},
                     prepare=False,
@@ -928,13 +874,13 @@ class PgMessageBus(MessageBus):
                         order by {seq}
                         """
                     ).format(
-                        events=self._table(ChatTable.LIVE_EVENTS),
-                        scope_kind=LiveEventsColumn.SCOPE_KIND.ident(),
-                        scope_id=LiveEventsColumn.SCOPE_ID.ident(),
-                        seq=LiveEventsColumn.SEQ.ident(),
-                        origin=LiveEventsColumn.ORIGIN.ident(),
-                        body=LiveEventsColumn.BODY.ident(),
-                        at=LiveEventsColumn.AT.ident(),
+                        events=self._table(LiveTable.EVENTS),
+                        scope_kind=SqlNames.ident(LiveEventsColumn.SCOPE_KIND),
+                        scope_id=SqlNames.ident(LiveEventsColumn.SCOPE_ID),
+                        seq=SqlNames.ident(LiveEventsColumn.SEQ),
+                        origin=SqlNames.ident(LiveEventsColumn.ORIGIN),
+                        body=SqlNames.ident(LiveEventsColumn.BODY),
+                        at=SqlNames.ident(LiveEventsColumn.AT),
                     ),
                     {
                         "scope_kind": scope.kind.value,
@@ -1018,10 +964,10 @@ class PgMessageBus(MessageBus):
                         select {body}, {at} from {commands} where {id} = %(id)s
                         """
                     ).format(
-                        commands=self._table(ChatTable.LIVE_COMMANDS),
-                        body=LiveCommandsColumn.BODY.ident(),
-                        at=LiveCommandsColumn.AT.ident(),
-                        id=LiveCommandsColumn.ID.ident(),
+                        commands=self._table(LiveTable.COMMANDS),
+                        body=SqlNames.ident(LiveCommandsColumn.BODY),
+                        at=SqlNames.ident(LiveCommandsColumn.AT),
+                        id=SqlNames.ident(LiveCommandsColumn.ID),
                     ),
                     {"id": pointer.seq},
                     prepare=False,

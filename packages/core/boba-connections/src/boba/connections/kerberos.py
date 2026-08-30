@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import time
 from collections.abc import Mapping
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Literal, Self, TypeAlias
@@ -42,12 +43,18 @@ __all__ = [
     "KerberosMethod",
     "KerberosPasswordAuth",
     "KeytabAuth",
+    "SignInTicket",
     "TicketAuth",
+    "TicketSealError",
 ]
 
 
 class KerberosError(Exception):
     """База ошибок kerberos: инфраструктурные варианты наследуют её."""
+
+
+class TicketSealError(KerberosError):
+    """Запечатанный билет входа не открывается: чужой ключ, порча или не тот формат."""
 
 
 class CcacheKind(StrEnum):
@@ -370,3 +377,27 @@ Delegation: TypeAlias = Annotated[
     Field(discriminator="mode"),
 ]
 """Режим делегирования; выбирается явно полем mode."""
+
+
+class SignInTicket(BaseModel):
+    """Делегированные креды одного SSO-входа: содержимое FILE-ccache и срок.
+
+    Constrained — evidence-тикет пользователя и TGT сервиса, forwarded — TGT
+    пользователя. Живёт в JWT сессии запечатанным; процесс ничего не хранит.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    principal: str = Field(min_length=1)
+    mode: DelegationMode
+    ccache: bytes = Field(min_length=1)
+    expires_at: int = Field(gt=0)
+    """Конец делегированных кредов, unix-секунды."""
+
+    def lifetime(self) -> int:
+        """Остаток кредов, сек; 0 — истекли."""
+        remaining = self.expires_at - int(time.time())
+        if remaining < 0:
+            return 0
+
+        return remaining

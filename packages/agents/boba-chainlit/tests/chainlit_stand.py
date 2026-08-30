@@ -21,6 +21,7 @@ from chainlit.user import User as ChainlitUser
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from psycopg import sql
 
+from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.canvas.keys import WorkspaceMount
 from boba.chainlit.chat.feed import TurnFeed
 from boba.chainlit.chat.history import ThreadMessages, TranscriptFeed
@@ -46,8 +47,8 @@ from boba.chat.provider import ChatSampling, OpenAiChatConfig
 from boba.chat.threads import ThreadOwnership
 from boba.config import bind, build_app_config
 from boba.connection_broker.store import ConnectionStore
-from boba.connection_broker.user_connections import StoreRef, TicketsRef
-from boba.connections.kerberos import DelegationMode
+from boba.connection_broker.user_connections import StoreRef
+from boba.connections.kerberos import DelegationMode, SignInTicket
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.api import AuthenticatedUser, Authenticator, UserSettingsStore
 from boba.identity.context import (
@@ -57,7 +58,6 @@ from boba.identity.context import (
 from boba.identity.errors import RefusalError
 from boba.identity.locks import MemoryLiveLocks
 from boba.identity.run import ElementTarget, RunPort, RunRefusal
-from boba.krb import SignInTicket
 from boba.krb.seal import SsoTickets, TicketSealer
 from boba.llm.bridge import ProviderChatModel
 from boba.llm.openai_chat import OpenAiChatProvider
@@ -218,7 +218,6 @@ async def chainlit_context(auth_token: str) -> AsyncIterator[None]:
     yield
     CallContext.reset()
     init_http_context()
-
 
 
 class FakeTurn(RunPort):
@@ -403,7 +402,10 @@ class StubRefs:
     """Входы приложения для стендов загрузки инструментов без реестра и workflow."""
 
     @staticmethod
-    def of(store: StoreRef, tickets: TicketsRef) -> RuntimeRefs:
+    def of(store: StoreRef, tickets: Callable[[], SsoTickets | None]) -> RuntimeRefs:
+        def credentials() -> KerberosCredentialSource:
+            return KerberosCredentialSource(tickets(), NoRefresh())
+
         async def no_registry() -> ToolRegistry:
             msg = "tool registry is not part of this stand"
             raise RuntimeError(msg)
@@ -416,7 +418,7 @@ class StubRefs:
             tool_registry=no_registry,
             workflow_service=no_service,
             connection_store=store,
-            sso_tickets=tickets,
+            credentials=credentials,
             live_locks=lambda: MemoryLiveLocks("stand", 20),
             heartbeat_sec=1.0,
             bus_watch=lambda: StaticBusWatch(ListenerState.LISTENING),
@@ -434,14 +436,14 @@ class StubRefs:
             msg = "connection store is not part of this stand"
             raise RuntimeError(msg)
 
-        def no_tickets() -> None:
-            return None
+        def no_credentials() -> KerberosCredentialSource:
+            return KerberosCredentialSource(None, NoRefresh())
 
         return RuntimeRefs(
             tool_registry=tool_registry,
             workflow_service=workflow_service,
             connection_store=no_store,
-            sso_tickets=no_tickets,
+            credentials=no_credentials,
             live_locks=lambda: MemoryLiveLocks("stand", 20),
             heartbeat_sec=1.0,
             bus_watch=lambda: StaticBusWatch(ListenerState.LISTENING),

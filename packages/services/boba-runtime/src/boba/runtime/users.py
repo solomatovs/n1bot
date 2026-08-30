@@ -18,19 +18,19 @@ from psycopg import sql
 from psycopg.rows import tuple_row
 from psycopg.types.json import Jsonb
 
-from boba.chat.threads import DataUnavailableError
+from boba.chat.threads import ChatTable, DataUnavailableError
 from boba.connections.postgres import PostgresConfig
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresSchema, SqlNames
 from boba.identity.api import (
     AuthenticatedUser,
     StoredUser,
     UserRows,
+    UsersColumn,
     UserSettingsStore,
     UsersUpsert,
 )
 from boba.identity.session import UserMetadataField
 from boba.identity.signin import SignedIn
-from boba.runtime.tables import ChatTable, UsersColumn
 
 __all__ = ["UsersTable"]
 
@@ -55,15 +55,15 @@ class UsersTable(UserRows, UserSettingsStore, UsersUpsert):
         return self._pool_ref
 
     def _users(self) -> sql.Identifier:
-        return ChatTable.USERS.under(self._schema)
+        return SqlNames.table(self._schema, ChatTable.USERS)
 
     def _row_columns(self) -> sql.Composed:
         return sql.SQL(", ").join(
             [
-                UsersColumn.ID.ident(),
-                UsersColumn.IDENTIFIER.ident(),
-                UsersColumn.CREATED_AT.ident(),
-                UsersColumn.META.ident(),
+                SqlNames.ident(UsersColumn.ID),
+                SqlNames.ident(UsersColumn.IDENTIFIER),
+                SqlNames.ident(UsersColumn.CREATED_AT),
+                SqlNames.ident(UsersColumn.META),
             ]
         )
 
@@ -78,9 +78,6 @@ class UsersTable(UserRows, UserSettingsStore, UsersUpsert):
     async def setup(self) -> None:
         """Создаёт схему и таблицу users; повтор безвреден."""
         ddl = (
-            sql.SQL("create schema if not exists {}").format(
-                sql.Identifier(self._schema)
-            ),
             sql.SQL(
                 """
                 create table if not exists {users} (
@@ -92,10 +89,10 @@ class UsersTable(UserRows, UserSettingsStore, UsersUpsert):
                 """
             ).format(
                 users=self._users(),
-                id=UsersColumn.ID.ident(),
-                identifier=UsersColumn.IDENTIFIER.ident(),
-                created_at=UsersColumn.CREATED_AT.ident(),
-                meta=UsersColumn.META.ident(),
+                id=SqlNames.ident(UsersColumn.ID),
+                identifier=SqlNames.ident(UsersColumn.IDENTIFIER),
+                created_at=SqlNames.ident(UsersColumn.CREATED_AT),
+                meta=SqlNames.ident(UsersColumn.META),
             ),
             # регистр логина не заводит вторую личность: инвариант держит база
             sql.SQL(
@@ -103,13 +100,18 @@ class UsersTable(UserRows, UserSettingsStore, UsersUpsert):
                 create unique index if not exists idx_users_identifier_lower
                     on {users} (lower({identifier}))
                 """
-            ).format(users=self._users(), identifier=UsersColumn.IDENTIFIER.ident()),
+            ).format(
+                users=self._users(),
+                identifier=SqlNames.ident(UsersColumn.IDENTIFIER),
+            ),
         )
         try:
             pool = await self._pool()
-            async with pool.connection() as conn, conn.transaction():
-                for statement in ddl:
-                    await conn.execute(statement)
+            async with pool.connection() as conn:
+                await PostgresSchema.ensure(conn, self._schema)
+                async with conn.transaction():
+                    for statement in ddl:
+                        await conn.execute(statement)
         except Exception as exc:
             raise DataUnavailableError("users.setup", str(exc)) from exc
 
@@ -119,7 +121,7 @@ class UsersTable(UserRows, UserSettingsStore, UsersUpsert):
         ).format(
             cols=self._row_columns(),
             users=self._users(),
-            identifier=UsersColumn.IDENTIFIER.ident(),
+            identifier=SqlNames.ident(UsersColumn.IDENTIFIER),
         )
 
         return await self._one(query, {"identifier": identifier}, "get_user")
@@ -128,7 +130,9 @@ class UsersTable(UserRows, UserSettingsStore, UsersUpsert):
         query = sql.SQL(
             "select {cols} from {users} where {id} = %(user_id)s limit 1"
         ).format(
-            cols=self._row_columns(), users=self._users(), id=UsersColumn.ID.ident()
+            cols=self._row_columns(),
+            users=self._users(),
+            id=SqlNames.ident(UsersColumn.ID),
         )
 
         return await self._one(query, {"user_id": user_id}, "get_user_by_id")
@@ -183,9 +187,9 @@ class UsersTable(UserRows, UserSettingsStore, UsersUpsert):
         ).format(
             users=self._users(),
             cols=self._row_columns(),
-            identifier=UsersColumn.IDENTIFIER.ident(),
-            created_at=UsersColumn.CREATED_AT.ident(),
-            meta=UsersColumn.META.ident(),
+            identifier=SqlNames.ident(UsersColumn.IDENTIFIER),
+            created_at=SqlNames.ident(UsersColumn.CREATED_AT),
+            meta=SqlNames.ident(UsersColumn.META),
         )
         params = {
             "identifier": identifier,
@@ -216,8 +220,8 @@ class UsersTable(UserRows, UserSettingsStore, UsersUpsert):
             """
         ).format(
             users=self._users(),
-            meta=UsersColumn.META.ident(),
-            id=UsersColumn.ID.ident(),
+            meta=SqlNames.ident(UsersColumn.META),
+            id=SqlNames.ident(UsersColumn.ID),
         )
         params = {
             "key": UserMetadataField.STUDIO_PROFILE,
@@ -250,8 +254,8 @@ class UsersTable(UserRows, UserSettingsStore, UsersUpsert):
                 """
             ).format(
                 users=self._users(),
-                meta=UsersColumn.META.ident(),
-                id=UsersColumn.ID.ident(),
+                meta=SqlNames.ident(UsersColumn.META),
+                id=SqlNames.ident(UsersColumn.ID),
             )
             params: dict[str, Any] = {
                 "user_id": user_id,
@@ -271,8 +275,8 @@ class UsersTable(UserRows, UserSettingsStore, UsersUpsert):
                 """
             ).format(
                 users=self._users(),
-                meta=UsersColumn.META.ident(),
-                id=UsersColumn.ID.ident(),
+                meta=SqlNames.ident(UsersColumn.META),
+                id=SqlNames.ident(UsersColumn.ID),
             )
             params = {"user_id": user_id, "path": path}
 

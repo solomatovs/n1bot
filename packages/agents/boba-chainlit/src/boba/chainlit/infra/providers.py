@@ -16,9 +16,6 @@ from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph.state import CompiledStateGraph
-from psycopg import sql
-from psycopg.errors import InsufficientPrivilege
-from psycopg_pool import PoolTimeout
 
 from boba.chainlit.agent.flow import (
     AgentGraphBuilder,
@@ -53,7 +50,7 @@ from boba.chat.profiles import (
     UserMeta,
 )
 from boba.chat.provider import ChatProvider, LocalChatConfig, OpenAiChatConfig
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresSchema
 from boba.identity.errors import InternalServiceError
 from boba.identity.session import SessionSource
 from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
@@ -242,16 +239,8 @@ async def langchain_checkpoint_saver(
     await pool.open()
     try:
         try:
-            async with pool.connection() as conn:
-                try:
-                    await conn.execute(
-                        sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(
-                            sql.Identifier(cp.db_schema)
-                        )
-                    )
-                except InsufficientPrivilege:
-                    await conn.commit()
-        except PoolTimeout as e:
+            await PostgresSchema.ensure_with(pool, cp.db_schema)
+        except PostgresError as e:
             raise InternalServiceError(
                 internal_detail=(
                     f"Failed to get postgres connection for checkpointer: {e!s}"

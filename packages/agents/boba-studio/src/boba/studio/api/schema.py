@@ -11,6 +11,7 @@ import sys
 from typing import Any, ClassVar
 
 from boba.auth import AuthService, JwtTokens
+from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.identity.api import (
     AuthenticatedUser,
@@ -106,7 +107,7 @@ class OpenApiDocument:
             tool_registry=cls._no_registry,
             workflow_service=cls._no_service,
             connection_store=cls._no_store,
-            sso_tickets=cls._no_tickets,
+            credentials=cls._no_credentials,
             live_locks=lambda: MemoryLiveLocks("stand", 20),
             heartbeat_sec=1.0,
             bus_watch=lambda: StaticBusWatch(ListenerState.LISTENING),
@@ -126,8 +127,8 @@ class OpenApiDocument:
         raise RuntimeError(OpenApiDocument._stub_called("connection store"))
 
     @staticmethod
-    def _no_tickets() -> None:
-        return None
+    def _no_credentials() -> KerberosCredentialSource:
+        return KerberosCredentialSource(None, NoRefresh())
 
     @staticmethod
     def _stub_called(name: str) -> str:

@@ -18,7 +18,9 @@ from uuid import uuid4
 import pytest
 from psycopg import sql
 
+from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chainlit.rendering.tool import ToolCallMarkdown, ToolResultMarkdown
+from boba.config import bind
 from boba.connection_broker.tickets import ServiceTickets
 from boba.connections.http import HttpProfile
 from boba.connections.kerberos import KeytabAuth
@@ -31,7 +33,6 @@ from boba.sandbox import (
 )
 from boba.sandbox.wrap import ToolProcessWrap
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
-from boba.config import bind
 from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
 from boba.tool.kb.search import ConfluenceCollection
 from boba.tool.pg.tools import PgToolConfig
@@ -410,10 +411,14 @@ def ingest_tools(raw_config, kb_collection: str):
         cfg = bind(raw_config, path=annotation.SECTION, model=annotation)
         return cfg.model_copy(update={"collection": kb_collection})
 
-    ServiceTickets.bind_all(functions, resolve)
+    ServiceTickets.bind_all(functions, _credentials, resolve)
     InjectedConfig.bind_all(functions, resolve)
 
     return ToolSetup.by_name(functions)
+
+
+def _credentials() -> KerberosCredentialSource:
+    return KerberosCredentialSource(None, NoRefresh())
 
 
 @pytest.fixture(scope="module")
@@ -434,7 +439,7 @@ def kb_tools(raw_config, kb_collection: str):
         cfg = bind(raw_config, path=annotation.SECTION, model=annotation)
         return cfg.model_copy(update={"collection": kb_collection})
 
-    ServiceTickets.bind_all(functions, resolve)
+    ServiceTickets.bind_all(functions, _credentials, resolve)
     InjectedConfig.bind_all(functions, resolve)
 
     return ToolSetup.by_name(functions)

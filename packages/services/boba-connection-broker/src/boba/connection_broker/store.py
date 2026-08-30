@@ -17,12 +17,11 @@ import binascii
 import logging
 from collections.abc import AsyncGenerator, Iterable, Sequence
 from contextlib import asynccontextmanager
-from typing import Any, ClassVar
+from typing import Any, ClassVar, LiteralString
 from uuid import UUID
 
 import psycopg
 from psycopg import sql
-from psycopg.errors import InsufficientPrivilege
 from psycopg.types.json import Jsonb
 from pydantic import (
     BaseModel,
@@ -40,13 +39,18 @@ from boba.connections.profile import (
     ConnectionNotFoundError,
     ConnectionProfile,
     ConnectionRepository,
+    ConnectionsColumn,
     ConnectionStoreError,
+    ConnectionTable,
     GrantKind,
+    GrantsColumn,
     GrantTarget,
+    RolesColumn,
     StoredConnection,
+    StoredRole,
 )
 from boba.connections.secrets import SecretCipher
-from boba.db.postgres import AsyncPostgresPool, PostgresError
+from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresSchema, SqlNames
 from boba.identity.context import Subject
 from boba.toolkit.failure import ValidationText
 
@@ -76,18 +80,6 @@ class ConnectionsConfig(BaseModel):
     db_schema: str = Field(
         min_length=1,
         description="Схема postgres, в которой живут таблицы.",
-    )
-    table: str = Field(
-        default="connections",
-        description="Имя таблицы соединений.",
-    )
-    roles_table: str = Field(
-        default="roles",
-        description="Имя таблицы ролей.",
-    )
-    grants_table: str = Field(
-        default="grants",
-        description="Имя связочной таблицы «источник — субъект» (src → tgt).",
     )
     encryption_key: SecretStr = Field(
         default=SecretStr(""),
@@ -158,13 +150,31 @@ class ConnectionStore(ConnectionRepository):
         return self._pool_ref
 
     def _table(self) -> sql.Identifier:
-        return sql.Identifier(self._cfg.db_schema, self._cfg.table)
+        return SqlNames.table(self._cfg.db_schema, ConnectionTable.CONNECTIONS)
 
     def _roles(self) -> sql.Identifier:
-        return sql.Identifier(self._cfg.db_schema, self._cfg.roles_table)
+        return SqlNames.table(self._cfg.db_schema, ConnectionTable.ROLES)
 
     def _grants(self) -> sql.Identifier:
-        return sql.Identifier(self._cfg.db_schema, self._cfg.grants_table)
+        return SqlNames.table(self._cfg.db_schema, ConnectionTable.GRANTS)
+
+    def _sql(self, text: LiteralString) -> sql.Composed:
+        """SQL с именами таблиц и колонок из enum'ов: c_* — connections, r_* — roles,
+        g_* — grants.
+        """
+        names: dict[str, sql.Composable] = {
+            "connections": self._table(),
+            "roles": self._roles(),
+            "grants": self._grants(),
+        }
+        for column in ConnectionsColumn:
+            names[f"c_{column.value}"] = SqlNames.ident(column)
+        for column in RolesColumn:
+            names[f"r_{column.name.lower()}"] = SqlNames.ident(column)
+        for column in GrantsColumn:
+            names[f"g_{column.value}"] = SqlNames.ident(column)
+
+        return sql.SQL(text).format(**names)
 
     @asynccontextmanager
     async def _guarded(self, action: str) -> AsyncGenerator[None]:
@@ -179,99 +189,71 @@ class ConnectionStore(ConnectionRepository):
         pool = await self._pool()
 
         async with self._guarded("setup"), pool.connection() as conn:
-            try:
-                await conn.execute(
-                    sql.SQL("create schema if not exists {schema}").format(
-                        schema=sql.Identifier(self._cfg.db_schema),
-                    ),
-                    prepare=False,
-                )
-            except InsufficientPrivilege:
-                logger.info(
-                    "no permission for create schema %r, "
-                    "assuming an administrator created it",
-                    self._cfg.db_schema,
-                )
+            await PostgresSchema.ensure(conn, self._cfg.db_schema)
 
             for query in self._ddl():
                 await conn.execute(query, prepare=False)
 
-        logger.info(
-            "connections ready: %s.%s",
-            self._cfg.db_schema,
-            self._cfg.table,
-        )
+        logger.info("connections ready: %s", self._cfg.db_schema)
 
     def _ddl(self) -> tuple[sql.Composed, ...]:
         return (
-            sql.SQL(
+            self._sql(
                 """
                 create table if not exists {connections} (
-                    id   uuid primary key default gen_random_uuid(),
-                    name text not null,
-                    data jsonb not null default '{{}}'::jsonb
+                    {c_id}   uuid primary key default gen_random_uuid(),
+                    {c_name} text not null,
+                    {c_data} jsonb not null default '{{}}'::jsonb
                 )
                 """
-            ).format(
-                connections=self._table(),
             ),
-            sql.SQL(
+            self._sql(
                 """
                 create index if not exists idx_connections_kind
-                    on {connections} ((data ->> 'kind'))
+                    on {connections} (({c_data} ->> 'kind'))
                 """
-            ).format(
-                connections=self._table(),
             ),
-            sql.SQL(
+            self._sql(
                 """
                 create table if not exists {roles} (
-                    id        uuid primary key default gen_random_uuid(),
-                    role      varchar not null unique,
-                    create_at timestamptz not null default now()
+                    {r_id}         uuid primary key default gen_random_uuid(),
+                    {r_role}       varchar not null unique,
+                    {r_created_at} timestamptz not null default now()
                 )
                 """
-            ).format(
-                roles=self._roles(),
             ),
-            sql.SQL(
+            self._sql(
                 """
                 create table if not exists {grants} (
-                    id          uuid primary key default gen_random_uuid(),
-                    src_kind    varchar not null,
-                    src_kind_id uuid not null,
-                    tgt_kind    varchar not null,
-                    tgt_kind_id uuid not null,
-                    unique (src_kind, src_kind_id, tgt_kind, tgt_kind_id)
+                    {g_id}          uuid primary key default gen_random_uuid(),
+                    {g_src_kind}    varchar not null,
+                    {g_src_kind_id} uuid not null,
+                    {g_tgt_kind}    varchar not null,
+                    {g_tgt_kind_id} uuid not null,
+                    unique ({g_src_kind}, {g_src_kind_id}, {g_tgt_kind}, {g_tgt_kind_id})
                 )
                 """
-            ).format(
-                grants=self._grants(),
             ),
-            sql.SQL(
+            self._sql(
                 """
                 create index if not exists idx_grants_target
-                    on {grants} (tgt_kind, tgt_kind_id)
+                    on {grants} ({g_tgt_kind}, {g_tgt_kind_id})
                 """
-            ).format(
-                grants=self._grants(),
             ),
         )
 
     async def sync_roles(self, names: Iterable[str]) -> None:
         """Добавляет в roles имена, которых там ещё нет; ничего не удаляет."""
-        query = sql.SQL(
+        query = self._sql(
             """
             insert into {roles} (
-                role
+                {r_role}
             )
             values (
                 %(role)s
             )
-            on conflict (role) do nothing
+            on conflict ({r_role}) do nothing
             """
-        ).format(
-            roles=self._roles(),
         )
 
         rows: list[dict[str, str]] = []
@@ -288,21 +270,19 @@ class ConnectionStore(ConnectionRepository):
     async def add(self, name: str, profile: ConnectionProfile) -> UUID:
         """Новая строка connections; уникальность имени — забота вызывающего."""
         payload = self._cipher.encrypt(profile)
-        query = sql.SQL(
+        query = self._sql(
             """
             insert into {connections} (
-                name,
-                data
+                {c_name},
+                {c_data}
             )
             values (
                 %(name)s,
                 %(data)s
             )
             returning
-                id
+                {c_id}
             """
-        ).format(
-            connections=self._table(),
         )
         params = {"name": name, "data": Jsonb(payload)}
 
@@ -322,29 +302,27 @@ class ConnectionStore(ConnectionRepository):
     ) -> UUID:
         """Строка и личный грант одной транзакцией: личный грант и есть владение."""
         payload = self._cipher.encrypt(profile)
-        insert_row = sql.SQL(
+        insert_row = self._sql(
             """
             insert into {connections} (
-                name,
-                data
+                {c_name},
+                {c_data}
             )
             values (
                 %(name)s,
                 %(data)s
             )
             returning
-                id
+                {c_id}
             """
-        ).format(
-            connections=self._table(),
         )
-        insert_grant = sql.SQL(
+        insert_grant = self._sql(
             """
             insert into {grants} (
-                src_kind,
-                src_kind_id,
-                tgt_kind,
-                tgt_kind_id
+                {g_src_kind},
+                {g_src_kind_id},
+                {g_tgt_kind},
+                {g_tgt_kind_id}
             )
             values (
                 %(src_kind)s,
@@ -353,8 +331,6 @@ class ConnectionStore(ConnectionRepository):
                 %(tgt_kind_id)s
             )
             """
-        ).format(
-            grants=self._grants(),
         )
 
         pool = await self._pool()
@@ -378,18 +354,16 @@ class ConnectionStore(ConnectionRepository):
     ) -> bool:
         """Полная замена имени и профиля; False — строки не было."""
         payload = self._cipher.encrypt(profile)
-        query = sql.SQL(
+        query = self._sql(
             """
             update
                 {connections}
             set
-                name = %(name)s,
-                data = %(data)s
+                {c_name} = %(name)s,
+                {c_data} = %(data)s
             where
-                id = %(id)s
+                {c_id} = %(id)s
             """
-        ).format(
-            connections=self._table(),
         )
         params = {"id": connection_id, "name": name, "data": Jsonb(payload)}
 
@@ -400,19 +374,17 @@ class ConnectionStore(ConnectionRepository):
 
     async def owned_ids(self, user_id: UUID) -> frozenset[UUID]:
         """Соединения с личным грантом пользователя: их он правит и удаляет сам."""
-        query = sql.SQL(
+        query = self._sql(
             """
             select
-                src_kind_id
+                {g_src_kind_id}
             from
                 {grants}
             where 1=1
-                and src_kind = %(src_kind)s
-                and tgt_kind = %(tgt_kind)s
-                and tgt_kind_id = %(user_id)s
+                and {g_src_kind} = %(src_kind)s
+                and {g_tgt_kind} = %(tgt_kind)s
+                and {g_tgt_kind_id} = %(user_id)s
             """
-        ).format(
-            grants=self._grants(),
         )
         params = {
             "src_kind": GrantKind.CONNECTIONS.value,
@@ -432,19 +404,17 @@ class ConnectionStore(ConnectionRepository):
         return frozenset(ids)
 
     async def get(self, connection_id: UUID) -> StoredConnection:
-        query = sql.SQL(
+        query = self._sql(
             """
             select
-                id,
-                name,
-                data
+                {c_id},
+                {c_name},
+                {c_data}
             from
                 {connections}
             where
-                id = %(id)s
+                {c_id} = %(id)s
             """
-        ).format(
-            connections=self._table(),
         )
 
         pool = await self._pool()
@@ -459,19 +429,17 @@ class ConnectionStore(ConnectionRepository):
         return self._stored(row)
 
     async def list_all(self) -> Sequence[StoredConnection]:
-        query = sql.SQL(
+        query = self._sql(
             """
             select
-                id,
-                name,
-                data
+                {c_id},
+                {c_name},
+                {c_data}
             from
                 {connections}
             order by
-                name
+                {c_name}
             """
-        ).format(
-            connections=self._table(),
         )
 
         pool = await self._pool()
@@ -483,26 +451,22 @@ class ConnectionStore(ConnectionRepository):
 
     async def remove(self, connection_id: UUID) -> bool:
         """Удаляет строку вместе с её грантами; False — строки не было."""
-        drop_grants = sql.SQL(
+        drop_grants = self._sql(
             """
             delete from
                 {grants}
             where
-                src_kind = %(src_kind)s
-                and src_kind_id = %(id)s
+                {g_src_kind} = %(src_kind)s
+                and {g_src_kind_id} = %(id)s
             """
-        ).format(
-            grants=self._grants(),
         )
-        drop_row = sql.SQL(
+        drop_row = self._sql(
             """
             delete from
                 {connections}
             where
-                id = %(id)s
+                {c_id} = %(id)s
             """
-        ).format(
-            connections=self._table(),
         )
         params = {"id": connection_id, "src_kind": GrantKind.CONNECTIONS.value}
 
@@ -512,19 +476,17 @@ class ConnectionStore(ConnectionRepository):
             await cur.execute(drop_row, params)
             return cur.rowcount > 0
 
-    async def roles(self) -> dict[str, UUID]:
-        query = sql.SQL(
+    async def roles(self) -> Sequence[StoredRole]:
+        query = self._sql(
             """
             select
-                role,
-                id
+                {r_role},
+                {r_id}
             from
                 {roles}
             order by
-                role
+                {r_role}
             """
-        ).format(
-            roles=self._roles(),
         )
 
         pool = await self._pool()
@@ -532,20 +494,20 @@ class ConnectionStore(ConnectionRepository):
             await cur.execute(query)
             fetched = await cur.fetchall()
 
-        by_name: dict[str, UUID] = {}
+        roles: list[StoredRole] = []
         for row in fetched:
-            by_name[row[0]] = UUID(str(row[1]))
+            roles.append(StoredRole(id=UUID(str(row[1])), name=row[0]))
 
-        return by_name
+        return roles
 
     async def grant(self, connection_id: UUID, target: GrantTarget) -> UUID:
-        query = sql.SQL(
+        query = self._sql(
             """
             insert into {grants} (
-                src_kind,
-                src_kind_id,
-                tgt_kind,
-                tgt_kind_id
+                {g_src_kind},
+                {g_src_kind_id},
+                {g_tgt_kind},
+                {g_tgt_kind_id}
             )
             values (
                 %(src_kind)s,
@@ -553,13 +515,11 @@ class ConnectionStore(ConnectionRepository):
                 %(tgt_kind)s,
                 %(tgt_kind_id)s
             )
-            on conflict (src_kind, src_kind_id, tgt_kind, tgt_kind_id) do update set
-                src_kind = excluded.src_kind
+            on conflict ({g_src_kind}, {g_src_kind_id}, {g_tgt_kind}, {g_tgt_kind_id})
+                do update set {g_src_kind} = excluded.{g_src_kind}
             returning
-                id
+                {g_id}
             """
-        ).format(
-            grants=self._grants(),
         )
         params = self._grant_params(connection_id, target)
 
@@ -578,18 +538,16 @@ class ConnectionStore(ConnectionRepository):
         return UUID(str(row[0]))
 
     async def revoke(self, connection_id: UUID, target: GrantTarget) -> bool:
-        query = sql.SQL(
+        query = self._sql(
             """
             delete from
                 {grants}
             where
-                src_kind = %(src_kind)s
-                and src_kind_id = %(src_kind_id)s
-                and tgt_kind = %(tgt_kind)s
-                and tgt_kind_id = %(tgt_kind_id)s
+                {g_src_kind} = %(src_kind)s
+                and {g_src_kind_id} = %(src_kind_id)s
+                and {g_tgt_kind} = %(tgt_kind)s
+                and {g_tgt_kind_id} = %(tgt_kind_id)s
             """
-        ).format(
-            grants=self._grants(),
         )
         params = self._grant_params(connection_id, target)
 
@@ -599,22 +557,20 @@ class ConnectionStore(ConnectionRepository):
             return cur.rowcount > 0
 
     async def grants_of(self, connection_id: UUID) -> Sequence[GrantTarget]:
-        query = sql.SQL(
+        query = self._sql(
             """
             select
-                tgt_kind,
-                tgt_kind_id
+                {g_tgt_kind},
+                {g_tgt_kind_id}
             from
                 {grants}
             where
-                src_kind = %(src_kind)s
-                and src_kind_id = %(src_kind_id)s
+                {g_src_kind} = %(src_kind)s
+                and {g_src_kind_id} = %(src_kind_id)s
             order by
-                tgt_kind,
-                tgt_kind_id
+                {g_tgt_kind},
+                {g_tgt_kind_id}
             """
-        ).format(
-            grants=self._grants(),
         )
         params = {
             "src_kind": GrantKind.CONNECTIONS.value,
@@ -636,37 +592,37 @@ class ConnectionStore(ConnectionRepository):
         self, subject: Subject, kind: ConnectionKind
     ) -> Sequence[StoredConnection]:
         """Соединения вида kind, выданные пользователю лично или любой его роли."""
-        query = sql.SQL(
+        query = self._sql(
             """
             with
                 subject_roles as (
                     select
-                        r.id
+                        r.{r_id}
                     from
                         {roles} r
                     where
-                        r.role = any(%(roles)s)
+                        r.{r_role} = any(%(roles)s)
                 ),
                 user_grants as (
                     select
-                        g.src_kind_id as connection_id
+                        g.{g_src_kind_id} as connection_id
                     from
                         {grants} g
                     where
-                        g.src_kind = %(src_kind)s
-                        and g.tgt_kind = %(users_kind)s
-                        and g.tgt_kind_id = %(user_id)s
+                        g.{g_src_kind} = %(src_kind)s
+                        and g.{g_tgt_kind} = %(users_kind)s
+                        and g.{g_tgt_kind_id} = %(user_id)s
                 ),
                 role_grants as (
                     select
-                        g.src_kind_id as connection_id
+                        g.{g_src_kind_id} as connection_id
                     from
                         {grants} g
                         inner join subject_roles sr on
-                            g.tgt_kind_id = sr.id
+                            g.{g_tgt_kind_id} = sr.{r_id}
                     where
-                        g.src_kind = %(src_kind)s
-                        and g.tgt_kind = %(roles_kind)s
+                        g.{g_src_kind} = %(src_kind)s
+                        and g.{g_tgt_kind} = %(roles_kind)s
                 ),
                 granted as (
                     select
@@ -680,21 +636,17 @@ class ConnectionStore(ConnectionRepository):
                         role_grants
                 )
             select
-                c.id,
-                c.name,
-                c.data
+                c.{c_id},
+                c.{c_name},
+                c.{c_data}
             from
                 {connections} c
-                inner join granted on granted.connection_id = c.id
+                inner join granted on granted.connection_id = c.{c_id}
             where
-                c.data ->> 'kind' = %(kind)s
+                c.{c_data} ->> 'kind' = %(kind)s
             order by
-                c.name
+                c.{c_name}
             """
-        ).format(
-            connections=self._table(),
-            grants=self._grants(),
-            roles=self._roles(),
         )
         params = {
             "kind": kind.value,
@@ -734,4 +686,6 @@ class ConnectionStore(ConnectionRepository):
             )
             raise ConnectionStoreError(msg) from None
 
-        return StoredConnection(id=UUID(str(row["id"])), name=row["name"], profile=profile)
+        return StoredConnection(
+            id=UUID(str(row["id"])), name=row["name"], profile=profile
+        )

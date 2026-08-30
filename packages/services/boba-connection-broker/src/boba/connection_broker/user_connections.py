@@ -4,8 +4,8 @@ Whitelist SQL/web-инструмента не лежит в конфиге: на
 собирается из таблицы connections по грантам пользователя и его ролей и
 подставляется в injected-параметр вместо статического конфига секции.
 В песочницу уезжает профиль только того соединения, которое вызов назвал;
-остальные — именами. Kerberos-секция профиля заменяется билетом вызова
-(TicketArming): одним сервисным билетом к этому соединению, выпущенным из
+остальные — именами. Kerberos-секцию профиля источник кредов заменяет
+билетом вызова: одним сервисным билетом к этому соединению, выпущенным из
 делегированных пользователем кредов либо из keytab строки. Тело инструмента
 получает готовый whitelist и про пользователя не знает.
 
@@ -25,15 +25,15 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from enum import StrEnum
-from typing import ClassVar
 
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel
 
 from boba.connection_broker.store import ConnectionStore
-from boba.connection_broker.tickets import TicketArming
+from boba.connection_broker.tickets import CredentialsRef
+from boba.connections.credentials import ProfileSections
 from boba.connections.http import HostPattern, HttpProfile
-from boba.connections.kerberos import DelegatedAuth, TicketAuth
+from boba.connections.kerberos import TicketAuth
 from boba.connections.marks import (
     ClientLabel,
     ConnectionRefusal,
@@ -46,15 +46,8 @@ from boba.connections.whitelist import (
     AmbiguousConnectionError,
     ConnectionWhitelist,
 )
-from boba.identity.context import CallContext, Credential, DelegatedTicket
+from boba.identity.context import CallContext
 from boba.identity.errors import RefusalError
-from boba.identity.sso import RefreshSignal
-from boba.krb import (
-    KerberosCredentials,
-    SignInTicket,
-    TicketSealError,
-)
-from boba.krb.seal import SsoTickets
 from boba.toolkit.sql import SqlProfiles
 from boba.toolrun.injected import (
     AsyncInjected,
@@ -65,20 +58,16 @@ from boba.toolrun.injected import (
 __all__ = [
     "ClientLabel",
     "ConnectionRefusal",
+    "CredentialsRef",
     "StoreRef",
-    "TicketsRef",
     "UserConnections",
     "UserConnectionsSpec",
-    "UserKerberos",
 ]
 
 logger = logging.getLogger(__name__)
 
 StoreRef = Callable[[], ConnectionStore]
 """Хранилище соединений; зовётся на вызов, а не при загрузке инструментов."""
-
-TicketsRef = Callable[[], SsoTickets | None]
-"""Открыватель билетов входа; None — SSO kerberos не настроен."""
 
 
 class WebArg(StrEnum):
@@ -87,153 +76,43 @@ class WebArg(StrEnum):
     URL = "url"
 
 
-class UserKerberos:
-    """Делегированные креды SSO-входа текущего вызова.
-
-    Билет лежит запечатанным в JWT входа: строка users общая для всех способов
-    входа, а JWT подписан приложением и описывает ровно этот вход. Процесс
-    ничего не хранит — любой процесс с тем же секретом откроет билет.
-    """
-
-    REFRESH_BELOW: ClassVar[int] = 300
-    """Остаток тикета входа (сек), ниже которого просим браузер обменяться заново."""
-
-    RETRY_HINT: ClassVar[str] = "retrying will not help until you sign in again"
-    """Хвост отказа: агенту незачем повторять вызов, дело в самом входе."""
-
-    def __init__(self, tickets_ref: TicketsRef, refresh: RefreshSignal) -> None:
-        self._tickets_ref = tickets_ref
-        self._refresh = refresh
-
-    @classmethod
-    def _ticket(cls) -> DelegatedTicket:
-        """Ссылка на билет субъекта текущего вызова; без неё — NO_DELEGATION."""
-        context = CallContext.current()
-
-        return cls.ticket_of(context.credential, context.subject.login)
-
-    async def ensure_fresh(self) -> None:
-        """Просит браузер обновить билет входа, когда тот на исходе.
-
-        Обмен идёт молча и кладёт в сессию новый JWT; ждать его вызов не
-        обязан — пока билет жив, работает текущий, а истёкший объяснит
-        credentials().
-        """
-        sso = self._ticket()
-        tickets = self._tickets_ref()
-        if tickets is None:
-            return
-
-        ticket = self._opened(tickets, sso)
-        if ticket.lifetime() >= self.REFRESH_BELOW:
-            return
-
-        logger.info(
-            "kerberos: sign-in ticket of %s has %ds left, asking the browser",
-            sso.principal,
-            ticket.lifetime(),
-        )
-        if not await self._refresh.send():
-            logger.info("kerberos: nobody is listening for the refresh signal")
-
-    def credentials(self) -> KerberosCredentials:
-        return self.open_credentials(self._ticket(), self._tickets_ref())
-
-    @classmethod
-    def open_credentials(
-        cls, sso: DelegatedTicket, tickets: SsoTickets | None
-    ) -> KerberosCredentials:
-        """Креды по билету входа; отказ — RefusalError NO_DELEGATION с причиной."""
-        if tickets is None:
-            msg = (
-                "this connection acts on your behalf, but Kerberos SSO is not "
-                "configured in this deployment: ask the administrator for a "
-                "connection with its own credentials"
-            )
-            raise RefusalError(ConnectionRefusal.NO_DELEGATION, msg)
-
-        ticket = cls._opened(tickets, sso)
-        if ticket.principal != sso.principal:
-            msg = (
-                f"the delegated ticket belongs to {ticket.principal} while "
-                f"this session is {sso.principal}: sign out and sign in again; "
-                f"{cls.RETRY_HINT}"
-            )
-            raise RefusalError(ConnectionRefusal.NO_DELEGATION, msg)
-
-        logger.info(
-            "kerberos: acting as %s [ticket %ds]", ticket.principal, ticket.lifetime()
-        )
-
-        return tickets.credentials_of(ticket)
-
-    @classmethod
-    def ticket_of(cls, credential: Credential, login: str) -> DelegatedTicket:
-        """Билет из секретов субъекта; без него — NO_DELEGATION с причиной."""
-        if isinstance(credential, DelegatedTicket):
-            return credential
-
-        logger.warning(
-            "kerberos: %s asked for a delegated ticket without one: %s",
-            login,
-            credential.reason,
-        )
-        msg = f"{credential.reason}; {cls.RETRY_HINT}"
-        raise RefusalError(ConnectionRefusal.NO_DELEGATION, msg)
-
-    @classmethod
-    def _opened(cls, tickets: SsoTickets, sso: DelegatedTicket) -> SignInTicket:
-        try:
-            return tickets.open(sso.sealed)
-        except TicketSealError as exc:
-            msg = (
-                f"the delegated Kerberos ticket in the session of {sso.principal} "
-                "does not open (the application secret changed?): sign in again; "
-                f"{cls.RETRY_HINT}"
-            )
-            raise RefusalError(ConnectionRefusal.NO_DELEGATION, msg) from exc
-
-
 class UserConnections(AsyncInjected):
     """Обвязка одного инструмента: профили субъекта в injected-конфиг на вызов."""
 
     def __init__(
         self,
         store_ref: StoreRef,
-        kerberos: UserKerberos,
+        credentials_ref: CredentialsRef,
         spec: UserConnectionsSpec,
         param: str,
         base: BaseModel,
     ) -> None:
         super().__init__(param, base)
         self._store_ref = store_ref
-        self._kerberos = kerberos
+        self._credentials_ref = credentials_ref
         self._spec = spec
         self._base = base
-        self._arming = TicketArming(kerberos.credentials)
 
     @classmethod
-    def bind_all(  # noqa: PLR0913 — обвязка собирается всеми зависимостями сразу
+    def bind_all(
         cls,
         tools: Sequence[BaseTool],
         store_ref: StoreRef,
-        tickets_ref: TicketsRef,
+        credentials_ref: CredentialsRef,
         spec: UserConnectionsSpec,
         resolve: ConfigResolver,
-        refresh: RefreshSignal,
     ) -> None:
         """Ставит обвязку на инструменты, чей injected-конфиг несёт profiles.
 
         Зовётся до InjectedConfig: injected-поля читаются со схемы, пока их
         с неё не сняли.
         """
-        kerberos = UserKerberos(tickets_ref, refresh)
 
         def make(param: str, base: object) -> AsyncInjected:
             if not isinstance(base, BaseModel):
                 raise ToolConfigError(f"{param}: injected value is not a model")
 
-            return cls(store_ref, kerberos, spec, param, base)
+            return cls(store_ref, credentials_ref, spec, param, base)
 
         cls.bind_each(tools, resolve, cls._accepts, make)
 
@@ -325,10 +204,7 @@ class UserConnections(AsyncInjected):
 
     async def _armed(self, profile: ConnectionProfile) -> ConnectionProfile:
         """Профиль с билетом вызова вместо kerberos-секции строки."""
-        section = TicketArming.section_of(profile)
-        if isinstance(section, DelegatedAuth):
-            await self._kerberos.ensure_fresh()
-
+        section = ProfileSections.section_of(profile)
         if isinstance(section, TicketAuth):
             msg = (
                 "stored connection carries a ticket kerberos section: "
@@ -336,4 +212,6 @@ class UserConnections(AsyncInjected):
             )
             raise ToolConfigError(msg)
 
-        return await self._arming.arm_profile(profile)
+        credential = CallContext.current().credential
+
+        return await self._credentials_ref().for_connection(profile, credential)

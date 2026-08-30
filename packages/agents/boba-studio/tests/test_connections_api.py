@@ -18,7 +18,7 @@ from studio_stand import NoUsers, StandProfiles, StubAuthenticator, StubRefs
 from boba.chat.profiles import ChatProfiles
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connections.http import HttpProfile
-from boba.connections.profile import GrantTarget
+from boba.connections.profile import GrantTarget, StoredRole
 from boba.db.postgres import AsyncPostgresPool
 from boba.runtime.config import StudioRuntimeConfig
 from boba.studio.api.app import ApiAccess, ApiApp
@@ -72,7 +72,7 @@ async def store(pool: AsyncPostgresPool) -> ConnectionStore:
 
 @pytest.fixture
 async def granted(store: ConnectionStore, studio_config: StudioRuntimeConfig) -> dict[str, UUID]:
-    roles = await store.roles()
+    roles = StoredRole.by_name(await store.roles())
     postgres = await store.add("main", studio_config.data_layer.postgres)
     await store.grant(postgres, GrantTarget.role(roles[ROLE]))
 
