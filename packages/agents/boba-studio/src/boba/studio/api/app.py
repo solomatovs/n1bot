@@ -65,7 +65,7 @@ class ApiApp:
 
         AccountApi(profiles, access.users, refs.message_bus).mount(router)
         ConnectionsApi(
-            refs.connection_store, profiles, refs.sso_tickets, refs.message_bus
+            refs.connection_store, profiles, refs.credentials, refs.message_bus
         ).mount(router)
         ToolCalling(
             refs.tool_registry,

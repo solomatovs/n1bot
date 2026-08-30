@@ -19,11 +19,9 @@ from boba.krb.errors import (
     InvalidTokenError,
     KerberosError,
     KeytabError,
-    TicketSealError,
 )
 from boba.krb.pac import PacGroupSids
 from boba.krb.spnego import SpnegoNegotiate
-from boba.krb.ticket import SignInTicket
 from boba.krb.tickets import ServiceTicketIssuer
 
 __all__ = [
@@ -44,11 +42,9 @@ __all__ = [
     "PacGroupSids",
     "PasswordCredentials",
     "ServiceTicketIssuer",
-    "SignInTicket",
     "SpnegoAcceptor",
     "SpnegoIdentity",
     "SpnegoNegotiate",
     "TicketCapture",
     "TicketCredentials",
-    "TicketSealError",
 ]

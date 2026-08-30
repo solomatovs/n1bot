@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from typing import ClassVar
 from uuid import UUID, uuid4
 
+from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chat.profiles import ChatProfiles
 from boba.chat.threads import ThreadOwnership
 from boba.connection_broker.store import ConnectionStore
@@ -19,7 +20,7 @@ from boba.krb.seal import SsoTickets
 from boba.messaging import MemoryMessageBus
 from boba.messaging.bus import ListenerState, StaticBusWatch
 from boba.runtime.config import StudioRuntimeConfig
-from boba.runtime.refs import RuntimeRefs, StoreRef, TicketsRef
+from boba.runtime.refs import RuntimeRefs, StoreRef
 from boba.toolrun.registry import ToolRegistry
 from boba.workflow_engine.service import WorkflowService
 
@@ -98,12 +99,16 @@ class NoRefs:
         return None
 
     @classmethod
+    def credentials(cls) -> KerberosCredentialSource:
+        return KerberosCredentialSource(cls.tickets(), NoRefresh())
+
+    @classmethod
     def refs(cls) -> RuntimeRefs:
         return RuntimeRefs(
             tool_registry=cls.registry,
             workflow_service=cls.workflows,
             connection_store=cls.store,
-            sso_tickets=cls.tickets,
+            credentials=cls.credentials,
             live_locks=lambda: MemoryLiveLocks("stand", 20),
             heartbeat_sec=1.0,
             bus_watch=lambda: StaticBusWatch(ListenerState.LISTENING),
@@ -125,14 +130,14 @@ class StubRefs:
             msg = "connection store is not part of this stand"
             raise RuntimeError(msg)
 
-        def no_tickets() -> None:
-            return None
+        def no_credentials() -> KerberosCredentialSource:
+            return KerberosCredentialSource(None, NoRefresh())
 
         return RuntimeRefs(
             tool_registry=tool_registry,
             workflow_service=workflow_service,
             connection_store=no_store,
-            sso_tickets=no_tickets,
+            credentials=no_credentials,
             live_locks=lambda: MemoryLiveLocks("stand", 20),
             heartbeat_sec=1.0,
             bus_watch=lambda: StaticBusWatch(ListenerState.LISTENING),
@@ -140,8 +145,11 @@ class StubRefs:
         )
 
     @staticmethod
-    def of(store: StoreRef, tickets: TicketsRef) -> RuntimeRefs:
+    def of(store: StoreRef, tickets: Callable[[], SsoTickets | None]) -> RuntimeRefs:
         """Соединения и билеты есть, реестра и workflow нет."""
+
+        def credentials() -> KerberosCredentialSource:
+            return KerberosCredentialSource(tickets(), NoRefresh())
 
         async def no_registry() -> ToolRegistry:
             msg = "tool registry is not part of this stand"
@@ -155,7 +163,7 @@ class StubRefs:
             tool_registry=no_registry,
             workflow_service=no_service,
             connection_store=store,
-            sso_tickets=tickets,
+            credentials=credentials,
             live_locks=lambda: MemoryLiveLocks("stand", 20),
             heartbeat_sec=1.0,
             bus_watch=lambda: StaticBusWatch(ListenerState.LISTENING),
@@ -203,7 +211,9 @@ class StandProfiles:
         return names[0]
 
     @staticmethod
-    def user(config: StudioRuntimeConfig, extra_roles: Iterable[str] = ()) -> AuthenticatedUser:
+    def user(
+        config: StudioRuntimeConfig, extra_roles: Iterable[str] = ()
+    ) -> AuthenticatedUser:
         """Пользователь стенда со всеми ролями конфига."""
         roles = [*sorted(config.roles), *extra_roles]
         return AuthenticatedUser(

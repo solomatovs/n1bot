@@ -67,13 +67,17 @@ class GroupLimits:
     @property
     def controllers(self) -> tuple[str, ...]:
         needed: list[str] = []
+
         if self.cpu_percent is not None or self.cpu_weight is not None:
             needed.append("cpu")
+
         memory_fields = (self.memory_bytes, self.swap_max_bytes, self.oom_kill_all)
         if any(value is not None for value in memory_fields):
             needed.append("memory")
+
         if self.pids_max is not None:
             needed.append("pids")
+
         return tuple(needed)
 
     @property

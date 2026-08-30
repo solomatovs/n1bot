@@ -22,7 +22,9 @@ from boba.workflow.graph import RunState, RunStatus, TaskStatus
 __all__ = [
     "DraftKey",
     "DraftKind",
+    "DraftsColumn",
     "RunOutcome",
+    "RunsColumn",
     "StopOutcome",
     "StoredRun",
     "StoredWorkflow",
@@ -33,7 +35,56 @@ __all__ = [
     "WorkflowRefusal",
     "WorkflowRunError",
     "WorkflowStoreError",
+    "WorkflowTable",
+    "WorkflowsColumn",
 ]
+
+
+class WorkflowTable(StrEnum):
+    """Таблицы workflow: определения, запуски и черновики."""
+
+    WORKFLOWS = "workflows"
+    RUNS = "workflow_runs"
+    DRAFTS = "workflow_drafts"
+
+
+class WorkflowsColumn(StrEnum):
+    """Колонки workflows."""
+
+    ID = "id"
+    USER_ID = "user_id"
+    NAME = "name"
+    SPEC = "spec"
+    TOOLS = "tools"
+    LAYOUT = "layout"
+    CREATED_AT = "created_at"
+    UPDATED_AT = "updated_at"
+
+
+class RunsColumn(StrEnum):
+    """Колонки workflow_runs."""
+
+    ID = "id"
+    WORKFLOW_ID = "workflow_id"
+    USER_ID = "user_id"
+    INITIATOR = "initiator"
+    PROFILE = "profile"
+    STATUS = "status"
+    STATE = "state"
+    INSTANCE = "instance"
+    STARTED_AT = "started_at"
+    FINISHED_AT = "finished_at"
+
+
+class DraftsColumn(StrEnum):
+    """Колонки workflow_drafts."""
+
+    USER_ID = "user_id"
+    KEY = "key"
+    REVISION = "revision"
+    SPEC = "spec"
+    LAYOUT = "layout"
+    UPDATED_AT = "updated_at"
 
 
 class WorkflowStoreError(Exception):

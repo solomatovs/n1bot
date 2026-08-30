@@ -14,6 +14,7 @@ from omegaconf import DictConfig
 
 from boba.access import GrantCheck
 from boba.auth import AuthService, JwtTokens
+from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.auth.signin import PasswordSignIns
 from boba.auth.sso import SpnegoGate, SsoSignIn
 from boba.chat.profiles import RolesSection
@@ -23,7 +24,6 @@ from boba.db.pgvector.schema import KbSchema
 from boba.identity.locks import RunLocking, StaleLock
 from boba.identity.sso import RefreshSignal
 from boba.identity.token import CookieSpec
-from boba.krb.seal import SsoTickets
 from boba.messaging.bus import BusWatch
 from boba.runtime.bus import PgMessageBus
 from boba.runtime.commands import CommandRunner
@@ -44,13 +44,6 @@ from boba.workflow_engine.service import WorkflowService
 from boba.workflow_engine.store import WorkflowConfig, WorkflowStore
 
 logger = logging.getLogger(__name__)
-
-
-class NoRefresh(RefreshSignal):
-    """Процесс без сокета сессии: просить браузер обновить билет некому."""
-
-    async def send(self) -> bool:
-        return False
 
 
 def get_raw_config() -> DictConfig:
@@ -101,14 +94,17 @@ async def message_bus(
         await bus.stop()
 
 
-def payload_store(
+async def payload_store(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
     bus: Annotated[PgMessageBus, Depends(message_bus)],
 ) -> PgPayloadStore:
-    """Хранилище тел сообщений в live_payloads; таблицу готовит шина, поэтому она
-    поднимается первой.
+    """Хранилище тел сообщений в live_payloads; схему готовит шина, поэтому она
+    поднимается первой, таблицу — само хранилище.
     """
-    return PgPayloadStore(config.data_layer.postgres, config.cluster.db_schema)
+    store = PgPayloadStore(config.data_layer.postgres, config.cluster.db_schema)
+    await store.setup()
+
+    return store
 
 
 def plugin_table() -> PluginTable:
@@ -136,9 +132,12 @@ def _root() -> Container:
     return root
 
 
-def sso_tickets_ref() -> SsoTickets | None:
-    """Открыватель билетов SSO-входа; None — kerberos в [auth] не настроен."""
-    return _root().resolved(get_runtime_config).sso_tickets()
+def credential_source_ref() -> KerberosCredentialSource:
+    """Источник кредов вызова; без kerberos в [auth] делегирование отказывает."""
+    tickets = _root().resolved(get_runtime_config).sso_tickets()
+    refresh = _root().resolved(refresh_signal)
+
+    return KerberosCredentialSource(tickets, refresh)
 
 
 def bus_watch_ref() -> BusWatch:
@@ -169,7 +168,7 @@ def runtime_refs() -> RuntimeRefs:
         tool_registry=tool_registry_ref,
         workflow_service=workflow_service_ref,
         connection_store=connection_store_ref,
-        sso_tickets=sso_tickets_ref,
+        credentials=credential_source_ref,
         live_locks=live_locks_ref,
         heartbeat_sec=_root().resolved(get_runtime_config).cluster.heartbeat_sec,
         bus_watch=bus_watch_ref,
@@ -180,11 +179,10 @@ def runtime_refs() -> RuntimeRefs:
 def tool_registry(
     raw: Annotated[DictConfig, Depends(get_raw_config)],
     table: Annotated[PluginTable, Depends(plugin_table)],
-    refresh: Annotated[RefreshSignal, Depends(refresh_signal)],
     check: Annotated[GrantCheck, Depends(grant_check)],
 ) -> ToolRegistry:
     refs = runtime_refs()
-    loader = ToolLoader(raw, table(refs), refs, refresh, check)
+    loader = ToolLoader(raw, table(refs), refs, check)
 
     return loader.load()
 
@@ -236,8 +234,9 @@ async def live_locks(
     app: Annotated[AppName, Depends(app_name)],
     bus: Annotated[PgMessageBus, Depends(message_bus)],
 ) -> PgLiveLocks:
-    """Блокировки областей процесса; таблицы готовит шина, поэтому она поднимается
-    первой, а инстанс регистрируется здесь и дальше подтверждается сторожем.
+    """Блокировки областей процесса; live_instances готовит шина, поэтому она
+    поднимается первой, live_locks создаёт хранилище само, инстанс регистрируется
+    здесь и дальше подтверждается сторожем.
     """
     locks = PgLiveLocks(
         config.data_layer.postgres,
@@ -246,6 +245,7 @@ async def live_locks(
         app,
         config.cluster,
     )
+    await locks.setup()
     await locks.register_instance()
     return locks
 

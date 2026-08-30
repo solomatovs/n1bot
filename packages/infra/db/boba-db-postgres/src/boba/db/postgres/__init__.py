@@ -10,6 +10,7 @@ from boba.db.postgres.async_pool import (
     PostgresPoolClosedError,
     PostgresPoolLoopError,
 )
+from boba.db.postgres.names import PostgresSchema, SqlNames
 from boba.db.postgres.payload import PayloadPostgres
 
 __all__ = [
@@ -20,4 +21,6 @@ __all__ = [
     "PostgresError",
     "PostgresPoolClosedError",
     "PostgresPoolLoopError",
+    "PostgresSchema",
+    "SqlNames",
 ]

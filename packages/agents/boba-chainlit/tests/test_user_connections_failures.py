@@ -24,12 +24,14 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 from pydantic import SecretStr, create_model
 
+from boba.auth.credentials import KerberosCredentialSource
 from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.infra.kerberos_refresh import ChatRefreshSignal
 from boba.chainlit.infra.plugins import ChatPlugins
+from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
-from boba.connection_broker.user_connections import UserConnections, UserKerberos
+from boba.connection_broker.user_connections import UserConnections
 from boba.connections.http import HttpProfile
 from boba.connections.kerberos import DelegatedAuth, DelegationMode, KeytabAuth
 from boba.connections.marks import ConnectionRefusal, UserConnectionsSpec
@@ -42,7 +44,6 @@ from boba.krb import KeytabCredentials
 from boba.krb.seal import SsoTickets, TicketSealer
 from boba.messaging import MemoryMessageBus
 from boba.sandbox.zygote import ZygoteRegistry
-from boba.config import bind
 from boba.stand.site import Stand
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebGrepConfig
@@ -307,10 +308,11 @@ class Guarded:
         UserConnections.bind_all(
             [tool],
             lambda: store,
-            lambda: tickets,
+            lambda: KerberosCredentialSource(
+                tickets, ChatRefreshSignal(lambda: MemoryMessageBus("test"))
+            ),
             spec,
             resolve,
-            ChatRefreshSignal(lambda: MemoryMessageBus("test")),
         )
         InjectedConfig.bind_all([tool], resolve)
         ToolErrorGuard.guard_all([tool])
@@ -550,7 +552,8 @@ class TestRefusalText:
             connection_name="main",
         )
 
-        for phrase in ("LocalAuth", "Kerberos SSO button", UserKerberos.RETRY_HINT):
+        expected = ("LocalAuth", "Kerberos SSO button", KerberosCredentialSource.RETRY_HINT)
+        for phrase in expected:
             if phrase not in result.message:
                 raise AssertionError(f"{phrase!r} not in {result.message!r}")
 

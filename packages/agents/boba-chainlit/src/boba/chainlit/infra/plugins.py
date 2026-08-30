@@ -13,8 +13,6 @@ from boba.chainlit.agent.tools.send_file import build_send_file_tool
 from boba.chainlit.canvas.diagram import build_diagram_tools
 from boba.chainlit.canvas.stream_logs import build_stream_logs_tools
 from boba.chainlit.canvas.tools import CanvasToolConfig, build_canvas_tools
-from boba.chainlit.infra.kerberos_refresh import ChatRefreshSignal
-from boba.runtime import providers as runtime
 from boba.runtime.plugins import CoreTools, ToolLoader, ToolPlugin
 from boba.runtime.refs import RuntimeRefs
 from boba.toolkit.launcher import LauncherFactory
@@ -32,7 +30,6 @@ class ChatPlugins:
             raw_config,
             cls.table(refs),
             refs,
-            ChatRefreshSignal(runtime.message_bus_ref),
             GrantCheck.STRICT,
         )
 

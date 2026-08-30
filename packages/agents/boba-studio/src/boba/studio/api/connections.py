@@ -34,7 +34,7 @@ from pydantic import (
 from boba.chat.profiles import ChatProfiles
 from boba.connection_broker.probe import ConnectionProbe
 from boba.connection_broker.store import ConnectionStore, ConnectionStoreError
-from boba.connection_broker.user_connections import StoreRef, TicketsRef, UserKerberos
+from boba.connection_broker.user_connections import CredentialsRef, StoreRef
 from boba.connections.profile import (
     ConnectionKind,
     ConnectionProfile,
@@ -44,7 +44,6 @@ from boba.connections.profile import (
 from boba.identity.api import ApiSubject
 from boba.identity.context import Scope, Subject
 from boba.identity.locks import LockToken
-from boba.krb import KerberosCredentials
 from boba.messaging import ChangeAction, ConnectionsChanged, MessageBus
 from boba.studio.api.auth import CurrentSubject, CurrentUser
 from boba.studio.api.urls import ConnectionUrl
@@ -159,12 +158,12 @@ class ConnectionsApi:
         self,
         store: StoreRef,
         profiles: ChatProfiles,
-        tickets: TicketsRef,
+        credentials: CredentialsRef,
         bus: BusSource,
     ) -> None:
         self._store = store
         self._profiles = profiles
-        self._tickets = tickets
+        self._credentials = credentials
         self._bus = bus
 
     async def _changed(
@@ -280,12 +279,10 @@ class ConnectionsApi:
 
         return ConnectionDeleted(deleted=deleted)
 
-    async def check(
-        self, body: ProbeBody, identity: CurrentSubject
-    ) -> ProbeResult:
+    async def check(self, body: ProbeBody, identity: CurrentSubject) -> ProbeResult:
         """Пробное соединение по профилю из формы; делегирование — билетом входа."""
 
-        return await self._probe(identity).probe(body.profile)
+        return await self._probed(identity, body.profile)
 
     async def check_stored(
         self, connection_id: UUID, identity: CurrentSubject
@@ -296,18 +293,18 @@ class ConnectionsApi:
         visible = await self._visible(store, identity.subject, list(ConnectionKind))
         for row in visible:
             if row.id == connection_id:
-                return await self._probe(identity).probe(row.profile)
+                return await self._probed(identity, row.profile)
 
         raise HTTPException(
             status_code=404, detail=f"connection #{connection_id} not found"
         )
 
-    def _probe(self, identity: ApiSubject) -> ConnectionProbe:
-        def delegation() -> KerberosCredentials:
-            ticket = UserKerberos.ticket_of(identity.credential, identity.subject.login)
-            return UserKerberos.open_credentials(ticket, self._tickets())
+    async def _probed(
+        self, identity: ApiSubject, profile: ConnectionProfile
+    ) -> ProbeResult:
+        probe = ConnectionProbe(self._credentials())
 
-        return ConnectionProbe(delegation)
+        return await probe.probe(profile, identity.credential)
 
     def _resolved(self) -> ConnectionStore:
         try:

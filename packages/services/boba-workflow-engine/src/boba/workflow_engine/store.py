@@ -15,26 +15,29 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import asynccontextmanager
-from typing import Any, ClassVar
+from typing import Any, LiteralString
 from uuid import UUID
 
 import psycopg
 from psycopg import sql
-from psycopg.errors import InsufficientPrivilege
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.connections.postgres import PostgresConfig
-from boba.db.postgres import AsyncPostgresPool, PostgresError
+from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresSchema, SqlNames
 from boba.workflow import RunState, RunStatus, WorkflowSpec
 from boba.workflow.ports import WorkflowRepository
 from boba.workflow.records import (
     DraftKey,
+    DraftsColumn,
+    RunsColumn,
     StoredRun,
     StoredWorkflow,
     WorkflowDraft,
     WorkflowNotFoundError,
+    WorkflowsColumn,
     WorkflowStoreError,
+    WorkflowTable,
 )
 
 __all__ = [
@@ -62,14 +65,6 @@ class WorkflowConfig(BaseModel):
         min_length=1,
         description="Схема postgres, в которой живут таблицы.",
     )
-    table: str = Field(
-        default="workflows",
-        description="Имя таблицы определений.",
-    )
-    runs_table: str = Field(
-        default="workflow_runs",
-        description="Имя таблицы запусков.",
-    )
 
     def require_conn(self) -> PostgresConfig:
         if self.connection is None:
@@ -81,8 +76,6 @@ class WorkflowConfig(BaseModel):
 
 class WorkflowStore(WorkflowRepository):
     """CRUD над workflows/workflow_runs; всё чтение и запись — под владельцем."""
-
-    DRAFTS_TABLE: ClassVar[str] = "workflow_drafts"
 
     def __init__(
         self,
@@ -100,13 +93,32 @@ class WorkflowStore(WorkflowRepository):
         return self._pool_ref
 
     def _workflows(self) -> sql.Identifier:
-        return sql.Identifier(self._cfg.db_schema, self._cfg.table)
+        return SqlNames.table(self._cfg.db_schema, WorkflowTable.WORKFLOWS)
 
     def _runs(self) -> sql.Identifier:
-        return sql.Identifier(self._cfg.db_schema, self._cfg.runs_table)
+        return SqlNames.table(self._cfg.db_schema, WorkflowTable.RUNS)
 
     def _drafts(self) -> sql.Identifier:
-        return sql.Identifier(self._cfg.db_schema, self.DRAFTS_TABLE)
+        return SqlNames.table(self._cfg.db_schema, WorkflowTable.DRAFTS)
+
+    def _names(self) -> dict[str, sql.Composable]:
+        """Имена из enum'ов: w_* — workflows, r_* — runs, d_* — drafts."""
+        names: dict[str, sql.Composable] = {
+            "workflows": self._workflows(),
+            "runs": self._runs(),
+            "drafts": self._drafts(),
+        }
+        for column in WorkflowsColumn:
+            names[f"w_{column.value}"] = SqlNames.ident(column)
+        for column in RunsColumn:
+            names[f"r_{column.value}"] = SqlNames.ident(column)
+        for column in DraftsColumn:
+            names[f"d_{column.value}"] = SqlNames.ident(column)
+
+        return names
+
+    def _sql(self, text: LiteralString) -> sql.Composed:
+        return sql.SQL(text).format(**self._names())
 
     @asynccontextmanager
     async def _guarded(self, action: str) -> AsyncGenerator[None, None]:
@@ -121,121 +133,102 @@ class WorkflowStore(WorkflowRepository):
         pool = await self._pool()
 
         async with self._guarded("setup"), pool.connection() as conn:
-            try:
-                await conn.execute(
-                    sql.SQL("create schema if not exists {schema}").format(
-                        schema=sql.Identifier(self._cfg.db_schema),
-                    ),
-                    prepare=False,
-                )
-            except InsufficientPrivilege:
-                logger.info(
-                    "no permission for create schema %r, "
-                    "assuming an administrator created it",
-                    self._cfg.db_schema,
-                )
+            await PostgresSchema.ensure(conn, self._cfg.db_schema)
 
             for query in self._ddl():
                 await conn.execute(query, prepare=False)
 
-        logger.info(
-            "workflow store ready: %s.%s, %s.%s",
-            self._cfg.db_schema,
-            self._cfg.table,
-            self._cfg.db_schema,
-            self._cfg.runs_table,
-        )
+        logger.info("workflow store ready: %s", self._cfg.db_schema)
 
     def _ddl(self) -> tuple[sql.Composed, ...]:
         return (
-            sql.SQL(
+            self._sql(
                 """
                 create table if not exists {workflows} (
-                    id         uuid primary key default gen_random_uuid(),
-                    user_id    uuid not null,
-                    name       text not null,
-                    spec       text not null,
-                    tools      text[] not null default '{{}}',
-                    layout     jsonb not null default '{{}}'::jsonb,
-                    created_at timestamptz not null default now(),
-                    updated_at timestamptz not null default now(),
-                    unique (user_id, name)
+                    {w_id}         uuid primary key default gen_random_uuid(),
+                    {w_user_id}    uuid not null,
+                    {w_name}       text not null,
+                    {w_spec}       text not null,
+                    {w_tools}      text[] not null default '{{}}',
+                    {w_layout}     jsonb not null default '{{}}'::jsonb,
+                    {w_created_at} timestamptz not null default now(),
+                    {w_updated_at} timestamptz not null default now(),
+                    unique ({w_user_id}, {w_name})
                 )
                 """
-            ).format(workflows=self._workflows()),
-            sql.SQL(
+            ),
+            self._sql(
                 """
                 create table if not exists {runs} (
-                    id          uuid primary key,
-                    workflow_id uuid references {workflows} (id) on delete set null,
-                    user_id     uuid not null,
-                    initiator   jsonb not null,
-                    profile     text not null,
-                    status      text not null,
-                    state       jsonb not null,
-                    instance    text not null,
-                    started_at  timestamptz not null default now(),
-                    finished_at timestamptz
+                    {r_id}          uuid primary key,
+                    {r_workflow_id} uuid references {workflows} ({w_id})
+                                    on delete set null,
+                    {r_user_id}     uuid not null,
+                    {r_initiator}   jsonb not null,
+                    {r_profile}     text not null,
+                    {r_status}      text not null,
+                    {r_state}       jsonb not null,
+                    {r_instance}    text not null,
+                    {r_started_at}  timestamptz not null default now(),
+                    {r_finished_at} timestamptz
                 )
                 """
-            ).format(runs=self._runs(), workflows=self._workflows()),
-            sql.SQL(
+            ),
+            self._sql(
                 """
                 create table if not exists {drafts} (
-                    user_id    uuid not null,
-                    key        text not null,
-                    revision   integer not null default 1,
-                    spec       text not null,
-                    layout     jsonb not null default '{{}}'::jsonb,
-                    updated_at timestamptz not null default now(),
-                    primary key (user_id, key)
+                    {d_user_id}    uuid not null,
+                    {d_key}        text not null,
+                    {d_revision}   integer not null default 1,
+                    {d_spec}       text not null,
+                    {d_layout}     jsonb not null default '{{}}'::jsonb,
+                    {d_updated_at} timestamptz not null default now(),
+                    primary key ({d_user_id}, {d_key})
                 )
                 """
-            ).format(drafts=self._drafts()),
-            sql.SQL(
+            ),
+            self._sql(
                 """
                 create index if not exists idx_workflow_runs_user
-                    on {runs} (user_id, started_at desc)
+                    on {runs} ({r_user_id}, {r_started_at} desc)
                 """
-            ).format(runs=self._runs()),
-            sql.SQL(
+            ),
+            self._sql(
                 """
                 create index if not exists idx_workflow_runs_status
-                    on {runs} (status)
+                    on {runs} ({r_status})
                 """
-            ).format(runs=self._runs()),
-            sql.SQL("alter table {runs} drop column if exists spec").format(
-                runs=self._runs()
             ),
-            sql.SQL(
+            self._sql("alter table {runs} drop column if exists spec"),
+            self._sql(
                 """
                 update {runs}
-                set state = jsonb_build_object(
+                set {r_state} = jsonb_build_object(
                     'graph', jsonb_build_object(
-                        'spec', state -> 'spec',
-                        'stages', state -> 'stages',
+                        'spec', {r_state} -> 'spec',
+                        'stages', {r_state} -> 'stages',
                         'bindings', '{{}}'::jsonb
                     ),
-                    'status', state -> 'status',
-                    'tasks', state -> 'tasks'
+                    'status', {r_state} -> 'status',
+                    'tasks', {r_state} -> 'tasks'
                 )
-                where state ? 'spec'
+                where {r_state} ? 'spec'
                 """
-            ).format(runs=self._runs()),
+            ),
         )
 
     async def save(
         self, user_id: UUID, spec: WorkflowSpec, layout: Mapping[str, Any]
     ) -> StoredWorkflow:
         """Создаёт или переписывает определение владельца с этим именем."""
-        query = sql.SQL(
+        query = self._sql(
             """
             insert into {workflows} (
-                user_id,
-                name,
-                spec,
-                tools,
-                layout
+                {w_user_id},
+                {w_name},
+                {w_spec},
+                {w_tools},
+                {w_layout}
             )
             values (
                 %(user_id)s,
@@ -244,15 +237,16 @@ class WorkflowStore(WorkflowRepository):
                 %(tools)s,
                 %(layout)s
             )
-            on conflict (user_id, name) do update set
-                spec       = excluded.spec,
-                tools      = excluded.tools,
-                layout     = excluded.layout,
-                updated_at = now()
+            on conflict ({w_user_id}, {w_name}) do update set
+                {w_spec}       = excluded.{w_spec},
+                {w_tools}      = excluded.{w_tools},
+                {w_layout}     = excluded.{w_layout},
+                {w_updated_at} = now()
             returning
-                id, user_id, name, spec, tools, layout, created_at, updated_at
+                {w_id}, {w_user_id}, {w_name}, {w_spec},
+                {w_tools}, {w_layout}, {w_created_at}, {w_updated_at}
             """
-        ).format(workflows=self._workflows())
+        )
         params = {
             "user_id": user_id,
             "name": spec.name,
@@ -273,24 +267,26 @@ class WorkflowStore(WorkflowRepository):
         return StoredWorkflow.model_validate(dict(row))
 
     async def get(self, user_id: UUID, workflow_id: UUID) -> StoredWorkflow:
-        return await self._one_workflow(user_id, sql.SQL("w.id = %(key)s"), workflow_id)
+        where = self._sql("w.{w_id} = %(key)s")
+
+        return await self._one_workflow(user_id, where, workflow_id)
 
     async def put_draft(
         self, user_id: UUID, key: DraftKey, spec: str, layout: Mapping[str, Any]
     ) -> WorkflowDraft:
-        query = sql.SQL(
+        query = self._sql(
             """
-            insert into {drafts} (user_id, key, spec, layout)
+            insert into {drafts} ({d_user_id}, {d_key}, {d_spec}, {d_layout})
             values (%(user_id)s, %(key)s, %(spec)s, %(layout)s)
-            on conflict (user_id, key) do update set
-                revision   = {drafts}.revision + 1,
-                spec       = excluded.spec,
-                layout     = excluded.layout,
-                updated_at = now()
+            on conflict ({d_user_id}, {d_key}) do update set
+                {d_revision}   = {drafts}.{d_revision} + 1,
+                {d_spec}       = excluded.{d_spec},
+                {d_layout}     = excluded.{d_layout},
+                {d_updated_at} = now()
             returning
-                key, user_id, revision, spec, layout, updated_at
+                {d_key}, {d_user_id}, {d_revision}, {d_spec}, {d_layout}, {d_updated_at}
             """
-        ).format(drafts=self._drafts())
+        )
         params = {
             "user_id": user_id,
             "key": key.render(),
@@ -310,17 +306,17 @@ class WorkflowStore(WorkflowRepository):
         return WorkflowDraft.model_validate(dict(row))
 
     async def get_draft(self, user_id: UUID, key: DraftKey) -> WorkflowDraft:
-        query = sql.SQL(
+        query = self._sql(
             """
             select
-                key, user_id, revision, spec, layout, updated_at
+                {d_key}, {d_user_id}, {d_revision}, {d_spec}, {d_layout}, {d_updated_at}
             from
                 {drafts}
             where 1=1
-                and user_id = %(user_id)s
-                and key = %(key)s
+                and {d_user_id} = %(user_id)s
+                and {d_key} = %(key)s
             """
-        ).format(drafts=self._drafts())
+        )
 
         pool = await self._pool()
         async with self._guarded("get_draft"), pool.dict_cursor() as cur:
@@ -334,14 +330,14 @@ class WorkflowStore(WorkflowRepository):
         return WorkflowDraft.model_validate(dict(row))
 
     async def drop_draft(self, user_id: UUID, key: DraftKey) -> bool:
-        query = sql.SQL(
+        query = self._sql(
             """
             delete from {drafts}
             where 1=1
-                and user_id = %(user_id)s
-                and key = %(key)s
+                and {d_user_id} = %(user_id)s
+                and {d_key} = %(key)s
             """
-        ).format(drafts=self._drafts())
+        )
 
         pool = await self._pool()
         async with self._guarded("drop_draft"), pool.dict_cursor() as cur:
@@ -349,21 +345,24 @@ class WorkflowStore(WorkflowRepository):
             return cur.rowcount > 0
 
     async def get_by_name(self, user_id: UUID, name: str) -> StoredWorkflow:
-        return await self._one_workflow(user_id, sql.SQL("w.name = %(key)s"), name)
+        where = self._sql("w.{w_name} = %(key)s")
+
+        return await self._one_workflow(user_id, where, name)
 
     async def list_for(self, user_id: UUID) -> Sequence[StoredWorkflow]:
-        query = sql.SQL(
+        query = self._sql(
             """
             select
-                id, user_id, name, spec, tools, layout, created_at, updated_at
+                {w_id}, {w_user_id}, {w_name}, {w_spec},
+                {w_tools}, {w_layout}, {w_created_at}, {w_updated_at}
             from
                 {workflows} w
             where
-                user_id = %(user_id)s
+                {w_user_id} = %(user_id)s
             order by
-                name
+                {w_name}
             """
-        ).format(workflows=self._workflows())
+        )
 
         pool = await self._pool()
         async with self._guarded("list"), pool.dict_cursor() as cur:
@@ -378,14 +377,14 @@ class WorkflowStore(WorkflowRepository):
 
     async def delete(self, user_id: UUID, workflow_id: UUID) -> bool:
         """Удаляет определение владельца; False — такого не было."""
-        query = sql.SQL(
+        query = self._sql(
             """
             delete from {workflows}
             where
-                id = %(id)s
-                and user_id = %(user_id)s
+                {w_id} = %(id)s
+                and {w_user_id} = %(user_id)s
             """
-        ).format(workflows=self._workflows())
+        )
 
         pool = await self._pool()
         async with self._guarded("delete"), pool.cursor() as cur:
@@ -403,20 +402,20 @@ class WorkflowStore(WorkflowRepository):
         instance: str,
     ) -> StoredRun:
         """Запись о запуске в момент старта; граф — в снимке состояния."""
-        query = sql.SQL(
+        query = self._sql(
             """
             insert into {runs} (
-                id, workflow_id, user_id, initiator, profile, status, state, instance
+                {r_id}, {r_workflow_id}, {r_user_id}, {r_initiator}, {r_profile}, {r_status}, {r_state}, {r_instance}
             )
             values (
                 %(id)s, %(workflow_id)s, %(user_id)s, %(initiator)s, %(profile)s,
                 %(status)s, %(state)s, %(instance)s
             )
             returning
-                id, workflow_id, user_id, initiator, profile, state, instance,
-                started_at, finished_at
+                {r_id}, {r_workflow_id}, {r_user_id}, {r_initiator}, {r_profile}, {r_state}, {r_instance},
+                {r_started_at}, {r_finished_at}
             """
-        ).format(runs=self._runs())
+        )
         params = {
             "id": run_id,
             "workflow_id": workflow_id,
@@ -441,19 +440,19 @@ class WorkflowStore(WorkflowRepository):
 
     async def update_run(self, run_id: UUID, state: RunState) -> None:
         """Свежий снимок состояния; завершённый запуск получает finished_at."""
-        query = sql.SQL(
+        query = self._sql(
             """
             update {runs} set
-                status      = %(status)s,
-                state       = %(state)s,
-                finished_at = case
-                    when %(terminal)s then coalesce(finished_at, now())
-                    else finished_at
+                {r_status}      = %(status)s,
+                {r_state}       = %(state)s,
+                {r_finished_at} = case
+                    when %(terminal)s then coalesce({r_finished_at}, now())
+                    else {r_finished_at}
                 end
             where
-                id = %(id)s
+                {r_id} = %(id)s
             """
-        ).format(runs=self._runs())
+        )
         params = {
             "id": run_id,
             "status": state.status.value,
@@ -469,18 +468,18 @@ class WorkflowStore(WorkflowRepository):
                 raise WorkflowNotFoundError(msg)
 
     async def get_run(self, user_id: UUID, run_id: UUID) -> StoredRun:
-        query = sql.SQL(
+        query = self._sql(
             """
             select
-                id, workflow_id, user_id, initiator, profile, state, instance,
-                started_at, finished_at
+                {r_id}, {r_workflow_id}, {r_user_id}, {r_initiator}, {r_profile}, {r_state}, {r_instance},
+                {r_started_at}, {r_finished_at}
             from
                 {runs}
             where 1=1
-                and id = %(id)s
-                and user_id = %(user_id)s
+                and {r_id} = %(id)s
+                and {r_user_id} = %(user_id)s
             """
-        ).format(runs=self._runs())
+        )
 
         pool = await self._pool()
         async with self._guarded("get run"), pool.dict_cursor() as cur:
@@ -495,17 +494,17 @@ class WorkflowStore(WorkflowRepository):
 
     async def run_by_id(self, run_id: UUID) -> StoredRun:
         """Запуск по id без владельца: для получателей шины после проверки подписки."""
-        query = sql.SQL(
+        query = self._sql(
             """
             select
-                id, workflow_id, user_id, initiator, profile, state, instance,
-                started_at, finished_at
+                {r_id}, {r_workflow_id}, {r_user_id}, {r_initiator}, {r_profile}, {r_state}, {r_instance},
+                {r_started_at}, {r_finished_at}
             from
                 {runs}
             where
-                id = %(id)s
+                {r_id} = %(id)s
             """
-        ).format(runs=self._runs())
+        )
 
         pool = await self._pool()
         async with self._guarded("get run"), pool.dict_cursor() as cur:
@@ -519,20 +518,20 @@ class WorkflowStore(WorkflowRepository):
         return StoredRun.model_validate(dict(row))
 
     async def list_runs(self, user_id: UUID, limit: int) -> Sequence[StoredRun]:
-        query = sql.SQL(
+        query = self._sql(
             """
             select
-                id, workflow_id, user_id, initiator, profile, state, instance,
-                started_at, finished_at
+                {r_id}, {r_workflow_id}, {r_user_id}, {r_initiator}, {r_profile}, {r_state}, {r_instance},
+                {r_started_at}, {r_finished_at}
             from
                 {runs}
             where
-                user_id = %(user_id)s
+                {r_user_id} = %(user_id)s
             order by
-                started_at desc
+                {r_started_at} desc
             limit %(limit)s
             """
-        ).format(runs=self._runs())
+        )
 
         pool = await self._pool()
         async with self._guarded("list runs"), pool.dict_cursor() as cur:
@@ -547,19 +546,19 @@ class WorkflowStore(WorkflowRepository):
 
     async def running(self) -> Sequence[StoredRun]:
         """Незавершённые запуски всех инстансов: их сверяет с блокировками сторож."""
-        query = sql.SQL(
+        query = self._sql(
             """
             select
-                id, workflow_id, user_id, initiator, profile, state, instance,
-                started_at, finished_at
+                {r_id}, {r_workflow_id}, {r_user_id}, {r_initiator}, {r_profile}, {r_state}, {r_instance},
+                {r_started_at}, {r_finished_at}
             from
                 {runs}
             where
-                status = any(%(statuses)s)
+                {r_status} = any(%(statuses)s)
             order by
-                started_at
+                {r_started_at}
             """
-        ).format(runs=self._runs())
+        )
         params = {"statuses": [RunStatus.PENDING.value, RunStatus.RUNNING.value]}
 
         pool = await self._pool()
@@ -575,20 +574,20 @@ class WorkflowStore(WorkflowRepository):
 
     async def orphans_of(self, instance: str) -> Sequence[StoredRun]:
         """Незавершённые запуски этого инстанса: после перезапуска их никто не ведёт."""
-        query = sql.SQL(
+        query = self._sql(
             """
             select
-                id, workflow_id, user_id, initiator, profile, state, instance,
-                started_at, finished_at
+                {r_id}, {r_workflow_id}, {r_user_id}, {r_initiator}, {r_profile}, {r_state}, {r_instance},
+                {r_started_at}, {r_finished_at}
             from
                 {runs}
             where 1=1
-                and instance = %(instance)s
-                and status = any(%(statuses)s)
+                and {r_instance} = %(instance)s
+                and {r_status} = any(%(statuses)s)
             order by
-                started_at
+                {r_started_at}
             """
-        ).format(runs=self._runs())
+        )
         params = {
             "instance": instance,
             "statuses": [RunStatus.PENDING.value, RunStatus.RUNNING.value],
@@ -611,14 +610,15 @@ class WorkflowStore(WorkflowRepository):
         query = sql.SQL(
             """
             select
-                id, user_id, name, spec, tools, layout, created_at, updated_at
+                {w_id}, {w_user_id}, {w_name}, {w_spec},
+                {w_tools}, {w_layout}, {w_created_at}, {w_updated_at}
             from
                 {workflows} w
             where 1=1
-                and user_id = %(user_id)s
+                and {w_user_id} = %(user_id)s
                 and {where}
             """
-        ).format(workflows=self._workflows(), where=where)
+        ).format(where=where, **self._names())
 
         pool = await self._pool()
         async with self._guarded("get"), pool.dict_cursor() as cur:

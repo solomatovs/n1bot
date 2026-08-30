@@ -15,6 +15,7 @@ import functools
 from abc import abstractmethod
 from collections.abc import Callable, Coroutine, Mapping, Sequence
 from datetime import datetime
+from enum import StrEnum
 from typing import Any, ParamSpec, Protocol, TypeVar
 from uuid import UUID
 
@@ -27,7 +28,11 @@ from boba.identity.errors import (
 )
 
 __all__ = [
+    "ChatTable",
     "ChatThreads",
+    "ElementsColumn",
+    "FeedbacksColumn",
+    "ThreadsColumn",
     "DataBrokenError",
     "DataLayerError",
     "DataRejectedError",
@@ -88,6 +93,53 @@ class DataBrokenError(DataLayerError):
 
     STATUS: int = 500
     USER_TEXT: str = "Internal storage error"
+
+
+class ChatTable(StrEnum):
+    """Таблицы схемы чата; users описана в boba.identity.api, остальные — здесь."""
+
+    USERS = "users"
+    THREADS = "threads"
+    ELEMENTS = "elements"
+    FEEDBACKS = "feedbacks"
+
+
+class ThreadsColumn(StrEnum):
+    """Колонки threads."""
+
+    ID = "id"
+    CREATED_AT = "created_at"
+    NAME = "name"
+    USER_ID = "user_id"
+    TAGS = "tags"
+    META = "meta"
+
+
+class ElementsColumn(StrEnum):
+    """Колонки elements."""
+
+    ID = "id"
+    NAME = "name"
+    TYPE = "type"
+    DISPLAY = "display"
+    THREAD_ID = "thread_id"
+    FOR_ID = "for_id"
+    CHAINLIT_KEY = "chainlit_key"
+    SIZE = "size"
+    LANGUAGE = "language"
+    PAGE = "page"
+    PROPS = "props"
+    MIME = "mime"
+
+
+class FeedbacksColumn(StrEnum):
+    """Колонки feedbacks."""
+
+    ID = "id"
+    FOR_ID = "for_id"
+    VALUE = "value"
+    THREAD_ID = "thread_id"
+    COMMENT = "comment"
 
 
 class StoredThread(BaseModel):

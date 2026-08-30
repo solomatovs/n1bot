@@ -22,6 +22,7 @@ from psycopg import sql
 from pydantic import SecretStr
 from test_tools_integration import Call, ToolSetup
 
+from boba.auth.credentials import KerberosCredentialSource
 from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.infra.kerberos_refresh import ChatRefreshSignal
@@ -32,7 +33,7 @@ from boba.connections.http import HttpProfile, NegotiateAuth
 from boba.connections.kerberos import DelegatedAuth, DelegationMode, KeytabAuth
 from boba.connections.marks import ConnectionRefusal, UserConnectionsSpec
 from boba.connections.postgres import PasswordAuth, PostgresConfig
-from boba.connections.profile import ConnectionKind, GrantTarget
+from boba.connections.profile import ConnectionKind, GrantTarget, StoredRole
 from boba.connections.whitelist import ConnectionKeying
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import CallContext, ContextKind
@@ -159,10 +160,11 @@ def pg_tools(
     UserConnections.bind_all(
         functions,
         lambda: store,
-        lambda: sso[0],
+        lambda: KerberosCredentialSource(
+            sso[0], ChatRefreshSignal(lambda: MemoryMessageBus("test"))
+        ),
         spec,
         resolve,
-        ChatRefreshSignal(lambda: MemoryMessageBus("test")),
     )
     InjectedConfig.bind_all(functions, resolve)
 
@@ -245,7 +247,7 @@ async def test_role_grant_reaches_every_role_holder(
     service_pg: PostgresConfig,
 ) -> None:
     user = await Session.user(layer, "conn-role-holder")
-    roles = await store.roles()
+    roles = StoredRole.by_name(await store.roles())
     connection_id = await store.add("shared", service_pg)
     await store.grant(connection_id, GrantTarget.role(roles[ROLE]))
     Session.enter(user)
@@ -423,10 +425,11 @@ def web_tools(
     UserConnections.bind_all(
         functions,
         lambda: store,
-        lambda: sso[0],
+        lambda: KerberosCredentialSource(
+            sso[0], ChatRefreshSignal(lambda: MemoryMessageBus("test"))
+        ),
         spec,
         resolve,
-        ChatRefreshSignal(lambda: MemoryMessageBus("test")),
     )
     InjectedConfig.bind_all(functions, resolve)
 

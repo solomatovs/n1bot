@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 import pytest
 from psycopg import sql
 
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, SqlNames
 from boba.identity.context import Scope
 from boba.identity.locks import (
     LockBusyError,
@@ -20,10 +20,10 @@ from boba.identity.locks import (
     StaleLock,
 )
 from boba.messaging import RunStateChanged
+from boba.messaging.bus import LiveTable
 from boba.runtime.bus import PgMessageBus
 from boba.runtime.config import AppName, ClusterConfig, RuntimeConfig
 from boba.runtime.locks import LockReaper, PgLiveLocks
-from boba.runtime.tables import ChatTable
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -178,7 +178,7 @@ async def test_instance_registration_survives_a_postgres_restart(
     регистрирует инстанс заново, и захват блокировки снова возможен.
     """
     first, _ = stands
-    instances = ChatTable.LIVE_INSTANCES.under(first.locks._schema)
+    instances = SqlNames.table(first.locks._schema, LiveTable.INSTANCES)
     async with pool.cursor() as cur:
         await cur.execute(
             sql.SQL("truncate {instances} cascade").format(instances=instances)

@@ -29,6 +29,7 @@ from boba.connections.profile import (
     ConnectionNotFoundError,
     GrantKind,
     GrantTarget,
+    StoredRole,
 )
 from boba.connections.secrets import SecretCryptoError
 from boba.db.postgres import AsyncPostgresPool
@@ -220,10 +221,10 @@ async def test_remove_drops_row_and_grants(store: ConnectionStore) -> None:
 
 async def test_sync_roles_adds_missing_only(store: ConnectionStore) -> None:
     await store.sync_roles(["wrt", "read"])
-    before = await store.roles()
+    before = StoredRole.by_name(await store.roles())
 
     await store.sync_roles(["read", "admin"])
-    after = await store.roles()
+    after = StoredRole.by_name(await store.roles())
 
     if set(after) != {"wrt", "read", "admin"}:
         raise AssertionError("sync must add missing roles and keep existing ones")
@@ -233,7 +234,7 @@ async def test_sync_roles_adds_missing_only(store: ConnectionStore) -> None:
 
 async def test_grant_revoke_listing(store: ConnectionStore) -> None:
     await store.sync_roles(["read"])
-    roles = await store.roles()
+    roles = StoredRole.by_name(await store.roles())
     connection_id = await store.add("main", _pg(FakeSecret.DB))
 
     await store.grant(connection_id, GrantTarget.user(UUID(int=5)))
@@ -255,7 +256,7 @@ async def test_grant_revoke_listing(store: ConnectionStore) -> None:
 
 async def test_for_subject_by_user_role_and_kind(store: ConnectionStore) -> None:
     await store.sync_roles(["read", "wrt"])
-    roles = await store.roles()
+    roles = StoredRole.by_name(await store.roles())
 
     personal = await store.add("mine", _pg(FakeSecret.DB))
     shared = await store.add("shared", _pg(FakeSecret.DB_OTHER))
@@ -301,12 +302,14 @@ async def test_for_subject_lists_doubly_granted_row_once(
     store: ConnectionStore,
 ) -> None:
     await store.sync_roles(["read"])
-    roles = await store.roles()
+    roles = StoredRole.by_name(await store.roles())
     connection_id = await store.add("main", _pg(FakeSecret.DB))
     await store.grant(connection_id, GrantTarget.user(UUID(int=1)))
     await store.grant(connection_id, GrantTarget.role(roles["read"]))
 
-    rows = await store.for_subject(_subject(UUID(int=1), ["read"]), ConnectionKind.POSTGRES)
+    rows = await store.for_subject(
+        _subject(UUID(int=1), ["read"]), ConnectionKind.POSTGRES
+    )
 
     if [row.id for row in rows] != [connection_id]:
         raise AssertionError("row granted twice must be listed once")

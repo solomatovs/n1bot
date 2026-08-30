@@ -13,7 +13,6 @@ dependencies = [
     "boba-canvas==0.0.14.dev9",
     "boba-connection-broker==0.0.14.dev9",
     "boba-connections==0.0.14.dev9",
-    "boba-krb==0.0.14.dev9",
     "boba-messaging==0.0.14.dev9",
     "boba-identity==0.0.14.dev9",
     "boba-chat==0.0.14.dev9",
@@ -43,6 +42,7 @@ tools = [
     "boba-tool-knowledge==0.0.14.dev9",
 ]
 dev = [
+    "boba-krb[seal]==0.0.14.dev9",
     "pyjwt>=2.8",
     "boba-access==0.0.14.dev9",
     "boba-db-postgres==0.0.14.dev9",

@@ -15,15 +15,17 @@ from psycopg.rows import tuple_row
 from psycopg.types.json import Jsonb
 
 from boba.chat.threads import (
+    ChatTable,
     DataUnavailableError,
+    ElementsColumn,
     ElementStore,
+    FeedbacksColumn,
     FeedbackStore,
     StoredElement,
     StoredFeedback,
 )
 from boba.connections.postgres import PostgresConfig
-from boba.db.postgres import AsyncPostgresPool
-from boba.runtime.tables import ChatTable, ElementsColumn, FeedbacksColumn
+from boba.db.postgres import AsyncPostgresPool, SqlNames
 from boba.runtime.threads import ThreadsTable
 from boba.runtime.users import UsersTable
 
@@ -49,9 +51,7 @@ class _Table:
 
         return self._pool_ref
 
-    async def _run(
-        self, statements: Sequence[sql.Composed], operation: str
-    ) -> None:
+    async def _run(self, statements: Sequence[sql.Composed], operation: str) -> None:
         try:
             pool = await self._pool()
             async with pool.connection() as conn, conn.transaction():
@@ -89,11 +89,11 @@ class ElementsTable(_Table, ElementStore):
     """elements треда: строка описания вложения, тело — в хранилище файлов."""
 
     def _elements(self) -> sql.Identifier:
-        return ChatTable.ELEMENTS.under(self._schema)
+        return SqlNames.table(self._schema, ChatTable.ELEMENTS)
 
     @staticmethod
     def _columns() -> sql.Composed:
-        return sql.SQL(", ").join([column.ident() for column in ElementsColumn])
+        return sql.SQL(", ").join([SqlNames.ident(column) for column in ElementsColumn])
 
     @staticmethod
     def _stored(row: tuple[Any, ...]) -> StoredElement:
@@ -128,7 +128,7 @@ class ElementsTable(_Table, ElementStore):
                 """
             ).format(
                 elements=self._elements(),
-                **{column.value: column.ident() for column in ElementsColumn},
+                **{column.value: SqlNames.ident(column) for column in ElementsColumn},
             ),
             sql.SQL(
                 """
@@ -136,7 +136,8 @@ class ElementsTable(_Table, ElementStore):
                     on {elements} ({thread_id})
                 """
             ).format(
-                elements=self._elements(), thread_id=ElementsColumn.THREAD_ID.ident()
+                elements=self._elements(),
+                thread_id=SqlNames.ident(ElementsColumn.THREAD_ID),
             ),
         )
 
@@ -145,7 +146,7 @@ class ElementsTable(_Table, ElementStore):
     async def upsert(self, element: StoredElement) -> None:
         assignments = sql.SQL(", ").join(
             [
-                sql.SQL("{0} = excluded.{0}").format(column.ident())
+                sql.SQL("{0} = excluded.{0}").format(SqlNames.ident(column))
                 for column in ElementsColumn
                 if column is not ElementsColumn.ID
             ]
@@ -163,7 +164,7 @@ class ElementsTable(_Table, ElementStore):
             placeholders=sql.SQL(", ").join(
                 [sql.Placeholder(column.value) for column in ElementsColumn]
             ),
-            id=ElementsColumn.ID.ident(),
+            id=SqlNames.ident(ElementsColumn.ID),
             assignments=assignments,
         )
         params: dict[str, Any] = element.model_dump()
@@ -178,7 +179,7 @@ class ElementsTable(_Table, ElementStore):
         query = sql.SQL("select {cols} from {elements} where {id} = %(id)s").format(
             cols=self._columns(),
             elements=self._elements(),
-            id=ElementsColumn.ID.ident(),
+            id=SqlNames.ident(ElementsColumn.ID),
         )
         rows = await self._fetch(query, {"id": element_id}, "get_element")
         if not rows:
@@ -200,8 +201,8 @@ class ElementsTable(_Table, ElementStore):
         ).format(
             cols=self._columns(),
             elements=self._elements(),
-            thread_id=ElementsColumn.THREAD_ID.ident(),
-            id=ElementsColumn.ID.ident(),
+            thread_id=SqlNames.ident(ElementsColumn.THREAD_ID),
+            id=SqlNames.ident(ElementsColumn.ID),
         )
         rows = await self._fetch(
             query, {"thread_id": thread_id, "id": element_id}, "get_element"
@@ -222,7 +223,7 @@ class ElementsTable(_Table, ElementStore):
             """
         ).format(
             elements=self._elements(),
-            id=ElementsColumn.ID.ident(),
+            id=SqlNames.ident(ElementsColumn.ID),
             cols=self._columns(),
         )
         rows = await self._fetch(query, {"id": element_id}, "delete_element")
@@ -244,7 +245,7 @@ class ElementsTable(_Table, ElementStore):
         ).format(
             cols=self._columns(),
             elements=self._elements(),
-            thread_id=ElementsColumn.THREAD_ID.ident(),
+            thread_id=SqlNames.ident(ElementsColumn.THREAD_ID),
         )
         rows = await self._fetch(query, {"thread_id": thread_id}, "get_thread")
 
@@ -257,7 +258,10 @@ class ElementsTable(_Table, ElementStore):
             where
                 {thread_id} = %(thread_id)s
             """
-        ).format(elements=self._elements(), thread_id=ElementsColumn.THREAD_ID.ident())
+        ).format(
+            elements=self._elements(),
+            thread_id=SqlNames.ident(ElementsColumn.THREAD_ID),
+        )
 
         await self._execute(query, {"thread_id": thread_id}, "delete_thread")
 
@@ -269,7 +273,7 @@ class ElementsTable(_Table, ElementStore):
                 {for_id} = %(for_id)s
             """
         ).format(
-            elements=self._elements(), for_id=ElementsColumn.FOR_ID.ident()
+            elements=self._elements(), for_id=SqlNames.ident(ElementsColumn.FOR_ID)
         )
 
         await self._execute(query, {"for_id": step_id}, "delete_step")
@@ -279,11 +283,13 @@ class FeedbacksTable(_Table, FeedbackStore):
     """feedbacks: оценка шага пользователем."""
 
     def _feedbacks(self) -> sql.Identifier:
-        return ChatTable.FEEDBACKS.under(self._schema)
+        return SqlNames.table(self._schema, ChatTable.FEEDBACKS)
 
     @staticmethod
     def _columns() -> sql.Composed:
-        return sql.SQL(", ").join([column.ident() for column in FeedbacksColumn])
+        return sql.SQL(", ").join(
+            [SqlNames.ident(column) for column in FeedbacksColumn]
+        )
 
     @staticmethod
     def _stored(row: tuple[Any, ...]) -> StoredFeedback:
@@ -309,7 +315,7 @@ class FeedbacksTable(_Table, FeedbackStore):
                 """
             ).format(
                 feedbacks=self._feedbacks(),
-                **{column.value: column.ident() for column in FeedbacksColumn},
+                **{column.value: SqlNames.ident(column) for column in FeedbacksColumn},
             ),
             sql.SQL(
                 """
@@ -317,7 +323,8 @@ class FeedbacksTable(_Table, FeedbackStore):
                     on {feedbacks} ({for_id})
                 """
             ).format(
-                feedbacks=self._feedbacks(), for_id=FeedbacksColumn.FOR_ID.ident()
+                feedbacks=self._feedbacks(),
+                for_id=SqlNames.ident(FeedbacksColumn.FOR_ID),
             ),
         )
 
@@ -336,7 +343,7 @@ class FeedbacksTable(_Table, FeedbackStore):
             """
         ).format(
             feedbacks=self._feedbacks(),
-            **{column.value: column.ident() for column in FeedbacksColumn},
+            **{column.value: SqlNames.ident(column) for column in FeedbacksColumn},
         )
         params: dict[str, Any] = feedback.model_dump()
         if params["comment"] == "":
@@ -354,7 +361,7 @@ class FeedbacksTable(_Table, FeedbackStore):
             """
         ).format(
             feedbacks=self._feedbacks(),
-            id=FeedbacksColumn.ID.ident(),
+            id=SqlNames.ident(FeedbacksColumn.ID),
             cols=self._columns(),
         )
         rows = await self._fetch(query, {"id": feedback_id}, "delete_feedback")
@@ -376,7 +383,7 @@ class FeedbacksTable(_Table, FeedbackStore):
         ).format(
             cols=self._columns(),
             feedbacks=self._feedbacks(),
-            thread_id=FeedbacksColumn.THREAD_ID.ident(),
+            thread_id=SqlNames.ident(FeedbacksColumn.THREAD_ID),
         )
         rows = await self._fetch(query, {"thread_id": thread_id}, "get_thread")
 
@@ -390,7 +397,8 @@ class FeedbacksTable(_Table, FeedbackStore):
                 {thread_id} = %(thread_id)s
             """
         ).format(
-            feedbacks=self._feedbacks(), thread_id=FeedbacksColumn.THREAD_ID.ident()
+            feedbacks=self._feedbacks(),
+            thread_id=SqlNames.ident(FeedbacksColumn.THREAD_ID),
         )
 
         await self._execute(query, {"thread_id": thread_id}, "delete_thread")
@@ -403,7 +411,7 @@ class FeedbacksTable(_Table, FeedbackStore):
                 {for_id} = %(for_id)s
             """
         ).format(
-            feedbacks=self._feedbacks(), for_id=FeedbacksColumn.FOR_ID.ident()
+            feedbacks=self._feedbacks(), for_id=SqlNames.ident(FeedbacksColumn.FOR_ID)
         )
 
         await self._execute(query, {"for_id": step_id}, "delete_step")

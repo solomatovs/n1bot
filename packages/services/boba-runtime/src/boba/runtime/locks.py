@@ -20,11 +20,12 @@ from psycopg import sql
 from psycopg.rows import DictRow
 
 from boba.connections.postgres import PostgresConfig
-from boba.db.postgres import AsyncPostgresPool, PostgresError
+from boba.db.postgres import AsyncPostgresPool, PostgresError, SqlNames
 from boba.identity.context import Scope, ScopeKind
 from boba.identity.locks import (
     LiveLock,
     LiveLocks,
+    LiveLocksColumn,
     LockBusy,
     LockBusyError,
     LockMode,
@@ -33,9 +34,10 @@ from boba.identity.locks import (
     StaleLock,
 )
 from boba.messaging import MessageBusError
+from boba.messaging.bus import LiveInstancesColumn, LiveTable
+from boba.runtime.bus import ScopeKindCheck
 from boba.runtime.config import AppName, ClusterConfig
 from boba.runtime.payloads import PayloadStoreError
-from boba.runtime.tables import ChatTable, LiveInstancesColumn, LiveLocksColumn
 
 __all__ = ["LockReaper", "LockStoreError", "PgLiveLocks"]
 
@@ -77,10 +79,10 @@ class PgLiveLocks(LiveLocks):
         return self._pool_ref
 
     def _locks(self) -> sql.Identifier:
-        return ChatTable.LIVE_LOCKS.under(self._schema)
+        return SqlNames.table(self._schema, LiveTable.LOCKS)
 
     def _instances(self) -> sql.Identifier:
-        return ChatTable.LIVE_INSTANCES.under(self._schema)
+        return SqlNames.table(self._schema, LiveTable.INSTANCES)
 
     @staticmethod
     def _scope_id(scope: Scope) -> UUID:
@@ -116,10 +118,10 @@ class PgLiveLocks(LiveLocks):
                         """
                     ).format(
                         locks=self._locks(),
-                        scope_kind=LiveLocksColumn.SCOPE_KIND.ident(),
-                        scope_id=LiveLocksColumn.SCOPE_ID.ident(),
-                        heartbeat=LiveLocksColumn.HEARTBEAT_AT.ident(),
-                        ttl=LiveLocksColumn.TTL_SEC.ident(),
+                        scope_kind=SqlNames.ident(LiveLocksColumn.SCOPE_KIND),
+                        scope_id=SqlNames.ident(LiveLocksColumn.SCOPE_ID),
+                        heartbeat=SqlNames.ident(LiveLocksColumn.HEARTBEAT_AT),
+                        ttl=SqlNames.ident(LiveLocksColumn.TTL_SEC),
                     ),
                     params,
                     prepare=False,
@@ -143,14 +145,14 @@ class PgLiveLocks(LiveLocks):
                         """
                     ).format(
                         locks=self._locks(),
-                        scope_kind=LiveLocksColumn.SCOPE_KIND.ident(),
-                        scope_id=LiveLocksColumn.SCOPE_ID.ident(),
-                        mode=LiveLocksColumn.MODE.ident(),
-                        holder=LiveLocksColumn.HOLDER.ident(),
-                        token=LiveLocksColumn.TOKEN.ident(),
-                        purpose=LiveLocksColumn.PURPOSE.ident(),
-                        user_id=LiveLocksColumn.USER_ID.ident(),
-                        ttl=LiveLocksColumn.TTL_SEC.ident(),
+                        scope_kind=SqlNames.ident(LiveLocksColumn.SCOPE_KIND),
+                        scope_id=SqlNames.ident(LiveLocksColumn.SCOPE_ID),
+                        mode=SqlNames.ident(LiveLocksColumn.MODE),
+                        holder=SqlNames.ident(LiveLocksColumn.HOLDER),
+                        token=SqlNames.ident(LiveLocksColumn.TOKEN),
+                        purpose=SqlNames.ident(LiveLocksColumn.PURPOSE),
+                        user_id=SqlNames.ident(LiveLocksColumn.USER_ID),
+                        ttl=SqlNames.ident(LiveLocksColumn.TTL_SEC),
                     ),
                     {
                         **params,
@@ -198,13 +200,13 @@ class PgLiveLocks(LiveLocks):
                 """
             ).format(
                 locks=self._locks(),
-                holder=LiveLocksColumn.HOLDER.ident(),
-                mode=LiveLocksColumn.MODE.ident(),
-                purpose=LiveLocksColumn.PURPOSE.ident(),
-                heartbeat=LiveLocksColumn.HEARTBEAT_AT.ident(),
-                scope_kind=LiveLocksColumn.SCOPE_KIND.ident(),
-                scope_id=LiveLocksColumn.SCOPE_ID.ident(),
-                ttl=LiveLocksColumn.TTL_SEC.ident(),
+                holder=SqlNames.ident(LiveLocksColumn.HOLDER),
+                mode=SqlNames.ident(LiveLocksColumn.MODE),
+                purpose=SqlNames.ident(LiveLocksColumn.PURPOSE),
+                heartbeat=SqlNames.ident(LiveLocksColumn.HEARTBEAT_AT),
+                scope_kind=SqlNames.ident(LiveLocksColumn.SCOPE_KIND),
+                scope_id=SqlNames.ident(LiveLocksColumn.SCOPE_ID),
+                ttl=SqlNames.ident(LiveLocksColumn.TTL_SEC),
             ),
             {"scope_kind": scope.kind.value, "scope_id": self._scope_id(scope)},
             prepare=False,
@@ -246,9 +248,9 @@ class PgLiveLocks(LiveLocks):
                         """
                     ).format(
                         locks=self._locks(),
-                        heartbeat=LiveLocksColumn.HEARTBEAT_AT.ident(),
-                        token=LiveLocksColumn.TOKEN.ident(),
-                        ttl=LiveLocksColumn.TTL_SEC.ident(),
+                        heartbeat=SqlNames.ident(LiveLocksColumn.HEARTBEAT_AT),
+                        token=SqlNames.ident(LiveLocksColumn.TOKEN),
+                        ttl=SqlNames.ident(LiveLocksColumn.TTL_SEC),
                     ),
                     {"token": token.value},
                     prepare=False,
@@ -256,6 +258,56 @@ class PgLiveLocks(LiveLocks):
                 return cur.rowcount == 1
         except (psycopg.Error, PostgresError) as exc:
             msg = "live locks: heartbeat failed"
+            raise LockStoreError(msg) from exc
+
+    async def setup(self) -> None:
+        """Создаёт live_locks; live_instances, на которую она ссылается, создаёт
+        шина, поэтому шина поднимается первой.
+        """
+        ddl = (
+            sql.SQL(
+                """
+                create unlogged table if not exists {locks} (
+                    {scope_kind}   text not null,
+                    {scope_id}     uuid not null,
+                    {mode}         text not null check ({mode} in ('exclusive', 'shared')),
+                    {holder}       text not null
+                        references {instances} ({instance_id}) on delete cascade,
+                    {token}        uuid not null,
+                    {purpose}      text not null
+                        check ({purpose} in ('turn', 'run', 'tool_call', 'cleanup')),
+                    {user_id}      uuid not null,
+                    {acquired_at}  timestamptz not null default now(),
+                    {heartbeat_at} timestamptz not null default now(),
+                    {ttl_sec}      integer not null check ({ttl_sec} > 0),
+                    primary key ({scope_kind}, {scope_id}, {token})
+                )
+                """
+            ).format(
+                locks=self._locks(),
+                instances=self._instances(),
+                instance_id=SqlNames.ident(LiveInstancesColumn.INSTANCE_ID),
+                **{column.value: SqlNames.ident(column) for column in LiveLocksColumn},
+            ),
+            sql.SQL(
+                """
+                create index if not exists idx_live_locks_scope
+                on {locks} ({scope_kind}, {scope_id})
+                """
+            ).format(
+                locks=self._locks(),
+                scope_kind=SqlNames.ident(LiveLocksColumn.SCOPE_KIND),
+                scope_id=SqlNames.ident(LiveLocksColumn.SCOPE_ID),
+            ),
+            ScopeKindCheck.of(self._schema, LiveTable.LOCKS),
+        )
+        pool = await self._pool()
+        try:
+            async with pool.connection() as conn, conn.transaction():
+                for statement in ddl:
+                    await conn.execute(statement, prepare=False)
+        except (psycopg.Error, PostgresError) as exc:
+            msg = "live locks: setup failed"
             raise LockStoreError(msg) from exc
 
     async def register_instance(self) -> None:
@@ -276,10 +328,10 @@ class PgLiveLocks(LiveLocks):
                         """
                     ).format(
                         instances=self._instances(),
-                        id=LiveInstancesColumn.INSTANCE_ID.ident(),
-                        app=LiveInstancesColumn.APP.ident(),
-                        host=LiveInstancesColumn.HOST.ident(),
-                        heartbeat=LiveInstancesColumn.HEARTBEAT_AT.ident(),
+                        id=SqlNames.ident(LiveInstancesColumn.INSTANCE_ID),
+                        app=SqlNames.ident(LiveInstancesColumn.APP),
+                        host=SqlNames.ident(LiveInstancesColumn.HOST),
+                        heartbeat=SqlNames.ident(LiveInstancesColumn.HEARTBEAT_AT),
                     ),
                     {
                         "id": self._instance,
@@ -298,7 +350,7 @@ class PgLiveLocks(LiveLocks):
             async with pool.cursor() as cur:
                 await cur.execute(
                     sql.SQL("delete from {locks} where {token} = %(token)s").format(
-                        locks=self._locks(), token=LiveLocksColumn.TOKEN.ident()
+                        locks=self._locks(), token=SqlNames.ident(LiveLocksColumn.TOKEN)
                     ),
                     {"token": token.value},
                     prepare=False,
@@ -313,7 +365,7 @@ class PgLiveLocks(LiveLocks):
             async with pool.cursor() as cur:
                 await cur.execute(
                     sql.SQL("delete from {locks} where {holder} = %(holder)s").format(
-                        locks=self._locks(), holder=LiveLocksColumn.HOLDER.ident()
+                        locks=self._locks(), holder=SqlNames.ident(LiveLocksColumn.HOLDER)
                     ),
                     {"holder": holder},
                     prepare=False,
@@ -336,12 +388,12 @@ class PgLiveLocks(LiveLocks):
                         """
                     ).format(
                         locks=self._locks(),
-                        heartbeat=LiveLocksColumn.HEARTBEAT_AT.ident(),
-                        ttl=LiveLocksColumn.TTL_SEC.ident(),
-                        scope_kind=LiveLocksColumn.SCOPE_KIND.ident(),
-                        scope_id=LiveLocksColumn.SCOPE_ID.ident(),
-                        holder=LiveLocksColumn.HOLDER.ident(),
-                        purpose=LiveLocksColumn.PURPOSE.ident(),
+                        heartbeat=SqlNames.ident(LiveLocksColumn.HEARTBEAT_AT),
+                        ttl=SqlNames.ident(LiveLocksColumn.TTL_SEC),
+                        scope_kind=SqlNames.ident(LiveLocksColumn.SCOPE_KIND),
+                        scope_id=SqlNames.ident(LiveLocksColumn.SCOPE_ID),
+                        holder=SqlNames.ident(LiveLocksColumn.HOLDER),
+                        purpose=SqlNames.ident(LiveLocksColumn.PURPOSE),
                     ),
                     prepare=False,
                 )
@@ -380,8 +432,8 @@ class PgLiveLocks(LiveLocks):
                         """
                     ).format(
                         instances=self._instances(),
-                        heartbeat=LiveInstancesColumn.HEARTBEAT_AT.ident(),
-                        id=LiveInstancesColumn.INSTANCE_ID.ident(),
+                        heartbeat=SqlNames.ident(LiveInstancesColumn.HEARTBEAT_AT),
+                        id=SqlNames.ident(LiveInstancesColumn.INSTANCE_ID),
                     ),
                     {"ttl": self._cluster.lock_ttl_sec},
                     prepare=False,

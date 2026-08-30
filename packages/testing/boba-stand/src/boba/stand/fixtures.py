@@ -8,9 +8,9 @@ from collections.abc import AsyncIterator
 import pytest
 from omegaconf import DictConfig
 
+from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.runtime.config import ConfigLocator, RawConfig, RuntimeConfig
-from boba.config import bind
 from boba.stand.context import call_context_cleared
 from boba.stand.database import TestDatabase
 

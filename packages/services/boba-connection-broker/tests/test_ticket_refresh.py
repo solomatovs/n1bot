@@ -14,7 +14,9 @@ import pytest
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, create_model
 
-from boba.connection_broker.tickets import ServiceTickets, TicketArming
+from boba.auth.credentials import KerberosCredentialSource, NoRefresh
+from boba.connection_broker.tickets import ServiceTickets
+from boba.connections.credentials import ProfileSections
 from boba.connections.kerberos import KeytabAuth, TicketAuth
 from boba.connections.postgres import PostgresConfig
 from boba.stand.site import Stand
@@ -100,7 +102,10 @@ class Fixtures:
         def resolve(name: str, annotation: Any) -> object:
             return config
 
-        ServiceTickets.bind_all([tool], resolve)
+        def credentials() -> KerberosCredentialSource:
+            return KerberosCredentialSource(None, NoRefresh())
+
+        ServiceTickets.bind_all([tool], credentials, resolve)
         InjectedConfig.bind_all([tool], resolve)
         return tool
 
@@ -108,11 +113,11 @@ class Fixtures:
 class TestArmingIsNeededWhereKeytabLives:
     def test_nested_keytab_is_found(self, tmp_path: Path) -> None:
         config = ToolConfig(connection=Fixtures.connection(tmp_path / "cc"))
-        if not TicketArming.needs_arming(config):
+        if not ProfileSections.needs_arming(config):
             raise AssertionError("keytab во вложенном профиле не найден")
 
     def test_plain_config_needs_nothing(self) -> None:
-        if TicketArming.needs_arming(ToolConfig(connection=Fixtures.plain())):
+        if ProfileSections.needs_arming(ToolConfig(connection=Fixtures.plain())):
             raise AssertionError("обвязка просится там, где kerberos нет")
 
     def test_ticket_section_needs_nothing(self) -> None:
@@ -120,7 +125,7 @@ class TestArmingIsNeededWhereKeytabLives:
         armed = Fixtures.plain().model_copy(
             update={"auth": ticket, "connect_timeout": 5}
         )
-        if TicketArming.needs_arming(ToolConfig(connection=armed)):
+        if ProfileSections.needs_arming(ToolConfig(connection=armed)):
             raise AssertionError("готовый билет перевыпускать не нужно")
 
 

@@ -17,10 +17,9 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from pydantic import ValidationError
 
-from boba.connections.kerberos import DelegationMode
+from boba.connections.credentials import SignInCredentials
+from boba.connections.kerberos import DelegationMode, SignInTicket, TicketSealError
 from boba.krb.credentials import DelegatedCredentials
-from boba.krb.errors import TicketSealError
-from boba.krb.ticket import SignInTicket
 
 __all__ = ["SsoTickets", "TicketSealer"]
 
@@ -80,11 +79,14 @@ class TicketSealer:
 
 
 @dataclass(frozen=True)
-class SsoTickets:
-    """Как приложение открывает билеты входа и превращает их в креды вызова."""
+class SsoTickets(SignInCredentials):
+    """Как приложение печатает и открывает билеты входа и превращает их в креды."""
 
     sealer: TicketSealer
     krb5_config: str
+
+    def seal(self, ticket: SignInTicket) -> str:
+        return self.sealer.seal(ticket)
 
     def open(self, sealed: str) -> SignInTicket:
         return self.sealer.open(sealed)

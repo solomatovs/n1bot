@@ -29,11 +29,11 @@ from boba.connections.kerberos import (
     KerberosAuth,
     KerberosPasswordAuth,
     KeytabAuth,
+    SignInTicket,
     TicketAuth,
 )
 from boba.krb.auth import KerberosWorkspace
 from boba.krb.errors import CredentialsExpiredError, KerberosError, KeytabError
-from boba.krb.ticket import SignInTicket
 from boba.toolkit.timing import Elapsed
 
 __all__ = [

@@ -13,9 +13,9 @@ import pytest
 from omegaconf import DictConfig, OmegaConf
 
 from boba.chainlit.infra.config import AppConfig
+from boba.config import bind
 from boba.runtime.plugins import PluginMeta
 from boba.sandbox import SandboxToolConfig
-from boba.config import bind
 
 HEAVY_SECTIONS = ("tool.ingest", "tool.kb")
 """Секции с нативным инференсом: их душит квота базового профиля."""

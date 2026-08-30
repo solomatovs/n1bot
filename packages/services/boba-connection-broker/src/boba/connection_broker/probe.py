@@ -12,17 +12,18 @@ from typing import ClassVar
 import httpx
 from psycopg import sql
 
-from boba.connection_broker.tickets import DelegationSource, TicketArming
 from boba.connections.clickhouse import ClickHouseConfig
+from boba.connections.credentials import CredentialSource
 from boba.connections.http import HttpProfile
+from boba.connections.kerberos import KerberosError
 from boba.connections.postgres import PostgresConfig
 from boba.connections.profile import ConnectionProfile, ProbeResult
 from boba.db.clickhouse.errors import ClickHouseError
 from boba.db.clickhouse.payload import PayloadClickHouse
 from boba.db.postgres.async_pool import PostgresError
 from boba.db.postgres.payload import PayloadPostgres
+from boba.identity.context import Credential
 from boba.identity.errors import RefusalError
-from boba.krb import KerberosError
 from boba.toolkit.timing import Elapsed
 from boba.toolrun.injected import ToolConfigError
 from boba.transport.http import HttpRequest, HttpTransport
@@ -38,13 +39,15 @@ class ConnectionProbe:
     TIMEOUT_SEC: ClassVar[float] = 15.0
     PROBE_SQL: ClassVar[sql.SQL] = sql.SQL("select version()")
 
-    def __init__(self, delegation: DelegationSource) -> None:
-        self._arming = TicketArming(delegation)
+    def __init__(self, source: CredentialSource) -> None:
+        self._source = source
 
-    async def probe(self, profile: ConnectionProfile) -> ProbeResult:
+    async def probe(
+        self, profile: ConnectionProfile, credential: Credential
+    ) -> ProbeResult:
         elapsed = Elapsed()
         try:
-            armed = await self._arming.arm_profile(profile)
+            armed = await self._source.for_connection(profile, credential)
             message = await asyncio.wait_for(self._open(armed), self.TIMEOUT_SEC)
         except TimeoutError:
             return ProbeResult(

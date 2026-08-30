@@ -25,9 +25,9 @@ import httpx
 from boba.stand.ui.toml_text import TomlText
 
 __all__ = [
+    "StandApp",
     "StandConfig",
     "StandError",
-    "StandApp",
     "StandPaths",
     "StandProcess",
     "free_port",

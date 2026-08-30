@@ -33,6 +33,12 @@ __all__ = [
     "Listener",
     "ListenerFailedError",
     "ListenerState",
+    "LiveChannel",
+    "LiveCommandsColumn",
+    "LiveEventsColumn",
+    "LiveInstancesColumn",
+    "LivePayloadsColumn",
+    "LiveTable",
     "LockLostError",
     "LockToken",
     "MessageBus",
@@ -120,6 +126,72 @@ class CommandEnvelope(BaseModel):
 Listener = Callable[[Envelope], Awaitable[None]]
 CommandListener = Callable[[CommandEnvelope], Awaitable[None]]
 Unsubscribe = Callable[[], None]
+
+
+class LiveTable(StrEnum):
+    """Таблицы шины и живучести; live_locks описана колонками в boba.identity.locks."""
+
+    INSTANCES = "live_instances"
+    EVENTS = "live_events"
+    COMMANDS = "live_commands"
+    LOCKS = "live_locks"
+    PAYLOADS = "live_payloads"
+
+
+class LiveChannel(StrEnum):
+    """Каналы LISTEN/NOTIFY; канал один на всё приложение, вид уведомления различает
+    указатель в теле.
+    """
+
+    LIVE = "boba_live"
+
+
+class LiveInstancesColumn(StrEnum):
+    """Колонки live_instances: зарегистрированные процессы и время их последнего
+    подтверждения жизни.
+    """
+
+    INSTANCE_ID = "instance_id"
+    APP = "app"
+    HOST = "host"
+    STARTED_AT = "started_at"
+    HEARTBEAT_AT = "heartbeat_at"
+
+
+class LiveEventsColumn(StrEnum):
+    """Колонки live_events: сообщения шины, пронумерованные внутри области."""
+
+    SCOPE_KIND = "scope_kind"
+    SCOPE_ID = "scope_id"
+    SEQ = "seq"
+    KIND = "kind"
+    ORIGIN = "origin"
+    BODY = "body"
+    AT = "at"
+
+
+class LiveCommandsColumn(StrEnum):
+    """Колонки live_commands: команды областям и кто из инстансов их исполнил."""
+
+    ID = "id"
+    SCOPE_KIND = "scope_kind"
+    SCOPE_ID = "scope_id"
+    ACTION = "action"
+    BODY = "body"
+    BY_INSTANCE = "by_instance"
+    AT = "at"
+    TAKEN_BY = "taken_by"
+    TAKEN_AT = "taken_at"
+
+
+class LivePayloadsColumn(StrEnum):
+    """Колонки live_payloads: тела сообщений, привязанные к области."""
+
+    SCOPE_KIND = "scope_kind"
+    SCOPE_ID = "scope_id"
+    ID = "id"
+    BODY = "body"
+    AT = "at"
 
 
 class ListenerState(StrEnum):

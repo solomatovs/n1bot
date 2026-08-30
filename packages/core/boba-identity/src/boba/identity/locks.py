@@ -29,6 +29,7 @@ from boba.identity.errors import RefusalError
 __all__ = [
     "LiveLock",
     "LiveLocks",
+    "LiveLocksColumn",
     "LockBusy",
     "LockBusyError",
     "LockKeeper",
@@ -90,6 +91,23 @@ class LockToken(BaseModel):
     def local(cls) -> LockToken:
         """Выпускает token без блокировки для сообщений, которым держатель не нужен."""
         return cls(value=uuid4())
+
+
+class LiveLocksColumn(StrEnum):
+    """Колонки live_locks: кто, зачем и в каком режиме держит область и когда
+    подтверждал жизнь.
+    """
+
+    SCOPE_KIND = "scope_kind"
+    SCOPE_ID = "scope_id"
+    MODE = "mode"
+    HOLDER = "holder"
+    TOKEN = "token"  # noqa: S105
+    PURPOSE = "purpose"
+    USER_ID = "user_id"
+    ACQUIRED_AT = "acquired_at"
+    HEARTBEAT_AT = "heartbeat_at"
+    TTL_SEC = "ttl_sec"
 
 
 class LiveLock(BaseModel):
@@ -156,7 +174,6 @@ class LiveLocks(Protocol):
 
     SYSTEM_USER: ClassVar[UUID] = UUID(int=0)
     """user_id захвата от имени приложения: уборка ходов умерших держателей."""
-
 
     @abstractmethod
     async def acquire(
