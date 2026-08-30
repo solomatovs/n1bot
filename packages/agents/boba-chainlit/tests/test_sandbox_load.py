@@ -1276,7 +1276,7 @@ class TestGroupLimitsUnderLoad:
         path = os.path.join(CgroupZone.find(), f"boba-load-{uuid4().hex[:8]}")
         yield path
 
-        CgroupManager._prepared.pop(path, None)
+        CgroupManager._prepared.pop(Path(path).resolve(), None)
         with contextlib.suppress(OSError):
             os.rmdir(path)
 

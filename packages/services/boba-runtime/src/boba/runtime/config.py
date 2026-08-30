@@ -35,7 +35,10 @@ __all__ = [
     "ConfigLocator",
     "DataLayerConfig",
     "DevPage",
+    "LocalMessagingConfig",
+    "MessagingConfig",
     "PageSource",
+    "PostgresMessagingConfig",
     "ProcessLogging",
     "RawConfig",
     "RuntimeConfig",
@@ -202,10 +205,6 @@ class ClusterConfig(BaseModel):
 
     node_id: str = Field(min_length=1, pattern=r"^[A-Za-z0-9_.-]+$")
     host: str = Field(min_length=1, description="Узел, где лежат журналы инструментов.")
-    db_schema: str = Field(
-        min_length=1,
-        description="Схема таблиц шины live_*: общая для всех приложений кластера.",
-    )
     lock_ttl_sec: int = Field(
         gt=0, description="Срок блокировки без подтверждения жизни."
     )
@@ -234,6 +233,39 @@ class ClusterConfig(BaseModel):
 
     def instance_of(self, app: AppName) -> str:
         return f"{self.node_id}{self.SEPARATOR}{app.value}"
+
+
+class LocalMessagingConfig(BaseModel):
+    """Шина сообщений в памяти процесса: один инстанс, доставка внутри publish."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: Literal["local"]
+
+
+class PostgresMessagingConfig(BaseModel):
+    """Шина сообщений в Postgres: доставка между инстансами через LISTEN/NOTIFY."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    provider: Literal["postgres"]
+
+    postgres: PostgresConfig = Field(
+        description="Подключение и пул; в конфиге подключается ссылкой ${postgres}.",
+    )
+
+    db_schema: str = Field(
+        min_length=1,
+        alias="schema",
+        description="Схема таблиц шины live_*: общая для всех приложений кластера.",
+    )
+
+
+MessagingConfig = Annotated[
+    LocalMessagingConfig | PostgresMessagingConfig,
+    Field(discriminator="provider"),
+]
+"""Discriminated union по provider — точная диагностика ошибок валидации."""
 
 
 class StudioPath(StrEnum):
@@ -375,6 +407,7 @@ class RuntimeConfig(BaseModel):
     stream_journal: StreamJournalConfig
     session: SessionConfig
     cluster: ClusterConfig
+    messaging: MessagingConfig
 
     @classmethod
     def load(cls, config_path: Path) -> Self:
@@ -402,6 +435,14 @@ class RuntimeConfig(BaseModel):
             raise ValueError(msg)
 
         return value
+
+    def pg_messaging(self) -> PostgresMessagingConfig:
+        """Секция [messaging] postgres-провайдера; при local — RuntimeError."""
+        if isinstance(self.messaging, PostgresMessagingConfig):
+            return self.messaging
+
+        msg = "[messaging] provider is not postgres"
+        raise RuntimeError(msg)
 
     def kerberos(self) -> KerberosAuthConfig | None:
         for entry in self.auth:

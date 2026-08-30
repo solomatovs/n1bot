@@ -14,6 +14,7 @@ import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import ClassVar
 
 from boba.sandbox.profile import SandboxProfile
@@ -120,7 +121,7 @@ class CgroupManager:
         "pids": "cgroup_pids_max",
     }
 
-    _prepared: ClassVar[dict[str, set[str]]] = {}
+    _prepared: ClassVar[dict[Path, set[str]]] = {}
     """База -> контроллеры, уже включённые в её subtree_control."""
 
     _lock: ClassVar[threading.Lock] = threading.Lock()
@@ -128,27 +129,27 @@ class CgroupManager:
     def __init__(self, base: str) -> None:
         # база приходит из конфига: раскрываем симлинки и `..` один раз, дальше
         # по дереву ходим только относительно неё
-        self._base = os.path.realpath(base)
+        self._base = Path(base).resolve()
 
-    def _inside(self, *parts: str) -> str:
+    def _inside(self, *parts: str) -> Path:
         """Путь в поддереве базы; выйти за её пределы нельзя."""
-        candidate = os.path.realpath(os.path.join(self._base, *parts))
+        candidate = self._base.joinpath(*parts).resolve()
 
         if candidate == self._base:
             return candidate
 
-        if candidate.startswith(self._base + os.sep):
+        if candidate.is_relative_to(self._base):
             return candidate
 
         msg = f"cgroup: path escapes {self._base}: {candidate}"
         raise CgroupError(msg)
 
-    def acquire(self, limits: GroupLimits) -> str:
+    def acquire(self, limits: GroupLimits) -> Path:
         """Создаёт leaf под один запуск, пишет лимиты; возвращает путь."""
         self._prepare(limits.controllers)
         leaf = self._inside(f"run-{os.getpid()}-{uuid.uuid4().hex[:8]}")
         try:
-            os.mkdir(leaf)
+            leaf.mkdir()
             self._write_limits(leaf, limits)
         except CgroupError:
             self._remove_quietly(leaf)
@@ -162,7 +163,7 @@ class CgroupManager:
     THROTTLE_RATIO: ClassVar[float] = 0.2
     """Доля времени под троттлингом, с которой запуск считается задушенным."""
 
-    def throttling(self, leaf: str) -> str:
+    def throttling(self, leaf: Path) -> str:
         """Сколько запуск простоял в очереди за cpu-квотой; пусто — не душили.
 
         Упёршийся в квоту процесс выглядит зависшим: он работает, но получает
@@ -187,11 +188,10 @@ class CgroupManager:
         )
 
     @staticmethod
-    def _cpu_stat(leaf: str) -> dict[str, int]:
+    def _cpu_stat(leaf: Path) -> dict[str, int]:
         """Счётчики cpu.stat leaf'а; недоступны — пустая карта."""
         try:
-            with open(os.path.join(leaf, "cpu.stat")) as f:
-                raw = f.read()
+            raw = (leaf / "cpu.stat").read_text()
         except OSError:
             return {}
 
@@ -208,17 +208,17 @@ class CgroupManager:
 
         return stat
 
-    def release(self, leaf: str) -> None:
+    def release(self, leaf: Path) -> None:
         """Добивает выживших через cgroup.kill и удаляет leaf."""
         try:
-            self._write(os.path.join(leaf, "cgroup.kill"), "1")
+            self._write(leaf / "cgroup.kill", "1")
         except OSError as e:
             if e.errno != errno.ENOENT:
                 logger.warning("cgroup: kill of %s failed: %s", leaf, e)
         deadline = time.monotonic() + self.RELEASE_WAIT_SEC
         while time.monotonic() < deadline:
             try:
-                os.rmdir(leaf)
+                leaf.rmdir()
                 return
             except OSError as e:
                 if e.errno == errno.ENOENT:
@@ -253,9 +253,9 @@ class CgroupManager:
                 limits.describe(),
             )
 
-    def probe_migration(self, leaf: str) -> None:
+    def probe_migration(self, leaf: Path) -> None:
         """Пробный ребёнок входит в leaf: ловит правило общего предка сразу."""
-        procs = os.path.join(leaf, "cgroup.procs")
+        procs = leaf / "cgroup.procs"
 
         def enter() -> None:
             fd = os.open(procs, os.O_WRONLY)
@@ -290,14 +290,14 @@ class CgroupManager:
 
     def _prepare_base(self, controllers: list[str]) -> None:
         try:
-            os.makedirs(self._base, exist_ok=True)
+            self._base.mkdir(parents=True, exist_ok=True)
         except OSError as e:
             msg = (
                 f"cgroup: cannot create base {self._base}: {e}; the directory "
                 f"must live under a cgroup v2 subtree delegated to this user"
             )
             raise CgroupError(msg) from e
-        available = self._read(os.path.join(self._base, "cgroup.controllers"))
+        available = self._read(self._base / "cgroup.controllers")
         absent = [c for c in controllers if c not in available.split()]
         if absent:
             self._enable_in_parent(absent)
@@ -305,7 +305,7 @@ class CgroupManager:
 
     def _enable_in_parent(self, controllers: list[str]) -> None:
         """Контроллеров нет в базе — включает их в subtree_control родителя."""
-        parent = os.path.dirname(self._base)
+        parent = self._base.parent
         try:
             self._enable(parent, controllers)
             return
@@ -325,10 +325,10 @@ class CgroupManager:
             msg = f"cgroup: cannot enable {controllers} in {parent}: {e}"
             raise CgroupError(msg) from e
 
-    def _evacuate(self, parent: str) -> None:
-        main = os.path.join(parent, self.MAIN_LEAF)
-        os.makedirs(main, exist_ok=True)
-        procs_path = os.path.join(parent, "cgroup.procs")
+    def _evacuate(self, parent: Path) -> None:
+        main = parent / self.MAIN_LEAF
+        main.mkdir(parents=True, exist_ok=True)
+        procs_path = parent / "cgroup.procs"
         for _ in range(10):
             pids = self._read(procs_path).split()
             if not pids:
@@ -341,7 +341,7 @@ class CgroupManager:
             )
             for pid in pids:
                 try:
-                    self._write(os.path.join(main, "cgroup.procs"), pid)
+                    self._write(main / "cgroup.procs", pid)
                 except OSError as e:
                     if e.errno != errno.ESRCH:
                         msg = (
@@ -352,7 +352,7 @@ class CgroupManager:
         msg = f"cgroup: {parent} keeps spawning processes, cannot evacuate"
         raise CgroupError(msg)
 
-    def _write_limits(self, leaf: str, limits: GroupLimits) -> None:
+    def _write_limits(self, leaf: Path, limits: GroupLimits) -> None:
         if limits.memory_bytes is not None:
             self._write_limit(
                 leaf, "memory.max", str(limits.memory_bytes), "cgroup_memory_bytes"
@@ -380,9 +380,9 @@ class CgroupManager:
         if limits.pids_max is not None:
             self._write_limit(leaf, "pids.max", str(limits.pids_max), "cgroup_pids_max")
 
-    def _write_limit(self, leaf: str, knob: str, value: str, field: str) -> None:
+    def _write_limit(self, leaf: Path, knob: str, value: str, field: str) -> None:
         try:
-            self._write(os.path.join(leaf, knob), value)
+            self._write(leaf / knob, value)
         except OSError as e:
             msg = (
                 f"cgroup: {knob} is not supported here ({e}); "
@@ -390,21 +390,19 @@ class CgroupManager:
             )
             raise CgroupError(msg) from e
 
-    def _enable(self, cgroup_dir: str, controllers: list[str]) -> None:
+    def _enable(self, cgroup_dir: Path, controllers: list[str]) -> None:
         value = " ".join(f"+{c}" for c in controllers)
-        self._write(os.path.join(cgroup_dir, "cgroup.subtree_control"), value)
+        self._write(cgroup_dir / "cgroup.subtree_control", value)
 
     @staticmethod
-    def _read(path: str) -> str:
-        with open(path) as f:
-            return f.read()
+    def _read(path: Path) -> str:
+        return path.read_text()
 
     @staticmethod
-    def _write(path: str, value: str) -> None:
-        with open(path, "w") as f:
-            f.write(value)
+    def _write(path: Path, value: str) -> None:
+        path.write_text(value)
 
     @staticmethod
-    def _remove_quietly(leaf: str) -> None:
+    def _remove_quietly(leaf: Path) -> None:
         with contextlib.suppress(OSError):
-            os.rmdir(leaf)
+            leaf.rmdir()

@@ -95,8 +95,8 @@ class SignInMetadata(BaseModel):
         if not self.is_kerberos():
             return (
                 f"you signed in with {self._provider_name()}, and this "
-                "connection acts in the database on your behalf: sign in with "
-                "the Kerberos SSO button instead"
+                "connection acts in the database on your behalf: sign in "
+                "through Kerberos SSO instead"
             )
 
         if not self.principal:

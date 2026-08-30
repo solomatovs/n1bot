@@ -55,13 +55,13 @@ async def _stand(
     )
     cluster = _cluster(runtime_config)
     bus = PgMessageBus(
-        cfg, runtime_config.cluster.db_schema, name, AppName.STUDIO, cluster
+        cfg, runtime_config.pg_messaging().db_schema, name, AppName.STUDIO, cluster
     )
     bus._pool_ref = pool
     await bus.setup()
     await bus.start()
     locks = PgLiveLocks(
-        cfg, runtime_config.cluster.db_schema, name, AppName.STUDIO, cluster
+        cfg, runtime_config.pg_messaging().db_schema, name, AppName.STUDIO, cluster
     )
     locks._pool_ref = pool
     await locks.register_instance()

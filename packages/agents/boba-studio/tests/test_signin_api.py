@@ -18,8 +18,8 @@ from boba.chat.provider import OpenAiChatConfig
 from boba.identity.admission import RoleExcludeConfig, RoleMappingConfig
 from boba.identity.api import (
     AuthenticatedUser,
+    ChosenProfiles,
     PersistedUsers,
-    StudioProfiles,
     UsersUpsert,
 )
 from boba.identity.signin import SignedIn
@@ -37,7 +37,7 @@ SECRET = "stand-secret-of-at-least-32-bytes-long"
 COOKIE = "access_token"
 
 
-class Users(PersistedUsers, UsersUpsert, StudioProfiles):
+class Users(PersistedUsers, UsersUpsert, ChosenProfiles):
     """Строки users стенда в памяти: id выдаётся по порядку входа."""
 
     def __init__(self) -> None:
