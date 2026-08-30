@@ -3,7 +3,7 @@
 # запускать через: source dev.sh
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONF="$DIR/build/conf"
+CONF="$DIR/build/chainlit/conf"
 
 unset PYTHONHOME
 unset PYTHONPATH
@@ -46,7 +46,7 @@ else
   apt-get install -y $PACKAGES
 fi
 
-export PATH="$DIR/build/src/uv:$PATH"
+export PATH="$DIR/build/chainlit/src/uv:$PATH"
 
 if [ ! -d "$DIR/.venv" ]; then
   (cd "$DIR" && uv venv --python 3.11 --clear --no-managed-python)
@@ -58,7 +58,7 @@ OK=$?
 if [ $OK -eq 0 ]; then
   source "$DIR/.venv/bin/activate"
   # activate перезаписывает PATH, поэтому uv возвращаем обратно
-  export PATH="$DIR/build/src/uv:$PATH"
+  export PATH="$DIR/build/chainlit/src/uv:$PATH"
   echo "dev: окружение .venv активировано"
 else
   echo "dev: ошибка подготовки окружения (.venv не активировано)" >&2

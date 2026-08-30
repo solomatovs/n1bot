@@ -47,8 +47,8 @@ class StandPaths(StrEnum):
     STUDIO_BASE_CONFIG = "compose/studio/conf/config.toml"
     CHAINLIT_BASE = "compose/chainlit"
     STUDIO_BASE = "compose/studio"
-    ASSETS = "compose/chainlit"
-    SANDBOX = "build/chainlit/src/sandbox"
+    CHAINLIT_SANDBOX = "build/chainlit/src/sandbox"
+    STUDIO_SANDBOX = "build/studio/src/sandbox"
     PACKAGES = "packages"
 
     def under(self, root: Path) -> Path:
@@ -123,6 +123,21 @@ class StandApp(StrEnum):
             return StandPaths.BASE_CONFIG
 
         return StandPaths.STUDIO_BASE_CONFIG
+
+    @property
+    def sandbox(self) -> StandPaths:
+        """Артефакты песочницы из сборки этого приложения."""
+        if self is StandApp.CHAINLIT:
+            return StandPaths.CHAINLIT_SANDBOX
+
+        return StandPaths.STUDIO_SANDBOX
+
+    @property
+    def cgroup_base(self) -> str:
+        if self is StandApp.CHAINLIT:
+            return "/sys/fs/cgroup/boba.slice/boba-sandbox"
+
+        return "/sys/fs/cgroup/boba.slice/boba-sandbox-studio"
 
     @property
     def ready_path(self) -> str:
@@ -264,11 +279,11 @@ class StandConfig:
         env["BOBA_DATA"] = str(data_dir)
         env["BOBA_CONFIG_PATH"] = str(self.config_path)
         env["BOBA_RUNTIME"] = str(self.workdir)
-        env["BOBA_SANDBOX"] = str(StandPaths.SANDBOX.under(REPO_ROOT))
-        env["BOBA_ASSETS"] = str(StandPaths.ASSETS.under(REPO_ROOT))
+        env["BOBA_SANDBOX"] = str(self.app.sandbox.under(REPO_ROOT))
+        env["BOBA_ASSETS"] = str(self.app.base.under(REPO_ROOT))
         env["BOBA_BIND_CODE"] = f"{StandPaths.PACKAGES.under(REPO_ROOT)}:/opt/src"
         env["BOBA_SANDBOX_PYTHONPATH"] = "/opt/site"
-        env["BOBA_CGROUP_BASE"] = "/sys/fs/cgroup/boba"
+        env["BOBA_CGROUP_BASE"] = self.app.cgroup_base
         env["BOBA_PORT"] = str(self.app_port)
         env["BOBA_INSTANCE_ID"] = f"stand{self.app_port}"
         env["BOBA_URL_PREFIX"] = self.url_prefix

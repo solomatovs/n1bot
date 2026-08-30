@@ -17,7 +17,6 @@ from typing import Any, ClassVar
 import pytest
 from fake_channel_tool import ChannelConfig, fx_echo, fx_probe_tmp, fx_warm_state
 from pydantic import SecretStr
-from zygote_stand import ProfileFields, SandboxStand
 
 from boba.sandbox import SandboxProfile
 from boba.sandbox.guest import WarmupCall
@@ -29,6 +28,7 @@ from boba.sandbox.zygote import (
     ZygoteSupervisor,
     ZygoteToolCaller,
 )
+from boba.stand.zygote import ProfileFields, SandboxStand
 from boba.toolkit.channels import JournalChannel, ToolChannel
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolMain
 from boba.toolkit.launcher import LauncherError

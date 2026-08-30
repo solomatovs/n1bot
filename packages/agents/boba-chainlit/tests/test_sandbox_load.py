@@ -27,7 +27,6 @@ from uuid import uuid4
 
 import pytest
 from pydantic import BaseModel, ConfigDict
-from zygote_stand import ROOTFS_IMAGE, ProfileFields, SandboxStand
 
 from boba.cancellation import RunCancellation, ToolStopped, run_cancellation
 from boba.chainlit.data.storage import ImageStorageClient, StorageFactory
@@ -41,6 +40,7 @@ from boba.sandbox.zygote import (
     ZygoteSpawner,
     ZygoteToolCaller,
 )
+from boba.stand.zygote import ROOTFS_IMAGE, ProfileFields, SandboxStand
 from boba.toolkit.launcher import LauncherError, LaunchOutcome
 from boba.toolkit.stream import Chunk, JournalChannel, StreamSink, ToolChannelsTap
 from boba.workspace.images import PartialCopy

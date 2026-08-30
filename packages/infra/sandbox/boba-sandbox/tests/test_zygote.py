@@ -22,7 +22,6 @@ from typing import Any
 import pytest
 from fake_channel_tool import ChannelConfig
 from pydantic import SecretStr
-from zygote_stand import SandboxStand
 
 from boba.cancellation import ToolStopped, run_cancellation
 from boba.sandbox.guest import CallMounts, ChildLimits, WarmupCall, ZygoteArgs
@@ -33,6 +32,7 @@ from boba.sandbox.zygote import (
     ZygoteSupervisor,
     ZygoteUnavailableError,
 )
+from boba.stand.zygote import SandboxStand
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.protocol import REPLY, ReplyOk
 from boba.toolkit.stream import Chunk

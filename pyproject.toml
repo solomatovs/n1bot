@@ -48,7 +48,7 @@ markers = [
 ]
 
 [tool.pyright]
-include = ["packages", "build/test"]
+include = ["packages", "build/chainlit/test", "build/studio/test"]
 exclude = [
     ".venv",
     "**/node_modules",
@@ -108,7 +108,7 @@ line-length = 88
 force-exclude = true
 extend-exclude = [
     "compose",
-    "build/src",
+    "build/*/src",
     "packages/*/*/build",
 ]
 
@@ -137,7 +137,7 @@ known-first-party = ["boba"]
     "S101", "PLR2004", "SLF001", "S105", "S106", "PLC0415", "TID251", "T201",
     "C901",
 ]
-"build/test/**" = ["T201", "E402", "TID251", "S603", "PLW1510", "S108"]
+"build/*/test/**" = ["T201", "E402", "TID251", "S603", "PLW1510", "S108"]
 
 [tool.uv.workspace]
 members = [

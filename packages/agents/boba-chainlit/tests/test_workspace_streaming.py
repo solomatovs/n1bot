@@ -22,8 +22,8 @@ from typing import Any, ClassVar, Self
 
 import pytest
 
-from boba.chainlit.data.storage import ImageStorageClient, StorageFactory
 from boba.canvas.storage import OpenedStream
+from boba.chainlit.data.storage import ImageStorageClient, StorageFactory
 from boba.chainlit.infra.config import LocalStorageConfig
 from boba.workspace.launcher import FUSE_DEVICE, ReadWindow
 

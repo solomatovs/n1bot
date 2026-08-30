@@ -9,10 +9,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from zygote_stand import SandboxStand, ZygoteStand
 
 from boba.sandbox.diagnostics import SandboxDiagnostics
 from boba.sandbox.profile import SandboxProfile
+from boba.stand.zygote import SandboxStand, ZygoteStand
 from boba.tool.shell.tools import BashToolConfig, build_bash_tool
 from boba.toolkit.launcher import RunResult
 from boba.toolkit.result import ShellResult

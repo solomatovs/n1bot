@@ -8,11 +8,11 @@ from importlib import reload
 from typing import Any
 
 import pytest
-from conftest import needs_sandbox, needs_userns, sandbox_profile
 
 from boba.sandbox import SandboxToolConfig
 from boba.sandbox.wrap import ToolProcessWrap
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
+from boba.stand.sandbox import needs_sandbox, needs_userns, sandbox_profile
 from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.result import ChartResult
 

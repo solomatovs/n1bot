@@ -6,10 +6,10 @@ import os
 from typing import Any, ClassVar
 
 import pytest
-from conftest import ROOTFS_IMAGE
 
 from boba.connections.http import HttpProfile
 from boba.sandbox import SandboxToolConfig
+from boba.stand.sandbox import ROOTFS_IMAGE
 from boba.tool.kb.confluence.tools import TOOLS as CONFLUENCE_TOOLS
 from boba.tool.kb.confluence.tools import (
     ConfluenceRequestError,

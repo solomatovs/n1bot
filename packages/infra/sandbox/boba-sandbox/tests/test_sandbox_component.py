@@ -10,10 +10,10 @@ from typing import Any
 import pytest
 from omegaconf import DictConfig, OmegaConf
 from omegaconf.errors import InterpolationKeyError
-from zygote_stand import ROOTFS_IMAGE, ProfileFields
 
 from boba.sandbox import SandboxConfig, SandboxProfile, SandboxToolConfig
 from boba.settings import bind
+from boba.stand.zygote import ROOTFS_IMAGE, ProfileFields
 
 
 def _bin_dirs() -> list[str]:

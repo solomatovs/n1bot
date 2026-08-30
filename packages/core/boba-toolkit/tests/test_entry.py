@@ -9,9 +9,14 @@ import sys
 from pathlib import Path
 
 import pytest
-from fake_toolmod import EXPECTED, FakeConfig, FakeUnavailableError, fake_echo
 from pydantic import SecretStr
 
+from boba.stand.fake_toolmod import (
+    EXPECTED,
+    FakeConfig,
+    FakeUnavailableError,
+    fake_echo,
+)
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.entry import (
     ArgumentTooLargeError,
@@ -50,7 +55,7 @@ def run_module(
         pass_fds = (write_fd,)
 
     proc = subprocess.run(  # noqa: S603
-        [sys.executable, "-m", "fake_toolmod", *arguments],
+        [sys.executable, "-m", "boba.stand.fake_toolmod", *arguments],
         input=stdin,
         capture_output=True,
         env=env,
@@ -78,12 +83,12 @@ class TestAddress:
     def test_roundtrip(self) -> None:
         address = ToolAddress.of(FAKE)
 
-        if address.module != "fake_toolmod":
-            raise AssertionError('address.module == "fake_toolmod"')
+        if address.module != "boba.stand.fake_toolmod":
+            raise AssertionError('address.module == "boba.stand.fake_toolmod"')
         if address.name != "fake_echo":
             raise AssertionError('address.name == "fake_echo"')
-        if address.argv_head()[1:] != ["-m", "fake_toolmod", "fake_echo"]:
-            raise AssertionError('address.argv_head()[1:] == ["-m", "fake_toolmod", "…')
+        if address.argv_head()[1:] != ["-m", "boba.stand.fake_toolmod", "fake_echo"]:
+            raise AssertionError('address.argv_head()[1:] == ["-m", "boba.stand.fake_toolmod", "…')
 
 
 class TestArgv:

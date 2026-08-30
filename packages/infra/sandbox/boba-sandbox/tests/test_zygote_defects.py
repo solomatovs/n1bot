@@ -24,11 +24,11 @@ from uuid import uuid4
 import pytest
 from fake_channel_tool import ChannelConfig, fx_chatter
 from pydantic import SecretStr
-from zygote_stand import ROOTFS_IMAGE, SandboxStand, ZygoteStand
 
 from boba.sandbox import SandboxProfile
 from boba.sandbox.guest import WarmupCall
 from boba.sandbox.zygote import ZygoteRegistry, ZygoteSpawner, ZygoteState
+from boba.stand.zygote import ROOTFS_IMAGE, SandboxStand, ZygoteStand
 from boba.toolkit.channels import JournalChannel, ToolChannel
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolMain
 from boba.toolkit.launcher import LauncherError
