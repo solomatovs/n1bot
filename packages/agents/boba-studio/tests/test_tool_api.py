@@ -16,16 +16,17 @@ from langchain_core.tools import tool
 from studio_stand import StandProfiles, StubAuthenticator
 
 from boba.access import ProfileGrant, RoleConfig, ToolAccess
-from boba.auth import JwtTokens
+from boba.auth import AuthService, JwtTokens
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import CallContext, HumanInitiator, ScopeKind
+from boba.identity.errors import AuthenticationError
 from boba.identity.locks import MemoryLiveLocks
 from boba.identity.signin import SignedIn
+from boba.identity.token import CookieSpec
 from boba.runtime.config import StudioRuntimeConfig
 from boba.runtime.plugins import CallSurface
 from boba.runtime.users import UsersTable
 from boba.studio.api.auth import ApiAuth, RequestTokens
-from boba.studio.api.jwt_auth import JwtAuthenticator
 from boba.studio.api.tools import ToolCallBody, ToolCalling
 from boba.toolkit.result import TextResult, pack_result
 from boba.toolrun.call_id import ToolCallIdField
@@ -247,7 +248,13 @@ class TestAuthenticator:
             )
         )
         issuer = JwtTokens(secret, 60)
-        authenticator = JwtAuthenticator(issuer, lambda: users)
+        authenticator = AuthService(
+            tokens=issuer,
+            cookie=CookieSpec(name="access_token", samesite="lax", ttl_sec=60),
+            password=None,
+            sso=None,
+            users=lambda: users,
+        )
 
         token = issuer.issue(
             SignedIn(
@@ -265,15 +272,13 @@ class TestAuthenticator:
         if user.roles != frozenset(StandProfiles.roles(studio_config)):
             raise AssertionError(f"roles must come from the token: {user.roles}")
 
-        if await authenticator.user_of_token("not-a-token") is not None:
-            raise AssertionError("garbage token must not authenticate")
+        with pytest.raises(AuthenticationError):
+            await authenticator.user_of_token("not-a-token")
 
-        # токен другого приложения на той же основе: строка users заводится здесь
-        stranger = issuer.issue(
-            SignedIn(identifier=f"nobody-{uuid4().hex[:8]}", display_name="", metadata={})
-        )
-        created = await authenticator.user_of_token(stranger)
-        if created is None:
-            raise AssertionError("a token of a peer application must sign in")
-        if not created.identifier.startswith("nobody-"):
-            raise AssertionError(created.identifier)
+        # токен подтверждает роли, но личность не заводит: без строки users входа нет
+        nobody = f"nobody-{uuid4().hex[:8]}"
+        stranger = issuer.issue(SignedIn(identifier=nobody, display_name="", metadata={}))
+        with pytest.raises(AuthenticationError):
+            await authenticator.user_of_token(stranger)
+
+        assert await users.get_user(nobody) is None

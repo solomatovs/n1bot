@@ -8,11 +8,11 @@ from uuid import uuid4
 import jwt
 import pytest
 
-from boba.auth import JwtTokens
+from boba.auth import AuthService, JwtTokens
 from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
 from boba.identity.signin import SignedIn
+from boba.identity.token import CookieSpec
 from boba.runtime.config import StudioRuntimeConfig
-from boba.studio.api.jwt_auth import JwtAuthenticator
 
 pytestmark = pytest.mark.anyio
 
@@ -43,9 +43,19 @@ def _peer_token(secret: str) -> str:
     return jwt.encode(claims, secret, algorithm="HS256")
 
 
+def _service(secret: str) -> AuthService:
+    return AuthService(
+        tokens=JwtTokens(secret, 60),
+        cookie=CookieSpec(name="access_token", samesite="lax", ttl_sec=60),
+        password=None,
+        sso=None,
+        users=OneUser,
+    )
+
+
 async def test_studio_accepts_a_peer_token(studio_config: StudioRuntimeConfig) -> None:
     secret = studio_config.session.auth_secret
-    user = await JwtAuthenticator(JwtTokens(secret, 60), OneUser).user_of_token(_peer_token(secret))
+    user = await _service(secret).user_of_token(_peer_token(secret))
 
     assert user is not None
     assert user.identifier == "alice"

@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Iterable, Iterator, Sequence
-from typing import Any, ClassVar
+from typing import Any
 
 from boba.auth.config import KerberosAuthConfig, KerberosRolesInLdapConfig
 from boba.auth.signin import ADDirectory
@@ -54,7 +54,6 @@ from boba.identity.session import (
 from boba.identity.signin import SignedIn
 from boba.identity.sso import (
     NegotiateToken,
-    RequestHeader,
     SpnegoExchange,
     SsoAdmission,
     SsoChallenge,
@@ -375,10 +374,6 @@ class SsoSignIn(SsoAdmission):
 class SpnegoGate(SpnegoExchange):
     """SPNEGO-обмен на URL приложения: вход и молчаливое обновление билета сессии."""
 
-    NEGOTIATE: ClassVar[dict[str, str]] = {
-        RequestHeader.WWW_AUTHENTICATE.value: "Negotiate"
-    }
-
     def __init__(self, sign_in: SsoSignIn) -> None:
         self._sign_in = sign_in
         self._logger = logging.getLogger(SpnegoGate.__name__)
@@ -393,12 +388,12 @@ class SpnegoGate(SpnegoExchange):
         found = NegotiateToken.of(request.authorization)
         if isinstance(found, str):
             # начало handshake токена не несёт — это не ошибка
-            return SsoChallenge(reason=found, level=logging.INFO)
+            return self._challenge(request, found, logging.INFO)
 
         try:
             identity = await self._accepted(found, client, "accept")
         except InvalidTokenError as e:
-            return SsoChallenge(reason=str(e), level=logging.WARNING)
+            return self._challenge(request, str(e), logging.WARNING)
 
         sealed = self._sign_in.sealed_of(identity)
         signed = await self._sign_in.signed_in(identity, sealed)
@@ -417,18 +412,23 @@ class SpnegoGate(SpnegoExchange):
         client = request.client
         refused = self._refresh_allowed(request, session)
         if refused is not None:
+            self._logger.warning("kerberos refresh refused: %s", refused.reason)
             return refused
 
         found = NegotiateToken.of(request.authorization)
         if isinstance(found, str):
-            return SsoChallenge(reason=found, level=logging.INFO)
+            return self._challenge(request, found, logging.INFO)
 
         try:
             identity = await self._accepted(found, client, "refresh")
         except InvalidTokenError as e:
-            return SsoChallenge(reason=str(e), level=logging.INFO)
+            return self._challenge(request, str(e), logging.INFO)
 
-        return await self._refreshed(identity, session, client)
+        outcome = await self._refreshed(identity, session, client)
+        if isinstance(outcome, SsoRefused):
+            self._logger.warning("kerberos refresh refused: %s", outcome.reason)
+
+        return outcome
 
     @staticmethod
     def _refresh_allowed(
@@ -495,13 +495,9 @@ class SpnegoGate(SpnegoExchange):
 
         return identity
 
-    def log_challenge(self, request: SsoRequest, challenge: SsoChallenge) -> None:
+    def _challenge(self, request: SsoRequest, reason: str, level: int) -> SsoChallenge:
         self._logger.log(
-            challenge.level,
-            "kerberos challenge [client=%s]: %s",
-            request.client,
-            challenge.reason,
+            level, "kerberos challenge [client=%s]: %s", request.client, reason
         )
 
-    def log_refusal(self, refused: SsoRefused) -> None:
-        self._logger.warning("kerberos refresh refused: %s", refused.reason)
+        return SsoChallenge(reason=reason, level=level)

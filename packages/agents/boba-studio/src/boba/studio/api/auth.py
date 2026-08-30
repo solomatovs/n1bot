@@ -1,8 +1,9 @@
-"""Вход запроса API: токен из cookie либо Authorization, пользователь — порт входа.
+"""Вход запроса API: токен из cookie либо Authorization, пользователь — порт входа;
+cookie входа в ответе.
 
-Ошибки (HTTP):
-401 — токен негоден, вход не сохранён или id пользователя не число.
-403 — профиль недоступен ролям пользователя.
+Ошибки:
+AuthenticationError — токена нет, он негоден или вход не сохранён.
+HTTPException 403 — профиль недоступен ролям пользователя.
 RuntimeError — ApiAuth не установлен в приложение (ошибка сборки).
 """
 
@@ -12,14 +13,14 @@ from collections.abc import Mapping
 from http.cookies import SimpleCookie
 from typing import Annotated, Any, ClassVar
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 
 from boba.chat.profiles import ChatProfiles
 from boba.identity.api import ApiSubject, AuthenticatedUser, Authenticator
 from boba.identity.errors import AuthenticationError, RefusalError
-from boba.identity.token import CookieJar
+from boba.identity.token import CookieJar, CookieSpec
 
-__all__ = ["ApiAuth", "ApiIdentity", "CurrentUser", "RequestTokens"]
+__all__ = ["ApiAuth", "ApiIdentity", "CurrentUser", "RequestTokens", "SessionCookie"]
 
 
 class RequestTokens:
@@ -77,21 +78,25 @@ class ApiAuth:
         self._authenticator = authenticator
         self._tokens = tokens
 
-    async def user_of_request(self, request: Request) -> AuthenticatedUser | None:
+    async def user_of_request(self, request: Request) -> AuthenticatedUser:
         token = self._tokens.of_request(request)
         if token is None:
-            return None
+            raise AuthenticationError("request carries no sign-in token")
 
         return await self._authenticator.user_of_token(token)
 
     async def user_of_environ(
         self, environ: Mapping[str, Any]
     ) -> AuthenticatedUser | None:
+        """Пользователь подключения сокета; None — подключение без входа."""
         token = self._tokens.of_environ(environ)
         if token is None:
             return None
 
-        return await self._authenticator.user_of_token(token)
+        try:
+            return await self._authenticator.user_of_token(token)
+        except AuthenticationError:
+            return None
 
     def install(self, app: FastAPI) -> None:
         setattr(app.state, self.STATE_KEY, self)
@@ -106,7 +111,7 @@ class ApiAuth:
         return auth
 
     @staticmethod
-    async def current(request: Request) -> AuthenticatedUser | None:
+    async def current(request: Request) -> AuthenticatedUser:
         """Зависимость FastAPI: пользователь входа текущего запроса."""
         return await ApiAuth.of_app(request.app).user_of_request(request)
 
@@ -139,3 +144,51 @@ class ApiIdentity:
             return ApiSubject.of(user, selected)
         except AuthenticationError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+
+class SessionCookie:
+    """Cookie входа в ответе HTTP: атрибуты из CookieSpec, чанки — CookieJar."""
+
+    def __init__(self, spec: CookieSpec) -> None:
+        self._spec = spec
+        self._jar = CookieJar(spec.name)
+
+    @property
+    def jar(self) -> CookieJar:
+        return self._jar
+
+    def put(self, response: Response, present: Mapping[str, str], token: str) -> None:
+        """Ставит токен и снимает чанки прежнего, более длинного токена."""
+        pieces = self._jar.pieces(token)
+        for key, value in pieces:
+            self._set(response, key, value)
+
+        for key in self._jar.stale(present, pieces):
+            self._delete(response, key)
+
+    def token_of(self, present: Mapping[str, str]) -> str | None:
+        """Токен из cookie запроса: целиком либо из чанков."""
+        return self._jar.token_of(present)
+
+    def clear(self, response: Response, present: Mapping[str, str]) -> None:
+        for key in self._jar.ours(present):
+            self._delete(response, key)
+
+    def _set(self, response: Response, key: str, value: str) -> None:
+        response.set_cookie(
+            key=key,
+            value=value,
+            httponly=True,
+            secure=self._spec.secure,
+            samesite=self._spec.samesite,
+            max_age=self._spec.ttl_sec,
+            path=self._spec.path,
+        )
+
+    def _delete(self, response: Response, key: str) -> None:
+        response.delete_cookie(
+            key=key,
+            path=self._spec.path,
+            secure=self._spec.secure,
+            samesite=self._spec.samesite,
+        )

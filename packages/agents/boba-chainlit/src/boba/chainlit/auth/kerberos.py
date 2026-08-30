@@ -176,12 +176,10 @@ class KerberosAuth:
 
     def _challenge(self, request: Request, challenge: SsoChallenge) -> Response:
         """401 Negotiate: с тикетом браузер повторит сам, без него уйдёт на логин."""
-        self.gate.log_challenge(SsoRequests.of(request), challenge)
-
         return Response(
             content=SsoErrorCode.TICKET.challenge_page(self._urls.login),
             status_code=401,
-            headers=SpnegoGate.NEGOTIATE,
+            headers=SsoChallenge.HEADERS,
             media_type="text/html",
         )
 
@@ -212,13 +210,11 @@ class KerberosAuth:
 
         outcome = await self.gate.refresh(SsoRequests.of(request), session)
         if isinstance(outcome, SsoRefused):
-            self.gate.log_refusal(outcome)
             return Response(status_code=403)
 
         if isinstance(outcome, SsoChallenge):
             # 401 без страницы логина: ответ читает скрипт, не человек
-            self.gate.log_challenge(SsoRequests.of(request), outcome)
-            return Response(status_code=401, headers=SpnegoGate.NEGOTIATE)
+            return Response(status_code=401, headers=SsoChallenge.HEADERS)
 
         return self._adopted(request, outcome)
 

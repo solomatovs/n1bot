@@ -16,7 +16,7 @@ from starlette.responses import Response
 from boba.chainlit.infra.entry import AppEntry
 from boba.identity.token import CookieSpec
 from boba.runtime.config import ConfigLocator, RuntimeConfig
-from boba.studio.api.jwt_auth import SessionCookie
+from boba.studio.api.auth import SessionCookie
 
 CHAINLIT_SIDE = """
 import json, sys

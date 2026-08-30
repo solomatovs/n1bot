@@ -10,7 +10,7 @@ import json
 import sys
 from typing import Any, ClassVar
 
-from boba.auth import JwtTokens
+from boba.auth import AuthService, JwtTokens
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.identity.api import (
     AuthenticatedUser,
@@ -25,7 +25,6 @@ from boba.messaging.bus import ListenerState, StaticBusWatch
 from boba.runtime.refs import RuntimeRefs
 from boba.runtime.users import UsersTable
 from boba.studio.api.app import ApiAccess, ApiApp
-from boba.studio.api.jwt_auth import JwtAuthenticator, SessionCookie
 from boba.studio.api.signin import PageUrls, SignInWiring
 from boba.toolrun.registry import ToolRegistry
 from boba.workflow_engine.service import WorkflowService
@@ -74,17 +73,18 @@ class OpenApiDocument:
     @classmethod
     def _signin(cls) -> SignInWiring:
         """Маршруты входа в схеме есть; провайдера паролей у схемы нет."""
-        return SignInWiring(
+        auth = AuthService(
+            tokens=JwtTokens(cls.JWT_KEY, 1),
+            cookie=CookieSpec(name=cls.COOKIE, samesite="lax", ttl_sec=1),
             password=None,
             sso=None,
+            users=cls._no_users,
+        )
+
+        return SignInWiring(
+            auth=auth,
             sso_url="",
             page=PageUrls(root="/workflow", login="/workflow/login", home="/workflow"),
-            issuer=JwtTokens(cls.JWT_KEY, 1),
-            authenticator=JwtAuthenticator(JwtTokens(cls.JWT_KEY, 1), cls._no_users),
-            cookie=SessionCookie(
-                CookieSpec(name=cls.COOKIE, samesite="lax", ttl_sec=1)
-            ),
-            users=NoUsers(),
         )
 
     @classmethod

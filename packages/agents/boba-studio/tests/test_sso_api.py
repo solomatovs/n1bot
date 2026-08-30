@@ -15,7 +15,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from studio_stand import NoUsers, StubAuthenticator, StubRefs
 
-from boba.auth import JwtTokens
+from boba.auth import AuthService, JwtTokens
 from boba.auth.config import KerberosAuthConfig
 from boba.auth.sso import SpnegoGate, SsoSignIn
 from boba.chat.profiles import ChatProfiles
@@ -30,7 +30,6 @@ from boba.runtime.config import StudioRuntimeConfig
 from boba.stand.kerberos import SsoBrowser
 from boba.stand.site import Stand as Site
 from boba.studio.api.app import ApiAccess, ApiApp
-from boba.studio.api.jwt_auth import JwtAuthenticator, SessionCookie
 from boba.studio.api.signin import PageUrls, SignInWiring
 from boba.studio.api.urls import ApiVersion, SignInUrl
 
@@ -88,18 +87,18 @@ class Stand:
         config = bind(raw_config, path="auth.kerberos", model=KerberosAuthConfig)
         secret = studio_config.session.auth_secret
         self.users = Users()
-        tokens = JwtTokens(secret, 3600)
-        self.authenticator = JwtAuthenticator(tokens, lambda: self.users)
         self.sign_in = SsoSignIn(config, secret)
-        wiring = SignInWiring(
+        self.auth = AuthService(
+            tokens=JwtTokens(secret, 3600),
+            cookie=CookieSpec(name=COOKIE, samesite="lax", ttl_sec=3600),
             password=None,
             sso=SpnegoGate(self.sign_in),
+            users=lambda: self.users,
+        )
+        wiring = SignInWiring(
+            auth=self.auth,
             sso_url=f"{PREFIX}/api{ApiVersion.V1}{SignInUrl.SSO}",
             page=PageUrls(root=PAGE, login=f"{PAGE}/login", home=f"{PAGE}/observe"),
-            issuer=tokens,
-            authenticator=self.authenticator,
-            cookie=SessionCookie(CookieSpec(name=COOKIE, samesite="lax", ttl_sec=3600)),
-            users=self.users,
         )
         access = ApiAccess(StubAuthenticator(None), COOKIE, NoUsers.source)
         self.app = ApiApp.build(
@@ -164,7 +163,7 @@ async def test_sign_in_sets_a_cookie_with_the_ticket_and_returns_to_next(
     assert reply.status_code == 303, reply.text
     assert reply.headers["location"] == f"{PAGE}/build/7"
 
-    ticket = stand.authenticator.ticket_of_token(_token_of(reply))
+    ticket = stand.auth.ticket_of_token(_token_of(reply))
     assert ticket is not None
     assert ticket.principal == USER_PRINCIPAL
 
@@ -193,7 +192,7 @@ async def test_refresh_issues_a_fresh_ticket_for_the_session(
         f"{ApiVersion.V1}{SignInUrl.SSO}", headers=_negotiate(SsoBrowser.token(SITE, tmp_path))
     )
     token = _token_of(signed_in)
-    before = stand.authenticator.ticket_of_token(token)
+    before = stand.auth.ticket_of_token(token)
     assert before is not None
 
     reply = await client.post(
@@ -206,7 +205,7 @@ async def test_refresh_issues_a_fresh_ticket_for_the_session(
     )
 
     assert reply.status_code == 204, reply.text
-    after = stand.authenticator.ticket_of_token(_token_of(reply))
+    after = stand.auth.ticket_of_token(_token_of(reply))
     assert after is not None
     assert after.sealed != before.sealed
     assert after.principal == USER_PRINCIPAL

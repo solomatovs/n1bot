@@ -113,6 +113,10 @@ class SsoChallenge(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    HEADERS: ClassVar[dict[str, str]] = {
+        RequestHeader.WWW_AUTHENTICATE.value: "Negotiate"
+    }
+
     reason: str
     level: int
 

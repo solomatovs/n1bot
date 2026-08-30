@@ -10,7 +10,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from studio_stand import NoRefs
 
-from boba.auth import JwtTokens
+from boba.auth import AuthService, JwtTokens
 from boba.auth.config import LocalAuthConfig
 from boba.auth.signin import PasswordSignIns
 from boba.chat.openai import OpenAiConfig
@@ -26,7 +26,6 @@ from boba.identity.roles import RoleExcludeConfig, RoleMappingConfig
 from boba.identity.signin import SignedIn
 from boba.identity.token import CookieSpec
 from boba.studio.api.app import ApiAccess, ApiApp
-from boba.studio.api.jwt_auth import JwtAuthenticator, SessionCookie
 from boba.studio.api.signin import PageUrls, SignInWiring
 from boba.studio.api.urls import AccountUrl, ApiVersion, SignInUrl
 
@@ -92,25 +91,23 @@ def _local() -> LocalAuthConfig:
 @pytest.fixture
 async def client() -> AsyncIterator[AsyncClient]:
     users = Users()
-    wiring = SignInWiring(
+    auth = AuthService(
+        tokens=JwtTokens(SECRET, 3600),
+        cookie=CookieSpec(name=COOKIE, samesite="lax", ttl_sec=3600),
         password=PasswordSignIns.of([_local()]),
         sso=None,
+        users=lambda: users,
+    )
+    wiring = SignInWiring(
+        auth=auth,
         sso_url="/boba-debug/api/v1/auth/sso",
         page=PageUrls(
             root="/boba-debug/workflow",
             login="/boba-debug/workflow/login",
             home="/boba-debug/workflow/observe",
         ),
-        issuer=JwtTokens(SECRET, 3600),
-        authenticator=JwtAuthenticator(JwtTokens(SECRET, 3600), lambda: users),
-        cookie=SessionCookie(CookieSpec(name=COOKIE, samesite="lax", ttl_sec=3600)),
-        users=users,
     )
-    access = ApiAccess(
-        JwtAuthenticator(JwtTokens(SECRET, 3600), lambda: users),
-        COOKIE,
-        lambda: users,
-    )
+    access = ApiAccess(auth, COOKIE, lambda: users)
     app = ApiApp.build(NoRefs.refs(), access, _profiles(), wiring)
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://api"
