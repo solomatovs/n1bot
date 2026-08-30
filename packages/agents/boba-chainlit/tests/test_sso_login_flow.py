@@ -19,14 +19,15 @@ from chainlit.auth.jwt import create_jwt
 from gssapi import Credentials, Name, NameType, SecurityContext
 from starlette.requests import Request
 
+from boba.auth.config import KerberosAuthConfig, KerberosRolesConfig
 from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.infra.session import ChainlitSession
+from boba.config import bind
 from boba.identity.roles import RoleExcludeConfig
 from boba.identity.session import SignInProvider, UserMetadataField
+from boba.identity.sso import SsoChallenge, SsoRefresh, SsoSigned
 from boba.krb import KerberosEnv, ServiceTicketIssuer
-from boba.runtime.auth_config import KerberosAuthConfig, KerberosRolesConfig
-from boba.runtime.sso import Challenge, Signed, SsoRefresh
-from boba.config import bind
+from boba.runtime.http import SsoRequests
 from boba.stand.site import Stand
 
 STAND = Stand.required()
@@ -106,7 +107,7 @@ class Sso:
     """Прогон /auth/sso через боевой обмен: исход handshake."""
 
     @staticmethod
-    async def signed(auth: KerberosAuth, token: bytes) -> Signed:
+    async def signed(auth: KerberosAuth, token: bytes) -> SsoSigned:
         import base64
 
         scope = {
@@ -117,8 +118,8 @@ class Sso:
             "headers": [(b"authorization", b"Negotiate " + base64.b64encode(token))],
             "client": ("127.0.0.1", 1234),
         }
-        outcome = await auth.gate.handshake(Request(scope))
-        if isinstance(outcome, Challenge):
+        outcome = await auth.gate.handshake(SsoRequests.of(Request(scope)))
+        if isinstance(outcome, SsoChallenge):
             raise AssertionError(f"SPNEGO must sign the browser in: {outcome.reason}")
 
         return outcome

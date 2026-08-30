@@ -14,6 +14,7 @@ import pytest
 from starlette.responses import Response
 
 from boba.chainlit.infra.entry import AppEntry
+from boba.identity.token import CookieSpec
 from boba.runtime.config import ConfigLocator, RuntimeConfig
 from boba.studio.api.jwt_auth import SessionCookie
 
@@ -100,12 +101,15 @@ class TestSharedSessionCookie:
     @staticmethod
     def studio_cookie(config: RuntimeConfig) -> SessionCookie:
         session = config.session
-
-        return SessionCookie(
-            session.cookie, session.cookie_samesite, session.session_ttl_sec
+        spec = CookieSpec(
+            name=session.cookie,
+            samesite=session.cookie_samesite,
+            ttl_sec=session.session_ttl_sec,
         )
 
-    @pytest.mark.parametrize("token", [SHORT_TOKEN, LONG_TOKEN])
+        return SessionCookie(spec)
+
+    @pytest.mark.parametrize("token", [SHORT_TOKEN, LONG_TOKEN], ids=["short", "long"])
     def test_chainlit_cookie_is_read_by_studio(
         self, runtime_config: RuntimeConfig, token: str
     ) -> None:
@@ -120,10 +124,10 @@ class TestSharedSessionCookie:
 
         for attributes in CookieHeaders.attributes(headers):
             assert attributes["samesite"] == runtime_config.session.cookie_samesite
-            assert attributes["path"] == SessionCookie.PATH
+            assert attributes["path"] == CookieSpec.PATH
             assert attributes["max-age"] == str(ttl)
 
-    @pytest.mark.parametrize("token", [SHORT_TOKEN, LONG_TOKEN])
+    @pytest.mark.parametrize("token", [SHORT_TOKEN, LONG_TOKEN], ids=["short", "long"])
     def test_studio_cookie_is_read_by_chainlit(
         self, runtime_config: RuntimeConfig, token: str
     ) -> None:

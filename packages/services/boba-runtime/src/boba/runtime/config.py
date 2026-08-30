@@ -15,14 +15,17 @@ from omegaconf import DictConfig
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from boba.access import RoleConfig
+from boba.auth.config import (
+    AuthConfig,
+    KerberosAuthConfig,
+)
 from boba.chat.profiles import ChatProfileConfig
+from boba.config import bind, build_app_config
 from boba.connections.postgres import PostgresConfig
 from boba.krb import KerberosWorkspaceConfig
 from boba.krb.seal import SsoTickets, TicketSealer
-from boba.runtime.auth_config import AuthConfig, KerberosAuthConfig
 from boba.sandbox import CgroupManager
 from boba.sandbox.profile import SandboxConfig
-from boba.config import bind, build_app_config
 
 __all__ = [
     "AppName",

@@ -8,10 +8,11 @@ from uuid import uuid4
 import jwt
 import pytest
 
+from boba.auth import JwtTokens
 from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
 from boba.identity.signin import SignedIn
 from boba.runtime.config import StudioRuntimeConfig
-from boba.studio.api.jwt_auth import JwtAuthenticator, JwtIssuer
+from boba.studio.api.jwt_auth import JwtAuthenticator
 
 pytestmark = pytest.mark.anyio
 
@@ -44,7 +45,7 @@ def _peer_token(secret: str) -> str:
 
 async def test_studio_accepts_a_peer_token(studio_config: StudioRuntimeConfig) -> None:
     secret = studio_config.session.auth_secret
-    user = await JwtAuthenticator(secret, OneUser).user_of_token(_peer_token(secret))
+    user = await JwtAuthenticator(JwtTokens(secret, 60), OneUser).user_of_token(_peer_token(secret))
 
     assert user is not None
     assert user.identifier == "alice"
@@ -54,7 +55,7 @@ async def test_studio_accepts_a_peer_token(studio_config: StudioRuntimeConfig) -
 def test_issued_token_carries_the_peer_claims(studio_config: StudioRuntimeConfig) -> None:
     """Выпущенный studio токен читается теми же claims, что и токен чата."""
     secret = studio_config.session.auth_secret
-    token = JwtIssuer(secret, 60).issue(
+    token = JwtTokens(secret, 60).issue(
         SignedIn(identifier="alice", display_name="Alice", metadata={"roles": ["DEV"]})
     )
     claims = jwt.decode(token, secret, algorithms=["HS256"])

@@ -13,6 +13,7 @@ from pydantic import (
 )
 
 from boba.access import RoleConfig
+from boba.auth.config import AuthConfig
 from boba.chainlit.domain.config import LocalStorageConfig
 from boba.chat.profiles import (
     ChatProfileConfig,
@@ -20,7 +21,6 @@ from boba.chat.profiles import (
 )
 from boba.connections.postgres import PostgresConfig
 from boba.krb import KerberosWorkspaceConfig
-from boba.runtime.auth_config import AuthConfig
 from boba.runtime.config import DataLayerConfig, RuntimeConfig
 from boba.sandbox.profile import SandboxConfig
 

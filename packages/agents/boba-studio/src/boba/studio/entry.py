@@ -13,9 +13,13 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI
 
+from boba.auth import JwtTokens
+from boba.auth.signin import PasswordSignIns
+from boba.auth.sso import SpnegoGate, SsoSignIn
 from boba.cancellation import StopReason
 from boba.chat.profiles import ChatProfiles
 from boba.identity.run import RunRegistry
+from boba.identity.token import CookieSpec
 from boba.runtime import providers
 from boba.runtime.config import (
     AppName,
@@ -27,12 +31,10 @@ from boba.runtime.config import (
 )
 from boba.runtime.di import Container
 from boba.runtime.plugins import CoreTools
-from boba.runtime.signin import PasswordSignIns
-from boba.runtime.sso import SpnegoGate, SsoSignIn
 from boba.runtime.users import UsersTable
 from boba.sandbox.zygote import ZygoteRegistry
 from boba.studio.api.app import ApiAccess, ApiApp
-from boba.studio.api.jwt_auth import JwtAuthenticator, JwtIssuer, SessionCookie
+from boba.studio.api.jwt_auth import JwtAuthenticator, SessionCookie
 from boba.studio.api.signin import PageUrls, SignInWiring
 from boba.studio.api.urls import ApiVersion, SignInUrl
 from boba.studio.page import WorkflowDevPage, WorkflowPage
@@ -65,7 +67,10 @@ class StudioHost:
 
         table = providers.users_table(config)
         access = ApiAccess(
-            authenticator=JwtAuthenticator(config.session.auth_secret, lambda: table),
+            authenticator=JwtAuthenticator(
+                JwtTokens(config.session.auth_secret, config.session.session_ttl_sec),
+                lambda: table,
+            ),
             cookie=config.session.cookie,
             users=lambda: table,
         )
@@ -89,7 +94,8 @@ class StudioHost:
         """Пароли и SPNEGO — провайдеры services; SSO на своём URL под api."""
         studio = config.studio
         session = config.session
-        authenticator = JwtAuthenticator(session.auth_secret, lambda: users)
+        tokens = JwtTokens(session.auth_secret, session.session_ttl_sec)
+        authenticator = JwtAuthenticator(tokens, lambda: users)
         gate = None
         if kerberos := config.kerberos():
             gate = SpnegoGate(SsoSignIn(kerberos, session.auth_secret))
@@ -105,10 +111,14 @@ class StudioHost:
                 login=f"{page_root}/login",
                 home=f"{page_root}/observe",
             ),
-            issuer=JwtIssuer(session.auth_secret, session.session_ttl_sec),
+            issuer=tokens,
             authenticator=authenticator,
             cookie=SessionCookie(
-                session.cookie, session.cookie_samesite, session.session_ttl_sec
+                CookieSpec(
+                    name=session.cookie,
+                    samesite=session.cookie_samesite,
+                    ttl_sec=session.session_ttl_sec,
+                )
             ),
             users=users,
         )

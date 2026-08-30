@@ -14,7 +14,7 @@ from boba.runtime.config import StudioPath
 from boba.runtime.http import DomainErrorMiddleware
 from boba.runtime.refs import RuntimeRefs
 from boba.studio.api.account import AccountApi, UsersSource
-from boba.studio.api.auth import ApiAuth, TokenReader
+from boba.studio.api.auth import ApiAuth, RequestTokens
 from boba.studio.api.connections import ConnectionsApi
 from boba.studio.api.signin import SignInApi, SignInWiring
 from boba.studio.api.streams import StreamApi
@@ -55,7 +55,7 @@ class ApiApp:
         app = FastAPI(
             title=cls.TITLE, openapi_url=cls.OPENAPI, docs_url=cls.DOCS, redoc_url=None
         )
-        ApiAuth(access.authenticator, TokenReader(access.cookie)).install(app)
+        ApiAuth(access.authenticator, RequestTokens(access.cookie)).install(app)
 
         router = APIRouter(prefix=ApiVersion.V1.value)
         if signin is not None:

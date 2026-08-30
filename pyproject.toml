@@ -26,6 +26,7 @@ pythonpath = [
     "packages/services/boba-connection-broker/src",
     "packages/services/boba-workflow-engine/src",
     "packages/services/boba-runtime/src",
+    "packages/services/boba-auth/src",
     "packages/core/boba-indexing/src",
     "packages/infra/config/boba-config/src",
     "packages/core/boba-toolkit/src",
@@ -81,6 +82,7 @@ extraPaths = [
     "packages/services/boba-connection-broker/src",
     "packages/services/boba-workflow-engine/src",
     "packages/services/boba-runtime/src",
+    "packages/services/boba-auth/src",
     "packages/core/boba-indexing/src",
     "packages/infra/config/boba-config/src",
     "packages/core/boba-toolkit/src",
@@ -165,6 +167,7 @@ boba-toolrun        = { workspace = true }
 boba-connection-broker = { workspace = true }
 boba-workflow-engine = { workspace = true }
 boba-runtime = { workspace = true }
+boba-auth = { workspace = true }
 boba-studio = { workspace = true }
 boba-indexing       = { workspace = true }
 boba-toolkit        = { workspace = true }

@@ -8,6 +8,13 @@ from __future__ import annotations
 
 import pytest
 
+from boba.auth.config import (
+    KerberosRolesInLdapConfig,
+    KerberosRolesInLdapMappingConfig,
+    LocalAuthConfig,
+)
+from boba.auth.signin import LocalSignIn
+from boba.auth.sso import KerberosRolesInLdapProvider
 from boba.identity.directory import ADUserEntry
 from boba.identity.errors import AuthorizationError
 from boba.identity.roles import (
@@ -17,13 +24,6 @@ from boba.identity.roles import (
     SidUserRolesProvider,
 )
 from boba.identity.session import UserLogin, UserMetadataField
-from boba.runtime.auth_config import (
-    KerberosRolesInLdapConfig,
-    KerberosRolesInLdapMappingConfig,
-    LocalAuthConfig,
-)
-from boba.runtime.signin import LocalSignIn
-from boba.runtime.sso import KerberosRolesInLdapProvider
 from boba.stand.fakes import FakeSecret
 
 pytestmark = pytest.mark.anyio

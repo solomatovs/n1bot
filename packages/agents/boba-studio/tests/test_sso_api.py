@@ -15,19 +15,22 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from studio_stand import NoUsers, StubAuthenticator, StubRefs
 
+from boba.auth import JwtTokens
+from boba.auth.config import KerberosAuthConfig
+from boba.auth.sso import SpnegoGate, SsoSignIn
 from boba.chat.profiles import ChatProfiles
+from boba.config import bind
 from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
 from boba.identity.session import UserMetadataField
 from boba.identity.signin import SignedIn
+from boba.identity.sso import SsoRefresh
+from boba.identity.token import CookieSpec
 from boba.krb import KerberosEnv
-from boba.runtime.auth_config import KerberosAuthConfig
 from boba.runtime.config import StudioRuntimeConfig
-from boba.runtime.sso import SpnegoGate, SsoRefresh, SsoSignIn
-from boba.config import bind
 from boba.stand.kerberos import SsoBrowser
 from boba.stand.site import Stand as Site
 from boba.studio.api.app import ApiAccess, ApiApp
-from boba.studio.api.jwt_auth import JwtAuthenticator, JwtIssuer, SessionCookie
+from boba.studio.api.jwt_auth import JwtAuthenticator, SessionCookie
 from boba.studio.api.signin import PageUrls, SignInWiring
 from boba.studio.api.urls import ApiVersion, SignInUrl
 
@@ -85,16 +88,17 @@ class Stand:
         config = bind(raw_config, path="auth.kerberos", model=KerberosAuthConfig)
         secret = studio_config.session.auth_secret
         self.users = Users()
-        self.authenticator = JwtAuthenticator(secret, lambda: self.users)
+        tokens = JwtTokens(secret, 3600)
+        self.authenticator = JwtAuthenticator(tokens, lambda: self.users)
         self.sign_in = SsoSignIn(config, secret)
         wiring = SignInWiring(
             password=None,
             sso=SpnegoGate(self.sign_in),
             sso_url=f"{PREFIX}/api{ApiVersion.V1}{SignInUrl.SSO}",
             page=PageUrls(root=PAGE, login=f"{PAGE}/login", home=f"{PAGE}/observe"),
-            issuer=JwtIssuer(secret, 3600),
+            issuer=tokens,
             authenticator=self.authenticator,
-            cookie=SessionCookie(COOKIE, "lax", 3600),
+            cookie=SessionCookie(CookieSpec(name=COOKIE, samesite="lax", ttl_sec=3600)),
             users=self.users,
         )
         access = ApiAccess(StubAuthenticator(None), COOKIE, NoUsers.source)

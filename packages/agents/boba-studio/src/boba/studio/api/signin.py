@@ -12,15 +12,14 @@ SSO: GET /auth/sso?next= — обмен на своём URL (общий SpnegoGa
 
 from __future__ import annotations
 
-import html
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import ClassVar
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from boba.auth.sso import SpnegoGate
 from boba.identity.api import UsersUpsert
 from boba.identity.errors import (
     AuthenticationError,
@@ -29,8 +28,10 @@ from boba.identity.errors import (
     InternalServiceError,
 )
 from boba.identity.signin import PasswordSignIn, SignedIn
-from boba.runtime.sso import Challenge, RefreshRefused, SpnegoGate
-from boba.studio.api.jwt_auth import JwtAuthenticator, JwtIssuer, SessionCookie
+from boba.identity.sso import SsoChallenge, SsoErrorCode, SsoRefused
+from boba.identity.token import TokenIssuer
+from boba.runtime.http import SsoRequests
+from boba.studio.api.jwt_auth import JwtAuthenticator, SessionCookie
 from boba.studio.api.urls import SignInUrl
 
 __all__ = [
@@ -39,7 +40,6 @@ __all__ = [
     "SignInApi",
     "SignInProviders",
     "SignInWiring",
-    "SsoError",
 ]
 
 
@@ -60,27 +60,10 @@ class SignInWiring:
     sso: SpnegoGate | None
     sso_url: str
     page: PageUrls
-    issuer: JwtIssuer
+    issuer: TokenIssuer
     authenticator: JwtAuthenticator
     cookie: SessionCookie
     users: UsersUpsert
-
-
-class SsoError(StrEnum):
-    """Коды исхода SSO для страницы логина: ?error=<code>."""
-
-    TICKET = "sso_ticket"
-    DENIED = "sso_denied"
-    FAILED = "sso_failed"
-
-    def login_url(self, login: str) -> str:
-        return f"{login}?error={self.value}"
-
-    def challenge_page(self, login: str) -> str:
-        """Тело 401: с тикетом браузер повторит запрос сам, без него уйдёт на логин."""
-        url = html.escape(self.login_url(login), quote=True)
-
-        return f'<!doctype html><meta http-equiv="refresh" content="0;url={url}">'
 
 
 class SignInProviders(BaseModel):
@@ -205,7 +188,7 @@ class SignInApi:
 
         return page.home
 
-    def _to_login(self, code: SsoError) -> RedirectResponse:
+    def _to_login(self, code: SsoErrorCode) -> RedirectResponse:
         return RedirectResponse(
             url=code.login_url(self._wiring.page.login), status_code=303
         )
@@ -215,11 +198,11 @@ class SignInApi:
         gate = self._gate()
 
         try:
-            outcome = await gate.handshake(request)
-            if isinstance(outcome, Challenge):
-                gate.log_challenge(request, outcome)
+            outcome = await gate.handshake(SsoRequests.of(request))
+            if isinstance(outcome, SsoChallenge):
+                gate.log_challenge(SsoRequests.of(request), outcome)
                 return Response(
-                    content=SsoError.TICKET.challenge_page(self._wiring.page.login),
+                    content=SsoErrorCode.TICKET.challenge_page(self._wiring.page.login),
                     status_code=401,
                     headers=SpnegoGate.NEGOTIATE,
                     media_type="text/html",
@@ -227,9 +210,9 @@ class SignInApi:
 
             await self._wiring.users.ensure_user(outcome.signed)
         except AuthorizationError:
-            return self._to_login(SsoError.DENIED)
+            return self._to_login(SsoErrorCode.DENIED)
         except (AuthenticationError, ExternalServiceError, InternalServiceError):
-            return self._to_login(SsoError.FAILED)
+            return self._to_login(SsoErrorCode.FAILED)
 
         response = RedirectResponse(url=self._next_of(next), status_code=303)
         self._issue(request, response, outcome.signed)
@@ -243,13 +226,13 @@ class SignInApi:
         if token := self._wiring.cookie.token_of(request.cookies):
             session = self._wiring.authenticator.ticket_of_token(token)
 
-        outcome = await gate.refresh(request, session)
-        if isinstance(outcome, RefreshRefused):
+        outcome = await gate.refresh(SsoRequests.of(request), session)
+        if isinstance(outcome, SsoRefused):
             gate.log_refusal(outcome)
             return Response(status_code=403)
 
-        if isinstance(outcome, Challenge):
-            gate.log_challenge(request, outcome)
+        if isinstance(outcome, SsoChallenge):
+            gate.log_challenge(SsoRequests.of(request), outcome)
             return Response(status_code=401, headers=SpnegoGate.NEGOTIATE)
 
         response = Response(status_code=204)

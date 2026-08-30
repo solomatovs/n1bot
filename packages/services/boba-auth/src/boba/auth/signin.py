@@ -34,6 +34,7 @@ from ldap3.core.exceptions import (
     LDAPStrongerAuthRequiredResult,
 )
 
+from boba.auth.config import AuthConfig, LdapAuthConfig, LocalAuthConfig
 from boba.identity.directory import (
     LDAPAccessDeniedError,
     LDAPConfigError,
@@ -63,7 +64,6 @@ from boba.identity.session import (
     UserMetadataField,
 )
 from boba.identity.signin import PasswordSignIn, SignedIn
-from boba.runtime.auth_config import AuthConfig, LdapAuthConfig, LocalAuthConfig
 
 __all__ = [
     "ADDirectory",

@@ -1,14 +1,16 @@
-"""HTTP-граница ошибок: BaseError -> статус и тело ответа, остальное -> 500."""
+"""HTTP-граница: BaseError -> статус и тело ответа, запрос SSO -> модель сервиса."""
 
 import logging
 
+from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from boba.identity.errors import BaseError, FailureReport, to_domain
 from boba.identity.session import LogLine
+from boba.identity.sso import RequestHeader, SsoRefresh, SsoRequest
 
-__all__ = ["DomainErrorMiddleware"]
+__all__ = ["DomainErrorMiddleware", "SsoRequests"]
 
 
 class DomainErrorMiddleware:
@@ -54,3 +56,32 @@ class DomainErrorMiddleware:
                     status_code=http.status_code,
                     headers=http.headers,
                 )(scope, receive, send)
+
+
+class SsoRequests:
+    """Запрос SPNEGO-обмена из запроса starlette: заголовки и адрес клиента."""
+
+    @classmethod
+    def of(cls, request: Request) -> SsoRequest:
+        refresh = request.headers.get(SsoRefresh.HEADER, "")
+
+        return SsoRequest(
+            authorization=request.headers.get(RequestHeader.AUTHORIZATION, ""),
+            refresh_asked=SsoRefresh.asked(refresh),
+            client=cls._client_of(request),
+        )
+
+    @staticmethod
+    def _client_of(request: Request) -> str:
+        """Лучший идентификатор клиента для логов: реальный IP за прокси, иначе peer."""
+        if xff := request.headers.get(RequestHeader.FORWARDED_FOR):
+            first, _, _ = xff.partition(",")
+            return first.strip()
+
+        if real := request.headers.get(RequestHeader.REAL_IP):
+            return real
+
+        if request.client is not None:
+            return request.client.host
+
+        return SsoRequest.UNKNOWN_CLIENT

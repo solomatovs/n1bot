@@ -12,16 +12,12 @@ InternalServiceError — keytab/SPN/делегирование/конфиг не
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
 from collections.abc import Iterable, Iterator, Sequence
-from dataclasses import dataclass
-from enum import StrEnum
 from typing import Any, ClassVar
 
-from starlette.datastructures import Headers
-from starlette.requests import Request
-
+from boba.auth.config import KerberosAuthConfig, KerberosRolesInLdapConfig
+from boba.auth.signin import ADDirectory
 from boba.identity.context import DelegatedTicket
 from boba.identity.directory import (
     ADUserEntry,
@@ -56,7 +52,16 @@ from boba.identity.session import (
     UserMetadataField,
 )
 from boba.identity.signin import SignedIn
-from boba.identity.sso import SsoAdmission
+from boba.identity.sso import (
+    NegotiateToken,
+    RequestHeader,
+    SpnegoExchange,
+    SsoAdmission,
+    SsoChallenge,
+    SsoRefused,
+    SsoRequest,
+    SsoSigned,
+)
 from boba.krb import (
     CredentialsExpiredError,
     DelegationNotPermittedError,
@@ -68,45 +73,16 @@ from boba.krb import (
     TicketCapture,
 )
 from boba.krb.seal import SsoTickets, TicketSealer
-from boba.runtime.auth_config import KerberosAuthConfig, KerberosRolesInLdapConfig
-from boba.runtime.signin import ADDirectory
 from boba.toolkit.template import TemplateError
 
 __all__ = [
-    "Challenge",
     "KerberosErrorToDomain",
     "KerberosRolesInLdapProvider",
-    "NegotiateToken",
-    "RefreshRefused",
-    "RequestHeader",
     "SidExcludeUserProvider",
     "SidUserRolesProvider",
-    "Signed",
     "SpnegoGate",
-    "SsoRefresh",
     "SsoSignIn",
 ]
-
-
-class RequestHeader(StrEnum):
-    """Заголовки, которыми живёт обмен: токен, клиент за прокси, вызов браузеру."""
-
-    AUTHORIZATION = "authorization"
-    FORWARDED_FOR = "x-forwarded-for"
-    REAL_IP = "x-real-ip"
-    WWW_AUTHENTICATE = "WWW-Authenticate"
-
-
-class SsoRefresh(StrEnum):
-    """Признак того, что обмен запросила своя страница, а не чужой сайт."""
-
-    HEADER = "x-boba-sso-refresh"
-    VALUE = "1"
-
-    @classmethod
-    def asked(cls, headers: Headers) -> bool:
-        """Заголовок ставит только свой fetch: кросс-сайтовый запрос его не несёт."""
-        return headers.get(cls.HEADER) == cls.VALUE
 
 
 class KerberosErrorToDomain:
@@ -396,55 +372,7 @@ class SsoSignIn(SsoAdmission):
         return roles, excluded
 
 
-class NegotiateToken:
-    """Токен Negotiate из заголовка Authorization."""
-
-    SCHEME: ClassVar[str] = "negotiate"
-
-    @classmethod
-    def of(cls, headers: Headers) -> bytes | str:
-        """Токен либо причина, почему его нет."""
-        auth = headers.get(RequestHeader.AUTHORIZATION)
-        if not auth:
-            return "no Authorization header"
-
-        scheme, _, value = auth.partition(" ")
-        if scheme.lower() != cls.SCHEME:
-            return f"unexpected auth scheme {scheme!r}"
-
-        if not value:
-            return f"unexpected auth scheme {scheme!r}"
-
-        try:
-            return base64.b64decode(value)
-        except ValueError as e:
-            return f"invalid base64 token: {e}"
-
-
-@dataclass(frozen=True)
-class Challenge:
-    """Личности нет: ответить 401 Negotiate, браузер домена повторит с токеном."""
-
-    reason: str
-    level: int
-
-
-@dataclass(frozen=True)
-class Signed:
-    """SPNEGO принят, принципал допущен: пользователь входа с билетом в metadata."""
-
-    signed: SignedIn
-    principal: str
-
-
-@dataclass(frozen=True)
-class RefreshRefused:
-    """Повторный обмен не относится к этой сессии: 403, повтор не поможет."""
-
-    reason: str
-
-
-class SpnegoGate:
+class SpnegoGate(SpnegoExchange):
     """SPNEGO-обмен на URL приложения: вход и молчаливое обновление билета сессии."""
 
     NEGOTIATE: ClassVar[dict[str, str]] = {
@@ -459,18 +387,18 @@ class SpnegoGate:
     def sign_in(self) -> SsoSignIn:
         return self._sign_in
 
-    async def handshake(self, request: Request) -> Challenge | Signed:
+    async def handshake(self, request: SsoRequest) -> SsoChallenge | SsoSigned:
         """Вход: токен из Authorization → личность → допуск → SignedIn."""
-        client = self.client_of(request)
-        found = NegotiateToken.of(request.headers)
+        client = request.client
+        found = NegotiateToken.of(request.authorization)
         if isinstance(found, str):
             # начало handshake токена не несёт — это не ошибка
-            return Challenge(found, logging.INFO)
+            return SsoChallenge(reason=found, level=logging.INFO)
 
         try:
             identity = await self._accepted(found, client, "accept")
         except InvalidTokenError as e:
-            return Challenge(str(e), logging.WARNING)
+            return SsoChallenge(reason=str(e), level=logging.WARNING)
 
         sealed = self._sign_in.sealed_of(identity)
         signed = await self._sign_in.signed_in(identity, sealed)
@@ -480,61 +408,64 @@ class SpnegoGate:
             identity.principal,
         )
 
-        return Signed(signed, identity.principal)
+        return SsoSigned(signed=signed, principal=identity.principal)
 
     async def refresh(
-        self, request: Request, session: DelegatedTicket | None
-    ) -> Challenge | RefreshRefused | Signed:
+        self, request: SsoRequest, session: DelegatedTicket | None
+    ) -> SsoChallenge | SsoRefused | SsoSigned:
         """Повторный SPNEGO живой сессии: свежий билет под тем же принципалом."""
-        client = self.client_of(request)
-        refused = self._refresh_allowed(request, session, client)
+        client = request.client
+        refused = self._refresh_allowed(request, session)
         if refused is not None:
             return refused
 
-        found = NegotiateToken.of(request.headers)
+        found = NegotiateToken.of(request.authorization)
         if isinstance(found, str):
-            return Challenge(found, logging.INFO)
+            return SsoChallenge(reason=found, level=logging.INFO)
 
         try:
             identity = await self._accepted(found, client, "refresh")
         except InvalidTokenError as e:
-            return Challenge(str(e), logging.INFO)
+            return SsoChallenge(reason=str(e), level=logging.INFO)
 
         return await self._refreshed(identity, session, client)
 
     @staticmethod
     def _refresh_allowed(
-        request: Request, session: DelegatedTicket | None, client: str
-    ) -> RefreshRefused | None:
-        if not SsoRefresh.asked(request.headers):
+        request: SsoRequest, session: DelegatedTicket | None
+    ) -> SsoRefused | None:
+        if not request.refresh_asked:
             # заголовок ставит только свой fetch: чужая страница обмен не запустит
-            return RefreshRefused(f"refresh without its own header [{client}]")
+            reason = f"refresh without its own header [{request.client}]"
+            return SsoRefused(reason=reason)
 
         if session is None:
-            return RefreshRefused("request carries no signed sign-in")
+            return SsoRefused(reason="request carries no signed sign-in")
 
         return None
 
     async def _refreshed(
         self, identity: SpnegoIdentity, session: DelegatedTicket | None, client: str
-    ) -> RefreshRefused | Signed:
+    ) -> SsoRefused | SsoSigned:
         if session is None:
-            return RefreshRefused("request carries no signed sign-in")
+            return SsoRefused(reason="request carries no signed sign-in")
 
         if identity.principal != session.principal:
-            return RefreshRefused(
+            reason = (
                 f"refresh token of {identity.principal} does not match the "
                 f"session of {session.principal}"
             )
+            return SsoRefused(reason=reason)
 
         try:
             await self._sign_in.roles_of(identity.principal, identity.group_sids)
         except AuthorizationError:
-            return RefreshRefused(f"{identity.principal} is no longer admitted")
+            return SsoRefused(reason=f"{identity.principal} is no longer admitted")
 
         sealed = self._sign_in.sealed_of(identity)
         if not sealed:
-            return RefreshRefused(f"no delegated credentials for {session.principal}")
+            reason = f"no delegated credentials for {session.principal}"
+            return SsoRefused(reason=reason)
 
         signed = await self._sign_in.signed_in(identity, sealed)
         self._logger.info(
@@ -543,7 +474,7 @@ class SpnegoGate:
             client,
         )
 
-        return Signed(signed, identity.principal)
+        return SsoSigned(signed=signed, principal=identity.principal)
 
     async def _accepted(self, token: bytes, client: str, stage: str) -> SpnegoIdentity:
         try:
@@ -564,28 +495,13 @@ class SpnegoGate:
 
         return identity
 
-    @staticmethod
-    def client_of(request: Request) -> str:
-        "Лучший идентификатор клиента для логов: реальный IP за прокси, иначе peer."
-        if xff := request.headers.get(RequestHeader.FORWARDED_FOR):
-            first, _, _ = xff.partition(",")
-            return first.strip()
-
-        if real := request.headers.get(RequestHeader.REAL_IP):
-            return real
-
-        if request.client is not None:
-            return request.client.host
-
-        return "unknown"
-
-    def log_challenge(self, request: Request, challenge: Challenge) -> None:
+    def log_challenge(self, request: SsoRequest, challenge: SsoChallenge) -> None:
         self._logger.log(
             challenge.level,
             "kerberos challenge [client=%s]: %s",
-            self.client_of(request),
+            request.client,
             challenge.reason,
         )
 
-    def log_refusal(self, refused: RefreshRefused) -> None:
+    def log_refusal(self, refused: SsoRefused) -> None:
         self._logger.warning("kerberos refresh refused: %s", refused.reason)

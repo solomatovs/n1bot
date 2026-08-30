@@ -10,6 +10,9 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from studio_stand import NoRefs
 
+from boba.auth import JwtTokens
+from boba.auth.config import LocalAuthConfig
+from boba.auth.signin import PasswordSignIns
 from boba.chat.openai import OpenAiConfig
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.chat.provider import OpenAiChatConfig
@@ -21,10 +24,9 @@ from boba.identity.api import (
 )
 from boba.identity.roles import RoleExcludeConfig, RoleMappingConfig
 from boba.identity.signin import SignedIn
-from boba.runtime.auth_config import LocalAuthConfig
-from boba.runtime.signin import PasswordSignIns
+from boba.identity.token import CookieSpec
 from boba.studio.api.app import ApiAccess, ApiApp
-from boba.studio.api.jwt_auth import JwtAuthenticator, JwtIssuer, SessionCookie
+from boba.studio.api.jwt_auth import JwtAuthenticator, SessionCookie
 from boba.studio.api.signin import PageUrls, SignInWiring
 from boba.studio.api.urls import AccountUrl, ApiVersion, SignInUrl
 
@@ -99,13 +101,13 @@ async def client() -> AsyncIterator[AsyncClient]:
             login="/boba-debug/workflow/login",
             home="/boba-debug/workflow/observe",
         ),
-        issuer=JwtIssuer(SECRET, 3600),
-        authenticator=JwtAuthenticator(SECRET, lambda: users),
-        cookie=SessionCookie(COOKIE, "lax", 3600),
+        issuer=JwtTokens(SECRET, 3600),
+        authenticator=JwtAuthenticator(JwtTokens(SECRET, 3600), lambda: users),
+        cookie=SessionCookie(CookieSpec(name=COOKIE, samesite="lax", ttl_sec=3600)),
         users=users,
     )
     access = ApiAccess(
-        JwtAuthenticator(SECRET, lambda: users),
+        JwtAuthenticator(JwtTokens(SECRET, 3600), lambda: users),
         COOKIE,
         lambda: users,
     )
