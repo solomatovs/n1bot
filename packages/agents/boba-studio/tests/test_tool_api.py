@@ -16,6 +16,7 @@ from langchain_core.tools import tool
 from studio_stand import StandProfiles, StubAuthenticator
 
 from boba.access import ProfileGrant, RoleConfig, ToolAccess
+from boba.auth import JwtTokens
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import CallContext, HumanInitiator, ScopeKind
 from boba.identity.locks import MemoryLiveLocks
@@ -23,8 +24,8 @@ from boba.identity.signin import SignedIn
 from boba.runtime.config import StudioRuntimeConfig
 from boba.runtime.plugins import CallSurface
 from boba.runtime.users import UsersTable
-from boba.studio.api.auth import ApiAuth, TokenReader
-from boba.studio.api.jwt_auth import JwtAuthenticator, JwtIssuer
+from boba.studio.api.auth import ApiAuth, RequestTokens
+from boba.studio.api.jwt_auth import JwtAuthenticator
 from boba.studio.api.tools import ToolCallBody, ToolCalling
 from boba.toolkit.result import TextResult, pack_result
 from boba.toolrun.call_id import ToolCallIdField
@@ -201,7 +202,7 @@ class TestRoute:
         app = FastAPI()
         ApiAuth(
             StubAuthenticator(user),
-            TokenReader(StubAuthenticator.COOKIE),
+            RequestTokens(StubAuthenticator.COOKIE),
         ).install(app)
         router = APIRouter()
         _calling(probe, studio_config).mount(router)
@@ -245,8 +246,8 @@ class TestAuthenticator:
                 metadata={"roles": StandProfiles.roles(studio_config)},
             )
         )
-        issuer = JwtIssuer(secret, 60)
-        authenticator = JwtAuthenticator(secret, lambda: users)
+        issuer = JwtTokens(secret, 60)
+        authenticator = JwtAuthenticator(issuer, lambda: users)
 
         token = issuer.issue(
             SignedIn(

@@ -1,4 +1,4 @@
-"""Вход API по JWT сессии: подпись общим секретом [session].auth_secret, строка users — портом.
+"""Вход API по JWT сессии: токен читает boba.auth, строка users — портом.
 
 Metadata входа (роли, запечатанный билет) берётся из токена — это то, что выдал
 вход; строка users даёт только её id.
@@ -9,13 +9,11 @@ Metadata входа (роли, запечатанный билет) берётс
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime, timedelta
-from enum import StrEnum
-from typing import Any, ClassVar, Literal, Protocol
+from typing import Protocol
 
-import jwt
 from fastapi import Response
 
+from boba.auth import JwtTokens
 from boba.identity.api import (
     AuthenticatedUser,
     Authenticator,
@@ -23,21 +21,9 @@ from boba.identity.api import (
     UsersUpsert,
 )
 from boba.identity.context import DelegatedTicket
-from boba.identity.signin import SignedIn
+from boba.identity.token import CookieJar, CookieSpec, TokenRejectedError
 
-__all__ = ["JwtAuthenticator", "JwtClaim", "JwtIssuer", "SameSite", "SessionCookie"]
-
-SameSite = Literal["lax", "strict", "none"]
-
-
-class JwtClaim(StrEnum):
-    """Поля JWT входа: общий формат токена обоих приложений."""
-
-    IDENTIFIER = "identifier"
-    DISPLAY_NAME = "display_name"
-    METADATA = "metadata"
-    EXP = "exp"
-    IAT = "iat"
+__all__ = ["JwtAuthenticator", "SessionCookie"]
 
 
 class JwtUsers(PersistedUsers, UsersUpsert, Protocol):
@@ -47,168 +33,81 @@ class JwtUsers(PersistedUsers, UsersUpsert, Protocol):
 class JwtAuthenticator(Authenticator):
     """Токен JWT входа -> пользователь входа со строкой users."""
 
-    ALGORITHM: ClassVar[str] = "HS256"
-
-    def __init__(self, secret: str, users: Callable[[], JwtUsers]) -> None:
-        if not secret:
-            msg = "jwt secret is empty: [session].auth_secret is required"
-            raise ValueError(msg)
-
-        self._secret = secret
+    def __init__(self, tokens: JwtTokens, users: Callable[[], JwtUsers]) -> None:
+        self._tokens = tokens
         self._users = users
 
     def ticket_of_token(self, token: str) -> DelegatedTicket | None:
         """Билет SSO-входа из JWT без строки users; None — токен негоден или не SSO."""
         try:
-            claims = jwt.decode(token, self._secret, algorithms=[self.ALGORITHM])
-        except jwt.PyJWTError:
+            claims = self._tokens.read(token)
+        except TokenRejectedError:
             return None
 
-        metadata = claims.get(JwtClaim.METADATA)
-        if not isinstance(metadata, dict):
-            return None
-
-        return DelegatedTicket.of_metadata(metadata)
+        return claims.ticket()
 
     async def user_of_token(self, token: str) -> AuthenticatedUser | None:
-        if not token:
-            return None
-
         try:
-            claims = jwt.decode(token, self._secret, algorithms=[self.ALGORITHM])
-        except jwt.PyJWTError:
+            claims = self._tokens.read(token)
+        except TokenRejectedError:
             return None
 
-        identifier = claims.get(JwtClaim.IDENTIFIER)
-        if not isinstance(identifier, str) or not identifier:
-            return None
-
-        metadata = self._metadata_of(claims)
-        stored = await self._users().get_user(identifier)
+        stored = await self._users().get_user(claims.identifier)
         if stored is None:
             # токен выдан другим приложением на той же основе: строка users заводится
             # здесь при первом обращении, входить заново не нужно
-            signed = SignedIn(
-                identifier=identifier, display_name=identifier, metadata=metadata
-            )
-            stored = await self._users().ensure_user(signed)
+            stored = await self._users().ensure_user(claims.signed())
 
         return AuthenticatedUser(
             id=stored.id,
             identifier=stored.identifier,
-            metadata=metadata,
+            metadata=claims.metadata,
         )
-
-    @classmethod
-    def _metadata_of(cls, claims: Mapping[str, Any]) -> Mapping[str, object]:
-        metadata = claims.get(JwtClaim.METADATA)
-        if not isinstance(metadata, Mapping):
-            return {}
-
-        return metadata
-
-
-class JwtIssuer:
-    """Выпуск JWT входа общего формата: identifier, display_name, metadata, exp."""
-
-    ALGORITHM: ClassVar[str] = "HS256"
-
-    def __init__(self, secret: str, ttl_sec: int) -> None:
-        if not secret:
-            msg = "jwt secret is empty"
-            raise ValueError(msg)
-
-        self._secret = secret
-        self._ttl = timedelta(seconds=ttl_sec)
-
-    def issue(self, signed: SignedIn) -> str:
-        now = datetime.now(UTC)
-        claims: dict[str, Any] = {
-            JwtClaim.IDENTIFIER.value: signed.identifier,
-            JwtClaim.DISPLAY_NAME.value: signed.display_name,
-            JwtClaim.METADATA.value: dict(signed.metadata),
-            JwtClaim.EXP.value: now + self._ttl,
-            JwtClaim.IAT.value: now,
-        }
-
-        return jwt.encode(claims, self._secret, algorithm=self.ALGORITHM)
 
 
 class SessionCookie:
-    """Cookie входа общего формата: целиком либо чанками name_0..name_n по 3000."""
+    """Cookie входа в ответе HTTP: атрибуты из CookieSpec, чанки — CookieJar."""
 
-    CHUNK: ClassVar[int] = 3000
-    PATH: ClassVar[str] = "/"
+    def __init__(self, spec: CookieSpec) -> None:
+        self._spec = spec
+        self._jar = CookieJar(spec.name)
 
-    def __init__(self, name: str, samesite: SameSite, ttl_sec: int) -> None:
-        self._name = name
-        self._samesite: SameSite = samesite
-        self._secure = samesite == "none"
-        self._ttl = ttl_sec
+    @property
+    def jar(self) -> CookieJar:
+        return self._jar
 
     def put(self, response: Response, present: Mapping[str, str], token: str) -> None:
         """Ставит токен и снимает чанки прежнего, более длинного токена."""
-        stale = self._ours(present)
+        pieces = self._jar.pieces(token)
+        for key, value in pieces:
+            self._set(response, key, value)
 
-        if len(token) > self.CHUNK:
-            pieces = range(0, len(token), self.CHUNK)
-            for index, start in enumerate(pieces):
-                key = f"{self._name}_{index}"
-                self._set(response, key, token[start : start + self.CHUNK])
-                stale.discard(key)
-        else:
-            self._set(response, self._name, token)
-            stale.discard(self._name)
-
-        for key in stale:
+        for key in self._jar.stale(present, pieces):
             self._delete(response, key)
 
     def token_of(self, present: Mapping[str, str]) -> str | None:
         """Токен из cookie запроса: целиком либо из чанков."""
-        whole = present.get(self._name)
-        if whole:
-            return whole
-
-        parts: list[str] = []
-        index = 0
-        while True:
-            chunk = present.get(f"{self._name}_{index}")
-            if chunk is None:
-                break
-
-            parts.append(chunk)
-            index += 1
-
-        joined = "".join(parts)
-        if not joined:
-            return None
-
-        return joined
+        return self._jar.token_of(present)
 
     def clear(self, response: Response, present: Mapping[str, str]) -> None:
-        for key in self._ours(present):
+        for key in self._jar.ours(present):
             self._delete(response, key)
-
-    def _ours(self, present: Mapping[str, str]) -> set[str]:
-        ours: set[str] = set()
-        for key in present:
-            if key.startswith(self._name):
-                ours.add(key)
-
-        return ours
 
     def _set(self, response: Response, key: str, value: str) -> None:
         response.set_cookie(
             key=key,
             value=value,
             httponly=True,
-            secure=self._secure,
-            samesite=self._samesite,
-            max_age=self._ttl,
-            path=self.PATH,
+            secure=self._spec.secure,
+            samesite=self._spec.samesite,
+            max_age=self._spec.ttl_sec,
+            path=self._spec.path,
         )
 
     def _delete(self, response: Response, key: str) -> None:
         response.delete_cookie(
-            key=key, path=self.PATH, secure=self._secure, samesite=self._samesite
+            key=key,
+            path=self._spec.path,
+            secure=self._spec.secure,
+            samesite=self._spec.samesite,
         )

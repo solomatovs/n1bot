@@ -8,6 +8,7 @@ version = "0.0.14.dev9"
 description = "Chainlit2 web UI app for the Boba agent."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "boba-auth==0.0.14.dev9",
     "boba-messaging==0.0.14.dev9",
     "boba-runtime==0.0.14.dev9",
     "boba-toolrun==0.0.14.dev9",

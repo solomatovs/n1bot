@@ -1,6 +1,6 @@
 """SSO через Kerberos/SPNEGO в chainlit: роуты входа и обновления над общим обменом.
 
-Обмен, допуск и билет — boba.runtime.sso; здесь cl.User, JWT-cookie chainlit,
+Обмен, допуск и билет — boba.auth.sso; здесь cl.User, JWT-cookie chainlit,
 кнопка на странице логина и подмена токена живым сокет-сессиям.
 
 Ошибки: AuthenticationError, AuthorizationError — отказ входа;
@@ -8,7 +8,6 @@ ExternalServiceError — недоступен внешний сервис (KDC, 
 InternalServiceError — keytab/SPN/конфиг непригодны.
 """
 
-import html
 import logging
 import os
 from collections.abc import Awaitable, Callable
@@ -22,6 +21,8 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
 import chainlit as cl
+from boba.auth.config import KerberosAuthConfig
+from boba.auth.sso import SpnegoGate, SsoSignIn
 from boba.chainlit.infra.session import ChainlitSession, ChainlitSessions
 from boba.identity.errors import (
     AuthorizationError,
@@ -31,16 +32,15 @@ from boba.identity.errors import (
 )
 from boba.identity.session import LogLine, UserMetadataField
 from boba.identity.signin import SignedIn
-from boba.krb.seal import SsoTickets
-from boba.runtime.auth_config import KerberosAuthConfig
-from boba.runtime.sso import (
-    Challenge,
-    RefreshRefused,
-    Signed,
-    SpnegoGate,
+from boba.identity.sso import (
+    SsoChallenge,
+    SsoErrorCode,
     SsoRefresh,
-    SsoSignIn,
+    SsoRefused,
+    SsoSigned,
 )
+from boba.krb.seal import SsoTickets
+from boba.runtime.http import SsoRequests
 from chainlit.auth import create_jwt, set_auth_cookie
 from chainlit.config import config as cl_config
 
@@ -53,23 +53,6 @@ class ButtonJsVar(StrEnum):
     REFRESH_HEADER = "__REFRESH_HEADER__"
     REFRESH_HEADER_VALUE = "__REFRESH_HEADER_VALUE__"
     TRANSLATIONS_URL = "__TRANSLATIONS_URL__"
-
-
-class SsoLoginError(StrEnum):
-    """Коды исхода SSO для страницы логина chainlit: auth.login.errors.<code>."""
-
-    TICKET = "sso_ticket"
-    DENIED = "sso_denied"
-    FAILED = "sso_failed"
-
-    def login_url(self, login_url: str) -> str:
-        return f"{login_url}?error={self.value}"
-
-    def challenge_page(self, login_url: str) -> str:
-        """Тело 401: с тикетом браузер повторит запрос сам, без него уйдёт на логин."""
-        url = html.escape(self.login_url(login_url), quote=True)
-
-        return f'<!doctype html><meta http-equiv="refresh" content="0;url={url}">'
 
 
 class SsoUrls(BaseModel):
@@ -185,18 +168,18 @@ class KerberosAuth:
         """Исход SSO кодом на страницу логина: браузер пришёл навигацией, не fetch."""
         self._logger.error("%s", LogLine.safe(FailureReport.of(exc).log))
 
-        code = SsoLoginError.FAILED
+        code = SsoErrorCode.FAILED
         if isinstance(exc, AuthorizationError):
-            code = SsoLoginError.DENIED
+            code = SsoErrorCode.DENIED
 
         return RedirectResponse(url=code.login_url(self._urls.login), status_code=303)
 
-    def _challenge(self, request: Request, challenge: Challenge) -> Response:
+    def _challenge(self, request: Request, challenge: SsoChallenge) -> Response:
         """401 Negotiate: с тикетом браузер повторит сам, без него уйдёт на логин."""
-        self.gate.log_challenge(request, challenge)
+        self.gate.log_challenge(SsoRequests.of(request), challenge)
 
         return Response(
-            content=SsoLoginError.TICKET.challenge_page(self._urls.login),
+            content=SsoErrorCode.TICKET.challenge_page(self._urls.login),
             status_code=401,
             headers=SpnegoGate.NEGOTIATE,
             media_type="text/html",
@@ -205,8 +188,8 @@ class KerberosAuth:
     async def auth_sso(self, request: Request) -> Response:
         """Вход: SPNEGO → cl.User → строка users → JWT-cookie → в чат."""
         try:
-            outcome = await self.gate.handshake(request)
-            if isinstance(outcome, Challenge):
+            outcome = await self.gate.handshake(SsoRequests.of(request))
+            if isinstance(outcome, SsoChallenge):
                 return self._challenge(request, outcome)
 
             user = self.user_of(outcome.signed)
@@ -227,19 +210,19 @@ class KerberosAuth:
         if token := get_token_from_cookies(request.cookies):
             session = ChainlitSession.ticket_of_token(token)
 
-        outcome = await self.gate.refresh(request, session)
-        if isinstance(outcome, RefreshRefused):
+        outcome = await self.gate.refresh(SsoRequests.of(request), session)
+        if isinstance(outcome, SsoRefused):
             self.gate.log_refusal(outcome)
             return Response(status_code=403)
 
-        if isinstance(outcome, Challenge):
+        if isinstance(outcome, SsoChallenge):
             # 401 без страницы логина: ответ читает скрипт, не человек
-            self.gate.log_challenge(request, outcome)
+            self.gate.log_challenge(SsoRequests.of(request), outcome)
             return Response(status_code=401, headers=SpnegoGate.NEGOTIATE)
 
         return self._adopted(request, outcome)
 
-    def _adopted(self, request: Request, outcome: Signed) -> Response:
+    def _adopted(self, request: Request, outcome: SsoSigned) -> Response:
         user = self.user_of(outcome.signed)
         token = create_jwt(user)
         response = Response(status_code=204)

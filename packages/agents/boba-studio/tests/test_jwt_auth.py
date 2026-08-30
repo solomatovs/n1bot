@@ -8,6 +8,7 @@ from uuid import UUID
 import jwt
 import pytest
 
+from boba.auth import JwtTokens
 from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
 from boba.identity.signin import SignedIn
 from boba.studio.api.jwt_auth import JwtAuthenticator
@@ -52,7 +53,7 @@ def _token(secret: str, **claims: object) -> str:
 
 async def test_valid_token_yields_the_users_row_with_token_metadata() -> None:
     users = Users()
-    user = await JwtAuthenticator(SECRET, lambda: users).user_of_token(_token(SECRET))
+    user = await JwtAuthenticator(JwtTokens(SECRET, 60), lambda: users).user_of_token(_token(SECRET))
 
     if user is None:
         raise AssertionError("valid token must authenticate")
@@ -77,7 +78,7 @@ async def test_valid_token_yields_the_users_row_with_token_metadata() -> None:
 )
 async def test_bad_tokens_are_refused_before_users(token: str) -> None:
     users = Users()
-    if await JwtAuthenticator(SECRET, lambda: users).user_of_token(token) is not None:
+    if await JwtAuthenticator(JwtTokens(SECRET, 60), lambda: users).user_of_token(token) is not None:
         raise AssertionError("bad token must not authenticate")
     if users.asked:
         raise AssertionError(f"users must not be consulted: {users.asked}")
@@ -89,7 +90,7 @@ async def test_unknown_identifier_gets_a_users_row() -> None:
     """
     users = Users()
     token = _token(SECRET, identifier="stranger", metadata={"roles": ["DEV"]})
-    user = await JwtAuthenticator(SECRET, lambda: users).user_of_token(token)
+    user = await JwtAuthenticator(JwtTokens(SECRET, 60), lambda: users).user_of_token(token)
     assert user is not None
     assert user.identifier == "stranger"
     assert "stranger" in users.rows
@@ -98,4 +99,4 @@ async def test_unknown_identifier_gets_a_users_row() -> None:
 
 def test_empty_secret_is_a_build_error() -> None:
     with pytest.raises(ValueError, match="secret"):
-        JwtAuthenticator("", Users)
+        JwtTokens("", 60)

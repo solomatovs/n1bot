@@ -8,6 +8,7 @@ version = "0.0.14.dev9"
 description = "Boba Studio: процесс над сервисами — REST и socket.io под {prefix}/api и страница workflow под {prefix}/workflow."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "boba-auth==0.0.14.dev9",
     "boba-cancellation==0.0.14.dev9",
     "boba-canvas==0.0.14.dev9",
     "boba-connection-broker==0.0.14.dev9",
@@ -25,7 +26,6 @@ dependencies = [
     "fastapi>=0.115,<1",
     "starlette>=0.40",
     "pydantic>=2.10,<3",
-    "pyjwt>=2.8",
     "python-socketio>=5.11,<6",
     "httpx>=0.28,<1",
     "websockets>=13",
@@ -43,6 +43,7 @@ tools = [
     "boba-tool-knowledge==0.0.14.dev9",
 ]
 dev = [
+    "pyjwt>=2.8",
     "boba-access==0.0.14.dev9",
     "boba-db-postgres==0.0.14.dev9",
     "boba-config==0.0.14.dev9",

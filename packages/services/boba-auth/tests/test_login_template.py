@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from boba.auth.config import LdapAuthConfig
 from boba.identity.session import LoginTemplate
-from boba.runtime.auth_config import LdapAuthConfig
 from boba.toolkit.template import TemplateError
 
 pytestmark = pytest.mark.anyio

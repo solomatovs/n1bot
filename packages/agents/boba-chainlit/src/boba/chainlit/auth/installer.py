@@ -1,9 +1,9 @@
 from fastapi import FastAPI
 
+from boba.auth.config import AuthConfig, KerberosAuthConfig
+from boba.auth.signin import PasswordSignIns
 from boba.chainlit.auth.composite import PasswordCallback
 from boba.chainlit.auth.kerberos import KerberosAuth
-from boba.runtime.auth_config import AuthConfig, KerberosAuthConfig
-from boba.runtime.signin import PasswordSignIns
 from chainlit.config import config as chainlit_config
 
 

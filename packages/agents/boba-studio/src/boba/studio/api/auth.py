@@ -17,40 +17,23 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from boba.chat.profiles import ChatProfiles
 from boba.identity.api import ApiSubject, AuthenticatedUser, Authenticator
 from boba.identity.errors import AuthenticationError, RefusalError
+from boba.identity.token import CookieJar
 
-__all__ = ["ApiAuth", "ApiIdentity", "CurrentUser", "TokenReader"]
+__all__ = ["ApiAuth", "ApiIdentity", "CurrentUser", "RequestTokens"]
 
 
-class TokenReader:
-    """Токен входа: cookie целиком либо чанками name_0..name_n, иначе Bearer."""
+class RequestTokens:
+    """Токен входа запроса: cookie (целиком либо чанками), иначе Bearer."""
 
     BEARER: ClassVar[str] = "Bearer "
     COOKIE_HEADER: ClassVar[str] = "HTTP_COOKIE"
     AUTHORIZATION: ClassVar[str] = "Authorization"
 
     def __init__(self, cookie: str) -> None:
-        self._cookie = cookie
+        self._jar = CookieJar(cookie)
 
     def of_cookies(self, cookies: Mapping[str, str]) -> str | None:
-        whole = cookies.get(self._cookie)
-        if whole:
-            return whole
-
-        parts: list[str] = []
-        index = 0
-        while True:
-            chunk = cookies.get(f"{self._cookie}_{index}")
-            if chunk is None:
-                break
-
-            parts.append(chunk)
-            index += 1
-
-        joined = "".join(parts)
-        if not joined:
-            return None
-
-        return joined
+        return self._jar.token_of(cookies)
 
     def of_request(self, request: Request) -> str | None:
         token = self.of_cookies(request.cookies)
@@ -90,7 +73,7 @@ class ApiAuth:
 
     STATE_KEY: ClassVar[str] = "api_auth"
 
-    def __init__(self, authenticator: Authenticator, tokens: TokenReader) -> None:
+    def __init__(self, authenticator: Authenticator, tokens: RequestTokens) -> None:
         self._authenticator = authenticator
         self._tokens = tokens
 

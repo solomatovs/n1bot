@@ -5,9 +5,9 @@ from pathlib import Path
 import pytest
 from studio_stand import StandProfiles
 
+from boba.config import bind
 from boba.identity.api import AuthenticatedUser
 from boba.runtime.config import RawConfig, StudioRuntimeConfig
-from boba.config import bind
 
 REPO = Path(__file__).resolve().parents[4]
 STUDIO_CONFIG = REPO / "compose" / "studio" / "conf" / "config.toml"
