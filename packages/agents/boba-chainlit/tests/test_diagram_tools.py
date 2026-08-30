@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import Any, cast
+from uuid import UUID
 
 import pytest
 from conftest import FakeTurn, make_context, use_session
@@ -155,7 +156,7 @@ class TestRefusal:
 
     @pytest.mark.anyio
     async def test_save_bad_spec(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        use_session(monkeypatch, user_id="7", thread_id=THREAD)
+        use_session(monkeypatch, user_id=str(UUID(int=7)), thread_id=THREAD)
 
         with pytest.raises(DiagramRefusedError) as failure:
             await DiagramFiles(1000).save("x.mmd", "не mermaid вовсе")
@@ -165,7 +166,7 @@ class TestRefusal:
 
     @pytest.mark.anyio
     async def test_save_over_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        use_session(monkeypatch, user_id="7", thread_id=THREAD)
+        use_session(monkeypatch, user_id=str(UUID(int=7)), thread_id=THREAD)
 
         with pytest.raises(DiagramRefusedError) as failure:
             await DiagramFiles(10).save("x.mmd", ER_SPEC)
@@ -214,7 +215,7 @@ def files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> DiagramFiles:
     storage = LocalStorageClient(config)
     layer = _StorageOnlyLayer(storage)
 
-    use_session(monkeypatch, user_id="7", thread_id=THREAD)
+    use_session(monkeypatch, user_id=str(UUID(int=7)), thread_id=THREAD)
     monkeypatch.setattr(AttachmentDataLayer, "require", classmethod(lambda cls: layer))
 
     return DiagramFiles(1000)
@@ -232,7 +233,7 @@ class TestSaveAndView:
         if key.in_workspace() != f"/workspace/{THREAD}/mermaid/orders.mmd":
             raise AssertionError('key.in_workspace() == f"/workspace/{THREAD}/mermaid…')
 
-        stored = tmp_path / "7" / THREAD / "mermaid" / "orders.mmd"
+        stored = tmp_path / str(UUID(int=7)) / THREAD / "mermaid" / "orders.mmd"
         if stored.read_text(encoding="utf-8") != ER_SPEC:
             raise AssertionError('stored.read_text(encoding="utf-8") == ER_SPEC')
 
@@ -253,7 +254,7 @@ class TestSaveAndView:
             shown.append(content)
 
         key = ObjectKey.build(
-            "7", THREAD, "orders.mmd", "el-1", dir_thread=ThreadDir.MERMAID
+            str(UUID(int=7)), THREAD, "orders.mmd", "el-1", dir_thread=ThreadDir.MERMAID
         )
         opened = await MermaidViewer(files).open(key, push)
 
@@ -280,7 +281,7 @@ class TestSaveAndView:
         """Пользовательский .mmd из upload/ показывается тем же вьювером."""
         storage = AttachmentDataLayer.require().storage
         await storage.upload_file(
-            object_key=f"7/{THREAD}/upload/mine.mmd",
+            object_key=f"{UUID(int=7)}/{THREAD}/upload/mine.mmd",
             data=ER_SPEC,
             mime="text/plain",
         )
@@ -291,7 +292,7 @@ class TestSaveAndView:
             shown.append(content)
 
         key = ObjectKey.build(
-            "7", THREAD, "mine.mmd", "el-1", dir_thread=ThreadDir.UPLOAD
+            str(UUID(int=7)), THREAD, "mine.mmd", "el-1", dir_thread=ThreadDir.UPLOAD
         )
         await MermaidViewer(files).open(key, push)
 
@@ -309,7 +310,7 @@ class TestSaveAndView:
     @pytest.mark.anyio
     async def test_read_missing_file(self, files: DiagramFiles) -> None:
         key = ObjectKey.build(
-            "7", THREAD, "no.mmd", "el-1", dir_thread=ThreadDir.MERMAID
+            str(UUID(int=7)), THREAD, "no.mmd", "el-1", dir_thread=ThreadDir.MERMAID
         )
 
         with pytest.raises(DiagramRefusedError) as failure:
@@ -327,7 +328,7 @@ class TestEntry:
     def test_entry_of_unparsed_spec_keeps_text(self) -> None:
         """Файл не mermaid: текст едет как есть, метаданных нет, подпись — имя."""
         key = ObjectKey.build(
-            "7", THREAD, "a.mmd", "el-1", dir_thread=ThreadDir.MERMAID
+            str(UUID(int=7)), THREAD, "a.mmd", "el-1", dir_thread=ThreadDir.MERMAID
         )
 
         entry = DiagramEntry.of(key, "не диаграмма вовсе")
@@ -342,7 +343,7 @@ class TestEntry:
     def test_entry_of_broken_body_keeps_type(self) -> None:
         """Заголовок разобран — тип известен; синтаксис тела проверяет браузер."""
         key = ObjectKey.build(
-            "7", THREAD, "a.mmd", "el-1", dir_thread=ThreadDir.MERMAID
+            str(UUID(int=7)), THREAD, "a.mmd", "el-1", dir_thread=ThreadDir.MERMAID
         )
 
         entry = DiagramEntry.of(key, "erDiagram\n  A ||--")
@@ -356,13 +357,13 @@ class TestEntry:
     async def test_read_binary_file(self, files: DiagramFiles) -> None:
         storage = AttachmentDataLayer.require().storage
         await storage.upload_file(
-            object_key=f"7/{THREAD}/mermaid/bin.mmd",
+            object_key=f"{UUID(int=7)}/{THREAD}/mermaid/bin.mmd",
             data=b"\xff\xfe\x00\x01",
             mime="application/octet-stream",
         )
 
         key = ObjectKey.build(
-            "7", THREAD, "bin.mmd", "el-1", dir_thread=ThreadDir.MERMAID
+            str(UUID(int=7)), THREAD, "bin.mmd", "el-1", dir_thread=ThreadDir.MERMAID
         )
 
         with pytest.raises(DiagramRefusedError) as failure:
@@ -381,13 +382,13 @@ class TestEntry:
         storage = AttachmentDataLayer.require().storage
         oversized = "flowchart LR\n" + "  A --> B\n" * 4000
         await storage.upload_file(
-            object_key=f"7/{THREAD}/mermaid/huge.mmd",
+            object_key=f"{UUID(int=7)}/{THREAD}/mermaid/huge.mmd",
             data=oversized,
             mime="text/plain",
         )
 
         key = ObjectKey.build(
-            "7", THREAD, "huge.mmd", "el-1", dir_thread=ThreadDir.MERMAID
+            str(UUID(int=7)), THREAD, "huge.mmd", "el-1", dir_thread=ThreadDir.MERMAID
         )
 
         with pytest.raises(DiagramRefusedError) as failure:
@@ -406,7 +407,7 @@ class TestWatchSource:
     ) -> None:
         await files.save("orders.mmd", ER_SPEC)
         key = ObjectKey.build(
-            "7", THREAD, "orders.mmd", "el-1", dir_thread=ThreadDir.MERMAID
+            str(UUID(int=7)), THREAD, "orders.mmd", "el-1", dir_thread=ThreadDir.MERMAID
         )
 
         source = MermaidViewer(files).watch_source(key)
@@ -433,7 +434,7 @@ class TestWatchSource:
         """Файл в момент чтения переписывается — тик отдаёт прежнее состояние."""
         await files.save("orders.mmd", ER_SPEC)
         key = ObjectKey.build(
-            "7", THREAD, "orders.mmd", "el-1", dir_thread=ThreadDir.MERMAID
+            str(UUID(int=7)), THREAD, "orders.mmd", "el-1", dir_thread=ThreadDir.MERMAID
         )
 
         source = MermaidViewer(files).watch_source(key)
@@ -443,7 +444,7 @@ class TestWatchSource:
         first = await source.probe()
 
         missing = ObjectKey.build(
-            "7", THREAD, "absent.mmd", "el-1", dir_thread=ThreadDir.MERMAID
+            str(UUID(int=7)), THREAD, "absent.mmd", "el-1", dir_thread=ThreadDir.MERMAID
         )
         broken = MermaidViewer(files).watch_source(missing)
         if broken is None:
@@ -503,7 +504,7 @@ class TestViewerVerdict:
     ) -> None:
         await files.save("orders.mmd", ER_SPEC)
         key = ObjectKey.build(
-            "7", THREAD, "orders.mmd", "el-1", dir_thread=ThreadDir.MERMAID
+            str(UUID(int=7)), THREAD, "orders.mmd", "el-1", dir_thread=ThreadDir.MERMAID
         )
 
         shown: list[Any] = []

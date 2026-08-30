@@ -175,7 +175,7 @@ def test_builder_validates_saves_and_runs_live(page: Page, stand: StandProcess) 
 
     _button(page, "Save").click()
     expect(page.locator(Selector.NOTICE)).to_contain_text('saved "ui-page-flow"')
-    expect(page).to_have_url(re.compile(r"/workflow/build/\d+$"))
+    expect(page).to_have_url(re.compile(r"/workflow/build/[0-9a-f-]{36}$"))
     expect(page.locator(Selector.CRUMB_CURRENT)).to_have_text("ui-page-flow")
     expect(page.locator(Selector.LIST_ITEM_ON)).to_contain_text("ui-page-flow")
 
@@ -246,7 +246,7 @@ def test_lists_show_saved_workflows_and_runs(page: Page, stand: StandProcess) ->
     item = page.locator(Selector.LIST_ITEM, has_text="ui-page-flow")
     expect(item.first).to_contain_text("runs")
     item.first.click()
-    expect(page).to_have_url(re.compile(r"/workflow/build/\d+$"))
+    expect(page).to_have_url(re.compile(r"/workflow/build/[0-9a-f-]{36}$"))
     expect(page.locator(Selector.EDITOR_NODE)).to_have_count(2)
 
 
@@ -333,7 +333,7 @@ def test_second_tab_follows_builder_edits_through_the_bus(
     """
     _open(page, stand, "/build")
     page.locator(Selector.LIST_ITEM, has_text="ui-page-flow").first.click()
-    expect(page).to_have_url(re.compile(r"/workflow/build/\d+$"))
+    expect(page).to_have_url(re.compile(r"/workflow/build/[0-9a-f-]{36}$"))
     expect(page.locator(Selector.EDITOR_NODE).first).to_be_visible()
     before = page.locator(Selector.EDITOR_NODE).count()
 
@@ -401,7 +401,7 @@ def test_narrow_screen_drawer_opens_and_closes_the_list(
     _open(page, stand, "/build/new")
     _apply_yaml(page, QUICK_SPEC)
     _button(page, "Save").click()
-    expect(page).to_have_url(re.compile(r"/workflow/build/\d+$"))
+    expect(page).to_have_url(re.compile(r"/workflow/build/[0-9a-f-]{36}$"))
 
     context = browser.new_context(viewport={"width": 700, "height": 800})
     context.add_cookies(login_cookies(stand))

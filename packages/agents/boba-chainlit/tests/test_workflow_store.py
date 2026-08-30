@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from psycopg import sql
@@ -24,8 +24,8 @@ from boba.workflow_engine.store import WorkflowConfig, WorkflowStore
 pytestmark = pytest.mark.anyio
 
 SCHEMA = "workflow_test"
-OWNER = 7
-STRANGER = 8
+OWNER = UUID(int=7)
+STRANGER = UUID(int=8)
 
 SPEC = """
 name: pg-to-ch
@@ -230,30 +230,30 @@ async def test_snapshot_is_independent_of_the_definition(store: WorkflowStore) -
 async def test_drafts_are_keyed_per_user_and_count_revisions(
     store: WorkflowStore,
 ) -> None:
-    key = DraftKey.of_workflow(7)
-    first = await store.put_draft(1, key, "name: a\ntasks: {}\n", {"positions": {}})
+    key = DraftKey.of_workflow(UUID(int=7))
+    first = await store.put_draft(UUID(int=1), key, "name: a\ntasks: {}\n", {"positions": {}})
     second = await store.put_draft(
-        1, key, "name: b\ntasks: {}\n", {"positions": {"t": 1}}
+        UUID(int=1), key, "name: b\ntasks: {}\n", {"positions": {"t": 1}}
     )
     assert first.revision == 1
     assert second.revision == 2
     assert second.spec.startswith("name: b")
 
-    found = await store.get_draft(1, key)
+    found = await store.get_draft(UUID(int=1), key)
     assert found.revision == 2
     assert found.layout == {"positions": {"t": 1}}
 
     with pytest.raises(WorkflowNotFoundError):
-        await store.get_draft(2, key)
+        await store.get_draft(UUID(int=2), key)
 
-    assert await store.drop_draft(1, key) is True
-    assert await store.drop_draft(1, key) is False
+    assert await store.drop_draft(UUID(int=1), key) is True
+    assert await store.drop_draft(UUID(int=1), key) is False
     with pytest.raises(WorkflowNotFoundError):
-        await store.get_draft(1, key)
+        await store.get_draft(UUID(int=1), key)
 
 
 async def test_draft_key_renders_and_parses() -> None:
-    assert DraftKey.of_workflow(12).render() == "workflow:12"
+    assert DraftKey.of_workflow(UUID(int=12)).render() == f"workflow:{UUID(int=12)}"
     parsed = DraftKey.parse("new:0f3b2a10-1111-4222-8333-444455556666")
     assert parsed.kind is DraftKind.NEW
     with pytest.raises(ValueError, match="bad draft key"):

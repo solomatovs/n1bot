@@ -16,6 +16,7 @@ import logging
 from collections.abc import Awaitable, Mapping
 from pathlib import Path
 from typing import Any, ClassVar, cast
+from uuid import UUID
 
 import jwt
 
@@ -352,7 +353,7 @@ class ChainlitSessions:
 
         return adopted
 
-    def of_user(self, user_id: int) -> list[ChainlitSession]:
+    def of_user(self, user_id: UUID) -> list[ChainlitSession]:
         """Живые сессии пользователя на этом инстансе: все его вкладки."""
         found: list[ChainlitSession] = []
         for session in list(ws_sessions_id.values()):

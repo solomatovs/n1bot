@@ -59,7 +59,7 @@ class DraftKey(BaseModel):
         return f"{self.kind.value}{self.SEP}{self.ident}"
 
     @classmethod
-    def of_workflow(cls, workflow_id: int) -> DraftKey:
+    def of_workflow(cls, workflow_id: UUID) -> DraftKey:
         return cls(kind=DraftKind.WORKFLOW, ident=str(workflow_id))
 
     @classmethod
@@ -84,7 +84,7 @@ class WorkflowDraft(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     key: str
-    user_id: int
+    user_id: UUID
     revision: int
     spec: str
     layout: Mapping[str, Any]
@@ -96,8 +96,8 @@ class StoredWorkflow(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    id: int
-    user_id: int
+    id: UUID
+    user_id: UUID
     name: str
     spec: str
     """YAML как сохранили: исходник для LLM, редактора и diff."""
@@ -115,9 +115,9 @@ class StoredRun(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: UUID
-    workflow_id: int | None
+    workflow_id: UUID | None
     """None — определение удалили; запуск и его логи остаются."""
-    user_id: int
+    user_id: UUID
     initiator: Mapping[str, Any]
     profile: str
     state: RunState

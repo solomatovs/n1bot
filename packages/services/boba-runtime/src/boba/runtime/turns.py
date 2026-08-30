@@ -64,7 +64,7 @@ class StaleTurnCloser:
 
         try:
             lock = await self._locks.acquire(
-                scope, LockMode.EXCLUSIVE, LockPurpose.CLEANUP, 0
+                scope, LockMode.EXCLUSIVE, LockPurpose.CLEANUP, LiveLocks.SYSTEM_USER
             )
         except LockBusyError:
             logger.info("stale turn of %s is already taken over", scope.render())

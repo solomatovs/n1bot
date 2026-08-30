@@ -3,6 +3,7 @@
 import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Annotated, Any, cast
+from uuid import UUID
 
 from fastapi import Request, Response
 from langchain_core.messages import BaseMessage
@@ -313,7 +314,7 @@ async def on_chat_start(
         ChatRoomSurface.renderer_of(ThreadRoom.websocket(), thread_id)
 
     if user_id := session.user_id:
-        UserRoom.join(int(user_id))
+        UserRoom.join(UUID(user_id))
 
     # профиль без разрешённых настроек панель не показывает
     if tabs := _session_settings(app_config, registry):
@@ -348,7 +349,7 @@ async def on_settings_update(
         raise RuntimeError(msg)
 
     await data_layer.update_user_llm_settings(
-        int(user_id), selected.name, overrides.stored()
+        UUID(user_id), selected.name, overrides.stored()
     )
 
     _refresh_session_user_meta(selected.name, overrides)
@@ -358,7 +359,7 @@ async def on_settings_update(
     changed = ChatSettingsChanged(
         profile=selected.name, by_session=current_session().id
     )
-    await _root_bus().publish(Scope.user(int(user_id)), changed, LockToken.local())
+    await _root_bus().publish(Scope.user(UUID(user_id)), changed, LockToken.local())
 
     logger.info(
         "llm settings saved: profile=%s, overrides=%s",
@@ -394,7 +395,7 @@ async def on_stop(
         logger.info("stop pressed for thread %s without a user", thread_id)
         return
 
-    command = StopRequested(by_user=int(user_id), by_instance=instance)
+    command = StopRequested(by_user=UUID(user_id), by_instance=instance)
     command_id = await bus.command(Scope.chat(thread_id), command)
     logger.info("stop of thread %s sent as command %d", thread_id, command_id)
 
@@ -522,7 +523,7 @@ async def on_chat_resume(
     turn = ChatTurn.active(thread_id)
     renderer = ChatRoomSurface.renderer_of(ThreadRoom.websocket(), thread_id)
     if user_id := current_session().user_id:
-        UserRoom.join(int(user_id))
+        UserRoom.join(UUID(user_id))
 
     room: list[str] = []
     for session in ThreadRoom.sessions(thread_id):

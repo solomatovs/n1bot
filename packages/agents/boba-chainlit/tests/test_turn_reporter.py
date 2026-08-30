@@ -11,6 +11,7 @@ import contextlib
 import logging
 from collections.abc import AsyncIterator
 from typing import Any, cast
+from uuid import UUID
 
 import pytest
 from conftest import RecordedTurn, use_context
@@ -368,7 +369,7 @@ class TestBusyThread:
         recorded = _turn()
         locks = MemoryLiveLocks("node2-chainlit", 20)
         scope = Scope.chat(THREAD)
-        await locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, 1)
+        await locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=1))
         history = RememberedHistory()
         turn = ChatTurn(
             thread_id=THREAD,

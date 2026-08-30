@@ -50,7 +50,7 @@ export function WorkflowList({ workflows, runs, selected, open, onPick }: Props)
             <Link
               key={item.id}
               to={`/build/${item.id}`}
-              className={`item${String(item.id) === selected ? " item--on" : ""}`}
+              className={`item${item.id === selected ? " item--on" : ""}`}
               onClick={onPick}
             >
               <span className="item__dot" style={{ "--status-color": "var(--signal)" } as React.CSSProperties} />

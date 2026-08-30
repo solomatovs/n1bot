@@ -8,7 +8,7 @@ import asyncio
 import time
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from chainlit.element import ElementDict
@@ -148,7 +148,7 @@ async def test_turn_on_one_instance_is_rendered_on_another(
     renderer, sink = _renderer(thread_id, viewer)
     leave = viewer.bus.subscribe(scope, renderer.apply)
 
-    lock = await holder.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, 1)
+    lock = await holder.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=1))
     feed = TurnFeed(holder.bus, holder.payloads, scope, TURN, lock.token)
     try:
         await feed.started(TURN, QuestionBody(text="question"))
@@ -236,7 +236,7 @@ async def test_reaper_closes_the_turn_of_a_dead_holder_and_resume_marks_it(
         thread_id = str(uuid4())
         scope = Scope.chat(thread_id)
         lock = await holder.locks.acquire(
-            scope, LockMode.EXCLUSIVE, LockPurpose.TURN, 1
+            scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=1)
         )
         feed = TurnFeed(holder.bus, holder.payloads, scope, TURN, lock.token)
         await feed.started(TURN, QuestionBody(text="question"))
@@ -313,7 +313,7 @@ async def test_stream_growth_is_published_through_the_pump(
         seen.append(envelope)
 
     leave = viewer.bus.subscribe(scope, collect)
-    lock = await holder.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, 1)
+    lock = await holder.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=1))
     feed = TurnFeed(holder.bus, holder.payloads, scope, TURN, lock.token)
     pumps = StreamPumps(feed)
     line = b"line 00\n"
@@ -425,7 +425,7 @@ async def test_rewind_and_elements_reach_the_viewer_instance(
     await _until(lambda: surface.refreshed == ["answer-0"], "viewer refreshed the step")
     assert surface.removed == ["el-old"]
 
-    lock = await holder.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, 1)
+    lock = await holder.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=1))
     feed = TurnFeed(holder.bus, holder.payloads, scope, TURN, lock.token)
     element = {**ELEMENT, "threadId": thread_id}
     attachment = ShownElement.model_validate(

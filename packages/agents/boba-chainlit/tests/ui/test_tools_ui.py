@@ -1609,7 +1609,7 @@ class TestWorkflowTools:
             view=ScriptCall(arg="spec", lang="yaml"),
         )
         expect = ToolExpect(
-            patterns=[r"^workflow 'ui-flow' saved \(id \d+\); tools: bash$"],
+            patterns=[r"^workflow 'ui-flow' saved \(id [0-9a-f-]{36}\); tools: bash$"],
             dom=["ui-flow", "saved"],
         )
         module_feed.call(call, expect)
@@ -1617,7 +1617,7 @@ class TestWorkflowTools:
     def test_list_names_the_saved_workflow(self, module_feed: ToolFeed) -> None:
         call = ToolCall(tool="workflow_list")
         expect = ToolExpect(
-            patterns=[r"^- ui-flow \(id \d+\): tools bash$"],
+            patterns=[r"^- ui-flow \(id [0-9a-f-]{36}\): tools bash$"],
             dom=["ui-flow"],
         )
         module_feed.call(call, expect)

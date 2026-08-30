@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from uuid import UUID
 
 import jwt
 import pytest
@@ -45,14 +46,14 @@ class Users(PersistedUsers, UsersUpsert, StudioProfiles):
             return known
 
         row = AuthenticatedUser(
-            id=str(len(self.rows) + 1),
+            id=str(UUID(int=len(self.rows) + 1)),
             identifier=signed.identifier,
             metadata=dict(signed.metadata),
         )
         self.rows[signed.identifier] = row
         return row
 
-    async def set_studio_profile(self, user_id: int, profile: str) -> None:
+    async def set_studio_profile(self, user_id: UUID, profile: str) -> None:
         return None
 
     async def get_user(self, identifier: str) -> AuthenticatedUser | None:

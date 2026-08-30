@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 import secrets as std_secrets
 from collections.abc import AsyncIterator
+from uuid import UUID
 
 import pytest
 from conftest import (
@@ -76,7 +77,7 @@ async def store(pool: AsyncPostgresPool) -> ConnectionStore:
 
 
 @pytest.fixture
-async def granted(store: ConnectionStore, app_config: AppConfig) -> dict[str, int]:
+async def granted(store: ConnectionStore, app_config: AppConfig) -> dict[str, UUID]:
     roles = await store.roles()
     postgres = await store.add("main", app_config.data_layer.postgres)
     await store.grant(postgres, GrantTarget.role(roles[ROLE]))
@@ -85,7 +86,7 @@ async def granted(store: ConnectionStore, app_config: AppConfig) -> dict[str, in
     await store.grant(web, GrantTarget.role(roles[ROLE]))
 
     stranger = await store.add("secret", HttpProfile(base_url="https://other.test"))
-    await store.grant(stranger, GrantTarget.user(999_999))
+    await store.grant(stranger, GrantTarget.user(UUID(int=999_999)))
 
     return {"postgres": postgres, "web": web, "stranger": stranger}
 

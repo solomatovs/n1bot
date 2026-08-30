@@ -1,7 +1,7 @@
 """Тесты PostgresDataLayer."""
 
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from chainlit.element import CustomElement, Text
@@ -351,7 +351,7 @@ async def test_thread_changes_are_published_to_the_user_scope(
     async def collect(envelope: Envelope) -> None:
         seen.append(envelope)
 
-    leave = data_bus.subscribe(Scope.user(int(seeded.user.id)), collect)
+    leave = data_bus.subscribe(Scope.user(UUID(seeded.user.id)), collect)
     thread_id = str(uuid4())
     try:
         await layer.update_thread(thread_id, name="first", user_id=seeded.user.id)

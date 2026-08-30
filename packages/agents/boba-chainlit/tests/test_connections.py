@@ -6,6 +6,7 @@ import base64
 import json
 import secrets as std_secrets
 from typing import Literal
+from uuid import UUID
 
 import pytest
 from conftest import FakeSecret
@@ -296,7 +297,7 @@ class TestConnectionKind:
             "auth": {"method": "no_password", "user": "boba"},
             "settings": {},
         }
-        raw = {"id": 1, "name": "x", "profile": profile}
+        raw = {"id": str(UUID(int=1)), "name": "x", "profile": profile}
         stored = StoredConnection.model_validate(raw)
         if not isinstance(stored.profile, ClickHouseConfig):
             raise AssertionError("profile must be validated by its kind")
@@ -305,33 +306,33 @@ class TestConnectionKind:
 
     def test_stored_profile_without_kind_is_rejected(self) -> None:
         with pytest.raises(ValidationError, match="kind"):
-            StoredConnection.model_validate({"id": 1, "name": "x", "profile": {}})
+            StoredConnection.model_validate({"id": str(UUID(int=1)), "name": "x", "profile": {}})
 
 
 class TestConnectionsConfig:
     def test_key_must_be_base64(self) -> None:
         with pytest.raises(ValueError, match="base64"):
-            ConnectionsConfig(encryption_key=SecretStr("не base64!"))
+            ConnectionsConfig(db_schema="chainlit", encryption_key=SecretStr("не base64!"))
 
     def test_key_must_be_32_bytes(self) -> None:
         short = SecretStr(base64.b64encode(std_secrets.token_bytes(16)).decode())
         with pytest.raises(ValueError, match="32-byte key required"):
-            ConnectionsConfig(encryption_key=short)
+            ConnectionsConfig(db_schema="chainlit", encryption_key=short)
 
     def test_valid_key_decodes(self) -> None:
-        if len(ConnectionsConfig(encryption_key=_key()).key_bytes()) != 32:
-            raise AssertionError("len(ConnectionsConfig(encryption_key=_key()).key_by…")
+        if len(ConnectionsConfig(db_schema="chainlit", encryption_key=_key()).key_bytes()) != 32:
+            raise AssertionError("the key must decode to 32 bytes")
 
     def test_missing_key_raises_on_use(self) -> None:
         with pytest.raises(ValueError, match="encryption_key is not set"):
-            ConnectionsConfig().key_bytes()
+            ConnectionsConfig(db_schema="chainlit").key_bytes()
 
     def test_missing_connection_raises_on_use(self) -> None:
         with pytest.raises(ValueError, match="connection is not set"):
-            ConnectionsConfig(encryption_key=_key()).require_conn()
+            ConnectionsConfig(db_schema="chainlit", encryption_key=_key()).require_conn()
 
     def test_defaults(self) -> None:
-        cfg = ConnectionsConfig()
+        cfg = ConnectionsConfig(db_schema="chainlit")
         if cfg.enable is not False:
             raise AssertionError("cfg.enable is False")
         if (cfg.db_schema, cfg.table) != ("chainlit", "connections"):
@@ -344,51 +345,47 @@ class TestGrantTarget:
             raise AssertionError("grant kinds must name the linked tables")
 
     def test_user_target(self) -> None:
-        target = GrantTarget.user(7)
-        if (target.kind, target.id) != (GrantKind.USERS, 7):
+        target = GrantTarget.user(UUID(int=7))
+        if (target.kind, target.id) != (GrantKind.USERS, UUID(int=7)):
             raise AssertionError("user target must point into users")
 
     def test_role_target(self) -> None:
-        target = GrantTarget.role(3)
-        if (target.kind, target.id) != (GrantKind.ROLES, 3):
+        target = GrantTarget.role(UUID(int=3))
+        if (target.kind, target.id) != (GrantKind.ROLES, UUID(int=3)):
             raise AssertionError("role target must point into roles")
 
     def test_connection_is_not_a_target(self) -> None:
         with pytest.raises(ValueError, match="user or a role"):
-            GrantTarget(kind=GrantKind.CONNECTIONS, id=1)
+            GrantTarget(kind=GrantKind.CONNECTIONS, id=UUID(int=1))
 
     def test_unknown_kind_rejected(self) -> None:
         with pytest.raises(ValidationError, match="kind"):
             GrantTarget.model_validate({"kind": "groups", "id": 1})
 
 
-class TestUserIntId:
-    """users.id теперь integer от базы, uuid сохранён как user_uuid."""
+class TestUserUuidId:
+    """users.id — uuid, который выдаёт строка при создании и который уходит в chainlit."""
 
-    def test_id_is_not_sent_on_insert(self) -> None:
+    def test_id_is_sent_on_insert(self) -> None:
         columns = User.insert_columns().as_string(None)
-        if "user_uuid" not in columns:
-            raise AssertionError('"user_uuid" in columns')
-        if '"id"' in columns:
-            raise AssertionError("'\"id\"' not in columns")
+        if '"id"' not in columns:
+            raise AssertionError("'\"id\"' in columns")
+        if "user_uuid" in columns:
+            raise AssertionError('"user_uuid" not in columns')
 
-    def test_all_columns_still_include_id(self) -> None:
-        if '"id"' not in User.all_columns().as_string(None):
-            raise AssertionError("'\"id\"' in User.all_columns().as_string(None)")
+    def test_persisted_id_is_the_uuid(self) -> None:
+        user = User(identifier="boba", id=UUID(int=7))
+        if user.to_persisted().id != str(UUID(int=7)):
+            raise AssertionError("user.to_persisted().id == str(UUID(int=7))")
 
-    def test_persisted_id_is_the_integer(self) -> None:
-        user = User(identifier="boba", id=7)
-        if user.to_persisted().id != "7":
-            raise AssertionError('user.to_persisted().id == "7"')
+    def test_id_is_generated(self) -> None:
+        if User(identifier="boba").id.version != 4:
+            raise AssertionError("a fresh row gets a uuid4 id")
 
-    def test_user_uuid_is_generated(self) -> None:
-        if User(identifier="boba").user_uuid is None:
-            raise AssertionError('User(identifier="boba").user_uuid is not None')
-
-    def test_thread_owner_is_int(self) -> None:
-        thread = Thread(user_id=7)
-        if thread.to_chainlit(None, [], [])["userId"] != "7":
-            raise AssertionError('thread.to_chainlit(None, [], [])["userId"] == "7"')
+    def test_thread_owner_is_uuid(self) -> None:
+        thread = Thread(user_id=UUID(int=7))
+        if thread.to_chainlit(None, [], [])["userId"] != str(UUID(int=7)):
+            raise AssertionError('thread.to_chainlit(None, [], [])["userId"] == str(UUID(int=7))')
 
     def test_thread_without_owner(self) -> None:
         if Thread().to_chainlit(None, [], [])["userId"] is not None:

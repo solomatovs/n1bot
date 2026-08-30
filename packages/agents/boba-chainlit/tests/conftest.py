@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from chainlit.step import StepDict
@@ -348,7 +348,7 @@ def make_context(  # noqa: PLR0913 — личность собирается п�
     thread_id: str,
     cancellation: RunCancellation | None = None,
     *,
-    user_id: int = 7,
+    user_id: UUID = UUID(int=7),
     login: str = "tester",
     roles: Iterable[str] = (),
     profile: str = TEST_PROFILE,
@@ -372,7 +372,7 @@ def use_context(  # noqa: PLR0913 — личность собирается по
     monkeypatch: pytest.MonkeyPatch,
     *,
     thread_id: str,
-    user_id: int = 7,
+    user_id: UUID = UUID(int=7),
     login: str = "tester",
     roles: Iterable[str] = (),
     profile: str = TEST_PROFILE,
@@ -487,7 +487,7 @@ class SessionStub:
             name = f"user-{user_id}"
 
         self.user = PersistedUser(
-            id=user_id or "0",
+            id=user_id or str(UUID(int=0)),
             identifier=name,
             createdAt="2026-01-01T00:00:00Z",
             metadata={},

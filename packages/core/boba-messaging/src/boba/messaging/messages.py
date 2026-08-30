@@ -417,7 +417,7 @@ class RunListChanged(Message):
 
     kind: Literal[MessageKind.RUN_LIST_CHANGED] = MessageKind.RUN_LIST_CHANGED
     run_id: UUID
-    workflow_id: int | None
+    workflow_id: UUID | None
     workflow_name: str
     status: str = Field(min_length=1)
 
@@ -426,7 +426,7 @@ class WorkflowChanged(Message):
     """Workflow workflow_id пользователя сохранён или удалён."""
 
     kind: Literal[MessageKind.WORKFLOW_CHANGED] = MessageKind.WORKFLOW_CHANGED
-    workflow_id: int
+    workflow_id: UUID
     name: str = Field(min_length=1)
     action: ChangeAction
 
@@ -435,7 +435,7 @@ class ConnectionsChanged(Message):
     """Соединение connection_id пользователя создано, изменено или удалено."""
 
     kind: Literal[MessageKind.CONNECTIONS_CHANGED] = MessageKind.CONNECTIONS_CHANGED
-    connection_id: int
+    connection_id: UUID
     name: str = Field(min_length=1)
     action: ChangeAction
 
@@ -527,7 +527,7 @@ class StopRequested(Command):
     """
 
     kind: Literal[CommandKind.STOP] = CommandKind.STOP
-    by_user: int
+    by_user: UUID
     by_instance: str = Field(min_length=1)
 
 

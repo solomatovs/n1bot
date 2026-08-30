@@ -299,7 +299,7 @@ class WorkflowService:
 
     async def _draft_changed(
         self,
-        user_id: int,
+        user_id: UUID,
         key: DraftKey,
         revision: int,
         by_sid: str,
@@ -313,7 +313,7 @@ class WorkflowService:
     async def list_workflows(self, subject: Subject) -> Sequence[StoredWorkflow]:
         return await self._store.list_for(subject.user_id)
 
-    async def get(self, subject: Subject, workflow_id: int) -> StoredWorkflow:
+    async def get(self, subject: Subject, workflow_id: UUID) -> StoredWorkflow:
         try:
             return await self._store.get(subject.user_id, workflow_id)
         except WorkflowNotFoundError as exc:
@@ -325,7 +325,7 @@ class WorkflowService:
         except WorkflowNotFoundError as exc:
             raise WorkflowError(WorkflowRefusal.NOT_FOUND, str(exc)) from exc
 
-    async def delete(self, subject: Subject, workflow_id: int) -> bool:
+    async def delete(self, subject: Subject, workflow_id: UUID) -> bool:
         try:
             stored = await self._store.get(subject.user_id, workflow_id)
         except WorkflowNotFoundError:

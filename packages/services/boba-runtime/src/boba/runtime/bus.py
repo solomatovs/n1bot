@@ -501,7 +501,7 @@ class PgMessageBus(MessageBus):
                     token        uuid not null,
                     purpose      text not null
                         check (purpose in ('turn', 'run', 'tool_call', 'cleanup')),
-                    user_id      integer not null,
+                    user_id      uuid not null,
                     acquired_at  timestamptz not null default now(),
                     heartbeat_at timestamptz not null default now(),
                     ttl_sec      integer not null check (ttl_sec > 0),

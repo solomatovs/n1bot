@@ -112,7 +112,7 @@ class ThreadUpsert(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    user_id: int | None
+    user_id: UUID | None
     name: str
     inserted: bool
 
@@ -127,7 +127,7 @@ class ThreadUpsert(BaseModel):
     def of(cls, row: tuple[Any, ...]) -> ThreadUpsert:
         user_id = None
         if row[0] is not None:
-            user_id = int(row[0])
+            user_id = UUID(str(row[0]))
 
         name = ""
         if row[1] is not None:
@@ -261,7 +261,7 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
     @data_boundary
     async def update_user_llm_settings(
         self,
-        user_id: int,
+        user_id: UUID,
         profile: str,
         values: Mapping[str, Any],
     ) -> None:
@@ -745,9 +745,9 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
         if name is not None:
             name_value = name
 
-        user_id_value: int | None = None
+        user_id_value: UUID | None = None
         if user_id:
-            user_id_value = int(user_id)
+            user_id_value = UUID(user_id)
 
         params = {
             "id": UUID(thread_id),
@@ -855,7 +855,7 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
         self._purge_stream_journal(owner, thread_id)
         if owner is not None and owner[0] is not None:
             await self._thread_changed(
-                int(owner[0]), thread_id, "", ChangeAction.DELETED
+                UUID(str(owner[0])), thread_id, "", ChangeAction.DELETED
             )
 
     async def _chat_changed(self, thread_id: object, message: AnyMessage) -> None:
@@ -869,7 +869,7 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
         await self._bus.publish(scope, message, LockToken.local())
 
     async def _thread_changed(
-        self, user_id: int | None, thread_id: str, name: str, action: ChangeAction
+        self, user_id: UUID | None, thread_id: str, name: str, action: ChangeAction
     ) -> None:
         """Сообщает вкладкам пользователя на всех инстансах, что его список тредов
         изменился; тред без владельца в списках не живёт.
@@ -941,7 +941,7 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
             users=User.get_table_name(self._schema),
         )
 
-        user_id = int(filters.userId)
+        user_id = UUID(filters.userId)
         try:
             async with self._pool.connection() as conn:
                 async with conn.cursor(row_factory=tuple_row) as cur:

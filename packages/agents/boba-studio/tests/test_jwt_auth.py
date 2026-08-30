@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from uuid import UUID
 
 import jwt
 import pytest
@@ -22,7 +23,7 @@ class Users(PersistedUsers, UsersUpsert):
     def __init__(self) -> None:
         self.asked: list[str] = []
         self.rows = {
-            "reader": AuthenticatedUser(id="7", identifier="reader", metadata={})
+            "reader": AuthenticatedUser(id=str(UUID(int=7)), identifier="reader", metadata={})
         }
 
     async def get_user(self, identifier: str) -> AuthenticatedUser | None:
@@ -55,7 +56,7 @@ async def test_valid_token_yields_the_users_row_with_token_metadata() -> None:
 
     if user is None:
         raise AssertionError("valid token must authenticate")
-    if (user.id, user.identifier) != ("7", "reader"):
+    if (user.id, user.identifier) != (str(UUID(int=7)), "reader"):
         raise AssertionError(user)
     if user.roles != frozenset({"read"}):
         raise AssertionError(f"metadata must come from the token: {user.metadata}")

@@ -245,6 +245,9 @@ class StandDatabase:
         app_config = bind(built, path="app", model=AppConfig)
 
         self._built = built
+        self._studio_built = build_app_config(
+            config_path=StandPaths.STUDIO_BASE_CONFIG.under(REPO_ROOT)
+        )
         pool = app_config.data_layer.postgres.pool.model_copy(update=self.POOL_OVERRIDE)
         self._postgres = app_config.data_layer.postgres.model_copy(
             update={"dbname": name, "pool": pool}
@@ -293,45 +296,56 @@ class StandDatabase:
         self._run(self._seed_connections(llm_port))
 
     async def _seed_connections(self, llm_port: int) -> None:
-        connections = bind(self._built, path="connections", model=ConnectionsConfig)
+        """У каждого приложения своя копия connections: сеем в обе схемы."""
         clickhouse = bind(self._built, path="clickhouse", model=ClickHouseConfig)
         web = HttpProfile(base_url=StandUrl.of(llm_port), ssl_verify=False)
 
         pool = AsyncPostgresPool(self._postgres)
         await pool.open()
         try:
-            store = ConnectionStore(connections, pool)
-
-            # строки прошлых прогонов могут не проходить нынешний валидатор
-            # профиля, поэтому чистятся мимо стора
-            async with pool.cursor() as cur:
-                await cur.execute(
-                    sql.SQL("delete from {}").format(
-                        sql.Identifier(connections.db_schema, connections.grants_table)
-                    )
-                )
-                await cur.execute(
-                    sql.SQL("delete from {}").format(
-                        sql.Identifier(connections.db_schema, connections.table)
-                    )
-                )
-
-            roles = await store.roles()
-            targets: list[GrantTarget] = []
-            for role_names in StandConfig.STAND_ROLES.values():
-                for role in role_names:
-                    targets.append(GrantTarget.role(roles[role]))
-
-            rows = [
-                await store.add("main", self._postgres),
-                await store.add("main", clickhouse),
-                await store.add("stand", web),
-            ]
-            for connection_id in rows:
-                for target in targets:
-                    await store.grant(connection_id, target)
+            for built in (self._built, self._studio_built):
+                connections = bind(built, path="connections", model=ConnectionsConfig)
+                await self._seed_schema(pool, connections, clickhouse, web)
         finally:
             await pool.close()
+
+    async def _seed_schema(
+        self,
+        pool: AsyncPostgresPool,
+        connections: ConnectionsConfig,
+        clickhouse: ClickHouseConfig,
+        web: HttpProfile,
+    ) -> None:
+        store = ConnectionStore(connections, pool)
+
+        # строки прошлых прогонов могут не проходить нынешний валидатор
+        # профиля, поэтому чистятся мимо стора
+        async with pool.cursor() as cur:
+            await cur.execute(
+                sql.SQL("delete from {}").format(
+                    sql.Identifier(connections.db_schema, connections.grants_table)
+                )
+            )
+            await cur.execute(
+                sql.SQL("delete from {}").format(
+                    sql.Identifier(connections.db_schema, connections.table)
+                )
+            )
+
+        roles = await store.roles()
+        targets: list[GrantTarget] = []
+        for role_names in StandConfig.STAND_ROLES.values():
+            for role in role_names:
+                targets.append(GrantTarget.role(roles[role]))
+
+        rows = [
+            await store.add("main", self._postgres),
+            await store.add("main", clickhouse),
+            await store.add("stand", web),
+        ]
+        for connection_id in rows:
+            for target in targets:
+                await store.grant(connection_id, target)
 
     async def _execute(
         self,

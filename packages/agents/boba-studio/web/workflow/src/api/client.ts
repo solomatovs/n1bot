@@ -159,7 +159,7 @@ export class WorkflowApi {
     return ConnectionViewSchema.parse(raw);
   }
 
-  async replaceConnection(id: number, body: ConnectionBody): Promise<ConnectionView> {
+  async replaceConnection(id: string, body: ConnectionBody): Promise<ConnectionView> {
     const raw = await this.raw("put", "/v1/connections/{connection_id}", { connection_id: id }, undefined, body);
     return ConnectionViewSchema.parse(raw);
   }
@@ -170,11 +170,11 @@ export class WorkflowApi {
     return ProbeResultSchema.parse(raw);
   }
 
-  checkStoredConnection(id: number): Promise<ProbeResult> {
+  checkStoredConnection(id: string): Promise<ProbeResult> {
     return this.call("post", "/v1/connections/{connection_id}/check", { connection_id: id }, undefined, {}, ProbeResultSchema);
   }
 
-  async removeConnection(id: number): Promise<boolean> {
+  async removeConnection(id: string): Promise<boolean> {
     const reply = await this.call(
       "delete",
       "/v1/connections/{connection_id}",
@@ -200,7 +200,7 @@ export class WorkflowApi {
     return this.call("get", "/v1/workflows", {}, undefined, undefined, StoredWorkflowSchema.array());
   }
 
-  getWorkflow(id: number): Promise<StoredWorkflow> {
+  getWorkflow(id: string): Promise<StoredWorkflow> {
     return this.call("get", "/v1/workflows/{workflow_id}", { workflow_id: id }, undefined, undefined, StoredWorkflowSchema);
   }
 
@@ -231,12 +231,12 @@ export class WorkflowApi {
     return reply.deleted;
   }
 
-  async remove(id: number): Promise<boolean> {
+  async remove(id: string): Promise<boolean> {
     const reply = await this.call("delete", "/v1/workflows/{workflow_id}", { workflow_id: id }, undefined, undefined, DeletedSchema);
     return reply.deleted;
   }
 
-  async run(id: number): Promise<string> {
+  async run(id: string): Promise<string> {
     const reply = await this.call("post", "/v1/workflows/{workflow_id}/run", { workflow_id: id }, undefined, {}, RunStartedSchema);
     return reply.run_id;
   }

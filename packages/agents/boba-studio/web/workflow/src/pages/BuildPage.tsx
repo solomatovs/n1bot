@@ -95,7 +95,7 @@ export function BuildPage(): ReactElement {
       return { catalog, stored: null, draft };
     }
 
-    return { catalog, stored: await api.getWorkflow(Number(workflowId)), draft };
+    return { catalog, stored: await api.getWorkflow(workflowId), draft };
   }, [api, workflowId, draftKey]);
   const [loaded] = useLoadable(load);
 
@@ -199,7 +199,7 @@ function Builder({ catalog, stored, draft, draftKey }: BuilderProps): ReactEleme
   const [issues, setIssues] = useState<SpecIssue[]>([]);
   const [notice, setNotice] = useState(() => noticeOf(location.state));
   const [failed, setFailed] = useState(false);
-  const [savedId, setSavedId] = useState<number | null>(stored?.id ?? null);
+  const [savedId, setSavedId] = useState<string | null>(stored?.id ?? null);
 
   const issuesByTask = useMemo(() => {
     const found = new Map<string, string>();

@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, ClassVar, cast
+from uuid import UUID
 
 from boba.canvas.canvas import CanvasSignal, SignalTransport
 from boba.chainlit.chat.feed import TextClip
@@ -262,7 +263,7 @@ class UserRoom:
 
     EVENT: ClassVar[str] = "first_interaction"
     INTERACTION: ClassVar[str] = "boba:thread-list:{seq}"
-    _JOINED: ClassVar[dict[int, Unsubscribe]] = {}
+    _JOINED: ClassVar[dict[UUID, Unsubscribe]] = {}
     _SETTINGS: ClassVar[SettingsRefresher | None] = None
 
     @classmethod
@@ -271,7 +272,7 @@ class UserRoom:
         cls._SETTINGS = refresher
 
     @classmethod
-    def join(cls, user_id: int) -> None:
+    def join(cls, user_id: UUID) -> None:
         if user_id in cls._JOINED:
             return
 
@@ -297,7 +298,7 @@ class UserRoom:
         cls._JOINED.clear()
 
     @classmethod
-    async def deliver(cls, user_id: int, envelope: Envelope) -> None:
+    async def deliver(cls, user_id: UUID, envelope: Envelope) -> None:
         message = envelope.message
         if isinstance(message, ChatSettingsChanged):
             await cls._settings_changed(user_id, message)
@@ -335,7 +336,7 @@ class UserRoom:
 
     @classmethod
     async def _settings_changed(
-        cls, user_id: int, message: ChatSettingsChanged
+        cls, user_id: UUID, message: ChatSettingsChanged
     ) -> None:
         """Остальные вкладки пользователя на том же профиле получают свежие настройки."""
         refresher = cls._SETTINGS

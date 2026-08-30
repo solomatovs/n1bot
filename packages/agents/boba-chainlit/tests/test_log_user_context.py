@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
+from uuid import UUID
 
 import pytest
 from conftest import use_session
@@ -42,7 +43,7 @@ class TestUserInEveryRecord:
     def test_user_label_taken_from_session(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        use_session(monkeypatch, user_id="7", identifier="ivanov")
+        use_session(monkeypatch, user_id=str(UUID(int=7)), identifier="ivanov")
         if getattr(self._record(), UserLogContext.ATTRIBUTE) != "ivanov":
             raise AssertionError("getattr(self._record(), UserLogContext.ATTRIBUTE) =…")
 
@@ -66,7 +67,7 @@ class TestUserInEveryRecord:
             raise AssertionError("logging.getLogRecordFactory() is factory")
 
     def test_format_with_user_field(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        use_session(monkeypatch, user_id="7", identifier="petrov")
+        use_session(monkeypatch, user_id=str(UUID(int=7)), identifier="petrov")
         formatter = logging.Formatter("[%(user)s] %(message)s")
         if formatter.format(self._record()) != "[petrov] сообщение":
             raise AssertionError('formatter.format(self._record()) == "[petrov] сообщ…')
@@ -82,7 +83,7 @@ class TestUserInEveryRecord:
     def test_session_wins_over_request_context(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        use_session(monkeypatch, user_id="7", identifier="ivanov")
+        use_session(monkeypatch, user_id=str(UUID(int=7)), identifier="ivanov")
         token = RequestUserContext.set("sidorov")
         try:
             if getattr(self._record(), UserLogContext.ATTRIBUTE) != "ivanov":

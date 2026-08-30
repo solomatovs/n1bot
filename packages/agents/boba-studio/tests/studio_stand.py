@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from typing import ClassVar
+from uuid import UUID
 
 from boba.connection_broker.store import ConnectionStore
 from boba.identity.api import AuthenticatedUser, Authenticator, UserSettingsStore
@@ -43,7 +44,7 @@ class MemoryUsers(UserSettingsStore):
 
     def __init__(self, user: AuthenticatedUser | None) -> None:
         self._user = user
-        self.chosen: dict[int, str] = {}
+        self.chosen: dict[UUID, str] = {}
 
     async def get_user(self, identifier: str) -> AuthenticatedUser | None:
         if self._user is None:
@@ -54,7 +55,7 @@ class MemoryUsers(UserSettingsStore):
 
         return self._user
 
-    async def set_studio_profile(self, user_id: int, profile: str) -> None:
+    async def set_studio_profile(self, user_id: UUID, profile: str) -> None:
         self.chosen[user_id] = profile
         if self._user is None:
             return

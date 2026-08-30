@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from enum import StrEnum
 from typing import Annotated, ClassVar, Literal
-from uuid import UUID, uuid5
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -99,14 +99,10 @@ class Scope(BaseModel):
         """Область запуска workflow: run_id — ключ реестра запусков и журнала."""
         return cls(kind=ScopeKind.WORKFLOW, id=str(run_id))
 
-    USER_NAMESPACE: ClassVar[UUID] = UUID("3b7f0c2e-5d2a-4e1b-9c8d-7a6f5e4d3c2b")
-
     @classmethod
-    def user(cls, user_id: int) -> Scope:
-        """Область пользователя для его лент (запуски, workflow, соединения); id —
-        uuid5 от users.id, чтобы область была uuid без обращения к таблице.
-        """
-        return cls(kind=ScopeKind.USER, id=str(uuid5(cls.USER_NAMESPACE, str(user_id))))
+    def user(cls, user_id: UUID) -> Scope:
+        """Область пользователя для его лент (запуски, workflow, соединения): users.id."""
+        return cls(kind=ScopeKind.USER, id=str(user_id))
 
 
 class Subject(BaseModel):
@@ -114,7 +110,7 @@ class Subject(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    user_id: int
+    user_id: UUID
     """Строка users."""
     login: str = Field(min_length=1)
     roles: frozenset[str]
@@ -130,17 +126,13 @@ class Subject(BaseModel):
     def of_user(
         cls, user_id: str, login: str, roles: Iterable[str], profile: str
     ) -> Subject:
-        """Субъект по строке users; id не число — ValueError."""
+        """Субъект по строке users; id не uuid — ValueError."""
         try:
-            numeric = int(user_id)
+            parsed = UUID(user_id)
         except ValueError as exc:
-            raise ValueError(
-                f"user id {user_id!r} is not the users.id integer"
-            ) from exc
+            raise ValueError(f"user id {user_id!r} is not the users.id uuid") from exc
 
-        return cls(
-            user_id=numeric, login=login, roles=frozenset(roles), profile=profile
-        )
+        return cls(user_id=parsed, login=login, roles=frozenset(roles), profile=profile)
 
 
 class ChatInitiator(BaseModel):

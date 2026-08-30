@@ -8,7 +8,7 @@ import type { ConnectionView } from "../../model/account";
 import { SchemaDoc, parseSchema } from "../../model/schema";
 import { ConnectionForm } from "./ConnectionForm";
 
-type Pick = { kind: "none" } | { kind: "new" } | { kind: "row"; id: number };
+type Pick = { kind: "none" } | { kind: "new" } | { kind: "row"; id: string };
 
 /** Вкладка соединений: свои — правятся, общие (по роли) — только просмотр. */
 export function ConnectionsTab(): ReactElement {

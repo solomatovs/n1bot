@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 import pytest
 from starlette.requests import Request
 from starlette.responses import Response
@@ -23,7 +25,7 @@ WORKSPACE = "/app/boba/data/workspace/{user_id}.ext4:/workspace"
 THREAD_ID = "e4baaef4-2887-455a-85ff-16d70dd3e4c9"
 
 
-def _context(user_id: int) -> CallContext:
+def _context(user_id: UUID) -> CallContext:
     return CallContext(
         subject=Subject(
             user_id=user_id, login="maksimov.ma", roles=frozenset(), profile="general"
@@ -39,18 +41,18 @@ class TestSandboxPathVars:
     """Контекст вызова отдаёт значения, которыми профиль разворачивает пути."""
 
     async def test_context_fills_both_variables(self) -> None:
-        with _context(18).applied():
+        with _context(UUID(int=18)).applied():
             values = CallSurface.sandbox_path_vars()
 
-        if values != {"user_id": "18", "thread_id": THREAD_ID}:
+        if values != {"user_id": str(UUID(int=18)), "thread_id": THREAD_ID}:
             raise AssertionError(f"оба значения из контекста, дано {values!r}")
 
     async def test_workspace_path_renders_from_the_context(self) -> None:
         """Путь образа собирается целиком: это и падало у bash."""
-        with _context(18).applied():
+        with _context(UUID(int=18)).applied():
             rendered = BindSpec.parse(WORKSPACE).render(CallSurface.sandbox_path_vars())
 
-        if rendered.host != "/app/boba/data/workspace/18.ext4":
+        if rendered.host != f"/app/boba/data/workspace/{UUID(int=18)}.ext4":
             raise AssertionError(f"host подставлен, дано {rendered.host!r}")
 
         if rendered.target != "/workspace":
@@ -58,7 +60,7 @@ class TestSandboxPathVars:
 
     async def test_each_user_gets_its_own_image(self) -> None:
         hosts: list[str] = []
-        for user_id in (18, 42):
+        for user_id in (UUID(int=18), UUID(int=42)):
             with _context(user_id).applied():
                 hosts.append(
                     BindSpec.parse(WORKSPACE)
@@ -67,8 +69,8 @@ class TestSandboxPathVars:
                 )
 
         if hosts != [
-            "/app/boba/data/workspace/18.ext4",
-            "/app/boba/data/workspace/42.ext4",
+            f"/app/boba/data/workspace/{UUID(int=18)}.ext4",
+            f"/app/boba/data/workspace/{UUID(int=42)}.ext4",
         ]:
             raise AssertionError(f"образ на пользователя, дано {hosts!r}")
 

@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar, cast
+from uuid import UUID
 
 import pytest
 from chainlit.context import ChainlitContext, context_var
@@ -66,7 +67,7 @@ def _bin_dirs() -> list[str]:
 
 
 THREAD = "33333333-3333-3333-3333-333333333333"
-USER = "7"
+USER = str(UUID(int=7))
 CALL_ID = "call-stream-1"
 TOOL_NAME = "fake_bash"
 
@@ -112,7 +113,7 @@ def chainlit_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
         client_type="webapp",
     )
     token = context_var.set(cast("ChainlitContext", SimpleNamespace(session=session)))
-    use_context(monkeypatch, thread_id=THREAD, user_id=int(USER))
+    use_context(monkeypatch, thread_id=THREAD, user_id=UUID(USER))
     ToolStreams.reset()
     ToolStreams.configure(
         StreamJournal(DirVault(str(tmp_path / "journal")), reserve_bytes=0)

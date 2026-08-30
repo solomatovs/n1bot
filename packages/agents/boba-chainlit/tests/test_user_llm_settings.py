@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from chainlit.input_widget import InputWidget, Select, Slider, Tab
@@ -557,7 +557,7 @@ class TestUserSettingsStorage:
             raise AssertionError("user is not created")
 
         await layer.update_user_llm_settings(
-            int(created.id), "general", {"temperature": 0.9}
+            UUID(created.id), "general", {"temperature": 0.9}
         )
 
         # повторный логин: провайдер приносит новую мету
@@ -585,9 +585,9 @@ class TestUserSettingsStorage:
             raise AssertionError("user is not created")
 
         await layer.update_user_llm_settings(
-            int(created.id), "general", {"temperature": 0.9}
+            UUID(created.id), "general", {"temperature": 0.9}
         )
-        await layer.update_user_llm_settings(int(created.id), "general", {})
+        await layer.update_user_llm_settings(UUID(created.id), "general", {})
 
         meta = await self._meta_of(pool, app_config.data_layer.db_schema, identifier)
         if meta.get("llm", {}).get("general") is not None:
@@ -605,10 +605,10 @@ class TestUserSettingsStorage:
             raise AssertionError("user is not created")
 
         await layer.update_user_llm_settings(
-            int(created.id), "general", {"temperature": 0.9}
+            UUID(created.id), "general", {"temperature": 0.9}
         )
         await layer.update_user_llm_settings(
-            int(created.id), "search", {"model": "alt-model"}
+            UUID(created.id), "search", {"model": "alt-model"}
         )
 
         meta = await self._meta_of(pool, app_config.data_layer.db_schema, identifier)

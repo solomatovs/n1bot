@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, ClassVar, cast
 from urllib.parse import quote
+from uuid import UUID
 
 import chainlit as cl
 import pytest
@@ -46,7 +47,7 @@ from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig
 
 THREAD = "11111111-1111-1111-1111-111111111111"
-USER = "7"
+USER = str(UUID(int=7))
 
 
 @pytest.fixture(autouse=True)

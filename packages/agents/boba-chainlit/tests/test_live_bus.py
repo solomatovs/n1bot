@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -182,7 +182,7 @@ async def test_command_reaches_both_instances_and_is_taken_once(
     second.subscribe_commands(right.take_command)
 
     command_id = await second.command(
-        scope, StopRequested(by_user=1, by_instance=second.instance)
+        scope, StopRequested(by_user=UUID(int=1), by_instance=second.instance)
     )
 
     await left.wait_commands(1)
@@ -263,14 +263,14 @@ async def test_user_scope_events_cross_instances(
     buses: tuple[PgMessageBus, PgMessageBus],
 ) -> None:
     first, second = buses
-    scope = Scope.user(7)
+    scope = Scope.user(UUID(int=7))
     inbox = Inbox()
     second.subscribe(scope, inbox.take)
 
     await first.publish(
         scope,
         RunListChanged(
-            run_id=uuid4(), workflow_id=1, workflow_name="w", status="pending"
+            run_id=uuid4(), workflow_id=UUID(int=1), workflow_name="w", status="pending"
         ),
         LockToken.local(),
     )

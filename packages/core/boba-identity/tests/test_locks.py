@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -33,11 +33,11 @@ async def test_second_exclusive_holder_is_refused_with_the_first_described() -> 
     clock = Clock()
     locks = MemoryLiveLocks("node1-chainlit", ttl_sec=20, clock=clock)
     scope = _scope()
-    await locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, 7)
+    await locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=7))
     clock.now += 3
 
     with pytest.raises(LockBusyError) as caught:
-        await locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TOOL_CALL, 7)
+        await locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TOOL_CALL, UUID(int=7))
 
     assert caught.value.busy.holder == "node1-chainlit"
     assert caught.value.busy.purpose is LockPurpose.TURN
@@ -48,26 +48,26 @@ async def test_second_exclusive_holder_is_refused_with_the_first_described() -> 
 async def test_shared_holders_coexist_but_exclusive_waits_for_them() -> None:
     locks = MemoryLiveLocks("n", ttl_sec=20)
     scope = _scope()
-    await locks.acquire(scope, LockMode.SHARED, LockPurpose.CLEANUP, 1)
-    await locks.acquire(scope, LockMode.SHARED, LockPurpose.CLEANUP, 2)
+    await locks.acquire(scope, LockMode.SHARED, LockPurpose.CLEANUP, UUID(int=1))
+    await locks.acquire(scope, LockMode.SHARED, LockPurpose.CLEANUP, UUID(int=2))
 
     with pytest.raises(LockBusyError):
-        await locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, 1)
+        await locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=1))
 
     exclusive_scope = _scope()
-    await locks.acquire(exclusive_scope, LockMode.EXCLUSIVE, LockPurpose.RUN, 1)
+    await locks.acquire(exclusive_scope, LockMode.EXCLUSIVE, LockPurpose.RUN, UUID(int=1))
     with pytest.raises(LockBusyError):
-        await locks.acquire(exclusive_scope, LockMode.SHARED, LockPurpose.CLEANUP, 1)
+        await locks.acquire(exclusive_scope, LockMode.SHARED, LockPurpose.CLEANUP, UUID(int=1))
 
 
 async def test_stale_lock_is_taken_over_and_its_heartbeat_fails() -> None:
     clock = Clock()
     locks = MemoryLiveLocks("n", ttl_sec=20, clock=clock)
     scope = _scope()
-    first = await locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.RUN, 1)
+    first = await locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.RUN, UUID(int=1))
     clock.now += 21
 
-    second = await locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.RUN, 2)
+    second = await locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.RUN, UUID(int=2))
 
     assert second.token != first.token
     assert await locks.heartbeat(first.token) is False
@@ -79,9 +79,9 @@ async def test_stale_lock_is_taken_over_and_its_heartbeat_fails() -> None:
 async def test_release_and_release_all_free_the_scope() -> None:
     locks = MemoryLiveLocks("n", ttl_sec=20)
     scope = _scope()
-    lock = await locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, 1)
+    lock = await locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=1))
     await locks.release(lock.token)
-    await locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, 1)
+    await locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=1))
 
     assert await locks.release_all("n") == 1
     assert await locks.holders_of(scope) == []
@@ -92,9 +92,9 @@ async def test_reap_returns_stale_locks_only() -> None:
     locks = MemoryLiveLocks("n", ttl_sec=20, clock=clock)
     old = _scope()
     fresh = _scope()
-    await locks.acquire(old, LockMode.EXCLUSIVE, LockPurpose.RUN, 1)
+    await locks.acquire(old, LockMode.EXCLUSIVE, LockPurpose.RUN, UUID(int=1))
     clock.now += 15
-    await locks.acquire(fresh, LockMode.EXCLUSIVE, LockPurpose.TURN, 1)
+    await locks.acquire(fresh, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=1))
     clock.now += 6
 
     stale = await locks.reap()

@@ -133,7 +133,7 @@ class Sel:
 
 @dataclass(frozen=True)
 class SeededRun:
-    workflow_id: int
+    workflow_id: str
     run_id: str
 
 
@@ -153,7 +153,7 @@ class Rest:
     def seed(self, spec: str = SPEC, expected: str = "done") -> SeededRun:
         saved = self._client.post(f"{self._base}/api/v1/workflows", json={"spec": spec})
         saved.raise_for_status()
-        workflow_id = int(saved.json()["id"])
+        workflow_id = str(saved.json()["id"])
 
         run_url = f"{self._base}/api/v1/workflows/{workflow_id}/run"
         started = self._client.post(run_url, json={})
@@ -232,6 +232,9 @@ def _open(page: Page, stand: StandProcess, path: str) -> None:
 def _open_run(page: Page, stand: StandProcess, seeded: SeededRun) -> None:
     _open(page, stand, f"/observe/{seeded.run_id}")
     expect(page.locator(Sel.TASK_NODE)).to_have_count(2)
+    # React Flow измеряет узлы после первого рендера: до этого у них нет box
+    expect(page.locator(Sel.TASK_NODE).first).to_be_visible()
+    expect(page.locator(Sel.VITALS)).to_be_visible()
 
 
 def _tab(page: Page, label: str) -> None:

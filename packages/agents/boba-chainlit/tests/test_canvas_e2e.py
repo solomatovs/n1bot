@@ -35,7 +35,6 @@ LAUNCHER = REPO / ".venv/bin/python"
 ENTRY = REPO / "packages/agents/boba-chainlit/src/boba/chainlit/main.py"
 PORT = int(os.environ.get("BOBA_E2E_PORT", "8601"))
 BASE = FakeUrl.loopback(PORT, "/boba-debug")
-USER_ID = "1"
 LOGIN = ("admin", "myPassdfd3")
 
 PNG = bytes.fromhex(
@@ -120,18 +119,51 @@ async def _wait_for_server() -> None:
     pytest.fail(f"приложение не поднялось: {last_error}")
 
 
-async def _upload(thread_id: str) -> None:
-    from boba.chainlit.data.storage import StorageFactory
+def _app_config() -> Any:
     from boba.chainlit.infra.config import AppConfig
     from boba.settings import bind, build_app_config
 
     raw = build_app_config(config_path=Path(os.environ["BOBA_CONFIG_PATH"]))
-    config = bind(raw, path="app", model=AppConfig)
+    return bind(raw, path="app", model=AppConfig)
+
+
+async def _user_id_of(config: Any, identifier: str) -> str:
+    """users.id пользователя стенда по логину: владелец тредов и журналов."""
+    from psycopg import sql
+
+    from boba.db.postgres import AsyncPostgresPool
+    from boba.runtime.tables import ChatTable, UsersColumn
+
+    pool = AsyncPostgresPool(config.data_layer.postgres)
+    await pool.open()
+    try:
+        query = sql.SQL("select {id} from {users} where {identifier} = %s").format(
+            id=UsersColumn.ID.ident(),
+            users=ChatTable.USERS.under(config.data_layer.db_schema),
+            identifier=UsersColumn.IDENTIFIER.ident(),
+        )
+        async with pool.connection() as conn:
+            cursor = await conn.execute(query, (identifier,))
+            row = await cursor.fetchone()
+    finally:
+        await pool.close()
+
+    if row is None:
+        raise AssertionError(f"stand user {identifier!r} has no users row yet")
+
+    return str(row[0])
+
+
+async def _upload(thread_id: str) -> None:
+    from boba.chainlit.data.storage import StorageFactory
+
+    config = _app_config()
     storage = StorageFactory.create(config.storage)
+    owner = await _user_id_of(config, LOGIN[0])
 
     for name, blob in FILES.items():
         await asyncio.wait_for(
-            storage.upload_file(f"{USER_ID}/{thread_id}/upload/{name}", blob), 120
+            storage.upload_file(f"{owner}/{thread_id}/upload/{name}", blob), 120
         )
 
 
@@ -672,17 +704,13 @@ async def test_bar_survives_scrolling(panel: Any) -> None:
 async def _rewrite(thread_id: str, name: str, blob: bytes) -> None:
     """Переписать файл workspace: так его меняет инструмент между показами."""
     from boba.chainlit.data.storage import StorageFactory
-    from boba.chainlit.infra.config import AppConfig
-    from boba.settings import bind, build_app_config
 
-    raw = build_app_config(config_path=Path(os.environ["BOBA_CONFIG_PATH"]))
-    config = bind(raw, path="app", model=AppConfig)
+    config = _app_config()
     storage = StorageFactory.create(config.storage)
+    owner = await _user_id_of(config, LOGIN[0])
 
     await asyncio.wait_for(
-        storage.upload_file(
-            f"{USER_ID}/{thread_id}/upload/{name}", blob, overwrite=True
-        ),
+        storage.upload_file(f"{owner}/{thread_id}/upload/{name}", blob, overwrite=True),
         120,
     )
 

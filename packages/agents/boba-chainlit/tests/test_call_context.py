@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 import pytest
 from conftest import use_context, use_session
 from pydantic import ValidationError
@@ -59,7 +61,7 @@ class TestCurrent:
         subject = CallContext.current_subject()
         if subject.roles != frozenset({"ADM"}) or subject.profile != "general":
             raise AssertionError(subject)
-        if subject.user_key != "7":
+        if subject.user_key != str(UUID(int=7)):
             raise AssertionError(subject.user_key)
 
 
@@ -76,7 +78,7 @@ class TestChatContext:
     def test_session_context_is_a_chat_with_a_surface(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        use_session(monkeypatch, user_id="7", thread_id=THREAD)
+        use_session(monkeypatch, user_id=str(UUID(int=7)), thread_id=THREAD)
 
         context = ChatCallContext.require()
         if not isinstance(context.surface, ChatSurface):

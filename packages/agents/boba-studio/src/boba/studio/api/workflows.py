@@ -162,7 +162,7 @@ class WorkflowApi:
         )
 
     async def get(
-        self, workflow_id: int, current_user: CurrentUser, profile: str | None = None
+        self, workflow_id: UUID, current_user: CurrentUser, profile: str | None = None
     ) -> StoredWorkflow:
         identity = self._identity(current_user, profile)
         service = await self._resolved()
@@ -170,7 +170,7 @@ class WorkflowApi:
         return await self._guarded(service.get(identity.subject, workflow_id))
 
     async def delete(
-        self, workflow_id: int, current_user: CurrentUser, profile: str | None = None
+        self, workflow_id: UUID, current_user: CurrentUser, profile: str | None = None
     ) -> Deleted:
         identity = self._identity(current_user, profile)
         service = await self._resolved()
@@ -226,7 +226,7 @@ class WorkflowApi:
 
     async def run(
         self,
-        workflow_id: int,
+        workflow_id: UUID,
         body: ProfileBody,
         current_user: CurrentUser,
         profile: str | None = None,
