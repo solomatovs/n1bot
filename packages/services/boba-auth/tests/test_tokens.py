@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 
 import jwt
 import pytest
@@ -43,17 +44,20 @@ class TestJwtTokens:
     @pytest.mark.parametrize(
         ("token", "reason"),
         [
-            ("", TokenRejection.MALFORMED),
-            ("not-a-jwt", TokenRejection.MALFORMED),
-            (_encode("other", "a", 60), TokenRejection.SIGNATURE),
-            (_encode(SECRET, "a", -5), TokenRejection.EXPIRED),
-            (_encode(SECRET, "", 60), TokenRejection.MALFORMED),
+            (lambda: "", TokenRejection.MALFORMED),
+            (lambda: "not-a-jwt", TokenRejection.MALFORMED),
+            (lambda: _encode("other", "a", 60), TokenRejection.SIGNATURE),
+            (lambda: _encode(SECRET, "a", -5), TokenRejection.EXPIRED),
+            (lambda: _encode(SECRET, "", 60), TokenRejection.MALFORMED),
         ],
         ids=["empty", "garbage", "foreign-secret", "expired", "no-identifier"],
     )
-    def test_rejection_reasons(self, token: str, reason: TokenRejection) -> None:
+    def test_rejection_reasons(
+        self, token: Callable[[], str], reason: TokenRejection
+    ) -> None:
+        """Токен собирается в самом тесте: срок в параметре истёк бы за долгий прогон."""
         with pytest.raises(TokenRejectedError) as caught:
-            JwtTokens(SECRET, 60).read(token)
+            JwtTokens(SECRET, 60).read(token())
 
         assert caught.value.reason is reason
 

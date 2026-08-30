@@ -136,7 +136,9 @@ def credential_source(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
     refresh: Annotated[RefreshSignal, Depends(refresh_signal)],
 ) -> KerberosCredentialSource:
-    """Источник кредов вызова на процесс; без kerberos в [auth] делегирование отказывает."""
+    """Источник кредов вызова на процесс; без kerberos в [auth] делегирование
+    отказывает.
+    """
     return KerberosCredentialSource(config.sso_tickets(), refresh)
 
 

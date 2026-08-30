@@ -30,15 +30,14 @@ from boba.identity.errors import (
 __all__ = [
     "ChatTable",
     "ChatThreads",
-    "ElementsColumn",
-    "FeedbacksColumn",
-    "ThreadsColumn",
     "DataBrokenError",
     "DataLayerError",
     "DataRejectedError",
     "DataUnavailableError",
     "ElementStore",
+    "ElementsColumn",
     "FeedbackStore",
+    "FeedbacksColumn",
     "StoredElement",
     "StoredFeedback",
     "StoredThread",
@@ -46,6 +45,7 @@ __all__ = [
     "ThreadStore",
     "ThreadUpsert",
     "ThreadUpserted",
+    "ThreadsColumn",
     "data_boundary",
 ]
 

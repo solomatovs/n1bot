@@ -45,6 +45,10 @@ pytestmark = [
 ]
 
 
+needs_clickhouse = pytest.mark.skipif(
+    not STAND.ch_addr, reason="в конфиге стенда нет clickhouse (ch_addr)"
+)
+
 @pytest.fixture(autouse=True)
 def workspace(tmp_path: Path) -> None:
     """Кэши билетов теста живут в своём каталоге, как у приложения."""
@@ -78,6 +82,7 @@ def _keytab() -> KeytabAuth:
     )
 
 
+@needs_clickhouse
 async def test_none_auth_reaches_an_open_endpoint() -> None:
     """method = none: заголовка авторизации нет, открытый адрес отвечает."""
     profile = _clickhouse(NoneAuth(method="none"))
@@ -88,6 +93,7 @@ async def test_none_auth_reaches_an_open_endpoint() -> None:
         raise AssertionError(f"anonymous request must pass: {status} {body}")
 
 
+@needs_clickhouse
 async def test_none_auth_is_refused_where_credentials_are_required() -> None:
     """Тот же профиль без кредов: закрытый адрес отвечает отказом, а не данными."""
     profile = _clickhouse(NoneAuth(method="none"))
@@ -101,6 +107,7 @@ async def test_none_auth_is_refused_where_credentials_are_required() -> None:
         raise AssertionError(f"anonymous request must be refused: {caught.value}")
 
 
+@needs_clickhouse
 async def test_basic_auth_logs_in_as_its_own_user() -> None:
     """method = basic: имя и пароль уходят заголовком Authorization."""
     if not STAND.ch_user:
@@ -120,6 +127,7 @@ async def test_basic_auth_logs_in_as_its_own_user() -> None:
         raise AssertionError(f"server must see the basic user: {body!r}")
 
 
+@needs_clickhouse
 async def test_basic_auth_with_a_wrong_password_is_refused() -> None:
     """Неверный пароль — отказ сервера, а не анонимный доступ."""
     profile = _clickhouse(

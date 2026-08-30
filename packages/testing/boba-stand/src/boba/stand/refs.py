@@ -34,7 +34,7 @@ class StandRefs:
 
     @classmethod
     def none(cls) -> RuntimeRefs:
-        """Ни реестра, ни workflow, ни соединений: как процесс с выключенными секциями."""
+        """Ни реестра, ни workflow, ни соединений: как процесс без этих секций."""
         return cls._build(
             cls._no_registry, cls._no_service, cls._disabled_store, cls._no_tickets
         )

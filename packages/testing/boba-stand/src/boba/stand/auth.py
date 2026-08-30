@@ -23,7 +23,7 @@ class StubAuthenticator(Authenticator):
     """Вход стенда: один известный токен -> заданный пользователь."""
 
     COOKIE: ClassVar[str] = "access_token"
-    TOKEN: ClassVar[str] = "stand-token"
+    TOKEN: ClassVar[str] = "stand-token"  # noqa: S105 — токен стенда, не секрет
 
     def __init__(self, user: AuthenticatedUser | None) -> None:
         self._user = user
