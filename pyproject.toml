@@ -12,7 +12,8 @@ pythonpath = [
     "packages/infra/db/boba-db-pgvector/src",
     "packages/infra/db/boba-db-clickhouse/src",
     "packages/infra/sandbox/boba-sandbox/src",
-    "packages/infra/krb/boba-krb/src",
+    "packages/infra/auth/boba-krb/src",
+    "packages/infra/auth/boba-ldap/src",
     "packages/core/boba-cancellation/src",
     "packages/core/boba-workflow/src",
     "packages/core/boba-access/src",
@@ -69,7 +70,8 @@ extraPaths = [
     "packages/infra/db/boba-db-pgvector/src",
     "packages/infra/db/boba-db-clickhouse/src",
     "packages/infra/sandbox/boba-sandbox/src",
-    "packages/infra/krb/boba-krb/src",
+    "packages/infra/auth/boba-krb/src",
+    "packages/infra/auth/boba-ldap/src",
     "packages/core/boba-cancellation/src",
     "packages/core/boba-workflow/src",
     "packages/core/boba-access/src",
@@ -190,6 +192,7 @@ boba-db-pgvector    = { workspace = true }
 boba-db-clickhouse  = { workspace = true }
 boba-sandbox        = { workspace = true }
 boba-krb            = { workspace = true }
+boba-ldap           = { workspace = true }
 boba-llm            = { workspace = true }
 boba-chainlit       = { workspace = true }
 

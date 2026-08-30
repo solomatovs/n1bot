@@ -385,7 +385,7 @@ def use_session(
 
 
 @pytest.fixture(autouse=True)
-def di_root() -> Iterator[None]:
+def di_root(app_config: AppConfig) -> Iterator[None]:
     """Корневой контейнер с источником сессий, как его собирает приложение.
 
     Без него ref-функции падают: отсутствие контейнера — ошибка сборки, а
@@ -400,6 +400,7 @@ def di_root() -> Iterator[None]:
     sessions = ChainlitSessions(StandTokens())
     ChainlitSessions.install(sessions)
     root.provide(session_source, sessions)
+    root.provide(runtime.get_runtime_config, app_config)
     root.provide(runtime.live_locks, MemoryLiveLocks("test-chainlit", 20))
     root.provide(runtime.message_bus, MemoryMessageBus("test-chainlit"))
     root.provide(runtime.payload_store, MemoryPayloadStore())

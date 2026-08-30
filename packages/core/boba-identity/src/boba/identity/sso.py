@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import html
 from abc import abstractmethod
 from enum import StrEnum
 from typing import ClassVar, Protocol
@@ -62,12 +61,6 @@ class SsoErrorCode(StrEnum):
     def login_url(self, login: str) -> str:
         return f"{login}?error={self.value}"
 
-    def challenge_page(self, login: str) -> str:
-        """Тело 401: с тикетом браузер повторит запрос сам, без него уйдёт на логин."""
-        url = html.escape(self.login_url(login), quote=True)
-
-        return f'<!doctype html><meta http-equiv="refresh" content="0;url={url}">'
-
 
 class SsoRequest(BaseModel):
     """Запрос входа глазами сервиса: заголовок Authorization, метка своего fetch и
@@ -84,13 +77,11 @@ class SsoRequest(BaseModel):
 
 
 class SsoChallenge(BaseModel):
-    """Личности нет: ответить 401 Negotiate, браузер домена повторит с токеном."""
+    """Личности нет: ответить 401 Negotiate, браузер домена повторит с токеном;
+    сам HTTP-ответ собирает адаптер приложения.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
-
-    HEADERS: ClassVar[dict[str, str]] = {
-        RequestHeader.WWW_AUTHENTICATE.value: "Negotiate"
-    }
 
     reason: str
     level: int

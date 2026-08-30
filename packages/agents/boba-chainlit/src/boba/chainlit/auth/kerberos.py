@@ -30,8 +30,7 @@ from boba.identity.sso import (
     SsoChallenge,
     SsoErrorCode,
 )
-from boba.runtime.http import SsoRequests
-from chainlit.auth import set_auth_cookie
+from boba.runtime.http import SessionCookie, SsoRequests, SsoResponses
 
 
 class KerberosAuth:
@@ -78,12 +77,7 @@ class KerberosAuth:
 
     def _challenge(self) -> Response:
         """401 Negotiate: с тикетом браузер повторит сам, без него уйдёт на логин."""
-        return Response(
-            content=SsoErrorCode.TICKET.challenge_page(self._urls.login),
-            status_code=401,
-            headers=SsoChallenge.HEADERS,
-            media_type="text/html",
-        )
+        return SsoResponses.challenge(self._urls.login)
 
     async def auth_sso(self, request: Request) -> Response:
         """Вход: SPNEGO → строка users и токен сервисом входа → cookie → в чат."""
@@ -96,6 +90,6 @@ class KerberosAuth:
             return self._challenge()
 
         response = RedirectResponse(url=self._urls.app, status_code=303)
-        set_auth_cookie(request, response, outcome.token)
+        SessionCookie(self.auth.cookie()).put(response, request.cookies, outcome.token)
 
         return response

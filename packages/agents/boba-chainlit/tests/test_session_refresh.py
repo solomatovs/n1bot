@@ -22,6 +22,7 @@ from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
 from boba.identity.signin import SignedIn, SignInMetadata
 from boba.identity.sso import OwnRequest
 from boba.identity.token import CookieSpec, SessionRenewal
+from boba.ldap import Ldap3Directory
 
 pytestmark = pytest.mark.anyio
 
@@ -62,7 +63,7 @@ def _refresh() -> SessionRefresh:
     auth = AuthService(
         tokens=JwtTokens(secret, 60),
         cookie=CookieSpec(name=COOKIE, samesite="lax", ttl_sec=60),
-        password=PasswordSignIns.of([config]),
+        password=PasswordSignIns.of([config], Ldap3Directory()),
         sso=None,
         users=Users(),
         renewal=SessionRenewal.of(60, 3600),

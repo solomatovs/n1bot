@@ -21,9 +21,11 @@ from boba.chat.profiles import RolesSection
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.db.pgvector.schema import KbSchema
+from boba.identity.directory import UserDirectory
 from boba.identity.locks import RunLocking, StaleLock
 from boba.identity.sso import RefreshSignal
 from boba.identity.token import CookieSpec
+from boba.ldap import Ldap3Directory
 from boba.messaging.bus import BusWatch
 from boba.runtime.bus import PgMessageBus
 from boba.runtime.commands import CommandRunner
@@ -117,6 +119,11 @@ def plugin_table() -> PluginTable:
 def refresh_signal() -> RefreshSignal:
     """Сигнал обновления билета входа: в область пользователя через шину процесса."""
     return BusRefreshSignal(message_bus_ref)
+
+
+def user_directory() -> UserDirectory:
+    """Каталог пользователей процесса: AD через ldap3."""
+    return Ldap3Directory()
 
 
 def live_sessions() -> LiveSessions:
@@ -352,6 +359,7 @@ def auth_service(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
     table: Annotated[UsersTable, Depends(users_table)],
     tokens: Annotated[JwtTokens, Depends(session_tokens)],
+    directory: Annotated[UserDirectory, Depends(user_directory)],
 ) -> AuthService:
     """Вход пользователя: пароли и SPNEGO из [auth], токен и cookie из [session]."""
     session = config.session
@@ -363,12 +371,12 @@ def auth_service(
 
     sso = None
     if kerberos := config.kerberos():
-        sso = SpnegoGate(SsoSignIn(kerberos, session.auth_secret))
+        sso = SpnegoGate(SsoSignIn(kerberos, session.auth_secret, directory))
 
     return AuthService(
         tokens=tokens,
         cookie=cookie,
-        password=PasswordSignIns.of(config.auth),
+        password=PasswordSignIns.of(config.auth, directory),
         sso=sso,
         users=table,
         renewal=session.renewal(),

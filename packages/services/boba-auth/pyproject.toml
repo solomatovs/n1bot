@@ -15,11 +15,11 @@ dependencies = [
     "boba-toolkit==0.0.14.dev9",
     "pydantic>=2.10,<3",
     "pyjwt>=2.8",
-    "ldap3",
 ]
 
 [project.optional-dependencies]
 dev = [
+    "boba-ldap==0.0.14.dev9",
     "boba-config==0.0.14.dev9",
     "boba-stand==0.0.14.dev9",
     "omegaconf>=2.3,<3",

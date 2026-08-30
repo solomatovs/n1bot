@@ -25,8 +25,7 @@ from boba.identity.errors import (
     InternalServiceError,
 )
 from boba.identity.sso import SsoChallenge, SsoErrorCode, SsoRefused
-from boba.runtime.http import SsoRequests
-from boba.studio.api.auth import SessionCookie
+from boba.runtime.http import SessionCookie, SsoRequests, SsoResponses
 from boba.studio.api.urls import SignInUrl
 
 __all__ = [
@@ -177,12 +176,7 @@ class SignInApi:
             return self._to_login(SsoErrorCode.FAILED)
 
         if isinstance(outcome, SsoChallenge):
-            return Response(
-                content=SsoErrorCode.TICKET.challenge_page(self._wiring.page.login),
-                status_code=401,
-                headers=SsoChallenge.HEADERS,
-                media_type="text/html",
-            )
+            return SsoResponses.challenge(self._wiring.page.login)
 
         response = RedirectResponse(url=self._next_of(next), status_code=303)
         self._cookie.put(response, request.cookies, outcome.token)
@@ -199,7 +193,7 @@ class SignInApi:
             return Response(status_code=403)
 
         if isinstance(outcome, SsoChallenge):
-            return Response(status_code=401, headers=SsoChallenge.HEADERS)
+            return SsoResponses.silent_challenge()
 
         return self._issued(request, outcome)
 

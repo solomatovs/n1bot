@@ -13,6 +13,7 @@ from boba.config import bind
 from boba.identity.admission import RoleExcludeConfig, RoleMappingConfig
 from boba.identity.errors import AuthorizationError
 from boba.krb import SpnegoIdentity
+from boba.ldap import Ldap3Directory
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -37,7 +38,7 @@ async def test_unparsed_pac_is_refused_when_sid_exclusions_are_configured(
 ) -> None:
     roles = KerberosRolesConfig(sid_ex=RoleExcludeConfig(root=["S-1-5-21-1"]))
     config = _config(raw_config, roles)
-    sign_in = SsoSignIn(config, "secret")
+    sign_in = SsoSignIn(config, "secret", Ldap3Directory())
 
     identity = SpnegoIdentity(principal=_principal(config), pac_parsed=False)
 
@@ -49,7 +50,9 @@ async def test_unparsed_pac_passes_without_sid_exclusions(raw_config: Any) -> No
     config = _config(raw_config, KerberosRolesConfig())
     principal = _principal(config)
     roles = KerberosRolesConfig(principal=RoleMappingConfig(root={principal: ["DEV"]}))
-    sign_in = SsoSignIn(config.model_copy(update={"roles": roles}), "secret")
+    sign_in = SsoSignIn(
+        config.model_copy(update={"roles": roles}), "secret", Ldap3Directory()
+    )
 
     identity = SpnegoIdentity(principal=principal, pac_parsed=False)
 

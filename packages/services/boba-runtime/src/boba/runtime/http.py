@@ -1,22 +1,112 @@
-"""HTTP-граница: BaseError -> статус и тело ответа, запрос SSO -> модель сервиса,
-токен входа из cookie или Authorization запроса.
+"""HTTP-граница входа, общая для chainlit и studio: BaseError -> статус и тело,
+запрос SSO -> модель сервиса, токен входа из cookie или Authorization, cookie
+сессии в ответе и ответы SPNEGO-обмена (401 Negotiate со страницей-переходом).
 """
 
+import html
 import logging
 from collections.abc import Mapping
 from http.cookies import SimpleCookie
 from typing import Any, ClassVar
 
 from starlette.requests import HTTPConnection, Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from boba.identity.errors import BaseError, FailureReport, to_domain
 from boba.identity.session import LogLine
-from boba.identity.sso import OwnRequest, RequestHeader, SsoRequest
-from boba.identity.token import CookieJar
+from boba.identity.sso import OwnRequest, RequestHeader, SsoErrorCode, SsoRequest
+from boba.identity.token import CookieJar, CookieSpec
 
-__all__ = ["DomainErrorMiddleware", "RequestTokens", "SsoRequests"]
+__all__ = [
+    "DomainErrorMiddleware",
+    "RequestTokens",
+    "SessionCookie",
+    "SsoRequests",
+    "SsoResponses",
+]
+
+
+class SessionCookie:
+    """Cookie входа в ответе HTTP: атрибуты из CookieSpec, чанки — CookieJar.
+
+    Одна реализация на оба приложения: chainlit читает её своим кодом cookie,
+    что проверяет test_session_cookie_shared.
+    """
+
+    def __init__(self, spec: CookieSpec) -> None:
+        self._spec = spec
+        self._jar = CookieJar(spec.name)
+
+    @property
+    def jar(self) -> CookieJar:
+        return self._jar
+
+    def put(self, response: Response, present: Mapping[str, str], token: str) -> None:
+        """Ставит токен и снимает чанки прежнего, более длинного токена."""
+        pieces = self._jar.pieces(token)
+        for key, value in pieces:
+            self._set(response, key, value)
+
+        for key in self._jar.stale(present, pieces):
+            self._delete(response, key)
+
+    def token_of(self, present: Mapping[str, str]) -> str | None:
+        """Токен из cookie запроса: целиком либо из чанков."""
+        return self._jar.token_of(present)
+
+    def clear(self, response: Response, present: Mapping[str, str]) -> None:
+        for key in self._jar.ours(present):
+            self._delete(response, key)
+
+    def _set(self, response: Response, key: str, value: str) -> None:
+        response.set_cookie(
+            key=key,
+            value=value,
+            httponly=True,
+            secure=self._spec.secure,
+            samesite=self._spec.samesite,
+            max_age=self._spec.ttl_sec,
+            path=self._spec.path,
+        )
+
+    def _delete(self, response: Response, key: str) -> None:
+        response.delete_cookie(
+            key=key,
+            path=self._spec.path,
+            secure=self._spec.secure,
+            samesite=self._spec.samesite,
+        )
+
+
+class SsoResponses:
+    """Ответы SPNEGO-обмена: 401 Negotiate — браузер домена повторит запрос сам."""
+
+    NEGOTIATE: ClassVar[str] = "Negotiate"
+    PAGE: ClassVar[str] = (
+        '<!doctype html><meta http-equiv="refresh" content="0;url={url}">'
+    )
+
+    @classmethod
+    def headers(cls) -> dict[str, str]:
+        return {RequestHeader.WWW_AUTHENTICATE.value: cls.NEGOTIATE}
+
+    @classmethod
+    def challenge(cls, login_url: str) -> Response:
+        """401 со страницей-переходом: без тикета браузер уйдёт на логин с кодом."""
+        url = html.escape(SsoErrorCode.TICKET.login_url(login_url), quote=True)
+
+        return Response(
+            content=cls.PAGE.format(url=url),
+            status_code=401,
+            headers=cls.headers(),
+            media_type="text/html",
+        )
+
+    @classmethod
+    def silent_challenge(cls) -> Response:
+        """401 без страницы: ответ читает скрипт обновления, не человек."""
+        return Response(status_code=401, headers=cls.headers())
 
 
 class RequestTokens:

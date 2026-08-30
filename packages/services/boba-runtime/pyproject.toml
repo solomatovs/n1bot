@@ -8,6 +8,7 @@ version = "0.0.14.dev9"
 description = "Boba runtime: контейнер зависимостей app/session/call и загрузчик tool-плагинов из конфига."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "boba-ldap==0.0.14.dev9",
     "boba-cancellation==0.0.14.dev9",
     "boba-access==0.0.14.dev9",
     "boba-canvas==0.0.14.dev9",

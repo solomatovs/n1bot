@@ -26,6 +26,7 @@ from boba.identity.signin import SignedIn
 from boba.identity.sso import OwnRequest
 from boba.identity.token import CookieSpec, SessionRenewal
 from boba.krb import KerberosEnv
+from boba.ldap import Ldap3Directory
 from boba.runtime.config import StudioRuntimeConfig
 from boba.stand.auth import NoUsers, StubAuthenticator
 from boba.stand.kerberos import SsoBrowser
@@ -89,7 +90,7 @@ class Stand:
         config = bind(raw_config, path="auth.kerberos", model=KerberosAuthConfig)
         secret = studio_config.session.auth_secret
         self.users = Users()
-        self.sign_in = SsoSignIn(config, secret)
+        self.sign_in = SsoSignIn(config, secret, Ldap3Directory())
         self.auth = AuthService(
             tokens=JwtTokens(secret, 3600),
             cookie=CookieSpec(name=COOKIE, samesite="lax", ttl_sec=3600),

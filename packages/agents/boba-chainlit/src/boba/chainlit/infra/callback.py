@@ -49,6 +49,7 @@ from boba.identity.context import Scope
 from boba.identity.errors import InternalServiceError
 from boba.identity.locks import RunLocking
 from boba.identity.session import UserMetadataField
+from boba.identity.token import CookieSpec
 from boba.messaging import (
     ChatSettingsChanged,
     LockToken,
@@ -58,9 +59,10 @@ from boba.messaging import (
 )
 from boba.runtime import providers as runtime
 from boba.runtime.bus import PgMessageBus
+from boba.runtime.config import RuntimeConfig
 from boba.runtime.di import Container, Depends, di_inject
+from boba.runtime.http import SessionCookie
 from boba.runtime.locks import PgLiveLocks
-from chainlit.auth.cookie import clear_auth_cookie
 from chainlit.config import config as chainlit_config
 from chainlit.context import ChainlitContext, context_var
 from chainlit.data.base import BaseDataLayer
@@ -372,7 +374,32 @@ async def on_settings_update(
 def on_logout(request: Request, response: Response):
     # только свои: на домене живут и чужие приложения, а среди присланных
     # кук попадаются имена, которых http.cookies не принимает ('Path')
-    clear_auth_cookie(request, response)
+    _session_cookie().clear(response, request.cookies)
+
+
+def _session_cookie() -> SessionCookie:
+    """Cookie входа по [session] из корневого контейнера."""
+    root = Container.root
+    if root is None:
+        raise InternalServiceError(
+            internal_detail="DI container is not initialised", user_detail=None
+        )
+
+    config = root.resolved(runtime.get_runtime_config)
+    if not isinstance(config, RuntimeConfig):
+        raise InternalServiceError(
+            internal_detail=f"config provider returned {type(config).__name__}",
+            user_detail=None,
+        )
+
+    session = config.session
+    spec = CookieSpec(
+        name=session.cookie,
+        samesite=session.cookie_samesite,
+        ttl_sec=session.session_ttl_sec,
+    )
+
+    return SessionCookie(spec)
 
 
 @cl.on_stop

@@ -22,8 +22,7 @@ from pydantic import BaseModel, ConfigDict
 from boba.auth import AuthService, IssuedSession
 from boba.chainlit.infra.session import ChainlitSessions
 from boba.identity.sso import OwnRequest, SsoChallenge, SsoRefused
-from boba.runtime.http import RequestTokens, SsoRequests
-from chainlit.auth import set_auth_cookie
+from boba.runtime.http import RequestTokens, SessionCookie, SsoRequests, SsoResponses
 from chainlit.config import config as cl_config
 
 __all__ = ["PageJsVar", "PageUrls", "SessionRefresh"]
@@ -119,13 +118,13 @@ class SessionRefresh:
             return Response(status_code=403)
 
         if isinstance(outcome, SsoChallenge):
-            return Response(status_code=401, headers=SsoChallenge.HEADERS)
+            return SsoResponses.silent_challenge()
 
         return self._adopted(request, outcome)
 
     def _adopted(self, request: Request, session: IssuedSession) -> Response:
         response = Response(status_code=204)
-        set_auth_cookie(request, response, session.token)
+        SessionCookie(self._auth.cookie()).put(response, request.cookies, session.token)
         identifier = session.signed.identifier
         adopted = self._sessions.adopt_token(identifier, session.token)
         self._logger.info(

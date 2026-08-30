@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-ldap"
+version = "0.0.14.dev9"
+description = "Boba ldap: каталог пользователей Active Directory через ldap3 — реализация порта UserDirectory."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba-identity==0.0.14.dev9",
+    "ldap3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

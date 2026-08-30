@@ -1,4 +1,5 @@
-"""Вход по паролю: статическая таблица и bind в AD; роли — по маппингам конфига.
+"""Вход по паролю: статическая таблица и bind в каталоге через порт UserDirectory;
+роли — по правилам конфига.
 
 Ошибки:
 AuthenticationError — логин не зарегистрирован или пароль неверен.
@@ -9,39 +10,21 @@ InternalServiceError — ошибка LDAP-конфига или каталог�
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Sequence
-from contextlib import contextmanager
 
-from ldap3 import (
-    Connection,
-    Server,
-)
-from ldap3.core.exceptions import (
-    LDAPBindError,
-    LDAPCommunicationError,
-    LDAPException,
-    LDAPInsufficientAccessRightsResult,
-    LDAPInvalidCredentialsResult,
-    LDAPInvalidDNSyntaxResult,
-    LDAPInvalidFilterError,
-    LDAPInvalidServerError,
-    LDAPNoSuchObjectResult,
-    LDAPServerPoolError,
-    LDAPStartTLSError,
-    LDAPStrongerAuthRequiredResult,
-)
+from pydantic import SecretStr
 
 from boba.auth.config import AuthConfig, LdapAuthConfig, LocalAuthConfig
 from boba.identity.admission import PrincipalFacts
 from boba.identity.directory import (
-    LDAPAccessDeniedError,
-    LDAPConfigError,
+    DirectoryBinding,
+    DirectorySearch,
     LDAPError,
     LDAPInvalidCredentialsError,
     LDAPServerUnavailableError,
     LDAPUserNotFoundError,
+    UserDirectory,
 )
 from boba.identity.errors import (
     AuthenticationError,
@@ -56,95 +39,11 @@ from boba.identity.session import (
 from boba.identity.signin import PasswordSignIn, SignedIn, SignInMetadata
 
 __all__ = [
-    "ADDirectory",
     "CompositeSignIn",
     "LdapSignIn",
     "LocalSignIn",
     "PasswordSignIns",
 ]
-
-
-class ADDirectory:
-    """Каталог AD: поиск пользователя, его группы (memberOf), проверка пароля."""
-
-    @staticmethod
-    @contextmanager
-    def _bind_with_password(
-        server: str,
-        bind_dn: str,
-        bind_password: str,
-        connect_timeout: int = 5,
-    ):
-        conn: Connection | None = None
-        try:
-            with Connection(
-                server=Server(
-                    host=server, get_info="ALL", connect_timeout=connect_timeout
-                ),
-                user=bind_dn,
-                password=bind_password,
-                auto_bind="DEFAULT",
-                # без raise_exceptions ошибки search'а молча дают пустой результат
-                raise_exceptions=True,
-            ) as conn:
-                yield conn
-        except LDAPError:
-            # доменные LDAP-ошибки (напр. LDAPUserNotFound из тела with) рейсим как есть
-            raise
-        except (
-            LDAPCommunicationError,
-            LDAPInvalidServerError,
-            LDAPServerPoolError,
-            LDAPStartTLSError,
-        ) as e:
-            raise LDAPServerUnavailableError(str(e)) from e
-        except (LDAPBindError, LDAPInvalidCredentialsResult) as e:
-            raise LDAPInvalidCredentialsError(str(e)) from e
-        except LDAPInsufficientAccessRightsResult as e:
-            raise LDAPAccessDeniedError(str(e)) from e
-        except (
-            LDAPNoSuchObjectResult,
-            LDAPInvalidDNSyntaxResult,
-            LDAPInvalidFilterError,
-            LDAPStrongerAuthRequiredResult,
-        ) as e:
-            raise LDAPConfigError(str(e)) from e
-        except LDAPException as e:
-            raise LDAPError(str(e)) from e
-        finally:
-            if conn:
-                conn.unbind()
-
-    @staticmethod
-    def fetch_userdn_samaccountname_member_of(
-        server: str,
-        bind_dn: str,
-        bind_password: str,
-        search_base: str,
-        search_filter: str,
-    ) -> tuple[str, str, list[str]]:
-        """Ищет пользователя: (DN, группы memberOf);"""
-        with ADDirectory._bind_with_password(
-            server,
-            bind_dn,
-            bind_password,
-        ) as conn:
-            conn.search(
-                search_base=search_base,
-                search_filter=search_filter,
-                attributes=["sAMAccountName", "memberOf"],
-            )
-
-            if not conn.entries:
-                raise LDAPUserNotFoundError()
-
-            entry = conn.entries[0]
-
-            dn = str(entry.entry_dn)
-            samaccountname = str(entry.sAMAccountName.value)
-            member_of = [str(x) for x in entry.memberOf.values]
-
-            return dn, samaccountname, member_of
 
 
 class LocalSignIn(PasswordSignIn):
@@ -173,27 +72,25 @@ class LocalSignIn(PasswordSignIn):
 class LdapSignIn(PasswordSignIn):
     """Логин/пароль с проверкой bind'ом в AD; роли — по атрибутам каталога."""
 
-    def __init__(self, config: LdapAuthConfig):
+    def __init__(self, config: LdapAuthConfig, directory: UserDirectory) -> None:
         self._config = config
-        self._ad = ADDirectory
+        self._directory = directory
         self._rules = config.rules()
         self._logger = logging.getLogger(__name__)
 
     async def sign_in(self, username: str, password: str) -> SignedIn | None:
         # личность подтверждаем bind'ом под пользователем
+        binding = DirectoryBinding(
+            server=self._config.server,
+            bind_dn=LoginTemplate.render(self._config.bind_dn_template, username),
+            bind_password=SecretStr(password),
+        )
+        search = DirectorySearch(
+            base_dn=self._config.base_dn,
+            filter=LoginTemplate.render(self._config.user_filter, username),
+        )
         try:
-            server = self._config.server
-            bind_dn = LoginTemplate.render(self._config.bind_dn_template, username)
-            search_filter = LoginTemplate.render(self._config.user_filter, username)
-            search_base = self._config.base_dn
-            user_dn, samaccountname, member_of = await asyncio.to_thread(
-                self._ad.fetch_userdn_samaccountname_member_of,
-                server=server,
-                bind_dn=bind_dn,
-                bind_password=password,
-                search_base=search_base,
-                search_filter=search_filter,
-            )
+            entry = await self._directory.find(binding, search)
         except LDAPUserNotFoundError as e:
             self._logger.warning("user %s is not registered", username)
             raise AuthenticationError("User is not registered") from e
@@ -215,13 +112,15 @@ class LdapSignIn(PasswordSignIn):
 
         # имя берём из каталога, а не из формы: набранный регистр на
         # роли, запреты и строку users влиять не должен
-        facts = PrincipalFacts(login=samaccountname, dn=user_dn, member_of=member_of)
+        facts = PrincipalFacts(
+            login=entry.samaccountname, dn=entry.dn, member_of=tuple(entry.member_of)
+        )
         roles = self._rules.admit(facts)
         sign_in = SignInMetadata(
             provider=SignInProvider.LDAP.value, roles=frozenset(roles)
         )
 
-        login = UserLogin.of(samaccountname)
+        login = UserLogin.of(entry.samaccountname)
 
         return SignedIn(
             identifier=login.key, display_name=login.display, sign_in=sign_in
@@ -257,14 +156,16 @@ class PasswordSignIns:
     """Провайдеры паролей из [auth]: local и ldap; kerberos сюда не входит."""
 
     @classmethod
-    def of(cls, configs: Sequence[AuthConfig]) -> CompositeSignIn | None:
+    def of(
+        cls, configs: Sequence[AuthConfig], directory: UserDirectory
+    ) -> CompositeSignIn | None:
         providers: list[PasswordSignIn] = []
         for config in configs:
             if isinstance(config, LocalAuthConfig):
                 providers.append(LocalSignIn(config))
 
             if isinstance(config, LdapAuthConfig):
-                providers.append(LdapSignIn(config))
+                providers.append(LdapSignIn(config, directory))
 
         if not providers:
             return None

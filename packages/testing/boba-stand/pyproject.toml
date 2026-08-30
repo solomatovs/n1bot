@@ -42,7 +42,6 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "boba-chainlit==0.0.14.dev9",
-    "boba-studio==0.0.14.dev9",
     "starlette>=0.40",
 ]
 
