@@ -12,11 +12,10 @@ from collections.abc import AsyncIterator, Iterator
 
 import httpx
 import pytest
-from conftest import fake_openai_chat
+from chainlit_stand import fake_openai_chat
 from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool, StructuredTool
-from ui.fake_llm import FakeLlmApp, ScenarioName
 from uvicorn.logging import DefaultFormatter
 
 from boba.chainlit.chat.tracing import LlmStateLog
@@ -24,6 +23,7 @@ from boba.chainlit.infra.config import LOGGING_CONFIG
 from boba.chainlit.infra.log_context import UserLogContext
 from boba.identity.session import LogUserMark
 from boba.llm.bridge import ProviderChatModel
+from boba.stand.ui.fake_llm import FakeLlmApp, ScenarioName
 
 pytestmark = pytest.mark.anyio
 

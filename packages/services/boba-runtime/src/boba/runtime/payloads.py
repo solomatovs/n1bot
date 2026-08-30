@@ -122,12 +122,26 @@ class PgPayloadStore(PayloadStore):
         try:
             async with pool.cursor() as cur:
                 await cur.execute(
-                    sql.SQL("select {body} from {payloads} where {id} = %(id)s").format(
+                    sql.SQL(
+                        """
+                        select {body} from {payloads}
+                        where 1=1
+                            and {id} = %(id)s
+                            and {scope_kind} = %(scope_kind)s
+                            and {scope_id} = %(scope_id)s
+                        """
+                    ).format(
                         payloads=self._table(),
                         body=LivePayloadsColumn.BODY.ident(),
                         id=LivePayloadsColumn.ID.ident(),
+                        scope_kind=LivePayloadsColumn.SCOPE_KIND.ident(),
+                        scope_id=LivePayloadsColumn.SCOPE_ID.ident(),
                     ),
-                    {"id": UUID(ref.id)},
+                    {
+                        "id": UUID(ref.id),
+                        "scope_kind": ref.scope.kind.value,
+                        "scope_id": self._scope_id(ref.scope),
+                    },
                     prepare=False,
                 )
                 row = await cur.fetchone()

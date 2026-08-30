@@ -17,7 +17,7 @@ import pytest
 from chainlit.config import config as chainlit_config
 from chainlit.server import sio
 from chainlit.session import WebsocketSession
-from conftest import FakeTurn, make_context
+from chainlit_stand import FakeTurn, make_context
 
 from boba.chainlit.infra.socket_events import SocketEvent, SocketEvents
 from boba.identity.run import RunRegistry

@@ -1,0 +1,61 @@
+x-runtime: &runtime
+  init: true
+  # без переменных берётся USER образа (1000:1000): песочница монтирует
+  # образы в user namespace, и от root файлы владельца данных недоступны
+  user: "${BOBA_UID:-1000}:${BOBA_GID:-1000}"
+  devices:
+    - /dev/fuse
+  security_opt:
+    - seccomp=unconfined
+    - systempaths=unconfined
+  restart: unless-stopped
+
+services:
+  studio-1:
+    <<: *runtime
+    image: boba-studio:${BOBA_TAG:-latest}
+    hostname: studio-1
+    container_name: studio-1
+    env_file: ./conf/boba.env
+    volumes:
+      - ./conf:/app/boba/conf:ro
+      - ./conf/krb/krb5.conf:/etc/krb5.conf:ro
+      - ./data:/app/boba/data:rw
+      - ./app_root:/app/boba/app_root:rw
+      - ./models:/app/boba/models:ro
+      - /sys/fs/cgroup/boba.slice:/cgroup:rw
+    networks:
+      default:
+        ipv4_address: 172.18.0.62
+    ports:
+      - 127.0.0.1:8512:8502
+    environment:
+      BOBA_INSTANCE_ID: node1
+      BOBA_URL_PREFIX: /boba-s1
+
+  studio-2:
+    <<: *runtime
+    image: boba-studio:${BOBA_TAG:-latest}
+    hostname: studio-2
+    container_name: studio-2
+    env_file: ./conf/boba.env
+    volumes:
+      - ./conf:/app/boba/conf:ro
+      - ./conf/krb/krb5.conf:/etc/krb5.conf:ro
+      - ./data-node2:/app/boba/data:rw
+      - ./app_root:/app/boba/app_root:rw
+      - ./models:/app/boba/models:ro
+      - /sys/fs/cgroup/boba.slice:/cgroup:rw
+    networks:
+      default:
+        ipv4_address: 172.18.0.63
+    ports:
+      - 127.0.0.1:8522:8502
+    environment:
+      BOBA_INSTANCE_ID: node2
+      BOBA_URL_PREFIX: /boba-s2
+
+networks:
+  default:
+    name: docker
+    external: true

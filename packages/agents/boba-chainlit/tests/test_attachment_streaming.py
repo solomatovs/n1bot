@@ -18,7 +18,7 @@ from uuid import UUID
 import pytest
 import uvicorn
 from chainlit.auth import get_current_user
-from conftest import FakeUrl
+from chainlit_stand import FakeUrl
 from fastapi import FastAPI
 from httpx import AsyncClient
 

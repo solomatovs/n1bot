@@ -12,7 +12,6 @@ from pathlib import Path
 import krb5
 import pytest
 from pydantic import SecretStr
-from stand_site import Stand
 
 from boba.connections.kerberos import (
     DelegatedAuth,
@@ -32,6 +31,7 @@ from boba.krb import (
     SignInTicket,
     TicketCredentials,
 )
+from boba.stand.site import Stand
 
 STAND = Stand.required()
 KEYTAB = Path(STAND.krb_pg_keytab)

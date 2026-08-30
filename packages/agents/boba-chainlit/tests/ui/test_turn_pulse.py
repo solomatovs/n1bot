@@ -10,9 +10,9 @@ from __future__ import annotations
 import pytest
 
 from boba.chainlit.rendering.chat_view import TurnPulse
-from ui.chat_page import ChatPage, StepKind
-from ui.fake_llm import ScenarioName
-from ui.socket_log import ChatEvent, SocketLog, StepField
+from boba.stand.ui.chat_page import ChatPage, StepKind
+from boba.stand.ui.fake_llm import ScenarioName
+from boba.stand.ui.socket_log import ChatEvent, SocketLog, StepField
 
 pytestmark = pytest.mark.ui
 

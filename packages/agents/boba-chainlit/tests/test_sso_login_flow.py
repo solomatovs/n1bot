@@ -17,7 +17,6 @@ import krb5
 import pytest
 from chainlit.auth.jwt import create_jwt
 from gssapi import Credentials, Name, NameType, SecurityContext
-from stand_site import Stand
 from starlette.requests import Request
 
 from boba.chainlit.auth.kerberos import KerberosAuth
@@ -28,6 +27,7 @@ from boba.krb import KerberosEnv, ServiceTicketIssuer
 from boba.runtime.auth_config import KerberosAuthConfig, KerberosRolesConfig
 from boba.runtime.sso import Challenge, Signed, SsoRefresh
 from boba.settings import bind
+from boba.stand.site import Stand
 
 STAND = Stand.required()
 KRB5_CONF = Path(STAND.krb_config)

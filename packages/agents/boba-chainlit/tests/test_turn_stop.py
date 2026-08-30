@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 
 import pytest
-from conftest import FakeTurn, make_context
+from chainlit_stand import FakeTurn, make_context
 
 from boba.cancellation import (
     StopReason,

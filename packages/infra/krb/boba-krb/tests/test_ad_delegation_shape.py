@@ -21,7 +21,8 @@ from typing import Any
 
 import pytest
 from ldap3 import ALL, SUBTREE, Connection, Server
-from stand_site import Stand
+
+from boba.stand.site import Stand
 
 STAND = Stand.required()
 

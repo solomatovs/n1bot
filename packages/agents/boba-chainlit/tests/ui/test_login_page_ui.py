@@ -12,12 +12,13 @@ from pathlib import Path
 
 import httpx
 import pytest
+from chat_ui import BOOT_TIMEOUT_SEC
 from playwright.sync_api import Browser, BrowserContext, Page, expect
-from stand_site import Stand
 
 from boba.chainlit.auth.kerberos import SsoLoginError
-from ui.conftest import BOOT_TIMEOUT_SEC
-from ui.stand import (
+from boba.stand.site import Stand
+from boba.stand.ui.stand import (
+    StandApp,
     StandAuth,
     StandConfig,
     StandProcess,
@@ -42,6 +43,7 @@ def _sso_stand(
 
     config = StandConfig(
         workdir=workdir,
+        app=StandApp.CHAINLIT,
         app_port=free_port(),
         llm_port=llm_port,
         db_name=db_name,

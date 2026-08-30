@@ -12,8 +12,8 @@ packages/**/*.egg-info
 
 # в контекст не уезжают: артефакты песочницы собирают стадии Dockerfile
 # (sandbox-rootfs, sandbox-site, fuse2fs-build), колёса — стадия boba-wheels
-build/src/sandbox
-build/src/wheels
+build/*/src/sandbox
+build/*/src/wheels
 
 # страница workflow: зависимости ставит и сборку делает стадия web-build
 packages/agents/boba-chainlit/web/workflow/node_modules

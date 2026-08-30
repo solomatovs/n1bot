@@ -18,7 +18,6 @@ import asyncio
 import io
 import logging
 import mimetypes
-import os
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable
@@ -46,6 +45,7 @@ from boba.canvas.transfer import (
 from boba.chainlit.data.storage import LocalStorageClient, StorageClient
 from boba.chainlit.domain.config import LocalStorageConfig
 from boba.chainlit.domain.fields import ElementField, FileField
+from boba.chainlit.domain.keys import AppPrefix
 from boba.chainlit.infra.session import ChainlitSession, session_source_ref
 from boba.toolkit.channels import JournalChannels, ToolChannel
 from boba.workspace.launcher import ReadWindow
@@ -482,8 +482,8 @@ class SessionFiles:
     OBJECT_KEY: ClassVar[str] = "object_key"
     """Поле записи: тело файла лежит в storage по этому ключу."""
 
-    ROOT_PATH_ENV: ClassVar[str] = "CHAINLIT_ROOT_PATH"
-    """Префикс подмонтированного приложения; ссылка без него уйдёт в корень домена."""
+    LINK: ClassVar[str] = "/project/file/{file_id}?session_id={session_id}"
+    """Шаблон ссылки chainlit на файл сессии."""
 
     @classmethod
     def register(
@@ -506,8 +506,9 @@ class SessionFiles:
     @classmethod
     def url_for(cls, session: ChainlitSession, file_id: str) -> str:
         """Ссылка на файл сессии — тот же вид, что строит фронт по chainlit_key."""
-        prefix = os.getenv(cls.ROOT_PATH_ENV, "").rstrip("/")
-        return f"{prefix}/project/file/{file_id}?session_id={session.id}"
+        link = cls.LINK.format(file_id=file_id, session_id=session.id)
+
+        return AppPrefix.render() + link
 
 
 class UploadRoute:

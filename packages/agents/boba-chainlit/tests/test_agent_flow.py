@@ -8,7 +8,7 @@ from typing import Annotated, Any
 
 import pytest
 from chainlit.step import StepDict
-from conftest import RecordedTurn
+from chainlit_stand import RecordedTurn
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig

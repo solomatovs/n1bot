@@ -16,7 +16,7 @@ import pytest
 from boba.sandbox import SandboxProfile
 
 REPO = Path(__file__).resolve().parents[4]
-SANDBOX = REPO / "build" / "src" / "sandbox"
+SANDBOX = REPO / "build" / "chainlit" / "src" / "sandbox"
 ROOTFS_IMAGE = SANDBOX / "rootfs.ext4"
 
 """Код пакетов монтируется одним каталогом: точку /usr/src несёт rootfs."""

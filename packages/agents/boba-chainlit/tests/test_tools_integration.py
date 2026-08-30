@@ -52,7 +52,7 @@ from boba.toolkit.result import (
 from boba.toolrun.injected import InjectedConfig
 
 _REPO = Path(__file__).resolve().parents[4]
-_ROOTFS_IMAGE = _REPO / "build" / "src" / "sandbox" / "rootfs.ext4"
+_ROOTFS_IMAGE = _REPO / "build" / "chainlit" / "src" / "sandbox" / "rootfs.ext4"
 
 _CGROUP_BASE = os.environ.get("BOBA_CGROUP_BASE", "/sys/fs/cgroup/boba")
 

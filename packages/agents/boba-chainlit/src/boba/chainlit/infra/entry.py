@@ -6,6 +6,7 @@ from typing import ClassVar
 
 from omegaconf import OmegaConf
 
+from boba.chainlit.domain.keys import AppPrefix
 from boba.settings import build_app_config
 
 __all__ = ["AppEntry"]
@@ -23,8 +24,6 @@ class AppEntry:
     SECTION: ClassVar[str] = "app.chainlit"
 
     APP_ROOT_ENV: ClassVar[str] = "CHAINLIT_APP_ROOT"
-
-    ROOT_PATH_ENV: ClassVar[str] = "CHAINLIT_ROOT_PATH"
 
     AUTH_ENV: ClassVar[str] = "CHAINLIT_AUTH_SECRET"
 
@@ -67,7 +66,7 @@ class AppEntry:
 
         # chainlit складывает пути от APP_ROOT сам, относительный сбился бы на chdir
         os.environ[cls.APP_ROOT_ENV] = str(Path(root).resolve())
-        os.environ[cls.ROOT_PATH_ENV] = section.get("url_prefix") or ""
+        os.environ[AppPrefix.ENV] = section.get("url_prefix") or ""
 
         auth_secret = section.get("auth_secret")
         if auth_secret:

@@ -8,7 +8,7 @@ from typing import Any, cast
 from uuid import UUID
 
 import pytest
-from conftest import FakeTurn, make_context, use_session
+from chainlit_stand import FakeTurn, make_context, use_session
 from pydantic import BaseModel
 
 from boba.canvas.canvas import (

@@ -960,16 +960,20 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
         user_identifier = None
         if identifier_row is not None:
             user_identifier = identifier_row[0]
+
         has_next = len(rows) > pagination.first
         page = [
             t.to_chainlit(user_identifier=user_identifier, steps=[], elements=[])
             for t in rows[: pagination.first]
         ]
+
         start_cursor = None
         end_cursor = None
+
         if page:
             start_cursor = page[0][ThreadField.ID]
             end_cursor = page[-1][ThreadField.ID]
+
         return PaginatedResponse(
             pageInfo=PageInfo(
                 hasNextPage=has_next,

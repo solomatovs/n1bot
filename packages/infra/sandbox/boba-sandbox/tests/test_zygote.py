@@ -38,7 +38,7 @@ from boba.toolkit.protocol import REPLY, ReplyOk
 from boba.toolkit.stream import Chunk
 
 REPO = Path(__file__).resolve().parents[5]
-SANDBOX = REPO / "build" / "src" / "sandbox"
+SANDBOX = REPO / "build" / "chainlit" / "src" / "sandbox"
 ROOTFS = SANDBOX / "rootfs"
 
 TESTS_DIR = str(Path(__file__).resolve().parent)

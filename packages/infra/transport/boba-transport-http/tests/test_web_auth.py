@@ -17,7 +17,6 @@ from typing import Any
 import httpx
 import pytest
 from pydantic import SecretStr
-from stand_site import Stand
 
 from boba.connections.http import (
     BasicAuth,
@@ -28,6 +27,7 @@ from boba.connections.http import (
 )
 from boba.connections.kerberos import KeytabAuth
 from boba.krb import KerberosWorkspace, KeytabCredentials, ServiceTicketIssuer
+from boba.stand.site import Stand
 from boba.transport.http import HttpRequest, HttpTransport
 
 STAND = Stand.required()

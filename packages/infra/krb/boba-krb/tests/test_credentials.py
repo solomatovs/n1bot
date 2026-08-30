@@ -13,7 +13,6 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from stand_site import Stand
 
 from boba.connections.kerberos import KeytabAuth
 from boba.krb import (
@@ -21,6 +20,7 @@ from boba.krb import (
     KerberosWorkspace,
     KeytabCredentials,
 )
+from boba.stand.site import Stand
 
 STAND = Stand.required()
 KEYTAB = Path(STAND.krb_pg_keytab)

@@ -77,6 +77,16 @@ class UsersTable(PersistedUsers, ThreadOwnership, UsersUpsert, StudioProfiles):
                 created_at=UsersColumn.CREATED_AT.ident(),
                 meta=UsersColumn.META.ident(),
             ),
+            # регистр логина не заводит вторую личность: тот же инвариант, что у чата
+            sql.SQL(
+                """
+                create unique index if not exists idx_users_identifier_lower
+                    on {users} (lower({identifier}))
+                """
+            ).format(
+                users=ChatTable.USERS.under(self._schema),
+                identifier=UsersColumn.IDENTIFIER.ident(),
+            ),
         )
         try:
             pool = await self._pool()

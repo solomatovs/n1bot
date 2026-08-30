@@ -9,8 +9,9 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from conftest import FakeSecret
+from chainlit_stand import FakeSecret
 
+from boba.chainlit.domain.keys import AppPrefix
 from boba.chainlit.infra.entry import AppEntry
 
 
@@ -59,7 +60,7 @@ class TestExportEnv:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.delenv(AppEntry.APP_ROOT_ENV, raising=False)
-        monkeypatch.delenv(AppEntry.ROOT_PATH_ENV, raising=False)
+        monkeypatch.delenv(AppPrefix.ENV, raising=False)
         monkeypatch.delenv(AppEntry.AUTH_ENV, raising=False)
 
         root = tmp_path / "data"
@@ -67,8 +68,8 @@ class TestExportEnv:
 
         if os.environ[AppEntry.APP_ROOT_ENV] != str(root):
             raise AssertionError("os.environ[AppEntry.APP_ROOT_ENV] == str(root)")
-        if os.environ[AppEntry.ROOT_PATH_ENV] != "/boba":
-            raise AssertionError('os.environ[AppEntry.ROOT_PATH_ENV] == "/boba"')
+        if os.environ[AppPrefix.ENV] != "/boba":
+            raise AssertionError('os.environ[AppPrefix.ENV] == "/boba"')
         if os.environ[AppEntry.AUTH_ENV] != FakeSecret.AUTH:
             raise AssertionError("os.environ[AppEntry.AUTH_ENV] == FakeSecret.…")
 

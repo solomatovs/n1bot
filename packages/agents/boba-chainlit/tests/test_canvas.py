@@ -9,7 +9,7 @@ from uuid import UUID
 
 import chainlit as cl
 import pytest
-from conftest import use_session
+from chainlit_stand import use_session
 from pydantic import BaseModel
 
 from boba.canvas.canvas import (

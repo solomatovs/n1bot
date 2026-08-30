@@ -5,11 +5,11 @@
 from __future__ import annotations
 
 import pytest
+from chat_ui import ChatOpener
 from playwright.sync_api import expect
 
-from ui.conftest import ChatOpener
-from ui.fake_llm import ScenarioName
-from ui.stand import StandProcess
+from boba.stand.ui.fake_llm import ScenarioName
+from boba.stand.ui.stand import StandProcess
 
 pytestmark = [pytest.mark.ui]
 

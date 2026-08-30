@@ -109,9 +109,10 @@ class PgLiveLocks(LiveLocks):
                     sql.SQL(
                         """
                         delete from {locks}
-                         where {scope_kind} = %(scope_kind)s
-                           and {scope_id} = %(scope_id)s
-                           and {heartbeat} + make_interval(secs => {ttl}) < now()
+                        where 1=1
+                            and {scope_kind} = %(scope_kind)s
+                            and {scope_id} = %(scope_id)s
+                            and {heartbeat} + make_interval(secs => {ttl}) < now()
                         """
                     ).format(
                         locks=self._locks(),
