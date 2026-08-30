@@ -20,7 +20,7 @@ from playwright.sync_api import Browser, BrowserContext, Playwright, expect
 from studio_ui import BOOT_TIMEOUT_SEC, publish_refresh
 
 from boba.connections.http import HttpProfile, NegotiateAuth
-from boba.connections.kerberos import KerberosPasswordAuth
+from boba.kerberos import KerberosPasswordAuth
 from boba.runtime.config import StudioRuntimeConfig
 from boba.stand.site import Stand
 from boba.stand.ui.database import run_blocking

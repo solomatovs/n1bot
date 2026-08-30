@@ -29,7 +29,9 @@ async def users(
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
         )
 
-    cfg = runtime_config.data_layer.postgres.model_copy(update={"dbname": test_database})
+    cfg = runtime_config.data_layer.postgres.model_copy(
+        update={"dbname": test_database}
+    )
     table = UsersTable(cfg, SCHEMA, pool)
     await table.setup()
     await table.setup()

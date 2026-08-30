@@ -28,6 +28,7 @@ from boba.runtime.config import (
 )
 from boba.runtime.di import Container
 from boba.runtime.plugins import CoreTools
+from boba.runtime.users import UsersTable
 from boba.sandbox.zygote import ZygoteRegistry
 from boba.studio.api.app import ApiAccess, ApiApp
 from boba.studio.api.signin import PageUrls, SignInWiring
@@ -62,10 +63,34 @@ class StudioHost:
         # реестр инструментов грузится на старте: ленивая загрузка в обработчике запроса
         # держит event loop дольше ping-таймаута socket.io, и вкладки теряют сокет
         container.eager(providers.tool_registry)
+        container.eager(providers.users_table)
+        container.eager(providers.auth_service)
+        container.eager(providers.credential_source)
         Container.set_root(container)
 
-        table = providers.users_table(config)
-        auth = providers.auth_service(config, table)
+        root = FastAPI(lifespan=cls._lifespan, openapi_url=None, docs_url=None)
+        root.state.container = container
+        root.state.config = config
+        cls.page_of(config.studio).mount(root)
+
+        return root
+
+    @classmethod
+    async def _mount_api(cls, app: FastAPI, config: StudioRuntimeConfig) -> None:
+        """Api над сервисами контейнера: собирается после start(), до первого запроса."""
+        container = app.state.container
+        table = container.resolved(providers.users_table)
+        if not isinstance(table, UsersTable):
+            msg = f"users table provider returned {type(table).__name__}"
+            raise RuntimeError(msg)
+
+        await table.setup()
+
+        auth = container.resolved(providers.auth_service)
+        if not isinstance(auth, AuthService):
+            msg = f"auth service provider returned {type(auth).__name__}"
+            raise RuntimeError(msg)
+
         access = ApiAccess(
             authenticator=auth,
             cookie=config.session.cookie,
@@ -77,14 +102,7 @@ class StudioHost:
             ChatProfiles(config.profiles),
             cls.signin_of(config, auth),
         )
-
-        root = FastAPI(lifespan=cls._lifespan, openapi_url=None, docs_url=None)
-        root.state.container = container
-        root.state.users = table
-        cls.page_of(config.studio).mount(root)
-        root.mount(config.studio.api_prefix(), api)
-
-        return root
+        app.mount(config.studio.api_prefix(), api)
 
     @staticmethod
     def signin_of(config: StudioRuntimeConfig, auth: AuthService) -> SignInWiring:
@@ -109,12 +127,17 @@ class StudioHost:
 
         return WorkflowPage(studio.dist, studio.url_prefix, studio)
 
-    @staticmethod
+    @classmethod
     @asynccontextmanager
-    async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    async def _lifespan(cls, app: FastAPI) -> AsyncGenerator[None, None]:
         container = app.state.container
+        config = app.state.config
+        if not isinstance(config, StudioRuntimeConfig):
+            msg = f"app state carries {type(config).__name__} instead of the config"
+            raise RuntimeError(msg)
+
         await container.start()
-        await app.state.users.setup()
+        await cls._mount_api(app, config)
 
         try:
             yield

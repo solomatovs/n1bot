@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from typing import Any
 
@@ -126,36 +126,6 @@ class ADDirectory:
                 conn.unbind()
 
     @staticmethod
-    def fetch_userdn_and_member_of(
-        server: str,
-        bind_dn: str,
-        bind_password: str,
-        search_base: str,
-        search_filter: str,
-    ) -> tuple[str, list[str]]:
-        """Ищет пользователя: (DN, группы memberOf);"""
-        with ADDirectory._bind_with_password(
-            server,
-            bind_dn,
-            bind_password,
-        ) as conn:
-            conn.search(
-                search_base=search_base,
-                search_filter=search_filter,
-                attributes=["memberOf"],
-            )
-
-            if not conn.entries:
-                raise LDAPUserNotFoundError()
-
-            entry = conn.entries[0]
-
-            dn = str(entry.entry_dn)
-            member_of = [str(x) for x in entry.memberOf.values]
-
-            return dn, member_of
-
-    @staticmethod
     def fetch_userdn_samaccountname_member_of(
         server: str,
         bind_dn: str,
@@ -185,15 +155,6 @@ class ADDirectory:
             member_of = [str(x) for x in entry.memberOf.values]
 
             return dn, samaccountname, member_of
-
-    @staticmethod
-    def role_of(
-        group_dn_and_roles: Mapping[str, str], member_of: list[str]
-    ) -> Iterable[str]:
-        """Возвращает роли которые подключены пользователю"""
-        for group_dn, role in group_dn_and_roles.items():
-            if group_dn in member_of:
-                yield role
 
 
 class LocalSignIn(PasswordSignIn):

@@ -25,7 +25,7 @@ from pydantic import (
     field_serializer,
 )
 
-from boba.connections.kerberos import (
+from boba.kerberos import (
     DelegatedAuth,
     KerberosAuthBase,
     KerberosPasswordAuth,

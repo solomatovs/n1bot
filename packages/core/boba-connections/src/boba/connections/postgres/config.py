@@ -14,8 +14,8 @@ from pydantic import (
     model_validator,
 )
 
-from boba.connections.kerberos import KerberosAuthBase, KerberosDump
 from boba.connections.postgres.auth import PostgresAuth, PostgresKerberos, PostgresLibpq
+from boba.kerberos import KerberosAuthBase, KerberosDump
 
 __all__ = ["PostgresConfig", "PostgresOptionsConfig", "PostgresPoolConfig"]
 

@@ -14,7 +14,7 @@ from fastapi import APIRouter, FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 from langchain_core.tools import tool
 from starlette.requests import Request
-from studio_stand import StandProfiles, StubAuthenticator
+from studio_stand import StandProfiles
 
 from boba.access import ProfileGrant, RoleConfig, ToolAccess
 from boba.auth import AuthService, JwtTokens
@@ -28,6 +28,7 @@ from boba.identity.token import CookieSpec
 from boba.runtime.config import StudioRuntimeConfig
 from boba.runtime.plugins import CallSurface
 from boba.runtime.users import UsersTable
+from boba.stand.auth import StubAuthenticator
 from boba.studio.api.auth import ApiAuth, RequestTokens
 from boba.studio.api.tools import ToolCallBody, ToolCalling
 from boba.toolkit.result import TextResult, pack_result
@@ -84,7 +85,9 @@ def _registry(probe: Probe, studio_config: StudioRuntimeConfig) -> ToolRegistry:
     access = ToolAccess(
         tool_names=names,
         roles=roles,
-        profiles={StandProfiles.profile(studio_config): ProfileGrant(tools=["*"], roles=["*"])},
+        profiles={
+            StandProfiles.profile(studio_config): ProfileGrant(tools=["*"], roles=["*"])
+        },
         chat_only=["canvas_open"],
     )
     return ToolRegistry(tools=tools, access=access)
@@ -163,10 +166,7 @@ class TestServe:
         body = _body(studio_config, profile="no-such-profile")
 
         with pytest.raises(AuthorizationError):
-            await _calling(Probe(), studio_config).serve(
-                "probe", body, user
-            )
-
+            await _calling(Probe(), studio_config).serve("probe", body, user)
 
     async def test_roles_without_grants_see_no_tool(
         self, studio_config: StudioRuntimeConfig
@@ -263,7 +263,7 @@ class TestAuthenticator:
             cookie=CookieSpec(name="access_token", samesite="lax", ttl_sec=60),
             password=None,
             sso=None,
-            users=lambda: users,
+            users=users,
         )
 
         token = issuer.issue(
@@ -287,7 +287,9 @@ class TestAuthenticator:
 
         # токен подтверждает роли, но личность не заводит: без строки users входа нет
         nobody = f"nobody-{uuid4().hex[:8]}"
-        stranger = issuer.issue(SignedIn(identifier=nobody, display_name="", metadata={}))
+        stranger = issuer.issue(
+            SignedIn(identifier=nobody, display_name="", metadata={})
+        )
         with pytest.raises(AuthenticationError):
             await authenticator.user_of_token(stranger)
 

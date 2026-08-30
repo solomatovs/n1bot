@@ -37,7 +37,9 @@ async def test_second_exclusive_holder_is_refused_with_the_first_described() -> 
     clock.now += 3
 
     with pytest.raises(LockBusyError) as caught:
-        await locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TOOL_CALL, UUID(int=7))
+        await locks.acquire(
+            scope, LockMode.EXCLUSIVE, LockPurpose.TOOL_CALL, UUID(int=7)
+        )
 
     assert caught.value.busy.holder == "node1-chainlit"
     assert caught.value.busy.purpose is LockPurpose.TURN
@@ -55,9 +57,13 @@ async def test_shared_holders_coexist_but_exclusive_waits_for_them() -> None:
         await locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.TURN, UUID(int=1))
 
     exclusive_scope = _scope()
-    await locks.acquire(exclusive_scope, LockMode.EXCLUSIVE, LockPurpose.RUN, UUID(int=1))
+    await locks.acquire(
+        exclusive_scope, LockMode.EXCLUSIVE, LockPurpose.RUN, UUID(int=1)
+    )
     with pytest.raises(LockBusyError):
-        await locks.acquire(exclusive_scope, LockMode.SHARED, LockPurpose.CLEANUP, UUID(int=1))
+        await locks.acquire(
+            exclusive_scope, LockMode.SHARED, LockPurpose.CLEANUP, UUID(int=1)
+        )
 
 
 async def test_stale_lock_is_taken_over_and_its_heartbeat_fails() -> None:
@@ -67,7 +73,9 @@ async def test_stale_lock_is_taken_over_and_its_heartbeat_fails() -> None:
     first = await locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.RUN, UUID(int=1))
     clock.now += 21
 
-    second = await locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.RUN, UUID(int=2))
+    second = await locks.acquire(
+        scope, LockMode.EXCLUSIVE, LockPurpose.RUN, UUID(int=2)
+    )
 
     assert second.token != first.token
     assert await locks.heartbeat(first.token) is False

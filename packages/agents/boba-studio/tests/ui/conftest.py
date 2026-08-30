@@ -60,7 +60,10 @@ def _await_llm(port: int) -> None:
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         try:
-            if httpx.get(StandUrl.of(port, "/v1/models"), timeout=1.0).status_code < 500:
+            if (
+                httpx.get(StandUrl.of(port, "/v1/models"), timeout=1.0).status_code
+                < 500
+            ):
                 return
         except httpx.HTTPError:
             time.sleep(0.2)
@@ -107,5 +110,3 @@ def workflow_stand(
         yield process
     finally:
         process.stop()
-
-

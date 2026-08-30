@@ -18,7 +18,12 @@ from typing import ClassVar
 
 from boba.connections.credentials import CredentialSource, ProfileSections
 from boba.connections.http import HttpProfile
-from boba.connections.kerberos import (
+from boba.connections.marks import ConnectionRefusal
+from boba.connections.profile import ConnectionProfile
+from boba.identity.context import Credential, DelegatedTicket
+from boba.identity.errors import RefusalError
+from boba.identity.sso import RefreshSignal
+from boba.kerberos import (
     DelegatedAuth,
     KerberosAuthBase,
     KerberosError,
@@ -28,11 +33,6 @@ from boba.connections.kerberos import (
     TicketAuth,
     TicketSealError,
 )
-from boba.connections.marks import ConnectionRefusal
-from boba.connections.profile import ConnectionProfile
-from boba.identity.context import Credential, DelegatedTicket
-from boba.identity.errors import RefusalError
-from boba.identity.sso import RefreshSignal
 from boba.krb import (
     KerberosCredentials,
     KeytabCredentials,

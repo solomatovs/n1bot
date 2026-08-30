@@ -132,12 +132,17 @@ def _root() -> Container:
     return root
 
 
-def credential_source_ref() -> KerberosCredentialSource:
-    """Источник кредов вызова; без kerberos в [auth] делегирование отказывает."""
-    tickets = _root().resolved(get_runtime_config).sso_tickets()
-    refresh = _root().resolved(refresh_signal)
+def credential_source(
+    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+    refresh: Annotated[RefreshSignal, Depends(refresh_signal)],
+) -> KerberosCredentialSource:
+    """Источник кредов вызова на процесс; без kerberos в [auth] делегирование отказывает."""
+    return KerberosCredentialSource(config.sso_tickets(), refresh)
 
-    return KerberosCredentialSource(tickets, refresh)
+
+def credential_source_ref() -> KerberosCredentialSource:
+    """Источник кредов вызова из корневого контейнера; зовётся на каждый вызов."""
+    return _root().resolved(credential_source)
 
 
 def bus_watch_ref() -> BusWatch:
@@ -347,7 +352,7 @@ def auth_service(
         cookie=cookie,
         password=PasswordSignIns.of(config.auth),
         sso=sso,
-        users=lambda: table,
+        users=table,
     )
 
 

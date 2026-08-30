@@ -85,7 +85,7 @@ def _kerberos_auth(
         ),
         password=None,
         sso=SpnegoGate(SsoSignIn(config, session.auth_secret)),
-        users=lambda: users,
+        users=users,
     )
 
     return KerberosAuth("/boba", config.sso_path, auth)

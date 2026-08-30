@@ -17,18 +17,17 @@ from pydantic import BaseModel
 
 from boba.connections.clickhouse import ClickHouseConfig
 from boba.connections.http import HttpProfile, NegotiateAuth
-from boba.connections.kerberos import (
+from boba.connections.postgres import PostgresConfig
+from boba.connections.profile import ConnectionProfile
+from boba.identity.context import Credential
+from boba.kerberos import (
     DelegatedAuth,
     KerberosAuthBase,
     KerberosPasswordAuth,
     KeytabAuth,
-    SignInTicket,
 )
-from boba.connections.postgres import PostgresConfig
-from boba.connections.profile import ConnectionProfile
-from boba.identity.context import Credential
 
-__all__ = ["ArmedValues", "CredentialSource", "ProfileSections", "SignInCredentials"]
+__all__ = ["ArmedValues", "CredentialSource", "ProfileSections"]
 
 
 class ProfileSections:
@@ -78,17 +77,6 @@ class ProfileSections:
         if isinstance(value, list | tuple):
             for nested in value:
                 yield from cls.profiles(nested)
-
-
-class SignInCredentials(Protocol):
-    """Билет входа под печатью приложения: печать при SSO, открытие на вызове."""
-
-    @abstractmethod
-    def seal(self, ticket: SignInTicket) -> str: ...
-
-    @abstractmethod
-    def open(self, sealed: str) -> SignInTicket:
-        """TicketSealError — чужой ключ, порча или не тот формат."""
 
 
 class CredentialSource(Protocol):

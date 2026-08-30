@@ -349,7 +349,11 @@ class PgLiveLocks(LiveLocks):
         try:
             async with pool.cursor() as cur:
                 await cur.execute(
-                    sql.SQL("delete from {locks} where {token} = %(token)s").format(
+                    sql.SQL("""
+                    delete from {locks}
+                    where
+                        {token} = %(token)s
+                    """).format(
                         locks=self._locks(), token=SqlNames.ident(LiveLocksColumn.TOKEN)
                     ),
                     {"token": token.value},
@@ -364,8 +368,14 @@ class PgLiveLocks(LiveLocks):
         try:
             async with pool.cursor() as cur:
                 await cur.execute(
-                    sql.SQL("delete from {locks} where {holder} = %(holder)s").format(
-                        locks=self._locks(), holder=SqlNames.ident(LiveLocksColumn.HOLDER)
+                    sql.SQL(
+                        """
+                        delete from {locks}
+                        where
+                            {holder} = %(holder)s
+                        """).format(
+                        locks=self._locks(),
+                        holder=SqlNames.ident(LiveLocksColumn.HOLDER),
                     ),
                     {"holder": holder},
                     prepare=False,

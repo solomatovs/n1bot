@@ -18,7 +18,7 @@ from boba.connections.clickhouse.auth import (
     ClickHouseKerberos,
     ClickHouseLibch,
 )
-from boba.connections.kerberos import KerberosAuthBase, KerberosDump
+from boba.kerberos import KerberosAuthBase, KerberosDump
 from boba.toolkit.types import SecretRevealing
 
 __all__ = ["ClickHouseConfig", "ClickHouseSettingsConfig"]

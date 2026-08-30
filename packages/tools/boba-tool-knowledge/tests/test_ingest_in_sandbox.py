@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from omegaconf import DictConfig
 
+from boba.config import bind
 from boba.sandbox import SandboxToolConfig
 from boba.sandbox.guest import WarmupCall
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
-from boba.config import bind
 from boba.stand.sandbox import needs_sandbox, needs_userns, sandbox_profile
 from boba.tool.kb.confluence.ingest_tools import IngestWarmupConfig
 from boba.toolkit.entry import ToolArgv

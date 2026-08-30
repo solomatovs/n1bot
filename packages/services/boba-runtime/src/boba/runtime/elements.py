@@ -443,6 +443,22 @@ class ChatTables:
             feedbacks=FeedbacksTable(postgres, db_schema, pool),
         )
 
+    @classmethod
+    def around(
+        cls,
+        users: UsersTable,
+        postgres: PostgresConfig,
+        db_schema: str,
+        pool: AsyncPostgresPool,
+    ) -> ChatTables:
+        """Таблицы чата вокруг уже существующей users: одна строка users на процесс."""
+        return cls(
+            users=users,
+            threads=ThreadsTable(postgres, db_schema, pool),
+            elements=ElementsTable(postgres, db_schema, pool),
+            feedbacks=FeedbacksTable(postgres, db_schema, pool),
+        )
+
     async def setup(self) -> None:
         await self.users.setup()
         await self.threads.setup()

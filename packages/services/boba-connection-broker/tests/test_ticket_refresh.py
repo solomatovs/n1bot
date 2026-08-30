@@ -17,8 +17,8 @@ from pydantic import BaseModel, create_model
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.connection_broker.tickets import ServiceTickets
 from boba.connections.credentials import ProfileSections
-from boba.connections.kerberos import KeytabAuth, TicketAuth
 from boba.connections.postgres import PostgresConfig
+from boba.kerberos import KeytabAuth, TicketAuth
 from boba.stand.site import Stand
 from boba.toolkit.facade import Injected
 from boba.toolrun.injected import InjectedConfig

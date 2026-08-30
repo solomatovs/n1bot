@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from psycopg import sql
 from pydantic import BaseModel, SecretStr
-from studio_stand import NoUsers, StandProfiles, StubAuthenticator, StubRefs
+from studio_stand import StandProfiles
 
 from boba.chat.profiles import ChatProfiles
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
@@ -21,6 +21,8 @@ from boba.connections.http import HttpProfile
 from boba.connections.profile import GrantTarget, StoredRole
 from boba.db.postgres import AsyncPostgresPool
 from boba.runtime.config import StudioRuntimeConfig
+from boba.stand.auth import NoUsers, StubAuthenticator
+from boba.stand.refs import StandRefs
 from boba.studio.api.app import ApiAccess, ApiApp
 from boba.studio.api.urls import ApiVersion, ConnectionUrl
 
@@ -71,7 +73,9 @@ async def store(pool: AsyncPostgresPool) -> ConnectionStore:
 
 
 @pytest.fixture
-async def granted(store: ConnectionStore, studio_config: StudioRuntimeConfig) -> dict[str, UUID]:
+async def granted(
+    store: ConnectionStore, studio_config: StudioRuntimeConfig
+) -> dict[str, UUID]:
     roles = StoredRole.by_name(await store.roles())
     postgres = await store.add("main", studio_config.data_layer.postgres)
     await store.grant(postgres, GrantTarget.role(roles[ROLE]))
@@ -102,14 +106,16 @@ def _web_body(name: str, url: str) -> dict[str, object]:
 async def client(
     store: ConnectionStore, studio_config: StudioRuntimeConfig
 ) -> AsyncIterator[AsyncClient]:
-    user = StandProfiles.user(studio_config).model_copy(update={"metadata": {"roles": [ROLE]}})
+    user = StandProfiles.user(studio_config).model_copy(
+        update={"metadata": {"roles": [ROLE]}}
+    )
     access = ApiAccess(
         StubAuthenticator(user),
         StubAuthenticator.COOKIE,
         NoUsers.source,
     )
     app: FastAPI = ApiApp.build(
-        StubRefs.of(lambda: store, lambda: None),
+        StandRefs.of(lambda: store, lambda: None),
         access,
         ChatProfiles(studio_config.profiles),
         None,
@@ -210,7 +216,8 @@ async def test_shared_and_foreign_rows_are_not_editable(
     assert shared_delete.status_code == 403
 
     foreign = await client.delete(
-        f"{ApiVersion.V1}/connections/{granted['stranger']}", params=_query(studio_config)
+        f"{ApiVersion.V1}/connections/{granted['stranger']}",
+        params=_query(studio_config),
     )
     assert foreign.status_code == 404
 

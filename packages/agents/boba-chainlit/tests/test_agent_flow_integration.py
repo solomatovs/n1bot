@@ -17,7 +17,7 @@ from typing import Any
 
 import chainlit as cl
 import pytest
-from chainlit_stand import StubRefs, use_context
+from chainlit_stand import use_context
 from httpx import AsyncClient
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -52,6 +52,7 @@ from boba.connection_broker.store import ConnectionStore
 from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
 from boba.llm.generation import LocalOnnxGenerator, OpenAiStructuredGenerator
 from boba.llm.local import OnnxChatRuntime
+from boba.stand.refs import StandRefs
 from boba.toolkit.result import TableResult, ToolArtifact
 
 _REPO = Path(__file__).resolve().parents[4]
@@ -148,7 +149,7 @@ def _no_store() -> ConnectionStore:
 @pytest.fixture(scope="module")
 def session_tools(raw_config: DictConfig, app_config: AppConfig) -> list[BaseTool]:
     """Инструменты профиля, собранные боевым загрузчиком."""
-    registry = ChatPlugins.load(raw_config, StubRefs.of(_no_store, _no_registry))
+    registry = ChatPlugins.load(raw_config, StandRefs.of(_no_store, _no_registry))
     roles = frozenset(app_config.roles)
     return registry.for_session(roles, PROFILE)
 

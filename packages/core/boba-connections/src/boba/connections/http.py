@@ -25,7 +25,7 @@ from pydantic import (
     model_validator,
 )
 
-from boba.connections.kerberos import KerberosAuth, KerberosDump
+from boba.kerberos import KerberosAuth, KerberosDump
 
 __all__ = [
     "BasicAuth",

@@ -96,7 +96,9 @@ async def _seed_history(config: AppConfig, thread_id: str) -> None:
         await pool.close()
 
 
-async def _seed_thread_and_button(config: AppConfig, owner: str, thread_id: str) -> None:
+async def _seed_thread_and_button(
+    config: AppConfig, owner: str, thread_id: str
+) -> None:
     """Тред пользователя и элемент кнопки потока — в data layer."""
     dl = config.data_layer
     pool = AsyncPostgresPool(
@@ -457,7 +459,9 @@ async def test_dom_stays_bounded_on_a_long_scroll(stream_thread: Any) -> None:
         raise AssertionError("верх загруженного не вытеснился")
 
 
-def _append_live(config: AppConfig, owner: str, thread_id: str, marker: str, lines: int) -> None:
+def _append_live(
+    config: AppConfig, owner: str, thread_id: str, marker: str, lines: int
+) -> None:
     """Дописать строки в живой журнал: как это делает инструмент из песочницы."""
     journal = StreamJournal(DirVault(config.stream_journal.dir), reserve_bytes=0)
     key = StreamKey(user_id=owner, thread_id=thread_id, call_id=LIVE_CALL_ID)
@@ -977,7 +981,9 @@ async def test_journal_windows_are_walkable_in_fullscreen(
         raise AssertionError("«в начало» не сработало в полном экране")
 
 
-def _append_short(config: AppConfig, owner: str, thread_id: str, marker: str, lines: int) -> None:
+def _append_short(
+    config: AppConfig, owner: str, thread_id: str, marker: str, lines: int
+) -> None:
     """Дописать строки в короткий живой журнал."""
     journal = StreamJournal(DirVault(config.stream_journal.dir), reserve_bytes=0)
     key = StreamKey(user_id=owner, thread_id=thread_id, call_id=SHORT_CALL_ID)

@@ -413,7 +413,9 @@ async def test_foreign_session_is_rejected(
     client_app: FastAPI,
     session: FakeSession,
 ):
-    client_app.dependency_overrides[get_current_user] = lambda: FakeUser("petrov", UUID(int=8))
+    client_app.dependency_overrides[get_current_user] = lambda: FakeUser(
+        "petrov", UUID(int=8)
+    )
 
     async with transport(client_app) as client:
         response = await client.post(

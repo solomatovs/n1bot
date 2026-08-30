@@ -231,7 +231,9 @@ async def test_drafts_are_keyed_per_user_and_count_revisions(
     store: WorkflowStore,
 ) -> None:
     key = DraftKey.of_workflow(UUID(int=7))
-    first = await store.put_draft(UUID(int=1), key, "name: a\ntasks: {}\n", {"positions": {}})
+    first = await store.put_draft(
+        UUID(int=1), key, "name: a\ntasks: {}\n", {"positions": {}}
+    )
     second = await store.put_draft(
         UUID(int=1), key, "name: b\ntasks: {}\n", {"positions": {"t": 1}}
     )

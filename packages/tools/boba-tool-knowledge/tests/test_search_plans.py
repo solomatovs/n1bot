@@ -17,10 +17,10 @@ from omegaconf import DictConfig
 from psycopg import AsyncConnection, sql
 from psycopg.rows import dict_row
 
+from boba.config import bind
 from boba.db.pgvector.migrations import Migrations
 from boba.db.pgvector.store import PostgresStoreSchema
 from boba.db.postgres import AsyncPostgresPool
-from boba.config import bind
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
 from boba.tool.kb.search import KbSearch
 

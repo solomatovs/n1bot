@@ -20,8 +20,8 @@ from typing import ClassVar
 from langchain_core.tools import BaseTool
 
 from boba.connections.credentials import ArmedValues, CredentialSource, ProfileSections
-from boba.connections.kerberos import DelegatedAuth
 from boba.identity.context import NoUserCredential
+from boba.kerberos import DelegatedAuth
 from boba.toolrun.injected import (
     AsyncInjected,
     ConfigResolver,

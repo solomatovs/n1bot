@@ -4,8 +4,6 @@ import os
 import time
 from collections.abc import (
     AsyncIterator,
-    Awaitable,
-    Callable,
     Iterator,
     Mapping,
 )
@@ -21,7 +19,6 @@ from chainlit.user import User as ChainlitUser
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from psycopg import sql
 
-from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.canvas.keys import WorkspaceMount
 from boba.chainlit.chat.feed import TurnFeed
 from boba.chainlit.chat.history import ThreadMessages, TranscriptFeed
@@ -44,13 +41,8 @@ from boba.chainlit.rendering.chat_view import (
 from boba.chainlit.rendering.renderer import ChatRenderer, NoSurface
 from boba.chat.openai import OpenAiConfig
 from boba.chat.provider import ChatSampling, OpenAiChatConfig
-from boba.chat.threads import ThreadOwnership
 from boba.config import bind, build_app_config
-from boba.connection_broker.store import ConnectionStore
-from boba.connection_broker.user_connections import StoreRef
-from boba.connections.kerberos import DelegationMode, SignInTicket
 from boba.db.postgres import AsyncPostgresPool
-from boba.identity.api import AuthenticatedUser, Authenticator, UserSettingsStore
 from boba.identity.context import (
     CallContext,
     Scope,
@@ -58,13 +50,12 @@ from boba.identity.context import (
 from boba.identity.errors import RefusalError
 from boba.identity.locks import MemoryLiveLocks
 from boba.identity.run import ElementTarget, RunPort, RunRefusal
+from boba.kerberos import DelegationMode, SignInTicket
 from boba.krb.seal import SsoTickets, TicketSealer
 from boba.llm.bridge import ProviderChatModel
 from boba.llm.openai_chat import OpenAiChatProvider
 from boba.messaging import LockToken, MemoryMessageBus, MemoryPayloadStore
-from boba.messaging.bus import ListenerState, StaticBusWatch
 from boba.runtime.elements import ChatTables
-from boba.runtime.refs import RuntimeRefs
 from boba.stand.context import TEST_PROFILE as TEST_PROFILE
 from boba.stand.context import TEST_TURN as TEST_TURN
 from boba.stand.context import install_context as install_context
@@ -72,8 +63,6 @@ from boba.stand.context import make_context as make_context
 from boba.stand.context import use_context as use_context
 from boba.stand.fakes import FakeSecret as FakeSecret
 from boba.stand.fakes import FakeUrl as FakeUrl
-from boba.toolrun.registry import ToolRegistry
-from boba.workflow_engine.service import WorkflowService
 
 AUTH_USER = "test-user"
 
@@ -381,112 +370,6 @@ def di_root() -> Iterator[None]:
         yield
     finally:
         Container.set_root(previous)
-
-
-class ChainlitUsers:
-    """Пользователь chainlit → пользователь входа api глазами JwtAuthenticator."""
-
-    @staticmethod
-    def of(user: ChainlitUser | PersistedUser | None) -> AuthenticatedUser | None:
-        if not isinstance(user, PersistedUser):
-            return None
-
-        return AuthenticatedUser(
-            id=user.id,
-            identifier=user.identifier,
-            metadata=ChainlitSession.metadata_of(user),
-        )
-
-
-class StubRefs:
-    """Входы приложения для стендов загрузки инструментов без реестра и workflow."""
-
-    @staticmethod
-    def of(store: StoreRef, tickets: Callable[[], SsoTickets | None]) -> RuntimeRefs:
-        def credentials() -> KerberosCredentialSource:
-            return KerberosCredentialSource(tickets(), NoRefresh())
-
-        async def no_registry() -> ToolRegistry:
-            msg = "tool registry is not part of this stand"
-            raise RuntimeError(msg)
-
-        async def no_service() -> WorkflowService:
-            msg = "workflow service is not part of this stand"
-            raise RuntimeError(msg)
-
-        return RuntimeRefs(
-            tool_registry=no_registry,
-            workflow_service=no_service,
-            connection_store=store,
-            credentials=credentials,
-            live_locks=lambda: MemoryLiveLocks("stand", 20),
-            heartbeat_sec=1.0,
-            bus_watch=lambda: StaticBusWatch(ListenerState.LISTENING),
-            message_bus=lambda: MemoryMessageBus("stand"),
-        )
-
-    @staticmethod
-    def services(
-        tool_registry: Callable[[], Awaitable[ToolRegistry]],
-        workflow_service: Callable[[], Awaitable[WorkflowService]],
-    ) -> RuntimeRefs:
-        """Стенд API: реестр и сервис есть, соединений и билетов нет."""
-
-        def no_store() -> ConnectionStore:
-            msg = "connection store is not part of this stand"
-            raise RuntimeError(msg)
-
-        def no_credentials() -> KerberosCredentialSource:
-            return KerberosCredentialSource(None, NoRefresh())
-
-        return RuntimeRefs(
-            tool_registry=tool_registry,
-            workflow_service=workflow_service,
-            connection_store=no_store,
-            credentials=no_credentials,
-            live_locks=lambda: MemoryLiveLocks("stand", 20),
-            heartbeat_sec=1.0,
-            bus_watch=lambda: StaticBusWatch(ListenerState.LISTENING),
-            message_bus=lambda: MemoryMessageBus("stand"),
-        )
-
-
-class StubAuthenticator(Authenticator):
-    """Вход стенда: один известный токен -> заданный пользователь."""
-
-    COOKIE: ClassVar[str] = "access_token"
-    TOKEN: ClassVar[str] = "stand-token"
-
-    def __init__(self, user: AuthenticatedUser | None) -> None:
-        self._user = user
-
-    async def user_of_token(self, token: str) -> AuthenticatedUser | None:
-        if token != self.TOKEN:
-            return None
-
-        return self._user
-
-    @classmethod
-    def cookies(cls) -> dict[str, str]:
-        return {cls.COOKIE: cls.TOKEN}
-
-
-class NoThreads:
-    """Владение тредами стендам API без тредов не нужно."""
-
-    @staticmethod
-    def source() -> ThreadOwnership:
-        msg = "thread ownership is not part of this stand"
-        raise RuntimeError(msg)
-
-
-class NoUsers:
-    """Хранилище пользователей стендам API без /me не нужно."""
-
-    @staticmethod
-    def source() -> UserSettingsStore:
-        msg = "users store is not part of this stand"
-        raise RuntimeError(msg)
 
 
 class SsoStand:

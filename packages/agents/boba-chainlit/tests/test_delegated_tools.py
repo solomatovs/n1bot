@@ -39,17 +39,17 @@ from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connection_broker.user_connections import UserConnections
 from boba.connections.clickhouse import ClickHouseConfig
 from boba.connections.http import HttpProfile, NegotiateAuth
-from boba.connections.kerberos import (
-    AcceptConfig,
-    ConstrainedDelegation,
-    DelegatedAuth,
-)
 from boba.connections.marks import UserConnectionsSpec
 from boba.connections.postgres import PostgresConfig
 from boba.connections.profile import ConnectionKind, ConnectionProfile, GrantTarget
 from boba.connections.whitelist import ConnectionKeying
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.session import UserMetadataField
+from boba.kerberos import (
+    AcceptConfig,
+    ConstrainedDelegation,
+    DelegatedAuth,
+)
 from boba.krb import SpnegoAcceptor, TicketCapture
 from boba.krb.seal import SsoTickets
 from boba.messaging import MemoryMessageBus

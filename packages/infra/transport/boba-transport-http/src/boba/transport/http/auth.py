@@ -20,12 +20,8 @@ from boba.connections.http import (
     NegotiateAuth,
     WebAuth,
 )
-from boba.krb import (
-    ClientCredentials,
-    KerberosCredentials,
-    KerberosError,
-    SpnegoNegotiate,
-)
+from boba.kerberos import KerberosError
+from boba.krb import ClientCredentials, KerberosCredentials, SpnegoNegotiate
 
 __all__ = [
     "HttpxAuth",

@@ -29,11 +29,15 @@ def login_cookies(stand: StandProcess, login: str = "") -> list[SetCookieParam]:
         timeout=30.0,
     )
     if response.status_code != 200:
-        raise RuntimeError(f"login failed: {response.status_code} {response.text[:200]}")
+        raise RuntimeError(
+            f"login failed: {response.status_code} {response.text[:200]}"
+        )
 
     cookies: list[SetCookieParam] = []
     for name, value in response.cookies.items():
-        cookies.append({"name": name, "value": value, "domain": "127.0.0.1", "path": "/"})
+        cookies.append(
+            {"name": name, "value": value, "domain": "127.0.0.1", "path": "/"}
+        )
 
     if not cookies:
         raise RuntimeError("login returned no cookies")

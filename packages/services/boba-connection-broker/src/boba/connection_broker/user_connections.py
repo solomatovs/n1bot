@@ -33,7 +33,6 @@ from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tickets import CredentialsRef
 from boba.connections.credentials import ProfileSections
 from boba.connections.http import HostPattern, HttpProfile
-from boba.connections.kerberos import TicketAuth
 from boba.connections.marks import (
     ClientLabel,
     ConnectionRefusal,
@@ -48,6 +47,7 @@ from boba.connections.whitelist import (
 )
 from boba.identity.context import CallContext
 from boba.identity.errors import RefusalError
+from boba.kerberos import TicketAuth
 from boba.toolkit.sql import SqlProfiles
 from boba.toolrun.injected import (
     AsyncInjected,

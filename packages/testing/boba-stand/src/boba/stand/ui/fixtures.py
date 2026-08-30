@@ -11,7 +11,9 @@ import pytest
 
 @pytest.fixture(scope="session")
 def playwright() -> Iterator[object]:
-    sync_api = pytest.importorskip("playwright.sync_api", reason="ui-тестам нужен playwright")
+    sync_api = pytest.importorskip(
+        "playwright.sync_api", reason="ui-тестам нужен playwright"
+    )
     with sync_api.sync_playwright() as instance:
         yield instance
 

@@ -15,11 +15,10 @@ from typing import ClassVar
 import pytest
 
 from boba.connections.clickhouse import ClickHouseConfig
-from boba.connections.kerberos import DelegatedAuth, KeytabAuth, TicketAuth
 from boba.connections.postgres import PostgresConfig
+from boba.kerberos import DelegatedAuth, KerberosError, KeytabAuth, TicketAuth
 from boba.krb import (
     ClientCredentials,
-    KerberosError,
     KerberosWorkspace,
     KeytabCredentials,
     TicketCredentials,

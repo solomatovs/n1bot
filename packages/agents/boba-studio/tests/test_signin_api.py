@@ -8,7 +8,6 @@ from uuid import UUID
 import jwt
 import pytest
 from httpx import ASGITransport, AsyncClient
-from studio_stand import NoRefs
 
 from boba.auth import AuthService, JwtTokens
 from boba.auth.config import LocalAuthConfig
@@ -26,6 +25,7 @@ from boba.identity.roles import RoleExcludeConfig, RoleMappingConfig
 from boba.identity.signin import SignedIn
 from boba.identity.sso import OwnRequest
 from boba.identity.token import CookieSpec
+from boba.stand.refs import StandRefs
 from boba.studio.api.app import ApiAccess, ApiApp
 from boba.studio.api.signin import PageUrls, SignInWiring
 from boba.studio.api.urls import AccountUrl, ApiVersion, SignInUrl
@@ -97,7 +97,7 @@ async def client() -> AsyncIterator[AsyncClient]:
         cookie=CookieSpec(name=COOKIE, samesite="lax", ttl_sec=3600),
         password=PasswordSignIns.of([_local()]),
         sso=None,
-        users=lambda: users,
+        users=users,
     )
     wiring = SignInWiring(
         auth=auth,
@@ -109,7 +109,7 @@ async def client() -> AsyncIterator[AsyncClient]:
         ),
     )
     access = ApiAccess(auth, COOKIE, lambda: users)
-    app = ApiApp.build(NoRefs.refs(), access, _profiles(), wiring)
+    app = ApiApp.build(StandRefs.none(), access, _profiles(), wiring)
     async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://api",

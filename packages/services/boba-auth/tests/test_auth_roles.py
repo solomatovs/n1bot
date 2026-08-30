@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import SecretStr
 
 from boba.auth.config import (
     KerberosRolesInLdapConfig,
@@ -109,7 +110,7 @@ def test_ldap_provider_maps_roles_from_all_sources() -> None:
             server="ldaps://dc.example.com:636",
             base_dn="DC=example,DC=com",
             bind_dn="cn=svc",
-            bind_password=FakeSecret.LDAP_BIND,
+            bind_password=SecretStr(FakeSecret.LDAP_BIND),
             mapping=mapping,
         ),
     )
@@ -133,7 +134,7 @@ def test_ldap_provider_excludes_by_any_source() -> None:
             server="ldaps://dc.example.com:636",
             base_dn="DC=example,DC=com",
             bind_dn="cn=svc",
-            bind_password=FakeSecret.LDAP_BIND,
+            bind_password=SecretStr(FakeSecret.LDAP_BIND),
             mapping=mapping,
         ),
     )

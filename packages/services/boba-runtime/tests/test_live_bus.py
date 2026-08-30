@@ -73,11 +73,20 @@ class Inbox:
 
 
 async def _bus(
-    runtime_config: RuntimeConfig, test_database: str, pool: AsyncPostgresPool, name: str
+    runtime_config: RuntimeConfig,
+    test_database: str,
+    pool: AsyncPostgresPool,
+    name: str,
 ) -> PgMessageBus:
-    cfg = runtime_config.data_layer.postgres.model_copy(update={"dbname": test_database})
+    cfg = runtime_config.data_layer.postgres.model_copy(
+        update={"dbname": test_database}
+    )
     bus = PgMessageBus(
-        cfg, runtime_config.cluster.db_schema, name, AppName.STUDIO, runtime_config.cluster
+        cfg,
+        runtime_config.cluster.db_schema,
+        name,
+        AppName.STUDIO,
+        runtime_config.cluster,
     )
     bus._pool_ref = pool
     await bus.setup()
@@ -286,7 +295,9 @@ async def test_listener_retries_when_the_catch_up_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Ошибка базы при догоне после реконнекта — повтор, а не остановка слушателя."""
-    cfg = runtime_config.data_layer.postgres.model_copy(update={"dbname": test_database})
+    cfg = runtime_config.data_layer.postgres.model_copy(
+        update={"dbname": test_database}
+    )
     calls: list[int] = []
 
     async def handler(pointer: Pointer) -> None:

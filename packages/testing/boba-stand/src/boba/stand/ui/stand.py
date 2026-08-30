@@ -514,7 +514,9 @@ class StandProcess:
         self.process = self._spawn()
         deadline = time.monotonic() + boot_timeout_sec
         path = self.config.url_prefix + self.config.app.ready_path
-        self._await_ready(self.process, StandUrl.of(self.config.app_port, path), deadline)
+        self._await_ready(
+            self.process, StandUrl.of(self.config.app_port, path), deadline
+        )
 
     def _spawn(self) -> subprocess.Popen[bytes]:
         handle = self.log_path.open("wb")

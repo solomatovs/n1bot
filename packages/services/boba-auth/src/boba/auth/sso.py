@@ -53,7 +53,6 @@ from boba.identity.session import (
 )
 from boba.identity.signin import SignedIn
 from boba.identity.sso import (
-    NegotiateToken,
     SpnegoExchange,
     SsoAdmission,
     SsoChallenge,
@@ -61,16 +60,15 @@ from boba.identity.sso import (
     SsoRequest,
     SsoSigned,
 )
-from boba.krb import (
+from boba.kerberos import (
     CredentialsExpiredError,
     DelegationNotPermittedError,
     InvalidTokenError,
     KerberosError,
     KeytabError,
-    SpnegoAcceptor,
-    SpnegoIdentity,
-    TicketCapture,
+    NegotiateToken,
 )
+from boba.krb import SpnegoAcceptor, SpnegoIdentity, TicketCapture
 from boba.krb.seal import SsoTickets, TicketSealer
 from boba.toolkit.template import TemplateError
 
@@ -156,7 +154,7 @@ class KerberosRolesInLdapProvider:
                 self._ad.fetch_userdn_samaccountname_member_of,
                 server=self._config.server,
                 bind_dn=self._config.bind_dn,
-                bind_password=self._config.bind_password,
+                bind_password=self._config.bind_password.get_secret_value(),
                 search_base=self._config.base_dn,
                 search_filter=search_filter,
             )
@@ -216,7 +214,6 @@ class SsoSignIn(SsoAdmission):
             raise ValueError(msg)
 
         self._config = config
-        self._ad = ADDirectory
         self.acceptor = SpnegoAcceptor(config.accept, config.delegation)
         self.capture = TicketCapture(config.delegation)
         self.sealer = TicketSealer(secret)

@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from boba.access import GrantCheck
+from boba.auth import AuthService
 from boba.cancellation import StopReason
 from boba.chainlit.auth.installer import ChainlitAuthInstaller
 from boba.chainlit.infra import providers
@@ -54,8 +55,6 @@ def run_app(config_path: Path):
     _use_stream_journal(c)
 
     _use_canvas_viewers()
-
-    _use_auth(c)
 
     _use_domain_error(app)
 
@@ -103,6 +102,8 @@ def run_app(config_path: Path):
 async def _run_container(app: FastAPI) -> AsyncGenerator[None, None]:
     container = app.state.container
     await container.start()
+    # роуты и колбэк входа ставятся до первого запроса: сервис входа живёт в контейнере
+    _use_auth(container)
 
     try:
         yield
@@ -236,10 +237,19 @@ def _use_canvas_viewers() -> None:
     ChatPlugins.load(RawConfig.get(), runtime.runtime_refs())
 
 
-def _use_auth(config: AppConfig) -> None:
+def _use_auth(container: Container) -> None:
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
-    auth = runtime.auth_service(config, runtime.users_table(config))
+    config = container.resolved(providers.get_app_config)
+    if not isinstance(config, AppConfig):
+        msg = f"app config provider returned {type(config).__name__}"
+        raise RuntimeError(msg)
+
+    auth = container.resolved(runtime.auth_service)
+    if not isinstance(auth, AuthService):
+        msg = f"auth service provider returned {type(auth).__name__}"
+        raise RuntimeError(msg)
+
     installer = ChainlitAuthInstaller(
         config.chainlit.url_prefix, config.auth, auth, config.session.session_ttl_sec
     )
@@ -263,6 +273,9 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     ChainlitSessions.install(sessions)
     container.provide(providers.session_source, sessions)
     container.eager(providers.get_app_config)
+    container.eager(runtime.users_table)
+    container.eager(runtime.auth_service)
+    container.eager(runtime.credential_source)
     container.eager(providers.chat_profiles_registry)
     container.eager(providers.chainlit_data_layer)
     container.eager(providers.langchain_checkpoint_saver)

@@ -9,7 +9,7 @@ import time
 import pytest
 
 from boba.chainlit.infra.entry import AppEntry, ChainlitEnv
-from boba.connections.kerberos import DelegationMode, SignInTicket
+from boba.kerberos import DelegationMode, SignInTicket
 from boba.krb.seal import TicketSealer
 from boba.runtime.config import ConfigLocator, RuntimeConfig
 

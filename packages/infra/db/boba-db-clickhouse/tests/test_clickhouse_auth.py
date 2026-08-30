@@ -16,8 +16,8 @@ import pytest
 from pydantic import SecretStr
 
 from boba.connections.clickhouse import ClickHouseConfig, PasswordAuth
-from boba.connections.kerberos import KerberosPasswordAuth, KeytabAuth
 from boba.db.clickhouse.payload import PayloadClickHouse
+from boba.kerberos import KerberosPasswordAuth, KeytabAuth
 from boba.krb import KerberosWorkspace, KeytabCredentials, ServiceTicketIssuer
 from boba.stand.site import Stand
 

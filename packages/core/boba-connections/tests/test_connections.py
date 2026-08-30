@@ -305,13 +305,17 @@ class TestConnectionKind:
 
     def test_stored_profile_without_kind_is_rejected(self) -> None:
         with pytest.raises(ValidationError, match="kind"):
-            StoredConnection.model_validate({"id": str(UUID(int=1)), "name": "x", "profile": {}})
+            StoredConnection.model_validate(
+                {"id": str(UUID(int=1)), "name": "x", "profile": {}}
+            )
 
 
 class TestConnectionsConfig:
     def test_key_must_be_base64(self) -> None:
         with pytest.raises(ValueError, match="base64"):
-            ConnectionsConfig(db_schema="chainlit", encryption_key=SecretStr("не base64!"))
+            ConnectionsConfig(
+                db_schema="chainlit", encryption_key=SecretStr("не base64!")
+            )
 
     def test_key_must_be_32_bytes(self) -> None:
         short = SecretStr(base64.b64encode(std_secrets.token_bytes(16)).decode())
@@ -319,7 +323,14 @@ class TestConnectionsConfig:
             ConnectionsConfig(db_schema="chainlit", encryption_key=short)
 
     def test_valid_key_decodes(self) -> None:
-        if len(ConnectionsConfig(db_schema="chainlit", encryption_key=_key()).key_bytes()) != 32:
+        if (
+            len(
+                ConnectionsConfig(
+                    db_schema="chainlit", encryption_key=_key()
+                ).key_bytes()
+            )
+            != 32
+        ):
             raise AssertionError("the key must decode to 32 bytes")
 
     def test_missing_key_raises_on_use(self) -> None:
@@ -328,7 +339,9 @@ class TestConnectionsConfig:
 
     def test_missing_connection_raises_on_use(self) -> None:
         with pytest.raises(ValueError, match="connection is not set"):
-            ConnectionsConfig(db_schema="chainlit", encryption_key=_key()).require_conn()
+            ConnectionsConfig(
+                db_schema="chainlit", encryption_key=_key()
+            ).require_conn()
 
     def test_defaults(self) -> None:
         cfg = ConnectionsConfig(db_schema="chainlit")

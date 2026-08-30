@@ -16,7 +16,8 @@ from typing import ClassVar
 import gssapi
 from gssapi.raw.misc import GSSError
 
-from boba.krb.errors import GssErrors, KerberosError
+from boba.kerberos import KerberosError
+from boba.krb.errors import GssErrors
 
 __all__ = ["SpnegoNegotiate"]
 

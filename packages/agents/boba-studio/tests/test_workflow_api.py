@@ -10,13 +10,15 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from psycopg import sql
-from studio_stand import NoUsers, StandProfiles, StubAuthenticator, StubRefs
+from studio_stand import StandProfiles
 
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.api import ApiSubject, AuthenticatedUser
 from boba.identity.locks import MemoryLiveLocks, RunLocking
 from boba.messaging import MemoryMessageBus
 from boba.runtime.config import StudioRuntimeConfig
+from boba.stand.auth import NoUsers, StubAuthenticator
+from boba.stand.refs import StandRefs
 from boba.stand.tools import PROBE_ROLE as ROLE
 from boba.stand.tools import Probe
 from boba.studio.api.app import ApiAccess, ApiApp
@@ -65,7 +67,9 @@ def user(studio_config: StudioRuntimeConfig) -> AuthenticatedUser:
 
 
 @pytest.fixture
-def app(store: WorkflowStore, user: AuthenticatedUser, studio_config: StudioRuntimeConfig) -> FastAPI:
+def app(
+    store: WorkflowStore, user: AuthenticatedUser, studio_config: StudioRuntimeConfig
+) -> FastAPI:
     probe = Probe()
 
     async def registry() -> ToolRegistry:
@@ -88,7 +92,10 @@ def app(store: WorkflowStore, user: AuthenticatedUser, studio_config: StudioRunt
         NoUsers.source,
     )
     return ApiApp.build(
-        StubRefs.services(registry, source), access, StandProfiles.profiles(studio_config), None
+        StandRefs.services(registry, source),
+        access,
+        StandProfiles.profiles(studio_config),
+        None,
     )
 
 
@@ -121,7 +128,9 @@ async def _finished(client: AsyncClient, run_id: str, profile: str) -> dict[str,
     raise AssertionError("the run never finished")
 
 
-async def test_catalog_lists_tools(client: AsyncClient, studio_config: StudioRuntimeConfig) -> None:
+async def test_catalog_lists_tools(
+    client: AsyncClient, studio_config: StudioRuntimeConfig
+) -> None:
     reply = await client.get(
         f"{ApiVersion.V1}{ToolCallUrl.CATALOG}",
         params={"profile": _profile_of(studio_config)},
@@ -146,7 +155,9 @@ async def test_catalog_lists_tools(client: AsyncClient, studio_config: StudioRun
     assert catalog["echo"]["results"] == ["text"]
 
 
-async def test_validate_and_save(client: AsyncClient, studio_config: StudioRuntimeConfig) -> None:
+async def test_validate_and_save(
+    client: AsyncClient, studio_config: StudioRuntimeConfig
+) -> None:
     profile = _profile_of(studio_config)
 
     valid = await client.post(
@@ -205,11 +216,15 @@ async def test_run_in_background_and_poll(
     assert run["state"]["tasks"]["second"]["status"] == "done"
     assert run["initiator"] == {"kind": "human", "via": "api"}
 
-    missing = await client.post(f"/v1/workflows/{uuid4()}/run", json={"profile": profile})
+    missing = await client.post(
+        f"/v1/workflows/{uuid4()}/run", json={"profile": profile}
+    )
     assert missing.status_code == 404
 
 
-async def test_stop_running(client: AsyncClient, studio_config: StudioRuntimeConfig) -> None:
+async def test_stop_running(
+    client: AsyncClient, studio_config: StudioRuntimeConfig
+) -> None:
     profile = _profile_of(studio_config)
     saved = await client.post(
         f"{ApiVersion.V1}{WorkflowUrl.WORKFLOWS}",
@@ -304,7 +319,9 @@ async def test_abandoned_runs_are_closed_on_startup_and_stop_is_honest(
     assert await mine.stop(subject, orphan.id) is StopOutcome.FINISHED
 
 
-async def test_draft_round_trip(client: AsyncClient, studio_config: StudioRuntimeConfig) -> None:
+async def test_draft_round_trip(
+    client: AsyncClient, studio_config: StudioRuntimeConfig
+) -> None:
     """Черновик билдера: 404 до записи, PUT растит revision, DELETE снимает."""
     profile = _profile_of(studio_config)
     key = "new:0f3b2a10-1111-4222-8333-444455556666"

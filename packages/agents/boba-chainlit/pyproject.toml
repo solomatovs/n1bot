@@ -49,6 +49,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "boba-kerberos==0.0.14.dev9",
     "boba-connection-broker==0.0.14.dev9",
     "boba-liteparse==0.0.14.dev9",
     "boba-stand==0.0.14.dev9",
@@ -60,7 +61,6 @@ dev = [
     "boba-tool-postgres==0.0.14.dev9",
     "boba-tool-web==0.0.14.dev9",
     "boba-transport-http==0.0.14.dev9",
-    "boba-workflow-engine==0.0.14.dev9",
     "gssapi>=1.9",
     "krb5>=0.7",
     "playwright>=1.47",

@@ -17,8 +17,12 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from pydantic import ValidationError
 
-from boba.connections.credentials import SignInCredentials
-from boba.connections.kerberos import DelegationMode, SignInTicket, TicketSealError
+from boba.kerberos import (
+    DelegationMode,
+    SignInCredentials,
+    SignInTicket,
+    TicketSealError,
+)
 from boba.krb.credentials import DelegatedCredentials
 
 __all__ = ["SsoTickets", "TicketSealer"]

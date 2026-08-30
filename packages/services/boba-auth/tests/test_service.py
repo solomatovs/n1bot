@@ -60,7 +60,7 @@ def _service(users: Users, password: bool = False) -> AuthService:
         cookie=CookieSpec(name="access_token", samesite="lax", ttl_sec=60),
         password=provider,
         sso=None,
-        users=lambda: users,
+        users=users,
     )
 
 

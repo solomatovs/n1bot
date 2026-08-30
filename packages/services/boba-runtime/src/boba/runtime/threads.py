@@ -135,9 +135,7 @@ class ThreadsTable(ChatThreads):
             raise DataUnavailableError("threads.setup", str(exc)) from exc
 
     async def get(self, thread_id: UUID) -> StoredThread | None:
-        query = sql.SQL(
-            "select {cols} from {threads} where {id} = %(id)s"
-        ).format(
+        query = sql.SQL("select {cols} from {threads} where {id} = %(id)s").format(
             cols=self._row_columns(),
             threads=self._threads(),
             id=SqlNames.ident(ThreadsColumn.ID),

@@ -12,7 +12,6 @@ InternalServiceError — ошибка конфига каталога или ker
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
 from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict
@@ -73,7 +72,7 @@ class AuthService(Authenticator):
         cookie: CookieSpec,
         password: PasswordSignIn | None,
         sso: SpnegoExchange | None,
-        users: Callable[[], AuthUsers],
+        users: AuthUsers,
     ) -> None:
         self._tokens = tokens
         self._cookie = cookie
@@ -124,7 +123,7 @@ class AuthService(Authenticator):
 
     async def issue(self, signed: SignedIn) -> IssuedSession:
         """Строка users по итогу входа и токен сессии с claims этого входа."""
-        user = await self._users().ensure_user(signed)
+        user = await self._users.ensure_user(signed)
         token = self._tokens.issue(signed)
 
         return IssuedSession(signed=signed, user=user, token=token)
@@ -137,7 +136,7 @@ class AuthService(Authenticator):
             message = f"sign-in token rejected: {exc.reason}"
             raise AuthenticationError(message) from exc
 
-        stored = await self._users().get_user(claims.identifier)
+        stored = await self._users.get_user(claims.identifier)
         if stored is None:
             raise AuthenticationError(f"sign-in of {claims.identifier!r} not persisted")
 

@@ -14,9 +14,9 @@ from clickhouse_connect.driver.asyncclient import AsyncClient
 from clickhouse_connect.driver.exceptions import ClickHouseError as DriverError
 
 from boba.connections.clickhouse import ClickHouseConfig
-from boba.connections.kerberos import KerberosAuthBase
 from boba.db.clickhouse.errors import ClickHouseError
-from boba.krb import ClientCredentials, KerberosError, SpnegoNegotiate
+from boba.kerberos import KerberosAuthBase, KerberosError
+from boba.krb import ClientCredentials, SpnegoNegotiate
 
 __all__ = ["PayloadClickHouse", "SpnegoHeaders"]
 
