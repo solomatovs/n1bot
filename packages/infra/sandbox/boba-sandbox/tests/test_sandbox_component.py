@@ -11,8 +11,8 @@ import pytest
 from omegaconf import DictConfig, OmegaConf
 from omegaconf.errors import InterpolationKeyError
 
-from boba.sandbox import SandboxConfig, SandboxProfile, SandboxToolConfig
 from boba.config import bind
+from boba.sandbox import SandboxConfig, SandboxProfile, SandboxToolConfig
 from boba.stand.zygote import ROOTFS_IMAGE, ProfileFields
 
 

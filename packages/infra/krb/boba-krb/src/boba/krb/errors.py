@@ -1,10 +1,6 @@
-"""Ошибки kerberos-слоя.
+"""Перевод GSSError в ошибки kerberos-слоя (база и виды — boba.kerberos).
 
-Ошибки: KeytabError — keytab недоступен, повреждён или не содержит принципала;
-CredentialsExpiredError — тикет истёк и не продлевается;
-DelegationNotPermittedError — делегирование запрещено политикой AD;
-InvalidTokenError — клиент прислал непригодный SPNEGO-токен;
-KerberosError — прочие сбои GSSAPI/krb5 (база — boba.connections.kerberos).
+Ошибки: своих не выпускает; классифицирует чужие.
 """
 
 from __future__ import annotations
@@ -18,20 +14,18 @@ from gssapi.exceptions import (
 )
 from gssapi.raw.misc import GSSError
 
-from boba.connections.kerberos import KerberosError
+from boba.kerberos import (
+    CredentialsExpiredError,
+    DelegationNotPermittedError,
+    KerberosError,
+    KeytabError,
+)
 
-__all__ = [
-    "CredentialsExpiredError",
-    "DelegationNotPermittedError",
-    "GssErrors",
-    "InvalidTokenError",
-    "KerberosError",
-    "KeytabError",
-]
+__all__ = ["GssErrors"]
 
 
 class GssErrors:
-    """Перевод GSSError в ошибки слоя; база KerberosError живёт в boba.connections."""
+    """Перевод GSSError в ошибки слоя."""
 
     @staticmethod
     def of(exc: GSSError, context: str) -> KerberosError:
@@ -48,21 +42,3 @@ class GssErrors:
         return KerberosError(
             f"{context}: gss maj={exc.maj_code} min={exc.min_code}: {exc}"
         )
-
-
-class KeytabError(KerberosError):
-    """keytab недоступен, повреждён или не содержит нужного принципала."""
-
-
-class CredentialsExpiredError(KerberosError):
-    """Тикет истёк; требуется повторное получение из keytab или повторный логин."""
-
-
-class DelegationNotPermittedError(KerberosError):
-    """Делегирование запрещено политикой AD (msDS-AllowedToDelegateTo)."""
-
-
-class InvalidTokenError(KerberosError):
-    """Клиент прислал битый, просроченный или неполный SPNEGO-токен."""
-
-

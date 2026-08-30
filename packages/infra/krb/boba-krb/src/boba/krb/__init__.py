@@ -13,13 +13,6 @@ from boba.krb.credentials import (
     TicketCredentials,
 )
 from boba.krb.delegation import SpnegoAcceptor, SpnegoIdentity, TicketCapture
-from boba.krb.errors import (
-    CredentialsExpiredError,
-    DelegationNotPermittedError,
-    InvalidTokenError,
-    KerberosError,
-    KeytabError,
-)
 from boba.krb.pac import PacGroupSids
 from boba.krb.spnego import SpnegoNegotiate
 from boba.krb.tickets import ServiceTicketIssuer
@@ -27,18 +20,13 @@ from boba.krb.tickets import ServiceTicketIssuer
 __all__ = [
     "CcacheLifetime",
     "ClientCredentials",
-    "CredentialsExpiredError",
     "DelegatedCredentials",
-    "DelegationNotPermittedError",
-    "InvalidTokenError",
     "IssuedCredentials",
     "KerberosCredentials",
     "KerberosEnv",
-    "KerberosError",
     "KerberosWorkspace",
     "KerberosWorkspaceConfig",
     "KeytabCredentials",
-    "KeytabError",
     "PacGroupSids",
     "PasswordCredentials",
     "ServiceTicketIssuer",

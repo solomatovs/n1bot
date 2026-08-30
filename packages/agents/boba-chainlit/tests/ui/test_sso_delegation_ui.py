@@ -28,7 +28,7 @@ from chat_ui import BOOT_TIMEOUT_SEC
 from playwright.sync_api import Browser, BrowserContext, Page, Playwright, expect
 
 from boba.connections.http import HttpProfile, NegotiateAuth
-from boba.connections.kerberos import KerberosPasswordAuth
+from boba.kerberos import KerberosPasswordAuth
 from boba.stand.site import Stand
 from boba.stand.ui.database import run_blocking
 from boba.stand.ui.stand import (

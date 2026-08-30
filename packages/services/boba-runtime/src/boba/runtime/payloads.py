@@ -93,14 +93,19 @@ class PgPayloadStore(PayloadStore):
                 """
             ).format(
                 payloads=self._table(),
-                **{column.value: SqlNames.ident(column) for column in LivePayloadsColumn},
+                **{
+                    column.value: SqlNames.ident(column)
+                    for column in LivePayloadsColumn
+                },
             ),
             sql.SQL(
                 """
                 alter table {payloads}
                     alter column {body} type json using {body}::text::json
                 """
-            ).format(payloads=self._table(), body=SqlNames.ident(LivePayloadsColumn.BODY)),
+            ).format(
+                payloads=self._table(), body=SqlNames.ident(LivePayloadsColumn.BODY)
+            ),
             sql.SQL(
                 """
                 create index if not exists idx_live_payloads_scope
@@ -238,7 +243,9 @@ class PgPayloadStore(PayloadStore):
                         delete from {payloads}
                         where {at} + make_interval(secs => %(age)s) < now()
                         """
-                    ).format(payloads=self._table(), at=SqlNames.ident(LivePayloadsColumn.AT)),
+                    ).format(
+                        payloads=self._table(), at=SqlNames.ident(LivePayloadsColumn.AT)
+                    ),
                     {"age": max_age_sec},
                     prepare=False,
                 )

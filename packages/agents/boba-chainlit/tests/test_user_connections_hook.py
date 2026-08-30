@@ -30,12 +30,6 @@ from boba.chainlit.infra.kerberos_refresh import ChatRefreshSignal
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connection_broker.user_connections import UserConnections
-from boba.connections.kerberos import (
-    DelegatedAuth,
-    DelegationMode,
-    KeytabAuth,
-    TicketAuth,
-)
 from boba.connections.marks import ConnectionRefusal, UserConnectionsSpec
 from boba.connections.postgres import PostgresConfig, TrustAuth
 from boba.connections.profile import ConnectionKind, GrantTarget, StoredRole
@@ -43,11 +37,13 @@ from boba.connections.whitelist import ConnectionKeying
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.errors import RefusalError
 from boba.identity.session import UserMetadataField
-from boba.krb import (
-    KerberosEnv,
-    KeytabCredentials,
-    TicketCredentials,
+from boba.kerberos import (
+    DelegatedAuth,
+    DelegationMode,
+    KeytabAuth,
+    TicketAuth,
 )
+from boba.krb import KerberosEnv, KeytabCredentials, TicketCredentials
 from boba.krb.seal import SsoTickets
 from boba.messaging import MemoryMessageBus
 from boba.stand.site import Stand

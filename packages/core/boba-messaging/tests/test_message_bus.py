@@ -143,7 +143,9 @@ async def test_commands_reach_every_process_but_are_taken_once() -> None:
         seen.append(envelope)
 
     bus.subscribe_commands(take)
-    command_id = await bus.command(scope, StopRequested(by_user=UUID(int=7), by_instance="n"))
+    command_id = await bus.command(
+        scope, StopRequested(by_user=UUID(int=7), by_instance="n")
+    )
 
     assert [e.command_id for e in seen] == [command_id]
     assert seen[0].scope == scope

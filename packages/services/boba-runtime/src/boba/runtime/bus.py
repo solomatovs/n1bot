@@ -120,7 +120,9 @@ class ScopeKindCheck:
                 drop constraint if exists {constraint},
                 add constraint {constraint} check (scope_kind in ({kinds}))
             """
-        ).format(table=SqlNames.table(schema, table), constraint=constraint, kinds=kinds)
+        ).format(
+            table=SqlNames.table(schema, table), constraint=constraint, kinds=kinds
+        )
 
 
 class LiveListener(BusWatch):

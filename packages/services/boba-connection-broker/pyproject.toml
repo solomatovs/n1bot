@@ -11,6 +11,7 @@ dependencies = [
     "boba-toolkit==0.0.14.dev9",
     "boba-identity==0.0.14.dev9",
     "boba-connections==0.0.14.dev9",
+    "boba-kerberos==0.0.14.dev9",
     "boba-toolrun==0.0.14.dev9",
     "boba-db-postgres==0.0.14.dev9",
     "boba-transport-http==0.0.14.dev9",

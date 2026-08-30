@@ -27,9 +27,9 @@ import krb5
 from gssapi import Credentials, Name, NameType, SecurityContext
 from gssapi.raw.misc import GSSError
 
-from boba.connections.kerberos import TicketAuth
+from boba.kerberos import CredentialsExpiredError, KerberosError, TicketAuth
 from boba.krb.credentials import KerberosCredentials
-from boba.krb.errors import CredentialsExpiredError, GssErrors, KerberosError
+from boba.krb.errors import GssErrors
 from boba.toolkit.timing import Elapsed
 
 __all__ = ["ServiceTicketIssuer"]

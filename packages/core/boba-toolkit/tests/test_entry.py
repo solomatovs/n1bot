@@ -88,7 +88,9 @@ class TestAddress:
         if address.name != "fake_echo":
             raise AssertionError('address.name == "fake_echo"')
         if address.argv_head()[1:] != ["-m", "boba.stand.fake_toolmod", "fake_echo"]:
-            raise AssertionError('address.argv_head()[1:] == ["-m", "boba.stand.fake_toolmod", "…')
+            raise AssertionError(
+                'address.argv_head()[1:] == ["-m", "boba.stand.fake_toolmod", "…'
+            )
 
 
 class TestArgv:

@@ -122,9 +122,7 @@ class ToolCalling:
             ToolCallUrl.CALL.value, self.serve, methods=["POST"], tags=[self.TAG]
         )
 
-    async def catalog(
-        self, identity: CurrentSubject
-    ) -> Mapping[str, ToolFacts]:
+    async def catalog(self, identity: CurrentSubject) -> Mapping[str, ToolFacts]:
         registry = await self._registry()
 
         return CatalogBuilder.of(

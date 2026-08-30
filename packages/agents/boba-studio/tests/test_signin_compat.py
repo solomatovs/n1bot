@@ -49,7 +49,7 @@ def _service(secret: str) -> AuthService:
         cookie=CookieSpec(name="access_token", samesite="lax", ttl_sec=60),
         password=None,
         sso=None,
-        users=OneUser,
+        users=OneUser(),
     )
 
 
@@ -62,7 +62,9 @@ async def test_studio_accepts_a_peer_token(studio_config: StudioRuntimeConfig) -
     assert user.roles == frozenset({"ADM"})
 
 
-def test_issued_token_carries_the_peer_claims(studio_config: StudioRuntimeConfig) -> None:
+def test_issued_token_carries_the_peer_claims(
+    studio_config: StudioRuntimeConfig,
+) -> None:
     """Выпущенный studio токен читается теми же claims, что и токен чата."""
     secret = studio_config.session.auth_secret
     token = JwtTokens(secret, 60).issue(

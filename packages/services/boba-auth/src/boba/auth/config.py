@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
-from boba.connections.kerberos import AcceptConfig, Delegation
 from boba.identity.roles import LdapRolesConfig, RoleExcludeConfig, RoleMappingConfig
 from boba.identity.session import LoginTemplate
+from boba.kerberos import AcceptConfig, Delegation
 
 __all__ = [
     "AuthConfig",
@@ -30,7 +30,7 @@ class LocalAuthConfig(BaseModel):
 
     users: dict[str, str] = Field(
         default_factory=dict,
-        description="Таблица логин→пароль; совпадение выдаёт роль admin.",
+        description="Таблица логин→пароль; роли — из roles/roles_ex по логину.",
     )
 
     roles: RoleMappingConfig | None = Field(
@@ -100,7 +100,7 @@ class KerberosRolesInLdapConfig(BaseModel):
         description="База поиска пользователя, напр. DC=corp,DC=example,DC=com.",
     )
     bind_dn: str
-    bind_password: str
+    bind_password: SecretStr
     mapping: KerberosRolesInLdapMappingConfig = Field(
         default=KerberosRolesInLdapMappingConfig(),
     )

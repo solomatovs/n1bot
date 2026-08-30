@@ -61,6 +61,7 @@ from boba.runtime import providers as runtime
 from boba.runtime.bus import PgMessageBus
 from boba.runtime.di import Depends
 from boba.runtime.elements import ChatTables
+from boba.runtime.users import UsersTable
 from boba.toolrun.registry import ToolRegistry
 
 
@@ -261,6 +262,7 @@ async def chainlit_data_layer(
     storage: Annotated[StorageClient, Depends(storage_provider)],
     saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
     bus: Annotated[PgMessageBus, Depends(runtime.message_bus)],
+    users: Annotated[UsersTable, Depends(runtime.users_table)],
 ) -> AsyncIterator[PostgresDataLayer]:
     pool = AsyncPostgresPool(
         cfg.postgres,
@@ -268,7 +270,7 @@ async def chainlit_data_layer(
     )
     await pool.open()
     try:
-        tables = ChatTables.of(cfg.postgres, cfg.db_schema, pool)
+        tables = ChatTables.around(users, cfg.postgres, cfg.db_schema, pool)
         await tables.setup()
         layer = PostgresDataLayer(
             users=tables.users,

@@ -74,7 +74,9 @@ class StandDatabase:
         layer = bind(self._built, path=app.data_layer_section, model=DataLayerConfig)
         pool = layer.postgres.pool.model_copy(update=self.POOL_OVERRIDE)
         self._maintenance = layer.postgres.model_copy(update={"pool": pool})
-        self._postgres = layer.postgres.model_copy(update={"dbname": name, "pool": pool})
+        self._postgres = layer.postgres.model_copy(
+            update={"dbname": name, "pool": pool}
+        )
         self._schema = layer.db_schema
 
     @property
@@ -107,14 +109,18 @@ class StandDatabase:
 
     @staticmethod
     def _drop(schema: str, table: str) -> sql.Composed:
-        return sql.SQL("drop table if exists {} cascade").format(sql.Identifier(schema, table))
+        return sql.SQL("drop table if exists {} cascade").format(
+            sql.Identifier(schema, table)
+        )
 
     async def _ensure_database(self) -> None:
         maintenance = AsyncPostgresPool(self._maintenance)
         await maintenance.open()
         try:
             async with maintenance.cursor() as cur:
-                await cur.execute("select 1 from pg_database where datname = %s", (self._name,))
+                await cur.execute(
+                    "select 1 from pg_database where datname = %s", (self._name,)
+                )
                 exists = await cur.fetchone()
                 if not exists:
                     await cur.execute(
@@ -147,7 +153,10 @@ class StandDatabase:
             async with self._pool() as pool, pool.cursor() as cur:
                 await cur.execute(
                     query,
-                    (UserMetadataField.STUDIO_PROFILE, UserMetadataField.STUDIO_PROFILE),
+                    (
+                        UserMetadataField.STUDIO_PROFILE,
+                        UserMetadataField.STUDIO_PROFILE,
+                    ),
                 )
         except Exception as exc:
             # таблицы users ещё нет у чистой базы: приложение создаст её на старте
@@ -222,7 +231,9 @@ class StandDatabase:
                 for target in targets:
                     await store.grant(connection_id, target)
 
-    async def _execute(self, query: sql.Composed, params: tuple[Any, ...] | None) -> Any:
+    async def _execute(
+        self, query: sql.Composed, params: tuple[Any, ...] | None
+    ) -> Any:
         async with self._pool() as pool, pool.cursor() as cur:
             await cur.execute(query, params)
             if cur.description is None:

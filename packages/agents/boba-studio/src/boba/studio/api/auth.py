@@ -146,7 +146,6 @@ class ApiAuth:
         """Зависимость FastAPI: пользователь входа текущего запроса."""
         return await ApiAuth.of_app(request.app).user_of_request(request)
 
-
     @staticmethod
     async def subject(request: Request, profile: str | None = None) -> ApiSubject:
         """Зависимость FastAPI: субъект текущего запроса под профилем из ?profile=."""

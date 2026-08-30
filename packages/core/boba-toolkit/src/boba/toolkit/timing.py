@@ -15,4 +15,3 @@ class Elapsed:
 
     def ms(self) -> int:
         return int((time.monotonic() - self._started) * 1000)
-

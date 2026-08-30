@@ -16,7 +16,7 @@ import krb5
 import pytest
 from gssapi import Credentials, Name, NameType, RequirementFlag, SecurityContext
 
-from boba.connections.kerberos import (
+from boba.kerberos import (
     AcceptConfig,
     ConstrainedDelegation,
     DelegationMode,

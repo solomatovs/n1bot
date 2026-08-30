@@ -25,7 +25,7 @@ from boba.connections.http import (
     NegotiateAuth,
     NoneAuth,
 )
-from boba.connections.kerberos import KeytabAuth
+from boba.kerberos import KeytabAuth
 from boba.krb import KerberosWorkspace, KeytabCredentials, ServiceTicketIssuer
 from boba.stand.site import Stand
 from boba.transport.http import HttpRequest, HttpTransport

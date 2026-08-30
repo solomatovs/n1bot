@@ -1,6 +1,6 @@
 """Рабочий каталог kerberos приложения: krb5.conf и кэши билетов.
 
-Модели способов аутентификации живут в boba.connections.kerberos; здесь —
+Модели способов аутентификации живут в boba.kerberos; здесь —
 где лежат их кэши, чтобы две строки не поделили один ccache.
 
 Ошибки:
@@ -17,7 +17,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.connections.kerberos import (
+from boba.kerberos import (
     CcacheKind,
     KerberosError,
     KerberosPasswordAuth,

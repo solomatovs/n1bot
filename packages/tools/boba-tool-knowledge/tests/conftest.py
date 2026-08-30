@@ -22,5 +22,3 @@ def raw_config():
     from boba.config import build_app_config
 
     return build_app_config(config_path=Path(config_path))
-
-

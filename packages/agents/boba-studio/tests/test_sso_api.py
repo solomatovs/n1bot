@@ -13,7 +13,6 @@ from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from studio_stand import NoUsers, StubAuthenticator, StubRefs
 
 from boba.auth import AuthService, JwtTokens
 from boba.auth.config import KerberosAuthConfig
@@ -27,7 +26,9 @@ from boba.identity.sso import OwnRequest
 from boba.identity.token import CookieSpec
 from boba.krb import KerberosEnv
 from boba.runtime.config import StudioRuntimeConfig
+from boba.stand.auth import NoUsers, StubAuthenticator
 from boba.stand.kerberos import SsoBrowser
+from boba.stand.refs import StandRefs
 from boba.stand.site import Stand as Site
 from boba.studio.api.app import ApiAccess, ApiApp
 from boba.studio.api.signin import PageUrls, SignInWiring
@@ -93,7 +94,7 @@ class Stand:
             cookie=CookieSpec(name=COOKIE, samesite="lax", ttl_sec=3600),
             password=None,
             sso=SpnegoGate(self.sign_in),
-            users=lambda: self.users,
+            users=self.users,
         )
         wiring = SignInWiring(
             auth=self.auth,
@@ -102,7 +103,7 @@ class Stand:
         )
         access = ApiAccess(StubAuthenticator(None), COOKIE, NoUsers.source)
         self.app = ApiApp.build(
-            StubRefs.of(_no_store, lambda: None),
+            StandRefs.of(_no_store, lambda: None),
             access,
             ChatProfiles(studio_config.profiles),
             wiring,
@@ -189,7 +190,8 @@ async def test_refresh_issues_a_fresh_ticket_for_the_session(
     client: AsyncClient, stand: Stand, tmp_path: Path, krb5_env: None
 ) -> None:
     signed_in = await client.get(
-        f"{ApiVersion.V1}{SignInUrl.SSO}", headers=_negotiate(SsoBrowser.token(SITE, tmp_path))
+        f"{ApiVersion.V1}{SignInUrl.SSO}",
+        headers=_negotiate(SsoBrowser.token(SITE, tmp_path)),
     )
     token = _token_of(signed_in)
     before = stand.auth.ticket_of_token(token)

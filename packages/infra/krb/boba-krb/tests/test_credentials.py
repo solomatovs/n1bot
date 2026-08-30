@@ -14,12 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from boba.connections.kerberos import KeytabAuth
-from boba.krb import (
-    KerberosEnv,
-    KerberosWorkspace,
-    KeytabCredentials,
-)
+from boba.kerberos import KeytabAuth
+from boba.krb import KerberosEnv, KerberosWorkspace, KeytabCredentials
 from boba.stand.site import Stand
 
 STAND = Stand.required()

@@ -1,7 +1,7 @@
 """Вход через API: пользователь входа, субъект под профилем, порт аутентификации.
 
 Ошибки:
-AuthenticationError — у входа нет строки users или её id не число.
+AuthenticationError — у входа нет строки users или её id не uuid.
 """
 
 from __future__ import annotations
@@ -36,8 +36,8 @@ __all__ = [
     "StoredUser",
     "StudioProfiles",
     "UserRows",
-    "UsersColumn",
     "UserSettingsStore",
+    "UsersColumn",
     "UsersUpsert",
 ]
 

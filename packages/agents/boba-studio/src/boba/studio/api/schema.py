@@ -10,13 +10,12 @@ import json
 import sys
 from typing import Any, ClassVar
 
-from boba.auth import AuthService, JwtTokens
+from boba.auth import AuthService, AuthUsers, JwtTokens
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.identity.api import (
     AuthenticatedUser,
     Authenticator,
-    UsersUpsert,
 )
 from boba.identity.locks import MemoryLiveLocks
 from boba.identity.signin import SignedIn
@@ -40,8 +39,12 @@ class NoOne(Authenticator):
         return None
 
 
-class NoUsers(UsersUpsert):
-    """Строки users для схемы: никого не пишет."""
+class NoUsers(AuthUsers):
+    """Строки users для схемы: никого не читает и не пишет."""
+
+    async def get_user(self, identifier: str) -> AuthenticatedUser | None:
+        msg = "users table is not part of the schema stand"
+        raise RuntimeError(msg)
 
     async def ensure_user(self, signed: SignedIn) -> AuthenticatedUser:
         msg = "users table is not part of the schema stand"
@@ -79,7 +82,7 @@ class OpenApiDocument:
             cookie=CookieSpec(name=cls.COOKIE, samesite="lax", ttl_sec=1),
             password=None,
             sso=None,
-            users=cls._no_users,
+            users=NoUsers(),
         )
 
         return SignInWiring(

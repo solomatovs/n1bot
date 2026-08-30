@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import base64
 import html
 from abc import abstractmethod
 from collections.abc import Sequence
@@ -18,7 +17,6 @@ from boba.identity.context import DelegatedTicket
 from boba.identity.signin import SignedIn
 
 __all__ = [
-    "NegotiateToken",
     "OwnRequest",
     "RefreshSignal",
     "RequestHeader",
@@ -83,30 +81,6 @@ class SsoRequest(BaseModel):
     authorization: str = ""
     own_request: bool = False
     client: str = UNKNOWN_CLIENT
-
-
-class NegotiateToken:
-    """Токен Negotiate из заголовка Authorization."""
-
-    SCHEME: ClassVar[str] = "negotiate"
-
-    @classmethod
-    def of(cls, authorization: str) -> bytes | str:
-        """Токен либо причина, почему его нет."""
-        if not authorization:
-            return "no Authorization header"
-
-        scheme, _, value = authorization.partition(" ")
-        if scheme.lower() != cls.SCHEME:
-            return f"unexpected auth scheme {scheme!r}"
-
-        if not value:
-            return f"unexpected auth scheme {scheme!r}"
-
-        try:
-            return base64.b64decode(value)
-        except ValueError as e:
-            return f"invalid base64 token: {e}"
 
 
 class SsoChallenge(BaseModel):

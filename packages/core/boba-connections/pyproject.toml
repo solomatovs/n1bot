@@ -10,6 +10,7 @@ requires-python = ">=3.11,<4"
 dependencies = [
     "boba-toolkit==0.0.14.dev9",
     "boba-identity==0.0.14.dev9",
+    "boba-kerberos==0.0.14.dev9",
     "cryptography>=42",
     "pydantic>=2.10,<3",
 ]

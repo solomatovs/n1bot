@@ -23,17 +23,19 @@ from typing import ClassVar
 
 import krb5
 
-from boba.connections.kerberos import (
+from boba.kerberos import (
+    CredentialsExpiredError,
     DelegatedAuth,
     DelegationMode,
     KerberosAuth,
+    KerberosError,
     KerberosPasswordAuth,
     KeytabAuth,
+    KeytabError,
     SignInTicket,
     TicketAuth,
 )
 from boba.krb.auth import KerberosWorkspace
-from boba.krb.errors import CredentialsExpiredError, KerberosError, KeytabError
 from boba.toolkit.timing import Elapsed
 
 __all__ = [

@@ -21,9 +21,9 @@ from urllib.parse import urlsplit
 import pytest
 from omegaconf import DictConfig, OmegaConf
 
+from boba.config import bind, build_app_config
 from boba.sandbox.profile import SandboxProfile, SandboxToolConfig
 from boba.sandbox.runner import has_bwrap
-from boba.config import bind, build_app_config
 from boba.stand.zygote import ZygoteStand
 
 

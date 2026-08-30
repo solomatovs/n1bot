@@ -30,7 +30,6 @@ from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connection_broker.user_connections import UserConnections
 from boba.connections.http import HttpProfile, NegotiateAuth
-from boba.connections.kerberos import DelegatedAuth, DelegationMode, KeytabAuth
 from boba.connections.marks import ConnectionRefusal, UserConnectionsSpec
 from boba.connections.postgres import PasswordAuth, PostgresConfig
 from boba.connections.profile import ConnectionKind, GrantTarget, StoredRole
@@ -39,6 +38,7 @@ from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import CallContext, ContextKind
 from boba.identity.errors import RefusalError
 from boba.identity.session import UserMetadataField
+from boba.kerberos import DelegatedAuth, DelegationMode, KeytabAuth
 from boba.krb import KeytabCredentials
 from boba.krb.seal import SsoTickets
 from boba.messaging import MemoryMessageBus

@@ -113,9 +113,7 @@ class TestEntryPointsFreeOfChainlit:
             check=True,
         )
 
-    @pytest.mark.parametrize(
-        "module", ["boba.chainlit.infra.entry"]
-    )
+    @pytest.mark.parametrize("module", ["boba.chainlit.infra.entry"])
     def test_module_import_leaves_cwd_clean(self, module: str, tmp_path: Path) -> None:
         result = self._probe(module, tmp_path)
 

@@ -7,12 +7,13 @@ from uuid import UUID
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from studio_stand import MemoryUsers, NoRefs, StubAuthenticator
 
 from boba.chat.openai import OpenAiConfig
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.chat.provider import OpenAiChatConfig
 from boba.identity.api import AuthenticatedUser
+from boba.stand.auth import MemoryUsers, StubAuthenticator
+from boba.stand.refs import StandRefs
 from boba.studio.api.app import ApiAccess, ApiApp
 from boba.studio.api.urls import AccountUrl, ApiVersion, ConnectionUrl
 
@@ -65,7 +66,7 @@ async def _client(user: AuthenticatedUser | None) -> AsyncClient:
         StubAuthenticator.COOKIE,
         MemoryUsers(user).source,
     )
-    app = ApiApp.build(NoRefs.refs(), access, _profiles(), None)
+    app = ApiApp.build(StandRefs.none(), access, _profiles(), None)
 
     return AsyncClient(
         transport=ASGITransport(app=app),

@@ -16,7 +16,7 @@ from typing import Any
 
 import chainlit as cl
 import pytest
-from chainlit_stand import StubRefs, use_context
+from chainlit_stand import use_context
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -31,6 +31,7 @@ from boba.chainlit.infra.plugins import ChatPlugins
 from boba.chainlit.infra.providers import build_history_view
 from boba.connection_broker.store import ConnectionStore
 from boba.sandbox import ZygoteRegistry
+from boba.stand.refs import StandRefs
 from boba.toolkit.result import ErrorResult, ToolArtifact
 
 _REPO = Path(__file__).resolve().parents[4]
@@ -129,7 +130,7 @@ def session_tools(
     raw_config: DictConfig, app_config: AppConfig, app_sandbox: None
 ) -> list[BaseTool]:
     """Инструменты профиля, собранные боевым загрузчиком."""
-    registry = ChatPlugins.load(raw_config, StubRefs.of(_no_store, _no_registry))
+    registry = ChatPlugins.load(raw_config, StandRefs.of(_no_store, _no_registry))
     roles = frozenset(app_config.roles)
     return registry.for_session(roles, PROFILE)
 

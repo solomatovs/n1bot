@@ -17,7 +17,7 @@ import krb5
 import pytest
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
-from chainlit_stand import SsoStand, StubRefs, enter_context
+from chainlit_stand import SsoStand, enter_context
 from langchain_core.tools import StructuredTool
 from omegaconf import DictConfig, OmegaConf
 from psycopg import sql
@@ -33,17 +33,18 @@ from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connection_broker.user_connections import UserConnections
 from boba.connections.http import HttpProfile
-from boba.connections.kerberos import DelegatedAuth, DelegationMode, KeytabAuth
 from boba.connections.marks import ConnectionRefusal, UserConnectionsSpec
 from boba.connections.postgres import PasswordAuth, PostgresConfig
 from boba.connections.profile import ConnectionKind, GrantTarget
 from boba.connections.whitelist import ConnectionKeying
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.session import UserMetadataField
+from boba.kerberos import DelegatedAuth, DelegationMode, KeytabAuth
 from boba.krb import KeytabCredentials
 from boba.krb.seal import SsoTickets, TicketSealer
 from boba.messaging import MemoryMessageBus
 from boba.sandbox.zygote import ZygoteRegistry
+from boba.stand.refs import StandRefs
 from boba.stand.site import Stand
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebGrepConfig
@@ -552,7 +553,11 @@ class TestRefusalText:
             connection_name="main",
         )
 
-        expected = ("LocalAuth", "Kerberos SSO button", KerberosCredentialSource.RETRY_HINT)
+        expected = (
+            "LocalAuth",
+            "Kerberos SSO button",
+            KerberosCredentialSource.RETRY_HINT,
+        )
         for phrase in expected:
             if phrase not in result.message:
                 raise AssertionError(f"{phrase!r} not in {result.message!r}")
@@ -709,7 +714,9 @@ class TestNoConnections:
     ) -> None:
         user = await Session.user(layer, "f-web", Session.local())
         row = HttpProfile(ssl_verify=False)
-        await store.grant(await store.add("blank", row), GrantTarget.user(UUID(user.id)))
+        await store.grant(
+            await store.add("blank", row), GrantTarget.user(UUID(user.id))
+        )
         Session.enter(user, Session.local())
 
         result = await Guarded.failure(
@@ -761,6 +768,6 @@ class TestStartup:
 
         try:
             with pytest.raises(RuntimeError, match=r"\[connections\] enable = true"):
-                ChatPlugins.load(disabled, StubRefs.of(lambda: None, lambda: None))  # type: ignore[arg-type]
+                ChatPlugins.load(disabled, StandRefs.of(lambda: None, lambda: None))  # type: ignore[arg-type]
         finally:
             ZygoteRegistry.stop_all()

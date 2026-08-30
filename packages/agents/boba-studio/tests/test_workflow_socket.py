@@ -123,7 +123,9 @@ def namespace(
 
         return None
 
-    built = WorkflowNamespace(source, StandProfiles.profiles(studio_config), authenticate, _bus_watch)
+    built = WorkflowNamespace(
+        source, StandProfiles.profiles(studio_config), authenticate, _bus_watch
+    )
     socketio.AsyncServer(async_mode="asgi").register_namespace(built)
 
     # живого сокета нет: комнаты — забота socket.io, здесь их не проверяем
@@ -139,7 +141,9 @@ def namespace(
 
 @pytest.fixture
 def context(
-    monkeypatch: pytest.MonkeyPatch, user: AuthenticatedUser, studio_config: StudioRuntimeConfig
+    monkeypatch: pytest.MonkeyPatch,
+    user: AuthenticatedUser,
+    studio_config: StudioRuntimeConfig,
 ) -> CallContext:
     return use_context(
         monkeypatch,
@@ -224,7 +228,9 @@ async def test_disconnect_drops_listeners(
 
 
 async def test_websocket_handshake_accepts_the_browser_origin_behind_a_proxy(
-    service: WorkflowService, studio_config: StudioRuntimeConfig, user: AuthenticatedUser
+    service: WorkflowService,
+    studio_config: StudioRuntimeConfig,
+    user: AuthenticatedUser,
 ) -> None:
     """Браузер шлёт Origin своего хоста; за прокси хост приходит в X-Forwarded-*."""
     import socket
@@ -492,7 +498,9 @@ async def test_stream_events_reach_the_run_room(
 
     # запуск отпустил область: публикуем от имени нового держателя
     scope = Scope.workflow(run_id)
-    lock = await service.locks.acquire(scope, LockMode.EXCLUSIVE, LockPurpose.RUN, UUID(int=1))
+    lock = await service.locks.acquire(
+        scope, LockMode.EXCLUSIVE, LockPurpose.RUN, UUID(int=1)
+    )
     try:
         message = StreamAppended(
             call_id="call-1", channel="tool_stdout", size=12, closed=False, note=""

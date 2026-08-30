@@ -13,19 +13,19 @@ import krb5
 import pytest
 from pydantic import SecretStr
 
-from boba.connections.kerberos import (
+from boba.kerberos import (
+    CredentialsExpiredError,
     DelegatedAuth,
     DelegationMode,
+    KerberosError,
     KeytabAuth,
     SignInTicket,
     TicketAuth,
 )
 from boba.krb import (
     ClientCredentials,
-    CredentialsExpiredError,
     DelegatedCredentials,
     KerberosEnv,
-    KerberosError,
     KerberosWorkspace,
     KeytabCredentials,
     ServiceTicketIssuer,

@@ -160,24 +160,18 @@ class WorkflowApi:
             service.save(identity.subject, body.spec, body.layout)
         )
 
-    async def get(
-        self, workflow_id: UUID, identity: CurrentSubject
-    ) -> StoredWorkflow:
+    async def get(self, workflow_id: UUID, identity: CurrentSubject) -> StoredWorkflow:
         service = await self._resolved()
 
         return await self._guarded(service.get(identity.subject, workflow_id))
 
-    async def delete(
-        self, workflow_id: UUID, identity: CurrentSubject
-    ) -> Deleted:
+    async def delete(self, workflow_id: UUID, identity: CurrentSubject) -> Deleted:
         service = await self._resolved()
 
         deleted = await self._guarded(service.delete(identity.subject, workflow_id))
         return Deleted(deleted=deleted)
 
-    async def get_draft(
-        self, key: str, identity: CurrentSubject
-    ) -> WorkflowDraft:
+    async def get_draft(self, key: str, identity: CurrentSubject) -> WorkflowDraft:
         service = await self._resolved()
 
         return await self._guarded(service.get_draft(identity.subject, self._key(key)))
@@ -246,9 +240,7 @@ class WorkflowApi:
 
         return await self._guarded(service.list_runs(identity.subject, limit))
 
-    async def get_run(
-        self, run_id: UUID, identity: CurrentSubject
-    ) -> StoredRun:
+    async def get_run(self, run_id: UUID, identity: CurrentSubject) -> StoredRun:
         service = await self._resolved()
 
         return await self._guarded(service.get_run(identity.subject, run_id))

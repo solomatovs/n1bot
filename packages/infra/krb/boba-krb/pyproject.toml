@@ -8,7 +8,7 @@ version = "0.0.14.dev9"
 description = "Boba Kerberos: KeytabCredentials (TGT из keytab в свой ccache), SPNEGO-accept, S4U-делегирование, PAC group SIDs."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-connections==0.0.14.dev9",
+    "boba-kerberos==0.0.14.dev9",
     "boba-toolkit==0.0.14.dev9",
     "gssapi",
     "krb5",
@@ -18,6 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 seal = ["cryptography>=42"]
 dev = [
+    "boba-connections==0.0.14.dev9",
     "boba-stand==0.0.14.dev9",
     "ldap3",
     "pytest>=8",

@@ -20,6 +20,7 @@ from uuid import uuid4
 import pytest
 from omegaconf import DictConfig, OmegaConf
 
+from boba.config import bind
 from boba.sandbox import SandboxProfile, SandboxToolConfig
 from boba.sandbox.zygote import (
     ZygoteCallError,
@@ -27,7 +28,6 @@ from boba.sandbox.zygote import (
     ZygoteState,
     ZygoteToolCaller,
 )
-from boba.config import bind
 from boba.stand.zygote import ZygoteStand
 
 needs_bwrap = pytest.mark.skipif(shutil.which("bwrap") is None, reason="нет bubblewrap")
