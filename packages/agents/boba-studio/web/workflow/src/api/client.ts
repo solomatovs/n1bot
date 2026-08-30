@@ -74,6 +74,13 @@ export class ApiError extends Error {
 
 type Method = "get" | "post" | "put" | "delete";
 
+/** Метка своего запроса — как OwnRequest на сервере: без неё вход, выход и повторный
+ * обмен отвергаются, кросс-сайтовая форма её поставить не может. */
+export const OWN_REQUEST = { header: "x-boba-request", value: "1" } as const;
+
+/** Путь повторного SPNEGO-обмена: роут вне схемы, поэтому не в типах paths. */
+const SSO_REFRESH_PATH = "/v1/auth/sso/refresh";
+
 /** Пути схемы, у которых есть операция метода M. */
 type PathWith<M extends Method> = {
   [P in keyof paths]: paths[P] extends Record<M, unknown> ? P : never;
@@ -128,6 +135,18 @@ export class WorkflowApi {
 
   async logout(): Promise<void> {
     await this.raw("post", "/v1/auth/logout", {}, undefined, {});
+  }
+
+  /** Повторный SPNEGO-обмен живой сессии по сигналу сервера; true — cookie обновлена.
+   * Браузер сам отвечает на 401 Negotiate своим тикетом, странице делать нечего. */
+  async ssoRefresh(): Promise<boolean> {
+    const response = await fetch(this.urls.api(SSO_REFRESH_PATH), {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { [OWN_REQUEST.header]: OWN_REQUEST.value },
+    });
+
+    return response.status === 204;
   }
 
   me(): Promise<Me> {
@@ -299,9 +318,10 @@ export class WorkflowApi {
     query: Query | undefined,
     body: unknown,
   ): Promise<unknown> {
-    const init: RequestInit = { method: method.toUpperCase(), credentials: "same-origin" };
+    const headers: Record<string, string> = { [OWN_REQUEST.header]: OWN_REQUEST.value };
+    const init: RequestInit = { method: method.toUpperCase(), credentials: "same-origin", headers };
     if (body !== undefined) {
-      init.headers = { "content-type": "application/json" };
+      headers["content-type"] = "application/json";
       init.body = JSON.stringify(body);
     }
 

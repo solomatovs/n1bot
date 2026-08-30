@@ -102,6 +102,26 @@ export function App(): ReactElement {
       }),
     [liveSocket, adopt],
   );
+
+  // билет входа на исходе: сервер просит молча пройти SPNEGO ещё раз, один обмен за раз
+  const refreshing = useRef(false);
+  useEffect(
+    () =>
+      liveSocket.onUser((event) => {
+        if (event.kind !== "signin_refresh_requested" || refreshing.current) {
+          return;
+        }
+
+        refreshing.current = true;
+        void new WorkflowApi(urls)
+          .ssoRefresh()
+          .catch(() => false)
+          .then(() => {
+            refreshing.current = false;
+          });
+      }),
+    [liveSocket, urls],
+  );
   const services = useMemo<Services>(
     () => ({ urls, api: new WorkflowApi(urls, profile), socket: liveSocket, chooseProfile }),
     [urls, profile, liveSocket, chooseProfile],

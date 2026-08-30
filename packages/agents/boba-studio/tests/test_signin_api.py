@@ -24,6 +24,7 @@ from boba.identity.api import (
 )
 from boba.identity.roles import RoleExcludeConfig, RoleMappingConfig
 from boba.identity.signin import SignedIn
+from boba.identity.sso import OwnRequest
 from boba.identity.token import CookieSpec
 from boba.studio.api.app import ApiAccess, ApiApp
 from boba.studio.api.signin import PageUrls, SignInWiring
@@ -110,7 +111,9 @@ async def client() -> AsyncIterator[AsyncClient]:
     access = ApiAccess(auth, COOKIE, lambda: users)
     app = ApiApp.build(NoRefs.refs(), access, _profiles(), wiring)
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://api"
+        transport=ASGITransport(app=app),
+        base_url="http://api",
+        headers={OwnRequest.HEADER.value: OwnRequest.VALUE.value},
     ) as c:
         yield c
 
@@ -184,3 +187,20 @@ async def test_logout_clears_the_cookie(client: AsyncClient) -> None:
 
     me = await client.get(f"{ApiVersion.V1}{AccountUrl.ME}")
     assert me.status_code == 401
+
+
+async def test_login_without_own_mark_is_refused(client: AsyncClient) -> None:
+    """Чужая форма не ставит метку своего запроса: вход и выход ей закрыты."""
+    reply = await client.post(
+        f"{ApiVersion.V1}{SignInUrl.LOGIN}",
+        json={"username": "Alice", "password": "pw"},
+        headers={OwnRequest.HEADER.value: ""},
+    )
+
+    assert reply.status_code == 403, reply.text
+
+    reply = await client.post(
+        f"{ApiVersion.V1}{SignInUrl.LOGOUT}", headers={OwnRequest.HEADER.value: ""}
+    )
+
+    assert reply.status_code == 403, reply.text

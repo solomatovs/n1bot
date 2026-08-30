@@ -68,4 +68,15 @@ describe("UserEventSchema", () => {
       expect(parsed.revision).toBe(3);
     }
   });
+
+  it("accepts the sign-in refresh request with its principal", () => {
+    const parsed = UserEventSchema.parse({
+      kind: "signin_refresh_requested",
+      principal: "reader@EXAMPLE.COM",
+    });
+    expect(parsed.kind).toBe("signin_refresh_requested");
+    if (parsed.kind === "signin_refresh_requested") {
+      expect(parsed.principal).toBe("reader@EXAMPLE.COM");
+    }
+  });
 });

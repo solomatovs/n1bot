@@ -28,7 +28,7 @@ from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.roles import RoleExcludeConfig
 from boba.identity.session import SignInProvider, UserMetadataField
-from boba.identity.sso import SsoChallenge, SsoRefresh
+from boba.identity.sso import OwnRequest, SsoChallenge
 from boba.identity.token import CookieSpec
 from boba.krb import KerberosEnv, ServiceTicketIssuer
 from boba.runtime.config import RuntimeConfig
@@ -187,7 +187,7 @@ class Refresh:
 
         headers = [(b"authorization", b"Negotiate " + base64.b64encode(token))]
         if own_header:
-            headers.append((SsoRefresh.HEADER.encode(), SsoRefresh.VALUE.encode()))
+            headers.append((OwnRequest.HEADER.encode(), OwnRequest.VALUE.encode()))
         if jwt_cookie is not None:
             cookie = f"{_auth_cookie_name}={jwt_cookie}".encode()
             headers.append((b"cookie", cookie))
@@ -386,7 +386,7 @@ async def test_page_script_knows_where_to_refresh(kerberos_auth: KerberosAuth) -
     script = kerberos_auth._get_static_button()
     if kerberos_auth._urls.refresh not in script:
         raise AssertionError("sso.js must carry the refresh url")
-    if SsoRefresh.HEADER not in script:
+    if OwnRequest.HEADER not in script:
         raise AssertionError("sso.js must mark its own request with the header")
     if "__REFRESH" in script:
         raise AssertionError("the placeholders must be replaced")

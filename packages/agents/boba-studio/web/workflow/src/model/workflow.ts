@@ -389,5 +389,9 @@ export const UserEventSchema = z.discriminatedUnion("kind", [
     name: z.string(),
     action: z.enum(["created", "updated", "deleted"]),
   }),
+  z.object({
+    kind: z.literal("signin_refresh_requested"),
+    principal: z.string(),
+  }),
 ]);
 export type UserEvent = z.infer<typeof UserEventSchema>;

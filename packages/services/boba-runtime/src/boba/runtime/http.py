@@ -8,7 +8,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from boba.identity.errors import BaseError, FailureReport, to_domain
 from boba.identity.session import LogLine
-from boba.identity.sso import RequestHeader, SsoRefresh, SsoRequest
+from boba.identity.sso import OwnRequest, RequestHeader, SsoRequest
 
 __all__ = ["DomainErrorMiddleware", "SsoRequests"]
 
@@ -63,11 +63,11 @@ class SsoRequests:
 
     @classmethod
     def of(cls, request: Request) -> SsoRequest:
-        refresh = request.headers.get(SsoRefresh.HEADER, "")
+        mark = request.headers.get(OwnRequest.HEADER, "")
 
         return SsoRequest(
             authorization=request.headers.get(RequestHeader.AUTHORIZATION, ""),
-            refresh_asked=SsoRefresh.asked(refresh),
+            own_request=OwnRequest.asked(mark),
             client=cls._client_of(request),
         )
 

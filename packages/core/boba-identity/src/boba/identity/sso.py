@@ -19,13 +19,13 @@ from boba.identity.signin import SignedIn
 
 __all__ = [
     "NegotiateToken",
+    "OwnRequest",
     "RefreshSignal",
     "RequestHeader",
     "SpnegoExchange",
     "SsoAdmission",
     "SsoChallenge",
     "SsoErrorCode",
-    "SsoRefresh",
     "SsoRefused",
     "SsoRequest",
     "SsoSigned",
@@ -41,15 +41,16 @@ class RequestHeader(StrEnum):
     WWW_AUTHENTICATE = "WWW-Authenticate"
 
 
-class SsoRefresh(StrEnum):
-    """Признак того, что обмен запросила своя страница, а не чужой сайт."""
+class OwnRequest(StrEnum):
+    """Метка запроса своей страницы: заголовок ставит только свой fetch, кросс-сайтовая
+    форма или навигация его не несут — им закрыты вход, выход и повторный обмен.
+    """
 
-    HEADER = "x-boba-sso-refresh"
+    HEADER = "x-boba-request"
     VALUE = "1"
 
     @classmethod
     def asked(cls, value: str) -> bool:
-        """Заголовок ставит только свой fetch: кросс-сайтовый запрос его не несёт."""
         return value == cls.VALUE
 
 
@@ -71,8 +72,8 @@ class SsoErrorCode(StrEnum):
 
 
 class SsoRequest(BaseModel):
-    """Запрос SPNEGO-обмена глазами сервиса: заголовок Authorization, признак своего
-    fetch и адрес клиента для журнала. Собирается адаптером транспорта.
+    """Запрос входа глазами сервиса: заголовок Authorization, метка своего fetch и
+    адрес клиента для журнала. Собирается адаптером транспорта.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -80,7 +81,7 @@ class SsoRequest(BaseModel):
     UNKNOWN_CLIENT: ClassVar[str] = "unknown"
 
     authorization: str = ""
-    refresh_asked: bool = False
+    own_request: bool = False
     client: str = UNKNOWN_CLIENT
 
 
