@@ -1,13 +1,10 @@
-"""Вход через api: пароль и SPNEGO провайдерами services, строка users, JWT и cookie.
+"""Вход через api: пароль и SPNEGO сервисом входа, JWT и cookie.
 
-SSO: GET /auth/sso?next= — обмен на своём URL (общий SpnegoGate), после входа 303 на
-страницу; POST /auth/sso/refresh — свежий билет для живой сессии.
+SSO: GET /auth/sso?next= — обмен на своём URL, после входа 303 на страницу;
+POST /auth/sso/refresh — свежий билет для живой сессии.
 
-Ошибки (HTTP):
-401 — логин не зарегистрирован или пароль неверен.
-403 — вход запрещён провайдером (исключение, нет ролей).
-503 — каталог входа недоступен или вход по паролю не настроен.
-500 — ошибка конфига каталога.
+Ошибки: свои не выпускает — ошибки сервиса входа (BaseError) переводит в HTTP
+DomainErrorMiddleware; HTTPException 404 — SSO не настроен.
 """
 
 from __future__ import annotations
@@ -19,19 +16,16 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.auth.sso import SpnegoGate
-from boba.identity.api import UsersUpsert
+from boba.auth import AuthService, IssuedSession
 from boba.identity.errors import (
     AuthenticationError,
     AuthorizationError,
     ExternalServiceError,
     InternalServiceError,
 )
-from boba.identity.signin import PasswordSignIn, SignedIn
 from boba.identity.sso import SsoChallenge, SsoErrorCode, SsoRefused
-from boba.identity.token import TokenIssuer
 from boba.runtime.http import SsoRequests
-from boba.studio.api.jwt_auth import JwtAuthenticator, SessionCookie
+from boba.studio.api.auth import SessionCookie
 from boba.studio.api.urls import SignInUrl
 
 __all__ = [
@@ -54,20 +48,15 @@ class PageUrls:
 
 @dataclass(frozen=True)
 class SignInWiring:
-    """Что нужно входу: пароли (None — нет), SSO (None — нет kerberos), токены."""
+    """Что нужно входу: сервис входа, адрес SSO и адреса страницы."""
 
-    password: PasswordSignIn | None
-    sso: SpnegoGate | None
+    auth: AuthService
     sso_url: str
     page: PageUrls
-    issuer: TokenIssuer
-    authenticator: JwtAuthenticator
-    cookie: SessionCookie
-    users: UsersUpsert
 
 
 class SignInProviders(BaseModel):
-    """Что доступно форме: пароль и/или адрес SSO chainlit (пусто — нет)."""
+    """Что доступно форме: пароль и/или адрес SSO (пусто — нет)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -89,6 +78,8 @@ class SignInApi:
 
     def __init__(self, wiring: SignInWiring) -> None:
         self._wiring = wiring
+        self._auth = wiring.auth
+        self._cookie = SessionCookie(wiring.auth.cookie())
 
     def mount(self, router: APIRouter) -> None:
         router.add_api_route(
@@ -108,7 +99,7 @@ class SignInApi:
             tags=[self.TAG],
             status_code=204,
         )
-        if self._wiring.sso is None:
+        if not self._auth.providers().sso:
             return
 
         router.add_api_route(
@@ -127,55 +118,31 @@ class SignInApi:
         )
 
     async def providers(self) -> SignInProviders:
+        available = self._auth.providers()
+
         sso_url = ""
-        if self._wiring.sso is not None:
+        if available.sso:
             sso_url = self._wiring.sso_url
 
-        return SignInProviders(
-            password=self._wiring.password is not None, sso_url=sso_url
-        )
+        return SignInProviders(password=available.password, sso_url=sso_url)
 
     async def login(self, body: Credentials, request: Request) -> Response:
-        provider = self._wiring.password
-        if provider is None:
-            raise HTTPException(
-                status_code=503, detail="password sign-in is not configured"
-            )
-
-        try:
-            signed = await provider.sign_in(body.username, body.password)
-        except AuthenticationError as exc:
-            raise HTTPException(status_code=401, detail=str(exc)) from exc
-        except AuthorizationError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
-        except ExternalServiceError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-        except InternalServiceError as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-        if signed is None:
-            raise HTTPException(status_code=401, detail="Invalid username or password")
-
-        await self._wiring.users.ensure_user(signed)
-        token = self._wiring.issuer.issue(signed)
+        session = await self._auth.by_password(body.username, body.password)
 
         response = Response(status_code=204)
-        self._wiring.cookie.put(response, request.cookies, token)
+        self._cookie.put(response, request.cookies, session.token)
 
         return response
 
     async def logout(self, request: Request) -> Response:
         response = Response(status_code=204)
-        self._wiring.cookie.clear(response, request.cookies)
+        self._cookie.clear(response, request.cookies)
 
         return response
 
-    def _gate(self) -> SpnegoGate:
-        gate = self._wiring.sso
-        if gate is None:
+    def _require_sso(self) -> None:
+        if not self._auth.providers().sso:
             raise HTTPException(status_code=404, detail="sso is not configured")
-
-        return gate
 
     def _next_of(self, raw: str | None) -> str:
         """Куда вернуть после входа: только внутрь страницы, иначе её начало."""
@@ -195,51 +162,44 @@ class SignInApi:
 
     async def sso(self, request: Request, next: str | None = None) -> Response:  # noqa: A002
         """SPNEGO-вход: 401 Negotiate без токена, иначе строка users, cookie и 303."""
-        gate = self._gate()
+        self._require_sso()
 
         try:
-            outcome = await gate.handshake(SsoRequests.of(request))
-            if isinstance(outcome, SsoChallenge):
-                gate.log_challenge(SsoRequests.of(request), outcome)
-                return Response(
-                    content=SsoErrorCode.TICKET.challenge_page(self._wiring.page.login),
-                    status_code=401,
-                    headers=SpnegoGate.NEGOTIATE,
-                    media_type="text/html",
-                )
-
-            await self._wiring.users.ensure_user(outcome.signed)
+            outcome = await self._auth.by_spnego(SsoRequests.of(request))
         except AuthorizationError:
             return self._to_login(SsoErrorCode.DENIED)
         except (AuthenticationError, ExternalServiceError, InternalServiceError):
             return self._to_login(SsoErrorCode.FAILED)
 
+        if isinstance(outcome, SsoChallenge):
+            return Response(
+                content=SsoErrorCode.TICKET.challenge_page(self._wiring.page.login),
+                status_code=401,
+                headers=SsoChallenge.HEADERS,
+                media_type="text/html",
+            )
+
         response = RedirectResponse(url=self._next_of(next), status_code=303)
-        self._issue(request, response, outcome.signed)
+        self._cookie.put(response, request.cookies, outcome.token)
 
         return response
 
     async def sso_refresh(self, request: Request) -> Response:
         """Свежий билет для живой сессии: 204 + новая cookie, 401 Negotiate, 403."""
-        gate = self._gate()
-        session = None
-        if token := self._wiring.cookie.token_of(request.cookies):
-            session = self._wiring.authenticator.ticket_of_token(token)
+        self._require_sso()
 
-        outcome = await gate.refresh(SsoRequests.of(request), session)
+        token = self._cookie.token_of(request.cookies)
+        outcome = await self._auth.refresh(SsoRequests.of(request), token)
         if isinstance(outcome, SsoRefused):
-            gate.log_refusal(outcome)
             return Response(status_code=403)
 
         if isinstance(outcome, SsoChallenge):
-            gate.log_challenge(SsoRequests.of(request), outcome)
-            return Response(status_code=401, headers=SpnegoGate.NEGOTIATE)
+            return Response(status_code=401, headers=SsoChallenge.HEADERS)
 
+        return self._issued(request, outcome)
+
+    def _issued(self, request: Request, session: IssuedSession) -> Response:
         response = Response(status_code=204)
-        self._issue(request, response, outcome.signed)
+        self._cookie.put(response, request.cookies, session.token)
 
         return response
-
-    def _issue(self, request: Request, response: Response, signed: SignedIn) -> None:
-        token = self._wiring.issuer.issue(signed)
-        self._wiring.cookie.put(response, request.cookies, token)

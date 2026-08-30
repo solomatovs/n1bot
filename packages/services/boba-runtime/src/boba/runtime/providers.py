@@ -13,12 +13,16 @@ from typing import Annotated
 from omegaconf import DictConfig
 
 from boba.access import GrantCheck
+from boba.auth import AuthService, JwtTokens
+from boba.auth.signin import PasswordSignIns
+from boba.auth.sso import SpnegoGate, SsoSignIn
 from boba.chat.profiles import RolesSection
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.db.pgvector.schema import KbSchema
 from boba.identity.locks import RunLocking, StaleLock
 from boba.identity.sso import RefreshSignal
+from boba.identity.token import CookieSpec
 from boba.krb.seal import SsoTickets
 from boba.messaging.bus import BusWatch
 from boba.runtime.bus import PgMessageBus
@@ -311,6 +315,32 @@ def users_table(
 ) -> UsersTable:
     """Строки users и авторы тредов той же схемы, что у data layer чата."""
     return UsersTable(config.data_layer.postgres, config.data_layer.db_schema)
+
+
+def auth_service(
+    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+    table: Annotated[UsersTable, Depends(users_table)],
+) -> AuthService:
+    """Вход пользователя: пароли и SPNEGO из [auth], токен и cookie из [session]."""
+    session = config.session
+    tokens = JwtTokens(session.auth_secret, session.session_ttl_sec)
+    cookie = CookieSpec(
+        name=session.cookie,
+        samesite=session.cookie_samesite,
+        ttl_sec=session.session_ttl_sec,
+    )
+
+    sso = None
+    if kerberos := config.kerberos():
+        sso = SpnegoGate(SsoSignIn(kerberos, session.auth_secret))
+
+    return AuthService(
+        tokens=tokens,
+        cookie=cookie,
+        password=PasswordSignIns.of(config.auth),
+        sso=sso,
+        users=lambda: table,
+    )
 
 
 async def lock_reaper(

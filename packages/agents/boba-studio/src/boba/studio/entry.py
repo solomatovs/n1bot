@@ -13,13 +13,10 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI
 
-from boba.auth import JwtTokens
-from boba.auth.signin import PasswordSignIns
-from boba.auth.sso import SpnegoGate, SsoSignIn
+from boba.auth import AuthService
 from boba.cancellation import StopReason
 from boba.chat.profiles import ChatProfiles
 from boba.identity.run import RunRegistry
-from boba.identity.token import CookieSpec
 from boba.runtime import providers
 from boba.runtime.config import (
     AppName,
@@ -31,10 +28,8 @@ from boba.runtime.config import (
 )
 from boba.runtime.di import Container
 from boba.runtime.plugins import CoreTools
-from boba.runtime.users import UsersTable
 from boba.sandbox.zygote import ZygoteRegistry
 from boba.studio.api.app import ApiAccess, ApiApp
-from boba.studio.api.jwt_auth import JwtAuthenticator, SessionCookie
 from boba.studio.api.signin import PageUrls, SignInWiring
 from boba.studio.api.urls import ApiVersion, SignInUrl
 from boba.studio.page import WorkflowDevPage, WorkflowPage
@@ -66,11 +61,9 @@ class StudioHost:
         Container.set_root(container)
 
         table = providers.users_table(config)
+        auth = providers.auth_service(config, table)
         access = ApiAccess(
-            authenticator=JwtAuthenticator(
-                JwtTokens(config.session.auth_secret, config.session.session_ttl_sec),
-                lambda: table,
-            ),
+            authenticator=auth,
             cookie=config.session.cookie,
             users=lambda: table,
         )
@@ -78,7 +71,7 @@ class StudioHost:
             providers.runtime_refs(),
             access,
             ChatProfiles(config.profiles),
-            cls.signin_of(config, table),
+            cls.signin_of(config, auth),
         )
 
         root = FastAPI(lifespan=cls._lifespan, openapi_url=None, docs_url=None)
@@ -90,37 +83,19 @@ class StudioHost:
         return root
 
     @staticmethod
-    def signin_of(config: StudioRuntimeConfig, users: UsersTable) -> SignInWiring:
-        """Пароли и SPNEGO — провайдеры services; SSO на своём URL под api."""
+    def signin_of(config: StudioRuntimeConfig, auth: AuthService) -> SignInWiring:
+        """Вход над сервисом входа; SSO на своём URL под api."""
         studio = config.studio
-        session = config.session
-        tokens = JwtTokens(session.auth_secret, session.session_ttl_sec)
-        authenticator = JwtAuthenticator(tokens, lambda: users)
-        gate = None
-        if kerberos := config.kerberos():
-            gate = SpnegoGate(SsoSignIn(kerberos, session.auth_secret))
-
         page_root = f"{studio.url_prefix}{StudioPath.PAGE}"
 
         return SignInWiring(
-            password=PasswordSignIns.of(config.auth),
-            sso=gate,
+            auth=auth,
             sso_url=f"{studio.api_prefix()}{ApiVersion.V1}{SignInUrl.SSO}",
             page=PageUrls(
                 root=page_root,
                 login=f"{page_root}/login",
                 home=f"{page_root}/observe",
             ),
-            issuer=tokens,
-            authenticator=authenticator,
-            cookie=SessionCookie(
-                CookieSpec(
-                    name=session.cookie,
-                    samesite=session.cookie_samesite,
-                    ttl_sec=session.session_ttl_sec,
-                )
-            ),
-            users=users,
         )
 
     @staticmethod

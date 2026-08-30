@@ -107,8 +107,8 @@ class Authenticator(Protocol):
     """Пользователь входа по токену запроса: cookie либо заголовок Authorization."""
 
     @abstractmethod
-    async def user_of_token(self, token: str) -> AuthenticatedUser | None:
-        """None — токен негоден или вход не сохранён слоем данных."""
+    async def user_of_token(self, token: str) -> AuthenticatedUser:
+        """AuthenticationError — токен негоден или вход не сохранён слоем данных."""
 
 
 class UsersUpsert(Protocol):

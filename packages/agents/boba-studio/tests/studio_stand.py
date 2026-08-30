@@ -12,6 +12,7 @@ from boba.chat.profiles import ChatProfiles
 from boba.chat.threads import ThreadOwnership
 from boba.connection_broker.store import ConnectionStore
 from boba.identity.api import AuthenticatedUser, Authenticator, UserSettingsStore
+from boba.identity.errors import AuthenticationError
 from boba.identity.locks import MemoryLiveLocks
 from boba.identity.session import UserMetadataField
 from boba.krb.seal import SsoTickets
@@ -32,9 +33,12 @@ class StubAuthenticator(Authenticator):
     def __init__(self, user: AuthenticatedUser | None) -> None:
         self._user = user
 
-    async def user_of_token(self, token: str) -> AuthenticatedUser | None:
+    async def user_of_token(self, token: str) -> AuthenticatedUser:
         if token != self.TOKEN:
-            return None
+            raise AuthenticationError("stand token mismatch")
+
+        if self._user is None:
+            raise AuthenticationError("stand has no signed-in user")
 
         return self._user
 
