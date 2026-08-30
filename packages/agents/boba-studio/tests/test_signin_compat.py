@@ -10,8 +10,8 @@ import pytest
 
 from boba.auth import AuthService, JwtTokens
 from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
-from boba.identity.signin import SignedIn
-from boba.identity.token import CookieSpec
+from boba.identity.signin import SignedIn, SignInMetadata
+from boba.identity.token import CookieSpec, SessionRenewal
 from boba.runtime.config import StudioRuntimeConfig
 
 pytestmark = pytest.mark.anyio
@@ -21,14 +21,16 @@ class OneUser(PersistedUsers, UsersUpsert):
     """Строка users стенда: одна на любой identifier."""
 
     def __init__(self) -> None:
-        self._id = str(uuid4())
+        self._id = uuid4()
 
     async def get_user(self, identifier: str) -> AuthenticatedUser | None:
-        return AuthenticatedUser(id=self._id, identifier=identifier, metadata={})
+        return AuthenticatedUser(
+            id=self._id, identifier=identifier, sign_in=SignInMetadata()
+        )
 
     async def ensure_user(self, signed: SignedIn) -> AuthenticatedUser:
         return AuthenticatedUser(
-            id=self._id, identifier=signed.identifier, metadata=signed.metadata
+            id=self._id, identifier=signed.identifier, sign_in=signed.sign_in
         )
 
 
@@ -50,6 +52,7 @@ def _service(secret: str) -> AuthService:
         password=None,
         sso=None,
         users=OneUser(),
+        renewal=SessionRenewal.of(60, 60 * 24),
     )
 
 
@@ -68,7 +71,11 @@ def test_issued_token_carries_the_peer_claims(
     """Выпущенный studio токен читается теми же claims, что и токен чата."""
     secret = studio_config.session.auth_secret
     token = JwtTokens(secret, 60).issue(
-        SignedIn(identifier="alice", display_name="Alice", metadata={"roles": ["DEV"]})
+        SignedIn(
+            identifier="alice",
+            display_name="Alice",
+            sign_in=SignInMetadata(roles=frozenset({"DEV"})),
+        )
     )
     claims = jwt.decode(token, secret, algorithms=["HS256"])
 

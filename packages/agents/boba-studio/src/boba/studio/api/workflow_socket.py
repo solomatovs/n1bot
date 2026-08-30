@@ -21,27 +21,24 @@ import socketio
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from boba.chat.profiles import ChatProfiles
-from boba.identity.api import AuthenticatedUser
-from boba.identity.context import CallContext, Scope, Subject
+from boba.identity.context import Scope, Subject
 from boba.identity.errors import BaseError, RefusalError
-from boba.identity.sso import RefreshSignal
 from boba.messaging import (
     Envelope,
-    LockToken,
-    MessageBus,
     MessageKind,
-    SignInRefreshRequested,
     StreamAppended,
     Unsubscribe,
 )
 from boba.runtime.bus import BusWatch, ListenerState
 from boba.runtime.config import StudioPath
-from boba.studio.api.auth import ApiAuth
+from boba.runtime.refresh import LiveSessions, LiveToken
+from boba.studio.api.auth import ApiAuth, SocketSignIn
 from boba.workflow.events import RunSnapshot
 from boba.workflow_engine.service import WorkflowService
 
 __all__ = [
     "SocketAuthenticator",
+    "StudioSessions",
     "WorkflowNamespace",
     "WorkflowSocket",
     "WorkflowSocketEvent",
@@ -54,7 +51,7 @@ ServiceSource = Callable[[], Awaitable[WorkflowService]]
 BusWatchSource = Callable[[], BusWatch]
 """Слушатель шины процесса; зовётся на подключение."""
 
-SocketAuthenticator = Callable[[dict[str, Any]], Awaitable[AuthenticatedUser | None]]
+SocketAuthenticator = Callable[[dict[str, Any]], Awaitable[SocketSignIn | None]]
 """WSGI environ подключения -> пользователь входа; None — cookie негодна."""
 
 
@@ -122,6 +119,22 @@ class UserRoom:
         return f"{cls.PREFIX}{user_id}"
 
 
+class StudioSessions(LiveSessions):
+    """Реестр подключённых сокетов страницы: чей сокет и каким токеном вошёл."""
+
+    def __init__(self) -> None:
+        self._live: dict[str, LiveToken] = {}
+
+    def attach(self, sid: str, live: LiveToken) -> None:
+        self._live[sid] = live
+
+    def detach(self, sid: str) -> None:
+        self._live.pop(sid, None)
+
+    def live_tokens(self) -> list[LiveToken]:
+        return list(self._live.values())
+
+
 class WorkflowNamespace(socketio.AsyncNamespace):
     """Namespace socket.io страницы: пускает подписчиков в комнаты запусков, шлёт им
     снимки по сообщениям шины и состояние слушателя шины для лампочки.
@@ -138,12 +151,14 @@ class WorkflowNamespace(socketio.AsyncNamespace):
         profiles: ChatProfiles,
         authenticate: SocketAuthenticator,
         bus_watch: BusWatchSource,
+        sessions: StudioSessions,
     ) -> None:
         super().__init__(self.NAME)
         self._service = service
         self._profiles = profiles
         self._authenticate = authenticate
         self._bus_watch = bus_watch
+        self._sessions = sessions
         self._watching: Unsubscribe | None = None
         self._subjects: dict[str, Subject] = {}
         self._leaves: dict[UUID, Callable[[], None]] = {}
@@ -152,11 +167,12 @@ class WorkflowNamespace(socketio.AsyncNamespace):
         self._user_rooms: dict[UUID, set[str]] = {}
 
     async def on_connect(self, sid: str, environ: dict[str, Any], auth: Any) -> None:
-        user = await self._authenticate(environ)
-        if user is None:
+        signed = await self._authenticate(environ)
+        if signed is None:
             logger.warning("workflow socket refused: sid=%s no sign-in", sid)
             raise ConnectionRefusedError("no sign-in")
 
+        user = signed.user
         try:
             identity = ApiAuth.resolve(user, None, self._profiles)
         except BaseError as exc:
@@ -164,6 +180,10 @@ class WorkflowNamespace(socketio.AsyncNamespace):
             raise ConnectionRefusedError(str(exc)) from exc
 
         self._subjects[sid] = identity.subject
+        self._sessions.attach(
+            sid,
+            LiveToken(user_id=user.id, login=user.identifier, token=signed.token),
+        )
         logger.info(
             "workflow socket connect: sid=%s user=%s", sid, identity.subject.login
         )
@@ -231,6 +251,7 @@ class WorkflowNamespace(socketio.AsyncNamespace):
         return {"listener": state.value}
 
     async def on_disconnect(self, sid: str, reason: str = "") -> None:
+        self._sessions.detach(sid)
         subject = self._subjects.pop(sid, None)
         for run_id in list(self._rooms):
             self._forget(run_id, sid)
@@ -353,21 +374,3 @@ class WorkflowSocket:
 
         # путь проверяет Mount приложения; сам engine.io путь не сверяет
         return socketio.ASGIApp(socketio_server=server, socketio_path="")
-
-
-class StudioRefreshSignal(RefreshSignal):
-    """Просит страницу молча пройти SPNEGO ещё раз: SignInRefreshRequested в область
-    пользователя текущего вызова, сокеты его комнаты получают USER_EVENT.
-    """
-
-    def __init__(self, bus: Callable[[], MessageBus]) -> None:
-        self._bus = bus
-
-    async def send(self) -> bool:
-        context = CallContext.current()
-        subject = context.subject
-        message = SignInRefreshRequested(principal=subject.login)
-        scope = Scope.user(subject.user_id)
-        await self._bus().publish(scope, message, LockToken.local())
-
-        return True

@@ -25,7 +25,6 @@ from test_tools_integration import Call, ToolSetup
 from boba.auth.credentials import KerberosCredentialSource
 from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.data.data_layer import PostgresDataLayer
-from boba.chainlit.infra.kerberos_refresh import ChatRefreshSignal
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connection_broker.user_connections import UserConnections
@@ -43,6 +42,7 @@ from boba.krb import KeytabCredentials
 from boba.krb.seal import SsoTickets
 from boba.messaging import MemoryMessageBus
 from boba.runtime.plugins import ToolBridge
+from boba.runtime.refresh import BusRefreshSignal
 from boba.sandbox.wrap import ToolProcessWrap
 from boba.sandbox.zygote import ZygoteRegistry
 from boba.stand.site import Stand
@@ -161,7 +161,7 @@ def pg_tools(
         functions,
         lambda: store,
         lambda: KerberosCredentialSource(
-            sso[0], ChatRefreshSignal(lambda: MemoryMessageBus("test"))
+            sso[0], BusRefreshSignal(lambda: MemoryMessageBus("test"))
         ),
         spec,
         resolve,
@@ -426,7 +426,7 @@ def web_tools(
         functions,
         lambda: store,
         lambda: KerberosCredentialSource(
-            sso[0], ChatRefreshSignal(lambda: MemoryMessageBus("test"))
+            sso[0], BusRefreshSignal(lambda: MemoryMessageBus("test"))
         ),
         spec,
         resolve,

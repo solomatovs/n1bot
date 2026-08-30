@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from boba.chat.profiles import ChatProfiles
 from boba.identity.api import AuthenticatedUser
+from boba.identity.signin import SignInMetadata
 from boba.runtime.config import StudioRuntimeConfig
 
 
@@ -40,5 +41,7 @@ class StandProfiles:
         """Пользователь стенда со всеми ролями конфига."""
         roles = [*sorted(config.roles), *extra_roles]
         return AuthenticatedUser(
-            id=str(uuid4()), identifier="user-1", metadata={"roles": roles}
+            id=uuid4(),
+            identifier="user-1",
+            sign_in=SignInMetadata(roles=frozenset(roles)),
         )

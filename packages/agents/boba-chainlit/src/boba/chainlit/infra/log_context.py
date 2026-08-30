@@ -12,6 +12,8 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from boba.chainlit.infra.session import current_session
 from boba.identity.context import CallContext
 from boba.identity.session import LogUserMark
+from boba.identity.token import TokenReader, TokenRejectedError
+from boba.runtime.http import RequestTokens
 
 __all__ = ["RequestUserContext", "RequestUserMiddleware", "UserLogContext"]
 
@@ -35,15 +37,18 @@ class RequestUserContext:
 
 
 class RequestUserMiddleware:
-    """ASGI: кладёт логин из auth-токена chainlit в RequestUserContext.
+    """ASGI: кладёт логин из токена входа запроса в RequestUserContext.
 
     Access-лог uvicorn пишется внутри запроса, поэтому видит contextvar.
+    Разбор best-effort: непринятый токен даёт пустую метку, а не отказ.
     """
 
     SCOPE_TYPES: ClassVar[frozenset[str]] = frozenset({"http", "websocket"})
 
-    def __init__(self, app: ASGIApp) -> None:
+    def __init__(self, app: ASGIApp, tokens: TokenReader, cookie: str) -> None:
         self._app = app
+        self._tokens = tokens
+        self._requests = RequestTokens(cookie)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in self.SCOPE_TYPES:
@@ -56,25 +61,14 @@ class RequestUserMiddleware:
         finally:
             RequestUserContext.reset(token)
 
-    @staticmethod
-    def _resolve(scope: Scope) -> str:
-        # логирование best effort: битый/просроченный токен не валит запрос
-        from chainlit.auth.cookie import get_token_from_cookies  # noqa: PLC0415
-        from chainlit.auth.jwt import decode_jwt  # noqa: PLC0415
+    def _resolve(self, scope: Scope) -> str:
+        raw = self._requests.of_request(HTTPConnection(scope))
+        if not raw:
+            return ""
 
         try:
-            connection = HTTPConnection(scope)
-            raw = get_token_from_cookies(connection.cookies)
-            if not raw:
-                authorization = connection.headers.get("Authorization", "")
-                scheme, _, param = authorization.partition(" ")
-                if scheme.lower() == "bearer":
-                    raw = param.strip()
-            if not raw:
-                return ""
-            user = decode_jwt(raw)
-            return str(user.identifier)
-        except Exception:
+            return self._tokens.read(raw).identifier
+        except TokenRejectedError:
             return ""
 
 

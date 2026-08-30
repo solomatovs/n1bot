@@ -13,11 +13,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Iterable, Iterator, Sequence
-from typing import Any
+from collections.abc import Sequence
 
 from boba.auth.config import KerberosAuthConfig, KerberosRolesInLdapConfig
 from boba.auth.signin import ADDirectory
+from boba.identity.admission import PrincipalFacts, RoleRules
 from boba.identity.context import DelegatedTicket
 from boba.identity.directory import (
     ADUserEntry,
@@ -33,25 +33,12 @@ from boba.identity.errors import (
     ExternalServiceError,
     InternalServiceError,
 )
-from boba.identity.roles import (
-    DnExcludeUserProvider,
-    DnUserRolesProvider,
-    LocalExcludeUserProvider,
-    LocalUserRolesProvider,
-    MemberOfExcludeUserProvider,
-    MemberOfUserRolesProvider,
-    SAMAccountNameExcludeUserProvider,
-    SAMAccountNameUserRolesProvider,
-    SidExcludeUserProvider,
-    SidUserRolesProvider,
-)
 from boba.identity.session import (
     LoginTemplate,
     SignInProvider,
     UserLogin,
-    UserMetadataField,
 )
-from boba.identity.signin import SignedIn
+from boba.identity.signin import SignedIn, SignInMetadata
 from boba.identity.sso import (
     SpnegoExchange,
     SsoAdmission,
@@ -75,8 +62,6 @@ from boba.toolkit.template import TemplateError
 __all__ = [
     "KerberosErrorToDomain",
     "KerberosRolesInLdapProvider",
-    "SidExcludeUserProvider",
-    "SidUserRolesProvider",
     "SpnegoGate",
     "SsoSignIn",
 ]
@@ -114,37 +99,11 @@ class KerberosErrorToDomain:
 
 
 class KerberosRolesInLdapProvider:
+    """Факты о принципале из каталога: DN, sAMAccountName и группы по UPN."""
+
     def __init__(self, config: KerberosRolesInLdapConfig):
         self._config = config
         self._ad = ADDirectory
-
-        self._init_mapping()
-
-    def _init_mapping(self):
-        self._samaccountname_roles: SAMAccountNameUserRolesProvider | None = None
-        self._samaccountname_roles_ex: SAMAccountNameExcludeUserProvider | None = None
-        self._member_of_roles: MemberOfUserRolesProvider | None = None
-        self._member_of_roles_ex: MemberOfExcludeUserProvider | None = None
-        self._dn_roles: DnUserRolesProvider | None = None
-        self._dn_roles_ex: DnExcludeUserProvider | None = None
-
-        if roles := self._config.mapping.samaccountname:
-            self._samaccountname_roles = SAMAccountNameUserRolesProvider(roles)
-
-        if roles := self._config.mapping.samaccountname_ex:
-            self._samaccountname_roles_ex = SAMAccountNameExcludeUserProvider(roles)
-
-        if roles := self._config.mapping.member_of:
-            self._member_of_roles = MemberOfUserRolesProvider(roles)
-
-        if roles := self._config.mapping.member_of_ex:
-            self._member_of_roles_ex = MemberOfExcludeUserProvider(roles)
-
-        if roles := self._config.mapping.dn:
-            self._dn_roles = DnUserRolesProvider(roles)
-
-        if roles := self._config.mapping.dn_ex:
-            self._dn_roles_ex = DnExcludeUserProvider(roles)
 
     async def request(self, principal: str) -> ADUserEntry:
         search_filter = f"(userPrincipalName={principal})"
@@ -181,32 +140,9 @@ class KerberosRolesInLdapProvider:
                 internal_detail=f"ldap error: {e}", user_detail=None
             ) from e
 
-    def roles_of(self, user: ADUserEntry) -> Iterable[str]:
-        if self._samaccountname_roles:
-            yield from self._samaccountname_roles.roles_of(user.samaccountname)
-
-        if self._member_of_roles:
-            yield from self._member_of_roles.roles_of(user.member_of)
-
-        if self._dn_roles:
-            yield from self._dn_roles.roles_of(user.dn)
-
-    def excluded_of(self, user: ADUserEntry) -> bool:
-        return any(self._exclusions_of(user))
-
-    def _exclusions_of(self, user: ADUserEntry) -> Iterator[bool]:
-        if self._samaccountname_roles_ex:
-            yield from self._samaccountname_roles_ex.exclude_of(user.samaccountname)
-
-        if self._member_of_roles_ex:
-            yield from self._member_of_roles_ex.exclude_of(user.member_of)
-
-        if self._dn_roles_ex:
-            yield from self._dn_roles_ex.exclude_of(user.dn)
-
 
 class SsoSignIn(SsoAdmission):
-    """Вход по SPNEGO-личности: роли по маппингам конфига и запечатанный билет."""
+    """Вход по SPNEGO-личности: роли по правилам конфига и запечатанный билет."""
 
     def __init__(self, config: KerberosAuthConfig, secret: str) -> None:
         if not secret:
@@ -219,8 +155,10 @@ class SsoSignIn(SsoAdmission):
         self.sealer = TicketSealer(secret)
         self.krb5_config = config.delegation.krb5_config
         self._logger = logging.getLogger(SsoSignIn.__name__)
-
-        self._init_mapping()
+        self._rules: RoleRules = config.rules()
+        self._directory: KerberosRolesInLdapProvider | None = None
+        if ldap_roles := config.ldap_roles:
+            self._directory = KerberosRolesInLdapProvider(ldap_roles)
 
     @property
     def config(self) -> KerberosAuthConfig:
@@ -230,28 +168,14 @@ class SsoSignIn(SsoAdmission):
         """Открыватель билетов входа для обвязок инструментов."""
         return SsoTickets(sealer=self.sealer, krb5_config=self.krb5_config)
 
-    def _init_mapping(self):
-        self._principal_roles: LocalUserRolesProvider | None = None
-        self._principal_roles_ex: LocalExcludeUserProvider | None = None
-        self._sid_roles: SidUserRolesProvider | None = None
-        self._sid_roles_ex: SidExcludeUserProvider | None = None
-        self._kerberos_roles_in_ldap: KerberosRolesInLdapProvider | None = None
-
-        if roles := self._config.roles:
-            if roles.principal:
-                self._principal_roles = LocalUserRolesProvider(roles.principal)
-
-            if roles.principal_ex:
-                self._principal_roles_ex = LocalExcludeUserProvider(roles.principal_ex)
-
-            if roles.sid:
-                self._sid_roles = SidUserRolesProvider(roles.sid)
-
-            if roles.sid_ex:
-                self._sid_roles_ex = SidExcludeUserProvider(roles.sid_ex)
-
-        if ldap_roles := self._config.ldap_roles:
-            self._kerberos_roles_in_ldap = KerberosRolesInLdapProvider(ldap_roles)
+    @staticmethod
+    def facts_of(identity: SpnegoIdentity) -> PrincipalFacts:
+        """Факты SPNEGO-личности: принципал, SID-ы групп и разобрался ли PAC."""
+        return PrincipalFacts(
+            principal=identity.principal,
+            group_sids=tuple(identity.group_sids),
+            pac_parsed=identity.pac_parsed,
+        )
 
     @staticmethod
     def _username_from_principal(principal_format: str, principal: str) -> str:
@@ -277,13 +201,8 @@ class SsoSignIn(SsoAdmission):
 
     async def signed_in(self, identity: SpnegoIdentity, sealed: str) -> SignedIn:
         """Итог входа: логин из принципала, роли по допуску, билет в metadata."""
-        self._require_pac(identity)
-
-        metadata = self._sso_metadata(identity.principal, sealed)
-
-        roles = await self.roles_of(identity.principal, identity.group_sids)
-        if roles:
-            metadata[UserMetadataField.ROLES] = roles
+        roles = await self.roles_of(self.facts_of(identity))
+        sign_in = self._sign_in_of(identity.principal, sealed, roles)
 
         username = self._username_from_principal(
             self._config.principal_format, identity.principal
@@ -291,97 +210,43 @@ class SsoSignIn(SsoAdmission):
         login = UserLogin.of(username)
 
         return SignedIn(
-            identifier=login.key, display_name=login.display, metadata=metadata
+            identifier=login.key, display_name=login.display, sign_in=sign_in
         )
 
-    async def roles_of(self, principal: str, group_sids: Sequence[str]) -> list[str]:
-        """Роли принципала по всем источникам; исключение — AuthorizationError.
+    async def roles_of(self, facts: PrincipalFacts) -> list[str]:
+        """Роли по фактам SPNEGO плюс фактам каталога, если он настроен.
 
         Зовётся и при входе, и при повторном обмене: запрет в AD должен
         отсекать обмен так же, как отсёк бы новый вход.
         """
-        roles: list[str] = []
-        excluded = False
+        if self._directory is not None:
+            entry = await self._directory.request(facts.principal)
+            facts = facts.model_copy(
+                update={
+                    "login": entry.samaccountname,
+                    "dn": entry.dn,
+                    "member_of": tuple(entry.member_of),
+                }
+            )
 
-        if self._principal_roles:
-            roles.extend(self._principal_roles.roles_of(principal))
+        return self._rules.admit(facts)
 
-        if self._principal_roles_ex:
-            excluded = any(self._principal_roles_ex.exclude_of(principal))
+    def _sign_in_of(
+        self, principal: str, sealed: str, roles: Sequence[str]
+    ) -> SignInMetadata:
+        """Metadata входа: провайдер, принципал, роли и запечатанный билет."""
+        if not sealed:
+            # без билета сессия останется без делегированных кредов: причина в логе выше
+            self._logger.warning(
+                "kerberos: sign-in of %s carries no delegated ticket", principal
+            )
 
-        sid_roles, sid_excluded = self._sid_mapping(group_sids)
-        roles.extend(sid_roles)
-        if sid_excluded:
-            excluded = True
-
-        if self._kerberos_roles_in_ldap:
-            user = await self._kerberos_roles_in_ldap.request(principal)
-            roles.extend(self._kerberos_roles_in_ldap.roles_of(user))
-
-            if self._kerberos_roles_in_ldap.excluded_of(user):
-                excluded = True
-
-        if excluded:
-            self._logger.warning("access denied for %s (excluded)", principal)
-            raise AuthorizationError("Access denied")
-
-        mapped = sorted(set(roles))
-
-        if self._config.require_roles and not mapped:
-            self._logger.warning("access denied for %s (no roles mapped)", principal)
-            raise AuthorizationError("Access denied")
-
-        return mapped
-
-    def _require_pac(self, identity: SpnegoIdentity) -> None:
-        """Исключения по SID настроены, а групп нет: вход без проверки не пускаем."""
-        if self._sid_roles_ex is None:
-            return
-
-        if identity.pac_parsed:
-            return
-
-        self._logger.warning(
-            "access denied for %s (PAC unavailable, sid exclusions configured)",
-            identity.principal,
+        return SignInMetadata(
+            provider=SignInProvider.KERBEROS.value,
+            principal=principal,
+            sealed_ticket=sealed,
+            roles=frozenset(roles),
         )
-        raise AuthorizationError("Access denied")
-
-    def _sso_metadata(self, principal: str, sealed: str) -> dict[str, Any]:
-        """Metadata входа: провайдер, принципал и запечатанный билет."""
-        metadata: dict[str, Any] = {
-            UserMetadataField.PROVIDER: SignInProvider.KERBEROS,
-            UserMetadataField.PRINCIPAL: principal,
-        }
-
-        if sealed:
-            metadata[UserMetadataField.TICKET] = sealed
-            return metadata
-
-        # без билета сессия останется без делегированных кредов: причина в логе выше
-        self._logger.warning(
-            "kerberos: sign-in of %s carries no delegated ticket", principal
-        )
-
-        return metadata
-
-    def _sid_mapping(self, sids: Sequence[str]) -> tuple[list[str], bool]:
-        "Роли и исключение по SID групп из PAC; сами SID приходят от вызывающего."
-        has_roles = self._sid_roles is not None
-        has_exclusions = self._sid_roles_ex is not None
-
-        if not has_roles and not has_exclusions:
-            return [], False
-
-        roles: list[str] = []
-        if self._sid_roles:
-            roles = list(self._sid_roles.roles_of(list(sids)))
-
-        excluded = False
-        if self._sid_roles_ex:
-            excluded = any(self._sid_roles_ex.exclude_of(list(sids)))
-
-        return roles, excluded
 
 
 class SpnegoGate(SpnegoExchange):
@@ -471,7 +336,7 @@ class SpnegoGate(SpnegoExchange):
             return SsoRefused(reason=reason)
 
         try:
-            await self._sign_in.roles_of(identity.principal, identity.group_sids)
+            await self._sign_in.roles_of(self._sign_in.facts_of(identity))
         except AuthorizationError:
             return SsoRefused(reason=f"{identity.principal} is no longer admitted")
 

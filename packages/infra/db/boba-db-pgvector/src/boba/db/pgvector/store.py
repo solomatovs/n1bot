@@ -250,8 +250,8 @@ class PostgresChunkStore(ChunkStore[str]):
                 content_hash
             from
                 {chunks_table}
-            where
-                collection = %s
+            where 1=1
+                and collection = %s
                 and chunk_id = ANY(%s)
             """,
         ).format(chunks_table=self._tables.chunks_ident())
@@ -360,8 +360,8 @@ class PostgresChunkStore(ChunkStore[str]):
             """
             delete from
                 {chunks_table}
-            where
-                collection = %s
+            where 1=1
+                and collection = %s
                 and chunk_id = ANY(%s)
             """,
         ).format(chunks_table=self._tables.chunks_ident())
@@ -384,8 +384,8 @@ class PostgresChunkStore(ChunkStore[str]):
             update {chunks_table} set
                 metadata = metadata || %s::jsonb,
                 updated_at = now()
-            where
-                collection = %s
+            where 1=1
+                and collection = %s
                 and chunk_id = ANY(%s)
             """,
         ).format(chunks_table=self._tables.chunks_ident())

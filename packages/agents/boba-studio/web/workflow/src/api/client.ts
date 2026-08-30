@@ -79,7 +79,7 @@ type Method = "get" | "post" | "put" | "delete";
 export const OWN_REQUEST = { header: "x-boba-request", value: "1" } as const;
 
 /** Путь повторного SPNEGO-обмена: роут вне схемы, поэтому не в типах paths. */
-const SSO_REFRESH_PATH = "/v1/auth/sso/refresh";
+const REFRESH_PATH = "/v1/auth/refresh";
 
 /** Пути схемы, у которых есть операция метода M. */
 type PathWith<M extends Method> = {
@@ -137,16 +137,25 @@ export class WorkflowApi {
     await this.raw("post", "/v1/auth/logout", {}, undefined, {});
   }
 
-  /** Повторный SPNEGO-обмен живой сессии по сигналу сервера; true — cookie обновлена.
-   * Браузер сам отвечает на 401 Negotiate своим тикетом, странице делать нечего. */
-  async ssoRefresh(): Promise<boolean> {
-    const response = await fetch(this.urls.api(SSO_REFRESH_PATH), {
+  /** Обновление живой сессии по сигналу сервера; true — cookie обновлена.
+   * Каким способом — решает сервер по виду входа; на 401 Negotiate браузер отвечает
+   * сам. Отказ значит, что сессию не продлить: страница уходит на вход. */
+  async refreshSession(): Promise<boolean> {
+    const response = await fetch(this.urls.api(REFRESH_PATH), {
       method: "POST",
       credentials: "same-origin",
       headers: { [OWN_REQUEST.header]: OWN_REQUEST.value },
     });
+    if (response.status === 204) {
+      return true;
+    }
 
-    return response.status === 204;
+    await this.logout().catch(() => undefined);
+    if (this.unauthorized !== null) {
+      this.unauthorized();
+    }
+
+    return false;
   }
 
   me(): Promise<Me> {

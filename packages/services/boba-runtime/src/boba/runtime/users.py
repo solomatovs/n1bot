@@ -19,8 +19,7 @@ from psycopg.rows import tuple_row
 from psycopg.types.json import Jsonb
 
 from boba.chat.threads import ChatTable, DataUnavailableError
-from boba.connections.postgres import PostgresConfig
-from boba.db.postgres import AsyncPostgresPool, PostgresSchema, SqlNames
+from boba.db.postgres import SqlNames
 from boba.identity.api import (
     AuthenticatedUser,
     StoredUser,
@@ -31,28 +30,13 @@ from boba.identity.api import (
 )
 from boba.identity.session import UserMetadataField
 from boba.identity.signin import SignedIn
+from boba.runtime.table import PgTable
 
 __all__ = ["UsersTable"]
 
 
-class UsersTable(UserRows, UserSettingsStore, UsersUpsert):
+class UsersTable(PgTable, UserRows, UserSettingsStore, UsersUpsert):
     """users приложения: DDL, строки входа и настройки пользователя."""
-
-    def __init__(
-        self,
-        postgres: PostgresConfig,
-        db_schema: str,
-        pool: AsyncPostgresPool | None = None,
-    ) -> None:
-        self._postgres = postgres
-        self._schema = db_schema
-        self._pool_ref = pool
-
-    async def _pool(self) -> AsyncPostgresPool:
-        if self._pool_ref is None:
-            self._pool_ref = await AsyncPostgresPool.get(self._postgres)
-
-        return self._pool_ref
 
     def _users(self) -> sql.Identifier:
         return SqlNames.table(self._schema, ChatTable.USERS)
@@ -105,15 +89,7 @@ class UsersTable(UserRows, UserSettingsStore, UsersUpsert):
                 identifier=SqlNames.ident(UsersColumn.IDENTIFIER),
             ),
         )
-        try:
-            pool = await self._pool()
-            async with pool.connection() as conn:
-                await PostgresSchema.ensure(conn, self._schema)
-                async with conn.transaction():
-                    for statement in ddl:
-                        await conn.execute(statement)
-        except Exception as exc:
-            raise DataUnavailableError("users.setup", str(exc)) from exc
+        await self._run(ddl, "users.setup")
 
     async def stored(self, identifier: str) -> StoredUser | None:
         query = sql.SQL(
@@ -164,9 +140,8 @@ class UsersTable(UserRows, UserSettingsStore, UsersUpsert):
         return stored.authenticated()
 
     async def upsert(self, identifier: str, meta: Mapping[str, Any]) -> StoredUser:
-        """Новая строка либо metadata поверх прежней; билет SSO в строку не пишется."""
+        """Новая строка либо metadata поверх прежней; что писать — решает вызывающий."""
         metadata = dict(meta)
-        metadata.pop(UserMetadataField.TICKET, None)
         query = sql.SQL(
             """
             insert into {users} (
@@ -204,7 +179,9 @@ class UsersTable(UserRows, UserSettingsStore, UsersUpsert):
         return row
 
     async def ensure_user(self, signed: SignedIn) -> AuthenticatedUser:
-        stored = await self.upsert(signed.identifier, signed.metadata)
+        stored = await self.upsert(
+            signed.identifier, signed.sign_in.persistable().render()
+        )
 
         return stored.authenticated()
 

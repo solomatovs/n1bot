@@ -3,24 +3,29 @@ socket.io и вход; процесс монтирует его под MOUNT."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import ClassVar
 
 from fastapi import APIRouter, FastAPI
 
 from boba.chat.profiles import ChatProfiles
+from boba.connection_broker.service import UserConnectionsService
 from boba.identity.api import Authenticator
 from boba.runtime.config import StudioPath
-from boba.runtime.http import DomainErrorMiddleware
+from boba.runtime.http import DomainErrorMiddleware, RequestTokens
 from boba.runtime.refs import RuntimeRefs
 from boba.studio.api.account import AccountApi, UsersSource
-from boba.studio.api.auth import ApiAuth, RequestTokens
+from boba.studio.api.auth import ApiAuth
 from boba.studio.api.connections import ConnectionsApi
 from boba.studio.api.signin import SignInApi, SignInWiring
 from boba.studio.api.streams import StreamApi
 from boba.studio.api.tools import ToolCalling
 from boba.studio.api.urls import ApiVersion
-from boba.studio.api.workflow_socket import WorkflowNamespace, WorkflowSocket
+from boba.studio.api.workflow_socket import (
+    StudioSessions,
+    WorkflowNamespace,
+    WorkflowSocket,
+)
 from boba.studio.api.workflows import WorkflowApi
 
 __all__ = ["ApiAccess", "ApiApp"]
@@ -33,6 +38,8 @@ class ApiAccess:
     authenticator: Authenticator
     cookie: str
     users: UsersSource
+    sessions: StudioSessions = field(default_factory=StudioSessions)
+    """Реестр сокетов страницы: его же читает сторож сессий процесса."""
 
 
 class ApiApp:
@@ -65,7 +72,10 @@ class ApiApp:
 
         AccountApi(profiles, access.users, refs.message_bus).mount(router)
         ConnectionsApi(
-            refs.connection_store, profiles, refs.credentials, refs.message_bus
+            UserConnectionsService(refs.connection_store),
+            profiles,
+            refs.credentials,
+            refs.message_bus,
         ).mount(router)
         ToolCalling(
             refs.tool_registry,
@@ -79,7 +89,11 @@ class ApiApp:
 
         auth = ApiAuth.of_app(app)
         namespace = WorkflowNamespace(
-            refs.workflow_service, profiles, auth.user_of_environ, refs.bus_watch
+            refs.workflow_service,
+            profiles,
+            auth.socket_sign_in,
+            refs.bus_watch,
+            access.sessions,
         )
         app.mount(WorkflowSocket.PATH, WorkflowSocket.build(namespace))
 

@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from psycopg import sql
 
 from boba.chat.threads import DataRejectedError, ThreadUpsert
 from boba.db.postgres import AsyncPostgresPool
-from boba.identity.signin import SignedIn
+from boba.identity.signin import SignedIn, SignInMetadata
 from boba.runtime.config import RuntimeConfig
 from boba.runtime.threads import ThreadsTable
 from boba.runtime.users import UsersTable
@@ -43,15 +43,15 @@ async def test_upsert_get_list_and_author(
 ) -> None:
     users, threads = tables
     owner = await users.ensure_user(
-        SignedIn(identifier="owner", display_name="owner", metadata={})
+        SignedIn(identifier="owner", display_name="owner", sign_in=SignInMetadata())
     )
     thread_id = uuid4()
 
     created = await threads.upsert(
-        ThreadUpsert(id=thread_id, user_id=UUID(owner.id), meta_set={"a": 1, "b": 2})
+        ThreadUpsert(id=thread_id, user_id=owner.id, meta_set={"a": 1, "b": 2})
     )
     assert created.inserted
-    assert created.user_id == UUID(owner.id)
+    assert created.user_id == owner.id
 
     renamed = await threads.upsert(
         ThreadUpsert(id=thread_id, name="renamed", meta_set={"c": 3}, meta_del=["a"])
@@ -62,15 +62,15 @@ async def test_upsert_get_list_and_author(
     stored = await threads.get(thread_id)
     assert stored is not None
     assert stored.name == "renamed"
-    assert stored.user_id == UUID(owner.id)
+    assert stored.user_id == owner.id
     assert dict(stored.meta) == {"b": 2, "c": 3}
 
-    listed = await threads.list_of(UUID(owner.id), 10)
+    listed = await threads.list_of(owner.id, 10)
     assert [t.id for t in listed] == [thread_id]
 
     assert await threads.get_thread_author(str(thread_id)) == "owner"
 
-    assert await threads.delete(thread_id) == UUID(owner.id)
+    assert await threads.delete(thread_id) == owner.id
     assert await threads.get(thread_id) is None
     assert await threads.delete(thread_id) is None
 

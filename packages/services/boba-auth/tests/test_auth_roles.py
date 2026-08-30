@@ -1,4 +1,4 @@
-"""Роли и исключения авторизации: чистые мапперы без KDC/LDAP.
+"""Роли и исключения авторизации: правило допуска без KDC/LDAP.
 
 Интеграционный путь (реальный SPNEGO/AD) в тестовом окружении недоступен,
 поэтому проверяется чистая логика маппинга SID/ролей и решений LocalSignIn.
@@ -10,21 +10,20 @@ import pytest
 from pydantic import SecretStr
 
 from boba.auth.config import (
+    KerberosRolesConfig,
     KerberosRolesInLdapConfig,
     KerberosRolesInLdapMappingConfig,
     LocalAuthConfig,
 )
 from boba.auth.signin import LocalSignIn
-from boba.auth.sso import KerberosRolesInLdapProvider
-from boba.identity.directory import ADUserEntry
-from boba.identity.errors import AuthorizationError
-from boba.identity.roles import (
+from boba.identity.admission import (
+    PrincipalFacts,
     RoleExcludeConfig,
     RoleMappingConfig,
-    SidExcludeUserProvider,
-    SidUserRolesProvider,
+    RoleRules,
 )
-from boba.identity.session import UserLogin, UserMetadataField
+from boba.identity.errors import AuthorizationError
+from boba.identity.session import UserLogin
 from boba.stand.fakes import FakeSecret
 
 pytestmark = pytest.mark.anyio
@@ -36,22 +35,29 @@ def chainlit_context() -> None:
 
 
 def test_sid_roles_maps_each_group() -> None:
-    mapping = RoleMappingConfig(
-        {"S-1-5-21-1": ["admin"], "S-1-5-21-2": ["dev"]},
+    rules = RoleRules(
+        require_roles=False,
+        by_sid=RoleMappingConfig({"S-1-5-21-1": ["admin"], "S-1-5-21-2": ["dev"]}),
     )
-    provider = SidUserRolesProvider(mapping)
-    roles = list(provider.roles_of(["S-1-5-21-1", "S-1-5-21-2", "S-1-5-21-3"]))
-    if sorted(roles) != ["admin", "dev"]:
-        raise AssertionError('sorted(roles) == ["admin", "dev"]')
+    facts = PrincipalFacts(group_sids=("S-1-5-21-1", "S-1-5-21-2", "S-1-5-21-3"))
+    if rules.admit(facts) != ["admin", "dev"]:
+        raise AssertionError('rules.admit(facts) == ["admin", "dev"]')
 
 
-def test_sid_exclude_flags_matching_group() -> None:
-    mapping = RoleExcludeConfig(["S-1-5-21-9"])
-    provider = SidExcludeUserProvider(mapping)
-    if not (any(provider.exclude_of(["S-1-5-21-9"]))):
-        raise AssertionError('any(provider.exclude_of(["S-1-5-21-9"]))')
-    if any(provider.exclude_of(["S-1-5-21-1"])):
-        raise AssertionError('not any(provider.exclude_of(["S-1-5-21-1"]))')
+def test_sid_exclude_refuses_matching_group() -> None:
+    rules = RoleRules(require_roles=False, by_sid_ex=RoleExcludeConfig(["S-1-5-21-9"]))
+    with pytest.raises(AuthorizationError):
+        rules.admit(PrincipalFacts(group_sids=("S-1-5-21-9",)))
+    if rules.admit(PrincipalFacts(group_sids=("S-1-5-21-1",))) != []:
+        raise AssertionError("a group outside the exclusions must pass")
+
+
+def test_sid_exclusions_need_a_parsed_pac() -> None:
+    rules = RoleRules(require_roles=False, by_sid_ex=RoleExcludeConfig(["S-1-5-21-9"]))
+    with pytest.raises(AuthorizationError):
+        rules.admit(PrincipalFacts(principal="reader@X", pac_parsed=False))
+    if RoleRules(require_roles=False).admit(PrincipalFacts(pac_parsed=False)) != []:
+        raise AssertionError("without sid exclusions an unparsed PAC is allowed")
 
 
 async def test_local_auth_allows_user_with_roles() -> None:
@@ -64,8 +70,8 @@ async def test_local_auth_allows_user_with_roles() -> None:
         raise AssertionError("user is not None")
     if user.identifier != "alice":
         raise AssertionError('user.identifier == "alice"')
-    if user.metadata[UserMetadataField.ROLES] != ["admin"]:
-        raise AssertionError('user.metadata[UserMetadataField.ROLES] == ["admin"]')
+    if user.sign_in.roles != frozenset({"admin"}):
+        raise AssertionError('user.sign_in.roles == {"admin"}')
 
 
 async def test_local_auth_rejects_wrong_password() -> None:
@@ -95,73 +101,67 @@ async def test_local_auth_allows_no_roles_when_not_required() -> None:
     user = await LocalSignIn(config).sign_in("alice", "pw")
     if user is None:
         raise AssertionError("user is not None")
-    if UserMetadataField.ROLES in user.metadata:
-        raise AssertionError("UserMetadataField.ROLES not in user.metadata")
+    if user.sign_in.roles:
+        raise AssertionError("no roles expected")
 
 
-def test_ldap_provider_maps_roles_from_all_sources() -> None:
+def test_ldap_rules_map_roles_from_all_sources() -> None:
     mapping = KerberosRolesInLdapMappingConfig(
         samaccountname=RoleMappingConfig({"alice": ["admin"]}),
         member_of=RoleMappingConfig({"CN=Devs,OU=G": ["dev"]}),
         dn=RoleMappingConfig({"CN=alice,OU=U": ["devops"]}),
     )
-    provider = KerberosRolesInLdapProvider(
-        KerberosRolesInLdapConfig(
-            server="ldaps://dc.example.com:636",
-            base_dn="DC=example,DC=com",
-            bind_dn="cn=svc",
-            bind_password=SecretStr(FakeSecret.LDAP_BIND),
-            mapping=mapping,
-        ),
-    )
-    user = ADUserEntry(
+    facts = PrincipalFacts(
+        login="alice",
         dn="CN=alice,OU=U",
-        samaccountname="alice",
-        member_of=["CN=Devs,OU=G", "CN=Other,OU=G"],
+        member_of=("CN=Devs,OU=G", "CN=Other,OU=G"),
     )
-    roles = list(provider.roles_of(user))
-    if sorted(roles) != ["admin", "dev", "devops"]:
-        raise AssertionError('sorted(roles) == ["admin", "dev", "devops"]')
+    if mapping.rules(require_roles=True).admit(facts) != ["admin", "dev", "devops"]:
+        raise AssertionError('admit(facts) == ["admin", "dev", "devops"]')
 
 
-def test_ldap_provider_excludes_by_any_source() -> None:
-    mapping = KerberosRolesInLdapMappingConfig(
+def test_ldap_rules_exclude_by_any_source() -> None:
+    rules = KerberosRolesInLdapMappingConfig(
         samaccountname_ex=RoleExcludeConfig(["bob"]),
         member_of_ex=RoleExcludeConfig(["CN=Blocked,OU=G"]),
+    ).rules(require_roles=False)
+
+    with pytest.raises(AuthorizationError):
+        rules.admit(PrincipalFacts(login="bob", dn="CN=bob,OU=U"))
+
+    with pytest.raises(AuthorizationError):
+        rules.admit(
+            PrincipalFacts(
+                login="carol", dn="CN=carol,OU=U", member_of=("CN=Blocked,OU=G",)
+            )
+        )
+
+    allowed = PrincipalFacts(
+        login="carol", dn="CN=carol,OU=U", member_of=("CN=Other,OU=G",)
     )
-    provider = KerberosRolesInLdapProvider(
-        KerberosRolesInLdapConfig(
-            server="ldaps://dc.example.com:636",
-            base_dn="DC=example,DC=com",
-            bind_dn="cn=svc",
-            bind_password=SecretStr(FakeSecret.LDAP_BIND),
-            mapping=mapping,
+    if rules.admit(allowed) != []:
+        raise AssertionError("a user outside the exclusions must pass")
+
+
+def test_kerberos_rules_merge_principal_sid_and_directory() -> None:
+    config = KerberosRolesInLdapConfig(
+        server="ldaps://dc.example.com:636",
+        base_dn="DC=example,DC=com",
+        bind_dn="cn=svc",
+        bind_password=SecretStr(FakeSecret.LDAP_BIND),
+        mapping=KerberosRolesInLdapMappingConfig(
+            member_of=RoleMappingConfig({"CN=Devs,OU=G": ["dev"]})
         ),
     )
-
-    blocked_by_name = ADUserEntry(
-        dn="CN=bob,OU=U",
-        samaccountname="bob",
-        member_of=[],
+    roles = KerberosRolesConfig(principal=RoleMappingConfig({"alice@X": ["adm"]}))
+    rules = (
+        RoleRules(require_roles=True)
+        .merged(roles.rules(True))
+        .merged(config.mapping.rules(True))
     )
-    if provider.excluded_of(blocked_by_name) is not True:
-        raise AssertionError("provider.excluded_of(blocked_by_name) is True")
-
-    blocked_by_group = ADUserEntry(
-        dn="CN=carol,OU=U",
-        samaccountname="carol",
-        member_of=["CN=Blocked,OU=G"],
-    )
-    if provider.excluded_of(blocked_by_group) is not True:
-        raise AssertionError("provider.excluded_of(blocked_by_group) is True")
-
-    allowed = ADUserEntry(
-        dn="CN=carol,OU=U",
-        samaccountname="carol",
-        member_of=["CN=Other,OU=G"],
-    )
-    if provider.excluded_of(allowed) is not False:
-        raise AssertionError("provider.excluded_of(allowed) is False")
+    facts = PrincipalFacts(principal="alice@X", member_of=("CN=Devs,OU=G",))
+    if rules.admit(facts) != ["adm", "dev"]:
+        raise AssertionError('rules.admit(facts) == ["adm", "dev"]')
 
 
 class TestUserLoginCanon:

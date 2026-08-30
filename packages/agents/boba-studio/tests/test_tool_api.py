@@ -23,13 +23,14 @@ from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import CallContext, HumanInitiator, ScopeKind
 from boba.identity.errors import AuthenticationError, AuthorizationError
 from boba.identity.locks import MemoryLiveLocks
-from boba.identity.signin import SignedIn
-from boba.identity.token import CookieSpec
+from boba.identity.signin import SignedIn, SignInMetadata
+from boba.identity.token import CookieSpec, SessionRenewal
 from boba.runtime.config import StudioRuntimeConfig
+from boba.runtime.http import RequestTokens
 from boba.runtime.plugins import CallSurface
 from boba.runtime.users import UsersTable
 from boba.stand.auth import StubAuthenticator
-from boba.studio.api.auth import ApiAuth, RequestTokens
+from boba.studio.api.auth import ApiAuth
 from boba.studio.api.tools import ToolCallBody, ToolCalling
 from boba.toolkit.result import TextResult, pack_result
 from boba.toolrun.call_id import ToolCallIdField
@@ -172,7 +173,9 @@ class TestServe:
         self, studio_config: StudioRuntimeConfig
     ) -> None:
         user = StandProfiles.user(studio_config)
-        user = user.model_copy(update={"metadata": {"roles": ["stranger"]}})
+        user = user.model_copy(
+            update={"sign_in": SignInMetadata(roles=frozenset({"stranger"}))}
+        )
 
         with pytest.raises(HTTPException) as caught:
             await _calling(Probe(), studio_config).serve(
@@ -254,7 +257,9 @@ class TestAuthenticator:
             SignedIn(
                 identifier=f"tester-{uuid4().hex[:8]}",
                 display_name="Tester",
-                metadata={"roles": StandProfiles.roles(studio_config)},
+                sign_in=SignInMetadata(
+                    roles=frozenset(StandProfiles.roles(studio_config))
+                ),
             )
         )
         issuer = JwtTokens(secret, 60)
@@ -264,13 +269,14 @@ class TestAuthenticator:
             password=None,
             sso=None,
             users=users,
+            renewal=SessionRenewal.of(60, 60 * 24),
         )
 
         token = issuer.issue(
             SignedIn(
                 identifier=tester.identifier,
                 display_name="Tester",
-                metadata=dict(tester.metadata),
+                sign_in=tester.sign_in,
             )
         )
         user = await authenticator.user_of_token(token)
@@ -288,7 +294,7 @@ class TestAuthenticator:
         # токен подтверждает роли, но личность не заводит: без строки users входа нет
         nobody = f"nobody-{uuid4().hex[:8]}"
         stranger = issuer.issue(
-            SignedIn(identifier=nobody, display_name="", metadata={})
+            SignedIn(identifier=nobody, display_name="", sign_in=SignInMetadata())
         )
         with pytest.raises(AuthenticationError):
             await authenticator.user_of_token(stranger)

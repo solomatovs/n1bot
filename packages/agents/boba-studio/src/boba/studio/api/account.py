@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from typing import ClassVar
 from uuid import UUID
 
@@ -19,6 +19,7 @@ from boba.identity.api import AuthenticatedUser, UserSettingsStore
 from boba.identity.context import Scope
 from boba.identity.errors import AuthorizationError
 from boba.identity.session import UserMetadataField
+from boba.identity.signin import SignInMetadata
 from boba.messaging import LockToken, MessageBus, StudioProfileChanged
 from boba.studio.api.auth import ApiAuth, CurrentUser
 from boba.studio.api.urls import AccountUrl
@@ -36,12 +37,12 @@ class SignIn(BaseModel):
     ticket: bool
 
     @classmethod
-    def of(cls, metadata: Mapping[str, object]) -> SignIn:
-        provider = metadata.get(UserMetadataField.PROVIDER, "")
-        principal = metadata.get(UserMetadataField.PRINCIPAL, "")
-        ticket = bool(metadata.get(UserMetadataField.TICKET))
-
-        return cls(provider=str(provider), principal=str(principal), ticket=ticket)
+    def of(cls, sign_in: SignInMetadata) -> SignIn:
+        return cls(
+            provider=sign_in.provider,
+            principal=sign_in.principal,
+            ticket=bool(sign_in.sealed_ticket),
+        )
 
 
 class Me(BaseModel):
@@ -139,9 +140,9 @@ class AccountApi:
         if body.profile not in self._profiles.visible_for(user.roles):
             raise AuthorizationError("profile is not available")
 
-        await self._users().set_studio_profile(UUID(user.id), body.profile)
+        await self._users().set_studio_profile(user.id, body.profile)
         changed = StudioProfileChanged(profile=body.profile, by_sid=body.sid)
-        await self._bus().publish(Scope.user(UUID(user.id)), changed, LockToken.local())
+        await self._bus().publish(Scope.user(user.id), changed, LockToken.local())
 
         return self._me_of(user, body.profile)
 
@@ -154,7 +155,7 @@ class AccountApi:
             login=subject.login,
             roles=sorted(subject.roles),
             profile=subject.profile,
-            sign_in=SignIn.of(user.metadata),
+            sign_in=SignIn.of(user.sign_in),
         )
 
     async def _stored_profile(self, user: AuthenticatedUser) -> str | None:
@@ -163,7 +164,7 @@ class AccountApi:
         if stored is None:
             return None
 
-        chosen = stored.metadata.get(UserMetadataField.STUDIO_PROFILE)
+        chosen = stored.settings.get(UserMetadataField.STUDIO_PROFILE)
         if not isinstance(chosen, str):
             return None
 

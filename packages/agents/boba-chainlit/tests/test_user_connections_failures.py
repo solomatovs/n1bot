@@ -27,7 +27,6 @@ from pydantic import SecretStr, create_model
 from boba.auth.credentials import KerberosCredentialSource
 from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.data.data_layer import PostgresDataLayer
-from boba.chainlit.infra.kerberos_refresh import ChatRefreshSignal
 from boba.chainlit.infra.plugins import ChatPlugins
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
@@ -43,6 +42,7 @@ from boba.kerberos import DelegatedAuth, DelegationMode, KeytabAuth
 from boba.krb import KeytabCredentials
 from boba.krb.seal import SsoTickets, TicketSealer
 from boba.messaging import MemoryMessageBus
+from boba.runtime.refresh import BusRefreshSignal
 from boba.sandbox.zygote import ZygoteRegistry
 from boba.stand.refs import StandRefs
 from boba.stand.site import Stand
@@ -310,7 +310,7 @@ class Guarded:
             [tool],
             lambda: store,
             lambda: KerberosCredentialSource(
-                tickets, ChatRefreshSignal(lambda: MemoryMessageBus("test"))
+                tickets, BusRefreshSignal(lambda: MemoryMessageBus("test"))
             ),
             spec,
             resolve,

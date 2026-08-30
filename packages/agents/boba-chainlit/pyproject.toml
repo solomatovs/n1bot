@@ -25,7 +25,6 @@ dependencies = [
     "boba-sandbox==0.0.14.dev9",
     "boba-krb==0.0.14.dev9",
     "boba-llm[chat]==0.0.14.dev9",
-    "pyjwt>=2.8",
     "python-multipart>=0.0.9",
     "typing-extensions>=4.12",
     "omegaconf>=2.3,<3",
@@ -49,6 +48,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "pyjwt>=2.8",
     "boba-kerberos==0.0.14.dev9",
     "boba-connection-broker==0.0.14.dev9",
     "boba-liteparse==0.0.14.dev9",
@@ -72,7 +72,6 @@ dev = [
 boba-chainlit = "boba.chainlit.infra.entry:AppEntry.run"
 
 [tool.setuptools.package-data]
-"boba.chainlit.auth" = ["*.js"]
 "boba.chainlit.chat" = ["translations/*.json"]
 
 [tool.setuptools.packages.find]

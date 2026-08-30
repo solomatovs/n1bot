@@ -24,7 +24,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.connections.postgres import PostgresConfig
-from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresSchema, SqlNames
+from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresTable, SqlNames
 from boba.workflow import RunState, RunStatus, WorkflowSpec
 from boba.workflow.ports import WorkflowRepository
 from boba.workflow.records import (
@@ -74,7 +74,7 @@ class WorkflowConfig(BaseModel):
         return self.connection
 
 
-class WorkflowStore(WorkflowRepository):
+class WorkflowStore(PostgresTable, WorkflowRepository):
     """CRUD над workflows/workflow_runs; всё чтение и запись — под владельцем."""
 
     def __init__(
@@ -82,24 +82,21 @@ class WorkflowStore(WorkflowRepository):
         cfg: WorkflowConfig,
         pool: AsyncPostgresPool | None = None,
     ) -> None:
+        postgres = cfg.connection
+        if pool is None:
+            postgres = cfg.require_conn()
+
+        super().__init__(postgres, cfg.db_schema, pool)
         self._cfg = cfg
-        self._pool_ref = pool
-
-    async def _pool(self) -> AsyncPostgresPool:
-        """Пул берётся при первом обращении: __init__ не может await."""
-        if self._pool_ref is None:
-            self._pool_ref = await AsyncPostgresPool.get(self._cfg.require_conn())
-
-        return self._pool_ref
 
     def _workflows(self) -> sql.Identifier:
-        return SqlNames.table(self._cfg.db_schema, WorkflowTable.WORKFLOWS)
+        return self._table(WorkflowTable.WORKFLOWS)
 
     def _runs(self) -> sql.Identifier:
-        return SqlNames.table(self._cfg.db_schema, WorkflowTable.RUNS)
+        return self._table(WorkflowTable.RUNS)
 
     def _drafts(self) -> sql.Identifier:
-        return SqlNames.table(self._cfg.db_schema, WorkflowTable.DRAFTS)
+        return self._table(WorkflowTable.DRAFTS)
 
     def _names(self) -> dict[str, sql.Composable]:
         """Имена из enum'ов: w_* — workflows, r_* — runs, d_* — drafts."""
@@ -130,91 +127,113 @@ class WorkflowStore(WorkflowRepository):
             raise WorkflowStoreError(msg) from exc
 
     async def setup(self) -> None:
-        pool = await self._pool()
-
-        async with self._guarded("setup"), pool.connection() as conn:
-            await PostgresSchema.ensure(conn, self._cfg.db_schema)
-
-            for query in self._ddl():
-                await conn.execute(query, prepare=False)
+        """Схема, три таблицы и миграции; повтор безвреден."""
+        ddl = (
+            *self._workflows_ddl(),
+            *self._runs_ddl(),
+            *self._drafts_ddl(),
+            *self._migrations(),
+        )
+        async with self._guarded("setup"):
+            await self._apply_ddl(ddl)
 
         logger.info("workflow store ready: %s", self._cfg.db_schema)
 
-    def _ddl(self) -> tuple[sql.Composed, ...]:
+    def _workflows_ddl(self) -> tuple[sql.Composed, ...]:
         return (
-            self._sql(
+            sql.SQL(
                 """
                 create table if not exists {workflows} (
-                    {w_id}         uuid primary key default gen_random_uuid(),
-                    {w_user_id}    uuid not null,
-                    {w_name}       text not null,
-                    {w_spec}       text not null,
-                    {w_tools}      text[] not null default '{{}}',
-                    {w_layout}     jsonb not null default '{{}}'::jsonb,
-                    {w_created_at} timestamptz not null default now(),
-                    {w_updated_at} timestamptz not null default now(),
-                    unique ({w_user_id}, {w_name})
+                    {id}         uuid primary key default gen_random_uuid(),
+                    {user_id}    uuid not null,
+                    {name}       text not null,
+                    {spec}       text not null,
+                    {tools}      text[] not null default '{{}}',
+                    {layout}     jsonb not null default '{{}}'::jsonb,
+                    {created_at} timestamptz not null default now(),
+                    {updated_at} timestamptz not null default now(),
+                    unique ({user_id}, {name})
                 )
                 """
-            ),
-            self._sql(
+            ).format(workflows=self._workflows(), **self._columns(WorkflowsColumn)),
+        )
+
+    def _runs_ddl(self) -> tuple[sql.Composed, ...]:
+        return (
+            sql.SQL(
                 """
                 create table if not exists {runs} (
-                    {r_id}          uuid primary key,
-                    {r_workflow_id} uuid references {workflows} ({w_id})
-                                    on delete set null,
-                    {r_user_id}     uuid not null,
-                    {r_initiator}   jsonb not null,
-                    {r_profile}     text not null,
-                    {r_status}      text not null,
-                    {r_state}       jsonb not null,
-                    {r_instance}    text not null,
-                    {r_started_at}  timestamptz not null default now(),
-                    {r_finished_at} timestamptz
+                    {id}          uuid primary key,
+                    {workflow_id} uuid references {workflows} ({workflow_pk})
+                                  on delete set null,
+                    {user_id}     uuid not null,
+                    {initiator}   jsonb not null,
+                    {profile}     text not null,
+                    {status}      text not null,
+                    {state}       jsonb not null,
+                    {instance}    text not null,
+                    {started_at}  timestamptz not null default now(),
+                    {finished_at} timestamptz
                 )
                 """
+            ).format(
+                runs=self._runs(),
+                workflows=self._workflows(),
+                workflow_pk=SqlNames.ident(WorkflowsColumn.ID),
+                **self._columns(RunsColumn),
             ),
-            self._sql(
-                """
-                create table if not exists {drafts} (
-                    {d_user_id}    uuid not null,
-                    {d_key}        text not null,
-                    {d_revision}   integer not null default 1,
-                    {d_spec}       text not null,
-                    {d_layout}     jsonb not null default '{{}}'::jsonb,
-                    {d_updated_at} timestamptz not null default now(),
-                    primary key ({d_user_id}, {d_key})
-                )
-                """
-            ),
-            self._sql(
+            sql.SQL(
                 """
                 create index if not exists idx_workflow_runs_user
-                    on {runs} ({r_user_id}, {r_started_at} desc)
+                    on {runs} ({user_id}, {started_at} desc)
                 """
-            ),
-            self._sql(
+            ).format(runs=self._runs(), **self._columns(RunsColumn)),
+            sql.SQL(
                 """
                 create index if not exists idx_workflow_runs_status
-                    on {runs} ({r_status})
+                    on {runs} ({status})
                 """
+            ).format(runs=self._runs(), **self._columns(RunsColumn)),
+        )
+
+    def _drafts_ddl(self) -> tuple[sql.Composed, ...]:
+        return (
+            sql.SQL(
+                """
+                create table if not exists {drafts} (
+                    {user_id}    uuid not null,
+                    {key}        text not null,
+                    {revision}   integer not null default 1,
+                    {spec}       text not null,
+                    {layout}     jsonb not null default '{{}}'::jsonb,
+                    {updated_at} timestamptz not null default now(),
+                    primary key ({user_id}, {key})
+                )
+                """
+            ).format(drafts=self._drafts(), **self._columns(DraftsColumn)),
+        )
+
+    def _migrations(self) -> tuple[sql.Composed, ...]:
+        """Перевод старых строк runs: spec ушёл из колонки в state.graph."""
+        return (
+            sql.SQL("alter table {runs} drop column if exists spec").format(
+                runs=self._runs()
             ),
-            self._sql("alter table {runs} drop column if exists spec"),
-            self._sql(
+            sql.SQL(
                 """
                 update {runs}
-                set {r_state} = jsonb_build_object(
+                set {state} = jsonb_build_object(
                     'graph', jsonb_build_object(
-                        'spec', {r_state} -> 'spec',
-                        'stages', {r_state} -> 'stages',
+                        'spec', {state} -> 'spec',
+                        'stages', {state} -> 'stages',
                         'bindings', '{{}}'::jsonb
                     ),
-                    'status', {r_state} -> 'status',
-                    'tasks', {r_state} -> 'tasks'
+                    'status', {state} -> 'status',
+                    'tasks', {state} -> 'tasks'
                 )
-                where {r_state} ? 'spec'
+                where {state} ? 'spec'
                 """
-            ),
+            ).format(runs=self._runs(), **self._columns(RunsColumn)),
         )
 
     async def save(

@@ -16,6 +16,7 @@ import chainlit as cl
 import krb5
 import pytest
 from chainlit.auth.jwt import create_jwt
+from chainlit_stand import SESSIONS
 from gssapi import Credentials, Name, NameType, SecurityContext
 from starlette.requests import Request
 
@@ -23,13 +24,13 @@ from boba.auth import AuthService, IssuedSession, JwtTokens
 from boba.auth.config import KerberosAuthConfig, KerberosRolesConfig
 from boba.auth.sso import SpnegoGate, SsoSignIn
 from boba.chainlit.auth.kerberos import KerberosAuth
-from boba.chainlit.infra.session import ChainlitSession
+from boba.chainlit.auth.refresh import PageUrls, SessionRefresh
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
-from boba.identity.roles import RoleExcludeConfig
+from boba.identity.admission import RoleExcludeConfig
 from boba.identity.session import SignInProvider, UserMetadataField
 from boba.identity.sso import OwnRequest, SsoChallenge
-from boba.identity.token import CookieSpec
+from boba.identity.token import CookieSpec, SessionRenewal
 from boba.krb import KerberosEnv, ServiceTicketIssuer
 from boba.runtime.config import RuntimeConfig
 from boba.runtime.http import SsoRequests
@@ -42,6 +43,9 @@ SERVICE_KEYTAB = Path(STAND.krb_http_keytab)
 SERVICE_SPN = f"HTTP/{STAND.krb_domain}@{STAND.krb_realm}"
 USER_PRINCIPAL = STAND.reader_principal
 TARGET = STAND.pg_spn
+
+APP_ROOT = Path(os.environ["BOBA_BASE"]) / "app_root"
+"""Каталог chainlit стенда: там лежит собранный скрипт страницы."""
 
 pytestmark = [
     pytest.mark.integration,
@@ -86,9 +90,12 @@ def _kerberos_auth(
         password=None,
         sso=SpnegoGate(SsoSignIn(config, session.auth_secret)),
         users=users,
+        renewal=SessionRenewal.of(
+            session.session_ttl_sec, session.session_ttl_sec * 24
+        ),
     )
 
-    return KerberosAuth("/boba", config.sso_path, auth)
+    return KerberosAuth(config.sso_path, PageUrls.of("/boba", config.sso_path), auth)
 
 
 @pytest.fixture
@@ -200,7 +207,8 @@ class Refresh:
             "client": ("127.0.0.1", 1234),
         }
 
-        response = await auth.refresh(Request(scope))
+        refresh = SessionRefresh(auth._urls, auth.auth, SESSIONS, APP_ROOT)
+        response = await refresh.refresh(Request(scope))
         raw = [(key, value) for key, value in response.raw_headers]
 
         return response.status_code, Refresh._token_of(raw, _auth_cookie_name)
@@ -262,7 +270,7 @@ async def test_sign_in_puts_principal_and_ticket_into_the_jwt(
     if not metadata.get(UserMetadataField.ROLES):
         raise AssertionError(f"roles must be mapped: {metadata}")
 
-    sso = ChainlitSession.ticket_of_token(create_jwt(user))
+    sso = SESSIONS.ticket_of_token(create_jwt(user))
     if sso is None:
         raise AssertionError("JWT of the sign-in must carry the ticket")
     if sso.principal != USER_PRINCIPAL:
@@ -287,12 +295,12 @@ async def test_users_row_keeps_no_ticket(
     user = await _signed_in(kerberos_auth, tmp_path)
     stored = await _users(runtime_config, pool).get_user(user.identifier)
     assert stored is not None, "sign-in must persist the users row"
-    if UserMetadataField.TICKET in stored.metadata:
+    if stored.sign_in.sealed_ticket:
         raise AssertionError(
-            f"the users row must not carry the ticket: {stored.metadata}"
+            f"the users row must not carry the ticket: {stored.sign_in}"
         )
-    if stored.metadata.get(UserMetadataField.PRINCIPAL) != USER_PRINCIPAL:
-        raise AssertionError(f"the rest of metadata must survive: {stored.metadata}")
+    if stored.sign_in.principal != USER_PRINCIPAL:
+        raise AssertionError(f"the rest of metadata must survive: {stored.sign_in}")
 
 
 async def test_stale_jwt_without_ticket_is_refused(
@@ -306,7 +314,7 @@ async def test_stale_jwt_without_ticket_is_refused(
             UserMetadataField.ROLES: ["read"],
         },
     )
-    if ChainlitSession.ticket_of_token(create_jwt(stale)) is not None:
+    if SESSIONS.ticket_of_token(create_jwt(stale)) is not None:
         raise AssertionError("a sign-in without a ticket must not resolve")
 
 
@@ -319,7 +327,7 @@ async def test_refresh_issues_a_new_jwt_with_a_fresh_ticket(
     """Билет входа на исходе, а сессия жива: обмен выдаёт новый JWT с новым билетом."""
     user = await _signed_in(kerberos_auth, tmp_path)
     token = create_jwt(user)
-    before = ChainlitSession.ticket_of_token(token)
+    before = SESSIONS.ticket_of_token(token)
     if before is None:
         raise AssertionError("JWT of the sign-in must carry the ticket")
 
@@ -331,12 +339,9 @@ async def test_refresh_issues_a_new_jwt_with_a_fresh_ticket(
     if not renewed:
         raise AssertionError("refresh must set a new session cookie")
 
-    after = ChainlitSession.ticket_of_token(renewed)
+    after = SESSIONS.ticket_of_token(renewed)
     if after is None:
-        raise AssertionError(
-            f"the new JWT must carry a ticket: {len(renewed)} chars, "
-            f"decoded {ChainlitSession.user_of_token(renewed)}"
-        )
+        raise AssertionError(f"the new JWT must carry a ticket: {len(renewed)} chars")
     if after.sealed == before.sealed:
         raise AssertionError("refresh must seal a fresh ticket")
     if after.principal != USER_PRINCIPAL:
@@ -383,11 +388,16 @@ async def test_refresh_of_another_principal_is_refused(
 
 async def test_page_script_knows_where_to_refresh(kerberos_auth: KerberosAuth) -> None:
     """Адрес обмена подставляет сервер: скрипт страницы не собирает его сам."""
-    script = kerberos_auth._get_static_button()
+    refresh = SessionRefresh(
+        kerberos_auth._urls, kerberos_auth.auth, SESSIONS, APP_ROOT
+    )
+    script = refresh.script()
     if kerberos_auth._urls.refresh not in script:
-        raise AssertionError("sso.js must carry the refresh url")
+        raise AssertionError("page.js must carry the refresh url")
+    if kerberos_auth._urls.sso not in script:
+        raise AssertionError("page.js must carry the sso url")
     if OwnRequest.HEADER not in script:
-        raise AssertionError("sso.js must mark its own request with the header")
+        raise AssertionError("page.js must mark its own request with the header")
     if "__REFRESH" in script:
         raise AssertionError("the placeholders must be replaced")
 

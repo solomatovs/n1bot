@@ -25,15 +25,19 @@ class PasswordCallback:
         chainlit_config.code.password_auth_callback = self.password_auth
 
     async def password_auth(self, username: str, password: str) -> cl.User | None:
-        """None — chainlit отвечает своим 401; прочие ошибки входа идут наверх."""
+        """None — chainlit отвечает своим 401; прочие ошибки входа идут наверх.
+
+        Строку users и JWT chainlit заводит сам после колбэка, поэтому сервис
+        входа зовётся без выпуска сессии.
+        """
         try:
-            session = await self._auth.by_password(username, password)
+            signed = await self._auth.sign_in(username, password)
         except AuthenticationError as exc:
             logger.info("password sign-in refused [user=%s]: %s", username, exc)
             return None
 
         return cl.User(
-            identifier=session.signed.identifier,
-            display_name=session.signed.display_name,
-            metadata=dict(session.signed.metadata),
+            identifier=signed.identifier,
+            display_name=signed.display_name,
+            metadata=signed.sign_in.render(),
         )

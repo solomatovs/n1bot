@@ -10,6 +10,7 @@ import os
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -23,7 +24,7 @@ from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
 from boba.identity.session import UserMetadataField
 from boba.identity.signin import SignedIn
 from boba.identity.sso import OwnRequest
-from boba.identity.token import CookieSpec
+from boba.identity.token import CookieSpec, SessionRenewal
 from boba.krb import KerberosEnv
 from boba.runtime.config import StudioRuntimeConfig
 from boba.stand.auth import NoUsers, StubAuthenticator
@@ -68,11 +69,11 @@ class Users(PersistedUsers, UsersUpsert):
         self.stored_metadata: list[dict[str, object]] = []
 
     async def ensure_user(self, signed: SignedIn) -> AuthenticatedUser:
-        self.stored_metadata.append(dict(signed.metadata))
+        self.stored_metadata.append(signed.sign_in.persistable().render())
         row = AuthenticatedUser(
-            id=str(len(self.rows) + 1),
+            id=UUID(int=len(self.rows) + 1),
             identifier=signed.identifier,
-            metadata=dict(signed.metadata),
+            sign_in=signed.sign_in,
         )
         self.rows[signed.identifier] = row
         return row
@@ -95,6 +96,7 @@ class Stand:
             password=None,
             sso=SpnegoGate(self.sign_in),
             users=self.users,
+            renewal=SessionRenewal.of(3600, 3600 * 24),
         )
         wiring = SignInWiring(
             auth=self.auth,
@@ -198,7 +200,7 @@ async def test_refresh_issues_a_fresh_ticket_for_the_session(
     assert before is not None
 
     reply = await client.post(
-        f"{ApiVersion.V1}{SignInUrl.SSO_REFRESH}",
+        f"{ApiVersion.V1}{SignInUrl.REFRESH}",
         headers={
             **_negotiate(SsoBrowser.token(SITE, tmp_path)),
             OwnRequest.HEADER.value: OwnRequest.VALUE.value,
@@ -217,11 +219,11 @@ async def test_refresh_without_its_own_header_or_session_is_refused(
     client: AsyncClient, tmp_path: Path, krb5_env: None
 ) -> None:
     foreign = await client.post(
-        f"{ApiVersion.V1}{SignInUrl.SSO_REFRESH}",
+        f"{ApiVersion.V1}{SignInUrl.REFRESH}",
         headers=_negotiate(SsoBrowser.token(SITE, tmp_path)),
     )
     no_session = await client.post(
-        f"{ApiVersion.V1}{SignInUrl.SSO_REFRESH}",
+        f"{ApiVersion.V1}{SignInUrl.REFRESH}",
         headers={
             **_negotiate(SsoBrowser.token(SITE, tmp_path)),
             OwnRequest.HEADER.value: OwnRequest.VALUE.value,

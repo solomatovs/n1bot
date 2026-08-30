@@ -4,18 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, ClassVar
 from uuid import UUID
 
 import pytest
 from chainlit_stand import use_session
 
+from boba.auth import JwtTokens
 from boba.chainlit.infra.log_context import (
     RequestUserContext,
     RequestUserMiddleware,
     UserLogContext,
 )
 from boba.chainlit.infra.session import ChainlitSession
+from boba.identity.signin import SignedIn, SignInMetadata
 
 
 @pytest.fixture(autouse=True)
@@ -93,8 +95,14 @@ class TestUserInEveryRecord:
 
 
 class TestRequestUserMiddleware:
-    class _JwtUser:
-        identifier = "sidorov"
+    SECRET: ClassVar[str] = "log-context-secret"
+    COOKIE: ClassVar[str] = "access_token"
+
+    @classmethod
+    def _middleware(cls, app: Any) -> RequestUserMiddleware:
+        return RequestUserMiddleware(
+            app, tokens=JwtTokens(cls.SECRET, 60), cookie=cls.COOKIE
+        )
 
     @staticmethod
     def _scope(headers: list[tuple[bytes, bytes]]) -> dict[str, Any]:
@@ -110,19 +118,18 @@ class TestRequestUserMiddleware:
 
         asyncio.run(middleware(scope, receive, send))
 
-    def test_label_visible_inside_request_and_reset_after(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import chainlit.auth.jwt
-
-        monkeypatch.setattr(chainlit.auth.jwt, "decode_jwt", lambda _t: self._JwtUser())
+    def test_label_visible_inside_request_and_reset_after(self) -> None:
         seen: list[str] = []
 
         async def app(scope: Any, receive: Any, send: Any) -> None:
             seen.append(RequestUserContext.get())
 
-        scope = self._scope([(b"authorization", b"Bearer whatever")])
-        self._run(RequestUserMiddleware(app), scope)
+        signed = SignedIn(
+            identifier="sidorov", display_name="", sign_in=SignInMetadata()
+        )
+        token = JwtTokens(self.SECRET, 60).issue(signed)
+        scope = self._scope([(b"authorization", f"Bearer {token}".encode())])
+        self._run(self._middleware(app), scope)
         if seen != ["sidorov"]:
             raise AssertionError('seen == ["sidorov"]')
         if RequestUserContext.get() != "":
@@ -135,7 +142,7 @@ class TestRequestUserMiddleware:
             seen.append(RequestUserContext.get())
 
         scope = self._scope([(b"cookie", b"access_token=garbage")])
-        self._run(RequestUserMiddleware(app), scope)
+        self._run(self._middleware(app), scope)
         if seen != [""]:
             raise AssertionError('seen == [""]')
 
@@ -145,6 +152,6 @@ class TestRequestUserMiddleware:
         async def app(scope: Any, receive: Any, send: Any) -> None:
             called.append(True)
 
-        self._run(RequestUserMiddleware(app), {"type": "lifespan"})
+        self._run(self._middleware(app), {"type": "lifespan"})
         if called != [True]:
             raise AssertionError("called == [True]")

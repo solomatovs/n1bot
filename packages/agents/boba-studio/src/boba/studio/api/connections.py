@@ -6,6 +6,9 @@
 Проверка: POST /connections/check {profile} и POST /connections/{id}/check — пробное
 соединение; исход всегда 200 с ProbeResult{ok, message, elapsed_ms}.
 
+Правила владения и уникальности имени — у UserConnectionsService; маршруты
+разбирают запрос, зовут сервис и переводят его отказы в статусы.
+
 Ошибки (HTTP):
 401 — вход не сохранён слоем данных.
 403 — профиль недоступен ролям пользователя; соединение общее, а не своё.
@@ -17,7 +20,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+from contextlib import asynccontextmanager
 from typing import Any, ClassVar
 from uuid import UUID
 
@@ -33,8 +37,10 @@ from pydantic import (
 
 from boba.chat.profiles import ChatProfiles
 from boba.connection_broker.probe import ConnectionProbe
-from boba.connection_broker.store import ConnectionStore, ConnectionStoreError
-from boba.connection_broker.user_connections import CredentialsRef, StoreRef
+from boba.connection_broker.service import UserConnectionsService
+from boba.connection_broker.store import ConnectionStoreError
+from boba.connection_broker.user_connections import CredentialsRef
+from boba.connections.marks import ConnectionRefusal
 from boba.connections.profile import (
     ConnectionKind,
     ConnectionProfile,
@@ -43,6 +49,7 @@ from boba.connections.profile import (
 )
 from boba.identity.api import ApiSubject
 from boba.identity.context import Scope, Subject
+from boba.identity.errors import RefusalError
 from boba.identity.locks import LockToken
 from boba.messaging import ChangeAction, ConnectionsChanged, MessageBus
 from boba.studio.api.auth import CurrentSubject, CurrentUser
@@ -149,19 +156,38 @@ class ProfileSchema:
         return cls._ADAPTER.json_schema()
 
 
+class RefusalStatus:
+    """Статус ответа по виду отказа сервиса соединений."""
+
+    _STATUS: ClassVar[Mapping[str, int]] = {
+        ConnectionRefusal.NOT_VISIBLE: 404,
+        ConnectionRefusal.NOT_OWNED: 403,
+        ConnectionRefusal.NAME_TAKEN: 409,
+    }
+
+    @classmethod
+    def of(cls, exc: RefusalError) -> HTTPException:
+        status = cls._STATUS.get(exc.kind)
+        if status is None:
+            msg = f"unexpected connection refusal {exc.kind!r}: {exc}"
+            raise RuntimeError(msg) from exc
+
+        return HTTPException(status_code=status, detail=str(exc))
+
+
 class ConnectionsApi:
-    """Обработчики /connections."""
+    """Обработчики /connections над сервисом соединений субъекта."""
 
     TAG: ClassVar[str] = "connections"
 
     def __init__(
         self,
-        store: StoreRef,
+        service: UserConnectionsService,
         profiles: ChatProfiles,
         credentials: CredentialsRef,
         bus: BusSource,
     ) -> None:
-        self._store = store
+        self._service = service
         self._profiles = profiles
         self._credentials = credentials
         self._bus = bus
@@ -200,19 +226,16 @@ class ConnectionsApi:
         identity: CurrentSubject,
         kind: ConnectionKind | None = None,
     ) -> Sequence[ConnectionView]:
-        subject = identity.subject
-        store = self._resolved()
-
         kinds: list[ConnectionKind] = list(ConnectionKind)
         if kind is not None:
             kinds = [kind]
 
-        rows = await self._visible(store, subject, kinds)
-        owned = await self._owned(store, subject)
+        async with self._served():
+            visible = await self._service.visible(identity.subject, kinds)
 
         views: list[ConnectionView] = []
-        for row in rows:
-            views.append(ConnectionView.of(row, row.id in owned))
+        for item in visible:
+            views.append(ConnectionView.of(item.row, item.mine))
 
         return views
 
@@ -222,19 +245,10 @@ class ConnectionsApi:
         identity: CurrentSubject,
     ) -> ConnectionView:
         subject = identity.subject
-        store = self._resolved()
+        async with self._served():
+            row = await self._service.create(subject, body.name, body.profile)
 
-        await self._require_free_name(store, subject, body.name, except_id=None)
-
-        try:
-            connection_id = await store.add_owned(
-                body.name, body.profile, subject.user_id
-            )
-            row = await store.get(connection_id)
-        except ConnectionStoreError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-        await self._changed(subject, connection_id, body.name, ChangeAction.CREATED)
+        await self._changed(subject, row.id, row.name, ChangeAction.CREATED)
         return ConnectionView.of(row, mine=True)
 
     async def replace(
@@ -244,40 +258,27 @@ class ConnectionsApi:
         identity: CurrentSubject,
     ) -> ConnectionView:
         subject = identity.subject
-        store = self._resolved()
+        async with self._served():
+            row = await self._service.replace(
+                subject, connection_id, body.name, body.profile
+            )
 
-        await self._require_owned(store, subject, connection_id)
-        await self._require_free_name(
-            store, subject, body.name, except_id=connection_id
-        )
-
-        try:
-            await store.update(connection_id, body.name, body.profile)
-            row = await store.get(connection_id)
-        except ConnectionStoreError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-        await self._changed(subject, connection_id, body.name, ChangeAction.UPDATED)
+        await self._changed(subject, row.id, row.name, ChangeAction.UPDATED)
         return ConnectionView.of(row, mine=True)
 
     async def delete(
         self, connection_id: UUID, identity: CurrentSubject
     ) -> ConnectionDeleted:
         subject = identity.subject
-        store = self._resolved()
+        async with self._served():
+            outcome = await self._service.delete(subject, connection_id)
 
-        await self._require_owned(store, subject, connection_id)
+        if outcome.deleted:
+            await self._changed(
+                subject, connection_id, outcome.name, ChangeAction.DELETED
+            )
 
-        try:
-            row = await store.get(connection_id)
-            deleted = await store.remove(connection_id)
-        except ConnectionStoreError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-        if deleted:
-            await self._changed(subject, connection_id, row.name, ChangeAction.DELETED)
-
-        return ConnectionDeleted(deleted=deleted)
+        return ConnectionDeleted(deleted=outcome.deleted)
 
     async def check(self, body: ProbeBody, identity: CurrentSubject) -> ProbeResult:
         """Пробное соединение по профилю из формы; делегирование — билетом входа."""
@@ -288,16 +289,22 @@ class ConnectionsApi:
         self, connection_id: UUID, identity: CurrentSubject
     ) -> ProbeResult:
         """Пробное соединение по сохранённой строке: видимой пользователю."""
-        store = self._resolved()
+        async with self._served():
+            row = await self._service.visible_row(identity.subject, connection_id)
 
-        visible = await self._visible(store, identity.subject, list(ConnectionKind))
-        for row in visible:
-            if row.id == connection_id:
-                return await self._probed(identity, row.profile)
+        return await self._probed(identity, row.profile)
 
-        raise HTTPException(
-            status_code=404, detail=f"connection #{connection_id} not found"
-        )
+    @asynccontextmanager
+    async def _served(self) -> AsyncGenerator[None, None]:
+        """Граница HTTP: отказы сервиса — статусы, недоступность — 503."""
+        try:
+            yield
+        except RefusalError as exc:
+            raise RefusalStatus.of(exc) from exc
+        except ConnectionStoreError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     async def _probed(
         self, identity: ApiSubject, profile: ConnectionProfile
@@ -305,65 +312,3 @@ class ConnectionsApi:
         probe = ConnectionProbe(self._credentials())
 
         return await probe.probe(profile, identity.credential)
-
-    def _resolved(self) -> ConnectionStore:
-        try:
-            return self._store()
-        except RuntimeError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-    @staticmethod
-    async def _visible(
-        store: ConnectionStore, subject: Subject, kinds: Sequence[ConnectionKind]
-    ) -> list[StoredConnection]:
-        """Свои и выданные по роли соединения указанных видов."""
-        rows: list[StoredConnection] = []
-        try:
-            for kind in kinds:
-                rows.extend(await store.for_subject(subject, kind))
-        except ConnectionStoreError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-        return rows
-
-    @staticmethod
-    async def _owned(store: ConnectionStore, subject: Subject) -> frozenset[UUID]:
-        try:
-            return await store.owned_ids(subject.user_id)
-        except ConnectionStoreError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-    async def _require_owned(
-        self, store: ConnectionStore, subject: Subject, connection_id: UUID
-    ) -> None:
-        """404 — не видно пользователю, 403 — видно, но общее."""
-        owned = await self._owned(store, subject)
-        if connection_id in owned:
-            return
-
-        visible = await self._visible(store, subject, list(ConnectionKind))
-        for row in visible:
-            if row.id == connection_id:
-                msg = f"connection #{connection_id} is shared: only its owner edits it"
-                raise HTTPException(status_code=403, detail=msg)
-
-        raise HTTPException(
-            status_code=404, detail=f"connection #{connection_id} not found"
-        )
-
-    async def _require_free_name(
-        self,
-        store: ConnectionStore,
-        subject: Subject,
-        name: str,
-        except_id: UUID | None,
-    ) -> None:
-        """Имя уникально среди видимых: инструменты выбирают соединение по имени."""
-        visible = await self._visible(store, subject, list(ConnectionKind))
-        for row in visible:
-            if row.id == except_id:
-                continue
-
-            if row.name == name:
-                msg = f"connection name {name!r} is already used"
-                raise HTTPException(status_code=409, detail=msg)

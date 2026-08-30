@@ -149,7 +149,7 @@ class KerberosCredentialSource(CredentialSource):
         Обмен идёт молча и кладёт в сессию новый JWT; ждать его вызов не
         обязан — пока билет жив, работает текущий.
         """
-        if ticket.lifetime() >= self.REFRESH_BELOW:
+        if not ticket.needs_refresh(self.REFRESH_BELOW):
             return
 
         logger.info(

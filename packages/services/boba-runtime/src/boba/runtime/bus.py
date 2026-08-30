@@ -768,9 +768,9 @@ class PgMessageBus(MessageBus):
                     sql.SQL(
                         """
                         delete from {commands}
-                         where 1=1
-                           and {scope_kind} = %(scope_kind)s
-                           and {scope_id} = %(scope_id)s
+                        where 1=1
+                            and {scope_kind} = %(scope_kind)s
+                            and {scope_id} = %(scope_id)s
                         """
                     ).format(
                         commands=self._table(LiveTable.COMMANDS),

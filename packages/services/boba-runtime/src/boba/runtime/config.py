@@ -22,6 +22,7 @@ from boba.auth.config import (
 from boba.chat.profiles import ChatProfileConfig
 from boba.config import bind, build_app_config
 from boba.connections.postgres import PostgresConfig
+from boba.identity.token import SessionRenewal
 from boba.krb import KerberosWorkspaceConfig
 from boba.krb.seal import SsoTickets, TicketSealer
 from boba.sandbox import CgroupManager
@@ -258,6 +259,21 @@ class SessionConfig(BaseModel):
         description="SameSite cookie входа; none включает Secure."
     )
     session_ttl_sec: int = Field(gt=0, description="Срок JWT и cookie входа.")
+    session_max_sec: int = Field(
+        gt=0,
+        description="Потолок сессии от первого входа: дольше без нового входа не продлить.",
+    )
+
+    @model_validator(mode="after")
+    def _max_covers_ttl(self) -> SessionConfig:
+        if self.session_max_sec < self.session_ttl_sec:
+            msg = "session_max_sec must not be shorter than session_ttl_sec"
+            raise ValueError(msg)
+
+        return self
+
+    def renewal(self) -> SessionRenewal:
+        return SessionRenewal.of(self.session_ttl_sec, self.session_max_sec)
 
 
 class StudioConfig(BaseModel):
@@ -372,12 +388,36 @@ class RuntimeConfig(BaseModel):
 
         return config
 
+    @field_validator("auth")
+    @classmethod
+    def _kerberos_at_most_once(cls, value: list[AuthConfig]) -> list[AuthConfig]:
+        found = 0
+        for entry in value:
+            if isinstance(entry, KerberosAuthConfig):
+                found += 1
+
+        if found > 1:
+            # один SPNEGO-обмен на приложение: второй [auth.kerberos] — ошибка конфига
+            msg = "kerberos authorization configured twice"
+            raise ValueError(msg)
+
+        return value
+
     def kerberos(self) -> KerberosAuthConfig | None:
         for entry in self.auth:
             if isinstance(entry, KerberosAuthConfig):
                 return entry
 
         return None
+
+    def sso_path(self) -> str:
+        """Путь SPNEGO-обмена из [auth.kerberos]; без него — RuntimeError."""
+        kerberos = self.kerberos()
+        if kerberos is None:
+            msg = "sso is configured without [auth.kerberos]"
+            raise RuntimeError(msg)
+
+        return kerberos.sso_path
 
     def sso_tickets(self) -> SsoTickets | None:
         """Открыватель билетов SSO-входа; None — kerberos в [auth] не настроен."""

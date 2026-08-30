@@ -9,7 +9,7 @@ import jwt
 import pytest
 
 from boba.auth import JwtTokens
-from boba.identity.signin import SignedIn
+from boba.identity.signin import SignedIn, SignInMetadata
 from boba.identity.token import ClaimKey, TokenRejectedError, TokenRejection
 
 SECRET = "stand-secret"
@@ -25,7 +25,9 @@ class TestJwtTokens:
     def test_issued_token_reads_back(self) -> None:
         tokens = JwtTokens(SECRET, 60)
         signed = SignedIn(
-            identifier="alice", display_name="Alice", metadata={"roles": ["DEV"]}
+            identifier="alice",
+            display_name="Alice",
+            sign_in=SignInMetadata(roles=frozenset({"DEV"})),
         )
 
         claims = tokens.read(tokens.issue(signed))
@@ -34,7 +36,9 @@ class TestJwtTokens:
         assert claims.exp - claims.iat == 60
 
     def test_claims_match_the_peer_layout(self) -> None:
-        signed = SignedIn(identifier="alice", display_name="Alice", metadata={})
+        signed = SignedIn(
+            identifier="alice", display_name="Alice", sign_in=SignInMetadata()
+        )
         token = JwtTokens(SECRET, 60).issue(signed)
 
         raw = jwt.decode(token, SECRET, algorithms=["HS256"])
@@ -55,7 +59,7 @@ class TestJwtTokens:
     def test_rejection_reasons(
         self, token: Callable[[], str], reason: TokenRejection
     ) -> None:
-        """Токен собирается в самом тесте: срок в параметре истёк бы за долгий прогон."""
+        """Токен собирается в самом тесте: срок из параметра истёк бы за прогон."""
         with pytest.raises(TokenRejectedError) as caught:
             JwtTokens(SECRET, 60).read(token())
 

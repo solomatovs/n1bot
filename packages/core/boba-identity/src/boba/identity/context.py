@@ -13,7 +13,7 @@ RefusalError — вызов идёт вне контекста (ContextKind.NO_C
 
 from __future__ import annotations
 
-from collections.abc import Generator, Iterable, Mapping
+from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from enum import StrEnum
@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from boba.cancellation import RunCancellation
 from boba.identity.errors import RefusalError
-from boba.identity.session import LogUserMark, SignInProvider, UserMetadataField
+from boba.identity.session import LogUserMark
 
 __all__ = [
     "CallContext",
@@ -124,15 +124,12 @@ class Subject(BaseModel):
 
     @classmethod
     def of_user(
-        cls, user_id: str, login: str, roles: Iterable[str], profile: str
+        cls, user_id: UUID, login: str, roles: Iterable[str], profile: str
     ) -> Subject:
-        """Субъект по строке users; id не uuid — ValueError."""
-        try:
-            parsed = UUID(user_id)
-        except ValueError as exc:
-            raise ValueError(f"user id {user_id!r} is not the users.id uuid") from exc
-
-        return cls(user_id=parsed, login=login, roles=frozenset(roles), profile=profile)
+        """Субъект по строке users под выбранным профилем."""
+        return cls(
+            user_id=user_id, login=login, roles=frozenset(roles), profile=profile
+        )
 
 
 class ChatInitiator(BaseModel):
@@ -193,8 +190,8 @@ class DelegatedTicket(BaseModel):
     """Делегированный kerberos-билет SSO-входа: чей он и сам билет под шифром.
 
     principal — чей билет, sealed — запечатанные креды входа (открывает
-    TicketSealer с секретом приложения). Единственная модель этой пары: из
-    metadata пользователя, из JWT и из контекста вызова читается она же.
+    TicketSealer с секретом приложения). Из metadata входа его достаёт
+    SignInMetadata.ticket().
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -202,73 +199,6 @@ class DelegatedTicket(BaseModel):
     kind: Literal["delegated"] = "delegated"
     principal: str
     sealed: str
-
-    @classmethod
-    def of_metadata(cls, metadata: Mapping[str, object]) -> DelegatedTicket | None:
-        """Билет из metadata входа; None — делегирования не было."""
-        if metadata.get(UserMetadataField.PROVIDER) != SignInProvider.KERBEROS:
-            return None
-
-        principal = metadata.get(UserMetadataField.PRINCIPAL)
-        if not isinstance(principal, str) or not principal:
-            return None
-
-        sealed = metadata.get(UserMetadataField.TICKET)
-        if not isinstance(sealed, str) or not sealed:
-            return None
-
-        return cls(principal=principal, sealed=sealed)
-
-    @classmethod
-    def credential_of(cls, metadata: Mapping[str, object]) -> Credential:
-        """Секреты вызова по metadata входа: билет либо причина его отсутствия."""
-        ticket = cls.of_metadata(metadata)
-        if ticket is not None:
-            return ticket
-
-        return NoUserCredential(reason=cls.absence_reason(metadata))
-
-    @classmethod
-    def absence_reason(cls, metadata: Mapping[str, object]) -> str:
-        """Почему у входа нет делегированного билета; текст готов для отказа."""
-        provider = metadata.get(UserMetadataField.PROVIDER)
-        if provider != SignInProvider.KERBEROS:
-            return (
-                f"you signed in with {cls._provider_name(provider)}, and this "
-                "connection acts in the database on your behalf: sign in with "
-                "the Kerberos SSO button instead"
-            )
-
-        principal = metadata.get(UserMetadataField.PRINCIPAL)
-        if not isinstance(principal, str):
-            return cls._no_principal()
-
-        if not principal:
-            return cls._no_principal()
-
-        return (
-            f"the Kerberos sign-in of {principal} carried no delegated ticket: "
-            "either Active Directory does not allow this service to act for "
-            "you, or the browser sent no ticket; sign in again from a "
-            "domain-joined browser"
-        )
-
-    @staticmethod
-    def _no_principal() -> str:
-        return (
-            "your Kerberos sign-in predates delegated connections "
-            "(the session token names no principal): sign out and sign in again"
-        )
-
-    @staticmethod
-    def _provider_name(provider: object) -> str:
-        if not isinstance(provider, str):
-            return "no known provider"
-
-        if not provider:
-            return "no known provider"
-
-        return provider
 
 
 Credential = Annotated[DelegatedTicket | NoUserCredential, Field(discriminator="kind")]

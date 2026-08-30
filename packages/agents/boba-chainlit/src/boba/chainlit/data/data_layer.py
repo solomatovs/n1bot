@@ -41,6 +41,7 @@ from boba.chat.threads import (
 from boba.identity.api import StoredUser, UserRows
 from boba.identity.context import Scope
 from boba.identity.session import SessionSource
+from boba.identity.signin import SignInMetadata
 from boba.messaging import (
     AnyMessage,
     ChangeAction,
@@ -338,8 +339,11 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
 
     @data_boundary
     async def create_user(self, user: ChainlitUser) -> PersistedUser | None:
-        # копия metadata: строка правит своё поле, а не словарь вызывающего
-        stored = await self._users.upsert(user.identifier, dict(user.metadata))
+        # в строку users уходит только вход без билета; настройки строки не трогаются
+        sign_in = SignInMetadata.parse(dict(user.metadata))
+        stored = await self._users.upsert(
+            user.identifier, sign_in.persistable().render()
+        )
 
         return ThreadDicts.user(stored)
 

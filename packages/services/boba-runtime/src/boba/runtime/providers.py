@@ -14,7 +14,7 @@ from omegaconf import DictConfig
 
 from boba.access import GrantCheck
 from boba.auth import AuthService, JwtTokens
-from boba.auth.credentials import KerberosCredentialSource, NoRefresh
+from boba.auth.credentials import KerberosCredentialSource
 from boba.auth.signin import PasswordSignIns
 from boba.auth.sso import SpnegoGate, SsoSignIn
 from boba.chat.profiles import RolesSection
@@ -33,6 +33,7 @@ from boba.runtime.journal import DirVault, StreamJournal
 from boba.runtime.locks import LockReaper, PgLiveLocks
 from boba.runtime.payloads import PgPayloadStore
 from boba.runtime.plugins import PluginMeta, PluginTable, ToolLoader
+from boba.runtime.refresh import BusRefreshSignal, LiveSessions, SessionKeeper
 from boba.runtime.refs import RuntimeRefs
 from boba.runtime.threads import ThreadsTable
 from boba.runtime.turns import StaleTurnCloser
@@ -114,8 +115,14 @@ def plugin_table() -> PluginTable:
 
 
 def refresh_signal() -> RefreshSignal:
-    """Сигнал обновления билета входа; чат заменяет своим."""
-    return NoRefresh()
+    """Сигнал обновления билета входа: в область пользователя через шину процесса."""
+    return BusRefreshSignal(message_bus_ref)
+
+
+def live_sessions() -> LiveSessions:
+    """Живые сессии инстанса; заглушку заменяет процесс через provide."""
+    msg = "live sessions provider is not set by the process"
+    raise RuntimeError(msg)
 
 
 def grant_check() -> GrantCheck:
@@ -332,13 +339,22 @@ def threads_table(
     return ThreadsTable(config.data_layer.postgres, config.data_layer.db_schema)
 
 
+def session_tokens(
+    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+) -> JwtTokens:
+    """Выпуск и чтение JWT сессии под секретом [session]: один читатель на процесс."""
+    session = config.session
+
+    return JwtTokens(session.auth_secret, session.session_ttl_sec)
+
+
 def auth_service(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
     table: Annotated[UsersTable, Depends(users_table)],
+    tokens: Annotated[JwtTokens, Depends(session_tokens)],
 ) -> AuthService:
     """Вход пользователя: пароли и SPNEGO из [auth], токен и cookie из [session]."""
     session = config.session
-    tokens = JwtTokens(session.auth_secret, session.session_ttl_sec)
     cookie = CookieSpec(
         name=session.cookie,
         samesite=session.cookie_samesite,
@@ -355,6 +371,7 @@ def auth_service(
         password=PasswordSignIns.of(config.auth),
         sso=sso,
         users=table,
+        renewal=session.renewal(),
     )
 
 
@@ -423,3 +440,20 @@ def command_runner(
     runner = CommandRunner(bus, instance)
     runner.start()
     return runner
+
+
+async def session_keeper(
+    config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
+    bus: Annotated[PgMessageBus, Depends(message_bus)],
+    sessions: Annotated[LiveSessions, Depends(live_sessions)],
+    tokens: Annotated[JwtTokens, Depends(session_tokens)],
+) -> AsyncGenerator[SessionKeeper, None]:
+    """Сторож сессий на всё время работы: сигнал обновления тем, чей токен на исходе."""
+    keeper = SessionKeeper(
+        bus, sessions, tokens, config.session.renewal(), config.cluster.heartbeat_sec
+    )
+    await keeper.start()
+    try:
+        yield keeper
+    finally:
+        await keeper.stop()

@@ -373,7 +373,8 @@ class PgLiveLocks(LiveLocks):
                         delete from {locks}
                         where
                             {holder} = %(holder)s
-                        """).format(
+                        """
+                    ).format(
                         locks=self._locks(),
                         holder=SqlNames.ident(LiveLocksColumn.HOLDER),
                     ),

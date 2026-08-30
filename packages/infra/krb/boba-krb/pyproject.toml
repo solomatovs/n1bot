@@ -18,6 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 seal = ["cryptography>=42"]
 dev = [
+    "cryptography>=42",
     "boba-connections==0.0.14.dev9",
     "boba-stand==0.0.14.dev9",
     "ldap3",

@@ -41,6 +41,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "pyjwt>=2.8",
     "pytest>=8",
 ]
 

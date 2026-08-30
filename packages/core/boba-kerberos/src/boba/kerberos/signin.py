@@ -121,9 +121,12 @@ class SignInTicket(BaseModel):
 
     Constrained — evidence-тикет пользователя и TGT сервиса, forwarded — TGT
     пользователя. Живёт в JWT сессии запечатанным; процесс ничего не хранит.
+    В json ccache едет base64-строкой.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", ser_json_bytes="base64", val_json_bytes="base64"
+    )
 
     principal: str = Field(min_length=1)
     mode: DelegationMode
@@ -138,6 +141,10 @@ class SignInTicket(BaseModel):
             return 0
 
         return remaining
+
+    def needs_refresh(self, below_sec: int) -> bool:
+        """Пора ли просить браузер обменяться заново: остаток меньше порога."""
+        return self.lifetime() < below_sec
 
 
 class SignInCredentials(Protocol):

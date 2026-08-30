@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
-from boba.identity.roles import LdapRolesConfig, RoleExcludeConfig, RoleMappingConfig
+from boba.identity.admission import RoleExcludeConfig, RoleMappingConfig, RoleRules
 from boba.identity.session import LoginTemplate
 from boba.kerberos import AcceptConfig, Delegation
 
@@ -19,6 +19,51 @@ __all__ = [
     "LdapAuthConfig",
     "LocalAuthConfig",
 ]
+
+
+class LdapRolesConfig(BaseModel):
+    """Маппинги ролей и исключений по атрибутам каталога."""
+
+    samaccountname: RoleMappingConfig | None = Field(default=None, description="")
+    samaccountname_ex: RoleExcludeConfig | None = Field(
+        default=None,
+        description="Логины, которым запрещён вход (403).",
+    )
+    member_of: RoleMappingConfig | None = Field(default=None, description="")
+    member_of_ex: RoleExcludeConfig | None = Field(
+        default=None,
+        description="Группы, членам которых запрещён вход (403).",
+    )
+    dn: RoleMappingConfig | None = Field(default=None, description="")
+    dn_ex: RoleExcludeConfig | None = Field(
+        default=None,
+        description="DN пользователей, которым запрещён вход (403).",
+    )
+
+    def rules(self, require_roles: bool) -> RoleRules:
+        return RoleRules(
+            require_roles=require_roles,
+            by_login=_mapping(self.samaccountname),
+            by_login_ex=_exclusions(self.samaccountname_ex),
+            by_member_of=_mapping(self.member_of),
+            by_member_of_ex=_exclusions(self.member_of_ex),
+            by_dn=_mapping(self.dn),
+            by_dn_ex=_exclusions(self.dn_ex),
+        )
+
+
+def _mapping(value: RoleMappingConfig | None) -> RoleMappingConfig:
+    if value is None:
+        return RoleMappingConfig({})
+
+    return value
+
+
+def _exclusions(value: RoleExcludeConfig | None) -> RoleExcludeConfig:
+    if value is None:
+        return RoleExcludeConfig([])
+
+    return value
 
 
 class LocalAuthConfig(BaseModel):
@@ -50,6 +95,13 @@ class LocalAuthConfig(BaseModel):
             "если пользователю не замапилась ни одна роль."
         ),
     )
+
+    def rules(self) -> RoleRules:
+        return RoleRules(
+            require_roles=self.require_roles,
+            by_login=_mapping(self.roles),
+            by_login_ex=_exclusions(self.roles_ex),
+        )
 
 
 class LdapAuthConfig(BaseModel):
@@ -87,6 +139,9 @@ class LdapAuthConfig(BaseModel):
         ),
     )
 
+    def rules(self) -> RoleRules:
+        return self.roles.rules(self.require_roles)
+
 
 class KerberosRolesInLdapMappingConfig(LdapRolesConfig):
     """Мапинг ролей/исключений по атрибутам AD; поля наследуются от LdapRolesConfig."""
@@ -117,6 +172,15 @@ class KerberosRolesConfig(BaseModel):
         default=None,
         description="SID групп из PAC, членам которых запрещён вход (403).",
     )
+
+    def rules(self, require_roles: bool) -> RoleRules:
+        return RoleRules(
+            require_roles=require_roles,
+            by_principal=_mapping(self.principal),
+            by_principal_ex=_exclusions(self.principal_ex),
+            by_sid=_mapping(self.sid),
+            by_sid_ex=_exclusions(self.sid_ex),
+        )
 
 
 class KerberosAuthConfig(BaseModel):
@@ -152,6 +216,17 @@ class KerberosAuthConfig(BaseModel):
     @classmethod
     def _principal_format_has_username(cls, value: str) -> str:
         return LoginTemplate.check_principal(value)
+
+    def rules(self) -> RoleRules:
+        """Правила по принципалу и SID плюс маппинги каталога, если он настроен."""
+        rules = RoleRules(require_roles=self.require_roles)
+        if self.roles is not None:
+            rules = rules.merged(self.roles.rules(self.require_roles))
+
+        if self.ldap_roles is not None:
+            rules = rules.merged(self.ldap_roles.mapping.rules(self.require_roles))
+
+        return rules
 
 
 AuthConfig = Annotated[

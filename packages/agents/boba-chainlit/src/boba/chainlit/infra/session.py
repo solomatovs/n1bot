@@ -6,6 +6,8 @@
 вызова для хода чата собирается тоже здесь.
 
 Ошибки:
+AuthenticationError — у сессии нет токена входа либо он не принят (истёк,
+    чужая подпись, порча): ход отказывается, пользователю нужен новый вход.
 InternalServiceError — контекст вызова не собрать: у сессии нет треда,
     сохранённого пользователя или выбранного профиля.
 """
@@ -18,23 +20,26 @@ from pathlib import Path
 from typing import Any, ClassVar, cast
 from uuid import UUID
 
-import jwt
-
 import chainlit as cl
 from boba.cancellation import RunCancellation
 from boba.chainlit.domain.context import ChatCallContext
-from boba.identity.api import AuthenticatedUser
 from boba.identity.context import (
     ChatInitiator,
     Credential,
     DelegatedTicket,
-    NoUserCredential,
     Scope,
     Subject,
 )
-from boba.identity.errors import InternalServiceError
+from boba.identity.errors import AuthenticationError, InternalServiceError
 from boba.identity.session import Session, SessionSource
-from chainlit.auth.jwt import decode_jwt
+from boba.identity.signin import SignInMetadata
+from boba.identity.token import (
+    SessionClaims,
+    TokenReader,
+    TokenRejectedError,
+    TokenRejection,
+)
+from boba.runtime.refresh import LiveSessions, LiveToken
 from chainlit.config import config as chainlit_config
 from chainlit.context import ChainlitContextException
 from chainlit.session import WebsocketSession, ws_sessions_id
@@ -58,8 +63,9 @@ class ChainlitSession(Session):
     сессии, принимает вызывающий.
     """
 
-    def __init__(self, session: Any | None) -> None:
+    def __init__(self, session: Any | None, tokens: TokenReader) -> None:
         self._session = session
+        self._tokens = tokens
 
     @property
     def present(self) -> bool:
@@ -134,7 +140,7 @@ class ChainlitSession(Session):
     @property
     def roles(self) -> frozenset[str]:
         """Роли входа — из токена сессии: их выдал вход, строка users их не хранит."""
-        return self.roles_of(self.login_user())
+        return self.signed_in().sign_in().roles
 
     @property
     def chat_profile(self) -> str | None:
@@ -176,13 +182,29 @@ class ChainlitSession(Session):
         specs: dict[str, Any] = getattr(self._session, "files_spec", {})
         return specs.get(parent_id)
 
-    def login_user(self) -> cl.User | None:
-        """Пользователь, каким его выпустил вход: из подписанного JWT сессии.
+    def signed_in(self) -> SessionClaims:
+        """Вход, каким его выпустил токен сессии; без годного токена — отказ.
 
-        None — сессии нет, токена нет или он не проходит проверку подписи
-        и срока.
+        Chainlit проверяет токен один раз при подключении сокета, поэтому
+        истёкший срок замечает именно это место — на каждом ходе.
         """
-        return self.user_of_token(self.token)
+        token = self.token
+        if not token:
+            msg = "this session carries no sign-in token: reload the page to sign in"
+            raise AuthenticationError(msg)
+
+        try:
+            return self._tokens.read(token)
+        except TokenRejectedError as exc:
+            if exc.reason is TokenRejection.EXPIRED:
+                msg = "your sign-in has expired: reload the page to sign in again"
+                raise AuthenticationError(msg) from exc
+
+            msg = (
+                f"sign-in token rejected ({exc.reason}): "
+                "reload the page to sign in again"
+            )
+            raise AuthenticationError(msg) from exc
 
     def value(self, key: str, default: Any = None) -> Any:
         """Значение, положенное на сессию приложением (DI-контейнер и т.п.)."""
@@ -244,39 +266,18 @@ class ChainlitSession(Session):
             )
 
         try:
-            return Subject.of_user(user_id, self.label, self.roles, profile)
+            parsed = UUID(user_id)
         except ValueError as exc:
             raise InternalServiceError(
-                internal_detail=str(exc), user_detail=None
+                internal_detail=f"user id {user_id!r} is not the users.id uuid",
+                user_detail=None,
             ) from exc
+
+        return Subject.of_user(parsed, self.label, self.roles, profile)
 
     def _credential(self) -> Credential:
         """Ссылка на делегированный билет входа по JWT сессии; иначе — причина."""
-        user = self.login_user()
-        if user is None:
-            return NoUserCredential(reason="this session has no signed sign-in")
-
-        return DelegatedTicket.credential_of(user.metadata)
-
-    @staticmethod
-    def user_of_token(token: str) -> cl.User | None:
-        """Пользователь из подписанного JWT; None — токен негоден."""
-        if not token:
-            return None
-
-        try:
-            return decode_jwt(token)
-        except jwt.PyJWTError:
-            return None
-
-    @classmethod
-    def ticket_of_token(cls, token: str) -> DelegatedTicket | None:
-        """Ссылка на билет входа из JWT-cookie; None — токен негоден или вход не SSO."""
-        user = cls.user_of_token(token)
-        if user is None:
-            return None
-
-        return DelegatedTicket.of_metadata(user.metadata)
+        return self.signed_in().sign_in().credential()
 
     @staticmethod
     def metadata_of(user: cl.User | cl.PersistedUser | None) -> Mapping[str, object]:
@@ -293,13 +294,26 @@ class ChainlitSession(Session):
     @classmethod
     def roles_of(cls, user: cl.User | cl.PersistedUser | None) -> frozenset[str]:
         """Роли пользователя из metadata; годится и вне контекста сессии."""
-        return AuthenticatedUser.roles_in(cls.metadata_of(user))
+        return SignInMetadata.parse(cls.metadata_of(user)).roles
 
 
-class ChainlitSessions(SessionSource):
+class ChainlitSessions(SessionSource, LiveSessions):
     """Источник сессий chainlit: контекст вызова, реестр сокетов и тред."""
 
     _installed: ClassVar[ChainlitSessions | None] = None
+
+    def __init__(self, tokens: TokenReader) -> None:
+        self._tokens = tokens
+
+    def ticket_of_token(self, token: str) -> DelegatedTicket | None:
+        """Ссылка на билет входа из JWT; None — токен негоден или вход не SSO."""
+        try:
+            claims = self._tokens.read(token)
+        except TokenRejectedError as exc:
+            logger.info("sign-in token rejected: %s", exc.reason)
+            return None
+
+        return claims.ticket()
 
     @classmethod
     def install(cls, source: ChainlitSessions) -> None:
@@ -317,24 +331,24 @@ class ChainlitSessions(SessionSource):
     def current(self) -> ChainlitSession:
         """Сессия текущего вызова; вне контекста chainlit — пустая обёртка."""
         try:
-            return ChainlitSession(cl.context.session)
+            return ChainlitSession(cl.context.session, self._tokens)
         except ChainlitContextException:
-            return ChainlitSession(None)
+            return ChainlitSession(None, self._tokens)
 
     def of(self, session: Any | None) -> ChainlitSession:
         """Обёртка вокруг готового объекта сессии."""
-        return ChainlitSession(session)
+        return ChainlitSession(session, self._tokens)
 
     def by_id(self, session_id: str) -> ChainlitSession:
         """Сессия по её id: так её находит http-обработчик вложений."""
         if not session_id:
-            return ChainlitSession(None)
+            return ChainlitSession(None, self._tokens)
 
-        return ChainlitSession(WebsocketSession.get_by_id(session_id))
+        return ChainlitSession(WebsocketSession.get_by_id(session_id), self._tokens)
 
     def of_socket(self, sid: str) -> ChainlitSession:
         """Сессия по socket-id: так её находит обработчик события сокета."""
-        return ChainlitSession(WebsocketSession.get(sid))
+        return ChainlitSession(WebsocketSession.get(sid), self._tokens)
 
     def adopt_token(self, identifier: str, token: str) -> int:
         """Живые сокет-сессии пользователя получают новый JWT; итог — сколько."""
@@ -352,6 +366,29 @@ class ChainlitSessions(SessionSource):
 
         return adopted
 
+    def live_tokens(self) -> list[LiveToken]:
+        """Токены живых сокет-сессий с сохранённым пользователем: для сторожа сессий."""
+        found: list[LiveToken] = []
+        for session in list(ws_sessions_id.values()):
+            wrapped = ChainlitSession(session, self._tokens)
+            user_id = wrapped.user_id
+            if not user_id:
+                continue
+
+            if not wrapped.token:
+                continue
+
+            try:
+                parsed = UUID(user_id)
+            except ValueError:
+                continue
+
+            found.append(
+                LiveToken(user_id=parsed, login=wrapped.label, token=wrapped.token)
+            )
+
+        return found
+
     def of_user(self, user_id: UUID) -> list[ChainlitSession]:
         """Живые сессии пользователя на этом инстансе: все его вкладки."""
         found: list[ChainlitSession] = []
@@ -363,7 +400,7 @@ class ChainlitSessions(SessionSource):
             if str(getattr(user, "id", "")) != str(user_id):
                 continue
 
-            found.append(ChainlitSession(session))
+            found.append(ChainlitSession(session, self._tokens))
 
         return found
 
@@ -374,7 +411,7 @@ class ChainlitSessions(SessionSource):
             if session.thread_id != thread_id:
                 continue
 
-            found.append(ChainlitSession(session))
+            found.append(ChainlitSession(session, self._tokens))
 
         return found
 

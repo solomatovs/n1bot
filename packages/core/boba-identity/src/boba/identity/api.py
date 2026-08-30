@@ -1,13 +1,13 @@
 """Вход через API: пользователь входа, субъект под профилем, порт аутентификации.
 
 Ошибки:
-AuthenticationError — у входа нет строки users или её id не uuid.
+AuthenticationError — у входа нет строки users.
 """
 
 from __future__ import annotations
 
 from abc import abstractmethod
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Protocol
@@ -19,14 +19,11 @@ from boba.cancellation import RunCancellation
 from boba.identity.context import (
     CallContext,
     Credential,
-    DelegatedTicket,
     HumanInitiator,
     Scope,
     Subject,
 )
-from boba.identity.errors import AuthenticationError
-from boba.identity.session import UserMetadataField
-from boba.identity.signin import SignedIn
+from boba.identity.signin import SignedIn, SignInMetadata
 
 __all__ = [
     "ApiSubject",
@@ -43,41 +40,24 @@ __all__ = [
 
 
 class AuthenticatedUser(BaseModel):
-    """Пользователь входа, сохранённый слоем данных: строка users и metadata входа."""
+    """Пользователь входа: строка users, metadata этого входа и настройки строки."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    id: str
+    id: UUID
     identifier: str
-    metadata: Mapping[str, object] = {}
+    sign_in: SignInMetadata
+    settings: Mapping[str, object] = {}
+    """Строка users как есть: настройки LLM по профилям, выбранный профиль studio."""
 
     @property
     def roles(self) -> frozenset[str]:
-        return self.roles_in(self.metadata)
+        return self.sign_in.roles
 
     @property
     def credential(self) -> Credential:
         """Делегированный билет входа либо причина его отсутствия."""
-        return DelegatedTicket.credential_of(self.metadata)
-
-    @staticmethod
-    def roles_in(metadata: Mapping[str, object]) -> frozenset[str]:
-        """Роли из metadata входа: строка, перечень либо ничего."""
-        roles = metadata.get(UserMetadataField.ROLES)
-        if not roles:
-            return frozenset()
-
-        if isinstance(roles, str):
-            return frozenset({roles})
-
-        if not isinstance(roles, Iterable):
-            return frozenset()
-
-        names: set[str] = set()
-        for role in roles:
-            names.add(str(role))
-
-        return frozenset(names)
+        return self.sign_in.credential()
 
 
 class ApiSubject(BaseModel):
@@ -90,10 +70,7 @@ class ApiSubject(BaseModel):
 
     @classmethod
     def of(cls, user: AuthenticatedUser, profile: str) -> ApiSubject:
-        try:
-            subject = Subject.of_user(user.id, user.identifier, user.roles, profile)
-        except ValueError as exc:
-            raise AuthenticationError(str(exc)) from exc
+        subject = Subject.of_user(user.id, user.identifier, user.roles, profile)
 
         return cls(subject=subject, credential=user.credential)
 
@@ -129,7 +106,10 @@ class StoredUser(BaseModel):
 
     def authenticated(self) -> AuthenticatedUser:
         return AuthenticatedUser(
-            id=str(self.id), identifier=self.identifier, metadata=self.meta
+            id=self.id,
+            identifier=self.identifier,
+            sign_in=SignInMetadata.parse(self.meta),
+            settings=self.meta,
         )
 
 

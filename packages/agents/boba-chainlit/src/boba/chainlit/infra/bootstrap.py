@@ -59,7 +59,11 @@ def run_app(config_path: Path):
     _use_domain_error(app)
 
     # добавлен последним — выполняется первым, покрывает access-лог всех запросов
-    app.add_middleware(RequestUserMiddleware)
+    app.add_middleware(
+        RequestUserMiddleware,
+        tokens=runtime.session_tokens(c),
+        cookie=c.session.cookie,
+    )
 
     async def start():
         # 0 отключает ws-пинг uvicorn: тогда живость сокета держит только
@@ -250,32 +254,46 @@ def _use_auth(container: Container) -> None:
         msg = f"auth service provider returned {type(auth).__name__}"
         raise RuntimeError(msg)
 
+    sessions = container.resolved(providers.session_source)
+    if not isinstance(sessions, ChainlitSessions):
+        msg = f"session source provider returned {type(sessions).__name__}"
+        raise RuntimeError(msg)
+
+    sso_path = ""
+    if auth.providers().sso:
+        sso_path = config.sso_path()
+
     installer = ChainlitAuthInstaller(
-        config.chainlit.url_prefix, config.auth, auth, config.session.session_ttl_sec
+        config.chainlit.url_prefix,
+        sso_path,
+        auth,
+        config.session.session_ttl_sec,
+        sessions,
+        Path(config.chainlit.root).resolve(),
     )
     installer.install(chainlit_app)
 
 
 def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
-    from boba.chainlit.infra.kerberos_refresh import ChatRefreshSignal  # noqa: PLC0415
     from boba.chainlit.infra.plugins import ChatPlugins  # noqa: PLC0415
 
     container = Container(level="app")
     container.provide(providers.get_app_config, c)
     container.provide(runtime.get_runtime_config, c)
     container.provide(runtime.plugin_table, ChatPlugins.table)
-    container.provide(
-        runtime.refresh_signal, ChatRefreshSignal(runtime.message_bus_ref)
-    )
     container.provide(runtime.grant_check, GrantCheck.STRICT)
     container.provide(runtime.app_name, AppName.CHAINLIT)
-    sessions = ChainlitSessions()
+    tokens = runtime.session_tokens(c)
+    container.provide(runtime.session_tokens, tokens)
+    sessions = ChainlitSessions(tokens)
     ChainlitSessions.install(sessions)
     container.provide(providers.session_source, sessions)
+    container.provide(runtime.live_sessions, sessions)
     container.eager(providers.get_app_config)
     container.eager(runtime.users_table)
     container.eager(runtime.auth_service)
     container.eager(runtime.credential_source)
+    container.eager(runtime.session_keeper)
     container.eager(providers.chat_profiles_registry)
     container.eager(providers.chainlit_data_layer)
     container.eager(providers.langchain_checkpoint_saver)

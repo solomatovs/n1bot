@@ -10,8 +10,8 @@ from omegaconf import DictConfig
 from boba.auth.config import KerberosAuthConfig, KerberosRolesConfig
 from boba.auth.sso import SsoSignIn
 from boba.config import bind
+from boba.identity.admission import RoleExcludeConfig, RoleMappingConfig
 from boba.identity.errors import AuthorizationError
-from boba.identity.roles import RoleExcludeConfig, RoleMappingConfig
 from boba.krb import SpnegoIdentity
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -55,6 +55,4 @@ async def test_unparsed_pac_passes_without_sid_exclusions(raw_config: Any) -> No
 
     signed = await sign_in.signed_in(identity, "")
 
-    roles = signed.metadata["roles"]
-    assert isinstance(roles, list)
-    assert "DEV" in roles
+    assert "DEV" in signed.sign_in.roles
