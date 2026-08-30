@@ -4,7 +4,8 @@ SSO: GET /auth/sso?next= — обмен на своём URL, после вход
 POST /auth/sso/refresh — свежий билет для живой сессии.
 
 Ошибки: свои не выпускает — ошибки сервиса входа (BaseError) переводит в HTTP
-DomainErrorMiddleware; роуты SSO монтируются только при настроенном SSO.
+DomainErrorMiddleware; AuthorizationError — вход/выход без метки своего запроса
+(OwnRequest); роуты SSO монтируются только при настроенном SSO.
 """
 
 from __future__ import annotations
@@ -127,6 +128,7 @@ class SignInApi:
         return SignInProviders(password=available.password, sso_url=sso_url)
 
     async def login(self, body: Credentials, request: Request) -> Response:
+        self._own(request)
         session = await self._auth.by_password(body.username, body.password)
 
         response = Response(status_code=204)
@@ -135,10 +137,19 @@ class SignInApi:
         return response
 
     async def logout(self, request: Request) -> Response:
+        self._own(request)
         response = Response(status_code=204)
         self._cookie.clear(response, request.cookies)
 
         return response
+
+    @staticmethod
+    def _own(request: Request) -> None:
+        """Вход и выход меняют сессию: чужая форма без метки своего запроса не пройдёт."""
+        if SsoRequests.of(request).own_request:
+            return
+
+        raise AuthorizationError("request without its own mark is refused")
 
     def _next_of(self, raw: str | None) -> str:
         """Куда вернуть после входа: только внутрь страницы, иначе её начало."""

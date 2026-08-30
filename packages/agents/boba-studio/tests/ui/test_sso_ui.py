@@ -9,6 +9,7 @@ import http.server
 import re
 import socketserver
 import threading
+import time
 from collections.abc import Iterator
 from typing import ClassVar
 
@@ -16,10 +17,11 @@ import httpx
 import krb5
 import pytest
 from playwright.sync_api import Browser, BrowserContext, Playwright, expect
-from studio_ui import BOOT_TIMEOUT_SEC
+from studio_ui import BOOT_TIMEOUT_SEC, publish_refresh
 
 from boba.connections.http import HttpProfile, NegotiateAuth
 from boba.connections.kerberos import KerberosPasswordAuth
+from boba.runtime.config import StudioRuntimeConfig
 from boba.stand.site import Stand
 from boba.stand.ui.database import run_blocking
 from boba.stand.ui.stand import (
@@ -277,3 +279,59 @@ def test_studio_login_page_signs_in_with_sso_and_returns(
 
     expect(page).to_have_url(re.compile(r"/workflow/account$"), timeout=60_000)
     expect(page.locator(".account__login")).to_be_visible(timeout=30_000)
+
+
+REFRESHED = "kerberos: refreshed sign-in ticket"
+"""Строка лога повторного обмена: страница молча обновила билет по сигналу."""
+
+
+def _wait_for_log(stand: StandProcess, marker: str, timeout_sec: float) -> bool:
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        if stand.log_path.is_file() and marker in stand.log_path.read_text(
+            encoding="utf-8", errors="replace"
+        ):
+            return True
+
+        time.sleep(0.5)
+
+    return False
+
+
+def _session_cookie(context: BrowserContext, name: str) -> str:
+    for cookie in context.cookies():
+        if cookie.get("name") == name:
+            return str(cookie.get("value"))
+
+    return ""
+
+
+def test_refresh_signal_makes_the_page_refresh_its_ticket(
+    sso_context: BrowserContext,
+    sso_stand: StandProcess,
+    studio_config: StudioRuntimeConfig,
+    stand_database: str,
+) -> None:
+    """Сигнал в область пользователя: страница шлёт POST refresh со своей меткой,
+    браузер отвечает Negotiate, сессия получает новую cookie с новым билетом.
+    """
+    page = sso_context.new_page()
+    page.goto(_domain_url(sso_stand, "/workflow/login"), wait_until="domcontentloaded")
+    page.get_by_role("link", name="Sign in with SSO").click()
+    expect(page).to_have_url(re.compile(r"/workflow/observe$"), timeout=60_000)
+    expect(page.locator(".lamp").first).to_be_visible(timeout=30_000)
+
+    me = page.request.get(_domain_url(sso_stand, "/api/v1/me")).json()
+    cookie_name = studio_config.session.cookie
+    before = _session_cookie(sso_context, cookie_name)
+    assert before, "sign-in must set the session cookie"
+
+    publish_refresh(
+        studio_config, stand_database, str(me["id"]), STAND.reader_principal
+    )
+
+    assert _wait_for_log(sso_stand, REFRESHED, 30.0), sso_stand.tail()
+    page.wait_for_timeout(500)
+    after = _session_cookie(sso_context, cookie_name)
+    assert after, "refresh must keep the session cookie"
+    assert after != before, "refresh must issue a new session cookie"

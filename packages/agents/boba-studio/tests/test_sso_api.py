@@ -23,7 +23,7 @@ from boba.config import bind
 from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
 from boba.identity.session import UserMetadataField
 from boba.identity.signin import SignedIn
-from boba.identity.sso import SsoRefresh
+from boba.identity.sso import OwnRequest
 from boba.identity.token import CookieSpec
 from boba.krb import KerberosEnv
 from boba.runtime.config import StudioRuntimeConfig
@@ -199,7 +199,7 @@ async def test_refresh_issues_a_fresh_ticket_for_the_session(
         f"{ApiVersion.V1}{SignInUrl.SSO_REFRESH}",
         headers={
             **_negotiate(SsoBrowser.token(SITE, tmp_path)),
-            SsoRefresh.HEADER.value: SsoRefresh.VALUE.value,
+            OwnRequest.HEADER.value: OwnRequest.VALUE.value,
         },
         cookies={COOKIE: token},
     )
@@ -222,7 +222,7 @@ async def test_refresh_without_its_own_header_or_session_is_refused(
         f"{ApiVersion.V1}{SignInUrl.SSO_REFRESH}",
         headers={
             **_negotiate(SsoBrowser.token(SITE, tmp_path)),
-            SsoRefresh.HEADER.value: SsoRefresh.VALUE.value,
+            OwnRequest.HEADER.value: OwnRequest.VALUE.value,
         },
     )
 

@@ -31,9 +31,9 @@ from boba.identity.errors import (
 from boba.identity.session import LogLine
 from boba.identity.signin import SignedIn
 from boba.identity.sso import (
+    OwnRequest,
     SsoChallenge,
     SsoErrorCode,
-    SsoRefresh,
     SsoRefused,
 )
 from boba.runtime.http import SsoRequests
@@ -223,10 +223,10 @@ class KerberosAuth:
         with_sso = template.replace(ButtonJsVar.SSO_URL, self._urls.sso)
         with_refresh = with_sso.replace(ButtonJsVar.REFRESH_URL, self._urls.refresh)
         with_header = with_refresh.replace(
-            ButtonJsVar.REFRESH_HEADER, SsoRefresh.HEADER
+            ButtonJsVar.REFRESH_HEADER, OwnRequest.HEADER
         )
         with_value = with_header.replace(
-            ButtonJsVar.REFRESH_HEADER_VALUE, SsoRefresh.VALUE
+            ButtonJsVar.REFRESH_HEADER_VALUE, OwnRequest.VALUE
         )
 
         return with_value.replace(ButtonJsVar.TRANSLATIONS_URL, self._urls.translations)

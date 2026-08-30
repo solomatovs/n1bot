@@ -450,7 +450,7 @@ class SpnegoGate(SpnegoExchange):
     def _refresh_allowed(
         request: SsoRequest, session: DelegatedTicket | None
     ) -> SsoRefused | None:
-        if not request.refresh_asked:
+        if not request.own_request:
             # заголовок ставит только свой fetch: чужая страница обмен не запустит
             reason = f"refresh without its own header [{request.client}]"
             return SsoRefused(reason=reason)
