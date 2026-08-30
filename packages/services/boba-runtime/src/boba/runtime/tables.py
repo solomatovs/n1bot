@@ -53,10 +53,47 @@ class UsersColumn(StrEnum):
 
 
 class ThreadsColumn(StrEnum):
-    """Колонки threads, к которым обращаются вне data layer."""
+    """Колонки threads."""
 
     ID = "id"
+    CREATED_AT = "created_at"
+    NAME = "name"
     USER_ID = "user_id"
+    TAGS = "tags"
+    META = "meta"
+
+    def ident(self) -> sql.Identifier:
+        return sql.Identifier(self.value)
+
+
+class ElementsColumn(StrEnum):
+    """Колонки elements."""
+
+    ID = "id"
+    NAME = "name"
+    TYPE = "type"
+    DISPLAY = "display"
+    THREAD_ID = "thread_id"
+    FOR_ID = "for_id"
+    CHAINLIT_KEY = "chainlit_key"
+    SIZE = "size"
+    LANGUAGE = "language"
+    PAGE = "page"
+    PROPS = "props"
+    MIME = "mime"
+
+    def ident(self) -> sql.Identifier:
+        return sql.Identifier(self.value)
+
+
+class FeedbacksColumn(StrEnum):
+    """Колонки feedbacks."""
+
+    ID = "id"
+    FOR_ID = "for_id"
+    VALUE = "value"
+    THREAD_ID = "thread_id"
+    COMMENT = "comment"
 
     def ident(self) -> sql.Identifier:
         return sql.Identifier(self.value)
