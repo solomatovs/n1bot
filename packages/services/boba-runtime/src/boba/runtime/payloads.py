@@ -241,7 +241,8 @@ class PgPayloadStore(PayloadStore):
                     sql.SQL(
                         """
                         delete from {payloads}
-                        where {at} + make_interval(secs => %(age)s) < now()
+                        where
+                            {at} + make_interval(secs => %(age)s) < now()
                         """
                     ).format(
                         payloads=self._table(), at=SqlNames.ident(LivePayloadsColumn.AT)

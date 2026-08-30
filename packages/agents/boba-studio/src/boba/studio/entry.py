@@ -77,7 +77,7 @@ class StudioHost:
 
     @classmethod
     async def _mount_api(cls, app: FastAPI, config: StudioRuntimeConfig) -> None:
-        """Api над сервисами контейнера: собирается после start(), до первого запроса."""
+        """Api над сервисами контейнера: после start(), до первого запроса."""
         container = app.state.container
         table = container.resolved(providers.users_table)
         if not isinstance(table, UsersTable):

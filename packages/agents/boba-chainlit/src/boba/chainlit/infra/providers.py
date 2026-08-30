@@ -256,7 +256,7 @@ async def langchain_checkpoint_saver(
         await pool.close()
 
 
-async def chainlit_data_layer(
+async def chainlit_data_layer(  # noqa: PLR0913 — слой данных собирается всеми зависимостями сразу
     cfg: Annotated[DataLayerConfig, Depends(get_data_layer_config)],
     storage_cfg: Annotated[LocalStorageConfig, Depends(get_local_storage_config)],
     storage: Annotated[StorageClient, Depends(storage_provider)],
