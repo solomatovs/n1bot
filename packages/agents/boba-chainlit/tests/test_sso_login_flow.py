@@ -19,15 +19,21 @@ from chainlit.auth.jwt import create_jwt
 from gssapi import Credentials, Name, NameType, SecurityContext
 from starlette.requests import Request
 
+from boba.auth import AuthService, IssuedSession, JwtTokens
 from boba.auth.config import KerberosAuthConfig, KerberosRolesConfig
+from boba.auth.sso import SpnegoGate, SsoSignIn
 from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.infra.session import ChainlitSession
 from boba.config import bind
+from boba.db.postgres import AsyncPostgresPool
 from boba.identity.roles import RoleExcludeConfig
 from boba.identity.session import SignInProvider, UserMetadataField
-from boba.identity.sso import SsoChallenge, SsoRefresh, SsoSigned
+from boba.identity.sso import SsoChallenge, SsoRefresh
+from boba.identity.token import CookieSpec
 from boba.krb import KerberosEnv, ServiceTicketIssuer
+from boba.runtime.config import RuntimeConfig
 from boba.runtime.http import SsoRequests
+from boba.runtime.users import UsersTable
 from boba.stand.site import Stand
 
 STAND = Stand.required()
@@ -58,15 +64,52 @@ def krb5_env() -> Iterator[None]:
     os.environ[KerberosEnv.CONFIG] = saved
 
 
+def _users(runtime_config: RuntimeConfig, pool: AsyncPostgresPool) -> UsersTable:
+    data_layer = runtime_config.data_layer
+
+    return UsersTable(data_layer.postgres, data_layer.db_schema, pool)
+
+
+def _kerberos_auth(
+    config: KerberosAuthConfig, runtime_config: RuntimeConfig, pool: AsyncPostgresPool
+) -> KerberosAuth:
+    """SSO chainlit над сервисом входа: секрет и cookie из [session], users — база."""
+    session = runtime_config.session
+    users = _users(runtime_config, pool)
+    auth = AuthService(
+        tokens=JwtTokens(session.auth_secret, session.session_ttl_sec),
+        cookie=CookieSpec(
+            name=session.cookie,
+            samesite=session.cookie_samesite,
+            ttl_sec=session.session_ttl_sec,
+        ),
+        password=None,
+        sso=SpnegoGate(SsoSignIn(config, session.auth_secret)),
+        users=lambda: users,
+    )
+
+    return KerberosAuth("/boba", config.sso_path, auth)
+
+
 @pytest.fixture
-def kerberos_auth(raw_config: Any, auth_token: str) -> KerberosAuth:
+def kerberos_auth(
+    raw_config: Any,
+    runtime_config: RuntimeConfig,
+    pool: AsyncPostgresPool,
+    auth_token: str,
+) -> KerberosAuth:
     """Провайдер SSO по боевой секции [auth.kerberos]; auth_token ставит JWT-секрет."""
     config = bind(raw_config, path="auth.kerberos", model=KerberosAuthConfig)
-    return KerberosAuth("/boba", config)
+    return _kerberos_auth(config, runtime_config, pool)
 
 
 @pytest.fixture
-def excluding_auth(raw_config: Any, auth_token: str) -> KerberosAuth:
+def excluding_auth(
+    raw_config: Any,
+    runtime_config: RuntimeConfig,
+    pool: AsyncPostgresPool,
+    auth_token: str,
+) -> KerberosAuth:
     """Тот же SSO, но принципал стенда попал в список исключённых AD."""
     config = bind(raw_config, path="auth.kerberos", model=KerberosAuthConfig)
     roles = config.roles
@@ -76,7 +119,9 @@ def excluding_auth(raw_config: Any, auth_token: str) -> KerberosAuth:
     excluded = roles.model_copy(
         update={"principal_ex": RoleExcludeConfig([USER_PRINCIPAL])}
     )
-    return KerberosAuth("/boba", config.model_copy(update={"roles": excluded}))
+    modified = config.model_copy(update={"roles": excluded})
+
+    return _kerberos_auth(modified, runtime_config, pool)
 
 
 class Browser:
@@ -107,7 +152,7 @@ class Sso:
     """Прогон /auth/sso через боевой обмен: исход handshake."""
 
     @staticmethod
-    async def signed(auth: KerberosAuth, token: bytes) -> SsoSigned:
+    async def signed(auth: KerberosAuth, token: bytes) -> IssuedSession:
         import base64
 
         scope = {
@@ -118,7 +163,7 @@ class Sso:
             "headers": [(b"authorization", b"Negotiate " + base64.b64encode(token))],
             "client": ("127.0.0.1", 1234),
         }
-        outcome = await auth.gate.handshake(SsoRequests.of(Request(scope)))
+        outcome = await auth.auth.by_spnego(SsoRequests.of(Request(scope)))
         if isinstance(outcome, SsoChallenge):
             raise AssertionError(f"SPNEGO must sign the browser in: {outcome.reason}")
 
@@ -203,7 +248,10 @@ async def _signed_in(auth: KerberosAuth, tmp_path: Path) -> cl.User:
 
 
 async def test_sign_in_puts_principal_and_ticket_into_the_jwt(
-    kerberos_auth: KerberosAuth, tmp_path: Path, krb5_env: None
+    kerberos_auth: KerberosAuth,
+    runtime_config: RuntimeConfig,
+    tmp_path: Path,
+    krb5_env: None,
 ) -> None:
     user = await _signed_in(kerberos_auth, tmp_path)
     metadata = user.metadata
@@ -220,7 +268,8 @@ async def test_sign_in_puts_principal_and_ticket_into_the_jwt(
     if sso.principal != USER_PRINCIPAL:
         raise AssertionError(sso.principal)
 
-    tickets = kerberos_auth.tickets()
+    tickets = runtime_config.sso_tickets()
+    assert tickets is not None
     credentials = tickets.credentials_of(tickets.open(sso.sealed))
     ticket = ServiceTicketIssuer(min_lifetime=60).issue(credentials, TARGET)
     if ticket.principal != USER_PRINCIPAL:
@@ -228,11 +277,16 @@ async def test_sign_in_puts_principal_and_ticket_into_the_jwt(
 
 
 async def test_users_row_keeps_no_ticket(
-    kerberos_auth: KerberosAuth, tmp_path: Path, krb5_env: None
+    kerberos_auth: KerberosAuth,
+    runtime_config: RuntimeConfig,
+    pool: AsyncPostgresPool,
+    tmp_path: Path,
+    krb5_env: None,
 ) -> None:
-    """Билет живёт только в JWT: копия для строки users идёт без него."""
+    """Билет живёт только в JWT: строка users, заведённая входом, идёт без него."""
     user = await _signed_in(kerberos_auth, tmp_path)
-    stored = KerberosAuth._without_ticket(user)
+    stored = await _users(runtime_config, pool).get_user(user.identifier)
+    assert stored is not None, "sign-in must persist the users row"
     if UserMetadataField.TICKET in stored.metadata:
         raise AssertionError(
             f"the users row must not carry the ticket: {stored.metadata}"
@@ -257,7 +311,10 @@ async def test_stale_jwt_without_ticket_is_refused(
 
 
 async def test_refresh_issues_a_new_jwt_with_a_fresh_ticket(
-    kerberos_auth: KerberosAuth, tmp_path: Path, krb5_env: None
+    kerberos_auth: KerberosAuth,
+    runtime_config: RuntimeConfig,
+    tmp_path: Path,
+    krb5_env: None,
 ) -> None:
     """Билет входа на исходе, а сессия жива: обмен выдаёт новый JWT с новым билетом."""
     user = await _signed_in(kerberos_auth, tmp_path)
@@ -285,7 +342,8 @@ async def test_refresh_issues_a_new_jwt_with_a_fresh_ticket(
     if after.principal != USER_PRINCIPAL:
         raise AssertionError(f"the ticket must stay the user's: {after.principal}")
 
-    tickets = kerberos_auth.tickets()
+    tickets = runtime_config.sso_tickets()
+    assert tickets is not None
     credentials = tickets.credentials_of(tickets.open(after.sealed))
     ticket = ServiceTicketIssuer(min_lifetime=60).issue(credentials, TARGET)
     if ticket.principal != USER_PRINCIPAL:

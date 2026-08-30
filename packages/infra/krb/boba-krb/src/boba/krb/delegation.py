@@ -36,12 +36,22 @@ __all__ = ["SpnegoAcceptor", "SpnegoIdentity", "TicketCapture"]
 
 
 @dataclass(frozen=True)
+class PacGroups:
+    """Группы из PAC: SID-ы и признак, что PAC разобрался."""
+
+    sids: Sequence[str]
+    parsed: bool
+
+
+@dataclass(frozen=True)
 class SpnegoIdentity:
     """Результат SPNEGO-accept: кто вошёл, его группы и делегированные им креды."""
 
     principal: str
     group_sids: Sequence[str] = field(default_factory=tuple)
     delegated: Credentials | None = None
+    pac_parsed: bool = True
+    """False — PAC не разобрался: группы неизвестны, исключения по SID не проверить."""
 
 
 class SpnegoAcceptor:
@@ -82,11 +92,13 @@ class SpnegoAcceptor:
             raise InvalidTokenError(msg)
 
         principal = str(ctx.initiator_name)
+        groups = self._group_sids(principal, ctx)
 
         return SpnegoIdentity(
             principal=principal,
-            group_sids=self._group_sids(principal, ctx),
+            group_sids=groups.sids,
             delegated=ctx.delegated_creds,
+            pac_parsed=groups.parsed,
         )
 
     async def accept_async(self, token: bytes) -> SpnegoIdentity:
@@ -121,8 +133,8 @@ class SpnegoAcceptor:
             },
         )
 
-    def _group_sids(self, principal: str, ctx: SecurityContext) -> Sequence[str]:
-        """SID-ы групп из PAC; пустой список, если PAC нет или он не разобрался."""
+    def _group_sids(self, principal: str, ctx: SecurityContext) -> PacGroups:
+        """SID-ы групп из PAC; parsed=False — PAC не разобрался, группы неизвестны."""
         try:
             sids = PacGroupSids.of_context(ctx)
         except ValueError as exc:
@@ -131,14 +143,14 @@ class SpnegoAcceptor:
                 principal,
                 exc,
             )
-            return ()
+            return PacGroups(sids=(), parsed=False)
 
         if not sids:
             self._logger.warning(
                 "kerberos: no PAC group SIDs [principal=%s]", principal
             )
 
-        return sids
+        return PacGroups(sids=tuple(sids), parsed=True)
 
 
 class TicketCapture:

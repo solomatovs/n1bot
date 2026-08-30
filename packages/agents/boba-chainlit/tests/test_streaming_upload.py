@@ -15,6 +15,7 @@ from boba.canvas.storage import StorageFullError
 from boba.canvas.transfer import UploadPolicy
 from boba.chainlit.data.storage import LocalStorageClient
 from boba.chainlit.data.upload import UploadRoute
+from boba.runtime.http import DomainErrorMiddleware
 from boba.workspace.launcher import ReadWindow
 
 pytestmark = pytest.mark.anyio
@@ -94,6 +95,7 @@ def app_builder(
         app = FastAPI()
         UploadRoute(storage, policy).install(app)
         app.dependency_overrides[get_current_user] = lambda: session.user
+        app.add_middleware(DomainErrorMiddleware)
         return app
 
     return build

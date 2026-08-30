@@ -22,9 +22,18 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from boba.chat.profiles import ChatProfiles
 from boba.identity.api import AuthenticatedUser
-from boba.identity.context import Scope, Subject
+from boba.identity.context import CallContext, Scope, Subject
 from boba.identity.errors import BaseError, RefusalError
-from boba.messaging import Envelope, MessageKind, StreamAppended, Unsubscribe
+from boba.identity.sso import RefreshSignal
+from boba.messaging import (
+    Envelope,
+    LockToken,
+    MessageBus,
+    MessageKind,
+    SignInRefreshRequested,
+    StreamAppended,
+    Unsubscribe,
+)
 from boba.runtime.bus import BusWatch, ListenerState
 from boba.runtime.config import StudioPath
 from boba.studio.api.auth import ApiAuth
@@ -344,3 +353,21 @@ class WorkflowSocket:
 
         # путь проверяет Mount приложения; сам engine.io путь не сверяет
         return socketio.ASGIApp(socketio_server=server, socketio_path="")
+
+
+class StudioRefreshSignal(RefreshSignal):
+    """Просит страницу молча пройти SPNEGO ещё раз: SignInRefreshRequested в область
+    пользователя текущего вызова, сокеты его комнаты получают USER_EVENT.
+    """
+
+    def __init__(self, bus: Callable[[], MessageBus]) -> None:
+        self._bus = bus
+
+    async def send(self) -> bool:
+        context = CallContext.current()
+        subject = context.subject
+        message = SignInRefreshRequested(principal=subject.login)
+        scope = Scope.user(subject.user_id)
+        await self._bus().publish(scope, message, LockToken.local())
+
+        return True

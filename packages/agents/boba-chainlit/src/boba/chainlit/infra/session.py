@@ -133,7 +133,8 @@ class ChainlitSession(Session):
 
     @property
     def roles(self) -> frozenset[str]:
-        return self.roles_of(self.user)
+        """Роли входа — из токена сессии: их выдал вход, строка users их не хранит."""
+        return self.roles_of(self.login_user())
 
     @property
     def chat_profile(self) -> str | None:

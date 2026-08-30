@@ -4,7 +4,7 @@ SSO: GET /auth/sso?next= — обмен на своём URL, после вход
 POST /auth/sso/refresh — свежий билет для живой сессии.
 
 Ошибки: свои не выпускает — ошибки сервиса входа (BaseError) переводит в HTTP
-DomainErrorMiddleware; HTTPException 404 — SSO не настроен.
+DomainErrorMiddleware; роуты SSO монтируются только при настроенном SSO.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -112,7 +112,7 @@ class SignInApi:
         router.add_api_route(
             SignInUrl.SSO_REFRESH.value,
             self.sso_refresh,
-            methods=["GET", "POST"],
+            methods=["POST"],
             tags=[self.TAG],
             include_in_schema=False,
         )
@@ -140,10 +140,6 @@ class SignInApi:
 
         return response
 
-    def _require_sso(self) -> None:
-        if not self._auth.providers().sso:
-            raise HTTPException(status_code=404, detail="sso is not configured")
-
     def _next_of(self, raw: str | None) -> str:
         """Куда вернуть после входа: только внутрь страницы, иначе её начало."""
         page = self._wiring.page
@@ -162,8 +158,6 @@ class SignInApi:
 
     async def sso(self, request: Request, next: str | None = None) -> Response:  # noqa: A002
         """SPNEGO-вход: 401 Negotiate без токена, иначе строка users, cookie и 303."""
-        self._require_sso()
-
         try:
             outcome = await self._auth.by_spnego(SsoRequests.of(request))
         except AuthorizationError:
@@ -186,8 +180,6 @@ class SignInApi:
 
     async def sso_refresh(self, request: Request) -> Response:
         """Свежий билет для живой сессии: 204 + новая cookie, 401 Negotiate, 403."""
-        self._require_sso()
-
         token = self._cookie.token_of(request.cookies)
         outcome = await self._auth.refresh(SsoRequests.of(request), token)
         if isinstance(outcome, SsoRefused):

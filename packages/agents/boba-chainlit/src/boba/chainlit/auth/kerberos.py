@@ -10,7 +10,7 @@ InternalServiceError — keytab/SPN/конфиг непригодны.
 
 import logging
 import os
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
@@ -21,27 +21,23 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
 import chainlit as cl
-from boba.auth.config import KerberosAuthConfig
-from boba.auth.sso import SpnegoGate, SsoSignIn
-from boba.chainlit.infra.session import ChainlitSession, ChainlitSessions
+from boba.auth import AuthService, IssuedSession
+from boba.chainlit.infra.session import ChainlitSessions
 from boba.identity.errors import (
     AuthorizationError,
     BaseError,
     FailureReport,
-    InternalServiceError,
 )
-from boba.identity.session import LogLine, UserMetadataField
+from boba.identity.session import LogLine
 from boba.identity.signin import SignedIn
 from boba.identity.sso import (
     SsoChallenge,
     SsoErrorCode,
     SsoRefresh,
     SsoRefused,
-    SsoSigned,
 )
-from boba.krb.seal import SsoTickets
 from boba.runtime.http import SsoRequests
-from chainlit.auth import create_jwt, set_auth_cookie
+from chainlit.auth import set_auth_cookie
 from chainlit.config import config as cl_config
 
 
@@ -91,30 +87,12 @@ class KerberosAuth:
     _CUSTOM_AUTH_ENV: ClassVar[str] = "CHAINLIT_CUSTOM_AUTH"
     """Флаг chainlit: вход обязателен, хотя свой колбэк авторизации не задан."""
 
-    def __init__(self, url_prefix: str, config: KerberosAuthConfig):
-        self._config = config
+    def __init__(self, url_prefix: str, sso_path: str, auth: AuthService) -> None:
         # роуты без префикса (root_path учтёт роутер), кнопка — с полным
-        self._sso_path = config.sso_path
-        self._urls = SsoUrls.of(url_prefix, config.sso_path)
-        self.sign_in = SsoSignIn(config, self._secret())
-        self.gate = SpnegoGate(self.sign_in)
+        self._sso_path = sso_path
+        self._urls = SsoUrls.of(url_prefix, sso_path)
+        self.auth = auth
         self._logger = logging.getLogger(KerberosAuth.__name__)
-
-    @staticmethod
-    def _secret() -> str:
-        """Секрет JWT chainlit: им же запечатывается билет входа."""
-        from chainlit.auth.jwt import get_jwt_secret  # noqa: PLC0415
-
-        secret = get_jwt_secret()
-        if not secret:
-            msg = "CHAINLIT_AUTH_SECRET is required: it seals the SSO sign-in ticket"
-            raise RuntimeError(msg)
-
-        return secret
-
-    def tickets(self) -> SsoTickets:
-        """Открыватель билетов входа для обвязок инструментов."""
-        return self.sign_in.tickets()
 
     def install(self, chainlit_app: FastAPI) -> None:
         # без password/header-колбэка chainlit считает, что логина нет, и пускает
@@ -132,38 +110,6 @@ class KerberosAuth:
             metadata=dict(signed.metadata),
         )
 
-    @staticmethod
-    def _without_ticket(user: cl.User) -> cl.User:
-        """Копия для строки users: билет входа живёт только в JWT."""
-        metadata: dict[str, Any] = {}
-        for key, value in user.metadata.items():
-            if key == UserMetadataField.TICKET:
-                continue
-
-            metadata[key] = value
-
-        return cl.User(
-            identifier=user.identifier,
-            display_name=user.display_name,
-            metadata=metadata,
-        )
-
-    async def _persisted(self, user: cl.User) -> None:
-        """Строка users без билета входа."""
-        from chainlit.data import get_data_layer  # noqa: PLC0415
-
-        data_layer = get_data_layer()
-        if data_layer is None:
-            return
-
-        try:
-            await data_layer.create_user(self._without_ticket(user))
-        except Exception as exc:
-            raise InternalServiceError(
-                internal_detail=f"failed to persist SSO user: {exc}",
-                user_detail=None,
-            ) from exc
-
     def _login_redirect(self, exc: BaseError) -> RedirectResponse:
         """Исход SSO кодом на страницу логина: браузер пришёл навигацией, не fetch."""
         self._logger.error("%s", LogLine.safe(FailureReport.of(exc).log))
@@ -174,7 +120,7 @@ class KerberosAuth:
 
         return RedirectResponse(url=code.login_url(self._urls.login), status_code=303)
 
-    def _challenge(self, request: Request, challenge: SsoChallenge) -> Response:
+    def _challenge(self) -> Response:
         """401 Negotiate: с тикетом браузер повторит сам, без него уйдёт на логин."""
         return Response(
             content=SsoErrorCode.TICKET.challenge_page(self._urls.login),
@@ -184,19 +130,17 @@ class KerberosAuth:
         )
 
     async def auth_sso(self, request: Request) -> Response:
-        """Вход: SPNEGO → cl.User → строка users → JWT-cookie → в чат."""
+        """Вход: SPNEGO → строка users и токен сервисом входа → cookie → в чат."""
         try:
-            outcome = await self.gate.handshake(SsoRequests.of(request))
-            if isinstance(outcome, SsoChallenge):
-                return self._challenge(request, outcome)
-
-            user = self.user_of(outcome.signed)
-            await self._persisted(user)
+            outcome = await self.auth.by_spnego(SsoRequests.of(request))
         except BaseError as exc:
             return self._login_redirect(exc)
 
+        if isinstance(outcome, SsoChallenge):
+            return self._challenge()
+
         response = RedirectResponse(url=self._urls.app, status_code=303)
-        set_auth_cookie(request, response, create_jwt(user))
+        set_auth_cookie(request, response, outcome.token)
 
         return response
 
@@ -204,11 +148,8 @@ class KerberosAuth:
         """Повторный SPNEGO живой сессии: новый JWT с новым билетом для её сокетов."""
         from chainlit.auth.cookie import get_token_from_cookies  # noqa: PLC0415
 
-        session = None
-        if token := get_token_from_cookies(request.cookies):
-            session = ChainlitSession.ticket_of_token(token)
-
-        outcome = await self.gate.refresh(SsoRequests.of(request), session)
+        token = get_token_from_cookies(request.cookies)
+        outcome = await self.auth.refresh(SsoRequests.of(request), token)
         if isinstance(outcome, SsoRefused):
             return Response(status_code=403)
 
@@ -218,15 +159,14 @@ class KerberosAuth:
 
         return self._adopted(request, outcome)
 
-    def _adopted(self, request: Request, outcome: SsoSigned) -> Response:
-        user = self.user_of(outcome.signed)
-        token = create_jwt(user)
+    def _adopted(self, request: Request, session: IssuedSession) -> Response:
         response = Response(status_code=204)
-        set_auth_cookie(request, response, token)
-        adopted = ChainlitSessions().adopt_token(user.identifier, token)
+        set_auth_cookie(request, response, session.token)
+        identifier = session.signed.identifier
+        adopted = ChainlitSessions().adopt_token(identifier, session.token)
         self._logger.info(
-            "kerberos: sessions adopted the refreshed JWT [principal=%s] [sessions=%d]",
-            outcome.principal,
+            "kerberos: sessions adopted the refreshed JWT [user=%s] [sessions=%d]",
+            session.signed.identifier,
             adopted,
         )
 
@@ -240,7 +180,9 @@ class KerberosAuth:
             return Response(content=js, media_type="application/javascript")
 
         self._prepend_route(chainlit_app, self._sso_path, self.auth_sso)
-        self._prepend_route(chainlit_app, f"{self._sso_path}/refresh", self.refresh)
+        self._prepend_route(
+            chainlit_app, f"{self._sso_path}/refresh", self.refresh, methods=["POST"]
+        )
         self._prepend_route(chainlit_app, self._urls.js, sso_js)
 
     def _install_button_js(self) -> None:
@@ -262,11 +204,14 @@ class KerberosAuth:
 
     @staticmethod
     def _prepend_route(
-        chainlit_app: FastAPI, path: str, endpoint: Callable[..., Awaitable[Any]]
+        chainlit_app: FastAPI,
+        path: str,
+        endpoint: Callable[..., Awaitable[Any]],
+        methods: Sequence[str] = ("GET",),
     ) -> None:
-        """Добавляет GET-роут в начало, иначе его перехватит chainlit"""
+        """Добавляет роут в начало, иначе его перехватит chainlit"""
         chainlit_app.add_api_route(
-            path, endpoint, methods=["GET"], include_in_schema=False
+            path, endpoint, methods=list(methods), include_in_schema=False
         )
 
         route = chainlit_app.router.routes.pop()

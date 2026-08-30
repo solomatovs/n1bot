@@ -11,12 +11,13 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import ClassVar
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.identity.api import AuthenticatedUser, UserSettingsStore
 from boba.identity.context import Scope
+from boba.identity.errors import AuthorizationError
 from boba.identity.session import UserMetadataField
 from boba.messaging import LockToken, MessageBus, StudioProfileChanged
 from boba.studio.api.auth import ApiAuth, CurrentUser
@@ -136,7 +137,7 @@ class AccountApi:
     async def set_profile(self, body: ProfileChoice, current_user: CurrentUser) -> Me:
         user = current_user
         if body.profile not in self._profiles.visible_for(user.roles):
-            raise HTTPException(status_code=403, detail="profile is not available")
+            raise AuthorizationError("profile is not available")
 
         await self._users().set_studio_profile(UUID(user.id), body.profile)
         changed = StudioProfileChanged(profile=body.profile, by_sid=body.sid)
