@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict
 from boba.canvas.journal import StreamSlice
 from boba.chat.profiles import ChatProfiles
 from boba.identity.context import Subject
-from boba.studio.api.auth import ApiIdentity, CurrentUser
+from boba.studio.api.auth import ApiAuth, CurrentUser
 from boba.studio.api.urls import WorkflowUrl
 from boba.toolkit.channels import JournalChannel, JournalChannels, ToolChannel
 from boba.toolrun.streams import ToolStreams
@@ -128,7 +128,7 @@ class StreamApi:
         self, current_user: CurrentUser, profile: str | None, run_id: UUID
     ) -> Subject:
         """Субъект, которому принадлежит запуск; чужой или неизвестный — 404."""
-        identity = ApiIdentity.resolve(current_user, profile, self._profiles)
+        identity = ApiAuth.resolve(current_user, profile, self._profiles)
 
         try:
             service = await self._service()

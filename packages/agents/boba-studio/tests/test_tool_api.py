@@ -13,13 +13,15 @@ import pytest
 from fastapi import APIRouter, FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 from langchain_core.tools import tool
+from starlette.requests import Request
 from studio_stand import StandProfiles, StubAuthenticator
 
 from boba.access import ProfileGrant, RoleConfig, ToolAccess
 from boba.auth import AuthService, JwtTokens
+from boba.chat.profiles import ChatProfiles
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import CallContext, HumanInitiator, ScopeKind
-from boba.identity.errors import AuthenticationError
+from boba.identity.errors import AuthenticationError, AuthorizationError
 from boba.identity.locks import MemoryLiveLocks
 from boba.identity.signin import SignedIn
 from boba.identity.token import CookieSpec
@@ -160,13 +162,11 @@ class TestServe:
         user = StandProfiles.user(studio_config)
         body = _body(studio_config, profile="no-such-profile")
 
-        with pytest.raises(HTTPException) as caught:
+        with pytest.raises(AuthorizationError):
             await _calling(Probe(), studio_config).serve(
                 "probe", body, user
             )
 
-        if caught.value.status_code != 403:
-            raise AssertionError(caught.value.status_code)
 
     async def test_roles_without_grants_see_no_tool(
         self, studio_config: StudioRuntimeConfig
@@ -185,13 +185,22 @@ class TestServe:
     async def test_unpersisted_user_is_unauthorized(
         self, studio_config: StudioRuntimeConfig
     ) -> None:
-        with pytest.raises(HTTPException) as caught:
-            await _calling(Probe(), studio_config).serve(
-                "probe", _body(studio_config), None
-            )
+        """Без сохранённого входа субъект не собирается: зависимость поднимает 401."""
+        auth = ApiAuth(
+            StubAuthenticator(None),
+            RequestTokens(StubAuthenticator.COOKIE),
+            ChatProfiles(studio_config.profiles),
+        )
+        cookie = f"{StubAuthenticator.COOKIE}={StubAuthenticator.TOKEN}".encode()
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/",
+            "headers": [(b"cookie", cookie)],
+        }
 
-        if caught.value.status_code != 401:
-            raise AssertionError(caught.value.status_code)
+        with pytest.raises(AuthenticationError):
+            await auth.subject_of_request(Request(scope), None)
 
 
 class TestRoute:
@@ -204,6 +213,7 @@ class TestRoute:
         ApiAuth(
             StubAuthenticator(user),
             RequestTokens(StubAuthenticator.COOKIE),
+            ChatProfiles(studio_config.profiles),
         ).install(app)
         router = APIRouter()
         _calling(probe, studio_config).mount(router)

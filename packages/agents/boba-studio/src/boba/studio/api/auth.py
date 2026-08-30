@@ -13,14 +13,20 @@ from collections.abc import Mapping
 from http.cookies import SimpleCookie
 from typing import Annotated, Any, ClassVar
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, Request, Response
 
 from boba.chat.profiles import ChatProfiles
 from boba.identity.api import ApiSubject, AuthenticatedUser, Authenticator
-from boba.identity.errors import AuthenticationError, RefusalError
+from boba.identity.errors import AuthenticationError, AuthorizationError, RefusalError
 from boba.identity.token import CookieJar, CookieSpec
 
-__all__ = ["ApiAuth", "ApiIdentity", "CurrentUser", "RequestTokens", "SessionCookie"]
+__all__ = [
+    "ApiAuth",
+    "CurrentSubject",
+    "CurrentUser",
+    "RequestTokens",
+    "SessionCookie",
+]
 
 
 class RequestTokens:
@@ -74,9 +80,34 @@ class ApiAuth:
 
     STATE_KEY: ClassVar[str] = "api_auth"
 
-    def __init__(self, authenticator: Authenticator, tokens: RequestTokens) -> None:
+    def __init__(
+        self,
+        authenticator: Authenticator,
+        tokens: RequestTokens,
+        profiles: ChatProfiles,
+    ) -> None:
         self._authenticator = authenticator
         self._tokens = tokens
+        self._profiles = profiles
+
+    @staticmethod
+    def resolve(
+        user: AuthenticatedUser, profile: str | None, profiles: ChatProfiles
+    ) -> ApiSubject:
+        """Субъект под профилем: AuthorizationError — профиль недоступен ролям."""
+        try:
+            selected = profiles.resolve_or_default(profile, user.roles).name
+        except RefusalError as exc:
+            raise AuthorizationError(str(exc)) from exc
+
+        return ApiSubject.of(user, selected)
+
+    async def subject_of_request(
+        self, request: Request, profile: str | None
+    ) -> ApiSubject:
+        user = await self.user_of_request(request)
+
+        return self.resolve(user, profile, self._profiles)
 
     async def user_of_request(self, request: Request) -> AuthenticatedUser:
         token = self._tokens.of_request(request)
@@ -116,34 +147,14 @@ class ApiAuth:
         return await ApiAuth.of_app(request.app).user_of_request(request)
 
 
-CurrentUser = Annotated[AuthenticatedUser | None, Depends(ApiAuth.current)]
-
-
-class ApiIdentity:
-    """Субъект вызова API: 401 без сохранённого входа, 403 если профиль недоступен."""
-
     @staticmethod
-    def user_of(user: AuthenticatedUser | None) -> AuthenticatedUser:
-        if user is None:
-            raise HTTPException(status_code=401, detail="Unauthorized")
+    async def subject(request: Request, profile: str | None = None) -> ApiSubject:
+        """Зависимость FastAPI: субъект текущего запроса под профилем из ?profile=."""
+        return await ApiAuth.of_app(request.app).subject_of_request(request, profile)
 
-        return user
 
-    @classmethod
-    def resolve(
-        cls, user: AuthenticatedUser | None, profile: str | None, profiles: ChatProfiles
-    ) -> ApiSubject:
-        user = cls.user_of(user)
-
-        try:
-            selected = profiles.resolve_or_default(profile, user.roles).name
-        except RefusalError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
-
-        try:
-            return ApiSubject.of(user, selected)
-        except AuthenticationError as exc:
-            raise HTTPException(status_code=401, detail=str(exc)) from exc
+CurrentUser = Annotated[AuthenticatedUser, Depends(ApiAuth.current)]
+CurrentSubject = Annotated[ApiSubject, Depends(ApiAuth.subject)]
 
 
 class SessionCookie:
