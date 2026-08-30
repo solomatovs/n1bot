@@ -25,6 +25,7 @@ from boba.identity.api import (
 from boba.identity.signin import SignedIn
 from boba.identity.sso import OwnRequest
 from boba.identity.token import CookieSpec, SessionRenewal
+from boba.ldap import Ldap3Directory
 from boba.stand.refs import StandRefs
 from boba.studio.api.app import ApiAccess, ApiApp
 from boba.studio.api.signin import PageUrls, SignInWiring
@@ -95,7 +96,7 @@ async def client() -> AsyncIterator[AsyncClient]:
     auth = AuthService(
         tokens=JwtTokens(SECRET, 3600),
         cookie=CookieSpec(name=COOKIE, samesite="lax", ttl_sec=3600),
-        password=PasswordSignIns.of([_local()]),
+        password=PasswordSignIns.of([_local()], Ldap3Directory()),
         sso=None,
         users=users,
         renewal=SessionRenewal.of(3600, 3600 * 24),

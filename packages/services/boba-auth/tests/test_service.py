@@ -16,6 +16,7 @@ from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
 from boba.identity.errors import AuthenticationError, ExternalServiceError
 from boba.identity.signin import SignedIn, SignInMetadata
 from boba.identity.token import CookieSpec, SessionRenewal
+from boba.ldap import Ldap3Directory
 
 pytestmark = pytest.mark.anyio
 
@@ -53,7 +54,7 @@ def _service(users: Users, password: bool = False) -> AuthService:
         config = LocalAuthConfig(
             users={"alice": "pw"}, roles=RoleMappingConfig(root={"alice": ["DEV"]})
         )
-        provider = PasswordSignIns.of([config])
+        provider = PasswordSignIns.of([config], Ldap3Directory())
 
     return AuthService(
         tokens=JwtTokens(SECRET, 60),

@@ -12,20 +12,18 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Annotated, Any, ClassVar
 
-from fastapi import Depends, FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.chat.profiles import ChatProfiles
 from boba.identity.api import ApiSubject, AuthenticatedUser, Authenticator
 from boba.identity.errors import AuthenticationError, AuthorizationError, RefusalError
-from boba.identity.token import CookieJar, CookieSpec
 from boba.runtime.http import RequestTokens
 
 __all__ = [
     "ApiAuth",
     "CurrentSubject",
     "CurrentUser",
-    "SessionCookie",
     "SocketSignIn",
 ]
 
@@ -81,7 +79,7 @@ class ApiAuth:
         return await self._authenticator.user_of_token(token)
 
     async def socket_sign_in(self, environ: Mapping[str, Any]) -> SocketSignIn | None:
-        """Вход подключения сокета; None — подключение без входа или с негодным токеном."""
+        """Вход подключения сокета; None — без входа или с негодным токеном."""
         token = self._tokens.of_environ(environ)
         if token is None:
             return None
@@ -118,51 +116,3 @@ class ApiAuth:
 
 CurrentUser = Annotated[AuthenticatedUser, Depends(ApiAuth.current)]
 CurrentSubject = Annotated[ApiSubject, Depends(ApiAuth.subject)]
-
-
-class SessionCookie:
-    """Cookie входа в ответе HTTP: атрибуты из CookieSpec, чанки — CookieJar."""
-
-    def __init__(self, spec: CookieSpec) -> None:
-        self._spec = spec
-        self._jar = CookieJar(spec.name)
-
-    @property
-    def jar(self) -> CookieJar:
-        return self._jar
-
-    def put(self, response: Response, present: Mapping[str, str], token: str) -> None:
-        """Ставит токен и снимает чанки прежнего, более длинного токена."""
-        pieces = self._jar.pieces(token)
-        for key, value in pieces:
-            self._set(response, key, value)
-
-        for key in self._jar.stale(present, pieces):
-            self._delete(response, key)
-
-    def token_of(self, present: Mapping[str, str]) -> str | None:
-        """Токен из cookie запроса: целиком либо из чанков."""
-        return self._jar.token_of(present)
-
-    def clear(self, response: Response, present: Mapping[str, str]) -> None:
-        for key in self._jar.ours(present):
-            self._delete(response, key)
-
-    def _set(self, response: Response, key: str, value: str) -> None:
-        response.set_cookie(
-            key=key,
-            value=value,
-            httponly=True,
-            secure=self._spec.secure,
-            samesite=self._spec.samesite,
-            max_age=self._spec.ttl_sec,
-            path=self._spec.path,
-        )
-
-    def _delete(self, response: Response, key: str) -> None:
-        response.delete_cookie(
-            key=key,
-            path=self._spec.path,
-            secure=self._spec.secure,
-            samesite=self._spec.samesite,
-        )

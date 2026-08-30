@@ -53,7 +53,7 @@ SRC_PACKAGES = (
     "infra/sandbox/boba-sandbox",
     "infra/db/boba-db-postgres",
     "infra/db/boba-db-pgvector",
-    "infra/krb/boba-krb",
+    "infra/auth/boba-krb",
     "infra/llm/boba-llm",
     "infra/transport/boba-transport-http",
     "infra/format/boba-liteparse",

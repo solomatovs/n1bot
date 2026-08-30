@@ -11,20 +11,22 @@ InternalServiceError — keytab/SPN/делегирование/конфиг не
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Sequence
+from typing import ClassVar
 
 from boba.auth.config import KerberosAuthConfig, KerberosRolesInLdapConfig
-from boba.auth.signin import ADDirectory
 from boba.identity.admission import PrincipalFacts, RoleRules
 from boba.identity.context import DelegatedTicket
 from boba.identity.directory import (
     ADUserEntry,
+    DirectoryBinding,
+    DirectorySearch,
     LDAPError,
     LDAPInvalidCredentialsError,
     LDAPServerUnavailableError,
     LDAPUserNotFoundError,
+    UserDirectory,
 )
 from boba.identity.errors import (
     AuthenticationError,
@@ -101,28 +103,25 @@ class KerberosErrorToDomain:
 class KerberosRolesInLdapProvider:
     """Факты о принципале из каталога: DN, sAMAccountName и группы по UPN."""
 
-    def __init__(self, config: KerberosRolesInLdapConfig):
+    UPN_FILTER: ClassVar[str] = "(userPrincipalName={principal})"
+
+    def __init__(self, config: KerberosRolesInLdapConfig, directory: UserDirectory):
         self._config = config
-        self._ad = ADDirectory
+        self._directory = directory
 
     async def request(self, principal: str) -> ADUserEntry:
-        search_filter = f"(userPrincipalName={principal})"
+        binding = DirectoryBinding(
+            server=self._config.server,
+            bind_dn=self._config.bind_dn,
+            bind_password=self._config.bind_password,
+        )
+        search = DirectorySearch(
+            base_dn=self._config.base_dn,
+            filter=self.UPN_FILTER.format(principal=principal),
+        )
 
         try:
-            user_dn, samaccountname, member_of = await asyncio.to_thread(
-                self._ad.fetch_userdn_samaccountname_member_of,
-                server=self._config.server,
-                bind_dn=self._config.bind_dn,
-                bind_password=self._config.bind_password.get_secret_value(),
-                search_base=self._config.base_dn,
-                search_filter=search_filter,
-            )
-
-            return ADUserEntry(
-                dn=user_dn,
-                samaccountname=samaccountname,
-                member_of=member_of,
-            )
+            return await self._directory.find(binding, search)
         except LDAPUserNotFoundError as e:
             raise AuthenticationError("User is not registered") from e
         except LDAPServerUnavailableError as e:
@@ -144,7 +143,9 @@ class KerberosRolesInLdapProvider:
 class SsoSignIn(SsoAdmission):
     """Вход по SPNEGO-личности: роли по правилам конфига и запечатанный билет."""
 
-    def __init__(self, config: KerberosAuthConfig, secret: str) -> None:
+    def __init__(
+        self, config: KerberosAuthConfig, secret: str, directory: UserDirectory
+    ) -> None:
         if not secret:
             msg = "sso secret is empty: it seals the sign-in ticket"
             raise ValueError(msg)
@@ -158,7 +159,7 @@ class SsoSignIn(SsoAdmission):
         self._rules: RoleRules = config.rules()
         self._directory: KerberosRolesInLdapProvider | None = None
         if ldap_roles := config.ldap_roles:
-            self._directory = KerberosRolesInLdapProvider(ldap_roles)
+            self._directory = KerberosRolesInLdapProvider(ldap_roles, directory)
 
     @property
     def config(self) -> KerberosAuthConfig:

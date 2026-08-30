@@ -48,6 +48,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "boba-ldap==0.0.14.dev9",
     "pyjwt>=2.8",
     "boba-kerberos==0.0.14.dev9",
     "boba-connection-broker==0.0.14.dev9",

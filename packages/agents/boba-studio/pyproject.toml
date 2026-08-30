@@ -42,6 +42,7 @@ tools = [
     "boba-tool-knowledge==0.0.14.dev9",
 ]
 dev = [
+    "boba-ldap==0.0.14.dev9",
     "boba-kerberos==0.0.14.dev9",
     "boba-krb[seal]==0.0.14.dev9",
     "pyjwt>=2.8",

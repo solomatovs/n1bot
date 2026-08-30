@@ -32,6 +32,7 @@ from boba.identity.session import SignInProvider, UserMetadataField
 from boba.identity.sso import OwnRequest, SsoChallenge
 from boba.identity.token import CookieSpec, SessionRenewal
 from boba.krb import KerberosEnv, ServiceTicketIssuer
+from boba.ldap import Ldap3Directory
 from boba.runtime.config import RuntimeConfig
 from boba.runtime.http import SsoRequests
 from boba.runtime.users import UsersTable
@@ -88,7 +89,7 @@ def _kerberos_auth(
             ttl_sec=session.session_ttl_sec,
         ),
         password=None,
-        sso=SpnegoGate(SsoSignIn(config, session.auth_secret)),
+        sso=SpnegoGate(SsoSignIn(config, session.auth_secret, Ldap3Directory())),
         users=users,
         renewal=SessionRenewal.of(
             session.session_ttl_sec, session.session_ttl_sec * 24
