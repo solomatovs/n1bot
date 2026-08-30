@@ -17,6 +17,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph.state import CompiledStateGraph
 
+from boba.auth import JwtTokens
 from boba.chainlit.agent.flow import (
     AgentGraphBuilder,
     GraphSpec,
@@ -134,9 +135,11 @@ def session_agent_settings(
     return view.agent()
 
 
-def session_source() -> SessionSource:
+def session_source(
+    tokens: Annotated[JwtTokens, Depends(runtime.session_tokens)],
+) -> SessionSource:
     """Источник сессий приложения; реализация знает про chainlit."""
-    return ChainlitSessions()
+    return ChainlitSessions(tokens)
 
 
 def session_tools(
@@ -263,6 +266,7 @@ async def chainlit_data_layer(  # noqa: PLR0913 — слой данных соб
     saver: Annotated[BaseCheckpointSaver, Depends(langchain_checkpoint_saver)],
     bus: Annotated[PgMessageBus, Depends(runtime.message_bus)],
     users: Annotated[UsersTable, Depends(runtime.users_table)],
+    sessions: Annotated[SessionSource, Depends(session_source)],
 ) -> AsyncIterator[PostgresDataLayer]:
     pool = AsyncPostgresPool(
         cfg.postgres,
@@ -280,7 +284,7 @@ async def chainlit_data_layer(  # noqa: PLR0913 — слой данных соб
             storage=storage,
             feed=TranscriptFeed(CheckpointMessages(saver)),
             links=AttachmentLinks(storage_cfg.public_prefix),
-            sessions=session_source(),
+            sessions=sessions,
             bus=bus,
         )
         yield layer

@@ -29,31 +29,15 @@ from boba.chat.threads import (
     ThreadUpsert,
     ThreadUpserted,
 )
-from boba.connections.postgres import PostgresConfig
-from boba.db.postgres import AsyncPostgresPool, SqlNames
+from boba.db.postgres import SqlNames
 from boba.identity.api import UsersColumn
+from boba.runtime.table import PgTable
 
 __all__ = ["ThreadsTable"]
 
 
-class ThreadsTable(ChatThreads):
+class ThreadsTable(PgTable, ChatThreads):
     """threads приложения рядом с users той же схемы."""
-
-    def __init__(
-        self,
-        postgres: PostgresConfig,
-        db_schema: str,
-        pool: AsyncPostgresPool | None = None,
-    ) -> None:
-        self._postgres = postgres
-        self._schema = db_schema
-        self._pool_ref = pool
-
-    async def _pool(self) -> AsyncPostgresPool:
-        if self._pool_ref is None:
-            self._pool_ref = await AsyncPostgresPool.get(self._postgres)
-
-        return self._pool_ref
 
     def _threads(self) -> sql.Identifier:
         return SqlNames.table(self._schema, ChatTable.THREADS)
@@ -126,13 +110,7 @@ class ThreadsTable(ChatThreads):
                 user_id=SqlNames.ident(ThreadsColumn.USER_ID),
             ),
         )
-        try:
-            pool = await self._pool()
-            async with pool.connection() as conn, conn.transaction():
-                for statement in ddl:
-                    await conn.execute(statement)
-        except Exception as exc:
-            raise DataUnavailableError("threads.setup", str(exc)) from exc
+        await self._run(ddl, "threads.setup")
 
     async def get(self, thread_id: UUID) -> StoredThread | None:
         query = sql.SQL("select {cols} from {threads} where {id} = %(id)s").format(

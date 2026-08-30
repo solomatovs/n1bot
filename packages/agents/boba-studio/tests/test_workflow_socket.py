@@ -20,10 +20,16 @@ from boba.messaging.bus import ListenerState, StaticBusWatch
 from boba.runtime.bus import PgMessageBus
 from boba.runtime.config import AppName, StudioRuntimeConfig
 from boba.runtime.locks import PgLiveLocks
+from boba.stand.auth import StubAuthenticator
 from boba.stand.context import use_context
 from boba.stand.tools import PROBE_ROLE as ROLE
 from boba.stand.tools import Probe
-from boba.studio.api.workflow_socket import WorkflowNamespace, WorkflowSocketEvent
+from boba.studio.api.auth import SocketSignIn
+from boba.studio.api.workflow_socket import (
+    StudioSessions,
+    WorkflowNamespace,
+    WorkflowSocketEvent,
+)
 from boba.toolrun.registry import ToolRegistry
 from boba.workflow import RunStatus
 from boba.workflow_engine.service import WorkflowService
@@ -117,14 +123,18 @@ def namespace(
     async def source() -> WorkflowService:
         return service
 
-    async def authenticate(environ: dict[str, Any]) -> AuthenticatedUser | None:
+    async def authenticate(environ: dict[str, Any]) -> SocketSignIn | None:
         if environ.get("signed"):
-            return user
+            return SocketSignIn(user=user, token=StubAuthenticator.TOKEN)
 
         return None
 
     built = WorkflowNamespace(
-        source, StandProfiles.profiles(studio_config), authenticate, _bus_watch
+        source,
+        StandProfiles.profiles(studio_config),
+        authenticate,
+        _bus_watch,
+        StudioSessions(),
     )
     socketio.AsyncServer(async_mode="asgi").register_namespace(built)
 
@@ -148,7 +158,7 @@ def context(
     return use_context(
         monkeypatch,
         thread_id="socket-thread",
-        user_id=UUID(user.id),
+        user_id=user.id,
         roles=[*StandProfiles.roles(studio_config), ROLE],
         profile=StandProfiles.profile(studio_config),
     )
@@ -247,11 +257,15 @@ async def test_websocket_handshake_accepts_the_browser_origin_behind_a_proxy(
     async def source() -> WorkflowService:
         return service
 
-    async def authenticate(environ: dict[str, Any]) -> AuthenticatedUser | None:
-        return user
+    async def authenticate(environ: dict[str, Any]) -> SocketSignIn | None:
+        return SocketSignIn(user=user, token=StubAuthenticator.TOKEN)
 
     namespace = WorkflowNamespace(
-        source, StandProfiles.profiles(studio_config), authenticate, _bus_watch
+        source,
+        StandProfiles.profiles(studio_config),
+        authenticate,
+        _bus_watch,
+        StudioSessions(),
     )
     app = FastAPI()
     app.mount("/socket.io", WorkflowSocket.build(namespace))
@@ -340,15 +354,19 @@ async def test_run_events_reach_a_namespace_on_another_instance(  # noqa: PLR091
     async def source() -> WorkflowService:
         return viewer
 
-    async def authenticate(environ: dict[str, Any]) -> AuthenticatedUser | None:
-        return user
+    async def authenticate(environ: dict[str, Any]) -> SocketSignIn | None:
+        return SocketSignIn(user=user, token=StubAuthenticator.TOKEN)
 
     async def room_noop(*args: Any, **kwargs: Any) -> None:
         return None
 
     emitted = Emitted()
     namespace = WorkflowNamespace(
-        source, StandProfiles.profiles(studio_config), authenticate, _bus_watch
+        source,
+        StandProfiles.profiles(studio_config),
+        authenticate,
+        _bus_watch,
+        StudioSessions(),
     )
     monkeypatch.setattr(namespace, "emit", emitted.emit)
     monkeypatch.setattr(namespace, "enter_room", room_noop)
@@ -446,15 +464,19 @@ async def test_user_events_reach_the_room_over_postgres(  # noqa: PLR0913
     async def source() -> WorkflowService:
         return service
 
-    async def authenticate(environ: dict[str, Any]) -> AuthenticatedUser | None:
-        return user
+    async def authenticate(environ: dict[str, Any]) -> SocketSignIn | None:
+        return SocketSignIn(user=user, token=StubAuthenticator.TOKEN)
 
     async def room_noop(*args: Any, **kwargs: Any) -> None:
         return None
 
     emitted = Emitted()
     namespace = WorkflowNamespace(
-        source, StandProfiles.profiles(studio_config), authenticate, _bus_watch
+        source,
+        StandProfiles.profiles(studio_config),
+        authenticate,
+        _bus_watch,
+        StudioSessions(),
     )
     monkeypatch.setattr(namespace, "emit", emitted.emit)
     monkeypatch.setattr(namespace, "enter_room", room_noop)

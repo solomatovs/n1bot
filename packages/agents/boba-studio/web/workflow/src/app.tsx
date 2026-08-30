@@ -103,7 +103,7 @@ export function App(): ReactElement {
     [liveSocket, adopt],
   );
 
-  // билет входа на исходе: сервер просит молча пройти SPNEGO ещё раз, один обмен за раз
+  // вход на исходе: сервер просит молча обновить сессию, один обмен за раз
   const refreshing = useRef(false);
   useEffect(
     () =>
@@ -114,7 +114,7 @@ export function App(): ReactElement {
 
         refreshing.current = true;
         void new WorkflowApi(urls)
-          .ssoRefresh()
+          .refreshSession()
           .catch(() => false)
           .then(() => {
             refreshing.current = false;

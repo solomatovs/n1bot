@@ -33,7 +33,7 @@ from boba.sandbox.zygote import ZygoteRegistry
 from boba.studio.api.app import ApiAccess, ApiApp
 from boba.studio.api.signin import PageUrls, SignInWiring
 from boba.studio.api.urls import ApiVersion, SignInUrl
-from boba.studio.api.workflow_socket import StudioRefreshSignal
+from boba.studio.api.workflow_socket import StudioSessions
 from boba.studio.page import WorkflowDevPage, WorkflowPage
 
 __all__ = ["StudioEntry", "StudioHost"]
@@ -48,9 +48,6 @@ class StudioHost:
         container.provide(providers.get_runtime_config, config)
         container.provide(providers.plugin_table, CoreTools.table)
         container.provide(providers.app_name, AppName.STUDIO)
-        container.provide(
-            providers.refresh_signal, StudioRefreshSignal(providers.message_bus_ref)
-        )
         container.eager(providers.message_bus)
         container.eager(providers.stream_journal)
         container.eager(providers.kb_schema)
@@ -66,11 +63,15 @@ class StudioHost:
         container.eager(providers.users_table)
         container.eager(providers.auth_service)
         container.eager(providers.credential_source)
+        sessions = StudioSessions()
+        container.provide(providers.live_sessions, sessions)
+        container.eager(providers.session_keeper)
         Container.set_root(container)
 
         root = FastAPI(lifespan=cls._lifespan, openapi_url=None, docs_url=None)
         root.state.container = container
         root.state.config = config
+        root.state.sessions = sessions
         cls.page_of(config.studio).mount(root)
 
         return root
@@ -91,10 +92,16 @@ class StudioHost:
             msg = f"auth service provider returned {type(auth).__name__}"
             raise RuntimeError(msg)
 
+        sessions = app.state.sessions
+        if not isinstance(sessions, StudioSessions):
+            msg = f"app state carries {type(sessions).__name__} instead of sessions"
+            raise RuntimeError(msg)
+
         access = ApiAccess(
             authenticator=auth,
             cookie=config.session.cookie,
             users=lambda: table,
+            sessions=sessions,
         )
         api = ApiApp.build(
             providers.runtime_refs(),

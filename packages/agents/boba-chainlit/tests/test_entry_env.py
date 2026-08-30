@@ -45,6 +45,7 @@ CONFIG = """
     cookie          = "boba_token"
     cookie_samesite = "strict"
     session_ttl_sec = 3600
+    session_max_sec = 86400
 
 [chainlit]
     root        = "<root>"

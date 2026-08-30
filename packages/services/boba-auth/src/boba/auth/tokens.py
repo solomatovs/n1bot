@@ -43,19 +43,42 @@ class JwtTokens(TokenIssuer, TokenReader):
     def issue(self, signed: SignedIn) -> str:
         claims = SessionClaims.of_signed(signed, int(time.time()), self._ttl_sec)
 
-        return jwt.encode(claims.render(), self._secret, algorithm=TokenAlgorithm.HS256)
+        return self._encode(claims)
+
+    def renew(self, claims: SessionClaims) -> str:
+        return self._encode(claims.renewed(int(time.time()), self._ttl_sec))
 
     def read(self, token: str) -> SessionClaims:
         if not token:
             raise TokenRejectedError(TokenRejection.MALFORMED, "token is empty")
 
-        raw = self._decode(token)
+        raw = self._decode(token, verify_exp=True)
 
         return SessionClaims.parse(raw)
 
-    def _decode(self, token: str) -> dict[str, Any]:
+    def read_stale(self, token: str, grace_sec: int) -> SessionClaims:
+        if not token:
+            raise TokenRejectedError(TokenRejection.MALFORMED, "token is empty")
+
+        claims = SessionClaims.parse(self._decode(token, verify_exp=False))
+        if claims.exp + grace_sec < int(time.time()):
+            raise TokenRejectedError(
+                TokenRejection.EXPIRED, "token expired beyond grace"
+            )
+
+        return claims
+
+    def _encode(self, claims: SessionClaims) -> str:
+        return jwt.encode(claims.render(), self._secret, algorithm=TokenAlgorithm.HS256)
+
+    def _decode(self, token: str, verify_exp: bool) -> dict[str, Any]:
         try:
-            return jwt.decode(token, self._secret, algorithms=[TokenAlgorithm.HS256])
+            return jwt.decode(
+                token,
+                self._secret,
+                algorithms=[TokenAlgorithm.HS256],
+                options={"verify_exp": verify_exp},
+            )
         except jwt.ExpiredSignatureError as exc:
             raise TokenRejectedError(TokenRejection.EXPIRED, "token expired") from exc
         except jwt.InvalidSignatureError as exc:

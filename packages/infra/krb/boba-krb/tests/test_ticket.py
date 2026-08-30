@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import time
 
 import pytest
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from boba.kerberos import DelegationMode, SignInTicket, TicketSealError
 from boba.krb.seal import TicketSealer
@@ -53,3 +58,28 @@ class TestTicketSealer:
     def test_garbage_does_not_open(self) -> None:
         with pytest.raises(TicketSealError):
             TicketSealer(SECRET).open("not-a-token")
+
+
+class TestSealedLayoutCompatibility:
+    def test_ticket_sealed_by_the_previous_layout_still_opens(self) -> None:
+        """Живые JWT несут билеты старой раскладки: dict, ccache в стандартном base64."""
+        ticket = _ticket(600)
+        derived = HKDF(
+            algorithm=hashes.SHA256(),
+            length=TicketSealer.KEY_BYTES,
+            salt=None,
+            info=TicketSealer.INFO,
+        ).derive(SECRET.encode(TicketSealer.ENCODING))
+        fernet = Fernet(base64.urlsafe_b64encode(derived))
+        payload = {
+            "principal": ticket.principal,
+            "mode": ticket.mode.value,
+            "expires_at": ticket.expires_at,
+            "ccache": base64.b64encode(ticket.ccache).decode(TicketSealer.ENCODING),
+        }
+        sealed = fernet.encrypt(json.dumps(payload).encode(TicketSealer.ENCODING))
+
+        opened = TicketSealer(SECRET).open(sealed.decode(TicketSealer.ENCODING))
+
+        if opened != ticket:
+            raise AssertionError("old layout must open into the same ticket")

@@ -11,9 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from contextlib import contextmanager
-from typing import Any
 
 from ldap3 import (
     Connection,
@@ -35,6 +34,7 @@ from ldap3.core.exceptions import (
 )
 
 from boba.auth.config import AuthConfig, LdapAuthConfig, LocalAuthConfig
+from boba.identity.admission import PrincipalFacts
 from boba.identity.directory import (
     LDAPAccessDeniedError,
     LDAPConfigError,
@@ -45,25 +45,15 @@ from boba.identity.directory import (
 )
 from boba.identity.errors import (
     AuthenticationError,
-    AuthorizationError,
     ExternalServiceError,
     InternalServiceError,
-)
-from boba.identity.roles import (
-    DnExcludeUserProvider,
-    DnUserRolesProvider,
-    LocalExcludeUserProvider,
-    LocalUserRolesProvider,
-    MemberOfExcludeUserProvider,
-    MemberOfUserRolesProvider,
 )
 from boba.identity.session import (
     LoginTemplate,
     SignInProvider,
     UserLogin,
-    UserMetadataField,
 )
-from boba.identity.signin import PasswordSignIn, SignedIn
+from boba.identity.signin import PasswordSignIn, SignedIn, SignInMetadata
 
 __all__ = [
     "ADDirectory",
@@ -162,118 +152,32 @@ class LocalSignIn(PasswordSignIn):
 
     def __init__(self, config: LocalAuthConfig) -> None:
         self._config = config
-        self._init_mapping()
-
-    def _init_mapping(self):
-        self._local_roles: LocalUserRolesProvider | None = None
-        self._local_roles_ex: LocalExcludeUserProvider | None = None
-
-        if roles := self._config.roles:
-            self._local_roles = LocalUserRolesProvider(roles)
-
-        if roles_ex := self._config.roles_ex:
-            self._local_roles_ex = LocalExcludeUserProvider(roles_ex)
+        self._rules = config.rules()
 
     async def sign_in(self, username: str, password: str) -> SignedIn | None:
         if self._config.users.get(username) != password:
             return None
 
-        excluded = False
-        if self._local_roles_ex:
-            excluded = any(self._local_roles_ex.exclude_of(username))
-
-        if excluded:
-            raise AuthorizationError("Access denied")
-
-        metadata: dict[str, Any] = {
-            UserMetadataField.PROVIDER: SignInProvider.LOCAL.value,
-        }
-
-        roles: list[str] = []
-        if self._local_roles:
-            roles.extend(self._local_roles.roles_of(username))
-
-        roles = sorted(set(roles))
-
-        requires_roles = self._config.require_roles
-        if requires_roles and not roles:
-            raise AuthorizationError("Access denied")
-
-        if roles:
-            metadata[UserMetadataField.ROLES] = roles
+        roles = self._rules.admit(PrincipalFacts(login=username))
+        sign_in = SignInMetadata(
+            provider=SignInProvider.LOCAL.value, roles=frozenset(roles)
+        )
 
         login = UserLogin.of(username)
 
         return SignedIn(
-            identifier=login.key, display_name=login.display, metadata=metadata
+            identifier=login.key, display_name=login.display, sign_in=sign_in
         )
 
 
 class LdapSignIn(PasswordSignIn):
-    """Логин/пароль с проверкой bind'ом в AD; роли — из групп AD."""
+    """Логин/пароль с проверкой bind'ом в AD; роли — по атрибутам каталога."""
 
     def __init__(self, config: LdapAuthConfig):
         self._config = config
         self._ad = ADDirectory
+        self._rules = config.rules()
         self._logger = logging.getLogger(__name__)
-
-        self._init_mapping()
-
-    def _init_mapping(self):
-        self._samaccountname_roles: LocalUserRolesProvider | None = None
-        self._samaccountname_roles_ex: LocalExcludeUserProvider | None = None
-        self._member_of_roles: MemberOfUserRolesProvider | None = None
-        self._member_of_roles_ex: MemberOfExcludeUserProvider | None = None
-        self._dn_roles: DnUserRolesProvider | None = None
-        self._dn_roles_ex: DnExcludeUserProvider | None = None
-
-        if roles := self._config.roles.samaccountname:
-            self._samaccountname_roles = LocalUserRolesProvider(roles)
-
-        if roles := self._config.roles.samaccountname_ex:
-            self._samaccountname_roles_ex = LocalExcludeUserProvider(roles)
-
-        if roles := self._config.roles.member_of:
-            self._member_of_roles = MemberOfUserRolesProvider(roles)
-
-        if roles := self._config.roles.member_of_ex:
-            self._member_of_roles_ex = MemberOfExcludeUserProvider(roles)
-
-        if roles := self._config.roles.dn:
-            self._dn_roles = DnUserRolesProvider(roles)
-
-        if roles := self._config.roles.dn_ex:
-            self._dn_roles_ex = DnExcludeUserProvider(roles)
-
-    def _excluded_of(self, username: str, user_dn: str, member_of: list[str]) -> bool:
-        return any(self._exclusions_of(username, user_dn, member_of))
-
-    def _exclusions_of(
-        self, username: str, user_dn: str, member_of: list[str]
-    ) -> Iterator[bool]:
-        if self._samaccountname_roles_ex:
-            yield from self._samaccountname_roles_ex.exclude_of(username)
-
-        if self._member_of_roles_ex:
-            yield from self._member_of_roles_ex.exclude_of(member_of)
-
-        if self._dn_roles_ex:
-            yield from self._dn_roles_ex.exclude_of(user_dn)
-
-    def _roles_of(self, username: str, user_dn: str, member_of: list[str]) -> list[str]:
-        return sorted(set(self._role_matches(username, user_dn, member_of)))
-
-    def _role_matches(
-        self, username: str, user_dn: str, member_of: list[str]
-    ) -> Iterator[str]:
-        if self._samaccountname_roles:
-            yield from self._samaccountname_roles.roles_of(username)
-
-        if self._member_of_roles:
-            yield from self._member_of_roles.roles_of(member_of)
-
-        if self._dn_roles:
-            yield from self._dn_roles.roles_of(user_dn)
 
     async def sign_in(self, username: str, password: str) -> SignedIn | None:
         # личность подтверждаем bind'ом под пользователем
@@ -289,34 +193,6 @@ class LdapSignIn(PasswordSignIn):
                 bind_password=password,
                 search_base=search_base,
                 search_filter=search_filter,
-            )
-
-            # имя берём из каталога, а не из формы: набранный регистр на
-            # роли, запреты и строку users влиять не должен
-            login = UserLogin.of(samaccountname)
-
-            if self._excluded_of(samaccountname, user_dn, member_of):
-                self._logger.warning("access denied for %s (excluded)", login.key)
-                raise AuthorizationError("Access denied")
-
-            metadata: dict[str, Any] = {
-                UserMetadataField.PROVIDER: SignInProvider.LDAP.value,
-            }
-
-            roles = self._roles_of(samaccountname, user_dn, member_of)
-
-            requires_roles = self._config.require_roles
-            if requires_roles and not roles:
-                self._logger.warning(
-                    "access denied for %s (no roles mapped)", login.key
-                )
-                raise AuthorizationError("Access denied")
-
-            if roles:
-                metadata[UserMetadataField.ROLES] = roles
-
-            return SignedIn(
-                identifier=login.key, display_name=login.display, metadata=metadata
             )
         except LDAPUserNotFoundError as e:
             self._logger.warning("user %s is not registered", username)
@@ -336,6 +212,20 @@ class LdapSignIn(PasswordSignIn):
             raise InternalServiceError(
                 internal_detail=f"ldap error: {e}", user_detail=None
             ) from e
+
+        # имя берём из каталога, а не из формы: набранный регистр на
+        # роли, запреты и строку users влиять не должен
+        facts = PrincipalFacts(login=samaccountname, dn=user_dn, member_of=member_of)
+        roles = self._rules.admit(facts)
+        sign_in = SignInMetadata(
+            provider=SignInProvider.LDAP.value, roles=frozenset(roles)
+        )
+
+        login = UserLogin.of(samaccountname)
+
+        return SignedIn(
+            identifier=login.key, display_name=login.display, sign_in=sign_in
+        )
 
 
 class CompositeSignIn(PasswordSignIn):

@@ -12,6 +12,7 @@ from boba.chat.openai import OpenAiConfig
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.chat.provider import OpenAiChatConfig
 from boba.identity.api import AuthenticatedUser
+from boba.identity.signin import SignInMetadata
 from boba.stand.auth import MemoryUsers, StubAuthenticator
 from boba.stand.refs import StandRefs
 from boba.studio.api.app import ApiAccess, ApiApp
@@ -49,14 +50,14 @@ def _profiles() -> ChatProfiles:
 
 def _user(roles: list[str]) -> AuthenticatedUser:
     return AuthenticatedUser(
-        id=str(UUID(int=7)),
+        id=UUID(int=7),
         identifier="reader",
-        metadata={
-            "roles": roles,
-            "provider": "KerberosAuth",
-            "principal": "reader@EXAMPLE",
-            "sso_ticket": "sealed",
-        },
+        sign_in=SignInMetadata(
+            provider="KerberosAuth",
+            roles=frozenset(roles),
+            principal="reader@EXAMPLE",
+            sealed_ticket="sealed",
+        ),
     )
 
 

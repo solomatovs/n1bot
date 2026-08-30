@@ -7,8 +7,6 @@ TicketSealError — запечатанный билет не читается: �
 from __future__ import annotations
 
 import base64
-import binascii
-import json
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -18,7 +16,6 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from pydantic import ValidationError
 
 from boba.kerberos import (
-    DelegationMode,
     SignInCredentials,
     SignInTicket,
     TicketSealError,
@@ -45,13 +42,7 @@ class TicketSealer:
         self._fernet = Fernet(base64.urlsafe_b64encode(derived))
 
     def seal(self, ticket: SignInTicket) -> str:
-        payload = {
-            "principal": ticket.principal,
-            "mode": ticket.mode.value,
-            "expires_at": ticket.expires_at,
-            "ccache": base64.b64encode(ticket.ccache).decode(self.ENCODING),
-        }
-        plain = json.dumps(payload).encode(self.ENCODING)
+        plain = ticket.model_dump_json().encode(self.ENCODING)
 
         return self._fernet.encrypt(plain).decode(self.ENCODING)
 
@@ -63,21 +54,8 @@ class TicketSealer:
             raise TicketSealError(msg) from exc
 
         try:
-            payload = json.loads(plain.decode(self.ENCODING))
-            ccache = base64.b64decode(payload["ccache"], validate=True)
-            return SignInTicket(
-                principal=payload["principal"],
-                mode=DelegationMode(payload["mode"]),
-                ccache=ccache,
-                expires_at=payload["expires_at"],
-            )
-        except (
-            ValueError,
-            KeyError,
-            TypeError,
-            binascii.Error,
-            ValidationError,
-        ) as exc:
+            return SignInTicket.model_validate_json(plain)
+        except ValidationError as exc:
             msg = f"sealed sign-in ticket is malformed: {exc}"
             raise TicketSealError(msg) from exc
 

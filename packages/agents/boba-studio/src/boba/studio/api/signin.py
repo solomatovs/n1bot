@@ -100,6 +100,13 @@ class SignInApi:
             tags=[self.TAG],
             status_code=204,
         )
+        router.add_api_route(
+            SignInUrl.REFRESH.value,
+            self.refresh,
+            methods=["POST"],
+            tags=[self.TAG],
+            include_in_schema=False,
+        )
         if not self._auth.providers().sso:
             return
 
@@ -107,13 +114,6 @@ class SignInApi:
             SignInUrl.SSO.value,
             self.sso,
             methods=["GET"],
-            tags=[self.TAG],
-            include_in_schema=False,
-        )
-        router.add_api_route(
-            SignInUrl.SSO_REFRESH.value,
-            self.sso_refresh,
-            methods=["POST"],
             tags=[self.TAG],
             include_in_schema=False,
         )
@@ -189,10 +189,12 @@ class SignInApi:
 
         return response
 
-    async def sso_refresh(self, request: Request) -> Response:
-        """Свежий билет для живой сессии: 204 + новая cookie, 401 Negotiate, 403."""
+    async def refresh(self, request: Request) -> Response:
+        """Обновление живой сессии по её виду входа: 204 + новая cookie, 401 Negotiate
+        (браузер повторит сам), 403 — сессию не продлить, страница уходит на вход.
+        """
         token = self._cookie.token_of(request.cookies)
-        outcome = await self._auth.refresh(SsoRequests.of(request), token)
+        outcome = await self._auth.refresh_session(SsoRequests.of(request), token)
         if isinstance(outcome, SsoRefused):
             return Response(status_code=403)
 

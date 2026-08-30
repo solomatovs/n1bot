@@ -6,17 +6,15 @@ DataUnavailableError — postgres недоступен или ответил н�
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import Any
 from uuid import UUID
 
 from psycopg import sql
-from psycopg.rows import tuple_row
 from psycopg.types.json import Jsonb
 
 from boba.chat.threads import (
     ChatTable,
-    DataUnavailableError,
     ElementsColumn,
     ElementStore,
     FeedbacksColumn,
@@ -26,66 +24,14 @@ from boba.chat.threads import (
 )
 from boba.connections.postgres import PostgresConfig
 from boba.db.postgres import AsyncPostgresPool, SqlNames
+from boba.runtime.table import PgTable
 from boba.runtime.threads import ThreadsTable
 from boba.runtime.users import UsersTable
 
 __all__ = ["ChatTables", "ElementsTable", "FeedbacksTable"]
 
 
-class _Table:
-    """Общее для таблиц схемы: пул и выполнение запросов с упаковкой ошибок."""
-
-    def __init__(
-        self,
-        postgres: PostgresConfig,
-        db_schema: str,
-        pool: AsyncPostgresPool | None = None,
-    ) -> None:
-        self._postgres = postgres
-        self._schema = db_schema
-        self._pool_ref = pool
-
-    async def _pool(self) -> AsyncPostgresPool:
-        if self._pool_ref is None:
-            self._pool_ref = await AsyncPostgresPool.get(self._postgres)
-
-        return self._pool_ref
-
-    async def _run(self, statements: Sequence[sql.Composed], operation: str) -> None:
-        try:
-            pool = await self._pool()
-            async with pool.connection() as conn, conn.transaction():
-                for statement in statements:
-                    await conn.execute(statement)
-        except Exception as exc:
-            raise DataUnavailableError(operation, str(exc)) from exc
-
-    async def _execute(
-        self, query: sql.Composed, params: Mapping[str, Any], operation: str
-    ) -> None:
-        try:
-            pool = await self._pool()
-            async with pool.connection() as conn:
-                await conn.execute(query, params)
-        except Exception as exc:
-            raise DataUnavailableError(operation, str(exc)) from exc
-
-    async def _fetch(
-        self, query: sql.Composed, params: Mapping[str, Any], operation: str
-    ) -> list[tuple[Any, ...]]:
-        try:
-            pool = await self._pool()
-            async with (
-                pool.connection() as conn,
-                conn.cursor(row_factory=tuple_row) as cur,
-            ):
-                await cur.execute(query, params)
-                return await cur.fetchall()
-        except Exception as exc:
-            raise DataUnavailableError(operation, str(exc)) from exc
-
-
-class ElementsTable(_Table, ElementStore):
+class ElementsTable(PgTable, ElementStore):
     """elements треда: строка описания вложения, тело — в хранилище файлов."""
 
     def _elements(self) -> sql.Identifier:
@@ -169,19 +115,35 @@ class ElementsTable(_Table, ElementStore):
         )
         params: dict[str, Any] = element.model_dump()
         params["props"] = Jsonb(dict(element.props))
-        for key in ("chainlit_key", "size", "language", "mime"):
+        for key in (
+            ElementsColumn.CHAINLIT_KEY,
+            ElementsColumn.SIZE,
+            ElementsColumn.LANGUAGE,
+            ElementsColumn.MIME,
+        ):
             if params[key] == "":
                 params[key] = None
 
-        await self._execute(query, params, "create_element")
+        await self._execute_as(query, params, "create_element")
 
     async def find(self, element_id: UUID) -> StoredElement | None:
-        query = sql.SQL("select {cols} from {elements} where {id} = %(id)s").format(
+        query = sql.SQL(
+            """
+            select
+                {cols}
+            from
+                {elements}
+            where
+                {id} = %(id)s
+            """
+        ).format(
             cols=self._columns(),
             elements=self._elements(),
             id=SqlNames.ident(ElementsColumn.ID),
         )
-        rows = await self._fetch(query, {"id": element_id}, "get_element")
+        rows = await self._fetch_as(
+            query, {ElementsColumn.ID: element_id}, "get_element"
+        )
         if not rows:
             return None
 
@@ -204,8 +166,10 @@ class ElementsTable(_Table, ElementStore):
             thread_id=SqlNames.ident(ElementsColumn.THREAD_ID),
             id=SqlNames.ident(ElementsColumn.ID),
         )
-        rows = await self._fetch(
-            query, {"thread_id": thread_id, "id": element_id}, "get_element"
+        rows = await self._fetch_as(
+            query,
+            {ElementsColumn.THREAD_ID: thread_id, ElementsColumn.ID: element_id},
+            "get_element",
         )
         if not rows:
             return None
@@ -226,7 +190,9 @@ class ElementsTable(_Table, ElementStore):
             id=SqlNames.ident(ElementsColumn.ID),
             cols=self._columns(),
         )
-        rows = await self._fetch(query, {"id": element_id}, "delete_element")
+        rows = await self._fetch_as(
+            query, {ElementsColumn.ID: element_id}, "delete_element"
+        )
         if not rows:
             return None
 
@@ -247,7 +213,9 @@ class ElementsTable(_Table, ElementStore):
             elements=self._elements(),
             thread_id=SqlNames.ident(ElementsColumn.THREAD_ID),
         )
-        rows = await self._fetch(query, {"thread_id": thread_id}, "get_thread")
+        rows = await self._fetch_as(
+            query, {ElementsColumn.THREAD_ID: thread_id}, "get_thread"
+        )
 
         return [self._stored(row) for row in rows]
 
@@ -263,7 +231,9 @@ class ElementsTable(_Table, ElementStore):
             thread_id=SqlNames.ident(ElementsColumn.THREAD_ID),
         )
 
-        await self._execute(query, {"thread_id": thread_id}, "delete_thread")
+        await self._execute_as(
+            query, {ElementsColumn.THREAD_ID: thread_id}, "delete_thread"
+        )
 
     async def delete_of_step(self, step_id: UUID) -> None:
         query = sql.SQL(
@@ -276,10 +246,10 @@ class ElementsTable(_Table, ElementStore):
             elements=self._elements(), for_id=SqlNames.ident(ElementsColumn.FOR_ID)
         )
 
-        await self._execute(query, {"for_id": step_id}, "delete_step")
+        await self._execute_as(query, {ElementsColumn.FOR_ID: step_id}, "delete_step")
 
 
-class FeedbacksTable(_Table, FeedbackStore):
+class FeedbacksTable(PgTable, FeedbackStore):
     """feedbacks: оценка шага пользователем."""
 
     def _feedbacks(self) -> sql.Identifier:
@@ -349,7 +319,7 @@ class FeedbacksTable(_Table, FeedbackStore):
         if params["comment"] == "":
             params["comment"] = None
 
-        await self._execute(query, params, "upsert_feedback")
+        await self._execute_as(query, params, "upsert_feedback")
 
     async def delete(self, feedback_id: UUID) -> StoredFeedback | None:
         query = sql.SQL(
@@ -364,7 +334,9 @@ class FeedbacksTable(_Table, FeedbackStore):
             id=SqlNames.ident(FeedbacksColumn.ID),
             cols=self._columns(),
         )
-        rows = await self._fetch(query, {"id": feedback_id}, "delete_feedback")
+        rows = await self._fetch_as(
+            query, {FeedbacksColumn.ID: feedback_id}, "delete_feedback"
+        )
         if not rows:
             return None
 
@@ -385,7 +357,9 @@ class FeedbacksTable(_Table, FeedbackStore):
             feedbacks=self._feedbacks(),
             thread_id=SqlNames.ident(FeedbacksColumn.THREAD_ID),
         )
-        rows = await self._fetch(query, {"thread_id": thread_id}, "get_thread")
+        rows = await self._fetch_as(
+            query, {FeedbacksColumn.THREAD_ID: thread_id}, "get_thread"
+        )
 
         return [self._stored(row) for row in rows]
 
@@ -401,7 +375,9 @@ class FeedbacksTable(_Table, FeedbackStore):
             thread_id=SqlNames.ident(FeedbacksColumn.THREAD_ID),
         )
 
-        await self._execute(query, {"thread_id": thread_id}, "delete_thread")
+        await self._execute_as(
+            query, {FeedbacksColumn.THREAD_ID: thread_id}, "delete_thread"
+        )
 
     async def delete_of_step(self, step_id: UUID) -> None:
         query = sql.SQL(
@@ -414,7 +390,7 @@ class FeedbacksTable(_Table, FeedbackStore):
             feedbacks=self._feedbacks(), for_id=SqlNames.ident(FeedbacksColumn.FOR_ID)
         )
 
-        await self._execute(query, {"for_id": step_id}, "delete_step")
+        await self._execute_as(query, {FeedbacksColumn.FOR_ID: step_id}, "delete_step")
 
 
 class ChatTables:

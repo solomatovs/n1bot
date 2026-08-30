@@ -14,7 +14,7 @@ from boba.chainlit.chat.feed import TextClip
 from boba.chainlit.domain.fields import StepField, ThreadField
 from boba.chainlit.infra.session import current_session, session_source_ref
 from boba.chainlit.rendering.chat_view import ChatView, LiveSink
-from boba.chainlit.rendering.renderer import ChatRenderers, RenderSurface
+from boba.chainlit.rendering.renderer import ChatRenderers, RenderSurface, SignalType
 from boba.identity.context import Scope
 from boba.identity.errors import InternalServiceError
 from boba.identity.locks import LockMode
@@ -26,6 +26,7 @@ from boba.messaging import (
     LockToken,
     Notice,
     NoticeLevel,
+    SignInRefreshRequested,
     ThreadChanged,
     Unsubscribe,
 )
@@ -304,6 +305,10 @@ class UserRoom:
             await cls._settings_changed(user_id, message)
             return
 
+        if isinstance(message, SignInRefreshRequested):
+            await cls._refresh_requested(user_id)
+            return
+
         if not isinstance(message, ThreadChanged):
             return
 
@@ -330,6 +335,22 @@ class UserRoom:
                 logger.warning(
                     "thread list refresh failed for session %s of user %s",
                     socket.id,
+                    user_id,
+                    exc_info=True,
+                )
+
+    @classmethod
+    async def _refresh_requested(cls, user_id: UUID) -> None:
+        """Билет входа на исходе: каждая вкладка пользователя обменивается заново."""
+        payload = {"type": SignalType.SIGNIN_REFRESH}
+        for session in session_source_ref().of_user(user_id):
+            # одна битая вкладка не должна оставить без сигнала остальные
+            try:
+                await session.emit(ChatRoomSurface.EVENT, payload)
+            except Exception:
+                logger.warning(
+                    "sign-in refresh signal failed for session %s of user %s",
+                    session.id,
                     user_id,
                     exc_info=True,
                 )

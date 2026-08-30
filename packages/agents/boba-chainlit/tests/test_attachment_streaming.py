@@ -18,7 +18,7 @@ from uuid import UUID
 import pytest
 import uvicorn
 from chainlit.auth import get_current_user
-from chainlit_stand import FakeUrl
+from chainlit_stand import FakeUrl, StandTokens
 from fastapi import FastAPI
 from httpx import AsyncClient
 
@@ -174,7 +174,7 @@ async def served(
     await storage.upload_stream(key.render(), payload.source())
 
     file_id = SessionFiles.register(
-        ChainlitSession(session),
+        ChainlitSession(session, StandTokens()),
         key,
         mime="application/octet-stream",
         size=payload.size,

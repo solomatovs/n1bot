@@ -1,16 +1,69 @@
-"""HTTP-граница: BaseError -> статус и тело ответа, запрос SSO -> модель сервиса."""
+"""HTTP-граница: BaseError -> статус и тело ответа, запрос SSO -> модель сервиса,
+токен входа из cookie или Authorization запроса.
+"""
 
 import logging
+from collections.abc import Mapping
+from http.cookies import SimpleCookie
+from typing import Any, ClassVar
 
-from starlette.requests import Request
+from starlette.requests import HTTPConnection, Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from boba.identity.errors import BaseError, FailureReport, to_domain
 from boba.identity.session import LogLine
 from boba.identity.sso import OwnRequest, RequestHeader, SsoRequest
+from boba.identity.token import CookieJar
 
-__all__ = ["DomainErrorMiddleware", "SsoRequests"]
+__all__ = ["DomainErrorMiddleware", "RequestTokens", "SsoRequests"]
+
+
+class RequestTokens:
+    """Токен входа запроса: cookie (целиком либо чанками), иначе Bearer."""
+
+    BEARER: ClassVar[str] = "Bearer "
+    COOKIE_HEADER: ClassVar[str] = "HTTP_COOKIE"
+    AUTHORIZATION: ClassVar[str] = "Authorization"
+
+    def __init__(self, cookie: str) -> None:
+        self._jar = CookieJar(cookie)
+
+    def of_cookies(self, cookies: Mapping[str, str]) -> str | None:
+        return self._jar.token_of(cookies)
+
+    def of_request(self, request: HTTPConnection) -> str | None:
+        """Токен http-запроса или websocket-подключения starlette."""
+        token = self.of_cookies(request.cookies)
+        if token is not None:
+            return token
+
+        header = request.headers.get(self.AUTHORIZATION)
+        if not header:
+            return None
+
+        if not header.startswith(self.BEARER):
+            return None
+
+        return header[len(self.BEARER) :]
+
+    def of_environ(self, environ: Mapping[str, Any]) -> str | None:
+        """Cookie из WSGI/ASGI environ подключения socket.io."""
+        raw = environ.get(self.COOKIE_HEADER)
+        if not isinstance(raw, str):
+            return None
+
+        if not raw:
+            return None
+
+        parsed = SimpleCookie()
+        parsed.load(raw)
+
+        cookies: dict[str, str] = {}
+        for name, morsel in parsed.items():
+            cookies[name] = morsel.value
+
+        return self.of_cookies(cookies)
 
 
 class DomainErrorMiddleware:

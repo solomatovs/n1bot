@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import time
 from uuid import UUID
 
+import jwt
 import pytest
-from chainlit_stand import use_context, use_session
+from chainlit_stand import (
+    TEST_PROFILE,
+    TEST_TURN,
+    StandTokens,
+    use_context,
+    use_session,
+)
 from pydantic import ValidationError
 
 from boba.chainlit.domain.context import ChatCallContext, ChatSurface
@@ -17,7 +25,7 @@ from boba.identity.context import (
     Scope,
     ScopeKind,
 )
-from boba.identity.errors import RefusalError
+from boba.identity.errors import AuthenticationError, RefusalError
 from boba.identity.session import LoginTemplate, LogUserMark
 
 THREAD = "55555555-5555-5555-5555-555555555555"
@@ -124,3 +132,24 @@ class TestPrincipalFormat:
 
         with pytest.raises(ValueError, match="username"):
             LoginTemplate.check_principal("user@X")
+
+
+class TestExpiredSignIn:
+    def test_expired_token_refuses_the_call_context(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Сокет пережил срок JWT: ход отказывает входом, а не пустыми ролями."""
+        session = use_session(
+            monkeypatch, user_id=str(UUID(int=5)), thread_id="thread-expired"
+        )
+        expired = jwt.encode(
+            {"identifier": "user-expired", "exp": int(time.time()) - 5},
+            StandTokens.secret(),
+            algorithm="HS256",
+        )
+        stub = session.raw
+        assert stub is not None
+        stub.token = expired
+
+        with pytest.raises(AuthenticationError, match="expired"):
+            session.call_context(TEST_TURN, TEST_PROFILE)

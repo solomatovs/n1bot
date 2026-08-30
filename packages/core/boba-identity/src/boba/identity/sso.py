@@ -7,12 +7,12 @@ from __future__ import annotations
 
 import html
 from abc import abstractmethod
-from collections.abc import Sequence
 from enum import StrEnum
 from typing import ClassVar, Protocol
 
 from pydantic import BaseModel, ConfigDict
 
+from boba.identity.admission import PrincipalFacts
 from boba.identity.context import DelegatedTicket
 from boba.identity.signin import SignedIn
 
@@ -117,8 +117,8 @@ class SsoAdmission(Protocol):
     """Допуск принципала ко входу: роли этого входа либо отказ."""
 
     @abstractmethod
-    async def roles_of(self, principal: str, group_sids: Sequence[str]) -> list[str]:
-        """Роли принципала; AuthorizationError — вход запрещён."""
+    async def roles_of(self, facts: PrincipalFacts) -> list[str]:
+        """Роли по фактам SPNEGO-входа; AuthorizationError — вход запрещён."""
 
 
 class SpnegoExchange(Protocol):

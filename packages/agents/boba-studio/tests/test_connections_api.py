@@ -20,6 +20,7 @@ from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connections.http import HttpProfile
 from boba.connections.profile import GrantTarget, StoredRole
 from boba.db.postgres import AsyncPostgresPool
+from boba.identity.signin import SignInMetadata
 from boba.runtime.config import StudioRuntimeConfig
 from boba.stand.auth import NoUsers, StubAuthenticator
 from boba.stand.refs import StandRefs
@@ -107,7 +108,7 @@ async def client(
     store: ConnectionStore, studio_config: StudioRuntimeConfig
 ) -> AsyncIterator[AsyncClient]:
     user = StandProfiles.user(studio_config).model_copy(
-        update={"metadata": {"roles": [ROLE]}}
+        update={"sign_in": SignInMetadata(roles=frozenset({ROLE}))}
     )
     access = ApiAccess(
         StubAuthenticator(user),

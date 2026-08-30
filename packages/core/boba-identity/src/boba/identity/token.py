@@ -1,8 +1,10 @@
 """Токен и cookie входа: claims, порты выпуска и чтения, cookie целиком и чанками.
 
-Claims одни у обоих приложений: identifier, display_name, metadata, exp, iat —
-так их выпускает chainlit и так их читает studio. Cookie длиннее лимита браузера
-едет чанками name_0..name_n; сборка и разбор — только здесь.
+Claims одни у обоих приложений: identifier, display_name, metadata, exp, iat,
+since — так их выпускает chainlit (без since) и так их читает studio. Правило
+продления сессии — SessionRenewal: когда просить обмен и до какого потолка можно
+перевыпускать токен без нового входа. Cookie длиннее лимита браузера едет чанками
+name_0..name_n; сборка и разбор — только здесь.
 
 Ошибки:
 TokenRejectedError — токен не принят: истёк, подпись чужая либо тело не разбирается.
@@ -18,13 +20,15 @@ from typing import Any, ClassVar, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from boba.identity.context import DelegatedTicket
-from boba.identity.signin import SignedIn
+from boba.identity.signin import SignedIn, SignInMetadata
 
 __all__ = [
     "ClaimKey",
     "CookieJar",
     "CookieSpec",
+    "RenewVerdict",
     "SessionClaims",
+    "SessionRenewal",
     "TokenAlgorithm",
     "TokenIssuer",
     "TokenReader",
@@ -65,6 +69,7 @@ class ClaimKey(StrEnum):
     METADATA = "metadata"
     EXP = "exp"
     IAT = "iat"
+    SINCE = "since"
 
 
 class SessionClaims(BaseModel):
@@ -78,6 +83,8 @@ class SessionClaims(BaseModel):
     exp: int = Field(gt=0)
     iat: int = Field(default=0, ge=0)
     """Момент выпуска; 0 — выпускающий его не пишет."""
+    since: int = Field(default=0, ge=0)
+    """Момент первого входа сессии; 0 — выпускающий его не пишет, тогда это iat."""
 
     @field_validator("display_name", mode="before")
     @classmethod
@@ -90,13 +97,41 @@ class SessionClaims(BaseModel):
 
     @classmethod
     def of_signed(cls, signed: SignedIn, issued_at: int, ttl_sec: int) -> SessionClaims:
+        """Claims нового входа: сессия начинается сейчас."""
         return cls(
             identifier=signed.identifier,
             display_name=signed.display_name,
-            metadata=dict(signed.metadata),
+            metadata=signed.sign_in.render(),
             exp=issued_at + ttl_sec,
             iat=issued_at,
+            since=issued_at,
         )
+
+    def renewed(self, issued_at: int, ttl_sec: int) -> SessionClaims:
+        """Те же вход и metadata с новым сроком; начало сессии сохраняется, а у токена
+        без него началом становится этот перевыпуск.
+        """
+        return self.model_copy(
+            update={
+                "exp": issued_at + ttl_sec,
+                "iat": issued_at,
+                "since": self.started_at_or(issued_at),
+            }
+        )
+
+    def started_at(self) -> int:
+        """Начало сессии: since, а у токена без него — iat; 0 — неизвестно."""
+        if self.since:
+            return self.since
+
+        return self.iat
+
+    def started_at_or(self, default: int) -> int:
+        started = self.started_at()
+        if started:
+            return started
+
+        return default
 
     @classmethod
     def parse(cls, raw: Mapping[str, Any]) -> SessionClaims:
@@ -112,25 +147,83 @@ class SessionClaims(BaseModel):
             ClaimKey.METADATA.value: dict(self.metadata),
             ClaimKey.EXP.value: self.exp,
             ClaimKey.IAT.value: self.iat,
+            ClaimKey.SINCE.value: self.since,
         }
 
     def signed(self) -> SignedIn:
         return SignedIn(
             identifier=self.identifier,
             display_name=self.display_name,
-            metadata=self.metadata,
+            sign_in=self.sign_in(),
         )
+
+    def sign_in(self) -> SignInMetadata:
+        """Metadata входа из claims: форма JWT чужая, разбор — модель."""
+        return SignInMetadata.parse(self.metadata)
 
     def ticket(self) -> DelegatedTicket | None:
         """Билет SSO-входа из metadata; None — вход был не через SPNEGO."""
-        return DelegatedTicket.of_metadata(self.metadata)
+        return self.sign_in().ticket()
+
+
+class RenewVerdict(StrEnum):
+    """Можно ли перевыпустить токен без нового входа."""
+
+    RENEWABLE = "renewable"
+    EXPIRED = "expired"
+    EXHAUSTED = "exhausted"
+
+
+class SessionRenewal(BaseModel):
+    """Правило продления сессии: срок токена, потолок сессии, порог сигнала и grace.
+
+    Сигнал уходит, когда до конца токена меньше refresh_below_sec; перевыпуск
+    принимает токен, чей exp прошёл не дольше grace_sec назад, и только пока сессия
+    моложе max_sec от первого входа.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    REFRESH_BELOW_SEC: ClassVar[int] = 300
+    GRACE_SEC: ClassVar[int] = 300
+
+    ttl_sec: int = Field(gt=0)
+    max_sec: int = Field(gt=0)
+    refresh_below_sec: int = Field(gt=0)
+    grace_sec: int = Field(ge=0)
+
+    @classmethod
+    def of(cls, ttl_sec: int, max_sec: int) -> SessionRenewal:
+        return cls(
+            ttl_sec=ttl_sec,
+            max_sec=max_sec,
+            refresh_below_sec=cls.REFRESH_BELOW_SEC,
+            grace_sec=cls.GRACE_SEC,
+        )
+
+    def should_refresh(self, claims: SessionClaims, now: int) -> bool:
+        return claims.exp - now < self.refresh_below_sec
+
+    def verdict(self, claims: SessionClaims, now: int) -> RenewVerdict:
+        if claims.exp + self.grace_sec < now:
+            return RenewVerdict.EXPIRED
+
+        # токен без iat и since: начало оцениваем по его сроку
+        started = claims.started_at_or(claims.exp - self.ttl_sec)
+        if now - started >= self.max_sec:
+            return RenewVerdict.EXHAUSTED
+
+        return RenewVerdict.RENEWABLE
 
 
 class TokenIssuer(Protocol):
-    """Выпуск токена входа по итогу входа."""
+    """Выпуск токена входа по итогу входа и его перевыпуск по прежним claims."""
 
     @abstractmethod
     def issue(self, signed: SignedIn) -> str: ...
+
+    @abstractmethod
+    def renew(self, claims: SessionClaims) -> str: ...
 
 
 class TokenReader(Protocol):
@@ -138,6 +231,10 @@ class TokenReader(Protocol):
 
     @abstractmethod
     def read(self, token: str) -> SessionClaims: ...
+
+    @abstractmethod
+    def read_stale(self, token: str, grace_sec: int) -> SessionClaims:
+        """Токен с верной подписью, чей exp прошёл не дольше grace_sec назад."""
 
 
 class CookieSpec(BaseModel):

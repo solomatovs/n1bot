@@ -26,7 +26,6 @@ from pydantic import SecretStr, create_model
 from boba.auth.credentials import KerberosCredentialSource
 from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.data.data_layer import PostgresDataLayer
-from boba.chainlit.infra.kerberos_refresh import ChatRefreshSignal
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connection_broker.user_connections import UserConnections
@@ -46,6 +45,7 @@ from boba.kerberos import (
 from boba.krb import KerberosEnv, KeytabCredentials, TicketCredentials
 from boba.krb.seal import SsoTickets
 from boba.messaging import MemoryMessageBus
+from boba.runtime.refresh import BusRefreshSignal
 from boba.stand.site import Stand
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebGrepConfig
@@ -191,7 +191,7 @@ class Capture:
             [tool],
             lambda: store,
             lambda: KerberosCredentialSource(
-                tickets, ChatRefreshSignal(lambda: MemoryMessageBus("test"))
+                tickets, BusRefreshSignal(lambda: MemoryMessageBus("test"))
             ),
             spec,
             resolve,
@@ -226,7 +226,7 @@ class Capture:
             [tool],
             lambda: store,
             lambda: KerberosCredentialSource(
-                tickets, ChatRefreshSignal(lambda: MemoryMessageBus("test"))
+                tickets, BusRefreshSignal(lambda: MemoryMessageBus("test"))
             ),
             spec,
             resolve,

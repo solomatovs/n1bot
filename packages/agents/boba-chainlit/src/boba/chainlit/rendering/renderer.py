@@ -37,7 +37,6 @@ from boba.messaging import (
     Notice,
     NoticeLevel,
     PayloadStore,
-    SignInRefreshRequested,
     StageEnded,
     StageQueries,
     StageStarted,
@@ -138,7 +137,7 @@ class NoSurface(RenderSurface):
 class SignalType:
     """Метки window_message: по ним скрипты страницы отличают свой сигнал от чужого."""
 
-    KERBEROS_REFRESH: ClassVar[str] = "boba:kerberos-refresh"
+    SIGNIN_REFRESH: ClassVar[str] = "boba:signin-refresh"
 
 
 class CatchUp(BaseModel):
@@ -245,7 +244,6 @@ class ChatRenderer:
             MessageKind.ELEMENT_SHOWN: self._on_element_shown,
             MessageKind.ELEMENT_REMOVED: self._on_element_removed,
             MessageKind.FEEDBACK_CHANGED: self._on_feedback_changed,
-            MessageKind.SIGNIN_REFRESH_REQUESTED: self._on_signin_refresh,
         }
 
     def begin_turn(self, key: str) -> None:
@@ -361,9 +359,6 @@ class ChatRenderer:
 
     async def _on_feedback_changed(self, message: FeedbackChanged) -> None:
         await self._surface.refresh_step(message.step_id)
-
-    async def _on_signin_refresh(self, message: SignInRefreshRequested) -> None:
-        await self._surface.window_message({"type": SignalType.KERBEROS_REFRESH})
 
     async def _interrupt_answer(self, key: str, note: str) -> None:
         """Дописывает к накопленному ответу курсивную пометку об остановке; без ответа

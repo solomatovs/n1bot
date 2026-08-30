@@ -4,14 +4,12 @@
 
 from __future__ import annotations
 
-from uuid import UUID
-
 import pytest
 from psycopg import sql
 
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.session import UserMetadataField
-from boba.identity.signin import SignedIn
+from boba.identity.signin import SignedIn, SignInMetadata
 from boba.runtime.config import RuntimeConfig
 from boba.runtime.users import UsersTable
 
@@ -40,16 +38,18 @@ async def users(
 
 async def test_setup_creates_the_schema_and_users_round_trip(users: UsersTable) -> None:
     signed = SignedIn(
-        identifier="reader", display_name="reader", metadata={"roles": ["DEV"]}
+        identifier="reader",
+        display_name="reader",
+        sign_in=SignInMetadata(roles=frozenset({"DEV"})),
     )
     created = await users.ensure_user(signed)
     found = await users.get_user("reader")
     assert found is not None
     assert found.id == created.id
-    assert found.metadata.get("roles") == ["DEV"]
+    assert found.roles == frozenset({"DEV"})
 
-    await users.set_studio_profile(UUID(created.id), "search")
+    await users.set_studio_profile(created.id, "search")
     again = await users.get_user("reader")
     assert again is not None
-    assert again.metadata.get(UserMetadataField.STUDIO_PROFILE) == "search"
-    assert again.metadata.get("roles") == ["DEV"]
+    assert again.settings.get(UserMetadataField.STUDIO_PROFILE) == "search"
+    assert again.roles == frozenset({"DEV"})

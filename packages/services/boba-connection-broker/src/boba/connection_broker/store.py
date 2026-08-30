@@ -50,7 +50,7 @@ from boba.connections.profile import (
     StoredRole,
 )
 from boba.connections.secrets import SecretCipher
-from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresSchema, SqlNames
+from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresTable, SqlNames
 from boba.identity.context import Subject
 from boba.toolkit.failure import ValidationText
 
@@ -128,7 +128,7 @@ class ConnectionsConfig(BaseModel):
         return self.connection
 
 
-class ConnectionStore(ConnectionRepository):
+class ConnectionStore(PostgresTable, ConnectionRepository):
     """CRUD над connections/roles/grants: наружу — модели, в базе — шифротекст."""
 
     _PROFILE: ClassVar[TypeAdapter[ConnectionProfile]] = TypeAdapter(ConnectionProfile)
@@ -138,32 +138,29 @@ class ConnectionStore(ConnectionRepository):
         cfg: ConnectionsConfig,
         pool: AsyncPostgresPool | None = None,
     ) -> None:
+        postgres = cfg.connection
+        if pool is None:
+            postgres = cfg.require_conn()
+
+        super().__init__(postgres, cfg.db_schema, pool)
         self._cfg = cfg
-        self._pool_ref = pool
         self._cipher = SecretCipher(cfg.key_bytes())
 
-    async def _pool(self) -> AsyncPostgresPool:
-        """Пул берётся при первом обращении: __init__ не может await."""
-        if self._pool_ref is None:
-            self._pool_ref = await AsyncPostgresPool.get(self._cfg.require_conn())
-
-        return self._pool_ref
-
-    def _table(self) -> sql.Identifier:
-        return SqlNames.table(self._cfg.db_schema, ConnectionTable.CONNECTIONS)
+    def _connections(self) -> sql.Identifier:
+        return self._table(ConnectionTable.CONNECTIONS)
 
     def _roles(self) -> sql.Identifier:
-        return SqlNames.table(self._cfg.db_schema, ConnectionTable.ROLES)
+        return self._table(ConnectionTable.ROLES)
 
     def _grants(self) -> sql.Identifier:
-        return SqlNames.table(self._cfg.db_schema, ConnectionTable.GRANTS)
+        return self._table(ConnectionTable.GRANTS)
 
     def _sql(self, text: LiteralString) -> sql.Composed:
         """SQL с именами таблиц и колонок из enum'ов: c_* — connections, r_* — roles,
         g_* — grants.
         """
         names: dict[str, sql.Composable] = {
-            "connections": self._table(),
+            "connections": self._connections(),
             "roles": self._roles(),
             "grants": self._grants(),
         }
@@ -186,60 +183,69 @@ class ConnectionStore(ConnectionRepository):
             raise ConnectionStoreError(msg) from exc
 
     async def setup(self) -> None:
-        pool = await self._pool()
-
-        async with self._guarded("setup"), pool.connection() as conn:
-            await PostgresSchema.ensure(conn, self._cfg.db_schema)
-
-            for query in self._ddl():
-                await conn.execute(query, prepare=False)
+        """Схема и три таблицы; повтор безвреден."""
+        ddl = (*self._connections_ddl(), *self._roles_ddl(), *self._grants_ddl())
+        async with self._guarded("setup"):
+            await self._apply_ddl(ddl)
 
         logger.info("connections ready: %s", self._cfg.db_schema)
 
-    def _ddl(self) -> tuple[sql.Composed, ...]:
+    def _connections_ddl(self) -> tuple[sql.Composed, ...]:
         return (
-            self._sql(
+            sql.SQL(
                 """
                 create table if not exists {connections} (
-                    {c_id}   uuid primary key default gen_random_uuid(),
-                    {c_name} text not null,
-                    {c_data} jsonb not null default '{{}}'::jsonb
+                    {id}   uuid primary key default gen_random_uuid(),
+                    {name} text not null,
+                    {data} jsonb not null default '{{}}'::jsonb
                 )
                 """
+            ).format(
+                connections=self._connections(), **self._columns(ConnectionsColumn)
             ),
-            self._sql(
+            sql.SQL(
                 """
                 create index if not exists idx_connections_kind
-                    on {connections} (({c_data} ->> 'kind'))
+                    on {connections} (({data} ->> 'kind'))
                 """
+            ).format(
+                connections=self._connections(), **self._columns(ConnectionsColumn)
             ),
-            self._sql(
+        )
+
+    def _roles_ddl(self) -> tuple[sql.Composed, ...]:
+        return (
+            sql.SQL(
                 """
                 create table if not exists {roles} (
-                    {r_id}         uuid primary key default gen_random_uuid(),
-                    {r_role}       varchar not null unique,
-                    {r_created_at} timestamptz not null default now()
+                    {id}        uuid primary key default gen_random_uuid(),
+                    {role}      varchar not null unique,
+                    {create_at} timestamptz not null default now()
                 )
                 """
-            ),
-            self._sql(
+            ).format(roles=self._roles(), **self._columns(RolesColumn)),
+        )
+
+    def _grants_ddl(self) -> tuple[sql.Composed, ...]:
+        return (
+            sql.SQL(
                 """
                 create table if not exists {grants} (
-                    {g_id}          uuid primary key default gen_random_uuid(),
-                    {g_src_kind}    varchar not null,
-                    {g_src_kind_id} uuid not null,
-                    {g_tgt_kind}    varchar not null,
-                    {g_tgt_kind_id} uuid not null,
-                    unique ({g_src_kind}, {g_src_kind_id}, {g_tgt_kind}, {g_tgt_kind_id})
+                    {id}          uuid primary key default gen_random_uuid(),
+                    {src_kind}    varchar not null,
+                    {src_kind_id} uuid not null,
+                    {tgt_kind}    varchar not null,
+                    {tgt_kind_id} uuid not null,
+                    unique ({src_kind}, {src_kind_id}, {tgt_kind}, {tgt_kind_id})
                 )
                 """
-            ),
-            self._sql(
+            ).format(grants=self._grants(), **self._columns(GrantsColumn)),
+            sql.SQL(
                 """
                 create index if not exists idx_grants_target
-                    on {grants} ({g_tgt_kind}, {g_tgt_kind_id})
+                    on {grants} ({tgt_kind}, {tgt_kind_id})
                 """
-            ),
+            ).format(grants=self._grants(), **self._columns(GrantsColumn)),
         )
 
     async def sync_roles(self, names: Iterable[str]) -> None:

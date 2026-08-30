@@ -1,0 +1,18 @@
+{
+  "name": "boba-chainlit-page",
+  "private": true,
+  "version": "0.0.14-dev9",
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "check": "tsc --noEmit -p tsconfig.json && eslint src"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.20.0",
+    "@types/node": "^22.20.1",
+    "eslint": "^9.20.0",
+    "typescript": "~5.8.0",
+    "typescript-eslint": "^8.24.0",
+    "vite": "^6.1.0"
+  }
+}

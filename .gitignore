@@ -44,3 +44,8 @@ packages/agents/boba-studio/web/workflow/.eslintcache
 packages/agents/boba-studio/web/workflow/coverage/
 packages/agents/boba-studio/web/workflow/*.tsbuildinfo
 packages/agents/boba-studio/assets/workflow/
+packages/agents/boba-chainlit/web/page/node_modules/
+packages/agents/boba-chainlit/web/page/.vite/
+packages/agents/boba-chainlit/web/page/.eslintcache
+packages/agents/boba-chainlit/web/page/*.tsbuildinfo
+packages/agents/boba-chainlit/assets/public/page.js

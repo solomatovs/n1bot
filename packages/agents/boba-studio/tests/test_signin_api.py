@@ -15,16 +15,16 @@ from boba.auth.signin import PasswordSignIns
 from boba.chat.openai import OpenAiConfig
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.chat.provider import OpenAiChatConfig
+from boba.identity.admission import RoleExcludeConfig, RoleMappingConfig
 from boba.identity.api import (
     AuthenticatedUser,
     PersistedUsers,
     StudioProfiles,
     UsersUpsert,
 )
-from boba.identity.roles import RoleExcludeConfig, RoleMappingConfig
 from boba.identity.signin import SignedIn
 from boba.identity.sso import OwnRequest
-from boba.identity.token import CookieSpec
+from boba.identity.token import CookieSpec, SessionRenewal
 from boba.stand.refs import StandRefs
 from boba.studio.api.app import ApiAccess, ApiApp
 from boba.studio.api.signin import PageUrls, SignInWiring
@@ -48,9 +48,9 @@ class Users(PersistedUsers, UsersUpsert, StudioProfiles):
             return known
 
         row = AuthenticatedUser(
-            id=str(UUID(int=len(self.rows) + 1)),
+            id=UUID(int=len(self.rows) + 1),
             identifier=signed.identifier,
-            metadata=dict(signed.metadata),
+            sign_in=signed.sign_in,
         )
         self.rows[signed.identifier] = row
         return row
@@ -98,6 +98,7 @@ async def client() -> AsyncIterator[AsyncClient]:
         password=PasswordSignIns.of([_local()]),
         sso=None,
         users=users,
+        renewal=SessionRenewal.of(3600, 3600 * 24),
     )
     wiring = SignInWiring(
         auth=auth,
@@ -139,7 +140,14 @@ async def test_login_sets_a_chainlit_shaped_cookie_and_opens_me(
     assert claims["identifier"] == "alice"
     assert claims["display_name"] == "Alice"
     assert claims["metadata"] == {"provider": "LocalAuth", "roles": ["DEV"]}
-    assert set(claims) == {"identifier", "display_name", "metadata", "exp", "iat"}
+    assert set(claims) == {
+        "identifier",
+        "display_name",
+        "metadata",
+        "exp",
+        "iat",
+        "since",
+    }
     assert "HttpOnly" in reply.headers["set-cookie"]
 
     me = await client.get(f"{ApiVersion.V1}{AccountUrl.ME}")
@@ -204,3 +212,38 @@ async def test_login_without_own_mark_is_refused(client: AsyncClient) -> None:
     )
 
     assert reply.status_code == 403, reply.text
+
+
+async def test_refresh_renews_a_password_session(client: AsyncClient) -> None:
+    """Вход по паролю продлевается перевыпуском JWT: новая cookie с более поздним exp."""
+    signed = await client.post(
+        f"{ApiVersion.V1}{SignInUrl.LOGIN}",
+        json={"username": "Alice", "password": "pw"},
+    )
+    assert signed.status_code == 204, signed.text
+    before = jwt.decode(signed.cookies[COOKIE], SECRET, algorithms=["HS256"])
+
+    renewed = await client.post(f"{ApiVersion.V1}{SignInUrl.REFRESH}")
+
+    assert renewed.status_code == 204, renewed.text
+    after = jwt.decode(renewed.cookies[COOKIE], SECRET, algorithms=["HS256"])
+    assert after["exp"] >= before["exp"]
+    assert after["since"] == before["since"]
+    assert after["identifier"] == "alice"
+
+
+async def test_refresh_without_a_session_or_its_mark_is_refused(
+    client: AsyncClient,
+) -> None:
+    no_session = await client.post(f"{ApiVersion.V1}{SignInUrl.REFRESH}")
+    assert no_session.status_code == 403
+
+    signed = await client.post(
+        f"{ApiVersion.V1}{SignInUrl.LOGIN}",
+        json={"username": "Alice", "password": "pw"},
+    )
+    assert signed.status_code == 204, signed.text
+    foreign = await client.post(
+        f"{ApiVersion.V1}{SignInUrl.REFRESH}", headers={OwnRequest.HEADER.value: ""}
+    )
+    assert foreign.status_code == 403

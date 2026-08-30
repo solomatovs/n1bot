@@ -103,6 +103,9 @@ ONNX_DIRS       := $(ONNX_MODELS:%=$(DEPS_DIR)/onnx-genai/%)
 WEBASSETS_DIR   := $(DEPS_DIR)/webassets
 ASSETS_DIR      := $(SRC_DIR)/packages/agents/boba-chainlit/assets
 ASSETS_VENDOR   := $(ASSETS_DIR)/public/vendor
+WEB_DIR         := $(SRC_DIR)/packages/agents/boba-chainlit
+WEB_PROJECT     := $(WEB_DIR)/web/page
+NODE_IMAGE      ?= dmp/nodejs:20
 KATEX_VERSION   ?= 0.16.22
 KATEX_URL       ?= https://github.com/KaTeX/KaTeX/releases/download/v$(KATEX_VERSION)/katex.tar.gz
 INTER_VERSION   ?= 5.3.0
@@ -211,6 +214,7 @@ help:
 	echo "                 ставится в INSTALL_DIR=$(INSTALL_DIR), данные — в DATA_DIR=$(DATA_DIR)"
 	echo "  make clean     удалить release и src/, кроме моделей"
 	echo "  make all       fetch + sandbox + build"
+	echo "  make web       скрипт страницы chainlit: npm ci/check/build в $(NODE_IMAGE) -> assets/public/page.js"
 	echo ""
 	echo "  Версия одна на все пакеты: version — показать, version-set VER=X.Y.Z — проставить"
 	echo ""
@@ -428,3 +432,14 @@ clean:
 	       $(DEPS_DIR)/*.tar.xz $(DEPS_DIR)/*.env
 
 all: fetch sandbox build
+
+# скрипт страницы (web/page, TypeScript): собирается node'ом образа, на хосте node не нужен
+web:
+	echo "== page script: $(NODE_IMAGE) =="
+	docker run --rm --entrypoint /bin/sh -u "$$(id -u):$$(id -g)" -e HOME=/tmp \
+	    -v "$(WEB_DIR):/pkg" -w /pkg/web/page $(NODE_IMAGE) \
+	    -c 'npm ci --no-audit --no-fund && npm run check && npm run build'
+	ls -la $(WEB_DIR)/assets/public/page.js
+	echo "    в app_root стенда сборку кладёт: make dev"
+
+.PHONY: web

@@ -2,8 +2,6 @@
 
 from uuid import UUID, uuid4
 
-import pytest
-
 from boba.identity.context import Scope, ScopeKind, Subject
 
 
@@ -21,13 +19,9 @@ class TestUserScope:
 
 
 class TestSubjectOfUser:
-    def test_parses_uuid_string(self) -> None:
+    def test_keeps_the_users_id_and_renders_its_key(self) -> None:
         user_id = uuid4()
-        subject = Subject.of_user(str(user_id), "ivanov", ("DEV",), "general")
+        subject = Subject.of_user(user_id, "ivanov", ("DEV",), "general")
 
         if subject.user_id != user_id or subject.user_key != str(user_id):
             raise AssertionError(subject)
-
-    def test_rejects_non_uuid(self) -> None:
-        with pytest.raises(ValueError, match="users.id uuid"):
-            Subject.of_user("7", "ivanov", (), "general")

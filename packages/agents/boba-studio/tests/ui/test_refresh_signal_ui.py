@@ -18,7 +18,7 @@ from boba.stand.ui.stand import StandProcess
 
 pytestmark = pytest.mark.ui
 
-REFRESH_PATH = "/api/v1/auth/sso/refresh"
+REFRESH_PATH = "/api/v1/auth/refresh"
 
 
 def test_refresh_signal_makes_the_page_post_refresh_with_its_mark(

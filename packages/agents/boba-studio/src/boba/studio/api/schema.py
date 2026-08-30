@@ -19,7 +19,7 @@ from boba.identity.api import (
 )
 from boba.identity.locks import MemoryLiveLocks
 from boba.identity.signin import SignedIn
-from boba.identity.token import CookieSpec
+from boba.identity.token import CookieSpec, SessionRenewal
 from boba.messaging import MemoryMessageBus
 from boba.messaging.bus import ListenerState, StaticBusWatch
 from boba.runtime.refs import RuntimeRefs
@@ -83,6 +83,7 @@ class OpenApiDocument:
             password=None,
             sso=None,
             users=NoUsers(),
+            renewal=SessionRenewal.of(1, 1 * 24),
         )
 
         return SignInWiring(

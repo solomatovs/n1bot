@@ -63,8 +63,8 @@ class MemoryUsers(UserSettingsStore):
         if self._user is None:
             return
 
-        metadata = {**self._user.metadata, UserMetadataField.STUDIO_PROFILE: profile}
-        self._user = self._user.model_copy(update={"metadata": metadata})
+        settings = {**self._user.settings, UserMetadataField.STUDIO_PROFILE: profile}
+        self._user = self._user.model_copy(update={"settings": settings})
 
     def source(self) -> UserSettingsStore:
         return self

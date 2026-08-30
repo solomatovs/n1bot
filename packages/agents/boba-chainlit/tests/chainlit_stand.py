@@ -19,6 +19,7 @@ from chainlit.user import User as ChainlitUser
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from psycopg import sql
 
+from boba.auth import JwtTokens
 from boba.canvas.keys import WorkspaceMount
 from boba.chainlit.chat.feed import TurnFeed
 from boba.chainlit.chat.history import ThreadMessages, TranscriptFeed
@@ -50,6 +51,8 @@ from boba.identity.context import (
 from boba.identity.errors import RefusalError
 from boba.identity.locks import MemoryLiveLocks
 from boba.identity.run import ElementTarget, RunPort, RunRefusal
+from boba.identity.signin import SignedIn, SignInMetadata
+from boba.identity.token import SessionClaims, TokenReader
 from boba.kerberos import DelegationMode, SignInTicket
 from boba.krb.seal import SsoTickets, TicketSealer
 from boba.llm.bridge import ProviderChatModel
@@ -176,7 +179,7 @@ async def layer(
         storage=storage,
         feed=TranscriptFeed(thread_messages),
         links=AttachmentLinks(app_config.storage.public_prefix),
-        sessions=ChainlitSessions(),
+        sessions=ChainlitSessions(StandTokens()),
         bus=data_bus,
     )
     return data_layer
@@ -280,7 +283,38 @@ async def seeded(
     )
 
 
-SESSIONS = ChainlitSessions()
+class StandTokens(TokenReader):
+    """JWT стенда: секрет chainlit из окружения, а без него — секрет самого стенда.
+
+    Секрет читается в момент обращения: фикстуры ставят CHAINLIT_AUTH_SECRET
+    позже импорта модуля, а тесты без фикстуры входа живут на своём секрете.
+    """
+
+    TTL_SEC: ClassVar[int] = 3600
+    FALLBACK_SECRET: ClassVar[str] = "chainlit-stand-secret"  # noqa: S105 — стенд
+
+    @classmethod
+    def secret(cls) -> str:
+        from chainlit.auth.jwt import get_jwt_secret  # noqa: PLC0415
+
+        secret = get_jwt_secret()
+        if secret:
+            return secret
+
+        return cls.FALLBACK_SECRET
+
+    @classmethod
+    def tokens(cls) -> JwtTokens:
+        return JwtTokens(cls.secret(), cls.TTL_SEC)
+
+    def read(self, token: str) -> SessionClaims:
+        return self.tokens().read(token)
+
+    def read_stale(self, token: str, grace_sec: int) -> SessionClaims:
+        return self.tokens().read_stale(token, grace_sec)
+
+
+SESSIONS = ChainlitSessions(StandTokens())
 """Источник сессий для тестов: подмену ставит use_session на класс."""
 
 
@@ -302,6 +336,7 @@ class SessionStub:
         self.thread_id = thread_id
         self.chat_profile = chat_profile
         self.user = None
+        self.token = ""
         if user_id is None and identifier is None:
             return
 
@@ -315,6 +350,9 @@ class SessionStub:
             createdAt="2026-01-01T00:00:00Z",
             metadata={},
         )
+        # токен входа как у живой сессии: без него ход отказывает
+        signed = SignedIn(identifier=name, display_name="", sign_in=SignInMetadata())
+        self.token = StandTokens.tokens().issue(signed)
 
 
 def use_session(
@@ -335,7 +373,7 @@ def use_session(
         profile = TEST_PROFILE
 
     stub = SessionStub(user_id, thread_id, profile, identifier)
-    session = ChainlitSession(stub)
+    session = ChainlitSession(stub, StandTokens())
     # подменяется источник, а не отдельные функции: так стенд попадает во
     # все пути — и в DI-провайдер, и в ref мест вне графа
     monkeypatch.setattr(ChainlitSessions, "current", lambda self: session)
@@ -359,7 +397,7 @@ def di_root() -> Iterator[None]:
 
     previous = Container.root
     root = Container(level="app")
-    sessions = ChainlitSessions()
+    sessions = ChainlitSessions(StandTokens())
     ChainlitSessions.install(sessions)
     root.provide(session_source, sessions)
     root.provide(runtime.live_locks, MemoryLiveLocks("test-chainlit", 20))
