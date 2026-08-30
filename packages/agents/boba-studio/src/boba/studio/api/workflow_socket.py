@@ -18,17 +18,16 @@ from typing import Any, ClassVar
 from uuid import UUID
 
 import socketio
-from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from boba.chat.profiles import ChatProfiles
 from boba.identity.api import AuthenticatedUser
 from boba.identity.context import Scope, Subject
-from boba.identity.errors import RefusalError
+from boba.identity.errors import BaseError, RefusalError
 from boba.messaging import Envelope, MessageKind, StreamAppended, Unsubscribe
 from boba.runtime.bus import BusWatch, ListenerState
 from boba.runtime.config import StudioPath
-from boba.studio.api.auth import ApiIdentity
+from boba.studio.api.auth import ApiAuth
 from boba.workflow.events import RunSnapshot
 from boba.workflow_engine.service import WorkflowService
 
@@ -145,11 +144,15 @@ class WorkflowNamespace(socketio.AsyncNamespace):
 
     async def on_connect(self, sid: str, environ: dict[str, Any], auth: Any) -> None:
         user = await self._authenticate(environ)
+        if user is None:
+            logger.warning("workflow socket refused: sid=%s no sign-in", sid)
+            raise ConnectionRefusedError("no sign-in")
+
         try:
-            identity = ApiIdentity.resolve(user, None, self._profiles)
-        except HTTPException as exc:
-            logger.warning("workflow socket refused: sid=%s %s", sid, exc.detail)
-            raise ConnectionRefusedError(str(exc.detail)) from exc
+            identity = ApiAuth.resolve(user, None, self._profiles)
+        except BaseError as exc:
+            logger.warning("workflow socket refused: sid=%s %s", sid, exc)
+            raise ConnectionRefusedError(str(exc)) from exc
 
         self._subjects[sid] = identity.subject
         logger.info(

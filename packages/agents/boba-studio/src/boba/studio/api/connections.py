@@ -46,7 +46,7 @@ from boba.identity.context import Scope, Subject
 from boba.identity.locks import LockToken
 from boba.krb import KerberosCredentials
 from boba.messaging import ChangeAction, ConnectionsChanged, MessageBus
-from boba.studio.api.auth import ApiIdentity, CurrentUser
+from boba.studio.api.auth import CurrentSubject, CurrentUser
 from boba.studio.api.urls import ConnectionUrl
 
 __all__ = [
@@ -193,17 +193,15 @@ class ConnectionsApi:
 
     async def schema(self, current_user: CurrentUser) -> Mapping[str, Any]:
         """Схема профиля с вариантами по kind и method; секреты — format=password."""
-        ApiIdentity.user_of(current_user)
 
         return ProfileSchema.render()
 
     async def list_connections(
         self,
-        current_user: CurrentUser,
+        identity: CurrentSubject,
         kind: ConnectionKind | None = None,
-        profile: str | None = None,
     ) -> Sequence[ConnectionView]:
-        subject = self._subject(current_user, profile)
+        subject = identity.subject
         store = self._resolved()
 
         kinds: list[ConnectionKind] = list(ConnectionKind)
@@ -222,10 +220,9 @@ class ConnectionsApi:
     async def create(
         self,
         body: ConnectionBody,
-        current_user: CurrentUser,
-        profile: str | None = None,
+        identity: CurrentSubject,
     ) -> ConnectionView:
-        subject = self._subject(current_user, profile)
+        subject = identity.subject
         store = self._resolved()
 
         await self._require_free_name(store, subject, body.name, except_id=None)
@@ -245,10 +242,9 @@ class ConnectionsApi:
         self,
         connection_id: UUID,
         body: ConnectionBody,
-        current_user: CurrentUser,
-        profile: str | None = None,
+        identity: CurrentSubject,
     ) -> ConnectionView:
-        subject = self._subject(current_user, profile)
+        subject = identity.subject
         store = self._resolved()
 
         await self._require_owned(store, subject, connection_id)
@@ -266,9 +262,9 @@ class ConnectionsApi:
         return ConnectionView.of(row, mine=True)
 
     async def delete(
-        self, connection_id: UUID, current_user: CurrentUser, profile: str | None = None
+        self, connection_id: UUID, identity: CurrentSubject
     ) -> ConnectionDeleted:
-        subject = self._subject(current_user, profile)
+        subject = identity.subject
         store = self._resolved()
 
         await self._require_owned(store, subject, connection_id)
@@ -285,18 +281,16 @@ class ConnectionsApi:
         return ConnectionDeleted(deleted=deleted)
 
     async def check(
-        self, body: ProbeBody, current_user: CurrentUser, profile: str | None = None
+        self, body: ProbeBody, identity: CurrentSubject
     ) -> ProbeResult:
         """Пробное соединение по профилю из формы; делегирование — билетом входа."""
-        identity = ApiIdentity.resolve(current_user, profile, self._profiles)
 
         return await self._probe(identity).probe(body.profile)
 
     async def check_stored(
-        self, connection_id: UUID, current_user: CurrentUser, profile: str | None = None
+        self, connection_id: UUID, identity: CurrentSubject
     ) -> ProbeResult:
         """Пробное соединение по сохранённой строке: видимой пользователю."""
-        identity = ApiIdentity.resolve(current_user, profile, self._profiles)
         store = self._resolved()
 
         visible = await self._visible(store, identity.subject, list(ConnectionKind))
@@ -314,9 +308,6 @@ class ConnectionsApi:
             return UserKerberos.open_credentials(ticket, self._tickets())
 
         return ConnectionProbe(delegation)
-
-    def _subject(self, current_user: CurrentUser, profile: str | None) -> Subject:
-        return ApiIdentity.resolve(current_user, profile, self._profiles).subject
 
     def _resolved(self) -> ConnectionStore:
         try:

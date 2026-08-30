@@ -55,7 +55,9 @@ class ApiApp:
         app = FastAPI(
             title=cls.TITLE, openapi_url=cls.OPENAPI, docs_url=cls.DOCS, redoc_url=None
         )
-        ApiAuth(access.authenticator, RequestTokens(access.cookie)).install(app)
+        ApiAuth(
+            access.authenticator, RequestTokens(access.cookie), profiles
+        ).install(app)
 
         router = APIRouter(prefix=ApiVersion.V1.value)
         if signin is not None:

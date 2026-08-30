@@ -19,7 +19,7 @@ from boba.identity.api import AuthenticatedUser, UserSettingsStore
 from boba.identity.context import Scope
 from boba.identity.session import UserMetadataField
 from boba.messaging import LockToken, MessageBus, StudioProfileChanged
-from boba.studio.api.auth import ApiIdentity, CurrentUser
+from boba.studio.api.auth import ApiAuth, CurrentUser
 from boba.studio.api.urls import AccountUrl
 
 __all__ = ["AccountApi", "Me", "ProfileView", "SignIn"]
@@ -126,7 +126,7 @@ class AccountApi:
         )
 
     async def me(self, current_user: CurrentUser, profile: str | None = None) -> Me:
-        user = ApiIdentity.user_of(current_user)
+        user = current_user
         chosen = profile
         if chosen is None:
             chosen = await self._stored_profile(user)
@@ -134,7 +134,7 @@ class AccountApi:
         return self._me_of(user, chosen)
 
     async def set_profile(self, body: ProfileChoice, current_user: CurrentUser) -> Me:
-        user = ApiIdentity.user_of(current_user)
+        user = current_user
         if body.profile not in self._profiles.visible_for(user.roles):
             raise HTTPException(status_code=403, detail="profile is not available")
 
@@ -145,7 +145,7 @@ class AccountApi:
         return self._me_of(user, body.profile)
 
     def _me_of(self, user: AuthenticatedUser, profile: str | None) -> Me:
-        identity = ApiIdentity.resolve(user, profile, self._profiles)
+        identity = ApiAuth.resolve(user, profile, self._profiles)
         subject = identity.subject
 
         return Me(
@@ -172,7 +172,7 @@ class AccountApi:
         return chosen
 
     async def list_profiles(self, current_user: CurrentUser) -> Sequence[ProfileView]:
-        user = ApiIdentity.user_of(current_user)
+        user = current_user
 
         views: list[ProfileView] = []
         for name, config in self._profiles.visible_for(user.roles).items():

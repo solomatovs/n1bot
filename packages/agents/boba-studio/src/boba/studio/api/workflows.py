@@ -26,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from boba.chat.profiles import ChatProfiles
 from boba.identity.api import ApiSubject, AuthenticatedUser
 from boba.identity.context import Scope
-from boba.studio.api.auth import ApiIdentity, CurrentUser
+from boba.studio.api.auth import ApiAuth, CurrentSubject, CurrentUser
 from boba.studio.api.urls import WorkflowUrl
 from boba.workflow import RunState
 from boba.workflow.records import (
@@ -144,9 +144,8 @@ class WorkflowApi:
         return service.initial_state(graph)
 
     async def list_workflows(
-        self, current_user: CurrentUser, profile: str | None = None
+        self, identity: CurrentSubject
     ) -> Sequence[StoredWorkflow]:
-        identity = self._identity(current_user, profile)
         service = await self._resolved()
 
         return await self._guarded(service.list_workflows(identity.subject))
@@ -162,26 +161,23 @@ class WorkflowApi:
         )
 
     async def get(
-        self, workflow_id: UUID, current_user: CurrentUser, profile: str | None = None
+        self, workflow_id: UUID, identity: CurrentSubject
     ) -> StoredWorkflow:
-        identity = self._identity(current_user, profile)
         service = await self._resolved()
 
         return await self._guarded(service.get(identity.subject, workflow_id))
 
     async def delete(
-        self, workflow_id: UUID, current_user: CurrentUser, profile: str | None = None
+        self, workflow_id: UUID, identity: CurrentSubject
     ) -> Deleted:
-        identity = self._identity(current_user, profile)
         service = await self._resolved()
 
         deleted = await self._guarded(service.delete(identity.subject, workflow_id))
         return Deleted(deleted=deleted)
 
     async def get_draft(
-        self, key: str, current_user: CurrentUser, profile: str | None = None
+        self, key: str, identity: CurrentSubject
     ) -> WorkflowDraft:
-        identity = self._identity(current_user, profile)
         service = await self._resolved()
 
         return await self._guarded(service.get_draft(identity.subject, self._key(key)))
@@ -205,11 +201,9 @@ class WorkflowApi:
     async def drop_draft(
         self,
         key: str,
-        current_user: CurrentUser,
-        profile: str | None = None,
+        identity: CurrentSubject,
         sid: str = "",
     ) -> Deleted:
-        identity = self._identity(current_user, profile)
         service = await self._resolved()
 
         dropped = await self._guarded(
@@ -245,19 +239,16 @@ class WorkflowApi:
 
     async def list_runs(
         self,
-        current_user: CurrentUser,
-        profile: str | None = None,
+        identity: CurrentSubject,
         limit: int = 50,
     ) -> Sequence[StoredRun]:
-        identity = self._identity(current_user, profile)
         service = await self._resolved()
 
         return await self._guarded(service.list_runs(identity.subject, limit))
 
     async def get_run(
-        self, run_id: UUID, current_user: CurrentUser, profile: str | None = None
+        self, run_id: UUID, identity: CurrentSubject
     ) -> StoredRun:
-        identity = self._identity(current_user, profile)
         service = await self._resolved()
 
         return await self._guarded(service.get_run(identity.subject, run_id))
@@ -288,9 +279,9 @@ class WorkflowApi:
         return in_query
 
     def _identity(
-        self, current_user: AuthenticatedUser | None, profile: str | None
+        self, current_user: AuthenticatedUser, profile: str | None
     ) -> ApiSubject:
-        return ApiIdentity.resolve(current_user, profile, self._profiles)
+        return ApiAuth.resolve(current_user, profile, self._profiles)
 
     async def _resolved(self) -> WorkflowService:
         try:

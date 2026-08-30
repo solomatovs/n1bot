@@ -38,7 +38,7 @@ from boba.identity.locks import (
     LockPurpose,
 )
 from boba.identity.run import RunRegistry
-from boba.studio.api.auth import ApiIdentity, CurrentUser
+from boba.studio.api.auth import ApiAuth, CurrentSubject, CurrentUser
 from boba.studio.api.urls import ToolCallUrl
 from boba.toolkit.calls import ToolIntent
 from boba.toolrun.invoke import (
@@ -123,9 +123,8 @@ class ToolCalling:
         )
 
     async def catalog(
-        self, current_user: CurrentUser, profile: str | None = None
+        self, identity: CurrentSubject
     ) -> Mapping[str, ToolFacts]:
-        identity = ApiIdentity.resolve(current_user, profile, self._profiles)
         registry = await self._registry()
 
         return CatalogBuilder.of(
@@ -138,7 +137,7 @@ class ToolCalling:
         body: ToolCallBody,
         current_user: CurrentUser,
     ) -> ToolCallReply:
-        identity = ApiIdentity.resolve(current_user, body.profile, self._profiles)
+        identity = ApiAuth.resolve(current_user, body.profile, self._profiles)
 
         # вызов живёт в своей области job: тредов чата у studio нет
         job_id = str(uuid4())
