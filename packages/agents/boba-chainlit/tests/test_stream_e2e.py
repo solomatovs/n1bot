@@ -38,7 +38,7 @@ from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.db.postgres import AsyncPostgresPool
 from boba.runtime.journal import DirVault, StreamJournal
-from boba.settings import bind, build_app_config
+from boba.config import bind, build_app_config
 from boba.toolkit.channels import ToolChannel
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]

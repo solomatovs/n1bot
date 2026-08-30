@@ -8,9 +8,14 @@ version = "0.0.14.dev9"
 description = "Boba canvas: ключи хранилища, журнал потоков, канвас и вьюверы, правила хранения и передачи файлов — модели и правила без I/O."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "pydantic>=2.10,<3",
     "boba-toolkit==0.0.14.dev9",
     "boba-identity==0.0.14.dev9",
+    "pydantic>=2.10,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
 ]
 
 [tool.setuptools.packages.find]

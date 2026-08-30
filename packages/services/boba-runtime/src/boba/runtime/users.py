@@ -23,8 +23,7 @@ from boba.connections.postgres import PostgresConfig
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.api import (
     AuthenticatedUser,
-    PersistedUsers,
-    StudioProfiles,
+    UserSettingsStore,
     UsersUpsert,
 )
 from boba.identity.session import UserMetadataField
@@ -34,7 +33,7 @@ from boba.runtime.tables import ChatTable, ThreadsColumn, UsersColumn
 __all__ = ["UsersTable"]
 
 
-class UsersTable(PersistedUsers, ThreadOwnership, UsersUpsert, StudioProfiles):
+class UsersTable(UserSettingsStore, ThreadOwnership, UsersUpsert):
     """users/threads той же схемы, что пишет data layer чата: чтение и строка входа."""
 
     def __init__(

@@ -23,7 +23,7 @@ from boba.krb import KerberosEnv
 from boba.runtime.auth_config import KerberosAuthConfig
 from boba.runtime.config import StudioRuntimeConfig
 from boba.runtime.sso import SpnegoGate, SsoRefresh, SsoSignIn
-from boba.settings import bind
+from boba.config import bind
 from boba.stand.kerberos import SsoBrowser
 from boba.stand.site import Stand as Site
 from boba.studio.api.app import ApiAccess, ApiApp

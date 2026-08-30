@@ -16,11 +16,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from abc import abstractmethod
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, ClassVar, Protocol
+from typing import Any, ClassVar
 from uuid import UUID
 
 import psycopg
@@ -49,6 +48,7 @@ from boba.messaging import (
     MessageTooLargeError,
     Unsubscribe,
 )
+from boba.messaging.bus import BusWatch, ListenerState, StateListener
 from boba.runtime.config import AppName, ClusterConfig
 from boba.runtime.tables import (
     ChatTable,
@@ -59,13 +59,10 @@ from boba.runtime.tables import (
 )
 
 __all__ = [
-    "BusWatch",
-    "ListenerState",
     "LiveListener",
     "PgMessageBus",
     "Pointer",
     "PointerKind",
-    "StaticBusWatch",
 ]
 
 logger = logging.getLogger(__name__)
@@ -102,48 +99,8 @@ class Pointer(BaseModel):
         return cls.model_validate_json(raw)
 
 
-class ListenerState(StrEnum):
-    """Состояние слушателя процесса; страница показывает его лампочкой рядом с
-    сокетом.
-    """
-
-    STOPPED = "stopped"
-    CONNECTING = "connecting"
-    LISTENING = "listening"
-    FAILED = "failed"
-
-
 PointerHandler = Callable[[Pointer], Awaitable[None]]
 ReconnectHandler = Callable[[], Awaitable[None]]
-StateListener = Callable[[ListenerState], None]
-
-
-class BusWatch(Protocol):
-    """Порт наблюдения за слушателем шины: текущее состояние и подписка на его смену."""
-
-    @property
-    @abstractmethod
-    def state(self) -> ListenerState: ...
-
-    @abstractmethod
-    def watch(self, listener: StateListener) -> Unsubscribe: ...
-
-
-class StaticBusWatch(BusWatch):
-    """Наблюдатель с постоянным состоянием для стендов и тестов без Postgres."""
-
-    def __init__(self, state: ListenerState) -> None:
-        self._state = state
-
-    @property
-    def state(self) -> ListenerState:
-        return self._state
-
-    def watch(self, listener: StateListener) -> Unsubscribe:
-        def leave() -> None:
-            return None
-
-        return leave
 
 
 class LiveListener(BusWatch):

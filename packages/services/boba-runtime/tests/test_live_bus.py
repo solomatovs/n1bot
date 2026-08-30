@@ -23,7 +23,8 @@ from boba.messaging import (
     RunListChanged,
     StopRequested,
 )
-from boba.runtime.bus import ListenerState, LiveListener, PgMessageBus, Pointer
+from boba.messaging.bus import ListenerState
+from boba.runtime.bus import LiveListener, PgMessageBus, Pointer
 from boba.runtime.config import AppName, RuntimeConfig
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]

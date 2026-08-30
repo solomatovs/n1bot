@@ -18,6 +18,11 @@ dependencies = [
 payload = [
     "plotly>=5.24,<6",
 ]
+dev = [
+    "boba-sandbox==0.0.14.dev9",
+    "boba-stand==0.0.14.dev9",
+    "pytest>=8",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

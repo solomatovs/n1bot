@@ -29,7 +29,7 @@ from chat_ui import ChatOpener
 from boba.canvas.diagram import DiagramPrompt
 from boba.chainlit.rendering.tool import ToolCallMarkdown, ToolResultMarkdown
 from boba.liteparse.engine import LiteParseEngine
-from boba.settings import bind, build_app_config
+from boba.config import bind, build_app_config
 from boba.stand.ui.chat_page import ChatPage, StepKind
 from boba.stand.ui.database import StandDatabase
 from boba.stand.ui.fake_llm import FakePage, FakeRoute, ScenarioName

@@ -26,7 +26,7 @@ from boba.identity.session import SignInProvider, UserMetadataField
 from boba.krb import KerberosEnv, ServiceTicketIssuer
 from boba.runtime.auth_config import KerberosAuthConfig, KerberosRolesConfig
 from boba.runtime.sso import Challenge, Signed, SsoRefresh
-from boba.settings import bind
+from boba.config import bind
 from boba.stand.site import Stand
 
 STAND = Stand.required()

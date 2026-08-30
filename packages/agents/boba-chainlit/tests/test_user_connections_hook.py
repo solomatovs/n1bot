@@ -48,7 +48,7 @@ from boba.krb import (
 )
 from boba.krb.seal import SsoTickets
 from boba.messaging import MemoryMessageBus
-from boba.settings import bind
+from boba.config import bind
 from boba.stand.site import Stand
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebGrepConfig

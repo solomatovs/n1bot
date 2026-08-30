@@ -32,6 +32,7 @@ from typing import (
     get_args,
     get_origin,
 )
+from uuid import uuid4
 
 from annotated_types import Ge, Gt, Le, Lt, MaxLen
 from pydantic import (
@@ -109,6 +110,16 @@ ToolCallView: TypeAlias = Annotated[
     JsonCall | ScriptCall | HiddenCall,
     Field(discriminator="kind"),
 ]
+
+
+class CallIdPrefix(StrEnum):
+    """Префикс id вызова по источнику: отличим от id, которые выдаёт модель."""
+
+    API = "api-"
+    WORKFLOW = "wf-"
+
+    def new_id(self) -> str:
+        return f"{self.value}{uuid4().hex}"
 
 
 class ToolIntent:

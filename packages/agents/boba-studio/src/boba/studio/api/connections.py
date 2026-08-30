@@ -32,12 +32,13 @@ from pydantic import (
 )
 
 from boba.chat.profiles import ChatProfiles
-from boba.connection_broker.probe import ConnectionProbe, ProbeResult
+from boba.connection_broker.probe import ConnectionProbe
 from boba.connection_broker.store import ConnectionStore, ConnectionStoreError
 from boba.connection_broker.user_connections import StoreRef, TicketsRef, UserKerberos
 from boba.connections.profile import (
     ConnectionKind,
     ConnectionProfile,
+    ProbeResult,
     StoredConnection,
 )
 from boba.identity.api import ApiSubject

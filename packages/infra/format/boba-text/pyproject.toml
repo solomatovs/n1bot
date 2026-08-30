@@ -9,6 +9,12 @@ description = "Boba text-pipeline: PlainTextReader, OverlapCharSplitter, Section
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-indexing==0.0.14.dev9",
+    "pydantic>=2.10,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
 ]
 
 [tool.setuptools.packages.find]

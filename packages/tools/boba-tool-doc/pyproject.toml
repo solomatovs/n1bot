@@ -20,6 +20,10 @@ payload = [
     "boba-liteparse==0.0.14.dev9",
     "liteparse>=2,<3",
 ]
+dev = [
+    "boba-config==0.0.14.dev9",
+    "pytest>=8",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

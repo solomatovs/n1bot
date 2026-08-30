@@ -3,14 +3,18 @@ requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "boba-settings"
+name = "boba-config"
 version = "0.0.14.dev9"
-description = "OmegaConf-источники + чистые pydantic-модели: load -> bind -> validate."
+description = "Boba config: загрузка toml/yaml/CLI в OmegaConf и привязка секций к pydantic-моделям."
 requires-python = ">=3.11,<4"
 dependencies = [
-    # 2.11+ ломает ForwardRef-резолв (см. boba-chainlit).
     "pydantic>=2.10,<2.11",
     "omegaconf>=2.3,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
 ]
 
 [tool.setuptools.packages.find]

@@ -158,3 +158,13 @@ class ConnectionRepository(Protocol):
     async def for_subject(
         self, subject: Subject, kind: ConnectionKind
     ) -> Sequence[StoredConnection]: ...
+
+
+class ProbeResult(BaseModel):
+    """Исход проверки: удалось ли открыть соединение, что ответил сервер, за сколько."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    ok: bool
+    message: str
+    elapsed_ms: int

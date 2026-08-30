@@ -15,15 +15,23 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
-from boba.workflow.graph import RunState, RunStatus
+from boba.identity.errors import RefusalError
+from boba.toolkit.result import ToolResult
+from boba.workflow.graph import RunState, RunStatus, TaskStatus
 
 __all__ = [
     "DraftKey",
     "DraftKind",
+    "RunOutcome",
+    "StopOutcome",
     "StoredRun",
     "StoredWorkflow",
+    "TaskOutcome",
     "WorkflowDraft",
+    "WorkflowError",
     "WorkflowNotFoundError",
+    "WorkflowRefusal",
+    "WorkflowRunError",
     "WorkflowStoreError",
 ]
 
@@ -130,3 +138,49 @@ class StoredRun(BaseModel):
     def status(self) -> RunStatus:
         """Статус — проекция состояния; в JSON уходит рядом с ним."""
         return self.state.status
+
+
+class WorkflowRefusal(StrEnum):
+    """Виды отказов сервиса workflow: негодная спека, запрещённые инструменты, не
+    найдено.
+    """
+
+    BAD_SPEC = "bad_workflow_spec"
+    NOT_FOUND = "workflow_not_found"
+
+
+class WorkflowError(RefusalError):
+    """Workflow отклонён; текст причины готов для показа модели и странице."""
+
+
+class StopOutcome(StrEnum):
+    """Итог просьбы остановить запуск: остановлен здесь, принят для другого инстанса
+    или уже завершён.
+    """
+
+    STOPPED = "stopped"
+    ACCEPTED = "accepted"
+    FINISHED = "finished"
+
+
+class RunOutcome(BaseModel):
+    """Итог запуска: запись хранилища, состояние и результаты задач по именам."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    run: StoredRun
+    state: RunState
+    results: Mapping[str, ToolResult]
+
+
+class WorkflowRunError(Exception):
+    """Раннер не может продолжать: контракт инструментов или автомата нарушен."""
+
+
+class TaskOutcome:
+    """Итог задачи: статус для автомата и результат для рёбер и отчёта."""
+
+    def __init__(self, status: TaskStatus, result: ToolResult, error: str) -> None:
+        self.status = status
+        self.result = result
+        self.error = error

@@ -14,12 +14,14 @@ from omegaconf import DictConfig
 
 from boba.access import GrantCheck
 from boba.chat.profiles import RolesSection
+from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
-from boba.connection_broker.user_connections import RefreshSignal
 from boba.db.pgvector.schema import KbSchema
 from boba.identity.locks import RunLocking, StaleLock
+from boba.identity.sso import RefreshSignal
 from boba.krb.seal import SsoTickets
-from boba.runtime.bus import BusWatch, PgMessageBus
+from boba.messaging.bus import BusWatch
+from boba.runtime.bus import PgMessageBus
 from boba.runtime.commands import CommandRunner
 from boba.runtime.config import AppName, RawConfig, RuntimeConfig
 from boba.runtime.di import Container, Depends
@@ -30,7 +32,6 @@ from boba.runtime.plugins import PluginMeta, PluginTable, ToolLoader
 from boba.runtime.refs import RuntimeRefs
 from boba.runtime.turns import StaleTurnCloser
 from boba.runtime.users import UsersTable
-from boba.settings import bind
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.streams import ToolStreams

@@ -12,7 +12,7 @@ import pytest
 from chainlit_stand import FakeSecret
 
 from boba.chainlit.domain.keys import AppPrefix
-from boba.chainlit.infra.entry import AppEntry
+from boba.chainlit.infra.entry import AppEntry, ChainlitEnv
 
 
 @pytest.fixture(autouse=True)
@@ -40,10 +40,15 @@ CONFIG = """
 [app]
     chainlit = "${chainlit}"
 
+[session]
+    auth_secret     = "<auth_secret>"
+    cookie          = "boba_token"
+    cookie_samesite = "strict"
+    session_ttl_sec = 3600
+
 [chainlit]
     root        = "<root>"
     url_prefix  = "/boba"
-    auth_secret = "<auth_secret>"
 """
 
 
@@ -59,19 +64,22 @@ class TestExportEnv:
     def test_env_taken_from_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.delenv(AppEntry.APP_ROOT_ENV, raising=False)
+        monkeypatch.delenv(ChainlitEnv.APP_ROOT, raising=False)
         monkeypatch.delenv(AppPrefix.ENV, raising=False)
-        monkeypatch.delenv(AppEntry.AUTH_ENV, raising=False)
+        monkeypatch.delenv(ChainlitEnv.AUTH_SECRET, raising=False)
 
         root = tmp_path / "data"
         AppEntry.export_env(self._config(tmp_path, str(root)))
 
-        if os.environ[AppEntry.APP_ROOT_ENV] != str(root):
-            raise AssertionError("os.environ[AppEntry.APP_ROOT_ENV] == str(root)")
+        if os.environ[ChainlitEnv.APP_ROOT] != str(root):
+            raise AssertionError("os.environ[ChainlitEnv.APP_ROOT] == str(root)")
         if os.environ[AppPrefix.ENV] != "/boba":
             raise AssertionError('os.environ[AppPrefix.ENV] == "/boba"')
-        if os.environ[AppEntry.AUTH_ENV] != FakeSecret.AUTH:
-            raise AssertionError("os.environ[AppEntry.AUTH_ENV] == FakeSecret.…")
+        if os.environ[ChainlitEnv.AUTH_SECRET] != FakeSecret.AUTH:
+            raise AssertionError("os.environ[ChainlitEnv.AUTH_SECRET] == FakeSecret.…")
+
+        assert os.environ[ChainlitEnv.COOKIE_NAME] == "boba_token"
+        assert os.environ[ChainlitEnv.COOKIE_SAMESITE] == "strict"
 
     def test_relative_root_resolved(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -80,8 +88,8 @@ class TestExportEnv:
 
         AppEntry.export_env(self._config(tmp_path, "./data"))
 
-        if not (Path(os.environ[AppEntry.APP_ROOT_ENV]).is_absolute()):
-            raise AssertionError("Path(os.environ[AppEntry.APP_ROOT_ENV]).is_absolute…")
+        if not (Path(os.environ[ChainlitEnv.APP_ROOT]).is_absolute()):
+            raise AssertionError("Path(os.environ[ChainlitEnv.APP_ROOT]).is_absolute…")
 
     def test_empty_root_rejected(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="root"):
@@ -106,7 +114,7 @@ class TestEntryPointsFreeOfChainlit:
         )
 
     @pytest.mark.parametrize(
-        "module", ["boba.chainlit.infra.entry", "boba.chainlit.cli.ingest"]
+        "module", ["boba.chainlit.infra.entry"]
     )
     def test_module_import_leaves_cwd_clean(self, module: str, tmp_path: Path) -> None:
         result = self._probe(module, tmp_path)

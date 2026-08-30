@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from boba.settings import ConfigBuilder, bind
+from boba.config import ConfigBuilder, bind
 
 
 class _Conn(BaseModel):

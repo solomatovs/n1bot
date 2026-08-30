@@ -16,7 +16,7 @@ from boba.identity.locks import MemoryLiveLocks
 from boba.identity.session import UserMetadataField
 from boba.krb.seal import SsoTickets
 from boba.messaging import MemoryMessageBus
-from boba.runtime.bus import ListenerState, StaticBusWatch
+from boba.messaging.bus import ListenerState, StaticBusWatch
 from boba.runtime.config import StudioRuntimeConfig
 from boba.runtime.refs import RuntimeRefs, StoreRef, TicketsRef
 from boba.toolrun.registry import ToolRegistry

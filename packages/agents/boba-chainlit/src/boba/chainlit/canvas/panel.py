@@ -53,6 +53,7 @@ from boba.canvas.journal import (
     JournalWindow,
     StreamJournalHub,
     StreamKey,
+    StreamNote,
     StreamSlice,
     WindowAlign,
 )
@@ -64,11 +65,7 @@ from boba.chainlit.domain.keys import CanvasFileUrl, StreamUrl
 from boba.identity.errors import RefusalError
 from boba.toolkit.channels import JournalChannel
 from boba.toolkit.result import CustomElementResult
-from boba.toolrun.streams import (
-    JournalWatchSource,
-    StreamNote,
-    ToolStreams,
-)
+from boba.toolrun.streams import JournalWatchSource, ToolStreams
 from boba.workspace.launcher import ReadWindow
 from chainlit.data import get_data_layer
 

@@ -22,7 +22,7 @@ from boba.krb.seal import SsoTickets, TicketSealer
 from boba.runtime.auth_config import AuthConfig, KerberosAuthConfig
 from boba.sandbox import CgroupManager
 from boba.sandbox.profile import SandboxConfig
-from boba.settings import bind, build_app_config
+from boba.config import bind, build_app_config
 
 __all__ = [
     "AppName",

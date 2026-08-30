@@ -20,18 +20,18 @@ from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel, ConfigDict
 
 from boba.access import GrantCheck, ToolAccess
+from boba.canvas.journal import CallStream
 from boba.canvas.keys import WorkspaceMount
 from boba.chat.profiles import ProfilesSection, RolesSection
+from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig
 from boba.connection_broker.tickets import ServiceTickets
-from boba.connection_broker.user_connections import (
-    RefreshSignal,
-    UserConnections,
-)
+from boba.connection_broker.user_connections import UserConnections
 from boba.connections.marks import UserConnectionsSpec
 from boba.connections.profile import ConnectionKind
 from boba.connections.whitelist import ConnectionKeying
 from boba.identity.context import CallContext
+from boba.identity.sso import RefreshSignal
 from boba.runtime.refs import RuntimeRefs
 from boba.sandbox import (
     BindSpec,
@@ -42,7 +42,6 @@ from boba.sandbox import (
 from boba.sandbox.guest import WarmupCall
 from boba.sandbox.wrap import ToolProcessWrap
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
-from boba.settings import bind
 from boba.tool.ch.tools import TOOLS as CH_TOOLS
 from boba.tool.chart.tools import TOOLS as CHART_TOOLS
 from boba.tool.doc.tools import TOOLS as DOC_TOOLS
@@ -63,7 +62,7 @@ from boba.toolrun.errors import ToolErrorGuard
 from boba.toolrun.injected import InjectedConfig, ToolConfigError
 from boba.toolrun.intent import ToolIntentField
 from boba.toolrun.registry import ToolRegistry
-from boba.toolrun.run_log import CallStream, NoCallScope, ToolRunLogger
+from boba.toolrun.run_log import NoCallScope, ToolRunLogger
 from boba.toolrun.streams import ToolStreams
 from boba.toolrun.wrapping import ToolAsyncBody
 from boba.workflow_engine.tools import WorkflowToolConfig, build_workflow_tools

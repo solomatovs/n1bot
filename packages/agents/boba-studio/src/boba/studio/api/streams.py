@@ -27,8 +27,8 @@ from boba.studio.api.auth import ApiIdentity, CurrentUser
 from boba.studio.api.urls import WorkflowUrl
 from boba.toolkit.channels import JournalChannel, JournalChannels, ToolChannel
 from boba.toolrun.streams import ToolStreams
-from boba.workflow.records import WorkflowStoreError
-from boba.workflow_engine.service import WorkflowError, WorkflowService
+from boba.workflow.records import WorkflowError, WorkflowStoreError
+from boba.workflow_engine.service import WorkflowService
 
 __all__ = ["ChannelView", "StreamApi"]
 

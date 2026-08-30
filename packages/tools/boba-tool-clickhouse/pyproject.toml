@@ -21,6 +21,10 @@ dependencies = [
 payload = [
     "boba-db-clickhouse[payload]==0.0.14.dev9",
 ]
+dev = [
+    "boba-config==0.0.14.dev9",
+    "pytest>=8",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

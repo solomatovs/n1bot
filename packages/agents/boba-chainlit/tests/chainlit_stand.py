@@ -44,6 +44,7 @@ from boba.chainlit.rendering.renderer import ChatRenderer, NoSurface
 from boba.chat.openai import OpenAiConfig
 from boba.chat.provider import ChatSampling, OpenAiChatConfig
 from boba.chat.threads import ThreadOwnership
+from boba.config import bind, build_app_config
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.user_connections import StoreRef, TicketsRef
 from boba.connections.kerberos import DelegationMode
@@ -61,9 +62,8 @@ from boba.krb.seal import SsoTickets, TicketSealer
 from boba.llm.bridge import ProviderChatModel
 from boba.llm.openai_chat import OpenAiChatProvider
 from boba.messaging import LockToken, MemoryMessageBus, MemoryPayloadStore
-from boba.runtime.bus import ListenerState, StaticBusWatch
+from boba.messaging.bus import ListenerState, StaticBusWatch
 from boba.runtime.refs import RuntimeRefs
-from boba.settings import bind, build_app_config
 from boba.stand.context import TEST_PROFILE as TEST_PROFILE
 from boba.stand.context import TEST_TURN as TEST_TURN
 from boba.stand.context import install_context as install_context
@@ -191,9 +191,7 @@ async def layer(
 
 @pytest.fixture
 def auth_token(app_config: AppConfig) -> str:
-    secret = app_config.chainlit.auth_secret
-    if not secret:
-        raise RuntimeError("chainlit.auth_secret не задан в конфиге")
+    secret = app_config.session.auth_secret
     os.environ["CHAINLIT_AUTH_SECRET"] = secret
 
     from chainlit.auth.jwt import create_jwt

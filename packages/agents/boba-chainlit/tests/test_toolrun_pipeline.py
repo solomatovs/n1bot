@@ -14,6 +14,7 @@ from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.tools import InjectedToolArg, tool
 from pydantic import BaseModel, Field, SecretStr
 
+from boba.canvas.journal import CallStream
 from boba.chainlit.rendering.tool import MarkdownRendering, ToolResultView
 from boba.toolkit.calls import ToolIntent
 from boba.toolkit.channels import JournalChannel
@@ -27,7 +28,7 @@ from boba.toolkit.stream import ToolChannelsTap
 from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.injected import InjectedConfig
 from boba.toolrun.intent import ToolIntentField
-from boba.toolrun.run_log import CallStream, NoCallScope, ToolRunLogger
+from boba.toolrun.run_log import NoCallScope, ToolRunLogger
 from boba.toolrun.wrapping import ToolAsyncBody
 
 

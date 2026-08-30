@@ -20,7 +20,7 @@ from omegaconf import OmegaConf
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
 from boba.runtime.config import ConfigLocator
-from boba.settings import build_app_config
+from boba.config import build_app_config
 
 __all__ = ["Stand", "StandError"]
 

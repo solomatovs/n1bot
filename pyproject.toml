@@ -27,7 +27,7 @@ pythonpath = [
     "packages/services/boba-workflow-engine/src",
     "packages/services/boba-runtime/src",
     "packages/core/boba-indexing/src",
-    "packages/core/boba-settings/src",
+    "packages/infra/config/boba-config/src",
     "packages/core/boba-toolkit/src",
     "packages/agents/boba-studio/src",
     "packages/agents/boba-chainlit/src",
@@ -55,6 +55,7 @@ exclude = [
     "**/__pycache__",
     "**/.*",
     "packages/*/*/build",
+    "packages/*/*/*/build",
 ]
 extraPaths = [
     "packages/infra/format/boba-kbdoc/src",
@@ -81,7 +82,7 @@ extraPaths = [
     "packages/services/boba-workflow-engine/src",
     "packages/services/boba-runtime/src",
     "packages/core/boba-indexing/src",
-    "packages/core/boba-settings/src",
+    "packages/infra/config/boba-config/src",
     "packages/core/boba-toolkit/src",
     "packages/agents/boba-studio/src",
     "packages/agents/boba-chainlit/src",
@@ -150,7 +151,7 @@ members = [
 ]
 
 [tool.uv.sources]
-boba-settings       = { workspace = true }
+boba-config         = { workspace = true }
 boba-cancellation   = { workspace = true }
 boba-workflow       = { workspace = true }
 boba-access         = { workspace = true }

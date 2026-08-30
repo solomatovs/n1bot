@@ -23,7 +23,8 @@ from boba.studio.api.app import ApiAccess, ApiApp
 from boba.studio.api.urls import ApiVersion, ToolCallUrl, WorkflowUrl
 from boba.toolrun.registry import ToolRegistry
 from boba.workflow import RunStatus, WorkflowSpec
-from boba.workflow_engine.service import StopOutcome, WorkflowService
+from boba.workflow.records import StopOutcome
+from boba.workflow_engine.service import WorkflowService
 from boba.workflow_engine.store import WorkflowConfig, WorkflowStore
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]

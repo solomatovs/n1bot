@@ -29,6 +29,7 @@ from boba.toolkit.result import (
 from boba.toolrun.registry import ToolRegistry
 from boba.workflow import RunStatus, TaskStatus
 from boba.workflow.records import DraftKey
+from boba.workflow.report import ReportKey
 from boba.workflow_engine.service import (
     StopOutcome,
     WorkflowError,
@@ -37,7 +38,6 @@ from boba.workflow_engine.service import (
 )
 from boba.workflow_engine.store import WorkflowConfig, WorkflowStore
 from boba.workflow_engine.tools import (
-    ReportKey,
     WorkflowToolConfig,
     build_workflow_tools,
 )

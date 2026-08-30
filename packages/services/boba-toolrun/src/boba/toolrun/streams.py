@@ -12,16 +12,17 @@ import contextlib
 import logging
 import threading
 from collections.abc import Callable, Iterable, Sequence
-from enum import StrEnum
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import ValidationError
 
 from boba.canvas.canvas import (
     WatchProbe,
     WatchSource,
 )
 from boba.canvas.journal import (
+    CallStream,
+    ChannelProbe,
     StreamJournalError,
     StreamJournalHub,
     StreamKey,
@@ -33,12 +34,9 @@ from boba.identity.run import LiveStream, RunRegistry
 from boba.messaging import StreamAppended, StreamFeed
 from boba.toolkit.channels import JournalChannel, JournalChannels, ToolChannel
 from boba.toolkit.stream import ChannelSinks, StreamSink
-from boba.toolrun.run_log import CallStream
 
 __all__ = [
-    "ChannelProbe",
     "JournalWatchSource",
-    "StreamNote",
     "StreamPump",
     "StreamPumps",
     "ToolStream",
@@ -46,33 +44,6 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
-
-
-class StreamNote(StrEnum):
-    """Экранные тексты статусной строки окна потока.
-
-    Исходы закрытого вызова приходят из журнала словами CallOutcome —
-    их пишет обвязка вызова, панель показывает как есть.
-    """
-
-    RUNNING = "running…"
-    GONE = "The log of this call is unavailable: journaling was not active."
-
-    @classmethod
-    def status_of(cls, piece: StreamSlice) -> str:
-        if not piece.closed:
-            return str(cls.RUNNING)
-
-        return piece.note
-
-
-class ChannelProbe(BaseModel):
-    """Состояние одного канала живого вызова: что насос сравнивает между записями."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    channel: JournalChannel
-    probe: WatchProbe
 
 
 class ToolStream(ChannelSinks, CallStream, LiveStream):

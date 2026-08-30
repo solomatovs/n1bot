@@ -31,7 +31,7 @@ from boba.sandbox import (
 )
 from boba.sandbox.wrap import ToolProcessWrap
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
-from boba.settings import bind
+from boba.config import bind
 from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
 from boba.tool.kb.search import ConfluenceCollection
 from boba.tool.pg.tools import PgToolConfig

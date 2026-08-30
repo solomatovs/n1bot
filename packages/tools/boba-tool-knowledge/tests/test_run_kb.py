@@ -9,7 +9,7 @@ from typing import ClassVar
 
 import pytest
 
-from boba.settings import bind
+from boba.config import bind
 from boba.tool.kb.tools import KbToolConfig, kb_fts_search, kb_vector_search
 from boba.toolkit.entry import ToolMain
 

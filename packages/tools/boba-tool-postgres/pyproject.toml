@@ -20,6 +20,10 @@ dependencies = [
 [project.optional-dependencies]
 payload = [
 ]
+dev = [
+    "boba-config==0.0.14.dev9",
+    "pytest>=8",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

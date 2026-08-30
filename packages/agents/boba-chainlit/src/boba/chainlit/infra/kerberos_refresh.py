@@ -9,8 +9,8 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from boba.chainlit.domain.context import ChatCallContext
-from boba.connection_broker.user_connections import RefreshSignal
 from boba.identity.context import CallContext
+from boba.identity.sso import RefreshSignal
 from boba.messaging import LockToken, MessageBus, SignInRefreshRequested
 
 __all__ = ["BusRef", "ChatRefreshSignal"]

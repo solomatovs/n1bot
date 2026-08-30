@@ -239,7 +239,9 @@ def _use_canvas_viewers() -> None:
 def _use_auth(config: AppConfig) -> None:
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
-    installer = ChainlitAuthInstaller(config.chainlit.url_prefix, config.auth)
+    installer = ChainlitAuthInstaller(
+        config.chainlit.url_prefix, config.auth, config.session.session_ttl_sec
+    )
     installer.install(chainlit_app)
 
 

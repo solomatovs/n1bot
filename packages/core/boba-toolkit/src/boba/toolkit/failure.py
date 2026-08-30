@@ -10,12 +10,20 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
+from enum import StrEnum
 from typing import ClassVar
 
 from pydantic import ValidationError
 from pydantic_core import ErrorDetails
 
-__all__ = ["FailureText", "ToolRefusalError", "ValidationText"]
+__all__ = [
+    "FailureText",
+    "InvokeErrorKind",
+    "ToolContractError",
+    "ToolRefusalError",
+    "ToolUnavailableError",
+    "ValidationText",
+]
 
 
 class ValidationText:
@@ -146,3 +154,19 @@ class FailureText:
             return type(error).__name__
 
         return f"{type(error).__name__}: {text}"
+
+
+class ToolUnavailableError(Exception):
+    """Инструмент не виден субъекту вне чата: не собран, запрещён или chat_only."""
+
+
+class ToolContractError(Exception):
+    """Инструмент нарушил контракт цепочки: ответ — не ToolMessage."""
+
+
+class InvokeErrorKind(StrEnum):
+    """Коды error_kind результатов, которые ставит исполнитель вместо инструмента."""
+
+    NO_RESULT = "no_result"
+    CRASHED = "crashed"
+    STOPPED = "stopped"

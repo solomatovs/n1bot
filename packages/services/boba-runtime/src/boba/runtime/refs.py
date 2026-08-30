@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from boba.connection_broker.user_connections import StoreRef, TicketsRef
 from boba.identity.locks import LiveLocks
 from boba.messaging import MessageBus
-from boba.runtime.bus import BusWatch
+from boba.messaging.bus import BusWatch
 from boba.toolrun.registry import ToolRegistry
 from boba.workflow_engine.service import WorkflowService
 

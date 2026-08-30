@@ -13,52 +13,25 @@ ToolContractError — инструмент вернул не ToolMessage.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from enum import StrEnum
 from typing import Any
-from uuid import uuid4
 
 from langchain_core.messages import ToolCall, ToolMessage
 from langchain_core.runnables.config import var_child_runnable_config
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict
 
-from boba.toolkit.calls import ToolIntent
+from boba.toolkit.calls import CallIdPrefix, ToolIntent
+from boba.toolkit.failure import (
+    InvokeErrorKind,
+    ToolContractError,
+    ToolUnavailableError,
+)
 from boba.toolkit.result import ErrorResult, ToolArtifact, ToolResult
 
 __all__ = [
-    "CallIdPrefix",
-    "InvokeErrorKind",
     "InvokeReply",
-    "ToolContractError",
     "ToolInvoker",
-    "ToolUnavailableError",
 ]
-
-
-class CallIdPrefix(StrEnum):
-    """Префикс id вызова по источнику: отличим от id, которые выдаёт модель."""
-
-    API = "api-"
-    WORKFLOW = "wf-"
-
-    def new_id(self) -> str:
-        return f"{self.value}{uuid4().hex}"
-
-
-class ToolUnavailableError(Exception):
-    """Инструмент не виден субъекту вне чата: не собран, запрещён или chat_only."""
-
-
-class ToolContractError(Exception):
-    """Инструмент нарушил контракт цепочки: ответ — не ToolMessage."""
-
-
-class InvokeErrorKind(StrEnum):
-    """Коды error_kind результатов, которые ставит исполнитель вместо инструмента."""
-
-    NO_RESULT = "no_result"
-    CRASHED = "crashed"
-    STOPPED = "stopped"
 
 
 class InvokeReply(BaseModel):

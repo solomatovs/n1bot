@@ -11,7 +11,7 @@ from typing import ClassVar
 import pytest
 
 from boba.connections.postgres import PostgresConfig
-from boba.settings import bind
+from boba.config import bind
 from boba.tool.pg.tools import PgToolConfig, pg_copy, pg_list_tables, pg_query
 from boba.toolkit.entry import ToolMain
 

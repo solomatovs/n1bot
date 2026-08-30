@@ -54,7 +54,7 @@ from boba.messaging import MemoryMessageBus
 from boba.runtime.plugins import ToolBridge
 from boba.sandbox.wrap import ToolProcessWrap
 from boba.sandbox.zygote import ZygoteRegistry
-from boba.settings import bind
+from boba.config import bind
 from boba.stand.site import Stand
 from boba.tool.ch.tools import ChToolConfig
 from boba.tool.pg.tools import PgToolConfig

@@ -9,17 +9,21 @@ from __future__ import annotations
 
 import os
 import re
+from abc import abstractmethod
 from collections.abc import Callable
 from enum import IntEnum, StrEnum
 from typing import ClassVar, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from boba.canvas.canvas import WatchProbe
 from boba.toolkit.channels import JournalChannel
 from boba.toolkit.stream import StreamSink
 
 __all__ = [
     "CallLogUsage",
+    "CallStream",
+    "ChannelProbe",
     "JournalFile",
     "JournalText",
     "JournalWindow",
@@ -29,6 +33,7 @@ __all__ = [
     "StreamJournalHub",
     "StreamKey",
     "StreamMeta",
+    "StreamNote",
     "StreamRecorderPort",
     "StreamSlice",
     "StreamStat",
@@ -225,6 +230,33 @@ class StreamSlice(BaseModel):
     note: str
 
 
+class StreamNote(StrEnum):
+    """Экранные тексты статусной строки окна потока.
+
+    Исходы закрытого вызова приходят из журнала словами CallOutcome —
+    их пишет обвязка вызова, панель показывает как есть.
+    """
+
+    RUNNING = "running…"
+    GONE = "The log of this call is unavailable: journaling was not active."
+
+    @classmethod
+    def status_of(cls, piece: StreamSlice) -> str:
+        if not piece.closed:
+            return str(cls.RUNNING)
+
+        return piece.note
+
+
+class ChannelProbe(BaseModel):
+    """Состояние одного канала живого вызова: что насос сравнивает между записями."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    channel: JournalChannel
+    probe: WatchProbe
+
+
 class StreamStat(BaseModel):
     """Состояние файла потока без чтения тела: размер и итог записи."""
 
@@ -348,6 +380,16 @@ class StreamRecorderPort(StreamSink, Protocol):
     @property
     def note(self) -> str: ...
 
+    def close(self, note: str) -> None: ...
+
+
+class CallStream(Protocol):
+    """Журнал живого вывода одного вызова: приёмники каналов и закрытие."""
+
+    @abstractmethod
+    def sink_of(self, channel: JournalChannel) -> StreamSink: ...
+
+    @abstractmethod
     def close(self, note: str) -> None: ...
 
 

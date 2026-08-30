@@ -20,7 +20,7 @@ class TestConfigKeepsBatchSmall:
 
     @pytest.mark.parametrize("section", ["tool.kb", "tool.ingest"])
     def test_batch_size_is_bounded(self, raw_config, section: str) -> None:
-        from boba.settings import bind
+        from boba.config import bind
 
         embedding = bind(raw_config, path=f"{section}.embedding", model=_Embedding).root
 

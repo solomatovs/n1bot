@@ -16,7 +16,8 @@ from boba.identity.api import AuthenticatedUser
 from boba.identity.context import CallContext, Scope
 from boba.identity.locks import LockMode, LockPurpose, MemoryLiveLocks, RunLocking
 from boba.messaging import MemoryMessageBus, StreamAppended
-from boba.runtime.bus import ListenerState, PgMessageBus, StaticBusWatch
+from boba.messaging.bus import ListenerState, StaticBusWatch
+from boba.runtime.bus import PgMessageBus
 from boba.runtime.config import AppName, StudioRuntimeConfig
 from boba.runtime.locks import PgLiveLocks
 from boba.stand.context import use_context
