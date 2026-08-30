@@ -11,6 +11,8 @@ dependencies = [
     "boba-chat==0.0.14.dev9",
     "boba-indexing==0.0.14.dev9",
     "boba-toolkit==0.0.14.dev9",
+    "httpcore>=1.0",
+    "typing-extensions>=4.12",
     "httpx[http2]>=0.28,<1",
     "httpx-sse>=0.4,<1",
     "pydantic>=2.10,<2.11",
@@ -18,15 +20,17 @@ dependencies = [
 
 [project.optional-dependencies]
 chat = [
-    "langchain[openai]",
     "langchain-core>=1.4,<1.5",
-    "langsmith>=0.8,<0.9",
 ]
 payload = [
     "fastembed>=0.4,<1",
 ]
 generation = [
     "onnxruntime-genai>=0.15,<1",
+]
+dev = [
+    "langchain-core>=1.4,<1.5",
+    "pytest>=8",
 ]
 
 [tool.setuptools.packages.find]

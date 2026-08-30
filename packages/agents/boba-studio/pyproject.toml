@@ -8,14 +8,12 @@ version = "0.0.14.dev9"
 description = "Boba Studio: процесс над сервисами — REST и socket.io под {prefix}/api и страница workflow под {prefix}/workflow."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "fastapi>=0.115,<1",
-    "starlette>=0.40",
-    "pydantic>=2.10,<3",
-    "pyjwt>=2.8",
-    "python-socketio>=5.11,<6",
-    "httpx>=0.28,<1",
-    "websockets>=13",
-    "uvicorn>=0.30",
+    "boba-cancellation==0.0.14.dev9",
+    "boba-canvas==0.0.14.dev9",
+    "boba-connection-broker==0.0.14.dev9",
+    "boba-connections==0.0.14.dev9",
+    "boba-krb==0.0.14.dev9",
+    "boba-messaging==0.0.14.dev9",
     "boba-identity==0.0.14.dev9",
     "boba-chat==0.0.14.dev9",
     "boba-toolkit==0.0.14.dev9",
@@ -24,6 +22,14 @@ dependencies = [
     "boba-workflow-engine==0.0.14.dev9",
     "boba-runtime==0.0.14.dev9",
     "boba-sandbox==0.0.14.dev9",
+    "fastapi>=0.115,<1",
+    "starlette>=0.40",
+    "pydantic>=2.10,<3",
+    "pyjwt>=2.8",
+    "python-socketio>=5.11,<6",
+    "httpx>=0.28,<1",
+    "websockets>=13",
+    "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]
@@ -35,6 +41,18 @@ tools = [
     "boba-tool-postgres==0.0.14.dev9",
     "boba-tool-clickhouse==0.0.14.dev9",
     "boba-tool-knowledge==0.0.14.dev9",
+]
+dev = [
+    "boba-access==0.0.14.dev9",
+    "boba-db-postgres==0.0.14.dev9",
+    "boba-config==0.0.14.dev9",
+    "boba-stand==0.0.14.dev9",
+    "boba-transport-http==0.0.14.dev9",
+    "krb5>=0.7",
+    "langchain-core>=1.4,<1.5",
+    "playwright>=1.47",
+    "psycopg[binary,pool]>=3.2",
+    "pytest>=8",
 ]
 
 [tool.setuptools.packages.find]

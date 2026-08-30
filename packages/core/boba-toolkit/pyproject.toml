@@ -8,16 +8,15 @@ version = "0.0.14.dev9"
 description = "Основание инструментов: песочница bwrap, workspace-образы, отмена хода и контракт результата."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "pydantic-core>=2.27",
     "pydantic>=2.10,<2.11",
     "annotated-types>=0.7",
 ]
 
-# ветка --config в entry.py: сборка injected-конфигов из toml приложения;
-# в песочницу extra не ставится — omegaconf туда нельзя
 [project.optional-dependencies]
-config = [
-    "boba-settings==0.0.14.dev9",
-    "boba-krb==0.0.14.dev9",
+dev = [
+    "boba-stand==0.0.14.dev9",
+    "pytest>=8",
 ]
 
 [tool.setuptools.packages.find]

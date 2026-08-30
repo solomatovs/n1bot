@@ -11,13 +11,12 @@ from typing import ClassVar
 
 import httpx
 from psycopg import sql
-from pydantic import BaseModel, ConfigDict
 
 from boba.connection_broker.tickets import DelegationSource, TicketArming
 from boba.connections.clickhouse import ClickHouseConfig
 from boba.connections.http import HttpProfile
 from boba.connections.postgres import PostgresConfig
-from boba.connections.profile import ConnectionProfile
+from boba.connections.profile import ConnectionProfile, ProbeResult
 from boba.db.clickhouse.errors import ClickHouseError
 from boba.db.clickhouse.payload import PayloadClickHouse
 from boba.db.postgres.async_pool import PostgresError
@@ -31,16 +30,6 @@ from boba.transport.http import HttpRequest, HttpTransport
 __all__ = ["ConnectionProbe", "ProbeResult"]
 
 logger = logging.getLogger(__name__)
-
-
-class ProbeResult(BaseModel):
-    """Исход проверки: удалось ли открыть соединение, что ответил сервер, за сколько."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    ok: bool
-    message: str
-    elapsed_ms: int
 
 
 class ConnectionProbe:

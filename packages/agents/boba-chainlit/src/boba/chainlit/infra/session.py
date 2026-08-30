@@ -33,9 +33,7 @@ from boba.identity.context import (
     Subject,
 )
 from boba.identity.errors import InternalServiceError
-from boba.identity.session import (
-    Session,
-)
+from boba.identity.session import Session, SessionSource
 from chainlit.auth.jwt import decode_jwt
 from chainlit.config import config as chainlit_config
 from chainlit.context import ChainlitContextException
@@ -297,7 +295,7 @@ class ChainlitSession(Session):
         return AuthenticatedUser.roles_in(cls.metadata_of(user))
 
 
-class ChainlitSessions:
+class ChainlitSessions(SessionSource):
     """Источник сессий chainlit: контекст вызова, реестр сокетов и тред."""
 
     _installed: ClassVar[ChainlitSessions | None] = None

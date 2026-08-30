@@ -8,10 +8,7 @@ version = "0.0.14.dev9"
 description = "Boba runtime: контейнер зависимостей app/session/call и загрузчик tool-плагинов из конфига."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "pydantic>=2.10,<3",
-    "psycopg[binary,pool]>=3.2,<4",
-    "omegaconf>=2.3,<3",
-    "langchain-core>=1.4,<1.5",
+    "boba-cancellation==0.0.14.dev9",
     "boba-access==0.0.14.dev9",
     "boba-canvas==0.0.14.dev9",
     "boba-messaging==0.0.14.dev9",
@@ -21,11 +18,10 @@ dependencies = [
     "boba-connection-broker==0.0.14.dev9",
     "boba-identity==0.0.14.dev9",
     "boba-sandbox==0.0.14.dev9",
-    "boba-settings==0.0.14.dev9",
+    "boba-config==0.0.14.dev9",
     "boba-toolkit==0.0.14.dev9",
     "boba-toolrun==0.0.14.dev9",
     "boba-workflow-engine==0.0.14.dev9",
-    "boba-workflow==0.0.14.dev9",
     "boba-tool-knowledge==0.0.14.dev9",
     "boba-tool-clickhouse==0.0.14.dev9",
     "boba-tool-postgres==0.0.14.dev9",
@@ -35,8 +31,18 @@ dependencies = [
     "boba-tool-shell==0.0.14.dev9",
     "boba-krb[seal]==0.0.14.dev9",
     "boba-db-pgvector==0.0.14.dev9",
+    "pydantic>=2.10,<3",
+    "psycopg[binary,pool]>=3.2,<4",
+    "omegaconf>=2.3,<3",
+    "langchain-core>=1.4,<1.5",
     "starlette>=0.40",
     "ldap3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "boba-stand==0.0.14.dev9",
+    "pytest>=8",
 ]
 
 [tool.setuptools.packages.find]

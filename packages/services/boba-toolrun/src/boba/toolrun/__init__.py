@@ -10,7 +10,6 @@ from boba.toolrun.cancellation import CancellableTools
 from boba.toolrun.errors import ToolErrorGuard
 from boba.toolrun.intent import ToolIntentField
 from boba.toolrun.run_log import (
-    CallStream,
     StreamSource,
     ToolRunLogger,
 )
@@ -24,7 +23,6 @@ from boba.toolrun.wrapping import (
 __all__ = [
     "AsyncCall",
     "CallHooks",
-    "CallStream",
     "CancellableTools",
     "StreamSource",
     "SyncCall",

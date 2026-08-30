@@ -6,7 +6,7 @@ user_env = []
 session_timeout = 86400
 
 # Duration (in seconds) of the user session expiry
-user_session_timeout = 86400 # 15 days
+user_session_timeout = 86400
 
 # Enable third parties caching (e.g., LangChain cache)
 cache = false

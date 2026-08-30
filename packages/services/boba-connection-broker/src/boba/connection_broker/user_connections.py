@@ -23,18 +23,14 @@ InjectedAsyncOnlyError — тело инструмента вызвано син
 from __future__ import annotations
 
 import logging
-from abc import abstractmethod
 from collections.abc import Callable, Mapping, Sequence
 from enum import StrEnum
-from typing import ClassVar, Protocol
+from typing import ClassVar
 
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel
 
-from boba.connection_broker.store import (
-    ConnectionProfile,
-    ConnectionStore,
-)
+from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tickets import TicketArming
 from boba.connections.http import HostPattern, HttpProfile
 from boba.connections.kerberos import DelegatedAuth, TicketAuth
@@ -44,6 +40,7 @@ from boba.connections.marks import (
     ConnectionTrace,
     UserConnectionsSpec,
 )
+from boba.connections.profile import ConnectionProfile
 from boba.connections.web import WebConnection
 from boba.connections.whitelist import (
     AmbiguousConnectionError,
@@ -51,6 +48,7 @@ from boba.connections.whitelist import (
 )
 from boba.identity.context import CallContext, Credential, DelegatedTicket
 from boba.identity.errors import RefusalError
+from boba.identity.sso import RefreshSignal
 from boba.krb import (
     KerberosCredentials,
     SignInTicket,
@@ -67,7 +65,6 @@ from boba.toolrun.injected import (
 __all__ = [
     "ClientLabel",
     "ConnectionRefusal",
-    "RefreshSignal",
     "StoreRef",
     "TicketsRef",
     "UserConnections",
@@ -88,14 +85,6 @@ class WebArg(StrEnum):
     """Tool-arg'и web-инструментов, которые читает обвязка."""
 
     URL = "url"
-
-
-class RefreshSignal(Protocol):
-    """Просьба к фронту молча пройти SPNEGO ещё раз; реализация — у приложения."""
-
-    @abstractmethod
-    async def send(self) -> bool:
-        """True — сигнал ушёл живому слушателю; False — слушать некому."""
 
 
 class UserKerberos:

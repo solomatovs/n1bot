@@ -6,7 +6,7 @@ from pathlib import Path
 
 from omegaconf import OmegaConf
 
-from boba.settings import ConfigBuilder
+from boba.config import ConfigBuilder
 
 
 def test_yaml_layer(tmp_path: Path) -> None:

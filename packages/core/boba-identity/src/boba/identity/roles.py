@@ -21,6 +21,8 @@ __all__ = [
     "RoleMappingConfig",
     "SAMAccountNameExcludeUserProvider",
     "SAMAccountNameUserRolesProvider",
+    "SidExcludeUserProvider",
+    "SidUserRolesProvider",
 ]
 
 
@@ -146,3 +148,25 @@ class LdapRolesConfig(BaseModel):
         default=None,
         description="DN пользователей, которым запрещён вход (403).",
     )
+
+
+class SidUserRolesProvider:
+    """Мапер SID группы - список ролей"""
+
+    def __init__(self, mapping: RoleMappingConfig):
+        self._mapping = mapping
+
+    def roles_of(self, sids: list[str]) -> Iterable[str]:
+        for s in sids:
+            yield from self._mapping.roles_of(s)
+
+
+class SidExcludeUserProvider:
+    """Список SID групп, членам которых запрещён вход"""
+
+    def __init__(self, mapping: RoleExcludeConfig):
+        self._mapping = mapping
+
+    def exclude_of(self, sids: list[str]) -> Iterable[bool]:
+        for s in sids:
+            yield from self._mapping.exclude_of(s)

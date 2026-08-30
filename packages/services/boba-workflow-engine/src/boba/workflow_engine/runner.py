@@ -24,15 +24,10 @@ from langchain_core.messages import ToolCall
 
 from boba.identity.context import CallContext
 from boba.identity.run import RunRegistry
-from boba.toolkit.calls import ToolIntent
-from boba.toolkit.failure import FailureText
+from boba.toolkit.calls import CallIdPrefix, ToolIntent
+from boba.toolkit.failure import FailureText, InvokeErrorKind
 from boba.toolkit.result import ErrorResult, ToolResult
-from boba.toolrun.invoke import (
-    CallIdPrefix,
-    InvokeErrorKind,
-    InvokeReply,
-    ToolInvoker,
-)
+from boba.toolrun.invoke import InvokeReply, ToolInvoker
 from boba.toolrun.streams import StreamPumps
 from boba.workflow import (
     RunState,
@@ -42,41 +37,33 @@ from boba.workflow import (
     WorkflowPlan,
 )
 from boba.workflow.ports import RunSink
+from boba.workflow.records import TaskOutcome, WorkflowRunError
 
-__all__ = ["RunSink", "TaskOutcome", "WorkflowRunError", "WorkflowRunner"]
+__all__ = ["WorkflowRunner"]
 
 logger = logging.getLogger(__name__)
 
 
-class WorkflowRunError(Exception):
-    """Раннер не может продолжать: контракт инструментов или автомата нарушен."""
-
-
-class TaskOutcome:
-    """Итог задачи: статус для автомата и результат для рёбер и отчёта."""
-
-    def __init__(self, status: TaskStatus, result: ToolResult, error: str) -> None:
-        self.status = status
-        self.result = result
-        self.error = error
+class ReplyOutcome:
+    """Сборка TaskOutcome из ответа исполнителя инструментов."""
 
     @classmethod
     def of_reply(cls, reply: InvokeReply) -> TaskOutcome:
         if reply.ok:
-            return cls(TaskStatus.DONE, reply.result, "")
+            return TaskOutcome(TaskStatus.DONE, reply.result, "")
 
-        return cls(TaskStatus.FAILED, reply.result, reply.error_text)
+        return TaskOutcome(TaskStatus.FAILED, reply.result, reply.error_text)
 
     @classmethod
     def of_failure(cls, error: Exception) -> TaskOutcome:
         text = FailureText.of(error)
         result = ErrorResult(message=text, error_kind=InvokeErrorKind.CRASHED)
-        return cls(TaskStatus.FAILED, result, text)
+        return TaskOutcome(TaskStatus.FAILED, result, text)
 
     @classmethod
     def stopped(cls) -> TaskOutcome:
         result = ErrorResult(message="stopped", error_kind=InvokeErrorKind.STOPPED)
-        return cls(TaskStatus.STOPPED, result, "stopped")
+        return TaskOutcome(TaskStatus.STOPPED, result, "stopped")
 
 
 class WorkflowRunner:
@@ -237,16 +224,16 @@ class _RunSession:
     @staticmethod
     def _outcome_of(task: asyncio.Task[InvokeReply]) -> TaskOutcome:
         if task.cancelled():
-            return TaskOutcome.stopped()
+            return ReplyOutcome.stopped()
 
         error = task.exception()
         if error is None:
-            return TaskOutcome.of_reply(task.result())
+            return ReplyOutcome.of_reply(task.result())
 
         if not isinstance(error, Exception):
             raise error
 
-        return TaskOutcome.of_failure(error)
+        return ReplyOutcome.of_failure(error)
 
     def _args_of(self, name: str) -> dict[str, Any]:
         """Аргументы задачи: спека плюс тексты результатов по привязкам графа."""

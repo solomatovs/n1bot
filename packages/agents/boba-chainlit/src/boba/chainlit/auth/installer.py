@@ -4,17 +4,31 @@ from boba.chainlit.auth.composite import PasswordCallback
 from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.runtime.auth_config import AuthConfig, KerberosAuthConfig
 from boba.runtime.signin import PasswordSignIns
+from chainlit.config import config as chainlit_config
+
+
+class ChainlitSessionTtl:
+    """Срок JWT и cookie chainlit — [session].session_ttl_sec, а не toml chainlit."""
+
+    @staticmethod
+    def apply(ttl_sec: int) -> None:
+        chainlit_config.project.user_session_timeout = ttl_sec
 
 
 class ChainlitAuthInstaller:
     """Единая точка подключения авторизации; стратегия выбирается конфигом."""
 
-    def __init__(self, url_prefix: str, configs: list[AuthConfig]) -> None:
+    def __init__(
+        self, url_prefix: str, configs: list[AuthConfig], session_ttl_sec: int
+    ) -> None:
         self._url_prefix = url_prefix
         self._configs = configs
+        self._session_ttl_sec = session_ttl_sec
 
     def install(self, chainlit_app: FastAPI) -> KerberosAuth | None:
         "Ставит способы авторизации; KerberosAuth нужен ради delegation в tools"
+        ChainlitSessionTtl.apply(self._session_ttl_sec)
+
         kerberos: KerberosAuth | None = None
 
         for auth in self._configs:

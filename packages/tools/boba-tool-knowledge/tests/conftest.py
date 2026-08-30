@@ -19,7 +19,7 @@ def raw_config():
     config_path = os.environ.get("BOBA_CONFIG_PATH")
     if not config_path:
         pytest.skip("BOBA_CONFIG_PATH не задан")
-    from boba.settings import build_app_config
+    from boba.config import build_app_config
 
     return build_app_config(config_path=Path(config_path))
 

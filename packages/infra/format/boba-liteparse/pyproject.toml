@@ -9,8 +9,13 @@ description = "Boba liteparse: движок парсинга документо�
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-text==0.0.14.dev9",
-    "pydantic>=2.10,<2.11",
     "liteparse>=2,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "boba-indexing==0.0.14.dev9",
+    "pytest>=8",
 ]
 
 [tool.setuptools.packages.find]

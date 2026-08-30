@@ -9,14 +9,17 @@ description = "Boba ClickHouse: ClickHouseConfig + подключение payloa
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-connections==0.0.14.dev9",
-    "boba-toolkit==0.0.14.dev9",
     "boba-krb==0.0.14.dev9",
-    "pydantic>=2.10,<2.11",
 ]
 
 [project.optional-dependencies]
 payload = [
     "clickhouse-connect[async]>=1.6,<2",
+]
+dev = [
+    "boba-stand==0.0.14.dev9",
+    "pydantic>=2.10,<2.11",
+    "pytest>=8",
 ]
 
 [tool.setuptools.packages.find]

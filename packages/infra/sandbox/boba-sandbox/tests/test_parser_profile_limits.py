@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 
 from boba.sandbox import SandboxProfile, SandboxToolConfig
-from boba.settings import bind
+from boba.config import bind
 
 MIN_ADDRESS_SPACE = 3 * 1024 * 1024 * 1024
 MIN_OPEN_FILES = 64

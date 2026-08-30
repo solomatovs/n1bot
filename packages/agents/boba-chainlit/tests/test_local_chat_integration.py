@@ -31,7 +31,7 @@ from boba.chainlit.infra.config import AppConfig
 from boba.chat.provider import ChatSampling, LocalChatConfig
 from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
 from boba.llm.local import OnnxChatRuntime
-from boba.settings import bind, build_app_config
+from boba.config import bind, build_app_config
 from boba.toolkit.calls import ToolIntent
 from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.intent import ToolIntentField

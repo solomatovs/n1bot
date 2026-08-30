@@ -2,8 +2,8 @@
 
 Одна и та же команда `python -m <модуль> <имя> --флаги` исполняется под
 launcher'ом приложения и человеком в терминале; разница только в источнике
-Injected-конфига (stdin, файл --injected либо toml --config) и приёмнике
-результата (конверт в fd из env против stdout).
+Injected-конфига (stdin либо файл --injected) и приёмнике результата (конверт
+в fd из env против stdout).
 
 Ошибки:
 ArgumentTooLargeError — значение аргумента не помещается в argv (MAX_ARG_STRLEN).
@@ -41,14 +41,13 @@ from boba.toolkit.channels import ToolChannel
 from boba.toolkit.failure import ValidationText
 from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.protocol import ReplyError, ReplyOk, ToolCommand
-from boba.toolkit.timing import Elapsed, ProcessAge
+from boba.toolkit.timing import Elapsed
 
 __all__ = [
     "ArgumentTooLargeError",
     "EntryErrorKind",
     "EntryFlag",
     "ExpectedErrors",
-    "HostConfig",
     "ToolAddress",
     "ToolArgv",
     "ToolEntryError",
@@ -88,7 +87,6 @@ class ToolEntryError(Exception):
 class EntryFlag(StrEnum):
     """Флаги CLI модуля инструментов, не относящиеся к параметрам тела."""
 
-    CONFIG = "--config"
     INJECTED = "--injected"
     ARTIFACT = "--artifact"
     HELP = "--help"
@@ -388,51 +386,13 @@ class ToolArgv:
         return kwargs
 
 
-class HostConfig:
-    """Toml приложения при запуске тела на хосте: каталог kerberos и injected-секции.
-
-    boba.settings и boba.krb импортируются лениво: под launcher'ом эта
-    ветка не исполняется, а тянуть их в песочницу нельзя.
-    """
-
-    KERBEROS_SECTION: ClassVar[str] = "krb"
-
-    def __init__(self, path: str) -> None:
-        from boba.settings import build_app_config  # noqa: PLC0415
-
-        self._raw = build_app_config(config_path=Path(path))
-
-    def enter_kerberos(self) -> None:
-        """Рабочий каталог kerberos из [krb]; без секции keytab-профили телу закрыты."""
-        if self.KERBEROS_SECTION not in self._raw:
-            return
-
-        from boba.krb import KerberosWorkspaceConfig  # noqa: PLC0415
-        from boba.settings import bind  # noqa: PLC0415
-
-        bind(self._raw, self.KERBEROS_SECTION, KerberosWorkspaceConfig).apply()
-
-    def injected(self, fields: Mapping[str, Any]) -> bytes:
-        """Injected-модели из секций toml; каждая знает свою секцию SECTION."""
-        from boba.settings import bind  # noqa: PLC0415
-
-        payload: dict[str, Any] = {}
-        for name, annotation in fields.items():
-            section = ToolArgv.section_of(name, annotation)
-            model = bind(self._raw, section, annotation)
-            payload[name] = ToolArgv.reveal(annotation, model)
-
-        return json.dumps(payload, ensure_ascii=False).encode("utf-8")
-
-
 class ToolMain:
     """CLI модуля инструментов: argv -> тело -> конверт либо вывод человеку.
 
     Конверт пишется в fd из env-переменной канала tool_result, когда она
     есть, — так зовёт launcher; без неё content печатается в stdout — так
-    зовёт человек. Injected-конфиг приезжает JSON'ом со stdin, файлом
-    --injected либо собирается из toml по --config; toml даёт и рабочий
-    каталог kerberos для тела на хосте.
+    зовёт человек. Injected-конфиг приезжает JSON'ом со stdin либо файлом
+    --injected; сборка его из toml приложения — дело CLI над модулем.
     """
 
     class Exit(IntEnum):
@@ -499,12 +459,6 @@ class ToolMain:
 
         cls._setup_logging()
 
-        # возраст процесса = вложенный bwrap + python + импорты модуля тела
-        logger.info(
-            "payload up %dms after exec (bwrap + python + imports)",
-            ProcessAge.ms(),
-        )
-
         try:
             return cls._run(tools, arguments)
         except ToolEntryError as exc:
@@ -546,16 +500,10 @@ class ToolMain:
         if want_artifact:
             arguments.remove(EntryFlag.ARTIFACT)
 
-        config_path = cls._pop_path(arguments, EntryFlag.CONFIG)
         injected_path = cls._pop_path(arguments, EntryFlag.INJECTED)
 
-        host: HostConfig | None = None
-        if config_path is not None:
-            host = HostConfig(config_path)
-            host.enter_kerberos()
-
         config_read = Elapsed()
-        stdin = cls._config_source(tool, host, injected_path)
+        stdin = cls._config_source(tool, injected_path)
         kwargs = ToolArgv.parse(tool, arguments, stdin)
         logger.info(
             "tool[%s]: args ready in %dms (config %d bytes)",
@@ -591,10 +539,8 @@ class ToolMain:
         return arguments.pop(index)
 
     @classmethod
-    def _config_source(
-        cls, tool: ToolLike, host: HostConfig | None, injected_path: str | None
-    ) -> bytes:
-        """Injected-конфиг: файл --injected, toml --config либо JSON со stdin."""
+    def _config_source(cls, tool: ToolLike, injected_path: str | None) -> bytes:
+        """Injected-конфиг: файл --injected либо JSON со stdin."""
         schema = ToolArgv.schema_of(tool)
         injected = ToolArgv.injected_fields(schema)
         if not injected:
@@ -603,14 +549,11 @@ class ToolMain:
         if injected_path is not None:
             return cls._config_from_file(injected_path)
 
-        if host is not None:
-            return host.injected(injected)
-
         data = sys.stdin.buffer.read()
         if not data:
             msg = (
                 "injected config expected on stdin "
-                f"(or pass {EntryFlag.INJECTED} <json> / {EntryFlag.CONFIG} <toml>)"
+                f"(or pass {EntryFlag.INJECTED} <json>)"
             )
             raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
 
@@ -736,9 +679,6 @@ class ToolMain:
 
             description = field.description or ""
             lines.append(f"  {ToolArgv.flag_of(name)} {description}".rstrip())
-
-        config_help = "application toml with injected config sections"
-        lines.append(f"  {EntryFlag.CONFIG} PATH  {config_help}")
 
         injected_help = "injected config as JSON, what the launcher sends on stdin"
         lines.append(f"  {EntryFlag.INJECTED} PATH  {injected_help}")

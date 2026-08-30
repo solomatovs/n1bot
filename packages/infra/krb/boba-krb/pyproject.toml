@@ -17,6 +17,11 @@ dependencies = [
 
 [project.optional-dependencies]
 seal = ["cryptography>=42"]
+dev = [
+    "boba-stand==0.0.14.dev9",
+    "ldap3",
+    "pytest>=8",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -13,41 +13,30 @@ from __future__ import annotations
 
 import logging
 import time
-from abc import abstractmethod
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import ClassVar, Protocol, TypeAlias
+from typing import ClassVar, TypeAlias
 
 from langchain_core.tools import BaseTool
 
+from boba.canvas.journal import CallStream
 from boba.toolkit.calls import ToolIntent
-from boba.toolkit.channels import CallOutcome, JournalChannel
+from boba.toolkit.channels import CallOutcome
 from boba.toolkit.failure import FailureText
 from boba.toolkit.result import ToolResultBase
-from boba.toolkit.stream import StreamSink, ToolChannelsTap
+from boba.toolkit.stream import ToolChannelsTap
 from boba.toolkit.timing import Elapsed
 from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.wrapping import CallHooks, ToolBody
 
 __all__ = [
     "CallScopeSource",
-    "CallStream",
     "NoCallScope",
     "StreamSource",
     "ToolRunLogger",
 ]
 
 logger = logging.getLogger(__name__)
-
-
-class CallStream(Protocol):
-    """Журнал живого вывода одного вызова: приёмники каналов и закрытие."""
-
-    @abstractmethod
-    def sink_of(self, channel: JournalChannel) -> StreamSink: ...
-
-    @abstractmethod
-    def close(self, note: str) -> None: ...
 
 
 StreamSource: TypeAlias = Callable[[str, str], "CallStream | None"]

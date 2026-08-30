@@ -10,7 +10,7 @@ from typing import ClassVar
 
 import pytest
 
-from boba.settings import bind
+from boba.config import bind
 from boba.tool.doc.tools import (
     DocToolSection,
     document_outline,

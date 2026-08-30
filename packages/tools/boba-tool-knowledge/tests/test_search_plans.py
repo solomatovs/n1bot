@@ -20,7 +20,7 @@ from psycopg.rows import dict_row
 from boba.db.pgvector.migrations import Migrations
 from boba.db.pgvector.store import PostgresStoreSchema
 from boba.db.postgres import AsyncPostgresPool
-from boba.settings import bind
+from boba.config import bind
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
 from boba.tool.kb.search import KbSearch
 

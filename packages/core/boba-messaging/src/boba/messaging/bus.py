@@ -15,7 +15,7 @@ import logging
 from abc import abstractmethod
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime
-from enum import IntEnum
+from enum import IntEnum, StrEnum
 from typing import Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -26,16 +26,20 @@ from boba.messaging.messages import AnyCommand, AnyMessage, Message, StreamAppen
 
 __all__ = [
     "BusLimit",
+    "BusWatch",
     "CommandEnvelope",
     "CommandListener",
     "Envelope",
     "Listener",
     "ListenerFailedError",
+    "ListenerState",
     "LockLostError",
     "LockToken",
     "MessageBus",
     "MessageBusError",
     "MessageTooLargeError",
+    "StateListener",
+    "StaticBusWatch",
     "StreamFeed",
     "Unsubscribe",
 ]
@@ -116,6 +120,48 @@ class CommandEnvelope(BaseModel):
 Listener = Callable[[Envelope], Awaitable[None]]
 CommandListener = Callable[[CommandEnvelope], Awaitable[None]]
 Unsubscribe = Callable[[], None]
+
+
+class ListenerState(StrEnum):
+    """Состояние слушателя процесса; страница показывает его лампочкой рядом с
+    сокетом.
+    """
+
+    STOPPED = "stopped"
+    CONNECTING = "connecting"
+    LISTENING = "listening"
+    FAILED = "failed"
+
+
+StateListener = Callable[[ListenerState], None]
+
+
+class BusWatch(Protocol):
+    """Порт наблюдения за слушателем шины: текущее состояние и подписка на его смену."""
+
+    @property
+    @abstractmethod
+    def state(self) -> ListenerState: ...
+
+    @abstractmethod
+    def watch(self, listener: StateListener) -> Unsubscribe: ...
+
+
+class StaticBusWatch(BusWatch):
+    """Наблюдатель с постоянным состоянием для стендов и тестов без Postgres."""
+
+    def __init__(self, state: ListenerState) -> None:
+        self._state = state
+
+    @property
+    def state(self) -> ListenerState:
+        return self._state
+
+    def watch(self, listener: StateListener) -> Unsubscribe:
+        def leave() -> None:
+            return None
+
+        return leave
 
 
 class StreamFeed(Protocol):

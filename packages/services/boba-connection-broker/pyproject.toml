@@ -8,18 +8,24 @@ version = "0.0.14.dev9"
 description = "Boba connection broker: хранилище соединений и грантов на postgres, соединения субъекта на вызов, билеты kerberos для тел инструментов."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "pydantic>=2.10,<3",
-    "langchain-core>=1.4,<1.5",
-    "psycopg[binary,pool]>=3.2,<4",
     "boba-toolkit==0.0.14.dev9",
     "boba-identity==0.0.14.dev9",
     "boba-connections==0.0.14.dev9",
     "boba-toolrun==0.0.14.dev9",
     "boba-krb==0.0.14.dev9",
     "boba-db-postgres==0.0.14.dev9",
-    "httpx>=0.28,<1",
     "boba-transport-http==0.0.14.dev9",
     "boba-db-clickhouse==0.0.14.dev9",
+    "httpx>=0.28,<1",
+    "pydantic>=2.10,<3",
+    "langchain-core>=1.4,<1.5",
+    "psycopg[binary,pool]>=3.2,<4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "boba-stand==0.0.14.dev9",
+    "pytest>=8",
 ]
 
 [tool.setuptools.packages.find]

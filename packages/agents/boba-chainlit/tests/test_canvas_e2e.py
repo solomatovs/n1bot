@@ -121,7 +121,7 @@ async def _wait_for_server() -> None:
 
 def _app_config() -> Any:
     from boba.chainlit.infra.config import AppConfig
-    from boba.settings import bind, build_app_config
+    from boba.config import bind, build_app_config
 
     raw = build_app_config(config_path=Path(os.environ["BOBA_CONFIG_PATH"]))
     return bind(raw, path="app", model=AppConfig)

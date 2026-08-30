@@ -19,7 +19,7 @@ from boba.identity.api import (
 from boba.identity.locks import MemoryLiveLocks
 from boba.identity.signin import SignedIn
 from boba.messaging import MemoryMessageBus
-from boba.runtime.bus import ListenerState, StaticBusWatch
+from boba.messaging.bus import ListenerState, StaticBusWatch
 from boba.runtime.refs import RuntimeRefs
 from boba.runtime.users import UsersTable
 from boba.studio.api.app import ApiAccess, ApiApp

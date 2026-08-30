@@ -13,7 +13,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
@@ -21,7 +20,6 @@ from pydantic import BaseModel, ConfigDict
 
 from boba.cancellation import StopReason
 from boba.identity.context import CallContext, Scope, Subject
-from boba.identity.errors import RefusalError
 from boba.identity.locks import (
     LiveLock,
     LiveLocks,
@@ -44,7 +42,6 @@ from boba.messaging import (
     WorkflowChanged,
     WorkflowDraftChanged,
 )
-from boba.toolkit.result import ToolResult
 from boba.toolrun.invoke import ToolInvoker
 from boba.toolrun.registry import ToolRegistry
 from boba.workflow import (
@@ -59,10 +56,14 @@ from boba.workflow.events import RunSnapshot
 from boba.workflow.ports import RunSink
 from boba.workflow.records import (
     DraftKey,
+    RunOutcome,
+    StopOutcome,
     StoredRun,
     StoredWorkflow,
     WorkflowDraft,
+    WorkflowError,
     WorkflowNotFoundError,
+    WorkflowRefusal,
 )
 from boba.workflow_engine.catalog import CatalogBuilder
 from boba.workflow_engine.runner import WorkflowRunner
@@ -80,39 +81,6 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 RegistrySource = Callable[[], Awaitable["ToolRegistry"]]
-
-
-class WorkflowRefusal(StrEnum):
-    """Виды отказов сервиса workflow: негодная спека, запрещённые инструменты, не
-    найдено.
-    """
-
-    BAD_SPEC = "bad_workflow_spec"
-    NOT_FOUND = "workflow_not_found"
-
-
-class WorkflowError(RefusalError):
-    """Workflow отклонён; текст причины готов для показа модели и странице."""
-
-
-class StopOutcome(StrEnum):
-    """Итог просьбы остановить запуск: остановлен здесь, принят для другого инстанса
-    или уже завершён.
-    """
-
-    STOPPED = "stopped"
-    ACCEPTED = "accepted"
-    FINISHED = "finished"
-
-
-class RunOutcome(BaseModel):
-    """Итог запуска: запись хранилища, состояние и результаты задач по именам."""
-
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
-
-    run: StoredRun
-    state: RunState
-    results: Mapping[str, ToolResult]
 
 
 class StartedRun(BaseModel):

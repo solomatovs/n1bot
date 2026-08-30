@@ -24,7 +24,7 @@ from boba.connections.profile import GrantTarget
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.session import UserMetadataField
 from boba.runtime.config import DataLayerConfig
-from boba.settings import bind, build_app_config
+from boba.config import bind, build_app_config
 from boba.stand.ui.stand import REPO_ROOT, StandApp, StandConfig, StandError, StandUrl
 from boba.workflow_engine.store import WorkflowConfig, WorkflowStore
 

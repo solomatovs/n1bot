@@ -106,14 +106,6 @@ class ChainlitExtendConfig(BaseModel):
         ),
     )
 
-    auth_secret: str | None = Field(
-        default=None,
-        description=(
-            "Секрет подписи JWT; chainlit читает его только из env "
-            "(CHAINLIT_AUTH_SECRET), бутстрап прокидывает значение туда."
-        ),
-    )
-
     ws_ping_interval: float = Field(
         default=20,
         ge=0,

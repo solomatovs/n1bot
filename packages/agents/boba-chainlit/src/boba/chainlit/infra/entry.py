@@ -1,15 +1,26 @@
 """Точка входа: env chainlit выставляется до первого импорта его модулей."""
 
 import os
+from enum import StrEnum
 from pathlib import Path
 from typing import ClassVar
 
 from omegaconf import OmegaConf
 
 from boba.chainlit.domain.keys import AppPrefix
-from boba.settings import build_app_config
+from boba.config import bind, build_app_config
+from boba.runtime.config import SessionConfig
 
-__all__ = ["AppEntry"]
+__all__ = ["AppEntry", "ChainlitEnv"]
+
+
+class ChainlitEnv(StrEnum):
+    """Переменные окружения, которые chainlit читает на импорте своих модулей."""
+
+    APP_ROOT = "CHAINLIT_APP_ROOT"
+    AUTH_SECRET = "CHAINLIT_AUTH_SECRET"  # noqa: S105 — имя переменной, не секрет
+    COOKIE_NAME = "CHAINLIT_AUTH_COOKIE_NAME"
+    COOKIE_SAMESITE = "CHAINLIT_COOKIE_SAMESITE"
 
 
 class AppEntry:
@@ -23,9 +34,7 @@ class AppEntry:
 
     SECTION: ClassVar[str] = "app.chainlit"
 
-    APP_ROOT_ENV: ClassVar[str] = "CHAINLIT_APP_ROOT"
-
-    AUTH_ENV: ClassVar[str] = "CHAINLIT_AUTH_SECRET"
+    SESSION_SECTION: ClassVar[str] = "session"
 
     @classmethod
     def run(cls) -> None:
@@ -52,7 +61,7 @@ class AppEntry:
 
     @classmethod
     def export_env(cls, config_path: Path) -> None:
-        """Секция [chainlit] -> переменные окружения, которые читает chainlit."""
+        """Секции [chainlit] и [session] -> переменные окружения chainlit."""
         raw = build_app_config(config_path=config_path)
         section = OmegaConf.select(raw, cls.SECTION)
         if section is None:
@@ -64,10 +73,12 @@ class AppEntry:
             msg = f"{cls.SECTION}.root не задан: chainlit уедет в текущий каталог"
             raise ValueError(msg)
 
+        session = bind(raw, cls.SESSION_SECTION, SessionConfig)
+
         # chainlit складывает пути от APP_ROOT сам, относительный сбился бы на chdir
-        os.environ[cls.APP_ROOT_ENV] = str(Path(root).resolve())
+        os.environ[ChainlitEnv.APP_ROOT] = str(Path(root).resolve())
         os.environ[AppPrefix.ENV] = section.get("url_prefix") or ""
 
-        auth_secret = section.get("auth_secret")
-        if auth_secret:
-            os.environ[cls.AUTH_ENV] = auth_secret
+        os.environ[ChainlitEnv.AUTH_SECRET] = session.auth_secret
+        os.environ[ChainlitEnv.COOKIE_NAME] = session.cookie
+        os.environ[ChainlitEnv.COOKIE_SAMESITE] = session.cookie_samesite

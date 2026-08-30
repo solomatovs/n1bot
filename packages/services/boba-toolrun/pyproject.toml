@@ -8,14 +8,20 @@ version = "0.0.14.dev9"
 description = "Boba toolrun: конвейер обёрток вызова инструмента (права, отмена, журнал, поток, ошибки), исполнитель вызова и реестр инструментов."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "pydantic>=2.10,<3",
-    "langchain-core>=1.4,<1.5",
     "boba-toolkit==0.0.14.dev9",
     "boba-access==0.0.14.dev9",
     "boba-cancellation==0.0.14.dev9",
     "boba-identity==0.0.14.dev9",
     "boba-canvas==0.0.14.dev9",
     "boba-messaging==0.0.14.dev9",
+    "pydantic>=2.10,<3",
+    "langchain-core>=1.4,<1.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "boba-sandbox==0.0.14.dev9",
+    "pytest>=8",
 ]
 
 [tool.setuptools.packages.find]

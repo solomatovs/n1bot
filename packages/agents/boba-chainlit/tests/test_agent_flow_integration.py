@@ -51,7 +51,7 @@ from boba.connection_broker.store import ConnectionStore
 from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
 from boba.llm.generation import LocalOnnxGenerator, OpenAiStructuredGenerator
 from boba.llm.local import OnnxChatRuntime
-from boba.settings import bind
+from boba.config import bind
 from boba.toolkit.result import TableResult, ToolArtifact
 
 _REPO = Path(__file__).resolve().parents[4]
