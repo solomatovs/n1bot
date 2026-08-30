@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
-from conftest import FakeUrl
+from chainlit_stand import FakeUrl
 from langchain_core.tools import tool
 
 from boba.cancellation import (
@@ -50,7 +50,7 @@ def chainlit_context() -> None:
     "механизм остановки не зависит от сессии chainlit"
 
 
-_SANDBOX = Path(__file__).resolve().parents[4] / "build" / "src" / "sandbox"
+_SANDBOX = Path(__file__).resolve().parents[4] / "build" / "chainlit" / "src" / "sandbox"
 _ROOTFS_IMAGE = _SANDBOX / "rootfs.ext4"
 _SITE_PACKAGES = "/usr/local/lib/python3.11/site-packages"
 _PACKAGES = Path(__file__).resolve().parents[3]

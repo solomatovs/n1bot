@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
-from conftest import StubRefs
+from chainlit_stand import StubRefs
 from pydantic import BaseModel
 
 from boba.chainlit.infra.plugins import ChatPlugins

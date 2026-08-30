@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from conftest import FakeUrl
+from chainlit_stand import FakeUrl
 
 from boba.canvas.keys import ObjectKey, ThreadDir, WorkspaceMount
 from boba.chainlit.domain.keys import AttachmentLinks, AttachmentUrl

@@ -17,10 +17,9 @@ from uuid import UUID
 import pytest
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
-from conftest import SsoStand, enter_context
+from chainlit_stand import SsoStand, enter_context
 from psycopg import sql
 from pydantic import SecretStr
-from stand_site import Stand
 from test_tools_integration import Call, ToolSetup
 
 from boba.chainlit.auth.kerberos import KerberosAuth
@@ -45,6 +44,7 @@ from boba.runtime.plugins import ToolBridge
 from boba.sandbox.wrap import ToolProcessWrap
 from boba.sandbox.zygote import ZygoteRegistry
 from boba.settings import bind
+from boba.stand.site import Stand
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebGrepConfig
 from boba.toolkit.entry import ToolMain
@@ -53,7 +53,7 @@ from boba.toolkit.sql import SqlErrorKind
 from boba.toolrun.injected import InjectedConfig
 
 _REPO = Path(__file__).resolve().parents[4]
-_ROOTFS_IMAGE = _REPO / "build" / "src" / "sandbox" / "rootfs.ext4"
+_ROOTFS_IMAGE = _REPO / "build" / "chainlit" / "src" / "sandbox" / "rootfs.ext4"
 _CGROUP_BASE = os.environ.get("BOBA_CGROUP_BASE", "/sys/fs/cgroup/boba")
 
 SCHEMA = "connections_e2e"

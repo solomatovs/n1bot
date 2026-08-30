@@ -15,7 +15,6 @@ from pathlib import Path
 import krb5
 import pytest
 from gssapi import Credentials, Name, NameType, RequirementFlag, SecurityContext
-from stand_site import Stand
 
 from boba.connections.kerberos import (
     AcceptConfig,
@@ -36,6 +35,7 @@ from boba.krb import (
     TicketCredentials,
 )
 from boba.krb.seal import TicketSealer
+from boba.stand.site import Stand
 
 STAND = Stand.required()
 KRB5_CONF = Path(STAND.krb_config)

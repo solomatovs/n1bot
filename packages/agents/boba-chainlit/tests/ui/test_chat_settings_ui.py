@@ -17,15 +17,15 @@ from typing import Any
 
 import httpx
 import pytest
+from chat_ui import LlmMetaReader
 from playwright.sync_api import expect
 
 from boba.chainlit.chat.panel_text import PanelText
 from boba.chainlit.chat.settings import PanelTab
 from boba.chat.profiles import UserSetting
-from ui.chat_page import ChatPage, StepKind
-from ui.conftest import LlmMetaReader
-from ui.fake_llm import ScenarioName
-from ui.stand import StandProcess, StandUrl
+from boba.stand.ui.chat_page import ChatPage, StepKind
+from boba.stand.ui.fake_llm import ScenarioName
+from boba.stand.ui.stand import StandProcess, StandUrl
 
 pytestmark = pytest.mark.ui
 

@@ -11,13 +11,13 @@ if [ -n "${PYTHONHOME:-}" ] || [ -n "${PYTHONPATH:-}" ]; then
   unset PYTHONHOME PYTHONPATH
 fi
 
-_uv="$_sec_dir/build/src/uv/uv"
+_uv="$_sec_dir/build/chainlit/src/uv/uv"
 if [ ! -x "$_uv" ]; then
   _uv=$(command -v uv)
 fi
 
 if [ -z "$_uv" ]; then
-  echo "sec: не найден uv (build/src/uv/uv или в PATH)" >&2
+  echo "sec: не найден uv (build/chainlit/src/uv/uv или в PATH)" >&2
   exit 1
 fi
 
@@ -44,18 +44,18 @@ _run_semgrep() {
   # правила скачиваются в build/src (как остальные артефакты) и в git
   # не попадают: обновляются через sec.sh rules
   SEMGREP_SEND_METRICS=off "$_uv" tool run --system-certs semgrep \
-    scan --config="$_sec_dir/build/src/semgrep" --metrics=off \
+    scan --config="$_sec_dir/sec/semgrep" --metrics=off \
     --exclude=.venv --exclude=build --exclude=release \
     --error "$_sec_dir/packages" || _rc=1
 }
 
 # охват и правила как у сканера ИБ: всё дерево, а не только packages, плюс
-# Dockerfile, Makefile, shell и jsx. Своя часть правил лежит в build/conf
+# Dockerfile, Makefile, shell и jsx. Своя часть правил лежит в sec
 _run_full() {
   echo "== semgrep: полный охват (правила ИБ) =="
   SEMGREP_SEND_METRICS=off "$_uv" tool run --system-certs semgrep \
-    scan --config="$_sec_dir/build/src/semgrep"                   \
-    --config="$_sec_dir/build/conf/semgrep-boba"                  \
+    scan --config="$_sec_dir/sec/semgrep"                   \
+    --config="$_sec_dir/sec/semgrep-boba"                  \
     --metrics=off --scan-unknown-extensions --json -q             \
     "$_sec_dir" > "$_full_json" || _rc=1
 
@@ -104,7 +104,7 @@ _update_rules() {
   echo "== semgrep rules =="
   for pack in python secrets dockerfile javascript react; do
     curl -fsS "https://semgrep.dev/c/p/$pack" \
-      -o "$_sec_dir/build/src/semgrep/$pack.yml" || _rc=1
+      -o "$_sec_dir/sec/semgrep/$pack.yml" || _rc=1
     echo "$pack.yml updated"
   done
 }

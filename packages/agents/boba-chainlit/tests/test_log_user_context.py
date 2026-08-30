@@ -8,7 +8,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-from conftest import use_session
+from chainlit_stand import use_session
 
 from boba.chainlit.infra.log_context import (
     RequestUserContext,

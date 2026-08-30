@@ -9,7 +9,7 @@ from chainlit.step import StepDict
 from chainlit.types import Feedback as FeedbackPayload
 from chainlit.types import Pagination, ThreadFilter
 from chainlit.user import User as ChainlitUser
-from conftest import Seed, use_session
+from chainlit_stand import Seed, use_session
 
 from boba.canvas.keys import ObjectKey
 from boba.chainlit.data.data_layer import PostgresDataLayer

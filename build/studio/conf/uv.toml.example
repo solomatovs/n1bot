@@ -1,0 +1,30 @@
+# ============================================================
+# Конфиг uv для сборки boba (аналог pip.conf).
+#
+# По умолчанию НЕ нужен: uv берёт настройки из pyproject.toml
+# ([tool.uv] — offline-режим: no-index + find-links на локальный wheelhouse).
+#
+# Этот файл нужен, когда uv должен ходить в приватный индекс (Nexus) —
+# например при онлайн-резолве или пересборке wheelhouse через uv.
+# Подхватывается из текущего каталога/корня проекта (или через UV_CONFIG_FILE).
+#
+# Пример для закрытого контура (Nexus PyPI):
+#
+#   # основной индекс (вытесняет pypi.org)
+#   [[index]]
+#   name = "nexus"
+#   url = "https://nexus.example.com/repository/pypi-all/simple"
+#   default = true
+#
+#   # самоподписанный/внутренний TLS — доверять хосту
+#   allow-insecure-host = ["nexus.example.com"]
+#
+#   # альтернатива стилю pip (вместо [[index]]):
+#   # index-url = "https://nexus.example.com/repository/pypi-all/simple"
+#   # extra-index-url = ["https://nexus.example.com/repository/pypi-extra/simple"]
+#
+# Аутентификация — НЕ хранить пароли в файле, задавать через окружение
+# (имя = UV_INDEX_<NAME>_*, где NAME = uppercase от index.name):
+#   export UV_INDEX_NEXUS_USERNAME=<user>
+#   export UV_INDEX_NEXUS_PASSWORD=<token>
+# ============================================================

@@ -14,9 +14,9 @@ from typing import Any
 
 import pytest
 
-from ui.chat_page import ChatPage, StepKind
-from ui.fake_llm import ScenarioName
-from ui.stand import StandConfig, StandProcess, free_port
+from boba.stand.ui.chat_page import ChatPage, StepKind
+from boba.stand.ui.fake_llm import ScenarioName
+from boba.stand.ui.stand import StandApp, StandConfig, StandProcess, free_port
 
 pytestmark = pytest.mark.ui
 
@@ -32,6 +32,7 @@ def sandbox_stand(
 ) -> Iterator[StandProcess]:
     config = StandConfig(
         workdir=stand_workdir / "sandbox-stream",
+        app=StandApp.CHAINLIT,
         app_port=free_port(),
         llm_port=llm_port,
         db_name=stand_database,

@@ -52,7 +52,7 @@ _WORKSPACE = "/workspace"
 _ROOT = "/tmp/boba-rootfs"  # noqa: S108
 """Точка, куда цепочка лаунчера смонтировала корень: её получает билдер argv."""
 
-_SANDBOX = Path(__file__).resolve().parents[4] / "build" / "src" / "sandbox"
+_SANDBOX = Path(__file__).resolve().parents[4] / "build" / "chainlit" / "src" / "sandbox"
 _ROOTFS_IMAGE = _SANDBOX / "rootfs.ext4"
 
 _PROFILE_BASE: dict[str, object] = {

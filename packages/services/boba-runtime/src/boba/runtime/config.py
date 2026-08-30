@@ -25,8 +25,6 @@ from boba.sandbox.profile import SandboxConfig
 from boba.settings import bind, build_app_config
 
 __all__ = [
-    "StudioRuntimeConfig",
-    "SessionConfig",
     "AppName",
     "BuiltPage",
     "ClusterConfig",
@@ -37,9 +35,11 @@ __all__ = [
     "ProcessLogging",
     "RawConfig",
     "RuntimeConfig",
+    "SessionConfig",
     "StreamJournalConfig",
     "StudioConfig",
     "StudioPath",
+    "StudioRuntimeConfig",
 ]
 
 

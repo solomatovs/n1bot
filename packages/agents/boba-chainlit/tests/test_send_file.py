@@ -6,7 +6,7 @@ from typing import cast
 from uuid import UUID
 
 import pytest
-from conftest import use_context, use_session
+from chainlit_stand import use_context, use_session
 from pydantic import BaseModel
 
 from boba.chainlit.agent.tools.send_file import FileAttachment, build_send_file_tool

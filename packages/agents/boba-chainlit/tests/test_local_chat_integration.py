@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import pytest
-from conftest import RecordedTurn
+from chainlit_stand import RecordedTurn
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig

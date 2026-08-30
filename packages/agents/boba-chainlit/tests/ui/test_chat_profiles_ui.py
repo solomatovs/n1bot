@@ -13,11 +13,11 @@ from typing import Any
 
 import httpx
 import pytest
+from chat_ui import OpenChat
 
-from ui.chat_page import ChatPage, StepKind
-from ui.conftest import OpenChat
-from ui.fake_llm import ScenarioName
-from ui.stand import StandProcess, StandUrl
+from boba.stand.ui.chat_page import ChatPage, StepKind
+from boba.stand.ui.fake_llm import ScenarioName
+from boba.stand.ui.stand import StandProcess, StandUrl
 
 pytestmark = pytest.mark.ui
 

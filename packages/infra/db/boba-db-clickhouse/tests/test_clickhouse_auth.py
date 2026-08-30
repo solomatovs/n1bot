@@ -14,12 +14,12 @@ from typing import Any
 
 import pytest
 from pydantic import SecretStr
-from stand_site import Stand
 
 from boba.connections.clickhouse import ClickHouseConfig, PasswordAuth
 from boba.connections.kerberos import KerberosPasswordAuth, KeytabAuth
 from boba.db.clickhouse.payload import PayloadClickHouse
 from boba.krb import KerberosWorkspace, KeytabCredentials, ServiceTicketIssuer
+from boba.stand.site import Stand
 
 STAND = Stand.required()
 

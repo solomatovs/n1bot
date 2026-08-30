@@ -18,11 +18,24 @@ from boba.canvas.keys import (
 from boba.toolkit.channels import JournalChannel
 
 __all__ = [
+    "AppPrefix",
     "AttachmentLinks",
     "AttachmentUrl",
     "CanvasFileUrl",
     "StreamUrl",
 ]
+
+
+class AppPrefix:
+    """Префикс подмонтированного приложения; ссылка без него уйдёт в корень домена."""
+
+    ENV: ClassVar[str] = "CHAINLIT_ROOT_PATH"
+
+    @classmethod
+    def render(cls) -> str:
+        prefix = os.getenv(cls.ENV, "")
+
+        return prefix.rstrip("/")
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,13 +81,18 @@ class CanvasFileUrl:
     """
 
     ROUTE: ClassVar[str] = "/canvas/{thread_id}/{dir}/{name}"
-    ROOT_PATH_ENV: ClassVar[str] = "CHAINLIT_ROOT_PATH"
+    """Общий шаблон route и ссылки."""
 
     @classmethod
     def path(cls, key: ObjectKey) -> str:
-        prefix = os.getenv(cls.ROOT_PATH_ENV, "").rstrip("/")
         name = quote(key.name, safe="")
-        return f"{prefix}/canvas/{key.thread_id}/{key.dir.value}/{name}"
+        route = cls.ROUTE.format(
+            thread_id=key.thread_id,
+            dir=key.dir.value,
+            name=name,
+        )
+
+        return AppPrefix.render() + route
 
 
 class StreamUrl:
@@ -85,10 +103,18 @@ class StreamUrl:
     """
 
     ROUTE: ClassVar[str] = "/stream/{thread_id}/{call_id}"
-    ROOT_PATH_ENV: ClassVar[str] = "CHAINLIT_ROOT_PATH"
+    """Шаблон route: канал уходит в query, роут его не разбирает."""
+
+    LINK: ClassVar[str] = ROUTE + "?channel={channel}"
+    """Шаблон ссылки: тот же route плюс канал запросом."""
 
     @classmethod
     def path(cls, thread_id: str, call_id: str, channel: JournalChannel) -> str:
-        prefix = os.getenv(cls.ROOT_PATH_ENV, "").rstrip("/")
         name = quote(channel.value, safe="")
-        return f"{prefix}/stream/{thread_id}/{call_id}?channel={name}"
+        link = cls.LINK.format(
+            thread_id=thread_id,
+            call_id=call_id,
+            channel=name,
+        )
+
+        return AppPrefix.render() + link

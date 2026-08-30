@@ -17,7 +17,7 @@ from typing import Any
 
 import chainlit as cl
 import pytest
-from conftest import StubRefs, use_context
+from chainlit_stand import StubRefs, use_context
 from httpx import AsyncClient
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -55,7 +55,7 @@ from boba.settings import bind
 from boba.toolkit.result import TableResult, ToolArtifact
 
 _REPO = Path(__file__).resolve().parents[4]
-_ROOTFS_IMAGE = _REPO / "build" / "src" / "sandbox" / "rootfs.ext4"
+_ROOTFS_IMAGE = _REPO / "build" / "chainlit" / "src" / "sandbox" / "rootfs.ext4"
 
 _CGROUP_BASE = os.environ.get("BOBA_CGROUP_BASE", "/sys/fs/cgroup/boba")
 

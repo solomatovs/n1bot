@@ -24,12 +24,25 @@ from typing import Any, ClassVar
 
 import httpx
 import pytest
-from playwright.sync_api import Browser, expect
+from chat_ui import ChatOpener
 
 from boba.canvas.diagram import DiagramPrompt
 from boba.chainlit.rendering.tool import ToolCallMarkdown, ToolResultMarkdown
 from boba.liteparse.engine import LiteParseEngine
 from boba.settings import bind, build_app_config
+from boba.stand.ui.chat_page import ChatPage, StepKind
+from boba.stand.ui.database import StandDatabase
+from boba.stand.ui.fake_llm import FakePage, FakeRoute, ScenarioName
+from boba.stand.ui.socket_log import ChatEvent, StepField
+from boba.stand.ui.stand import (
+    REPO_ROOT,
+    StandApp,
+    StandConfig,
+    StandPaths,
+    StandProcess,
+    StandUrl,
+    free_port,
+)
 from boba.text.document import LiteParseParams
 from boba.text.grep import GrepLimits, TextGrep
 from boba.tool.kb.confluence.parsing import ConfluenceJson
@@ -46,20 +59,6 @@ from boba.toolkit.result import (
     ToolResult,
 )
 from boba.transport.http import HttpxAuth
-from ui.chat_page import ChatPage, StepKind
-from ui.conftest import ChatOpener, StandDatabase, login_cookies
-from ui.fake_llm import FakePage, FakeRoute, ScenarioName
-from ui.socket_log import ChatEvent, StepField
-from ui.stand import (
-    REPO_ROOT,
-    StandConfig,
-    StandPaths,
-    StandProcess,
-    StandUrl,
-    free_port,
-)
-from ui.test_workflow_page_ui import PAGE_TIMEOUT_MS
-from ui.test_workflow_page_ui import Selector as PageSelector
 
 pytestmark = pytest.mark.ui
 
@@ -726,6 +725,7 @@ def sandbox_stand(
     """Стенд с песочницей: инструменты идут через зиготы, как в проде."""
     config = StandConfig(
         workdir=stand_workdir / "sandbox",
+        app=StandApp.CHAINLIT,
         app_port=free_port(),
         llm_port=llm_port,
         db_name=stand_database,
@@ -736,7 +736,7 @@ def sandbox_stand(
     process.start(boot_timeout_sec=BOOT_TIMEOUT_SEC)
     try:
         # роли стенда в таблице появляются на старте: гранты кладутся после него
-        StandDatabase(stand_database).seed_connections(llm_port)
+        StandDatabase(StandApp.CHAINLIT, stand_database).seed_connections(llm_port)
         yield process
     finally:
         process.stop()
@@ -1636,28 +1636,6 @@ class TestWorkflowTools:
             dom=["first: done", "second: done", "UI_FLOW_TWO"],
         )
         module_feed.call(call, expect, timeout_sec=TURN_TIMEOUT_SEC * 2)
-
-    def test_run_from_chat_stays_in_the_chat_schema(
-        self, module_feed: ToolFeed, browser: Browser
-    ) -> None:
-        """Приложения разделены по хранению: запуск, сделанный из чата, лежит в схеме
-        чата и на странице studio (схема automation) не появляется."""
-        stand = module_feed.stand
-        context = browser.new_context(viewport={"width": 1280, "height": 900})
-        context.add_cookies(login_cookies(stand))
-        page = context.new_page()
-        page.set_default_timeout(PAGE_TIMEOUT_MS)
-        try:
-            page.goto(
-                f"{stand.config.base_url}/workflow/observe",
-                wait_until="domcontentloaded",
-            )
-            expect(page.locator(PageSelector.BRAND)).to_contain_text("Workflow")
-            page.wait_for_timeout(1500)
-            runs = page.locator(PageSelector.LIST_ITEM, has_text="ui-flow")
-            expect(runs).to_have_count(0)
-        finally:
-            context.close()
 
 
 class TestCoverage:

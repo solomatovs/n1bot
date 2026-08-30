@@ -92,7 +92,7 @@ class BindSpec(BaseModel):
             if not variables:
                 msg = (
                     f"sandbox: variable {{{missing}}} in path {template!r} "
-                    f"is unavailable: the call has no chainlit session"
+                    f"is unavailable: the call has no user session"
                 )
                 raise RuntimeError(msg) from e
 

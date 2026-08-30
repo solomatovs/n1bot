@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from chainlit.element import ElementDict
-from conftest import make_context
+from chainlit_stand import make_context
 
 from boba.chainlit.chat.feed import QuestionBody, ShownElement, TurnFeed
 from boba.chainlit.domain.fields import StepField

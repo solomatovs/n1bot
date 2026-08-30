@@ -11,8 +11,9 @@ docs
 CLAUDE.md
 
 /release/
-/compose/*
-!/compose/docker-compose.yml
+/compose/*/*
+!/compose/*/docker-compose.yml
+!/compose/*/docker-compose-test.yml
 uv.lock
 
 packages/**/build/
@@ -27,20 +28,9 @@ packages/**/dist/
 # ассеты — готовый app_root: debug-сессия читает их напрямую по BOBA_APP_ROOT
 !/packages/agents/boba-chainlit/assets/.chainlit/
 
-/build/*
-!/build/Dockerfile
-!/build/Makefile
-!/build/test/
-/build/test/*
-!/build/test/bobacheck.py
-!/build/scripts/
-!/build/rootfs/
-!/build/conf/
-/build/conf/*
-!/build/conf/common/
-!/build/conf/chainlit/
-!/build/conf/studio/
-!/build/conf/semgrep-boba/
+/build/*/src/
+/build/*/test/__pycache__/
+/sec/semgrep/
 
 # статика фронта: кладётся make webassets, в образ идёт из build/src/webassets
 packages/agents/boba-chainlit/assets/public/vendor/

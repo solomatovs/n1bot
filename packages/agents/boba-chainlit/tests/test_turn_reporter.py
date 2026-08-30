@@ -14,7 +14,7 @@ from typing import Any, cast
 from uuid import UUID
 
 import pytest
-from conftest import RecordedTurn, use_context
+from chainlit_stand import RecordedTurn, use_context
 from langchain_core.messages import BaseMessage
 
 from boba.cancellation import StopReason

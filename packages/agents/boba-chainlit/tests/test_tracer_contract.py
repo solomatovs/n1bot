@@ -23,14 +23,14 @@ import pytest
 from chainlit.context import ChainlitContext, context_var
 from chainlit.emitter import BaseChainlitEmitter
 from chainlit.session import HTTPSession
-from conftest import RecordedTurn, fake_openai_chat
+from chainlit_stand import RecordedTurn, fake_openai_chat
 from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
-from ui.fake_llm import FakeLlmApp, ScenarioName
 
 from boba.chainlit.chat.tracing import AgentTracer
 from boba.chainlit.chat.turn import TurnState
+from boba.stand.ui.fake_llm import FakeLlmApp, ScenarioName
 
 pytestmark = pytest.mark.anyio
 

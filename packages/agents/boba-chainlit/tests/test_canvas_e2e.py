@@ -26,7 +26,7 @@ from typing import Any
 
 import httpx
 import pytest
-from conftest import FakeUrl
+from chainlit_stand import FakeUrl
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 

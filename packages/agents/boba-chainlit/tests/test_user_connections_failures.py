@@ -17,13 +17,12 @@ import krb5
 import pytest
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
-from conftest import SsoStand, StubRefs, enter_context
+from chainlit_stand import SsoStand, StubRefs, enter_context
 from langchain_core.tools import StructuredTool
 from omegaconf import DictConfig, OmegaConf
 from psycopg import sql
 from psycopg.types.json import Jsonb
 from pydantic import SecretStr, create_model
-from stand_site import Stand
 
 from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.data.data_layer import PostgresDataLayer
@@ -44,6 +43,7 @@ from boba.krb.seal import SsoTickets, TicketSealer
 from boba.messaging import MemoryMessageBus
 from boba.sandbox.zygote import ZygoteRegistry
 from boba.settings import bind
+from boba.stand.site import Stand
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebGrepConfig
 from boba.toolkit.facade import Injected

@@ -5,7 +5,7 @@ from __future__ import annotations
 from uuid import UUID
 
 import pytest
-from conftest import use_context, use_session
+from chainlit_stand import use_context, use_session
 from pydantic import ValidationError
 
 from boba.chainlit.domain.context import ChatCallContext, ChatSurface

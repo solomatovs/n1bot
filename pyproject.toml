@@ -19,6 +19,7 @@ pythonpath = [
     "packages/core/boba-connections/src",
     "packages/core/boba-chat/src",
     "packages/core/boba-identity/src",
+    "packages/testing/boba-stand/src",
     "packages/core/boba-canvas/src",
     "packages/core/boba-messaging/src",
     "packages/services/boba-toolrun/src",
@@ -72,6 +73,7 @@ extraPaths = [
     "packages/core/boba-connections/src",
     "packages/core/boba-chat/src",
     "packages/core/boba-identity/src",
+    "packages/testing/boba-stand/src",
     "packages/core/boba-canvas/src",
     "packages/core/boba-messaging/src",
     "packages/services/boba-toolrun/src",
@@ -144,6 +146,7 @@ members = [
     "packages/tools/*",
     "packages/infra/*/*",
     "packages/services/*",
+    "packages/testing/*",
 ]
 
 [tool.uv.sources]
@@ -154,6 +157,7 @@ boba-access         = { workspace = true }
 boba-connections    = { workspace = true }
 boba-chat           = { workspace = true }
 boba-identity       = { workspace = true }
+boba-stand          = { workspace = true }
 boba-canvas         = { workspace = true }
 boba-messaging      = { workspace = true }
 boba-toolrun        = { workspace = true }

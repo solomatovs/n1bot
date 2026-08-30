@@ -41,7 +41,7 @@ from boba.toolkit.stream import (
 )
 
 REPO = Path(__file__).resolve().parents[5]
-SANDBOX = REPO / "build" / "src" / "sandbox"
+SANDBOX = REPO / "build" / "chainlit" / "src" / "sandbox"
 ROOTFS = SANDBOX / "rootfs"
 ROOTFS_IMAGE = SANDBOX / "rootfs.ext4"
 

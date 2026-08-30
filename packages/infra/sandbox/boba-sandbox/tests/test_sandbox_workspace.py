@@ -155,7 +155,7 @@ class TestBindSpec:
 
     def test_missing_variable_fails_loudly(self) -> None:
         spec = BindSpec.parse("/srv/ws/{thread_id}")
-        with pytest.raises(RuntimeError, match="no chainlit session"):
+        with pytest.raises(RuntimeError, match="no user session"):
             spec.render({})
 
     def test_half_filled_session_names_what_it_has(self) -> None:
@@ -166,7 +166,7 @@ class TestBindSpec:
             spec.render({"thread_id": "t1"})
 
         message = str(caught.value)
-        if "no chainlit session" in message:
+        if "no user session" in message:
             raise AssertionError(f"причина названа неверно: {message}")
 
         if "known: thread_id" not in message:

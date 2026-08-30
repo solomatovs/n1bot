@@ -54,7 +54,7 @@ class CommandRunner:
         command = envelope.command
         if isinstance(command, StopRequested):
             logger.info(
-                "command %d: stop %s requested by user %d via %s",
+                "command %d: stop %s requested by user %s via %s",
                 envelope.command_id,
                 envelope.scope.render(),
                 command.by_user,

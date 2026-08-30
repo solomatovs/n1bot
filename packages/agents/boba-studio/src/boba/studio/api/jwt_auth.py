@@ -1,4 +1,4 @@
-"""Вход API по JWT chainlit: подпись общим секретом, строка users — портом.
+"""Вход API по JWT сессии: подпись общим секретом [session].auth_secret, строка users — портом.
 
 Metadata входа (роли, запечатанный билет) берётся из токена — это то, что выдал
 вход; строка users даёт только её id.
@@ -31,7 +31,7 @@ SameSite = Literal["lax", "strict", "none"]
 
 
 class JwtClaim(StrEnum):
-    """Поля JWT входа chainlit."""
+    """Поля JWT входа: общий формат токена обоих приложений."""
 
     IDENTIFIER = "identifier"
     DISPLAY_NAME = "display_name"
@@ -45,13 +45,13 @@ class JwtUsers(PersistedUsers, UsersUpsert, Protocol):
 
 
 class JwtAuthenticator(Authenticator):
-    """Токен JWT chainlit -> пользователь входа со строкой users."""
+    """Токен JWT входа -> пользователь входа со строкой users."""
 
     ALGORITHM: ClassVar[str] = "HS256"
 
     def __init__(self, secret: str, users: Callable[[], JwtUsers]) -> None:
         if not secret:
-            msg = "jwt secret is empty: CHAINLIT_AUTH_SECRET is required"
+            msg = "jwt secret is empty: [session].auth_secret is required"
             raise ValueError(msg)
 
         self._secret = secret
@@ -109,7 +109,7 @@ class JwtAuthenticator(Authenticator):
 
 
 class JwtIssuer:
-    """Выпуск JWT входа в формате chainlit: identifier, display_name, metadata, exp."""
+    """Выпуск JWT входа общего формата: identifier, display_name, metadata, exp."""
 
     ALGORITHM: ClassVar[str] = "HS256"
 
@@ -135,7 +135,7 @@ class JwtIssuer:
 
 
 class SessionCookie:
-    """Cookie входа как у chainlit: целиком либо чанками name_0..name_n по 3000."""
+    """Cookie входа общего формата: целиком либо чанками name_0..name_n по 3000."""
 
     CHUNK: ClassVar[int] = 3000
     PATH: ClassVar[str] = "/"

@@ -8,7 +8,7 @@ import plotly.graph_objects as go
 import pytest
 from chainlit.auth import get_current_user
 from chainlit.user import PersistedUser
-from conftest import FakeUrl, Seed, use_session
+from chainlit_stand import FakeUrl, Seed, use_session
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 

@@ -14,7 +14,7 @@ from uuid import uuid4
 
 import pytest
 from chainlit.context import ChainlitContext, context_var
-from conftest import RecordedTurn
+from chainlit_stand import RecordedTurn
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, LLMResult
 

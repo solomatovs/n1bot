@@ -19,7 +19,7 @@ from uuid import UUID
 import pytest
 from chainlit.context import ChainlitContext, context_var
 from chainlit.step import Step
-from conftest import FakeTurn, make_context, use_context
+from chainlit_stand import FakeTurn, make_context, use_context
 from langchain_core.tools import tool
 from pydantic import ValidationError
 

@@ -16,7 +16,6 @@ from __future__ import annotations
 import base64
 import http.server
 import json
-import re
 import socketserver
 import threading
 from collections.abc import Iterator
@@ -25,14 +24,21 @@ from typing import ClassVar
 import httpx
 import krb5
 import pytest
+from chat_ui import BOOT_TIMEOUT_SEC
 from playwright.sync_api import Browser, BrowserContext, Page, Playwright, expect
-from stand_site import Stand
 
 from boba.connections.http import HttpProfile, NegotiateAuth
 from boba.connections.kerberos import KerberosPasswordAuth
+from boba.stand.site import Stand
+from boba.stand.ui.database import run_blocking
+from boba.stand.ui.stand import (
+    StandApp,
+    StandAuth,
+    StandConfig,
+    StandProcess,
+    free_port,
+)
 from boba.transport.http import HttpRequest, HttpTransport
-from ui.conftest import BOOT_TIMEOUT_SEC, run_blocking
-from ui.stand import StandAuth, StandConfig, StandLog, StandProcess, free_port
 
 pytestmark = pytest.mark.ui
 
@@ -135,6 +141,7 @@ def sso_stand(
     workdir = tmp_path_factory.mktemp("sso-delegation")
     config = StandConfig(
         workdir=workdir,
+        app=StandApp.CHAINLIT,
         app_port=free_port(),
         llm_port=llm_port,
         db_name=stand_database,
@@ -214,11 +221,9 @@ def _sign_in(page: Page, stand: StandProcess) -> None:
     expect(page.locator(CHAT_INPUT)).to_be_visible(timeout=60_000)
 
 
-def _delegation_lines(
-    stand: StandProcess, log: StandLog = StandLog.CHAINLIT
-) -> list[str]:
+def _delegation_lines(stand: StandProcess) -> list[str]:
     """Строки лога про делегирование: по ним виден исход входа."""
-    path = log.path_of(stand.log_path)
+    path = stand.log_path
     if not path.is_file():
         return []
 
@@ -325,45 +330,3 @@ def test_signed_in_session_carries_the_sealed_ticket(
         raise AssertionError(f"в сессии не тот принципал: {metadata}")
     if not metadata.get("sso_ticket"):
         raise AssertionError(f"в сессии нет билета входа: {metadata}")
-
-
-def test_studio_accepts_negotiate_on_its_own_url(sso_stand: StandProcess) -> None:
-    """Тот же обмен на URL studio: вход принят, делегирование сохранено."""
-    profile = HttpProfile(
-        base_url=_domain_url(sso_stand),
-        auth=NegotiateAuth(
-            method="negotiate",
-            kerberos=KerberosPasswordAuth(
-                method="kerberos_password",
-                principal=STAND.reader_principal,
-                password=STAND.reader_password,
-            ),
-            service_host=STAND.krb_domain,
-        ),
-    )
-    before = len(_delegation_lines(sso_stand, StandLog.STUDIO))
-
-    _visit(profile, HttpRequest(url="/api/v1/auth/sso"))
-
-    lines = _delegation_lines(sso_stand, StandLog.STUDIO)[before:]
-    captured = [line for line in lines if CAPTURED in line]
-    if not captured:
-        raise AssertionError(
-            f"studio did not capture the delegation: {sso_stand.tail()}"
-        )
-
-
-def test_studio_login_page_signs_in_with_sso_and_returns(
-    sso_context: BrowserContext, sso_stand: StandProcess
-) -> None:
-    """Кнопка SSO на странице studio: обмен на её URL и возврат туда, откуда ушли."""
-    page = sso_context.new_page()
-    page.goto(
-        _domain_url(sso_stand, "/workflow/account"), wait_until="domcontentloaded"
-    )
-    expect(page).to_have_url(re.compile(r"/workflow/login$"), timeout=30_000)
-
-    page.get_by_role("link", name="Sign in with SSO").click()
-
-    expect(page).to_have_url(re.compile(r"/workflow/account$"), timeout=60_000)
-    expect(page.locator(".account__login")).to_be_visible(timeout=30_000)
