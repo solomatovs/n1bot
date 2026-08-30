@@ -32,6 +32,7 @@ from boba.sandbox.zygote import ZygoteRegistry
 from boba.studio.api.app import ApiAccess, ApiApp
 from boba.studio.api.signin import PageUrls, SignInWiring
 from boba.studio.api.urls import ApiVersion, SignInUrl
+from boba.studio.api.workflow_socket import StudioRefreshSignal
 from boba.studio.page import WorkflowDevPage, WorkflowPage
 
 __all__ = ["StudioEntry", "StudioHost"]
@@ -46,6 +47,9 @@ class StudioHost:
         container.provide(providers.get_runtime_config, config)
         container.provide(providers.plugin_table, CoreTools.table)
         container.provide(providers.app_name, AppName.STUDIO)
+        container.provide(
+            providers.refresh_signal, StudioRefreshSignal(providers.message_bus_ref)
+        )
         container.eager(providers.message_bus)
         container.eager(providers.stream_journal)
         container.eager(providers.kb_schema)

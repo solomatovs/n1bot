@@ -25,6 +25,7 @@ from test_tools_integration import Call, ToolSetup
 from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.infra.kerberos_refresh import ChatRefreshSignal
+from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connection_broker.user_connections import UserConnections
 from boba.connections.http import HttpProfile, NegotiateAuth
@@ -43,7 +44,6 @@ from boba.messaging import MemoryMessageBus
 from boba.runtime.plugins import ToolBridge
 from boba.sandbox.wrap import ToolProcessWrap
 from boba.sandbox.zygote import ZygoteRegistry
-from boba.config import bind
 from boba.stand.site import Stand
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebGrepConfig
@@ -187,9 +187,13 @@ class Session:
 
     @staticmethod
     def enter(user: PersistedUser) -> None:
+        """Сессия с JWT входа: роли берутся из токена, а не из строки users."""
+        from chainlit.auth.jwt import create_jwt
         from chainlit.context import init_http_context
 
-        context = init_http_context(user=user, thread_id=THREAD)
+        context = init_http_context(
+            user=user, thread_id=THREAD, auth_token=create_jwt(user)
+        )
         context.session.chat_profile = PROFILE
         enter_context()
 

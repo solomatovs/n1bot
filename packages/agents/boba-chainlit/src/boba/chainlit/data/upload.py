@@ -47,6 +47,7 @@ from boba.chainlit.domain.config import LocalStorageConfig
 from boba.chainlit.domain.fields import ElementField, FileField
 from boba.chainlit.domain.keys import AppPrefix
 from boba.chainlit.infra.session import ChainlitSession, session_source_ref
+from boba.identity.errors import AuthenticationError
 from boba.toolkit.channels import JournalChannels, ToolChannel
 from boba.workspace.launcher import ReadWindow
 from chainlit.auth import get_current_user
@@ -720,9 +721,7 @@ class UploadRoute:
             return session
 
         if session.identifier != current_user.identifier:
-            raise HTTPException(
-                status_code=401, detail="This session belongs to another user"
-            )
+            raise AuthenticationError("This session belongs to another user")
 
         return session
 

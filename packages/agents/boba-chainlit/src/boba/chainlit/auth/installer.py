@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 
+from boba.auth import AuthService
 from boba.auth.config import AuthConfig, KerberosAuthConfig
-from boba.auth.signin import PasswordSignIns
 from boba.chainlit.auth.composite import PasswordCallback
 from boba.chainlit.auth.kerberos import KerberosAuth
 from chainlit.config import config as chainlit_config
@@ -16,33 +16,46 @@ class ChainlitSessionTtl:
 
 
 class ChainlitAuthInstaller:
-    """Единая точка подключения авторизации; стратегия выбирается конфигом."""
+    """Единая точка подключения авторизации поверх сервиса входа."""
 
     def __init__(
-        self, url_prefix: str, configs: list[AuthConfig], session_ttl_sec: int
+        self,
+        url_prefix: str,
+        configs: list[AuthConfig],
+        auth: AuthService,
+        session_ttl_sec: int,
     ) -> None:
         self._url_prefix = url_prefix
         self._configs = configs
+        self._auth = auth
         self._session_ttl_sec = session_ttl_sec
 
-    def install(self, chainlit_app: FastAPI) -> KerberosAuth | None:
-        "Ставит способы авторизации; KerberosAuth нужен ради delegation в tools"
+    def install(self, chainlit_app: FastAPI) -> None:
+        """Ставит способы входа: SSO-роуты и password-callback."""
         ChainlitSessionTtl.apply(self._session_ttl_sec)
 
-        kerberos: KerberosAuth | None = None
+        providers = self._auth.providers()
+        if providers.sso:
+            KerberosAuth(self._url_prefix, self._sso_path(), self._auth).install(
+                chainlit_app
+            )
 
+        if providers.password:
+            PasswordCallback(self._auth).install()
+
+    def _sso_path(self) -> str:
+        found: KerberosAuthConfig | None = None
         for auth in self._configs:
             if not isinstance(auth, KerberosAuthConfig):
                 continue
 
-            if kerberos is not None:
+            if found is not None:
                 # две SpnegoMiddleware на один sso_path — ошибка конфига
                 raise ValueError("kerberos authorization configured twice")
 
-            kerberos = KerberosAuth(self._url_prefix, auth)
-            kerberos.install(chainlit_app)
+            found = auth
 
-        if signin := PasswordSignIns.of(self._configs):
-            PasswordCallback(signin).install()
+        if found is None:
+            raise ValueError("sso is configured without [auth.kerberos]")
 
-        return kerberos
+        return found.sso_path

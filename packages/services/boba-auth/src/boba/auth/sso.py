@@ -280,6 +280,8 @@ class SsoSignIn(SsoAdmission):
 
     async def signed_in(self, identity: SpnegoIdentity, sealed: str) -> SignedIn:
         """Итог входа: логин из принципала, роли по допуску, билет в metadata."""
+        self._require_pac(identity)
+
         metadata = self._sso_metadata(identity.principal, sealed)
 
         roles = await self.roles_of(identity.principal, identity.group_sids)
@@ -333,6 +335,20 @@ class SsoSignIn(SsoAdmission):
             raise AuthorizationError("Access denied")
 
         return mapped
+
+    def _require_pac(self, identity: SpnegoIdentity) -> None:
+        """Исключения по SID настроены, а групп нет: вход без проверки не пускаем."""
+        if self._sid_roles_ex is None:
+            return
+
+        if identity.pac_parsed:
+            return
+
+        self._logger.warning(
+            "access denied for %s (PAC unavailable, sid exclusions configured)",
+            identity.principal,
+        )
+        raise AuthorizationError("Access denied")
 
     def _sso_metadata(self, principal: str, sealed: str) -> dict[str, Any]:
         """Metadata входа: провайдер, принципал и запечатанный билет."""

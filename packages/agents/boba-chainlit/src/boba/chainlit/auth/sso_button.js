@@ -155,7 +155,7 @@
     const headers = {};
     headers[REFRESH_HEADER] = REFRESH_HEADER_VALUE;
     // заголовок метит запрос как свой: кросс-сайтовый запрос его не поставит
-    fetch(REFRESH_URL, { credentials: "include", headers: headers })
+    fetch(REFRESH_URL, { method: "POST", credentials: "include", headers: headers })
       .catch(() => {})
       .then(() => {
         refreshing = false;
