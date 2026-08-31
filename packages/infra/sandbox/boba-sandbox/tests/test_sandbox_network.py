@@ -21,10 +21,11 @@ from urllib.parse import urlsplit
 import pytest
 from omegaconf import DictConfig, OmegaConf
 
-from boba.config import bind
 from boba.runtime.config import AppLayers
-from boba.sandbox.profile import SandboxProfile, SandboxToolConfig
+from boba.runtime.plugins import EntryPointPlugins
+from boba.sandbox.profile import SandboxProfile
 from boba.sandbox.runner import has_bwrap
+from boba.stand.sandbox import section_profile
 from boba.stand.zygote import ZygoteStand
 
 
@@ -80,14 +81,18 @@ class SandboxToolProfiles:
 
     def networked(self) -> dict[str, SandboxProfile]:
         """Инструменты, которым конфиг разрешил сеть."""
+        installed = EntryPointPlugins.discover()
+
         profiles: dict[str, SandboxProfile] = {}
         for name in self._tool_names():
+            if name not in installed:
+                continue
+
             section = OmegaConf.select(self._raw, f"tool.{name}.sandbox")
             if section is None:
                 continue
 
-            profile = bind(self._raw, f"tool.{name}.sandbox", SandboxToolConfig)
-            effective = profile.profile
+            effective = section_profile(self._raw, name)
             if not effective.isolation.network:
                 continue
 

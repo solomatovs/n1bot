@@ -63,10 +63,12 @@ class LiteParseParams(BaseModel):
         description="Лимит числа парсируемых страниц. 0 = без лимита.",
     )
     tessdata_path: str = Field(
+        default="/usr/share/tessdata",
         min_length=1,
         description=(
-            "Каталог моделей OCR внутри песочницы. Без него liteparse качает "
-            "их из интернета, а у профиля парсера сети нет."
+            "Каталог моделей OCR: по умолчанию родной путь tesseract, куда "
+            "их запекает образ. Без каталога liteparse качал бы модели из "
+            "интернета, а у профиля парсера сети нет."
         ),
     )
     num_workers: int = Field(

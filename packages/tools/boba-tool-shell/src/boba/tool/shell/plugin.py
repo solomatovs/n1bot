@@ -15,7 +15,6 @@ class BashPlugin:
     def build(cfg: BashToolConfig, launchers: LauncherFactory) -> list[ToolLike]:
         return [build_bash_tool(cfg, launchers)]
 
-
 MANIFEST: Final = ToolPluginManifest(
     section="bash",
     config_model=BashToolConfig,

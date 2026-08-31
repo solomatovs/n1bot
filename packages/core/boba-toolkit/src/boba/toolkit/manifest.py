@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from boba.toolkit.entry import ToolLike
 from boba.toolkit.launcher import LauncherFactory
 
-__all__ = ["ToolPluginManifest"]
+__all__ = ["LaunchSpec", "ToolPluginManifest"]
 
 ManifestBuild = Callable[[Any, LauncherFactory], Sequence[ToolLike]]
 """Фабрика инструментов секции: конфиг секции и исполнители -> инструменты."""
@@ -39,3 +39,16 @@ class ToolPluginManifest:
     tools: tuple[ToolLike, ...] = ()
     config_model: type[BaseModel] | None = None
     build: ManifestBuild | None = None
+
+
+@dataclass(frozen=True)
+class LaunchSpec:
+    """Что секции нужно от способа запуска: имя, модули тел, пакет и изоляция.
+
+    package — дистрибутив entry point'а: по нему ищется образ корня
+    plugins/<package>/rootfs.ext4; пусто — плагин встроен в приложение.
+    """
+
+    section: str
+    modules: tuple[str, ...] = ()
+    package: str = ""

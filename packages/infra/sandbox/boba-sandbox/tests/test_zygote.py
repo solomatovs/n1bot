@@ -39,13 +39,14 @@ from boba.toolkit.stream import Chunk
 
 REPO = Path(__file__).resolve().parents[5]
 SANDBOX = REPO / "build" / "chainlit" / "src" / "sandbox"
-ROOTFS = SANDBOX / "rootfs"
+ROOTFS_IMAGE = SANDBOX / "plugins" / "boba-tool-shell" / "rootfs.ext4"
+FUSE2FS = SANDBOX / "third" / "bin" / "fuse2fs"
 
 TESTS_DIR = str(Path(__file__).resolve().parent)
 
 needs_bwrap = pytest.mark.skipif(
-    shutil.which("bwrap") is None or not (ROOTFS / "bin" / "sh").exists(),
-    reason="нет bwrap или артефактов песочницы (собрать: make fetch sandbox)",
+    shutil.which("bwrap") is None or not ROOTFS_IMAGE.exists() or not FUSE2FS.exists(),
+    reason="нет bwrap или артефактов песочницы (собрать: make fetch sandbox plugin-rootfs-all)",
 )
 needs_userns = pytest.mark.skipif(
     os.geteuid() == 0, reason="под root user namespace ведёт себя иначе"
@@ -381,7 +382,24 @@ class TestCall:
 class TestIsolated:
     """E2e в настоящем bwrap: зигота с CAP_SYS_ADMIN, дети изолированы."""
 
-    def _bwrap_spawner(self, fd: int) -> subprocess.Popen[bytes]:
+    @pytest.fixture(scope="class")
+    def mounted_root(self, tmp_path_factory: pytest.TempPathFactory) -> Any:
+        """Образ shell-плагина, смонтированный fuse2fs: корень для ручного bwrap."""
+        point = tmp_path_factory.mktemp("rootfs")
+        subprocess.run(  # noqa: S603
+            [str(FUSE2FS), "-o", "ro", str(ROOTFS_IMAGE), str(point)],
+            check=True,
+            capture_output=True,
+        )
+        yield point
+
+        fusermount = shutil.which("fusermount3")
+        if fusermount is None:
+            raise AssertionError("fusermount3 недоступен: точка осталась смонтированной")
+
+        subprocess.run([fusermount, "-u", str(point)], check=True)  # noqa: S603
+
+    def _bwrap_spawner(self, fd: int, root: Path) -> subprocess.Popen[bytes]:
         python_path = SandboxStand.python_path(
             "/usr/src/infra/sandbox/boba-sandbox/tests"
         )
@@ -411,14 +429,8 @@ class TestIsolated:
             "zygote",
             "--new-session",
             "--ro-bind",
-            str(ROOTFS),
+            str(root),
             "/",
-            "--ro-bind",
-            str(SANDBOX / "third" / "python"),
-            "/usr/local",
-            "--ro-bind",
-            str(SANDBOX / "site"),
-            "/usr/local/lib/python3.11/site-packages",
             "--ro-bind",
             str(REPO / "packages"),
             "/usr/src",
@@ -457,8 +469,11 @@ class TestIsolated:
             argv, pass_fds=(fd,), stdin=subprocess.DEVNULL
         )
 
-    def test_isolated_call_works(self, supervisor: Any) -> None:
-        zygote = supervisor(self._bwrap_spawner)
+    def test_isolated_call_works(self, supervisor: Any, mounted_root: Path) -> None:
+        def spawner(fd: int) -> subprocess.Popen[bytes]:
+            return self._bwrap_spawner(fd, mounted_root)
+
+        zygote = supervisor(spawner)
         zygote.start()
 
         outcome, result, _ = _call_echo(zygote, "isolated", isolate=True)
@@ -473,9 +488,13 @@ class TestIsolated:
         if outcome.child_pid <= 0:
             raise AssertionError("host-pid исполнителя не получен")
 
-    def test_children_do_not_share_tmp(self, supervisor: Any) -> None:
+    def test_children_do_not_share_tmp(self, supervisor: Any, mounted_root: Path) -> None:
         """Параллельные вызовы не видят /tmp друг друга."""
-        zygote = supervisor(self._bwrap_spawner)
+
+        def spawner(fd: int) -> subprocess.Popen[bytes]:
+            return self._bwrap_spawner(fd, mounted_root)
+
+        zygote = supervisor(spawner)
         zygote.start()
 
         def probe(index: int) -> str:

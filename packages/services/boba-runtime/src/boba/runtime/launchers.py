@@ -11,12 +11,12 @@ RuntimeError — секция запуска не согласована с ко
 from __future__ import annotations
 
 from abc import abstractmethod
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Annotated, ClassVar, Literal, Protocol
+from typing import Annotated, Any, ClassVar, Literal, Protocol
 
 from omegaconf import DictConfig, OmegaConf
-from pydantic import BaseModel, ConfigDict, Field, RootModel
+from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 
 from boba.canvas.journal import CallStream
 from boba.canvas.keys import WorkspaceMount
@@ -26,24 +26,24 @@ from boba.sandbox import (
     BindSpec,
     CgroupManager,
     SandboxProfile,
-    SandboxToolConfig,
     has_bwrap,
 )
 from boba.sandbox.guest import WarmupCall
-from boba.sandbox.profile import SandboxConfig
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
 from boba.toolkit.entry import ToolArgv
 from boba.toolkit.facade import WarmupHooks
 from boba.toolkit.launcher import ToolLauncher
+from boba.toolkit.manifest import LaunchSpec
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 from boba.toolrun.run_log import NoCallScope
 from boba.toolrun.streams import ToolStreams
 
 __all__ = [
     "CallSurface",
+    "PluginSandbox",
     "ProcessLaunchers",
+    "SandboxDefaults",
     "SandboxLauncherConfig",
-    "SandboxRequire",
     "SectionLaunchers",
     "ToolLauncherConfig",
     "ToolLaunchers",
@@ -74,13 +74,164 @@ class ToolLauncherSection(RootModel[ToolLauncherConfig]):
     """Секция [tool_launcher] целиком."""
 
 
-class SandboxRequire(BaseModel):
-    """Кусок секции [sandbox], который читает сборка исполнителей."""
+class EnvPaths(BaseModel):
+    """Пути развёртывания из [env]: на них стоят конвенции песочницы."""
 
     model_config = ConfigDict(extra="ignore")
 
-    zygote: ZygotePolicy
-    """Политика супервизора зигот; каждая sandboxed-секция обслуживается зиготой."""
+    base: str
+    data: str
+    sandbox: str
+    models: str
+    krb: str
+    cgroup_base: str
+
+
+class PluginSandbox(BaseModel):
+    """Секция [sandbox] файла conf/plugins/<id>.toml: изоляция плагина.
+
+    profile — полный профиль, отключает сборку. Семантические ключи: network
+    включает сеть (по умолчанию её нет), workspace — образ рабочего каталога,
+    binds — явные строки host:guest хостовых файлов (resolv.conf, hosts,
+    krb5.conf), пути развёртывания — интерполяциями ${env.*}. Таблицы
+    host/isolation/limits/run/zygote накладываются на собранный дефолт
+    полями профиля.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    profile: SandboxProfile | None = None
+    network: bool = False
+    workspace: bool = False
+    binds: tuple[str, ...] = ()
+    host: dict[str, Any] = Field(default_factory=dict)
+    isolation: dict[str, Any] = Field(default_factory=dict)
+    limits: dict[str, Any] = Field(default_factory=dict)
+    run: dict[str, Any] = Field(default_factory=dict)
+    zygote: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _full_or_delta(self) -> PluginSandbox:
+        if self.profile is None:
+            return self
+
+        delta = (
+            self.network
+            or self.workspace
+            or self.binds
+            or self.host
+            or self.isolation
+            or self.limits
+            or self.run
+            or self.zygote
+        )
+        if delta:
+            msg = "[sandbox]: profile is exclusive with delta fields"
+            raise ValueError(msg)
+
+        return self
+
+
+class SandboxDefaults:
+    """Дефолтный профиль песочницы: числа здесь, пути — конвенциями от [env].
+
+    Секции [sandbox] в корневом конфиге нет: всё выводимое строится кодом,
+    файл плагина описывает только отличия.
+    """
+
+    TMP_SIZE: ClassVar[str] = "512M"
+    SHELL: ClassVar[str] = "/bin/bash"
+    WORKSPACE_TARGET: ClassVar[str] = "/workspace"
+
+    HOST: ClassVar[dict[str, Any]] = {
+        "stderr_tail_bytes": 4096,
+        "channel_limit_bytes": 67108864,
+        "fail_tail_chars": 2000,
+        "kill_grace_sec": 5,
+        "mounting": {
+            "mount_wait_sec": 10.0,
+            "mount_poll_sec": 0.002,
+            "shutdown_wait_sec": 5.0,
+            "lock_wait_sec": 10.0,
+            "copy_chunk_bytes": 1048576,
+        },
+    }
+
+    ISOLATION: ClassVar[dict[str, Any]] = {
+        "network": False,
+        "reap_poll_sec": 0.1,
+        "env": {
+            "PATH": "/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin",
+            "HOME": "/tmp",  # noqa: S108 — путь внутри песочницы
+            "LANG": "C.UTF-8",
+        },
+    }
+
+    LIMITS: ClassVar[dict[str, Any]] = {
+        "timeout_sec": 86400,
+        "process_memory_bytes": 1073741824,
+        "process_cpu_sec": 86400,
+        "process_file_bytes": 1073741824,
+        "process_open_files": 1024,
+        "process_oom_score_adj": 900,
+        "group_memory_bytes": 1073741824,
+        "group_swap_bytes": 0,
+        "group_cpu_percent": 100,
+        "group_cpu_weight": 100,
+        "group_pids_max": 256,
+        "group_oom_kill_all": True,
+    }
+
+    @classmethod
+    def profile(cls, env: EnvPaths, package: str) -> dict[str, Any]:
+        return {
+            "rootfs": f"{env.sandbox}/plugins/{package}/rootfs.ext4",
+            "host": {
+                "cgroup_base": env.cgroup_base,
+                "binaries": {
+                    "dirs": [
+                        f"{env.base}/third/bin",
+                        "/usr/bin",
+                        "/usr/sbin",
+                        "/bin",
+                        "/sbin",
+                    ],
+                },
+                **cls.HOST,
+            },
+            "mounts": {
+                "ro": [],
+                "rw": [],
+                "tmp": cls.TMP_SIZE,
+            },
+            "isolation": dict(cls.ISOLATION),
+            "limits": dict(cls.LIMITS),
+            "run": {"cwd": "/tmp", "shell": cls.SHELL},  # noqa: S108 — внутри песочницы
+        }
+
+    @classmethod
+    def workspace(cls, env: EnvPaths) -> dict[str, Any]:
+        return {
+            "template": f"{env.sandbox}/workspace.ext4",
+            "mount": (
+                f"{env.data}/workspace/{{user_id}}.ext4:{cls.WORKSPACE_TARGET}"
+            ),
+        }
+
+    @classmethod
+    def merged(
+        cls, base: dict[str, Any], override: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Рекурсивное наложение таблиц файла плагина на дефолтный профиль."""
+        result = dict(base)
+        for key, value in override.items():
+            below = result.get(key)
+            if isinstance(below, dict) and isinstance(value, Mapping):
+                result[key] = cls.merged(below, value)
+            else:
+                result[key] = value
+
+        return result
 
 
 class CallSurface:
@@ -142,43 +293,40 @@ class SectionLaunchers(Protocol):
         """Проверяет предпосылки способа запуска; нарушение — отказ старта."""
 
     @abstractmethod
-    def launcher_of(self, section: str, modules: Sequence[str]) -> ToolLauncher:
-        """Исполнитель секции [tool.<section>]; её конфиг проверяется здесь."""
+    def launcher_of(self, spec: LaunchSpec) -> ToolLauncher:
+        """Исполнитель секции спеки; её конфиг и изоляция проверяются здесь."""
 
 
 class ZygoteLaunchers(SectionLaunchers):
-    """Запуск в песочнице: зигота на секцию, профиль из [tool.<name>.sandbox]."""
-
-    SECTION: ClassVar[str] = "sandbox"
+    """Запуск в песочнице: зигота на секцию, профиль собирается из [env],
+    дефолтов и секции [sandbox] файла плагина."""
 
     def __init__(self, raw: DictConfig) -> None:
         self._raw = raw
 
     def probe(self) -> None:
-        """Групповые лимиты профилей проверяются на старте: отказ виден сразу,
-        с именем профиля.
+        """Пути конвенций проверяются разбором [env]; cgroup-лимиты каждой
+        секции проверяет сборка её профиля.
         """
-        node = OmegaConf.select(self._raw, self.SECTION)
-        if node is None:
-            msg = "[sandbox] is required when [tool_launcher] provider is sandbox"
-            raise RuntimeError(msg)
+        self._env()
 
-        config = bind(self._raw, self.SECTION, SandboxConfig)
-        CgroupManager.probe_profiles(config.profiles)
+    def _env(self) -> EnvPaths:
+        return bind(self._raw, "env", EnvPaths)
 
-    def launcher_of(self, section: str, modules: Sequence[str]) -> ToolLauncher:
-        profile = self._profile_of(section)
+    def launcher_of(self, spec: LaunchSpec) -> ToolLauncher:
+        profile = self.profile_of(spec)
+        sandbox = self._plugin_sandbox(spec.section)
 
         supervisor = ZygoteRegistry.obtain(
-            section,
+            spec.section,
             profile,
-            tuple(modules),
-            self._zygote_policy(),
-            warmup_calls=self.warmup_configs(section, modules, self._raw),
+            tuple(spec.modules),
+            ZygotePolicy.model_validate(sandbox.zygote),
+            warmup_calls=self.warmup_configs(spec.section, spec.modules, self._raw),
         )
 
         return ZygoteToolCaller(
-            section, supervisor, profile, CallSurface.sandbox_path_vars
+            spec.section, supervisor, profile, CallSurface.sandbox_path_vars
         )
 
     @staticmethod
@@ -206,34 +354,83 @@ class ZygoteLaunchers(SectionLaunchers):
 
         return tuple(calls)
 
-    def _zygote_policy(self) -> ZygotePolicy:
-        return bind(self._raw, self.SECTION, SandboxRequire).zygote
+    def _plugin_sandbox(self, section: str) -> PluginSandbox:
+        return bind(self._raw, f"tool.{section}.sandbox", PluginSandbox)
 
-    def _profile_of(self, section: str) -> SandboxProfile:
-        """Профиль секции [tool.<name>.sandbox]; отсутствие — отказ старта.
+    def profile_of(self, spec: LaunchSpec) -> SandboxProfile:
+        """Профиль секции по [sandbox] файла плагина: полный профиль как есть,
+        иначе дефолты от [env] плюс образ пакета и дельта изоляции.
 
-        Секция есть, а bwrap недоступен — тоже отказ: молчаливая деградация
+        Профиль есть, а bwrap недоступен — отказ старта: молчаливая деградация
         инструмента до процесса приложения запрещена.
         """
-        node = OmegaConf.select(self._raw, f"tool.{section}.sandbox")
-        if node is None:
-            msg = f"[tool.{section}.sandbox] is missing: the plugin runs in a sandbox"
-            raise RuntimeError(msg)
+        sandbox = self._plugin_sandbox(spec.section)
+        if sandbox.profile is not None:
+            return self._checked(sandbox.profile, spec.section)
 
-        sandbox = bind(self._raw, f"tool.{section}.sandbox", SandboxToolConfig)
-        profile = sandbox.profile
+        return self._checked(self._composed(spec, sandbox), spec.section)
 
+    def _checked(self, profile: SandboxProfile, section: str) -> SandboxProfile:
         if profile.mounts.workspace is not None:
             WorkspaceMount.configure(profile.mounts.workspace.mount.target)
 
         if not has_bwrap(profile):
             msg = (
-                f"[tool.{section}.sandbox] is configured, but bubblewrap (bwrap) "
-                "is not in the trusted binary directories"
+                f"sandbox profile of {section!r} is configured, but bubblewrap "
+                "(bwrap) is not in the trusted binary directories"
             )
             raise RuntimeError(msg)
 
+        # групповые лимиты секции проверяются при сборке: отказ виден на старте
+        CgroupManager.probe_profiles({section: profile})
         return profile
+
+    def _composed(self, spec: LaunchSpec, needs: PluginSandbox) -> SandboxProfile:
+        """Дефолтный профиль от [env] + образ plugins/<package>/rootfs.ext4 +
+        семантика и таблицы из [sandbox] файла conf/plugins/<section>.toml.
+        """
+        if not spec.package:
+            msg = (
+                f"[tool.{spec.section}.sandbox] profile is missing: a built-in "
+                "plugin declares the full sandbox profile in its config"
+            )
+            raise RuntimeError(msg)
+
+        env = self._env()
+        data = SandboxDefaults.profile(env, spec.package)
+
+        ro = list(data["mounts"]["ro"])
+
+        if needs.network:
+            data["isolation"]["network"] = True
+
+        for entry in needs.binds:
+            if ":" not in entry:
+                msg = (
+                    f"plugin {spec.section!r}: bind {entry!r} must be an "
+                    "explicit host:guest pair"
+                )
+                raise RuntimeError(msg)
+
+            ro.append(entry)
+
+        data["mounts"]["ro"] = ro
+
+        if needs.workspace:
+            data["mounts"]["workspace"] = SandboxDefaults.workspace(env)
+            data["run"]["cwd"] = SandboxDefaults.WORKSPACE_TARGET
+
+        overrides = {
+            "host": needs.host,
+            "isolation": needs.isolation,
+            "limits": needs.limits,
+            "run": needs.run,
+        }
+        for key, override in overrides.items():
+            if override:
+                data[key] = SandboxDefaults.merged(data[key], override)
+
+        return SandboxProfile.model_validate(data)
 
 
 class ProcessLaunchers(SectionLaunchers):
@@ -251,8 +448,8 @@ class ProcessLaunchers(SectionLaunchers):
         # файловые ссылки канваса читают файлы инструментов из workdir
         WorkspaceMount.configure(self._cfg.workdir)
 
-    def launcher_of(self, section: str, modules: Sequence[str]) -> ToolLauncher:
-        return ProcessToolCaller(section, self._cfg)
+    def launcher_of(self, spec: LaunchSpec) -> ToolLauncher:
+        return ProcessToolCaller(spec.section, self._cfg)
 
 
 class ToolLaunchers:

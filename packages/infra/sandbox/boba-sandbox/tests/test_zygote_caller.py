@@ -42,8 +42,7 @@ from boba.toolkit.stream import (
 
 REPO = Path(__file__).resolve().parents[5]
 SANDBOX = REPO / "build" / "chainlit" / "src" / "sandbox"
-ROOTFS = SANDBOX / "rootfs"
-ROOTFS_IMAGE = SANDBOX / "rootfs.ext4"
+ROOTFS_IMAGE = SANDBOX / "plugins" / "boba-tool-shell" / "rootfs.ext4"
 
 needs_sandbox = pytest.mark.skipif(
     shutil.which("bwrap") is None or not ROOTFS_IMAGE.exists(),

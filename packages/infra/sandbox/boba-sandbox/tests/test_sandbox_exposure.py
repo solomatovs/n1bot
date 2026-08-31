@@ -18,10 +18,11 @@ from typing import ClassVar, TypeAlias
 from uuid import uuid4
 
 import pytest
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
-from boba.config import bind
-from boba.sandbox import SandboxProfile, SandboxToolConfig
+from boba.runtime.plugins import EntryPointPlugins
+from boba.sandbox import SandboxProfile
+from boba.stand.sandbox import section_profile
 from boba.sandbox.zygote import (
     ZygoteCallError,
     ZygoteRegistry,
@@ -73,22 +74,14 @@ class SandboxSection:
 
 
 class Sections:
-    """Секции [tool.*.sandbox] конфига приложения: список ведёт конфиг."""
+    """Sandboxed-плагины установленных пакетов и их профили сборкой приложения."""
 
     @classmethod
     def of(cls, raw_config: DictConfig) -> list[SandboxSection]:
-        tools = OmegaConf.select(raw_config, "tool")
-        if tools is None:
-            return []
-
         sections: list[SandboxSection] = []
-        for name in tools:
-            section = OmegaConf.select(raw_config, f"tool.{name}.sandbox")
-            if section is None:
-                continue
-
-            config = bind(raw_config, f"tool.{name}.sandbox", SandboxToolConfig)
-            sections.append(SandboxSection(name=str(name), profile=config.profile))
+        for name in EntryPointPlugins.discover():
+            profile = section_profile(raw_config, name)
+            sections.append(SandboxSection(name=name, profile=profile))
 
         return sections
 

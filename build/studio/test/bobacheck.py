@@ -35,7 +35,8 @@ args = parser.parse_args()
 APP = "studio"
 PACKAGES_DIR = args.packages
 NAMES_FILE = args.names
-BASE_DIR = os.environ["BOBA_BASE"]
+# каталог установки: в контейнере его несёт ENV образа BOBA_DIR
+BASE_DIR: str = os.environ.get("BOBA_BASE") or os.environ["BOBA_DIR"]
 
 failures = []
 
@@ -208,26 +209,46 @@ if APP == "studio":
     check("workflow page built", t_workflow_page)
 
 # 7) веса эмбеддера: лежат рядом с моделями чата и едут в песочницу биндом
-print("== local fastembed weights ==")
+print("== plugin rootfs images ==")
+PLUGINS_DIR = os.path.join(BASE_DIR, "sandbox", "plugins")
+
+
+def t_plugin_images_present():
+    if not os.path.isdir(PLUGINS_DIR):
+        raise RuntimeError(f"нет каталога {PLUGINS_DIR}")
+
+    images = []
+    for name in sorted(os.listdir(PLUGINS_DIR)):
+        if os.path.isfile(os.path.join(PLUGINS_DIR, name, "rootfs.ext4")):
+            images.append(name)
+
+    if not images:
+        raise RuntimeError(f"нет ни одного rootfs.ext4 в {PLUGINS_DIR}")
+
+    print(f"  образов плагинов: {len(images)}")
+
+
+check("plugin images present", t_plugin_images_present)
+
+print("== fastembed weights baked into kb plugin image ==")
 EMBED_DIR = os.path.join(BASE_DIR, "models", "fastembed")
+KB_IMAGE = os.path.join(PLUGINS_DIR, "boba-tool-knowledge", "rootfs.ext4")
+KB_MIN_BYTES = 2 * 1024**3
 
 
-def t_embed_weights_present():
-    if not os.path.isdir(EMBED_DIR):
-        raise RuntimeError(f"нет каталога {EMBED_DIR}")
+def t_embed_weights_baked():
+    if os.path.isdir(EMBED_DIR):
+        raise RuntimeError(f"веса эмбеддера в релизе, а должны быть в образе: {EMBED_DIR}")
 
-    names = []
-    for name in sorted(os.listdir(EMBED_DIR)):
-        if not name.startswith("models--"):
-            continue
+    if not os.path.isfile(KB_IMAGE):
+        raise RuntimeError(f"нет образа {KB_IMAGE}")
 
-        names.append(name)
-
-    if not names:
-        raise RuntimeError(f"нет весов моделей в {EMBED_DIR}")
+    size = os.path.getsize(KB_IMAGE)
+    if size < KB_MIN_BYTES:
+        raise RuntimeError(f"образ kb подозрительно мал ({size} байт): весов внутри нет")
 
 
-check("weights present", t_embed_weights_present)
+check("weights baked", t_embed_weights_baked)
 
 print()
 if failures:

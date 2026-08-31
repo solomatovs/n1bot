@@ -32,7 +32,7 @@ def _tool() -> Any:
 
     module = reload(chart_module)
 
-    sandbox = SandboxToolConfig.model_validate({"profile": sandbox_profile()})
+    sandbox = SandboxToolConfig.model_validate({"profile": sandbox_profile("boba-tool-chart")})
     profile = sandbox.profile
     supervisor = ZygoteRegistry.obtain(
         "chart-test", profile, [chart_module.__name__], ZYGOTE

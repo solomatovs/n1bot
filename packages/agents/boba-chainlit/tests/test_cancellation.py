@@ -53,7 +53,7 @@ def chainlit_context() -> None:
 _SANDBOX = (
     Path(__file__).resolve().parents[4] / "build" / "chainlit" / "src" / "sandbox"
 )
-_ROOTFS_IMAGE = _SANDBOX / "rootfs.ext4"
+_ROOTFS_IMAGE = _SANDBOX / "plugins" / "boba-tool-shell" / "rootfs.ext4"
 _SITE_PACKAGES = "/usr/local/lib/python3.11/site-packages"
 _PACKAGES = Path(__file__).resolve().parents[3]
 

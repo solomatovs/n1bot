@@ -19,7 +19,6 @@ APP             := studio
 APP_PACKAGES    := boba-studio[tools]
 APP_IMPORTS     := boba.studio
 APP_HEALTH      := /api/openapi.json
-APP_EXTRAS      := tools
 APP_CGROUP      := boba-sandbox-studio
 
 .DEFAULT_GOAL := help
@@ -55,10 +54,8 @@ NODE_IMAGE      ?= dmp/nodejs:22
 BASE_IMAGE      := boba-base-$(APP):$(PYTHON_VERSION)
 BWRAP_IMAGE     := boba-bwrap-$(APP):$(PYTHON_VERSION)
 FUSE_IMAGE      := boba-fuse2fs-$(APP):$(PYTHON_VERSION)
-ROOTFS_IMAGE    := boba-sandbox-image-$(APP):$(PYTHON_VERSION)
 SANDBOX_DIR     := $(DEPS_DIR)/sandbox
 # нативное окружение liteparse: office/растр/pdf он конвертирует этими программами
-LITEPARSE_PACKAGES ?= imagemagick libreoffice-writer libreoffice-calc libreoffice-impress ghostscript fonts-dejavu-core
 
 # --- что скачивает fetch -------------------------------------------------------
 
@@ -141,13 +138,11 @@ DOCKER_ARGS      = --build-arg GLIBC_IMAGE=$(GLIBC_IMAGE)              	\
     --build-arg LIBFUSE_VERSION=$(LIBFUSE_VERSION)                     	\
     --build-arg E2FSPROGS_VERSION=$(E2FSPROGS_VERSION)                 	\
     --build-arg SANDBOX_WS_SIZE=$(SANDBOX_WS_SIZE)                     	\
-    --build-arg LITEPARSE_PACKAGES="$(LITEPARSE_PACKAGES)"
 
 # аргументы стадий одного приложения
 APP_ARGS         = --build-arg APP=$(APP)                              	\
     --build-arg APP_PACKAGES="$(APP_PACKAGES)"                      	\
     --build-arg APP_IMPORTS="$(APP_IMPORTS)"                        	\
-    --build-arg APP_EXTRAS="$(APP_EXTRAS)"                          	\
     --build-arg HEALTH_PATH="$(APP_HEALTH)"                         	\
     --build-arg SANDBOX_DEV_KRB=$(SRC_DIR)/compose/$(APP)/conf/krb     	\
     --build-arg BOBA_DIR="$(DEST_DIR)" --build-arg BOBA_VERSION="$(VERSION)"
@@ -256,7 +251,7 @@ $(E2FSPROGS_TARBALL):
 $(UV_BIN):
 	@$(call fetch,$(UV_URL),/tmp/uv-$(UV_VERSION).tar.gz)
 	tar -xzf /tmp/uv-$(UV_VERSION).tar.gz -C /tmp
-	install -m 0755 /tmp/uv-$(UV_PLATFORM)/uv "$@"
+	install -D -m 0755 /tmp/uv-$(UV_PLATFORM)/uv "$@"
 	rm -rf /tmp/uv-$(UV_PLATFORM) /tmp/uv-$(UV_VERSION).tar.gz
 	"$@" --version
 
@@ -314,16 +309,39 @@ sandbox: version-check
 	echo "== песочница $(APP) =="
 	$(call docker-stage,bwrap-build,$(BWRAP_IMAGE))
 	$(call docker-stage,fuse2fs-build,$(FUSE_IMAGE))
-	$(call docker-stage,sandbox-image,$(ROOTFS_IMAGE),$(APP_ARGS))
 	mkdir -p "$(SANDBOX_DIR)/third/bin"
 	rm -f "$(SANDBOX_DIR)/third/bin/bwrap" "$(SANDBOX_DIR)/third/bin/fuse2fs" \
-	      "$(SANDBOX_DIR)/workspace.ext4" "$(SANDBOX_DIR)/rootfs.ext4"
+	      "$(SANDBOX_DIR)/workspace.ext4"
 	$(call image-copy,$(BWRAP_IMAGE),/out/bwrap,$(SANDBOX_DIR)/third/bin/bwrap)
 	$(call image-copy,$(FUSE_IMAGE),/out/fuse2fs,$(SANDBOX_DIR)/third/bin/fuse2fs)
 	$(call image-copy,$(FUSE_IMAGE),/out/sandbox-workspace.ext4,$(SANDBOX_DIR)/workspace.ext4)
-	$(call image-copy,$(ROOTFS_IMAGE),/out/sandbox-rootfs.ext4,$(SANDBOX_DIR)/rootfs.ext4)
 	chmod 0755 "$(SANDBOX_DIR)/third/bin/bwrap" "$(SANDBOX_DIR)/third/bin/fuse2fs"
-	ls -lh $(SANDBOX_DIR)/third/bin $(SANDBOX_DIR)/*.ext4
+	# TrustedBinaries отвергает каталог, открытый группе на запись
+	chmod -R go-w "$(SANDBOX_DIR)/third"
+	ls -lh $(SANDBOX_DIR)/third/bin $(SANDBOX_DIR)/workspace.ext4
+
+# образ корня одного плагина: цель читает декларации [tool.boba.sandbox] пакета
+.PHONY: plugin-rootfs
+plugin-rootfs: version-check
+	@$(check-inputs)
+	@if [ -z "$(PLUGIN)" ]; then
+	    echo "нужен PLUGIN=<имя пакета>: make plugin-rootfs PLUGIN=boba-tool-postgres" >&2
+	    exit 1
+	fi
+	echo "== образ корня плагина $(PLUGIN) =="
+	$(call docker-stage,plugin-rootfs,boba-plugin-$(PLUGIN):$(BOBA_TAG),$(APP_ARGS) --build-arg PLUGIN=$(PLUGIN))
+	mkdir -p "$(SANDBOX_DIR)/plugins/$(PLUGIN)"
+	rm -f "$(SANDBOX_DIR)/plugins/$(PLUGIN)/rootfs.ext4"
+	$(call image-copy,boba-plugin-$(PLUGIN):$(BOBA_TAG),/out/plugin-rootfs.ext4,$(SANDBOX_DIR)/plugins/$(PLUGIN)/rootfs.ext4)
+	ls -lh "$(SANDBOX_DIR)/plugins/$(PLUGIN)/rootfs.ext4"
+
+# образы всех плагинов с entry points группы boba.tools
+.PHONY: plugin-rootfs-all
+plugin-rootfs-all:
+	@for name in $$(python3 "$(BASE_DIR)/scripts/plugin_rootfs.py" list "$(SRC_DIR)/packages"); do
+	    $(MAKE) plugin-rootfs PLUGIN=$$name || exit 1
+	done
+
 
 .PHONY: build
 build: version-check
@@ -342,8 +360,8 @@ test: build
 	    -c '"$$PYTHONHOME/bin/python3" - --names "$(DEST_DIR)/app/packages.txt"' < "$(TEST_DIR)/bobacheck.py"
 
 # что обязано лежать в дереве установки
-RELEASE_PARTS_common := sandbox/rootfs.ext4 sandbox/workspace.ext4 third/bin/bwrap third/bin/fuse2fs \
-                        models/fastembed app/bin app_root/public
+RELEASE_PARTS_common := sandbox/plugins sandbox/workspace.ext4 third/bin/bwrap third/bin/fuse2fs \
+                        app/bin app_root/public
 RELEASE_PARTS := $(RELEASE_PARTS_common) app_root/public/workflow
 
 # дерево установки из готового образа: пути и шебанги переводятся с DEST_DIR на INSTALL_DIR
@@ -356,6 +374,9 @@ release:
 	rm -rf "$(OUT)"
 	mkdir -p "$(OUT)/conf"
 	$(call image-copy,$(RELEASE_IMAGE),$(DEST_DIR)/.,$(OUT)/)
+	if [ -d "$(SANDBOX_DIR)/plugins" ]; then
+	    cp -a "$(SANDBOX_DIR)/plugins" "$(OUT)/sandbox/plugins"
+	fi
 	sed -i "1s|^#!.*python3.*|#!$(INSTALL_DIR)/third/bin/python3|" "$(OUT)/app/bin"/*
 	export BOBA_BASE="$(INSTALL_DIR)" BOBA_VERSION="$(VERSION)" INSTALL_DIR="$(INSTALL_DIR)" BOBA_DATA="$(DATA_DIR)"
 	envsubst '$${INSTALL_DIR} $${BOBA_DATA}' < "$(CONF_DIR)/boba-$(APP).service" > "$(OUT)/boba-$(APP).service"
@@ -381,28 +402,22 @@ dev:
 	@$(check-inputs)
 	echo "== рантайм $(APP) в $(OUT) =="
 	mkdir -p "$(OUT)/conf" "$(OUT)/data/workspace" "$(OUT)/data/tool-logs" "$(OUT)/data/dump" "$(OUT)/data/krb"
-	# веса эмбеддера — своя копия у приложения
+	# в dev веса эмбеддера нужны process-режиму отладки; релиз их не таскает
 	rm -rf "$(OUT)/models"
 	mkdir -p "$(OUT)/models"
 	cp -al "$(DEPS_DIR)/fastembed" "$(OUT)/models/fastembed"
 	install -m 0755 "$(CONF_DIR)/cgroup-init.sh" "$(OUT)/cgroup-init.sh"
+	# dev-хост работает process-режимом: образы песочницы живут только в релизе,
+	# но bwrap и fuse2fs нужны хранилищу приложения (workspace.ext4 канваса)
 	rm -rf "$(OUT)/sandbox" "$(OUT)/third" "$(OUT)/app_root"
-	mkdir -p "$(OUT)/sandbox" "$(OUT)/third" "$(OUT)/app_root/public"
-	ln -f "$(SANDBOX_DIR)/rootfs.ext4" "$(OUT)/sandbox/rootfs.ext4"
-	ln -f "$(SANDBOX_DIR)/workspace.ext4" "$(OUT)/sandbox/workspace.ext4"
+	mkdir -p "$(OUT)/third" "$(OUT)/app_root/public"
 	cp -al "$(SANDBOX_DIR)/third/bin" "$(OUT)/third/bin"
-	# код инструментов приезжает в песочницу биндом поверх /usr/src образа: sys.path даёт этот pth
-	: > "$(OUT)/sandbox/boba-src.pth"
-	for src in $(PACKAGE_SRCS); do
-	    echo "/usr/src/$${src#$(SRC_DIR)/packages/}" >> "$(OUT)/sandbox/boba-src.pth"
-	done
+	chmod -R go-w "$(OUT)/third"
 	cp -a "$(WEB_DIR)/assets/workflow" "$(OUT)/app_root/public/workflow"
 	cp -a "$(WEBASSETS_DIR)" "$(OUT)/app_root/public/vendor"
 	export BOBA_BASE="$(DEST_DIR)" BOBA_VERSION="$(VERSION)" BOBA_DATA="$(DEST_DIR)/data"
 	envsubst '$${BOBA_BASE} $${BOBA_VERSION} $${BOBA_DATA}' < "$(CONF_DIR)/boba.env" > "$(OUT)/conf/boba.env"
-	# umask сборки даёт g+w, а TrustedBinaries такой third/bin не примет
 	chmod go-w "$(OUT)"
-	chmod -R go-w "$(OUT)/third" "$(OUT)/sandbox"
 	if [ ! -f "$(OUT)/conf/config.toml" ]; then
 	    echo "нет $(OUT)/conf/config.toml — положи конфиг приложения $(APP)" >&2
 	    exit 1
@@ -471,4 +486,4 @@ clean:
 	rm -rf $(RELEASE_DIR) $(DEPS_DIR)/uv $(DEPS_DIR)/tessdata $(WEBASSETS_DIR) $(SANDBOX_DIR) \
 	       $(DEPS_DIR)/*.tar.xz $(DEPS_DIR)/*.env
 
-all: fetch sandbox build
+all: fetch sandbox plugin-rootfs-all build

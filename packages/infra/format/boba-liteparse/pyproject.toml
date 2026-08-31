@@ -4,17 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-liteparse"
-version = "0.0.14.dev9"
+version = "0.0.15.dev1"
 description = "Boba liteparse: движок парсинга документов поверх нативного liteparse; исполняется только в песочнице."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-text==0.0.14.dev9",
+    "boba-text==0.0.15.dev1",
     "liteparse>=2,<3",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "boba-indexing==0.0.14.dev9",
+    "boba-indexing==0.0.15.dev1",
     "pytest>=8",
 ]
 
@@ -22,3 +22,9 @@ dev = [
 where = ["src"]
 include = ["boba*"]
 namespaces = true
+
+[tool.boba.sandbox]
+apt = ["imagemagick", "libreoffice-writer", "libreoffice-calc", "libreoffice-impress", "ghostscript", "fonts-dejavu-core"]
+data = ["tessdata:/usr/share/tessdata"]
+root = "sandbox-root"
+setup = "sandbox-setup.sh"

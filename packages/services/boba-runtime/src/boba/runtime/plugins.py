@@ -38,7 +38,7 @@ from boba.runtime.refs import RuntimeRefs
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolEntryError, ToolLike, ToolMain
 from boba.toolkit.facade import PayloadTool
 from boba.toolkit.launcher import LauncherFactory, ToolLauncher
-from boba.toolkit.manifest import ToolPluginManifest
+from boba.toolkit.manifest import LaunchSpec, ToolPluginManifest
 from boba.toolkit.types import StringList
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.access import ToolAccessGuard
@@ -91,6 +91,9 @@ class ToolPlugin:
     discovered: bool = False
     """True — плагин пришёл entry point'ом установленного пакета: его секция
     tool.<section> обязана прийти файлом conf/plugins/<section>.toml."""
+    package: str = ""
+    """Дистрибутив entry point'а: по нему ищется образ корня песочницы
+    plugins/<package>/rootfs.ext4; пусто — плагин встроен в приложение."""
 
 
 class PluginMeta(BaseModel):
@@ -233,7 +236,12 @@ class ToolLoader:
         if not plugin.sandboxed:
             return self._enabled_tools(plugin, cfg, self._no_launchers, meta)
 
-        launcher = launchers.launcher_of(plugin.section, plugin.modules)
+        spec = LaunchSpec(
+            section=plugin.section,
+            modules=plugin.modules,
+            package=plugin.package,
+        )
+        launcher = launchers.launcher_of(spec)
 
         def factory(tool: str) -> ToolLauncher:
             return launcher
@@ -368,12 +376,23 @@ class EntryPointPlugins:
                 msg = f"tool plugin section {manifest.section!r} is declared twice"
                 raise RuntimeError(msg)
 
-            table[manifest.section] = cls._plugin_of(manifest)
+            package = cls._package_of(entry)
+            table[manifest.section] = cls._plugin_of(manifest, package)
 
         return table
 
+    @staticmethod
+    def _package_of(entry: Any) -> str:
+        """Дистрибутив entry point'а; по нему ищется образ корня плагина."""
+        dist = getattr(entry, "dist", None)
+        if dist is None:
+            msg = f"entry point {entry.name!r} carries no distribution"
+            raise RuntimeError(msg)
+
+        return dist.name
+
     @classmethod
-    def _plugin_of(cls, manifest: ToolPluginManifest) -> ToolPlugin:
+    def _plugin_of(cls, manifest: ToolPluginManifest, package: str) -> ToolPlugin:
         connections = None
         if isinstance(manifest, ConnectedToolManifest):
             connections = manifest.connections
@@ -386,6 +405,7 @@ class EntryPointPlugins:
             modules=ToolBridge.modules_of(manifest.tools),
             connections=connections,
             discovered=True,
+            package=package,
         )
 
     @staticmethod

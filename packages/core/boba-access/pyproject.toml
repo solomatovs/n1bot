@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-access"
-version = "0.0.14.dev9"
+version = "0.0.15.dev1"
 description = "Boba access: права на инструменты — гранты ролей и профилей, одно решение о доступности."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-toolkit==0.0.14.dev9",
+    "boba-toolkit==0.0.15.dev1",
     "pydantic>=2.10,<3",
 ]
 
