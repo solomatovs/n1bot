@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-web"
-version = "0.0.14.dev9"
+version = "0.0.15.dev1"
 description = "Инструменты web: скачивание и grep страницы целиком внутри песочницы."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-connections==0.0.14.dev9",
-    "boba-text==0.0.14.dev9",
-    "boba-toolkit==0.0.14.dev9",
-    "boba-transport-http==0.0.14.dev9",
+    "boba-connections==0.0.15.dev1",
+    "boba-text==0.0.15.dev1",
+    "boba-toolkit==0.0.15.dev1",
+    "boba-transport-http==0.0.15.dev1",
     "httpx",
     "pydantic>=2.10,<2.11",
 ]
@@ -26,7 +26,7 @@ payload = [
     "markdownify>=0.11,<1.0",
 ]
 dev = [
-    "boba-config==0.0.14.dev9",
+    "boba-config==0.0.15.dev1",
     "pytest>=8",
 ]
 
@@ -34,3 +34,6 @@ dev = [
 where = ["src"]
 include = ["boba*"]
 namespaces = true
+
+[tool.boba.sandbox]
+imports = ["httpx", "markdownify", "bs4"]

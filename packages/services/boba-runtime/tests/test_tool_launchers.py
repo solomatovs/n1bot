@@ -6,12 +6,14 @@ from pathlib import Path
 
 import pytest
 from omegaconf import OmegaConf
+from pydantic import ValidationError
 
 from boba.runtime.launchers import (
     ProcessLaunchers,
     ToolLaunchers,
     ZygoteLaunchers,
 )
+from boba.toolkit.manifest import LaunchSpec
 from boba.toolrun.process import ProcessToolCaller
 
 
@@ -44,12 +46,13 @@ def test_sandbox_provider_builds_zygote_launchers() -> None:
     assert isinstance(launchers, ZygoteLaunchers)
 
 
-def test_sandbox_probe_requires_sandbox_section() -> None:
+def test_sandbox_probe_requires_env_paths() -> None:
     raw = OmegaConf.create({"tool_launcher": {"provider": "sandbox"}})
 
     launchers = ToolLaunchers.of(raw)
 
-    with pytest.raises(RuntimeError, match=r"\[sandbox\] is required"):
+    # конвенции песочницы стоят на путях [env]: без них probe отказывает
+    with pytest.raises(ValidationError):
         launchers.probe()
 
 
@@ -61,7 +64,7 @@ def test_process_provider_builds_process_launchers(tmp_path: Path) -> None:
     assert isinstance(launchers, ProcessLaunchers)
 
     launchers.probe()
-    launcher = launchers.launcher_of("fake", ())
+    launcher = launchers.launcher_of(LaunchSpec(section="fake"))
 
     assert isinstance(launcher, ProcessToolCaller)
 

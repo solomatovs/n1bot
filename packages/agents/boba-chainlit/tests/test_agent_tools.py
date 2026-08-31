@@ -55,7 +55,7 @@ _ROOT = "/tmp/boba-rootfs"  # noqa: S108
 _SANDBOX = (
     Path(__file__).resolve().parents[4] / "build" / "chainlit" / "src" / "sandbox"
 )
-_ROOTFS_IMAGE = _SANDBOX / "rootfs.ext4"
+_ROOTFS_IMAGE = _SANDBOX / "plugins" / "boba-tool-shell" / "rootfs.ext4"
 
 _PROFILE_BASE: dict[str, object] = {
     "host": {

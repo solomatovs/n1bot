@@ -4,18 +4,18 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-connection-broker"
-version = "0.0.14.dev9"
+version = "0.0.15.dev1"
 description = "Boba connection broker: хранилище соединений и грантов на postgres, соединения субъекта на вызов, билеты kerberos для тел инструментов."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-toolkit==0.0.14.dev9",
-    "boba-identity==0.0.14.dev9",
-    "boba-connections==0.0.14.dev9",
-    "boba-kerberos==0.0.14.dev9",
-    "boba-toolrun==0.0.14.dev9",
-    "boba-db-postgres==0.0.14.dev9",
-    "boba-transport-http==0.0.14.dev9",
-    "boba-db-clickhouse==0.0.14.dev9",
+    "boba-toolkit==0.0.15.dev1",
+    "boba-identity==0.0.15.dev1",
+    "boba-connections==0.0.15.dev1",
+    "boba-kerberos==0.0.15.dev1",
+    "boba-toolrun==0.0.15.dev1",
+    "boba-db-postgres==0.0.15.dev1",
+    "boba-transport-http==0.0.15.dev1",
+    "boba-db-clickhouse==0.0.15.dev1",
     "httpx>=0.28,<1",
     "pydantic>=2.10,<3",
     "langchain-core>=1.4,<1.5",
@@ -24,8 +24,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "boba-auth==0.0.14.dev9",
-    "boba-stand==0.0.14.dev9",
+    "boba-auth==0.0.15.dev1",
+    "boba-stand==0.0.15.dev1",
     "pytest>=8",
 ]
 

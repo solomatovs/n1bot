@@ -144,6 +144,7 @@ class ZygotePolicy(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     start_timeout_sec: float = Field(
+        default=60.0,
         gt=0,
         description=(
             "Сколько секунд ждать готовности зиготы: отсчёт идёт от запуска "
@@ -154,6 +155,7 @@ class ZygotePolicy(BaseModel):
         ),
     )
     max_start_attempts: int = Field(
+        default=3,
         ge=1,
         description=(
             "Сколько неудачных попыток старта подряд допускается. Когда они "
@@ -164,6 +166,7 @@ class ZygotePolicy(BaseModel):
         ),
     )
     restart_backoff_sec: float = Field(
+        default=1.0,
         ge=0,
         description=(
             "Пауза между попытками старта. Зигота, падающая сразу после "
@@ -173,6 +176,7 @@ class ZygotePolicy(BaseModel):
         ),
     )
     stop_wait_sec: float = Field(
+        default=5.0,
         gt=0,
         description=(
             "Сколько секунд ждать, пока зигота выйдет сама после закрытия "
@@ -182,6 +186,7 @@ class ZygotePolicy(BaseModel):
         ),
     )
     call_poll_sec: float = Field(
+        default=0.01,
         gt=0,
         description=(
             "Шаг опроса дескрипторов вызова на стороне приложения: как часто "
@@ -190,6 +195,7 @@ class ZygotePolicy(BaseModel):
         ),
     )
     healthy_after_sec: float = Field(
+        default=30.0,
         ge=0,
         description=(
             "Сколько секунд зигота должна прожить после ready, чтобы её "

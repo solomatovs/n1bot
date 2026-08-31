@@ -6,6 +6,7 @@ set -eu
 tree=$1
 out=$2
 python_version=$3
+reserve_mb=${4:-512}
 e2fs_src=/tmp/e2fs-src
 
 PYTHONHOME="$tree/usr/local" "$tree/usr/local/bin/python3" -m compileall -q -j 0 \
@@ -13,7 +14,7 @@ PYTHONHOME="$tree/usr/local" "$tree/usr/local/bin/python3" -m compileall -q -j 0
     "$tree/usr/local/lib/python$python_version" "$tree/usr/src"
 
 used_mb=$(du -sm "$tree" | cut -f1)
-size_mb=$(( used_mb + used_mb / 5 + 512 ))
+size_mb=$(( used_mb + used_mb / 5 + reserve_mb ))
 inodes=$(find "$tree" | wc -l)
 inodes=$(( inodes + inodes / 5 + 1000 ))
 

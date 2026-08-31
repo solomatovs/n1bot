@@ -4,19 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-knowledge"
-version = "0.0.14.dev9"
+version = "0.0.15.dev1"
 description = "Документы и база знаний: чтение файлов, Confluence, индексация и поиск — всё в песочнице."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-connections==0.0.14.dev9",
-    "boba-toolkit==0.0.14.dev9",
-    "boba-db-postgres==0.0.14.dev9",
-    "boba-db-pgvector==0.0.14.dev9",
-    "boba-indexing==0.0.14.dev9",
-    "boba-kbdoc==0.0.14.dev9",
-    "boba-llm==0.0.14.dev9",
-    "boba-text==0.0.14.dev9",
-    "boba-transport-http==0.0.14.dev9",
+    "boba-connections==0.0.15.dev1",
+    "boba-toolkit==0.0.15.dev1",
+    "boba-db-postgres==0.0.15.dev1",
+    "boba-db-pgvector==0.0.15.dev1",
+    "boba-indexing==0.0.15.dev1",
+    "boba-kbdoc==0.0.15.dev1",
+    "boba-llm==0.0.15.dev1",
+    "boba-text==0.0.15.dev1",
+    "boba-transport-http==0.0.15.dev1",
     "httpx[http2]>=0.28,<1",
     "psycopg[binary,pool]>=3.2",
     "pydantic>=2.10,<2.11",
@@ -31,20 +31,20 @@ ingest = "boba.tool.kb.plugin:INGEST"
 
 [project.optional-dependencies]
 payload = [
-    "boba-liteparse==0.0.14.dev9",
-    "boba-llm[payload]==0.0.14.dev9",
+    "boba-liteparse==0.0.15.dev1",
+    "boba-llm[payload]==0.0.15.dev1",
     "lxml>=5.0",
     "liteparse>=2,<3",
     "beautifulsoup4>=4.12",
     "markdownify>=0.11,<1.0",
 ]
 dev = [
-    "boba-runtime==0.0.14.dev9",
-    "boba-liteparse==0.0.14.dev9",
-    "boba-sandbox==0.0.14.dev9",
-    "boba-config==0.0.14.dev9",
-    "boba-stand==0.0.14.dev9",
-    "boba-tool-postgres==0.0.14.dev9",
+    "boba-runtime==0.0.15.dev1",
+    "boba-liteparse==0.0.15.dev1",
+    "boba-sandbox==0.0.15.dev1",
+    "boba-config==0.0.15.dev1",
+    "boba-stand==0.0.15.dev1",
+    "boba-tool-postgres==0.0.15.dev1",
     "fastapi>=0.115,<1",
     "liteparse>=2,<3",
     "omegaconf>=2.3,<3",
@@ -56,3 +56,6 @@ dev = [
 where = ["src"]
 include = ["boba*"]
 namespaces = true
+
+[tool.boba.sandbox]
+imports = ["fastembed", "liteparse"]

@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
+from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel
 
 from boba.chainlit.infra.plugins import ChatPlugins
@@ -35,6 +36,14 @@ def app_sandbox() -> Iterator[None]:
         ZygoteRegistry.stop_all()
 
 
+@pytest.fixture
+def reload_config(raw_config: DictConfig) -> DictConfig:
+    """Конфиг с процессным запуском: тест про обвязку tools, не про песочницу."""
+    copied = raw_config.copy()
+    OmegaConf.update(copied, "env.tool_launcher", "process")
+    return copied
+
+
 def _no_registry() -> None:
     return None
 
@@ -53,9 +62,9 @@ def _schema_fields(tool: object) -> set[str]:
     return set(schema.model_fields)
 
 
-def test_repeated_load_serves_wrapped_copies(raw_config) -> None:
-    first = ChatPlugins.load(raw_config, StandRefs.of(_no_store, _no_registry))
-    second = ChatPlugins.load(raw_config, StandRefs.of(_no_store, _no_registry))
+def test_repeated_load_serves_wrapped_copies(reload_config: DictConfig) -> None:
+    first = ChatPlugins.load(reload_config, StandRefs.of(_no_store, _no_registry))
+    second = ChatPlugins.load(reload_config, StandRefs.of(_no_store, _no_registry))
 
     if [t.name for t in first.tools] != [t.name for t in second.tools]:
         raise AssertionError("[t.name for t in first.tools] == [t.name for t in secon…")
@@ -69,9 +78,9 @@ def test_repeated_load_serves_wrapped_copies(raw_config) -> None:
         raise AssertionError('"cfg" not in _schema_fields(loaded)')
 
 
-def test_module_singletons_stay_pristine(raw_config) -> None:
-    ChatPlugins.load(raw_config, StandRefs.of(_no_store, _no_registry))
-    ChatPlugins.load(raw_config, StandRefs.of(_no_store, _no_registry))
+def test_module_singletons_stay_pristine(reload_config: DictConfig) -> None:
+    ChatPlugins.load(reload_config, StandRefs.of(_no_store, _no_registry))
+    ChatPlugins.load(reload_config, StandRefs.of(_no_store, _no_registry))
 
     for tool in PG_TOOLS:
         fields = _schema_fields(tool)

@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import pytest
 
-from boba.sandbox import SandboxProfile, SandboxToolConfig
-from boba.config import bind
+from boba.sandbox import SandboxProfile
+from boba.stand.sandbox import section_profile
 
 MIN_ADDRESS_SPACE = 3 * 1024 * 1024 * 1024
 MIN_OPEN_FILES = 64
@@ -36,11 +36,11 @@ def chainlit_context() -> None:
 
 
 def _bound(raw, sections) -> list[tuple[str, SandboxProfile]]:
-    """Профиль запуска инструмента: он объявлен секцией [tool.<name>.sandbox]."""
+    """Профиль запуска инструмента: сборка из манифеста, как в приложении."""
     found: list[tuple[str, SandboxProfile]] = []
     for section in sections:
-        sandbox = bind(raw, path=f"{section}.sandbox", model=SandboxToolConfig)
-        found.append((section, sandbox.profile))
+        name = section.removeprefix("tool.")
+        found.append((section, section_profile(raw, name)))
     return found
 
 

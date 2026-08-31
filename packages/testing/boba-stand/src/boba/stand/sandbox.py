@@ -12,12 +12,23 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from omegaconf import DictConfig, OmegaConf
 
+from boba.runtime.launchers import ZygoteLaunchers
+from boba.runtime.plugins import EntryPointPlugins
 from boba.sandbox import SandboxProfile
+from boba.toolkit.manifest import LaunchSpec
 
 REPO = Path(__file__).resolve().parents[6]
 SANDBOX = REPO / "build" / "chainlit" / "src" / "sandbox"
-ROOTFS_IMAGE = SANDBOX / "rootfs.ext4"
+PLUGIN_IMAGES = SANDBOX / "plugins"
+ROOTFS_IMAGE = PLUGIN_IMAGES / "boba-tool-shell" / "rootfs.ext4"
+"""Базовый корень стендов: образ shell-плагина, bash и python без payload'ов."""
+
+
+def plugin_rootfs(package: str) -> Path:
+    """Образ корня пакета: make plugin-rootfs PLUGIN=<пакет>."""
+    return PLUGIN_IMAGES / package / "rootfs.ext4"
 
 """Код пакетов монтируется одним каталогом: точку /usr/src несёт rootfs."""
 
@@ -26,7 +37,7 @@ ADDRESS_SPACE = 16 * 1024 * 1024 * 1024
 
 needs_sandbox = pytest.mark.skipif(
     shutil.which("bwrap") is None or not ROOTFS_IMAGE.exists(),
-    reason="нет bwrap или артефактов песочницы (собрать: make -C build/chainlit fetch sandbox)",
+    reason="нет bwrap или образов плагинов (собрать: make -C build/chainlit fetch plugin-rootfs-all)",
 )
 needs_userns = pytest.mark.skipif(
     os.geteuid() == 0, reason="под root user namespace ведёт себя иначе"
@@ -46,33 +57,20 @@ def _bin_dirs() -> list[str]:
     return dirs
 
 
-SRC_PACKAGES = (
-    "core/boba-cancellation",
-    "core/boba-indexing",
-    "core/boba-toolkit",
-    "infra/sandbox/boba-sandbox",
-    "infra/db/boba-db-postgres",
-    "infra/db/boba-db-pgvector",
-    "infra/auth/boba-krb",
-    "infra/llm/boba-llm",
-    "infra/transport/boba-transport-http",
-    "infra/format/boba-liteparse",
-    "infra/format/boba-text",
-    "tools/boba-tool-shell",
-    "tools/boba-tool-doc",
-    "tools/boba-tool-knowledge",
-    "tools/boba-tool-chart",
-)
+def _src_packages() -> tuple[str, ...]:
+    """Все пакеты репозитория с src-layout: бинд packages:/usr/src перекрывает
+    запечённый код образа, поэтому sys.path обязан покрывать репо целиком."""
+    names: list[str] = []
+    for src in sorted((REPO / "packages").glob("*/*/src")) + sorted(
+        (REPO / "packages").glob("*/*/*/src")
+    ):
+        names.append(str(src.relative_to(REPO / "packages").parent))
+
+    return tuple(names)
+
+
+SRC_PACKAGES = _src_packages()
 """Пакеты, чей код нужен телу инструмента внутри песочницы."""
-
-
-def _base_dir() -> Path:
-    """Каталог развёртывания (BOBA_BASE): оттуда приложение берёт .pth и модели."""
-    base = os.environ.get("BOBA_BASE")
-    if not base:
-        raise RuntimeError("BOBA_BASE не задан — тесты песочницы берут пути из него")
-
-    return Path(base)
 
 
 class SandboxLayout:
@@ -80,18 +78,8 @@ class SandboxLayout:
 
     @staticmethod
     def ro_binds(docs_dir: Path | None) -> list[str]:
-        """Те же бинды, что у [sandbox.bind] приложения: код, .pth, веса эмбеддера.
-
-        Python и tessdata лежат в самом образе rootfs.ext4; веса и код идут
-        с хоста, как в бою.
-        """
-        base = _base_dir()
-        site_packages = "/usr/local/lib/python3.11/site-packages"
-        binds = [
-            f"{REPO / 'packages'}:/usr/src",
-            f"{base / 'sandbox' / 'boba-src.pth'}:{site_packages}/boba-src.pth",
-            f"{base / 'models' / 'fastembed'}:/var/cache/fastembed",
-        ]
+        """Код репозитория поверх кода образа: sys.path даёт PYTHONPATH профиля."""
+        binds = [f"{REPO / 'packages'}:/usr/src"]
         if docs_dir is not None:
             binds.append(f"{docs_dir}:/workspace")
         return binds
@@ -148,8 +136,10 @@ def _merged(base: dict[str, Any], flat: dict[str, Any]) -> dict[str, Any]:
     return raw
 
 
-def sandbox_profile(docs_dir: Path | None = None, **kw: Any) -> dict[str, Any]:
-    """Профиль запуска payload'а — тот же по смыслу, что в конфиге приложения."""
+def sandbox_profile(
+    package: str, docs_dir: Path | None = None, **kw: Any
+) -> dict[str, Any]:
+    """Профиль запуска payload'а пакета — тот же по смыслу, что в приложении."""
     profile: dict[str, Any] = {
         "host": {
             "mounting": {
@@ -166,7 +156,7 @@ def sandbox_profile(docs_dir: Path | None = None, **kw: Any) -> dict[str, Any]:
             "kill_grace_sec": 5,
             "cgroup_base": "",
         },
-        "rootfs": str(ROOTFS_IMAGE),
+        "rootfs": str(plugin_rootfs(package)),
         "mounts": {
             "ro": tuple(SandboxLayout.ro_binds(docs_dir)),
             "rw": (),
@@ -196,3 +186,54 @@ def sandbox_profile(docs_dir: Path | None = None, **kw: Any) -> dict[str, Any]:
         },
     }
     return _merged(profile, kw)
+
+
+def plugin_launch_spec(section: str) -> LaunchSpec:
+    """Спека запуска секции из установленных entry points — как у приложения."""
+    table = EntryPointPlugins.discover()
+    plugin = table.get(section)
+    if plugin is None:
+        msg = f"plugin {section!r} is not installed"
+        raise RuntimeError(msg)
+
+    return LaunchSpec(
+        section=plugin.section,
+        modules=plugin.modules,
+        package=plugin.package,
+    )
+
+
+def _staged(value: Any, deploy_sandbox: str, deploy_third: str) -> Any:
+    """Пути развёртывания в значении профиля -> артефакты сборки."""
+    if isinstance(value, str):
+        replaced = value.replace(deploy_sandbox, str(SANDBOX))
+        return replaced.replace(deploy_third, str(SANDBOX / "third"))
+
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        for key, entry in value.items():
+            result[key] = _staged(entry, deploy_sandbox, deploy_third)
+        return result
+
+    if isinstance(value, (list, tuple)):
+        items: list[Any] = []
+        for entry in value:
+            items.append(_staged(entry, deploy_sandbox, deploy_third))
+        return items
+
+    return value
+
+
+def section_profile(raw: DictConfig, section: str) -> SandboxProfile:
+    """Профиль секции той же сборкой, что у приложения: base + манифест.
+
+    Пути развёртывания (rootfs, workspace, third/bin) подменяются артефактами
+    сборки: dev-хост работает process-режимом и их не раскладывает.
+    """
+    profile = ZygoteLaunchers(raw).profile_of(plugin_launch_spec(section))
+
+    deploy_sandbox = str(OmegaConf.select(raw, "env.sandbox"))
+    deploy_third = str(OmegaConf.select(raw, "env.base")) + "/third"
+    data = _staged(profile.model_dump(), deploy_sandbox, deploy_third)
+
+    return SandboxProfile.model_validate(data)

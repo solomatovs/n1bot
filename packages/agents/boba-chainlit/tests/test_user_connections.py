@@ -54,7 +54,7 @@ from boba.toolkit.sql import SqlErrorKind
 from boba.toolrun.injected import InjectedConfig
 
 _REPO = Path(__file__).resolve().parents[4]
-_ROOTFS_IMAGE = _REPO / "build" / "chainlit" / "src" / "sandbox" / "rootfs.ext4"
+_ROOTFS_IMAGE = _REPO / "build" / "chainlit" / "src" / "sandbox" / "plugins" / "boba-tool-shell" / "rootfs.ext4"
 _CGROUP_BASE = os.environ.get("BOBA_CGROUP_BASE", "/sys/fs/cgroup/boba")
 
 SCHEMA = "connections_e2e"

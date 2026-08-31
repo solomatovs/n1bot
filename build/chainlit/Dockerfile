@@ -109,46 +109,6 @@ RUN truncate -s ${SANDBOX_WS_SIZE} /out/sandbox-workspace.ext4                  
        ./misc/mke2fs -F -q -t ext4 -O ^has_journal -m 0 -L workspace /out/sandbox-workspace.ext4
 
 
-# корень песочницы: нативное окружение инструментов без python и site-packages
-FROM ${GLIBC_IMAGE} AS sandbox-rootfs
-
-ARG PYTHON_VERSION=3.11
-ARG LIBSTDCXX_VERSION=6.0.25
-ARG LIBSTDCXX_OLD=6.0.22
-ARG LITEPARSE_PACKAGES="imagemagick libreoffice-writer libreoffice-calc libreoffice-impress ghostscript fonts-dejavu-core"
-
-COPY --from=site-conf /certs/  /
-
-RUN apt-get update && apt-get install -y --no-install-recommends        \
-        unzip p7zip-full file curl jq                                   \
-        libssl1.1 libffi6 libsqlite3-0 libbz2-1.0 liblzma5 libreadline7 \
-        libncurses5 zlib1g                                              \
-        libkrb5-3 libgssapi-krb5-2 krb5-user                            \
-        ${LITEPARSE_PACKAGES}                                           \
-    && rm -rf /var/lib/apt/lists/*
-
-# рантайм C++ ровно один — тулчейновый: дистрибутивный даёт только CXXABI_1.3.10,
-# а колёсам (onnxruntime) нужен 1.3.11. Ставится после apt, иначе apt вернул бы свой
-COPY --from=base /usr/lib/x86_64-linux-gnu/libstdc++.so.${LIBSTDCXX_VERSION}  /usr/lib/x86_64-linux-gnu/
-COPY --from=base /usr/lib/x86_64-linux-gnu/libgcc_s.so.1                      /lib/x86_64-linux-gnu/
-RUN rm -f /usr/lib/x86_64-linux-gnu/libstdc++.so.${LIBSTDCXX_OLD}                          \
-    && ln -sf libstdc++.so.${LIBSTDCXX_VERSION} /usr/lib/x86_64-linux-gnu/libstdc++.so.6   \
-    && ldconfig
-
-# обёртка magick для liteparse; ImageMagick по умолчанию запрещает читать PDF
-COPY build/chainlit/rootfs/  /
-RUN sed -i 's#</policymap>#  <policy domain="coder" rights="read|write" pattern="PDF"/>\n</policymap>#' \
-        /etc/ImageMagick-6/policy.xml
-
-# точки монтирования: bwrap не создаёт их в read-only корне. python лежит в /usr/local
-# (собран с этим prefix), поэтому PYTHONHOME и PYTHONPATH внутри не нужны
-RUN mkdir -p /usr/local/lib/python${PYTHON_VERSION}/site-packages \
-             /usr/src /usr/share/tessdata /var/cache/fastembed    \
-             /workspace /mnt/pgsock
-
-RUN for tool in unzip 7z file head curl jq convert magick soffice gs; do command -v "$tool"; done
-
-
 # колёса всех пакетов репозитория и constraints из uv.lock: обе стадии установки
 # получают версии хоста, иначе uv ставил бы свежайшие
 FROM base AS boba-wheels
@@ -181,52 +141,112 @@ RUN for name in ${APP_IMPORTS}; do python3 -c "import $name; print('$name ok')";
 RUN pip3 list --path /opt/app-site --format=freeze | grep '^boba-' | cut -d= -f1 > /opt/app-packages.txt
 
 
-# site-packages песочницы: закрытие зависимостей приложения даёт список пакетов
-# с payload, в песочнице живут только они. Код инструментов уезжает отдельно —
-# в /usr/src образа корня, а sys.path добавляет boba-src.pth
-FROM base AS sandbox-site
+# --- образ корня одного плагина: make plugin-rootfs PLUGIN=<пакет> ---------------
 
-ARG APP=chainlit
-ARG APP_EXTRAS=""
+# site-packages плагина: закрытие payload одного пакета и его сборочные декларации
+FROM base AS plugin-site
+
+ARG PLUGIN
 
 COPY --from=boba-wheels /tmp/wheels/         /tmp/wheels/
 COPY --from=boba-wheels /tmp/boba/packages/  /tmp/packages/
-COPY build/chainlit/scripts/sandbox_names.py          /tmp/sandbox_names.py
+COPY build/chainlit/scripts/plugin_rootfs.py    /tmp/plugin_rootfs.py
 
-RUN python3 /tmp/sandbox_names.py /tmp/packages ${APP} ${APP_EXTRAS} > /tmp/names.txt \
+RUN test -n "${PLUGIN}"                                                              \
+    && python3 /tmp/plugin_rootfs.py names /tmp/packages ${PLUGIN} > /tmp/names.txt  \
     && cat /tmp/names.txt                                                              \
     && uv pip install --python "$(command -v python3)" --target /opt/site              \
         --constraint /tmp/wheels/constraints.txt --find-links=/tmp/wheels              \
         $(cat /tmp/names.txt)
 
-RUN mkdir -p /opt/code-sandbox                    \
-    && mv /opt/site/boba /opt/code-sandbox/boba   \
+RUN python3 /tmp/plugin_rootfs.py apt /tmp/packages ${PLUGIN} > /opt/plugin-apt.txt \
+    && python3 /tmp/plugin_rootfs.py data /tmp/packages ${PLUGIN} > /opt/plugin-data.txt \
+    && mkdir -p /opt/plugin-root /opt/plugin-setup.d                                    \
+    && for root in $(python3 /tmp/plugin_rootfs.py root /tmp/packages ${PLUGIN}); do    \
+           cp -a "$root/." /opt/plugin-root/; done                                      \
+    && index=0                                                                          \
+    && for setup in $(python3 /tmp/plugin_rootfs.py setup /tmp/packages ${PLUGIN}); do  \
+           cp "$setup" "/opt/plugin-setup.d/$index.sh"; index=$((index + 1)); done
+
+ENV PYTHONPATH=/opt/site
+RUN for name in $(python3 /tmp/plugin_rootfs.py imports /tmp/packages ${PLUGIN}); do \
+        python3 -c "import $name; print('$name ok')"; done
+
+RUN mkdir -p /opt/code-sandbox                          \
+    && mv /opt/site/boba /opt/code-sandbox/boba         \
     && mv /opt/site/boba_*.dist-info /opt/code-sandbox/ \
     && echo /usr/src > /opt/site/boba-src.pth
 
-ENV PYTHONPATH=/opt/code-sandbox:/opt/site
-RUN python3 -c "import liteparse, markdownify, bs4, lxml, plotly, httpx, psycopg, clickhouse_connect, aiohttp, fastembed, gssapi, krb5, pandas, openpyxl, boba.tool; print('site ok')"
+# гость зиготы стартует в образе без биндов кода: контракт проверяется здесь
+RUN PYTHONPATH=/opt/code-sandbox:/opt/site python3 -c "import boba.sandbox.guest; print('guest ok')"
 
 
-# образ корня песочницы: собранное дерево одним ext4-файлом
-FROM fuse2fs-build AS sandbox-image
+# корень плагина: база песочницы плюс нативные зависимости из декларации
+FROM ${GLIBC_IMAGE} AS plugin-root
+
+ARG LIBSTDCXX_VERSION=6.0.25
+ARG LIBSTDCXX_OLD=6.0.22
+
+COPY --from=site-conf /certs/                 /
+COPY --from=plugin-site /opt/plugin-apt.txt   /tmp/plugin-apt.txt
+COPY --from=plugin-site /opt/plugin-setup.d/  /tmp/plugin-setup.d/
+
+RUN apt-get update && apt-get install -y --no-install-recommends        \
+        unzip p7zip-full file curl jq                                   \
+        libssl1.1 libffi6 libsqlite3-0 libbz2-1.0 liblzma5 libreadline7 \
+        libncurses5 zlib1g                                              \
+        libkrb5-3 libgssapi-krb5-2 krb5-user                            \
+        $(tr '\n' ' ' < /tmp/plugin-apt.txt)                            \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=base /usr/lib/x86_64-linux-gnu/libstdc++.so.${LIBSTDCXX_VERSION}  /usr/lib/x86_64-linux-gnu/
+COPY --from=base /usr/lib/x86_64-linux-gnu/libgcc_s.so.1                      /lib/x86_64-linux-gnu/
+RUN rm -f /usr/lib/x86_64-linux-gnu/libstdc++.so.${LIBSTDCXX_OLD}                          \
+    && ln -sf libstdc++.so.${LIBSTDCXX_VERSION} /usr/lib/x86_64-linux-gnu/libstdc++.so.6   \
+    && ldconfig
+
+COPY --from=plugin-site /opt/plugin-root/  /
+RUN for setup in /tmp/plugin-setup.d/*.sh; do                       \
+        if [ -f "$setup" ]; then sh "$setup"; fi; done               \
+    && rm -rf /tmp/plugin-setup.d /tmp/plugin-apt.txt
+
+RUN rm -rf /usr/share/man /usr/share/doc /usr/share/info /usr/share/locale \
+           /usr/share/lintian /var/cache/* /var/log/*
+
+RUN mkdir -p /usr/src /workspace /mnt/pgsock
+
+
+# ext4-образ корня плагина
+FROM fuse2fs-build AS plugin-rootfs
 
 ARG PYTHON_VERSION=3.11
 ARG BOBA_DIR=/app/boba
 ARG SANDBOX_DEV_KRB=/app/boba/conf/krb
 
-COPY --from=sandbox-rootfs /                   /tree/
+COPY --from=plugin-root /                      /tree/
 COPY --from=python-dist /opt/python/usr/local  /tree/usr/local/
-COPY --from=sandbox-site /opt/site             /tree/usr/local/lib/python${PYTHON_VERSION}/site-packages/
-COPY --from=sandbox-site /opt/code-sandbox     /tree/usr/src/
-COPY build/chainlit/src/tessdata/                       /tree/usr/share/tessdata/
-COPY build/chainlit/scripts/mkrootfs.sh                 /tmp/mkrootfs.sh
+COPY --from=plugin-site /opt/site              /tree/usr/local/lib/python${PYTHON_VERSION}/site-packages/
+COPY --from=plugin-site /opt/code-sandbox      /tree/usr/src/
+COPY --from=plugin-site /opt/plugin-data.txt   /tmp/plugin-data.txt
+COPY build/chainlit/scripts/mkrootfs.sh           /tmp/mkrootfs.sh
 
-# точки монтирования krb релиза и дерева исходников; tesseract ищет пары языков файлами
-RUN mkdir -p "/tree${BOBA_DIR}/conf/krb" "/tree${SANDBOX_DEV_KRB}"             \
-    && ln -sf eng.traineddata /tree/usr/share/tessdata/rus+eng.traineddata     \
-    && ln -sf rus.traineddata /tree/usr/share/tessdata/eng+rus.traineddata     \
-    && sh /tmp/mkrootfs.sh /tree /out/sandbox-rootfs.ext4 ${PYTHON_VERSION}
+# данные деклараций (модели эмбеддера, tessdata): из fetch-артефактов в образ;
+# путь назначения может нести ${BOBA_DIR} — раскрывается значением стадии
+RUN --mount=type=bind,source=build/chainlit/src,target=/build-data                \
+    for pair in $(cat /tmp/plugin-data.txt); do                                \
+        src="/build-data/${pair%%:*}";                                       \
+        dst="/tree$(eval echo \"${pair#*:}\")";                            \
+        mkdir -p "$dst" && cp -a "$src/." "$dst/"; done
+
+# статическая libpython, tests и инструменты установки телу не нужны:
+# python внутри образа только исполняет модуль инструментов
+RUN mkdir -p "/tree${BOBA_DIR}/conf/krb" "/tree${SANDBOX_DEV_KRB}"                        \
+    && lib="/tree/usr/local/lib/python${PYTHON_VERSION}"                                  \
+    && rm -rf "$lib/test" "$lib/idlelib" "$lib/tkinter" "$lib/lib2to3" "$lib/ensurepip"   \
+              "$lib/config-${PYTHON_VERSION}-x86_64-linux-gnu"                            \
+              "$lib/site-packages/pip" "$lib/site-packages/setuptools"                    \
+              "$lib/site-packages/pkg_resources"                                          \
+    && sh /tmp/mkrootfs.sh /tree /out/plugin-rootfs.ext4 ${PYTHON_VERSION} 64
 
 
 FROM ${GLIBC_IMAGE} AS runtime-base
@@ -250,11 +270,10 @@ COPY --from=base /usr/local/bin/uv                                            ${
 COPY --from=bwrap-build /out/bwrap                                            ${BOBA_DIR}/third/bin/bwrap
 COPY --from=fuse2fs-build /out/fuse2fs                                        ${BOBA_DIR}/third/bin/fuse2fs
 COPY --from=fuse2fs-build /out/sandbox-workspace.ext4                         ${BOBA_DIR}/sandbox/workspace.ext4
-COPY --from=sandbox-image /out/sandbox-rootfs.ext4                            ${BOBA_DIR}/sandbox/rootfs.ext4
 COPY --from=app-site /opt/app-site                                            ${BOBA_DIR}/app/
 COPY --from=app-site /opt/app-packages.txt                                    ${BOBA_DIR}/app/packages.txt
-# веса эмбеддера едут в песочницу биндом профиля kb: образ корня от них не растёт
-COPY build/chainlit/src/fastembed/                                                     ${BOBA_DIR}/models/fastembed/
+# веса эмбеддера и tessdata запечены в образы плагинов: рантайму они не нужны
+COPY build/chainlit/src/sandbox/plugins/                                              ${BOBA_DIR}/sandbox/plugins/
 
 RUN mkdir -p ${BOBA_DIR}/conf ${BOBA_DIR}/app_root/public
 

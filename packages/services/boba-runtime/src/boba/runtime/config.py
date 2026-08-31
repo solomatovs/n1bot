@@ -84,7 +84,6 @@ class EnvOverride(StrEnum):
     """
 
     BASE = "base"
-    APP = "app"
     DATA = "data"
     PORT = "port"
     INSTANCE_ID = "instance_id"

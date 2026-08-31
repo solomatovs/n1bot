@@ -537,6 +537,8 @@ async def on_canvas_render_status(action: cl.Action) -> None:
 async def on_chat_resume(
     thread_dict: ThreadDict,
     graph: Annotated[CompiledStateGraph, Depends(langchain_agent, scope="session")],
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
+    registry: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
 ):
     """Вкладка вернулась к треду: если ход жив — сохранить loading и живые шаги.
 
@@ -550,6 +552,10 @@ async def on_chat_resume(
     renderer = ChatRoomSurface.renderer_of(ThreadRoom.websocket(), thread_id)
     if user_id := current_session().user_id:
         UserRoom.join(UUID(user_id))
+
+    # обновление страницы приходит resume'ом: панель настроек шлётся как на старте
+    if tabs := _session_settings(app_config, registry):
+        await cl.ChatSettings(tabs).send()
 
     room: list[str] = []
     for session in ThreadRoom.sessions(thread_id):

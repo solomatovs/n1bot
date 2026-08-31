@@ -15,8 +15,7 @@ from omegaconf import DictConfig, OmegaConf
 from boba.chainlit.infra.config import AppConfig
 from boba.config import bind
 from boba.runtime.plugins import PluginMeta
-from boba.sandbox import SandboxToolConfig
-from boba.sandbox.profile import SandboxConfig
+from boba.stand.sandbox import section_profile
 
 HEAVY_SECTIONS = ("tool.ingest", "tool.kb")
 """Секции с нативным инференсом: их душит квота базового профиля."""
@@ -36,12 +35,6 @@ class TestConfigStaysValid:
     def test_app_section_binds(self, raw_config: DictConfig) -> None:
         bind(raw_config, path="app", model=AppConfig)
 
-    def test_sandbox_section_binds(self, raw_config: DictConfig) -> None:
-        sandbox = bind(raw_config, path="sandbox", model=SandboxConfig)
-
-        if not sandbox.profiles:
-            raise AssertionError("sandbox.profiles")
-
     def test_every_tool_section_binds_meta(self, raw_config: DictConfig) -> None:
         tools = OmegaConf.select(raw_config, "tool")
         if not (tools):
@@ -57,7 +50,7 @@ class TestHeavyToolsGetTheirCpu:
 
     @pytest.mark.parametrize("section", HEAVY_SECTIONS)
     def test_cpu_quota_is_raised(self, raw_config: DictConfig, section: str) -> None:
-        profile = bind(raw_config, f"{section}.sandbox", SandboxToolConfig).profile
+        profile = section_profile(raw_config, section.removeprefix("tool."))
         quota = profile.limits.group_cpu_percent
 
         if quota is None:

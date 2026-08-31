@@ -23,10 +23,9 @@ from boba.sandbox.zygote import (
 
 REPO = Path(__file__).resolve().parents[6]
 SANDBOX = REPO / "build" / "chainlit" / "src" / "sandbox"
-ROOTFS = SANDBOX / "rootfs"
-ROOTFS_IMAGE = SANDBOX / "rootfs.ext4"
-DEPLOY_BIN = REPO / "compose" / "chainlit" / "third" / "bin"
-"""Каталог бинарей развёртывания: тот же, что объявлен в конфиге приложения."""
+ROOTFS_IMAGE = SANDBOX / "plugins" / "boba-tool-shell" / "rootfs.ext4"
+DEPLOY_BIN = SANDBOX / "third" / "bin"
+"""Бинарные артефакты сборки: bwrap и fuse2fs из make sandbox."""
 
 
 class ProfileFields:
@@ -137,12 +136,8 @@ class SandboxStand:
 
     @classmethod
     def image_ro_binds(cls) -> tuple[str, ...]:
-        """Бинды кода стенда в корень-образ: точки в нём уже есть."""
-        return (
-            f"{SANDBOX / 'third' / 'python'}:/usr/local",
-            f"{SANDBOX / 'site'}:{cls.SITE_PACKAGES}",
-            f"{REPO / 'packages'}:/usr/src",
-        )
+        """Бинды кода стенда в корень-образ: python и site уже внутри образа."""
+        return (f"{REPO / 'packages'}:/usr/src",)
 
     @classmethod
     def image_env(cls) -> dict[str, str]:

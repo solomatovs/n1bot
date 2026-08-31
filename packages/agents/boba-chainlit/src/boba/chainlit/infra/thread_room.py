@@ -312,25 +312,39 @@ class UserRoom:
         if not isinstance(message, ThreadChanged):
             return
 
+        await cls._thread_list_changed(user_id, envelope, message)
+
+    @classmethod
+    async def _thread_list_changed(
+        cls, user_id: UUID, envelope: Envelope, message: ThreadChanged
+    ) -> None:
         interaction = cls.INTERACTION.format(seq=envelope.seq)
+
+        sent = 0
+        skipped: list[str] = []
         for session in session_source_ref().of_user(user_id):
             socket = session.websocket
             if socket is None:
+                skipped.append(f"{session.id}:no-socket")
                 continue
 
             if socket.thread_id == message.thread_id:
+                skipped.append(f"{session.id}:same-thread")
                 continue
 
             if not cls._on_thread_page(socket):
+                skipped.append(f"{session.id}:not-on-thread-page")
                 continue
 
             if not sio.manager.is_connected(socket.socket_id, "/"):
+                skipped.append(f"{session.id}:disconnected")
                 continue
 
             payload = {"interaction": interaction, "thread_id": socket.thread_id}
             # одна битая вкладка не должна оставить без обновления остальные
             try:
                 await cast("Awaitable[None]", socket.emit(cls.EVENT, payload))
+                sent += 1
             except Exception:
                 logger.warning(
                     "thread list refresh failed for session %s of user %s",
@@ -338,6 +352,14 @@ class UserRoom:
                     user_id,
                     exc_info=True,
                 )
+
+        logger.info(
+            "thread list refresh for user %s seq %d: sent=%d skipped=%s",
+            user_id,
+            envelope.seq,
+            sent,
+            skipped,
+        )
 
     @classmethod
     async def _refresh_requested(cls, user_id: UUID) -> None:

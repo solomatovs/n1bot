@@ -11,8 +11,10 @@ packages/**/*.egg-info
 .venv
 
 # в контекст не уезжают: артефакты песочницы собирают стадии Dockerfile
-# (sandbox-rootfs, sandbox-site, fuse2fs-build), колёса — стадия boba-wheels
+# (fuse2fs-build, plugin-rootfs), колёса — стадия boba-wheels; готовые образы
+# плагинов едут в runtime-образ из src/sandbox/plugins
 build/*/src/sandbox
+!build/*/src/sandbox/plugins
 build/*/src/wheels
 
 # страница workflow: зависимости ставит и сборку делает стадия web-build

@@ -29,11 +29,8 @@ from boba.kerberos import KeytabAuth
 from boba.krb import KeytabCredentials, ServiceTicketIssuer
 from boba.runtime.launchers import ZygoteLaunchers
 from boba.runtime.plugins import ToolBridge
-from boba.sandbox import (
-    SandboxToolConfig,
-)
-from boba.toolkit.wrap import ToolProcessWrap
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
+from boba.stand.sandbox import section_profile
 from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
 from boba.tool.kb.search import ConfluenceCollection
 from boba.tool.pg.tools import PgToolConfig
@@ -51,10 +48,11 @@ from boba.toolkit.result import (
     TextResult,
     ToolArtifact,
 )
+from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.injected import InjectedConfig
 
 _REPO = Path(__file__).resolve().parents[4]
-_ROOTFS_IMAGE = _REPO / "build" / "chainlit" / "src" / "sandbox" / "rootfs.ext4"
+_ROOTFS_IMAGE = _REPO / "build" / "chainlit" / "src" / "sandbox" / "plugins" / "boba-tool-shell" / "rootfs.ext4"
 
 _CGROUP_BASE = os.environ.get("BOBA_CGROUP_BASE", "/sys/fs/cgroup/boba")
 
@@ -161,8 +159,7 @@ class ToolSetup:
     @staticmethod
     def caller(raw: Any, section: str, modules: Sequence[str] = ()) -> ZygoteToolCaller:
         """Зигота секции конфига: тот же путь запуска, что в приложении."""
-        sandbox = bind(raw, path=f"tool.{section}.sandbox", model=SandboxToolConfig)
-        profile = sandbox.profile
+        profile = section_profile(raw, section)
 
         supervisor = ZygoteRegistry.obtain(
             section,
@@ -449,8 +446,7 @@ def kb_tools(raw_config, kb_collection: str):
 @pytest.fixture(scope="module")
 def workspace_image(raw_config):
     """Образ тестового пользователя: создаётся из шаблона и сносится после."""
-    sandbox = ToolSetup.config(raw_config, "tool.bash.sandbox", SandboxToolConfig)
-    profile = sandbox.profile.render(ToolSetup.path_vars())
+    profile = section_profile(raw_config, "bash").render(ToolSetup.path_vars())
 
     workspace = profile.mounts.workspace
     if workspace is None:
