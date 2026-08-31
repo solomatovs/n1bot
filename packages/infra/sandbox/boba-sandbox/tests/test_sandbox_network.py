@@ -21,7 +21,8 @@ from urllib.parse import urlsplit
 import pytest
 from omegaconf import DictConfig, OmegaConf
 
-from boba.config import bind, build_app_config
+from boba.config import bind
+from boba.runtime.config import AppLayers
 from boba.sandbox.profile import SandboxProfile, SandboxToolConfig
 from boba.sandbox.runner import has_bwrap
 from boba.stand.zygote import ZygoteStand
@@ -75,7 +76,7 @@ class SandboxToolProfiles:
         if not path.is_file():
             return None
 
-        return cls(build_app_config(config_path=path))
+        return cls(AppLayers.compose(path))
 
     def networked(self) -> dict[str, SandboxProfile]:
         """Инструменты, которым конфиг разрешил сеть."""

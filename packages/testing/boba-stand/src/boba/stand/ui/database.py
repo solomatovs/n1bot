@@ -16,7 +16,7 @@ from typing import Any, ClassVar
 from psycopg import sql
 from psycopg.errors import InsufficientPrivilege
 
-from boba.config import bind, build_app_config
+from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connections.clickhouse import ClickHouseConfig
 from boba.connections.http import HttpProfile
@@ -24,7 +24,7 @@ from boba.connections.postgres.config import PostgresConfig
 from boba.connections.profile import ConnectionTable, GrantTarget, StoredRole
 from boba.db.postgres import AsyncPostgresPool, SqlNames
 from boba.identity.session import UserMetadataField
-from boba.runtime.config import DataLayerConfig
+from boba.runtime.config import AppLayers, DataLayerConfig
 from boba.stand.ui.stand import REPO_ROOT, StandApp, StandConfig, StandError, StandUrl
 from boba.workflow.records import WorkflowTable
 from boba.workflow_engine.store import WorkflowConfig
@@ -70,7 +70,7 @@ class StandDatabase:
     def __init__(self, app: StandApp, name: str) -> None:
         self._app = app
         self._name = name
-        self._built = build_app_config(config_path=app.base_config.under(REPO_ROOT))
+        self._built = AppLayers.compose(app.base_config.under(REPO_ROOT))
         layer = bind(self._built, path=app.data_layer_section, model=DataLayerConfig)
         pool = layer.postgres.pool.model_copy(update=self.POOL_OVERRIDE)
         self._maintenance = layer.postgres.model_copy(update={"pool": pool})

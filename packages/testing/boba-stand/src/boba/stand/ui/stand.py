@@ -267,8 +267,11 @@ class StandConfig:
         pool["max_size"] = 6
 
     def env(self) -> dict[str, str]:
-        """Окружение процесса приложения: свой корень, конфиг, данные и порт — те же
-        переменные, что у контейнера, с разными значениями.
+        """Окружение процесса приложения: BOBA_-переопределения поверх конфига,
+        который уходит аргументом --config.
+
+        BOBA_BASE обязателен: конфиг стенда пишется в рабочий каталог, и base,
+        вычисленный из его расположения, указывал бы мимо развёртывания.
         """
         data_dir = self.data_dir
         for name in ("workspace", "tool-logs", "dump", "krb"):
@@ -277,12 +280,6 @@ class StandConfig:
         env = dict(os.environ)
         env["BOBA_BASE"] = str(self.app.base.under(REPO_ROOT))
         env["BOBA_DATA"] = str(data_dir)
-        env["BOBA_CONFIG_PATH"] = str(self.config_path)
-        env["BOBA_RUNTIME"] = str(self.workdir)
-        env["BOBA_SANDBOX"] = str(self.app.sandbox.under(REPO_ROOT))
-        env["BOBA_ASSETS"] = str(self.app.base.under(REPO_ROOT))
-        env["BOBA_BIND_CODE"] = f"{StandPaths.PACKAGES.under(REPO_ROOT)}:/opt/src"
-        env["BOBA_SANDBOX_PYTHONPATH"] = "/opt/site"
         env["BOBA_CGROUP_BASE"] = self.app.cgroup_base
         env["BOBA_PORT"] = str(self.app_port)
         env["BOBA_INSTANCE_ID"] = f"stand{self.app_port}"
@@ -521,7 +518,13 @@ class StandProcess:
     def _spawn(self) -> subprocess.Popen[bytes]:
         handle = self.log_path.open("wb")
         return subprocess.Popen(  # noqa: S603
-            [sys.executable, "-m", self.config.app.module],
+            [
+                sys.executable,
+                "-m",
+                self.config.app.module,
+                "--config",
+                str(self.config.config_path),
+            ],
             env=self.config.env(),
             cwd=str(REPO_ROOT),
             stdout=handle,

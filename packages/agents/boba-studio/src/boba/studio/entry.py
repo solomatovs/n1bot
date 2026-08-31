@@ -6,9 +6,11 @@ RuntimeError — конфиг не найден или обязательная 
 
 from __future__ import annotations
 
+import argparse
 import logging.config
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
@@ -20,7 +22,6 @@ from boba.identity.run import RunRegistry
 from boba.runtime import providers
 from boba.runtime.config import (
     AppName,
-    ConfigLocator,
     DevPage,
     StudioConfig,
     StudioPath,
@@ -156,11 +157,11 @@ class StudioHost:
 
 
 class StudioEntry:
-    """python -m boba.studio: конфиг по ConfigLocator, uvicorn на [studio] host/port."""
+    """python -m boba.studio --config <toml>: uvicorn на [studio] host/port."""
 
     @classmethod
     def run(cls) -> None:
-        config = StudioRuntimeConfig.load(ConfigLocator.path())
+        config = StudioRuntimeConfig.load(cls.config_argument())
         logging.config.dictConfig(config.logger)
 
         app = StudioHost.build(config)
@@ -173,3 +174,20 @@ class StudioEntry:
             log_level=None,
             access_log=True,
         )
+
+    @classmethod
+    def config_argument(cls) -> Path:
+        """Путь конфига — обязательный аргумент запуска; дефолта и env нет."""
+        parser = argparse.ArgumentParser(
+            prog="boba.studio",
+            description="Studio application of boba",
+        )
+        parser.add_argument(
+            "--config",
+            required=True,
+            type=Path,
+            help="path to the application config.toml",
+        )
+        arguments = parser.parse_args()
+
+        return arguments.config

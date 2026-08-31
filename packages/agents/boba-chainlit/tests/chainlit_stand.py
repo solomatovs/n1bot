@@ -42,7 +42,7 @@ from boba.chainlit.rendering.chat_view import (
 from boba.chainlit.rendering.renderer import ChatRenderer, NoSurface
 from boba.chat.openai import OpenAiConfig
 from boba.chat.provider import ChatSampling, OpenAiChatConfig
-from boba.config import bind, build_app_config
+from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import (
     CallContext,
@@ -58,6 +58,7 @@ from boba.krb.seal import SsoTickets, TicketSealer
 from boba.llm.bridge import ProviderChatModel
 from boba.llm.openai_chat import OpenAiChatProvider
 from boba.messaging import LockToken, MemoryMessageBus, MemoryPayloadStore
+from boba.runtime.config import AppLayers
 from boba.runtime.elements import ChatTables
 from boba.stand.context import TEST_PROFILE as TEST_PROFILE
 from boba.stand.context import TEST_TURN as TEST_TURN
@@ -130,7 +131,7 @@ def app_config() -> AppConfig:
             "BOBA_CONFIG_PATH не задан — укажи конфиг приложения "
             "(launch.json 'pytest: текущий файл' его прокидывает)"
         )
-    built = build_app_config(config_path=Path(config_path))
+    built = AppLayers.compose(Path(config_path))
     return bind(built, path="app", model=AppConfig)
 
 
@@ -291,11 +292,11 @@ class StandTokens(TokenReader):
     """
 
     TTL_SEC: ClassVar[int] = 3600
-    FALLBACK_SECRET: ClassVar[str] = "chainlit-stand-secret"  # noqa: S105 — стенд
+    FALLBACK_SECRET: ClassVar[str] = "chainlit-stand-secret"
 
     @classmethod
     def secret(cls) -> str:
-        from chainlit.auth.jwt import get_jwt_secret  # noqa: PLC0415
+        from chainlit.auth.jwt import get_jwt_secret
 
         secret = get_jwt_secret()
         if secret:

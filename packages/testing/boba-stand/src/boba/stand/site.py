@@ -19,8 +19,7 @@ import pytest
 from omegaconf import OmegaConf
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
-from boba.config import build_app_config
-from boba.runtime.config import ConfigLocator
+from boba.runtime.config import AppLayers, ConfigLocator
 
 __all__ = ["Stand", "StandError"]
 
@@ -82,7 +81,7 @@ class Stand(BaseModel):
     def load(cls) -> Stand:
         """Стенд из конфига приложения; путь берётся так же, как приложением."""
         try:
-            raw = build_app_config(config_path=ConfigLocator.path())
+            raw = AppLayers.compose(ConfigLocator.path())
         except Exception as exc:
             msg = f"stand: application config is unavailable: {exc}"
             raise StandError(msg) from exc

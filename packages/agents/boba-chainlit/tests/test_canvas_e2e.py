@@ -87,7 +87,7 @@ def app_server() -> Iterator[None]:
 
     log = Path(tempfile.gettempdir()) / "boba-canvas-e2e.log"
     process = subprocess.Popen(  # noqa: S603
-        [str(LAUNCHER), str(ENTRY)],
+        [str(LAUNCHER), str(ENTRY), "--config", os.environ["BOBA_CONFIG_PATH"]],
         stdout=log.open("wb"),
         stderr=subprocess.STDOUT,
     )
@@ -121,9 +121,10 @@ async def _wait_for_server() -> None:
 
 def _app_config() -> Any:
     from boba.chainlit.infra.config import AppConfig
-    from boba.config import bind, build_app_config
+    from boba.config import bind
+    from boba.runtime.config import AppLayers
 
-    raw = build_app_config(config_path=Path(os.environ["BOBA_CONFIG_PATH"]))
+    raw = AppLayers.compose(Path(os.environ["BOBA_CONFIG_PATH"]))
     return bind(raw, path="app", model=AppConfig)
 
 
