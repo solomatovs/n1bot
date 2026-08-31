@@ -39,7 +39,7 @@ from boba.chainlit.infra.config import LocalStorageConfig
 from boba.identity.context import ContextKind
 from boba.identity.errors import RefusalError
 from boba.identity.run import RunRegistry
-from boba.runtime.plugins import CallSurface
+from boba.runtime.launchers import CallSurface
 from boba.toolkit.result import DiagramResult, ErrorResult, TextResult
 from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.run_log import ToolRunLogger

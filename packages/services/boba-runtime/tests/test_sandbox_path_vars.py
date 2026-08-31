@@ -14,7 +14,7 @@ from boba.identity.context import (
     Scope,
     Subject,
 )
-from boba.runtime.plugins import CallSurface
+from boba.runtime.launchers import CallSurface
 from boba.sandbox import BindSpec
 
 pytestmark = pytest.mark.anyio

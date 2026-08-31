@@ -1,9 +1,9 @@
 """Загрузчик tool-плагинов: секция [tool.<name>] -> langchain-инструменты с обвязками.
 
 Ошибки:
-RuntimeError — конфиг противоречит плагину: нет [tool.<name>.sandbox]
-    у sandboxed-плагина, bwrap недоступен, секция с соединениями
-    пользователя без [connections].
+RuntimeError — конфиг противоречит плагину: способ запуска из [tool_launcher]
+    не согласован с секциями (см. boba.runtime.launchers), секция
+    с соединениями пользователя без [connections].
 ToolConfigError — injected-параметр инструмента не привязан к секции конфига.
 TypeError — TOOLS модуля содержит не PayloadTool и не BaseTool.
 """
@@ -16,12 +16,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.tools import BaseTool, StructuredTool
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 from pydantic import BaseModel, ConfigDict
 
 from boba.access import GrantCheck, ToolAccess
-from boba.canvas.journal import CallStream
-from boba.canvas.keys import WorkspaceMount
 from boba.chat.profiles import ProfilesSection, RolesSection
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig
@@ -31,16 +29,8 @@ from boba.connections.marks import UserConnectionsSpec
 from boba.connections.profile import ConnectionKind
 from boba.connections.whitelist import ConnectionKeying
 from boba.identity.context import CallContext
+from boba.runtime.launchers import CallSurface, SectionLaunchers, ToolLaunchers
 from boba.runtime.refs import RuntimeRefs
-from boba.sandbox import (
-    BindSpec,
-    SandboxProfile,
-    SandboxToolConfig,
-    has_bwrap,
-)
-from boba.sandbox.guest import WarmupCall
-from boba.sandbox.wrap import ToolProcessWrap
-from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
 from boba.tool.ch.tools import TOOLS as CH_TOOLS
 from boba.tool.chart.tools import TOOLS as CHART_TOOLS
 from boba.tool.doc.tools import TOOLS as DOC_TOOLS
@@ -51,9 +41,10 @@ from boba.tool.pg.tools import TOOLS as PG_TOOLS
 from boba.tool.shell.tools import BashToolConfig, build_bash_tool
 from boba.tool.web.tools import TOOLS as WEB_TOOLS
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolEntryError, ToolLike, ToolMain
-from boba.toolkit.facade import PayloadTool, WarmupHooks
+from boba.toolkit.facade import PayloadTool
 from boba.toolkit.launcher import LauncherFactory, ToolLauncher
 from boba.toolkit.types import StringList
+from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.access import ToolAccessGuard
 from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.cancellation import CancellableTools
@@ -61,17 +52,15 @@ from boba.toolrun.errors import ToolErrorGuard
 from boba.toolrun.injected import InjectedConfig, ToolConfigError
 from boba.toolrun.intent import ToolIntentField
 from boba.toolrun.registry import ToolRegistry
-from boba.toolrun.run_log import NoCallScope, ToolRunLogger
+from boba.toolrun.run_log import ToolRunLogger
 from boba.toolrun.streams import ToolStreams
 from boba.toolrun.wrapping import ToolAsyncBody
 from boba.workflow_engine.tools import WorkflowToolConfig, build_workflow_tools
 
 __all__ = [
-    "CallSurface",
     "CoreTools",
     "PluginMeta",
     "PluginTable",
-    "SandboxRequire",
     "ToolBridge",
     "ToolLoader",
     "ToolPlugin",
@@ -90,7 +79,8 @@ class ToolPlugin:
     build: Callable[[Any, LauncherFactory], list[BaseTool]] | None = None
     config_model: type[BaseModel] | None = None
     sandboxed: bool = True
-    """False — инструменты плагина ничего не запускают, секции sandbox у него нет."""
+    """False — инструменты плагина ничего не запускают; True — тела исполняются
+    отдельным процессом способом из [tool_launcher]."""
     module_tools: tuple[BaseTool, ...] = ()
     """Функции уровня модуля новой модели: обёртка запуска ставится на них."""
     modules: tuple[str, ...] = ()
@@ -101,15 +91,6 @@ class ToolPlugin:
     chat_only: bool = False
     """True — инструментам нужна поверхность чата (панель, карточки, вложения):
     вне хода чата они отказывают, в каталог workflow не попадают."""
-
-
-class SandboxRequire(BaseModel):
-    """Кусок секции [sandbox], который читает загрузчик инструментов."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    zygote: ZygotePolicy
-    """Политика супервизора зигот; каждая sandboxed-секция обслуживается зиготой."""
 
 
 class PluginMeta(BaseModel):
@@ -168,57 +149,6 @@ class ToolBridge:
         return tuple(modules)
 
 
-class CallSurface:
-    """Значения из контекста вызова для обвязок запуска инструментов."""
-
-    @staticmethod
-    def stream_source(tool: str, call_id: str) -> CallStream | None:
-        """Журнал живого вывода вызова; область и субъект — из контекста вызова."""
-        if not ToolStreams.streamable(tool):
-            return None
-
-        context = CallContext.peek()
-        if context is None:
-            return None
-
-        return ToolStreams.begin(
-            context.subject.user_key, context.scope.id, call_id, tool
-        )
-
-    @staticmethod
-    def tool_call_scope(call_id: str) -> Callable[[], None]:
-        """Контекст вызова инструмента моделью на время вызова: инициатор llm.
-
-        Без контекста ставить нечего — снимать тоже.
-        """
-        context = CallContext.peek()
-        if context is None:
-            return NoCallScope.leave
-
-        token = CallContext.push(context.as_tool_call(call_id))
-
-        def leave() -> None:
-            CallContext.pop(token)
-
-        return leave
-
-    @staticmethod
-    def sandbox_path_vars() -> dict[str, str]:
-        """Значения {user_id}/{thread_id} для путей профиля на момент вызова.
-
-        Вне контекста вызова значений нет: профиль с такими переменными
-        отказывает рендером, называя недостающую.
-        """
-        context = CallContext.peek()
-        if context is None:
-            return {}
-
-        return {
-            BindSpec.VARS[0]: context.subject.user_key,
-            BindSpec.VARS[1]: context.scope.id,
-        }
-
-
 class ToolLoader:
     """Сборка реестра инструментов из включённых секций [tool.<name>].
 
@@ -241,7 +171,7 @@ class ToolLoader:
         self._grant_check = grant_check
 
     def load(self) -> ToolRegistry:
-        zygote_policy = bind(self._raw, "sandbox", SandboxRequire).zygote
+        launchers = ToolLaunchers.of(self._raw)
 
         tools: list[BaseTool] = []
         chat_only: set[str] = set()
@@ -253,17 +183,16 @@ class ToolLoader:
             if plugin.connections is not None:
                 self._require_connections(name)
 
-            profile = self._plugin_sandbox(name, plugin)
-            built = self._plugin_tools(name, plugin, meta, profile, zygote_policy)
+            built = self._plugin_tools(name, plugin, meta, launchers)
             tools.extend(built)
 
             if plugin.chat_only:
                 for tool in built:
                     chat_only.add(tool.name)
 
-            # живой вывод есть только у процессов песочницы: кнопка потока
+            # живой вывод есть только у отдельных процессов: кнопка потока
             # рисуется на шагах этих инструментов
-            if profile is not None:
+            if plugin.sandboxed:
                 streamable: list[str] = []
                 for tool in built:
                     streamable.append(tool.name)
@@ -281,59 +210,36 @@ class ToolLoader:
         ToolAsyncBody.ensure_all(tools)
         return ToolRegistry(tools=tools, access=access)
 
-    @staticmethod
-    def warmup_configs(
-        section: str, modules: Sequence[str], raw_config: DictConfig
-    ) -> tuple[WarmupCall, ...]:
-        """Прогревы модулей секции: конфиг каждому хуку из секции его инструмента.
-
-        Хуки объявляет автор инструмента через @warmup, хост их не угадывает —
-        берёт из реестра фасада. Модель конфига — аннотация параметра хука,
-        значения приезжают из [tool.<section>].
-        """
-        calls: list[WarmupCall] = []
-
-        for name in modules:
-            for hook in WarmupHooks.of(name):
-                model = bind(raw_config, f"tool.{section}", hook.config_model)
-                calls.append(
-                    WarmupCall(
-                        module=name,
-                        hook=hook.name,
-                        config=ToolArgv.reveal(hook.config_model, model),
-                    )
-                )
-
-        return tuple(calls)
-
     def _plugin_tools(
         self,
         name: str,
         plugin: ToolPlugin,
         meta: PluginMeta,
-        profile: SandboxProfile | None,
-        zygote_policy: ZygotePolicy,
+        launchers: SectionLaunchers,
     ) -> list[BaseTool]:
         """Инструменты плагина: фабричные старого пути плюс функции модуля."""
         cfg: ConfigT = None
         if plugin.config_model is not None:
             cfg = bind(self._raw, f"tool.{name}", plugin.config_model)
 
-        if profile is None:
+        if not plugin.sandboxed:
             return self._enabled_tools(plugin, cfg, self._no_launchers, meta)
 
-        launchers = self._section_launchers(plugin, profile, zygote_policy)
-        built = self._enabled_tools(plugin, cfg, launchers, meta)
+        launcher = launchers.launcher_of(plugin.section, plugin.modules)
 
-        built.extend(self._module_tools(plugin, meta, profile, zygote_policy))
+        def factory(tool: str) -> ToolLauncher:
+            return launcher
+
+        built = self._enabled_tools(plugin, cfg, factory, meta)
+
+        built.extend(self._module_tools(plugin, meta, launcher))
         return built
 
     def _module_tools(
         self,
         plugin: ToolPlugin,
         meta: PluginMeta,
-        profile: SandboxProfile,
-        zygote_policy: ZygotePolicy,
+        launcher: ToolLauncher,
     ) -> list[BaseTool]:
         """Функции модуля новой модели: обёртка запуска + partial конфига."""
         functions: list[BaseTool] = []
@@ -345,8 +251,6 @@ class ToolLoader:
 
         if not functions:
             return []
-
-        launcher = self._section_launcher(plugin, profile, zygote_policy)
 
         ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
 
@@ -364,39 +268,6 @@ class ToolLoader:
         InjectedConfig.bind_all(functions, resolve)
 
         return functions
-
-    def _section_launcher(
-        self,
-        plugin: ToolPlugin,
-        profile: SandboxProfile,
-        zygote_policy: ZygotePolicy,
-    ) -> ToolLauncher:
-        """Исполнитель секции: зигота секции, одна на все её инструменты."""
-        supervisor = ZygoteRegistry.obtain(
-            plugin.section,
-            profile,
-            plugin.modules,
-            zygote_policy,
-            warmup_calls=self.warmup_configs(plugin.section, plugin.modules, self._raw),
-        )
-
-        return ZygoteToolCaller(
-            plugin.section, supervisor, profile, CallSurface.sandbox_path_vars
-        )
-
-    def _section_launchers(
-        self,
-        plugin: ToolPlugin,
-        profile: SandboxProfile,
-        zygote_policy: ZygotePolicy,
-    ) -> LauncherFactory:
-        """Фабрика исполнителей фабричных инструментов: одна зигота секции на всех."""
-        launcher = self._section_launcher(plugin, profile, zygote_policy)
-
-        def factory(tool: str) -> ToolLauncher:
-            return launcher
-
-        return factory
 
     @staticmethod
     def _enabled_tools(
@@ -419,44 +290,6 @@ class ToolLoader:
 
         return built
 
-    def _plugin_sandbox(self, name: str, plugin: ToolPlugin) -> SandboxProfile | None:
-        """Профиль песочницы плагина; None — только у плагинов процесса приложения."""
-        if not plugin.sandboxed:
-            return None
-
-        profile = self._sandbox_section(name)
-
-        if profile is None:
-            msg = f"[tool.{name}.sandbox] is missing: the plugin runs in a sandbox"
-            raise RuntimeError(msg)
-
-        return profile
-
-    def _sandbox_section(self, name: str) -> SandboxProfile | None:
-        """Профиль секции [tool.<name>.sandbox]; None — секции нет, запуск локальный.
-
-        Секция есть, а bwrap недоступен — отказ старта: молчаливая деградация
-        инструмента до процесса приложения запрещена.
-        """
-        node = OmegaConf.select(self._raw, f"tool.{name}.sandbox")
-        if node is None:
-            return None
-
-        sandbox = bind(self._raw, f"tool.{name}.sandbox", SandboxToolConfig)
-        profile = sandbox.profile
-
-        if profile.mounts.workspace is not None:
-            WorkspaceMount.configure(profile.mounts.workspace.mount.target)
-
-        if not has_bwrap(profile):
-            msg = (
-                f"[tool.{name}.sandbox] is configured, but bubblewrap (bwrap) "
-                "is not in the trusted binary directories"
-            )
-            raise RuntimeError(msg)
-
-        return profile
-
     def _config_resolver(self) -> Callable[[str, Any], object]:
         """Значения injected-параметров: модель собирается из своей секции."""
         raw = self._raw
@@ -473,8 +306,8 @@ class ToolLoader:
 
     @staticmethod
     def _no_launchers(tool: str) -> ToolLauncher:
-        """Плагин объявлен без песочницы: запускать в ней нечего."""
-        msg = f"tool {tool!r} is registered without a sandbox profile"
+        """Плагин живёт в процессе приложения: запускать ему нечего."""
+        msg = f"tool {tool!r} runs in the app process and has no launcher"
         raise RuntimeError(msg)
 
     def _access_of(

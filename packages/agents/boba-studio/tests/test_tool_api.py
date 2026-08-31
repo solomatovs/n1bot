@@ -27,7 +27,7 @@ from boba.identity.signin import SignedIn, SignInMetadata
 from boba.identity.token import CookieSpec, SessionRenewal
 from boba.runtime.config import StudioRuntimeConfig
 from boba.runtime.http import RequestTokens
-from boba.runtime.plugins import CallSurface
+from boba.runtime.launchers import CallSurface
 from boba.runtime.users import UsersTable
 from boba.stand.auth import StubAuthenticator
 from boba.studio.api.auth import ApiAuth

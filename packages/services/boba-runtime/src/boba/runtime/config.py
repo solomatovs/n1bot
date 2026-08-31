@@ -25,8 +25,7 @@ from boba.connections.postgres import PostgresConfig
 from boba.identity.token import SessionRenewal
 from boba.krb import KerberosWorkspaceConfig
 from boba.krb.seal import SsoTickets, TicketSealer
-from boba.sandbox import CgroupManager
-from boba.sandbox.profile import SandboxConfig
+from boba.runtime.launchers import ToolLaunchers
 
 __all__ = [
     "AppName",
@@ -236,9 +235,13 @@ class ClusterConfig(BaseModel):
 
 
 class LocalMessagingConfig(BaseModel):
-    """Шина сообщений в памяти процесса: один инстанс, доставка внутри publish."""
+    """Шина сообщений в памяти процесса: один инстанс, доставка внутри publish.
 
-    model_config = ConfigDict(extra="forbid")
+    Лишние ключи игнорируются: секция общая для всех провайдеров, provider
+    выбирается env-переменной.
+    """
+
+    model_config = ConfigDict(extra="ignore")
 
     provider: Literal["local"]
 
@@ -246,7 +249,7 @@ class LocalMessagingConfig(BaseModel):
 class PostgresMessagingConfig(BaseModel):
     """Шина сообщений в Postgres: доставка между инстансами через LISTEN/NOTIFY."""
 
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     provider: Literal["postgres"]
 
@@ -403,7 +406,6 @@ class RuntimeConfig(BaseModel):
     auth: list[AuthConfig]
     logger: dict[str, Any] = Field(default_factory=ProcessLogging.default)
     data_layer: DataLayerConfig
-    sandbox: SandboxConfig
     stream_journal: StreamJournalConfig
     session: SessionConfig
     cluster: ClusterConfig
@@ -411,11 +413,13 @@ class RuntimeConfig(BaseModel):
 
     @classmethod
     def load(cls, config_path: Path) -> Self:
-        """Читает toml, проверяет лимиты песочницы и раскладывает кэши kerberos."""
+        """Читает toml, проверяет способ запуска инструментов и раскладывает кэши
+        kerberos.
+        """
         raw = RawConfig.load(config_path)
         config = bind(raw, path=cls.SECTION, model=cls)
-        # групповые лимиты проверяются на старте: отказ виден сразу, с именем профиля
-        CgroupManager.probe_profiles(config.sandbox.profiles)
+        # предпосылки способа запуска проверяются на старте: отказ виден сразу
+        ToolLaunchers.of(raw).probe()
         # кэши билетов раскладывает приложение: строкам соединений пути не задают
         config.krb.apply()
 

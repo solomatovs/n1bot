@@ -21,6 +21,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "boba-sandbox==0.0.14.dev9",
+    "boba-stand==0.0.14.dev9",
     "pytest>=8",
 ]
 
