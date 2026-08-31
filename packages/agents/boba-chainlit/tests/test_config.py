@@ -16,6 +16,7 @@ from boba.chainlit.infra.config import AppConfig
 from boba.config import bind
 from boba.runtime.plugins import PluginMeta
 from boba.sandbox import SandboxToolConfig
+from boba.sandbox.profile import SandboxConfig
 
 HEAVY_SECTIONS = ("tool.ingest", "tool.kb")
 """Секции с нативным инференсом: их душит квота базового профиля."""
@@ -33,10 +34,13 @@ class TestConfigStaysValid:
     """Конфиг разбирается моделями приложения: пропущенное поле — падение."""
 
     def test_app_section_binds(self, raw_config: DictConfig) -> None:
-        app = bind(raw_config, path="app", model=AppConfig)
+        bind(raw_config, path="app", model=AppConfig)
 
-        if not (app.sandbox.profiles):
-            raise AssertionError("app.sandbox.profiles")
+    def test_sandbox_section_binds(self, raw_config: DictConfig) -> None:
+        sandbox = bind(raw_config, path="sandbox", model=SandboxConfig)
+
+        if not sandbox.profiles:
+            raise AssertionError("sandbox.profiles")
 
     def test_every_tool_section_binds_meta(self, raw_config: DictConfig) -> None:
         tools = OmegaConf.select(raw_config, "tool")

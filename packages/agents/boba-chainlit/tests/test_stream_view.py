@@ -43,7 +43,7 @@ from boba.chainlit.rendering.chat_view import (
 )
 from boba.identity.run import RunRegistry
 from boba.runtime.journal import DirVault, StreamJournal
-from boba.runtime.plugins import CallSurface
+from boba.runtime.launchers import CallSurface
 from boba.toolkit.channels import CallOutcome, ToolChannel, WrapChannel
 from boba.toolkit.stream import ToolChannelsTap
 from boba.toolrun.call_id import ToolCallIdField

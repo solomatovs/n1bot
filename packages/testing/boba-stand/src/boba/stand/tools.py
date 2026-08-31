@@ -7,7 +7,7 @@ from langchain_core.tools import tool
 
 from boba.access import ProfileGrant, RoleConfig, ToolAccess
 from boba.identity.context import CallContext
-from boba.runtime.plugins import CallSurface
+from boba.runtime.launchers import CallSurface
 from boba.stand.context import TEST_PROFILE
 from boba.toolkit.result import ErrorResult, Produces, TextResult, pack_result
 from boba.toolrun.call_id import ToolCallIdField

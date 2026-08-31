@@ -27,11 +27,12 @@ from boba.connections.postgres import PostgresConfig
 from boba.db.postgres import AsyncPostgresPool
 from boba.kerberos import KeytabAuth
 from boba.krb import KeytabCredentials, ServiceTicketIssuer
-from boba.runtime.plugins import ToolBridge, ToolLoader
+from boba.runtime.launchers import ZygoteLaunchers
+from boba.runtime.plugins import ToolBridge
 from boba.sandbox import (
     SandboxToolConfig,
 )
-from boba.sandbox.wrap import ToolProcessWrap
+from boba.toolkit.wrap import ToolProcessWrap
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
 from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
 from boba.tool.kb.search import ConfluenceCollection
@@ -168,7 +169,7 @@ class ToolSetup:
             profile,
             modules,
             ZYGOTE,
-            warmup_calls=ToolLoader.warmup_configs(section, modules, raw),
+            warmup_calls=ZygoteLaunchers.warmup_configs(section, modules, raw),
         )
         return ZygoteToolCaller(section, supervisor, profile, ToolSetup.path_vars)
 

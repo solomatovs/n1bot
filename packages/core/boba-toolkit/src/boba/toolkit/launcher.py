@@ -6,6 +6,7 @@
 Ошибки:
 LauncherError — исполнитель нарушил контракт, результату доверять нельзя.
 PayloadFailureError — инструмент сообщил об ожидаемом отказе конвертом.
+ChannelOverflowError — канал вызова превысил байтовый потолок.
 """
 
 from __future__ import annotations
@@ -20,8 +21,12 @@ from pydantic import BaseModel, ConfigDict, TypeAdapter
 
 from boba.toolkit.failure import ToolRefusalError
 from boba.toolkit.protocol import ReplyError, ReplyOk, ToolCommand
+from boba.toolkit.stream import Chunk
 
 __all__ = [
+    "CappedChannel",
+    "ChannelOverflowError",
+    "ChannelTail",
     "ClippedText",
     "ErrorKind",
     "LaunchOutcome",
@@ -38,6 +43,54 @@ __all__ = [
 
 class LauncherError(RuntimeError):
     """Исполнитель нарушил контракт: результату доверять нельзя."""
+
+
+class ChannelOverflowError(LauncherError):
+    """Канал вызова превысил байтовый потолок: вызов обрывается."""
+
+
+class CappedChannel:
+    """Канал целиком, но не длиннее потолка: конверт и вывод команды.
+
+    Вывод тела копится в памяти приложения, на которую лимиты запуска не
+    распространяются: без потолка тело выносит хост потоком в гигабайты.
+    """
+
+    def __init__(self, limit: int, channel: str) -> None:
+        self._limit = limit
+        self._channel = channel
+        self._data = bytearray()
+
+    def feed(self, chunk: Chunk) -> None:
+        self._data.extend(chunk)
+        if len(self._data) <= self._limit:
+            return
+
+        msg = f"{self._channel} exceeded {self._limit} bytes; the call was killed"
+        raise ChannelOverflowError(msg)
+
+    def text(self) -> str:
+        return self._data.decode("utf-8", errors="replace")
+
+    def data(self) -> bytearray:
+        """Конверт как есть: pydantic разбирает bytes-like без копии."""
+        return self._data
+
+
+class ChannelTail:
+    """Хвост канала: объяснение сбоя, когда конверта нет."""
+
+    def __init__(self, limit: int) -> None:
+        self._limit = limit
+        self._tail = bytearray()
+
+    def feed(self, chunk: Chunk) -> None:
+        self._tail.extend(chunk)
+        if len(self._tail) > self._limit:
+            del self._tail[: len(self._tail) - self._limit]
+
+    def text(self) -> str:
+        return self._tail.decode("utf-8", errors="replace")
 
 
 class PayloadFailureError(LauncherError):

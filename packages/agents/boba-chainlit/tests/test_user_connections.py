@@ -43,7 +43,7 @@ from boba.krb.seal import SsoTickets
 from boba.messaging import MemoryMessageBus
 from boba.runtime.plugins import ToolBridge
 from boba.runtime.refresh import BusRefreshSignal
-from boba.sandbox.wrap import ToolProcessWrap
+from boba.toolkit.wrap import ToolProcessWrap
 from boba.sandbox.zygote import ZygoteRegistry
 from boba.stand.site import Stand
 from boba.tool.pg.tools import PgToolConfig

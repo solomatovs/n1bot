@@ -22,7 +22,6 @@ from boba.chat.profiles import (
 from boba.connections.postgres import PostgresConfig
 from boba.krb import KerberosWorkspaceConfig
 from boba.runtime.config import DataLayerConfig, RuntimeConfig
-from boba.sandbox.profile import SandboxConfig
 
 LOGGING_CONFIG: dict[str, Any] = {
     "version": 1,
@@ -241,9 +240,4 @@ class AppConfig(RuntimeConfig):
     storage: Annotated[
         LocalStorageConfig,
         Field(description="Файловое хранилище вложений."),
-    ]
-
-    sandbox: Annotated[
-        SandboxConfig,
-        Field(description="Реестр профилей песочницы; ${sandbox}."),
     ]
