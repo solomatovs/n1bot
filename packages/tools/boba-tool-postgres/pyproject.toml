@@ -17,6 +17,9 @@ dependencies = [
 
 # зависимости payload'а: нужны только внутри песочницы,
 # в окружении приложения их быть не должно
+[project.entry-points."boba.tools"]
+pg = "boba.tool.pg.plugin:MANIFEST"
+
 [project.optional-dependencies]
 payload = [
 ]

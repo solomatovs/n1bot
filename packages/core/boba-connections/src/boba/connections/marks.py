@@ -17,9 +17,11 @@ from boba.connections.http import HttpProfile
 from boba.connections.postgres import PostgresConfig
 from boba.connections.profile import ConnectionKind, ConnectionProfile
 from boba.connections.whitelist import ConnectionKeying
+from boba.toolkit.manifest import ToolPluginManifest
 
 __all__ = [
     "ClientLabel",
+    "ConnectedToolManifest",
     "ConnectionRefusal",
     "ConnectionTrace",
     "UserConnectionsSpec",
@@ -43,6 +45,13 @@ class UserConnectionsSpec:
 
     kind: ConnectionKind
     keying: ConnectionKeying
+
+
+@dataclass(frozen=True, kw_only=True)
+class ConnectedToolManifest(ToolPluginManifest):
+    """Манифест плагина, чьи инструменты берут соединения пользователя."""
+
+    connections: UserConnectionsSpec
 
 
 class ConnectionTrace:

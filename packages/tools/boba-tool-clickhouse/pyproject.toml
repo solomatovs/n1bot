@@ -17,6 +17,9 @@ dependencies = [
 
 # зависимости payload'а: нужны только внутри песочницы,
 # в окружении приложения их быть не должно
+[project.entry-points."boba.tools"]
+ch = "boba.tool.ch.plugin:MANIFEST"
+
 [project.optional-dependencies]
 payload = [
     "boba-db-clickhouse[payload]==0.0.14.dev9",

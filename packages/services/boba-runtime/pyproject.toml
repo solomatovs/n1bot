@@ -24,12 +24,6 @@ dependencies = [
     "boba-toolrun==0.0.14.dev9",
     "boba-workflow-engine==0.0.14.dev9",
     "boba-tool-knowledge==0.0.14.dev9",
-    "boba-tool-clickhouse==0.0.14.dev9",
-    "boba-tool-postgres==0.0.14.dev9",
-    "boba-tool-doc==0.0.14.dev9",
-    "boba-tool-web==0.0.14.dev9",
-    "boba-tool-chart==0.0.14.dev9",
-    "boba-tool-shell==0.0.14.dev9",
     "boba-krb[seal]==0.0.14.dev9",
     "boba-db-pgvector==0.0.14.dev9",
     "pydantic>=2.10,<3",
@@ -42,6 +36,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "boba-stand==0.0.14.dev9",
     "pyjwt>=2.8",
     "pytest>=8",
 ]
