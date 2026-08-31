@@ -16,6 +16,7 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+from omegaconf import OmegaConf
 from psycopg import sql
 
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
@@ -157,8 +158,16 @@ class ToolSetup:
         return limits.model_copy(update={"profiles": {WEB_CONNECTION: service}})
 
     @staticmethod
+    def sandbox_raw(raw: Any) -> Any:
+        """Зиготы тестов живут в песочнице: режимные развилки конфига — sandbox."""
+        copied = raw.copy()
+        OmegaConf.update(copied, "env.tool_launcher", "sandbox")
+        return copied
+
+    @staticmethod
     def caller(raw: Any, section: str, modules: Sequence[str] = ()) -> ZygoteToolCaller:
         """Зигота секции конфига: тот же путь запуска, что в приложении."""
+        raw = ToolSetup.sandbox_raw(raw)
         profile = section_profile(raw, section)
 
         supervisor = ZygoteRegistry.obtain(
@@ -406,7 +415,8 @@ def ingest_tools(raw_config, kb_collection: str):
     ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:
-        cfg = bind(raw_config, path=annotation.SECTION, model=annotation)
+        sandboxed = ToolSetup.sandbox_raw(raw_config)
+        cfg = bind(sandboxed, path=annotation.SECTION, model=annotation)
         return cfg.model_copy(update={"collection": kb_collection})
 
     ServiceTickets.bind_all(functions, _credentials, resolve)
@@ -434,7 +444,8 @@ def kb_tools(raw_config, kb_collection: str):
     ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
 
     def resolve(name: str, annotation: Any) -> object:
-        cfg = bind(raw_config, path=annotation.SECTION, model=annotation)
+        sandboxed = ToolSetup.sandbox_raw(raw_config)
+        cfg = bind(sandboxed, path=annotation.SECTION, model=annotation)
         return cfg.model_copy(update={"collection": kb_collection})
 
     ServiceTickets.bind_all(functions, _credentials, resolve)

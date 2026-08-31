@@ -9,6 +9,7 @@ StandError — стенд не поднялся или не ответил в о
 from __future__ import annotations
 
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -180,20 +181,6 @@ class StandConfig:
     sso_roles: dict[str, list[str]] = field(default_factory=dict)
     """Роли SSO-входа по принципалу: без них вход отклоняется как безролевой."""
 
-    SANDBOXED_TOOLS: tuple[str, ...] = (
-        "bash",
-        "doc",
-        "chart",
-        "web",
-        "confluence",
-        "workflow",
-        "ingest",
-        "kb",
-        "pg",
-        "ch",
-    )
-    """Инструменты, которым нужна песочница или внешние сервисы."""
-
     @property
     def config_path(self) -> Path:
         return self.workdir / "config.toml"
@@ -252,12 +239,22 @@ class StandConfig:
         self._use_local_storage(doc)
         self._use_local_auth(doc)
         self._use_studio(doc)
-        self._disable_sandbox_tools(doc)
         self._drop_cgroup_limits(doc)
         self._shrink_pools(doc)
 
         self.config_path.write_text(TomlText.dumps(doc), encoding="utf-8")
+        self._copy_plugins()
         return self.config_path
+
+    def _copy_plugins(self) -> None:
+        """Файлы conf/plugins рядом с конфигом стенда: загрузчик требует файл
+        для каждого установленного плагина."""
+        source = self.app.base_config.under(REPO_ROOT).parent / "plugins"
+        target = self.workdir / "plugins"
+        target.mkdir(parents=True, exist_ok=True)
+
+        for path in sorted(source.glob("*.toml")):
+            shutil.copy(path, target / path.name)
 
     @staticmethod
     def _shrink_pools(doc: MutableMapping[str, Any]) -> None:
@@ -440,22 +437,6 @@ class StandConfig:
         # SSO-тесты ходят доменным именем площадки, оно резолвится в адрес хоста
         doc["studio"]["host"] = "0.0.0.0"  # noqa: S104 — стенд, а не прод
         doc["studio"]["page"] = "built"
-
-    def _disable_sandbox_tools(self, doc: MutableMapping[str, Any]) -> None:
-        """Без песочницы остаются инструменты, которым она не нужна."""
-        if self.sandbox:
-            return
-
-        tools = doc.get("tool")
-        if not isinstance(tools, Mapping):
-            return
-
-        for name in self.SANDBOXED_TOOLS:
-            section = tools.get(name)
-            if not isinstance(section, MutableMapping):
-                continue
-
-            section["enable"] = False
 
     @staticmethod
     def _drop_cgroup_limits(doc: MutableMapping[str, Any]) -> None:

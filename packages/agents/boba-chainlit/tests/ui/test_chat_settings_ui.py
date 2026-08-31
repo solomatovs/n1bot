@@ -563,6 +563,21 @@ class TestSettingsAfterTurn:
         if chat.page.locator(field).count() == 0:
             raise AssertionError("после сообщения панель открылась без виджетов")
 
+    def test_panel_survives_thread_resume(self, chat: ChatPage) -> None:
+        """Обновление страницы треда идёт resume'ом: шестерёнка обязана вернуться."""
+        _ask_and_wait(chat)
+
+        chat.page.reload(wait_until="domcontentloaded")
+        chat.page.wait_for_selector("#chat-input", timeout=60000)
+        chat.page.wait_for_selector(PanelSelector.OPEN_MODAL.value, timeout=15000)
+
+        _open_settings(chat)
+        _open_tab(chat, PanelTab.PROMPT)
+
+        field = PanelSelector.textarea_of(UserSetting.USER_PROMPT.value)
+        if chat.page.locator(field).count() == 0:
+            raise AssertionError("после resume панель открылась без виджетов")
+
 
 class TestSettingsIsolation:
     """Настройки general не текут в search: у каждого профиля свои."""
