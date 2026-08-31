@@ -119,6 +119,22 @@ async def _wait_for_server() -> None:
     pytest.fail(f"приложение не поднялось: {last_error}")
 
 
+def _tool_view(thread_id: str, name: str) -> str:
+    """Путь файла глазами тела инструмента: гостевой в песочнице, хостовый в process."""
+    from omegaconf import OmegaConf
+
+    from boba.runtime.config import AppLayers
+
+    raw = AppLayers.compose(Path(os.environ["BOBA_CONFIG_PATH"]))
+    launcher = str(OmegaConf.select(raw, "env.tool_launcher"))
+
+    if launcher == "process":
+        workdir = str(OmegaConf.select(raw, "tool_launcher.workdir"))
+        return f"{workdir}/{thread_id}/upload/{name}"
+
+    return f"/workspace/{thread_id}/upload/{name}"
+
+
 def _app_config() -> Any:
     from boba.chainlit.infra.config import AppConfig
     from boba.config import bind
@@ -270,7 +286,7 @@ async def panel(app_server: None) -> AsyncIterator[Any]:
             return page.locator("#side-view-content")
 
         async def show(name: str) -> Any:
-            path = f"/workspace/{session['thread']}/upload/{name}"
+            path = _tool_view(session["thread"], name)
             return await act("canvas_open", {"path": path})
 
         yield show, reports, session["thread"], act
@@ -430,7 +446,7 @@ async def test_wheel_does_not_zoom_in_the_panel(panel: Any) -> None:
 async def test_switching_file_does_not_reopen_the_panel(panel: Any) -> None:
     """Открытая панель меняет содержимое сама: анимация открытия не повторяется."""
     show, _, thread, _act = panel
-    other = f"/workspace/{thread}/upload/report.md"
+    other = _tool_view(thread, "report.md")
     side = await show("flow.mmd")
     page = side.page
 
@@ -625,7 +641,7 @@ async def test_panel_switches_after_a_render_error(panel: Any) -> None:
     await page.evaluate(
         """path => window.dispatchEvent(
             new CustomEvent('boba:canvas', {detail: {path}}))""",
-        f"/workspace/{thread}/upload/flow.mmd",
+        _tool_view(thread, "flow.mmd"),
     )
     await page.wait_for_timeout(3000)
 
@@ -1333,7 +1349,7 @@ async def test_missing_file_is_explained(panel: Any) -> None:
     """Пропавший файл объясняется в панели, а не роняет её молча."""
     _show, _, thread, act = panel
     side = await act(
-        "canvas_open", {"path": f"/workspace/{thread}/upload/нет-такого.md"}
+        "canvas_open", {"path": _tool_view(thread, "нет-такого.md")}
     )
 
     text = await side.inner_text()

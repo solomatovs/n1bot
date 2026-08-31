@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 import tomllib
-from collections.abc import Mapping, MutableMapping
+from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -239,7 +239,7 @@ class StandConfig:
         self._use_local_storage(doc)
         self._use_local_auth(doc)
         self._use_studio(doc)
-        self._drop_cgroup_limits(doc)
+        self._use_sandbox_artifacts(doc)
         self._shrink_pools(doc)
 
         self.config_path.write_text(TomlText.dumps(doc), encoding="utf-8")
@@ -282,6 +282,11 @@ class StandConfig:
         env["BOBA_INSTANCE_ID"] = f"stand{self.app_port}"
         env["BOBA_URL_PREFIX"] = self.url_prefix
         env["PGGSSENCMODE"] = "disable"
+        # способ запуска tools фиксируется стендом, а не окружением прогона
+        if self.sandbox:
+            env["BOBA_TOOL_LAUNCHER"] = "sandbox"
+        else:
+            env["BOBA_TOOL_LAUNCHER"] = "process"
         # лог стенда читает упавший тест: буфер до kill не доживёт
         env["PYTHONUNBUFFERED"] = "1"
         env.pop("KRB5_CLIENT_KTNAME", None)
@@ -438,29 +443,13 @@ class StandConfig:
         doc["studio"]["host"] = "0.0.0.0"  # noqa: S104 — стенд, а не прод
         doc["studio"]["page"] = "built"
 
-    @staticmethod
-    def _drop_cgroup_limits(doc: MutableMapping[str, Any]) -> None:
-        """Лимиты требуют делегированного поддерева — стенду его не дают.
-
-        cgroup_base остаётся: он обязателен в модели профиля, а проба на старте
-        включается только при заданных лимитах.
-        """
-        profiles = doc.get("sandbox", {}).get("profiles")
-        if not isinstance(profiles, Mapping):
+    def _use_sandbox_artifacts(self, doc: MutableMapping[str, Any]) -> None:
+        """Стенд с песочницей берёт rootfs плагинов и workspace.ext4 из сборки."""
+        if not self.sandbox:
             return
 
-        for profile in profiles.values():
-            if not isinstance(profile, MutableMapping):
-                continue
-
-            for key in list(profile):
-                if not key.startswith("cgroup_"):
-                    continue
-
-                if key == "cgroup_base":
-                    continue
-
-                del profile[key]
+        env = doc["env"]
+        env["sandbox"] = str(self.app.sandbox.under(REPO_ROOT))
 
 
 @dataclass
