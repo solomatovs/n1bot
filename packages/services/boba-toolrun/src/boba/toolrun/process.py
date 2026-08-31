@@ -24,11 +24,13 @@ import time
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
+from pathlib import Path
 from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.cancellation import current_cancellation
+from boba.identity.context import CallContext
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.launcher import (
     CappedChannel,
@@ -247,6 +249,19 @@ class ProcessToolCaller(ToolLauncher):
 
         return sinks
 
+    def _call_workdir(self) -> str:
+        """Рабочий каталог тела: своя папка области вызова, как /workspace в песочнице.
+
+        Вне контекста вызова (прогрев, пробы) тело работает в общем workdir.
+        """
+        context = CallContext.peek()
+        if context is None:
+            return self._cfg.workdir
+
+        scoped = Path(self._cfg.workdir) / context.scope.id
+        scoped.mkdir(parents=True, exist_ok=True)
+        return str(scoped)
+
     def _run(
         self,
         argv: Sequence[str],
@@ -257,6 +272,7 @@ class ProcessToolCaller(ToolLauncher):
     ) -> _ProcRun:
         sinks = self._sinks(own)
 
+        workdir = self._call_workdir()
         env = dict(os.environ)
 
         result_r = -1
@@ -275,7 +291,7 @@ class ProcessToolCaller(ToolLauncher):
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                cwd=self._cfg.workdir,
+                cwd=workdir,
                 env=env,
                 pass_fds=pass_fds,
                 start_new_session=True,
