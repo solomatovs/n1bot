@@ -14,6 +14,9 @@ dependencies = [
 
 # зависимости payload'а: нужны только внутри песочницы,
 # в окружении приложения их быть не должно
+[project.entry-points."boba.tools"]
+bash = "boba.tool.shell.plugin:MANIFEST"
+
 [project.optional-dependencies]
 payload = [
     "pandas>=2,<3",

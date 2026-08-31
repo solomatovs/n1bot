@@ -15,6 +15,9 @@ dependencies = [
 
 # зависимости payload'а: нужны только внутри песочницы,
 # в окружении приложения их быть не должно
+[project.entry-points."boba.tools"]
+doc = "boba.tool.doc.plugin:MANIFEST"
+
 [project.optional-dependencies]
 payload = [
     "boba-liteparse==0.0.14.dev9",

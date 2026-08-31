@@ -24,6 +24,11 @@ dependencies = [
 
 # зависимости payload'а: нужны только внутри песочницы,
 # в окружении приложения их быть не должно
+[project.entry-points."boba.tools"]
+kb = "boba.tool.kb.plugin:KB"
+confluence = "boba.tool.kb.plugin:CONFLUENCE"
+ingest = "boba.tool.kb.plugin:INGEST"
+
 [project.optional-dependencies]
 payload = [
     "boba-liteparse==0.0.14.dev9",
@@ -34,6 +39,7 @@ payload = [
     "markdownify>=0.11,<1.0",
 ]
 dev = [
+    "boba-runtime==0.0.14.dev9",
     "boba-liteparse==0.0.14.dev9",
     "boba-sandbox==0.0.14.dev9",
     "boba-config==0.0.14.dev9",

@@ -7,6 +7,7 @@ RuntimeError — конфиг ещё не загружен (RawConfig.get до R
 from __future__ import annotations
 
 import os
+import tomllib
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, Literal, Self
@@ -101,20 +102,24 @@ class EnvOverride(StrEnum):
 
 
 class AppLayers:
-    """Слои конфига процесса: вычисленный base -> toml -> BOBA_-переопределения.
+    """Слои конфига процесса: вычисленный base -> toml -> плагины -> BOBA_-оверрайды.
 
     Конфиг самодостаточен: значения секции [env] описаны в toml, base выводится
-    из раскладки (config.toml лежит в ${base}/conf), а окружение лишь
-    переопределяет ключи из реестра EnvOverride.
+    из раскладки (config.toml лежит в ${base}/conf), файлы conf/plugins/<id>.toml
+    ложатся секциями tool.<id>, а окружение лишь переопределяет ключи из
+    реестра EnvOverride.
     """
 
     HOST_FALLBACK: ClassVar[str] = "HOSTNAME"
+    PLUGINS_DIR: ClassVar[str] = "plugins"
+    PLUGIN_SUFFIX: ClassVar[str] = ".toml"
 
     @classmethod
     def compose(cls, config_path: Path) -> DictConfig:
         builder = ConfigBuilder()
         builder.add_dict(cls._computed(config_path))
         builder.add_toml(config_path)
+        builder.add_dict(cls._plugins(config_path))
         builder.add_dict(cls._overrides())
 
         return builder.build()
@@ -123,6 +128,25 @@ class AppLayers:
     def _computed(cls, config_path: Path) -> dict[str, Any]:
         base = config_path.resolve().parent.parent
         return {"env": {"base": str(base)}}
+
+    @classmethod
+    def _plugins(cls, config_path: Path) -> dict[str, Any]:
+        """Файлы conf/plugins/<id>.toml -> секции tool.<id>; интерполяции файлов
+        резолвятся от корня собранного конфига.
+        """
+        plugins_dir = config_path.parent / cls.PLUGINS_DIR
+        if not plugins_dir.is_dir():
+            return {}
+
+        sections: dict[str, Any] = {}
+        for path in sorted(plugins_dir.glob(f"*{cls.PLUGIN_SUFFIX}")):
+            with path.open("rb") as body:
+                sections[path.stem] = tomllib.load(body)
+
+        if not sections:
+            return {}
+
+        return {"tool": sections}
 
     @classmethod
     def _overrides(cls) -> dict[str, Any]:

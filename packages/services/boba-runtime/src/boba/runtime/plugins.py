@@ -1,9 +1,14 @@
 """Загрузчик tool-плагинов: секция [tool.<name>] -> langchain-инструменты с обвязками.
 
+Плагины обнаруживаются entry points группы boba.tools у установленных пакетов;
+конфиг каждого приходит файлом conf/plugins/<name>.toml (слой AppLayers).
+
 Ошибки:
-RuntimeError — конфиг противоречит плагину: способ запуска из [tool_launcher]
-    не согласован с секциями (см. boba.runtime.launchers), секция
-    с соединениями пользователя без [connections].
+RuntimeError — конфиг противоречит плагину: у установленного плагина нет
+    conf/plugins/<name>.toml, entry point отдал не манифест, секции плагинов
+    совпали, способ запуска из [tool_launcher] не согласован с секциями
+    (см. boba.runtime.launchers), секция с соединениями пользователя без
+    [connections].
 ToolConfigError — injected-параметр инструмента не привязан к секции конфига.
 TypeError — TOOLS модуля содержит не PayloadTool и не BaseTool.
 """
@@ -13,10 +18,11 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from importlib.metadata import entry_points
 from typing import Any
 
 from langchain_core.tools import BaseTool, StructuredTool
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel, ConfigDict
 
 from boba.access import GrantCheck, ToolAccess
@@ -25,24 +31,14 @@ from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig
 from boba.connection_broker.tickets import ServiceTickets
 from boba.connection_broker.user_connections import UserConnections
-from boba.connections.marks import UserConnectionsSpec
-from boba.connections.profile import ConnectionKind
-from boba.connections.whitelist import ConnectionKeying
+from boba.connections.marks import ConnectedToolManifest, UserConnectionsSpec
 from boba.identity.context import CallContext
 from boba.runtime.launchers import CallSurface, SectionLaunchers, ToolLaunchers
 from boba.runtime.refs import RuntimeRefs
-from boba.tool.ch.tools import TOOLS as CH_TOOLS
-from boba.tool.chart.tools import TOOLS as CHART_TOOLS
-from boba.tool.doc.tools import TOOLS as DOC_TOOLS
-from boba.tool.kb.confluence.ingest_tools import TOOLS as INGEST_TOOLS
-from boba.tool.kb.confluence.tools import TOOLS as CONFLUENCE_TOOLS
-from boba.tool.kb.tools import TOOLS as KB_TOOLS
-from boba.tool.pg.tools import TOOLS as PG_TOOLS
-from boba.tool.shell.tools import BashToolConfig, build_bash_tool
-from boba.tool.web.tools import TOOLS as WEB_TOOLS
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolEntryError, ToolLike, ToolMain
 from boba.toolkit.facade import PayloadTool
 from boba.toolkit.launcher import LauncherFactory, ToolLauncher
+from boba.toolkit.manifest import ToolPluginManifest
 from boba.toolkit.types import StringList
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.access import ToolAccessGuard
@@ -59,6 +55,7 @@ from boba.workflow_engine.tools import WorkflowToolConfig, build_workflow_tools
 
 __all__ = [
     "CoreTools",
+    "EntryPointPlugins",
     "PluginMeta",
     "PluginTable",
     "ToolBridge",
@@ -91,6 +88,9 @@ class ToolPlugin:
     chat_only: bool = False
     """True — инструментам нужна поверхность чата (панель, карточки, вложения):
     вне хода чата они отказывают, в каталог workflow не попадают."""
+    discovered: bool = False
+    """True — плагин пришёл entry point'ом установленного пакета: его секция
+    tool.<section> обязана прийти файлом conf/plugins/<section>.toml."""
 
 
 class PluginMeta(BaseModel):
@@ -176,6 +176,14 @@ class ToolLoader:
         tools: list[BaseTool] = []
         chat_only: set[str] = set()
         for name, plugin in self._plugins.items():
+            section = OmegaConf.select(self._raw, f"tool.{name}")
+            if section is None and plugin.discovered:
+                msg = (
+                    f"conf/plugins/{name}.toml is missing: the installed "
+                    f"plugin {name!r} requires its config"
+                )
+                raise RuntimeError(msg)
+
             meta = bind(self._raw, f"tool.{name}", PluginMeta)
             if not meta.enable:
                 continue
@@ -337,64 +345,84 @@ PluginTable = Callable[[RuntimeRefs], Mapping[str, ToolPlugin]]
 """Таблица плагинов процесса: общая часть плюс своё (у чата — chat-only инструменты)."""
 
 
+class EntryPointPlugins:
+    """Обнаружение установленных tool-плагинов: entry points группы boba.tools.
+
+    Пакет объявляет манифест в pyproject; установленный пакет виден без
+    перечисления в коде, удалённый — исчезает из таблицы.
+    """
+
+    @classmethod
+    def discover(cls) -> dict[str, ToolPlugin]:
+        """Таблица плагинов установленных пакетов; дубликат секции — отказ."""
+        table: dict[str, ToolPlugin] = {}
+
+        for entry in entry_points(group=ToolPluginManifest.GROUP):
+            manifest = entry.load()
+            if not isinstance(manifest, ToolPluginManifest):
+                found = type(manifest).__name__
+                msg = f"entry point {entry.name!r}: {found} is not a tool manifest"
+                raise RuntimeError(msg)
+
+            if manifest.section in table:
+                msg = f"tool plugin section {manifest.section!r} is declared twice"
+                raise RuntimeError(msg)
+
+            table[manifest.section] = cls._plugin_of(manifest)
+
+        return table
+
+    @classmethod
+    def _plugin_of(cls, manifest: ToolPluginManifest) -> ToolPlugin:
+        connections = None
+        if isinstance(manifest, ConnectedToolManifest):
+            connections = manifest.connections
+
+        return ToolPlugin(
+            section=manifest.section,
+            build=cls._build_of(manifest),
+            config_model=manifest.config_model,
+            module_tools=ToolBridge.toolset(manifest.tools),
+            modules=ToolBridge.modules_of(manifest.tools),
+            connections=connections,
+            discovered=True,
+        )
+
+    @staticmethod
+    def _build_of(
+        manifest: ToolPluginManifest,
+    ) -> Callable[[Any, LauncherFactory], list[BaseTool]] | None:
+        """Фабрика манифеста с мостом в langchain; манифест langchain не знает."""
+        source = manifest.build
+        if source is None:
+            return None
+
+        def build(cfg: Any, launchers: LauncherFactory) -> list[BaseTool]:
+            built: list[BaseTool] = []
+            for tool in source(cfg, launchers):
+                built.append(ToolBridge.as_structured_tool(tool))
+
+            return built
+
+        return build
+
+
 class CoreTools:
-    """Таблица плагинов, общая для процессов: инструменты модулей, bash и workflow."""
+    """Таблица плагинов, общая для процессов: обнаруженные пакеты плюс workflow."""
 
     @classmethod
     def table(cls, refs: RuntimeRefs) -> dict[str, ToolPlugin]:
-        return {
-            "bash": ToolPlugin(
-                section="bash",
-                config_model=BashToolConfig,
-                build=cls._bash,
-            ),
-            "doc": cls.module("doc", DOC_TOOLS),
-            "chart": cls.module("chart", CHART_TOOLS),
-            "workflow": ToolPlugin(
-                section="workflow",
-                config_model=WorkflowToolConfig,
-                build=cls._workflow_builder(refs),
-                sandboxed=False,
-            ),
-            "pg": cls.connected(
-                "pg", PG_TOOLS, ConnectionKind.POSTGRES, ConnectionKeying.NAME
-            ),
-            "ch": cls.connected(
-                "ch", CH_TOOLS, ConnectionKind.CLICKHOUSE, ConnectionKeying.NAME
-            ),
-            "kb": cls.module("kb", KB_TOOLS),
-            "confluence": cls.module("confluence", CONFLUENCE_TOOLS),
-            "ingest": cls.module("ingest", INGEST_TOOLS),
-            "web": cls.connected(
-                "web", WEB_TOOLS, ConnectionKind.WEB, ConnectionKeying.NAME
-            ),
-        }
+        """workflow встроен: ему нужен сервис из входов приложения."""
+        table = EntryPointPlugins.discover()
 
-    @staticmethod
-    def module(section: str, tools: Sequence[ToolLike]) -> ToolPlugin:
-        return ToolPlugin(
-            section=section,
-            module_tools=ToolBridge.toolset(tools),
-            modules=ToolBridge.modules_of(tools),
+        table["workflow"] = ToolPlugin(
+            section="workflow",
+            config_model=WorkflowToolConfig,
+            build=cls._workflow_builder(refs),
+            sandboxed=False,
         )
 
-    @staticmethod
-    def connected(
-        section: str,
-        tools: Sequence[ToolLike],
-        kind: ConnectionKind,
-        keying: ConnectionKeying,
-    ) -> ToolPlugin:
-        return ToolPlugin(
-            section=section,
-            module_tools=ToolBridge.toolset(tools),
-            modules=ToolBridge.modules_of(tools),
-            connections=UserConnectionsSpec(kind, keying),
-        )
-
-    @staticmethod
-    def _bash(cfg: BashToolConfig, launchers: LauncherFactory) -> list[BaseTool]:
-        return [ToolBridge.as_structured_tool(build_bash_tool(cfg, launchers))]
+        return table
 
     @staticmethod
     def _workflow_builder(

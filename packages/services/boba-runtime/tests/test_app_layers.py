@@ -40,6 +40,26 @@ def test_base_computed_from_config_layout(
     assert OmegaConf.select(raw, "env.port") == 8501
 
 
+def test_plugin_files_land_under_their_tool_section(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for override in EnvOverride:
+        monkeypatch.delenv(override.var, raising=False)
+
+    config = _write(tmp_path)
+
+    plugins = config.parent / "plugins"
+    plugins.mkdir()
+    body = 'enable = true\nworkdir = "${env.data}/pg"\n[sandbox]\nprofile = "x"\n'
+    (plugins / "pg.toml").write_text(body, encoding="utf-8")
+
+    raw = AppLayers.compose(config)
+
+    assert OmegaConf.select(raw, "tool.pg.enable") is True
+    assert OmegaConf.select(raw, "tool.pg.workdir") == f"{tmp_path}/data/pg"
+    assert OmegaConf.select(raw, "tool.pg.sandbox.profile") == "x"
+
+
 def test_environment_overrides_toml(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

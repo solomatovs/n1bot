@@ -18,6 +18,9 @@ dependencies = [
 
 # зависимости payload'а: нужны только внутри песочницы,
 # в окружении приложения их быть не должно
+[project.entry-points."boba.tools"]
+web = "boba.tool.web.plugin:MANIFEST"
+
 [project.optional-dependencies]
 payload = [
     "markdownify>=0.11,<1.0",

@@ -16,10 +16,10 @@ DEPS_DIR        ?= $(BASE_DIR)/src
 RELEASE_DIR     := $(SRC_DIR)/release
 
 APP             := chainlit
-APP_PACKAGES    := boba-chainlit boba-llm[generation]
+APP_PACKAGES    := boba-chainlit[tools] boba-llm[generation]
 APP_IMPORTS     := boba.chainlit onnxruntime_genai
 APP_HEALTH      := /
-APP_EXTRAS      :=
+APP_EXTRAS      := tools
 APP_CGROUP      := boba-sandbox
 
 .DEFAULT_GOAL := help
