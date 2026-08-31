@@ -9,7 +9,7 @@ Type=simple
 EnvironmentFile=${INSTALL_DIR}/conf/boba.env
 WorkingDirectory=${BOBA_DATA}
 ExecStartPre=/bin/mkdir -p ${BOBA_DATA}/workspace ${BOBA_DATA}/tool-logs ${BOBA_DATA}/dump
-ExecStart=${INSTALL_DIR}/third/bin/python3 -m boba.chainlit.main
+ExecStart=${INSTALL_DIR}/third/bin/python3 -m boba.chainlit.main --config ${INSTALL_DIR}/conf/config.toml
 
 Restart=always
 RestartSec=5

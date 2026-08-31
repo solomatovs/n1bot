@@ -1,5 +1,6 @@
 """Точка входа: env chainlit выставляется до первого импорта его модулей."""
 
+import argparse
 import os
 from enum import StrEnum
 from pathlib import Path
@@ -8,8 +9,8 @@ from typing import ClassVar
 from omegaconf import OmegaConf
 
 from boba.chainlit.domain.keys import AppPrefix
-from boba.config import bind, build_app_config
-from boba.runtime.config import SessionConfig
+from boba.config import bind
+from boba.runtime.config import AppLayers, SessionConfig
 
 __all__ = ["AppEntry", "ChainlitEnv"]
 
@@ -26,19 +27,13 @@ class ChainlitEnv(StrEnum):
 class AppEntry:
     """Конфиг -> env chainlit -> запуск приложения."""
 
-    CONFIG_ENV: ClassVar[str] = "BOBA_CONFIG_PATH"
-
-    BASE_ENV: ClassVar[str] = "BOBA_BASE"
-
-    CONFIG_IN_BASE: ClassVar[str] = "conf/config.toml"
-
     SECTION: ClassVar[str] = "app.chainlit"
 
     SESSION_SECTION: ClassVar[str] = "session"
 
     @classmethod
     def run(cls) -> None:
-        config_path = cls.config_path()
+        config_path = cls.config_argument()
         cls.export_env(config_path)
 
         # импорт здесь: chainlit фиксирует пути из env на импорте своих модулей
@@ -47,22 +42,26 @@ class AppEntry:
         run_app(config_path)
 
     @classmethod
-    def config_path(cls) -> Path:
-        """Путь конфига: явный BOBA_CONFIG_PATH либо conf/config.toml в BOBA_BASE."""
-        if config_path := os.environ.get(cls.CONFIG_ENV):
-            return Path(config_path)
+    def config_argument(cls) -> Path:
+        """Путь конфига — обязательный аргумент запуска; дефолта и env нет."""
+        parser = argparse.ArgumentParser(
+            prog="boba.chainlit",
+            description="Chainlit application of boba",
+        )
+        parser.add_argument(
+            "--config",
+            required=True,
+            type=Path,
+            help="path to the application config.toml",
+        )
+        arguments = parser.parse_args()
 
-        base = os.environ.get(cls.BASE_ENV)
-        if not base:
-            msg = f"не задан ни {cls.CONFIG_ENV}, ни {cls.BASE_ENV}"
-            raise ValueError(msg)
-
-        return Path(base) / cls.CONFIG_IN_BASE
+        return arguments.config
 
     @classmethod
     def export_env(cls, config_path: Path) -> None:
         """Секции [chainlit] и [session] -> переменные окружения chainlit."""
-        raw = build_app_config(config_path=config_path)
+        raw = AppLayers.compose(config_path)
         section = OmegaConf.select(raw, cls.SECTION)
         if section is None:
             msg = f"в конфиге нет секции {cls.SECTION}: {config_path}"

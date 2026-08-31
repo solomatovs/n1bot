@@ -308,4 +308,4 @@ RUN mkdir -p ${BOBA_DIR}/app_root/.files && chown -R ${BOBA_UID}:${BOBA_GID} ${B
 
 EXPOSE 8501
 USER ${BOBA_UID}:${BOBA_GID}
-CMD ["-m", "boba.chainlit.main"]
+CMD ["-m", "boba.chainlit.main", "--config", "/app/boba/conf/config.toml"]

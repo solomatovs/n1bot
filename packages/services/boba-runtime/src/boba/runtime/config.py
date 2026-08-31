@@ -20,7 +20,7 @@ from boba.auth.config import (
     KerberosAuthConfig,
 )
 from boba.chat.profiles import ChatProfileConfig
-from boba.config import bind, build_app_config
+from boba.config import ConfigBuilder, bind
 from boba.connections.postgres import PostgresConfig
 from boba.identity.token import SessionRenewal
 from boba.krb import KerberosWorkspaceConfig
@@ -28,12 +28,14 @@ from boba.krb.seal import SsoTickets, TicketSealer
 from boba.runtime.launchers import ToolLaunchers
 
 __all__ = [
+    "AppLayers",
     "AppName",
     "BuiltPage",
     "ClusterConfig",
     "ConfigLocator",
     "DataLayerConfig",
     "DevPage",
+    "EnvOverride",
     "LocalMessagingConfig",
     "MessagingConfig",
     "PageSource",
@@ -50,8 +52,10 @@ __all__ = [
 
 
 class ConfigLocator:
-    """Путь конфига процесса: BOBA_CONFIG_PATH либо BOBA_BASE/conf/config.toml. У каждого
-    приложения свой корень BOBA_BASE, поэтому имя файла одно.
+    """Путь конфига тестового стенда: BOBA_CONFIG_PATH либо BOBA_BASE/conf/config.toml.
+
+    Приложения получают конфиг обязательным аргументом запуска; локатор остаётся
+    только фикстурам и стендам, которые аргументов не имеют.
     """
 
     CONFIG_ENV: ClassVar[str] = "BOBA_CONFIG_PATH"
@@ -71,6 +75,84 @@ class ConfigLocator:
         return Path(base) / cls.CONFIG_RELATIVE
 
 
+class EnvOverride(StrEnum):
+    """Ключи секции [env], которые переменная окружения BOBA_* переопределяет.
+
+    Значение члена — имя ключа в [env]; имя переменной складывается из имени
+    члена: BASE -> BOBA_BASE. Всё остальное задаётся только конфигом.
+    """
+
+    BASE = "base"
+    APP = "app"
+    DATA = "data"
+    PORT = "port"
+    INSTANCE_ID = "instance_id"
+    HOST = "host"
+    URL_PREFIX = "url_prefix"
+    CGROUP_BASE = "cgroup_base"
+    APP_ROOT = "app_root"
+    WORKFLOW_PAGE = "workflow_page"
+    MESSAGING = "messaging_provider"
+    TOOL_LAUNCHER = "tool_launcher"
+
+    @property
+    def var(self) -> str:
+        return f"BOBA_{self.name}"
+
+
+class AppLayers:
+    """Слои конфига процесса: вычисленный base -> toml -> BOBA_-переопределения.
+
+    Конфиг самодостаточен: значения секции [env] описаны в toml, base выводится
+    из раскладки (config.toml лежит в ${base}/conf), а окружение лишь
+    переопределяет ключи из реестра EnvOverride.
+    """
+
+    HOST_FALLBACK: ClassVar[str] = "HOSTNAME"
+
+    @classmethod
+    def compose(cls, config_path: Path) -> DictConfig:
+        builder = ConfigBuilder()
+        builder.add_dict(cls._computed(config_path))
+        builder.add_toml(config_path)
+        builder.add_dict(cls._overrides())
+
+        return builder.build()
+
+    @classmethod
+    def _computed(cls, config_path: Path) -> dict[str, Any]:
+        base = config_path.resolve().parent.parent
+        return {"env": {"base": str(base)}}
+
+    @classmethod
+    def _overrides(cls) -> dict[str, Any]:
+        entries: dict[str, str] = {}
+        for override in EnvOverride:
+            value = cls._value_of(override)
+            if value is None:
+                continue
+
+            entries[override.value] = value
+
+        if not entries:
+            return {}
+
+        return {"env": entries}
+
+    @classmethod
+    def _value_of(cls, override: EnvOverride) -> str | None:
+        value = os.environ.get(override.var)
+        if value is not None:
+            return value
+
+        # имя узла в кластере по умолчанию берётся у контейнера: один конфиг
+        # обслуживает несколько узлов тест-стенда
+        if override is EnvOverride.HOST:
+            return os.environ.get(cls.HOST_FALLBACK)
+
+        return None
+
+
 class RawConfig:
     """Загруженный toml приложения: один на процесс, провайдеры читают его секциями."""
 
@@ -78,7 +160,7 @@ class RawConfig:
 
     @classmethod
     def load(cls, config_path: Path) -> DictConfig:
-        cls._raw = build_app_config(config_path=config_path)
+        cls._raw = AppLayers.compose(config_path)
 
         return cls._raw
 

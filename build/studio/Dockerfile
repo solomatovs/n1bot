@@ -305,4 +305,4 @@ RUN chown -R ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/app_root
 
 EXPOSE 8502
 USER ${BOBA_UID}:${BOBA_GID}
-CMD ["-m", "boba.studio"]
+CMD ["-m", "boba.studio", "--config", "/app/boba/conf/config.toml"]

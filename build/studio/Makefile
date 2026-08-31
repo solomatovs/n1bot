@@ -400,7 +400,6 @@ dev:
 	cp -a "$(WEBASSETS_DIR)" "$(OUT)/app_root/public/vendor"
 	export BOBA_BASE="$(DEST_DIR)" BOBA_VERSION="$(VERSION)" BOBA_DATA="$(DEST_DIR)/data"
 	envsubst '$${BOBA_BASE} $${BOBA_VERSION} $${BOBA_DATA}' < "$(CONF_DIR)/boba.env" > "$(OUT)/conf/boba.env"
-	sed -i 's|^BOBA_CGROUP_BASE=.*|BOBA_CGROUP_BASE=/cgroup/$(APP_CGROUP)|' "$(OUT)/conf/boba.env"
 	# umask сборки даёт g+w, а TrustedBinaries такой third/bin не примет
 	chmod go-w "$(OUT)"
 	chmod -R go-w "$(OUT)/third" "$(OUT)/sandbox"
@@ -409,7 +408,7 @@ dev:
 	    exit 1
 	fi
 	echo ">>> дерево готово: $(OUT)"
-	echo "    debug:   BOBA_BASE=$(OUT) BOBA_DATA=$(OUT)/data BOBA_APP=$(SRC_DIR)/packages"
+	echo "    debug:   python -m boba.studio --config $(OUT)/conf/config.toml"
 	echo "    compose: cd $(OUT) && docker compose up -d"
 
 # --- страница workflow ----------------------------------------------------------

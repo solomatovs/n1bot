@@ -45,7 +45,13 @@ class StudioProcess:
         self.api = f"{self.root}/api"
         self.page = f"{self.root}/workflow"
         self.process = subprocess.Popen(
-            [sys.executable, "-m", "boba.studio"],
+            [
+                sys.executable,
+                "-m",
+                "boba.studio",
+                "--config",
+                str(base / "conf" / "config.toml"),
+            ],
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

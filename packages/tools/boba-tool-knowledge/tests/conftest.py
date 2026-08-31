@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from boba.runtime.config import AppLayers
+
 
 @pytest.fixture(autouse=True)
 def chainlit_context() -> None:
@@ -19,6 +21,5 @@ def raw_config():
     config_path = os.environ.get("BOBA_CONFIG_PATH")
     if not config_path:
         pytest.skip("BOBA_CONFIG_PATH не задан")
-    from boba.config import build_app_config
 
-    return build_app_config(config_path=Path(config_path))
+    return AppLayers.compose(Path(config_path))

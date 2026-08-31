@@ -29,7 +29,8 @@ from boba.chainlit.chat.turn import TurnState
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.infra.config import AppConfig
 from boba.chat.provider import ChatSampling, LocalChatConfig
-from boba.config import bind, build_app_config
+from boba.config import bind
+from boba.runtime.config import AppLayers
 from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
 from boba.llm.local import OnnxChatRuntime
 from boba.toolkit.calls import ToolIntent
@@ -65,7 +66,7 @@ def _local_model_dir() -> str:
     if not config_path:
         pytest.skip("BOBA_CONFIG_PATH не задан")
 
-    built = build_app_config(config_path=Path(config_path))
+    built = AppLayers.compose(Path(config_path))
     app_config = bind(built, path="app", model=AppConfig)
 
     for profile in app_config.profiles.values():

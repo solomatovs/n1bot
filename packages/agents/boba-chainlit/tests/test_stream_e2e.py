@@ -36,7 +36,8 @@ __all__ = ["anyio_backend", "app_server", "panel"]
 from boba.canvas.journal import StreamKey
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
-from boba.config import bind, build_app_config
+from boba.config import bind
+from boba.runtime.config import AppLayers
 from boba.db.postgres import AsyncPostgresPool
 from boba.runtime.journal import DirVault, StreamJournal
 from boba.toolkit.channels import ToolChannel
@@ -54,7 +55,7 @@ ERR_LINE = "E0000000,warning"
 
 
 def _config() -> AppConfig:
-    raw = build_app_config(config_path=Path(os.environ["BOBA_CONFIG_PATH"]))
+    raw = AppLayers.compose(Path(os.environ["BOBA_CONFIG_PATH"]))
     return bind(raw, path="app", model=AppConfig)
 
 

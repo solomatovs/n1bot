@@ -28,7 +28,8 @@ from chat_ui import ChatOpener
 
 from boba.canvas.diagram import DiagramPrompt
 from boba.chainlit.rendering.tool import ToolCallMarkdown, ToolResultMarkdown
-from boba.config import bind, build_app_config
+from boba.config import bind
+from boba.runtime.config import AppLayers
 from boba.liteparse.engine import LiteParseEngine
 from boba.stand.ui.chat_page import ChatPage, StepKind
 from boba.stand.ui.database import StandDatabase
@@ -531,7 +532,7 @@ class ConfluenceSite:
 
     @classmethod
     def load(cls) -> ConfluenceSite:
-        built = build_app_config(config_path=StandPaths.BASE_CONFIG.under(REPO_ROOT))
+        built = AppLayers.compose(StandPaths.BASE_CONFIG.under(REPO_ROOT))
         config = bind(
             built, path=ConfluenceToolsConfig.SECTION, model=ConfluenceToolsConfig
         )

@@ -26,8 +26,9 @@ from typing import Any, ClassVar
 
 from omegaconf import DictConfig
 
-from boba.config import bind, build_app_config
+from boba.config import bind
 from boba.krb import KerberosWorkspaceConfig
+from boba.runtime.config import AppLayers
 from boba.toolkit.entry import EntryFlag, ToolArgv, ToolLike, ToolMain
 
 __all__ = ["HostConfig", "ToolCli", "ToolCliError"]
@@ -49,7 +50,7 @@ class HostConfig:
     KERBEROS_SECTION: ClassVar[str] = "krb"
 
     def __init__(self, path: Path) -> None:
-        self._raw: DictConfig = build_app_config(config_path=path)
+        self._raw: DictConfig = AppLayers.compose(path)
 
     def enter_kerberos(self) -> None:
         """Рабочий каталог kerberos из [krb]; без секции keytab-профили телу закрыты."""
