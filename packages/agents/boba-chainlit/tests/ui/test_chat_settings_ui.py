@@ -119,77 +119,10 @@ class FieldCase:
 
 CASES = (
     FieldCase(
-        setting=UserSetting.TEMPERATURE,
-        tab=PanelTab.SAMPLING,
-        action=Action.SLIDER,
-        payload_key="temperature",
-    ),
-    FieldCase(
-        setting=UserSetting.TOP_P,
-        tab=PanelTab.SAMPLING,
-        action=Action.SLIDER,
-        payload_key="top_p",
-    ),
-    FieldCase(
-        setting=UserSetting.MAX_TOKENS,
-        tab=PanelTab.SAMPLING,
-        action=Action.SLIDER,
-        payload_key="max_completion_tokens",
-        integer=True,
-    ),
-    FieldCase(
-        setting=UserSetting.FREQUENCY_PENALTY,
-        tab=PanelTab.SAMPLING,
-        action=Action.SLIDER,
-        payload_key="frequency_penalty",
-    ),
-    FieldCase(
-        setting=UserSetting.PRESENCE_PENALTY,
-        tab=PanelTab.SAMPLING,
-        action=Action.SLIDER,
-        payload_key="presence_penalty",
-    ),
-    FieldCase(
         setting=UserSetting.HISTORY_MESSAGES,
-        tab=PanelTab.SAMPLING,
+        tab=PanelTab.HISTORY,
         action=Action.SLIDER,
         integer=True,
-    ),
-    FieldCase(
-        setting=UserSetting.STOP,
-        tab=PanelTab.SAMPLING,
-        action=Action.TAGS,
-        value="END",
-        meta={"stop": ["END"]},
-        payload_key="stop",
-        payload_value=["END"],
-    ),
-    FieldCase(
-        setting=UserSetting.SEED,
-        tab=PanelTab.MODEL,
-        action=Action.NUMBER,
-        value="42",
-        meta={"seed": 42},
-        payload_key="seed",
-        payload_value=42,
-    ),
-    FieldCase(
-        setting=UserSetting.MODEL,
-        tab=PanelTab.MODEL,
-        action=Action.SELECT,
-        value="fake-model-alt",
-        meta={"model": "fake-model-alt"},
-        payload_key="model",
-        payload_value="fake-model-alt",
-    ),
-    FieldCase(
-        setting=UserSetting.REASONING_EFFORT,
-        tab=PanelTab.MODEL,
-        action=Action.SELECT,
-        value="high",
-        meta={"reasoning_effort": "high"},
-        payload_key="reasoning_effort",
-        payload_value="high",
     ),
     FieldCase(
         setting=UserSetting.USER_PROMPT,
@@ -374,32 +307,34 @@ class TestEveryFieldClickable:
 class TestProfileValueBack:
     """Возврат значения к профильному снимает переопределение."""
 
-    def test_model_back_to_profile_clears_override(
-        self, chat: ChatPage, llm_port: int, llm_meta: LlmMetaReader
+    def test_history_back_to_profile_clears_override(
+        self, chat: ChatPage, llm_meta: LlmMetaReader
     ) -> None:
         _open_settings(chat)
-        _open_tab(chat, PanelTab.MODEL)
+        _open_tab(chat, PanelTab.HISTORY)
 
-        chat.page.locator(PanelSelector.trigger_of(UserSetting.MODEL.value)).click()
-        chat.page.get_by_role("option", name="fake-model-alt", exact=True).click()
+        slider = chat.page.locator(
+            PanelSelector.slider_of(UserSetting.HISTORY_MESSAGES.value)
+        ).first
+        slider.click()
+        slider.press("ArrowRight")
         _confirm_settings(chat)
 
-        if llm_meta(ADMIN_LOGIN).get("general") != {"model": "fake-model-alt"}:
-            raise AssertionError("model override is not saved")
+        stored = llm_meta(ADMIN_LOGIN).get("general")
+        if stored is None or "history_messages" not in stored:
+            raise AssertionError(f"history override is not saved: {stored}")
 
         _open_settings(chat)
-        _open_tab(chat, PanelTab.MODEL)
-        chat.page.locator(PanelSelector.trigger_of(UserSetting.MODEL.value)).click()
-        chat.page.get_by_role("option", name="fake-model-general", exact=True).click()
+        _open_tab(chat, PanelTab.HISTORY)
+        slider = chat.page.locator(
+            PanelSelector.slider_of(UserSetting.HISTORY_MESSAGES.value)
+        ).first
+        slider.click()
+        slider.press("ArrowLeft")
         _confirm_settings(chat)
 
         if llm_meta(ADMIN_LOGIN).get("general") is not None:
-            raise AssertionError(f"model stayed stored: {llm_meta(ADMIN_LOGIN)}")
-
-        _ask_and_wait(chat)
-        payload = _last_request(llm_port)
-        if payload.get("model") != "fake-model-general":
-            raise AssertionError(f"model: {payload.get('model')!r}")
+            raise AssertionError(f"history stayed stored: {llm_meta(ADMIN_LOGIN)}")
 
     def test_untouched_panel_stores_nothing(
         self, chat: ChatPage, llm_port: int, llm_meta: LlmMetaReader
@@ -413,8 +348,8 @@ class TestProfileValueBack:
         _ask_and_wait(chat)
         payload = _last_request(llm_port)
 
-        # профиль не задаёт penalties: стартовые значения слайдеров в запрос
-        # не уходят, а заданные профилем остаются его значениями
+        # сэмплинг задаёт только админская таблица профиля: незаданные ключи
+        # в запрос не попадают, заданные уходят как написаны
         for absent in ("frequency_penalty", "presence_penalty", "seed"):
             if absent in payload:
                 raise AssertionError(f"{absent} leaked: {payload.get(absent)!r}")
@@ -492,28 +427,19 @@ class TestAllowedSettingsVisibility:
         for index in range(tabs.count()):
             labels.add(tabs.nth(index).inner_text().strip())
 
-        # search разрешает temperature, top_p, history_messages и user_prompt
-        expected = {
-            TEXT.tab(PanelTab.SAMPLING.value),
-            TEXT.tab(PanelTab.PROMPT.value),
-        }
+        # search разрешает только user_prompt: вкладка истории не рисуется
+        expected = {TEXT.tab(PanelTab.PROMPT.value)}
         if labels != expected:
             raise AssertionError(f"tabs: {sorted(labels)}")
 
-        _open_tab(chat, PanelTab.SAMPLING)
-        allowed = PanelSelector.slider_of(UserSetting.TEMPERATURE.value)
+        _open_tab(chat, PanelTab.PROMPT)
+        allowed = PanelSelector.textarea_of(UserSetting.USER_PROMPT.value)
         if not chat.page.locator(allowed).count():
-            raise AssertionError("temperature slider is not drawn")
+            raise AssertionError("user prompt input is not drawn")
 
-        forbidden = {
-            UserSetting.MAX_TOKENS.value: PanelSelector.slider_of(
-                UserSetting.MAX_TOKENS.value
-            ),
-            UserSetting.STOP.value: PanelSelector.input_of(UserSetting.STOP.value),
-        }
-        for name, selector in forbidden.items():
-            if chat.page.locator(selector).count():
-                raise AssertionError(f"forbidden widget {name} is drawn")
+        forbidden = PanelSelector.slider_of(UserSetting.HISTORY_MESSAGES.value)
+        if chat.page.locator(forbidden).count():
+            raise AssertionError("history slider is drawn for a closed setting")
 
 
 class TestSettingsLifecycle:
@@ -536,19 +462,6 @@ class TestSettingsLifecycle:
         ).input_value()
         if value != "stay here":
             raise AssertionError(f"user_prompt after reload: {value!r}")
-
-    def test_out_of_bounds_value_is_clamped(
-        self, chat: ChatPage, llm_port: int, llm_meta: LlmMetaReader
-    ) -> None:
-        _open_settings(chat)
-        _open_tab(chat, PanelTab.MODEL)
-        chat.page.fill(PanelSelector.input_of(UserSetting.SEED.value), "-5")
-        _confirm_settings(chat)
-
-        # seed отрицательным быть не может: модель отвергает значение целиком
-        if llm_meta(ADMIN_LOGIN).get("general") is not None:
-            raise AssertionError(f"negative seed stored: {llm_meta(ADMIN_LOGIN)}")
-
 
 class TestSettingsAfterTurn:
     """Панель настроек остаётся рабочей, когда в треде уже есть переписка."""
@@ -629,19 +542,26 @@ class TestOtherTabs:
         other: ChatPage = open_chat(stand)
 
         _open_settings(chat)
-        _open_tab(chat, PanelTab.MODEL)
-        chat.page.locator(PanelSelector.trigger_of(UserSetting.MODEL.value)).click()
-        chat.page.get_by_role("option", name="fake-model-alt", exact=True).click()
+        _open_tab(chat, PanelTab.PROMPT)
+        chat.page.fill(
+            PanelSelector.textarea_of(UserSetting.USER_PROMPT.value),
+            "Sign every answer",
+        )
         _confirm_settings(chat)
-        assert llm_meta(ADMIN_LOGIN).get("general") == {"model": "fake-model-alt"}
+        assert llm_meta(ADMIN_LOGIN).get("general") == {
+            "user_prompt": "Sign every answer"
+        }
 
-        # вторая вкладка пересобрала агента по сообщению шины: запрос с новой моделью
+        # вторая вкладка пересобрала агента по сообщению шины: промпт с добавкой
         other.page.wait_for_timeout(1000)
         _ask_and_wait(other)
-        assert _last_request(llm_port)["model"] == "fake-model-alt"
+        prompt = _system_prompt(_last_request(llm_port))
+        assert prompt == f"{GENERAL_PROMPT}\n\nSign every answer"
 
         _open_settings(other)
-        _open_tab(other, PanelTab.MODEL)
+        _open_tab(other, PanelTab.PROMPT)
         expect(
-            other.page.locator(PanelSelector.trigger_of(UserSetting.MODEL.value))
-        ).to_contain_text("fake-model-alt")
+            other.page.locator(
+                PanelSelector.textarea_of(UserSetting.USER_PROMPT.value)
+            )
+        ).to_have_value("Sign every answer")

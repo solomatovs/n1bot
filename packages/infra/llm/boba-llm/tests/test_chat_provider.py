@@ -24,7 +24,6 @@ from boba.chat.provider import (
     ChatReply,
     ChatRequest,
     ChatRole,
-    ChatSampling,
     ChatTurn,
     OpenAiChatConfig,
     ToolCallRequest,
@@ -330,7 +329,7 @@ class TestOpenAiChatProvider:
             return httpx.Response(200, json=body)
 
         request = REQUEST.model_copy(
-            update={"stream": False, "sampling": ChatSampling(max_tokens=77)}
+            update={"stream": False, "sampling": {"max_completion_tokens": 77}}
         )
         events = await _events(_provider(handler), request)
 

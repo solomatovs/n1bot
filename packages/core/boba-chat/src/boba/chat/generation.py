@@ -60,8 +60,6 @@ class ChatField(StrEnum):
     NAME = "name"
     DESCRIPTION = "description"
     PARAMETERS = "parameters"
-    TEMPERATURE = "temperature"
-    MAX_TOKENS = "max_tokens"
     STREAM = "stream"
 
 
@@ -88,19 +86,11 @@ class SchemaSpec(BaseModel):
 
 
 class GenerationBase(BaseModel):
-    """Общие поля профилей генерации: промпт и потолок ответа."""
+    """Общее поле профилей генерации: системный промпт."""
 
     model_config = ConfigDict(extra="ignore")
 
     system_prompt: str = Field(description="Системный промпт генерации.")
-
-    max_tokens: int = Field(
-        gt=0,
-        description=(
-            "Потолок токенов ответа; обязателен. Локально это ещё и стоп для "
-            "модели, ушедшей в повтор."
-        ),
-    )
 
 
 class GenerationMessages:
@@ -126,6 +116,14 @@ class LocalGeneration(GenerationBase):
     """Локальный инференс onnxruntime-genai (in-process, ONNX)."""
 
     provider: Literal["local"]
+
+    max_tokens: int = Field(
+        gt=0,
+        description=(
+            "Потолок токенов прогона; обязателен. Он же стоп для модели, "
+            "ушедшей в повтор. Не поле запроса: тела запроса тут нет."
+        ),
+    )
 
     model_dir: str = Field(
         description=(
@@ -158,9 +156,13 @@ class OpenAiGeneration(GenerationBase):
 
     model: str = Field(description="Имя модели у провайдера.")
 
-    temperature: float = Field(
-        ge=0,
-        description="Температура сэмплинга; обязательна.",
+    sampling: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Параметры запроса к провайдеру как есть: имена и значения уходят "
+            "в тело запроса без проверок и переименований. Потолок ответа "
+            "задаётся здесь же тем именем, которое понимает провайдер."
+        ),
     )
 
 

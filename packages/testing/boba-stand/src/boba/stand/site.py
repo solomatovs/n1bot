@@ -11,6 +11,7 @@ StandError — конфиг приложения не читается или в
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 from typing import Any, ClassVar
 from urllib.parse import urlparse
@@ -21,11 +22,35 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
 from boba.runtime.config import AppLayers, ConfigLocator
 
-__all__ = ["Stand", "StandError"]
+__all__ = ["Stand", "StandError", "StandLayers"]
 
 
 class StandError(Exception):
     """Конфиг стенда недоступен или неполон."""
+
+
+class StandLayers:
+    """Конфиг глазами тестов: слои приложения плюс стендовый conf/stand.toml.
+
+    В stand.toml живёт то, что нужно только тестам: адреса живых сервисов
+    стенда и сервисные секции для посева ([clickhouse], confluence). Приложение
+    этот файл не читает.
+    """
+
+    FILE: ClassVar[str] = "stand.toml"
+
+    @classmethod
+    def compose(cls, config_path: Path) -> Any:
+        raw = AppLayers.compose(config_path)
+
+        stand_path = config_path.parent / cls.FILE
+        if not stand_path.is_file():
+            return raw
+
+        with stand_path.open("rb") as handle:
+            overlay = tomllib.load(handle)
+
+        return OmegaConf.merge(raw, OmegaConf.create(overlay))
 
 
 class Stand(BaseModel):
@@ -81,7 +106,7 @@ class Stand(BaseModel):
     def load(cls) -> Stand:
         """Стенд из конфига приложения; путь берётся так же, как приложением."""
         try:
-            raw = AppLayers.compose(ConfigLocator.path())
+            raw = StandLayers.compose(ConfigLocator.path())
         except Exception as exc:
             msg = f"stand: application config is unavailable: {exc}"
             raise StandError(msg) from exc

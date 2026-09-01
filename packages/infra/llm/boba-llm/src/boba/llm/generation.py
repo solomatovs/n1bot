@@ -197,7 +197,7 @@ class OpenAiStructuredGenerator(StructuredGenerator):
             ChatField.FUNCTION.value: {ChatField.NAME.value: schema.name},
         }
 
-        return {
+        payload: dict[str, Any] = {
             ChatField.MODEL.value: self._cfg.model,
             ChatField.MESSAGES.value: messages,
             ChatField.TOOLS.value: [
@@ -207,10 +207,16 @@ class OpenAiStructuredGenerator(StructuredGenerator):
                 }
             ],
             ChatField.TOOL_CHOICE.value: choice,
-            ChatField.TEMPERATURE.value: self._cfg.temperature,
-            ChatField.MAX_TOKENS.value: self._cfg.max_tokens,
             ChatField.STREAM.value: False,
         }
+
+        payload.update(self._sampling())
+
+        return payload
+
+    def _sampling(self) -> dict[str, Any]:
+        """Админская таблица сэмплинга как есть: без проверок и переименований."""
+        return dict(self._cfg.sampling)
 
     @staticmethod
     def _parse(body: bytes) -> ChatCompletion:

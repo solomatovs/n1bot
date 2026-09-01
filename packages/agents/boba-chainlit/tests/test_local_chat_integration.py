@@ -28,7 +28,7 @@ from boba.chainlit.chat.tracing import AgentTracer
 from boba.chainlit.chat.turn import TurnState
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.infra.config import AppConfig
-from boba.chat.provider import ChatSampling, LocalChatConfig
+from boba.chat.provider import LocalChatConfig
 from boba.config import bind
 from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
 from boba.llm.local import OnnxChatRuntime
@@ -102,7 +102,7 @@ def _chat(model_dir: str) -> ProviderChatModel:
 
     return ProviderChatModel(
         provider=provider,
-        sampling=ChatSampling(max_tokens=1024),
+        sampling={"max_tokens": 1024},
         model_name=Path(model_dir).name,
     )
 

@@ -23,7 +23,7 @@ from pydantic import (
 
 from boba.access import ProfileGrant, RoleConfig, ToolGrant
 from boba.chat.generation import GenerationConfig
-from boba.chat.provider import ChatBackendConfig, ChatSampling
+from boba.chat.provider import ChatBackendConfig
 from boba.identity.errors import RefusalError
 from boba.toolkit.types import StringList
 
@@ -38,7 +38,6 @@ __all__ = [
     "PrefetchFlowConfig",
     "ProfileRefusal",
     "ProfilesSection",
-    "ReasoningEffort",
     "RolesSection",
     "SelectedProfile",
     "SettingsBounds",
@@ -49,15 +48,6 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
-
-
-class ReasoningEffort(StrEnum):
-    """Глубина рассуждений reasoning-моделей провайдера."""
-
-    MINIMAL = "minimal"
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
 
 
 class LlmSettings(BaseModel):
@@ -85,73 +75,19 @@ class LlmSettings(BaseModel):
         description="Системный промпт по умолчанию",
     )
 
-    temperature: float | None = Field(
-        default=None,
-        description="Температура сэмплинга; не задана — параметр не отправляется.",
-    )
-
-    max_tokens: int | None = Field(
-        default=None,
-        gt=0,
-        description="Потолок токенов ответа; не задан — параметр не отправляется.",
-    )
-
-    top_p: float | None = Field(
-        default=None,
-        description="Nucleus sampling; не задан — параметр не отправляется.",
-    )
-
-    frequency_penalty: float | None = Field(
-        default=None,
-        description="Штраф за повторы; не задан — параметр не отправляется.",
-    )
-
-    presence_penalty: float | None = Field(
-        default=None,
-        description="Штраф за присутствие темы; не задан — параметр не отправляется.",
-    )
-
-    stop: StringList = Field(
-        default=[],
+    sampling: dict[str, Any] = Field(
+        default_factory=dict,
         description=(
-            "Последовательности, обрывающие генерацию; пустой список — "
-            "параметр не отправляется."
+            "Параметры запроса к провайдеру как есть: имена и значения уходят "
+            "в тело запроса без проверок и переименований. Что провайдер "
+            "принимает — решает администратор профиля."
         ),
     )
 
-    seed: int | None = Field(
-        default=None,
-        ge=0,
-        description=(
-            "Зерно сэмплинга для воспроизводимости; не задано — "
-            "параметр не отправляется."
-        ),
-    )
+    def chat_sampling(self) -> dict[str, Any]:
+        """Сэмплинг запроса к провайдеру: копия админской таблицы."""
+        return dict(self.sampling)
 
-    reasoning_effort: ReasoningEffort | None = Field(
-        default=None,
-        description=(
-            "Глубина рассуждений reasoning-модели; не задана — "
-            "параметр не отправляется."
-        ),
-    )
-
-    def chat_sampling(self) -> ChatSampling:
-        """Сэмплинг запроса к провайдеру; незаданные параметры не отправляются."""
-        effort = ""
-        if self.reasoning_effort is not None:
-            effort = self.reasoning_effort.value
-
-        return ChatSampling(
-            max_tokens=self.max_tokens,
-            temperature=self.temperature,
-            top_p=self.top_p,
-            frequency_penalty=self.frequency_penalty,
-            presence_penalty=self.presence_penalty,
-            seed=self.seed,
-            stop=tuple(self.stop),
-            reasoning_effort=effort,
-        )
 
 
 class AgentSettings(LlmSettings):
@@ -220,15 +156,6 @@ class UserSetting(StrEnum):
     подписи и описания живут в переводах chainlit (chat.settings.llm).
     """
 
-    MODEL = "model"
-    TEMPERATURE = "temperature"
-    TOP_P = "top_p"
-    MAX_TOKENS = "max_tokens"
-    FREQUENCY_PENALTY = "frequency_penalty"
-    PRESENCE_PENALTY = "presence_penalty"
-    STOP = "stop"
-    SEED = "seed"
-    REASONING_EFFORT = "reasoning_effort"
     HISTORY_MESSAGES = "history_messages"
     USER_PROMPT = "user_prompt"
 
@@ -256,14 +183,6 @@ class ChatProfileConfig(AgentSettings, ProfileGrant):
         description="Профиль, предвыбранный в интерфейсе; ровно один в конфиге.",
     )
 
-    models: StringList = Field(
-        default=[],
-        description=(
-            "Модели, которые пользователь может выбрать в настройках; "
-            "пустой список — выбор модели закрыт."
-        ),
-    )
-
     settings: StringList = Field(
         default=[],
         description=(
@@ -289,17 +208,6 @@ class ChatProfileConfig(AgentSettings, ProfileGrant):
         return name in self.settings
 
     @model_validator(mode="after")
-    def _validate_models(self) -> Self:
-        if not self.models:
-            return self
-
-        if self.model not in self.models:
-            msg = f"profile: model {self.model!r} is not listed in models"
-            raise ValueError(msg)
-
-        return self
-
-    @model_validator(mode="after")
     def _validate_settings(self) -> Self:
         known = {setting.value for setting in UserSetting}
 
@@ -315,11 +223,6 @@ class ChatProfileConfig(AgentSettings, ProfileGrant):
 
         if unknown:
             msg = f"profile: unknown settings {unknown}"
-            raise ValueError(msg)
-
-        model_allowed = self.setting_allowed(UserSetting.MODEL)
-        if model_allowed and self.settings and not self.models:
-            msg = "profile: setting 'model' is allowed, but models list is empty"
             raise ValueError(msg)
 
         return self
@@ -504,16 +407,13 @@ class NumberBounds(BaseModel):
 
 
 class SettingsBounds(BaseModel):
-    """Секция [settings]: пределы пользовательских настроек LLM."""
+    """Пределы пользовательских настроек панели; конфиг их не задаёт."""
 
     model_config = ConfigDict(extra="ignore")
 
-    temperature: NumberBounds
-    top_p: NumberBounds
-    max_tokens: NumberBounds
-    frequency_penalty: NumberBounds
-    presence_penalty: NumberBounds
-    history_messages: NumberBounds
+    history_messages: NumberBounds = Field(
+        default_factory=lambda: NumberBounds(low=1, high=100, step=1, default=30)
+    )
 
 
 class UserLlmOverrides(BaseModel):
@@ -521,15 +421,6 @@ class UserLlmOverrides(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    model: str | None = None
-    temperature: float | None = None
-    top_p: float | None = None
-    max_tokens: int | None = None
-    frequency_penalty: float | None = None
-    presence_penalty: float | None = None
-    stop: list[str] | None = None
-    seed: int | None = Field(default=None, ge=0)
-    reasoning_effort: ReasoningEffort | None = None
     history_messages: int | None = None
     user_prompt: str | None = None
 
@@ -541,35 +432,9 @@ class UserLlmOverrides(BaseModel):
         """Копия в пределах границ и разрешений профиля.
 
         Поле, не разрешённое профилем, отбрасывается — даже если пришло в
-        обход панели; модель вне белого списка отбрасывается тоже.
+        обход панели.
         """
         update: dict[str, Any] = {}
-
-        if self.model is not None and self.model not in profile.models:
-            update[UserSetting.MODEL.value] = None
-
-        if self.temperature is not None:
-            update[UserSetting.TEMPERATURE.value] = bounds.temperature.clamp(
-                self.temperature
-            )
-
-        if self.top_p is not None:
-            update[UserSetting.TOP_P.value] = bounds.top_p.clamp(self.top_p)
-
-        if self.max_tokens is not None:
-            update[UserSetting.MAX_TOKENS.value] = int(
-                bounds.max_tokens.clamp(self.max_tokens)
-            )
-
-        if self.frequency_penalty is not None:
-            update[UserSetting.FREQUENCY_PENALTY.value] = (
-                bounds.frequency_penalty.clamp(self.frequency_penalty)
-            )
-
-        if self.presence_penalty is not None:
-            update[UserSetting.PRESENCE_PENALTY.value] = bounds.presence_penalty.clamp(
-                self.presence_penalty
-            )
 
         if self.history_messages is not None:
             update[UserSetting.HISTORY_MESSAGES.value] = int(

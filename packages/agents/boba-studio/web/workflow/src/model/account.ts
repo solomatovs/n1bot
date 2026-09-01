@@ -29,7 +29,6 @@ export const ProfileViewSchema = z.object({
   description: z.string(),
   icon: z.string(),
   default: z.boolean(),
-  models: z.array(z.string()),
   tools: z.array(z.string()),
 });
 export type ProfileView = z.infer<typeof ProfileViewSchema>;

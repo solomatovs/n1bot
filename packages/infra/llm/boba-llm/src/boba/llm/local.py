@@ -35,7 +35,6 @@ from boba.chat.provider import (
     ChatReply,
     ChatRequest,
     ChatRole,
-    ChatSampling,
     ChatTurn,
     ToolCallRequest,
     ToolSpec,
@@ -637,14 +636,24 @@ class LocalChatProvider(ChatProvider):
             stop.set()
             await worker
 
-    @staticmethod
-    def _spec(sampling: ChatSampling) -> RunSpec:
-        if sampling.max_tokens is None:
-            msg = "local chat requires max_tokens: the run has no other ceiling"
+    KNOWN_SAMPLING: ClassVar[frozenset[str]] = frozenset(
+        {"max_tokens", "temperature", "top_p"}
+    )
+    """Ключи админской таблицы sampling, которые понимает локальный рантайм."""
+
+    @classmethod
+    def _spec(cls, sampling: Mapping[str, Any]) -> RunSpec:
+        unknown = sorted(set(sampling) - cls.KNOWN_SAMPLING)
+        if unknown:
+            logger.warning("local chat ignores sampling keys: %s", ", ".join(unknown))
+
+        max_tokens = sampling.get("max_tokens")
+        if max_tokens is None:
+            msg = "local chat requires sampling.max_tokens: no other ceiling exists"
             raise ChatProviderError(msg)
 
         return RunSpec(
-            max_tokens=sampling.max_tokens,
-            temperature=sampling.temperature,
-            top_p=sampling.top_p,
+            max_tokens=int(max_tokens),
+            temperature=sampling.get("temperature"),
+            top_p=sampling.get("top_p"),
         )
