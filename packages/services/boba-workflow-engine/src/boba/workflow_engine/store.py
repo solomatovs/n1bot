@@ -424,14 +424,16 @@ class WorkflowStore(PostgresTable, WorkflowRepository):
         query = self._sql(
             """
             insert into {runs} (
-                {r_id}, {r_workflow_id}, {r_user_id}, {r_initiator}, {r_profile}, {r_status}, {r_state}, {r_instance}
+                {r_id}, {r_workflow_id}, {r_user_id}, {r_initiator},
+                {r_profile}, {r_status}, {r_state}, {r_instance}
             )
             values (
                 %(id)s, %(workflow_id)s, %(user_id)s, %(initiator)s, %(profile)s,
                 %(status)s, %(state)s, %(instance)s
             )
             returning
-                {r_id}, {r_workflow_id}, {r_user_id}, {r_initiator}, {r_profile}, {r_state}, {r_instance},
+                {r_id}, {r_workflow_id}, {r_user_id}, {r_initiator},
+                {r_profile}, {r_state}, {r_instance},
                 {r_started_at}, {r_finished_at}
             """
         )
@@ -490,7 +492,8 @@ class WorkflowStore(PostgresTable, WorkflowRepository):
         query = self._sql(
             """
             select
-                {r_id}, {r_workflow_id}, {r_user_id}, {r_initiator}, {r_profile}, {r_state}, {r_instance},
+                {r_id}, {r_workflow_id}, {r_user_id}, {r_initiator},
+                {r_profile}, {r_state}, {r_instance},
                 {r_started_at}, {r_finished_at}
             from
                 {runs}
@@ -516,7 +519,8 @@ class WorkflowStore(PostgresTable, WorkflowRepository):
         query = self._sql(
             """
             select
-                {r_id}, {r_workflow_id}, {r_user_id}, {r_initiator}, {r_profile}, {r_state}, {r_instance},
+                {r_id}, {r_workflow_id}, {r_user_id}, {r_initiator},
+                {r_profile}, {r_state}, {r_instance},
                 {r_started_at}, {r_finished_at}
             from
                 {runs}
@@ -540,7 +544,8 @@ class WorkflowStore(PostgresTable, WorkflowRepository):
         query = self._sql(
             """
             select
-                {r_id}, {r_workflow_id}, {r_user_id}, {r_initiator}, {r_profile}, {r_state}, {r_instance},
+                {r_id}, {r_workflow_id}, {r_user_id}, {r_initiator},
+                {r_profile}, {r_state}, {r_instance},
                 {r_started_at}, {r_finished_at}
             from
                 {runs}
@@ -568,7 +573,8 @@ class WorkflowStore(PostgresTable, WorkflowRepository):
         query = self._sql(
             """
             select
-                {r_id}, {r_workflow_id}, {r_user_id}, {r_initiator}, {r_profile}, {r_state}, {r_instance},
+                {r_id}, {r_workflow_id}, {r_user_id}, {r_initiator},
+                {r_profile}, {r_state}, {r_instance},
                 {r_started_at}, {r_finished_at}
             from
                 {runs}
@@ -596,7 +602,8 @@ class WorkflowStore(PostgresTable, WorkflowRepository):
         query = self._sql(
             """
             select
-                {r_id}, {r_workflow_id}, {r_user_id}, {r_initiator}, {r_profile}, {r_state}, {r_instance},
+                {r_id}, {r_workflow_id}, {r_user_id}, {r_initiator},
+                {r_profile}, {r_state}, {r_instance},
                 {r_started_at}, {r_finished_at}
             from
                 {runs}

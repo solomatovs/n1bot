@@ -69,9 +69,13 @@ class Tokens:
         return float(self.raw(name).removesuffix("px"))
 
 
+RGB_HEX_LEN = 6
+"""Длина #rrggbb без решётки: две шестнадцатеричные цифры на канал."""
+
+
 def hex_to_rgb(value: str) -> str:
     text = value.strip().lstrip("#")
-    if len(text) != 6:
+    if len(text) != RGB_HEX_LEN:
         raise ValueError(f"not a #rrggbb color: {value}")
 
     r, g, b = (int(text[i : i + 2], 16) for i in (0, 2, 4))

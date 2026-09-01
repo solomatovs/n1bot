@@ -32,7 +32,9 @@ ZYGOTE = ZygotePolicy(
 
 def _caller(raw_config: DictConfig) -> ZygoteToolCaller:
     """Зигота ingest: прогрев объявлен модулем, конфиг ему даёт вызывающий."""
-    sandbox = SandboxToolConfig.model_validate({"profile": sandbox_profile("boba-tool-knowledge")})
+    sandbox = SandboxToolConfig.model_validate(
+        {"profile": sandbox_profile("boba-tool-knowledge")}
+    )
     profile = sandbox.profile
 
     # тело живёт в песочнице: режимные развилки конфига — sandbox-веткой

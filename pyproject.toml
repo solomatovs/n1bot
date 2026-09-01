@@ -128,6 +128,7 @@ ignore = [
     "RUF001", "RUF002", "RUF003",
     "RET504",
     "SIM102", "SIM108",
+    "S610",
 ]
 
 [tool.ruff.lint.mccabe]
@@ -142,9 +143,10 @@ known-first-party = ["boba"]
 [tool.ruff.lint.per-file-ignores]
 "**/tests/**" = [
     "S101", "PLR2004", "SLF001", "S105", "S106", "PLC0415", "TID251", "T201",
-    "C901",
+    "C901", "E402", "B008", "S603", "RUF012", "PLC0414",
 ]
 "build/*/test/**" = ["T201", "E402", "TID251", "S603", "PLW1510", "S108"]
+"build/*/scripts/**" = ["T201", "PLR2004", "PLC0415"]
 
 [tool.uv.workspace]
 members = [

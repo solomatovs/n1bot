@@ -35,7 +35,8 @@ class OneUser(PersistedUsers, UsersUpsert):
 
 
 def _peer_token(secret: str) -> str:
-    """Токен так, как его выпускает соседнее приложение: identifier, display_name, metadata, exp."""
+    """Токен, как его выпускает соседнее приложение: identifier, display_name,
+    metadata, exp."""
     claims = {
         "identifier": "alice",
         "display_name": "Alice",

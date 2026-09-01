@@ -476,7 +476,7 @@ def _mkfs_template(tmp_path: Path) -> str:
         pytest.skip("mkfs.ext4 недоступен")
 
     template = tmp_path / "workspace.ext4"
-    subprocess.run(  # noqa: S603
+    subprocess.run(
         [mkfs, "-q", "-F", str(template), "8m"], check=True, capture_output=True
     )
     return str(template)

@@ -132,7 +132,7 @@ def big_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
     mkfs = shutil.which("mkfs.ext4")
     if mkfs is None:
         raise AssertionError("mkfs is not None")
-    subprocess.run(  # noqa: S603
+    subprocess.run(
         [mkfs, "-F", "-q", "-O", "^has_journal", "-m", "0", str(path)],
         check=True,
     )

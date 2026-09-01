@@ -1,4 +1,4 @@
-"""Версия пакетов репозитория: одна на все pyproject.toml, внутренние пины boba-* — на неё же.
+"""Версия пакетов репозитория: одна на все pyproject.toml и пины boba-*.
 
 Вызов: version.py <команда> <корень packages> [аргумент]
   show      — напечатать версию
@@ -70,7 +70,8 @@ class Repository:
     def requires_python(self) -> str:
         found = re.match(r">=([0-9]+\.[0-9]+)", self._projects[0].requires_python)
         if found is None:
-            raise SystemExit(f"requires-python is not '>=X.Y' in {self._projects[0].path}")
+            msg = f"requires-python is not '>=X.Y' in {self._projects[0].path}"
+            raise SystemExit(msg)
 
         return found.group(1)
 
@@ -79,7 +80,8 @@ class Repository:
         for project in self._projects:
             for pin in project.pins:
                 if pin != version:
-                    raise SystemExit(f"{project.path}: boba-* pinned to {pin}, expected {version}")
+                    msg = f"{project.path}: boba-* pinned to {pin}, expected {version}"
+                    raise SystemExit(msg)
 
         return f"version-check: {version}, {len(self._projects)} packages - ok"
 

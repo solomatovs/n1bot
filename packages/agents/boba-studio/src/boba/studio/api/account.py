@@ -159,7 +159,7 @@ class AccountApi:
         )
 
     async def _stored_profile(self, user: AuthenticatedUser) -> str | None:
-        """Профиль, выбранный пользователем раньше; недоступный ролям — как невыбранный."""
+        """Прежний выбор профиля; недоступный ролям — как невыбранный."""
         stored = await self._users().get_user(user.identifier)
         if stored is None:
             return None

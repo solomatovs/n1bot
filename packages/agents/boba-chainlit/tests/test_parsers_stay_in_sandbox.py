@@ -25,7 +25,7 @@ class TestParsersStayInSandbox:
             f"    raise SystemExit('the app pulls {module}')\n"
             "print('ok')\n"
         )
-        subprocess.run(  # noqa: S603
+        subprocess.run(
             [sys.executable, "-c", code],
             check=True,
             capture_output=True,

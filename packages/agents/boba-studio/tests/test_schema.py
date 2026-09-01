@@ -36,7 +36,7 @@ def test_api_package_does_not_import_chainlit() -> None:
         "loaded = [m for m in sys.modules if m.split('.')[0] == 'chainlit']\n"
         "raise SystemExit(1 if loaded else 0)\n"
     )
-    result = subprocess.run(  # noqa: S603
+    result = subprocess.run(
         [sys.executable, "-c", code], check=False, capture_output=True, text=True
     )
 

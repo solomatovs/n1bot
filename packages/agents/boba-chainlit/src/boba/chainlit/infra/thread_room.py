@@ -381,7 +381,7 @@ class UserRoom:
     async def _settings_changed(
         cls, user_id: UUID, message: ChatSettingsChanged
     ) -> None:
-        """Остальные вкладки пользователя на том же профиле получают свежие настройки."""
+        """Остальные вкладки пользователя того же профиля получают настройки."""
         refresher = cls._SETTINGS
         if refresher is None:
             return

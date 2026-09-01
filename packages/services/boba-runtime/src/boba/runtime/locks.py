@@ -292,7 +292,8 @@ class PgLiveLocks(LiveLocks):
                 create unlogged table if not exists {locks} (
                     {scope_kind}   text not null,
                     {scope_id}     uuid not null,
-                    {mode}         text not null check ({mode} in ('exclusive', 'shared')),
+                    {mode}         text not null
+                        check ({mode} in ('exclusive', 'shared')),
                     {holder}       text not null
                         references {instances} ({instance_id}) on delete cascade,
                     {token}        uuid not null,

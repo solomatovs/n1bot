@@ -55,7 +55,8 @@ from boba.toolrun.injected import InjectedConfig
 from boba.transport.http.profile import HttpProfile, NegotiateAuth
 
 _REPO = Path(__file__).resolve().parents[4]
-_ROOTFS_IMAGE = _REPO / "build" / "chainlit" / "src" / "sandbox" / "plugins" / "boba-tool-shell" / "rootfs.ext4"
+_SANDBOX_STAGING = _REPO / "build" / "chainlit" / "src" / "sandbox"
+_ROOTFS_IMAGE = _SANDBOX_STAGING / "plugins" / "boba-tool-shell" / "rootfs.ext4"
 _CGROUP_BASE = os.environ.get("BOBA_CGROUP_BASE", "/sys/fs/cgroup/boba")
 
 SCHEMA = "connections_e2e"

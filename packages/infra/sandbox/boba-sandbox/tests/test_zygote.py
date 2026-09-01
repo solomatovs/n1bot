@@ -46,7 +46,10 @@ TESTS_DIR = str(Path(__file__).resolve().parent)
 
 needs_bwrap = pytest.mark.skipif(
     shutil.which("bwrap") is None or not ROOTFS_IMAGE.exists() or not FUSE2FS.exists(),
-    reason="нет bwrap или артефактов песочницы (собрать: make fetch sandbox plugin-rootfs-all)",
+    reason=(
+        "нет bwrap или артефактов песочницы "
+        "(собрать: make fetch sandbox plugin-rootfs-all)"
+    ),
 )
 needs_userns = pytest.mark.skipif(
     os.geteuid() == 0, reason="под root user namespace ведёт себя иначе"
@@ -101,7 +104,7 @@ def _plain_spawner(fd: int) -> subprocess.Popen[bytes]:
         modules=("fake_channel_tool",),
     )
 
-    return subprocess.Popen(  # noqa: S603
+    return subprocess.Popen(
         [sys.executable, "-m", "boba.sandbox.guest", *args.render()],
         env=env,
         pass_fds=(fd,),
@@ -386,7 +389,7 @@ class TestIsolated:
     def mounted_root(self, tmp_path_factory: pytest.TempPathFactory) -> Any:
         """Образ shell-плагина, смонтированный fuse2fs: корень для ручного bwrap."""
         point = tmp_path_factory.mktemp("rootfs")
-        subprocess.run(  # noqa: S603
+        subprocess.run(
             [str(FUSE2FS), "-o", "ro", str(ROOTFS_IMAGE), str(point)],
             check=True,
             capture_output=True,
@@ -395,9 +398,10 @@ class TestIsolated:
 
         fusermount = shutil.which("fusermount3")
         if fusermount is None:
-            raise AssertionError("fusermount3 недоступен: точка осталась смонтированной")
+            msg = "fusermount3 недоступен: точка осталась смонтированной"
+            raise AssertionError(msg)
 
-        subprocess.run([fusermount, "-u", str(point)], check=True)  # noqa: S603
+        subprocess.run([fusermount, "-u", str(point)], check=True)
 
     def _bwrap_spawner(self, fd: int, root: Path) -> subprocess.Popen[bytes]:
         python_path = SandboxStand.python_path(
@@ -465,7 +469,7 @@ class TestIsolated:
             ).render(),
         ]
 
-        return subprocess.Popen(  # noqa: S603
+        return subprocess.Popen(
             argv, pass_fds=(fd,), stdin=subprocess.DEVNULL
         )
 
@@ -488,7 +492,9 @@ class TestIsolated:
         if outcome.child_pid <= 0:
             raise AssertionError("host-pid исполнителя не получен")
 
-    def test_children_do_not_share_tmp(self, supervisor: Any, mounted_root: Path) -> None:
+    def test_children_do_not_share_tmp(
+        self, supervisor: Any, mounted_root: Path
+    ) -> None:
         """Параллельные вызовы не видят /tmp друг друга."""
 
         def spawner(fd: int) -> subprocess.Popen[bytes]:

@@ -106,7 +106,7 @@ class TestEntryPointsFreeOfChainlit:
             f"import importlib, sys; importlib.import_module('{module}'); "
             "print([m for m in sys.modules if m.startswith('chainlit')])"
         )
-        return subprocess.run(  # noqa: S603
+        return subprocess.run(
             [sys.executable, "-c", code],
             cwd=cwd,
             capture_output=True,

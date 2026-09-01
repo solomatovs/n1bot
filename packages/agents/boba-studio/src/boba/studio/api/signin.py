@@ -144,7 +144,7 @@ class SignInApi:
 
     @staticmethod
     def _own(request: Request) -> None:
-        """Вход и выход меняют сессию: чужая форма без метки своего запроса не пройдёт."""
+        """Вход и выход меняют сессию: чужая форма без своей метки не пройдёт."""
         if SsoRequests.of(request).own_request:
             return
 

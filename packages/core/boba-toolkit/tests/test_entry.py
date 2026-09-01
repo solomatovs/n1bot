@@ -54,7 +54,7 @@ def run_module(
         env[ToolChannel.RESULT.env_name] = str(write_fd)
         pass_fds = (write_fd,)
 
-    proc = subprocess.run(  # noqa: S603
+    proc = subprocess.run(
         [sys.executable, "-m", "boba.stand.fake_toolmod", *arguments],
         input=stdin,
         capture_output=True,

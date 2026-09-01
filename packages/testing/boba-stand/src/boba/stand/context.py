@@ -1,4 +1,4 @@
-"""Контекст вызова в тестах: сборка личности без сессии приложения и установка на время теста."""
+"""Контекст вызова в тестах: личность без сессии приложения на время теста."""
 
 from collections.abc import Iterable, Iterator
 from contextvars import ContextVar
@@ -19,6 +19,8 @@ TEST_TURN = "test-turn"
 """Метка хода в контекстах вызова, которые ставят тесты."""
 
 TEST_PROFILE = "test"
+TEST_USER_ID = UUID(int=7)
+"""Пользователь тестового контекста по умолчанию."""
 """Профиль контекста вызова, если тест не назвал свой."""
 
 
@@ -38,7 +40,7 @@ def make_context(  # noqa: PLR0913 — личность собирается п�
     thread_id: str,
     cancellation: RunCancellation | None = None,
     *,
-    user_id: UUID = UUID(int=7),
+    user_id: UUID = TEST_USER_ID,
     login: str = "tester",
     roles: Iterable[str] = (),
     profile: str = TEST_PROFILE,
@@ -62,7 +64,7 @@ def use_context(  # noqa: PLR0913 — личность собирается по
     monkeypatch: pytest.MonkeyPatch,
     *,
     thread_id: str,
-    user_id: UUID = UUID(int=7),
+    user_id: UUID = TEST_USER_ID,
     login: str = "tester",
     roles: Iterable[str] = (),
     profile: str = TEST_PROFILE,

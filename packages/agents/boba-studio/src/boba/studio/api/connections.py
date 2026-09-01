@@ -289,7 +289,8 @@ class ConnectionsApi:
     ) -> ConnectionView:
         subject = identity.subject
         async with self._served():
-            row = await self._service.create(subject, body.name, self._parsed(body.profile))
+            profile = self._parsed(body.profile)
+            row = await self._service.create(subject, body.name, profile)
 
         await self._changed(subject, row.id, row.name, ChangeAction.CREATED)
         return ConnectionView.of(row, mine=True)

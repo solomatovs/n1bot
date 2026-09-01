@@ -293,7 +293,9 @@ class TestConnectionKind:
             "settings": {},
         }
         types = ConnectionTypes.discover()
-        stored = StoredConnection(id=UUID(int=1), name="x", profile=types.parse(profile))
+        stored = StoredConnection(
+            id=UUID(int=1), name="x", profile=types.parse(profile)
+        )
         if not isinstance(stored.profile, ClickHouseConfig):
             raise AssertionError("profile must be validated by its kind")
         if stored.kind != "clickhouse":

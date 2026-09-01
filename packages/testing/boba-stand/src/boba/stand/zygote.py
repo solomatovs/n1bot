@@ -217,7 +217,7 @@ class SandboxStand:
     @staticmethod
     def mkfs_template(tmp_path: Path) -> str:
         """Шаблон workspace-образа: пустой ext4 на 8 МБ."""
-        mkfs = shutil.which("mkfs.ext4")
+        mkfs = shutil.which("mkfs.ext4")  # noqa: TID251 — стенд ищет по PATH сознательно
         if mkfs is None:
             msg = "mkfs.ext4 недоступен"
             raise RuntimeError(msg)

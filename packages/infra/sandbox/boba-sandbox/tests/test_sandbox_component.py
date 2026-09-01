@@ -235,7 +235,7 @@ class TestComponentIsolation:
             "    raise SystemExit('пакет собран без вызывателя или конфига')\n"
             "print('ok')\n"
         )
-        result = subprocess.run(  # noqa: S603
+        result = subprocess.run(
             [sys.executable, "-c", code],
             check=True,
             capture_output=True,

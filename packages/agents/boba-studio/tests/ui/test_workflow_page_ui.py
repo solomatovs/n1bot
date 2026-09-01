@@ -386,7 +386,7 @@ def test_profile_choice_reaches_another_tab_through_the_bus(
         _open(fresh, stand, "/build")
         expect(fresh.locator(Selector.PROFILE_SELECT)).to_have_value("search")
     finally:
-        # выбор хранится на пользователе: возвращаем профиль, с которым живут другие тесты
+        # выбор хранится на пользователе: возвращаем профиль остальных тестов
         page.locator(Selector.PROFILE_SELECT).select_option("general")
         expect(page.locator(Selector.PROFILE_SELECT)).to_have_value("general")
         context.close()

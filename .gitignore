@@ -6,7 +6,8 @@ __pycache__
 *.pyo
 *.pyd
 *.egg-info/
-docs
+/docs/*
+!/docs/adding-connections-and-tools.md
 .claude
 CLAUDE.md
 

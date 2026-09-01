@@ -78,7 +78,10 @@ check("pip module", lambda: run(sys.executable, "-m", "pip", "--version"))
 print("== third-party imports ==")
 import importlib
 
-THIRD_PARTY = {"chainlit": ["pydantic", "fastapi", "tabulate", "chainlit"], "studio": ["pydantic", "fastapi"]}
+THIRD_PARTY = {
+    "chainlit": ["pydantic", "fastapi", "tabulate", "chainlit"],
+    "studio": ["pydantic", "fastapi"],
+}
 for m in THIRD_PARTY[APP]:
     check(f"import {m}", lambda m=m: importlib.import_module(m))
 
@@ -238,14 +241,16 @@ KB_MIN_BYTES = 2 * 1024**3
 
 def t_embed_weights_baked():
     if os.path.isdir(EMBED_DIR):
-        raise RuntimeError(f"веса эмбеддера в релизе, а должны быть в образе: {EMBED_DIR}")
+        msg = f"веса эмбеддера в релизе, а должны быть в образе: {EMBED_DIR}"
+        raise RuntimeError(msg)
 
     if not os.path.isfile(KB_IMAGE):
         raise RuntimeError(f"нет образа {KB_IMAGE}")
 
     size = os.path.getsize(KB_IMAGE)
     if size < KB_MIN_BYTES:
-        raise RuntimeError(f"образ kb подозрительно мал ({size} байт): весов внутри нет")
+        msg = f"образ kb подозрительно мал ({size} байт): весов внутри нет"
+        raise RuntimeError(msg)
 
 
 check("weights baked", t_embed_weights_baked)
