@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-indexing"
-version = "0.0.15.dev1"
+version = "0.0.15.dev2"
 description = "Boba indexing + processing: Source/Reader/Chunker/Store/IndexPipeline + streaming-processing primitives (Request/Transport/Decoder/RawDocument/Section)."
 requires-python = ">=3.11,<4"
 dependencies = []

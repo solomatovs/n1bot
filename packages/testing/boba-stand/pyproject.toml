@@ -4,29 +4,29 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-stand"
-version = "0.0.15.dev1"
+version = "0.0.15.dev2"
 description = "Boba stand: общие фикстуры тестов — конфиг, тестовая база, пул, kerberos, контекст вызова."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-db-clickhouse==0.0.15.dev1",
-    "boba-transport-http==0.0.15.dev1",
-    "boba-auth==0.0.15.dev1",
-    "boba-chat==0.0.15.dev1",
-    "boba-connection-broker==0.0.15.dev1",
-    "boba-sandbox==0.0.15.dev1",
-    "boba-workflow==0.0.15.dev1",
-    "boba-workflow-engine==0.0.15.dev1",
-    "boba-config==0.0.15.dev1",
-    "boba-identity==0.0.15.dev1",
-    "boba-messaging==0.0.15.dev1",
-    "boba-cancellation==0.0.15.dev1",
-    "boba-krb==0.0.15.dev1",
-    "boba-db-postgres==0.0.15.dev1",
-    "boba-connections==0.0.15.dev1",
-    "boba-runtime==0.0.15.dev1",
-    "boba-access==0.0.15.dev1",
-    "boba-toolkit==0.0.15.dev1",
-    "boba-toolrun==0.0.15.dev1",
+    "boba-db-clickhouse==0.0.15.dev2",
+    "boba-transport-http==0.0.15.dev2",
+    "boba-auth==0.0.15.dev2",
+    "boba-chat==0.0.15.dev2",
+    "boba-connection-broker==0.0.15.dev2",
+    "boba-sandbox==0.0.15.dev2",
+    "boba-workflow==0.0.15.dev2",
+    "boba-workflow-engine==0.0.15.dev2",
+    "boba-config==0.0.15.dev2",
+    "boba-identity==0.0.15.dev2",
+    "boba-messaging==0.0.15.dev2",
+    "boba-cancellation==0.0.15.dev2",
+    "boba-krb==0.0.15.dev2",
+    "boba-db-postgres==0.0.15.dev2",
+    "boba-connections==0.0.15.dev2",
+    "boba-runtime==0.0.15.dev2",
+    "boba-access==0.0.15.dev2",
+    "boba-toolkit==0.0.15.dev2",
+    "boba-toolrun==0.0.15.dev2",
     "fastapi>=0.115,<1",
     "httpx>=0.28,<1",
     "playwright>=1.47",
@@ -43,7 +43,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "boba-chainlit==0.0.15.dev1",
+    "boba-chainlit==0.0.15.dev2",
     "starlette>=0.40",
 ]
 

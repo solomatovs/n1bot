@@ -4,24 +4,24 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-connections"
-version = "0.0.15.dev1"
+version = "0.0.15.dev2"
 description = "Boba connections: профили внешних систем (postgres, clickhouse, http, kerberos) и правила доступа к ним — модели без I/O."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-toolkit==0.0.15.dev1",
-    "boba-identity==0.0.15.dev1",
-    "boba-kerberos==0.0.15.dev1",
+    "boba-toolkit==0.0.15.dev2",
+    "boba-identity==0.0.15.dev2",
+    "boba-kerberos==0.0.15.dev2",
     "cryptography>=42",
     "pydantic>=2.10,<3",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "boba-db-clickhouse==0.0.15.dev1",
-    "boba-db-postgres==0.0.15.dev1",
-    "boba-connection-broker==0.0.15.dev1",
-    "boba-stand==0.0.15.dev1",
-    "boba-transport-http==0.0.15.dev1",
+    "boba-db-clickhouse==0.0.15.dev2",
+    "boba-db-postgres==0.0.15.dev2",
+    "boba-connection-broker==0.0.15.dev2",
+    "boba-stand==0.0.15.dev2",
+    "boba-transport-http==0.0.15.dev2",
     "pytest>=8",
 ]
 

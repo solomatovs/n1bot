@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-identity"
-version = "0.0.15.dev1"
+version = "0.0.15.dev2"
 description = "Boba identity: субъект, область и контекст вызова, сессия, ошибки слоёв, реестр запусков — без I/O."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-cancellation==0.0.15.dev1",
-    "boba-toolkit==0.0.15.dev1",
+    "boba-cancellation==0.0.15.dev2",
+    "boba-toolkit==0.0.15.dev2",
     "pydantic>=2.10,<3",
 ]
 
