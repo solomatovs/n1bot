@@ -47,7 +47,10 @@ export function ConnectionsTab(): ReactElement {
         }}
       >
         <span className="item__name">{row.name}</span>
-        <span className="item__meta">{row.kind}</span>
+        <span className="item__meta">
+          {row.kind}
+          {!row.available && <span className="item__missing"> · not installed</span>}
+        </span>
       </button>
     );
 
@@ -90,7 +93,29 @@ export function ConnectionsTab(): ReactElement {
               }}
             />
           )}
-          {pick.kind === "row" && current !== null && (
+          {pick.kind === "row" && current !== null && !current.available && (
+            <div className="connections__missing">
+              <p>
+                Connection type “{current.kind}” is not installed in this
+                deployment, so this connection cannot be opened or used.
+              </p>
+              {current.mine && (
+                <button
+                  type="button"
+                  className="missing__delete"
+                  onClick={() => {
+                    void api.removeConnection(current.id).then(() => {
+                      reload();
+                      setPick({ kind: "none" });
+                    });
+                  }}
+                >
+                  Delete connection
+                </button>
+              )}
+            </div>
+          )}
+          {pick.kind === "row" && current !== null && current.available && (
             <ConnectionForm
               key={current.id}
               doc={doc}

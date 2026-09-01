@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 
-from boba.connections.manifest import ConnectionTypes
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.user_connections import StoreRef
+from boba.connections.manifest import ConnectionTypes
 from boba.identity.locks import MemoryLiveLocks
 from boba.krb.seal import SsoTickets
 from boba.messaging import MemoryMessageBus

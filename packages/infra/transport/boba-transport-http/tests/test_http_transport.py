@@ -6,8 +6,8 @@ import httpx
 import pytest
 from pydantic import SecretStr
 
-from boba.transport.http.profile import BasicAuth, HttpProfile
 from boba.transport.http import HttpRequest, HttpTransport
+from boba.transport.http.profile import BasicAuth, HttpProfile
 
 pytestmark = pytest.mark.anyio
 

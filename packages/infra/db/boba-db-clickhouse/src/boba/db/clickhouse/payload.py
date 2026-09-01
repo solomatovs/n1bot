@@ -13,8 +13,8 @@ from typing import ClassVar
 from clickhouse_connect.driver.asyncclient import AsyncClient
 from clickhouse_connect.driver.exceptions import ClickHouseError as DriverError
 
-from boba.db.clickhouse.profile import ClickHouseConfig
 from boba.db.clickhouse.errors import ClickHouseError
+from boba.db.clickhouse.profile import ClickHouseConfig
 from boba.kerberos import KerberosAuthBase, KerberosError
 from boba.krb import ClientCredentials, SpnegoNegotiate
 

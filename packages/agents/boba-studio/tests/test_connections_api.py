@@ -18,7 +18,6 @@ from studio_stand import StandProfiles
 from boba.chat.profiles import ChatProfiles
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connections.manifest import ConnectionTypes
-from boba.transport.http.profile import HttpProfile
 from boba.connections.profile import GrantTarget, StoredRole
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.signin import SignInMetadata
@@ -27,6 +26,7 @@ from boba.stand.auth import NoUsers, StubAuthenticator
 from boba.stand.refs import StandRefs
 from boba.studio.api.app import ApiAccess, ApiApp
 from boba.studio.api.urls import ApiVersion, ConnectionUrl
+from boba.transport.http.profile import HttpProfile
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -148,6 +148,39 @@ async def test_lists_granted_rows_with_masked_secrets(
 
     for secret in _secrets_of(studio_config.data_layer.postgres):
         assert secret not in reply.text
+
+
+async def test_missing_type_row_is_listed_with_a_mark(
+    client: AsyncClient,
+    granted: dict[str, int],
+    studio_config: StudioRuntimeConfig,
+    pool: AsyncPostgresPool,
+) -> None:
+    """Строка типа без установленного пакета остаётся в списке: available=False."""
+    async with pool.connection() as conn:
+        await conn.execute(
+            sql.SQL(
+                "update {}.connections set data = jsonb_set(data, '{{kind}}', '\"vanished\"') "
+                "where id = %(id)s"
+            ).format(sql.Identifier(SCHEMA)),
+            {"id": granted["web"]},
+        )
+
+    reply = await client.get(
+        f"{ApiVersion.V1}{ConnectionUrl.CONNECTIONS}",
+        params={"profile": _profile_name(studio_config)},
+    )
+
+    assert reply.status_code == 200, reply.text
+    rows = {row["name"]: row for row in reply.json()}
+    assert set(rows) == {"main", "site"}
+
+    broken = rows["site"]
+    assert broken["available"] is False
+    assert broken["kind"] == "vanished"
+    assert broken["profile"] is None
+
+    assert rows["main"]["available"] is True
 
 
 async def test_kind_filter_narrows_the_list(

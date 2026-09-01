@@ -104,9 +104,12 @@ def _open(page: Page, stand: StandProcess, path: str) -> None:
 
 
 def _open_new_connection(page: Page, stand: StandProcess) -> None:
+    """Форма нового соединения на виде postgres: порядок видов задаёт реестр
+    плагинов, поэтому вид выбирается явно."""
     _open(page, stand, "/account")
     page.locator(Sel.LIST_NEW).click()
     expect(page.locator(Sel.FORM)).to_be_visible()
+    page.locator(Sel.KIND).select_option("postgres")
 
 
 class TestLogin:
@@ -234,7 +237,6 @@ class TestSchemaForm:
         self, page: Page, stand: StandProcess, tokens: Tokens
     ) -> None:
         _open_new_connection(page, stand)
-        expect(page.locator(Sel.KIND)).to_have_value("postgres")
 
         # обязательные поля помечены; вложенный auth — блок с пикером варианта
         name = page.get_by_label("connection name")

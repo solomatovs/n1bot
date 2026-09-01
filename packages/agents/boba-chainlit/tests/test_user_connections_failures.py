@@ -32,12 +32,11 @@ from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connection_broker.user_connections import UserConnections
 from boba.connections.manifest import ConnectionTypes
-from boba.transport.http.profile import HttpProfile
 from boba.connections.marks import ConnectionRefusal, UserConnectionsSpec
-from boba.db.postgres.profile import PasswordAuth, PostgresConfig
 from boba.connections.profile import GrantTarget
 from boba.connections.whitelist import ConnectionKeying
 from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres.profile import PasswordAuth, PostgresConfig
 from boba.identity.session import UserMetadataField
 from boba.kerberos import DelegatedAuth, DelegationMode, KeytabAuth
 from boba.krb import KeytabCredentials
@@ -53,6 +52,7 @@ from boba.toolkit.facade import Injected
 from boba.toolkit.result import ErrorResult, ToolArtifact
 from boba.toolrun.errors import ToolErrorGuard
 from boba.toolrun.injected import InjectedConfig
+from boba.transport.http.profile import HttpProfile
 
 pytestmark = pytest.mark.anyio
 

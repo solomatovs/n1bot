@@ -28,8 +28,8 @@ from psycopg.rows import DictRow
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
-from boba.db.postgres.profile import PostgresConfig
 from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresSchema, SqlNames
+from boba.db.postgres.profile import PostgresConfig
 from boba.identity.context import Scope, ScopeKind
 from boba.identity.locks import LiveLocksColumn
 from boba.messaging import (

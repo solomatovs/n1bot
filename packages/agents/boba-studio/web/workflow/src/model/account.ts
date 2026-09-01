@@ -34,7 +34,8 @@ export const ProfileViewSchema = z.object({
 });
 export type ProfileView = z.infer<typeof ProfileViewSchema>;
 
-export const ConnectionKindSchema = z.enum(["postgres", "clickhouse", "web"]);
+/** Виды соединений приносят плагины сервера: перечня на фронте нет, kind — строка. */
+export const ConnectionKindSchema = z.string();
 export type ConnectionKind = z.infer<typeof ConnectionKindSchema>;
 
 /** Профиль соединения — объект с дискриминатором kind; поля читает форма по виду. */
@@ -46,7 +47,9 @@ export const ConnectionViewSchema = z.object({
   name: z.string(),
   kind: ConnectionKindSchema,
   mine: z.boolean(),
-  profile: ConnectionProfileSchema,
+  /** false — тип строки не установлен: профиля нет, вместо формы — пометка. */
+  available: z.boolean(),
+  profile: ConnectionProfileSchema.nullable(),
 });
 export type ConnectionView = z.infer<typeof ConnectionViewSchema>;
 

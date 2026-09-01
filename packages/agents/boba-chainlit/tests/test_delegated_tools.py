@@ -37,13 +37,12 @@ from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connection_broker.user_connections import UserConnections
 from boba.connections.manifest import ConnectionTypes
-from boba.db.clickhouse.profile import ClickHouseConfig
-from boba.transport.http.profile import HttpProfile, NegotiateAuth
 from boba.connections.marks import UserConnectionsSpec
-from boba.db.postgres.profile import PostgresConfig
 from boba.connections.profile import ConnectionProfileBase, GrantTarget
 from boba.connections.whitelist import ConnectionKeying
+from boba.db.clickhouse.profile import ClickHouseConfig
 from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres.profile import PostgresConfig
 from boba.identity.session import UserMetadataField
 from boba.kerberos import (
     AcceptConfig,
@@ -55,14 +54,15 @@ from boba.krb.seal import SsoTickets
 from boba.messaging import MemoryMessageBus
 from boba.runtime.plugins import ToolBridge
 from boba.runtime.refresh import BusRefreshSignal
-from boba.toolkit.wrap import ToolProcessWrap
 from boba.sandbox.zygote import ZygoteRegistry
 from boba.stand.site import Stand
 from boba.tool.ch.tools import ChToolConfig
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebGrepConfig
 from boba.toolkit.entry import ToolMain
+from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.injected import InjectedConfig
+from boba.transport.http.profile import HttpProfile, NegotiateAuth
 
 _REPO = Path(__file__).resolve().parents[4]
 _ROOTFS_IMAGE = _REPO / "build" / "chainlit" / "src" / "sandbox" / "plugins" / "boba-tool-shell" / "rootfs.ext4"

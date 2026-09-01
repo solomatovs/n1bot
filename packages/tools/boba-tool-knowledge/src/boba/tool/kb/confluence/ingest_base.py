@@ -10,7 +10,6 @@ from typing import Annotated, Any, ClassVar, Literal, Self
 
 from pydantic import ConfigDict, Field, model_validator
 
-from boba.transport.http.profile import HttpProfile
 from boba.db.pgvector.config import PostgresStoreConfig
 from boba.db.pgvector.store import (
     PostgresChunkStore,
@@ -51,6 +50,7 @@ from boba.tool.kb.indexing_log import (
 from boba.tool.kb.warm import EmbeddingConfig, WarmEmbedder
 from boba.toolkit.timing import Elapsed
 from boba.toolkit.types import StringList
+from boba.transport.http.profile import HttpProfile
 
 __all__ = ["ConfluenceIngest", "ConfluenceIngestConfig"]
 

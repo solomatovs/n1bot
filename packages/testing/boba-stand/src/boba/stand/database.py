@@ -2,8 +2,8 @@
 
 from psycopg import sql
 
-from boba.db.postgres.profile.config import PostgresConfig
 from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres.profile.config import PostgresConfig
 
 
 class TestDatabase:

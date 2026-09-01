@@ -8,7 +8,8 @@ from typing import ClassVar
 import pytest
 from playwright.sync_api import Browser, Page, expect
 
-from boba.stand.ui.stand import StandProcess
+from boba.stand.ui.database import StandDatabase
+from boba.stand.ui.stand import StandApp, StandProcess
 
 pytestmark = pytest.mark.ui
 
@@ -120,4 +121,40 @@ def test_gear_opens_account_and_own_connection_round_trips(
 
     expect(
         page.locator(Selector.CONNECTION_ITEM).filter(has_text="ui-own")
+    ).to_have_count(0)
+
+
+def test_missing_type_connection_is_marked_and_deletable(
+    page: Page, stand: StandProcess
+) -> None:
+    """Строка типа без пакета: пометка в списке, заглушка вместо формы, Delete."""
+    page.goto(f"{stand.config.base_url}/workflow/login", wait_until="domcontentloaded")
+    _sign_in(page, stand)
+    page.locator(Selector.GEAR).click()
+
+    page.locator(Selector.NEW_CONNECTION).click()
+    page.get_by_label("connection name").fill("ui-broken")
+    page.get_by_label("profile.kind", exact=True).select_option("web")
+    page.get_by_label("profile.base_url", exact=True).fill("http://broken.test")
+    page.get_by_role("button", name="Save", exact=True).click()
+    expect(
+        page.locator(Selector.CONNECTION_ITEM).filter(has_text="ui-broken")
+    ).to_have_count(1)
+
+    # пакет типа «удаляется»: строка получает kind, которого нет в реестре
+    StandDatabase(StandApp.STUDIO, stand.config.db_name).break_connection_kind(
+        "ui-broken", "vanished"
+    )
+    page.reload(wait_until="domcontentloaded")
+
+    broken = page.locator(Selector.CONNECTION_ITEM).filter(has_text="ui-broken")
+    expect(broken).to_have_count(1)
+    expect(broken.locator(".item__meta")).to_contain_text("not installed")
+
+    broken.click()
+    expect(page.locator(".connections__missing")).to_contain_text("is not installed")
+
+    page.get_by_role("button", name="Delete connection", exact=True).click()
+    expect(
+        page.locator(Selector.CONNECTION_ITEM).filter(has_text="ui-broken")
     ).to_have_count(0)

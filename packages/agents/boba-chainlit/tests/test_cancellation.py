@@ -23,13 +23,13 @@ from boba.cancellation import (
     run_cancellation,
 )
 from boba.chainlit.agent.tools import BashToolConfig, build_bash_tool
-from boba.transport.http.profile import HttpProfile
 from boba.runtime.plugins import ToolBridge
 from boba.sandbox import SandboxProfile, SandboxToolConfig
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
 from boba.toolkit.result import ErrorResult
 from boba.toolrun.cancellation import CancellableTools
 from boba.transport.http import CancellableHttpTransport, HttpRequest
+from boba.transport.http.profile import HttpProfile
 
 
 def _bin_dirs() -> list[str]:

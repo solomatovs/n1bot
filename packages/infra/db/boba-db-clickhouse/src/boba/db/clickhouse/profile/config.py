@@ -206,13 +206,13 @@ class ClickHouseConfig(ConnectionProfileBase):
 
         return None
 
-    def with_call_ticket(self, ticket: TicketAuth) -> "ClickHouseConfig":
+    def with_call_ticket(self, ticket: TicketAuth) -> ClickHouseConfig:
         return self.model_copy(update={"auth": ticket})
 
     def trace(self) -> str:
         return self.auth.trace()
 
-    def labeled(self, label: str) -> "ClickHouseConfig":
+    def labeled(self, label: str) -> ClickHouseConfig:
         return self.model_copy(update={"client_name": label})
 
 

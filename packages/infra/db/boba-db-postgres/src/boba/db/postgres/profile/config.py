@@ -236,13 +236,13 @@ class PostgresConfig(ConnectionProfileBase):
 
         return None
 
-    def with_call_ticket(self, ticket: TicketAuth) -> "PostgresConfig":
+    def with_call_ticket(self, ticket: TicketAuth) -> PostgresConfig:
         return self.model_copy(update={"auth": ticket})
 
     def trace(self) -> str:
         return self.auth.trace()
 
-    def labeled(self, label: str) -> "PostgresConfig":
+    def labeled(self, label: str) -> PostgresConfig:
         return self.model_copy(update={"application_name": label})
 
 

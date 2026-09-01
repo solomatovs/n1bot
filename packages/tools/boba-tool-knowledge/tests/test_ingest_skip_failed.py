@@ -20,7 +20,6 @@ import uvicorn
 from fastapi import FastAPI, Response
 from ingest_stand import MemoryChunkStore, TextReader, ZeroEmbedder
 
-from boba.transport.http.profile import HttpProfile
 from boba.indexing import (
     CollectionId,
     CollectionScopedView,
@@ -49,6 +48,7 @@ from boba.tool.kb.indexing_log import (
     LoggingChunkStore,
     LoggingReader,
 )
+from boba.transport.http.profile import HttpProfile
 
 pytestmark = pytest.mark.anyio
 

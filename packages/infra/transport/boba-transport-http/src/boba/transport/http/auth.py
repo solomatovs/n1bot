@@ -12,6 +12,8 @@ from collections.abc import AsyncGenerator, Generator
 
 import httpx
 
+from boba.kerberos import KerberosError
+from boba.krb import ClientCredentials, KerberosCredentials, SpnegoNegotiate
 from boba.transport.http.profile import (
     BasicAuth,
     BearerAuth,
@@ -20,8 +22,6 @@ from boba.transport.http.profile import (
     NegotiateAuth,
     WebAuth,
 )
-from boba.kerberos import KerberosError
-from boba.krb import ClientCredentials, KerberosCredentials, SpnegoNegotiate
 
 __all__ = [
     "HttpxAuth",

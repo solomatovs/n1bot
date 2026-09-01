@@ -12,7 +12,6 @@ from typing import Annotated
 
 from omegaconf import DictConfig
 
-from boba.connections.manifest import ConnectionTypes
 from boba.access import GrantCheck
 from boba.auth import AuthService, JwtTokens
 from boba.auth.credentials import KerberosCredentialSource
@@ -21,6 +20,7 @@ from boba.auth.sso import SpnegoGate, SsoSignIn
 from boba.chat.profiles import RolesSection
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
+from boba.connections.manifest import ConnectionTypes
 from boba.db.pgvector.schema import KbSchema
 from boba.identity.directory import UserDirectory
 from boba.identity.locks import LiveLocks, MemoryLiveLocks, RunLocking, StaleLock

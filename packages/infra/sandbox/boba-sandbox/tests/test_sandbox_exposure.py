@@ -22,13 +22,13 @@ from omegaconf import DictConfig
 
 from boba.runtime.plugins import EntryPointPlugins
 from boba.sandbox import SandboxProfile
-from boba.stand.sandbox import section_profile
 from boba.sandbox.zygote import (
     ZygoteCallError,
     ZygoteRegistry,
     ZygoteState,
     ZygoteToolCaller,
 )
+from boba.stand.sandbox import section_profile
 from boba.stand.zygote import ZygoteStand
 
 needs_bwrap = pytest.mark.skipif(shutil.which("bwrap") is None, reason="нет bubblewrap")

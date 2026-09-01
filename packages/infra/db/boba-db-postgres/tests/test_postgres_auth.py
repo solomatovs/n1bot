@@ -16,8 +16,8 @@ from typing import Any
 import pytest
 from pydantic import SecretStr
 
-from boba.db.postgres.profile import PasswordAuth, PostgresConfig
 from boba.db.postgres.payload import PayloadPostgres
+from boba.db.postgres.profile import PasswordAuth, PostgresConfig
 from boba.kerberos import KerberosPasswordAuth, KeytabAuth
 from boba.krb import KerberosWorkspace, KeytabCredentials, ServiceTicketIssuer
 from boba.stand.site import Stand

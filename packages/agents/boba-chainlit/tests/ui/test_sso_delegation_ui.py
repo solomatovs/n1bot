@@ -27,7 +27,6 @@ import pytest
 from chat_ui import BOOT_TIMEOUT_SEC
 from playwright.sync_api import Browser, BrowserContext, Page, Playwright, expect
 
-from boba.transport.http.profile import HttpProfile, NegotiateAuth
 from boba.kerberos import KerberosPasswordAuth
 from boba.stand.site import Stand
 from boba.stand.ui.database import run_blocking
@@ -39,6 +38,7 @@ from boba.stand.ui.stand import (
     free_port,
 )
 from boba.transport.http import HttpRequest, HttpTransport
+from boba.transport.http.profile import HttpProfile, NegotiateAuth
 
 pytestmark = pytest.mark.ui
 

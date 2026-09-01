@@ -16,9 +16,9 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.transport.http.profile import HostPattern, HttpProfile
 from boba.toolkit.result import TableResult
 from boba.toolkit.sql import UnknownConnectionError
+from boba.transport.http.profile import HostPattern, HttpProfile
 
 __all__ = ["UnknownHostError", "WebConnection"]
 

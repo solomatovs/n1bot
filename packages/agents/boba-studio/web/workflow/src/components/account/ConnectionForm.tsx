@@ -21,7 +21,7 @@ export function ConnectionForm({ doc, row, onSaved, onRemoved }: Props): ReactEl
   const { api } = useServices();
   const [name, setName] = useState(row?.name ?? "");
   const [profile, setProfile] = useState<unknown>(() =>
-    row === null ? doc.defaults(doc.root) : withoutMaskedSecrets(row.profile),
+    row?.profile == null ? doc.defaults(doc.root) : withoutMaskedSecrets(row.profile),
   );
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");

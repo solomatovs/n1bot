@@ -37,8 +37,8 @@ from boba.canvas.journal import StreamKey
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.rendering.chat_view import ChatView, StepRole
 from boba.config import bind
-from boba.runtime.config import AppLayers
 from boba.db.postgres import AsyncPostgresPool
+from boba.runtime.config import AppLayers
 from boba.runtime.journal import DirVault, StreamJournal
 from boba.toolkit.channels import ToolChannel
 

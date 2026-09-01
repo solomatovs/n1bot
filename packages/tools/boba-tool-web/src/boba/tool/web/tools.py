@@ -21,8 +21,6 @@ from typing import Annotated, ClassVar, Final
 import httpx
 from pydantic import Field
 
-from boba.transport.http.profile import HttpProfile
-from boba.transport.http.web import UnknownHostError, WebConnection
 from boba.text.grep import GrepLimits, TextGrep
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
@@ -35,6 +33,8 @@ from boba.toolkit.result import (
 from boba.toolkit.sql import ConnectionName, UnknownConnectionError
 from boba.toolkit.types import SecretRevealing
 from boba.transport.http import HttpxAuth
+from boba.transport.http.profile import HttpProfile
+from boba.transport.http.web import UnknownHostError, WebConnection
 
 
 class WebRequestError(Exception):
