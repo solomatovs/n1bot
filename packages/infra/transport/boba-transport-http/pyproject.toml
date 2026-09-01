@@ -8,6 +8,7 @@ version = "0.0.15.dev1"
 description = "Boba HTTP transport: HttpRequest + HttpTransport + auth callables (PatAuth/BasicAuth) на httpx."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "boba-toolkit==0.0.15.dev1",
     "boba-connections==0.0.15.dev1",
     "boba-kerberos==0.0.15.dev1",
     "boba-cancellation==0.0.15.dev1",
@@ -26,3 +27,6 @@ dev = [
 where = ["src"]
 include = ["boba*"]
 namespaces = true
+
+[project.entry-points."boba.connections"]
+web = "boba.transport.http.connection:MANIFEST"

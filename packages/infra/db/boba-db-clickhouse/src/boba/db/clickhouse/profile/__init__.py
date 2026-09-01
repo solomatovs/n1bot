@@ -1,6 +1,6 @@
 """Профиль соединения clickhouse: параметры HTTP-клиента, настройки сессии, auth."""
 
-from boba.connections.clickhouse.auth import (
+from boba.db.clickhouse.profile.auth import (
     CertificateAuth,
     ClickHouseAuth,
     ClickHouseAuthBase,
@@ -11,7 +11,7 @@ from boba.connections.clickhouse.auth import (
     NoPasswordAuth,
     PasswordAuth,
 )
-from boba.connections.clickhouse.config import (
+from boba.db.clickhouse.profile.config import (
     ClickHouseConfig,
     ClickHouseSettingsConfig,
 )

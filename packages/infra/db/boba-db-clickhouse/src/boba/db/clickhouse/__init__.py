@@ -1,4 +1,4 @@
-"""boba.db.clickhouse — клиент ClickHouse; конфиг — boba.connections.clickhouse.
+"""boba.db.clickhouse — клиент ClickHouse; конфиг — boba.db.clickhouse.profile.
 
 Клиент (boba.db.clickhouse.payload) отсюда не экспортируется: он тянет
 clickhouse-connect, которого в окружении приложения нет — драйвер объявлен

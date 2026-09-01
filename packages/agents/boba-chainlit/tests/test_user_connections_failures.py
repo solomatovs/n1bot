@@ -31,10 +31,11 @@ from boba.chainlit.infra.plugins import ChatPlugins
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connection_broker.user_connections import UserConnections
-from boba.connections.http import HttpProfile
+from boba.connections.manifest import ConnectionTypes
+from boba.transport.http.profile import HttpProfile
 from boba.connections.marks import ConnectionRefusal, UserConnectionsSpec
-from boba.connections.postgres import PasswordAuth, PostgresConfig
-from boba.connections.profile import ConnectionKind, GrantTarget
+from boba.db.postgres.profile import PasswordAuth, PostgresConfig
+from boba.connections.profile import GrantTarget
 from boba.connections.whitelist import ConnectionKeying
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.session import UserMetadataField
@@ -89,7 +90,7 @@ async def store(pool: AsyncPostgresPool, key: SecretStr) -> ConnectionStore:
         )
 
     cfg = ConnectionsConfig(enable=True, db_schema=SCHEMA, encryption_key=key)
-    built = ConnectionStore(cfg, pool)
+    built = ConnectionStore(cfg, ConnectionTypes.discover(), pool)
     await built.setup()
     await built.sync_roles([ROLE])
     return built
@@ -275,7 +276,7 @@ class Guarded:
         def resolve(name: str, annotation: Any) -> object:
             return bind(raw_config, path="tool.pg", model=PgToolConfig)
 
-        spec = UserConnectionsSpec(ConnectionKind.POSTGRES, ConnectionKeying.NAME)
+        spec = UserConnectionsSpec("postgres", ConnectionKeying.NAME)
         return Guarded._build(schema, store, tickets, spec, resolve)
 
     @staticmethod
@@ -290,7 +291,7 @@ class Guarded:
         def resolve(name: str, annotation: Any) -> object:
             return bind(raw_config, path="tool.web", model=WebGrepConfig)
 
-        spec = UserConnectionsSpec(ConnectionKind.WEB, ConnectionKeying.NAME)
+        spec = UserConnectionsSpec("web", ConnectionKeying.NAME)
         return Guarded._build(schema, store, None, spec, resolve)
 
     @staticmethod
@@ -590,7 +591,7 @@ class TestNoConnections:
         await closed.open()
         await closed.close()
         cfg = ConnectionsConfig(enable=True, db_schema=SCHEMA, encryption_key=key)
-        broken = ConnectionStore(cfg, closed)
+        broken = ConnectionStore(cfg, ConnectionTypes.discover(), closed)
 
         result = await Guarded.failure(
             Guarded.pg(raw_config, broken, None), connection_name="main"
@@ -637,7 +638,7 @@ class TestNoConnections:
         Session.enter(user, Session.local())
 
         cfg = ConnectionsConfig(enable=True, db_schema=SCHEMA, encryption_key=_key())
-        foreign = ConnectionStore(cfg, pool)
+        foreign = ConnectionStore(cfg, ConnectionTypes.discover(), pool)
 
         result = await Guarded.failure(
             Guarded.pg(raw_config, foreign, None), connection_name="main"

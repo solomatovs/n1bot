@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from boba.connections.http import HostPattern, HttpProfile
+from boba.transport.http.profile import HostPattern, HttpProfile
 
 
 class TestHostPattern:

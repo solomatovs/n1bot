@@ -10,7 +10,7 @@ from typing import Annotated, Any, ClassVar, Literal, Self
 
 from pydantic import ConfigDict, Field, model_validator
 
-from boba.connections.http import HttpProfile
+from boba.transport.http.profile import HttpProfile
 from boba.db.pgvector.config import PostgresStoreConfig
 from boba.db.pgvector.store import (
     PostgresChunkStore,

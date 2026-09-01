@@ -11,7 +11,7 @@ from typing import ClassVar
 import pytest
 
 from boba.config import bind
-from boba.connections.clickhouse import ClickHouseConfig
+from boba.db.clickhouse.profile import ClickHouseConfig
 from boba.tool.ch.tools import ChToolConfig, ch_list_tables, ch_query
 from boba.toolkit.entry import ToolMain
 

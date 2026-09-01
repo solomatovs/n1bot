@@ -3,12 +3,12 @@
 from typing import Final
 
 from boba.connections.marks import ConnectedToolManifest, UserConnectionsSpec
-from boba.connections.profile import ConnectionKind
+from boba.db.postgres.connection import MANIFEST as PG_CONNECTION
 from boba.connections.whitelist import ConnectionKeying
 from boba.tool.pg.tools import TOOLS
 
 MANIFEST: Final = ConnectedToolManifest(
     section="pg",
     tools=tuple(TOOLS),
-    connections=UserConnectionsSpec(ConnectionKind.POSTGRES, ConnectionKeying.NAME),
+    connections=UserConnectionsSpec(PG_CONNECTION.kind, ConnectionKeying.NAME),
 )

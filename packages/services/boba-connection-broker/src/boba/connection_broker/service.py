@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.user_connections import StoreRef
 from boba.connections.marks import ConnectionRefusal
-from boba.connections.profile import ConnectionKind, ConnectionProfile, StoredConnection
+from boba.connections.profile import ConnectionProfileBase, StoredConnection
 from boba.identity.context import Subject
 from boba.identity.errors import RefusalError
 
@@ -55,7 +55,7 @@ class UserConnectionsService:
         self._store_ref = store_ref
 
     async def visible(
-        self, subject: Subject, kinds: Sequence[ConnectionKind]
+        self, subject: Subject, kinds: Sequence[str]
     ) -> list[VisibleConnection]:
         """Свои и выданные по роли строки указанных видов с признаком владения."""
         store = self._store_ref()
@@ -73,7 +73,7 @@ class UserConnectionsService:
     ) -> StoredConnection:
         """Видимая субъекту строка по id; иначе NOT_VISIBLE."""
         store = self._store_ref()
-        rows = await self._visible_rows(store, subject, list(ConnectionKind))
+        rows = await store.for_subject_all(subject)
         for row in rows:
             if row.id == connection_id:
                 return row
@@ -82,7 +82,7 @@ class UserConnectionsService:
         raise RefusalError(ConnectionRefusal.NOT_VISIBLE, msg)
 
     async def create(
-        self, subject: Subject, name: str, profile: ConnectionProfile
+        self, subject: Subject, name: str, profile: ConnectionProfileBase
     ) -> StoredConnection:
         """Новая строка с личным грантом субъекту."""
         store = self._store_ref()
@@ -97,7 +97,7 @@ class UserConnectionsService:
         subject: Subject,
         connection_id: UUID,
         name: str,
-        profile: ConnectionProfile,
+        profile: ConnectionProfileBase,
     ) -> StoredConnection:
         """Имя и профиль своей строки целиком."""
         store = self._store_ref()
@@ -120,7 +120,7 @@ class UserConnectionsService:
 
     @staticmethod
     async def _visible_rows(
-        store: ConnectionStore, subject: Subject, kinds: Sequence[ConnectionKind]
+        store: ConnectionStore, subject: Subject, kinds: Sequence[str]
     ) -> list[StoredConnection]:
         rows: list[StoredConnection] = []
         for kind in kinds:
@@ -136,7 +136,7 @@ class UserConnectionsService:
         if connection_id in owned:
             return
 
-        rows = await self._visible_rows(store, subject, list(ConnectionKind))
+        rows = await store.for_subject_all(subject)
         for row in rows:
             if row.id == connection_id:
                 msg = f"connection #{connection_id} is shared: only its owner edits it"
@@ -152,7 +152,7 @@ class UserConnectionsService:
         name: str,
         except_id: UUID | None,
     ) -> None:
-        rows = await self._visible_rows(store, subject, list(ConnectionKind))
+        rows = await store.for_subject_all(subject)
         for row in rows:
             if row.id == except_id:
                 continue

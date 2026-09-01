@@ -1,5 +1,5 @@
 """HTTP-auth для httpx: Bearer и Negotiate, которых нет в httpx, и фабрика
-аутентификатора по профилю соединения (модели — boba.connections.http).
+аутентификатора по профилю соединения (модели — boba.transport.http.profile).
 
 Ошибки:
 KerberosError — у negotiate-профиля не выпущен SPNEGO-токен; идёт из
@@ -12,7 +12,7 @@ from collections.abc import AsyncGenerator, Generator
 
 import httpx
 
-from boba.connections.http import (
+from boba.transport.http.profile import (
     BasicAuth,
     BearerAuth,
     DigestAuth,

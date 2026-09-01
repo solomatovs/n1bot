@@ -22,7 +22,7 @@ from boba.chat.threads import (
     StoredElement,
     StoredFeedback,
 )
-from boba.connections.postgres import PostgresConfig
+from boba.db.postgres.profile import PostgresConfig
 from boba.db.postgres import AsyncPostgresPool, SqlNames
 from boba.runtime.table import PgTable
 from boba.runtime.threads import ThreadsTable

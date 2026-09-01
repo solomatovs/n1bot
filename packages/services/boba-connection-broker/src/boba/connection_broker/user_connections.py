@@ -32,15 +32,15 @@ from pydantic import BaseModel
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tickets import CredentialsRef
 from boba.connections.credentials import ProfileSections
-from boba.connections.http import HostPattern, HttpProfile
+from boba.transport.http.profile import HostPattern, HttpProfile
 from boba.connections.marks import (
     ClientLabel,
     ConnectionRefusal,
     ConnectionTrace,
     UserConnectionsSpec,
 )
-from boba.connections.profile import ConnectionProfile
-from boba.connections.web import WebConnection
+from boba.connections.profile import ConnectionProfileBase
+from boba.transport.http.web import WebConnection
 from boba.connections.whitelist import (
     AmbiguousConnectionError,
     ConnectionWhitelist,
@@ -138,7 +138,7 @@ class UserConnections(AsyncInjected):
             )
             raise RefusalError(ConnectionRefusal.AMBIGUOUS, msg) from exc
 
-        shipped: dict[str, ConnectionProfile] = {}
+        shipped: dict[str, ConnectionProfileBase] = {}
         if picked is not None:
             profile = self._at_host(requested, picked.profile, kwargs)
             armed = await self._armed(self._labelled(profile, name))
@@ -147,7 +147,7 @@ class UserConnections(AsyncInjected):
                 "tool %s: connection %r (%s) %s",
                 name,
                 requested,
-                self._spec.kind.value,
+                self._spec.kind,
                 ConnectionTrace.of(armed),
             )
 
@@ -161,7 +161,7 @@ class UserConnections(AsyncInjected):
         return self._base.model_copy(update=update)
 
     @staticmethod
-    def _labelled(profile: ConnectionProfile, tool: str) -> ConnectionProfile:
+    def _labelled(profile: ConnectionProfileBase, tool: str) -> ConnectionProfileBase:
         """Профиль с меткой клиента: логин субъекта вызова."""
         login = CallContext.current().subject.login
 
@@ -169,8 +169,8 @@ class UserConnections(AsyncInjected):
 
     @staticmethod
     def _at_host(
-        name: str, profile: ConnectionProfile, kwargs: Mapping[str, object]
-    ) -> ConnectionProfile:
+        name: str, profile: ConnectionProfileBase, kwargs: Mapping[str, object]
+    ) -> ConnectionProfileBase:
         """Web-профиль привязывается к хосту URL вызова; чужой хост — отказ.
 
         Билет negotiate выпускается к реальному хосту, поэтому привязка идёт
@@ -194,7 +194,7 @@ class UserConnections(AsyncInjected):
         return profile.bound_to(host)
 
     @staticmethod
-    def _hosts(profiles: Mapping[str, ConnectionProfile]) -> dict[str, str]:
+    def _hosts(profiles: Mapping[str, ConnectionProfileBase]) -> dict[str, str]:
         hosts: dict[str, str] = {}
         for name, profile in profiles.items():
             if isinstance(profile, HttpProfile):
@@ -202,7 +202,7 @@ class UserConnections(AsyncInjected):
 
         return hosts
 
-    async def _armed(self, profile: ConnectionProfile) -> ConnectionProfile:
+    async def _armed(self, profile: ConnectionProfileBase) -> ConnectionProfileBase:
         """Профиль с билетом вызова вместо kerberos-секции строки."""
         section = ProfileSections.section_of(profile)
         if isinstance(section, TicketAuth):

@@ -28,10 +28,11 @@ from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connection_broker.user_connections import UserConnections
-from boba.connections.http import HttpProfile, NegotiateAuth
+from boba.connections.manifest import ConnectionTypes
+from boba.transport.http.profile import HttpProfile, NegotiateAuth
 from boba.connections.marks import ConnectionRefusal, UserConnectionsSpec
-from boba.connections.postgres import PasswordAuth, PostgresConfig
-from boba.connections.profile import ConnectionKind, GrantTarget, StoredRole
+from boba.db.postgres.profile import PasswordAuth, PostgresConfig
+from boba.connections.profile import GrantTarget, StoredRole
 from boba.connections.whitelist import ConnectionKeying
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import CallContext, ContextKind
@@ -103,7 +104,7 @@ async def store(pool: AsyncPostgresPool) -> ConnectionStore:
         )
 
     cfg = ConnectionsConfig(enable=True, db_schema=SCHEMA, encryption_key=_key())
-    built = ConnectionStore(cfg, pool)
+    built = ConnectionStore(cfg, ConnectionTypes.discover(), pool)
     await built.setup()
     await built.sync_roles([ROLE])
     return built
@@ -156,7 +157,7 @@ def pg_tools(
     def resolve(name: str, annotation: Any) -> object:
         return bind(raw_config, path="tool.pg", model=PgToolConfig)
 
-    spec = UserConnectionsSpec(ConnectionKind.POSTGRES, ConnectionKeying.NAME)
+    spec = UserConnectionsSpec("postgres", ConnectionKeying.NAME)
     UserConnections.bind_all(
         functions,
         lambda: store,
@@ -421,7 +422,7 @@ def web_tools(
     def resolve(name: str, annotation: Any) -> object:
         return bind(raw_config, path="tool.web", model=WebGrepConfig)
 
-    spec = UserConnectionsSpec(ConnectionKind.WEB, ConnectionKeying.NAME)
+    spec = UserConnectionsSpec("web", ConnectionKeying.NAME)
     UserConnections.bind_all(
         functions,
         lambda: store,

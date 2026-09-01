@@ -23,7 +23,7 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.connections.postgres import PostgresConfig
+from boba.db.postgres.profile import PostgresConfig
 from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresTable, SqlNames
 from boba.workflow import RunState, RunStatus, WorkflowSpec
 from boba.workflow.ports import WorkflowRepository

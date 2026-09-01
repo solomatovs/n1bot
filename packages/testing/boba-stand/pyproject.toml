@@ -8,6 +8,8 @@ version = "0.0.15.dev1"
 description = "Boba stand: общие фикстуры тестов — конфиг, тестовая база, пул, kerberos, контекст вызова."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "boba-db-clickhouse==0.0.15.dev1",
+    "boba-transport-http==0.0.15.dev1",
     "boba-auth==0.0.15.dev1",
     "boba-chat==0.0.15.dev1",
     "boba-connection-broker==0.0.15.dev1",

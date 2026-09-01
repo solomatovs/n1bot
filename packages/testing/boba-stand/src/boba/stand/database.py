@@ -2,7 +2,7 @@
 
 from psycopg import sql
 
-from boba.connections.postgres.config import PostgresConfig
+from boba.db.postgres.profile.config import PostgresConfig
 from boba.db.postgres import AsyncPostgresPool
 
 

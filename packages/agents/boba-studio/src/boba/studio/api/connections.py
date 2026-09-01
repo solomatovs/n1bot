@@ -26,24 +26,17 @@ from typing import Any, ClassVar
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    SecretStr,
-    TypeAdapter,
-    field_validator,
-)
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, SerializeAsAny
 
 from boba.chat.profiles import ChatProfiles
 from boba.connection_broker.probe import ConnectionProbe
 from boba.connection_broker.service import UserConnectionsService
 from boba.connection_broker.store import ConnectionStoreError
 from boba.connection_broker.user_connections import CredentialsRef
+from boba.connections.manifest import ConnectionTypes, ConnectionTypesError
 from boba.connections.marks import ConnectionRefusal
 from boba.connections.profile import (
-    ConnectionKind,
-    ConnectionProfile,
+    ConnectionProfileBase,
     ProbeResult,
     StoredConnection,
 )
@@ -88,21 +81,12 @@ BusSource = Callable[[], MessageBus]
 
 
 class ConnectionBody(BaseModel):
-    """Имя и рабочий профиль соединения с настоящими секретами."""
+    """Имя и сырой профиль соединения: модель выбирает реестр типов на границе."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str = Field(min_length=1, max_length=128)
-    profile: ConnectionProfile
-
-    @field_validator("profile")
-    @classmethod
-    def _real_secrets(cls, value: ConnectionProfile) -> ConnectionProfile:
-        if MaskedSecrets.find(value):
-            msg = "profile carries a masked secret: enter the real value"
-            raise ValueError(msg)
-
-        return value
+    profile: Mapping[str, Any]
 
 
 class ConnectionView(BaseModel):
@@ -112,9 +96,9 @@ class ConnectionView(BaseModel):
 
     id: UUID
     name: str
-    kind: ConnectionKind
+    kind: str
     mine: bool
-    profile: ConnectionProfile
+    profile: SerializeAsAny[ConnectionProfileBase]
 
     @classmethod
     def of(cls, row: StoredConnection, mine: bool) -> ConnectionView:
@@ -124,20 +108,11 @@ class ConnectionView(BaseModel):
 
 
 class ProbeBody(BaseModel):
-    """Профиль на проверку: как в форме, ещё не сохранённый."""
+    """Сырой профиль на проверку: как в форме, ещё не сохранённый."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    profile: ConnectionProfile
-
-    @field_validator("profile")
-    @classmethod
-    def _real_secrets(cls, value: ConnectionProfile) -> ConnectionProfile:
-        if MaskedSecrets.find(value):
-            msg = "profile carries a masked secret: enter the real value"
-            raise ValueError(msg)
-
-        return value
+    profile: Mapping[str, Any]
 
 
 class ConnectionDeleted(BaseModel):
@@ -149,11 +124,9 @@ class ConnectionDeleted(BaseModel):
 class ProfileSchema:
     """JSON Schema профиля соединения: по ней страница строит форму."""
 
-    _ADAPTER: ClassVar[TypeAdapter[ConnectionProfile]] = TypeAdapter(ConnectionProfile)
-
-    @classmethod
-    def render(cls) -> Mapping[str, Any]:
-        return cls._ADAPTER.json_schema()
+    @staticmethod
+    def render(types: ConnectionTypes) -> Mapping[str, Any]:
+        return types.json_schema()
 
 
 class RefusalStatus:
@@ -186,11 +159,26 @@ class ConnectionsApi:
         profiles: ChatProfiles,
         credentials: CredentialsRef,
         bus: BusSource,
+        types: ConnectionTypes,
     ) -> None:
         self._service = service
         self._profiles = profiles
         self._credentials = credentials
         self._bus = bus
+        self._types = types
+
+    def _parsed(self, raw: Mapping[str, Any]) -> ConnectionProfileBase:
+        """Профиль из тела запроса: модель по kind, секреты — настоящие."""
+        try:
+            profile = self._types.parse(raw)
+        except ConnectionTypesError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        if MaskedSecrets.find(profile):
+            msg = "profile carries a masked secret: enter the real value"
+            raise HTTPException(status_code=422, detail=msg)
+
+        return profile
 
     async def _changed(
         self, subject: Subject, connection_id: UUID, name: str, action: ChangeAction
@@ -219,14 +207,14 @@ class ConnectionsApi:
     async def schema(self, current_user: CurrentUser) -> Mapping[str, Any]:
         """Схема профиля с вариантами по kind и method; секреты — format=password."""
 
-        return ProfileSchema.render()
+        return ProfileSchema.render(self._types)
 
     async def list_connections(
         self,
         identity: CurrentSubject,
-        kind: ConnectionKind | None = None,
+        kind: str | None = None,
     ) -> Sequence[ConnectionView]:
-        kinds: list[ConnectionKind] = list(ConnectionKind)
+        kinds = list(self._types.kinds())
         if kind is not None:
             kinds = [kind]
 
@@ -246,7 +234,7 @@ class ConnectionsApi:
     ) -> ConnectionView:
         subject = identity.subject
         async with self._served():
-            row = await self._service.create(subject, body.name, body.profile)
+            row = await self._service.create(subject, body.name, self._parsed(body.profile))
 
         await self._changed(subject, row.id, row.name, ChangeAction.CREATED)
         return ConnectionView.of(row, mine=True)
@@ -260,7 +248,7 @@ class ConnectionsApi:
         subject = identity.subject
         async with self._served():
             row = await self._service.replace(
-                subject, connection_id, body.name, body.profile
+                subject, connection_id, body.name, self._parsed(body.profile)
             )
 
         await self._changed(subject, row.id, row.name, ChangeAction.UPDATED)
@@ -283,7 +271,7 @@ class ConnectionsApi:
     async def check(self, body: ProbeBody, identity: CurrentSubject) -> ProbeResult:
         """Пробное соединение по профилю из формы; делегирование — билетом входа."""
 
-        return await self._probed(identity, body.profile)
+        return await self._probed(identity, self._parsed(body.profile))
 
     async def check_stored(
         self, connection_id: UUID, identity: CurrentSubject
@@ -307,8 +295,8 @@ class ConnectionsApi:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     async def _probed(
-        self, identity: ApiSubject, profile: ConnectionProfile
+        self, identity: ApiSubject, profile: ConnectionProfileBase
     ) -> ProbeResult:
-        probe = ConnectionProbe(self._credentials())
+        probe = ConnectionProbe(self._credentials(), self._types)
 
         return await probe.probe(profile, identity.credential)

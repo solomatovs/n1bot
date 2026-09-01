@@ -18,9 +18,10 @@ from psycopg.errors import InsufficientPrivilege
 
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
-from boba.connections.clickhouse import ClickHouseConfig
-from boba.connections.http import HttpProfile
-from boba.connections.postgres.config import PostgresConfig
+from boba.connections.manifest import ConnectionTypes
+from boba.db.clickhouse.profile import ClickHouseConfig
+from boba.transport.http.profile import HttpProfile
+from boba.db.postgres.profile.config import PostgresConfig
 from boba.connections.profile import ConnectionTable, GrantTarget, StoredRole
 from boba.db.postgres import AsyncPostgresPool, SqlNames
 from boba.identity.session import UserMetadataField
@@ -205,7 +206,7 @@ class StandDatabase:
         clickhouse = bind(self._built, path="clickhouse", model=ClickHouseConfig)
         web = HttpProfile(base_url=StandUrl.of(llm_port), ssl_verify=False)
         async with self._pool() as pool:
-            store = ConnectionStore(connections, pool)
+            store = ConnectionStore(connections, ConnectionTypes.discover(), pool)
             # строки прошлых прогонов могут не проходить нынешний валидатор
             # профиля, поэтому чистятся мимо стора
             async with pool.cursor() as cur:

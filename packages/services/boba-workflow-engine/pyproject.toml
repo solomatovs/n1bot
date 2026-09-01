@@ -13,7 +13,6 @@ dependencies = [
     "boba-messaging==0.0.15.dev1",
     "boba-cancellation==0.0.15.dev1",
     "boba-workflow==0.0.15.dev1",
-    "boba-connections==0.0.15.dev1",
     "boba-toolrun==0.0.15.dev1",
     "boba-db-postgres==0.0.15.dev1",
     "pydantic>=2.10,<3",

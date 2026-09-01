@@ -1,6 +1,6 @@
 """Профиль соединения postgres: libpq-модель, опции сессии, пул, способы auth."""
 
-from boba.connections.postgres.auth import (
+from boba.db.postgres.profile.auth import (
     CertificateAuth,
     PasswordAuth,
     PostgresAuth,
@@ -11,7 +11,7 @@ from boba.connections.postgres.auth import (
     PostgresLibpq,
     TrustAuth,
 )
-from boba.connections.postgres.config import (
+from boba.db.postgres.profile.config import (
     PostgresConfig,
     PostgresOptionsConfig,
     PostgresPoolConfig,

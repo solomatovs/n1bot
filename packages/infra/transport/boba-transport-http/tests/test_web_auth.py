@@ -18,17 +18,17 @@ import httpx
 import pytest
 from pydantic import SecretStr
 
-from boba.connections.http import (
+from boba.kerberos import KeytabAuth
+from boba.krb import KerberosWorkspace, KeytabCredentials, ServiceTicketIssuer
+from boba.stand.site import Stand
+from boba.transport.http import HttpRequest, HttpTransport
+from boba.transport.http.profile import (
     BasicAuth,
     BearerAuth,
     HttpProfile,
     NegotiateAuth,
     NoneAuth,
 )
-from boba.kerberos import KeytabAuth
-from boba.krb import KerberosWorkspace, KeytabCredentials, ServiceTicketIssuer
-from boba.stand.site import Stand
-from boba.transport.http import HttpRequest, HttpTransport
 
 STAND = Stand.required()
 
@@ -48,6 +48,7 @@ pytestmark = [
 needs_clickhouse = pytest.mark.skipif(
     not STAND.ch_addr, reason="в конфиге стенда нет clickhouse (ch_addr)"
 )
+
 
 @pytest.fixture(autouse=True)
 def workspace(tmp_path: Path) -> None:

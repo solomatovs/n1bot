@@ -19,7 +19,7 @@ from typing import Annotated, Any, ClassVar, Final, Literal
 import httpx
 from pydantic import ConfigDict, Field
 
-from boba.connections.http import HttpProfile
+from boba.transport.http.profile import HttpProfile
 from boba.text.grep import GrepLimits, TextGrep
 from boba.tool.kb.confluence.parsing import ConfluenceJson
 from boba.tool.kb.confluence.request_sources import ConfluenceRest

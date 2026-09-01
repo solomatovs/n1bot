@@ -15,8 +15,6 @@ dependencies = [
     "boba-toolrun==0.0.15.dev1",
     "boba-db-postgres==0.0.15.dev1",
     "boba-transport-http==0.0.15.dev1",
-    "boba-db-clickhouse==0.0.15.dev1",
-    "httpx>=0.28,<1",
     "pydantic>=2.10,<3",
     "langchain-core>=1.4,<1.5",
     "psycopg[binary,pool]>=3.2,<4",
@@ -24,6 +22,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "boba-db-clickhouse==0.0.15.dev1",
     "boba-auth==0.0.15.dev1",
     "boba-stand==0.0.15.dev1",
     "pytest>=8",

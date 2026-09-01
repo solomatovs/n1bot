@@ -25,7 +25,8 @@ from pydantic import (
     model_validator,
 )
 
-from boba.kerberos import KerberosAuth, KerberosDump
+from boba.connections.base import ConnectionProfileBase
+from boba.kerberos import KerberosAuth, KerberosAuthBase, KerberosDump, TicketAuth
 
 __all__ = [
     "BasicAuth",
@@ -200,7 +201,7 @@ class HostPattern(BaseModel):
         return host.lower()
 
 
-class HttpProfile(BaseModel):
+class HttpProfile(ConnectionProfileBase):
     """Транспортный профиль: timeout/ssl/retry + auth. Без url."""
 
     model_config = ConfigDict(extra="ignore")
@@ -311,6 +312,23 @@ class HttpProfile(BaseModel):
             raise ValueError(msg)
 
         return f"{self.HTTP_SERVICE}@{host}"
+
+    def kerberos_section(self) -> KerberosAuthBase | None:
+        if isinstance(self.auth, NegotiateAuth):
+            return self.auth.kerberos
+
+        return None
+
+    def with_call_ticket(self, ticket: TicketAuth) -> "HttpProfile":
+        if not isinstance(self.auth, NegotiateAuth):
+            return self
+
+        auth = self.auth.model_copy(update={"kerberos": ticket})
+        return self.model_copy(update={"auth": auth})
+
+    def trace(self) -> str:
+        return f"{self.auth.trace()} url={self.base_url}"
+
 
     def login_url(self) -> str | None:
         """URL login-сервлета negotiate-профиля; None — сервлета нет."""

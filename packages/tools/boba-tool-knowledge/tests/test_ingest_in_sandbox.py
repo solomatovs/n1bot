@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 from boba.config import bind
 from boba.sandbox import SandboxToolConfig
@@ -35,7 +35,10 @@ def _caller(raw_config: DictConfig) -> ZygoteToolCaller:
     sandbox = SandboxToolConfig.model_validate({"profile": sandbox_profile("boba-tool-knowledge")})
     profile = sandbox.profile
 
-    warm = bind(raw_config, "tool.ingest", IngestWarmupConfig)
+    # тело живёт в песочнице: режимные развилки конфига — sandbox-веткой
+    sandboxed = raw_config.copy()
+    OmegaConf.update(sandboxed, "env.tool_launcher", "sandbox")
+    warm = bind(sandboxed, "tool.ingest", IngestWarmupConfig)
     calls = (
         WarmupCall(
             module=MODULE,

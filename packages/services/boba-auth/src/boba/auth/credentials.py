@@ -17,9 +17,8 @@ import logging
 from typing import ClassVar
 
 from boba.connections.credentials import CredentialSource, ProfileSections
-from boba.connections.http import HttpProfile
 from boba.connections.marks import ConnectionRefusal
-from boba.connections.profile import ConnectionProfile
+from boba.connections.profile import ConnectionProfileBase
 from boba.identity.context import Credential, DelegatedTicket
 from boba.identity.errors import RefusalError
 from boba.identity.sso import RefreshSignal
@@ -72,8 +71,8 @@ class KerberosCredentialSource(CredentialSource):
         self._refresh = refresh
 
     async def for_connection(
-        self, profile: ConnectionProfile, credential: Credential
-    ) -> ConnectionProfile:
+        self, profile: ConnectionProfileBase, credential: Credential
+    ) -> ConnectionProfileBase:
         section = ProfileSections.section_of(profile)
         if section is None:
             return profile
@@ -93,11 +92,7 @@ class KerberosCredentialSource(CredentialSource):
             section.trace(),
         )
 
-        if isinstance(profile, HttpProfile):
-            auth = profile.auth.model_copy(update={"kerberos": ticket})
-            return profile.model_copy(update={"auth": auth})
-
-        return profile.model_copy(update={"auth": ticket})
+        return profile.with_call_ticket(ticket)
 
     async def _source(
         self, section: KerberosAuthBase, credential: Credential

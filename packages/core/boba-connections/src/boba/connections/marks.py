@@ -12,10 +12,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict
 
-from boba.connections.clickhouse import ClickHouseConfig
-from boba.connections.http import HttpProfile
-from boba.connections.postgres import PostgresConfig
-from boba.connections.profile import ConnectionKind, ConnectionProfile
+from boba.connections.base import ConnectionProfileBase
 from boba.connections.whitelist import ConnectionKeying
 from boba.toolkit.manifest import ToolPluginManifest
 
@@ -43,7 +40,7 @@ class ConnectionRefusal(StrEnum):
 class UserConnectionsSpec:
     """Как секция инструментов адресует соединения: вид и ключ вызова."""
 
-    kind: ConnectionKind
+    kind: str
     keying: ConnectionKeying
 
 
@@ -63,11 +60,8 @@ class ConnectionTrace:
     """
 
     @staticmethod
-    def of(profile: ConnectionProfile) -> str:
-        if isinstance(profile, HttpProfile):
-            return f"{profile.auth.trace()} url={profile.base_url}"
-
-        return profile.auth.trace()
+    def of(profile: ConnectionProfileBase) -> str:
+        return profile.trace()
 
 
 class ClientLabel(BaseModel):
@@ -99,12 +93,6 @@ class ClientLabel(BaseModel):
 
         return raw[: self.MAX_BYTES].decode("utf-8", errors="ignore")
 
-    def applied(self, profile: ConnectionProfile) -> ConnectionProfile:
+    def applied(self, profile: ConnectionProfileBase) -> ConnectionProfileBase:
         """Профиль с меткой в поле, которым сервер подписывает сессию."""
-        if isinstance(profile, PostgresConfig):
-            return profile.model_copy(update={"application_name": self.render()})
-
-        if isinstance(profile, ClickHouseConfig):
-            return profile.model_copy(update={"client_name": self.render()})
-
-        return profile
+        return profile.labeled(self.render())

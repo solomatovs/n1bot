@@ -12,26 +12,26 @@ import pytest
 from pydantic import BaseModel, Field, SecretStr, ValidationError
 
 from boba.connection_broker.store import ConnectionsConfig
-from boba.connections.clickhouse import (
+from boba.connections.manifest import ConnectionTypes
+from boba.db.clickhouse.profile import (
     ClickHouseConfig,
     ClickHouseSettingsConfig,
     NoPasswordAuth,
 )
-from boba.connections.http import (
+from boba.transport.http.profile import (
     BasicAuth,
     BearerAuth,
     DigestAuth,
     HttpProfile,
     NoneAuth,
 )
-from boba.connections.postgres import (
+from boba.db.postgres.profile import (
     PasswordAuth,
     PostgresConfig,
     PostgresOptionsConfig,
     PostgresPoolConfig,
 )
 from boba.connections.profile import (
-    ConnectionKind,
     GrantKind,
     GrantTarget,
     StoredConnection,
@@ -259,8 +259,8 @@ class TestRealProfiles:
 
 class TestConnectionKind:
     def test_kind_of_postgres(self) -> None:
-        if ConnectionKind.of(_pg()) is not ConnectionKind.POSTGRES:
-            raise AssertionError("postgres profile must map to POSTGRES")
+        if _pg().kind != "postgres":
+            raise AssertionError("postgres profile must carry kind postgres")
 
     def test_kind_of_clickhouse(self) -> None:
         profile = ClickHouseConfig(
@@ -270,16 +270,12 @@ class TestConnectionKind:
             auth=NoPasswordAuth(method="no_password", user="boba"),
             settings=ClickHouseSettingsConfig(),
         )
-        if ConnectionKind.of(profile) is not ConnectionKind.CLICKHOUSE:
-            raise AssertionError("clickhouse profile must map to CLICKHOUSE")
+        if profile.kind != "clickhouse":
+            raise AssertionError("clickhouse profile must carry kind clickhouse")
 
     def test_kind_of_web(self) -> None:
-        if ConnectionKind.of(HttpProfile()) is not ConnectionKind.WEB:
-            raise AssertionError("http profile must map to WEB")
-
-    def test_unknown_kind_raises(self) -> None:
-        with pytest.raises(ValueError, match="redis"):
-            ConnectionKind("redis")
+        if HttpProfile().kind != "web":
+            raise AssertionError("http profile must carry kind web")
 
     def test_kind_is_part_of_the_model(self) -> None:
         if PostgresConfig.model_fields["kind"].default != "postgres":
@@ -296,11 +292,11 @@ class TestConnectionKind:
             "auth": {"method": "no_password", "user": "boba"},
             "settings": {},
         }
-        raw = {"id": str(UUID(int=1)), "name": "x", "profile": profile}
-        stored = StoredConnection.model_validate(raw)
+        types = ConnectionTypes.discover()
+        stored = StoredConnection(id=UUID(int=1), name="x", profile=types.parse(profile))
         if not isinstance(stored.profile, ClickHouseConfig):
             raise AssertionError("profile must be validated by its kind")
-        if stored.kind is not ConnectionKind.CLICKHOUSE:
+        if stored.kind != "clickhouse":
             raise AssertionError("stored.kind must follow the profile")
 
     def test_stored_profile_without_kind_is_rejected(self) -> None:

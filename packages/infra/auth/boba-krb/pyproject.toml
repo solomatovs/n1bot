@@ -18,8 +18,9 @@ dependencies = [
 [project.optional-dependencies]
 seal = ["cryptography>=42"]
 dev = [
+    "boba-db-clickhouse==0.0.15.dev1",
+    "boba-db-postgres==0.0.15.dev1",
     "cryptography>=42",
-    "boba-connections==0.0.15.dev1",
     "boba-stand==0.0.15.dev1",
     "ldap3",
     "pytest>=8",

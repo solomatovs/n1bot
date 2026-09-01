@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 
 from boba.config import bind
-from boba.connections.http import HttpProfile
+from boba.transport.http.profile import HttpProfile
 from boba.tool.web.tools import WebGrepConfig, web_fetch_page, web_grep_page
 from boba.toolkit.entry import ToolMain
 

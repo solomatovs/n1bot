@@ -8,6 +8,7 @@ version = "0.0.15.dev1"
 description = "Boba ClickHouse: ClickHouseConfig + подключение payload'а по HTTP, пароль или Kerberos SPNEGO на каждый запрос."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "boba-toolkit==0.0.15.dev1",
     "boba-connections==0.0.15.dev1",
     "boba-kerberos==0.0.15.dev1",
     "boba-krb==0.0.15.dev1",
@@ -27,3 +28,6 @@ dev = [
 where = ["src"]
 include = ["boba*"]
 namespaces = true
+
+[project.entry-points."boba.connections"]
+clickhouse = "boba.db.clickhouse.connection:MANIFEST"

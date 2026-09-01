@@ -14,8 +14,8 @@ from typing import ClassVar
 
 import pytest
 
-from boba.connections.clickhouse import ClickHouseConfig
-from boba.connections.postgres import PostgresConfig
+from boba.db.clickhouse.profile import ClickHouseConfig
+from boba.db.postgres.profile import PostgresConfig
 from boba.kerberos import DelegatedAuth, KerberosError, KeytabAuth, TicketAuth
 from boba.krb import (
     ClientCredentials,

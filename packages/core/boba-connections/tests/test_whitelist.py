@@ -6,7 +6,7 @@ from uuid import UUID
 
 import pytest
 
-from boba.connections.http import HttpProfile
+from boba.transport.http.profile import HttpProfile
 from boba.connections.profile import StoredConnection
 from boba.connections.whitelist import (
     AmbiguousConnectionError,
