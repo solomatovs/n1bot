@@ -19,11 +19,11 @@ CONNECTION = "confluence"
 
 @pytest.fixture(scope="module")
 def web_cfg(raw_config) -> WebGrepConfig:
-    """Лимиты из [tool.web], whitelist — сервисный [web.confluence] по его хосту."""
+    """Лимиты из [tool.web], whitelist — [tool.ingest.confluence] по его хосту."""
     limits = bind(raw_config, path="tool.web", model=WebGrepConfig)
-    service = bind(raw_config, path="web.confluence", model=HttpProfile)
+    service = bind(raw_config, path="tool.ingest.confluence", model=HttpProfile)
     if service.base_url is None:
-        raise AssertionError("[web.confluence] has no base_url")
+        raise AssertionError("[tool.ingest.confluence] has no base_url")
 
     return limits.model_copy(update={"profiles": {CONNECTION: service}})
 

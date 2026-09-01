@@ -343,25 +343,6 @@ class StandConfig:
             },
         }
 
-        doc["settings"] = {
-            "temperature": {"min": 0.0, "max": 2.0, "step": 0.05, "default": 1.0},
-            "top_p": {"min": 0.0, "max": 1.0, "step": 0.05, "default": 1.0},
-            "max_tokens": {"min": 256, "max": 16000, "step": 256, "default": 4096},
-            "frequency_penalty": {
-                "min": -2.0,
-                "max": 2.0,
-                "step": 0.1,
-                "default": 0.0,
-            },
-            "presence_penalty": {
-                "min": -2.0,
-                "max": 2.0,
-                "step": 0.1,
-                "default": 0.0,
-            },
-            "history_messages": {"min": 1, "max": 100, "step": 1, "default": 30},
-        }
-
         doc["profiles"] = {
             "general": {
                 "display_name": "General",
@@ -371,13 +352,14 @@ class StandConfig:
                 "tools": ["*"],
                 "backend": {"provider": "openai", "openai": "${openai.main}"},
                 "model": "fake-model-general",
-                "models": ["fake-model-general", "fake-model-alt"],
                 "settings": ["*"],
                 "system_prompt": "You are the general stand assistant",
                 "history_messages": 30,
-                "temperature": 0.1,
-                "max_tokens": 1111,
-                "top_p": 0.9,
+                "sampling": {
+                    "temperature": 0.1,
+                    "max_completion_tokens": 1111,
+                    "top_p": 0.9,
+                },
             },
             "search": {
                 "display_name": "Search",
@@ -387,12 +369,13 @@ class StandConfig:
                 "tools": ["diagram_save", "canvas_open"],
                 "backend": {"provider": "openai", "openai": "${openai.main}"},
                 "model": "fake-model-search",
-                "models": ["fake-model-search"],
-                "settings": ["temperature", "top_p", "history_messages", "user_prompt"],
+                "settings": ["user_prompt"],
                 "system_prompt": "You are the search stand assistant",
                 "history_messages": 30,
-                "temperature": 0.7,
-                "max_tokens": 2222,
+                "sampling": {
+                    "temperature": 0.7,
+                    "max_completion_tokens": 2222,
+                },
             },
         }
 

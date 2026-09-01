@@ -41,7 +41,7 @@ from boba.chainlit.rendering.chat_view import (
 )
 from boba.chainlit.rendering.renderer import ChatRenderer, NoSurface
 from boba.chat.openai import OpenAiConfig
-from boba.chat.provider import ChatSampling, OpenAiChatConfig
+from boba.chat.provider import OpenAiChatConfig
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import (
@@ -97,7 +97,7 @@ def fake_openai_chat(
     client: object,
     model: str = "fake-model",
     base_url: str = "https://fake-llm/v1",
-    sampling: ChatSampling | None = None,
+    sampling: dict[str, Any] | None = None,
 ) -> ProviderChatModel:
     """Чат-модель прод-стека на фейковом httpx-клиенте: SSE идёт через него."""
     cfg = OpenAiChatConfig(
@@ -106,7 +106,7 @@ def fake_openai_chat(
     )
 
     if sampling is None:
-        sampling = ChatSampling()
+        sampling = {}
 
     import httpx
 

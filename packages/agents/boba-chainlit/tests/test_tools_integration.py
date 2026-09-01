@@ -150,11 +150,11 @@ class ToolSetup:
 
     @staticmethod
     def web_config(raw: Any) -> WebGrepConfig:
-        """[tool.web] с whitelist'ом из сервисного [web.confluence]."""
+        """[tool.web] с whitelist'ом из [tool.ingest.confluence]."""
         limits = bind(raw, path="tool.web", model=WebGrepConfig)
-        service = bind(raw, path="web.confluence", model=HttpProfile)
+        service = bind(raw, path="tool.ingest.confluence", model=HttpProfile)
         if service.base_url is None:
-            raise AssertionError("[web.confluence] has no base_url")
+            raise AssertionError("[tool.ingest.confluence] has no base_url")
 
         return limits.model_copy(update={"profiles": {WEB_CONNECTION: service}})
 

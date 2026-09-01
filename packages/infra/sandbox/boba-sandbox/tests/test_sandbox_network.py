@@ -101,21 +101,14 @@ class SandboxToolProfiles:
         return profiles
 
     def http_hosts(self) -> list[str]:
-        """Хосты сервисов из секции [web.*]: по ним инструменты и ходят."""
+        """Хосты сервисных профилей плагинов: по ним инструменты и ходят."""
         hosts: list[str] = []
-        section = OmegaConf.select(self._raw, "web")
-        if section is None:
+        base_url = OmegaConf.select(self._raw, "tool.ingest.confluence.base_url")
+        if not base_url:
             return hosts
 
-        for profile in section.values():
-            base_url = profile.get("base_url")
-            if not base_url:
-                continue
-
-            host = urlsplit(str(base_url)).hostname
-            if not host:
-                continue
-
+        host = urlsplit(str(base_url)).hostname
+        if host:
             hosts.append(host)
 
         return hosts
@@ -161,7 +154,7 @@ def _resolvable_host() -> str:
 
         return host
 
-    pytest.skip("ни один хост из [web.*] не резолвится на самой машине")
+    pytest.skip("ни один сервисный хост конфига не резолвится на самой машине")
 
 
 @pytest.fixture(autouse=True)

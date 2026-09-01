@@ -10,7 +10,7 @@ from boba.chat.profiles import (
     ChatProfiles,
     ProfileRefusal,
 )
-from boba.chat.provider import ChatSampling, OpenAiChatConfig
+from boba.chat.provider import OpenAiChatConfig
 from boba.identity.errors import RefusalError
 
 OPENAI = {"base_url": "https://llm.example/v1", "api_key": "token"}
@@ -122,40 +122,38 @@ class TestVisibilityByWildcard:
 
 
 class TestChatSampling:
-    def test_unset_params_are_not_sent(self) -> None:
+    def test_empty_sampling_sends_nothing(self) -> None:
         settings = AgentSettings.model_validate(
             {"backend": BACKEND, "model": "test-model"}
         )
-        if settings.chat_sampling() != ChatSampling():
-            raise AssertionError("settings.chat_sampling() == ChatSampling()")
+        if settings.chat_sampling() != {}:
+            raise AssertionError("settings.chat_sampling() == {}")
 
-    def test_set_params_are_sent(self) -> None:
+    def test_admin_params_pass_through_verbatim(self) -> None:
+        """Таблица sampling уходит как написана: без проверок и переименований."""
         settings = AgentSettings.model_validate(
             {
                 "backend": BACKEND,
                 "model": "test-model",
-                "temperature": 0.2,
-                "max_tokens": 1000,
-                "top_p": 0.9,
-                "stop": ["END"],
+                "sampling": {
+                    "temperature": 0.2,
+                    "max_completion_tokens": 1000,
+                    "top_k": 40,
+                    "repetition_penalty": 1.1,
+                    "stop": ["END"],
+                },
             }
         )
         sampling = settings.chat_sampling()
-        expected = ChatSampling(
-            temperature=0.2,
-            max_tokens=1000,
-            top_p=0.9,
-            stop=("END",),
-        )
+        expected = {
+            "temperature": 0.2,
+            "max_completion_tokens": 1000,
+            "top_k": 40,
+            "repetition_penalty": 1.1,
+            "stop": ["END"],
+        }
         if sampling != expected:
             raise AssertionError(f"sampling: {sampling}")
-
-    def test_zero_temperature_is_sent(self) -> None:
-        settings = AgentSettings.model_validate(
-            {"backend": BACKEND, "model": "test-model", "temperature": 0}
-        )
-        if settings.chat_sampling().temperature != 0:
-            raise AssertionError("chat_sampling().temperature == 0")
 
     def test_openai_transport_binds(self) -> None:
         settings = AgentSettings.model_validate(

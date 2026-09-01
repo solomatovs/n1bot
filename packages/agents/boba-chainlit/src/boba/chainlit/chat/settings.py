@@ -3,7 +3,8 @@
 Панель показывает только разрешённые профилем настройки со значениями профиля
 (поверх которых легли уже сохранённые пользовательские); изменённое при
 сохранении уходит в users.meta, возврат к значению профиля снимает
-переопределение. Ошибки: своих не выпускает.
+переопределение. Модель и параметры сэмплинга пользователю
+недоступны — их задаёт администратор в профиле. Ошибки: своих не выпускает.
 """
 
 from __future__ import annotations
@@ -15,18 +16,13 @@ from typing import Any, ClassVar
 from boba.chainlit.chat.panel_text import PanelText
 from boba.chat.profiles import (
     AgentSettings,
-    NumberBounds,
-    ReasoningEffort,
     SettingsView,
     UserSetting,
 )
 from chainlit.input_widget import (
     InputWidget,
-    NumberInput,
-    Select,
     Slider,
     Tab,
-    Tags,
     TextInput,
 )
 
@@ -36,8 +32,7 @@ __all__ = ["PanelTab", "SettingsPanel"]
 class PanelTab(StrEnum):
     """Вкладки панели настроек; подписи — в переводах chainlit."""
 
-    MODEL = "model_tab"
-    SAMPLING = "sampling_tab"
+    HISTORY = "history_tab"
     PROMPT = "prompt_tab"
 
 
@@ -45,37 +40,9 @@ class SettingsPanel:
     """Сборка виджетов панели и разбор её формы для одного профиля."""
 
     TABS: ClassVar[dict[PanelTab, tuple[UserSetting, ...]]] = {
-        PanelTab.MODEL: (
-            UserSetting.MODEL,
-            UserSetting.REASONING_EFFORT,
-            UserSetting.SEED,
-        ),
-        PanelTab.SAMPLING: (
-            UserSetting.TEMPERATURE,
-            UserSetting.TOP_P,
-            UserSetting.MAX_TOKENS,
-            UserSetting.FREQUENCY_PENALTY,
-            UserSetting.PRESENCE_PENALTY,
-            UserSetting.HISTORY_MESSAGES,
-            UserSetting.STOP,
-        ),
+        PanelTab.HISTORY: (UserSetting.HISTORY_MESSAGES,),
         PanelTab.PROMPT: (UserSetting.USER_PROMPT,),
     }
-
-    NUMERIC: ClassVar[tuple[UserSetting, ...]] = (
-        UserSetting.TEMPERATURE,
-        UserSetting.TOP_P,
-        UserSetting.MAX_TOKENS,
-        UserSetting.FREQUENCY_PENALTY,
-        UserSetting.PRESENCE_PENALTY,
-        UserSetting.HISTORY_MESSAGES,
-    )
-    """Настройки-слайдеры: границы, шаг и стартовое значение берутся из [settings]."""
-
-    INTEGER: ClassVar[tuple[UserSetting, ...]] = (
-        UserSetting.MAX_TOKENS,
-        UserSetting.HISTORY_MESSAGES,
-    )
 
     def __init__(self, view: SettingsView, text: PanelText) -> None:
         self._view = view
@@ -114,27 +81,18 @@ class SettingsPanel:
     def _shown_value(self, setting: UserSetting) -> Any:
         value = self._view.value_of(setting)
 
-        if setting is UserSetting.STOP:
-            return list(value)
-
-        if setting in self.NUMERIC:
-            return self._numeric_value(setting, value)
-
-        if setting is UserSetting.REASONING_EFFORT and value is not None:
-            return value.value
+        if setting is UserSetting.HISTORY_MESSAGES:
+            return self._history_value(value)
 
         return value
 
-    def _numeric_value(self, setting: UserSetting, value: Any) -> float | int:
+    def _history_value(self, value: Any) -> int:
         """Число для слайдера: профильное либо стартовое из [settings]."""
-        shown = self._bounds_of(setting).default
+        shown = self._bounds.history_messages.default
         if value is not None:
             shown = value
 
-        if setting in self.INTEGER:
-            return int(shown)
-
-        return float(shown)
+        return int(shown)
 
     def _tab_widgets(
         self,
@@ -159,69 +117,10 @@ class SettingsPanel:
         setting: UserSetting,
         effective: AgentSettings,
     ) -> InputWidget | None:
-        if setting is UserSetting.MODEL:
-            return self._model_select(effective)
-
-        if setting is UserSetting.REASONING_EFFORT:
-            return self._effort_select(effective)
-
-        if setting is UserSetting.SEED:
-            return self._seed_input(effective)
-
-        if setting is UserSetting.STOP:
-            return Tags(
-                id=setting.value,
-                label=self._text.label(setting),
-                description=self._text.description(setting),
-                initial=list(effective.stop),
-            )
-
         if setting is UserSetting.USER_PROMPT:
             return self._prompt_input()
 
-        return self._slider(setting, effective)
-
-    def _model_select(self, effective: AgentSettings) -> Select | None:
-        """Модели профиля; выбрана та, что работает сейчас."""
-        if not self._profile.models:
-            return None
-
-        return Select(
-            id=UserSetting.MODEL.value,
-            label=self._text.label(UserSetting.MODEL),
-            description=self._text.description(UserSetting.MODEL),
-            values=list(self._profile.models),
-            initial_value=effective.model,
-        )
-
-    def _effort_select(self, effective: AgentSettings) -> Select:
-        effort = None
-        if effective.reasoning_effort is not None:
-            effort = effective.reasoning_effort.value
-
-        values: list[str] = []
-        for level in ReasoningEffort:
-            values.append(level.value)
-
-        return Select(
-            id=UserSetting.REASONING_EFFORT.value,
-            label=self._text.label(UserSetting.REASONING_EFFORT),
-            description=self._text.description(UserSetting.REASONING_EFFORT),
-            values=values,
-            initial_value=effort,
-        )
-
-    def _seed_input(self, effective: AgentSettings) -> NumberInput:
-        seed = None
-        if effective.seed is not None:
-            seed = float(effective.seed)
-
-        return NumberInput(
-            id=UserSetting.SEED.value,
-            label=self._text.label(UserSetting.SEED),
-            description=self._text.description(UserSetting.SEED),
-            initial=seed,
-        )
+        return self._history_slider(effective)
 
     def _prompt_input(self) -> TextInput:
         user_prompt = ""
@@ -236,27 +135,15 @@ class SettingsPanel:
             multiline=True,
         )
 
-    def _slider(self, setting: UserSetting, effective: AgentSettings) -> Slider:
-        bounds = self._bounds_of(setting)
-        value = getattr(effective, setting.value)
+    def _history_slider(self, effective: AgentSettings) -> Slider:
+        bounds = self._bounds.history_messages
 
         return Slider(
-            id=setting.value,
-            label=self._text.label(setting),
-            description=self._text.description(setting),
-            initial=float(self._numeric_value(setting, value)),
+            id=UserSetting.HISTORY_MESSAGES.value,
+            label=self._text.label(UserSetting.HISTORY_MESSAGES),
+            description=self._text.description(UserSetting.HISTORY_MESSAGES),
+            initial=float(self._history_value(effective.history_messages)),
             min=bounds.low,
             max=bounds.high,
             step=bounds.step,
         )
-
-    def _bounds_of(self, setting: UserSetting) -> NumberBounds:
-        by_setting = {
-            UserSetting.TEMPERATURE: self._bounds.temperature,
-            UserSetting.TOP_P: self._bounds.top_p,
-            UserSetting.MAX_TOKENS: self._bounds.max_tokens,
-            UserSetting.FREQUENCY_PENALTY: self._bounds.frequency_penalty,
-            UserSetting.PRESENCE_PENALTY: self._bounds.presence_penalty,
-            UserSetting.HISTORY_MESSAGES: self._bounds.history_messages,
-        }
-        return by_setting[setting]

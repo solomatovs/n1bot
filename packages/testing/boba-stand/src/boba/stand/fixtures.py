@@ -13,6 +13,7 @@ from boba.db.postgres import AsyncPostgresPool
 from boba.runtime.config import ConfigLocator, RawConfig, RuntimeConfig
 from boba.stand.context import call_context_cleared
 from boba.stand.database import TestDatabase
+from boba.stand.site import StandLayers
 
 __all__ = ["call_context_cleared"]
 
@@ -24,8 +25,15 @@ def anyio_backend() -> str:
 
 @pytest.fixture(scope="session")
 def raw_config() -> DictConfig:
-    """Собранный конфиг приложения до привязки к моделям."""
-    return RawConfig.load(ConfigLocator.path())
+    """Конфиг приложения со стендовым слоем conf/stand.toml поверх."""
+    RawConfig.load(ConfigLocator.path())
+
+    raw = StandLayers.compose(ConfigLocator.path())
+    if not isinstance(raw, DictConfig):
+        msg = "stand config did not compose into a table"
+        raise TypeError(msg)
+
+    return raw
 
 
 @pytest.fixture(scope="session")

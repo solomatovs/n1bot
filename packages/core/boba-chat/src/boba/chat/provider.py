@@ -35,7 +35,6 @@ __all__ = [
     "ChatReply",
     "ChatRequest",
     "ChatRole",
-    "ChatSampling",
     "ChatTurn",
     "ChatUsage",
     "LocalChatConfig",
@@ -104,21 +103,6 @@ class ToolSpec(BaseModel):
     parameters: Mapping[str, Any]
 
 
-class ChatSampling(BaseModel):
-    """Параметры сэмплинга запроса; None — параметр бэкенду не передаётся."""
-
-    model_config = ConfigDict(frozen=True)
-
-    max_tokens: int | None = None
-    temperature: float | None = None
-    top_p: float | None = None
-    frequency_penalty: float | None = None
-    presence_penalty: float | None = None
-    seed: int | None = None
-    stop: Sequence[str] = ()
-    reasoning_effort: str = ""
-
-
 class ChatRequest(BaseModel):
     """Конверт запроса: сообщения, инструменты и сэмплинг одного обращения."""
 
@@ -126,7 +110,13 @@ class ChatRequest(BaseModel):
 
     messages: Sequence[ChatTurn]
     tools: Sequence[ToolSpec] = ()
-    sampling: ChatSampling = ChatSampling()
+    sampling: Mapping[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Параметры запроса к провайдеру как есть: ключи и значения уходят "
+            "в тело без проверок; что принимает провайдер — решает конфиг."
+        ),
+    )
     stream: bool = Field(
         default=True,
         description=(

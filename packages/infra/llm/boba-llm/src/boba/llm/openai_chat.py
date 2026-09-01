@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from enum import StrEnum
 from typing import Any, ClassVar
 
@@ -35,7 +35,6 @@ from boba.chat.provider import (
     ChatReply,
     ChatRequest,
     ChatRole,
-    ChatSampling,
     ChatTurn,
     ChatUsage,
     OpenAiChatConfig,
@@ -69,14 +68,7 @@ class WireField(StrEnum):
     ARGUMENTS = "arguments"
     ID = "id"
     STREAM = "stream"
-    MAX_TOKENS = "max_completion_tokens"
-    TEMPERATURE = "temperature"
-    TOP_P = "top_p"
-    FREQUENCY_PENALTY = "frequency_penalty"
-    PRESENCE_PENALTY = "presence_penalty"
-    SEED = "seed"
     STOP = "stop"
-    REASONING_EFFORT = "reasoning_effort"
 
 
 class WireFunctionDelta(BaseModel):
@@ -503,27 +495,6 @@ class OpenAiChatProvider(ChatProvider):
         return wired
 
     @staticmethod
-    def _sampling(sampling: ChatSampling) -> dict[str, Any]:
-        numeric: dict[WireField, float | int | None] = {
-            WireField.MAX_TOKENS: sampling.max_tokens,
-            WireField.TEMPERATURE: sampling.temperature,
-            WireField.TOP_P: sampling.top_p,
-            WireField.FREQUENCY_PENALTY: sampling.frequency_penalty,
-            WireField.PRESENCE_PENALTY: sampling.presence_penalty,
-            WireField.SEED: sampling.seed,
-        }
-
-        wired: dict[str, Any] = {}
-        for field, value in numeric.items():
-            if value is None:
-                continue
-
-            wired[field.value] = value
-
-        if sampling.stop:
-            wired[WireField.STOP.value] = list(sampling.stop)
-
-        if sampling.reasoning_effort:
-            wired[WireField.REASONING_EFFORT.value] = sampling.reasoning_effort
-
-        return wired
+    def _sampling(sampling: Mapping[str, Any]) -> dict[str, Any]:
+        """Админская таблица сэмплинга как есть: без проверок и переименований."""
+        return dict(sampling)

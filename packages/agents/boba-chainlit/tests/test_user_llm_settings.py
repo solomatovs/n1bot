@@ -1,4 +1,9 @@
-"""Тесты слоя пользовательских настроек LLM: границы, наложение, хранение."""
+"""Тесты слоя пользовательских настроек LLM: границы, наложение, хранение.
+
+Сэмплинг пользователю недоступен: его задаёт администратор таблицей sampling
+профиля, и она уходит в провайдер как написана; модель тоже фиксирована
+профилем. Пользователю остаются глубина истории и личная добавка к промпту.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +11,7 @@ from collections.abc import Sequence
 from uuid import UUID, uuid4
 
 import pytest
-from chainlit.input_widget import InputWidget, Select, Slider, Tab
+from chainlit.input_widget import InputWidget, Slider, Tab
 from chainlit.user import User as ChainlitUser
 from psycopg import sql
 from psycopg.rows import dict_row
@@ -18,7 +23,6 @@ from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.session import current_session
 from boba.chat.profiles import (
     ChatProfileConfig,
-    ReasoningEffort,
     SettingsBounds,
     SettingsView,
     UserLlmOverrides,
@@ -44,16 +48,7 @@ def chainlit_context() -> None:
     """Заглушка сессионной фикстуры: тесты слоя не ходят в контекст chainlit."""
 
 
-BOUNDS = SettingsBounds.model_validate(
-    {
-        "temperature": {"min": 0.0, "max": 2.0, "step": 0.05, "default": 1.0},
-        "top_p": {"min": 0.0, "max": 1.0, "step": 0.05, "default": 1.0},
-        "max_tokens": {"min": 256, "max": 16000, "step": 256, "default": 4096},
-        "frequency_penalty": {"min": -2.0, "max": 2.0, "step": 0.1, "default": 0.0},
-        "presence_penalty": {"min": -2.0, "max": 2.0, "step": 0.1, "default": 0.0},
-        "history_messages": {"min": 1, "max": 100, "step": 1, "default": 30},
-    }
-)
+BOUNDS = SettingsBounds()
 
 
 def _panel(profile: ChatProfileConfig, saved: UserLlmOverrides) -> SettingsPanel:
@@ -67,44 +62,23 @@ def _profile(**kw) -> ChatProfileConfig:
         "description": "test profile",
         "backend": BACKEND,
         "model": "base-model",
-        "models": ["base-model", "alt-model"],
         "settings": ["*"],
         "system_prompt": "You are the profile assistant",
-        "temperature": 0.1,
-        "max_tokens": 1000,
+        "history_messages": 25,
+        "sampling": {"temperature": 0.1, "top_k": 40},
     }
     base.update(kw)
     return ChatProfileConfig.model_validate(base)
 
 
 class TestClamped:
-    def test_values_are_clamped_into_bounds(self) -> None:
-        overrides = UserLlmOverrides(temperature=9.0, max_tokens=1, top_p=-1.0)
+    def test_history_is_clamped_into_bounds(self) -> None:
+        overrides = UserLlmOverrides(history_messages=900)
 
         bounded = overrides.clamped(BOUNDS, _profile())
 
-        if bounded.temperature != 2.0:
-            raise AssertionError(f"temperature: {bounded.temperature}")
-        if bounded.max_tokens != 256:
-            raise AssertionError(f"max_tokens: {bounded.max_tokens}")
-        if bounded.top_p != 0.0:
-            raise AssertionError(f"top_p: {bounded.top_p}")
-
-    def test_foreign_model_is_dropped(self) -> None:
-        overrides = UserLlmOverrides(model="smuggled-model")
-
-        bounded = overrides.clamped(BOUNDS, _profile())
-
-        if bounded.model is not None:
-            raise AssertionError(f"model survived: {bounded.model}")
-
-    def test_listed_model_is_kept(self) -> None:
-        overrides = UserLlmOverrides(model="alt-model")
-
-        bounded = overrides.clamped(BOUNDS, _profile())
-
-        if bounded.model != "alt-model":
-            raise AssertionError(f"model: {bounded.model}")
+        if bounded.history_messages != 100:
+            raise AssertionError(f"history: {bounded.history_messages}")
 
     def test_none_fields_stay_none(self) -> None:
         bounded = UserLlmOverrides().clamped(BOUNDS, _profile())
@@ -113,17 +87,17 @@ class TestClamped:
             raise AssertionError(f"stored: {bounded.stored()}")
 
     def test_disallowed_setting_is_dropped(self) -> None:
-        profile = _profile(settings=["top_p"])
-        overrides = UserLlmOverrides(temperature=0.9, top_p=0.5)
+        profile = _profile(settings=["history_messages"])
+        overrides = UserLlmOverrides(history_messages=10, user_prompt="sneak")
 
         bounded = overrides.clamped(BOUNDS, profile)
 
-        if bounded.stored() != {"top_p": 0.5}:
+        if bounded.stored() != {"history_messages": 10}:
             raise AssertionError(f"stored: {bounded.stored()}")
 
     def test_empty_settings_disallow_everything(self) -> None:
         profile = _profile(settings=[])
-        overrides = UserLlmOverrides(temperature=0.9, user_prompt="sneak")
+        overrides = UserLlmOverrides(history_messages=10, user_prompt="sneak")
 
         bounded = overrides.clamped(BOUNDS, profile)
 
@@ -133,20 +107,18 @@ class TestClamped:
 
 class TestApplyTo:
     def test_override_wins_over_profile(self) -> None:
-        overrides = UserLlmOverrides(temperature=0.9, model="alt-model")
+        overrides = UserLlmOverrides(history_messages=5)
 
         settings = overrides.apply_to(_profile())
 
-        if settings.temperature != 0.9:
-            raise AssertionError(f"temperature: {settings.temperature}")
-        if settings.model != "alt-model":
-            raise AssertionError(f"model: {settings.model}")
+        if settings.history_messages != 5:
+            raise AssertionError(f"history: {settings.history_messages}")
 
     def test_none_keeps_profile_value(self) -> None:
         settings = UserLlmOverrides().apply_to(_profile())
 
-        if settings.temperature != 0.1:
-            raise AssertionError(f"temperature: {settings.temperature}")
+        if settings.history_messages != 25:
+            raise AssertionError(f"history: {settings.history_messages}")
         if settings.model != "base-model":
             raise AssertionError(f"model: {settings.model}")
 
@@ -160,7 +132,7 @@ class TestApplyTo:
             raise AssertionError(f"system_prompt: {settings.system_prompt!r}")
 
     def test_transport_is_never_overridden(self) -> None:
-        settings = UserLlmOverrides(temperature=1.0).apply_to(_profile())
+        settings = UserLlmOverrides(history_messages=1).apply_to(_profile())
 
         backend = settings.backend
         if not isinstance(backend, OpenAiChatConfig):
@@ -168,15 +140,14 @@ class TestApplyTo:
         if backend.openai.base_url != OPENAI["base_url"]:
             raise AssertionError("openai transport changed")
 
-    def test_reasoning_and_seed_reach_chat_sampling(self) -> None:
-        overrides = UserLlmOverrides(seed=7, reasoning_effort=ReasoningEffort.HIGH)
+    def test_admin_sampling_survives_overrides_verbatim(self) -> None:
+        """Таблица sampling профиля не трогается пользователем и уходит как есть."""
+        overrides = UserLlmOverrides(history_messages=3)
 
         sampling = overrides.apply_to(_profile()).chat_sampling()
 
-        if sampling.seed != 7:
-            raise AssertionError(f"seed: {sampling.seed}")
-        if sampling.reasoning_effort != "high":
-            raise AssertionError(f"effort: {sampling.reasoning_effort}")
+        if sampling != {"temperature": 0.1, "top_k": 40}:
+            raise AssertionError(f"sampling: {sampling}")
 
 
 class TestEdited:
@@ -196,12 +167,12 @@ class TestEdited:
             raise AssertionError(f"stored: {parsed.stored()}")
 
     def test_untouched_form_keeps_saved_override(self) -> None:
-        saved = UserLlmOverrides(temperature=0.9)
+        saved = UserLlmOverrides(history_messages=7)
         panel = self._panel(saved)
 
         parsed = panel.parse(panel.shown_values()).overrides
 
-        if parsed.stored() != {"temperature": 0.9}:
+        if parsed.stored() != {"history_messages": 7}:
             raise AssertionError(f"stored: {parsed.stored()}")
 
     def test_changed_value_is_stored(self) -> None:
@@ -209,49 +180,23 @@ class TestEdited:
         panel = self._panel(saved)
 
         form = panel.shown_values()
-        form[UserSetting.TEMPERATURE.value] = 0.9
+        form[UserSetting.HISTORY_MESSAGES.value] = 7
 
         parsed = panel.parse(form).overrides
 
-        if parsed.stored() != {"temperature": 0.9}:
+        if parsed.stored() != {"history_messages": 7}:
             raise AssertionError(f"stored: {parsed.stored()}")
 
     def test_profile_value_back_clears_override(self) -> None:
-        saved = UserLlmOverrides(temperature=0.9)
+        saved = UserLlmOverrides(history_messages=7)
         panel = self._panel(saved)
 
         form = panel.shown_values()
-        form[UserSetting.TEMPERATURE.value] = 0.1
+        form[UserSetting.HISTORY_MESSAGES.value] = 25
 
         parsed = panel.parse(form).overrides
 
         if parsed.stored() != {}:
-            raise AssertionError(f"stored: {parsed.stored()}")
-
-    def test_parameter_absent_in_profile_is_not_stored_untouched(self) -> None:
-        """Слайдер показал стартовое значение из [settings], а не значение профиля."""
-        saved = UserLlmOverrides()
-        panel = self._panel(saved)
-
-        shown = panel.shown_values()
-        if shown[UserSetting.TOP_P.value] != BOUNDS.top_p.default:
-            raise AssertionError(f"shown top_p: {shown[UserSetting.TOP_P.value]}")
-
-        parsed = panel.parse(shown).overrides
-
-        if parsed.stored() != {}:
-            raise AssertionError(f"stored: {parsed.stored()}")
-
-    def test_moved_slider_of_absent_parameter_is_stored(self) -> None:
-        saved = UserLlmOverrides()
-        panel = self._panel(saved)
-
-        form = panel.shown_values()
-        form[UserSetting.TOP_P.value] = 0.55
-
-        parsed = panel.parse(form).overrides
-
-        if parsed.stored() != {"top_p": 0.55}:
             raise AssertionError(f"stored: {parsed.stored()}")
 
     def test_empty_prompt_clears_the_instruction(self) -> None:
@@ -315,12 +260,12 @@ class TestSettingsPanel:
                 raise AssertionError(f"{name} has no description")
 
     def test_only_allowed_widgets_are_drawn(self) -> None:
-        profile = _profile(settings=["temperature", "user_prompt"])
+        profile = _profile(settings=["history_messages", "user_prompt"])
         panel = _panel(profile, UserLlmOverrides())
 
         ids = set(self._widgets(panel.tabs()))
 
-        if ids != {"temperature", "user_prompt"}:
+        if ids != {"history_messages", "user_prompt"}:
             raise AssertionError(f"ids: {sorted(ids)}")
 
     def test_no_tabs_for_empty_settings(self) -> None:
@@ -336,75 +281,27 @@ class TestSettingsPanel:
 
         return widget
 
-    def _select(self, panel: SettingsPanel, setting: UserSetting) -> Select:
-        widget = self._widgets(panel.tabs())[setting.value]
-        if not isinstance(widget, Select):
-            raise AssertionError(f"{setting.value} is {type(widget).__name__}")
-
-        return widget
-
-    def test_slider_starts_at_profile_value(self) -> None:
+    def test_history_slider_starts_at_profile_value(self) -> None:
         panel = _panel(_profile(), UserLlmOverrides())
 
-        slider = self._slider(panel, UserSetting.TEMPERATURE)
+        slider = self._slider(panel, UserSetting.HISTORY_MESSAGES)
 
-        if (slider.min, slider.max, slider.step) != (0.0, 2.0, 0.05):
+        if (slider.min, slider.max, slider.step) != (1.0, 100.0, 1.0):
             raise AssertionError(f"bounds: {slider.min}, {slider.max}, {slider.step}")
-        if slider.initial != 0.1:
+        if slider.initial != 25:
             raise AssertionError(f"initial: {slider.initial}")
 
-    def test_slider_starts_at_settings_default_when_profile_is_silent(self) -> None:
-        panel = _panel(_profile(), UserLlmOverrides())
+    def test_history_slider_starts_at_saved_override(self) -> None:
+        panel = _panel(_profile(), UserLlmOverrides(history_messages=7))
 
-        slider = self._slider(panel, UserSetting.TOP_P)
+        slider = self._slider(panel, UserSetting.HISTORY_MESSAGES)
 
-        if slider.initial != BOUNDS.top_p.default:
+        if slider.initial != 7:
             raise AssertionError(f"initial: {slider.initial}")
-
-    def test_slider_starts_at_saved_override(self) -> None:
-        panel = _panel(_profile(), UserLlmOverrides(temperature=1.4))
-
-        slider = self._slider(panel, UserSetting.TEMPERATURE)
-
-        if slider.initial != 1.4:
-            raise AssertionError(f"initial: {slider.initial}")
-
-    def test_model_select_lists_profile_models(self) -> None:
-        panel = _panel(_profile(), UserLlmOverrides())
-
-        select = self._select(panel, UserSetting.MODEL)
-
-        values = [item["value"] for item in select.to_dict()["items"]]
-        if values != ["base-model", "alt-model"]:
-            raise AssertionError(f"values: {values}")
-        if select.initial != "base-model":
-            raise AssertionError(f"initial: {select.initial}")
-
-    def test_effort_is_a_select_of_levels(self) -> None:
-        panel = _panel(_profile(), UserLlmOverrides())
-
-        select = self._select(panel, UserSetting.REASONING_EFFORT)
-
-        values = [item["value"] for item in select.to_dict()["items"]]
-        if values != [level.value for level in ReasoningEffort]:
-            raise AssertionError(f"values: {values}")
-
-    def test_no_model_select_without_whitelist(self) -> None:
-        profile = _profile(models=[], settings=["temperature"])
-        panel = _panel(profile, UserLlmOverrides())
-
-        ids = set(self._widgets(panel.tabs()))
-
-        if UserSetting.MODEL.value in ids:
-            raise AssertionError("model select is drawn without a whitelist")
-
-    def test_allowed_model_requires_whitelist(self) -> None:
-        with pytest.raises(ValueError, match="models"):
-            _profile(models=[], settings=["*"])
 
     def test_unknown_setting_name_is_config_error(self) -> None:
         with pytest.raises(ValueError, match="unknown settings"):
-            _profile(settings=["tempreture"])
+            _profile(settings=["temperature"])
 
     def test_enum_matches_override_fields(self) -> None:
         enum_names = {setting.value for setting in UserSetting}
@@ -413,28 +310,28 @@ class TestSettingsPanel:
             raise AssertionError(f"mismatch: {enum_names ^ field_names}")
 
     def test_parse_drops_disallowed_fields(self) -> None:
-        profile = _profile(settings=["temperature"])
+        profile = _profile(settings=["history_messages"])
         saved = UserLlmOverrides()
         panel = _panel(profile, saved)
 
         form = panel.shown_values()
-        form[UserSetting.TEMPERATURE.value] = 0.9
+        form[UserSetting.HISTORY_MESSAGES.value] = 7
         form[UserSetting.USER_PROMPT.value] = "smuggled"
 
         parsed = panel.parse(form).overrides
 
-        if parsed.stored() != {"temperature": 0.9}:
+        if parsed.stored() != {"history_messages": 7}:
             raise AssertionError(f"stored: {parsed.stored()}")
 
     def test_parse_clamps_out_of_bounds(self) -> None:
         panel = _panel(_profile(), UserLlmOverrides())
 
         form = panel.shown_values()
-        form[UserSetting.TEMPERATURE.value] = 5.0
+        form[UserSetting.HISTORY_MESSAGES.value] = 900
 
         parsed = panel.parse(form).overrides
 
-        if parsed.stored() != {"temperature": 2.0}:
+        if parsed.stored() != {"history_messages": 100}:
             raise AssertionError(f"stored: {parsed.stored()}")
 
 
@@ -444,22 +341,18 @@ class TestPanelText:
     def test_russian_strings_are_translated(self) -> None:
         text = PanelText(NO_OVERRIDES, "ru-RU")
 
-        if text.label(UserSetting.TEMPERATURE) != "Температура":
-            raise AssertionError(f"label: {text.label(UserSetting.TEMPERATURE)!r}")
-        if text.tab(PanelTab.SAMPLING.value) != "Сэмплинг":
-            raise AssertionError(f"tab: {text.tab(PanelTab.SAMPLING.value)!r}")
+        history = UserSetting.HISTORY_MESSAGES
+        if text.label(history) != "Сообщений истории":
+            raise AssertionError(f"label: {text.label(history)!r}")
+        if text.tab(PanelTab.HISTORY.value) != "История":
+            raise AssertionError(f"tab: {text.tab(PanelTab.HISTORY.value)!r}")
 
     def test_unknown_language_falls_back_to_default(self) -> None:
         text = PanelText(NO_OVERRIDES, "de-DE")
 
-        if text.label(UserSetting.TEMPERATURE) != "Temperature":
-            raise AssertionError(f"label: {text.label(UserSetting.TEMPERATURE)!r}")
-
-    def test_base_language_is_used(self) -> None:
-        text = PanelText(NO_OVERRIDES, "ru")
-
-        if text.label(UserSetting.SEED) != "Зерно":
-            raise AssertionError(f"label: {text.label(UserSetting.SEED)!r}")
+        history = UserSetting.HISTORY_MESSAGES
+        if text.label(history) != "History messages":
+            raise AssertionError(f"label: {text.label(history)!r}")
 
     def test_every_setting_is_translated(self) -> None:
         for language in ("en-US", "ru-RU"):
@@ -507,18 +400,28 @@ class TestPanelLanguage:
 
 class TestUserMeta:
     def test_malformed_meta_degrades_to_empty(self) -> None:
-        meta = UserMeta.of({"llm": {"general": {"temperature": "abc"}}})
+        meta = UserMeta.of({"llm": {"general": {"history_messages": "abc"}}})
 
         if meta.llm != {}:
             raise AssertionError(f"llm: {meta.llm}")
 
     def test_missing_profile_gives_empty_overrides(self) -> None:
-        meta = UserMeta.of({"llm": {"general": {"temperature": 0.5}}})
+        meta = UserMeta.of({"llm": {"general": {"history_messages": 5}}})
 
         if meta.overrides_for("search").stored() != {}:
             raise AssertionError("search overrides are not empty")
-        if meta.overrides_for("general").temperature != 0.5:
+        if meta.overrides_for("general").history_messages != 5:
             raise AssertionError("general override lost")
+
+    def test_stale_sampling_keys_are_ignored(self) -> None:
+        """users.meta прошлых версий с сэмплингом: лишние ключи отбрасываются."""
+        meta = UserMeta.of(
+            {"llm": {"general": {"temperature": 0.9, "history_messages": 5}}}
+        )
+
+        overrides = meta.overrides_for("general")
+        if overrides.stored() != {"history_messages": 5}:
+            raise AssertionError(f"stored: {overrides.stored()}")
 
 
 class TestUserSettingsStorage:
@@ -557,7 +460,7 @@ class TestUserSettingsStorage:
             raise AssertionError("user is not created")
 
         await layer.update_user_llm_settings(
-            UUID(created.id), "general", {"temperature": 0.9}
+            UUID(created.id), "general", {"history_messages": 5}
         )
 
         # повторный логин: провайдер приносит новую мету
@@ -570,7 +473,7 @@ class TestUserSettingsStorage:
         meta = await self._meta_of(pool, app_config.data_layer.db_schema, identifier)
         if meta.get("roles") != ["ADM"]:
             raise AssertionError(f"roles: {meta.get('roles')}")
-        if meta.get("llm") != {"general": {"temperature": 0.9}}:
+        if meta.get("llm") != {"general": {"history_messages": 5}}:
             raise AssertionError(f"llm: {meta.get('llm')}")
 
     async def test_empty_values_remove_the_profile_key(
@@ -585,7 +488,7 @@ class TestUserSettingsStorage:
             raise AssertionError("user is not created")
 
         await layer.update_user_llm_settings(
-            UUID(created.id), "general", {"temperature": 0.9}
+            UUID(created.id), "general", {"history_messages": 5}
         )
         await layer.update_user_llm_settings(UUID(created.id), "general", {})
 
@@ -605,16 +508,16 @@ class TestUserSettingsStorage:
             raise AssertionError("user is not created")
 
         await layer.update_user_llm_settings(
-            UUID(created.id), "general", {"temperature": 0.9}
+            UUID(created.id), "general", {"history_messages": 5}
         )
         await layer.update_user_llm_settings(
-            UUID(created.id), "search", {"model": "alt-model"}
+            UUID(created.id), "search", {"user_prompt": "be terse"}
         )
 
         meta = await self._meta_of(pool, app_config.data_layer.db_schema, identifier)
         expected = {
-            "general": {"temperature": 0.9},
-            "search": {"model": "alt-model"},
+            "general": {"history_messages": 5},
+            "search": {"user_prompt": "be terse"},
         }
         if meta.get("llm") != expected:
             raise AssertionError(f"llm: {meta.get('llm')}")

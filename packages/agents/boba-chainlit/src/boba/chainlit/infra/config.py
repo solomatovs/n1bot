@@ -207,12 +207,10 @@ class AppConfig(RuntimeConfig):
         ),
     ]
 
-    settings: Annotated[
-        SettingsBounds,
-        Field(
-            description=("Пределы пользовательских настроек LLM; ссылкой ${settings}."),
-        ),
-    ]
+    settings: SettingsBounds = Field(
+        default_factory=SettingsBounds,
+        description="Пределы пользовательских настроек панели; заданы кодом.",
+    )
 
     auth: Annotated[
         list[AuthConfig],

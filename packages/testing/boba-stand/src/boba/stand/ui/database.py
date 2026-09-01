@@ -24,7 +24,8 @@ from boba.db.clickhouse.profile import ClickHouseConfig
 from boba.db.postgres import AsyncPostgresPool, SqlNames
 from boba.db.postgres.profile.config import PostgresConfig
 from boba.identity.session import UserMetadataField
-from boba.runtime.config import AppLayers, DataLayerConfig
+from boba.runtime.config import DataLayerConfig
+from boba.stand.site import StandLayers
 from boba.stand.ui.stand import REPO_ROOT, StandApp, StandConfig, StandError, StandUrl
 from boba.transport.http.profile import HttpProfile
 from boba.workflow.records import WorkflowTable
@@ -71,7 +72,7 @@ class StandDatabase:
     def __init__(self, app: StandApp, name: str) -> None:
         self._app = app
         self._name = name
-        self._built = AppLayers.compose(app.base_config.under(REPO_ROOT))
+        self._built = StandLayers.compose(app.base_config.under(REPO_ROOT))
         layer = bind(self._built, path=app.data_layer_section, model=DataLayerConfig)
         pool = layer.postgres.pool.model_copy(update=self.POOL_OVERRIDE)
         self._maintenance = layer.postgres.model_copy(update={"pool": pool})

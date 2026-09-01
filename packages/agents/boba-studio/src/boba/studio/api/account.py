@@ -67,7 +67,6 @@ class ProfileView(BaseModel):
     description: str
     icon: str
     default: bool
-    models: Sequence[str]
     tools: Sequence[str]
 
     @classmethod
@@ -78,7 +77,6 @@ class ProfileView(BaseModel):
             description=config.description,
             icon=config.icon,
             default=config.default,
-            models=list(config.models),
             tools=list(config.tools),
         )
 

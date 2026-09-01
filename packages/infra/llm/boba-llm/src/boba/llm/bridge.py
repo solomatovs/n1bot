@@ -36,7 +36,7 @@ from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResu
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
-from pydantic import ConfigDict
+from pydantic import ConfigDict, Field
 from typing_extensions import override
 
 from boba.chat.provider import (
@@ -45,7 +45,6 @@ from boba.chat.provider import (
     ChatReply,
     ChatRequest,
     ChatRole,
-    ChatSampling,
     ChatTurn,
     LocalChatConfig,
     OpenAiChatConfig,
@@ -96,7 +95,7 @@ class ProviderChatModel(BaseChatModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     provider: ChatProvider
-    sampling: ChatSampling = ChatSampling()
+    sampling: Mapping[str, Any] = Field(default_factory=dict)
     model_name: str = ""
 
     LLM_TYPE: ClassVar[str] = "boba-chat-provider"
@@ -192,9 +191,9 @@ class ProviderChatModel(BaseChatModel):
         stop: Sequence[str] | None,
         kwargs: Mapping[str, Any],
     ) -> ChatRequest:
-        sampling = self.sampling
+        sampling: Mapping[str, Any] = self.sampling
         if stop:
-            sampling = sampling.model_copy(update={"stop": tuple(stop)})
+            sampling = {**sampling, "stop": list(stop)}
 
         turns: list[ChatTurn] = []
         for message in messages:
