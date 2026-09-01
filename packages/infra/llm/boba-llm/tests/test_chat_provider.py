@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Sequence
 from typing import Any
 
@@ -834,3 +835,104 @@ class TestOllamaChatProvider:
         built = ChatProviderFactory.build(cfg, model="m", client=client, runtime=None)
         if not isinstance(built, OllamaChatProvider):
             raise AssertionError(type(built))
+
+
+class TestTruncatedReply:
+    """Обрыв по потолку токенов: причина названа, а не спрятана за 'мусор'."""
+
+    TRUNCATED = (
+        '{"space_keys": ["ARROW", "ASTERIXDB"], "attachments": "*", '
+        '"force_update": true, "ocr_language": "rus+eng"'
+    )
+    """Аргументы вызова, оборванные на середине: закрывающей скобки нет."""
+
+    async def test_length_finish_names_the_ceiling(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = _sse(
+                _delta_chunk(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call-1",
+                                "function": {"name": "confluence_index_spaces"},
+                            }
+                        ]
+                    }
+                ),
+                _delta_chunk(
+                    {
+                        "tool_calls": [
+                            {"index": 0, "function": {"arguments": self.TRUNCATED}}
+                        ]
+                    }
+                ),
+                {
+                    "choices": [{"delta": {"content": ""}, "finish_reason": "length"}],
+                    "usage": {"prompt_tokens": 500, "completion_tokens": 4096},
+                },
+            )
+            return httpx.Response(200, content=body)
+
+        with pytest.raises(ChatProviderError, match="token ceiling") as caught:
+            await _events(_provider(handler), REQUEST)
+
+        message = str(caught.value)
+        if "confluence_index_spaces" not in message:
+            raise AssertionError(f"в ошибке нет имени вызова: {message}")
+        if "4096" not in message:
+            raise AssertionError(f"в ошибке нет истраченных токенов: {message}")
+        if "max_tokens" not in message:
+            raise AssertionError(f"в ошибке нет подсказки, что делать: {message}")
+
+    async def test_malformed_without_length_stays_malformed(self) -> None:
+        """Без обрыва по длине битые аргументы остаются битыми аргументами."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = _sse(
+                _delta_chunk(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call-1",
+                                "function": {"name": "probe", "arguments": "{not json"},
+                            }
+                        ]
+                    }
+                ),
+                {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+            )
+            return httpx.Response(200, content=body)
+
+        with pytest.raises(ChatProviderError, match="malformed call arguments"):
+            await _events(_provider(handler), REQUEST)
+
+    async def test_ollama_length_is_reported(self, caplog) -> None:
+        """Нативный обрыв по num_predict попадает в лог предупреждением."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = _ndjson(
+                _ollama_chunk({"role": "assistant", "content": "начал и не"}),
+                {
+                    "model": "test-model",
+                    "message": {"role": "assistant"},
+                    "done": True,
+                    "done_reason": "length",
+                    "prompt_eval_count": 5,
+                    "eval_count": 4096,
+                },
+            )
+            return httpx.Response(200, content=body)
+
+        with caplog.at_level(logging.WARNING, logger="boba.llm.ollama_chat"):
+            events = await _events(_ollama_provider(handler), REQUEST)
+
+        reply = events[-1]
+        if not isinstance(reply, ChatReply):
+            raise AssertionError("финал — ChatReply")
+        if reply.content != "начал и не":
+            raise AssertionError(f"частичный текст сохранён: {reply.content!r}")
+
+        if "num_predict" not in caplog.text:
+            raise AssertionError(f"обрыв не назван в логе: {caplog.text!r}")

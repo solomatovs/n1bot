@@ -66,6 +66,15 @@ class OllamaField(StrEnum):
     OPTIONS = "options"
 
 
+class OllamaDone(StrEnum):
+    """Причины остановки генерации, которые различает провайдер."""
+
+    LENGTH = "length"
+    """Ответ упёрся в num_predict и оборван на полуслове."""
+
+    STOP = "stop"
+
+
 class OllamaWireFunction(BaseModel):
     """function вызова инструмента; аргументы приходят объектом."""
 
@@ -101,6 +110,7 @@ class OllamaWireChunk(BaseModel):
 
     message: OllamaWireMessage = OllamaWireMessage()
     done: bool = False
+    done_reason: str = ""
     prompt_eval_count: int = 0
     eval_count: int = 0
     error: str = ""
@@ -115,6 +125,7 @@ class OllamaAssembly:
         self._calls: list[ToolCallRequest] = []
         self._input_tokens = 0
         self._output_tokens = 0
+        self._done_reason = ""
 
     def take(self, chunk: OllamaWireChunk) -> ChatDelta | None:
         """Учитывает чанк; наружу — прирост текста или рассуждений."""
@@ -125,6 +136,7 @@ class OllamaAssembly:
         if chunk.done:
             self._input_tokens = chunk.prompt_eval_count
             self._output_tokens = chunk.eval_count
+            self._done_reason = chunk.done_reason
 
         for call in chunk.message.tool_calls:
             self._calls.append(self._call(call))
@@ -140,6 +152,10 @@ class OllamaAssembly:
             return None
 
         return ChatDelta(content=message.content, reasoning=message.thinking)
+
+    def truncated(self) -> bool:
+        """Ответ оборван потолком num_predict, а не завершён моделью."""
+        return self._done_reason == OllamaDone.LENGTH
 
     def reply(self) -> ChatReply:
         return ChatReply(
@@ -223,6 +239,14 @@ class OllamaChatProvider(ChatProvider):
             assembly.take(self._parse_body(body))
 
         reply = assembly.reply()
+        if assembly.truncated():
+            logger.warning(
+                "ollama chat: %s hit num_predict, reply is cut off "
+                "(%d eval tokens)",
+                self._model,
+                reply.usage.output_tokens,
+            )
+
         logger.info(
             "ollama chat: %s replied in %dms (%d call(s))",
             self._model,
