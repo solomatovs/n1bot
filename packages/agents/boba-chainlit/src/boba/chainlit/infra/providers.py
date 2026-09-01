@@ -41,7 +41,7 @@ from boba.chainlit.infra.config import (
 from boba.chainlit.infra.session import ChainlitSessions, current_session
 from boba.chainlit.rendering.chat_view import StepText
 from boba.chat.generation import LocalGeneration, OpenAiGeneration, StructuredGenerator
-from boba.chat.openai import OpenAiConfig
+from boba.chat.http import HttpConfig
 from boba.chat.profiles import (
     AgentSettings,
     ChatProfiles,
@@ -61,8 +61,8 @@ from boba.identity.errors import InternalServiceError
 from boba.identity.session import SessionSource
 from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
 from boba.llm.generation import GeneratorFactory
+from boba.llm.http import LlmHttp
 from boba.llm.local import OnnxChatRuntime
-from boba.llm.openai import OpenAiHttp
 from boba.messaging import MessageBus
 from boba.runtime import providers as runtime
 from boba.runtime.di import Depends
@@ -169,12 +169,12 @@ def _chainlit_dump_file(request: httpx.Request) -> str:
     return f"{label}-{request.url.host}.log"
 
 
-def _openai_client(openai: OpenAiConfig) -> AsyncClient:
+def _llm_client(http: HttpConfig) -> AsyncClient:
     dump_file = None
-    if openai.dump.enable:
+    if http.dump.enable:
         dump_file = _chainlit_dump_file
 
-    return OpenAiHttp.client(openai, dump_file)
+    return LlmHttp.client(http, dump_file)
 
 
 async def httpx_clients(
@@ -189,10 +189,10 @@ async def httpx_clients(
     clients: dict[str, AsyncClient] = {}
     for name, profile in c.profiles.items():
         if isinstance(profile.provider, OpenAiChatConfig):
-            clients[name] = _openai_client(profile.provider.http)
+            clients[name] = _llm_client(profile.provider.http)
 
         if isinstance(profile.provider, OllamaChatConfig):
-            clients[name] = _openai_client(profile.provider.http)
+            clients[name] = _llm_client(profile.provider.http)
 
         flow = profile.flow
         if not isinstance(flow, PrefetchFlowConfig):
@@ -201,7 +201,7 @@ async def httpx_clients(
         if not isinstance(flow.rephraser, OpenAiGeneration):
             continue
 
-        clients[flow.client_key(name)] = _openai_client(flow.rephraser.http)
+        clients[flow.client_key(name)] = _llm_client(flow.rephraser.http)
 
     try:
         yield clients

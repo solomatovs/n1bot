@@ -1,4 +1,4 @@
-"""Конфиг openai-совместимого провайдера: endpoint, ключ, тюнинг httpx-транспорта.
+"""Поведение HTTP-транспорта LLM-провайдеров: таймауты, ретраи, пул, дампы.
 
 Ошибки: своих не выпускает.
 """
@@ -9,10 +9,10 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-__all__ = ["OpenAiConfig", "OpenAiDumpConfig"]
+__all__ = ["HttpConfig", "HttpDumpConfig"]
 
 
-class OpenAiDumpConfig(BaseModel):
+class HttpDumpConfig(BaseModel):
     """Дамп HTTP-обмена с провайдером: флаг и каталог файлов."""
 
     model_config = ConfigDict(extra="ignore")
@@ -33,28 +33,24 @@ class OpenAiDumpConfig(BaseModel):
             return self
 
         if not self.path:
-            msg = "openai.dump: enable = true требует path"
+            msg = "http.dump: enable = true требует path"
             raise ValueError(msg)
 
         return self
 
 
-class OpenAiConfig(BaseModel):
-    """Транспорт openai-совместимого провайдера: endpoint + httpx-тюнинг."""
+class HttpConfig(BaseModel):
+    """Поведение httpx-транспорта; адрес endpoint'а живёт в конфиге провайдера."""
 
     model_config = ConfigDict(extra="ignore")
-
-    base_url: str = Field(description="Endpoint openai-совместимого API.")
-
-    api_key: str = Field(description="Ключ API провайдера.")
 
     ssl_verify: bool = Field(
         default=True,
         description="Проверять TLS-сертификат сервера.",
     )
 
-    dump: OpenAiDumpConfig = Field(
-        default_factory=OpenAiDumpConfig,
+    dump: HttpDumpConfig = Field(
+        default_factory=HttpDumpConfig,
         description="Дамп HTTP-обмена с провайдером.",
     )
 
@@ -90,7 +86,7 @@ class OpenAiConfig(BaseModel):
         default=2,
         ge=0,
         description=(
-            "Повторы запроса клиентом openai при 429/5xx и таймауте; "
+            "Повторы запроса при 429/5xx и таймауте; "
             "каждый повтор — новая полная попытка."
         ),
     )

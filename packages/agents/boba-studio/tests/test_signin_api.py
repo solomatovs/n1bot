@@ -12,7 +12,7 @@ from httpx import ASGITransport, AsyncClient
 from boba.auth import AuthService, JwtTokens
 from boba.auth.config import LocalAuthConfig
 from boba.auth.signin import PasswordSignIns
-from boba.chat.openai import OpenAiConfig
+from boba.chat.http import HttpConfig
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.chat.provider import OpenAiChatConfig
 from boba.identity.admission import RoleExcludeConfig, RoleMappingConfig
@@ -73,7 +73,9 @@ def _profiles() -> ChatProfiles:
             "tools": ["echo"],
             "provider": OpenAiChatConfig(
                 kind="openai",
-                http=OpenAiConfig(base_url="https://fake-llm/v1", api_key="k"),
+                http=HttpConfig(),
+                base_url="https://fake-llm/v1",
+                api_key="k",
             ),
             "model": "fake",
             "system_prompt": "stand",

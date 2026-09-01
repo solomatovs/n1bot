@@ -1,7 +1,8 @@
 """Единая точка работы с LLM-провайдерами: транспорт, чат, эмбеддинги.
 
 Стандарт провайдеров: каждая способность — порт, union-конфиг с
-дискриминатором provider (boba.chat) и фабрика здесь. Модули с
+дискриминатором kind (boba.chat) и фабрика здесь. Поведение HTTP общее
+для всех провайдеров: секция [http] и компоненты модуля http. Модули с
 langchain (chat, bridge) и локальным рантаймом (local) импортируются
 напрямую: их зависимостей нет в песочных payload-окружениях.
 
@@ -17,15 +18,16 @@ from boba.llm.embedding import (
     OpenAiEmbedder,
     OpenAiEmbedding,
 )
-from boba.llm.openai import OpenAiHttp
+from boba.llm.http import ChatExchange, LlmHttp
 
 __all__ = [
+    "ChatExchange",
     "EmbedderFactory",
     "EmbeddingConfig",
     "EmbeddingError",
+    "LlmHttp",
     "LocalEmbedding",
     "LocalFastEmbedEmbedder",
     "OpenAiEmbedder",
     "OpenAiEmbedding",
-    "OpenAiHttp",
 ]

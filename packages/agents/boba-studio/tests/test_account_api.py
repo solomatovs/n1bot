@@ -8,7 +8,7 @@ from uuid import UUID
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from boba.chat.openai import OpenAiConfig
+from boba.chat.http import HttpConfig
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.chat.provider import OpenAiChatConfig
 from boba.identity.api import AuthenticatedUser
@@ -31,7 +31,9 @@ def _profile(default: bool, roles: list[str]) -> ChatProfileConfig:
             "tools": ["echo"],
             "provider": OpenAiChatConfig(
                 kind="openai",
-                http=OpenAiConfig(base_url="https://fake-llm/v1", api_key="k"),
+                http=HttpConfig(),
+                base_url="https://fake-llm/v1",
+                api_key="k",
             ),
             "model": "fake",
             "system_prompt": "stand",

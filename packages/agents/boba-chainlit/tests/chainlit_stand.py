@@ -40,7 +40,7 @@ from boba.chainlit.rendering.chat_view import (
     StepRole,
 )
 from boba.chainlit.rendering.renderer import ChatRenderer, NoSurface
-from boba.chat.openai import OpenAiConfig
+from boba.chat.http import HttpConfig
 from boba.chat.provider import OpenAiChatConfig
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
@@ -102,7 +102,9 @@ def fake_openai_chat(
     """Чат-модель прод-стека на фейковом httpx-клиенте: SSE идёт через него."""
     cfg = OpenAiChatConfig(
         kind="openai",
-        http=OpenAiConfig(base_url=base_url, api_key="fake-key"),
+        http=HttpConfig(),
+        base_url=base_url,
+        api_key="fake-key",
     )
 
     if sampling is None:

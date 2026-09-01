@@ -8,6 +8,7 @@ __pycache__
 *.egg-info/
 /docs/*
 !/docs/adding-connections-and-tools.md
+!/docs/llm-params-verification.md
 .claude
 CLAUDE.md
 
