@@ -71,6 +71,16 @@ class WireField(StrEnum):
     STOP = "stop"
 
 
+class FinishReason(StrEnum):
+    """Причины остановки генерации, которые различает провайдер."""
+
+    LENGTH = "length"
+    """Ответ упёрся в потолок токенов и оборван на полуслове."""
+
+    STOP = "stop"
+    TOOL_CALLS = "tool_calls"
+
+
 class WireFunctionDelta(BaseModel):
     """function внутри дельты вызова."""
 
@@ -114,6 +124,7 @@ class WireChoice(BaseModel):
 
     delta: WireDelta = WireDelta()
     message: WireDelta | None = None
+    finish_reason: str = ""
 
 
 class WireUsage(BaseModel):
@@ -150,6 +161,7 @@ class StreamAssembly:
         self._reasoning: list[str] = []
         self._calls: dict[int, GrowingCall] = {}
         self._usage = WireUsage()
+        self._finish_reason = ""
 
     def take(self, chunk: WireChunk) -> ChatDelta | None:
         """Учитывает чанк; наружу — прирост текста или рассуждений."""
@@ -160,6 +172,9 @@ class StreamAssembly:
             return None
 
         choice = chunk.choices[0]
+        if choice.finish_reason:
+            self._finish_reason = choice.finish_reason
+
         delta = choice.delta
         if choice.message is not None:
             delta = choice.message
@@ -188,6 +203,10 @@ class StreamAssembly:
             if call.function.arguments:
                 growing.arguments += call.function.arguments
 
+    def truncated(self) -> bool:
+        """Ответ оборван потолком токенов, а не завершён моделью."""
+        return self._finish_reason == FinishReason.LENGTH
+
     def reply(self) -> ChatReply:
         calls: list[ToolCallRequest] = []
         for index in sorted(self._calls):
@@ -210,22 +229,34 @@ class StreamAssembly:
             ),
         )
 
-    @staticmethod
-    def _arguments(growing: GrowingCall) -> dict[str, Any]:
+    def _arguments(self, growing: GrowingCall) -> dict[str, Any]:
         if not growing.arguments:
             return {}
 
         try:
             parsed = json.loads(growing.arguments)
         except json.JSONDecodeError as exc:
-            msg = f"provider sent malformed call arguments: {growing.name}"
-            raise ChatProviderError(msg) from exc
+            raise self._broken_call(growing) from exc
 
         if not isinstance(parsed, dict):
             msg = f"provider sent non-object call arguments: {growing.name}"
             raise ChatProviderError(msg)
 
         return parsed
+
+    def _broken_call(self, growing: GrowingCall) -> ChatProviderError:
+        """Ошибка по причине обрыва: потолок токенов или мусор от провайдера."""
+        if self._finish_reason != FinishReason.LENGTH:
+            msg = f"provider sent malformed call arguments: {growing.name}"
+            return ChatProviderError(msg)
+
+        msg = (
+            f"reply hit the token ceiling before the call was complete: "
+            f"{growing.name} cut off after {len(growing.arguments)} chars "
+            f"({self._usage.completion_tokens} completion tokens spent); "
+            f"raise sampling max_tokens or lower the reasoning effort"
+        )
+        return ChatProviderError(msg)
 
 
 class SseWireStream(WireStream[WireChunk]):
@@ -307,6 +338,14 @@ class OpenAiChatProvider(ChatProvider):
             assembly.take(self._parse_body(body))
 
         reply = assembly.reply()
+        if assembly.truncated():
+            logger.warning(
+                "openai chat: %s hit the token ceiling, reply is cut off "
+                "(%d completion tokens)",
+                self._model,
+                reply.usage.output_tokens,
+            )
+
         logger.info(
             "openai chat: %s replied in %dms (%d call(s))",
             self._model,
