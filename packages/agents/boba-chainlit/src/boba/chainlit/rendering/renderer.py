@@ -41,6 +41,7 @@ from boba.messaging import (
     StageQueries,
     StageStarted,
     ThinkingClosed,
+    TokensSpent,
     ThinkingComplete,
     ThinkingToken,
     ThreadRewound,
@@ -230,6 +231,7 @@ class ChatRenderer:
             MessageKind.THINKING_TOKEN: self._on_thinking_token,
             MessageKind.THINKING_COMPLETE: self._on_thinking_complete,
             MessageKind.THINKING_CLOSED: self._on_thinking_closed,
+            MessageKind.TOKENS_SPENT: self._on_tokens_spent,
             MessageKind.STAGE_STARTED: self._on_stage_started,
             MessageKind.STAGE_QUERIES: self._on_stage_queries,
             MessageKind.STAGE_ENDED: self._on_stage_ended,
@@ -289,6 +291,14 @@ class ChatRenderer:
 
     async def _on_thinking_closed(self, message: ThinkingClosed) -> None:
         await self._view.close_thinking()
+
+    async def _on_tokens_spent(self, message: TokensSpent) -> None:
+        await self._view.tokens_spent(
+            message.key,
+            message.input_tokens,
+            message.output_tokens,
+            message.reasoning_tokens,
+        )
 
     async def _on_stage_started(self, message: StageStarted) -> None:
         await self._view.begin_stage(message.name, message.phase)

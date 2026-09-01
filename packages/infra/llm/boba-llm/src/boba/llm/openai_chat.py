@@ -127,6 +127,14 @@ class WireChoice(BaseModel):
     finish_reason: str = ""
 
 
+class WireOutputDetails(BaseModel):
+    """Разбивка выходных токенов; провайдеры без рассуждений её не шлют."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    reasoning_tokens: int = 0
+
+
 class WireUsage(BaseModel):
     """usage чанка: провайдер шлёт его в финале потока."""
 
@@ -134,6 +142,7 @@ class WireUsage(BaseModel):
 
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    completion_tokens_details: WireOutputDetails = WireOutputDetails()
 
 
 class WireChunk(BaseModel):
@@ -226,6 +235,7 @@ class StreamAssembly:
             usage=ChatUsage(
                 input_tokens=self._usage.prompt_tokens,
                 output_tokens=self._usage.completion_tokens,
+                reasoning_tokens=self._usage.completion_tokens_details.reasoning_tokens,
             ),
         )
 

@@ -33,6 +33,7 @@ from boba.messaging import (
     ThinkingClosed,
     ThinkingComplete,
     ThinkingToken,
+    TokensSpent,
     ToolFailed,
     ToolFinished,
     ToolStarted,
@@ -182,6 +183,23 @@ class TurnFeed(StreamFeed):
 
     async def thinking_closed(self) -> None:
         await self._publish(ThinkingClosed(turn_id=self._turn_id))
+
+    async def tokens_spent(
+        self,
+        key: str,
+        input_tokens: int,
+        output_tokens: int,
+        reasoning_tokens: int,
+    ) -> None:
+        """Расход прогона модели; key — шаг рассуждений, пусто — шага не было."""
+        message = TokensSpent(
+            turn_id=self._turn_id,
+            key=key,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            reasoning_tokens=reasoning_tokens,
+        )
+        await self._publish(message)
 
     async def stage_started(self, name: str, phase: str) -> None:
         message = StageStarted(turn_id=self._turn_id, name=name, phase=phase)

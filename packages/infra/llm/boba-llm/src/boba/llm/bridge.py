@@ -30,7 +30,7 @@ from langchain_core.messages import (
     ToolCall,
     ToolMessage,
 )
-from langchain_core.messages.ai import UsageMetadata
+from langchain_core.messages.ai import OutputTokenDetails, UsageMetadata
 from langchain_core.messages.tool import tool_call_chunk
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_core.runnables import Runnable
@@ -373,8 +373,15 @@ class ProviderChatModel(BaseChatModel):
         if not usage.input_tokens and not usage.output_tokens:
             return None
 
-        return UsageMetadata(
+        metadata = UsageMetadata(
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
             total_tokens=usage.input_tokens + usage.output_tokens,
         )
+
+        if usage.reasoning_tokens:
+            metadata["output_token_details"] = OutputTokenDetails(
+                reasoning=usage.reasoning_tokens
+            )
+
+        return metadata
