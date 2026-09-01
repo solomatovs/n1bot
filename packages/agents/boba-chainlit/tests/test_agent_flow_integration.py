@@ -176,7 +176,7 @@ def _graph(
     settings = selected.config
 
     provider = ChatProviderFactory.build(
-        settings.backend,
+        settings.provider,
         model=settings.model,
         client=clients.get(PROFILE),
         runtime=None,
@@ -450,10 +450,10 @@ class TestPrefetchGraph:
         if not isinstance(rephraser_config, OpenAiGeneration):
             pytest.skip("недоступный endpoint проверяется на удалённом провайдере")
 
-        unreachable = rephraser_config.openai.model_copy(
+        unreachable = rephraser_config.http.model_copy(
             update={"base_url": "http://127.0.0.1:9/v1", "max_retries": 0}
         )
-        rephraser = rephraser_config.model_copy(update={"openai": unreachable})
+        rephraser = rephraser_config.model_copy(update={"http": unreachable})
         broken = flow_config.model_copy(update={"rephraser": rephraser})
         profile = app_config.profiles[PROFILE].model_copy(update={"flow": broken})
         config = app_config.model_copy(

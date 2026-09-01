@@ -47,12 +47,14 @@ from boba.chat.provider import (
     ChatRole,
     ChatTurn,
     LocalChatConfig,
+    OllamaChatConfig,
     OpenAiChatConfig,
     ToolCallRequest,
     ToolSpec,
 )
 from boba.llm.chat import ResponseField
 from boba.llm.local import LocalChatProvider, OnnxChatRuntime
+from boba.llm.ollama_chat import OllamaChatProvider
 from boba.llm.openai_chat import OpenAiChatProvider
 
 __all__ = ["ChatProviderFactory", "ProviderChatModel"]
@@ -61,14 +63,14 @@ __all__ = ["ChatProviderFactory", "ProviderChatModel"]
 class ChatProviderFactory:
     """Собирает ChatProvider по union-конфигу бэкенда.
 
-    Ресурсы приходят снаружи: httpx-клиент openai-бэкенда и локальный рантайм
+    Ресурсы приходят снаружи: httpx-клиент удалённого бэкенда и локальный рантайм
     строит и держит DI приложения — фабрика только выбирает реализацию.
     """
 
     @classmethod
     def build(
         cls,
-        cfg: LocalChatConfig | OpenAiChatConfig,
+        cfg: LocalChatConfig | OpenAiChatConfig | OllamaChatConfig,
         *,
         model: str,
         client: httpx.AsyncClient | None,
@@ -87,6 +89,12 @@ class ChatProviderFactory:
                     raise ValueError(msg)
 
                 return OpenAiChatProvider(cfg, client, model)
+            case OllamaChatConfig():
+                if client is None:
+                    msg = "ollama chat backend needs an httpx client"
+                    raise ValueError(msg)
+
+                return OllamaChatProvider(cfg, client, model)
 
 
 class ProviderChatModel(BaseChatModel):

@@ -1,7 +1,7 @@
 """Стандарт LLM-провайдеров: конверты чата, порт ChatProvider, union-конфиг.
 
 Каждая LLM-способность проекта собирается по одному шаблону: порт (базовый
-класс), union-конфиг с дискриминатором provider ("local" | "openai") и
+класс), union-конфиг с дискриминатором kind ("local" | "openai" | "ollama") и
 фабрика, отдающая реализацию по конфигу. Использующий код объявляет порт,
 реализацию подставляет DI. Чат описан здесь; генерация по схеме — generation
 (StructuredGenerator), эмбеддинг — embedding (Embedder).
@@ -38,6 +38,7 @@ __all__ = [
     "ChatTurn",
     "ChatUsage",
     "LocalChatConfig",
+    "OllamaChatConfig",
     "OpenAiChatConfig",
     "ToolCallRequest",
     "ToolSpec",
@@ -178,7 +179,7 @@ class LocalChatConfig(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    provider: Literal["local"]
+    kind: Literal["local"]
 
     model_dir: str = Field(
         description=(
@@ -193,18 +194,33 @@ class OpenAiChatConfig(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    provider: Literal["openai"]
+    kind: Literal["openai"]
 
-    openai: OpenAiConfig = Field(
+    http: OpenAiConfig = Field(
         description=(
-            "Транспорт openai-провайдера; в конфиге подключается ссылкой "
+            "HTTP-транспорт провайдера; в конфиге подключается ссылкой "
+            "${openai.<name>}."
+        ),
+    )
+
+
+class OllamaChatConfig(BaseModel):
+    """Удалённый чат-бэкенд: нативный endpoint ollama /api/chat."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    kind: Literal["ollama"]
+
+    http: OpenAiConfig = Field(
+        description=(
+            "HTTP-транспорт провайдера; в конфиге подключается ссылкой "
             "${openai.<name>}."
         ),
     )
 
 
 ChatBackendConfig = Annotated[
-    LocalChatConfig | OpenAiChatConfig,
-    Field(discriminator="provider"),
+    LocalChatConfig | OpenAiChatConfig | OllamaChatConfig,
+    Field(discriminator="kind"),
 ]
-"""Discriminated union по provider — точная диагностика ошибок валидации."""
+"""Discriminated union по kind — точная диагностика ошибок валидации."""

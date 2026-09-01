@@ -37,7 +37,7 @@ from boba.chat.provider import OpenAiChatConfig
 
 OPENAI = {"base_url": "https://llm.example/v1", "api_key": "token"}
 
-BACKEND = {"provider": "openai", "openai": OPENAI}
+BACKEND = {"kind": "openai", "http": OPENAI}
 
 NO_OVERRIDES = ""
 """Пустой app_root: строки берутся из пакета, как в чистом развёртывании."""
@@ -60,7 +60,7 @@ def _profile(**kw) -> ChatProfileConfig:
     base = {
         "display_name": "Profile",
         "description": "test profile",
-        "backend": BACKEND,
+        "provider": BACKEND,
         "model": "base-model",
         "settings": ["*"],
         "system_prompt": "You are the profile assistant",
@@ -134,10 +134,10 @@ class TestApplyTo:
     def test_transport_is_never_overridden(self) -> None:
         settings = UserLlmOverrides(history_messages=1).apply_to(_profile())
 
-        backend = settings.backend
+        backend = settings.provider
         if not isinstance(backend, OpenAiChatConfig):
             raise AssertionError(f"backend is openai: {backend}")
-        if backend.openai.base_url != OPENAI["base_url"]:
+        if backend.http.base_url != OPENAI["base_url"]:
             raise AssertionError("openai transport changed")
 
     def test_admin_sampling_survives_overrides_verbatim(self) -> None:

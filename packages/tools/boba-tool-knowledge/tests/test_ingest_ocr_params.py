@@ -20,7 +20,7 @@ def _config() -> IngestToolConfig:
             },
             "tables": {},
             "embedding": {
-                "provider": "local",
+                "kind": "local",
                 "model": "intfloat/e5",
                 "dim": 8,
                 "batch_size": 4,

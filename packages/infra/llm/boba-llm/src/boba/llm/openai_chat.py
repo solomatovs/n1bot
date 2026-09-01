@@ -273,9 +273,9 @@ class OpenAiChatProvider(ChatProvider):
 
     async def _complete(self, payload: dict[str, Any]) -> WireChunk:
         """Один запрос-ответ: всё тело chat/completions одним чанком."""
-        headers = {"Authorization": f"Bearer {self._cfg.openai.api_key}"}
-        endpoint = self._cfg.openai.base_url.rstrip("/") + "/" + self.ENDPOINT
-        attempts = self._cfg.openai.max_retries + 1
+        headers = {"Authorization": f"Bearer {self._cfg.http.api_key}"}
+        endpoint = self._cfg.http.base_url.rstrip("/") + "/" + self.ENDPOINT
+        attempts = self._cfg.http.max_retries + 1
 
         for attempt in range(attempts):
             try:
@@ -315,7 +315,7 @@ class OpenAiChatProvider(ChatProvider):
 
     async def _stream(self, payload: dict[str, Any]) -> AsyncIterator[WireChunk]:
         """SSE-чанки ответа; до первого байта запрос повторяется."""
-        attempts = self._cfg.openai.max_retries + 1
+        attempts = self._cfg.http.max_retries + 1
 
         for attempt in range(attempts):
             streamed = False
@@ -344,8 +344,8 @@ class OpenAiChatProvider(ChatProvider):
                 )
 
     async def _attempt(self, payload: dict[str, Any]) -> AsyncIterator[WireChunk]:
-        headers = {"Authorization": f"Bearer {self._cfg.openai.api_key}"}
-        endpoint = self._cfg.openai.base_url.rstrip("/") + "/" + self.ENDPOINT
+        headers = {"Authorization": f"Bearer {self._cfg.http.api_key}"}
+        endpoint = self._cfg.http.base_url.rstrip("/") + "/" + self.ENDPOINT
 
         async with self._client.stream(
             "POST", endpoint, json=payload, headers=headers
@@ -389,7 +389,7 @@ class OpenAiChatProvider(ChatProvider):
 
     async def _next_line(self, lines: AsyncIterator[str]) -> str | None:
         """Очередная строка SSE под вотчдогом паузы между чанками."""
-        ceiling = self._cfg.openai.stream_chunk_timeout
+        ceiling = self._cfg.http.stream_chunk_timeout
 
         try:
             if ceiling:

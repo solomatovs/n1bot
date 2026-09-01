@@ -59,7 +59,7 @@ def fake_fastembed(monkeypatch: pytest.MonkeyPatch):
 
 def _config(batch_size: int) -> LocalEmbedding:
     return LocalEmbedding(
-        provider="local",
+        kind="local",
         model="intfloat/multilingual-e5-small",
         cache_dir="/var/cache/fastembed",
         dim=384,

@@ -71,9 +71,9 @@ def _profiles() -> ChatProfiles:
             "default": True,
             "roles": ["*"],
             "tools": ["echo"],
-            "backend": OpenAiChatConfig(
-                provider="openai",
-                openai=OpenAiConfig(base_url="https://fake-llm/v1", api_key="k"),
+            "provider": OpenAiChatConfig(
+                kind="openai",
+                http=OpenAiConfig(base_url="https://fake-llm/v1", api_key="k"),
             ),
             "model": "fake",
             "system_prompt": "stand",

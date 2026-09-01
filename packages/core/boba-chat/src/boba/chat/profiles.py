@@ -55,12 +55,13 @@ class LlmSettings(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    backend: Annotated[
+    provider: Annotated[
         ChatBackendConfig,
         Field(
             description=(
-                "Чат-бэкенд профиля: provider = 'openai' с транспортом "
-                "${openai.<name>} либо provider = 'local' с каталогом модели."
+                "Чат-провайдер профиля: kind = 'openai' | 'ollama' с "
+                "транспортом http = ${openai.<name>} либо kind = 'local' "
+                "с каталогом модели."
             ),
         ),
     ]

@@ -33,12 +33,12 @@ def _patch(monkeypatch: pytest.MonkeyPatch, handler) -> None:
 
 def _config(batch_size: int) -> OpenAiEmbedding:
     return OpenAiEmbedding(
-        provider="openai",
+        kind="openai",
         model="text-embedding-test",
         dim=DIM,
         batch_size=batch_size,
         progress_every=100,
-        openai=OpenAiConfig(base_url="https://llm.test/v1", api_key="secret-key"),
+        http=OpenAiConfig(base_url="https://llm.test/v1", api_key="secret-key"),
     )
 
 

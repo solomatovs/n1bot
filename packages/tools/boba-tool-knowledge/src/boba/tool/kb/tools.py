@@ -113,7 +113,7 @@ async def _embed(cfg: KbToolConfig, query: str) -> tuple[list[float], int]:
     """Вектор запроса и его размерность — их ждёт SQL-шаблон."""
     build = Elapsed()
     embedder = WarmEmbedder.of(cfg.embedding)
-    logger.info("embedder ready in %dms (%s)", build.ms(), cfg.embedding.provider)
+    logger.info("embedder ready in %dms (%s)", build.ms(), cfg.embedding.kind)
 
     embed = Elapsed()
     vector = await embedder.embed_query(query)
