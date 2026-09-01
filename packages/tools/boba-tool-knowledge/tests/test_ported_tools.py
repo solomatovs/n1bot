@@ -7,7 +7,7 @@ from typing import Any, ClassVar
 
 import pytest
 
-from boba.connections.http import HttpProfile
+from boba.transport.http.profile import HttpProfile
 from boba.sandbox import SandboxToolConfig
 from boba.stand.sandbox import ROOTFS_IMAGE
 from boba.tool.kb.confluence.tools import TOOLS as CONFLUENCE_TOOLS

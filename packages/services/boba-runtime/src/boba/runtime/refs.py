@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from boba.connection_broker.user_connections import CredentialsRef, StoreRef
+from boba.connections.manifest import ConnectionTypes
 from boba.identity.locks import LiveLocks
 from boba.messaging import MessageBus
 from boba.messaging.bus import BusWatch
@@ -24,6 +25,8 @@ class RuntimeRefs:
     workflow_service: Callable[[], Awaitable[WorkflowService]]
     """Сервис workflow; RuntimeError — секция [workflow] выключена."""
     connection_store: StoreRef
+    connection_types: Callable[[], ConnectionTypes]
+    """Реестр установленных типов соединений; зовётся на запрос."""
     credentials: CredentialsRef
     """Источник кредов вызова: профиль соединения с билетом к его SPN."""
     live_locks: Callable[[], LiveLocks]

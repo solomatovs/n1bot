@@ -16,7 +16,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.connections.http import HostPattern, HttpProfile
+from boba.transport.http.profile import HostPattern, HttpProfile
 from boba.toolkit.result import TableResult
 from boba.toolkit.sql import UnknownConnectionError
 

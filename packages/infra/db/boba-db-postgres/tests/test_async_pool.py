@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from boba.connections.postgres import PostgresConfig
+from boba.db.postgres.profile import PostgresConfig
 from boba.db.postgres import (
     AsyncPostgresPool,
     PostgresPoolClosedError,

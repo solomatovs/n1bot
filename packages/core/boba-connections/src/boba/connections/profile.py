@@ -1,5 +1,7 @@
-"""Соединение как сущность: рабочий профиль (postgres, clickhouse, web),
-его вид, кому выдано, строка хранилища и порт хранилища.
+"""Соединение как сущность: строка хранилища, кому выдано, порт хранилища.
+
+Конкретные типы профилей живут в пакетах-владельцах и попадают сюда через
+ConnectionProfileBase; ядро конкретных типов не знает.
 
 Ошибки:
 ConnectionStoreError — хранилище отказало или строка не сохранилась.
@@ -11,20 +13,16 @@ from __future__ import annotations
 from abc import abstractmethod
 from collections.abc import Iterable, Mapping, Sequence
 from enum import StrEnum
-from typing import Annotated, Protocol, TypeAlias
+from typing import Protocol
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
-from boba.connections.clickhouse import ClickHouseConfig
-from boba.connections.http import HttpProfile
-from boba.connections.postgres import PostgresConfig
+from boba.connections.base import ConnectionProfileBase
 from boba.identity.context import Subject
 
 __all__ = [
-    "ConnectionKind",
     "ConnectionNotFoundError",
-    "ConnectionProfile",
     "ConnectionRepository",
     "ConnectionStoreError",
     "ConnectionTable",
@@ -44,25 +42,6 @@ class ConnectionStoreError(Exception):
 
 class ConnectionNotFoundError(ConnectionStoreError):
     """В таблице connections нет строки с таким id."""
-
-
-ConnectionProfile: TypeAlias = Annotated[
-    PostgresConfig | ClickHouseConfig | HttpProfile,
-    Field(discriminator="kind"),
-]
-"""Рабочая модель соединения; jsonb строки разбирается по полю kind."""
-
-
-class ConnectionKind(StrEnum):
-    """Виды соединений: значение — дискриминатор kind рабочей модели."""
-
-    POSTGRES = "postgres"
-    CLICKHOUSE = "clickhouse"
-    WEB = "web"
-
-    @classmethod
-    def of(cls, profile: ConnectionProfile) -> ConnectionKind:
-        return cls(profile.kind)
 
 
 class GrantKind(StrEnum):
@@ -157,11 +136,11 @@ class StoredConnection(BaseModel):
 
     id: UUID
     name: str
-    profile: ConnectionProfile
+    profile: ConnectionProfileBase
 
     @property
-    def kind(self) -> ConnectionKind:
-        return ConnectionKind.of(self.profile)
+    def kind(self) -> str:
+        return self.profile.kind
 
 
 class ConnectionRepository(Protocol):
@@ -174,16 +153,16 @@ class ConnectionRepository(Protocol):
     async def sync_roles(self, names: Iterable[str]) -> None: ...
 
     @abstractmethod
-    async def add(self, name: str, profile: ConnectionProfile) -> UUID: ...
+    async def add(self, name: str, profile: ConnectionProfileBase) -> UUID: ...
 
     @abstractmethod
     async def add_owned(
-        self, name: str, profile: ConnectionProfile, user_id: UUID
+        self, name: str, profile: ConnectionProfileBase, user_id: UUID
     ) -> UUID: ...
 
     @abstractmethod
     async def update(
-        self, connection_id: UUID, name: str, profile: ConnectionProfile
+        self, connection_id: UUID, name: str, profile: ConnectionProfileBase
     ) -> bool: ...
 
     @abstractmethod
@@ -212,7 +191,7 @@ class ConnectionRepository(Protocol):
 
     @abstractmethod
     async def for_subject(
-        self, subject: Subject, kind: ConnectionKind
+        self, subject: Subject, kind: str
     ) -> Sequence[StoredConnection]: ...
 
 

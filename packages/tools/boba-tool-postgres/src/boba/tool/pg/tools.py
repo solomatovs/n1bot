@@ -21,7 +21,7 @@ import psycopg
 from psycopg.rows import dict_row
 from pydantic import Field
 
-from boba.connections.postgres import PostgresConfig
+from boba.db.postgres.profile import PostgresConfig
 from boba.db.postgres import PayloadPostgres, PostgresError
 from boba.tool.pg.catalog import PgCatalog, PgCatalogQuery
 from boba.toolkit.calls import ConnectionArg, ScriptCall

@@ -19,8 +19,8 @@ from psycopg import sql
 from psycopg.types.json import Json
 from pydantic import BaseModel
 
-from boba.connections.postgres import PostgresConfig
 from boba.db.postgres import AsyncPostgresPool, PostgresError, SqlNames
+from boba.db.postgres.profile import PostgresConfig
 from boba.identity.context import Scope
 from boba.messaging import PayloadMissingError, PayloadRef, PayloadStore
 from boba.messaging.bus import LivePayloadsColumn, LiveTable

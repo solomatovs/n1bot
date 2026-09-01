@@ -7,6 +7,8 @@ connections — чистое хранилище профилей, без вла�
 ConnectionStoreError — база отказала, строка не сохранилась или её jsonb
     не разбирается как профиль.
 ConnectionNotFoundError — в connections нет строки с таким id.
+UnknownConnectionKindError — точечное чтение строки типа, чей пакет не установлен;
+    списки такие строки пропускают с warning.
 SecretCryptoError — секрет строки не расшифровался ключом конфига.
 """
 
@@ -28,16 +30,17 @@ from pydantic import (
     ConfigDict,
     Field,
     SecretStr,
-    TypeAdapter,
-    ValidationError,
     field_validator,
 )
 
-from boba.connections.postgres import PostgresConfig
+from boba.connections.manifest import (
+    ConnectionTypes,
+    ConnectionTypesError,
+    UnknownConnectionKindError,
+)
 from boba.connections.profile import (
-    ConnectionKind,
     ConnectionNotFoundError,
-    ConnectionProfile,
+    ConnectionProfileBase,
     ConnectionRepository,
     ConnectionsColumn,
     ConnectionStoreError,
@@ -51,8 +54,8 @@ from boba.connections.profile import (
 )
 from boba.connections.secrets import SecretCipher
 from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresTable, SqlNames
+from boba.db.postgres.profile import PostgresConfig
 from boba.identity.context import Subject
-from boba.toolkit.failure import ValidationText
 
 logger = logging.getLogger(__name__)
 
@@ -129,13 +132,16 @@ class ConnectionsConfig(BaseModel):
 
 
 class ConnectionStore(PostgresTable, ConnectionRepository):
-    """CRUD над connections/roles/grants: наружу — модели, в базе — шифротекст."""
+    """CRUD над connections/roles/grants: наружу — модели, в базе — шифротекст.
 
-    _PROFILE: ClassVar[TypeAdapter[ConnectionProfile]] = TypeAdapter(ConnectionProfile)
+    Профили разбираются реестром установленных типов соединений: строка с kind
+    без пакета-владельца падает UnknownConnectionKindError при обращении.
+    """
 
     def __init__(
         self,
         cfg: ConnectionsConfig,
+        types: ConnectionTypes,
         pool: AsyncPostgresPool | None = None,
     ) -> None:
         postgres = cfg.connection
@@ -144,6 +150,7 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
 
         super().__init__(postgres, cfg.db_schema, pool)
         self._cfg = cfg
+        self._types = types
         self._cipher = SecretCipher(cfg.key_bytes())
 
     def _connections(self) -> sql.Identifier:
@@ -273,7 +280,7 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
         async with self._guarded("sync roles"), pool.cursor() as cur:
             await cur.executemany(query, rows)
 
-    async def add(self, name: str, profile: ConnectionProfile) -> UUID:
+    async def add(self, name: str, profile: ConnectionProfileBase) -> UUID:
         """Новая строка connections; уникальность имени — забота вызывающего."""
         payload = self._cipher.encrypt(profile)
         query = self._sql(
@@ -304,7 +311,7 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
         return UUID(str(row[0]))
 
     async def add_owned(
-        self, name: str, profile: ConnectionProfile, user_id: UUID
+        self, name: str, profile: ConnectionProfileBase, user_id: UUID
     ) -> UUID:
         """Строка и личный грант одной транзакцией: личный грант и есть владение."""
         payload = self._cipher.encrypt(profile)
@@ -356,7 +363,7 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
         return connection_id
 
     async def update(
-        self, connection_id: UUID, name: str, profile: ConnectionProfile
+        self, connection_id: UUID, name: str, profile: ConnectionProfileBase
     ) -> bool:
         """Полная замена имени и профиля; False — строки не было."""
         payload = self._cipher.encrypt(profile)
@@ -453,7 +460,7 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
             await cur.execute(query)
             rows = await cur.fetchall()
 
-        return list(map(self._stored, rows))
+        return self._stored_rows(rows)
 
     async def remove(self, connection_id: UUID) -> bool:
         """Удаляет строку вместе с её грантами; False — строки не было."""
@@ -594,8 +601,16 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
 
         return targets
 
+    async def for_subject_all(self, subject: Subject) -> Sequence[StoredConnection]:
+        """Все соединения, выданные пользователю лично или любой его роли."""
+        rows: list[StoredConnection] = []
+        for kind in self._types.kinds():
+            rows.extend(await self.for_subject(subject, kind))
+
+        return rows
+
     async def for_subject(
-        self, subject: Subject, kind: ConnectionKind
+        self, subject: Subject, kind: str
     ) -> Sequence[StoredConnection]:
         """Соединения вида kind, выданные пользователю лично или любой его роли."""
         query = self._sql(
@@ -655,7 +670,7 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
             """
         )
         params = {
-            "kind": kind.value,
+            "kind": kind,
             "src_kind": GrantKind.CONNECTIONS.value,
             "users_kind": GrantKind.USERS.value,
             "roles_kind": GrantKind.ROLES.value,
@@ -668,7 +683,7 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
             await cur.execute(query, params)
             rows = await cur.fetchall()
 
-        return list(map(self._stored, rows))
+        return self._stored_rows(rows)
 
     @staticmethod
     def _grant_params(connection_id: UUID, target: GrantTarget) -> dict[str, Any]:
@@ -679,16 +694,37 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
             "tgt_kind_id": target.id,
         }
 
+    def _stored_rows(self, rows: list[dict[str, Any]]) -> list[StoredConnection]:
+        """Строки списком: запись типа без установленного пакета пропускается.
+
+        Пропуск не молчалив: warning с именем строки и kind; точечный get такой
+        строки падает UnknownConnectionKindError — внятной ошибкой использования.
+        """
+        stored: list[StoredConnection] = []
+        for row in rows:
+            try:
+                stored.append(self._stored(row))
+            except UnknownConnectionKindError as exc:
+                logger.warning(
+                    "connections: row #%s %r skipped: %s",
+                    row["id"],
+                    row["name"],
+                    exc,
+                )
+
+        return stored
+
     def _stored(self, row: dict[str, Any]) -> StoredConnection:
         try:
-            profile = self._PROFILE.validate_python(self._cipher.decrypt(row["data"]))
-        except ValidationError as exc:
-            # from None: в input_value разобранной строки лежит пароль, а
-            # traceback печатает причину сам, мимо FailureText
-            details = ValidationText.of(exc)
+            profile = self._types.parse(self._cipher.decrypt(row["data"]))
+        except UnknownConnectionKindError:
+            raise
+        except ConnectionTypesError as exc:
+            # from None: в разобранной строке лежит пароль, причину печатает
+            # текст самой ошибки, мимо FailureText
             msg = (
                 f"connections: row #{row['id']} {row['name']!r} is not a valid "
-                f"connection profile: {details}"
+                f"connection profile: {exc}"
             )
             raise ConnectionStoreError(msg) from None
 

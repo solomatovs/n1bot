@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from boba.connections.http import HttpProfile
+from boba.transport.http.profile import HttpProfile
 
 __all__ = ["ConfluenceConnection"]
 

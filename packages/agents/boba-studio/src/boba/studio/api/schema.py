@@ -10,6 +10,7 @@ import json
 import sys
 from typing import Any, ClassVar
 
+from boba.connections.manifest import ConnectionTypes
 from boba.auth import AuthService, AuthUsers, JwtTokens
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
@@ -111,6 +112,7 @@ class OpenApiDocument:
             tool_registry=cls._no_registry,
             workflow_service=cls._no_service,
             connection_store=cls._no_store,
+            connection_types=ConnectionTypes.discover,
             credentials=cls._no_credentials,
             live_locks=lambda: MemoryLiveLocks("stand", 20),
             heartbeat_sec=1.0,

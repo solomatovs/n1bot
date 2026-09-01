@@ -8,7 +8,6 @@ version = "0.0.15.dev1"
 description = "Документы и база знаний: чтение файлов, Confluence, индексация и поиск — всё в песочнице."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-connections==0.0.15.dev1",
     "boba-toolkit==0.0.15.dev1",
     "boba-db-postgres==0.0.15.dev1",
     "boba-db-pgvector==0.0.15.dev1",

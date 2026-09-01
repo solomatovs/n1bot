@@ -23,8 +23,8 @@ from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chainlit.rendering.tool import ToolCallMarkdown, ToolResultMarkdown
 from boba.config import bind
 from boba.connection_broker.tickets import ServiceTickets
-from boba.connections.http import HttpProfile
-from boba.connections.postgres import PostgresConfig
+from boba.transport.http.profile import HttpProfile
+from boba.db.postgres.profile import PostgresConfig
 from boba.db.postgres import AsyncPostgresPool
 from boba.kerberos import KeytabAuth
 from boba.krb import KeytabCredentials, ServiceTicketIssuer

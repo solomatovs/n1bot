@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 
+from boba.connections.manifest import ConnectionTypes
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.user_connections import StoreRef
@@ -70,6 +71,7 @@ class StandRefs:
             tool_registry=tool_registry,
             workflow_service=workflow_service,
             connection_store=store,
+            connection_types=ConnectionTypes.discover,
             credentials=credentials,
             live_locks=lambda: MemoryLiveLocks(cls.NAME, cls.LOCK_TTL_SEC),
             heartbeat_sec=cls.HEARTBEAT_SEC,

@@ -12,29 +12,29 @@ from psycopg import sql
 from pydantic import SecretStr
 
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
-from boba.connections.clickhouse import (
-    ClickHouseConfig,
-    ClickHouseSettingsConfig,
-    NoPasswordAuth,
-)
-from boba.connections.http import BearerAuth, HttpProfile
-from boba.connections.postgres import (
-    PasswordAuth,
-    PostgresConfig,
-    PostgresOptionsConfig,
-    PostgresPoolConfig,
-)
+from boba.connections.manifest import ConnectionTypes, UnknownConnectionKindError
 from boba.connections.profile import (
-    ConnectionKind,
     ConnectionNotFoundError,
     GrantKind,
     GrantTarget,
     StoredRole,
 )
 from boba.connections.secrets import SecretCryptoError
+from boba.db.clickhouse.profile import (
+    ClickHouseConfig,
+    ClickHouseSettingsConfig,
+    NoPasswordAuth,
+)
 from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres.profile import (
+    PasswordAuth,
+    PostgresConfig,
+    PostgresOptionsConfig,
+    PostgresPoolConfig,
+)
 from boba.identity.context import Subject
 from boba.stand.fakes import FakeSecret
+from boba.transport.http.profile import BearerAuth, HttpProfile
 
 pytestmark = pytest.mark.anyio
 
@@ -89,9 +89,29 @@ async def store(pool: AsyncPostgresPool) -> ConnectionStore:
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
         )
 
-    built = ConnectionStore(_config(_key()), pool)
+    built = ConnectionStore(_config(_key()), ConnectionTypes.discover(), pool)
     await built.setup()
     return built
+
+
+async def test_unknown_kind_is_skipped_in_lists_and_fails_on_get(
+    store: ConnectionStore, pool: AsyncPostgresPool
+) -> None:
+    """Строка типа без установленного пакета: списки живут, точечный get падает."""
+    key = _key()
+    full = ConnectionStore(_config(key), ConnectionTypes.discover(), pool)
+    await full.setup()
+    connection_id = await full.add("legacy", _pg(FakeSecret.DB))
+
+    # реестр без postgres: как будто пакет-владелец удалили
+    stripped = ConnectionStore(_config(key), ConnectionTypes({}), pool)
+
+    rows = await stripped.list_all()
+    if [row.name for row in rows] != []:
+        raise AssertionError(f"unknown kind must be skipped: {rows}")
+
+    with pytest.raises(UnknownConnectionKindError, match="not installed"):
+        await stripped.get(connection_id)
 
 
 async def test_setup_is_idempotent(store: ConnectionStore) -> None:
@@ -106,7 +126,7 @@ async def test_add_and_get_restores_profile(store: ConnectionStore) -> None:
 
     if stored.name != "main":
         raise AssertionError("name must survive the roundtrip")
-    if stored.kind is not ConnectionKind.POSTGRES:
+    if stored.kind != "postgres":
         raise AssertionError("kind must follow the profile")
     if not isinstance(stored.profile, PostgresConfig):
         raise AssertionError("profile must come back as PostgresConfig")
@@ -184,7 +204,7 @@ async def test_kind_is_read_from_the_data(
 
     if row is None:
         raise AssertionError("row must exist")
-    if row[0] != ConnectionKind.CLICKHOUSE.value:
+    if row[0] != "clickhouse":
         raise AssertionError(f"kind must come from the profile: {row[0]}")
 
 
@@ -193,7 +213,7 @@ async def test_foreign_key_cannot_read_rows(
 ) -> None:
     connection_id = await store.add("main", _pg(FakeSecret.DB))
 
-    foreign = ConnectionStore(_config(_key()), pool)
+    foreign = ConnectionStore(_config(_key()), ConnectionTypes.discover(), pool)
     with pytest.raises(SecretCryptoError):
         await foreign.get(connection_id)
 
@@ -272,26 +292,24 @@ async def test_for_subject_by_user_role_and_kind(store: ConnectionStore) -> None
     await store.grant(ch, GrantTarget.user(UUID(int=1)))
 
     reader = _subject(UUID(int=1), ["read"])
-    pg_rows = await store.for_subject(reader, ConnectionKind.POSTGRES)
+    pg_rows = await store.for_subject(reader, "postgres")
     if {row.id for row in pg_rows} != {personal, shared}:
         raise AssertionError(f"reader must see personal and role rows: {pg_rows}")
 
-    web_rows = await store.for_subject(reader, ConnectionKind.WEB)
+    web_rows = await store.for_subject(reader, "web")
     if [row.id for row in web_rows] != [web]:
         raise AssertionError("kind filter must hold")
 
-    ch_rows = await store.for_subject(reader, ConnectionKind.CLICKHOUSE)
+    ch_rows = await store.for_subject(reader, "clickhouse")
     if [row.id for row in ch_rows] != [ch]:
         raise AssertionError("clickhouse rows must be selectable")
 
     stranger = _subject(UUID(int=2), [])
-    if await store.for_subject(stranger, ConnectionKind.POSTGRES):
+    if await store.for_subject(stranger, "postgres"):
         raise AssertionError("stranger must see nothing")
 
     writer = _subject(UUID(int=2), ["wrt"])
-    if [row.id for row in await store.for_subject(writer, ConnectionKind.POSTGRES)] != [
-        other_role
-    ]:
+    if [row.id for row in await store.for_subject(writer, "postgres")] != [other_role]:
         raise AssertionError("role grant must be visible to any role holder")
 
     if nobody in [row.id for row in pg_rows]:
@@ -307,9 +325,7 @@ async def test_for_subject_lists_doubly_granted_row_once(
     await store.grant(connection_id, GrantTarget.user(UUID(int=1)))
     await store.grant(connection_id, GrantTarget.role(roles["read"]))
 
-    rows = await store.for_subject(
-        _subject(UUID(int=1), ["read"]), ConnectionKind.POSTGRES
-    )
+    rows = await store.for_subject(_subject(UUID(int=1), ["read"]), "postgres")
 
     if [row.id for row in rows] != [connection_id]:
         raise AssertionError("row granted twice must be listed once")
@@ -320,10 +336,10 @@ async def test_revoke_takes_effect_immediately(store: ConnectionStore) -> None:
     await store.grant(connection_id, GrantTarget.user(UUID(int=1)))
     subject = _subject(UUID(int=1), [])
 
-    if not await store.for_subject(subject, ConnectionKind.POSTGRES):
+    if not await store.for_subject(subject, "postgres"):
         raise AssertionError("granted row must be visible")
 
     await store.revoke(connection_id, GrantTarget.user(UUID(int=1)))
 
-    if await store.for_subject(subject, ConnectionKind.POSTGRES):
+    if await store.for_subject(subject, "postgres"):
         raise AssertionError("revoked row must disappear without restart")

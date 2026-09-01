@@ -23,7 +23,7 @@ from boba.cancellation import (
     run_cancellation,
 )
 from boba.chainlit.agent.tools import BashToolConfig, build_bash_tool
-from boba.connections.http import HttpProfile
+from boba.transport.http.profile import HttpProfile
 from boba.runtime.plugins import ToolBridge
 from boba.sandbox import SandboxProfile, SandboxToolConfig
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller

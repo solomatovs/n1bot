@@ -36,11 +36,12 @@ from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connection_broker.user_connections import UserConnections
-from boba.connections.clickhouse import ClickHouseConfig
-from boba.connections.http import HttpProfile, NegotiateAuth
+from boba.connections.manifest import ConnectionTypes
+from boba.db.clickhouse.profile import ClickHouseConfig
+from boba.transport.http.profile import HttpProfile, NegotiateAuth
 from boba.connections.marks import UserConnectionsSpec
-from boba.connections.postgres import PostgresConfig
-from boba.connections.profile import ConnectionKind, ConnectionProfile, GrantTarget
+from boba.db.postgres.profile import PostgresConfig
+from boba.connections.profile import ConnectionProfileBase, GrantTarget
 from boba.connections.whitelist import ConnectionKeying
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.session import UserMetadataField
@@ -130,7 +131,7 @@ async def store(pool: AsyncPostgresPool) -> ConnectionStore:
         )
 
     cfg = ConnectionsConfig(enable=True, db_schema=SCHEMA, encryption_key=_key())
-    built = ConnectionStore(cfg, pool)
+    built = ConnectionStore(cfg, ConnectionTypes.discover(), pool)
     await built.setup()
     await built.sync_roles([ROLE])
     return built
@@ -229,7 +230,7 @@ class Tools:
         section: str,
         module_name: str,
         config_model: type,
-        kind: ConnectionKind,
+        kind: str,
     ) -> dict[str, Any]:
         from importlib import import_module, reload
 
@@ -266,7 +267,7 @@ def pg_tools(raw_config: Any, store: ConnectionStore, tickets: SsoTickets):
         section="pg",
         module_name="boba.tool.pg.tools",
         config_model=PgToolConfig,
-        kind=ConnectionKind.POSTGRES,
+        kind="postgres",
     )
 
 
@@ -279,7 +280,7 @@ def ch_tools(raw_config: Any, store: ConnectionStore, tickets: SsoTickets):
         section="ch",
         module_name="boba.tool.ch.tools",
         config_model=ChToolConfig,
-        kind=ConnectionKind.CLICKHOUSE,
+        kind="clickhouse",
     )
 
 
@@ -292,7 +293,7 @@ def web_tools(raw_config: Any, store: ConnectionStore, tickets: SsoTickets):
         section="web",
         module_name="boba.tool.web.tools",
         config_model=WebGrepConfig,
-        kind=ConnectionKind.WEB,
+        kind="web",
     )
 
 
@@ -305,7 +306,7 @@ async def _granted(
     store: ConnectionStore,
     session: PersistedUser,
     name: str,
-    profile: ConnectionProfile,
+    profile: ConnectionProfileBase,
 ) -> None:
     connection_id = await store.add(name, profile)
     await store.grant(connection_id, GrantTarget.user(UUID(session.id)))

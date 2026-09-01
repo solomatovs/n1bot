@@ -14,8 +14,9 @@ from pydantic import (
     model_validator,
 )
 
-from boba.connections.postgres.auth import PostgresAuth, PostgresKerberos, PostgresLibpq
-from boba.kerberos import KerberosAuthBase, KerberosDump
+from boba.connections.base import ConnectionProfileBase
+from boba.db.postgres.profile.auth import PostgresAuth, PostgresKerberos, PostgresLibpq
+from boba.kerberos import KerberosAuthBase, KerberosDump, TicketAuth
 
 __all__ = ["PostgresConfig", "PostgresOptionsConfig", "PostgresPoolConfig"]
 
@@ -92,7 +93,7 @@ class PostgresOptionsConfig(BaseModel):
         return " ".join(parts)
 
 
-class PostgresConfig(BaseModel):
+class PostgresConfig(ConnectionProfileBase):
     """libpq connection keywords + поведение connect() psycopg; см. PostgreSQL docs."""
 
     model_config = ConfigDict(extra="ignore")
@@ -228,6 +229,22 @@ class PostgresConfig(BaseModel):
             raise ValueError(msg)
 
         return f"{PostgresKerberos.service_of(self.auth)}@{self.host}"
+
+    def kerberos_section(self) -> KerberosAuthBase | None:
+        if isinstance(self.auth, KerberosAuthBase):
+            return self.auth
+
+        return None
+
+    def with_call_ticket(self, ticket: TicketAuth) -> "PostgresConfig":
+        return self.model_copy(update={"auth": ticket})
+
+    def trace(self) -> str:
+        return self.auth.trace()
+
+    def labeled(self, label: str) -> "PostgresConfig":
+        return self.model_copy(update={"application_name": label})
+
 
     @field_serializer("auth", when_used="json")
     def _dump_auth(

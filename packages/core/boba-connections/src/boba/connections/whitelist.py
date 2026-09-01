@@ -15,7 +15,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict
 
-from boba.connections.profile import ConnectionProfile, StoredConnection
+from boba.connections.profile import ConnectionProfileBase, StoredConnection
 
 __all__ = [
     "AmbiguousConnectionError",
@@ -52,7 +52,7 @@ class Picked(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     key: str
-    profile: ConnectionProfile
+    profile: ConnectionProfileBase
 
 
 class ConnectionWhitelist(BaseModel):
@@ -61,7 +61,7 @@ class ConnectionWhitelist(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     keying: ConnectionKeying
-    profiles: Mapping[str, ConnectionProfile]
+    profiles: Mapping[str, ConnectionProfileBase]
     ambiguous: frozenset[str]
 
     @classmethod
@@ -72,7 +72,7 @@ class ConnectionWhitelist(BaseModel):
         for row in rows:
             by_key.setdefault(keying.key_of(row), []).append(row)
 
-        profiles: dict[str, ConnectionProfile] = {}
+        profiles: dict[str, ConnectionProfileBase] = {}
         for key, row in cls._unique(by_key):
             profiles[key] = row.profile
 

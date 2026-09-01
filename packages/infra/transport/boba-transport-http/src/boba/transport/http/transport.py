@@ -17,7 +17,7 @@ from typing import Any, Protocol
 import httpx
 
 from boba.cancellation import current_cancellation
-from boba.connections.http import HttpProfile
+from boba.transport.http.profile import HttpProfile
 from boba.transport.http import HttpxAuth
 
 __all__ = [

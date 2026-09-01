@@ -76,6 +76,7 @@ class ApiApp:
             profiles,
             refs.credentials,
             refs.message_bus,
+            refs.connection_types(),
         ).mount(router)
         ToolCalling(
             refs.tool_registry,

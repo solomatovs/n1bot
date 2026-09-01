@@ -20,7 +20,7 @@ import uvicorn
 from fastapi import FastAPI, Response
 from ingest_stand import MemoryChunkStore, TextReader, ZeroEmbedder
 
-from boba.connections.http import HttpProfile
+from boba.transport.http.profile import HttpProfile
 from boba.indexing import (
     CollectionId,
     CollectionScopedView,

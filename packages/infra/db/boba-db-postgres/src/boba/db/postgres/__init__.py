@@ -1,4 +1,4 @@
-"boba.db.postgres — async-пул postgres; конфиг живёт в boba.connections.postgres"
+"boba.db.postgres — async-пул postgres; конфиг живёт в boba.db.postgres.profile"
 
 from __future__ import annotations
 

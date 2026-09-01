@@ -12,6 +12,7 @@ from typing import Annotated
 
 from omegaconf import DictConfig
 
+from boba.connections.manifest import ConnectionTypes
 from boba.access import GrantCheck
 from boba.auth import AuthService, JwtTokens
 from boba.auth.credentials import KerberosCredentialSource
@@ -209,12 +210,18 @@ def connection_store_ref() -> ConnectionStore:
     return store
 
 
+def connection_types_ref() -> ConnectionTypes:
+    """Реестр типов соединений; зовётся на запрос."""
+    return _root().resolved(connection_types)
+
+
 def runtime_refs() -> RuntimeRefs:
     """Входы приложения для api и обвязок: ссылки в корневой контейнер."""
     return RuntimeRefs(
         tool_registry=tool_registry_ref,
         workflow_service=workflow_service_ref,
         connection_store=connection_store_ref,
+        connection_types=connection_types_ref,
         credentials=credential_source_ref,
         live_locks=live_locks_ref,
         heartbeat_sec=_root().resolved(get_runtime_config).cluster.heartbeat_sec,
@@ -332,15 +339,21 @@ async def workflow_recovery(
         logger.warning("workflow: %d abandoned run(s) closed on startup", recovered)
 
 
+def connection_types() -> ConnectionTypes:
+    """Реестр установленных типов соединений: entry points boba.connections."""
+    return ConnectionTypes.discover()
+
+
 async def connection_store(
     raw: Annotated[DictConfig, Depends(get_raw_config)],
+    types: Annotated[ConnectionTypes, Depends(connection_types)],
 ) -> ConnectionStore | None:
     """Хранилище соединений; роли из [roles] попадают в таблицу roles на старте."""
     cfg = bind(raw, "connections", ConnectionsConfig)
     if not cfg.enable:
         return None
 
-    store = ConnectionStore(cfg)
+    store = ConnectionStore(cfg, types)
     await store.setup()
 
     roles = bind(raw, "roles", RolesSection).root

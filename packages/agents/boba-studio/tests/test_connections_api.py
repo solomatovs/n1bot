@@ -17,7 +17,8 @@ from studio_stand import StandProfiles
 
 from boba.chat.profiles import ChatProfiles
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
-from boba.connections.http import HttpProfile
+from boba.connections.manifest import ConnectionTypes
+from boba.transport.http.profile import HttpProfile
 from boba.connections.profile import GrantTarget, StoredRole
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.signin import SignInMetadata
@@ -67,7 +68,7 @@ async def store(pool: AsyncPostgresPool) -> ConnectionStore:
         )
 
     cfg = ConnectionsConfig(enable=True, db_schema=SCHEMA, encryption_key=_key())
-    built = ConnectionStore(cfg, pool)
+    built = ConnectionStore(cfg, ConnectionTypes.discover(), pool)
     await built.setup()
     await built.sync_roles([ROLE])
     return built

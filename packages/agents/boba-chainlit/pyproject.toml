@@ -15,7 +15,6 @@ dependencies = [
     "boba-canvas==0.0.15.dev1",
     "boba-identity==0.0.15.dev1",
     "boba-chat==0.0.15.dev1",
-    "boba-connections==0.0.15.dev1",
     "boba-config==0.0.15.dev1",
     "boba-toolkit==0.0.15.dev1",
     "boba-cancellation==0.0.15.dev1",
@@ -56,6 +55,8 @@ tools = [
     "boba-tool-web==0.0.15.dev1",
 ]
 dev = [
+    "boba-connections==0.0.15.dev1",
+    "boba-db-clickhouse==0.0.15.dev1",
     "boba-ldap==0.0.15.dev1",
     "boba-kerberos==0.0.15.dev1",
     "boba-connection-broker==0.0.15.dev1",

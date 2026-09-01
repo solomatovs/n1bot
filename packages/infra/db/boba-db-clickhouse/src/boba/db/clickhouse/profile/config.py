@@ -13,12 +13,13 @@ from pydantic import (
     model_validator,
 )
 
-from boba.connections.clickhouse.auth import (
+from boba.connections.base import ConnectionProfileBase
+from boba.db.clickhouse.profile.auth import (
     ClickHouseAuth,
     ClickHouseKerberos,
     ClickHouseLibch,
 )
-from boba.kerberos import KerberosAuthBase, KerberosDump
+from boba.kerberos import KerberosAuthBase, KerberosDump, TicketAuth
 from boba.toolkit.types import SecretRevealing
 
 __all__ = ["ClickHouseConfig", "ClickHouseSettingsConfig"]
@@ -68,7 +69,7 @@ class ClickHouseSettingsConfig(BaseModel):
         return settings
 
 
-class ClickHouseConfig(BaseModel):
+class ClickHouseConfig(ConnectionProfileBase):
     """Параметры clickhouse_connect.AsyncClient (HTTP-интерфейс) + настройки сессии."""
 
     model_config = ConfigDict(extra="ignore")
@@ -198,6 +199,22 @@ class ClickHouseConfig(BaseModel):
             raise ValueError(msg)
 
         return f"{ClickHouseKerberos.service_of(self.auth)}@{self._spn_host()}"
+
+    def kerberos_section(self) -> KerberosAuthBase | None:
+        if isinstance(self.auth, KerberosAuthBase):
+            return self.auth
+
+        return None
+
+    def with_call_ticket(self, ticket: TicketAuth) -> "ClickHouseConfig":
+        return self.model_copy(update={"auth": ticket})
+
+    def trace(self) -> str:
+        return self.auth.trace()
+
+    def labeled(self, label: str) -> "ClickHouseConfig":
+        return self.model_copy(update={"client_name": label})
+
 
     def _spn_host(self) -> str:
         """Хост в SPN: явное имя сервера, иначе адрес соединения."""

@@ -6,7 +6,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from boba.connections.http import HttpProfile, NegotiateAuth
+from boba.transport.http.profile import HttpProfile, NegotiateAuth
 from boba.kerberos import DelegatedAuth, KerberosError, TicketAuth
 from boba.krb import KerberosCredentials
 from boba.transport.http import HttpxAuth

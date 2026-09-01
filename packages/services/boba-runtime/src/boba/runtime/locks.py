@@ -19,8 +19,8 @@ import psycopg
 from psycopg import sql
 from psycopg.rows import DictRow
 
-from boba.connections.postgres import PostgresConfig
 from boba.db.postgres import AsyncPostgresPool, PostgresError, SqlNames
+from boba.db.postgres.profile import PostgresConfig
 from boba.identity.context import Scope, ScopeKind
 from boba.identity.locks import (
     LiveLock,
@@ -137,11 +137,26 @@ class PgLiveLocks(LiveLocks):
                 await conn.execute(
                     sql.SQL(
                         """
-                        insert into {locks}
-                            ({scope_kind}, {scope_id}, {mode}, {holder}, {token},
-                             {purpose}, {user_id}, {ttl})
-                        values (%(scope_kind)s, %(scope_id)s, %(mode)s, %(holder)s,
-                                %(token)s, %(purpose)s, %(user_id)s, %(ttl)s)
+                        insert into {locks} (
+                            {scope_kind},
+                            {scope_id},
+                            {mode},
+                            {holder},
+                            {token},
+                            {purpose},
+                            {user_id},
+                            {ttl}
+                        )
+                        values (
+                            %(scope_kind)s,
+                            %(scope_id)s,
+                            %(mode)s,
+                            %(holder)s,
+                            %(token)s,
+                            %(purpose)s,
+                            %(user_id)s,
+                            %(ttl)s
+                        )
                         """
                     ).format(
                         locks=self._locks(),
@@ -191,10 +206,15 @@ class PgLiveLocks(LiveLocks):
         cur = await conn.execute(
             sql.SQL(
                 """
-                select {holder}, {mode}, {purpose},
-                       extract(epoch from now() - {heartbeat})::int as silent
-                  from {locks}
-                 where {scope_kind} = %(scope_kind)s
+                select
+                    {holder},
+                    {mode},
+                    {purpose},
+                    extract(epoch from now() - {heartbeat})::int as silent
+                from
+                    {locks}
+                where 1=1
+                   and {scope_kind} = %(scope_kind)s
                    and {scope_id} = %(scope_id)s
                    and {heartbeat} + make_interval(secs => {ttl}) >= now()
                 """
@@ -242,8 +262,10 @@ class PgLiveLocks(LiveLocks):
                 await cur.execute(
                     sql.SQL(
                         """
-                        update {locks} set {heartbeat} = now()
-                         where {token} = %(token)s
+                        update {locks}
+                        set {heartbeat} = now()
+                        where 1=1
+                           and {token} = %(token)s
                            and {heartbeat} + make_interval(secs => {ttl}) >= now()
                         """
                     ).format(
@@ -322,8 +344,10 @@ class PgLiveLocks(LiveLocks):
                         """
                         insert into {instances} ({id}, {app}, {host})
                         values (%(id)s, %(app)s, %(host)s)
-                        on conflict ({id}) do update
-                        set {app} = excluded.{app}, {host} = excluded.{host},
+                        on conflict ({id})
+                        do update set
+                            {app} = excluded.{app},
+                            {host} = excluded.{host},
                             {heartbeat} = now()
                         """
                     ).format(
@@ -394,8 +418,13 @@ class PgLiveLocks(LiveLocks):
                     sql.SQL(
                         """
                         delete from {locks}
-                         where {heartbeat} + make_interval(secs => {ttl}) < now()
-                        returning {scope_kind}, {scope_id}, {holder}, {purpose}
+                        where
+                            {heartbeat} + make_interval(secs => {ttl}) < now()
+                        returning
+                            {scope_kind},
+                            {scope_id},
+                            {holder},
+                            {purpose}
                         """
                     ).format(
                         locks=self._locks(),
@@ -438,8 +467,10 @@ class PgLiveLocks(LiveLocks):
                     sql.SQL(
                         """
                         delete from {instances}
-                         where {heartbeat} + make_interval(secs => %(ttl)s) < now()
-                        returning {id}
+                        where
+                            {heartbeat} + make_interval(secs => %(ttl)s) < now()
+                        returning
+                            {id}
                         """
                     ).format(
                         instances=self._instances(),
