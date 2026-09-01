@@ -35,7 +35,7 @@ class SqlNames:
 
 
 class PostgresSchema:
-    """Создание схемы: без прав на CREATE SCHEMA считается, что её завёл администратор."""
+    """Создание схемы: без прав на CREATE SCHEMA её заводит администратор."""
 
     @staticmethod
     async def ensure(conn: AsyncConnection, schema: str) -> None:

@@ -1,6 +1,6 @@
-"""Профиль песочницы для тестов инструментов: артефакты сборки chainlit плюс код репозитория.
+"""Профиль песочницы для тестов инструментов: артефакты сборки плюс код репо.
 
-Зависимости берутся из собранного site, код инструментов — из src: иначе тест проверял бы
+Зависимости — из собранного site, код инструментов — из src: иначе тест проверял бы
 прошлую сборку, а не то, что сейчас в репозитории.
 """
 
@@ -36,8 +36,12 @@ ADDRESS_SPACE = 16 * 1024 * 1024 * 1024
 """RLIMIT_AS профиля парсера: pdfium резервирует ~2.3G независимо от документа."""
 
 needs_sandbox = pytest.mark.skipif(
-    shutil.which("bwrap") is None or not ROOTFS_IMAGE.exists(),
-    reason="нет bwrap или образов плагинов (собрать: make -C build/chainlit fetch plugin-rootfs-all)",
+    shutil.which("bwrap") is None  # noqa: TID251 — стенд ищет по PATH сознательно
+    or not ROOTFS_IMAGE.exists(),
+    reason=(
+        "нет bwrap или образов плагинов "
+        "(собрать: make -C build/chainlit fetch plugin-rootfs-all)"
+    ),
 )
 needs_userns = pytest.mark.skipif(
     os.geteuid() == 0, reason="под root user namespace ведёт себя иначе"

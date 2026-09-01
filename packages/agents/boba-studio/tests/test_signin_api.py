@@ -216,7 +216,7 @@ async def test_login_without_own_mark_is_refused(client: AsyncClient) -> None:
 
 
 async def test_refresh_renews_a_password_session(client: AsyncClient) -> None:
-    """Вход по паролю продлевается перевыпуском JWT: новая cookie с более поздним exp."""
+    """Вход по паролю продлевается перевыпуском JWT: новая cookie с поздним exp."""
     signed = await client.post(
         f"{ApiVersion.V1}{SignInUrl.LOGIN}",
         json={"username": "Alice", "password": "pw"},

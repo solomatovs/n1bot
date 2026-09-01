@@ -401,7 +401,9 @@ class SessionConfig(BaseModel):
     session_ttl_sec: int = Field(gt=0, description="Срок JWT и cookie входа.")
     session_max_sec: int = Field(
         gt=0,
-        description="Потолок сессии от первого входа: дольше без нового входа не продлить.",
+        description=(
+            "Потолок сессии от первого входа: дольше без нового входа не продлить."
+        ),
     )
 
     @model_validator(mode="after")

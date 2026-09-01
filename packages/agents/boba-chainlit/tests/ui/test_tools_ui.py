@@ -566,7 +566,7 @@ class ConfluenceSite:
             if attempt >= self.RETRIES:
                 response.raise_for_status()
 
-            # 401 приходит на сессионную cookie после долгой серии запросов: сбрасываем её
+            # 401 приходит на сессионную cookie после серии запросов: сбрасываем её
             self._client.cookies.clear()
             time.sleep(self.RETRY_SEC)
 

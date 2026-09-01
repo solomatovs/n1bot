@@ -86,7 +86,7 @@ def app_server() -> Iterator[None]:
         pytest.fail(f"порт {PORT} уже занят: остановите запущенное приложение")
 
     log = Path(tempfile.gettempdir()) / "boba-canvas-e2e.log"
-    process = subprocess.Popen(  # noqa: S603
+    process = subprocess.Popen(
         [str(LAUNCHER), str(ENTRY), "--config", os.environ["BOBA_CONFIG_PATH"]],
         stdout=log.open("wb"),
         stderr=subprocess.STDOUT,

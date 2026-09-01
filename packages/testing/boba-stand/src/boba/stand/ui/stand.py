@@ -17,6 +17,7 @@ import tomllib
 from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from http import HTTPStatus
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -578,7 +579,7 @@ class StandProcess:
                 time.sleep(0.3)
                 continue
 
-            if response.status_code < 500:
+            if response.status_code < HTTPStatus.INTERNAL_SERVER_ERROR:
                 return
 
             time.sleep(0.3)

@@ -114,7 +114,7 @@ class TestPoolFollowsTheAffinityMask:
 
         counts: list[int] = []
         for cores in ("1", "4"):
-            proc = subprocess.run(  # noqa: S603
+            proc = subprocess.run(
                 [sys.executable, "-c", script, cores],
                 check=True,
                 capture_output=True,

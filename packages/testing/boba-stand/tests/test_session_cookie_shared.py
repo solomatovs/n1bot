@@ -86,7 +86,7 @@ class TestSharedSessionCookie:
     @staticmethod
     def chainlit_side(job: Mapping[str, object]) -> object:
         AppEntry.export_env(ConfigLocator.path())
-        proc = subprocess.run(  # noqa: S603
+        proc = subprocess.run(
             [sys.executable, "-c", CHAINLIT_SIDE],
             input=json.dumps(job),
             capture_output=True,

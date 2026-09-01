@@ -101,7 +101,7 @@ class Scope(BaseModel):
 
     @classmethod
     def user(cls, user_id: UUID) -> Scope:
-        """Область пользователя для его лент (запуски, workflow, соединения): users.id."""
+        """Область пользователя для его лент (запуски, соединения): users.id."""
         return cls(kind=ScopeKind.USER, id=str(user_id))
 
 

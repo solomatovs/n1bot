@@ -63,7 +63,7 @@ class Probe:
         return tools
 
     def registry(self, granted: list[str], profile: str = TEST_PROFILE) -> ToolRegistry:
-        """Реестр с этими инструментами: роль PROBE_ROLE видит всё, профиль — granted."""
+        """Реестр с инструментами: роль PROBE_ROLE видит всё, профиль — granted."""
         tools = self.tools()
         names: list[str] = []
         for tool_ in tools:

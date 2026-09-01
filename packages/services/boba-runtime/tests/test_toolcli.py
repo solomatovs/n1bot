@@ -15,7 +15,7 @@ class TestToolCli:
 
     @staticmethod
     def run_cli(arguments: list[str]) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.run(  # noqa: S603
+        return subprocess.run(
             [sys.executable, "-m", "boba.runtime.toolcli", *arguments],
             capture_output=True,
             env=dict(os.environ),

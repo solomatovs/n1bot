@@ -160,7 +160,8 @@ async def test_missing_type_row_is_listed_with_a_mark(
     async with pool.connection() as conn:
         await conn.execute(
             sql.SQL(
-                "update {}.connections set data = jsonb_set(data, '{{kind}}', '\"vanished\"') "
+                "update {}.connections "
+                "set data = jsonb_set(data, '{{kind}}', '\"vanished\"') "
                 "where id = %(id)s"
             ).format(sql.Identifier(SCHEMA)),
             {"id": granted["web"]},

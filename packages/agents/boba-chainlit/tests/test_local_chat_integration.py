@@ -85,7 +85,10 @@ async def kb_probe(
     query: Annotated[str, Field(description="Search query.")],
 ) -> str:
     """Поиск по базе знаний: отдаёт найденную страницу."""
-    return f"KB-42: Kerberos SSO в Confluence настраивается на странице 'Kerberos' ({query})"
+    return (
+        f"KB-42: Kerberos SSO в Confluence настраивается на странице 'Kerberos' "
+        f"({query})"
+    )
 
 
 def _chat(model_dir: str) -> ProviderChatModel:

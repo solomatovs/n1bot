@@ -308,7 +308,7 @@ class SandboxMount(StrEnum):
     ROOTFS = "/tmp/boba-rootfs"  # noqa: S108
     PROC = "/proc"
     DEV = "/dev"
-    TMP = "/tmp"
+    TMP = "/tmp"  # noqa: S108 — путь внутри песочницы
     SETUP = "/mnt"
     SETUP_TEMPLATE = "/mnt/template.ext4"
     SETUP_FUSE2FS = "/mnt/fuse2fs"

@@ -62,7 +62,7 @@ class TestTicketSealer:
 
 class TestSealedLayoutCompatibility:
     def test_ticket_sealed_by_the_previous_layout_still_opens(self) -> None:
-        """Живые JWT несут билеты старой раскладки: dict, ccache в стандартном base64."""
+        """Живые JWT несут билеты старой раскладки: dict, ccache в base64."""
         ticket = _ticket(600)
         derived = HKDF(
             algorithm=hashes.SHA256(),

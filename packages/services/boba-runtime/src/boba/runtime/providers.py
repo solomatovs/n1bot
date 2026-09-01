@@ -425,6 +425,60 @@ def auth_service(
     )
 
 
+class ReaperHandlers:
+    """Обработчики сторожа блокировок: осиротевшие ходы/запуски и ретенция."""
+
+    def __init__(
+        self,
+        config: RuntimeConfig,
+        locks: PgLiveLocks,
+        service: WorkflowService | None,
+        bus: PgMessageBus,
+        payloads: PgPayloadStore,
+    ) -> None:
+        self._config = config
+        self._locks = locks
+        self._service = service
+        self._bus = bus
+        self._payloads = payloads
+
+    async def on_stale(self, stale: Sequence[StaleLock]) -> None:
+        for lock in stale:
+            logger.warning(
+                "stale lock removed: %s held by %s for %s",
+                lock.scope.render(),
+                lock.holder,
+                lock.purpose.value,
+            )
+
+        turns = await StaleTurnCloser(self._bus, self._locks).close(stale)
+        if turns:
+            logger.warning("chat: %d turn(s) of dead holders closed", turns)
+
+        if self._service is None:
+            return
+
+        closed = await self._service.close_unlocked()
+        if closed:
+            logger.warning("workflow: %d run(s) without a holder closed", closed)
+
+    async def on_sweep(self) -> None:
+        usage = await self._bus.queue_usage()
+        if usage > self._config.cluster.queue_usage_limit:
+            # долю очереди держит соединение слушателя: освобождает только разрыв
+            logger.error(
+                "notification queue usage %.3f exceeds %.3f: reconnecting the listener",
+                usage,
+                self._config.cluster.queue_usage_limit,
+            )
+            await self._bus.listener.reconnect()
+
+        removed = await self._bus.purge_idle(self._config.cluster.retention_sec)
+        bodies = await self._payloads.purge_idle(self._config.cluster.retention_sec)
+        if removed or bodies:
+            logger.info("live retention: %d events, %d bodies removed", removed, bodies)
+
+
 async def lock_reaper(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
     locks: Annotated[LiveLocks, Depends(live_locks)],
@@ -453,43 +507,10 @@ async def lock_reaper(
         msg = "lock reaper requires the postgres payload store"
         raise RuntimeError(msg)
 
-    async def on_stale(stale: Sequence[StaleLock]) -> None:
-        for lock in stale:
-            logger.warning(
-                "stale lock removed: %s held by %s for %s",
-                lock.scope.render(),
-                lock.holder,
-                lock.purpose.value,
-            )
-
-        turns = await StaleTurnCloser(bus, locks).close(stale)
-        if turns:
-            logger.warning("chat: %d turn(s) of dead holders closed", turns)
-
-        if service is None:
-            return
-
-        closed = await service.close_unlocked()
-        if closed:
-            logger.warning("workflow: %d run(s) without a holder closed", closed)
-
-    async def on_sweep() -> None:
-        usage = await bus.queue_usage()
-        if usage > config.cluster.queue_usage_limit:
-            # долю очереди держит соединение слушателя: освобождает только разрыв
-            logger.error(
-                "notification queue usage %.3f exceeds %.3f: reconnecting the listener",
-                usage,
-                config.cluster.queue_usage_limit,
-            )
-            await bus.listener.reconnect()
-
-        removed = await bus.purge_idle(config.cluster.retention_sec)
-        bodies = await payloads.purge_idle(config.cluster.retention_sec)
-        if removed or bodies:
-            logger.info("live retention: %d events, %d bodies removed", removed, bodies)
-
-    reaper = LockReaper(locks, config.cluster.reaper_period_sec, on_stale, on_sweep)
+    handlers = ReaperHandlers(config, locks, service, bus, payloads)
+    reaper = LockReaper(
+        locks, config.cluster.reaper_period_sec, handlers.on_stale, handlers.on_sweep
+    )
     await reaper.start()
     try:
         yield reaper

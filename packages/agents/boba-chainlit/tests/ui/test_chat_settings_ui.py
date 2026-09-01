@@ -635,7 +635,7 @@ class TestOtherTabs:
         _confirm_settings(chat)
         assert llm_meta(ADMIN_LOGIN).get("general") == {"model": "fake-model-alt"}
 
-        # вторая вкладка пересобрала агента по сообщению шины: её запрос идёт с новой моделью
+        # вторая вкладка пересобрала агента по сообщению шины: запрос с новой моделью
         other.page.wait_for_timeout(1000)
         _ask_and_wait(other)
         assert _last_request(llm_port)["model"] == "fake-model-alt"

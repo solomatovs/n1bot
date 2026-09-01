@@ -1,6 +1,6 @@
 """Плагин pytest общего стенда: конфиг приложения, тестовая база и пул, kerberos.
 
-Конфиг берётся так же, как приложением: BOBA_CONFIG_PATH либо conf/config.toml в BOBA_BASE.
+Конфиг берётся как приложением: BOBA_CONFIG_PATH либо conf/config.toml в BOBA_BASE.
 """
 
 from collections.abc import AsyncIterator
