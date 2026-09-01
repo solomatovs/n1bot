@@ -24,7 +24,7 @@ from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.chat.openai import OpenAiConfig
+from boba.chat.http import HttpConfig
 
 __all__ = [
     "ChatBackendConfig",
@@ -196,12 +196,15 @@ class OpenAiChatConfig(BaseModel):
 
     kind: Literal["openai"]
 
-    http: OpenAiConfig = Field(
+    http: HttpConfig = Field(
         description=(
-            "HTTP-транспорт провайдера; в конфиге подключается ссылкой "
-            "${openai.<name>}."
+            "Поведение HTTP-транспорта; в конфиге подключается ссылкой ${http}."
         ),
     )
+
+    base_url: str = Field(description="Endpoint API провайдера.")
+
+    api_key: str = Field(description="Ключ API провайдера.")
 
 
 class OllamaChatConfig(BaseModel):
@@ -211,12 +214,15 @@ class OllamaChatConfig(BaseModel):
 
     kind: Literal["ollama"]
 
-    http: OpenAiConfig = Field(
+    http: HttpConfig = Field(
         description=(
-            "HTTP-транспорт провайдера; в конфиге подключается ссылкой "
-            "${openai.<name>}."
+            "Поведение HTTP-транспорта; в конфиге подключается ссылкой ${http}."
         ),
     )
+
+    base_url: str = Field(description="Endpoint API провайдера.")
+
+    api_key: str = Field(description="Ключ API провайдера.")
 
 
 ChatBackendConfig = Annotated[

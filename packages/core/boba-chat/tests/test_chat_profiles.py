@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from boba.chat.profiles import (
@@ -13,9 +15,14 @@ from boba.chat.profiles import (
 from boba.chat.provider import OpenAiChatConfig
 from boba.identity.errors import RefusalError
 
-OPENAI = {"base_url": "https://llm.example/v1", "api_key": "token"}
+HTTP: dict[str, Any] = {}
 
-BACKEND = {"kind": "openai", "http": OPENAI}
+BACKEND = {
+    "kind": "openai",
+    "http": HTTP,
+    "base_url": "https://llm.example/v1",
+    "api_key": "token",
+}
 
 
 @pytest.fixture(autouse=True)

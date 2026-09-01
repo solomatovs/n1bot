@@ -1,9 +1,9 @@
 """Нативный чат-бэкенд ollama: /api/chat потоком NDJSON.
 
-Провайдер владеет wire-форматом целиком: сборка тела запроса (сообщения с
-thinking и tool_calls-объектами, таблица sampling как есть, options с
-переложенным из моста stop), построчный разбор NDJSON-чанков, вотчдог пауз
-между чанками и повторы до первого полученного байта.
+Провайдер владеет wire-форматом: сборка тела запроса (сообщения с thinking
+и tool_calls-объектами, таблица sampling как есть, options с переложенным
+из моста stop), построчный разбор NDJSON-чанков. HTTP-обмен — ретраи,
+вотчдог пауз — делает ChatExchange.
 
 Ошибки:
 ChatProviderError — endpoint недоступен, ответил статусом, мусором или
@@ -12,7 +12,6 @@ ChatProviderError — endpoint недоступен, ответил статус
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
 from enum import StrEnum
@@ -36,6 +35,7 @@ from boba.chat.provider import (
     ToolCallRequest,
     ToolSpec,
 )
+from boba.llm.http import ChatExchange, WireStream
 from boba.toolkit.timing import Elapsed
 
 logger = logging.getLogger(__name__)
@@ -166,12 +166,29 @@ class OllamaAssembly:
         )
 
 
+class NdjsonWireStream(WireStream[OllamaWireChunk]):
+    """NDJSON-строки потока в чанки; экземпляр живёт одну попытку запроса."""
+
+    def feed(self, line: str) -> OllamaWireChunk | None:
+        body = line.strip()
+        if not body:
+            return None
+
+        try:
+            return OllamaWireChunk.model_validate_json(body)
+        except ValidationError as exc:
+            msg = f"chat endpoint sent malformed chunk: {body[:300]!r}"
+            raise ChatProviderError(msg) from exc
+
+    def finish(self) -> OllamaWireChunk | None:
+        """NDJSON не буферизуется: недосланных чанков не бывает."""
+        return None
+
+
 class OllamaChatProvider(ChatProvider):
     """ChatProvider поверх нативного endpoint'а ollama."""
 
     ENDPOINT: ClassVar[str] = "api/chat"
-
-    RETRY_STATUSES: ClassVar[frozenset[int]] = frozenset({429, 500, 502, 503, 504})
 
     def __init__(
         self,
@@ -180,8 +197,16 @@ class OllamaChatProvider(ChatProvider):
         model: str,
     ) -> None:
         self._cfg = cfg
-        self._client = client
         self._model = model
+
+        endpoint = cfg.base_url.rstrip("/") + "/" + self.ENDPOINT
+        self._exchange = ChatExchange(
+            cfg.http,
+            client,
+            endpoint=endpoint,
+            api_key=cfg.api_key,
+            label="ollama chat",
+        )
 
     async def chat(self, request: ChatRequest) -> AsyncIterator[ChatEvent]:
         payload = self._payload(request)
@@ -189,12 +214,13 @@ class OllamaChatProvider(ChatProvider):
         elapsed = Elapsed()
         assembly = OllamaAssembly()
         if request.stream:
-            async for chunk in self._stream(payload):
+            async for chunk in self._exchange.stream(payload, NdjsonWireStream):
                 emitted = assembly.take(chunk)
                 if emitted is not None:
                     yield emitted
         else:
-            assembly.take(await self._complete(payload))
+            body = await self._exchange.complete(payload)
+            assembly.take(self._parse_body(body))
 
         reply = assembly.reply()
         logger.info(
@@ -206,127 +232,13 @@ class OllamaChatProvider(ChatProvider):
 
         yield reply
 
-    async def _complete(self, payload: dict[str, Any]) -> OllamaWireChunk:
-        """Один запрос-ответ: всё тело /api/chat одним чанком."""
-        attempts = self._cfg.http.max_retries + 1
-
-        for attempt in range(attempts):
-            try:
-                response = await self._client.post(
-                    self._endpoint(), json=payload, headers=self._headers()
-                )
-                if response.status_code in self.RETRY_STATUSES:
-                    raise httpx.TransportError(f"status {response.status_code}")
-
-                if response.is_error:
-                    msg = (
-                        f"chat endpoint returned {response.status_code}: "
-                        f"{response.content[:500]!r}"
-                    )
-                    raise ChatProviderError(msg)
-
-                break
-            except ChatProviderError:
-                raise
-            except httpx.HTTPError as exc:
-                if attempt + 1 >= attempts:
-                    msg = f"chat endpoint failed: {exc}"
-                    raise ChatProviderError(msg) from exc
-
-                logger.warning(
-                    "ollama chat: attempt %d/%d failed: %s",
-                    attempt + 1,
-                    attempts,
-                    exc,
-                )
-
-        try:
-            return OllamaWireChunk.model_validate_json(response.content)
-        except ValidationError as exc:
-            msg = f"chat endpoint returned malformed body: {response.content[:300]!r}"
-            raise ChatProviderError(msg) from exc
-
-    async def _stream(self, payload: dict[str, Any]) -> AsyncIterator[OllamaWireChunk]:
-        """NDJSON-чанки ответа; до первого байта запрос повторяется."""
-        attempts = self._cfg.http.max_retries + 1
-
-        for attempt in range(attempts):
-            streamed = False
-            try:
-                async for chunk in self._attempt(payload):
-                    streamed = True
-                    yield chunk
-
-                return
-            except ChatProviderError:
-                raise
-            except httpx.HTTPError as exc:
-                if streamed:
-                    msg = f"chat stream broke mid-reply: {exc}"
-                    raise ChatProviderError(msg) from exc
-
-                if attempt + 1 >= attempts:
-                    msg = f"chat endpoint failed: {exc}"
-                    raise ChatProviderError(msg) from exc
-
-                logger.warning(
-                    "ollama chat: attempt %d/%d failed: %s",
-                    attempt + 1,
-                    attempts,
-                    exc,
-                )
-
-    async def _attempt(self, payload: dict[str, Any]) -> AsyncIterator[OllamaWireChunk]:
-        async with self._client.stream(
-            "POST", self._endpoint(), json=payload, headers=self._headers()
-        ) as response:
-            if response.status_code in self.RETRY_STATUSES:
-                # тело не нужно: статус ретраится как сетевая ошибка
-                raise httpx.TransportError(f"status {response.status_code}")
-
-            if response.is_error:
-                body = await response.aread()
-                msg = f"chat endpoint returned {response.status_code}: {body[:500]!r}"
-                raise ChatProviderError(msg)
-
-            lines = response.aiter_lines()
-            while True:
-                line = await self._next_line(lines)
-                if line is None:
-                    break
-
-                body = line.strip()
-                if not body:
-                    continue
-
-                yield self._parse_line(body)
-
-    async def _next_line(self, lines: AsyncIterator[str]) -> str | None:
-        """Очередная NDJSON-строка под вотчдогом паузы между чанками."""
-        ceiling = self._cfg.http.stream_chunk_timeout
-
-        try:
-            if ceiling:
-                async with asyncio.timeout(ceiling):
-                    return await anext(lines, None)
-            return await anext(lines, None)
-        except TimeoutError as exc:
-            msg = f"chat stream stalled: no chunk for {ceiling}s"
-            raise ChatProviderError(msg) from exc
-
     @staticmethod
-    def _parse_line(body: str) -> OllamaWireChunk:
+    def _parse_body(body: bytes) -> OllamaWireChunk:
         try:
             return OllamaWireChunk.model_validate_json(body)
         except ValidationError as exc:
-            msg = f"chat endpoint sent malformed chunk: {body[:300]!r}"
+            msg = f"chat endpoint returned malformed body: {body[:300]!r}"
             raise ChatProviderError(msg) from exc
-
-    def _endpoint(self) -> str:
-        return self._cfg.http.base_url.rstrip("/") + "/" + self.ENDPOINT
-
-    def _headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self._cfg.http.api_key}"}
 
     def _payload(self, request: ChatRequest) -> dict[str, Any]:
         payload: dict[str, Any] = {

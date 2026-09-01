@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -35,9 +36,14 @@ pytestmark = pytest.mark.anyio
 
 from boba.chat.provider import OpenAiChatConfig
 
-OPENAI = {"base_url": "https://llm.example/v1", "api_key": "token"}
+HTTP: dict[str, Any] = {}
 
-BACKEND = {"kind": "openai", "http": OPENAI}
+BACKEND = {
+    "kind": "openai",
+    "http": HTTP,
+    "base_url": "https://llm.example/v1",
+    "api_key": "token",
+}
 
 NO_OVERRIDES = ""
 """Пустой app_root: строки берутся из пакета, как в чистом развёртывании."""
@@ -137,7 +143,7 @@ class TestApplyTo:
         backend = settings.provider
         if not isinstance(backend, OpenAiChatConfig):
             raise AssertionError(f"backend is openai: {backend}")
-        if backend.http.base_url != OPENAI["base_url"]:
+        if backend.base_url != BACKEND["base_url"]:
             raise AssertionError("openai transport changed")
 
     def test_admin_sampling_survives_overrides_verbatim(self) -> None:

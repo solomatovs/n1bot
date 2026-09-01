@@ -60,7 +60,7 @@ class LlmSettings(BaseModel):
         Field(
             description=(
                 "Чат-провайдер профиля: kind = 'openai' | 'ollama' с "
-                "транспортом http = ${openai.<name>} либо kind = 'local' "
+                "транспортом http = ${http.<name>} либо kind = 'local' "
                 "с каталогом модели."
             ),
         ),

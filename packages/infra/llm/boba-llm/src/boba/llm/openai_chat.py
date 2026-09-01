@@ -1,9 +1,9 @@
 """Openai-совместимый чат-бэкенд: /chat/completions потоком SSE.
 
-Провайдер владеет wire-форматом целиком: сборка тела запроса, разбор
-SSE-дельт, склейка вызовов инструментов по index, нормализация рассуждений
-(reasoning_content | reasoning), вотчдог пауз между чанками и повторы
-до первого полученного байта.
+Провайдер владеет wire-форматом: сборка тела запроса, разбор SSE-дельт,
+склейка вызовов инструментов по index, нормализация рассуждений
+(reasoning_content | reasoning). HTTP-обмен — ретраи, вотчдог пауз —
+делает ChatExchange.
 
 Ошибки:
 ChatProviderError — endpoint недоступен, ответил статусом или мусором,
@@ -12,7 +12,6 @@ ChatProviderError — endpoint недоступен, ответил статус
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
@@ -41,6 +40,7 @@ from boba.chat.provider import (
     ToolCallRequest,
     ToolSpec,
 )
+from boba.llm.http import ChatExchange, WireStream
 from boba.toolkit.timing import Elapsed
 
 logger = logging.getLogger(__name__)
@@ -228,177 +228,29 @@ class StreamAssembly:
         return parsed
 
 
-class OpenAiChatProvider(ChatProvider):
-    """ChatProvider поверх openai-совместимого endpoint'а."""
-
-    ENDPOINT: ClassVar[str] = "chat/completions"
-
-    RETRY_STATUSES: ClassVar[frozenset[int]] = frozenset({429, 500, 502, 503, 504})
+class SseWireStream(WireStream[WireChunk]):
+    """SSE-строки потока в WireChunk; экземпляр живёт одну попытку запроса."""
 
     SSE_DONE: ClassVar[str] = "[DONE]"
     """Данные последнего события потока."""
 
-    def __init__(
-        self,
-        cfg: OpenAiChatConfig,
-        client: httpx.AsyncClient,
-        model: str,
-    ) -> None:
-        self._cfg = cfg
-        self._client = client
-        self._model = model
+    def __init__(self) -> None:
+        self._decoder = SSEDecoder()
 
-    async def chat(self, request: ChatRequest) -> AsyncIterator[ChatEvent]:
-        payload = self._payload(request)
+    def feed(self, line: str) -> WireChunk | None:
+        event = self._decoder.decode(line)
+        if event is None:
+            return None
 
-        elapsed = Elapsed()
-        assembly = StreamAssembly()
-        if request.stream:
-            async for chunk in self._stream(payload):
-                emitted = assembly.take(chunk)
-                if emitted is not None:
-                    yield emitted
-        else:
-            assembly.take(await self._complete(payload))
+        return self._parse_event(event)
 
-        reply = assembly.reply()
-        logger.info(
-            "openai chat: %s replied in %dms (%d call(s))",
-            self._model,
-            elapsed.ms(),
-            len(reply.tool_calls),
-        )
+    def finish(self) -> WireChunk | None:
+        """Поток оборвался без пустой строки: недосланное событие всё же отдаём."""
+        trailing = self._decoder.decode("")
+        if trailing is None:
+            return None
 
-        yield reply
-
-    async def _complete(self, payload: dict[str, Any]) -> WireChunk:
-        """Один запрос-ответ: всё тело chat/completions одним чанком."""
-        headers = {"Authorization": f"Bearer {self._cfg.http.api_key}"}
-        endpoint = self._cfg.http.base_url.rstrip("/") + "/" + self.ENDPOINT
-        attempts = self._cfg.http.max_retries + 1
-
-        for attempt in range(attempts):
-            try:
-                response = await self._client.post(
-                    endpoint, json=payload, headers=headers
-                )
-                if response.status_code in self.RETRY_STATUSES:
-                    raise httpx.TransportError(f"status {response.status_code}")
-
-                if response.is_error:
-                    msg = (
-                        f"chat endpoint returned {response.status_code}: "
-                        f"{response.content[:500]!r}"
-                    )
-                    raise ChatProviderError(msg)
-
-                break
-            except ChatProviderError:
-                raise
-            except httpx.HTTPError as exc:
-                if attempt + 1 >= attempts:
-                    msg = f"chat endpoint failed: {exc}"
-                    raise ChatProviderError(msg) from exc
-
-                logger.warning(
-                    "openai chat: attempt %d/%d failed: %s",
-                    attempt + 1,
-                    attempts,
-                    exc,
-                )
-
-        try:
-            return WireChunk.model_validate_json(response.content)
-        except ValidationError as exc:
-            msg = f"chat endpoint returned malformed body: {response.content[:300]!r}"
-            raise ChatProviderError(msg) from exc
-
-    async def _stream(self, payload: dict[str, Any]) -> AsyncIterator[WireChunk]:
-        """SSE-чанки ответа; до первого байта запрос повторяется."""
-        attempts = self._cfg.http.max_retries + 1
-
-        for attempt in range(attempts):
-            streamed = False
-            try:
-                async for chunk in self._attempt(payload):
-                    streamed = True
-                    yield chunk
-
-                return
-            except ChatProviderError:
-                raise
-            except httpx.HTTPError as exc:
-                if streamed:
-                    msg = f"chat stream broke mid-reply: {exc}"
-                    raise ChatProviderError(msg) from exc
-
-                if attempt + 1 >= attempts:
-                    msg = f"chat endpoint failed: {exc}"
-                    raise ChatProviderError(msg) from exc
-
-                logger.warning(
-                    "openai chat: attempt %d/%d failed: %s",
-                    attempt + 1,
-                    attempts,
-                    exc,
-                )
-
-    async def _attempt(self, payload: dict[str, Any]) -> AsyncIterator[WireChunk]:
-        headers = {"Authorization": f"Bearer {self._cfg.http.api_key}"}
-        endpoint = self._cfg.http.base_url.rstrip("/") + "/" + self.ENDPOINT
-
-        async with self._client.stream(
-            "POST", endpoint, json=payload, headers=headers
-        ) as response:
-            if response.status_code in self.RETRY_STATUSES:
-                # тело не нужно: статус ретраится как сетевая ошибка
-                raise httpx.TransportError(f"status {response.status_code}")
-
-            if response.is_error:
-                body = await response.aread()
-                msg = f"chat endpoint returned {response.status_code}: {body[:500]!r}"
-                raise ChatProviderError(msg)
-
-            decoder = SSEDecoder()
-            lines = response.aiter_lines()
-            while True:
-                line = await self._next_line(lines)
-                if line is None:
-                    break
-
-                event = decoder.decode(line)
-                if event is None:
-                    continue
-
-                chunk = self._parse_event(event)
-                if chunk is None:
-                    continue
-
-                yield chunk
-
-            # поток оборвался без пустой строки: недосланное событие всё же отдаём
-            trailing = decoder.decode("")
-            if trailing is None:
-                return
-
-            chunk = self._parse_event(trailing)
-            if chunk is None:
-                return
-
-            yield chunk
-
-    async def _next_line(self, lines: AsyncIterator[str]) -> str | None:
-        """Очередная строка SSE под вотчдогом паузы между чанками."""
-        ceiling = self._cfg.http.stream_chunk_timeout
-
-        try:
-            if ceiling:
-                async with asyncio.timeout(ceiling):
-                    return await anext(lines, None)
-            return await anext(lines, None)
-        except TimeoutError as exc:
-            msg = f"chat stream stalled: no chunk for {ceiling}s"
-            raise ChatProviderError(msg) from exc
+        return self._parse_event(trailing)
 
     @classmethod
     def _parse_event(cls, event: ServerSentEvent) -> WireChunk | None:
@@ -414,6 +266,62 @@ class OpenAiChatProvider(ChatProvider):
             return WireChunk.model_validate_json(body)
         except ValidationError as exc:
             msg = f"chat endpoint sent malformed chunk: {body[:300]!r}"
+            raise ChatProviderError(msg) from exc
+
+
+class OpenAiChatProvider(ChatProvider):
+    """ChatProvider поверх openai-совместимого endpoint'а."""
+
+    ENDPOINT: ClassVar[str] = "chat/completions"
+
+    def __init__(
+        self,
+        cfg: OpenAiChatConfig,
+        client: httpx.AsyncClient,
+        model: str,
+    ) -> None:
+        self._cfg = cfg
+        self._model = model
+
+        endpoint = cfg.base_url.rstrip("/") + "/" + self.ENDPOINT
+        self._exchange = ChatExchange(
+            cfg.http,
+            client,
+            endpoint=endpoint,
+            api_key=cfg.api_key,
+            label="openai chat",
+        )
+
+    async def chat(self, request: ChatRequest) -> AsyncIterator[ChatEvent]:
+        payload = self._payload(request)
+
+        elapsed = Elapsed()
+        assembly = StreamAssembly()
+        if request.stream:
+            async for chunk in self._exchange.stream(payload, SseWireStream):
+                emitted = assembly.take(chunk)
+                if emitted is not None:
+                    yield emitted
+        else:
+            body = await self._exchange.complete(payload)
+            assembly.take(self._parse_body(body))
+
+        reply = assembly.reply()
+        logger.info(
+            "openai chat: %s replied in %dms (%d call(s))",
+            self._model,
+            elapsed.ms(),
+            len(reply.tool_calls),
+        )
+
+        yield reply
+
+    @staticmethod
+    def _parse_body(body: bytes) -> WireChunk:
+        try:
+            return WireChunk.model_validate_json(body)
+        except ValidationError as exc:
+            msg = f"chat endpoint returned malformed body: {body[:300]!r}"
             raise ChatProviderError(msg) from exc
 
     def _payload(self, request: ChatRequest) -> dict[str, Any]:

@@ -59,13 +59,20 @@ from boba.toolrun.cancellation import CancellableTools
 
 pytestmark = pytest.mark.anyio
 
-OPENAI = {"base_url": "https://llm.example/v1", "api_key": "token"}
+HTTP: dict[str, Any] = {}
 
-BACKEND = {"kind": "openai", "http": OPENAI}
+BACKEND = {
+    "kind": "openai",
+    "http": HTTP,
+    "base_url": "https://llm.example/v1",
+    "api_key": "token",
+}
 
 REPHRASER = {
     "kind": "openai",
-    "http": OPENAI,
+    "http": HTTP,
+    "base_url": "https://llm.example/v1",
+    "api_key": "token",
     "model": "small-model",
     "system_prompt": "rephrase",
     "max_tokens": 256,

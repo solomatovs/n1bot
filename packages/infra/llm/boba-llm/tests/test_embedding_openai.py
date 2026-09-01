@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 import pytest
 
-from boba.chat.openai import OpenAiConfig
+from boba.chat.http import HttpConfig
 from boba.llm.embedding import (
     EmbedderFactory,
     EmbeddingError,
@@ -28,7 +28,7 @@ def _patch(monkeypatch: pytest.MonkeyPatch, handler) -> None:
         kwargs["transport"] = httpx.MockTransport(handler)
         return real_client(**kwargs)
 
-    monkeypatch.setattr("boba.llm.openai.httpx.AsyncClient", mock_client)
+    monkeypatch.setattr("boba.llm.http.httpx.AsyncClient", mock_client)
 
 
 def _config(batch_size: int) -> OpenAiEmbedding:
@@ -38,7 +38,9 @@ def _config(batch_size: int) -> OpenAiEmbedding:
         dim=DIM,
         batch_size=batch_size,
         progress_every=100,
-        http=OpenAiConfig(base_url="https://llm.test/v1", api_key="secret-key"),
+        http=HttpConfig(),
+        base_url="https://llm.test/v1",
+        api_key="secret-key",
     )
 
 

@@ -19,9 +19,9 @@ from typing import Annotated, ClassVar, Literal
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from boba.chat.openai import OpenAiConfig
+from boba.chat.http import HttpConfig
 from boba.indexing.ports import Embedder
-from boba.llm.openai import OpenAiHttp
+from boba.llm.http import LlmHttp
 from boba.toolkit.timing import Elapsed
 
 logger = logging.getLogger(__name__)
@@ -96,12 +96,16 @@ class OpenAiEmbedding(EmbeddingBase):
     """Удалённый инференс через openai-совместимый endpoint /embeddings."""
 
     kind: Literal["openai"]
-    http: OpenAiConfig = Field(
+
+    http: HttpConfig = Field(
         description=(
-            "HTTP-транспорт провайдера; в конфиге подключается ссылкой "
-            "${openai.<name>}."
+            "Поведение HTTP-транспорта; в конфиге подключается ссылкой ${http}."
         ),
     )
+
+    base_url: str = Field(description="Endpoint API провайдера.")
+
+    api_key: str = Field(description="Ключ API провайдера.")
 
 
 EmbeddingConfig = Annotated[
@@ -248,7 +252,7 @@ class OpenAiEmbedder(Embedder[str]):
         self,
         contents: Sequence[str],
     ) -> Sequence[Sequence[float]]:
-        async with OpenAiHttp.client(self._cfg.http) as client:
+        async with LlmHttp.client(self._cfg.http) as client:
             vectors: list[Sequence[float]] = []
             elapsed = Elapsed()
             logged = 0
@@ -269,7 +273,7 @@ class OpenAiEmbedder(Embedder[str]):
             return vectors
 
     async def embed_query(self, content: str) -> Sequence[float]:
-        async with OpenAiHttp.client(self._cfg.http) as client:
+        async with LlmHttp.client(self._cfg.http) as client:
             vectors = await self._request(client, [content])
             return vectors[0]
 
@@ -277,7 +281,7 @@ class OpenAiEmbedder(Embedder[str]):
         return self._cfg.dim
 
     def _endpoint(self) -> str:
-        return self._cfg.http.base_url.rstrip("/") + "/" + self.ENDPOINT
+        return self._cfg.base_url.rstrip("/") + "/" + self.ENDPOINT
 
     async def _request(
         self,
@@ -285,7 +289,7 @@ class OpenAiEmbedder(Embedder[str]):
         batch: Sequence[str],
     ) -> list[Sequence[float]]:
         payload = {"model": self._cfg.model, "input": list(batch)}
-        headers = {"Authorization": f"Bearer {self._cfg.http.api_key}"}
+        headers = {"Authorization": f"Bearer {self._cfg.api_key}"}
 
         elapsed = Elapsed()
         try:

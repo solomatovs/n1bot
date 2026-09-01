@@ -16,7 +16,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
-from boba.chat.openai import OpenAiConfig
+from boba.chat.http import HttpConfig
 from boba.chat.provider import (
     ChatDelta,
     ChatProvider,
@@ -31,8 +31,8 @@ from boba.chat.provider import (
     ToolSpec,
 )
 from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
-from boba.llm.ollama_chat import OllamaChatProvider
 from boba.llm.local import LocalReplyParser, QwenDialogRender
+from boba.llm.ollama_chat import OllamaChatProvider
 from boba.llm.openai_chat import OpenAiChatProvider
 
 pytestmark = pytest.mark.anyio
@@ -210,7 +210,9 @@ def _delta_chunk(delta: dict[str, Any]) -> dict[str, Any]:
 def _provider(handler) -> OpenAiChatProvider:
     cfg = OpenAiChatConfig(
         kind="openai",
-        http=OpenAiConfig(base_url="https://fake/v1", api_key="k"),
+        http=HttpConfig(),
+        base_url="https://fake/v1",
+        api_key="k",
     )
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
@@ -500,7 +502,9 @@ class TestChatProviderFactory:
     def test_openai_needs_client(self) -> None:
         cfg = OpenAiChatConfig(
             kind="openai",
-            http=OpenAiConfig(base_url="https://x/v1", api_key="k"),
+            http=HttpConfig(),
+            base_url="https://x/v1",
+            api_key="k",
         )
 
         with pytest.raises(ValueError, match="httpx client"):
@@ -509,7 +513,9 @@ class TestChatProviderFactory:
     def test_openai_builds_provider(self) -> None:
         cfg = OpenAiChatConfig(
             kind="openai",
-            http=OpenAiConfig(base_url="https://x/v1", api_key="k"),
+            http=HttpConfig(),
+            base_url="https://x/v1",
+            api_key="k",
         )
         client = httpx.AsyncClient(
             transport=httpx.MockTransport(lambda r: httpx.Response(200))
@@ -594,7 +600,9 @@ def _ndjson(*chunks: dict[str, Any]) -> bytes:
 def _ollama_provider(handler) -> OllamaChatProvider:
     cfg = OllamaChatConfig(
         kind="ollama",
-        http=OpenAiConfig(base_url="http://fake:11434", api_key="k"),
+        http=HttpConfig(),
+        base_url="http://fake:11434",
+        api_key="k",
     )
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
@@ -724,7 +732,9 @@ class TestOllamaChatProvider:
                 ChatTurn(role=ChatRole.TOOL, content="found", tool_call_id="c1"),
                 ChatTurn(role=ChatRole.USER, content="and?"),
             ],
-            tools=[ToolSpec(name="probe", description="d", parameters={"type": "object"})],
+            tools=[
+                ToolSpec(name="probe", description="d", parameters={"type": "object"})
+            ],
             sampling={
                 "think": "low",
                 "options": {"top_k": 20, "num_predict": 4096},
@@ -802,7 +812,9 @@ class TestOllamaChatProvider:
     def test_factory_needs_client(self) -> None:
         cfg = OllamaChatConfig(
             kind="ollama",
-            http=OpenAiConfig(base_url="http://x:11434", api_key="k"),
+            http=HttpConfig(),
+            base_url="http://x:11434",
+            api_key="k",
         )
 
         with pytest.raises(ValueError, match="httpx client"):
@@ -811,7 +823,9 @@ class TestOllamaChatProvider:
     def test_factory_builds_provider(self) -> None:
         cfg = OllamaChatConfig(
             kind="ollama",
-            http=OpenAiConfig(base_url="http://x:11434", api_key="k"),
+            http=HttpConfig(),
+            base_url="http://x:11434",
+            api_key="k",
         )
         client = httpx.AsyncClient(
             transport=httpx.MockTransport(lambda r: httpx.Response(200))

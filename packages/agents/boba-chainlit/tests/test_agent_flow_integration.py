@@ -450,10 +450,10 @@ class TestPrefetchGraph:
         if not isinstance(rephraser_config, OpenAiGeneration):
             pytest.skip("недоступный endpoint проверяется на удалённом провайдере")
 
-        unreachable = rephraser_config.http.model_copy(
-            update={"base_url": "http://127.0.0.1:9/v1", "max_retries": 0}
+        unreachable = rephraser_config.http.model_copy(update={"max_retries": 0})
+        rephraser = rephraser_config.model_copy(
+            update={"http": unreachable, "base_url": "http://127.0.0.1:9/v1"}
         )
-        rephraser = rephraser_config.model_copy(update={"http": unreachable})
         broken = flow_config.model_copy(update={"rephraser": rephraser})
         profile = app_config.profiles[PROFILE].model_copy(update={"flow": broken})
         config = app_config.model_copy(
