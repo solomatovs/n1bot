@@ -73,7 +73,7 @@ def kb_config() -> PostgresKnowledgeBaseConfig:
             },
             "tables": {"pg_schema": "kb"},
             "embedding": {
-                "provider": "local",
+                "kind": "local",
                 "model": "intfloat/multilingual-e5-small",
                 "dim": 384,
                 "batch_size": 8,

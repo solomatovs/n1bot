@@ -15,7 +15,7 @@ from boba.identity.errors import RefusalError
 
 OPENAI = {"base_url": "https://llm.example/v1", "api_key": "token"}
 
-BACKEND = {"provider": "openai", "openai": OPENAI}
+BACKEND = {"kind": "openai", "http": OPENAI}
 
 
 @pytest.fixture(autouse=True)
@@ -27,7 +27,7 @@ def _profile(**kw) -> ChatProfileConfig:
     base = {
         "display_name": "Profile",
         "description": "test profile",
-        "backend": BACKEND,
+        "provider": BACKEND,
         "model": "test-model",
     }
     base.update(kw)
@@ -124,7 +124,7 @@ class TestVisibilityByWildcard:
 class TestChatSampling:
     def test_empty_sampling_sends_nothing(self) -> None:
         settings = AgentSettings.model_validate(
-            {"backend": BACKEND, "model": "test-model"}
+            {"provider": BACKEND, "model": "test-model"}
         )
         if settings.chat_sampling() != {}:
             raise AssertionError("settings.chat_sampling() == {}")
@@ -133,7 +133,7 @@ class TestChatSampling:
         """Таблица sampling уходит как написана: без проверок и переименований."""
         settings = AgentSettings.model_validate(
             {
-                "backend": BACKEND,
+                "provider": BACKEND,
                 "model": "test-model",
                 "sampling": {
                     "temperature": 0.2,
@@ -157,7 +157,7 @@ class TestChatSampling:
 
     def test_openai_transport_binds(self) -> None:
         settings = AgentSettings.model_validate(
-            {"backend": BACKEND, "model": "test-model"}
+            {"provider": BACKEND, "model": "test-model"}
         )
-        if not isinstance(settings.backend, OpenAiChatConfig):
-            raise AssertionError("isinstance(settings.backend, OpenAiChatConfig)")
+        if not isinstance(settings.provider, OpenAiChatConfig):
+            raise AssertionError("isinstance(settings.provider, OpenAiChatConfig)")

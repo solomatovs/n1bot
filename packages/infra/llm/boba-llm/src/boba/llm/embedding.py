@@ -82,7 +82,7 @@ class EmbeddingBase(BaseModel):
 class LocalEmbedding(EmbeddingBase):
     """Локальный инференс fastembed (in-process, ONNX)."""
 
-    provider: Literal["local"]
+    kind: Literal["local"]
     cache_dir: str = Field(
         default="",
         description=(
@@ -95,10 +95,10 @@ class LocalEmbedding(EmbeddingBase):
 class OpenAiEmbedding(EmbeddingBase):
     """Удалённый инференс через openai-совместимый endpoint /embeddings."""
 
-    provider: Literal["openai"]
-    openai: OpenAiConfig = Field(
+    kind: Literal["openai"]
+    http: OpenAiConfig = Field(
         description=(
-            "Транспорт openai-провайдера; в конфиге подключается ссылкой "
+            "HTTP-транспорт провайдера; в конфиге подключается ссылкой "
             "${openai.<name>}."
         ),
     )
@@ -106,9 +106,9 @@ class OpenAiEmbedding(EmbeddingBase):
 
 EmbeddingConfig = Annotated[
     LocalEmbedding | OpenAiEmbedding,
-    Field(discriminator="provider"),
+    Field(discriminator="kind"),
 ]
-"""Discriminated union по provider — точная диагностика ошибок валидации."""
+"""Discriminated union по kind — точная диагностика ошибок валидации."""
 
 
 class LocalFastEmbedEmbedder(Embedder[str]):
@@ -248,7 +248,7 @@ class OpenAiEmbedder(Embedder[str]):
         self,
         contents: Sequence[str],
     ) -> Sequence[Sequence[float]]:
-        async with OpenAiHttp.client(self._cfg.openai) as client:
+        async with OpenAiHttp.client(self._cfg.http) as client:
             vectors: list[Sequence[float]] = []
             elapsed = Elapsed()
             logged = 0
@@ -269,7 +269,7 @@ class OpenAiEmbedder(Embedder[str]):
             return vectors
 
     async def embed_query(self, content: str) -> Sequence[float]:
-        async with OpenAiHttp.client(self._cfg.openai) as client:
+        async with OpenAiHttp.client(self._cfg.http) as client:
             vectors = await self._request(client, [content])
             return vectors[0]
 
@@ -277,7 +277,7 @@ class OpenAiEmbedder(Embedder[str]):
         return self._cfg.dim
 
     def _endpoint(self) -> str:
-        return self._cfg.openai.base_url.rstrip("/") + "/" + self.ENDPOINT
+        return self._cfg.http.base_url.rstrip("/") + "/" + self.ENDPOINT
 
     async def _request(
         self,
@@ -285,7 +285,7 @@ class OpenAiEmbedder(Embedder[str]):
         batch: Sequence[str],
     ) -> list[Sequence[float]]:
         payload = {"model": self._cfg.model, "input": list(batch)}
-        headers = {"Authorization": f"Bearer {self._cfg.openai.api_key}"}
+        headers = {"Authorization": f"Bearer {self._cfg.http.api_key}"}
 
         elapsed = Elapsed()
         try:

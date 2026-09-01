@@ -101,8 +101,8 @@ def fake_openai_chat(
 ) -> ProviderChatModel:
     """Чат-модель прод-стека на фейковом httpx-клиенте: SSE идёт через него."""
     cfg = OpenAiChatConfig(
-        provider="openai",
-        openai=OpenAiConfig(base_url=base_url, api_key="fake-key"),
+        kind="openai",
+        http=OpenAiConfig(base_url=base_url, api_key="fake-key"),
     )
 
     if sampling is None:

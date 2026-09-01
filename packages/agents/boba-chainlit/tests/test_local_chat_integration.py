@@ -70,8 +70,8 @@ def _local_model_dir() -> str:
     app_config = bind(built, path="app", model=AppConfig)
 
     for profile in app_config.profiles.values():
-        if isinstance(profile.backend, LocalChatConfig):
-            model_dir = profile.backend.model_dir
+        if isinstance(profile.provider, LocalChatConfig):
+            model_dir = profile.provider.model_dir
             if not (Path(model_dir) / "genai_config.json").is_file():
                 pytest.skip(f"нет весов локальной модели: {model_dir}")
 
@@ -92,7 +92,7 @@ async def kb_probe(
 
 
 def _chat(model_dir: str) -> ProviderChatModel:
-    cfg = LocalChatConfig(provider="local", model_dir=model_dir)
+    cfg = LocalChatConfig(kind="local", model_dir=model_dir)
     provider = ChatProviderFactory.build(
         cfg,
         model=Path(model_dir).name,

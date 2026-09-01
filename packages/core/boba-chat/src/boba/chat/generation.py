@@ -115,7 +115,7 @@ class GenerationMessages:
 class LocalGeneration(GenerationBase):
     """Локальный инференс onnxruntime-genai (in-process, ONNX)."""
 
-    provider: Literal["local"]
+    kind: Literal["local"]
 
     max_tokens: int = Field(
         gt=0,
@@ -145,11 +145,11 @@ class LocalGeneration(GenerationBase):
 class OpenAiGeneration(GenerationBase):
     """Удалённый инференс через openai-совместимый endpoint /chat/completions."""
 
-    provider: Literal["openai"]
+    kind: Literal["openai"]
 
-    openai: OpenAiConfig = Field(
+    http: OpenAiConfig = Field(
         description=(
-            "Транспорт openai-провайдера; в конфиге подключается ссылкой "
+            "HTTP-транспорт провайдера; в конфиге подключается ссылкой "
             "${openai.<name>}."
         ),
     )
@@ -168,9 +168,9 @@ class OpenAiGeneration(GenerationBase):
 
 GenerationConfig = Annotated[
     LocalGeneration | OpenAiGeneration,
-    Field(discriminator="provider"),
+    Field(discriminator="kind"),
 ]
-"""Discriminated union по provider — точная диагностика ошибок валидации."""
+"""Discriminated union по kind — точная диагностика ошибок валидации."""
 
 
 class StructuredGenerator(Protocol):

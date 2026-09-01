@@ -50,7 +50,12 @@ from boba.chat.profiles import (
     SettingsView,
     UserMeta,
 )
-from boba.chat.provider import ChatProvider, LocalChatConfig, OpenAiChatConfig
+from boba.chat.provider import (
+    ChatProvider,
+    LocalChatConfig,
+    OllamaChatConfig,
+    OpenAiChatConfig,
+)
 from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresSchema
 from boba.identity.errors import InternalServiceError
 from boba.identity.session import SessionSource
@@ -175,7 +180,7 @@ def _openai_client(openai: OpenAiConfig) -> AsyncClient:
 async def httpx_clients(
     c: Annotated[AppConfig, Depends(get_app_config)],
 ) -> AsyncIterator[dict[str, AsyncClient]]:
-    """HTTP-клиент на каждый openai-бэкенд профиля чата; живут до остановки.
+    """HTTP-клиент на каждый удалённый бэкенд профиля чата; живут до остановки.
 
     Профиль на локальном бэкенде клиента не имеет. Prefetch-flow профиля
     получает свой клиент под ключом flow: у его переформулировщика свой
@@ -183,8 +188,11 @@ async def httpx_clients(
     """
     clients: dict[str, AsyncClient] = {}
     for name, profile in c.profiles.items():
-        if isinstance(profile.backend, OpenAiChatConfig):
-            clients[name] = _openai_client(profile.backend.openai)
+        if isinstance(profile.provider, OpenAiChatConfig):
+            clients[name] = _openai_client(profile.provider.http)
+
+        if isinstance(profile.provider, OllamaChatConfig):
+            clients[name] = _openai_client(profile.provider.http)
 
         flow = profile.flow
         if not isinstance(flow, PrefetchFlowConfig):
@@ -193,7 +201,7 @@ async def httpx_clients(
         if not isinstance(flow.rephraser, OpenAiGeneration):
             continue
 
-        clients[flow.client_key(name)] = _openai_client(flow.rephraser.openai)
+        clients[flow.client_key(name)] = _openai_client(flow.rephraser.http)
 
     try:
         yield clients
@@ -214,8 +222,8 @@ def local_chat_runtimes(
     runtimes: dict[str, OnnxChatRuntime] = {}
 
     for profile in c.profiles.values():
-        if isinstance(profile.backend, LocalChatConfig):
-            model_dir = profile.backend.model_dir
+        if isinstance(profile.provider, LocalChatConfig):
+            model_dir = profile.provider.model_dir
             if model_dir not in runtimes:
                 runtimes[model_dir] = OnnxChatRuntime(model_dir)
 
@@ -456,7 +464,7 @@ def session_chat_provider(
     ],
 ) -> ChatProvider:
     """Чат-провайдер сессии: реализацию выбирает бэкенд профиля."""
-    backend = settings.backend
+    backend = settings.provider
 
     runtime = None
     if isinstance(backend, LocalChatConfig):

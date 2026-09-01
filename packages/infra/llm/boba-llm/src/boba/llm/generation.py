@@ -151,7 +151,7 @@ class OpenAiStructuredGenerator(StructuredGenerator):
 
     async def generate(self, user: str, schema: SchemaSpec) -> str:
         payload = self._payload(user, schema)
-        headers = {"Authorization": f"Bearer {self._cfg.openai.api_key}"}
+        headers = {"Authorization": f"Bearer {self._cfg.http.api_key}"}
 
         elapsed = Elapsed()
         try:
@@ -172,7 +172,7 @@ class OpenAiStructuredGenerator(StructuredGenerator):
         return self._candidate(reply)
 
     def _endpoint(self) -> str:
-        return self._cfg.openai.base_url.rstrip("/") + "/" + self.ENDPOINT
+        return self._cfg.http.base_url.rstrip("/") + "/" + self.ENDPOINT
 
     def _payload(self, user: str, schema: SchemaSpec) -> dict[str, Any]:
         function = {

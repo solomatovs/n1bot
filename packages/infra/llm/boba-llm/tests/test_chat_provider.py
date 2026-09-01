@@ -1,4 +1,4 @@
-"""Стандарт чат-провайдеров: парсер локального ответа, wire openai, мост."""
+"""Стандарт чат-провайдеров: парсер локального ответа, wire openai и ollama, мост."""
 
 from __future__ import annotations
 
@@ -25,11 +25,13 @@ from boba.chat.provider import (
     ChatRequest,
     ChatRole,
     ChatTurn,
+    OllamaChatConfig,
     OpenAiChatConfig,
     ToolCallRequest,
     ToolSpec,
 )
 from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
+from boba.llm.ollama_chat import OllamaChatProvider
 from boba.llm.local import LocalReplyParser, QwenDialogRender
 from boba.llm.openai_chat import OpenAiChatProvider
 
@@ -207,8 +209,8 @@ def _delta_chunk(delta: dict[str, Any]) -> dict[str, Any]:
 
 def _provider(handler) -> OpenAiChatProvider:
     cfg = OpenAiChatConfig(
-        provider="openai",
-        openai=OpenAiConfig(base_url="https://fake/v1", api_key="k"),
+        kind="openai",
+        http=OpenAiConfig(base_url="https://fake/v1", api_key="k"),
     )
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
@@ -497,8 +499,8 @@ class TestChatProviderFactory:
 
     def test_openai_needs_client(self) -> None:
         cfg = OpenAiChatConfig(
-            provider="openai",
-            openai=OpenAiConfig(base_url="https://x/v1", api_key="k"),
+            kind="openai",
+            http=OpenAiConfig(base_url="https://x/v1", api_key="k"),
         )
 
         with pytest.raises(ValueError, match="httpx client"):
@@ -506,8 +508,8 @@ class TestChatProviderFactory:
 
     def test_openai_builds_provider(self) -> None:
         cfg = OpenAiChatConfig(
-            provider="openai",
-            openai=OpenAiConfig(base_url="https://x/v1", api_key="k"),
+            kind="openai",
+            http=OpenAiConfig(base_url="https://x/v1", api_key="k"),
         )
         client = httpx.AsyncClient(
             transport=httpx.MockTransport(lambda r: httpx.Response(200))
@@ -579,3 +581,242 @@ class TestReasoningRoundTrip:
             raise AssertionError(f"пустой ключ сохранён: {turns[1]}")
         if turns[2].reasoning is not None:
             raise AssertionError(f"без ключа — None: {turns[2]}")
+
+
+def _ndjson(*chunks: dict[str, Any]) -> bytes:
+    lines: list[str] = []
+    for chunk in chunks:
+        lines.append(json.dumps(chunk, ensure_ascii=False) + "\n")
+
+    return "".join(lines).encode()
+
+
+def _ollama_provider(handler) -> OllamaChatProvider:
+    cfg = OllamaChatConfig(
+        kind="ollama",
+        http=OpenAiConfig(base_url="http://fake:11434", api_key="k"),
+    )
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    return OllamaChatProvider(cfg, client, "test-model")
+
+
+def _ollama_chunk(message: dict[str, Any]) -> dict[str, Any]:
+    return {"model": "test-model", "message": message, "done": False}
+
+
+class TestOllamaChatProvider:
+    """Wire нативного /api/chat: NDJSON-дельты, вызовы объектами, usage, тело."""
+
+    async def test_stream_deltas_and_final_reply(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = _ndjson(
+                _ollama_chunk({"role": "assistant", "thinking": "думаю"}),
+                _ollama_chunk({"role": "assistant", "content": "от"}),
+                _ollama_chunk({"role": "assistant", "content": "вет"}),
+                _ollama_chunk(
+                    {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": "call-1",
+                                "function": {
+                                    "index": 0,
+                                    "name": "probe",
+                                    "arguments": {"q": "x"},
+                                },
+                            }
+                        ],
+                    }
+                ),
+                {
+                    "model": "test-model",
+                    "message": {"role": "assistant"},
+                    "done": True,
+                    "done_reason": "stop",
+                    "prompt_eval_count": 11,
+                    "eval_count": 7,
+                },
+            )
+            return httpx.Response(200, content=body)
+
+        events = await _events(_ollama_provider(handler), REQUEST)
+
+        reply = events[-1]
+        if not isinstance(reply, ChatReply):
+            raise AssertionError("финал потока — ChatReply")
+
+        if reply.content != "ответ" or reply.reasoning != "думаю":
+            raise AssertionError(f"{reply.content!r} {reply.reasoning!r}")
+
+        if reply.tool_calls[0].arguments != {"q": "x"}:
+            raise AssertionError(f"аргументы объектом: {reply.tool_calls}")
+        if reply.tool_calls[0].id != "call-1":
+            raise AssertionError(reply.tool_calls)
+
+        if reply.usage.input_tokens != 11 or reply.usage.output_tokens != 7:
+            raise AssertionError(f"usage: {reply.usage}")
+
+        deltas = [e for e in events if isinstance(e, ChatDelta)]
+        if "".join(d.content for d in deltas) != "ответ":
+            raise AssertionError(f"дельты текста: {deltas}")
+        if "".join(d.reasoning for d in deltas) != "думаю":
+            raise AssertionError(f"дельты рассуждений: {deltas}")
+
+    async def test_non_stream_request_parses_whole_body(self) -> None:
+        seen: list[dict[str, Any]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(json.loads(request.content))
+            body = {
+                "model": "test-model",
+                "message": {"role": "assistant", "content": "весь ответ"},
+                "done": True,
+                "prompt_eval_count": 3,
+                "eval_count": 2,
+            }
+            return httpx.Response(200, json=body)
+
+        request = ChatRequest(
+            messages=[ChatTurn(role=ChatRole.USER, content="hi")],
+            stream=False,
+        )
+        events = await _events(_ollama_provider(handler), request)
+
+        if len(events) != 1:
+            raise AssertionError(f"без потока только финал: {events}")
+
+        reply = events[0]
+        if not isinstance(reply, ChatReply):
+            raise AssertionError("финал — ChatReply")
+        if reply.content != "весь ответ":
+            raise AssertionError(reply.content)
+        if reply.usage.input_tokens != 3 or reply.usage.output_tokens != 2:
+            raise AssertionError(f"usage: {reply.usage}")
+
+        if seen[0]["stream"] is not False:
+            raise AssertionError(f"stream в теле: {seen[0]}")
+
+    async def test_payload_sampling_as_is_and_stop_moves_into_options(self) -> None:
+        seen: list[dict[str, Any]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(json.loads(request.content))
+            body = {
+                "model": "test-model",
+                "message": {"role": "assistant", "content": "ok"},
+                "done": True,
+            }
+            return httpx.Response(200, json=body)
+
+        request = ChatRequest(
+            messages=[
+                ChatTurn(role=ChatRole.SYSTEM, content="be brief"),
+                ChatTurn(role=ChatRole.USER, content="hi"),
+                ChatTurn(
+                    role=ChatRole.ASSISTANT,
+                    content="",
+                    reasoning="прикинул",
+                    tool_calls=[
+                        ToolCallRequest(id="c1", name="probe", arguments={"q": "x"})
+                    ],
+                ),
+                ChatTurn(role=ChatRole.TOOL, content="found", tool_call_id="c1"),
+                ChatTurn(role=ChatRole.USER, content="and?"),
+            ],
+            tools=[ToolSpec(name="probe", description="d", parameters={"type": "object"})],
+            sampling={
+                "think": "low",
+                "options": {"top_k": 20, "num_predict": 4096},
+                "stop": ["</s>"],
+            },
+            stream=False,
+        )
+        await _events(_ollama_provider(handler), request)
+
+        payload = seen[0]
+        if payload["think"] != "low":
+            raise AssertionError(f"think верхним уровнем: {payload}")
+
+        if payload["options"] != {"top_k": 20, "num_predict": 4096, "stop": ["</s>"]}:
+            raise AssertionError(f"options со stop моста: {payload['options']}")
+        if "stop" in payload:
+            raise AssertionError(f"stop не должен остаться в корне: {payload}")
+
+        assistant = payload["messages"][2]
+        if assistant["thinking"] != "прикинул":
+            raise AssertionError(f"thinking ассистента: {assistant}")
+        call = assistant["tool_calls"][0]
+        if call["function"]["arguments"] != {"q": "x"}:
+            raise AssertionError(f"аргументы объектом: {call}")
+
+        tool = payload["messages"][3]
+        if tool["tool_call_id"] != "c1":
+            raise AssertionError(f"ответ инструмента: {tool}")
+
+        declared = payload["tools"][0]
+        if declared["function"]["name"] != "probe":
+            raise AssertionError(f"объявление инструмента: {declared}")
+
+    async def test_error_chunk_raises_provider_error(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = _ndjson(
+                _ollama_chunk({"role": "assistant", "content": "нач"}),
+                {"error": "model runner crashed"},
+            )
+            return httpx.Response(200, content=body)
+
+        with pytest.raises(ChatProviderError, match="model runner crashed"):
+            await _events(_ollama_provider(handler), REQUEST)
+
+    async def test_tool_call_without_id_gets_local_one(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = _ndjson(
+                _ollama_chunk(
+                    {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {"function": {"name": "probe", "arguments": {}}}
+                        ],
+                    }
+                ),
+                {"model": "test-model", "message": {"role": "assistant"}, "done": True},
+            )
+            return httpx.Response(200, content=body)
+
+        events = await _events(_ollama_provider(handler), REQUEST)
+
+        reply = events[-1]
+        if not isinstance(reply, ChatReply):
+            raise AssertionError("финал — ChatReply")
+        if not reply.tool_calls[0].id:
+            raise AssertionError("вызов без id от сервера получает локальный")
+
+    async def test_http_error_status_raises_provider_error(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404, json={"error": "model not found"})
+
+        with pytest.raises(ChatProviderError, match="404"):
+            await _events(_ollama_provider(handler), REQUEST)
+
+    def test_factory_needs_client(self) -> None:
+        cfg = OllamaChatConfig(
+            kind="ollama",
+            http=OpenAiConfig(base_url="http://x:11434", api_key="k"),
+        )
+
+        with pytest.raises(ValueError, match="httpx client"):
+            ChatProviderFactory.build(cfg, model="m", client=None, runtime=None)
+
+    def test_factory_builds_provider(self) -> None:
+        cfg = OllamaChatConfig(
+            kind="ollama",
+            http=OpenAiConfig(base_url="http://x:11434", api_key="k"),
+        )
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda r: httpx.Response(200))
+        )
+
+        built = ChatProviderFactory.build(cfg, model="m", client=client, runtime=None)
+        if not isinstance(built, OllamaChatProvider):
+            raise AssertionError(type(built))
