@@ -170,11 +170,13 @@ class AgentTracer(AsyncBaseTracer):
         streamed = self._state.take_reasoning(str(run_id))
         await self._feed.thinking_closed()
 
+        message = GeneratedMessage.of_result(response)
+        await self._spend_tokens(message, run_id)
+
         # рассуждения без стрима приходят разом в итоговом сообщении
         if streamed:
             return traced
 
-        message = GeneratedMessage.of_result(response)
         if message is None:
             return traced
 
@@ -185,6 +187,23 @@ class AgentTracer(AsyncBaseTracer):
         await self._feed.thinking_complete(self._key_of(message.id, run_id), text)
 
         return traced
+
+    async def _spend_tokens(self, message: BaseMessage | None, run_id: UUID) -> None:
+        """Публикует расход прогона; без учёта от провайдера публиковать нечего."""
+        usage = LlmUsage.of(message)
+        if not usage.counted:
+            return
+
+        message_id = None
+        if message is not None:
+            message_id = message.id
+
+        await self._feed.tokens_spent(
+            self._key_of(message_id, run_id),
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.reasoning_tokens,
+        )
 
     @override
     @_visible_failure
@@ -411,6 +430,8 @@ class UsageField:
 
     INPUT: Final = "input_tokens"
     OUTPUT: Final = "output_tokens"
+    OUTPUT_DETAILS: Final = "output_token_details"
+    REASONING: Final = "reasoning"
 
 
 class InvocationParams(BaseModel):
@@ -437,6 +458,12 @@ class LlmUsage(BaseModel):
 
     input_tokens: int = 0
     output_tokens: int = 0
+    reasoning_tokens: int = 0
+
+    @property
+    def counted(self) -> bool:
+        """Провайдер прислал учёт: нулевой расход показывать нечего."""
+        return bool(self.input_tokens or self.output_tokens)
 
     @classmethod
     def of(cls, message: BaseMessage | None) -> LlmUsage:
@@ -448,9 +475,14 @@ class LlmUsage(BaseModel):
         if usage is None:
             return cls()
 
+        details = usage.get(UsageField.OUTPUT_DETAILS)
+        if details is None:
+            details = {}
+
         return cls(
             input_tokens=usage[UsageField.INPUT],
             output_tokens=usage[UsageField.OUTPUT],
+            reasoning_tokens=details.get(UsageField.REASONING, 0),
         )
 
 
@@ -653,12 +685,14 @@ class LlmStateLog(AsyncCallbackHandler):
 
         usage = LlmUsage.of(message)
         self._say(
-            "llm %s %s: run=%s tokens in=%d out=%d, tool_calls=[%s] in %dms",
+            "llm %s %s: run=%s tokens in=%d out=%d (%d reasoning), "
+            "tool_calls=[%s] in %dms",
             LlmStage.REQUEST.value,
             LlmStageEvent.FINISHED.value,
             run.label,
             usage.input_tokens,
             usage.output_tokens,
+            usage.reasoning_tokens,
             ", ".join(self._tool_names_of(message)),
             run.elapsed_ms(now),
         )

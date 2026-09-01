@@ -147,6 +147,13 @@ class ChatUsage(BaseModel):
 
     input_tokens: int = 0
     output_tokens: int = 0
+    reasoning_tokens: int = Field(
+        default=0,
+        description=(
+            "Часть output_tokens, ушедшая в рассуждения; 0 — провайдер "
+            "рассуждения отдельно не считает."
+        ),
+    )
 
 
 class ChatReply(BaseModel):
