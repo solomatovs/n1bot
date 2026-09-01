@@ -19,14 +19,14 @@ from psycopg.errors import InsufficientPrivilege
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connections.manifest import ConnectionTypes
-from boba.db.clickhouse.profile import ClickHouseConfig
-from boba.transport.http.profile import HttpProfile
-from boba.db.postgres.profile.config import PostgresConfig
 from boba.connections.profile import ConnectionTable, GrantTarget, StoredRole
+from boba.db.clickhouse.profile import ClickHouseConfig
 from boba.db.postgres import AsyncPostgresPool, SqlNames
+from boba.db.postgres.profile.config import PostgresConfig
 from boba.identity.session import UserMetadataField
 from boba.runtime.config import AppLayers, DataLayerConfig
 from boba.stand.ui.stand import REPO_ROOT, StandApp, StandConfig, StandError, StandUrl
+from boba.transport.http.profile import HttpProfile
 from boba.workflow.records import WorkflowTable
 from boba.workflow_engine.store import WorkflowConfig
 
@@ -193,6 +193,26 @@ class StandDatabase:
             raise RuntimeError(f"user {identifier} is not stored")
 
         return dict(row[0])
+
+    def break_connection_kind(self, name: str, kind: str) -> None:
+        """Строке connections по имени ставится несуществующий kind.
+
+        Стенд пометки «type not installed»: приложение видит строку, чей
+        пакет-владелец как будто удалён.
+        """
+        run_blocking(self._break_connection_kind(name, kind))
+
+    async def _break_connection_kind(self, name: str, kind: str) -> None:
+        connections = bind(self._built, path="connections", model=ConnectionsConfig)
+        query = sql.SQL(
+            "update {} set data = jsonb_set(data, '{{kind}}', to_jsonb(%(kind)s::text)) "
+            "where name = %(name)s"
+        ).format(
+            SqlNames.table(connections.db_schema, ConnectionTable.CONNECTIONS)
+        )
+
+        async with self._pool() as pool, pool.cursor() as cur:
+            await cur.execute(query, {"kind": kind, "name": name})
 
     def seed_connections(self, llm_port: int) -> None:
         """Соединения инструментов стенда: сервисные pg/ch под именем main и web-профиль

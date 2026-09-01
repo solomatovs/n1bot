@@ -19,7 +19,6 @@ import pytest
 from playwright.sync_api import Browser, BrowserContext, Playwright, expect
 from studio_ui import BOOT_TIMEOUT_SEC, publish_refresh
 
-from boba.transport.http.profile import HttpProfile, NegotiateAuth
 from boba.kerberos import KerberosPasswordAuth
 from boba.runtime.config import StudioRuntimeConfig
 from boba.stand.site import Stand
@@ -32,6 +31,7 @@ from boba.stand.ui.stand import (
     free_port,
 )
 from boba.transport.http import HttpRequest, HttpTransport
+from boba.transport.http.profile import HttpProfile, NegotiateAuth
 
 pytestmark = pytest.mark.ui
 

@@ -8,9 +8,9 @@ from __future__ import annotations
 import pytest
 
 from boba.config import bind
-from boba.transport.http.profile import HttpProfile
 from boba.tool.web.tools import WebGrepConfig, web_fetch_page, web_grep_page
 from boba.toolkit.entry import ToolMain
+from boba.transport.http.profile import HttpProfile
 
 pytestmark = [pytest.mark.run, pytest.mark.anyio]
 

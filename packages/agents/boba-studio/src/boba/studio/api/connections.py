@@ -26,7 +26,14 @@ from typing import Any, ClassVar
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, SerializeAsAny
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    SerializeAsAny,
+    ValidationError,
+)
 
 from boba.chat.profiles import ChatProfiles
 from boba.connection_broker.probe import ConnectionProbe
@@ -37,6 +44,7 @@ from boba.connections.manifest import ConnectionTypes, ConnectionTypesError
 from boba.connections.marks import ConnectionRefusal
 from boba.connections.profile import (
     ConnectionProfileBase,
+    MissingTypeConnection,
     ProbeResult,
     StoredConnection,
 )
@@ -90,7 +98,11 @@ class ConnectionBody(BaseModel):
 
 
 class ConnectionView(BaseModel):
-    """Строка connections для страницы: профиль с замаскированными секретами."""
+    """Строка connections для страницы: профиль с замаскированными секретами.
+
+    available=False — тип строки не установлен в этом развёртывании: профиля
+    нет, страница показывает пометку вместо формы.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -98,12 +110,19 @@ class ConnectionView(BaseModel):
     name: str
     kind: str
     mine: bool
-    profile: SerializeAsAny[ConnectionProfileBase]
+    available: bool = True
+    profile: SerializeAsAny[ConnectionProfileBase] | None = None
 
     @classmethod
     def of(cls, row: StoredConnection, mine: bool) -> ConnectionView:
         return cls(
             id=row.id, name=row.name, kind=row.kind, mine=mine, profile=row.profile
+        )
+
+    @classmethod
+    def unavailable(cls, row: MissingTypeConnection, mine: bool) -> ConnectionView:
+        return cls(
+            id=row.id, name=row.name, kind=row.kind, mine=mine, available=False
         )
 
 
@@ -168,11 +187,37 @@ class ConnectionsApi:
         self._types = types
 
     def _parsed(self, raw: Mapping[str, Any]) -> ConnectionProfileBase:
-        """Профиль из тела запроса: модель по kind, секреты — настоящие."""
+        """Профиль из тела запроса: модель по kind, секреты — настоящие.
+
+        Ошибки валидации уходят в формате FastAPI (loc/msg/type): страница
+        подсвечивает ими конкретные поля формы.
+        """
+        kind = raw.get("kind")
+        if not isinstance(kind, str):
+            raise HTTPException(status_code=422, detail="profile has no kind")
+
         try:
-            profile = self._types.parse(raw)
+            manifest = self._types.manifest_of(kind)
         except ConnectionTypesError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        try:
+            profile = manifest.profile.model_validate(raw)
+        except ValidationError as exc:
+            # include_input=False: в input разобранного тела ездят секреты
+            # kind-тег в loc повторяет формат discriminated union: страница
+            # спускается по нему к полю формы
+            issues: list[dict[str, Any]] = []
+            for issue in exc.errors(include_url=False, include_input=False):
+                issues.append(
+                    {
+                        "loc": ["body", "profile", kind, *issue["loc"]],
+                        "msg": issue["msg"],
+                        "type": issue["type"],
+                    }
+                )
+
+            raise HTTPException(status_code=422, detail=issues) from None
 
         if MaskedSecrets.find(profile):
             msg = "profile carries a masked secret: enter the real value"
@@ -214,16 +259,26 @@ class ConnectionsApi:
         identity: CurrentSubject,
         kind: str | None = None,
     ) -> Sequence[ConnectionView]:
-        kinds = list(self._types.kinds())
         if kind is not None:
-            kinds = [kind]
+            async with self._served():
+                visible = await self._service.visible(identity.subject, [kind])
+
+            views: list[ConnectionView] = []
+            for item in visible:
+                views.append(ConnectionView.of(item.row, item.mine))
+
+            return views
 
         async with self._served():
-            visible = await self._service.visible(identity.subject, kinds)
+            found = await self._service.visible_all(identity.subject)
 
-        views: list[ConnectionView] = []
-        for item in visible:
+        views = []
+        for item in found.rows:
             views.append(ConnectionView.of(item.row, item.mine))
+
+        # строки типов без пакета показываются с пометкой, а не исчезают
+        for broken in found.missing:
+            views.append(ConnectionView.unavailable(broken.row, broken.mine))
 
         return views
 

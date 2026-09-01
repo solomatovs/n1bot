@@ -48,9 +48,11 @@ from boba.connections.profile import (
     GrantKind,
     GrantsColumn,
     GrantTarget,
+    MissingTypeConnection,
     RolesColumn,
     StoredConnection,
     StoredRole,
+    SubjectConnections,
 )
 from boba.connections.secrets import SecretCipher
 from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresTable, SqlNames
@@ -441,6 +443,30 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
 
         return self._stored(row)
 
+    async def name_of(self, connection_id: UUID) -> str:
+        """Имя строки без разбора профиля: живёт и у строк без типа."""
+        query = self._sql(
+            """
+            select
+                {c_name}
+            from
+                {connections}
+            where
+                {c_id} = %(id)s
+            """
+        )
+
+        pool = await self._pool()
+        async with self._guarded("name of"), pool.cursor() as cur:
+            await cur.execute(query, {"id": connection_id})
+            row = await cur.fetchone()
+
+        if row is None:
+            msg = f"connections: connection #{connection_id} not found"
+            raise ConnectionNotFoundError(msg)
+
+        return str(row[0])
+
     async def list_all(self) -> Sequence[StoredConnection]:
         query = self._sql(
             """
@@ -577,8 +603,8 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
                 {g_tgt_kind_id}
             from
                 {grants}
-            where
-                {g_src_kind} = %(src_kind)s
+            where 1=1
+                and {g_src_kind} = %(src_kind)s
                 and {g_src_kind_id} = %(src_kind_id)s
             order by
                 {g_tgt_kind},
@@ -601,18 +627,44 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
 
         return targets
 
-    async def for_subject_all(self, subject: Subject) -> Sequence[StoredConnection]:
-        """Все соединения, выданные пользователю лично или любой его роли."""
-        rows: list[StoredConnection] = []
-        for kind in self._types.kinds():
-            rows.extend(await self.for_subject(subject, kind))
+    async def for_subject_all(self, subject: Subject) -> SubjectConnections:
+        """Все соединения субъекта: разобранные строки плюс строки без типа.
 
-        return rows
+        Строка типа без установленного пакета не теряется — она попадает в
+        missing и показывается спискам с пометкой.
+        """
+        raw_rows = await self._subject_rows(subject, kind=None)
+
+        rows: list[StoredConnection] = []
+        missing: list[MissingTypeConnection] = []
+        for row in raw_rows:
+            try:
+                rows.append(self._stored(row))
+            except UnknownConnectionKindError as exc:
+                missing.append(
+                    MissingTypeConnection(
+                        id=UUID(str(row["id"])), name=row["name"], kind=exc.kind
+                    )
+                )
+
+        return SubjectConnections(rows=rows, missing=missing)
 
     async def for_subject(
         self, subject: Subject, kind: str
     ) -> Sequence[StoredConnection]:
         """Соединения вида kind, выданные пользователю лично или любой его роли."""
+        rows = await self._subject_rows(subject, kind)
+
+        return self._stored_rows(rows)
+
+    async def _subject_rows(
+        self, subject: Subject, kind: str | None
+    ) -> list[dict[str, Any]]:
+        """Строки, выданные субъекту лично или по роли; kind=None — все виды."""
+        kind_filter = ""
+        if kind is not None:
+            kind_filter = "and c.{c_data} ->> 'kind' = %(kind)s"
+
         query = self._sql(
             """
             with
@@ -629,8 +681,8 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
                         g.{g_src_kind_id} as connection_id
                     from
                         {grants} g
-                    where
-                        g.{g_src_kind} = %(src_kind)s
+                    where 1=1
+                        and g.{g_src_kind} = %(src_kind)s
                         and g.{g_tgt_kind} = %(users_kind)s
                         and g.{g_tgt_kind_id} = %(user_id)s
                 ),
@@ -641,8 +693,8 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
                         {grants} g
                         inner join subject_roles sr on
                             g.{g_tgt_kind_id} = sr.{r_id}
-                    where
-                        g.{g_src_kind} = %(src_kind)s
+                    where 1=1
+                        and g.{g_src_kind} = %(src_kind)s
                         and g.{g_tgt_kind} = %(roles_kind)s
                 ),
                 granted as (
@@ -663,11 +715,11 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
             from
                 {connections} c
                 inner join granted on granted.connection_id = c.{c_id}
-            where
-                c.{c_data} ->> 'kind' = %(kind)s
+            where 1=1
+                KIND_FILTER
             order by
                 c.{c_name}
-            """
+            """.replace("KIND_FILTER", kind_filter)
         )
         params = {
             "kind": kind,
@@ -681,9 +733,7 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
         pool = await self._pool()
         async with self._guarded("for subject"), pool.dict_cursor() as cur:
             await cur.execute(query, params)
-            rows = await cur.fetchall()
-
-        return self._stored_rows(rows)
+            return await cur.fetchall()
 
     @staticmethod
     def _grant_params(connection_id: UUID, target: GrantTarget) -> dict[str, Any]:

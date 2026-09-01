@@ -23,9 +23,8 @@ from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chainlit.rendering.tool import ToolCallMarkdown, ToolResultMarkdown
 from boba.config import bind
 from boba.connection_broker.tickets import ServiceTickets
-from boba.transport.http.profile import HttpProfile
-from boba.db.postgres.profile import PostgresConfig
 from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres.profile import PostgresConfig
 from boba.kerberos import KeytabAuth
 from boba.krb import KeytabCredentials, ServiceTicketIssuer
 from boba.runtime.launchers import ZygoteLaunchers
@@ -51,6 +50,7 @@ from boba.toolkit.result import (
 )
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.injected import InjectedConfig
+from boba.transport.http.profile import HttpProfile
 
 _REPO = Path(__file__).resolve().parents[4]
 _ROOTFS_IMAGE = _REPO / "build" / "chainlit" / "src" / "sandbox" / "plugins" / "boba-tool-shell" / "rootfs.ext4"

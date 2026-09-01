@@ -30,9 +30,9 @@ from boba.chainlit.domain.fields import StepField
 from boba.chainlit.infra.config import AppConfig
 from boba.chat.provider import ChatSampling, LocalChatConfig
 from boba.config import bind
-from boba.runtime.config import AppLayers
 from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
 from boba.llm.local import OnnxChatRuntime
+from boba.runtime.config import AppLayers
 from boba.toolkit.calls import ToolIntent
 from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.intent import ToolIntentField

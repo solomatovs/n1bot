@@ -9,8 +9,8 @@ httpx.HTTPError — пробный запрос не прошёл.
 from __future__ import annotations
 
 from boba.connections.base import ConnectionProfileBase, ConnectionTypeError
-from boba.transport.http.profile import HttpProfile
 from boba.connections.manifest import ConnectionTypeManifest
+from boba.transport.http.profile import HttpProfile
 from boba.transport.http.transport import HttpRequest, HttpTransport
 
 __all__ = ["MANIFEST"]

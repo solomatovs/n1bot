@@ -31,10 +31,10 @@ from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connection_broker.user_connections import UserConnections
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.marks import ConnectionRefusal, UserConnectionsSpec
-from boba.db.postgres.profile import PostgresConfig, TrustAuth
 from boba.connections.profile import GrantTarget, StoredRole
 from boba.connections.whitelist import ConnectionKeying
 from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres.profile import PostgresConfig, TrustAuth
 from boba.identity.errors import RefusalError
 from boba.identity.session import UserMetadataField
 from boba.kerberos import (

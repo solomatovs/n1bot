@@ -3,8 +3,8 @@
 from typing import Final
 
 from boba.connections.marks import ConnectedToolManifest, UserConnectionsSpec
-from boba.db.postgres.connection import MANIFEST as PG_CONNECTION
 from boba.connections.whitelist import ConnectionKeying
+from boba.db.postgres.connection import MANIFEST as PG_CONNECTION
 from boba.tool.pg.tools import TOOLS
 
 MANIFEST: Final = ConnectedToolManifest(

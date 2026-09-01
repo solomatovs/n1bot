@@ -32,7 +32,6 @@ from pydantic import BaseModel
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tickets import CredentialsRef
 from boba.connections.credentials import ProfileSections
-from boba.transport.http.profile import HostPattern, HttpProfile
 from boba.connections.marks import (
     ClientLabel,
     ConnectionRefusal,
@@ -40,7 +39,6 @@ from boba.connections.marks import (
     UserConnectionsSpec,
 )
 from boba.connections.profile import ConnectionProfileBase
-from boba.transport.http.web import WebConnection
 from boba.connections.whitelist import (
     AmbiguousConnectionError,
     ConnectionWhitelist,
@@ -54,6 +52,8 @@ from boba.toolrun.injected import (
     ConfigResolver,
     ToolConfigError,
 )
+from boba.transport.http.profile import HostPattern, HttpProfile
+from boba.transport.http.web import WebConnection
 
 __all__ = [
     "ClientLabel",

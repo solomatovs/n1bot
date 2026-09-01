@@ -17,8 +17,8 @@ from typing import Any, Protocol
 import httpx
 
 from boba.cancellation import current_cancellation
-from boba.transport.http.profile import HttpProfile
 from boba.transport.http import HttpxAuth
+from boba.transport.http.profile import HttpProfile
 
 __all__ = [
     "ByteStream",

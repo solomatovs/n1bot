@@ -319,7 +319,7 @@ class HttpProfile(ConnectionProfileBase):
 
         return None
 
-    def with_call_ticket(self, ticket: TicketAuth) -> "HttpProfile":
+    def with_call_ticket(self, ticket: TicketAuth) -> HttpProfile:
         if not isinstance(self.auth, NegotiateAuth):
             return self
 

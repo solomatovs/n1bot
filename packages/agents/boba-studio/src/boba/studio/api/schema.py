@@ -10,10 +10,10 @@ import json
 import sys
 from typing import Any, ClassVar
 
-from boba.connections.manifest import ConnectionTypes
 from boba.auth import AuthService, AuthUsers, JwtTokens
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
+from boba.connections.manifest import ConnectionTypes
 from boba.identity.api import (
     AuthenticatedUser,
     Authenticator,

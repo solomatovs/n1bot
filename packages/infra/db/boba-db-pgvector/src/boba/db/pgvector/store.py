@@ -12,9 +12,9 @@ from typing import Any, ClassVar, TypeVar
 
 from psycopg import sql
 
-from boba.db.postgres.profile import PostgresConfig
 from boba.db.pgvector.config import PostgresStoreConfig, PostgresStoreSchema
 from boba.db.postgres import AsyncPostgresPool, CancellablePool
+from boba.db.postgres.profile import PostgresConfig
 from boba.indexing.chunks import Chunk, ChunkId, ChunkSummary, EmbeddedChunk
 from boba.indexing.filter import (
     And,

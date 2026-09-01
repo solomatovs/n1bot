@@ -19,9 +19,9 @@ from typing import Annotated, Any, ClassVar, Final, cast
 from clickhouse_connect.driver.exceptions import ClickHouseError as DriverError
 from pydantic import Field
 
-from boba.db.clickhouse.profile import ClickHouseConfig
 from boba.db.clickhouse import ClickHouseError
 from boba.db.clickhouse.payload import PayloadClickHouse
+from boba.db.clickhouse.profile import ClickHouseConfig
 from boba.toolkit.calls import ConnectionArg, ScriptCall
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool

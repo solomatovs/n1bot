@@ -13,17 +13,16 @@ from pydantic import BaseModel, Field, SecretStr, ValidationError
 
 from boba.connection_broker.store import ConnectionsConfig
 from boba.connections.manifest import ConnectionTypes
+from boba.connections.profile import (
+    GrantKind,
+    GrantTarget,
+    StoredConnection,
+)
+from boba.connections.secrets import SecretCipher, SecretCryptoError
 from boba.db.clickhouse.profile import (
     ClickHouseConfig,
     ClickHouseSettingsConfig,
     NoPasswordAuth,
-)
-from boba.transport.http.profile import (
-    BasicAuth,
-    BearerAuth,
-    DigestAuth,
-    HttpProfile,
-    NoneAuth,
 )
 from boba.db.postgres.profile import (
     PasswordAuth,
@@ -31,14 +30,15 @@ from boba.db.postgres.profile import (
     PostgresOptionsConfig,
     PostgresPoolConfig,
 )
-from boba.connections.profile import (
-    GrantKind,
-    GrantTarget,
-    StoredConnection,
-)
-from boba.connections.secrets import SecretCipher, SecretCryptoError
 from boba.stand.fakes import FakeSecret
 from boba.transport.http import HttpxAuth
+from boba.transport.http.profile import (
+    BasicAuth,
+    BearerAuth,
+    DigestAuth,
+    HttpProfile,
+    NoneAuth,
+)
 
 
 @pytest.fixture(autouse=True)

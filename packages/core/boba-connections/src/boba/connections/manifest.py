@@ -14,11 +14,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from importlib.metadata import entry_points
-from typing import Any, ClassVar, Protocol
+from typing import Any, ClassVar, Literal, Protocol
 
 from pydantic import ValidationError
+from pydantic.json_schema import models_json_schema
 
 from boba.connections.base import ConnectionProfileBase
+from boba.toolkit.failure import ValidationText
 
 __all__ = [
     "ConnectionTypeManifest",
@@ -109,32 +111,36 @@ class ConnectionTypes:
         try:
             return manifest.profile.model_validate(raw)
         except ValidationError as exc:
-            msg = f"connection profile of kind {kind!r} does not validate"
-            raise ConnectionTypesError(msg) from exc
+            # from None: в input_value разобранной строки ездят секреты,
+            # наружу идёт только безопасный текст ошибок
+            details = ValidationText.of(exc)
+            msg = f"connection profile of kind {kind!r}: {details}"
+            raise ConnectionTypesError(msg) from None
 
     def json_schema(self) -> dict[str, Any]:
         """Схема форм: oneOf по установленным типам с дискриминатором kind.
 
         Форма совпадает со схемой pydantic discriminated union: варианты
         ссылками в общий $defs плюс discriminator.mapping kind -> ссылка.
+        Схемы моделей генерируются одним вызовом — одноимённые вложенные
+        модели разных пакетов не перетирают друг друга.
         """
-        defs: dict[str, Any] = {}
+        ordered = self.kinds()
+        inputs: list[tuple[type[ConnectionProfileBase], Literal["validation"]]] = []
+        for kind in ordered:
+            inputs.append((self._table[kind].profile, "validation"))
+
+        refs, document = models_json_schema(inputs, ref_template="#/$defs/{model}")
+
         variants: list[dict[str, Any]] = []
         mapping: dict[str, str] = {}
-
-        for kind in self.kinds():
-            model = self._table[kind].profile
-            schema = model.model_json_schema(ref_template="#/$defs/{model}")
-            defs.update(schema.pop("$defs", {}))
-
-            name = model.__name__
-            defs[name] = schema
-            reference = f"#/$defs/{name}"
+        for kind, entry in zip(ordered, inputs, strict=True):
+            reference = str(refs[entry]["$ref"])
             variants.append({"$ref": reference})
             mapping[kind] = reference
 
         return {
             "oneOf": variants,
             "discriminator": {"propertyName": "kind", "mapping": mapping},
-            "$defs": defs,
+            "$defs": dict(document.get("$defs", {})),
         }

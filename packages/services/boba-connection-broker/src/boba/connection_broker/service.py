@@ -23,11 +23,20 @@ from pydantic import BaseModel, ConfigDict
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.user_connections import StoreRef
 from boba.connections.marks import ConnectionRefusal
-from boba.connections.profile import ConnectionProfileBase, StoredConnection
+from boba.connections.profile import (
+    ConnectionProfileBase,
+    MissingTypeConnection,
+    StoredConnection,
+)
 from boba.identity.context import Subject
 from boba.identity.errors import RefusalError
 
-__all__ = ["DeletedConnection", "UserConnectionsService", "VisibleConnection"]
+__all__ = [
+    "DeletedConnection",
+    "UserConnectionsService",
+    "VisibleConnection",
+    "VisibleConnections",
+]
 
 
 class VisibleConnection(BaseModel):
@@ -37,6 +46,24 @@ class VisibleConnection(BaseModel):
 
     row: StoredConnection
     mine: bool
+
+
+class VisibleMissing(BaseModel):
+    """Строка без установленного типа и признак владения ею."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    row: MissingTypeConnection
+    mine: bool
+
+
+class VisibleConnections(BaseModel):
+    """Список субъекта целиком: разобранные строки и строки без типа."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    rows: Sequence[VisibleConnection] = ()
+    missing: Sequence[VisibleMissing] = ()
 
 
 class DeletedConnection(BaseModel):
@@ -68,12 +95,28 @@ class UserConnectionsService:
 
         return visible
 
+    async def visible_all(self, subject: Subject) -> VisibleConnections:
+        """Все видимые строки субъекта; строки без типа — отдельно, с пометкой."""
+        store = self._store_ref()
+        found = await store.for_subject_all(subject)
+        owned = await store.owned_ids(subject.user_id)
+
+        visible: list[VisibleConnection] = []
+        for row in found.rows:
+            visible.append(VisibleConnection(row=row, mine=row.id in owned))
+
+        broken: list[VisibleMissing] = []
+        for lost in found.missing:
+            broken.append(VisibleMissing(row=lost, mine=lost.id in owned))
+
+        return VisibleConnections(rows=visible, missing=broken)
+
     async def visible_row(
         self, subject: Subject, connection_id: UUID
     ) -> StoredConnection:
         """Видимая субъекту строка по id; иначе NOT_VISIBLE."""
         store = self._store_ref()
-        rows = await store.for_subject_all(subject)
+        rows = (await store.for_subject_all(subject)).rows
         for row in rows:
             if row.id == connection_id:
                 return row
@@ -113,10 +156,11 @@ class UserConnectionsService:
         store = self._store_ref()
         await self._require_owned(store, subject, connection_id)
 
-        row = await store.get(connection_id)
+        # имя читается без разбора профиля: удаляться должна и строка без типа
+        name = await store.name_of(connection_id)
         deleted = await store.remove(connection_id)
 
-        return DeletedConnection(name=row.name, deleted=deleted)
+        return DeletedConnection(name=name, deleted=deleted)
 
     @staticmethod
     async def _visible_rows(
@@ -136,7 +180,7 @@ class UserConnectionsService:
         if connection_id in owned:
             return
 
-        rows = await store.for_subject_all(subject)
+        rows = (await store.for_subject_all(subject)).rows
         for row in rows:
             if row.id == connection_id:
                 msg = f"connection #{connection_id} is shared: only its owner edits it"
@@ -152,7 +196,7 @@ class UserConnectionsService:
         name: str,
         except_id: UUID | None,
     ) -> None:
-        rows = await store.for_subject_all(subject)
+        rows = (await store.for_subject_all(subject)).rows
         for row in rows:
             if row.id == except_id:
                 continue

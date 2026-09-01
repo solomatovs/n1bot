@@ -30,9 +30,11 @@ __all__ = [
     "GrantKind",
     "GrantTarget",
     "GrantsColumn",
+    "MissingTypeConnection",
     "RolesColumn",
     "StoredConnection",
     "StoredRole",
+    "SubjectConnections",
 ]
 
 
@@ -141,6 +143,25 @@ class StoredConnection(BaseModel):
     @property
     def kind(self) -> str:
         return self.profile.kind
+
+
+class MissingTypeConnection(BaseModel):
+    """Строка connections, чей тип не установлен: в списках живёт с пометкой."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID
+    name: str
+    kind: str
+
+
+class SubjectConnections(BaseModel):
+    """Соединения субъекта целиком: разобранные строки и строки без типа."""
+
+    model_config = ConfigDict(frozen=True)
+
+    rows: Sequence[StoredConnection] = ()
+    missing: Sequence[MissingTypeConnection] = ()
 
 
 class ConnectionRepository(Protocol):
