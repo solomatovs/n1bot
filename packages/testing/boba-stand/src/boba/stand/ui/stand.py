@@ -9,7 +9,6 @@ StandError — стенд не поднялся или не ответил в о
 from __future__ import annotations
 
 import os
-import shutil
 import socket
 import subprocess
 import sys
@@ -175,6 +174,20 @@ class StandConfig:
     sandbox: bool = False
     """True — инструменты песочницы остаются включёнными: боевой путь целиком."""
 
+    SANDBOXED_TOOLS: ClassVar[tuple[str, ...]] = (
+        "bash",
+        "doc",
+        "chart",
+        "web",
+        "confluence",
+        "workflow",
+        "ingest",
+        "kb",
+        "pg",
+        "ch",
+    )
+    """Инструменты, которым нужна песочница или внешние сервисы."""
+
     auth: StandAuth = StandAuth.LOCAL
     """Набор провайдеров входа стенда."""
 
@@ -248,13 +261,20 @@ class StandConfig:
 
     def _copy_plugins(self) -> None:
         """Файлы conf/plugins рядом с конфигом стенда: загрузчик требует файл
-        для каждого установленного плагина."""
+        для каждого установленного плагина. Без песочницы остаются инструменты,
+        которым она не нужна."""
         source = self.app.base_config.under(REPO_ROOT).parent / "plugins"
         target = self.workdir / "plugins"
         target.mkdir(parents=True, exist_ok=True)
 
         for path in sorted(source.glob("*.toml")):
-            shutil.copy(path, target / path.name)
+            with path.open("rb") as handle:
+                doc: dict[str, Any] = tomllib.load(handle)
+
+            if not self.sandbox and path.stem in self.SANDBOXED_TOOLS:
+                doc["enable"] = False
+
+            (target / path.name).write_text(TomlText.dumps(doc), encoding="utf-8")
 
     @staticmethod
     def _shrink_pools(doc: MutableMapping[str, Any]) -> None:
