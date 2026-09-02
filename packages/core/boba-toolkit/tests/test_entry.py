@@ -1,4 +1,5 @@
-"""Контракт вызова: адрес, argv/stdin, конверт, CLI настоящим subprocess'ом."""
+"""Контракт вызова: адрес, argv, каналы флагами, конверт, CLI настоящим
+subprocess'ом."""
 
 from __future__ import annotations
 
@@ -17,10 +18,10 @@ from boba.stand.fake_toolmod import (
     FakeUnavailableError,
     fake_echo,
 )
-from boba.toolkit.channels import ToolChannel
 from boba.toolkit.entry import (
     ArgumentTooLargeError,
     EntryErrorKind,
+    EntryFlag,
     ExpectedErrors,
     ToolAddress,
     ToolArgv,
@@ -38,31 +39,46 @@ FAKE = TOOLSET[0]
 
 def run_module(
     arguments: list[str],
-    stdin: bytes = b"",
+    config: bytes | None = None,
     result_fd: bool = False,
 ) -> tuple[subprocess.CompletedProcess[bytes], bytes]:
-    """Запуск fake_toolmod настоящей командой модуля, как зовёт launcher."""
+    """Запуск fake_toolmod настоящей командой модуля, как зовёт launcher.
+
+    config едет каналом --injected-fd, конверт возвращается каналом
+    --fd-result — номера дескрипторов в аргументах, как их шлёт лончер.
+    """
     env = dict(os.environ)
     env["PYTHONPATH"] = TESTS_DIR + os.pathsep + env.get("PYTHONPATH", "")
 
-    pass_fds: tuple[int, ...] = ()
+    pass_fds: list[int] = []
+    extra: list[str] = []
+
+    config_r = -1
+    if config is not None:
+        config_r, config_w = os.pipe()
+        os.write(config_w, config)
+        os.close(config_w)
+        extra.extend((EntryFlag.INJECTED_FD.value, str(config_r)))
+        pass_fds.append(config_r)
+
     read_fd = -1
     write_fd = -1
     if result_fd:
         read_fd, write_fd = os.pipe()
-        os.set_inheritable(write_fd, True)
-        env[ToolChannel.RESULT.env_name] = str(write_fd)
-        pass_fds = (write_fd,)
+        extra.extend((EntryFlag.FD_RESULT.value, str(write_fd)))
+        pass_fds.append(write_fd)
 
     proc = subprocess.run(
-        [sys.executable, "-m", "boba.stand.fake_toolmod", *arguments],
-        input=stdin,
+        [sys.executable, "-m", "boba.stand.fake_toolmod", *arguments, *extra],
         capture_output=True,
         env=env,
         pass_fds=pass_fds,
         timeout=60,
         check=False,
     )
+
+    if config_r >= 0:
+        os.close(config_r)
 
     envelope = b""
     if result_fd:
@@ -164,7 +180,7 @@ class TestExpectedErrors:
 class TestToolMainAsProgram:
     """Модуль инструментов — обычная программа: контракт argv/stdin/конверт."""
 
-    STDIN = json.dumps({"cfg": CFG.revealed()}).encode()
+    CONFIG = json.dumps({"cfg": CFG.revealed()}).encode()
 
     def test_help_lists_tools(self) -> None:
         proc, _ = run_module(["--help"])
@@ -177,7 +193,7 @@ class TestToolMainAsProgram:
     def test_human_run_prints_content(self) -> None:
         proc, _ = run_module(
             ["fake_echo", "--text", "ping", "--repeat", "2"],
-            stdin=self.STDIN,
+            config=self.CONFIG,
         )
 
         if proc.returncode != 0:
@@ -188,7 +204,7 @@ class TestToolMainAsProgram:
     def test_envelope_goes_to_result_fd_not_stdout(self) -> None:
         proc, envelope = run_module(
             ["fake_echo", "--text", "ping", "--repeat", "1"],
-            stdin=self.STDIN,
+            config=self.CONFIG,
             result_fd=True,
         )
 
@@ -209,7 +225,7 @@ class TestToolMainAsProgram:
         """Логи тела — живой вывод: журнал и панель читают stdout процесса."""
         proc, envelope = run_module(
             ["fake_echo", "--text", "ping", "--repeat", "1"],
-            stdin=self.STDIN,
+            config=self.CONFIG,
             result_fd=True,
         )
 
@@ -227,7 +243,7 @@ class TestToolMainAsProgram:
     def test_expected_error_becomes_error_envelope(self) -> None:
         proc, envelope = run_module(
             ["fake_echo", "--text", "boom", "--repeat", "1"],
-            stdin=self.STDIN,
+            config=self.CONFIG,
             result_fd=True,
         )
 
@@ -245,7 +261,7 @@ class TestToolMainAsProgram:
     def test_unexpected_error_leaves_no_envelope(self) -> None:
         proc, envelope = run_module(
             ["fake_echo", "--text", "crash", "--repeat", "1"],
-            stdin=self.STDIN,
+            config=self.CONFIG,
             result_fd=True,
         )
 
@@ -272,7 +288,7 @@ class TestToolMainAsProgram:
     def test_invalid_flag_is_entry_error(self) -> None:
         proc, envelope = run_module(
             ["fake_echo", "--nope", "x"],
-            stdin=self.STDIN,
+            config=self.CONFIG,
             result_fd=True,
         )
 
@@ -293,9 +309,21 @@ class TestToolMainAsProgram:
         if b"invalid_request" not in proc.stderr:
             raise AssertionError('b"invalid_request" in proc.stderr')
 
-    def test_injected_file_replaces_stdin(self, tmp_path: Path) -> None:
+    def test_broken_channel_number_is_entry_error(self) -> None:
+        """Не-числовой номер канала: конверт писать некуда, причина в stderr."""
+        proc, _ = run_module(
+            ["fake_echo", "--text", "x", "--repeat", "1", "--fd-result", "nope"]
+        )
+
+        if proc.returncode != ToolMain.Exit.ENTRY_ERROR:
+            raise AssertionError("proc.returncode == ToolMain.Exit.ENTRY_ERROR")
+        if b"not a descriptor number" not in proc.stderr:
+            raise AssertionError(f"stderr={proc.stderr!r}")
+
+    def test_injected_file_serves_the_config(self, tmp_path: Path) -> None:
+        """Ручной запуск: конфиг файлом --injected, каналов лончера нет."""
         injected = tmp_path / "injected.json"
-        injected.write_bytes(self.STDIN)
+        injected.write_bytes(self.CONFIG)
 
         proc, _ = run_module(
             [

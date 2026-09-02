@@ -40,7 +40,15 @@ class WrapErrorKind(StrEnum):
 
 
 class ToolProcessWrap:
-    """Подменяет тела инструмента переносом вызова в отдельный процесс."""
+    """Подменяет тело инструмента обёрткой, которая исполняет вызов отдельным
+    процессом через ToolLauncher.
+
+    LLM-агент зовёт tool-объект как обычную функцию; guard_all при сборке
+    инструментов заменяет func/coroutine на перенос вызова: аргументы
+    кодируются в ToolCommand (ToolArgv.render), вызов идёт накопительно
+    (CollectedCall), конверт разворачивается в возврат или
+    PayloadFailureError.
+    """
 
     @classmethod
     def guard_all(cls, tools: Sequence[ToolLike], launcher: ToolLauncher) -> None:

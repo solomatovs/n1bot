@@ -1,10 +1,19 @@
-"""Насос каналов вызова, прямой вход в тело и открытый вызов поверх них.
+"""Общая механика исполнения вызова: вход в тело, насос чтения, прогон.
 
-Общая механика обеих реализаций ToolLauncher (субпроцесс, зигота): вход
-вызова пишется потоком вызывающего прямо в пайп stdin тела — полный буфер
-пайпа блокирует запись, и скорость входа прижимается к скорости тела
-(нативный backpressure, очередей в памяти хоста нет). Каналы тела читает
-насос своим потоком; реализациям остаётся устройство процесса и каналов.
+Обе реализации ToolLauncher — субпроцесс (boba.toolrun.process) и песочница
+(boba.sandbox.zygote) — исполняют вызов одинаково и различаются только
+устройством процесса и каналов. Общее собрано здесь:
+
+- CallInput / FrameInput — единственное горлышко записи в тело: прямая
+  блокирующая запись в пайп из потока вызывающего. Полный буфер пайпа
+  останавливает запись, и скорость входа прижимается к скорости тела —
+  это backpressure без очередей в памяти хоста.
+- ChannelPump — базовый насос чтения каналов тела (select, дедлайн,
+  отмена, добивание); реализации наследуют его.
+- OpenRun — открытый прогон вызова: насос крутится своим потоком, вход
+  остаётся у вызывающего; PumpedCall наследует его и добавляет контракт
+  ToolCall для потоковых инструментов.
+- CallSinks / Tee — сборка приёмников каналов вместе с журналом вызова.
 
 Ошибки:
 LauncherError — вход вызова уже закрыт, у кадров уже есть читатель либо
@@ -29,7 +38,6 @@ from boba.toolkit.channels import ToolChannel
 from boba.toolkit.frames import (
     CallInbox,
     FrameCodec,
-    FrameKind,
     FrameLimit,
     ToolFrame,
 )
@@ -41,7 +49,7 @@ __all__ = [
     "CallSinks",
     "ChannelPump",
     "FrameInput",
-    "InputFeeder",
+    "OpenRun",
     "PumpEnd",
     "PumpedCall",
     "Tee",
@@ -49,7 +57,10 @@ __all__ = [
 
 
 class Tee:
-    """Тройник двух приёмников одного канала."""
+    """Тройник: одна порция канала уходит в два приёмника сразу.
+
+    Нужен, когда канал читают и свой буфер вызова, и журнал (CallSinks).
+    """
 
     def __init__(self, first: ChunkSink, second: ChunkSink) -> None:
         self._first = first
@@ -61,10 +72,12 @@ class Tee:
 
 
 class CallSinks:
-    """Сборка приёмников каналов вызова: свои буферы плюс журнал из тапа.
+    """Собирает приёмники каналов вызова: свои буферы плюс журнал.
 
-    Журнальный приёмник ставится тройником к своему, а каналы без своего
-    приёмника получают журнальный напрямую. Без тапа остаются только свои.
+    Журнал вызова обвязка передаёт через contextvar (ToolChannelsTap);
+    здесь его приёмники подключаются тройником (Tee) к своим, а каналы без
+    своего приёмника пишутся только в журнал. Зовётся в потоке вызывающего:
+    в поток насоса contextvar не переезжает, и журнал там уже не найти.
     """
 
     @staticmethod
@@ -91,13 +104,17 @@ class CallSinks:
 
 
 class CallInput:
-    """Вход вызова: прямая блокирующая запись в stdin тела.
+    """Вход вызова: прямая блокирующая запись в stdin-пайп тела.
 
-    Пишет поток вызывающего. Полный буфер пайпа блокирует запись, пока тело
-    не прочитает своё, — это и есть backpressure. Разрыв пайпа (тело умерло
-    или закрыло stdin) закрывает вход: запись, на которой это случилось,
-    молчит — причина сбоя видна в итоге вызова кодом возврата и stderr, —
-    а последующие send падают ошибкой закрытого входа.
+    Единственный способ передать телу данные — так backpressure получается
+    сам собой: пишет поток вызывающего, и когда тело не успевает читать,
+    запись стоит на полном буфере пайпа. Разрыв пайпа (тело умерло или
+    закрыло stdin) закрывает вход: запись, на которой это случилось, молчит
+    — причину сбоя объяснит итог вызова кодом возврата и stderr, — а
+    последующие send падают ошибкой закрытого входа.
+
+    Базовый для FrameInput; сырым CallInput пишутся injected-конфиг и stdin
+    shell-команды.
     """
 
     def __init__(self, fd: int) -> None:
@@ -113,25 +130,20 @@ class CallInput:
             self._write(data)
 
     def finish(self) -> None:
-        """Конец входа: прощальные байты и EOF телу; повтор безвреден."""
+        """Конец входа: EOF телу закрытием пайпа; повтор безвреден."""
         with self._lock:
             if not self._open:
                 return
 
-            self._write(self._farewell())
             self._close()
 
     def abandon(self) -> None:
-        """Закрыть вход без прощаний: путь отмены и уборки; повтор безвреден."""
+        """Закрыть вход на пути отмены и уборки; повтор безвреден."""
         with self._lock:
             if not self._open:
                 return
 
             self._close()
-
-    def _farewell(self) -> bytes:
-        """Что дописать перед EOF; сырому входу дописывать нечего."""
-        return b""
 
     def _require_open(self) -> None:
         if self._open:
@@ -168,7 +180,9 @@ class CallInput:
 
 
 class FrameInput(CallInput):
-    """Вход кадрами: send кодирует кадр, finish завершает поток кадром eos."""
+    """Вход вызова кадрами: send кодирует ToolFrame в байты и пишет их тем же
+    блокирующим способом, что и базовый CallInput; finish даёт телу EOF
+    закрытием пайпа."""
 
     def __init__(self, fd: int) -> None:
         super().__init__(fd)
@@ -177,53 +191,27 @@ class FrameInput(CallInput):
     def send(self, frame: ToolFrame) -> None:
         self.send_bytes(self._codec.encode(frame))
 
-    def send_config(self, config: bytes) -> None:
-        """Injected-конфиг первым кадром входа; шлёт лончер при открытии."""
-        self.send(ToolFrame.service(FrameKind.CONFIG, config))
-
-    def _farewell(self) -> bytes:
-        return self._codec.encode(ToolFrame.service(FrameKind.EOS))
-
-
-class InputFeeder:
-    """Весь stdin команды одним куском: пишет своим потоком и закрывает вход.
-
-    Для вызовов, у которых вход известен заранее (shell-команда): вызывающий
-    не блокируется на полном пайпе, а насос свободен только читать.
-    """
-
-    def __init__(self, fd: int, data: bytes) -> None:
-        self._input = CallInput(fd)
-        self._data = data
-        self._worker = threading.Thread(
-            target=self._feed, name="call-stdin-feeder", daemon=True
-        )
-        self._worker.start()
-
-    def join(self) -> None:
-        """Дождаться конца записи; вернётся быстро — пайп либо принял, либо порван."""
-        self._worker.join()
-
-    def _feed(self) -> None:
-        self._input.send_bytes(self._data)
-        self._input.finish()
-
 
 @dataclass(frozen=True)
 class PumpEnd:
-    """Итог насоса: таймаут и латентность первого байта вывода."""
+    """Что насос знает о прогоне после его конца: был ли таймаут и когда
+    пришёл первый байт вывода. Код возврата сюда не входит — его источник у
+    каждой реализации свой (poll процесса, control-сокет зиготы)."""
 
     timed_out: bool
     first_output_ms: int | None
 
 
 class ChannelPump:
-    """Насос чтения каналов вызова: select, дедлайн, отмена, добивание.
+    """Базовый насос чтения каналов вызова: select по дескрипторам, дедлайн,
+    реакция на отмену и добивание исполнителя.
 
-    Вход тела насос не пишет — им владеет CallInput в потоке вызывающего.
-    Реализация подставляет устройство процесса тремя методами: _finished
-    (исполнитель завершился), _kill (добить исполнителя) и, при нужде,
-    _quit_on_timeout (прекратить ждать выхода после таймаута).
+    Крутится в потоке прогона (OpenRun) и только читает: входом тела
+    владеет CallInput в потоке вызывающего. Наследники — _ProcessPump в
+    boba.toolrun.process и _ZygotePump в boba.sandbox.zygote — подставляют
+    устройство процесса тремя методами: _finished (исполнитель завершился),
+    _kill (добить) и, при нужде, _quit_on_timeout (прекратить ждать выхода
+    после таймаута).
     """
 
     READ_BYTES: ClassVar[int] = 65536
@@ -369,39 +357,37 @@ class ChannelPump:
 RunEnd = TypeVar("RunEnd")
 
 
-class PumpedCall(ToolCall, Generic[RunEnd]):
-    """Открытый вызов: вход пишет вызывающий напрямую, насос читает каналы
-    своим потоком.
+class OpenRun(Generic[RunEnd]):
+    """Открытый прогон вызова: насос читает каналы своим потоком, а вход
+    пишет вызывающий через entry (CallInput).
+
+    Базовый класс исполнения любого вызова; два потока — и есть решение:
+    вызывающий может стоять на записи входа, пока насос читает вывод, и
+    взаимной блокировки не случается. PumpedCall наследует его для
+    потоковых инструментов; shell-команда пользуется напрямую — пишет весь
+    stdin и ждёт итога wait().
 
     Прерыватель внешней отмены регистрируется в конструкторе, до старта
-    потока насоса: отмена хода, пришедшая сразу после open, не теряется.
-    Уже отменённый ход роняет конструктор ToolStopped — вызывающий обязан
-    прибрать каналы и процесс сам (насос ещё не жил и добить некому).
-
-    run исполняется в потоке насоса под опубликованной собственной отменой
-    и обязан на любом исходе добить процесс и закрыть host-концы каналов;
-    finish собирает ToolOutcome из итога run в потоке читателя result.
+    потока насоса, поэтому отмена хода сразу после открытия не теряется.
+    Уже отменённый ход роняет конструктор ToolStopped — тогда прибрать
+    процесс и каналы обязан вызывающий: насос ещё не жил и добить некому.
+    Функция run исполняется в потоке насоса и обязана на любом исходе
+    добить процесс и закрыть host-концы каналов.
     """
 
     def __init__(
         self,
         tool: str,
-        entry: FrameInput,
-        inbox: CallInbox,
+        entry: CallInput,
         run: Callable[[RunCancellation], RunEnd],
-        finish: Callable[[RunEnd], ToolOutcome],
     ) -> None:
         self._tool = tool
         self._entry = entry
-        self._inbox = inbox
         self._run = run
-        self._finish = finish
         self._own = RunCancellation()
         self._relay = ExitStack()
         self._end: RunEnd | None = None
         self._failure: BaseException | None = None
-        self._outcome: ToolOutcome | None = None
-        self._frames_taken = False
 
         outer = current_cancellation()
         self._relay.enter_context(outer.abort_with(self._own.cancel))
@@ -413,24 +399,12 @@ class PumpedCall(ToolCall, Generic[RunEnd]):
         )
         self._worker.start()
 
-    def send(self, frame: ToolFrame) -> None:
-        self._entry.send(frame)
+    @property
+    def entry(self) -> CallInput:
+        return self._entry
 
-    def done_sending(self) -> None:
-        self._entry.finish()
-
-    def frames(self) -> Iterator[ToolFrame]:
-        if self._frames_taken:
-            msg = f"{self._tool}: call frames already have a reader"
-            raise LauncherError(msg)
-
-        self._frames_taken = True
-        return self._inbox.frames()
-
-    def result(self) -> ToolOutcome:
-        if self._outcome is not None:
-            return self._outcome
-
+    def wait(self) -> RunEnd:
+        """Дождаться конца насоса и отдать итог; сбой прогона поднимается тут."""
         self._worker.join()
         self._settle()
 
@@ -442,13 +416,10 @@ class PumpedCall(ToolCall, Generic[RunEnd]):
             msg = f"{self._tool}: call pump left no result"
             raise LauncherError(msg)
 
-        self._outcome = self._finish(end)
-        return self._outcome
+        return end
 
-    def close(self) -> None:
-        if self._outcome is not None:
-            return
-
+    def halt(self) -> None:
+        """Добить прогон, не интересуясь итогом; повтор безвреден."""
         self._own.cancel()
         self._worker.join()
         self._settle()
@@ -465,4 +436,68 @@ class PumpedCall(ToolCall, Generic[RunEnd]):
             except BaseException as exc:
                 self._failure = exc
             finally:
-                self._inbox.close()
+                self._finalize()
+
+    def _finalize(self) -> None:
+        """Насос кончился; подкласс закрывает здесь своих читателей."""
+        return
+
+
+class PumpedCall(OpenRun[RunEnd], ToolCall):
+    """Реализация протокола ToolCall поверх OpenRun: открытый потоковый
+    вызов инструмента.
+
+    Создаётся методом open() реализаций ToolLauncher. К прогону добавляет
+    кадры: send и done_sending пишут вход через FrameInput, frames() отдаёт
+    кадры тела из CallInbox (читатель ровно один), result() ждёт конца
+    насоса и собирает ToolOutcome переданной функцией finish.
+    """
+
+    def __init__(
+        self,
+        tool: str,
+        entry: FrameInput,
+        inbox: CallInbox,
+        run: Callable[[RunCancellation], RunEnd],
+        finish: Callable[[RunEnd], ToolOutcome],
+    ) -> None:
+        self._frames = entry
+        self._inbox = inbox
+        self._finish = finish
+        self._outcome: ToolOutcome | None = None
+        self._frames_taken = False
+
+        # поля читателей выставлены до конструктора низа: он стартует поток
+        super().__init__(tool, entry, run)
+
+    def send(self, frame: ToolFrame) -> None:
+        self._frames.send(frame)
+
+    def done_sending(self) -> None:
+        self._frames.finish()
+
+    def frames(self) -> Iterator[ToolFrame]:
+        if self._frames_taken:
+            msg = f"{self._tool}: call frames already have a reader"
+            raise LauncherError(msg)
+
+        self._frames_taken = True
+        return self._inbox.frames()
+
+    def result(self) -> ToolOutcome:
+        if self._outcome is not None:
+            return self._outcome
+
+        end = self.wait()
+
+        self._outcome = self._finish(end)
+        return self._outcome
+
+    def close(self) -> None:
+        if self._outcome is not None:
+            return
+
+        self.halt()
+
+    def _finalize(self) -> None:
+        self._inbox.close()

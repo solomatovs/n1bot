@@ -18,8 +18,7 @@ from typing import Annotated, ClassVar, Final
 
 from pydantic import BaseModel, Field, SecretStr
 
-from boba.toolkit.channels import ToolChannel
-from boba.toolkit.entry import ToolMain
+from boba.toolkit.entry import EntryFlag, ToolMain
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.frames import ToolIo
 from boba.toolkit.result import TextResult, ToolResult, render_for_llm
@@ -146,10 +145,15 @@ async def fake_hostage(
 async def fake_garbage(
     cfg: Annotated[FakeConfig, Injected],
 ) -> tuple[str, ToolResult]:
-    """Пишет мусор в канал кадров мимо кодека: читатель обязан увидеть обрыв."""
-    raw = os.environ.get(ToolChannel.FRAMES.env_name)
-    if raw is not None:
-        os.write(int(raw), b"\xff\xff\xff\xff not a frame at all")
+    """Пишет мусор в канал кадров мимо кодека: читатель обязан увидеть обрыв.
+
+    Номер канала берётся из полного sys.argv: флаги каналов ToolMain из
+    argv тела вынимает, а вредителю нужен именно сырой дескриптор.
+    """
+    flag = EntryFlag.FD_FRAMES.value
+    if flag in sys.argv:
+        fd = int(sys.argv[sys.argv.index(flag) + 1])
+        os.write(fd, b"\xff\xff\xff\xff not a frame at all")
 
     artifact = TextResult(text=f"garbage sent|{cfg.token.get_secret_value()}")
     return render_for_llm(artifact), artifact

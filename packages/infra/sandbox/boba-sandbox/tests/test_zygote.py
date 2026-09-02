@@ -34,7 +34,6 @@ from boba.sandbox.zygote import (
 )
 from boba.stand.zygote import SandboxStand
 from boba.toolkit.channels import ToolChannel
-from boba.toolkit.frames import FrameCodec, FrameKind, FrameLimit, ToolFrame
 from boba.toolkit.protocol import REPLY, ReplyOk
 from boba.toolkit.stream import Chunk
 
@@ -122,15 +121,9 @@ def _broken_spawner(fd: int) -> subprocess.Popen[bytes]:
     )
 
 
-def _config_stdin() -> bytes:
-    """Вход вызова байтами: конфиг первым кадром и eos — как шлёт лончер."""
-    codec = FrameCodec(FrameLimit.HEADER_BYTES, FrameLimit.BODY_BYTES)
-
-    config = ToolFrame.service(
-        FrameKind.CONFIG, json.dumps({"cfg": CFG.revealed()}).encode("utf-8")
-    )
-
-    return codec.encode(config) + codec.encode(ToolFrame.service(FrameKind.EOS))
+def _config_bytes() -> bytes:
+    """Injected-конфиг байтами: едет отдельным каналом --injected-fd."""
+    return json.dumps({"cfg": CFG.revealed()}).encode("utf-8")
 
 
 def _call_echo(
@@ -149,7 +142,8 @@ def _call_echo(
     outcome = supervisor.call(
         call_id,
         ["fx_echo", "--text", text],
-        _config_stdin(),
+        b"",
+        _config_bytes(),
         NO_LIMITS,
         {
             ToolChannel.RESULT: result.feed,
@@ -285,7 +279,8 @@ class TestLifecycle:
             zygote.call(
                 "t-die",
                 ["fx_echo", "--text", "slow", "--sleep-sec", "30"],
-                _config_stdin(),
+                b"",
+                _config_bytes(),
                 NO_LIMITS,
                 {ToolChannel.RESULT: result.feed},
                 isolate=False,
@@ -518,7 +513,8 @@ class TestIsolated:
             outcome = zygote.call(
                 f"t-tmp-{index}",
                 ["fx_probe_tmp", "--marker", f"m{index}"],
-                _config_stdin(),
+                b"",
+                _config_bytes(),
                 NO_LIMITS,
                 {ToolChannel.RESULT: result.feed},
                 isolate=True,
