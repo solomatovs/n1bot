@@ -238,9 +238,9 @@ class TestSpendSurvivesReplay:
             names[str(step.get("id"))] = str(step.get("name"))
 
         thinking_id = str(ChatView.derive_id(THREAD, AI_ID, StepRole.THINKING))
-        if names[thinking_id] != "○ thinking · 10.9k → 400 (305 reasoning)":
+        if names[thinking_id] != "○ thinking · in: 10.9k, out: 400 (305 reasoning)":
             raise AssertionError(f"шаг рассуждений: {names[thinking_id]!r}")
 
         container_id = str(ChatView.derive_id(THREAD, TURN_KEY, StepRole.PROCESS))
-        if names[container_id] != "process... · 10.9k → 400 (305 reasoning)":
+        if names[container_id] != "process... · in: 10.9k, out: 400 (305 reasoning)":
             raise AssertionError(f"контейнер: {names[container_id]!r}")
