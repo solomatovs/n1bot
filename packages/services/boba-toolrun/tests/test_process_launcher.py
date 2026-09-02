@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
 from pydantic import SecretStr
 
-from boba.stand.fake_toolmod import FakeConfig
+from boba.cancellation import ToolStopped
+from boba.stand.fake_toolmod import FakeChunkHead, FakeConfig
 from boba.toolkit.entry import ToolMain
-from boba.toolkit.launcher import ChannelOverflowError, PayloadFailureError
-from boba.toolkit.protocol import ReplyError, ToolCommand
+from boba.toolkit.frames import ToolFrame
+from boba.toolkit.launcher import (
+    ChannelOverflowError,
+    CollectedCall,
+    LauncherError,
+    PayloadFailureError,
+)
+from boba.toolkit.protocol import ReplyError, ReplyOk, ToolCommand
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.process import (
     ProcessCallError,
@@ -83,9 +91,9 @@ class TestRunTool:
 
     def test_entry_error_arrives_as_error_reply(self, tmp_path: Path) -> None:
         launcher = _launcher(tmp_path)
-        command = ToolCommand(argv=(*MODULE_ARGV, "--text", "hi"), stdin=b"{}")
+        command = ToolCommand(argv=(*MODULE_ARGV, "--text", "hi"), config=b"{}")
 
-        outcome = launcher.run_tool(command)
+        outcome = CollectedCall.of(launcher, command)
 
         assert isinstance(outcome.reply, ReplyError)
         assert outcome.run.exit_code == int(ToolMain.Exit.ENTRY_ERROR)
@@ -93,17 +101,17 @@ class TestRunTool:
     def test_missing_envelope_is_refused(self, tmp_path: Path) -> None:
         launcher = _launcher(tmp_path)
         argv = ("python3", "-m", "boba.no_such_toolmod", "fake_echo")
-        command = ToolCommand(argv=argv, stdin=b"")
+        command = ToolCommand(argv=argv, config=b"")
 
-        with pytest.raises(ProcessCallError, match="no envelope"):
-            launcher.run_tool(command)
+        with pytest.raises(LauncherError, match="no envelope"):
+            CollectedCall.of(launcher, command)
 
     def test_non_module_command_is_refused(self, tmp_path: Path) -> None:
         launcher = _launcher(tmp_path)
-        command = ToolCommand(argv=("/bin/true", "x", "y", "z"), stdin=b"")
+        command = ToolCommand(argv=("/bin/true", "x", "y", "z"), config=b"")
 
         with pytest.raises(ProcessCallError, match="not a tool module command"):
-            launcher.run_tool(command)
+            launcher.open(command)
 
 
 class TestCallText:
@@ -145,3 +153,80 @@ class TestCallText:
 
         with pytest.raises(ChannelOverflowError):
             launcher.call_text("yes overflow", "")
+
+
+class TestStreamingCall:
+    """Потоковый вызов: кадр в ответ на кадр, конверт после конца входа."""
+
+    STREAM_ARGV = ("python3", "-m", "boba.stand.fake_toolmod", "fake_stream")
+
+    def _command(self, prefix: str) -> ToolCommand:
+        config = json.dumps({"cfg": CFG.revealed()}).encode("utf-8")
+        return ToolCommand(
+            argv=(*self.STREAM_ARGV, "--prefix", prefix), config=config
+        )
+
+    def test_frames_answer_frames_and_envelope_closes_call(
+        self, tmp_path: Path
+    ) -> None:
+        launcher = _launcher(tmp_path)
+
+        with launcher.open(self._command("re:")) as call:
+            call.send(ToolFrame.of(FakeChunkHead(seq=1), b"one"))
+            call.send(ToolFrame.of(FakeChunkHead(seq=2), b"two"))
+            call.done_sending()
+
+            bodies: list[bytes] = []
+            kinds: list[str] = []
+            for frame in call.frames():
+                kinds.append(frame.kind)
+                bodies.append(frame.body)
+
+            outcome = call.result()
+
+        assert kinds == ["chunk", "chunk", "done"]
+        assert bodies[:2] == [b"re:one", b"re:two"]
+        assert isinstance(outcome.reply, ReplyOk)
+        assert "streamed 2" in outcome.reply.content
+
+    def test_frames_arrive_before_input_is_closed(self, tmp_path: Path) -> None:
+        launcher = _launcher(tmp_path)
+
+        with launcher.open(self._command("x:")) as call:
+            call.send(ToolFrame.of(FakeChunkHead(seq=1), b"early"))
+
+            stream = call.frames()
+            first = next(stream)
+
+            assert first.body == b"x:early"
+
+            call.done_sending()
+            rest = list(stream)
+            outcome = call.result()
+
+        assert [frame.kind for frame in rest] == ["done"]
+        assert isinstance(outcome.reply, ReplyOk)
+
+    def test_large_body_survives_pipe_limit(self, tmp_path: Path) -> None:
+        launcher = _launcher(tmp_path, channel_limit_bytes=8_000_000)
+        payload = bytes(1_000_000)
+
+        with launcher.open(self._command("")) as call:
+            call.send(ToolFrame.of(FakeChunkHead(seq=1), payload))
+            call.done_sending()
+
+            frames = list(call.frames())
+            outcome = call.result()
+
+        assert frames[0].body == payload
+        assert isinstance(outcome.reply, ReplyOk)
+
+    def test_close_without_result_kills_the_call(self, tmp_path: Path) -> None:
+        launcher = _launcher(tmp_path)
+
+        call = launcher.open(self._command("y:"))
+        call.send(ToolFrame.of(FakeChunkHead(seq=1), b"hang"))
+        call.close()
+
+        with pytest.raises(ToolStopped):
+            call.result()

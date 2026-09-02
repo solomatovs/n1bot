@@ -15,9 +15,17 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
-from fake_channel_tool import ChannelConfig, fx_echo, fx_probe_tmp, fx_warm_state
+from fake_channel_tool import (
+    ChannelConfig,
+    FxChunkHead,
+    fx_echo,
+    fx_probe_tmp,
+    fx_stream,
+    fx_warm_state,
+)
 from pydantic import SecretStr
 
+from boba.cancellation import ToolStopped, run_cancellation
 from boba.sandbox import SandboxProfile
 from boba.sandbox.guest import WarmupCall
 from boba.sandbox.zygote import (
@@ -31,7 +39,8 @@ from boba.sandbox.zygote import (
 from boba.stand.zygote import ProfileFields, SandboxStand
 from boba.toolkit.channels import JournalChannel, ToolChannel
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolMain
-from boba.toolkit.launcher import LauncherError
+from boba.toolkit.frames import ToolFrame
+from boba.toolkit.launcher import CollectedCall, LauncherError
 from boba.toolkit.protocol import ReplyError, ReplyOk
 from boba.toolkit.stream import (
     ChannelSinks,
@@ -58,6 +67,7 @@ CFG = ChannelConfig(token=SecretStr("zc-s3cret"))
 
 FX_ECHO = ToolMain.toolset(fx_echo)[0]
 FX_PROBE = ToolMain.toolset(fx_probe_tmp)[0]
+FX_STREAM = ToolMain.toolset(fx_stream)[0]
 
 FAST = ZygotePolicy(
     start_timeout_sec=20.0,
@@ -188,6 +198,13 @@ def _command(text: str) -> Any:
     return ToolArgv.render(address, schema, {"text": text, "cfg": CFG})
 
 
+def _stream_command(prefix: str) -> Any:
+    """ToolCommand потокового инструмента: io-параметр в конфиг не попадает."""
+    address = ToolAddress(module="fake_channel_tool", name="fx_stream")
+    schema = ToolArgv.schema_of(FX_STREAM)
+    return ToolArgv.render(address, schema, {"prefix": prefix, "cfg": CFG})
+
+
 @pytest.fixture
 def zygote() -> Any:
     born: list[ZygoteSupervisor] = []
@@ -217,7 +234,7 @@ class TestRunTool:
     def test_ok_envelope_with_secret_from_stdin(self, zygote: Any) -> None:
         caller = zygote(_profile())
 
-        outcome = caller.run_tool(_command("ping"))
+        outcome = CollectedCall.of(caller, _command("ping"))
 
         if not isinstance(outcome.reply, ReplyOk):
             raise AssertionError(f"reply={outcome.reply}")
@@ -236,13 +253,13 @@ class TestRunTool:
         if "zc-s3cret" in " ".join(command.argv):
             raise AssertionError(f"секрет в argv: {command.argv}")
 
-        if b"zc-s3cret" not in command.stdin:
-            raise AssertionError("секрет не доехал stdin'ом")
+        if b"zc-s3cret" not in command.config:
+            raise AssertionError("секрет не доехал конфигом вызова")
 
     def test_expected_failure_travels_as_reply_error(self, zygote: Any) -> None:
         caller = zygote(_profile())
 
-        outcome = caller.run_tool(_command("boom"))
+        outcome = CollectedCall.of(caller, _command("boom"))
 
         if not isinstance(outcome.reply, ReplyError):
             raise AssertionError(f"reply={outcome.reply}")
@@ -257,13 +274,13 @@ class TestRunTool:
         caller_supervisor.stop()
 
         with pytest.raises(LauncherError):
-            caller.run_tool(_command("late"))
+            CollectedCall.of(caller, _command("late"))
 
     def test_timeout_without_envelope_is_launcher_error(self, zygote: Any) -> None:
         caller = zygote(_profile(timeout_sec=2))
 
         with pytest.raises(LauncherError, match="no envelope"):
-            caller.run_tool(_command("sleepy"))
+            CollectedCall.of(caller, _command("sleepy"))
 
     def test_journal_sinks_receive_channels(self, zygote: Any) -> None:
         caller = zygote(_profile())
@@ -271,7 +288,7 @@ class TestRunTool:
         sinks = RecordingSinks()
         ToolChannelsTap.set(sinks)
         try:
-            outcome = caller.run_tool(_command("journal"))
+            outcome = CollectedCall.of(caller, _command("journal"))
         finally:
             ToolChannelsTap.set(None)
 
@@ -294,7 +311,7 @@ class TestRunTool:
         schema = ToolArgv.schema_of(FX_PROBE)
         command = ToolArgv.render(address, schema, {"marker": "solo"})
 
-        outcome = caller.run_tool(command)
+        outcome = CollectedCall.of(caller, command)
 
         if not isinstance(outcome.reply, ReplyOk):
             raise AssertionError(f"reply={outcome.reply}")
@@ -371,7 +388,7 @@ class TestCgroup:
             )
         )
 
-        outcome = caller.run_tool(_command("grouped"))
+        outcome = CollectedCall.of(caller, _command("grouped"))
 
         if not isinstance(outcome.reply, ReplyOk):
             raise AssertionError(f"reply={outcome.reply}")
@@ -439,7 +456,7 @@ class TestWarmup:
         schema = ToolArgv.schema_of(
             next(t for t in ToolMain.toolset(fx_warm_state) if t)
         )
-        outcome = caller.run_tool(ToolArgv.render(address, schema, {}))
+        outcome = CollectedCall.of(caller, ToolArgv.render(address, schema, {}))
 
         if not isinstance(outcome.reply, ReplyOk):
             raise AssertionError(f"reply={outcome.reply}")
@@ -524,7 +541,7 @@ class TestWorkspaceImages:
         )
 
     def _workspace_listing(self, caller: ZygoteToolCaller) -> str:
-        outcome = caller.run_tool(_command("workspace"))
+        outcome = CollectedCall.of(caller, _command("workspace"))
         if not isinstance(outcome.reply, ReplyOk):
             raise AssertionError(f"reply={outcome.reply}")
 
@@ -537,7 +554,7 @@ class TestWorkspaceImages:
         if "fx-probe.txt" not in first:
             raise AssertionError(f"запись в образ не видна: {first}")
 
-        outcome = caller.run_tool(_command("workspace"))
+        outcome = CollectedCall.of(caller, _command("workspace"))
         if "sandbox-mount" in outcome.run.stderr:
             raise AssertionError(f"кадры обвязки в tool_stderr: {outcome.run.stderr!r}")
 
@@ -623,7 +640,7 @@ class TestImageRootfs:
         before = self._mounts_of_host()
         caller = self._caller("fx-img", tmp_path)
 
-        outcome = caller.run_tool(_command("ping"))
+        outcome = CollectedCall.of(caller, _command("ping"))
 
         if not isinstance(outcome.reply, ReplyOk):
             raise AssertionError(f"reply={outcome.reply}")
@@ -641,7 +658,7 @@ class TestImageRootfs:
         schema = ToolArgv.schema_of(FX_PROBE)
         command = ToolArgv.render(address, schema, {"marker": "img.txt"})
 
-        outcome = caller.run_tool(command)
+        outcome = CollectedCall.of(caller, command)
         if not isinstance(outcome.reply, ReplyOk):
             raise AssertionError(f"reply={outcome.reply}")
 
@@ -756,3 +773,151 @@ class TestShell:
 
         if "0000000000000000" not in stdout:
             raise AssertionError(f"capabilities не сброшены: {stdout!r}")
+
+
+class TestStreamingCall:
+    """Потоковый вызов в песочнице: кадры внутрь и наружу, конверт в конце."""
+
+    def test_frames_answer_frames_and_envelope_closes_call(
+        self, zygote: Any
+    ) -> None:
+        caller = zygote(_profile())
+
+        with caller.open(_stream_command("re:")) as call:
+            call.send(ToolFrame.of(FxChunkHead(seq=1), b"one"))
+            call.send(ToolFrame.of(FxChunkHead(seq=2), b"two"))
+            call.done_sending()
+
+            kinds: list[str] = []
+            bodies: list[bytes] = []
+            for frame in call.frames():
+                kinds.append(frame.kind)
+                bodies.append(frame.body)
+
+            outcome = call.result()
+
+        if kinds != ["chunk", "chunk", "done"]:
+            raise AssertionError(f"kinds={kinds}")
+
+        if bodies[:2] != [b"re:one", b"re:two"]:
+            raise AssertionError(f"bodies={bodies[:2]!r}")
+
+        if not isinstance(outcome.reply, ReplyOk):
+            raise AssertionError(f"reply={outcome.reply}")
+
+        if "streamed 2" not in outcome.reply.content:
+            raise AssertionError(f"content={outcome.reply.content!r}")
+
+    def test_frames_arrive_before_input_is_closed(self, zygote: Any) -> None:
+        caller = zygote(_profile())
+
+        with caller.open(_stream_command("x:")) as call:
+            call.send(ToolFrame.of(FxChunkHead(seq=1), b"early"))
+
+            stream = call.frames()
+            first = next(stream)
+
+            if first.body != b"x:early":
+                raise AssertionError(f"first={first.body!r}")
+
+            call.done_sending()
+            rest = [frame.kind for frame in stream]
+            outcome = call.result()
+
+        if rest != ["done"]:
+            raise AssertionError(f"rest={rest}")
+
+        if not isinstance(outcome.reply, ReplyOk):
+            raise AssertionError(f"reply={outcome.reply}")
+
+    def test_frames_journal_keeps_heads_without_bodies(self, zygote: Any) -> None:
+        caller = zygote(_profile())
+
+        sinks = RecordingSinks()
+        ToolChannelsTap.set(sinks)
+        try:
+            with caller.open(_stream_command("j:")) as call:
+                call.send(ToolFrame.of(FxChunkHead(seq=1), b"body-bytes"))
+                call.done_sending()
+                list(call.frames())
+                call.result()
+        finally:
+            ToolChannelsTap.set(None)
+
+        journal = sinks.text_of(ToolChannel.FRAMES)
+        if '"seq":1' not in journal:
+            raise AssertionError(f"tool_frames={journal!r}")
+
+
+class TestCallResilience:
+    """Срывы потокового вызова в песочнице: отмена, второй читатель, ресурсы."""
+
+    def test_cancel_right_after_open_is_not_lost(self, zygote: Any) -> None:
+        """Гонка отмены: cancel сразу после open обязан убить вызов."""
+        caller = zygote(_profile())
+
+        with run_cancellation() as cancellation:
+            call = caller.open(_stream_command("c:"))
+            cancellation.cancel()
+
+            with pytest.raises(ToolStopped):
+                call.result()
+
+    def test_open_on_cancelled_run_raises_and_leaks_nothing(
+        self, zygote: Any
+    ) -> None:
+        """Уже отменённый ход: open падает сразу, проводка прибрана."""
+        caller = zygote(_profile())
+
+        before = len(os.listdir("/proc/self/fd"))
+
+        with run_cancellation() as cancellation:
+            cancellation.cancel()
+
+            with pytest.raises(ToolStopped):
+                caller.open(_stream_command("c:"))
+
+        after = len(os.listdir("/proc/self/fd"))
+        if after != before:
+            raise AssertionError(f"дескрипторы утекли: {before} -> {after}")
+
+    def test_second_frames_reader_is_refused(self, zygote: Any) -> None:
+        caller = zygote(_profile())
+
+        with caller.open(_stream_command("r:")) as call:
+            call.frames()
+
+            with pytest.raises(LauncherError, match="already have a reader"):
+                call.frames()
+
+            call.done_sending()
+            call.result()
+
+    def test_no_fd_leak_across_streaming_calls(self, zygote: Any) -> None:
+        """Дескрипторы после серии вызовов — как до неё: успех и отмена."""
+        caller = zygote(_profile())
+
+        def one_ok() -> None:
+            with caller.open(_stream_command("f:")) as call:
+                call.send(ToolFrame.of(FxChunkHead(seq=1), b"data"))
+                call.done_sending()
+                list(call.frames())
+                call.result()
+
+        def one_closed() -> None:
+            call = caller.open(_stream_command("f:"))
+            call.close()
+
+            with pytest.raises(ToolStopped):
+                call.result()
+
+        one_ok()
+
+        before = len(os.listdir("/proc/self/fd"))
+        for _ in range(3):
+            one_ok()
+            one_closed()
+
+        after = len(os.listdir("/proc/self/fd"))
+        if after != before:
+            raise AssertionError(f"дескрипторы утекли: {before} -> {after}")

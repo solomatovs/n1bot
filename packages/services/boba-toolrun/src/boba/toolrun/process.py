@@ -1,8 +1,10 @@
 """Запуск инструмента обычным субпроцессом хоста: dev-режим без песочницы.
 
 Команда модуля исполняется интерпретатором приложения из workdir; контракт
-процесса тот же, что в песочнице (argv, injected на stdin, конверт через fd
-BOBA_FD_TOOL_RESULT), но изоляции, cgroup-лимитов и прогрева модулей нет.
+процесса тот же, что в песочнице (argv, кадры на stdin и в BOBA_FD_FRAMES,
+конверт через BOBA_FD_RESULT), но изоляции, cgroup-лимитов и прогрева
+модулей нет. Вход тела пишется напрямую в пайп потоком вызывающего; насос
+своим потоком только читает каналы.
 
 Ошибки:
 ProcessCallError — процесс не запустился, не отдал конверт либо команда
@@ -15,13 +17,11 @@ from __future__ import annotations
 
 import logging
 import os
-import selectors
 import signal
 import subprocess
 import sys
-import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,22 +29,36 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.cancellation import current_cancellation
+from boba.cancellation import RunCancellation, current_cancellation
 from boba.identity.context import CallContext
 from boba.toolkit.channels import ToolChannel
+from boba.toolkit.frames import CallInbox
 from boba.toolkit.launcher import (
     CappedChannel,
     ChannelTail,
+    EnvelopeReply,
     LauncherError,
     LaunchOutcome,
     RunResult,
+    ToolCall,
     ToolLauncher,
     ToolOutcome,
 )
-from boba.toolkit.protocol import REPLY, ToolCommand
-from boba.toolkit.stream import Chunk, ChunkSink, ToolChannelsTap
+from boba.toolkit.protocol import ToolCommand
+from boba.toolkit.pump import (
+    CallSinks,
+    ChannelPump,
+    FrameInput,
+    InputFeeder,
+    PumpedCall,
+)
+from boba.toolkit.stream import ChunkSink
 
-__all__ = ["ProcessCallError", "ProcessLauncherConfig", "ProcessToolCaller"]
+__all__ = [
+    "ProcessCallError",
+    "ProcessLauncherConfig",
+    "ProcessToolCaller",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -88,25 +102,65 @@ class ProcessLauncherConfig(BaseModel):
     )
 
 
-class _Tee:
-    """Тройник двух приёмников одного канала."""
+class _CallPipes:
+    """Пайпы каналов вызова, которых нет у subprocess: result и frames.
 
-    def __init__(self, first: ChunkSink, second: ChunkSink) -> None:
-        self._first = first
-        self._second = second
+    Дескрипторы записи наследует тело (их номера едут в env), дескрипторы
+    чтения держит насос.
+    """
 
-    def feed(self, chunk: Chunk) -> None:
-        self._first(chunk)
-        self._second(chunk)
+    def __init__(self, ends: Mapping[ToolChannel, tuple[int, int]]) -> None:
+        self._ends = dict(ends)
+        self._child_open = True
 
+    @classmethod
+    def opened(cls, env: dict[str, str], *, with_result: bool) -> _CallPipes:
+        """Открывает пайпы вызова модуля и прописывает их номера в env."""
+        if not with_result:
+            return cls({})
 
-@dataclass(frozen=True)
-class _PumpEnd:
-    """Итог насоса каналов: код возврата, таймаут, латентность первого байта."""
+        ends: dict[ToolChannel, tuple[int, int]] = {}
+        for channel in (ToolChannel.RESULT, ToolChannel.FRAMES):
+            read_fd, write_fd = os.pipe()
+            os.set_inheritable(write_fd, True)
+            env[channel.env_name] = str(write_fd)
+            ends[channel] = (read_fd, write_fd)
 
-    exit_code: int
-    timed_out: bool
-    first_output_ms: int | None
+        return cls(ends)
+
+    def child_fds(self) -> tuple[int, ...]:
+        fds: list[int] = []
+        for _, write_fd in self._ends.values():
+            fds.append(write_fd)
+
+        return tuple(fds)
+
+    def host_reads(self) -> tuple[tuple[ToolChannel, int], ...]:
+        reads: list[tuple[ToolChannel, int]] = []
+        for channel, (read_fd, _) in self._ends.items():
+            reads.append((channel, read_fd))
+
+        return tuple(reads)
+
+    def close_child_ends(self) -> None:
+        if not self._child_open:
+            return
+
+        self._child_open = False
+        for _, write_fd in self._ends.values():
+            with suppress(OSError):
+                os.close(write_fd)
+
+    def close_host_ends(self) -> None:
+        for read_fd, _ in self._ends.values():
+            with suppress(OSError):
+                os.close(read_fd)
+
+        self._ends.clear()
+
+    def close_all(self) -> None:
+        self.close_child_ends()
+        self.close_host_ends()
 
 
 @dataclass(frozen=True)
@@ -120,6 +174,38 @@ class _ProcRun:
     first_output_ms: int | None
 
 
+@dataclass(frozen=True)
+class _LiveCall:
+    """Запущенное тело: процесс, пайпы каналов и вход, ещё не отданный писателю."""
+
+    proc: subprocess.Popen[bytes]
+    channels: _CallPipes
+    stdin_w: int
+    started: float
+    spawn_ms: int
+
+
+class _ProcessPump(ChannelPump):
+    """Насос субпроцесса: жизнь исполнителя по poll, добивание группой."""
+
+    def __init__(
+        self,
+        poll_sec: float,
+        timeout_sec: float,
+        proc: subprocess.Popen[bytes],
+        killer: Callable[[subprocess.Popen[bytes]], None],
+    ) -> None:
+        super().__init__(poll_sec, timeout_sec)
+        self._proc = proc
+        self._killer = killer
+
+    def _finished(self) -> bool:
+        return self._proc.poll() is not None
+
+    def _kill(self) -> None:
+        self._killer(self._proc)
+
+
 class ProcessToolCaller(ToolLauncher):
     """Реализация ToolLauncher субпроцессом хоста: команда модуля -> конверт."""
 
@@ -127,56 +213,64 @@ class ProcessToolCaller(ToolLauncher):
     """python3 -m <module> — префикс команды модуля инструментов."""
 
     POLL_SEC: ClassVar[float] = 0.05
-    READ_BYTES: ClassVar[int] = 65536
+
+    MODULE_JOURNAL: ClassVar[tuple[ToolChannel, ...]] = (
+        ToolChannel.STDOUT,
+        ToolChannel.STDERR,
+        ToolChannel.RESULT,
+        ToolChannel.FRAMES,
+    )
+    """Каналы вызова модуля, попадающие в журнал при поставленном тапе."""
+
+    SHELL_JOURNAL: ClassVar[tuple[ToolChannel, ...]] = (
+        ToolChannel.STDOUT,
+        ToolChannel.STDERR,
+    )
+    """Каналы shell-команды: конверта и кадров у неё нет."""
 
     def __init__(self, tool: str, cfg: ProcessLauncherConfig) -> None:
         self._tool = tool
         self._cfg = cfg
 
-    def run_tool(self, command: ToolCommand) -> ToolOutcome:
-        """Граница слоя: наружу только ошибки из контракта модуля."""
+    def open(self, command: ToolCommand) -> ToolCall:
+        """Вызов модуля инструментов: конфиг первым кадром, кадры тела наружу."""
         argv = self._module_argv(command)
 
         envelope = CappedChannel(
             self._cfg.channel_limit_bytes, ToolChannel.RESULT.value
         )
         stderr_tail = ChannelTail(self._cfg.stderr_tail_bytes)
+        inbox = CallInbox()
 
         own: dict[ToolChannel, ChunkSink] = {
             ToolChannel.RESULT: envelope.feed,
             ToolChannel.STDERR: stderr_tail.feed,
+            ToolChannel.FRAMES: inbox.feed,
         }
-        outcome = self._run(argv, command.stdin, own, with_result=True)
+        sinks = CallSinks.merged(own, self.MODULE_JOURNAL)
 
-        run = RunResult(
-            exit_code=outcome.exit_code,
-            stdout="",
-            stderr=stderr_tail.text(),
-            duration_ms=outcome.duration_ms,
-            timed_out=outcome.timed_out,
-            spawn_ms=outcome.spawn_ms,
-            first_output_ms=outcome.first_output_ms,
-        )
+        live = self._spawn(argv, with_result=True)
+        entry = FrameInput(live.stdin_w)
 
-        if run.exit_code != 0:
-            self._log_failure(run)
+        def run(cancellation: RunCancellation) -> _ProcRun:
+            return self._pump_live(live, sinks, cancellation)
 
-        reply_raw = envelope.data()
-        if not reply_raw:
-            msg = (
-                f"{self._tool}: no envelope on tool_result "
-                f"(rc={run.exit_code}, timed_out={run.timed_out}); "
-                f"tool_stderr={run.stderr!r}"
-            )
-            raise ProcessCallError(msg)
+        def finish(run_end: _ProcRun) -> ToolOutcome:
+            return self._collect(run_end, envelope, stderr_tail)
 
         try:
-            reply = REPLY.validate_json(reply_raw)
-        except ValueError as exc:
-            msg = f"{self._tool}: envelope does not match contract: {exc}"
-            raise ProcessCallError(msg) from exc
+            call = PumpedCall(self._tool, entry, inbox, run, finish)
+        except BaseException:
+            # ход уже отменён: насос не родился, прибираем процесс сами
+            entry.abandon()
+            self._kill(live.proc)
+            live.proc.wait()
+            live.channels.close_host_ends()
+            self._close_pipes(live.proc)
+            raise
 
-        return ToolOutcome(reply=reply, run=run, diagnostic="")
+        entry.send_config(command.config)
+        return call
 
     def call_text(self, command: str, stdin: str) -> LaunchOutcome:
         """Shell-команда на хосте: stdout/stderr/rc как есть."""
@@ -188,8 +282,16 @@ class ProcessToolCaller(ToolLauncher):
             ToolChannel.STDOUT: stdout.feed,
             ToolChannel.STDERR: stderr.feed,
         }
+        sinks = CallSinks.merged(own, self.SHELL_JOURNAL)
+
         argv = (self._cfg.shell, "-c", command)
-        outcome = self._run(argv, stdin.encode("utf-8"), own, with_result=False)
+        live = self._spawn(argv, with_result=False)
+        feeder = InputFeeder(live.stdin_w, stdin.encode("utf-8"))
+
+        try:
+            outcome = self._pump_live(live, sinks, current_cancellation())
+        finally:
+            feeder.join()
 
         run = RunResult(
             exit_code=outcome.exit_code,
@@ -202,11 +304,11 @@ class ProcessToolCaller(ToolLauncher):
         )
 
         if run.exit_code != 0:
-            self._log_failure(run)
+            self.log_failure(run)
 
         return LaunchOutcome(self._tool, run, "")
 
-    def _log_failure(self, run: RunResult) -> None:
+    def log_failure(self, run: RunResult) -> None:
         logger.warning(
             "process[%s]: rc=%d timed_out=%s stderr=%r",
             self._tool,
@@ -229,26 +331,6 @@ class ProcessToolCaller(ToolLauncher):
         # интерпретатор приложения вместо python3 из PATH образа песочницы
         return (sys.executable, *argv[1:])
 
-    def _sinks(
-        self, own: Mapping[ToolChannel, ChunkSink]
-    ) -> dict[ToolChannel, ChunkSink]:
-        """Приёмники вызова: свой буфер плюс журнал каналов, если тап поставлен."""
-        sinks: dict[ToolChannel, ChunkSink] = dict(own)
-
-        journal = ToolChannelsTap.get()
-        if journal is None:
-            return sinks
-
-        channels = (ToolChannel.STDOUT, ToolChannel.STDERR, ToolChannel.RESULT)
-        for channel in channels:
-            journal_sink = journal.sink_of(channel).feed
-            if channel in sinks:
-                sinks[channel] = _Tee(sinks[channel], journal_sink).feed
-            else:
-                sinks[channel] = journal_sink
-
-        return sinks
-
     def _call_workdir(self) -> str:
         """Рабочий каталог тела: своя папка области вызова, как /workspace в песочнице.
 
@@ -262,187 +344,136 @@ class ProcessToolCaller(ToolLauncher):
         scoped.mkdir(parents=True, exist_ok=True)
         return str(scoped)
 
-    def _run(
-        self,
-        argv: Sequence[str],
-        stdin: bytes,
-        own: Mapping[ToolChannel, ChunkSink],
-        *,
-        with_result: bool,
-    ) -> _ProcRun:
-        sinks = self._sinks(own)
+    def _spawn(self, argv: Sequence[str], *, with_result: bool) -> _LiveCall:
+        """Запустить тело с каналами; спавн идёт в потоке вызывающего.
 
+        Здесь же снимаются контексты вызова (workdir области, журнальный тап):
+        в поток насоса contextvar'ы не переезжают.
+        """
         workdir = self._call_workdir()
         env = dict(os.environ)
 
-        result_r = -1
-        result_w = -1
-        pass_fds: tuple[int, ...] = ()
-        if with_result:
-            result_r, result_w = os.pipe()
-            os.set_inheritable(result_w, True)
-            env[ToolChannel.RESULT.env_name] = str(result_w)
-            pass_fds = (result_w,)
+        channels = _CallPipes.opened(env, with_result=with_result)
+        stdin_r, stdin_w = os.pipe()
 
         started = time.monotonic()
         try:
             proc = subprocess.Popen(  # noqa: S603 — argv собран контрактом модуля
                 list(argv),
-                stdin=subprocess.PIPE,
+                stdin=stdin_r,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=workdir,
                 env=env,
-                pass_fds=pass_fds,
+                pass_fds=channels.child_fds(),
                 start_new_session=True,
             )
         except OSError as exc:
-            if with_result:
-                os.close(result_r)
-                os.close(result_w)
+            channels.close_all()
+            os.close(stdin_r)
+            os.close(stdin_w)
 
             msg = f"{self._tool}: cannot spawn {argv[0]}: {exc}"
             raise ProcessCallError(msg) from exc
 
         spawn_ms = int((time.monotonic() - started) * 1000)
 
-        # копия записи родителя закрывается сразу: EOF канала результата
-        # наступает вместе со смертью тела
-        if with_result:
-            os.close(result_w)
+        # копии записи родителя закрываются сразу: EOF каналов наступает
+        # вместе со смертью тела
+        os.close(stdin_r)
+        channels.close_child_ends()
 
-        writer = threading.Thread(
-            target=self._feed_stdin,
-            args=(proc, stdin),
-            name=f"tool-stdin:{self._tool}",
+        return _LiveCall(
+            proc=proc,
+            channels=channels,
+            stdin_w=stdin_w,
+            started=started,
+            spawn_ms=spawn_ms,
         )
-        writer.start()
+
+    def _pump_live(
+        self,
+        live: _LiveCall,
+        sinks: Mapping[ToolChannel, ChunkSink],
+        cancellation: RunCancellation,
+    ) -> _ProcRun:
+        """Прогнать каналы тела до его выхода; зовут call_text и поток насоса."""
+        pump = _ProcessPump(
+            self.POLL_SEC, self._cfg.timeout_sec, live.proc, self._kill
+        )
+        self._register_reads(pump, live, sinks)
 
         try:
-            outcome = self._pump(proc, sinks, started, result_r)
+            end = pump.run(cancellation)
         except BaseException:
             # сорвался приёмник или пришла отмена: тело добивается группой,
             # иначе оно переживёт вызов и продолжит писать в закрытые пайпы
-            self._kill(proc)
-            proc.wait()
+            self._kill(live.proc)
+            live.proc.wait()
             raise
         finally:
-            if with_result:
-                os.close(result_r)
-
-            # писатель stdin выходит по EOF пайпа после смерти тела, поэтому
-            # join идёт до закрытия пайпов — гонки с писателем нет
-            writer.join()
-            self._close_pipes(proc)
+            pump.close()
+            live.channels.close_host_ends()
+            self._close_pipes(live.proc)
 
         return _ProcRun(
-            exit_code=outcome.exit_code,
-            timed_out=outcome.timed_out,
-            duration_ms=int((time.monotonic() - started) * 1000),
-            spawn_ms=spawn_ms,
-            first_output_ms=outcome.first_output_ms,
-        )
-
-    def _pump(
-        self,
-        proc: subprocess.Popen[bytes],
-        sinks: Mapping[ToolChannel, ChunkSink],
-        started: float,
-        result_r: int,
-    ) -> _PumpEnd:
-        """Читает каналы до EOF и выхода тела; следит за дедлайном и отменой."""
-        sel = selectors.DefaultSelector()
-        open_reads = self._register(sel, proc, result_r)
-
-        deadline = started + self._cfg.timeout_sec
-        timed_out = False
-        first_output: float | None = None
-
-        cancellation = current_cancellation()
-
-        def kill() -> None:
-            self._kill(proc)
-
-        with cancellation.abort_with(kill):
-            while open_reads or proc.poll() is None:
-                if cancellation.cancelled:
-                    self._kill(proc)
-
-                if not timed_out and time.monotonic() >= deadline:
-                    timed_out = True
-                    self._kill(proc)
-
-                got = self._step(sel, sinks, open_reads)
-                if got and first_output is None:
-                    first_output = time.monotonic()
-
-        sel.close()
-        cancellation.raise_if_cancelled()
-
-        first_output_ms: int | None = None
-        if first_output is not None:
-            first_output_ms = int((first_output - started) * 1000)
-
-        return _PumpEnd(
-            exit_code=proc.wait(),
-            timed_out=timed_out,
-            first_output_ms=first_output_ms,
+            exit_code=live.proc.wait(),
+            timed_out=end.timed_out,
+            duration_ms=int((time.monotonic() - live.started) * 1000),
+            spawn_ms=live.spawn_ms,
+            first_output_ms=end.first_output_ms,
         )
 
     @staticmethod
-    def _register(
-        sel: selectors.BaseSelector,
-        proc: subprocess.Popen[bytes],
-        result_r: int,
-    ) -> set[int]:
-        """Регистрирует читаемые каналы тела; возвращает их дескрипторы."""
-        if proc.stdout is not None:
-            fd = proc.stdout.fileno()
-            os.set_blocking(fd, False)
-            sel.register(fd, selectors.EVENT_READ, ToolChannel.STDOUT)
-
-        if proc.stderr is not None:
-            fd = proc.stderr.fileno()
-            os.set_blocking(fd, False)
-            sel.register(fd, selectors.EVENT_READ, ToolChannel.STDERR)
-
-        if result_r >= 0:
-            os.set_blocking(result_r, False)
-            sel.register(result_r, selectors.EVENT_READ, ToolChannel.RESULT)
-
-        return {key.fd for key in sel.get_map().values()}
-
-    def _step(
-        self,
-        sel: selectors.BaseSelector,
+    def _register_reads(
+        pump: ChannelPump,
+        live: _LiveCall,
         sinks: Mapping[ToolChannel, ChunkSink],
-        open_reads: set[int],
-    ) -> bool:
-        """Один шаг насоса: читает готовые каналы, True — тело что-то вывело."""
-        got = False
+    ) -> None:
+        """Каналы тела в насос; канал без приёмника дочитывается в никуда."""
+        reads: list[tuple[ToolChannel, int]] = []
 
-        for key, _ in sel.select(timeout=self.POLL_SEC):
-            chunk = os.read(key.fd, self.READ_BYTES)
-            if not chunk:
-                sel.unregister(key.fd)
-                open_reads.discard(key.fd)
+        stdout = live.proc.stdout
+        if stdout is not None:
+            reads.append((ToolChannel.STDOUT, stdout.fileno()))
+
+        stderr = live.proc.stderr
+        if stderr is not None:
+            reads.append((ToolChannel.STDERR, stderr.fileno()))
+
+        reads.extend(live.channels.host_reads())
+
+        for channel, fd in reads:
+            sink = sinks.get(channel)
+            if sink is None:
+                pump.add_drain(fd)
                 continue
 
-            got = True
-            sink = sinks.get(key.data)
-            if sink is not None:
-                sink(chunk)
+            pump.add_read(fd, sink)
 
-        return got
+    def _collect(
+        self,
+        run: _ProcRun,
+        envelope: CappedChannel,
+        stderr_tail: ChannelTail,
+    ) -> ToolOutcome:
+        """Итог вызова модуля: процессные поля плюс разбор конверта."""
+        result = RunResult(
+            exit_code=run.exit_code,
+            stdout="",
+            stderr=stderr_tail.text(),
+            duration_ms=run.duration_ms,
+            timed_out=run.timed_out,
+            spawn_ms=run.spawn_ms,
+            first_output_ms=run.first_output_ms,
+        )
 
-    def _feed_stdin(self, proc: subprocess.Popen[bytes], stdin: bytes) -> None:
-        if proc.stdin is None:
-            return
+        if result.exit_code != 0:
+            self.log_failure(result)
 
-        # тело умерло до конца записи: причина видна по коду возврата и stderr
-        with suppress(BrokenPipeError, OSError):
-            proc.stdin.write(stdin)
-            proc.stdin.close()
+        reply = EnvelopeReply.parse(self._tool, envelope.data(), result, "")
+
+        return ToolOutcome(reply=reply, run=result, diagnostic="")
 
     def _kill(self, proc: subprocess.Popen[bytes]) -> None:
         """Гасит группу тела: SIGTERM, пауза, SIGKILL выжившим."""
@@ -460,7 +491,7 @@ class ProcessToolCaller(ToolLauncher):
 
     @staticmethod
     def _close_pipes(proc: subprocess.Popen[bytes]) -> None:
-        for stream in (proc.stdin, proc.stdout, proc.stderr):
+        for stream in (proc.stdout, proc.stderr):
             if stream is None:
                 continue
 

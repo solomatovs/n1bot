@@ -13,6 +13,7 @@ from boba.toolrun.run_log import (
     StreamSource,
     ToolRunLogger,
 )
+from boba.toolrun.streaming import AsyncToolCall
 from boba.toolrun.wrapping import (
     AsyncCall,
     CallHooks,
@@ -22,6 +23,7 @@ from boba.toolrun.wrapping import (
 
 __all__ = [
     "AsyncCall",
+    "AsyncToolCall",
     "CallHooks",
     "CancellableTools",
     "StreamSource",

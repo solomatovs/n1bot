@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field, SecretStr
 
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool, warmup
+from boba.toolkit.frames import ToolIo
 from boba.toolkit.result import TextResult, ToolResult, render_for_llm
 
 
@@ -149,11 +150,46 @@ async def fx_probe_tmp(
     return json.dumps(state), artifact
 
 
+class FxChunkHead(BaseModel):
+    """Заголовок кадра потокового ответа: номер порции."""
+
+    kind: str = "chunk"
+    seq: int
+
+
+class FxDoneHead(BaseModel):
+    """Заголовок последнего кадра: сколько порций прошло через тело."""
+
+    kind: str = "done"
+    total: int
+
+
+@tool
+async def fx_stream(
+    prefix: Annotated[str, Field(description="Приставка к порции")],
+    *,
+    cfg: Annotated[ChannelConfig, Injected],
+    io: Annotated[ToolIo, Injected],
+) -> tuple[str, ToolResult]:
+    """Отвечает кадром на каждый кадр входа: потоковый вызов в песочнице."""
+    total = 0
+    for frame in io.inbound():
+        total += 1
+        io.emit(FxChunkHead(seq=total), prefix.encode("utf-8") + frame.body)
+
+    io.emit(FxDoneHead(total=total))
+
+    artifact = TextResult(text=f"streamed {total}|{cfg.token.get_secret_value()}")
+    return render_for_llm(artifact), artifact
+
+
 EXPECTED: Mapping[type[Exception], FxErrorKind] = {
     FxDownError: FxErrorKind.DOWN,
 }
 
-TOOLS: Final = ToolMain.toolset(fx_echo, fx_chatter, fx_probe_tmp, fx_warm_state)
+TOOLS: Final = ToolMain.toolset(
+    fx_echo, fx_chatter, fx_probe_tmp, fx_warm_state, fx_stream
+)
 
 if __name__ == "__main__":
     sys.exit(ToolMain.run(TOOLS))

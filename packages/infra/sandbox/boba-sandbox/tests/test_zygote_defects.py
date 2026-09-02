@@ -31,7 +31,7 @@ from boba.sandbox.zygote import ZygoteRegistry, ZygoteSpawner, ZygoteState
 from boba.stand.zygote import ROOTFS_IMAGE, SandboxStand, ZygoteStand
 from boba.toolkit.channels import JournalChannel, ToolChannel
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolMain
-from boba.toolkit.launcher import LauncherError
+from boba.toolkit.launcher import CollectedCall, LauncherError
 from boba.toolkit.protocol import ReplyOk, ToolCommand
 from boba.toolkit.stream import (
     ChannelSinks,
@@ -236,7 +236,7 @@ class TestBodyOutputIsNotLost:
         sinks = RecordingSinks()
         ToolChannelsTap.set(sinks)
         try:
-            outcome = caller.run_tool(_command("fx_chatter", {}))
+            outcome = CollectedCall.of(caller, _command("fx_chatter", {}))
         finally:
             ToolChannelsTap.set(None)
 
@@ -269,7 +269,7 @@ class TestBodyLogLevel:
             sinks = RecordingSinks()
             ToolChannelsTap.set(sinks)
             try:
-                caller.run_tool(_command("fx_chatter", {}))
+                CollectedCall.of(caller, _command("fx_chatter", {}))
             finally:
                 ToolChannelsTap.set(None)
         finally:

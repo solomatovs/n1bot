@@ -4,6 +4,9 @@
 конверт, launcher запускает команду и разбирает его. Оба зависят отсюда, друг
 от друга — нет.
 
+Вход вызова — поток кадров (boba.toolkit.frames): команда несёт только
+injected-конфиг, который лончер отправляет телу первым кадром.
+
 Ошибки: своих не выпускает.
 """
 
@@ -25,12 +28,12 @@ __all__ = [
 
 
 class ToolCommand(BaseModel):
-    """Что запускать: готовая команда и её stdin."""
+    """Что запускать: готовая команда и injected-конфиг её тела."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     argv: tuple[str, ...]
-    stdin: bytes
+    config: bytes
 
 
 class ReplyOk(BaseModel):

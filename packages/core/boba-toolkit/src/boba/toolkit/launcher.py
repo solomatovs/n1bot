@@ -1,7 +1,9 @@
 """Порт запуска инструмента: чем инструмент пользуется, не зная про песочницу.
 
-Инструменты зависят только от этого модуля: протокол ToolLauncher и данные одного
-запуска. Реализация (bwrap, cgroup, subprocess) подставляется снаружи.
+Инструменты зависят только от этого модуля: протоколы ToolLauncher и ToolCall,
+данные одного запуска. Реализация (bwrap, cgroup, subprocess) подставляется
+снаружи. Вызов всегда потоковый: вход и выход — кадры (boba.toolkit.frames);
+накопительный вызов строится поверх него компонентом CollectedCall.
 
 Ошибки:
 LauncherError — исполнитель нарушил контракт, результату доверять нельзя.
@@ -13,14 +15,16 @@ from __future__ import annotations
 
 import json
 from abc import abstractmethod
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from typing import Any, ClassVar, Protocol
+from types import TracebackType
+from typing import Any, ClassVar, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
 from boba.toolkit.failure import ToolRefusalError
-from boba.toolkit.protocol import ReplyError, ReplyOk, ToolCommand
+from boba.toolkit.frames import ToolFrame
+from boba.toolkit.protocol import REPLY, ReplyError, ReplyOk, ToolCommand
 from boba.toolkit.stream import Chunk
 
 __all__ = [
@@ -28,6 +32,8 @@ __all__ = [
     "ChannelOverflowError",
     "ChannelTail",
     "ClippedText",
+    "CollectedCall",
+    "EnvelopeReply",
     "ErrorKind",
     "LaunchOutcome",
     "LaunchPayload",
@@ -36,6 +42,7 @@ __all__ = [
     "PayloadFailureError",
     "RowStream",
     "RunResult",
+    "ToolCall",
     "ToolLauncher",
     "ToolOutcome",
 ]
@@ -249,22 +256,116 @@ class ToolOutcome:
     diagnostic: str
 
 
-class ToolLauncher(Protocol):
-    """Запуск инструмента в изолированном окружении.
+class EnvelopeReply:
+    """Разбор конверта tool_result: один контракт у всех исполнителей."""
 
-    run_tool исполняет команду модуля инструментов и разбирает конверт из
-    канала tool_result; call_text отдаёт процесс как есть (bash).
+    @staticmethod
+    def parse(
+        tool: str, raw: bytes | bytearray, run: RunResult, diagnostic: str
+    ) -> ReplyOk | ReplyError:
+        if not raw:
+            msg = (
+                f"{tool}: no envelope on tool_result "
+                f"(rc={run.exit_code}, timed_out={run.timed_out}); "
+                f"tool_stderr={run.stderr!r}"
+            )
+            if diagnostic:
+                msg = f"{msg}; {diagnostic}"
+
+            raise LauncherError(msg)
+
+        try:
+            return REPLY.validate_json(bytes(raw))
+        except ValueError as exc:
+            msg = f"{tool}: envelope does not match contract: {exc}"
+            raise LauncherError(msg) from exc
+
+
+class ToolCall(Protocol):
+    """Открытый вызов инструмента: вход кадрами, кадры наружу, конверт в конце.
+
+    Конфиг команды лончер отправляет телу сам, первым кадром; send добавляет
+    прикладные кадры, done_sending закрывает вход кадром eos и EOF. send
+    пишет в пайп тела напрямую и блокируется на полном буфере, пока тело не
+    прочитает своё, — так скорость входа прижимается к скорости тела; писать
+    можно из любого потока, записи атомарны. frames — итератор кадров канала
+    tool_frames, один читатель на вызов: он блокирует до следующего кадра и
+    кончается вместе с вызовом; result дожидается завершения и разбирает
+    конверт. close добивает вызов; выход из контекста зовёт close.
     """
 
     @abstractmethod
-    def run_tool(self, command: ToolCommand) -> ToolOutcome:
-        """Выполнить команду модуля инструментов; конверт обязателен."""
+    def send(self, frame: ToolFrame) -> None:
+        """Прикладной кадр телу; после done_sending — LauncherError."""
+        ...
+
+    @abstractmethod
+    def done_sending(self) -> None:
+        """Конец входа: телу уходит eos, дальше stdin закрывается."""
+        ...
+
+    @abstractmethod
+    def frames(self) -> Iterator[ToolFrame]:
+        """Кадры тела по мере поступления, до конца вызова."""
+        ...
+
+    @abstractmethod
+    def result(self) -> ToolOutcome:
+        """Дождаться завершения и разобрать конверт; без конверта — LauncherError."""
+        ...
+
+    @abstractmethod
+    def close(self) -> None:
+        """Добить вызов; после result — ничего не делает."""
+        ...
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.close()
+
+
+class ToolLauncher(Protocol):
+    """Запуск инструмента в изолированном окружении.
+
+    open начинает вызов команды модуля инструментов; call_text отдаёт процесс
+    как есть (bash). Накопительный вызов строится поверх open компонентом
+    CollectedCall — отдельного входа в порт у него нет.
+    """
+
+    @abstractmethod
+    def open(self, command: ToolCommand) -> ToolCall:
+        """Открыть вызов команды модуля инструментов."""
         ...
 
     @abstractmethod
     def call_text(self, command: str, stdin: str) -> LaunchOutcome:
         """Выполнить команду; stdout/stderr/rc возвращаются без разбора."""
         ...
+
+
+class CollectedCall:
+    """Накопительный вызов поверх потокового: вход только конфигом, кадры
+    тела отбрасываются, наружу отдаётся конверт.
+
+    Так работает вызов инструмента моделью: кадры ему не нужны, нужен итог.
+    """
+
+    @staticmethod
+    def of(launcher: ToolLauncher, command: ToolCommand) -> ToolOutcome:
+        with launcher.open(command) as call:
+            call.done_sending()
+
+            for _ in call.frames():
+                continue
+
+            return call.result()
 
 
 class LauncherFactory(Protocol):

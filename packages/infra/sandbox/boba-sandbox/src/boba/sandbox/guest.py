@@ -168,8 +168,9 @@ class CallFd(IntEnum):
     STDOUT = 1
     STDERR = 2
     RESULT = 3
-    CONTROL = 4
-    CGROUP = 5
+    FRAMES = 4
+    CONTROL = 5
+    CGROUP = 6
     """Каталог cgroup-leaf'а; едет только когда у вызова есть групповые лимиты."""
 
     @classmethod
@@ -780,7 +781,13 @@ class ZygoteMain:
             self._child(request, fds, timing)
             os._exit(127)
 
-        for index in (CallFd.STDIN, CallFd.STDOUT, CallFd.STDERR, CallFd.RESULT):
+        for index in (
+            CallFd.STDIN,
+            CallFd.STDOUT,
+            CallFd.STDERR,
+            CallFd.RESULT,
+            CallFd.FRAMES,
+        ):
             os.close(fds[index])
 
         if request.into_cgroup:
@@ -940,6 +947,19 @@ class ZygoteMain:
         control.close()
 
     @staticmethod
+    def _publish_channels(request: CallRequest, fds: list[int]) -> None:
+        """Каналы модуля инструментов в env: конверт результата и кадры.
+
+        Shell-команде они не принадлежат: её вывод — stdout и stderr, а
+        дескрипторы модуля закрываются вместе с исполнителем.
+        """
+        if request.kind is CallKind.SHELL:
+            return
+
+        os.environ[ToolChannel.RESULT.env_name] = str(fds[CallFd.RESULT])
+        os.environ[ToolChannel.FRAMES.env_name] = str(fds[CallFd.FRAMES])
+
+    @staticmethod
     def _close_inherited(request: CallRequest, fds: list[int]) -> None:
         """Закрыть всё, что телу не принадлежит: leaf cgroup и копии каналов.
 
@@ -972,7 +992,7 @@ class ZygoteMain:
         os.dup2(fds[CallFd.STDIN], 0)
         os.dup2(fds[CallFd.STDOUT], 1)
         os.dup2(fds[CallFd.STDERR], 2)
-        os.environ[ToolChannel.RESULT.env_name] = str(fds[CallFd.RESULT])
+        self._publish_channels(request, fds)
 
         self._close_inherited(request, fds)
 

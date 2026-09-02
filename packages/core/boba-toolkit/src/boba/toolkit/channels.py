@@ -31,16 +31,21 @@ class CallOutcome(StrEnum):
 
 
 class ToolChannel(StrEnum):
-    """Каналы тела инструмента; значение — имя канала в файле журнала."""
+    """Каналы тела инструмента; значение — имя канала в файле журнала.
+
+    Вход и кадры наружу кадрированы (boba.toolkit.frames): stdin несёт
+    config, прикладные кадры и eos, frames — кадры тела.
+    """
 
     STDIN = "tool_stdin"
     STDOUT = "tool_stdout"
     STDERR = "tool_stderr"
     RESULT = "tool_result"
+    FRAMES = "tool_frames"
 
     @property
     def env_name(self) -> str:
-        """Имя env-переменной с номером fd: BOBA_FD_TOOL_RESULT."""
+        """Имя env-переменной с номером fd: BOBA_FD_RESULT, BOBA_FD_FRAMES."""
         return f"BOBA_FD_{self.name}"
 
     @property
