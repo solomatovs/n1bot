@@ -35,6 +35,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
@@ -74,6 +75,7 @@ from boba.sandbox.runner import (
     SandboxMountError,
     StderrTee,
 )
+from boba.toolkit.chain import TappedCall
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.frames import CallInbox
 from boba.toolkit.launcher import (
@@ -93,6 +95,7 @@ from boba.toolkit.pump import (
     CallSinks,
     ChannelPump,
     OpenRun,
+    PipePlumbing,
     PumpedCall,
 )
 from boba.toolkit.stream import (
@@ -257,12 +260,15 @@ class _CallChannels:
         self.result_r, self.result_w = os.pipe()
         self.frames_r, self.frames_w = os.pipe()
         self.injected_r, self.injected_w = os.pipe()
+        PipePlumbing.widen(self.stdin_w)
+        PipePlumbing.widen(self.frames_w)
         self.control_host, self.control_child = socket.socketpair(
             socket.AF_UNIX, socket.SOCK_SEQPACKET
         )
         self.control_host.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
         self._stdin_open = True
         self._injected_open = True
+        self._frames_open = True
 
     def child_fds(self) -> list[int]:
         """В порядке CallFd: так их ждёт зигота; cgroup — последним и не всегда."""
@@ -310,6 +316,29 @@ class _CallChannels:
         self._injected_open = False
         return self.injected_w
 
+    def take_frames(self) -> int:
+        """Отдать канал кадров перекачке: насос его не читает, каналы его
+        больше не закрывают; владеет дескриптором перекачка."""
+        if not self._frames_open:
+            msg = "call frames channel is already taken or closed"
+            raise LauncherError(msg)
+
+        self._frames_open = False
+        return self.frames_r
+
+    def host_reads(self) -> tuple[tuple[ToolChannel, int], ...]:
+        """Читаемые насосом каналы вызова; отданный перекачке не входит."""
+        reads: list[tuple[ToolChannel, int]] = [
+            (ToolChannel.STDOUT, self.stdout_r),
+            (ToolChannel.STDERR, self.stderr_r),
+            (ToolChannel.RESULT, self.result_r),
+        ]
+
+        if self._frames_open:
+            reads.append((ToolChannel.FRAMES, self.frames_r))
+
+        return tuple(reads)
+
     def close_stdin(self) -> None:
         if not self._stdin_open:
             return
@@ -320,10 +349,10 @@ class _CallChannels:
     def close_host_ends(self) -> None:
         self.close_stdin()
         self._close_injected()
+        self._close_frames()
         os.close(self.stdout_r)
         os.close(self.stderr_r)
         os.close(self.result_r)
-        os.close(self.frames_r)
         self.control_host.close()
 
     def _close_injected(self) -> None:
@@ -332,6 +361,13 @@ class _CallChannels:
 
         self._injected_open = False
         os.close(self.injected_w)
+
+    def _close_frames(self) -> None:
+        if not self._frames_open:
+            return
+
+        self._frames_open = False
+        os.close(self.frames_r)
 
 
 class ZygoteSupervisor:
@@ -897,13 +933,7 @@ class _ZygotePump(ChannelPump):
         self._setup_failure = SetupFailure.NONE
         self._setup_detail = ""
 
-        reads = {
-            ToolChannel.STDOUT: channels.stdout_r,
-            ToolChannel.STDERR: channels.stderr_r,
-            ToolChannel.RESULT: channels.result_r,
-            ToolChannel.FRAMES: channels.frames_r,
-        }
-        for channel, fd in reads.items():
+        for channel, fd in channels.host_reads():
             sink = sinks.get(channel)
             if sink is None:
                 self.add_drain(fd)
@@ -1297,6 +1327,22 @@ class ZygoteToolCaller(ToolLauncher):
         Проводка и cgroup-leaf готовятся в потоке вызывающего; насос живёт
         в PumpedCall и на любом исходе отпускает leaf и host-концы каналов.
         """
+        call, _fd = self._open_call(command, tap=False)
+
+        return call
+
+    def open_tap(self, command: ToolCommand) -> TappedCall:
+        """Вызов-источник splice-перекачки (CallRelay.splice).
+
+        Канал кадров хостом не разбирается и не журналируется — его
+        дескриптор отдаётся перекачке; frames() такого вызова пуст.
+        """
+        call, fd = self._open_call(command, tap=True)
+
+        return TappedCall(call=call, frames_fd=fd)
+
+    def _open_call(self, command: ToolCommand, *, tap: bool) -> tuple[ToolCall, int]:
+        """Общий открыватель вызова модуля; tap отдаёт канал кадров наружу."""
         argv_tail = self._argv_tail(command)
         plan = self._plan()
 
@@ -1313,9 +1359,16 @@ class ZygoteToolCaller(ToolLauncher):
         own: dict[ToolChannel, ChunkSink] = {
             ToolChannel.STDERR: relay.feed,
             ToolChannel.RESULT: envelope.feed,
-            ToolChannel.FRAMES: inbox.feed,
         }
-        sinks = CallSinks.merged(own, self.MODULE_JOURNAL)
+        journal = list(self.MODULE_JOURNAL)
+
+        # сырой канал кадров хост не разбирает и не журналирует: без tap
+        # насос дочитывает его в никуда, с tap — отдаёт перекачке
+        if not tap and not command.raw_frames:
+            own[ToolChannel.FRAMES] = inbox.feed
+            journal.append(ToolChannel.FRAMES)
+
+        sinks = CallSinks.merged(own, tuple(journal))
 
         manager, leaf = self._acquire_leaf()
 
@@ -1337,7 +1390,13 @@ class ZygoteToolCaller(ToolLauncher):
             self._release_leaf(manager, leaf)
             raise
 
-        entry = CallSinks.stdin_input(wired.channels.take_stdin())
+        frames_fd = -1
+        if tap:
+            frames_fd = wired.channels.take_frames()
+
+        entry = CallSinks.stdin_input(
+            wired.channels.take_stdin(), framed=not command.raw_stdin
+        )
 
         def run(cancellation: RunCancellation) -> ZygoteOutcome:
             try:
@@ -1361,6 +1420,9 @@ class ZygoteToolCaller(ToolLauncher):
             # ход уже отменён: насос не родился, проводку прибираем сами;
             # EOF каналов выведет тело, зигота пожнёт его сама
             entry.abandon()
+            if frames_fd >= 0:
+                with suppress(OSError):
+                    os.close(frames_fd)
             self._supervisor.abandon_wired(wired)
             self._release_leaf(manager, leaf)
             raise
@@ -1370,7 +1432,7 @@ class ZygoteToolCaller(ToolLauncher):
         config_input.send_bytes(command.config)
         config_input.finish()
 
-        return call
+        return call, frames_fd
 
     def outcome_of(
         self,

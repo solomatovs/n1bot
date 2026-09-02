@@ -31,13 +31,17 @@ class ToolCommand(BaseModel):
 
     Собирается хостом (ToolArgv.render) из аргументов LLM и injected-моделей;
     конфиг с секретами в argv не попадает — лончер отправляет его телу
-    отдельным каналом --injected-fd.
+    отдельным каналом --injected-fd. raw_stdin и raw_frames выводятся из
+    деклараций портов инструмента: сырой канал несёт голые байты, лончер его
+    не разбирает, не журналирует и не кадрирует вход.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     argv: tuple[str, ...]
     config: bytes
+    raw_stdin: bool = False
+    raw_frames: bool = False
 
 
 class ReplyOk(BaseModel):

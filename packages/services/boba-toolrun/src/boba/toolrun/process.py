@@ -33,6 +33,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from boba.cancellation import RunCancellation
 from boba.identity.context import CallContext
+from boba.toolkit.chain import TappedCall
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.entry import EntryFlag
 from boba.toolkit.frames import CallInbox
@@ -53,6 +54,7 @@ from boba.toolkit.pump import (
     CallSinks,
     ChannelPump,
     OpenRun,
+    PipePlumbing,
     PumpedCall,
 )
 from boba.toolkit.stream import ChunkSink
@@ -121,6 +123,7 @@ class _CallPipes:
         self._module = module
         self._child_open = module
         self._injected_taken = False
+        self._frames_taken = False
 
         self.result_r = -1
         self.result_w = -1
@@ -135,6 +138,7 @@ class _CallPipes:
         self.result_r, self.result_w = os.pipe()
         self.frames_r, self.frames_w = os.pipe()
         self.injected_r, self.injected_w = os.pipe()
+        PipePlumbing.widen(self.frames_w)
 
     def argv_flags(self) -> tuple[str, ...]:
         """Флаги каналов для команды тела: номера унаследованных дескрипторов."""
@@ -165,14 +169,26 @@ class _CallPipes:
         self._injected_taken = True
         return self.injected_w
 
+    def take_frames(self) -> int:
+        """Отдать канал кадров перекачке: насос его не читает, закрытия
+        каналов его не трогают; владеет дескриптором перекачка."""
+        if not self._module or self._frames_taken:
+            msg = "frames channel is already taken or absent"
+            raise LauncherError(msg)
+
+        self._frames_taken = True
+        return self.frames_r
+
     def host_reads(self) -> tuple[tuple[ToolChannel, int], ...]:
         if not self._module:
             return ()
 
-        return (
-            (ToolChannel.RESULT, self.result_r),
-            (ToolChannel.FRAMES, self.frames_r),
-        )
+        reads: list[tuple[ToolChannel, int]] = [(ToolChannel.RESULT, self.result_r)]
+
+        if not self._frames_taken:
+            reads.append((ToolChannel.FRAMES, self.frames_r))
+
+        return tuple(reads)
 
     def close_child_ends(self) -> None:
         if not self._child_open:
@@ -188,9 +204,12 @@ class _CallPipes:
             return
 
         self._module = False
-        for fd in (self.result_r, self.frames_r):
+        with suppress(OSError):
+            os.close(self.result_r)
+
+        if not self._frames_taken:
             with suppress(OSError):
-                os.close(fd)
+                os.close(self.frames_r)
 
         if self._injected_taken:
             return
@@ -283,6 +302,22 @@ class ProcessToolCaller(ToolLauncher):
 
     def open(self, command: ToolCommand) -> ToolCall:
         """Вызов модуля инструментов: конфиг первым кадром, кадры тела наружу."""
+        call, _fd = self._open_call(command, tap=False)
+
+        return call
+
+    def open_tap(self, command: ToolCommand) -> TappedCall:
+        """Вызов-источник splice-перекачки (CallRelay.splice).
+
+        Канал кадров хостом не разбирается и не журналируется — его
+        дескриптор отдаётся перекачке; frames() такого вызова пуст.
+        """
+        call, fd = self._open_call(command, tap=True)
+
+        return TappedCall(call=call, frames_fd=fd)
+
+    def _open_call(self, command: ToolCommand, *, tap: bool) -> tuple[ToolCall, int]:
+        """Общий открыватель вызова модуля; tap отдаёт канал кадров наружу."""
         argv = self._module_argv(command)
 
         envelope = CappedChannel(
@@ -294,12 +329,24 @@ class ProcessToolCaller(ToolLauncher):
         own: dict[ToolChannel, ChunkSink] = {
             ToolChannel.RESULT: envelope.feed,
             ToolChannel.STDERR: stderr_tail.feed,
-            ToolChannel.FRAMES: inbox.feed,
         }
-        sinks = CallSinks.merged(own, self.MODULE_JOURNAL)
+        journal = list(self.MODULE_JOURNAL)
+
+        # сырой канал кадров хост не разбирает и не журналирует: без tap
+        # насос дочитывает его в никуда, с tap — отдаёт перекачке
+        if not tap and not command.raw_frames:
+            own[ToolChannel.FRAMES] = inbox.feed
+            journal.append(ToolChannel.FRAMES)
+
+        sinks = CallSinks.merged(own, tuple(journal))
 
         live = self._spawn(argv, with_result=True)
-        entry = CallSinks.stdin_input(live.stdin_w)
+
+        frames_fd = -1
+        if tap:
+            frames_fd = live.channels.take_frames()
+
+        entry = CallSinks.stdin_input(live.stdin_w, framed=not command.raw_stdin)
 
         def run(cancellation: RunCancellation) -> _ProcRun:
             return self._pump_live(live, sinks, cancellation)
@@ -312,6 +359,9 @@ class ProcessToolCaller(ToolLauncher):
         except BaseException:
             # ход уже отменён: насос не родился, прибираем процесс сами
             entry.abandon()
+            if frames_fd >= 0:
+                with suppress(OSError):
+                    os.close(frames_fd)
             self._kill(live.proc)
             live.proc.wait()
             live.channels.close_host_ends()
@@ -323,7 +373,7 @@ class ProcessToolCaller(ToolLauncher):
         config_input.send_bytes(command.config)
         config_input.finish()
 
-        return call
+        return call, frames_fd
 
     def call_text(self, command: str, stdin: str) -> LaunchOutcome:
         """Shell-команда на хосте: stdout/stderr/rc как есть."""
@@ -421,6 +471,7 @@ class ProcessToolCaller(ToolLauncher):
 
         channels = _CallPipes(module=with_result)
         stdin_r, stdin_w = os.pipe()
+        PipePlumbing.widen(stdin_w)
 
         started = time.monotonic()
         try:

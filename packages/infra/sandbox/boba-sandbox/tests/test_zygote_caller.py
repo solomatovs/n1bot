@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, ClassVar
@@ -37,6 +38,7 @@ from boba.sandbox.zygote import (
     ZygoteToolCaller,
 )
 from boba.stand.zygote import ProfileFields, SandboxStand
+from boba.toolkit.chain import CallRelay
 from boba.toolkit.channels import JournalChannel, ToolChannel
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolMain
 from boba.toolkit.frames import ToolFrame
@@ -853,6 +855,50 @@ class TestStreamingCall:
         stdin_journal = sinks.text_of(ToolChannel.STDIN)
         if '"seq":1' not in stdin_journal:
             raise AssertionError(f"tool_stdin={stdin_journal!r}")
+
+
+class TestSpliceChain:
+    """Zero-copy цепочка в песочнице: кадры одного вызова уходят во вход
+    другого через ядро, хост данные не разбирает."""
+
+    def test_kernel_splice_between_sandboxed_calls(self, zygote: Any) -> None:
+        caller = zygote(_profile())
+
+        tapped = caller.open_tap(_stream_command("s:"))
+        sink = caller.open(_stream_command("z:"))
+
+        stats_box: list[Any] = []
+        sink_fd = CallRelay.input_fd(sink)
+
+        def relay() -> None:
+            stats_box.append(CallRelay.splice(tapped.frames_fd, sink_fd))
+
+        worker = threading.Thread(target=relay, daemon=True)
+
+        with tapped.call as source, sink:
+            worker.start()
+
+            source.send(ToolFrame.of(FxChunkHead(seq=1), b"data"))
+            source.done_sending()
+
+            worker.join(timeout=60)
+
+            source_outcome = source.result()
+            bodies = [frame.body for frame in sink.frames()]
+            sink_outcome = sink.result()
+
+        if not stats_box or not stats_box[0].spliced:
+            raise AssertionError(f"splice не отработал: {stats_box}")
+
+        # источник ответил кадром s:data и done; приёмник обернул их своим z:
+        if b"z:s:data" not in bodies:
+            raise AssertionError(f"тела не доехали сквозь ядро: {bodies}")
+
+        if not isinstance(source_outcome.reply, ReplyOk):
+            raise AssertionError(f"source={source_outcome.reply}")
+
+        if not isinstance(sink_outcome.reply, ReplyOk):
+            raise AssertionError(f"sink={sink_outcome.reply}")
 
 
 class TestCallResilience:
