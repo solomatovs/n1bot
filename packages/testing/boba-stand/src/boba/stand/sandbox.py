@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from omegaconf import DictConfig, OmegaConf
@@ -80,13 +80,39 @@ SRC_PACKAGES = _src_packages()
 class SandboxLayout:
     """Монтирования и env: код пакетов кладётся поверх собранного site."""
 
+    DATA_BINDS: ClassVar[dict[str, tuple[tuple[str, str], ...]]] = {
+        "boba-tool-knowledge": (
+            ("fastembed", "/var/cache/fastembed"),
+            ("tessdata", "/usr/share/tessdata"),
+        ),
+        "boba-tool-doc": (("tessdata", "/usr/share/tessdata"),),
+    }
+    """Данные моделей по пакетам: рантайм монтирует их биндами ([sandbox].binds
+    секций), образ несёт только пустые точки — и только у пакетов, в замыкании
+    которых объявлены data-пути; бинд в чужой rootfs уронил бы bwrap."""
+
     @staticmethod
-    def ro_binds(docs_dir: Path | None) -> list[str]:
-        """Код репозитория поверх кода образа: sys.path даёт PYTHONPATH профиля."""
+    def ro_binds(docs_dir: Path | None, package: str = "") -> list[str]:
+        """Код репозитория поверх кода образа плюс данные моделей пакета."""
         binds = [f"{REPO / 'packages'}:/usr/src"]
+
+        models = SandboxLayout.models_dir()
+        for name, guest in SandboxLayout.DATA_BINDS.get(package, ()):
+            binds.append(f"{models / name}:{guest}")
+
         if docs_dir is not None:
             binds.append(f"{docs_dir}:/workspace")
+
         return binds
+
+    @staticmethod
+    def models_dir() -> Path:
+        base = os.environ.get("BOBA_BASE")
+        if base is None:
+            msg = "BOBA_BASE is required to locate model data for the sandbox"
+            raise RuntimeError(msg)
+
+        return Path(base) / "models"
 
     @staticmethod
     def python_path() -> str:
@@ -162,7 +188,7 @@ def sandbox_profile(
         },
         "rootfs": str(plugin_rootfs(package)),
         "mounts": {
-            "ro": tuple(SandboxLayout.ro_binds(docs_dir)),
+            "ro": tuple(SandboxLayout.ro_binds(docs_dir, package)),
             "rw": (),
             "tmp": "256M",
         },

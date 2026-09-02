@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from langchain_core.tools import BaseTool
 
 from boba.access import ToolAccess
+from boba.toolkit.ports import ToolStreamSpecs
 
 __all__ = ["ToolRegistry"]
 
@@ -26,7 +27,12 @@ class ToolRegistry:
     access: ToolAccess
 
     def for_session(self, user_roles: Iterable[str], profile: str) -> list[BaseTool]:
-        """Инструменты хода чата: всё, что решение допускает в чате."""
+        """Инструменты хода чата: всё, что решение допускает в чате.
+
+        Потоковые насосы (инструменты с портами данных) сюда не попадают:
+        их выход предназначен другому инструменту, а не модели — модель
+        собирает их в цепочки через pipeline_catalog/pipeline_run.
+        """
         roles = frozenset(user_roles)
         allowed = list(self._select(roles, profile, headless=False))
 
@@ -55,6 +61,9 @@ class ToolRegistry:
         self, roles: frozenset[str], profile: str, *, headless: bool
     ) -> Iterator[BaseTool]:
         for tool in self.tools:
+            if not headless and ToolStreamSpecs.of(tool.name).streaming():
+                continue
+
             decision = self.access.decide(tool.name, roles, profile)
             if headless:
                 admitted = decision.headless

@@ -1,10 +1,11 @@
 import { createContext, useContext } from "react";
 
-import type { StoredRun, StoredWorkflow } from "../model/workflow";
+import type { StoredRun, StoredWorkflow, WorkflowDraft } from "../model/workflow";
 
-/** Списки каркаса: workflow и запуски субъекта; reload — после действий. */
+/** Списки каркаса: workflow, черновики и запуски субъекта; reload — после действий. */
 export type ShellData = {
   workflows: StoredWorkflow[];
+  drafts: WorkflowDraft[];
   runs: StoredRun[];
   loading: boolean;
   error: string;

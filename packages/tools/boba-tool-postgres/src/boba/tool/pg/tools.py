@@ -8,6 +8,7 @@ PostgresError — до базы не достучаться (сеть, отка�
 UnknownConnectionError — имя подключения вне whitelist'а конфига.
 psycopg.Error — сервер отклонил запрос (синтаксис, права).
 ResultTooLargeError — выдача превысила max_bytes конфига.
+CopyDirectionError — COPY-стейтмент не подходит направлению насоса.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from boba.tool.pg.catalog import PgCatalog, PgCatalogQuery
 from boba.toolkit.calls import ConnectionArg, ScriptCall
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
+from boba.toolkit.ports import RawInbound, RawOutbound
 from boba.toolkit.result import (
     AffectedSqlResult,
     MultiResult,
@@ -63,6 +65,31 @@ class CopyDump:
     """
 
     LANG: ClassVar[str] = "csv"
+
+
+class CopyDirectionError(Exception):
+    """COPY-стейтмент не подходит направлению инструмента-насоса."""
+
+
+class CopyStatement:
+    """Направление COPY-стейтмента: насос конвейера качает в одну сторону.
+
+    pg_copy_out принимает только `COPY ... TO STDOUT`, pg_copy_in — только
+    `COPY ... FROM STDIN`; проверка по тексту до похода в базу, чтобы модель
+    получила внятную подсказку вместо ошибки протокола psycopg.
+    """
+
+    TO_STDOUT: ClassVar[str] = "to stdout"
+    FROM_STDIN: ClassVar[str] = "from stdin"
+
+    @classmethod
+    def require(cls, sql: str, marker: str, tool_name: str) -> None:
+        folded = " ".join(sql.lower().split())
+        if marker in folded:
+            return
+
+        msg = f"{tool_name} needs a full COPY statement with {marker.upper()}"
+        raise CopyDirectionError(msg)
 
 
 class PgToolConfig(SecretRevealing, SqlProfiles[PostgresConfig]):
@@ -337,7 +364,97 @@ async def pg_copy(
     return pack_result(artifact)
 
 
+@tool
+async def pg_copy_out(
+    connection_name: PgConnection,
+    sql: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Стейтмент COPY ... TO STDOUT целиком, например: "
+                "COPY my_table TO STDOUT или "
+                "COPY (select ...) TO STDOUT. Без WITH-опций постгрес "
+                "отдаёт стандартный text-формат COPY — он же дефолт у "
+                "принимающего COPY ... FROM STDIN, для перекачки pg->pg "
+                "этого достаточно. Форматы обоих концов цепочки должны "
+                "совпадать."
+            ),
+        ),
+    ],
+    out: Annotated[RawOutbound, Injected],
+    cfg: Annotated[PgToolConfig, Injected],
+) -> Annotated[tuple[str, ToolResult], Produces.of(TextResult)]:
+    """Насос выгрузки: COPY ... TO STDOUT сырым потоком в выходной порт.
+
+    Узел конвейера (pipeline_run): данные идут следующему узлу, а не в чат.
+    В ответ возвращается только счётчик перекачанных байтов.
+    """
+    CopyStatement.require(sql, CopyStatement.TO_STDOUT, "pg_copy_out")
+
+    connection = cfg.resolve(connection_name)
+    total = 0
+
+    conn = await PayloadPostgres.connect_config(connection)
+
+    # bytes: тип Query psycopg требует LiteralString, а запрос пишет LLM
+    statement = sql.encode(conn.info.encoding)
+
+    async with conn, conn.cursor() as cur, cur.copy(statement) as copy_out:
+        async for block in copy_out:
+            data = bytes(block)
+            total += len(data)
+            out.write(data)
+
+    artifact = TextResult(text=f"copied out {total} bytes")
+    return pack_result(artifact)
+
+
+@tool
+async def pg_copy_in(
+    connection_name: PgConnection,
+    sql: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Стейтмент COPY ... FROM STDIN целиком, например: "
+                "COPY my_table FROM STDIN. Без WITH-опций постгрес ждёт "
+                "стандартный text-формат COPY. Формат обязан совпадать с "
+                "тем, что отдаёт источник цепочки."
+            ),
+        ),
+    ],
+    feed: Annotated[RawInbound, Injected],
+    cfg: Annotated[PgToolConfig, Injected],
+) -> Annotated[tuple[str, ToolResult], Produces.of(TextResult)]:
+    """Насос загрузки: сырой поток входного порта в COPY ... FROM STDIN.
+
+    Узел конвейера (pipeline_run): данные приходят от предыдущего узла.
+    В ответ возвращается счётчик байтов и статус сервера (COPY N).
+    """
+    CopyStatement.require(sql, CopyStatement.FROM_STDIN, "pg_copy_in")
+
+    connection = cfg.resolve(connection_name)
+    total = 0
+
+    conn = await PayloadPostgres.connect_config(connection)
+    statement = sql.encode(conn.info.encoding)
+
+    async with conn, conn.cursor() as cur:
+        async with cur.copy(statement) as copy_in:
+            for chunk in feed:
+                total += len(chunk)
+                await copy_in.write(chunk)
+
+        status = cur.statusmessage
+
+    artifact = TextResult(text=f"copied in {total} bytes; server: {status}")
+    return pack_result(artifact)
+
+
 EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
+    CopyDirectionError: SqlErrorKind.SQL_FAILED,
     PostgresError: SqlErrorKind.DATABASE_UNAVAILABLE,
     UnknownConnectionError: SqlErrorKind.UNKNOWN_TARGET,
     psycopg.Error: SqlErrorKind.SQL_FAILED,
@@ -350,9 +467,13 @@ TOOLS: Final = ToolMain.toolset(
     pg_describe_table,
     pg_query,
     pg_copy,
+    pg_copy_out,
+    pg_copy_in,
     views={
         "pg_query": ScriptCall(arg="sql", lang="sql"),
         "pg_copy": ScriptCall(arg="sql", lang="sql"),
+        "pg_copy_out": ScriptCall(arg="sql", lang="sql"),
+        "pg_copy_in": ScriptCall(arg="sql", lang="sql"),
     },
 )
 

@@ -124,7 +124,7 @@ class StudioHost:
             page=PageUrls(
                 root=page_root,
                 login=f"{page_root}/login",
-                home=f"{page_root}/observe",
+                home=f"{page_root}/workflow",
             ),
         )
 

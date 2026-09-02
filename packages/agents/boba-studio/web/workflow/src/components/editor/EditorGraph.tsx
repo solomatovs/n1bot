@@ -12,10 +12,13 @@ import { useCallback, useMemo, type ReactElement } from "react";
 import type { TaskPositions } from "../../model/layout";
 import type { EditableEdge, EditableWorkflow } from "../../model/spec";
 import type { ToolCatalog } from "../../model/workflow";
+import { EditorStageNode, type EditorStageFlowNode } from "./EditorStageNode";
 import { EditorTaskNode, type EditorTaskFlowNode } from "./EditorTaskNode";
-import { edgeOfConnection, editorEdges, editorNodes } from "./flow";
+import { edgeOfConnection, editorEdges, editorNodes, editorStageNodes } from "./flow";
 
-const NODE_TYPES: NodeTypes = { editorTask: EditorTaskNode };
+const NODE_TYPES: NodeTypes = { editorTask: EditorTaskNode, editorStage: EditorStageNode };
+
+type EditorFlowNode = EditorTaskFlowNode | EditorStageFlowNode;
 
 type Props = {
   workflow: EditableWorkflow;
@@ -34,15 +37,19 @@ type Props = {
 /** Канвас редактора: модель — источник истины, жесты переводятся в правки модели. */
 export function EditorGraph(props: Props): ReactElement {
   const { workflow, positions, catalog, selected, issues } = props;
-  const nodes = useMemo(
-    () => editorNodes(workflow, positions, catalog, selected, issues),
-    [workflow, positions, catalog, selected, issues],
-  );
+  const nodes = useMemo<EditorFlowNode[]>(() => {
+    const tasks = editorNodes(workflow, positions, catalog, selected, issues);
+    return [...editorStageNodes(workflow, tasks), ...tasks];
+  }, [workflow, positions, catalog, selected, issues]);
   const edges = useMemo(() => editorEdges(workflow), [workflow]);
 
   const onNodesChange = useCallback(
-    (changes: NodeChange<EditorTaskFlowNode>[]) => {
+    (changes: NodeChange<EditorFlowNode>[]) => {
       for (const change of changes) {
+        if ("id" in change && change.id.startsWith("stage:")) {
+          continue;
+        }
+
         if (change.type === "position" && change.position !== undefined) {
           props.onMove(change.id, change.position.x, change.position.y);
         }

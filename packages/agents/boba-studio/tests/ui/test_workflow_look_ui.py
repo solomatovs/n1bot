@@ -54,6 +54,24 @@ edges:
   - first -> second
 """
 
+STREAM_SPEC = """name: look-stream
+tasks:
+  first:
+    tool: bash
+    args:
+      command: echo LOOK
+    ports:
+      out: write
+  second:
+    tool: bash
+    args:
+      command: cat
+    ports:
+      src: read
+edges:
+  - first.out -> second.src
+"""
+
 FAILING_SPEC = """name: look-failing
 tasks:
   boom:
@@ -75,17 +93,16 @@ class Sel:
     TOPBAR: ClassVar[str] = ".topbar"
     BRAND: ClassVar[str] = ".topbar__brand"
     CRUMBS: ClassVar[str] = ".crumbs"
-    MODE_ON: ClassVar[str] = ".topbar .segmented__item--on"
     THEME: ClassVar[str] = 'button[aria-label="Theme"]'
-    RAIL: ClassVar[str] = ".rail"
-    RAIL_ITEM: ClassVar[str] = ".rail__item"
-    RAIL_ON: ClassVar[str] = ".rail__item--on"
     LIST: ClassVar[str] = ".list"
     LIST_FILTER: ClassVar[str] = ".list__filter"
     LIST_NEW: ClassVar[str] = ".list__new"
     ITEM: ClassVar[str] = ".list .item"
     ITEM_ON: ClassVar[str] = ".list .item--on"
     ITEM_DOT: ClassVar[str] = ".item__dot"
+    ITEM_TOGGLE: ClassVar[str] = ".item__toggle"
+    ITEM_DRAFT: ClassVar[str] = ".item--draft"
+    ITEM_SUB: ClassVar[str] = ".item--sub"
     CHIP: ClassVar[str] = ".chip"
     VITALS: ClassVar[str] = ".vitals"
     VITALS_FILL: ClassVar[str] = ".vitals__progress-fill"
@@ -230,7 +247,7 @@ def _open(page: Page, stand: StandProcess, path: str) -> None:
 
 
 def _open_run(page: Page, stand: StandProcess, seeded: SeededRun) -> None:
-    _open(page, stand, f"/observe/{seeded.run_id}")
+    _open(page, stand, f"/runs/{seeded.run_id}")
     expect(page.locator(Sel.TASK_NODE)).to_have_count(2)
     # React Flow измеряет узлы после первого рендера: до этого у них нет box
     expect(page.locator(Sel.TASK_NODE).first).to_be_visible()
@@ -247,12 +264,12 @@ def _add_tool(page: Page, tool: str) -> None:
 
 
 class TestShell:
-    """Каркас: топбар, крошки, сегмент режимов, рейл, тема."""
+    """Каркас: топбар, крошки, единый список, тема."""
 
     def test_topbar_geometry_and_colors(
         self, page: Page, stand: StandProcess, tokens: Tokens
     ) -> None:
-        _open(page, stand, "/observe")
+        _open(page, stand, "/workflow")
         topbar = page.locator(Sel.TOPBAR)
 
         assert Css.box(topbar).height == tokens.px("h-topbar")
@@ -262,33 +279,71 @@ class TestShell:
         assert "space grotesk" in Css.of(brand, "font-family").lower()
         assert Css.of(brand, "font-weight") == "700"
         assert Css.of(brand.locator("b"), "color") == tokens.rgb("signal")
-        expect(page.locator(Sel.CRUMBS)).to_contain_text("History")
+        expect(page.locator(Sel.CRUMBS)).to_contain_text("Workflows")
         assert "geist mono" in Css.of(page.locator(Sel.CRUMBS), "font-family").lower()
 
-    def test_mode_segment_and_rail(
+    def test_single_scene_has_no_mode_switch(
         self, page: Page, stand: StandProcess, tokens: Tokens
     ) -> None:
-        _open(page, stand, "/build")
-        on = page.locator(Sel.MODE_ON)
-        expect(on).to_have_text("Build")
-        assert Css.of(on, "background-color") == tokens.rgb("raised-2")
-        assert Css.of(on, "border-radius") == tokens.raw("r-pill")
-        assert Css.of(on, "color") == tokens.rgb("ink")
+        """Сцена одна: ни сегмента Observe/Build, ни рейла — только список и сцена."""
+        _open(page, stand, "/workflow")
+        expect(page.locator('.topbar [role="tablist"]')).to_have_count(0)
+        expect(page.locator(".rail")).to_have_count(0)
 
-        rail = page.locator(Sel.RAIL)
-        assert Css.box(rail).width == tokens.px("w-rail")
-        assert Css.of(rail, "border-right-color") == tokens.rgb("hairline")
-        expect(page.locator(Sel.RAIL_ITEM)).to_have_count(2)
-        active = page.locator(Sel.RAIL_ON)
-        expect(active).to_have_text("Workflows")
-        assert Css.of(active, "color") == tokens.rgb("signal")
         assert close(Css.box(page.locator(Sel.LIST)).width, list_width(WIDE["width"]))
+        columns = Css.of(page.locator(Sel.SHELL_BODY), "grid-template-columns")
+        assert len(columns.split()) == 2
         expect(page.locator(Sel.CRUMBS)).to_contain_text("Workflows")
+        assert Css.of(page.locator(Sel.LIST), "border-right-color") == tokens.rgb(
+            "hairline"
+        )
+
+    def test_list_collapses_on_any_width(
+        self, page: Page, stand: StandProcess, tokens: Tokens
+    ) -> None:
+        """Кнопка панели работает всегда: на широком экране список сворачивается
+        и разворачивается, сцена забирает освободившееся место."""
+        _open(page, stand, "/workflow")
+        listing = page.locator(Sel.LIST)
+        expect(listing).to_be_visible()
+
+        drawer = page.get_by_role("button", name="Toggle list")
+        expect(drawer).to_be_visible()
+        drawer.click()
+        expect(listing).not_to_be_visible()
+        columns = Css.of(page.locator(Sel.SHELL_BODY), "grid-template-columns")
+        assert columns.split()[0] == "0px"
+
+        drawer.click()
+        expect(listing).to_be_visible()
+
+    def test_list_resizes_and_remembers_width(
+        self, page: Page, stand: StandProcess, tokens: Tokens
+    ) -> None:
+        """Правый край панели тянется мышью; ширина переживает перезагрузку."""
+        _open(page, stand, "/workflow")
+        listing = page.locator(Sel.LIST)
+        before = Css.box(listing).width
+
+        handle = page.locator(".list__resize")
+        box = handle.bounding_box()
+        assert box is not None
+        page.mouse.move(box["x"] + box["width"] / 2, box["y"] + 200)
+        page.mouse.down()
+        page.mouse.move(box["x"] + 120, box["y"] + 200)
+        page.mouse.up()
+
+        after = Css.box(listing).width
+        assert after > before + 80
+
+        page.reload(wait_until="domcontentloaded")
+        expect(page.locator(Sel.LIST)).to_be_visible()
+        assert abs(Css.box(page.locator(Sel.LIST)).width - after) <= 2
 
     def test_theme_toggle_swaps_tokens_and_survives_reload(
         self, page: Page, stand: StandProcess, tokens: Tokens
     ) -> None:
-        _open(page, stand, "/observe")
+        _open(page, stand, "/workflow")
         body = page.locator("body")
         assert Css.of(body, "background-color") == tokens.rgb("bg")
 
@@ -305,38 +360,40 @@ class TestShell:
 
 
 class TestLists:
-    """Списки слева: заголовок, фильтр, элементы, «+ New workflow»."""
+    """Единый список: workflow с разворотом запусков, черновики сверху."""
 
-    def test_run_list_items(
+    def test_selected_run_is_expanded_under_its_workflow(
         self, page: Page, stand: StandProcess, seeded: SeededRun, tokens: Tokens
     ) -> None:
-        _open(page, stand, f"/observe/{seeded.run_id}")
+        """Выбранный запуск держит workflow развёрнутым; строка запуска — под ним."""
+        _open(page, stand, f"/runs/{seeded.run_id}")
         listing = page.locator(Sel.LIST)
-        expect(listing).to_have_attribute("aria-label", "runs")
+        expect(listing).to_have_attribute("aria-label", "workflows")
         assert Css.of(page.locator(Sel.LIST_FILTER), "border-radius") == tokens.raw(
             "r-cell"
         )
-        assert Css.of(page.locator(Sel.LIST_FILTER), "background-color") == tokens.rgb(
-            "bg"
-        )
+
+        toggle = page.locator(Sel.ITEM_TOGGLE).first
+        expect(toggle).to_have_attribute("aria-expanded", "true")
 
         item = page.locator(Sel.ITEM_ON)
         expect(item).to_have_count(1)
+        assert "item--sub" in (item.get_attribute("class") or "")
         assert Css.of(item, "border-left-color") == tokens.rgb("signal")
         assert Css.of(item, "background-color") == tokens.rgb("raised")
-        assert "geist mono" in Css.of(item, "font-family").lower()
         dot = item.locator(Sel.ITEM_DOT)
         assert Css.of(dot, "background-color") == tokens.rgb("status-done")
         assert Css.of(dot, "border-radius") == "50%"
         expect(item).to_contain_text("2 tasks")
 
-        page.locator(Sel.LIST_FILTER).fill("no-such-run")
-        expect(page.locator(Sel.ITEM)).to_have_count(0)
+        # строка запуска отступает под родителя
+        parent = page.locator(Sel.ITEM, has_text="look-flow").first
+        assert Css.box(item).x > Css.box(parent).x
 
-    def test_workflow_list_items(
+    def test_workflow_rows_expand_their_runs(
         self, page: Page, stand: StandProcess, seeded: SeededRun, tokens: Tokens
     ) -> None:
-        _open(page, stand, "/build")
+        _open(page, stand, "/workflow")
         new = page.locator(Sel.LIST_NEW)
         assert Css.of(new, "color") == tokens.rgb("signal")
         assert Css.of(new, "border-top-style") == "dashed"
@@ -346,10 +403,50 @@ class TestLists:
         expect(chip).to_have_text("bash")
         assert Css.of(chip, "color") == tokens.rgb("signal")
         assert Css.of(chip, "text-transform") == "uppercase"
-        expect(item.locator(Sel.CHIP).last).to_contain_text("runs")
+        expect(item.locator(Sel.CHIP, has_text="runs")).to_have_count(1)
+        # рядом с числом запусков — сколько прошло с последнего
+        expect(item.locator(Sel.CHIP).last).to_contain_text("ago")
+
+        # свернуто — запусков не видно; стрелка разворачивает историю
+        expect(page.locator(Sel.ITEM_SUB)).to_have_count(0)
+        toggle = item.locator(Sel.ITEM_TOGGLE)
+        expect(toggle).to_have_attribute("aria-expanded", "false")
+        toggle.click()
+        expect(toggle).to_have_attribute("aria-expanded", "true")
+        runs = page.locator(Sel.ITEM_SUB)
+        assert runs.count() >= 1
+        expect(runs.first).to_contain_text("tasks")
 
         item.hover()
         assert Css.of(item, "background-color") == tokens.rgb("raised")
+
+    def test_draft_rows_stay_on_top_with_a_badge(
+        self, page: Page, stand: StandProcess, tokens: Tokens
+    ) -> None:
+        """Начатый workflow виден в списке черновиком: сверху, только имя и
+        пометка draft; удаляется кнопкой билдера рядом с Validate/Save/Run."""
+        _open(page, stand, "/workflow/new")
+        page.locator('input[aria-label="workflow name"]').fill("look-draft")
+        _add_tool(page, "bash")
+
+        draft = page.locator(Sel.ITEM_DRAFT, has_text="look-draft")
+        expect(draft).to_have_count(1)
+        badge = draft.locator(".chip--draft")
+        expect(badge).to_have_text("draft")
+        assert Css.of(badge, "color") == tokens.rgb("signal")
+        # у черновика нет ни времени, ни кнопок — имя и пометка
+        expect(draft.locator(".chip")).to_have_count(1)
+        expect(draft.locator("button")).to_have_count(0)
+
+        # черновики стоят выше сохранённых workflow
+        first_saved = page.locator(f"{Sel.ITEM}:not({Sel.ITEM_DRAFT})").first
+        assert Css.box(draft).y < Css.box(first_saved).y
+
+        delete = page.get_by_role("button", name="Delete draft", exact=True)
+        expect(delete).to_be_visible()
+        delete.click()
+        expect(page.locator(Sel.ITEM_DRAFT, has_text="look-draft")).to_have_count(0)
+        expect(page).to_have_url(re.compile(r"/workflow/workflow$"))
 
 
 class TestObserve:
@@ -507,7 +604,7 @@ class TestStatusPalette:
     def test_failed_run_colors(
         self, page: Page, stand: StandProcess, failed_run: SeededRun, tokens: Tokens
     ) -> None:
-        _open(page, stand, f"/observe/{failed_run.run_id}")
+        _open(page, stand, f"/runs/{failed_run.run_id}")
         expect(page.locator(Sel.TASK_NODE)).to_have_count(2)
 
         badge = page.locator(Sel.VITALS_BADGE)
@@ -550,7 +647,7 @@ class TestBuild:
     def test_builder_bar_and_menu(
         self, page: Page, stand: StandProcess, tokens: Tokens
     ) -> None:
-        _open(page, stand, "/build/new")
+        _open(page, stand, "/workflow/new")
         bar = page.locator(Sel.BUILDER)
         assert Css.box(bar).height >= tokens.px("h-vitals")
         label = page.locator(Sel.BUILDER_LABEL)
@@ -573,7 +670,7 @@ class TestBuild:
     def test_editor_node_form_and_issues(
         self, page: Page, stand: StandProcess, tokens: Tokens
     ) -> None:
-        _open(page, stand, "/build/new")
+        _open(page, stand, "/workflow/new")
         _add_tool(page, "bash")
 
         node = page.locator(Sel.EDITOR_NODE)
@@ -633,10 +730,36 @@ class TestBuild:
         expect(footer.locator(".chip")).to_have_text(["shell"])
         assert Css.of(footer, "border-top-color") == tokens.rgb("hairline")
 
+    def test_stream_stage_frame_in_builder(
+        self, page: Page, stand: StandProcess, tokens: Tokens
+    ) -> None:
+        """Потоково-связанные узлы билда обведены той же карточкой стадии,
+        что в Observe: один визуальный язык на обоих экранах."""
+        _open(page, stand, "/workflow/new")
+        yaml_button = page.get_by_role("button", name="YAML", exact=True)
+        yaml_button.click()
+        page.locator(Sel.YAML_TEXT).fill(STREAM_SPEC)
+        page.get_by_role("button", name="Apply YAML", exact=True).click()
+        expect(page.locator(Sel.NOTICE)).to_have_text("yaml applied")
+        yaml_button.click()
+
+        nodes = page.locator(Sel.EDITOR_NODE)
+        expect(nodes).to_have_count(2)
+
+        stage = page.locator(Sel.STAGE_NODE)
+        expect(stage).to_have_count(1)
+        expect(stage.locator(".tag")).to_have_text("stage")
+        expect(stage).to_contain_text("first → second")
+        assert Css.of(stage, "border-radius") == tokens.raw("r-phase")
+        assert Css.of(stage, "border-top-color") == tokens.rgb("phase-0")
+
+        for index in range(2):
+            assert Css.box(stage).contains(Css.box(nodes.nth(index)))
+
     def test_yaml_mode_and_notices(
         self, page: Page, stand: StandProcess, tokens: Tokens
     ) -> None:
-        _open(page, stand, "/build/new")
+        _open(page, stand, "/workflow/new")
         yaml_button = page.get_by_role("button", name="YAML", exact=True)
         yaml_button.click()
         expect(yaml_button).to_have_attribute("aria-pressed", "true")
@@ -699,7 +822,7 @@ class TestResponsive:
                 listing = Css.box(page.locator(Sel.LIST))
                 assert close(listing.width, list_width(width)), width
                 columns = Css.of(page.locator(Sel.SHELL_BODY), "grid-template-columns")
-                assert len(columns.split()) == 3, width
+                assert len(columns.split()) == 2, width
                 assert no_horizontal_scroll(page), width
 
                 page.locator(Sel.TASK_NODE).first.click()
@@ -715,7 +838,7 @@ class TestResponsive:
         sizes: list[float] = []
         for width in (1920, 640):
             for page in _page(browser, stand, {"width": width, "height": 900}, 1):
-                _open(page, stand, "/observe")
+                _open(page, stand, "/workflow")
                 sizes.append(
                     float(Css.of(page.locator("body"), "font-size").removesuffix("px"))
                 )
@@ -728,7 +851,7 @@ class TestResponsive:
     ) -> None:
         _open_run(narrow_page, stand, seeded)
         columns = Css.of(narrow_page.locator(Sel.SHELL_BODY), "grid-template-columns")
-        assert len(columns.split()) == 2
+        assert len(columns.split()) == 1
         assert Css.of(narrow_page.locator(Sel.MINIMAP), "display") == "none"
         assert no_horizontal_scroll(narrow_page)
 
@@ -740,22 +863,22 @@ class TestResponsive:
         expect(listing).to_have_class(re.compile("list--open"))
         narrow_page.wait_for_timeout(400)
         box = Css.box(listing)
-        assert box.x == 56
+        assert box.x == 0
         assert box.width <= NARROW["width"] * 0.85 + 1
 
         narrow_page.locator(Sel.ITEM_ON).click()
         expect(listing).not_to_have_class(re.compile("list--open"))
 
-        # узкий экран: инспектор занимает всю сцену, кроме рейла
+        # узкий экран: инспектор занимает всю сцену
         _tab(narrow_page, "Table")
         narrow_page.locator(f"{Sel.TABLE} tbody tr").first.click()
         inspector = Css.box(narrow_page.locator(Sel.INSPECTOR))
-        assert inspector.width == NARROW["width"] - 56
+        assert inspector.width == NARROW["width"]
 
     def test_dense_screen_keeps_css_geometry(
         self, dense_page: Page, stand: StandProcess, tokens: Tokens
     ) -> None:
-        _open(dense_page, stand, "/observe")
+        _open(dense_page, stand, "/workflow")
         assert Css.box(dense_page.locator(Sel.TOPBAR)).height == tokens.px("h-topbar")
         assert float(dense_page.evaluate("() => window.devicePixelRatio")) == 2
         assert no_horizontal_scroll(dense_page)
@@ -785,7 +908,7 @@ class TestOutputPanel:
     def test_output_reads_the_journal(
         self, page: Page, stand: StandProcess, seeded: SeededRun, tokens: Tokens
     ) -> None:
-        _open(page, stand, f"/observe/{seeded.run_id}")
+        _open(page, stand, f"/runs/{seeded.run_id}")
         page.locator(Sel.TASK_NODE).first.click()
         panel = page.locator(Sel.INSPECTOR).locator(self.OUTPUT)
         expect(panel).to_be_visible()

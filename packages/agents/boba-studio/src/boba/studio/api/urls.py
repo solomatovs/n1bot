@@ -61,6 +61,7 @@ class WorkflowUrl(StrEnum):
     VALIDATE = "/workflows/validate"
     WORKFLOWS = "/workflows"
     WORKFLOW = "/workflows/{workflow_id}"
+    DRAFTS = "/workflows/drafts"
     DRAFT = "/workflows/drafts/{key}"
     RUN = "/workflows/{workflow_id}/run"
     RUNS = "/workflow-runs"

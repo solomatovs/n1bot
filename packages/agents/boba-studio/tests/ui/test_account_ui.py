@@ -79,7 +79,7 @@ def test_gear_opens_account_and_own_connection_round_trips(
 ) -> None:
     page.goto(f"{stand.config.base_url}/workflow/login", wait_until="domcontentloaded")
     _sign_in(page, stand)
-    expect(page).to_have_url(re.compile(r"/workflow/observe$"))
+    expect(page).to_have_url(re.compile(r"/workflow/workflow$"))
 
     page.locator(Selector.GEAR).click()
     expect(page).to_have_url(re.compile(r"/workflow/account$"))

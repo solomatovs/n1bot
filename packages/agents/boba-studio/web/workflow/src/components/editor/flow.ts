@@ -4,7 +4,9 @@ import { blockRows } from "../../model/args";
 import type { TaskPositions } from "../../model/layout";
 import { edgeId, edgeKindOf, type EditableEdge, type EditableTask, type EditableWorkflow } from "../../model/spec";
 import type { ToolCatalog } from "../../model/workflow";
+import { phaseColor } from "../../model/summary";
 import { sideHandle } from "../graph/geometry";
+import type { EditorStageFlowNode } from "./EditorStageNode";
 import { editorNodeHeight, editorPorts, type EditorTaskData, type EditorTaskFlowNode } from "./EditorTaskNode";
 import { portOfHandle } from "./handles";
 
@@ -99,6 +101,100 @@ export function editorEdges(workflow: EditableWorkflow): FlowEdge[] {
       markerEnd: { type: MarkerType.ArrowClosed, color },
     };
   });
+}
+
+const STAGE_PAD = 18;
+const STAGE_HEAD = 40;
+
+/** Цепочки задач по потоковым рёбрам — будущие стадии исполнения.
+ * Порядок внутри цепочки — по направлению потока; при ветвлении или цикле
+ * (невалидная спека посреди правки) — порядок появления задач. */
+export function streamChains(workflow: EditableWorkflow): string[][] {
+  const next = new Map<string, string>();
+  const fed = new Set<string>();
+  const linked = new Set<string>();
+  let linear = true;
+
+  for (const edge of workflow.edges) {
+    if (edge.src.kind !== "fd" || edge.dst.kind !== "fd") {
+      continue;
+    }
+
+    if (next.has(edge.src.task) || fed.has(edge.dst.task)) {
+      linear = false;
+    }
+
+    next.set(edge.src.task, edge.dst.task);
+    fed.add(edge.dst.task);
+    linked.add(edge.src.task);
+    linked.add(edge.dst.task);
+  }
+
+  const seen = new Set<string>();
+  const chains: string[][] = [];
+  for (const task of workflow.tasks) {
+    const name = task.name;
+    if (!linked.has(name) || seen.has(name) || fed.has(name)) {
+      continue;
+    }
+
+    const chain: string[] = [];
+    let cursor: string | undefined = name;
+    while (cursor !== undefined && !seen.has(cursor)) {
+      chain.push(cursor);
+      seen.add(cursor);
+      cursor = next.get(cursor);
+    }
+
+    chains.push(chain);
+  }
+
+  if (!linear) {
+    const rest = workflow.tasks.map((task) => task.name).filter((name) => linked.has(name) && !seen.has(name));
+    if (rest.length > 0) {
+      chains.push(rest);
+    }
+  }
+
+  return chains.filter((chain) => chain.length >= 2);
+}
+
+/** Рамки стадий вокруг потоково-связанных узлов: та же карточка, что в Observe. */
+export function editorStageNodes(workflow: EditableWorkflow, nodes: EditorTaskFlowNode[]): EditorStageFlowNode[] {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const stages: EditorStageFlowNode[] = [];
+
+  streamChains(workflow).forEach((chain, index) => {
+    const members = chain.map((name) => byId.get(name)).filter((node): node is EditorTaskFlowNode => node !== undefined);
+    if (members.length < 2) {
+      return;
+    }
+
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const node of members) {
+      minX = Math.min(minX, node.position.x);
+      minY = Math.min(minY, node.position.y);
+      maxX = Math.max(maxX, node.position.x + (node.width ?? EDITOR_NODE_WIDTH));
+      maxY = Math.max(maxY, node.position.y + (node.height ?? 0));
+    }
+
+    stages.push({
+      id: `stage:${chain.join("+")}`,
+      type: "editorStage",
+      position: { x: minX - STAGE_PAD, y: minY - STAGE_HEAD },
+      width: maxX - minX + STAGE_PAD * 2,
+      height: maxY - minY + STAGE_HEAD + STAGE_PAD,
+      draggable: false,
+      selectable: false,
+      zIndex: -1,
+      data: { title: chain.join(" → "), color: phaseColor(index) },
+    });
+  });
+
+  return stages;
 }
 
 /** Ребро из жеста соединения; null — такая пара портов ребром не бывает. */

@@ -131,7 +131,7 @@ export function ObservePage(): ReactElement {
     try {
       const started = await api.run(run.value.workflow_id);
       shell.reload();
-      await navigate(`/observe/${started}`);
+      await navigate(`/runs/${started}`);
     } catch (error: unknown) {
       setNotice(errorText(error));
     }
@@ -144,8 +144,8 @@ export function ObservePage(): ReactElement {
     return (
       <main className="stage">
         <div className="empty" style={{ gridRow: "1 / -1" }}>
-          <span className="empty__title">Observe runs</span>
-          <span>Pick a run on the left, or build and run a workflow.</span>
+          <span className="empty__title">Runs</span>
+          <span>Expand a workflow on the left and pick a run.</span>
         </div>
       </main>
     );

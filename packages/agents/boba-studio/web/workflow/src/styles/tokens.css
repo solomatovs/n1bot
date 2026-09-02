@@ -57,7 +57,6 @@
   --r-pill: 999px;
   --h-topbar: 48px;
   --h-vitals: 44px;
-  --w-rail: 56px;
   --w-list: clamp(220px, 22vw, 340px);
   --w-inspector: clamp(300px, 32vw, 480px);
   --w-list-min: 220px;

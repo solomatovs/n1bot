@@ -198,11 +198,7 @@ def test_module_tool_ports() -> None:
                 "tasks": {"a": bash("x", out="write", src="read")},
                 "edges": ["a.out -> a.src"],
             },
-            [
-                IssueCode.SELF_EDGE,
-                IssueCode.PORT_UNCONNECTED,
-                IssueCode.PORT_UNCONNECTED,
-            ],
+            [IssueCode.SELF_EDGE],
         ),
         (
             {
@@ -256,10 +252,6 @@ def test_module_tool_ports() -> None:
                 "edges": ["a.result -> c.args.query"],
             },
             [IssueCode.TEMPLATE_UNBOUND],
-        ),
-        (
-            {"name": "w", "tasks": {"a": bash("x", out="write")}},
-            [IssueCode.PORT_UNCONNECTED],
         ),
         (
             {

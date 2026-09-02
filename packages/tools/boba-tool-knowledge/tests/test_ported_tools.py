@@ -108,6 +108,8 @@ class TestPgTools:
         "pg_describe_table",
         "pg_query",
         "pg_copy",
+        "pg_copy_out",
+        "pg_copy_in",
     ]
 
     def test_module_declares_the_toolset(self) -> None:

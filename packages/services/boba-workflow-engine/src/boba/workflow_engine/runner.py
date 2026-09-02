@@ -3,8 +3,11 @@
 Каждая задача — `tool.ainvoke(ToolCall)` через всю цепочку хуков реестра:
 роли, журнал под `scope.id` запуска, `intent`, ошибка результатом. Задачи
 готовой стадии стартуют вместе; рёбра-значения подставляют `llm_text`
-результата источника в аргументы приёмника. Остановка — отменой запуска:
-работающие задачи снимаются, незапущенные помечает автомат.
+результата источника в аргументы приёмника. Потоковая стадия (задачи,
+связанные fd-рёбрами) поднимается цепочкой: каналы задач отдаются слотам
+(PipelineSlot), рёбра соединяет splice — данные текут между процессами
+через ядро, минуя хост. Остановка — отменой запуска: работающие задачи
+снимаются, незапущенные помечает автомат.
 
 Ошибки:
 WorkflowRunError — план завис без готовых стадий и работающих задач.
@@ -16,16 +19,25 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any
+from itertools import pairwise
+from typing import Any, ClassVar
 
 from langchain_core.messages import ToolCall
 
 from boba.identity.context import CallContext
 from boba.identity.run import RunRegistry
 from boba.toolkit.calls import CallIdPrefix, ToolIntent
+from boba.toolkit.chain import (
+    CallRelay,
+    ChainCheck,
+    ChainMismatchError,
+    NodeSlot,
+    PipelineSlot,
+)
 from boba.toolkit.failure import FailureText, InvokeErrorKind
+from boba.toolkit.ports import StreamSpec, ToolStreamSpecs
 from boba.toolkit.result import ErrorResult, ToolResult
 from boba.toolrun.invoke import InvokeReply, ToolInvoker
 from boba.toolrun.streams import StreamPumps
@@ -131,6 +143,8 @@ class _RunSession:
         self._plan = WorkflowPlan(graph)
         self._running: dict[str, asyncio.Task[InvokeReply]] = {}
         self._results: dict[str, ToolResult] = {}
+        self._slots: dict[str, NodeSlot] = {}
+        self._wires: list[asyncio.Task[None]] = []
         self._loop = asyncio.get_running_loop()
 
     def abort(self) -> None:
@@ -170,11 +184,20 @@ class _RunSession:
                 "the plan is stuck: nothing runs and nothing is ready"
             )
 
+        await asyncio.gather(*self._wires, return_exceptions=True)
+
         state = self._plan.snapshot()
         await self._sink.snapshot(state)
         return state, dict(self._results)
 
+    FD_WAIT_SEC: ClassVar[float] = 60.0
+    """Сколько ждать дескриптор канала от узла потоковой стадии."""
+
     def _launch(self, stage: Stage) -> None:
+        if stage.streams:
+            self._launch_streamed(stage)
+            return
+
         for name in stage.tasks:
             call = self._runner.call_of(self._graph, name, self._args_of(name))
             self._plan.started(name, str(call["id"]), self._runner.clock())
@@ -182,9 +205,133 @@ class _RunSession:
                 self._runner.invoker.invoke(call), name=f"workflow:{name}"
             )
 
+    def _launch_streamed(self, stage: Stage) -> None:
+        """Стадия по потоковым рёбрам: цепочка задач с разводкой каналов."""
+        try:
+            order = self._stream_order(stage)
+        except ChainMismatchError as exc:
+            self._refuse_stage(stage, str(exc))
+            return
+
+        slots: dict[str, NodeSlot] = {}
+        last = len(order) - 1
+
+        for index, name in enumerate(order):
+            slot = NodeSlot(has_upstream=index > 0, has_downstream=index < last)
+            slots[name] = slot
+            self._slots[name] = slot
+
+            call = self._runner.call_of(self._graph, name, self._args_of(name))
+            self._plan.started(name, str(call["id"]), self._runner.clock())
+
+            token = PipelineSlot.set(slot)
+            try:
+                self._running[name] = asyncio.create_task(
+                    self._runner.invoker.invoke(call), name=f"workflow:{name}"
+                )
+            finally:
+                PipelineSlot.reset(token)
+
+        self._wires.append(
+            asyncio.create_task(
+                self._wire(order, slots), name=f"workflow-stage:{order[0]}"
+            )
+        )
+
+    def _stream_order(self, stage: Stage) -> list[str]:
+        """Порядок цепочки стадии; ветвления и циклы пока не поддержаны.
+
+        Провод несёт один канал на направление, поэтому у задачи не больше
+        одного потокового ребра в каждую сторону; стыковка kind'ов
+        проверяется декларациями до старта процессов.
+        """
+        follower: dict[str, str] = {}
+        fed: set[str] = set()
+        for edge in stage.streams:
+            if edge.src.task in follower or edge.dst.task in fed:
+                raise ChainMismatchError(
+                    "stream fan-in/fan-out is not supported yet: a task "
+                    "carries at most one stream edge per direction"
+                )
+
+            follower[edge.src.task] = edge.dst.task
+            fed.add(edge.dst.task)
+
+        heads: list[str] = []
+        for name in stage.tasks:
+            if name not in fed:
+                heads.append(name)
+
+        if len(heads) != 1:
+            raise ChainMismatchError(
+                "stream stage must be one linear chain: cycles and parallel "
+                "chains are not supported yet"
+            )
+
+        order = [heads[0]]
+        while order[-1] in follower:
+            order.append(follower[order[-1]])
+
+        if len(order) != len(stage.tasks):
+            raise ChainMismatchError("stream stage must be one connected chain")
+
+        specs: list[StreamSpec] = []
+        for name in order:
+            specs.append(ToolStreamSpecs.of(self._graph.spec.tasks[name].tool))
+
+        for left, right in pairwise(specs):
+            ChainCheck.ensure(left, right)
+
+        return order
+
+    def _refuse_stage(self, stage: Stage, message: str) -> None:
+        """Стадия не собирается в цепочку: задачи закрываются отказом."""
+        for name in stage.tasks:
+            self._plan.started(name, "", self._runner.clock())
+            result = ErrorResult(
+                message=message, error_kind=InvokeErrorKind.CRASHED
+            )
+            self._results[name] = result
+            self._plan.finished(
+                name, TaskStatus.FAILED, self._runner.clock(), message, result
+            )
+
+    async def _wire(self, order: Sequence[str], slots: Mapping[str, NodeSlot]) -> None:
+        """Соединяет рёбра цепочки splice-задачами и ждёт перекачку."""
+        relays: list[asyncio.Task[Any]] = []
+        try:
+            for left, right in pairwise(order):
+                source_fd = await asyncio.to_thread(
+                    slots[left].take_source_fd, self.FD_WAIT_SEC
+                )
+                sink_fd = await asyncio.to_thread(
+                    slots[right].take_input_fd, self.FD_WAIT_SEC
+                )
+                relays.append(
+                    asyncio.create_task(
+                        asyncio.to_thread(CallRelay.splice, source_fd, sink_fd),
+                        name=f"workflow-edge:{left}->{right}",
+                    )
+                )
+        except ChainMismatchError as exc:
+            logger.warning("workflow %s: stage wiring failed: %s", order, exc)
+            for slot in slots.values():
+                slot.abort()
+
+        moved = await asyncio.gather(*relays, return_exceptions=True)
+        for pair, stats in zip(pairwise(order), moved, strict=True):
+            if isinstance(stats, BaseException):
+                logger.warning("workflow edge %s: relay failed: %s", pair, stats)
+                continue
+
+            logger.info("workflow edge %s: %d bytes moved", pair, stats.bytes)
+
     async def _stop_now(self) -> None:
         """Отмена самой корутины запуска: работающие задачи снимаем и ждём."""
         self._plan.stop()
+        for slot in self._slots.values():
+            slot.abort()
+
         self._cancel_running()
         done, _ = await asyncio.wait(self._running.values())
         self._settle(done)

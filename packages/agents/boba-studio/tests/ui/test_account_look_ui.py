@@ -176,14 +176,13 @@ class TestAccount:
 
         meta = page.locator(Sel.ACCOUNT_META)
         expect(meta).to_contain_text("roles: ADM")
-        expect(meta).to_contain_text("profile: general")
         expect(meta).to_contain_text("sign-in: LocalAuth")
         assert Css.of(meta, "color") == tokens.rgb("muted")
 
         expect(page.locator(Sel.CRUMBS)).to_have_text("Account")
         expect(page.locator(Sel.SIGN_OUT)).to_be_visible()
         expect(page.locator(Sel.BACK)).to_have_attribute(
-            "href", f"{stand.config.url_prefix}/workflow/observe"
+            "href", f"{stand.config.url_prefix}/workflow/workflow"
         )
 
         tab = page.locator(Sel.TAB, has_text="Connections")
@@ -323,9 +322,11 @@ class TestSchemaForm:
 
 
 class TestTopbarWidgets:
-    def test_lamp_and_profile_chip(
+    def test_lamp_without_profile_chip(
         self, page: Page, stand: StandProcess, tokens: Tokens
     ) -> None:
+        """Лампочка живёт; чипа профиля в studio больше нет — профиль здесь
+        всегда общий, его роль займут сами workflow."""
         _open(page, stand, "/observe")
         lamp = page.locator(Sel.LAMP)
         expect(lamp).to_have_attribute("data-socket", "connected")
@@ -335,12 +336,8 @@ class TestTopbarWidgets:
         assert Css.of(lamp, "border-radius") == "50%"
         assert Css.of(lamp, "box-shadow") != "none"
 
-        chip = page.locator(Sel.PROFILE_CHIP)
-        expect(chip).to_contain_text(stand.config.credential().login)
-        assert Css.of(chip, "background-color") == tokens.rgb("raised")
-        select = page.locator(Sel.PROFILE_SELECT)
-        expect(select).to_have_value("general")
-        expect(select.locator("option")).to_have_text(["General", "Search"])
+        expect(page.locator(Sel.PROFILE_CHIP)).to_have_count(0)
+        expect(page.locator(Sel.PROFILE_SELECT)).to_have_count(0)
 
         gear = page.locator(Sel.GEAR)
         expect(gear).to_have_attribute(

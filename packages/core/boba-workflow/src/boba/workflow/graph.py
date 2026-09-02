@@ -450,17 +450,10 @@ class _Checker:
             )
 
     def _ports_connected(self) -> None:
-        for name, task in self._spec.tasks.items():
-            for port in self._declared_ports(name, task):
-                ref = PortRef(task=name, kind=PortKind.FD, name=port)
-                if ref in self._used_ports:
-                    continue
-
-                self._issue(
-                    IssueCode.PORT_UNCONNECTED,
-                    name,
-                    f"port has no edge: {ref.render()}",
-                )
+        """Неподключённый порт объявленной декларации — не ошибка: вход без
+        ребра закрыт (EOF), выход без ребра уходит в журнал запуска. Ошибкой
+        остаётся только ребро в порт, который задача видит из task.ports, но
+        декларация инструмента не объявляет — это ловит _port."""
 
     def _declared_ports(self, name: str, task: TaskSpec) -> Iterator[str]:
         facts = self._facts(name)

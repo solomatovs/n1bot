@@ -257,6 +257,10 @@ class WorkflowService:
         except WorkflowNotFoundError as exc:
             raise WorkflowError(WorkflowRefusal.NOT_FOUND, str(exc)) from exc
 
+    async def list_drafts(self, subject: Subject) -> Sequence[WorkflowDraft]:
+        """Черновики пользователя для списка workflow, свежие сверху."""
+        return await self._store.list_drafts(subject.user_id)
+
     async def drop_draft(self, subject: Subject, key: DraftKey, by_sid: str) -> bool:
         dropped = await self._store.drop_draft(subject.user_id, key)
         if not dropped:

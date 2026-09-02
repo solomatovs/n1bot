@@ -18,9 +18,12 @@ from langchain_core.tools import BaseTool
 from pydantic import BaseModel
 
 from boba.toolkit.calls import ArgViews, ToolCallViews
+from boba.toolkit.ports import PortDirection as StreamDirection
+from boba.toolkit.ports import StreamPorts, ToolStreamSpecs
 from boba.toolkit.result import Produces
 from boba.toolrun.registry import ToolRegistry
-from boba.workflow import ToolArg, ToolCatalog, ToolFacts
+from boba.workflow import ToolArg, ToolCatalog, ToolFacts, ToolPort
+from boba.workflow.spec import PortDirection
 
 __all__ = ["CatalogBuilder"]
 
@@ -53,8 +56,23 @@ class CatalogBuilder:
             availability=registry.access.decide(tool.name, roles, profile),
             description=cls._summary(tool.description),
             args=tuple(cls._args(tool)),
+            ports=cls._ports(tool.name),
             results=cls._results(tool),
         )
+
+    @staticmethod
+    def _ports(name: str) -> tuple[ToolPort, ...]:
+        """fd-порты из потоковой декларации: inbound читает ребро, outbound пишет."""
+        ports: list[ToolPort] = []
+        for decl in ToolStreamSpecs.of(name).ports:
+            if decl.direction is StreamDirection.INBOUND:
+                direction = PortDirection.READ
+            else:
+                direction = PortDirection.WRITE
+
+            ports.append(ToolPort(name=decl.name, direction=direction))
+
+        return tuple(ports)
 
     @staticmethod
     def _summary(description: str) -> str:
@@ -70,6 +88,10 @@ class CatalogBuilder:
 
         call = ToolCallViews.of(tool.name)
         for name, field in schema.model_fields.items():
+            # порт данных — не аргумент: он уходит в facts.ports хэндлом узла
+            if StreamPorts.is_port(field.annotation):
+                continue
+
             view = ArgViews.of_field(name, field, call)
             description = field.description
             if description is None:

@@ -109,7 +109,7 @@ async def client() -> AsyncIterator[AsyncClient]:
         page=PageUrls(
             root="/boba-debug/workflow",
             login="/boba-debug/workflow/login",
-            home="/boba-debug/workflow/observe",
+            home="/boba-debug/workflow/workflow",
         ),
     )
     access = ApiAccess(auth, COOKIE, lambda: users)
