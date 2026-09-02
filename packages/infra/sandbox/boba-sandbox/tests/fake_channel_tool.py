@@ -176,7 +176,7 @@ async def fx_stream(
     total = 0
     for item in feed:
         total += 1
-        out.emit(FxChunkHead(seq=total), prefix.encode("utf-8") + item.body)
+        out.emit(FxChunkHead(seq=total), prefix.encode("utf-8") + bytes(item.body))
 
     out.emit(FxDoneHead(total=total))
 

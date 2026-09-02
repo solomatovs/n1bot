@@ -56,6 +56,7 @@ from pydantic import (
 from pydantic_core import CoreSchema, core_schema
 
 from boba.toolkit.frames import FrameProtocolError, ToolIo
+from boba.toolkit.stream import Chunk
 
 __all__ = [
     "Framed",
@@ -87,10 +88,15 @@ class PortDirection(StrEnum):
 @dataclass(frozen=True)
 class Framed(Generic[HeadT]):
     """Один принятый кадр: заголовок уже разобран в модель порта, тело —
-    сырые байты (PCM, файл, текст)."""
+    сырые байты (PCM, файл, текст).
+
+    body — memoryview на собственный буфер кадра (одна копия из ядра, без
+    пересборок); view владеет буфером, держать его можно сколько угодно.
+    Для склейки с bytes используйте bytes(item.body).
+    """
 
     head: HeadT
-    body: bytes
+    body: Chunk
 
 
 class Inbound(Generic[HeadT]):
@@ -107,8 +113,8 @@ class Inbound(Generic[HeadT]):
         self._heads = heads
 
     def __iter__(self) -> Iterator[Framed[HeadT]]:
-        for frame in self._io.inbound():
-            yield Framed(head=self._head_of(frame.header), body=frame.body)
+        for header, body in self._io.read_frames():
+            yield Framed(head=self._head_of(header), body=body)
 
     def _head_of(self, header: bytes) -> HeadT:
         try:
@@ -135,7 +141,7 @@ class Outbound(Generic[HeadT]):
     def __init__(self, io: ToolIo) -> None:
         self._io = io
 
-    def emit(self, head: HeadT, body: bytes = b"") -> None:
+    def emit(self, head: HeadT, body: Chunk = b"") -> None:
         self._io.emit(head, body)
 
     @classmethod
@@ -179,7 +185,7 @@ class RawOutbound:
     def __init__(self, io: ToolIo) -> None:
         self._io = io
 
-    def write(self, chunk: bytes) -> None:
+    def write(self, chunk: Chunk) -> None:
         self._io.write_chunk(chunk)
 
     @classmethod
