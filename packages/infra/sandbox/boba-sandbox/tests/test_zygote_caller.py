@@ -848,6 +848,12 @@ class TestStreamingCall:
         if '"seq":1' not in journal:
             raise AssertionError(f"tool_frames={journal!r}")
 
+        # вход тоже попадает в журнал; заголовки без тел проверяет
+        # юнит FrameHeadsSink — здесь тестовый приёмник пишет сырьё
+        stdin_journal = sinks.text_of(ToolChannel.STDIN)
+        if '"seq":1' not in stdin_journal:
+            raise AssertionError(f"tool_stdin={stdin_journal!r}")
+
 
 class TestCallResilience:
     """Срывы потокового вызова в песочнице: отмена, второй читатель, ресурсы."""

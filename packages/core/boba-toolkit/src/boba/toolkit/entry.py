@@ -45,6 +45,7 @@ from boba.toolkit.calls import ToolCallView, ToolCallViews
 from boba.toolkit.failure import ValidationText
 from boba.toolkit.frames import ToolIo
 from boba.toolkit.launcher import PayloadFailureError
+from boba.toolkit.ports import PortDeclarationError, StreamPorts, StreamSpec
 from boba.toolkit.protocol import ReplyError, ReplyOk, ToolCommand
 from boba.toolkit.timing import Elapsed
 
@@ -249,11 +250,12 @@ class ToolArgv:
     инструмента — одна логика у обёртки запуска (хост) и CLI (гость).
 
     Правило одно: параметр, видимый LLM, — флаг argv; параметр с injected-
-    метадатой — ключ в JSON конфига, который едет телу первым кадром входа.
+    метадатой — ключ в JSON конфига, который едет телу каналом --injected-fd.
     Текстовые значения едут как есть, остальные — JSON'ом в значении флага.
 
-    Особый случай — параметр типа ToolIo: это среда вызова, а не значение.
-    Хост его не сериализует, гость подставляет свой объект.
+    Особый случай — порты Inbound/Outbound (boba.toolkit.ports): это каналы
+    вызова, а не значения. Хост их не сериализует, гость строит и
+    подставляет свои объекты.
     """
 
     MAX_VALUE_BYTES: ClassVar[int] = 131_071
@@ -342,7 +344,7 @@ class ToolArgv:
 
     @classmethod
     def injected_fields(cls, schema: type[BaseModel]) -> dict[str, Any]:
-        """Injected-параметры схемы: имя -> аннотация. Среда вызова не в счёт."""
+        """Injected-параметры схемы: имя -> аннотация. Порты не в счёт."""
         fields: dict[str, Any] = {}
         for name, field in schema.model_fields.items():
             if cls.is_io(field.annotation):
@@ -354,18 +356,19 @@ class ToolArgv:
         return fields
 
     @classmethod
-    def io_field(cls, schema: type[BaseModel]) -> str:
-        """Имя параметра среды вызова; пусто — тело её не просило."""
+    def port_fields(cls, schema: type[BaseModel]) -> dict[str, Any]:
+        """Порты схемы: имя параметра -> аннотация Inbound/Outbound."""
+        fields: dict[str, Any] = {}
         for name, field in schema.model_fields.items():
             if cls.is_io(field.annotation):
-                return name
+                fields[name] = field.annotation
 
-        return ""
+        return fields
 
     @staticmethod
     def is_io(annotation: Any) -> bool:
-        """Параметр — среда вызова: значение подставляет гость, а не хост."""
-        return annotation is ToolIo
+        """Параметр — порт вызова: значение строит гость, а не хост."""
+        return StreamPorts.is_port(annotation)
 
     @staticmethod
     def flag_of(param: str) -> str:
@@ -487,8 +490,9 @@ class ToolMain:
     зовёт launcher; без него content печатается в stdout — так зовёт
     человек. Injected-конфиг приезжает каналом --injected-fd (лончер) либо
     файлом --injected (человек); сборка его из toml приложения — дело CLI
-    над модулем. Тело, объявившее параметр ToolIo, получает кадровую среду
-    вызова: у запуска лончером она привязана к каналам, у человека отвязана.
+    над модулем. Тело, объявившее порты Inbound/Outbound (boba.toolkit.ports),
+    получает их готовыми: у запуска лончером они привязаны к каналам вызова,
+    у человека отвязаны.
     """
 
     class Exit(IntEnum):
@@ -608,13 +612,9 @@ class ToolMain:
         injected_path = cls._pop_path(arguments, EntryFlag.INJECTED)
 
         config_read = Elapsed()
-        io = cls._call_io(wiring)
         config = cls._config_source(tool, wiring, injected_path)
         kwargs = ToolArgv.parse(tool, arguments, config)
-
-        io_param = ToolArgv.io_field(ToolArgv.schema_of(tool))
-        if io_param:
-            kwargs[io_param] = io
+        kwargs.update(cls._build_ports(tool, wiring))
 
         logger.info(
             "tool[%s]: args ready in %dms (config %d bytes)",
@@ -649,9 +649,38 @@ class ToolMain:
         arguments.pop(index)
         return arguments.pop(index)
 
+    @classmethod
+    def _build_ports(cls, tool: ToolLike, wiring: CallWiring) -> dict[str, Any]:
+        """Порты вызова для объявивших их параметров подписи.
+
+        Валидирует декларацию (StreamSpec: не больше порта на направление) и
+        строит Inbound/Outbound поверх транспорта ToolIo: у запуска лончером
+        он привязан к каналам из wiring, у человека отвязан — вход пуст,
+        кадры наружу уходят в лог.
+        """
+        schema = ToolArgv.schema_of(tool)
+
+        fields = ToolArgv.port_fields(schema)
+        if not fields:
+            return {}
+
+        try:
+            StreamSpec.of_schema(schema)
+        except (PortDeclarationError, ValidationError) as exc:
+            msg = f"tool {tool.name!r} declares broken ports: {exc}"
+            raise ToolEntryError(EntryErrorKind.INTERNAL_ERROR, msg) from exc
+
+        io = cls._call_io(wiring)
+
+        ports: dict[str, Any] = {}
+        for name, annotation in fields.items():
+            ports[name] = StreamPorts.build(annotation, io)
+
+        return ports
+
     @staticmethod
     def _call_io(wiring: CallWiring) -> ToolIo:
-        """Среда вызова: каналы лончера либо отвязанная среда человека.
+        """Транспорт портов: каналы лончера либо отвязанная среда человека.
 
         Признак запуска лончером — канал кадров в argv: без него читать
         кадры неоткуда, и вход остаётся пустым.

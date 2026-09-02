@@ -52,7 +52,6 @@ from boba.toolkit.pump import (
     CallInput,
     CallSinks,
     ChannelPump,
-    FrameInput,
     OpenRun,
     PumpedCall,
 )
@@ -300,7 +299,7 @@ class ProcessToolCaller(ToolLauncher):
         sinks = CallSinks.merged(own, self.MODULE_JOURNAL)
 
         live = self._spawn(argv, with_result=True)
-        entry = FrameInput(live.stdin_w)
+        entry = CallSinks.stdin_input(live.stdin_w)
 
         def run(cancellation: RunCancellation) -> _ProcRun:
             return self._pump_live(live, sinks, cancellation)
