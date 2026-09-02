@@ -84,7 +84,7 @@ class FakeDoneHead(BaseModel):
 async def fake_stream(
     prefix: Annotated[str, Field(description="Приставка к каждой порции")],
     cfg: Annotated[FakeConfig, Injected],
-    feed: Annotated[Inbound[FakeChunkHead], Injected],
+    feed: Annotated[Inbound[FakeChunkHead | FakeDoneHead], Injected],
     out: Annotated[Outbound[FakeChunkHead | FakeDoneHead], Injected],
 ) -> tuple[str, ToolResult]:
     """Отвечает кадром на каждый кадр входа: образец потокового инструмента."""

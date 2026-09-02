@@ -45,7 +45,12 @@ from boba.toolkit.calls import ToolCallView, ToolCallViews
 from boba.toolkit.failure import ValidationText
 from boba.toolkit.frames import ToolIo
 from boba.toolkit.launcher import PayloadFailureError
-from boba.toolkit.ports import PortDeclarationError, StreamPorts, StreamSpec
+from boba.toolkit.ports import (
+    PortDeclarationError,
+    PortDirection,
+    StreamPorts,
+    StreamSpec,
+)
 from boba.toolkit.protocol import ReplyError, ReplyOk, ToolCommand
 from boba.toolkit.timing import Elapsed
 
@@ -298,7 +303,14 @@ class ToolArgv:
             argv.append(encoded)
 
         config = json.dumps(config_payload, ensure_ascii=False).encode("utf-8")
-        return ToolCommand(argv=tuple(argv), config=config)
+        spec = StreamSpec.of_schema(schema)
+
+        return ToolCommand(
+            argv=tuple(argv),
+            config=config,
+            raw_stdin=spec.raw(PortDirection.INBOUND),
+            raw_frames=spec.raw(PortDirection.OUTBOUND),
+        )
 
     @classmethod
     def parse(

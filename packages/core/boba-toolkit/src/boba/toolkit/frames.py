@@ -255,15 +255,21 @@ class CallInbox:
 
 
 class ToolIo:
-    """Транспорт кадров на стороне тела инструмента: inbound() читает кадры
-    входа со stdin до EOF, emit() пишет кадр наружу в канал tool_frames.
+    """Транспорт каналов данных на стороне тела инструмента.
+
+    Кадровый режим: inbound() читает кадры входа со stdin до EOF, emit()
+    пишет кадр наружу в канал tool_frames. Сырой режим — для RawInbound и
+    RawOutbound: read_chunks() отдаёт порции байтов как есть, write_chunk()
+    пишет порцию без какого-либо кадрирования — на проводе только сами
+    данные. Режим канала выбирает декларация порта в подписи тела, транспорт
+    одинаково умеет оба.
 
     Телам инструментов наружу не отдаётся: они объявляют типизированные
-    порты Inbound/Outbound (boba.toolkit.ports), а ToolMain строит ToolIo
-    из номеров дескрипторов команды и подкладывает его портам транспортом.
+    порты (boba.toolkit.ports), а ToolMain строит ToolIo из номеров
+    дескрипторов команды и подкладывает его портам транспортом.
 
     При запуске человеком (--injected файлом, без каналов лончера) среда
-    отвязана: вход пуст, заголовки emit уходят в лог.
+    отвязана: вход пуст, записи наружу уходят в лог.
     """
 
     READ_BYTES: ClassVar[int] = 65536
@@ -322,6 +328,28 @@ class ToolIo:
 
         with self._write_lock:
             self._write_all(self._outbound_fd, data)
+
+    def read_chunks(self) -> Iterator[bytes]:
+        """Сырой вход: порции байтов как есть, EOF пайпа завершает итерацию."""
+        if self._inbound_fd < 0:
+            return
+
+        while True:
+            chunk = os.read(self._inbound_fd, self.READ_BYTES)
+            if not chunk:
+                return
+
+            yield chunk
+
+    def write_chunk(self, chunk: bytes) -> None:
+        """Сырой выход: порция пишется без кадрирования, атомарно к другим
+        потокам тела."""
+        if self._outbound_fd < 0:
+            logger.info("raw chunk emitted (detached): %d bytes", len(chunk))
+            return
+
+        with self._write_lock:
+            self._write_all(self._outbound_fd, chunk)
 
     def _next(self) -> ToolFrame | None:
         """Следующий кадр входа; None — поток кончился."""

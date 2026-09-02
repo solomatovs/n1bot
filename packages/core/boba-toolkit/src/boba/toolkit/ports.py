@@ -8,9 +8,14 @@
 один раз на границе — тело работает с типизированными Framed, а не с
 сырыми байтами заголовков.
 
+Кроме модельных портов есть истинно сырые — RawInbound и RawOutbound:
+никаких структур и кадрирования, по каналу идут только сами байты
+(passthrough pg->pg, файлы, PCM). Сырой канал совместим только с сырым:
+модельный поток кадрирован, и его рамки попали бы в данные.
+
 Декларация — единственный источник правды о каналах инструмента: по ней
-ToolMain строит порты для вызова, а StreamSpec.of_schema отдаёт хосту
-интроспекцию (какие kind'ы тул принимает и отдаёт) для манифеста и
+ToolMain строит порты для вызова, хост выводит режим каналов (raw-флаги
+ToolCommand), а StreamSpec.of_schema отдаёт интроспекцию для манифеста и
 проверки стыковки цепочек. Транспортом портам служит ToolIo
 (boba.toolkit.frames) — наружу он больше не показывается.
 
@@ -59,7 +64,6 @@ __all__ = [
     "PortDecl",
     "PortDeclarationError",
     "PortDirection",
-    "RawHead",
     "RawInbound",
     "RawOutbound",
     "StreamPorts",
@@ -141,27 +145,20 @@ class Outbound(Generic[HeadT]):
         return core_schema.is_instance_schema(cls)
 
 
-class RawHead(BaseModel):
-    """Заголовок порции сырого потока: метаданных нет, только маркер raw."""
-
-    kind: Literal["raw"] = "raw"
-
-
 class RawInbound:
-    """Сырой входной порт: итератор порций bytes, без моделей и валидации.
+    """Истинно сырой входной порт: итератор порций bytes с провода как есть.
 
-    Для passthrough-инструментов, которым структура потока не нужна: тело
-    объявляет `feed: Annotated[RawInbound, Injected]` и получает тела кадров
-    как есть — заголовки отбрасываются, поэтому на raw-вход можно направить
-    и выход модельного порта. Строится в ToolMain поверх ToolIo.
+    Никакого кадрирования, моделей и валидации — по каналу идут только сами
+    данные (CSV из COPY, файл, PCM), тело читает их порциями до EOF. Границы
+    порций произвольны: это байтовый поток, а не сообщения. Совместим только
+    с таким же сырым выходом (ChainCheck). Строится в ToolMain поверх ToolIo.
     """
 
     def __init__(self, io: ToolIo) -> None:
         self._io = io
 
     def __iter__(self) -> Iterator[bytes]:
-        for frame in self._io.inbound():
-            yield frame.body
+        yield from self._io.read_chunks()
 
     @classmethod
     def __get_pydantic_core_schema__(
@@ -171,19 +168,19 @@ class RawInbound:
 
 
 class RawOutbound:
-    """Сырой выходной порт: write шлёт порцию bytes без объявления структур.
+    """Истинно сырой выходной порт: write шлёт порцию bytes на провод как есть.
 
-    Каждая порция едет кадром с маркерным заголовком RawHead — провод и
-    журнал остаются кадровыми, но тело сериализацией не занимается.
-    Тело объявляет `out: Annotated[RawOutbound, Injected]`; строится в
-    ToolMain поверх ToolIo.
+    Никакого кадрирования и преобразований — pg->pg перекачка везёт ровно
+    те байты, что отдал COPY. Плата за это — отсутствие метаданных и
+    журнала содержимого: канал предназначен для перекачки (splice), хост в
+    него не заглядывает. Строится в ToolMain поверх ToolIo.
     """
 
     def __init__(self, io: ToolIo) -> None:
         self._io = io
 
     def write(self, chunk: bytes) -> None:
-        self._io.emit(RawHead(), chunk)
+        self._io.write_chunk(chunk)
 
     @classmethod
     def __get_pydantic_core_schema__(
@@ -401,3 +398,11 @@ class StreamSpec(BaseModel):
                 return port.kinds
 
         return ()
+
+    def raw(self, direction: PortDirection) -> bool:
+        """Канал направления сырой: голые байты без кадрирования."""
+        for port in self.ports:
+            if port.direction is direction:
+                return port.raw
+
+        return False

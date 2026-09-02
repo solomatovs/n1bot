@@ -104,7 +104,7 @@ class TestStreamSpec:
         spec = StreamSpec.of_schema(ToolArgv.schema_of(STREAM))
 
         assert spec.streaming()
-        assert spec.kinds(PortDirection.INBOUND) == ("chunk",)
+        assert spec.kinds(PortDirection.INBOUND) == ("chunk", "done")
         assert spec.kinds(PortDirection.OUTBOUND) == ("chunk", "done")
 
     def test_tool_without_ports_has_empty_spec(self) -> None:
@@ -138,20 +138,20 @@ class TestStreamSpec:
 
 
 class TestRawPorts:
-    def test_raw_inbound_yields_bodies_of_any_frames(self) -> None:
-        """Сырой вход отдаёт тела как есть — заголовки любых kind'ов
-        отбрасываются, модельный выход стыкуется с raw-входом."""
-        io = _feed_io(
-            ToolFrame.of(ChunkHead(seq=1), b"one"),
-            ToolFrame.of(DoneHead(total=1), b"two"),
-        )
+    def test_raw_inbound_yields_bytes_verbatim(self) -> None:
+        """Истинно сырой вход: байты с провода как есть, без кадров и разбора."""
+        read_fd, write_fd = os.pipe()
+        os.write(write_fd, b"csv,line,1\ncsv,line,2\n")
+        os.close(write_fd)
 
+        io = ToolIo.on_channels(read_fd, -1)
         port = StreamPorts.build(RawInbound, io)
 
         assert isinstance(port, RawInbound)
-        assert list(port) == [b"one", b"two"]
+        assert b"".join(port) == b"csv,line,1\ncsv,line,2\n"
 
-    def test_raw_outbound_wraps_chunks_into_marker_frames(self) -> None:
+    def test_raw_outbound_writes_bytes_verbatim(self) -> None:
+        """Истинно сырой выход: на проводе ровно те байты, что отдал write."""
         read_fd, write_fd = os.pipe()
         io = ToolIo.on_channels(-1, write_fd)
 
@@ -159,6 +159,7 @@ class TestRawPorts:
         assert isinstance(port, RawOutbound)
 
         port.write(b"\x01\x02\x03")
+        port.write(b"tail")
         os.close(write_fd)
 
         collected = bytearray()
@@ -171,9 +172,7 @@ class TestRawPorts:
 
         os.close(read_fd)
 
-        decoded = _codec().feed(bytes(collected))
-        assert [frame.kind for frame in decoded] == ["raw"]
-        assert decoded[0].body == b"\x01\x02\x03"
+        assert bytes(collected) == b"\x01\x02\x03tail"
 
     def test_raw_ports_in_spec_have_no_kinds(self) -> None:
         class RelaySchema(BaseModel):

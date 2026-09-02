@@ -169,7 +169,7 @@ async def fx_stream(
     prefix: Annotated[str, Field(description="Приставка к порции")],
     *,
     cfg: Annotated[ChannelConfig, Injected],
-    feed: Annotated[Inbound[FxChunkHead], Injected],
+    feed: Annotated[Inbound[FxChunkHead | FxDoneHead], Injected],
     out: Annotated[Outbound[FxChunkHead | FxDoneHead], Injected],
 ) -> tuple[str, ToolResult]:
     """Отвечает кадром на каждый кадр входа: потоковый вызов в песочнице."""

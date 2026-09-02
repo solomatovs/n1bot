@@ -23,6 +23,7 @@ ToolStopped — вызов остановлен отменой хода либо
 
 from __future__ import annotations
 
+import fcntl
 import os
 import selectors
 import threading
@@ -51,10 +52,32 @@ __all__ = [
     "FrameInput",
     "JournaledFrameInput",
     "OpenRun",
+    "PipePlumbing",
     "PumpEnd",
     "PumpedCall",
+    "RawStdinInput",
     "Tee",
 ]
+
+
+class PipePlumbing:
+    """Настройка пайпов каналов данных: просит у ядра буфер пошире.
+
+    Чем больше буфер пайпа, тем реже просыпается насос и тем длиннее
+    порции на тех же данных — дешёвое ускорение массивных перекачек.
+    Отказ ядра (потолок /proc/sys/fs/pipe-max-size ниже запрошенного) не
+    ошибка: остаётся дефолтный буфер, это оптимизация, а не контракт.
+    """
+
+    DATA_PIPE_BYTES: ClassVar[int] = 1 << 20
+
+    @classmethod
+    def widen(cls, fd: int) -> None:
+        """Расширить буфер пайпа канала данных; действует на весь пайп."""
+        try:
+            fcntl.fcntl(fd, fcntl.F_SETPIPE_SZ, cls.DATA_PIPE_BYTES)
+        except OSError:
+            return
 
 
 class Tee:
@@ -82,9 +105,12 @@ class CallSinks:
     """
 
     @staticmethod
-    def stdin_input(fd: int) -> FrameInput:
-        """Вход кадров вызова: с журналом входных заголовков, когда тап
-        поставлен; без журнала — обычный FrameInput."""
+    def stdin_input(fd: int, *, framed: bool) -> FrameInput:
+        """Вход вызова: кадровый — с журналом заголовков, когда тап поставлен;
+        сырой (framed=False) — голые байты без кадров и журнала."""
+        if not framed:
+            return RawStdinInput(fd)
+
         journal = ToolChannelsTap.get()
         if journal is None:
             return FrameInput(fd)
@@ -156,6 +182,18 @@ class CallInput:
 
             self._close()
 
+    def take_fd(self) -> int:
+        """Отдать дескриптор входа перекачке (CallRelay.splice).
+
+        Владение уходит вместе с дескриптором: закрывает его перекачка,
+        а send/finish на этом входе больше не работают.
+        """
+        with self._lock:
+            self._require_open()
+            self._open = False
+
+            return self._fd
+
     def _require_open(self) -> None:
         if self._open:
             return
@@ -219,6 +257,19 @@ class JournaledFrameInput(FrameInput):
     def send_bytes(self, data: bytes) -> None:
         self._tap(data)
         super().send_bytes(data)
+
+
+class RawStdinInput(FrameInput):
+    """Вход истинно сырого канала: по нему идут голые байты (send_bytes).
+
+    Кадровый send запрещён — рамки кадра попали бы прямо в данные тела.
+    Журнала у сырого входа нет: разбирать в нём нечего. Создаётся через
+    CallSinks.stdin_input для инструмента с RawInbound-декларацией.
+    """
+
+    def send(self, frame: ToolFrame) -> None:
+        msg = "call stdin is a raw byte channel: frames are not accepted"
+        raise LauncherError(msg)
 
 
 @dataclass(frozen=True)
