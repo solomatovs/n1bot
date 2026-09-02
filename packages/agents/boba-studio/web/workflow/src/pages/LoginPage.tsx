@@ -5,11 +5,12 @@ import { z } from "zod";
 
 import { ApiError } from "../api/client";
 import { useServices } from "../app";
-import { Alert } from "../components/Alert";
+import { Alert } from "../ui/Alert";
 import { Async, errorText } from "../components/Async";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { useLoadable } from "../hooks/useLoadable";
 import type { SignInProviders } from "../model/account";
+import { Button, Field, Input, LinkButton } from "../ui";
 
 const NextStateSchema = z.object({ next: z.string() });
 
@@ -74,10 +75,8 @@ export function LoginPage(): ReactElement {
     <>
       {available.password && (
         <form className="form login__form" onSubmit={submit} aria-label="sign in">
-          <label className="field">
-            <span className="field__label">login</span>
-            <input
-              className="input"
+          <Field label="login">
+            <Input
               name="username"
               autoComplete="username"
               value={username}
@@ -86,11 +85,9 @@ export function LoginPage(): ReactElement {
               }}
               required
             />
-          </label>
-          <label className="field">
-            <span className="field__label">password</span>
-            <input
-              className="input"
+          </Field>
+          <Field label="password">
+            <Input
               name="password"
               type="password"
               autoComplete="current-password"
@@ -100,22 +97,22 @@ export function LoginPage(): ReactElement {
               }}
               required
             />
-          </label>
+          </Field>
           {notice !== "" && (
             <Alert tone="error" mark="login">
               {notice}
             </Alert>
           )}
-          <button type="submit" className="btn btn--primary login__submit" disabled={busy}>
+          <Button type="submit" tone="primary" className="login__submit" disabled={busy}>
             <LogIn size={14} />
             Sign in
-          </button>
+          </Button>
         </form>
       )}
       {available.sso_url !== "" && (
-        <a className="btn login__sso" href={`${available.sso_url}?next=${encodeURIComponent(urls.routerBase + next)}`}>
+        <LinkButton className="login__sso" href={`${available.sso_url}?next=${encodeURIComponent(urls.routerBase + next)}`}>
           Sign in with SSO
-        </a>
+        </LinkButton>
       )}
       {!available.password && available.sso_url === "" && (
         <Alert tone="error">No sign-in method is configured</Alert>

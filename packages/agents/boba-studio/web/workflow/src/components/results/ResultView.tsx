@@ -3,7 +3,8 @@ import type { ReactElement } from "react";
 import { resultSummary } from "../../model/results";
 import type { ToolResult } from "../../model/workflow";
 import { JsonView } from "../JsonView";
-import { StatusPill } from "../StatusPill";
+import { StatusPill } from "../../ui/StatusPill";
+import { Chip } from "../../ui";
 
 /** Итог задачи в инспекторе: своя форма на каждый kind ToolResult,
  * неизвестный вид — деревом json. */
@@ -197,7 +198,7 @@ export function ResultView({ result }: Props): ReactElement {
   return (
     <section className="result-view" data-kind={result.kind} aria-label="task result">
       <div className="result-view__head">
-        <span className="chip">{summary.kind}</span>
+        <Chip>{summary.kind}</Chip>
         <span className="result-view__figure">{summary.figure}</span>
         <span className="result-view__detail">{summary.detail}</span>
         <span className="viewbar__spacer" />

@@ -4,6 +4,7 @@ import { valueText } from "../../model/args";
 import { clipText } from "../../model/json";
 import type { ArgKind, ArgView } from "../../model/workflow";
 import { JsonView } from "../JsonView";
+import { Input, Select, TextArea } from "../../ui";
 
 /** Реестр виджетов аргумента по kind: Row — значение строкой в узле,
  * Editor — поле формы. Неизвестный kind сюда не доходит: схема каталога
@@ -83,8 +84,8 @@ function TextEditor({ name, view, value, required, onChange }: EditorProps): Rea
   const placeholder = view.kind === "text" && view.placeholder !== "" ? view.placeholder : hint(required);
   if (multiline) {
     return (
-      <textarea
-        className="input mono"
+      <TextArea
+        mono
         rows={3}
         value={valueText(value)}
         placeholder={placeholder}
@@ -97,8 +98,8 @@ function TextEditor({ name, view, value, required, onChange }: EditorProps): Rea
   }
 
   return (
-    <input
-      className="input mono"
+    <Input
+      mono
       value={valueText(value)}
       placeholder={placeholder}
       onChange={(event) => {
@@ -112,8 +113,9 @@ function TextEditor({ name, view, value, required, onChange }: EditorProps): Rea
 function CodeEditor({ name, view, value, required, onChange }: EditorProps): ReactElement {
   const lang = view.kind === "code" ? view.lang : "";
   return (
-    <textarea
-      className="input mono input--code"
+    <TextArea
+      mono
+      code
       rows={CODE_ROWS}
       data-lang={lang}
       spellCheck={false}
@@ -130,8 +132,8 @@ function CodeEditor({ name, view, value, required, onChange }: EditorProps): Rea
 function ConnectionEditor({ name, view, value, required, onChange }: EditorProps): ReactElement {
   const family = view.kind === "connection" ? view.family : "";
   return (
-    <input
-      className="input mono"
+    <Input
+      mono
       value={valueText(value)}
       placeholder={family === "" ? hint(required) : `${family} connection`}
       onChange={(event) => {
@@ -145,8 +147,8 @@ function ConnectionEditor({ name, view, value, required, onChange }: EditorProps
 function EnumEditor({ name, view, value, onChange }: EditorProps): ReactElement {
   const options = view.kind === "enum" ? view.options : [];
   return (
-    <select
-      className="input mono"
+    <Select
+      mono
       value={valueText(value)}
       onChange={(event) => {
         onChange(event.target.value);
@@ -159,15 +161,15 @@ function EnumEditor({ name, view, value, onChange }: EditorProps): ReactElement 
           {option}
         </option>
       ))}
-    </select>
+    </Select>
   );
 }
 
 function NumberEditor({ name, view, value, required, onChange }: EditorProps): ReactElement {
   const bounds = view.kind === "number" ? view : null;
   return (
-    <input
-      className="input mono"
+    <Input
+      mono
       type="number"
       value={valueText(value)}
       min={bounds?.minimum ?? undefined}
@@ -199,8 +201,8 @@ function BoolEditor({ name, value, onChange }: EditorProps): ReactElement {
 
 function SecretEditor({ name, value, required, onChange }: EditorProps): ReactElement {
   return (
-    <input
-      className="input mono"
+    <Input
+      mono
       type="password"
       value={valueText(value)}
       placeholder={hint(required)}
@@ -214,8 +216,8 @@ function SecretEditor({ name, value, required, onChange }: EditorProps): ReactEl
 
 function JsonEditor({ name, value, required, onChange }: EditorProps): ReactElement {
   return (
-    <textarea
-      className="input mono"
+    <TextArea
+      mono
       rows={4}
       spellCheck={false}
       value={jsonText(value)}

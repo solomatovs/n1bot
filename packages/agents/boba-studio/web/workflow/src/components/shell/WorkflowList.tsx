@@ -1,11 +1,11 @@
-import { ChevronDown, ChevronRight } from "lucide-react";
-import { type CSSProperties, type ReactElement, useEffect, useMemo, useState } from "react";
+import { type ReactElement, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { runsOfWorkflow } from "../../hooks/useShellData";
 import { parseSpecText } from "../../model/spec";
 import { formatAgo, formatDuration } from "../../model/time";
 import type { Initiator, StoredRun, StoredWorkflow, WorkflowDraft } from "../../model/workflow";
+import { Chip, EmptyState, Eyebrow, ListRow } from "../../ui";
 
 type Props = {
   workflows: StoredWorkflow[];
@@ -13,10 +13,7 @@ type Props = {
   runs: StoredRun[];
   selectedWorkflow: string | null;
   selectedRun: string | null;
-  open: boolean;
-  collapsed: boolean;
   onPick: () => void;
-  onResizeStart: (event: React.PointerEvent<HTMLElement>) => void;
 };
 
 export function describeInitiator(initiator: Initiator): string {
@@ -72,10 +69,7 @@ export function WorkflowList({
   runs,
   selectedWorkflow,
   selectedRun,
-  open,
-  collapsed,
   onPick,
-  onResizeStart,
 }: Props): ReactElement {
   const [filter, setFilter] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -89,14 +83,29 @@ export function WorkflowList({
     return workflows.filter((item) => item.name.toLowerCase().includes(needle));
   }, [workflows, filter]);
 
+  // отдельной строкой живут только черновики НОВЫХ workflow: черновик
+  // сохранённого — это его правки, они открываются самим workflow
   const shownDrafts = useMemo(() => {
+    const fresh = drafts.filter((draft) => draft.key.startsWith("new:"));
     const needle = filter.trim().toLowerCase();
     if (needle === "") {
-      return drafts;
+      return fresh;
     }
 
-    return drafts.filter((draft) => draftName(draft).toLowerCase().includes(needle));
+    return fresh.filter((draft) => draftName(draft).toLowerCase().includes(needle));
   }, [drafts, filter]);
+
+  const editedWorkflows = useMemo(() => {
+    const edited = new Set<string>();
+    for (const draft of drafts) {
+      const [kind, ident] = draft.key.split(":", 2);
+      if (kind === "workflow" && ident !== undefined) {
+        edited.add(ident);
+      }
+    }
+
+    return edited;
+  }, [drafts]);
 
   // выбранный запуск держит свой workflow развёрнутым
   const runWorkflow = useMemo(() => {
@@ -136,12 +145,9 @@ export function WorkflowList({
   };
 
   return (
-    <aside
-      className={`list${open ? " list--open" : ""}${collapsed ? " list--collapsed" : ""}`}
-      aria-label="workflows"
-    >
+    <>
       <div className="list__head">
-        <span className="eyebrow">Workflows</span>
+        <Eyebrow>Workflows</Eyebrow>
         <span className="list__count">{workflows.length}</span>
       </div>
       <input
@@ -158,54 +164,47 @@ export function WorkflowList({
           + New workflow
         </Link>
         {shownDrafts.map((draft) => (
-          <Link
-            to={draftHref(draft)}
-            className="item item--draft"
+          <ListRow
             key={draft.key}
-            data-draft={draft.key}
+            href={draftHref(draft)}
+            draft
+            dotColor="var(--muted)"
+            dataDraft={draft.key}
+            name={draftName(draft)}
+            pills={<Chip tone="draft">draft</Chip>}
             onClick={onPick}
-          >
-            <span className="item__dot" style={{ "--status-color": "var(--muted)" } as CSSProperties} />
-            <span className="item__name">{draftName(draft)}</span>
-            <span className="item__pills">
-              <span className="chip chip--draft">draft</span>
-            </span>
-          </Link>
+          />
         ))}
-        {shown.length === 0 && shownDrafts.length === 0 && <div className="empty">No workflows in this filter.</div>}
+        {shown.length === 0 && shownDrafts.length === 0 && <EmptyState>No workflows in this filter.</EmptyState>}
         {shown.map((item) => {
           const own = runsOfWorkflow(runs, item.id);
           const opened = expanded.has(item.id);
           return (
             <div key={item.id}>
-              <div className={`item${item.id === selectedWorkflow ? " item--on" : ""}`}>
-                <button
-                  type="button"
-                  className="item__toggle"
-                  aria-label={`runs of ${item.name}`}
-                  aria-expanded={opened}
-                  onClick={() => {
+              <ListRow
+                href={`/workflow/${item.id}`}
+                selected={item.id === selectedWorkflow}
+                toggle={{
+                  expanded: opened,
+                  label: `runs of ${item.name}`,
+                  onToggle: () => {
                     toggle(item.id);
-                  }}
-                >
-                  {opened ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                </button>
-                <Link to={`/workflow/${item.id}`} className="item__body" onClick={onPick}>
-                  <span className="item__name">{item.name}</span>
-                  <span className="item__pills">
+                  },
+                }}
+                name={item.name}
+                pills={
+                  <>
+                    {editedWorkflows.has(item.id) && <Chip tone="draft">draft</Chip>}
                     {item.tools.map((tool) => (
-                      <span className="chip" key={tool}>
-                        {tool}
-                      </span>
+                      <Chip key={tool}>{tool}</Chip>
                     ))}
-                    <span className="chip chip--muted">{own.length} runs</span>
-                    {own[0] !== undefined && (
-                      <span className="chip chip--muted">{formatAgo(own[0].started_at)}</span>
-                    )}
-                  </span>
-                </Link>
-              </div>
-              {opened && own.length === 0 && <div className="empty empty--sub">No runs yet.</div>}
+                    <Chip tone="muted">{own.length} runs</Chip>
+                    {own[0] !== undefined && <Chip tone="muted">{formatAgo(own[0].started_at)}</Chip>}
+                  </>
+                }
+                onClick={onPick}
+              />
+              {opened && own.length === 0 && <EmptyState sub>No runs yet.</EmptyState>}
               {opened &&
                 own.map((run) => (
                   <RunItem key={run.id} run={run} selected={run.id === selectedRun} onPick={onPick} />
@@ -214,8 +213,7 @@ export function WorkflowList({
           );
         })}
       </div>
-      <div className="list__resize" aria-hidden="true" onPointerDown={onResizeStart} />
-    </aside>
+    </>
   );
 }
 
@@ -230,28 +228,25 @@ function RunItem({
 }): ReactElement {
   const failed = failedCount(run);
   return (
-    <Link
-      to={`/runs/${run.id}`}
-      className={`item item--sub${selected ? " item--on" : ""}`}
-      data-status={run.status}
+    <ListRow
+      href={`/runs/${run.id}`}
+      sub
+      selected={selected}
+      status={run.status}
       onClick={onPick}
-    >
-      <span
-        className="item__dot"
-        data-status={run.status}
-        style={{ "--status-color": `var(--status-${run.status})` } as CSSProperties}
-      />
-      <span className="item__meta">
-        <span>{taskCount(run)} tasks</span>
-        <span>{describeInitiator(run.initiator)}</span>
-        <span>{formatAgo(run.started_at)}</span>
-        <span>{formatDuration(run.started_at, run.finished_at)}</span>
-        {failed > 0 && (
-          <span className="is-error">
-            failed {failed}/{taskCount(run)}
-          </span>
-        )}
-      </span>
-    </Link>
+      meta={
+        <>
+          <span>{taskCount(run)} tasks</span>
+          <span>{describeInitiator(run.initiator)}</span>
+          <span>{formatAgo(run.started_at)}</span>
+          <span>{formatDuration(run.started_at, run.finished_at)}</span>
+          {failed > 0 && (
+            <span className="is-error">
+              failed {failed}/{taskCount(run)}
+            </span>
+          )}
+        </>
+      }
+    />
   );
 }

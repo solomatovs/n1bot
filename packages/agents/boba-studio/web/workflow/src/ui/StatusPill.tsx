@@ -2,6 +2,8 @@ import type { ReactElement } from "react";
 
 import type { RunStatus, TaskStatus } from "../model/status";
 
+import "./StatusPill.css";
+
 type Props = {
   status: RunStatus | TaskStatus;
 };

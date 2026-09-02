@@ -5,6 +5,7 @@ import { blockRows, intentOf, withIntent, type ArgRow } from "../../model/args";
 import { isIdent, type EditableEdge, type EditableTask } from "../../model/spec";
 import type { PortDirection, ToolCatalog } from "../../model/workflow";
 import { widgetOf } from "../args/widgets";
+import { Button, Eyebrow, Field, IconButton, Input, Select } from "../../ui";
 
 type Props = {
   task: EditableTask;
@@ -33,24 +34,26 @@ function ArgField({ row, known, onValue, onClear }: FieldProps): ReactElement {
   const { Editor } = widgetOf(row.view);
 
   return (
-    <label className="field" data-arg={row.name}>
-      <span className="field__label mono">
-        {row.name}
-        {row.required && <span className="field__required">*</span>}
-        {!known && " (extra)"}
-      </span>
-      {row.description !== "" && <span className="field__hint">{row.description}</span>}
-      {row.bound !== "" ? (
-        <span className="field__bound">◂ {row.bound}</span>
-      ) : (
-        <Editor name={row.name} view={row.view} value={row.value} required={row.required} onChange={onValue} />
-      )}
+    <Field
+      label={
+        <>
+          {row.name}
+          {!known && " (extra)"}
+        </>
+      }
+      required={row.required}
+      mono
+      hint={row.description}
+      bound={row.bound}
+      dataArg={row.name}
+    >
+      <Editor name={row.name} view={row.view} value={row.value} required={row.required} onChange={onValue} />
       {!row.required && row.value !== undefined && (
-        <button type="button" className="btn btn--tiny" onClick={onClear}>
+        <Button size="tiny" onClick={onClear}>
           clear
-        </button>
+        </Button>
       )}
-    </label>
+    </Field>
   );
 }
 
@@ -97,9 +100,8 @@ export function TaskForm({ task, catalog, edges, taken, onChange, onRename, onRe
   return (
     <aside className="inspector form" aria-label="task form">
       <div className="inspector__head">
-        <span className="eyebrow">task</span>
-        <input
-          className="input"
+        <Eyebrow>task</Eyebrow>
+        <Input
           value={draftName}
           onChange={(event) => {
             setDraftName(event.target.value);
@@ -107,18 +109,17 @@ export function TaskForm({ task, catalog, edges, taken, onChange, onRename, onRe
           onBlur={commitName}
           aria-label="task name"
         />
-        <button type="button" className="icon-btn" onClick={onRemove} title="Remove task" aria-label="Remove task">
+        <IconButton onClick={onRemove} title="Remove task" aria-label="Remove task">
           <Trash2 size={14} />
-        </button>
-        <button type="button" className="icon-btn" onClick={onClose} aria-label="Close inspector">
+        </IconButton>
+        <IconButton onClick={onClose} aria-label="Close inspector">
           <X size={14} />
-        </button>
+        </IconButton>
       </div>
       <div className="inspector__body">
-        <label className="field">
-          <span className="field__label">tool</span>
-          <select
-            className="input mono"
+        <Field label="tool" hint={facts?.description}>
+          <Select
+            mono
             value={task.tool}
             onChange={(event) => {
               onChange({ ...task, tool: event.target.value });
@@ -131,14 +132,11 @@ export function TaskForm({ task, catalog, edges, taken, onChange, onRename, onRe
                   {tool.name}
                 </option>
               ))}
-          </select>
-          {facts !== undefined && facts.description !== "" && <span className="field__hint">{facts.description}</span>}
-        </label>
+          </Select>
+        </Field>
 
-        <label className="field">
-          <span className="field__label">intent</span>
-          <input
-            className="input"
+        <Field label="intent">
+          <Input
             value={intentOf(task)}
             placeholder="what this step does"
             onChange={(event) => {
@@ -146,9 +144,9 @@ export function TaskForm({ task, catalog, edges, taken, onChange, onRename, onRe
             }}
             aria-label="task intent"
           />
-        </label>
+        </Field>
 
-        <h4 className="eyebrow">args</h4>
+        <Eyebrow as="h4">args</Eyebrow>
         {rows.body.map((row) => (
           <ArgField
             key={row.name}
@@ -162,9 +160,9 @@ export function TaskForm({ task, catalog, edges, taken, onChange, onRename, onRe
             }}
           />
         ))}
-        <div className="field field--row">
-          <input
-            className="input mono"
+        <Field row>
+          <Input
+            mono
             placeholder="new arg"
             value={newArg}
             onChange={(event) => {
@@ -172,9 +170,7 @@ export function TaskForm({ task, catalog, edges, taken, onChange, onRename, onRe
             }}
             aria-label="new arg"
           />
-          <button
-            type="button"
-            className="btn"
+          <Button
             disabled={!isIdent(newArg) || known.has(newArg) || newArg in task.args}
             onClick={() => {
               setArg(newArg, "");
@@ -182,17 +178,16 @@ export function TaskForm({ task, catalog, edges, taken, onChange, onRename, onRe
             }}
           >
             add
-          </button>
-        </div>
+          </Button>
+        </Field>
 
         {(facts?.task_ports ?? false) && (
           <>
-            <h4 className="eyebrow">ports</h4>
+            <Eyebrow as="h4">ports</Eyebrow>
             {Object.entries(task.ports).map(([name, direction]) => (
-              <div className="field field--row" key={name}>
+              <Field row key={name}>
                 <span className="mono">{name}</span>
-                <select
-                  className="input"
+                <Select
                   value={direction}
                   onChange={(event) => {
                     setPort(name, event.target.value === "read" ? "read" : "write");
@@ -201,21 +196,20 @@ export function TaskForm({ task, catalog, edges, taken, onChange, onRename, onRe
                 >
                   <option value="read">read</option>
                   <option value="write">write</option>
-                </select>
-                <button
-                  type="button"
-                  className="btn btn--tiny"
+                </Select>
+                <Button
+                  size="tiny"
                   onClick={() => {
                     dropPort(name);
                   }}
                 >
                   drop
-                </button>
-              </div>
+                </Button>
+              </Field>
             ))}
-            <div className="field field--row">
-              <input
-                className="input mono"
+            <Field row>
+              <Input
+                mono
                 placeholder="new port"
                 value={newPort}
                 onChange={(event) => {
@@ -223,9 +217,7 @@ export function TaskForm({ task, catalog, edges, taken, onChange, onRename, onRe
                 }}
                 aria-label="new port"
               />
-              <button
-                type="button"
-                className="btn"
+              <Button
                 disabled={!isIdent(newPort) || newPort in task.ports}
                 onClick={() => {
                   setPort(newPort, "write");
@@ -233,8 +225,8 @@ export function TaskForm({ task, catalog, edges, taken, onChange, onRename, onRe
                 }}
               >
                 add
-              </button>
-            </div>
+              </Button>
+            </Field>
           </>
         )}
       </div>
