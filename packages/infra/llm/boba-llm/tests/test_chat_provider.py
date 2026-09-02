@@ -31,7 +31,18 @@ from boba.chat.provider import (
     ToolSpec,
 )
 from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
-from boba.llm.local import LocalReplyParser, QwenDialogRender
+from boba.llm.local import (
+    LocalReplyParser,
+    OnnxChatRuntime,
+    OnnxGenai,
+    OnnxGenerator,
+    OnnxModel,
+    OnnxParams,
+    OnnxTokenizer,
+    OnnxTokenStream,
+    QwenDialogRender,
+    RunSpec,
+)
 from boba.llm.ollama_chat import OllamaChatProvider
 from boba.llm.openai_chat import OpenAiChatProvider
 
@@ -124,6 +135,118 @@ class TestLocalReplyParser:
             != reply.content[: len("".join(d.content for d in deltas))]
         ):
             raise AssertionError("дельты — префикс финала")
+
+
+class _FakeModel(OnnxModel):
+    """Пустышка загруженной модели."""
+
+
+class _FakeStream(OnnxTokenStream):
+    def decode(self, token: int) -> str:
+        return "x"
+
+
+class _FakeTokenizer(OnnxTokenizer):
+    def encode(self, text: str) -> Sequence[int]:
+        return [1, 2, 3]
+
+    def decode(self, tokens: Sequence[int]) -> str:
+        return "x" * len(tokens)
+
+    def create_stream(self) -> OnnxTokenStream:
+        return _FakeStream()
+
+    def apply_chat_template(
+        self, messages: str, *, add_generation_prompt: bool
+    ) -> str:
+        return messages
+
+
+class _FakeParams(OnnxParams):
+    def __init__(self) -> None:
+        self.max_length = 0
+
+    def set_search_options(self, **options: object) -> None:
+        raw = options["max_length"]
+        assert isinstance(raw, int)
+        self.max_length = raw
+
+    def set_guidance(self, kind: str, data: str) -> None:
+        return None
+
+
+class _FakeGenerator(OnnxGenerator):
+    """Генерация до EOS либо до max_length — как настоящий рантайм."""
+
+    def __init__(self, max_length: int, eos_after: int | None) -> None:
+        self._max_length = max_length
+        self._eos_after = eos_after
+        self._held = 0
+        self._produced = 0
+
+    def append_tokens(self, tokens: Sequence[int]) -> None:
+        self._held += len(tokens)
+
+    def is_done(self) -> bool:
+        if self._eos_after is not None and self._produced >= self._eos_after:
+            return True
+
+        return self._held >= self._max_length
+
+    def generate_next_token(self) -> None:
+        self._held += 1
+        self._produced += 1
+
+    def get_next_tokens(self) -> Sequence[int]:
+        return [42]
+
+    def get_sequence(self, index: int) -> Sequence[int]:
+        return []
+
+
+class _FakeGenai(OnnxGenai):
+    """Рантайм без onnxruntime_genai: генерация по правилам фейка."""
+
+    def __init__(self, eos_after: int | None = None) -> None:
+        self._eos_after = eos_after
+
+    def load(self, model_dir: str) -> tuple[OnnxModel, OnnxTokenizer]:
+        return _FakeModel(), _FakeTokenizer()
+
+    def params(self, model: OnnxModel) -> OnnxParams:
+        return _FakeParams()
+
+    def generator(self, model: OnnxModel, params: OnnxParams) -> OnnxGenerator:
+        assert isinstance(params, _FakeParams)
+        return _FakeGenerator(params.max_length, self._eos_after)
+
+
+class TestLocalTokenCeiling:
+    """Полный расход max_tokens локального прогона — честная ошибка."""
+
+    def test_hitting_the_ceiling_raises(self) -> None:
+        runtime = OnnxChatRuntime("fake-model", _FakeGenai())
+        pieces: list[str] = []
+
+        with pytest.raises(ChatProviderError, match="cut off by the token limit"):
+            runtime.run(
+                "prompt",
+                RunSpec(max_tokens=5),
+                pieces.append,
+                lambda: False,
+            )
+
+        if len(pieces) != 5:
+            raise AssertionError(pieces)
+
+    def test_eos_before_the_ceiling_is_fine(self) -> None:
+        runtime = OnnxChatRuntime("fake-model", _FakeGenai(eos_after=2))
+        pieces: list[str] = []
+
+        runtime.run("prompt", RunSpec(max_tokens=5), pieces.append, lambda: False)
+
+        if len(pieces) != 2:
+            raise AssertionError(pieces)
 
 
 class TestQwenDialogRender:
@@ -318,6 +441,90 @@ class TestOpenAiChatProvider:
         deltas = [e for e in events if isinstance(e, ChatDelta)]
         if "".join(d.content for d in deltas) != "ответ":
             raise AssertionError(f"дельты: {deltas}")
+
+    async def test_length_finish_is_an_honest_error(self) -> None:
+        """Обрыв по лимиту токенов посреди аргументов вызова — ошибка про
+        лимит, а не «malformed call arguments» на недописанном JSON."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = _sse(
+                _delta_chunk(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call-1",
+                                "function": {"name": "probe", "arguments": '{"q'},
+                            }
+                        ]
+                    }
+                ),
+                {
+                    "choices": [{"delta": {}, "finish_reason": "length"}],
+                    "usage": {"prompt_tokens": 11, "completion_tokens": 4096},
+                },
+            )
+            return httpx.Response(200, content=body)
+
+        with pytest.raises(ChatProviderError, match="cut off by the token limit"):
+            await _events(_provider(handler), REQUEST)
+
+    async def test_content_filter_finish_is_an_honest_error(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = _sse(
+                _delta_chunk({"content": "нач"}),
+                {"choices": [{"delta": {}, "finish_reason": "content_filter"}]},
+            )
+            return httpx.Response(200, content=body)
+
+        with pytest.raises(ChatProviderError, match="content filter"):
+            await _events(_provider(handler), REQUEST)
+
+    async def test_unknown_finish_reason_is_an_honest_error(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = _sse(
+                _delta_chunk({"content": "нач"}),
+                {
+                    "choices": [
+                        {
+                            "delta": {},
+                            "finish_reason": "insufficient_system_resource",
+                        }
+                    ]
+                },
+            )
+            return httpx.Response(200, content=body)
+
+        with pytest.raises(
+            ChatProviderError, match="insufficient_system_resource"
+        ):
+            await _events(_provider(handler), REQUEST)
+
+    async def test_stop_and_tool_calls_finishes_are_complete(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = _sse(
+                _delta_chunk(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call-1",
+                                "function": {"name": "probe", "arguments": "{}"},
+                            }
+                        ]
+                    }
+                ),
+                {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+            )
+            return httpx.Response(200, content=body)
+
+        events = await _events(_provider(handler), REQUEST)
+
+        reply = events[-1]
+        if not isinstance(reply, ChatReply):
+            raise AssertionError("финал потока — ChatReply")
+        if reply.tool_calls[0].name != "probe":
+            raise AssertionError(reply.tool_calls)
 
     async def test_non_stream_request_parses_message_body(self) -> None:
         seen: list[dict[str, Any]] = []
@@ -777,6 +984,39 @@ class TestOllamaChatProvider:
             return httpx.Response(200, content=body)
 
         with pytest.raises(ChatProviderError, match="model runner crashed"):
+            await _events(_ollama_provider(handler), REQUEST)
+
+    async def test_done_reason_length_is_an_honest_error(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = _ndjson(
+                _ollama_chunk({"role": "assistant", "content": "нач"}),
+                {
+                    "model": "test-model",
+                    "message": {"role": "assistant"},
+                    "done": True,
+                    "done_reason": "length",
+                    "prompt_eval_count": 11,
+                    "eval_count": 512,
+                },
+            )
+            return httpx.Response(200, content=body)
+
+        with pytest.raises(ChatProviderError, match="cut off by the token limit"):
+            await _events(_ollama_provider(handler), REQUEST)
+
+    async def test_unknown_done_reason_is_an_honest_error(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = _ndjson(
+                {
+                    "model": "test-model",
+                    "message": {"role": "assistant"},
+                    "done": True,
+                    "done_reason": "unload",
+                },
+            )
+            return httpx.Response(200, content=body)
+
+        with pytest.raises(ChatProviderError, match="done_reason=unload"):
             await _events(_ollama_provider(handler), REQUEST)
 
     async def test_tool_call_without_id_gets_local_one(self) -> None:

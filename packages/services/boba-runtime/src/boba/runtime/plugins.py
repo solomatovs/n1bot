@@ -47,6 +47,7 @@ from boba.toolrun.cancellation import CancellableTools
 from boba.toolrun.errors import ToolErrorGuard
 from boba.toolrun.injected import InjectedConfig, ToolConfigError
 from boba.toolrun.intent import ToolIntentField
+from boba.toolrun.pipeline import PipelineToolConfig, build_pipeline_tools
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.run_log import ToolRunLogger
 from boba.toolrun.streams import ToolStreams
@@ -428,11 +429,12 @@ class EntryPointPlugins:
 
 
 class CoreTools:
-    """Таблица плагинов, общая для процессов: обнаруженные пакеты плюс workflow."""
+    """Таблица плагинов, общая для процессов: обнаруженные пакеты плюс
+    встроенные workflow и pipeline."""
 
     @classmethod
     def table(cls, refs: RuntimeRefs) -> dict[str, ToolPlugin]:
-        """workflow встроен: ему нужен сервис из входов приложения."""
+        """workflow и pipeline встроены: им нужны входы приложения."""
         table = EntryPointPlugins.discover()
 
         table["workflow"] = ToolPlugin(
@@ -442,7 +444,27 @@ class CoreTools:
             sandboxed=False,
         )
 
+        table["pipeline"] = ToolPlugin(
+            section="pipeline",
+            config_model=PipelineToolConfig,
+            build=cls._pipeline_builder(refs),
+            sandboxed=False,
+        )
+
         return table
+
+    @staticmethod
+    def _pipeline_builder(
+        refs: RuntimeRefs,
+    ) -> Callable[[PipelineToolConfig, LauncherFactory], list[BaseTool]]:
+        """Реестр инструментов берётся из входов приложения на каждый вызов."""
+
+        def build(
+            cfg: PipelineToolConfig, launchers: LauncherFactory
+        ) -> list[BaseTool]:
+            return build_pipeline_tools(cfg, refs.tool_registry)
+
+        return build
 
     @staticmethod
     def _workflow_builder(

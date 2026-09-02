@@ -20,9 +20,20 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Awaitable, Callable, Coroutine
-from typing import Any, ClassVar, Literal, TypeAlias, get_type_hints
+from typing import (
+    Annotated,
+    Any,
+    ClassVar,
+    Literal,
+    TypeAlias,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 from pydantic import BaseModel, ConfigDict, create_model
+
+from boba.toolkit.ports import StreamPorts
 
 __all__ = [
     "Injected",
@@ -193,6 +204,19 @@ def _schema_of(fn: Callable[..., Any]) -> type[BaseModel]:
         if default is inspect.Parameter.empty:
             default = ...
 
+        if StreamPorts.is_port(_bare(annotation)):
+            # порт строит гость на вызове: хост значения не передаёт, и в
+            # схеме поле обязательным быть не может
+            default = None
+
         fields[name] = (annotation, default)
 
     return create_model(f"{fn.__name__}_args", **fields)
+
+
+def _bare(annotation: Any) -> Any:
+    """Аннотация без Annotated-обёртки: метадату держит pydantic отдельно."""
+    if get_origin(annotation) is Annotated:
+        return get_args(annotation)[0]
+
+    return annotation

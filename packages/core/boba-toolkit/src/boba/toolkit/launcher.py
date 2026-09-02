@@ -46,6 +46,7 @@ __all__ = [
     "PayloadFailureError",
     "RowStream",
     "RunResult",
+    "TappedCall",
     "ToolCall",
     "ToolLauncher",
     "ToolOutcome",
@@ -359,21 +360,37 @@ class ToolCall(Protocol):
         self.close()
 
 
+@dataclass(frozen=True)
+class TappedCall:
+    """Вызов-источник для splice-перекачки: сам вызов и дескриптор его
+    канала кадров, который хост не разбирает. Возвращается методом
+    open_tap; дескриптором владеет перекачка (CallRelay.splice)."""
+
+    call: ToolCall
+    frames_fd: int
+
+
 class ToolLauncher(Protocol):
     """Протокол исполнителя инструментов: запуск тела в изолированном
     окружении.
 
     open() начинает потоковый вызов команды модуля инструментов и отдаёт
-    ToolCall; call_text() исполняет shell-команду и возвращает её вывод как
-    есть (bash-инструмент). Реализации: ProcessToolCaller (dev-режим без
-    песочницы) и ZygoteToolCaller (bwrap-песочница). Накопительный вызов
-    строится поверх open компонентом CollectedCall — отдельного входа в
-    порт у него нет.
+    ToolCall; open_tap() — вариант для перекачки: канал кадров вызова
+    отдаётся дескриптором и хостом не разбирается; call_text() исполняет
+    shell-команду и возвращает её вывод как есть (bash-инструмент).
+    Реализации: ProcessToolCaller (dev-режим без песочницы) и
+    ZygoteToolCaller (bwrap-песочница). Накопительный вызов строится поверх
+    open компонентом CollectedCall — отдельного входа в порт у него нет.
     """
 
     @abstractmethod
     def open(self, command: ToolCommand) -> ToolCall:
         """Открыть вызов команды модуля инструментов."""
+        ...
+
+    @abstractmethod
+    def open_tap(self, command: ToolCommand) -> TappedCall:
+        """Открыть вызов-источник перекачки: канал кадров — дескриптором."""
         ...
 
     @abstractmethod

@@ -7,7 +7,9 @@
 
 Ошибки:
 ChatProviderError — endpoint недоступен, ответил статусом или мусором,
-    либо пауза между чанками превысила потолок конфига.
+    пауза между чанками превысила потолок конфига, либо генерация
+    завершилась не по-хорошему (finish_reason вне списка полных, см.
+    FinishReason: лимит токенов, контент-фильтр, авария провайдера).
 """
 
 from __future__ import annotations
@@ -71,6 +73,27 @@ class WireField(StrEnum):
     STOP = "stop"
 
 
+class FinishReason(StrEnum):
+    """Известные finish_reason ответа; всё вне списка полных — обрыв.
+
+    Полные: STOP (обычный конец или стоп-последовательность), TOOL_CALLS и
+    устаревший FUNCTION_CALL. LENGTH — генерацию срезал лимит токенов,
+    CONTENT_FILTER — ответ снял фильтр провайдера; прочие значения
+    (insufficient_system_resource у deepseek, error у openrouter, ...)
+    провайдероспецифичны и означают аварию генерации.
+    """
+
+    STOP = "stop"
+    TOOL_CALLS = "tool_calls"
+    FUNCTION_CALL = "function_call"
+    LENGTH = "length"
+    CONTENT_FILTER = "content_filter"
+
+    @classmethod
+    def is_complete(cls, reason: str) -> bool:
+        return reason in (cls.STOP, cls.TOOL_CALLS, cls.FUNCTION_CALL)
+
+
 class WireFunctionDelta(BaseModel):
     """function внутри дельты вызова."""
 
@@ -114,6 +137,7 @@ class WireChoice(BaseModel):
 
     delta: WireDelta = WireDelta()
     message: WireDelta | None = None
+    finish_reason: str | None = None
 
 
 class WireUsage(BaseModel):
@@ -150,6 +174,7 @@ class StreamAssembly:
         self._reasoning: list[str] = []
         self._calls: dict[int, GrowingCall] = {}
         self._usage = WireUsage()
+        self._finish_reason = ""
 
     def take(self, chunk: WireChunk) -> ChatDelta | None:
         """Учитывает чанк; наружу — прирост текста или рассуждений."""
@@ -160,6 +185,9 @@ class StreamAssembly:
             return None
 
         choice = chunk.choices[0]
+        if choice.finish_reason:
+            self._finish_reason = choice.finish_reason
+
         delta = choice.delta
         if choice.message is not None:
             delta = choice.message
@@ -189,6 +217,8 @@ class StreamAssembly:
                 growing.arguments += call.function.arguments
 
     def reply(self) -> ChatReply:
+        self._check_complete()
+
         calls: list[ToolCallRequest] = []
         for index in sorted(self._calls):
             growing = self._calls[index]
@@ -209,6 +239,34 @@ class StreamAssembly:
                 output_tokens=self._usage.completion_tokens,
             ),
         )
+
+    def _check_complete(self) -> None:
+        """Обрыв генерации провайдером — честная ошибка, а не тихо неполный
+        ответ или битый JSON недописанного вызова инструмента."""
+        if not self._finish_reason:
+            return
+
+        if FinishReason.is_complete(self._finish_reason):
+            return
+
+        if self._finish_reason == FinishReason.LENGTH:
+            msg = (
+                "chat reply cut off by the token limit "
+                f"(finish_reason=length, completion tokens used: "
+                f"{self._usage.completion_tokens}); "
+                "raise max_tokens in the profile sampling"
+            )
+            raise ChatProviderError(msg)
+
+        if self._finish_reason == FinishReason.CONTENT_FILTER:
+            msg = "chat reply blocked by the provider content filter"
+            raise ChatProviderError(msg)
+
+        msg = (
+            "chat generation ended abnormally: "
+            f"finish_reason={self._finish_reason}"
+        )
+        raise ChatProviderError(msg)
 
     @staticmethod
     def _arguments(growing: GrowingCall) -> dict[str, Any]:

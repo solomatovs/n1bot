@@ -7,7 +7,9 @@
 
 Ошибки:
 ChatProviderError — endpoint недоступен, ответил статусом, мусором или
-    чанком-ошибкой, либо пауза между чанками превысила потолок конфига.
+    чанком-ошибкой, пауза между чанками превысила потолок конфига, либо
+    генерация завершилась не по-хорошему (done_reason кроме stop:
+    length — лимит токенов, load/unload — прогон без генерации).
 """
 
 from __future__ import annotations
@@ -101,9 +103,21 @@ class OllamaWireChunk(BaseModel):
 
     message: OllamaWireMessage = OllamaWireMessage()
     done: bool = False
+    done_reason: str = ""
     prompt_eval_count: int = 0
     eval_count: int = 0
     error: str = ""
+
+
+class OllamaDoneReason(StrEnum):
+    """Известные done_reason финального чанка; полный ответ — только STOP.
+
+    LENGTH — генерацию срезал лимит токенов; прочие значения (load, unload)
+    означают прогон без генерации.
+    """
+
+    STOP = "stop"
+    LENGTH = "length"
 
 
 class OllamaAssembly:
@@ -115,6 +129,7 @@ class OllamaAssembly:
         self._calls: list[ToolCallRequest] = []
         self._input_tokens = 0
         self._output_tokens = 0
+        self._done_reason = ""
 
     def take(self, chunk: OllamaWireChunk) -> ChatDelta | None:
         """Учитывает чанк; наружу — прирост текста или рассуждений."""
@@ -125,6 +140,7 @@ class OllamaAssembly:
         if chunk.done:
             self._input_tokens = chunk.prompt_eval_count
             self._output_tokens = chunk.eval_count
+            self._done_reason = chunk.done_reason
 
         for call in chunk.message.tool_calls:
             self._calls.append(self._call(call))
@@ -142,6 +158,8 @@ class OllamaAssembly:
         return ChatDelta(content=message.content, reasoning=message.thinking)
 
     def reply(self) -> ChatReply:
+        self._check_complete()
+
         return ChatReply(
             content="".join(self._content),
             reasoning="".join(self._thinking),
@@ -151,6 +169,25 @@ class OllamaAssembly:
                 output_tokens=self._output_tokens,
             ),
         )
+
+    def _check_complete(self) -> None:
+        """Обрыв генерации сервером — честная ошибка, а не тихо неполный ответ."""
+        if not self._done_reason:
+            return
+
+        if self._done_reason == OllamaDoneReason.STOP:
+            return
+
+        if self._done_reason == OllamaDoneReason.LENGTH:
+            msg = (
+                "chat reply cut off by the token limit "
+                f"(done_reason=length, tokens generated: {self._output_tokens}); "
+                "raise the num_predict sampling option"
+            )
+            raise ChatProviderError(msg)
+
+        msg = f"chat generation ended abnormally: done_reason={self._done_reason}"
+        raise ChatProviderError(msg)
 
     @staticmethod
     def _call(call: OllamaWireCall) -> ToolCallRequest:

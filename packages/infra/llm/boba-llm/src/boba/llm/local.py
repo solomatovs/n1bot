@@ -8,7 +8,8 @@ OnnxChatRuntime — общий низкоуровневый прогон лок�
 рантайм пересобирает схемы и теряет required и вложенные свойства.
 
 Ошибки:
-ChatProviderError — модель не загрузилась или прогон сорвался.
+ChatProviderError — модель не загрузилась, прогон сорвался либо генерация
+    упёрлась в потолок max_tokens (ответ неполон).
 """
 
 from __future__ import annotations
@@ -259,6 +260,15 @@ class OnnxChatRuntime:
                 produced,
                 elapsed.ms(),
             )
+
+        # is_done не различает EOS и max_length: полный расход потолка
+        # читается как обрыв — честная ошибка вместо тихо неполного ответа
+        if produced >= spec.max_tokens:
+            msg = (
+                f"local generation cut off by the token limit ({spec.max_tokens}); "
+                "raise max_tokens in the profile sampling"
+            )
+            raise ChatProviderError(msg)
 
     @staticmethod
     def _search_options(prompt_tokens: int, spec: RunSpec) -> dict[str, object]:
