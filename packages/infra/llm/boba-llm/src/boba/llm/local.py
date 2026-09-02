@@ -265,7 +265,7 @@ class OnnxChatRuntime:
         # читается как обрыв — честная ошибка вместо тихо неполного ответа
         if produced >= spec.max_tokens:
             msg = (
-                f"local generation cut off by the token limit ({spec.max_tokens}); "
+                f"local generation hit the token ceiling ({spec.max_tokens} tokens); "
                 "raise max_tokens in the profile sampling"
             )
             raise ChatProviderError(msg)

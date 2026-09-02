@@ -180,8 +180,8 @@ class OllamaAssembly:
 
         if self._done_reason == OllamaDoneReason.LENGTH:
             msg = (
-                "chat reply cut off by the token limit "
-                f"(done_reason=length, tokens generated: {self._output_tokens}); "
+                "chat reply hit the token ceiling: done_reason=length, "
+                f"{self._output_tokens} eval tokens spent; "
                 "raise the num_predict sampling option"
             )
             raise ChatProviderError(msg)

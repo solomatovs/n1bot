@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 from typing import ClassVar
 
@@ -71,9 +72,10 @@ class Fixtures:
 
 
 @pytest.fixture(autouse=True)
-def workspace(tmp_path: Path) -> None:
-    """Каталог кэшей на тест: KeytabCredentials выбирает файл через workspace."""
-    KerberosWorkspace.configure(str(tmp_path / "krb5.conf"), str(tmp_path / "cache"))
+def workspace(tmp_path: Path) -> Iterator[None]:
+    """Каталог кэшей на тест; после — откат: workspace глобален на процесс."""
+    with KerberosWorkspace.scoped(str(tmp_path / "krb5.conf"), str(tmp_path / "cache")):
+        yield
 
 
 class TestKeytabStaysWithTheApp:

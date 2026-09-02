@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
+from itertools import pairwise
 from typing import Annotated, Any, ClassVar
 
 from langchain_core.tools import BaseTool, tool
@@ -176,7 +177,7 @@ class PipelineService:
 
             specs.append(spec)
 
-        for left, right in zip(specs, specs[1:], strict=False):
+        for left, right in pairwise(specs):
             ChainCheck.ensure(left, right)
 
         return tuple(specs)

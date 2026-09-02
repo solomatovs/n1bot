@@ -50,6 +50,7 @@ __all__ = [
     "ThinkingToken",
     "ThreadChanged",
     "ThreadRewound",
+    "TokensSpent",
     "ToolFailed",
     "ToolFinished",
     "ToolStarted",
@@ -78,6 +79,7 @@ class MessageKind(StrEnum):
     THINKING_TOKEN = "thinking_token"  # noqa: S105
     THINKING_COMPLETE = "thinking_complete"
     THINKING_CLOSED = "thinking_closed"
+    TOKENS_SPENT = "tokens_spent"
     STAGE_STARTED = "stage_started"
     STAGE_QUERIES = "stage_queries"
     STAGE_ENDED = "stage_ended"
@@ -116,6 +118,7 @@ _HOLDER_ONLY: frozenset[MessageKind] = frozenset(
         MessageKind.THINKING_TOKEN,
         MessageKind.THINKING_COMPLETE,
         MessageKind.THINKING_CLOSED,
+        MessageKind.TOKENS_SPENT,
         MessageKind.STAGE_STARTED,
         MessageKind.STAGE_QUERIES,
         MessageKind.STAGE_ENDED,
@@ -251,6 +254,24 @@ class ThinkingClosed(Message):
 
     kind: Literal[MessageKind.THINKING_CLOSED] = MessageKind.THINKING_CLOSED
     turn_id: str = Field(min_length=1)
+
+
+class TokensSpent(Message):
+    """Прогон модели закончился: сколько токенов он стоил. key адресует шаг
+    рассуждений этого прогона; шага может не быть, тогда расход виден только в
+    итоге хода.
+    """
+
+    kind: Literal[MessageKind.TOKENS_SPENT] = MessageKind.TOKENS_SPENT
+    turn_id: str = Field(min_length=1)
+    key: str = ""
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    reasoning_tokens: int = Field(
+        default=0,
+        ge=0,
+        description="Часть output_tokens, ушедшая в рассуждения; 0 — не сообщено.",
+    )
 
 
 class StageStarted(Message):
@@ -540,6 +561,7 @@ AnyMessage = Annotated[
     | ThinkingToken
     | ThinkingComplete
     | ThinkingClosed
+    | TokensSpent
     | StageStarted
     | StageQueries
     | StageEnded

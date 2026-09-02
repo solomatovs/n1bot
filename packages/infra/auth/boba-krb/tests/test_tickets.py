@@ -65,9 +65,10 @@ def clean_env() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
-def workspace(tmp_path: Path) -> None:
-    """Кэши билетов теста живут в своём каталоге, как у приложения."""
-    KerberosWorkspace.configure(str(KRB5_CONF), str(tmp_path / "cache"))
+def workspace(tmp_path: Path) -> Iterator[None]:
+    """Каталог кэшей на тест; после — откат: workspace глобален на процесс."""
+    with KerberosWorkspace.scoped(str(KRB5_CONF), str(tmp_path / "cache")):
+        yield
 
 
 def _source() -> KeytabCredentials:
