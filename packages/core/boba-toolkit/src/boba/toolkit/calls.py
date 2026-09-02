@@ -117,6 +117,7 @@ class CallIdPrefix(StrEnum):
 
     API = "api-"
     WORKFLOW = "wf-"
+    PIPELINE = "pl-"
 
     def new_id(self) -> str:
         return f"{self.value}{uuid4().hex}"

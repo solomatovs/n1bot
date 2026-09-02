@@ -24,13 +24,16 @@ LauncherError — вызов нарушил контракт; поднимают
 from __future__ import annotations
 
 import os
+import queue
+import threading
+from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from contextvars import ContextVar, Token
 from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict
 
-from boba.toolkit.launcher import LauncherError, ToolCall
+from boba.toolkit.launcher import LauncherError, TappedCall, ToolCall
 from boba.toolkit.ports import PortDecl, PortDirection, StreamSpec
 from boba.toolkit.pump import OpenRun
 
@@ -38,6 +41,8 @@ __all__ = [
     "CallRelay",
     "ChainCheck",
     "ChainMismatchError",
+    "NodeSlot",
+    "PipelineSlot",
     "RelayStats",
     "TappedCall",
 ]
@@ -47,14 +52,99 @@ class ChainMismatchError(LauncherError):
     """Выход source не подходит входу sink: цепочку собирать нельзя."""
 
 
-@dataclass(frozen=True)
-class TappedCall:
-    """Вызов-источник для splice-перекачки: сам вызов и дескриптор его
-    канала кадров, который хост не разбирает. Возвращается методом
-    open_tap реализаций ToolLauncher; дескриптором владеет перекачка."""
+class NodeSlot:
+    """Роль одного вызова в конвейере: какие его каналы отданы рёбрам.
 
-    call: ToolCall
-    frames_fd: int
+    Оркестратор создаёт слот на узел и публикует его через PipelineSlot
+    перед вызовом инструмента; обёртка запуска (ToolProcessWrap), увидев
+    слот, открывает потоковый вызов вместо накопительного и отдаёт сюда
+    дескрипторы каналов. Оркестратор забирает их из своего потока и
+    соединяет splice'ом; abort() добивает вызов узла при сбое конвейера.
+    """
+
+    def __init__(self, *, has_upstream: bool, has_downstream: bool) -> None:
+        self.has_upstream = has_upstream
+        self.has_downstream = has_downstream
+        self._source_fd: queue.Queue[int] = queue.Queue(maxsize=1)
+        self._input_fd: queue.Queue[int] = queue.Queue(maxsize=1)
+        self._abort_lock = threading.Lock()
+        self._abort: Callable[[], None] | None = None
+        self._aborted = False
+
+    def give_source_fd(self, fd: int) -> None:
+        """Обёртка отдаёт дескриптор выходного канала узла (open_tap)."""
+        self._source_fd.put_nowait(fd)
+
+    def give_input_fd(self, fd: int) -> None:
+        """Обёртка отдаёт дескриптор входа узла (CallRelay.input_fd)."""
+        self._input_fd.put_nowait(fd)
+
+    def take_source_fd(self, timeout_sec: float) -> int:
+        return self._take(self._source_fd, timeout_sec, "source")
+
+    def take_input_fd(self, timeout_sec: float) -> int:
+        return self._take(self._input_fd, timeout_sec, "input")
+
+    def attach_abort(self, abort: Callable[[], None]) -> None:
+        """Обёртка регистрирует добивание своего вызова; при уже сорванном
+        конвейере оно исполняется немедленно."""
+        with self._abort_lock:
+            self._abort = abort
+            fire = self._aborted
+
+        if fire:
+            abort()
+
+    def abort(self) -> None:
+        """Сорвать узел: добить его вызов и закрыть неразобранные каналы."""
+        with self._abort_lock:
+            self._aborted = True
+            abort = self._abort
+
+        if abort is not None:
+            abort()
+
+        self._drain()
+
+    def _take(self, box: queue.Queue[int], timeout_sec: float, side: str) -> int:
+        try:
+            return box.get(timeout=timeout_sec)
+        except queue.Empty:
+            msg = f"pipeline node gave no {side} descriptor in {timeout_sec:.0f}s"
+            raise ChainMismatchError(msg) from None
+
+    def _drain(self) -> None:
+        for box in (self._source_fd, self._input_fd):
+            while True:
+                try:
+                    fd = box.get_nowait()
+                except queue.Empty:
+                    break
+
+                with suppress(OSError):
+                    os.close(fd)
+
+
+class PipelineSlot:
+    """Contextvar-переноска слота конвейера: оркестратор ставит слот перед
+    вызовом узла, обёртка запуска читает его в потоке тела. Вне конвейера
+    слот пуст, и вызов идёт обычным накопительным путём."""
+
+    _SLOT: ClassVar[ContextVar[NodeSlot | None]] = ContextVar(
+        "boba_pipeline_slot", default=None
+    )
+
+    @classmethod
+    def set(cls, slot: NodeSlot) -> Token[NodeSlot | None]:
+        return cls._SLOT.set(slot)
+
+    @classmethod
+    def reset(cls, token: Token[NodeSlot | None]) -> None:
+        cls._SLOT.reset(token)
+
+    @classmethod
+    def get(cls) -> NodeSlot | None:
+        return cls._SLOT.get()
 
 
 class RelayStats(BaseModel):

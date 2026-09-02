@@ -69,6 +69,7 @@ __all__ = [
     "RawOutbound",
     "StreamPorts",
     "StreamSpec",
+    "ToolStreamSpecs",
 ]
 
 HeadT = TypeVar("HeadT", bound=BaseModel)
@@ -328,6 +329,36 @@ class StreamPorts:
             raise PortDeclarationError(msg)
 
         return values[0]
+
+
+class ToolStreamSpecs:
+    """Процессный реестр потоковых деклараций собранных инструментов.
+
+    Наполняет обёртка запуска (ToolProcessWrap.guard_all) — в этот момент
+    схема инструмента ещё полная, с портами; позже injected-поля из видимой
+    схемы снимаются. Читает оркестратор конвейеров: по спекам он строит
+    каталог узлов и проверяет стыковку рёбер до запуска.
+    """
+
+    _SPECS: ClassVar[dict[str, StreamSpec]] = {}
+
+    @classmethod
+    def register(cls, name: str, spec: StreamSpec) -> None:
+        cls._SPECS[name] = spec
+
+    @classmethod
+    def of(cls, name: str) -> StreamSpec:
+        """Декларация инструмента; неизвестное имя — пустая (не потоковый)."""
+        spec = cls._SPECS.get(name)
+        if spec is None:
+            return StreamSpec()
+
+        return spec
+
+    @classmethod
+    def reset(cls) -> None:
+        """Сброс реестра: пользуются тесты."""
+        cls._SPECS.clear()
 
 
 class PortDecl(BaseModel):

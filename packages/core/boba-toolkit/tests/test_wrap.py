@@ -15,6 +15,7 @@ from boba.toolkit.launcher import (
     LaunchOutcome,
     PayloadFailureError,
     RunResult,
+    TappedCall,
     ToolCall,
     ToolLauncher,
     ToolOutcome,
@@ -83,6 +84,9 @@ class RecordingLauncher(ToolLauncher):
     def open(self, command: ToolCommand) -> ToolCall:
         self.commands.append(command)
         return RecordedCall(self._reply)
+
+    def open_tap(self, command: ToolCommand) -> TappedCall:
+        raise NotImplementedError
 
     def call_text(self, command: str, stdin: str) -> LaunchOutcome:
         raise NotImplementedError

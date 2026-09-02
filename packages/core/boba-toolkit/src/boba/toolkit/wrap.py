@@ -21,6 +21,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from boba.toolkit.chain import CallRelay, NodeSlot, PipelineSlot
 from boba.toolkit.entry import (
     ArgumentTooLargeError,
     ReplyError,
@@ -28,7 +29,14 @@ from boba.toolkit.entry import (
     ToolArgv,
     ToolLike,
 )
-from boba.toolkit.launcher import CollectedCall, PayloadFailureError, ToolLauncher
+from boba.toolkit.launcher import (
+    CollectedCall,
+    PayloadFailureError,
+    ToolLauncher,
+    ToolOutcome,
+)
+from boba.toolkit.ports import StreamSpec, ToolStreamSpecs
+from boba.toolkit.protocol import ToolCommand
 
 __all__ = ["ToolProcessWrap", "WrapErrorKind"]
 
@@ -48,11 +56,21 @@ class ToolProcessWrap:
     кодируются в ToolCommand (ToolArgv.render), вызов идёт накопительно
     (CollectedCall), конверт разворачивается в возврат или
     PayloadFailureError.
+
+    Внутри конвейера (оркестратор поставил PipelineSlot) вызов открывается
+    потоково: каналы узла отдаются слоту дескрипторами, и данные текут
+    между узлами мимо хоста; конверт разворачивается так же. Попутно
+    guard_all публикует потоковую декларацию инструмента в ToolStreamSpecs
+    — позже injected-поля снимаются из видимой схемы, и портов в ней уже
+    не найти.
     """
 
     @classmethod
     def guard_all(cls, tools: Sequence[ToolLike], launcher: ToolLauncher) -> None:
         for tool in tools:
+            ToolStreamSpecs.register(
+                tool.name, StreamSpec.of_schema(ToolArgv.schema_of(tool))
+            )
             cls._guard(tool, launcher)
 
     @classmethod
@@ -90,7 +108,11 @@ class ToolProcessWrap:
                     str(WrapErrorKind.ARGUMENT_TOO_LARGE), str(exc)
                 ) from exc
 
-            outcome = CollectedCall.of(launcher, command)
+            slot = PipelineSlot.get()
+            if slot is None:
+                outcome = CollectedCall.of(launcher, command)
+            else:
+                outcome = cls._piped_call(launcher, command, slot)
 
             reply = outcome.reply
             if isinstance(reply, ReplyError):
@@ -99,6 +121,37 @@ class ToolProcessWrap:
             return reply.content, reply.artifact
 
         return call
+
+    @staticmethod
+    def _piped_call(
+        launcher: ToolLauncher, command: ToolCommand, slot: NodeSlot
+    ) -> ToolOutcome:
+        """Вызов узла конвейера: каналы рёбер отдаются слоту дескрипторами.
+
+        Выход узла с ребром вниз открывается open_tap (канал кадров хост не
+        разбирает), вход узла с ребром вверх забирается у вызова — оба
+        конца соединяет оркестратор splice'ом. Свободные каналы живут как в
+        накопительном вызове: вход закрывается сразу, кадры дочитываются.
+        """
+        if slot.has_downstream:
+            tapped = launcher.open_tap(command)
+            call = tapped.call
+            slot.give_source_fd(tapped.frames_fd)
+        else:
+            call = launcher.open(command)
+
+        with call:
+            slot.attach_abort(call.close)
+
+            if slot.has_upstream:
+                slot.give_input_fd(CallRelay.input_fd(call))
+            else:
+                call.done_sending()
+
+            for _ in call.frames():
+                continue
+
+            return call.result()
 
     @staticmethod
     def _set_func(tool: ToolLike, body: Callable[..., Any]) -> None:
