@@ -56,11 +56,11 @@ def keytab_copy(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def workspace(tmp_path: Path) -> Path:
-    """Рабочий каталог kerberos теста: кэши раскладывает приложение."""
+def workspace(tmp_path: Path) -> Iterator[Path]:
+    """Рабочий каталог kerberos теста; после — откат: workspace глобален."""
     cache = tmp_path / "cache"
-    KerberosWorkspace.configure(str(KRB5_CONF), str(cache))
-    return cache
+    with KerberosWorkspace.scoped(str(KRB5_CONF), str(cache)):
+        yield cache
 
 
 def auth(principal: str = PRINCIPAL) -> KeytabAuth:

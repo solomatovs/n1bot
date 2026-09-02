@@ -203,3 +203,44 @@ class TestStepContract:
             raise AssertionError("answer_id in replay")
         if replay[answer_id].get("output") != "ответ":
             raise AssertionError('replay[answer_id].get("output") == "ответ"')
+
+
+class TestSpendSurvivesReplay:
+    """Расход токенов хранится в AIMessage: пересборка истории подписывает шаги."""
+
+    REASONING = "прикинул объём"
+
+    async def _replay(self) -> RecordingSink:
+        sink = RecordingSink()
+        view = ChatView(THREAD, sink, user_name="tester")
+        messages = [
+            HumanMessage(content="вопрос", id=TURN_KEY),
+            AIMessage(
+                content="ответ",
+                id=AI_ID,
+                additional_kwargs={"reasoning_content": self.REASONING},
+                usage_metadata={
+                    "input_tokens": 10856,
+                    "output_tokens": 400,
+                    "total_tokens": 11256,
+                    "output_token_details": {"reasoning": 305},
+                },
+            ),
+        ]
+        await ConversationTranscript(messages, view).replay()
+        return sink
+
+    def test_thinking_and_container_carry_the_spend(self) -> None:
+        sink = run(self._replay())
+
+        names: dict[str, str] = {}
+        for step in sink.steps:
+            names[str(step.get("id"))] = str(step.get("name"))
+
+        thinking_id = str(ChatView.derive_id(THREAD, AI_ID, StepRole.THINKING))
+        if names[thinking_id] != "○ thinking · 10.9k → 400 (305 reasoning)":
+            raise AssertionError(f"шаг рассуждений: {names[thinking_id]!r}")
+
+        container_id = str(ChatView.derive_id(THREAD, TURN_KEY, StepRole.PROCESS))
+        if names[container_id] != "process... · 10.9k → 400 (305 reasoning)":
+            raise AssertionError(f"контейнер: {names[container_id]!r}")

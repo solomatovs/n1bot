@@ -11,6 +11,7 @@ Anonymous и basic проверяются на HTTP-интерфейсе clickho
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -51,9 +52,11 @@ needs_clickhouse = pytest.mark.skipif(
 
 
 @pytest.fixture(autouse=True)
-def workspace(tmp_path: Path) -> None:
-    """Кэши билетов теста живут в своём каталоге, как у приложения."""
-    KerberosWorkspace.configure(STAND.krb_config, str(tmp_path / "cache"))
+def workspace(tmp_path: Path) -> Iterator[None]:
+    """Кэши билетов теста живут в своём каталоге; после теста настройка
+    процесса возвращается — workspace глобален."""
+    with KerberosWorkspace.scoped(STAND.krb_config, str(tmp_path / "cache")):
+        yield
 
 
 def _clickhouse(auth: Any) -> HttpProfile:

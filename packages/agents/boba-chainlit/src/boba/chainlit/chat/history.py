@@ -26,6 +26,7 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.graph.state import CompiledStateGraph
 
 from boba.chainlit.agent.flow import PrefetchCall, PrefetchStamp
+from boba.chainlit.chat.tracing import LlmUsage
 from boba.chainlit.chat.turn import (
     ChatTurnAttachments,
     TurnHistory,
@@ -257,6 +258,8 @@ class ConversationTranscript:
         if reasoning := self._reasoning(message):
             await self._view.thinking(reasoning, key)
 
+        await self._spend(message, key)
+
         for call in message.tool_calls:
             call_id = call.get("id")
             if not call_id:
@@ -295,6 +298,19 @@ class ConversationTranscript:
             artifact = self._text(message)
         await self._view.tool_finished(step, artifact, message.tool_call_id)
 
+    async def _spend(self, message: AIMessage, key: str) -> None:
+        """Расход прогона из записи истории: usage хранится в самом сообщении."""
+        usage = LlmUsage.of(message)
+        if not usage.counted:
+            return
+
+        await self._view.tokens_spent(
+            key,
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.reasoning_tokens,
+        )
+
     def _answer_key(self, key: str) -> str:
         """Ключ очередного ответа хода; вне хода адресуемся самим сообщением."""
         turn_key = self._turn.next_answer_key()
@@ -307,6 +323,8 @@ class ConversationTranscript:
         """Прерванный ход: пометка остановки уже вшита в текст записи."""
         if reasoning := self._reasoning(message):
             await self._view.thinking(reasoning, key)
+
+        await self._spend(message, key)
 
         if text := self._text(message):
             await self._view.answer(text, self._answer_key(key))

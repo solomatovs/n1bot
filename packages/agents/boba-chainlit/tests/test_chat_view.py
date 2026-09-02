@@ -21,6 +21,8 @@ from boba.chainlit.rendering.chat_view import (
     StepRole,
     StepStatus,
     StepText,
+    TokenCount,
+    TokenSpend,
     TurnPulse,
 )
 from boba.toolkit.result import TextResult
@@ -521,3 +523,110 @@ class TestToolIntent:
             raise AssertionError(step.name)
         if step.output != "running":
             raise AssertionError(f"без подписи шаг остаётся running: {step.output!r}")
+
+
+
+
+def _names(steps: list[StepDict]) -> list[str]:
+    """Названия шагов ленты: ключ необязательный, поэтому читается через get."""
+    found: list[str] = []
+    for step in steps:
+        found.append(str(step.get(StepField.NAME, "")))
+
+    return found
+
+class TestTokenSpendLabel:
+    """Расход токенов в подписи: формат числа, reasoning и отсутствие учёта."""
+
+    def test_thousands_are_short(self) -> None:
+        if TokenCount.of(400) != "400":
+            raise AssertionError(TokenCount.of(400))
+        if TokenCount.of(10856) != "10.9k":
+            raise AssertionError(TokenCount.of(10856))
+
+    def test_reasoning_is_shown_apart(self) -> None:
+        spend = TokenSpend(input_tokens=10856, output_tokens=400, reasoning_tokens=305)
+        if spend.label() != "10.9k → 400 (305 reasoning)":
+            raise AssertionError(spend.label())
+
+    def test_without_reasoning_brackets_are_dropped(self) -> None:
+        spend = TokenSpend(input_tokens=1200, output_tokens=64)
+        if spend.label() != "1.2k → 64":
+            raise AssertionError(spend.label())
+
+    def test_uncounted_spend_leaves_the_name_alone(self) -> None:
+        spend = TokenSpend()
+        if spend.append_to("○ thinking") != "○ thinking":
+            raise AssertionError(spend.append_to("○ thinking"))
+
+
+class TestTokensInTheFeed:
+    """Расход приходит шиной и подписывает шаг рассуждений и контейнер хода."""
+
+    @pytest.mark.anyio
+    async def test_step_and_container_get_the_spend(self, http_context: None) -> None:
+        sink = RecordingSink()
+        view = ChatView(THREAD, sink, user_name="Пользователь")
+        view.begin_turn(TURN)
+
+        await view.container()
+        await view.stream_thinking("обдумываю", TURN)
+        await view.close_thinking()
+        await view.tokens_spent(TURN, 10856, 400, 305)
+
+        names = {str(step.get(StepField.NAME, "")) for step in sink.steps}
+        thinking = [n for n in names if StepText.THINKING in n]
+        if thinking != ["○ thinking · 10.9k → 400 (305 reasoning)"]:
+            raise AssertionError(f"шаг рассуждений: {thinking}")
+
+        container = [n for n in names if n.startswith(StepText.CONTAINER)]
+        if container != ["process... · 10.9k → 400 (305 reasoning)"]:
+            raise AssertionError(f"контейнер: {container}")
+
+    @pytest.mark.anyio
+    async def test_container_sums_up_the_runs(self, http_context: None) -> None:
+        """Ход из нескольких прогонов: на контейнере их сумма."""
+        sink = RecordingSink()
+        view = ChatView(THREAD, sink, user_name="Пользователь")
+        view.begin_turn(TURN)
+
+        await view.container()
+        await view.tokens_spent("run-1", 10856, 400, 305)
+        await view.tokens_spent("run-2", 15926, 218, 113)
+
+        names = _names(sink.steps)
+        container = [n for n in names if n.startswith(StepText.CONTAINER)]
+        if container != ["process... · 26.8k → 618 (418 reasoning)"]:
+            raise AssertionError(f"сумма хода: {container}")
+
+    @pytest.mark.anyio
+    async def test_spend_survives_the_awaiting_label(self, http_context: None) -> None:
+        """Смена подписи ожидания не затирает уже показанный расход."""
+        sink = RecordingSink()
+        view = ChatView(THREAD, sink, user_name="Пользователь")
+        view.begin_turn(TURN)
+
+        await view.await_model()
+        await view.tokens_spent(TURN, 1200, 64, 0)
+        await view.model_answered()
+
+        names = _names(sink.steps)
+        container = [n for n in names if n.startswith(StepText.CONTAINER)]
+        if container != ["process... · 1.2k → 64"]:
+            raise AssertionError(f"контейнер после ответа: {container}")
+
+    @pytest.mark.anyio
+    async def test_run_without_thinking_only_sums_up(self, http_context: None) -> None:
+        """Прогон без рассуждений: шага нет, расход виден только в итоге хода."""
+        sink = RecordingSink()
+        view = ChatView(THREAD, sink, user_name="Пользователь")
+        view.begin_turn(TURN)
+
+        await view.container()
+        await view.tokens_spent("run-without-a-step", 900, 32, 0)
+
+        names = _names(sink.steps)
+        if any(StepText.THINKING in name for name in names):
+            raise AssertionError(f"шага рассуждений быть не должно: {names}")
+        if "process... · 900 → 32" not in names:
+            raise AssertionError(f"итог хода: {names}")

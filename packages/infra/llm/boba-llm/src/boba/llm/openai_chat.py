@@ -137,7 +137,16 @@ class WireChoice(BaseModel):
 
     delta: WireDelta = WireDelta()
     message: WireDelta | None = None
+    # null в каждом промежуточном чанке — норма провода, поэтому не str
     finish_reason: str | None = None
+
+
+class WireOutputDetails(BaseModel):
+    """Разбивка выходных токенов; провайдеры без рассуждений её не шлют."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    reasoning_tokens: int = 0
 
 
 class WireUsage(BaseModel):
@@ -147,6 +156,7 @@ class WireUsage(BaseModel):
 
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    completion_tokens_details: WireOutputDetails = WireOutputDetails()
 
 
 class WireChunk(BaseModel):
@@ -237,6 +247,7 @@ class StreamAssembly:
             usage=ChatUsage(
                 input_tokens=self._usage.prompt_tokens,
                 output_tokens=self._usage.completion_tokens,
+                reasoning_tokens=self._usage.completion_tokens_details.reasoning_tokens,
             ),
         )
 
@@ -250,13 +261,7 @@ class StreamAssembly:
             return
 
         if self._finish_reason == FinishReason.LENGTH:
-            msg = (
-                "chat reply cut off by the token limit "
-                f"(finish_reason=length, completion tokens used: "
-                f"{self._usage.completion_tokens}); "
-                "raise max_tokens in the profile sampling"
-            )
-            raise ChatProviderError(msg)
+            raise self._ceiling_error()
 
         if self._finish_reason == FinishReason.CONTENT_FILTER:
             msg = "chat reply blocked by the provider content filter"
@@ -267,6 +272,36 @@ class StreamAssembly:
             f"finish_reason={self._finish_reason}"
         )
         raise ChatProviderError(msg)
+
+    def _ceiling_error(self) -> ChatProviderError:
+        """Ошибка обрыва по потолку токенов: расход, недописанный вызов, совет."""
+        spent = self._usage.completion_tokens
+        reasoning = self._usage.completion_tokens_details.reasoning_tokens
+        msg = (
+            "chat reply hit the token ceiling: finish_reason=length, "
+            f"{spent} completion tokens spent ({reasoning} reasoning)"
+        )
+
+        if cut := self._cut_call():
+            msg = f"{msg}; call {cut} is cut off mid-arguments"
+
+        msg = f"{msg}; raise sampling max_tokens or lower the reasoning effort"
+
+        return ChatProviderError(msg)
+
+    def _cut_call(self) -> str:
+        """Имя вызова, который резался последним; пусто, если все вызовы целы."""
+        if not self._calls:
+            return ""
+
+        last = self._calls[max(self._calls)]
+
+        try:
+            json.loads(last.arguments)
+        except json.JSONDecodeError:
+            return last.name
+
+        return ""
 
     @staticmethod
     def _arguments(growing: GrowingCall) -> dict[str, Any]:

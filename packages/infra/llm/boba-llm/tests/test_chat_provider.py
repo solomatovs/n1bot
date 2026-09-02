@@ -228,7 +228,7 @@ class TestLocalTokenCeiling:
         runtime = OnnxChatRuntime("fake-model", _FakeGenai())
         pieces: list[str] = []
 
-        with pytest.raises(ChatProviderError, match="cut off by the token limit"):
+        with pytest.raises(ChatProviderError, match="hit the token ceiling"):
             runtime.run(
                 "prompt",
                 RunSpec(max_tokens=5),
@@ -441,33 +441,6 @@ class TestOpenAiChatProvider:
         deltas = [e for e in events if isinstance(e, ChatDelta)]
         if "".join(d.content for d in deltas) != "ответ":
             raise AssertionError(f"дельты: {deltas}")
-
-    async def test_length_finish_is_an_honest_error(self) -> None:
-        """Обрыв по лимиту токенов посреди аргументов вызова — ошибка про
-        лимит, а не «malformed call arguments» на недописанном JSON."""
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            body = _sse(
-                _delta_chunk(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "call-1",
-                                "function": {"name": "probe", "arguments": '{"q'},
-                            }
-                        ]
-                    }
-                ),
-                {
-                    "choices": [{"delta": {}, "finish_reason": "length"}],
-                    "usage": {"prompt_tokens": 11, "completion_tokens": 4096},
-                },
-            )
-            return httpx.Response(200, content=body)
-
-        with pytest.raises(ChatProviderError, match="cut off by the token limit"):
-            await _events(_provider(handler), REQUEST)
 
     async def test_content_filter_finish_is_an_honest_error(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
@@ -1001,7 +974,7 @@ class TestOllamaChatProvider:
             )
             return httpx.Response(200, content=body)
 
-        with pytest.raises(ChatProviderError, match="cut off by the token limit"):
+        with pytest.raises(ChatProviderError, match="hit the token ceiling"):
             await _events(_ollama_provider(handler), REQUEST)
 
     async def test_unknown_done_reason_is_an_honest_error(self) -> None:
@@ -1074,3 +1047,95 @@ class TestOllamaChatProvider:
         built = ChatProviderFactory.build(cfg, model="m", client=client, runtime=None)
         if not isinstance(built, OllamaChatProvider):
             raise AssertionError(type(built))
+
+
+class TestTruncatedReply:
+    """Обрыв по потолку токенов: причина названа, а не спрятана за 'мусор'."""
+
+    TRUNCATED = (
+        '{"space_keys": ["ARROW", "ASTERIXDB"], "attachments": "*", '
+        '"force_update": true, "ocr_language": "rus+eng"'
+    )
+    """Аргументы вызова, оборванные на середине: закрывающей скобки нет."""
+
+    async def test_length_finish_names_the_ceiling(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = _sse(
+                _delta_chunk(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call-1",
+                                "function": {"name": "confluence_index_spaces"},
+                            }
+                        ]
+                    }
+                ),
+                _delta_chunk(
+                    {
+                        "tool_calls": [
+                            {"index": 0, "function": {"arguments": self.TRUNCATED}}
+                        ]
+                    }
+                ),
+                {
+                    "choices": [{"delta": {"content": ""}, "finish_reason": "length"}],
+                    "usage": {"prompt_tokens": 500, "completion_tokens": 4096},
+                },
+            )
+            return httpx.Response(200, content=body)
+
+        with pytest.raises(ChatProviderError, match="token ceiling") as caught:
+            await _events(_provider(handler), REQUEST)
+
+        message = str(caught.value)
+        if "confluence_index_spaces" not in message:
+            raise AssertionError(f"в ошибке нет имени вызова: {message}")
+        if "4096" not in message:
+            raise AssertionError(f"в ошибке нет истраченных токенов: {message}")
+        if "max_tokens" not in message:
+            raise AssertionError(f"в ошибке нет подсказки, что делать: {message}")
+
+    async def test_malformed_without_length_stays_malformed(self) -> None:
+        """Без обрыва по длине битые аргументы остаются битыми аргументами."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = _sse(
+                _delta_chunk(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call-1",
+                                "function": {"name": "probe", "arguments": "{not json"},
+                            }
+                        ]
+                    }
+                ),
+                {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+            )
+            return httpx.Response(200, content=body)
+
+        with pytest.raises(ChatProviderError, match="malformed call arguments"):
+            await _events(_provider(handler), REQUEST)
+
+    async def test_length_without_calls_still_names_the_ceiling(self) -> None:
+        """Обрыв по лимиту посреди текста — та же честная ошибка, без имени
+        вызова: резать было нечего."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = _sse(
+                _delta_chunk({"content": "начал и не"}),
+                {
+                    "choices": [{"delta": {}, "finish_reason": "length"}],
+                    "usage": {"prompt_tokens": 5, "completion_tokens": 4096},
+                },
+            )
+            return httpx.Response(200, content=body)
+
+        with pytest.raises(ChatProviderError, match="token ceiling") as caught:
+            await _events(_provider(handler), REQUEST)
+
+        if "cut off mid-arguments" in str(caught.value):
+            raise AssertionError(f"вызов не резался: {caught.value}")

@@ -193,21 +193,21 @@ class TestConstrained:
         self, tmp_path: Path, krb5_env: None
     ) -> None:
         """Ccache с TGT пользователя не подходит режиму constrained."""
-        KerberosWorkspace.configure(str(KRB5_CONF), str(tmp_path / "cache"))
-        credentials = KeytabCredentials.of(
-            KeytabAuth(
-                method="kerberos_keytab",
-                principal=SERVICE_PRINCIPAL,
-                keytab=str(SERVICE_KEYTAB),
+        with KerberosWorkspace.scoped(str(KRB5_CONF), str(tmp_path / "cache")):
+            credentials = KeytabCredentials.of(
+                KeytabAuth(
+                    method="kerberos_keytab",
+                    principal=SERVICE_PRINCIPAL,
+                    keytab=str(SERVICE_KEYTAB),
+                )
             )
-        )
-        credentials.ensure()
+            credentials.ensure()
 
-        reason = TicketCapture.mismatch(
-            credentials.ccache, SERVICE_PRINCIPAL, DelegationMode.CONSTRAINED
-        )
-        if "forwarded TGT" not in reason:
-            raise AssertionError(f"TGT must be rejected: {reason!r}")
+            reason = TicketCapture.mismatch(
+                credentials.ccache, SERVICE_PRINCIPAL, DelegationMode.CONSTRAINED
+            )
+            if "forwarded TGT" not in reason:
+                raise AssertionError(f"TGT must be rejected: {reason!r}")
 
 
 class TestBrowserDelegationIsRefused:
@@ -299,18 +299,20 @@ class TestForwarded:
     def test_tgt_ccache_matches_forwarded_mode(
         self, tmp_path: Path, krb5_env: None
     ) -> None:
-        KerberosWorkspace.configure(str(KRB5_CONF), str(tmp_path / "cache"))
-        credentials = KeytabCredentials.of(
-            KeytabAuth(
-                method="kerberos_keytab",
-                principal=SERVICE_PRINCIPAL,
-                keytab=str(SERVICE_KEYTAB),
+        with KerberosWorkspace.scoped(str(KRB5_CONF), str(tmp_path / "cache")):
+            credentials = KeytabCredentials.of(
+                KeytabAuth(
+                    method="kerberos_keytab",
+                    principal=SERVICE_PRINCIPAL,
+                    keytab=str(SERVICE_KEYTAB),
+                )
             )
-        )
-        credentials.ensure()
+            credentials.ensure()
 
-        reason = TicketCapture.mismatch(
-            credentials.ccache, SERVICE_PRINCIPAL, DelegationMode.FORWARDED
-        )
-        if reason:
-            raise AssertionError(f"a TGT ccache must satisfy forwarded mode: {reason}")
+            reason = TicketCapture.mismatch(
+                credentials.ccache, SERVICE_PRINCIPAL, DelegationMode.FORWARDED
+            )
+            if reason:
+                raise AssertionError(
+                    f"a TGT ccache must satisfy forwarded mode: {reason}"
+                )

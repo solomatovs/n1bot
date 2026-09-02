@@ -13,6 +13,8 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+from collections.abc import Generator
+from contextlib import contextmanager
 from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -50,6 +52,24 @@ class KerberosWorkspace:
         os.makedirs(ccache_dir, mode=cls.DIR_MODE, exist_ok=True)
         os.chmod(ccache_dir, cls.DIR_MODE)
         cls._settings = {"krb5_config": krb5_config, "ccache_dir": ccache_dir}
+
+    @classmethod
+    @contextmanager
+    def scoped(cls, krb5_config: str, ccache_dir: str) -> Generator[None, None, None]:
+        """Временная настройка workspace с откатом прежней.
+
+        Workspace глобален на процесс: тест или короткий прогон, сменивший
+        его без отката, ломает kinit всем последующим — они уходят в чужой
+        krb5.conf. Внутри блока действует переданная настройка, на выходе
+        возвращается прежняя.
+        """
+        before = dict(cls._settings)
+        cls.configure(krb5_config, ccache_dir)
+
+        try:
+            yield
+        finally:
+            cls._settings = before
 
     @classmethod
     def krb5_config(cls) -> str:
