@@ -4,39 +4,39 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-runtime"
-version = "0.0.15.dev3"
+version = "0.0.15.dev4"
 description = "Boba runtime: контейнер зависимостей app/session/call и загрузчик tool-плагинов из конфига."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-ldap==0.0.15.dev3",
-    "boba-cancellation==0.0.15.dev3",
-    "boba-access==0.0.15.dev3",
-    "boba-canvas==0.0.15.dev3",
-    "boba-messaging==0.0.15.dev3",
-    "boba-chat==0.0.15.dev3",
-    "boba-connections==0.0.15.dev3",
-    "boba-db-postgres==0.0.15.dev3",
-    "boba-connection-broker==0.0.15.dev3",
-    "boba-identity==0.0.15.dev3",
-    "boba-sandbox==0.0.15.dev3",
-    "boba-config==0.0.15.dev3",
-    "boba-toolkit==0.0.15.dev3",
-    "boba-toolrun==0.0.15.dev3",
-    "boba-workflow-engine==0.0.15.dev3",
-    "boba-tool-knowledge==0.0.15.dev3",
-    "boba-krb[seal]==0.0.15.dev3",
-    "boba-db-pgvector==0.0.15.dev3",
+    "boba-ldap==0.0.15.dev4",
+    "boba-cancellation==0.0.15.dev4",
+    "boba-access==0.0.15.dev4",
+    "boba-canvas==0.0.15.dev4",
+    "boba-messaging==0.0.15.dev4",
+    "boba-chat==0.0.15.dev4",
+    "boba-connections==0.0.15.dev4",
+    "boba-db-postgres==0.0.15.dev4",
+    "boba-connection-broker==0.0.15.dev4",
+    "boba-identity==0.0.15.dev4",
+    "boba-sandbox==0.0.15.dev4",
+    "boba-config==0.0.15.dev4",
+    "boba-toolkit==0.0.15.dev4",
+    "boba-toolrun==0.0.15.dev4",
+    "boba-workflow-engine==0.0.15.dev4",
+    "boba-tool-knowledge==0.0.15.dev4",
+    "boba-krb[seal]==0.0.15.dev4",
+    "boba-db-pgvector==0.0.15.dev4",
     "pydantic>=2.10,<3",
     "psycopg[binary,pool]>=3.2,<4",
     "omegaconf>=2.3,<3",
     "langchain-core>=1.4,<1.5",
     "starlette>=0.40",
-    "boba-auth==0.0.15.dev3",
+    "boba-auth==0.0.15.dev4",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "boba-stand==0.0.15.dev3",
+    "boba-stand==0.0.15.dev4",
     "pyjwt>=2.8",
     "pytest>=8",
 ]
