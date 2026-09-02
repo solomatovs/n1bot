@@ -1,0 +1,50 @@
+.viewbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s2) var(--s4);
+  border-bottom: 1px solid var(--hairline);
+  background: var(--bg);
+}
+
+.viewbar__hint {
+  font-family: var(--font-mono);
+  font-size: var(--fs-data);
+  color: var(--muted);
+}
+
+.viewbar__spacer {
+  flex: 1;
+}
+
+.builder {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2) var(--s4);
+  min-height: var(--h-vitals);
+  background: var(--surface);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.builder__label {
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--signal);
+  margin-right: var(--s2);
+}
+
+.builder > .input {
+  width: clamp(140px, 18vw, 260px);
+}
+
+.builder__hint {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

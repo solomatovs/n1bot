@@ -1,6 +1,8 @@
 import { AlertTriangle, CheckCircle2, Info } from "lucide-react";
 import type { PropsWithChildren, ReactElement } from "react";
 
+import "./Alert.css";
+
 export type Tone = "error" | "info" | "ok";
 
 type Props = PropsWithChildren<{

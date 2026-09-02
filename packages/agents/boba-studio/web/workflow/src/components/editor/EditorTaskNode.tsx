@@ -4,6 +4,7 @@ import type { ReactElement } from "react";
 import type { ArgRow } from "../../model/args";
 import { widgetOf } from "../args/widgets";
 import { HandleSide, handleId } from "./handles";
+import { Chip } from "../../ui";
 
 export type EditorTaskData = {
   name: string;
@@ -146,9 +147,9 @@ export function EditorTaskNode({ data }: NodeProps<EditorTaskFlowNode>): ReactEl
       <div className="editor-node__footer">
         <span className="editor-node__results">
           {data.results.map((kind) => (
-            <span className="chip" key={kind}>
+            <Chip key={kind}>
               {kind}
-            </span>
+            </Chip>
           ))}
         </span>
         <span className="editor-node__result">result</span>

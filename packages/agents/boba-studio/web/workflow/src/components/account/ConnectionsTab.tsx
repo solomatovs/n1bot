@@ -7,6 +7,7 @@ import { useLoadable } from "../../hooks/useLoadable";
 import type { ConnectionView } from "../../model/account";
 import { SchemaDoc, parseSchema } from "../../model/schema";
 import { ConnectionForm } from "./ConnectionForm";
+import { EmptyState } from "../../ui";
 
 type Pick = { kind: "none" } | { kind: "new" } | { kind: "row"; id: string };
 
@@ -77,7 +78,7 @@ export function ConnectionsTab(): ReactElement {
           {shared.map(item)}
         </div>
         <div className="connections__scene">
-          {pick.kind === "none" && <div className="empty">Pick a connection or create a new one</div>}
+          {pick.kind === "none" && <EmptyState>Pick a connection or create a new one</EmptyState>}
           {pick.kind === "new" && (
             <ConnectionForm
               key="new"

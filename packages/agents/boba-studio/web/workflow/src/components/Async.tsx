@@ -1,7 +1,8 @@
 import type { ReactElement } from "react";
 import type { PropsWithChildren } from "react";
 
-import { Alert } from "./Alert";
+import { Alert } from "../ui/Alert";
+import { EmptyState } from "../ui";
 
 export type Loadable<T> =
   | { kind: "loading" }
@@ -16,14 +17,14 @@ type Props<T> = PropsWithChildren<{
 /** Три состояния загрузки одним местом: спиннер, ошибка, содержимое. */
 export function Async<T>({ state, render }: Props<T>): ReactElement {
   if (state.kind === "loading") {
-    return <div className="empty">Loading…</div>;
+    return <EmptyState>Loading…</EmptyState>;
   }
 
   if (state.kind === "error") {
     return (
-      <div className="empty">
+      <EmptyState>
         <Alert tone="error">{state.message}</Alert>
-      </div>
+      </EmptyState>
     );
   }
 

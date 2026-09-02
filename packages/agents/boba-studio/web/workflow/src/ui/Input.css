@@ -1,0 +1,14 @@
+.input {
+  padding: 6px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-cell);
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--fs-data);
+}
+
+.input--code {
+  min-height: 7em;
+  tab-size: 2;
+}

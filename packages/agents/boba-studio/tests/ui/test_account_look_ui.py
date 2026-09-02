@@ -181,9 +181,14 @@ class TestAccount:
 
         expect(page.locator(Sel.CRUMBS)).to_have_text("Account")
         expect(page.locator(Sel.SIGN_OUT)).to_be_visible()
-        expect(page.locator(Sel.BACK)).to_have_attribute(
+        back = page.locator(Sel.BACK)
+        expect(back).to_have_attribute(
             "href", f"{stand.config.url_prefix}/workflow/workflow"
         )
+        # стрелка назад стоит в правом слоте — там, где на сцене шестерёнка:
+        # переход между экранами не двигает сетку топбара
+        theme = page.locator('button[aria-label="Theme"]')
+        assert Css.box(back).x > Css.box(theme).x
 
         tab = page.locator(Sel.TAB, has_text="Connections")
         expect(tab).to_have_attribute("aria-selected", "true")

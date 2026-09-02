@@ -1,36 +1,17 @@
-import { type CSSProperties, type ReactElement, useCallback, useEffect, useMemo, useState } from "react";
+import { type ReactElement, useCallback, useEffect, useMemo, useState } from "react";
 import { Outlet, useParams } from "react-router-dom";
 
 import { useServices } from "../../app";
 import { errorText } from "../Async";
 import { ShellDataContext, type ShellData } from "../../hooks/useShellData";
 import type { StoredRun, StoredWorkflow, WorkflowDraft } from "../../model/workflow";
+import { Panel } from "../../ui";
 import { Topbar } from "./Topbar";
 import { WorkflowList } from "./WorkflowList";
 
 const LIST_WIDTH_KEY = "studio.list.width";
 const LIST_COLLAPSED_KEY = "studio.list.collapsed";
-const LIST_MIN = 200;
-const LIST_MAX = 560;
 const NARROW_QUERY = "(max-width: 760px)";
-
-function storedWidth(): number | null {
-  try {
-    const raw = window.localStorage.getItem(LIST_WIDTH_KEY);
-    if (raw === null) {
-      return null;
-    }
-
-    const parsed = Number(raw);
-    if (Number.isFinite(parsed)) {
-      return Math.min(Math.max(parsed, LIST_MIN), LIST_MAX);
-    }
-  } catch {
-    // приватное окно: настройка живёт до перезагрузки
-  }
-
-  return null;
-}
 
 function storedCollapsed(): boolean {
   try {
@@ -64,7 +45,6 @@ export function Shell(): ReactElement {
   const [tick, setTick] = useState(0);
   const [listOpen, setListOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(storedCollapsed);
-  const [listWidth, setListWidth] = useState<number | null>(storedWidth);
   const [narrow, setNarrow] = useState(() => window.matchMedia(NARROW_QUERY).matches);
 
   useEffect(() => {
@@ -91,29 +71,7 @@ export function Shell(): ReactElement {
     });
   }, []);
 
-  const resizeStart = useCallback(
-    (event: React.PointerEvent<HTMLElement>) => {
-      event.preventDefault();
-      const startX = event.clientX;
-      const panel = (event.target as HTMLElement).closest("aside");
-      const startWidth = panel === null ? LIST_MIN : panel.getBoundingClientRect().width;
 
-      const onMove = (move: PointerEvent): void => {
-        const next = Math.min(Math.max(startWidth + move.clientX - startX, LIST_MIN), LIST_MAX);
-        setListWidth(next);
-      };
-      const onUp = (up: PointerEvent): void => {
-        window.removeEventListener("pointermove", onMove);
-        window.removeEventListener("pointerup", onUp);
-        const next = Math.min(Math.max(startWidth + up.clientX - startX, LIST_MIN), LIST_MAX);
-        remember(LIST_WIDTH_KEY, String(Math.round(next)));
-      };
-
-      window.addEventListener("pointermove", onMove);
-      window.addEventListener("pointerup", onUp);
-    },
-    [],
-  );
 
   useEffect(() => {
     let alive = true;
@@ -177,14 +135,6 @@ export function Shell(): ReactElement {
   const currentWorkflow =
     workflows.find((item) => item.id === (workflowId ?? workflowOfRun)) ?? null;
 
-  let listSize = "var(--w-list)";
-  if (listWidth !== null) {
-    listSize = `${listWidth}px`;
-  }
-  if (collapsed && !narrow) {
-    listSize = "0px";
-  }
-
   let panelShown = !collapsed;
   if (narrow) {
     panelShown = listOpen;
@@ -199,18 +149,24 @@ export function Shell(): ReactElement {
           listOpen={panelShown}
           onToggleList={toggleList}
         />
-        <div className="shell__body" style={{ "--w-list-live": listSize } as CSSProperties}>
-          <WorkflowList
-            workflows={workflows}
-            drafts={drafts}
-            runs={runs}
-            selectedWorkflow={workflowId ?? null}
-            selectedRun={runId ?? null}
+        <div className="shell__body">
+          <Panel
+            aria-label="workflows"
+            className="list"
             open={listOpen}
             collapsed={collapsed && !narrow}
-            onPick={closeList}
-            onResizeStart={resizeStart}
-          />
+            narrow={narrow}
+            storageKey={LIST_WIDTH_KEY}
+          >
+            <WorkflowList
+              workflows={workflows}
+              drafts={drafts}
+              runs={runs}
+              selectedWorkflow={workflowId ?? null}
+              selectedRun={runId ?? null}
+              onPick={closeList}
+            />
+          </Panel>
           <Outlet />
         </div>
       </div>

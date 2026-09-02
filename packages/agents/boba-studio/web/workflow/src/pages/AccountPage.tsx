@@ -1,14 +1,15 @@
 import { ArrowLeft, LogOut, Workflow } from "lucide-react";
 import { type ReactElement, useCallback, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 
 import { useServices } from "../app";
 import { Async } from "../components/Async";
 import { ConnectionsTab } from "../components/account/ConnectionsTab";
-import { Segmented } from "../components/Segmented";
+import { Segmented } from "../ui/Segmented";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { useLoadable } from "../hooks/useLoadable";
 import type { Me } from "../model/account";
+import { Button, IconLink } from "../ui";
 
 type Tab = "connections";
 
@@ -52,9 +53,8 @@ export function AccountPage(): ReactElement {
   return (
     <div className="account">
       <header className="topbar">
-        <Link to="/workflow" className="icon-btn" aria-label="Back to studio" title="Back to studio">
-          <ArrowLeft size={16} />
-        </Link>
+        {/* слот кнопки панели: держит сетку топбара той же, что на сцене */}
+        <span className="topbar__slot" aria-hidden="true" />
         <div className="topbar__brand">
           <Workflow size={18} />
           <b>Boba</b> Workflow <span>Studio</span>
@@ -63,11 +63,15 @@ export function AccountPage(): ReactElement {
           <span>Account</span>
         </nav>
         <span className="topbar__spacer" />
-        <button type="button" className="btn" onClick={logout} aria-label="Sign out">
+        <Button onClick={logout} aria-label="Sign out">
           <LogOut size={14} />
           Sign out
-        </button>
+        </Button>
         <ThemeToggle />
+        {/* стрелка назад живёт на месте шестерёнки: UI не прыгает при переходе */}
+        <IconLink to="/workflow" aria-label="Back to studio" title="Back to studio">
+          <ArrowLeft size={16} />
+        </IconLink>
       </header>
       <div className="account__body">
         <Async state={me} render={renderHeader} />

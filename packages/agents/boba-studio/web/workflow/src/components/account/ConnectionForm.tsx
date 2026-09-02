@@ -3,11 +3,12 @@ import { type FormEvent, type ReactElement, useCallback, useState } from "react"
 
 import { ApiError } from "../../api/client";
 import { useServices } from "../../app";
-import { Alert } from "../Alert";
+import { Alert } from "../../ui/Alert";
 import { errorText } from "../Async";
 import type { ConnectionView, ProbeResult } from "../../model/account";
 import { type SchemaDoc, withoutMaskedSecrets } from "../../model/schema";
 import { SchemaNode } from "./SchemaForm";
+import { Button, Field, Input } from "../../ui";
 
 type Props = {
   doc: SchemaDoc;
@@ -106,12 +107,8 @@ export function ConnectionForm({ doc, row, onSaved, onRemoved }: Props): ReactEl
   return (
     <form className="form connection-form" onSubmit={submit} aria-label="connection">
       {readonly && <Alert tone="info">Shared connection: read-only</Alert>}
-      <label className="field">
-        <span className="field__label">
-          name<span className="field__required">*</span>
-        </span>
-        <input
-          className="input"
+      <Field label="name" required>
+        <Input
           aria-label="connection name"
           value={name}
           disabled={readonly}
@@ -119,7 +116,7 @@ export function ConnectionForm({ doc, row, onSaved, onRemoved }: Props): ReactEl
             setName(event.target.value);
           }}
         />
-      </label>
+      </Field>
       <SchemaNode
         doc={doc}
         schema={doc.root}
@@ -145,22 +142,22 @@ export function ConnectionForm({ doc, row, onSaved, onRemoved }: Props): ReactEl
         </Alert>
       )}
       <div className="connection-form__actions">
-        <button type="button" className="btn" disabled={busy} onClick={check}>
+        <Button disabled={busy} onClick={check}>
           <PlugZap size={14} />
           Check
-        </button>
+        </Button>
       </div>
       {!readonly && (
         <div className="connection-form__actions">
-          <button type="submit" className="btn btn--primary" disabled={busy}>
+          <Button type="submit" tone="primary" disabled={busy}>
             <Save size={14} />
             Save
-          </button>
+          </Button>
           {row !== null && (
-            <button type="button" className="btn" disabled={busy} onClick={remove}>
+            <Button disabled={busy} onClick={remove}>
               <Trash2 size={14} />
               Delete
-            </button>
+            </Button>
           )}
         </div>
       )}

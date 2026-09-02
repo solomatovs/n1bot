@@ -31,6 +31,8 @@ import {
   type SpecIssue,
 } from "../model/spec";
 import type { StoredWorkflow, ToolCatalog, WorkflowDraft } from "../model/workflow";
+import { Button, EmptyState, Notice, Toolbar, ToolbarHint, ToolbarLabel, ToolbarSpacer } from "../ui";
+import { Input, TextArea } from "../ui";
 
 const EMPTY: EditableWorkflow = { name: "new-workflow", description: "", tasks: [], edges: [] };
 
@@ -102,10 +104,9 @@ export function BuildPage(): ReactElement {
   if (workflowId === undefined && !isNew) {
     return (
       <main className="stage stage--build">
-        <div className="empty" style={{ gridRow: "1 / -1" }}>
-          <span className="empty__title">Build workflows</span>
-          <span>Pick a workflow or a run on the left, or press “+ New workflow”.</span>
-        </div>
+        <EmptyState fill title="Build workflows">
+          Pick a workflow or a run on the left, or press “+ New workflow”.
+        </EmptyState>
       </main>
     );
   }
@@ -193,6 +194,8 @@ function Builder({ catalog, stored, draft, draftKey }: BuilderProps): ReactEleme
   const revision = useRef(draft?.revision ?? 0);
   const remote = useRef(false);
   const untouched = useRef(true);
+  // черновик закрыт (сохранён или удалён): отложенная запись не должна его воскресить
+  const draftClosed = useRef(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [yamlMode, setYamlMode] = useState(false);
   const [yamlText, setYamlText] = useState("");
@@ -236,6 +239,10 @@ function Builder({ catalog, stored, draft, draftKey }: BuilderProps): ReactEleme
     }
 
     const timer = window.setTimeout(() => {
+      if (draftClosed.current) {
+        return;
+      }
+
       void api.putDraft(draftKey, renderSpecText(workflow), { positions }, socket.id).then(
         (saved) => {
           revision.current = Math.max(revision.current, saved.revision);
@@ -361,6 +368,7 @@ function Builder({ catalog, stored, draft, draftKey }: BuilderProps): ReactEleme
       shell.reload();
       if (stored === null) {
         // черновик нового workflow свою роль сыграл: дальше вкладки правят сохранённый
+        draftClosed.current = true;
         await api.dropDraft(draftKey, socket.id);
         await navigate(`/workflow/${saved.id}`, { replace: true, state: { notice: text } });
       }
@@ -371,6 +379,7 @@ function Builder({ catalog, stored, draft, draftKey }: BuilderProps): ReactEleme
 
   const deleteDraft = useCallback(async () => {
     try {
+      draftClosed.current = true;
       await api.dropDraft(draftKey, socket.id);
       shell.reload();
       if (stored === null) {
@@ -383,6 +392,7 @@ function Builder({ catalog, stored, draft, draftKey }: BuilderProps): ReactEleme
       const parsed = parseSpecText(fresh.spec);
       remote.current = true;
       revision.current = 0;
+      draftClosed.current = false;
       setWorkflow(parsed);
       setPositions(positionsOf(fresh.layout, parsed, catalog));
       setIssues([]);
@@ -466,10 +476,9 @@ function Builder({ catalog, stored, draft, draftKey }: BuilderProps): ReactEleme
 
   return (
     <main className="stage stage--build">
-      <div className="builder">
-        <span className="builder__label">Builder</span>
-        <input
-          className="input input--name"
+      <Toolbar variant="builder">
+        <ToolbarLabel>Builder</ToolbarLabel>
+        <Input
           value={workflow.name}
           onChange={(event) => {
             setWorkflow({ ...workflow, name: event.target.value });
@@ -477,38 +486,36 @@ function Builder({ catalog, stored, draft, draftKey }: BuilderProps): ReactEleme
           aria-label="workflow name"
         />
         <ToolMenu catalog={catalog} onAdd={addTask} />
-        <button type="button" className={`btn${yamlMode ? " btn--signal" : ""}`} onClick={toggleYaml} aria-pressed={yamlMode}>
-          <Code2 size={12} /> YAML
-        </button>
-        <span className="builder__hint">edges: drag then → after · result → args · fd → fd</span>
-        <span className="viewbar__spacer" />
-        <button type="button" className="btn" onClick={() => void deleteDraft()}>
-          <Trash2 size={12} /> Delete draft
-        </button>
-        <button type="button" className="btn" onClick={() => void validate()}>
-          <ShieldCheck size={12} /> Validate
-        </button>
-        <button type="button" className="btn btn--signal" onClick={() => void save()}>
-          <Save size={12} /> Save
-        </button>
-        <button type="button" className="btn btn--primary" disabled={savedId === null} onClick={() => void run()}>
-          <Play size={12} /> Run
-        </button>
-      </div>
+        <Button tone={yamlMode ? "signal" : "default"} icon={Code2} onClick={toggleYaml} aria-pressed={yamlMode}>
+          YAML
+        </Button>
+        <ToolbarHint variant="builder">edges: drag then → after · result → args · fd → fd</ToolbarHint>
+        <ToolbarSpacer />
+        <Button icon={Trash2} onClick={() => void deleteDraft()}>
+          Delete draft
+        </Button>
+        <Button icon={ShieldCheck} onClick={() => void validate()}>
+          Validate
+        </Button>
+        <Button tone="signal" icon={Save} onClick={() => void save()}>
+          Save
+        </Button>
+        <Button tone="primary" icon={Play} disabled={savedId === null} onClick={() => void run()}>
+          Run
+        </Button>
+      </Toolbar>
       <div>
         {notice !== "" && (
-          <div className="viewbar">
-            <span className={`notice${failed ? " notice--error" : ""}`} data-notice>
-              {notice}
-            </span>
-          </div>
+          <Toolbar variant="view">
+            <Notice tone={failed ? "error" : "info"}>{notice}</Notice>
+          </Toolbar>
         )}
         <IssueList issues={issues} />
       </div>
       {yamlMode ? (
         <div className="yaml">
-          <textarea
-            className="input yaml__text"
+          <TextArea
+            className="yaml__text"
             value={yamlText}
             onChange={(event) => {
               setYamlText(event.target.value);
@@ -517,9 +524,9 @@ function Builder({ catalog, stored, draft, draftKey }: BuilderProps): ReactEleme
             aria-label="workflow yaml"
           />
           <div>
-            <button type="button" className="btn btn--signal" onClick={applyYaml}>
+            <Button tone="signal" onClick={applyYaml}>
               Apply YAML
-            </button>
+            </Button>
           </div>
         </div>
       ) : (

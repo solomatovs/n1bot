@@ -2,6 +2,7 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import { type ReactElement, useState } from "react";
 
 import { type JsonSchema, type Node, type SchemaDoc } from "../../model/schema";
+import { Field, Input, Select, TextArea } from "../../ui";
 
 type NodeProps = {
   doc: SchemaDoc;
@@ -36,14 +37,6 @@ function asString(value: unknown): string {
   return "";
 }
 
-function Hint({ schema }: { schema: JsonSchema }): ReactElement | null {
-  if (schema.description === undefined || schema.description === "") {
-    return null;
-  }
-
-  return <span className="field__hint">{schema.description}</span>;
-}
-
 /** Поле-скаляр: строка, секрет, число, флаг, enum, список строк, JSON. */
 function Scalar({ node, schema, value, path, label, required, readonly, issues, onChange }: NodeProps & { node: Node }): ReactElement {
   const issue = issues.get(path);
@@ -51,8 +44,7 @@ function Scalar({ node, schema, value, path, label, required, readonly, issues, 
     switch (node.kind) {
       case "enum":
         return (
-          <select
-            className="input"
+          <Select
             aria-label={path}
             value={asString(value)}
             disabled={readonly}
@@ -66,11 +58,11 @@ function Scalar({ node, schema, value, path, label, required, readonly, issues, 
                 {option}
               </option>
             ))}
-          </select>
+          </Select>
         );
       case "boolean":
         return (
-          <input
+          <Input
             type="checkbox"
             aria-label={path}
             checked={value === true}
@@ -82,8 +74,7 @@ function Scalar({ node, schema, value, path, label, required, readonly, issues, 
         );
       case "number":
         return (
-          <input
-            className="input"
+          <Input
             type="number"
             step={node.integer ? 1 : "any"}
             aria-label={path}
@@ -97,8 +88,7 @@ function Scalar({ node, schema, value, path, label, required, readonly, issues, 
         );
       case "lines":
         return (
-          <textarea
-            className="input"
+          <TextArea
             aria-label={path}
             rows={3}
             value={Array.isArray(value) ? value.map(String).join("\n") : ""}
@@ -112,8 +102,8 @@ function Scalar({ node, schema, value, path, label, required, readonly, issues, 
       case "json":
       case "map":
         return (
-          <textarea
-            className="input input--code"
+          <TextArea
+            code
             aria-label={path}
             rows={3}
             defaultValue={value === null || value === undefined ? "" : JSON.stringify(value, null, 2)}
@@ -135,8 +125,7 @@ function Scalar({ node, schema, value, path, label, required, readonly, issues, 
         );
       default:
         return (
-          <input
-            className="input"
+          <Input
             type={node.kind === "string" && node.secret ? "password" : "text"}
             aria-label={path}
             value={asString(value)}
@@ -152,20 +141,19 @@ function Scalar({ node, schema, value, path, label, required, readonly, issues, 
   })();
 
   const row = node.kind === "boolean";
-  const classes = ["field"];
-  if (row) classes.push("field--row");
-  if (issue !== undefined) classes.push("field--invalid");
   return (
-    <label className={classes.join(" ")} data-path={path}>
-      {row && control}
-      <span className="field__label">
-        {label}
-        {required && <span className="field__required">*</span>}
-      </span>
-      {!row && control}
-      <Hint schema={schema} />
-      {issue !== undefined && <span className="field__issue">{issue}</span>}
-    </label>
+    <Field
+      label={label}
+      required={required}
+      row={row}
+      controlFirst={row}
+      invalid={issue !== undefined}
+      issue={issue}
+      dataPath={path}
+      hint={schema.description}
+    >
+      {control}
+    </Field>
   );
 }
 
@@ -183,10 +171,8 @@ export function SchemaNode(props: NodeProps): ReactElement | null {
     return (
       <fieldset className="schema-block" data-path={path}>
         <legend className="schema-block__legend">{label}</legend>
-        <label className="field">
-          <span className="field__label">{node.field}</span>
-          <select
-            className="input"
+        <Field label={node.field} hint={doc.resolve(schema).description}>
+          <Select
             aria-label={`${path}.${node.field}`}
             value={variant.tag}
             disabled={readonly}
@@ -202,9 +188,8 @@ export function SchemaNode(props: NodeProps): ReactElement | null {
                 {option.tag}
               </option>
             ))}
-          </select>
-          <Hint schema={doc.resolve(schema)} />
-        </label>
+          </Select>
+        </Field>
         <ObjectFields {...props} schema={variant.schema} value={asRecord(value)} />
       </fieldset>
     );

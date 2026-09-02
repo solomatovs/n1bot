@@ -2,6 +2,8 @@ import { ChevronDown, Plus } from "lucide-react";
 import { type ReactElement, useEffect, useRef, useState } from "react";
 
 import type { ToolAvailability, ToolCatalog } from "../../model/workflow";
+import { Button } from "../../ui";
+import { Menu, MenuGroup, MenuItem, MenuList } from "../../ui";
 
 type Props = {
   catalog: ToolCatalog;
@@ -34,10 +36,8 @@ export function ToolMenu({ catalog, onAdd }: Props): ReactElement {
 
   const names = Object.keys(catalog).sort();
   return (
-    <div className="menu" ref={root}>
-      <button
-        type="button"
-        className="btn"
+    <Menu containerRef={root}>
+      <Button
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => {
@@ -45,9 +45,9 @@ export function ToolMenu({ catalog, onAdd }: Props): ReactElement {
         }}
       >
         <Plus size={12} /> Tool <ChevronDown size={12} />
-      </button>
+      </Button>
       {open && (
-        <div className="menu__list" role="menu" aria-label="tools">
+        <MenuList label="tools">
           {ORDER.map((availability) => {
             const group = names.filter((name) => catalog[name]?.availability === availability);
             if (group.length === 0) {
@@ -56,13 +56,10 @@ export function ToolMenu({ catalog, onAdd }: Props): ReactElement {
 
             return (
               <div key={availability}>
-                <div className="menu__group eyebrow">{availability.replace("_", " ")}</div>
+                <MenuGroup>{availability.replace("_", " ")}</MenuGroup>
                 {group.map((name) => (
-                  <button
-                    type="button"
-                    role="menuitem"
+                  <MenuItem
                     key={name}
-                    className="menu__item"
                     disabled={availability !== "available"}
                     onClick={() => {
                       onAdd(name);
@@ -70,13 +67,13 @@ export function ToolMenu({ catalog, onAdd }: Props): ReactElement {
                     }}
                   >
                     {name}
-                  </button>
+                  </MenuItem>
                 ))}
               </div>
             );
           })}
-        </div>
+        </MenuList>
       )}
-    </div>
+    </Menu>
   );
 }

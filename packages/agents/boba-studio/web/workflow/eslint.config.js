@@ -18,5 +18,20 @@ export default tseslint.config(
       "@typescript-eslint/restrict-template-expressions": ["error", { allowNumber: true }],
     },
   },
+  {
+    // классы виджетов существуют только внутри src/ui: снаружи — компонент из ui/
+    files: ["src/**/*.tsx"],
+    ignores: ["src/ui/**"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            'JSXAttribute[name.name="className"] Literal[value=/^(btn|chip|empty|notice|icon-btn|eyebrow|item|input|field|viewbar|builder|menu|segmented|pill|alert|list__resize)([ -].*)?$/]',
+          message: "widget classes live in src/ui: use the widget component instead",
+        },
+      ],
+    },
+  },
   { ignores: ["dist", "node_modules", "eslint.config.js", "vite.config.ts", "src/api/schema.d.ts"] },
 );

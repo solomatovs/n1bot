@@ -2,7 +2,7 @@ import type { ReactElement } from "react";
 
 import { formatDuration, formatInstant } from "../../model/time";
 import type { RunState } from "../../model/workflow";
-import { StatusPill } from "../StatusPill";
+import { StatusPill } from "../../ui/StatusPill";
 
 type Props = {
   run: RunState;

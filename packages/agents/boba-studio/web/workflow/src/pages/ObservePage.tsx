@@ -3,18 +3,19 @@ import { type ReactElement, useCallback, useEffect, useRef, useState } from "rea
 import { useNavigate, useParams } from "react-router-dom";
 
 import { useServices } from "../app";
-import { Alert } from "../components/Alert";
+import { Alert } from "../ui/Alert";
 import { errorText, type Loadable } from "../components/Async";
 import { RunGraph } from "../components/graph/RunGraph";
 import { Inspector } from "../components/observe/Inspector";
 import { TaskTable } from "../components/observe/TaskTable";
 import { Timeline } from "../components/observe/Timeline";
 import { Vitals } from "../components/observe/Vitals";
-import { Segmented } from "../components/Segmented";
+import { Segmented } from "../ui/Segmented";
 import { useClock } from "../hooks/useClock";
 import { useShellData } from "../hooks/useShellData";
 import { runFinished } from "../model/status";
 import type { RunSnapshot, StoredRun } from "../model/workflow";
+import { Button, EmptyState, Notice, Toolbar, ToolbarHint, ToolbarSpacer } from "../ui";
 
 type View = "grid" | "table" | "timeline";
 
@@ -143,10 +144,9 @@ export function ObservePage(): ReactElement {
   if (runId === undefined) {
     return (
       <main className="stage">
-        <div className="empty" style={{ gridRow: "1 / -1" }}>
-          <span className="empty__title">Runs</span>
-          <span>Expand a workflow on the left and pick a run.</span>
-        </div>
+        <EmptyState fill title="Runs">
+          Expand a workflow on the left and pick a run.
+        </EmptyState>
       </main>
     );
   }
@@ -154,9 +154,7 @@ export function ObservePage(): ReactElement {
   if (run.kind === "loading") {
     return (
       <main className="stage">
-        <div className="empty" style={{ gridRow: "1 / -1" }}>
-          Loading…
-        </div>
+        <EmptyState fill>Loading…</EmptyState>
       </main>
     );
   }
@@ -164,11 +162,11 @@ export function ObservePage(): ReactElement {
   if (run.kind === "error") {
     return (
       <main className="stage">
-        <div className="empty" style={{ gridRow: "1 / -1" }}>
+        <EmptyState fill>
           <Alert tone="error" title="Run failed">
             {run.message}
           </Alert>
-        </div>
+        </EmptyState>
       </main>
     );
   }
@@ -177,19 +175,23 @@ export function ObservePage(): ReactElement {
   return (
     <main className="stage" data-run-status={loaded.status}>
       <Vitals run={loaded} now={now} />
-      <div className="viewbar">
-        <span className="viewbar__hint">{loaded.instance}</span>
-        <span className="viewbar__spacer" />
+      <Toolbar variant="view">
+        <ToolbarHint>{loaded.instance}</ToolbarHint>
+        <ToolbarSpacer />
         <Segmented options={VIEWS} value={view} onChange={setView} label="view" />
-        <span className="viewbar__spacer" />
-        <button type="button" className="btn btn--signal" disabled={loaded.workflow_id === null} onClick={() => void rerun()}>
+        <ToolbarSpacer />
+        <Button tone="signal" disabled={loaded.workflow_id === null} onClick={() => void rerun()}>
           → Re-run
-        </button>
-        <button type="button" className="btn btn--danger" disabled={!live} onClick={() => void stop()}>
-          <Square size={12} /> Stop
-        </button>
-      </div>
-      {notice !== "" && <div className="stage__float notice notice--error">{notice}</div>}
+        </Button>
+        <Button tone="danger" icon={Square} disabled={!live} onClick={() => void stop()}>
+          Stop
+        </Button>
+      </Toolbar>
+      {notice !== "" && (
+        <div className="stage__float">
+          <Notice tone="error">{notice}</Notice>
+        </div>
+      )}
       {view === "grid" && (
         <div className="view">
           <RunGraph run={loaded.state} selectedTask={selectedTask} onSelectTask={setSelectedTask} />

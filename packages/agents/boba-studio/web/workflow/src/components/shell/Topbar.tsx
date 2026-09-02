@@ -1,10 +1,10 @@
 import { PanelLeft, Settings, Workflow } from "lucide-react";
 import type { ReactElement } from "react";
-import { NavLink } from "react-router-dom";
 
 import type { StoredRun, StoredWorkflow } from "../../model/workflow";
 import { ThemeToggle } from "../ThemeToggle";
 import { SocketLamp } from "./SocketLamp";
+import { IconButton, IconLink } from "../../ui";
 
 type Props = {
   run: StoredRun | null;
@@ -31,15 +31,14 @@ export function Topbar({ run, workflow, listOpen, onToggleList }: Props): ReactE
 
   return (
     <header className="topbar">
-      <button
-        type="button"
-        className="icon-btn topbar__drawer"
+      <IconButton
+        className="topbar__drawer"
         aria-label="Toggle list"
         aria-expanded={listOpen}
         onClick={onToggleList}
       >
         <PanelLeft size={16} />
-      </button>
+      </IconButton>
       <div className="topbar__brand">
         <Workflow size={18} />
         <b>Boba</b> Workflow <span>Studio</span>
@@ -56,9 +55,9 @@ export function Topbar({ run, workflow, listOpen, onToggleList }: Props): ReactE
       <span className="topbar__spacer" />
       <SocketLamp />
       <ThemeToggle />
-      <NavLink to="/account" className="icon-btn" aria-label="Account" title="Account">
+      <IconLink to="/account" aria-label="Account" title="Account">
         <Settings size={16} />
-      </NavLink>
+      </IconLink>
     </header>
   );
 }

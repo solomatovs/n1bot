@@ -3,9 +3,10 @@ import { type ReactElement, useCallback, useEffect, useRef, useState } from "rea
 import { ApiError } from "../../api/client";
 import { useServices } from "../../app";
 import type { ChannelView, StreamEvent, StreamSlice } from "../../model/workflow";
-import { Alert } from "../Alert";
+import { Alert } from "../../ui/Alert";
 import { errorText } from "../Async";
-import { Segmented } from "../Segmented";
+import { Segmented } from "../../ui/Segmented";
+import { Eyebrow } from "../../ui";
 
 type Props = {
   runId: string;
@@ -128,7 +129,7 @@ export function OutputPanel({ runId, callId }: Props): ReactElement | null {
   return (
     <section className="output" aria-label="output">
       <div className="output__head">
-        <span className="eyebrow">output</span>
+        <Eyebrow>output</Eyebrow>
         <Segmented
           options={channels.map((view) => ({ value: view.name, label: view.label }))}
           value={channel}
