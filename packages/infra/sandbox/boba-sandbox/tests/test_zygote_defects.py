@@ -523,15 +523,42 @@ class TestCallFdsAreNotInherited:
 
     PROBE: ClassVar[str] = """
 for fd in /proc/self/fd/*; do
-  readlink "$fd"
+  readlink "$fd" || true
 done
 """
-    """Тело печатает, куда указывает каждый его дескриптор."""
+    """Тело печатает, куда указывает каждый его дескриптор.
+
+    `|| true` — дескриптор глоба bash исчезает к моменту readlink: с тех пор
+    как лишние каналы вызова закрыты, он последний в глобе и ронял бы rc.
+    """
 
     needs_cgroup = pytest.mark.skipif(
         not os.access(CGROUP_BASE, os.W_OK),
         reason="нет делегированного /sys/fs/cgroup/boba (прогнать cgroup-init.sh)",
     )
+
+    def test_shell_gets_only_stdio(self, section: str) -> None:
+        """Каналы модуля (конверт, кадры, конфиг) закрыты для shell-команды.
+
+        До правки они наследовались телом: команда пользователя могла писать
+        в конверт вызова и читать канал конфига.
+        """
+        caller = ZygoteStand.caller(section, _profile())
+
+        outcome = caller.call_text(self.PROBE, stdin="")
+        if outcome.result.exit_code != 0:
+            raise AssertionError(f"rc={outcome.result.exit_code}")
+
+        pipes: list[str] = []
+        for line in outcome.result.stdout.splitlines():
+            if "pipe:" not in line:
+                continue
+
+            pipes.append(line.strip())
+
+        # stdin, stdout, stderr — и ничего больше
+        if len(pipes) > 3:
+            raise AssertionError(f"лишние каналы у shell-тела: {pipes}")
 
     @needs_cgroup
     def test_body_has_no_cgroup_descriptor(self, section: str) -> None:

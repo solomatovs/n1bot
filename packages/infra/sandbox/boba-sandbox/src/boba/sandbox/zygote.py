@@ -1,8 +1,14 @@
 """Хост-сторона зиготы: супервизор, спавнер из профиля и мост ToolLauncher.
 
-Супервизор держит процесс-зиготу живым: поднимает при старте, перезапускает
-после внезапной смерти, останавливается после исчерпания попыток старта.
-Вызов при неготовой зиготе — ошибка инструмента, а не тихая деградация.
+Зигота — резидентный процесс секции инструментов внутри песочницы: она
+один раз импортирует тяжёлые модули и на каждый вызов форкает исполнителя
+(гостевая сторона — boba.sandbox.guest). Так вызов не платит за холодный
+импорт. Здесь живёт хостовая половина: ZygoteSupervisor держит зиготу
+живой (поднимает при старте, перезапускает после смерти, сдаётся после
+исчерпания попыток), ZygoteSpawner собирает её команду из профиля
+песочницы, ZygoteToolCaller реализует протокол ToolLauncher поверх
+супервизора. Вызов при неготовой зиготе — ошибка инструмента, а не тихая
+деградация.
 
 Ошибки:
 ZygoteStartError — зигота не поднялась за отведённые попытки.
@@ -36,7 +42,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.cancellation import RunCancellation, current_cancellation
+from boba.cancellation import RunCancellation
 from boba.sandbox.argv import build_zygote_argv
 from boba.sandbox.cgroup import CgroupManager, GroupLimits
 from boba.sandbox.diagnostics import SandboxDiagnostics
@@ -83,10 +89,11 @@ from boba.toolkit.launcher import (
 )
 from boba.toolkit.protocol import ToolCommand
 from boba.toolkit.pump import (
+    CallInput,
     CallSinks,
     ChannelPump,
     FrameInput,
-    InputFeeder,
+    OpenRun,
     PumpedCall,
 )
 from boba.toolkit.stream import (
@@ -143,13 +150,8 @@ class ZygoteState(StrEnum):
 
 
 class ZygotePolicy(BaseModel):
-    """Секция [sandbox.zygote]: как супервизор поднимает и перезапускает зиготу.
-
-    Зигота секции инструментов — резидентный процесс: приложение поднимает его
-    при старте и держит живым, форкая на каждый вызов. Эти четыре значения
-    описывают, сколько ждать готовности, сколько раз пробовать снова и когда
-    считать зиготу здоровой.
-    """
+    """Секция конфига [sandbox.zygote]: сколько супервизор ждёт готовности
+    зиготы, сколько раз пробует поднять снова и когда считает её здоровой."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -220,7 +222,10 @@ class ZygotePolicy(BaseModel):
 
 
 class ZygoteOutcome(BaseModel):
-    """Итог вызова через зиготу."""
+    """Итог одного вызова через зиготу: код выхода исполнителя, длительность,
+    таймаут и отчёт о сорванной подготовке (если тело не запустилось).
+    Собирается насосом _ZygotePump; в ToolOutcome его превращает
+    ZygoteToolCaller.outcome_of."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -235,7 +240,15 @@ class ZygoteOutcome(BaseModel):
 
 
 class _CallChannels:
-    """Дескрипторы одного вызова: пайпы каналов, stdin, control-пара и cgroup."""
+    """Все дескрипторы одного вызова, которые супервизор шлёт зиготе через
+    SCM_RIGHTS: пайпы stdin/stdout/stderr/result/frames/injected, control-
+    сокет и каталог cgroup-leaf'а.
+
+    Порядок в child_fds() жёсткий — гость раскладывает их по CallFd. После
+    отправки child-концы закрываются здесь, host-концы разбирают владельцы:
+    stdin забирает CallInput (take_stdin), канал конфига — писатель конфига
+    (take_injected), остальное читает насос и закрывает close_host_ends.
+    """
 
     def __init__(self, cgroup_fd: int = -1) -> None:
         self.cgroup_fd = cgroup_fd
@@ -244,11 +257,13 @@ class _CallChannels:
         self.stderr_r, self.stderr_w = os.pipe()
         self.result_r, self.result_w = os.pipe()
         self.frames_r, self.frames_w = os.pipe()
+        self.injected_r, self.injected_w = os.pipe()
         self.control_host, self.control_child = socket.socketpair(
             socket.AF_UNIX, socket.SOCK_SEQPACKET
         )
         self.control_host.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
         self._stdin_open = True
+        self._injected_open = True
 
     def child_fds(self) -> list[int]:
         """В порядке CallFd: так их ждёт зигота; cgroup — последним и не всегда."""
@@ -258,6 +273,7 @@ class _CallChannels:
             self.stderr_w,
             self.result_w,
             self.frames_w,
+            self.injected_r,
             self.control_child.fileno(),
         ]
         if self.cgroup_fd >= 0:
@@ -271,6 +287,7 @@ class _CallChannels:
         os.close(self.stderr_w)
         os.close(self.result_w)
         os.close(self.frames_w)
+        os.close(self.injected_r)
         self.control_child.close()
 
     def stdin_alive(self) -> bool:
@@ -285,6 +302,15 @@ class _CallChannels:
         self._stdin_open = False
         return self.stdin_w
 
+    def take_injected(self) -> int:
+        """Отдать канал конфига писателю: каналы его больше не закрывают."""
+        if not self._injected_open:
+            msg = "call injected channel is already taken or closed"
+            raise LauncherError(msg)
+
+        self._injected_open = False
+        return self.injected_w
+
     def close_stdin(self) -> None:
         if not self._stdin_open:
             return
@@ -294,15 +320,32 @@ class _CallChannels:
 
     def close_host_ends(self) -> None:
         self.close_stdin()
+        self._close_injected()
         os.close(self.stdout_r)
         os.close(self.stderr_r)
         os.close(self.result_r)
         os.close(self.frames_r)
         self.control_host.close()
 
+    def _close_injected(self) -> None:
+        if not self._injected_open:
+            return
+
+        self._injected_open = False
+        os.close(self.injected_w)
+
 
 class ZygoteSupervisor:
-    """Держит зиготу живой и прогоняет вызовы через её socketpair."""
+    """Держит процесс-зиготу секции живым и проводит через него вызовы.
+
+    Жизненный цикл: start() поднимает зиготу (с попытками и таймаутом из
+    ZygotePolicy), монитор-тред перезапускает её после внезапной смерти,
+    stop() гасит. Вызов идёт в два шага: begin() шлёт запрос и каналы через
+    socketpair (поток вызывающего), run_wired() качает каналы насосом до
+    выхода исполнителя (поток прогона); call() соединяет оба шага для
+    вызова с заранее известным входом (shell, тесты). ZygoteToolCaller
+    строит поверх этого протокол ToolLauncher.
+    """
 
     def __init__(  # noqa: PLR0913
         self,
@@ -617,6 +660,7 @@ class ZygoteSupervisor:
         call_id: str,
         argv: Sequence[str],
         stdin: bytes,
+        config: bytes,
         limits: ChildLimits,
         sinks: Mapping[ToolChannel, ChunkSink],
         *,
@@ -631,7 +675,7 @@ class ZygoteSupervisor:
         cwd: str = "",
         kind: CallKind = CallKind.MODULE,
     ) -> ZygoteOutcome:
-        """Вызов с заранее известным входом: проводка, весь stdin, насос."""
+        """Вызов с заранее известным входом: проводка, stdin и конфиг, насос."""
         wired = self.begin(
             call_id,
             argv,
@@ -646,18 +690,34 @@ class ZygoteSupervisor:
             kind=kind,
         )
 
-        feeder = InputFeeder(wired.channels.take_stdin(), stdin)
+        entry = CallInput(wired.channels.take_stdin())
+        config_input = CallInput(wired.channels.take_injected())
 
-        try:
+        def pump_run(cancellation: RunCancellation) -> ZygoteOutcome:
             return self.run_wired(
                 wired,
                 sinks,
                 timeout_sec=timeout_sec,
                 kill_grace_sec=kill_grace_sec,
-                cancellation=current_cancellation(),
+                cancellation=cancellation,
             )
-        finally:
-            feeder.join()
+
+        try:
+            opened = OpenRun(self._name, entry, pump_run)
+        except BaseException:
+            # ход уже отменён: насос не родился, проводку прибираем сами
+            entry.abandon()
+            config_input.abandon()
+            self.abandon_wired(wired)
+            raise
+
+        config_input.send_bytes(config)
+        config_input.finish()
+
+        entry.send_bytes(stdin)
+        entry.finish()
+
+        return opened.wait()
 
     def _try_start(self) -> bool:
         """Запуск идёт на своём треде супервизора.
@@ -799,18 +859,23 @@ class ZygoteSupervisor:
 
 @dataclass(frozen=True)
 class _WiredCall:
-    """Открытая проводка вызова: запрос уехал зиготе, каналы у хоста."""
+    """Проводка открытого вызова: запрос уже уехал зиготе, host-концы
+    каналов ещё у нас. Отдаётся из begin() и живёт до конца run_wired()
+    либо до abandon_wired(), если насос так и не родился."""
 
     request: CallRequest
     channels: _CallChannels
 
 
 class _ZygotePump(ChannelPump):
-    """Насос вызова зиготы: каналы тела плюс control-события исполнителя.
+    """Реализация ChannelPump для вызова через зиготу: каналы тела плюс
+    control-события исполнителя.
 
-    Жизнь исполнителя определяет control-сокет: born несёт host-pid, exit —
-    код выхода; EOF сокета до exit — смерть зиготы посреди вызова. Вход
-    тела насос не пишет: им владеет вызывающий через FrameInput/InputFeeder.
+    Завершение исполнителя здесь определяет не poll (процесс форкает
+    зигота, у хоста его нет), а control-сокет: событие born несёт host-pid
+    исполнителя, exit — код выхода; EOF сокета до exit означает смерть
+    зиготы посреди вызова. Вход тела насос не пишет: им владеет вызывающий
+    через CallInput.
     """
 
     def __init__(  # noqa: PLR0913 — насос держит все части одного вызова
@@ -936,7 +1001,9 @@ def _kill_quietly(pid: int) -> None:
 
 
 class ZygoteMounts:
-    """Пути обвязки образа внутри зиготы: точки фиксированы SandboxLayout."""
+    """Считает пути обвязки монтирования образов внутри зиготы (шаблон,
+    fuse2fs, каталог образов) по фиксированным точкам SandboxLayout и
+    проверяет их предпосылки на хосте."""
 
     def __init__(self, profile: SandboxProfile) -> None:
         self._profile = profile
@@ -986,7 +1053,8 @@ class ZygoteMounts:
 
 
 class ZygoteSpawner:
-    """Запуск процесса зиготы из профиля песочницы.
+    """Собирает и запускает процесс зиготы из профиля песочницы; его spawn
+    супервизор зовёт на каждом подъёме секции.
 
     Корень образом монтируется цепочкой лаунчера один раз на жизнь зиготы:
     внешний bwrap -> лаунчер (fuse2fs) -> вложенный bwrap с корнем из
@@ -1123,7 +1191,8 @@ class ZygoteSpawner:
 
 
 class _RelayTee(StderrTee):
-    """Tee релея: сырые строки stderr — в журнал вызова и в свой приёмник."""
+    """Наследник StderrTee: сырые строки stderr тела уходят и в журнал
+    вызова, и в свой буфер (хвост для диагностики сбоя)."""
 
     def __init__(
         self, sinks: ChannelSinks | None, own: CappedChannel | ChannelTail
@@ -1137,7 +1206,15 @@ class _RelayTee(StderrTee):
 
 
 class ZygoteToolCaller(ToolLauncher):
-    """Реализация ToolLauncher поверх зиготы: команда модуля -> конверт."""
+    """Реализация протокола ToolLauncher поверх зиготы: вызовы инструментов
+    в bwrap-песочнице.
+
+    open() открывает проводку через ZygoteSupervisor.begin и отдаёт
+    PumpedCall; call_text() исполняет shell-команду изолированным ребёнком.
+    Сюда же стянута профильная обвязка вызова: лимиты и образы (_plan),
+    cgroup-leaf (_acquire_leaf/_release_leaf), диагностика сбоев лимитами
+    профиля (_diagnose).
+    """
 
     ARGV_HEAD: ClassVar[int] = 3
     """python3 -m <module> — префикс команды модуля инструментов."""
@@ -1283,13 +1360,17 @@ class ZygoteToolCaller(ToolLauncher):
             call = PumpedCall(self._tool, entry, inbox, run, finish)
         except BaseException:
             # ход уже отменён: насос не родился, проводку прибираем сами;
-            # EOF stdin выведет тело, зигота пожнёт его сама
+            # EOF каналов выведет тело, зигота пожнёт его сама
             entry.abandon()
             self._supervisor.abandon_wired(wired)
             self._release_leaf(manager, leaf)
             raise
 
-        entry.send_config(command.config)
+        # насос уже жив: запись конфига блокируется только скоростью тела
+        config_input = CallInput(wired.channels.take_injected())
+        config_input.send_bytes(command.config)
+        config_input.finish()
+
         return call
 
     def outcome_of(
@@ -1418,6 +1499,7 @@ class ZygoteToolCaller(ToolLauncher):
                 uuid.uuid4().hex,
                 argv,
                 stdin,
+                b"",
                 plan.limits,
                 sinks,
                 isolate=True,
@@ -1476,7 +1558,9 @@ class ZygoteToolCaller(ToolLauncher):
 
 @dataclass(frozen=True)
 class _CallPlan:
-    """Параметры одного вызова, выведенные из профиля секции."""
+    """Готовые параметры одного вызова, выведенные из профиля секции:
+    таймаут, rlimit'ы, образы и рабочий каталог. Считаются один раз в
+    _plan() и едут в begin/call супервизора."""
 
     timeout_sec: float
     kill_grace_sec: float
@@ -1488,7 +1572,8 @@ class _CallPlan:
 
 
 class ZygoteRegistry:
-    """Реестр супервизоров процесса: одна живая зигота на tool-секцию.
+    """Процессный реестр супервизоров: одна живая зигота на tool-секцию,
+    сколько бы раз ни собирались инструменты.
 
     load_tools зовётся несколько раз (bootstrap, DI): повторный obtain отдаёт
     уже поднятый супервизор. stop_all гасит всех на shutdown приложения.

@@ -35,8 +35,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.toolkit.channels import ToolChannel
-from boba.toolkit.entry import ToolLike, ToolMain
+from boba.toolkit.entry import EntryFlag, ToolLike, ToolMain
 from boba.toolkit.facade import WarmupHooks
 from boba.toolkit.payload import PayloadLogging
 from boba.toolkit.timing import Elapsed
@@ -169,8 +168,10 @@ class CallFd(IntEnum):
     STDERR = 2
     RESULT = 3
     FRAMES = 4
-    CONTROL = 5
-    CGROUP = 6
+    INJECTED = 5
+    """Канал injected-конфига: хост пишет, тело читает до EOF."""
+    CONTROL = 6
+    CGROUP = 7
     """Каталог cgroup-leaf'а; едет только когда у вызова есть групповые лимиты."""
 
     @classmethod
@@ -787,6 +788,7 @@ class ZygoteMain:
             CallFd.STDERR,
             CallFd.RESULT,
             CallFd.FRAMES,
+            CallFd.INJECTED,
         ):
             os.close(fds[index])
 
@@ -947,24 +949,33 @@ class ZygoteMain:
         control.close()
 
     @staticmethod
-    def _publish_channels(request: CallRequest, fds: list[int]) -> None:
-        """Каналы модуля инструментов в env: конверт результата и кадры.
+    def _channel_argv(request: CallRequest, fds: list[int]) -> list[str]:
+        """Команда тела с номерами каналов вызова аргументами.
 
-        Shell-команде они не принадлежат: её вывод — stdout и stderr, а
-        дескрипторы модуля закрываются вместе с исполнителем.
+        Shell-команде каналы модуля не принадлежат: её argv остаётся как
+        есть, а сами дескрипторы закрывает _close_inherited.
         """
+        argv = list(request.argv)
         if request.kind is CallKind.SHELL:
-            return
+            return argv
 
-        os.environ[ToolChannel.RESULT.env_name] = str(fds[CallFd.RESULT])
-        os.environ[ToolChannel.FRAMES.env_name] = str(fds[CallFd.FRAMES])
+        argv.append(EntryFlag.FD_RESULT.value)
+        argv.append(str(fds[CallFd.RESULT]))
+        argv.append(EntryFlag.FD_FRAMES.value)
+        argv.append(str(fds[CallFd.FRAMES]))
+        argv.append(EntryFlag.INJECTED_FD.value)
+        argv.append(str(fds[CallFd.INJECTED]))
+
+        return argv
 
     @staticmethod
     def _close_inherited(request: CallRequest, fds: list[int]) -> None:
         """Закрыть всё, что телу не принадлежит: leaf cgroup и копии каналов.
 
         Дескриптор leaf'а даёт запись в memory.max и обход соседних групп,
-        поэтому переживать вход в cgroup он не должен.
+        поэтому переживать вход в cgroup он не должен. Shell-команде не
+        принадлежат и каналы модуля: конверт, кадры и конфиг закрываются,
+        чтобы не утекать в команду пользователя.
         """
         if request.into_cgroup:
             os.close(fds[CallFd.CGROUP])
@@ -975,6 +986,12 @@ class ZygoteMain:
                 continue
 
             os.close(fd)
+
+        if request.kind is not CallKind.SHELL:
+            return
+
+        for index in (CallFd.RESULT, CallFd.FRAMES, CallFd.INJECTED):
+            os.close(fds[index])
 
     def _grandchild(
         self, request: CallRequest, fds: list[int], timing: SetupTiming
@@ -992,7 +1009,6 @@ class ZygoteMain:
         os.dup2(fds[CallFd.STDIN], 0)
         os.dup2(fds[CallFd.STDOUT], 1)
         os.dup2(fds[CallFd.STDERR], 2)
-        self._publish_channels(request, fds)
 
         self._close_inherited(request, fds)
 
@@ -1028,9 +1044,11 @@ class ZygoteMain:
         timing.mark("limits")
         timing.report(request.call_id)
 
+        body_argv = self._channel_argv(request, fds)
+
         timing = SetupTiming()
         try:
-            code = self._run_body(request)
+            code = self._run_body(request, body_argv)
             timing.mark("body")
         finally:
             # записи доезжают до образа только после штатного выхода fuse2fs
@@ -1041,7 +1059,7 @@ class ZygoteMain:
 
         os._exit(code)
 
-    def _run_body(self, request: CallRequest) -> int:
+    def _run_body(self, request: CallRequest, argv: list[str]) -> int:
         """Тело своим процессом — только когда после него надо гасить демон.
 
         Исполнитель обязан пережить тело, если у вызова есть образ: записи
@@ -1050,18 +1068,17 @@ class ZygoteMain:
         миллисекунд, поэтому тело исполняется прямо здесь.
         """
         if not request.images:
-            return self._body_here(request)
+            return self._body_here(request, argv)
 
         pid = os.fork()
         if pid == 0:
-            self._body(request)
+            self._body(request, argv)
 
         _, status = os.waitpid(pid, 0)
         return os.waitstatus_to_exitcode(status)
 
-    def _body_here(self, request: CallRequest) -> int:
+    def _body_here(self, request: CallRequest, argv: list[str]) -> int:
         """Тело в самом исполнителе: shell замещает процесс, модуль отдаёт код."""
-        argv = list(request.argv)
         if request.kind is CallKind.SHELL:
             self._flush_streams()
             os.execv(argv[0], argv)  # noqa: S606 — argv собран хостом, без shell
@@ -1071,12 +1088,11 @@ class ZygoteMain:
 
         return code
 
-    def _body(self, request: CallRequest) -> None:
+    def _body(self, request: CallRequest, argv: list[str]) -> None:
         # тело умирает вместе с исполнителем и без pid ns: в изоляции это и
         # так гарантирует init, в голом запуске — только pdeathsig
         FuseMounter.set_pdeathsig()
 
-        argv = list(request.argv)
         if request.kind is CallKind.SHELL:
             self._flush_streams()
             os.execv(argv[0], argv)  # noqa: S606 — argv собран хостом, без shell

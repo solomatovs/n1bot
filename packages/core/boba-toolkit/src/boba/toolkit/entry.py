@@ -1,9 +1,13 @@
-"""Вход модуля инструментов и контракт вызова: адрес, argv, конверт, CLI.
+"""Гостевая сторона вызова: CLI модуля инструментов и разбор его команды.
 
-Одна и та же команда `python -m <модуль> <имя> --флаги` исполняется под
-launcher'ом приложения и человеком в терминале; разница в источнике
-Injected-конфига (кадр config от лончера, stdin либо файл --injected у
-человека) и приёмнике результата (конверт в fd из env против stdout).
+Каждый модуль инструментов — обычная программа: `python -m <модуль> <имя>
+--флаги`. Одну и ту же команду исполняет launcher приложения и человек в
+терминале; здесь живёт всё, что превращает команду в вызов тела: разбор
+argv в kwargs (ToolArgv), каналы вызова из аргументов (CallWiring), сам
+вход run (ToolMain). Хост передаёт каналы номерами дескрипторов в флагах
+(--injected-fd, --fd-result, --fd-frames); человек передаёт конфиг файлом
+--injected и читает результат из stdout. stdin несёт только прикладные
+кадры входа и при ручном запуске свободен.
 
 Ошибки:
 ArgumentTooLargeError — значение аргумента не помещается в argv (MAX_ARG_STRLEN).
@@ -22,6 +26,7 @@ import logging
 import os
 import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import suppress
 from enum import IntEnum, StrEnum
 from pathlib import Path
 from types import NoneType, UnionType
@@ -37,15 +42,15 @@ from typing import (
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from boba.toolkit.calls import ToolCallView, ToolCallViews
-from boba.toolkit.channels import ToolChannel
 from boba.toolkit.failure import ValidationText
-from boba.toolkit.frames import FrameProtocolError, ToolIo
+from boba.toolkit.frames import ToolIo
 from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.protocol import ReplyError, ReplyOk, ToolCommand
 from boba.toolkit.timing import Elapsed
 
 __all__ = [
     "ArgumentTooLargeError",
+    "CallWiring",
     "EntryErrorKind",
     "EntryFlag",
     "ExpectedErrors",
@@ -86,15 +91,76 @@ class ToolEntryError(Exception):
 
 
 class EntryFlag(StrEnum):
-    """Флаги CLI модуля инструментов, не относящиеся к параметрам тела."""
+    """Служебные флаги команды модуля инструментов — каналы вызова, конфиг,
+    справка; с флагами параметров тела (их порождает схема инструмента) не
+    пересекаются. На эти же имена ссылаются лончеры, дописывая флаги каналов
+    в команду."""
 
     INJECTED = "--injected"
+    INJECTED_FD = "--injected-fd"
+    FD_RESULT = "--fd-result"
+    FD_FRAMES = "--fd-frames"
     ARTIFACT = "--artifact"
     HELP = "--help"
 
 
+class CallWiring(BaseModel):
+    """Каналы вызова, разобранные из argv: номера дескрипторов конфига,
+    конверта и кадров, которые лончер выдал телу.
+
+    Сами дескрипторы достаются процессу наследованием, а номера едут
+    флагами — команда самодостаточна, по argv видно все каналы вызова.
+    -1 значит «канала нет»: так выглядит запуск человеком. strip() вынимает
+    флаги из argv в начале ToolMain.run, дальше объект живёт весь вызов.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    injected_fd: int = -1
+    result_fd: int = -1
+    frames_fd: int = -1
+
+    FLAGS: ClassVar[Mapping[str, str]] = {
+        EntryFlag.INJECTED_FD.value: "injected_fd",
+        EntryFlag.FD_RESULT.value: "result_fd",
+        EntryFlag.FD_FRAMES.value: "frames_fd",
+    }
+
+    @classmethod
+    def strip(cls, arguments: list[str]) -> CallWiring:
+        """Вынуть свои флаги из argv; значение не-число — нарушение контракта."""
+        values: dict[str, int] = {}
+
+        for flag, field in cls.FLAGS.items():
+            raw = cls._pop_value(arguments, flag)
+            if raw is None:
+                continue
+
+            try:
+                values[field] = int(raw)
+            except ValueError as exc:
+                msg = f"{flag} is not a descriptor number: {raw!r}"
+                raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from exc
+
+        return cls.model_validate(values)
+
+    @staticmethod
+    def _pop_value(arguments: list[str], flag: str) -> str | None:
+        if flag not in arguments:
+            return None
+
+        index = arguments.index(flag)
+        if index + 1 >= len(arguments):
+            msg = f"{flag} requires a value"
+            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
+
+        arguments.pop(index)
+        return arguments.pop(index)
+
+
 class ToolLike(Protocol):
-    """Tool-объект duck-typing'ом; toolkit не зависит от langchain.
+    """Протокол tool-объекта (имя, схема, тело) — то, что toolkit'у нужно от
+    langchain-инструмента без зависимости от langchain.
 
     Только read-only свойства: mutable-атрибут протокола инвариантен, и
     StructuredTool с его `args_schema: ArgsSchema | None` его не проходит.
@@ -114,7 +180,8 @@ class ToolLike(Protocol):
 
 
 class ToolAddress(BaseModel):
-    """Адрес инструмента: модуль тела и имя в TOOLS.
+    """Адрес инструмента для командной строки: модуль тела и имя в TOOLS —
+    из них собирается префикс команды `python -m <модуль> <имя>`.
 
     Захватывается при постановке обёртки запуска, пока тело не подменено;
     вычислять на вызове нельзя — __module__ обёртки укажет не туда.
@@ -143,7 +210,9 @@ class ToolAddress(BaseModel):
 
 
 class ExpectedErrors:
-    """Ожидаемые исключения модуля инструментов: разбор и применение EXPECTED."""
+    """Читает карту EXPECTED модуля инструментов — какие исключения тела
+    считаются ожидаемым отказом и под каким kind'ом ехать в конверт
+    ReplyError. Неожиданные исключения уходят наверх и означают дефект."""
 
     ATTRIBUTE: ClassVar[str] = "EXPECTED"
 
@@ -176,7 +245,8 @@ class ExpectedErrors:
 
 
 class ToolArgv:
-    """kwargs <-> argv по args_schema: одна логика у обёртки запуска и CLI.
+    """Переводит kwargs вызова в argv команды и обратно по args_schema
+    инструмента — одна логика у обёртки запуска (хост) и CLI (гость).
 
     Правило одно: параметр, видимый LLM, — флаг argv; параметр с injected-
     метадатой — ключ в JSON конфига, который едет телу первым кадром входа.
@@ -413,10 +483,10 @@ class ToolArgv:
 class ToolMain:
     """CLI модуля инструментов: argv -> тело -> конверт либо вывод человеку.
 
-    Конверт пишется в fd из env-переменной канала tool_result, когда она
-    есть, — так зовёт launcher; без неё content печатается в stdout — так
-    зовёт человек. Injected-конфиг приезжает первым кадром входа (kind
-    config) либо файлом --injected; сборка его из toml приложения — дело CLI
+    Конверт пишется в дескриптор из --fd-result, когда он передан, — так
+    зовёт launcher; без него content печатается в stdout — так зовёт
+    человек. Injected-конфиг приезжает каналом --injected-fd (лончер) либо
+    файлом --injected (человек); сборка его из toml приложения — дело CLI
     над модулем. Тело, объявившее параметр ToolIo, получает кадровую среду
     вызова: у запуска лончером она привязана к каналам, у человека отвязана.
     """
@@ -486,12 +556,19 @@ class ToolMain:
         cls._setup_logging()
 
         try:
-            return cls._run(tools, arguments)
+            wiring = CallWiring.strip(arguments)
         except ToolEntryError as exc:
-            cls._emit_error(str(exc.kind), str(exc))
+            # каналы не разобраны: конверт писать некуда, причина — в stderr
+            print(f"{exc.kind}: {exc}", file=sys.stderr)  # noqa: T201
+            return cls.Exit.ENTRY_ERROR
+
+        try:
+            return cls._run(tools, arguments, wiring)
+        except ToolEntryError as exc:
+            cls._emit_error(wiring, str(exc.kind), str(exc))
             return cls.Exit.ENTRY_ERROR
         except PayloadFailureError as exc:
-            cls._emit_error(exc.kind, str(exc))
+            cls._emit_error(wiring, exc.kind, str(exc))
             return cls.Exit.EXPECTED_FAILURE
 
     @classmethod
@@ -510,7 +587,9 @@ class ToolMain:
         )
 
     @classmethod
-    def _run(cls, tools: Sequence[ToolLike], arguments: list[str]) -> int:
+    def _run(
+        cls, tools: Sequence[ToolLike], arguments: list[str], wiring: CallWiring
+    ) -> int:
         if not arguments or arguments == [EntryFlag.HELP]:
             print(cls._tools_help(tools))  # noqa: T201
             return cls.Exit.OK
@@ -529,8 +608,8 @@ class ToolMain:
         injected_path = cls._pop_path(arguments, EntryFlag.INJECTED)
 
         config_read = Elapsed()
-        io = cls._call_io(injected_path)
-        config = cls._config_source(tool, io, injected_path)
+        io = cls._call_io(wiring)
+        config = cls._config_source(tool, wiring, injected_path)
         kwargs = ToolArgv.parse(tool, arguments, config)
 
         io_param = ToolArgv.io_field(ToolArgv.schema_of(tool))
@@ -545,7 +624,7 @@ class ToolMain:
         )
 
         reply = cls._call(tool, kwargs)
-        return cls._deliver(reply, want_artifact)
+        return cls._deliver(reply, wiring, want_artifact)
 
     @classmethod
     def _lookup(cls, tools: Sequence[ToolLike], name: str) -> ToolLike:
@@ -571,73 +650,70 @@ class ToolMain:
         return arguments.pop(index)
 
     @staticmethod
-    def _call_io(injected_path: str | None) -> ToolIo:
+    def _call_io(wiring: CallWiring) -> ToolIo:
         """Среда вызова: каналы лончера либо отвязанная среда человека.
 
-        Признак запуска лончером — канал кадров в env: без него читать кадры
-        неоткуда, и вход остаётся пустым.
+        Признак запуска лончером — канал кадров в argv: без него читать
+        кадры неоткуда, и вход остаётся пустым.
         """
-        if injected_path is not None:
+        if wiring.frames_fd < 0:
             return ToolIo.detached()
 
-        raw = os.environ.get(ToolChannel.FRAMES.env_name)
-        if raw is None:
-            return ToolIo.detached()
-
-        try:
-            frames_fd = int(raw)
-        except ValueError as exc:
-            msg = f"{ToolChannel.FRAMES.env_name} is not a descriptor number: {raw!r}"
-            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from exc
-
-        return ToolIo.on_channels(sys.stdin.fileno(), frames_fd)
+        return ToolIo.on_channels(sys.stdin.fileno(), wiring.frames_fd)
 
     @classmethod
     def _config_source(
-        cls, tool: ToolLike, io: ToolIo, injected_path: str | None
+        cls, tool: ToolLike, wiring: CallWiring, injected_path: str | None
     ) -> bytes:
-        """Injected-конфиг: файл --injected, кадр config либо stdin человека.
+        """Injected-конфиг: канал --injected-fd лончера либо файл --injected.
 
-        Лончер всегда шлёт конфиг первым кадром; у человека кадров нет, и
-        JSON приезжает обычным stdin либо файлом флага.
+        Источник однозначен по режиму запуска; stdin конфиг не несёт никогда
+        — он принадлежит прикладным кадрам входа.
         """
         if injected_path is not None:
             return cls._config_from_file(injected_path)
 
+        if wiring.injected_fd >= 0:
+            return cls._config_from_fd(wiring.injected_fd)
+
         schema = ToolArgv.schema_of(tool)
         injected = ToolArgv.injected_fields(schema)
-        io_param = ToolArgv.io_field(schema)
-        if not injected and not io_param:
+        if not injected:
             return b"{}"
 
-        if io.attached:
-            return cls._config_frame(io)
+        msg = (
+            "injected config is required: the launcher passes "
+            f"{EntryFlag.INJECTED_FD} <fd>, a human passes "
+            f"{EntryFlag.INJECTED} <path>"
+        )
+        raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
 
-        return cls._config_from_stdin()
+    READ_BYTES: ClassVar[int] = 65536
 
-    @staticmethod
-    def _config_frame(io: ToolIo) -> bytes:
+    @classmethod
+    def _config_from_fd(cls, fd: int) -> bytes:
+        """Канал конфига от лончера: читается до EOF и закрывается."""
+        chunks: list[bytes] = []
+
         try:
-            return io.config()
-        except FrameProtocolError as exc:
-            msg = f"the call stream carries no config frame: {exc}"
+            while True:
+                chunk = os.read(fd, cls.READ_BYTES)
+                if not chunk:
+                    break
+
+                chunks.append(chunk)
+        except OSError as exc:
+            msg = f"injected config channel is not readable: {exc}"
             raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from exc
+        finally:
+            with suppress(OSError):
+                os.close(fd)
 
-    @staticmethod
-    def _config_from_stdin() -> bytes:
-        data = sys.stdin.buffer.read()
-        if not data:
-            msg = (
-                "injected config expected on stdin "
-                f"(or pass {EntryFlag.INJECTED} <path>)"
-            )
-            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
-
-        return data
+        return b"".join(chunks)
 
     @staticmethod
     def _config_from_file(path: str) -> bytes:
-        """Файл с тем же JSON, что лончер шлёт кадром config."""
+        """Файл с тем же JSON, что лончер шлёт каналом конфига."""
         try:
             return Path(path).read_bytes()
         except OSError as exc:
@@ -696,10 +772,9 @@ class ToolMain:
             raise ToolEntryError(EntryErrorKind.INTERNAL_ERROR, msg) from exc
 
     @classmethod
-    def _deliver(cls, reply: ReplyOk, want_artifact: bool) -> int:
-        fd = cls._result_fd()
-        if fd is not None:
-            cls._write_envelope(fd, reply)
+    def _deliver(cls, reply: ReplyOk, wiring: CallWiring, want_artifact: bool) -> int:
+        if wiring.result_fd >= 0:
+            cls._write_envelope(wiring.result_fd, reply)
             return cls.Exit.OK
 
         print(reply.content)  # noqa: T201
@@ -709,23 +784,14 @@ class ToolMain:
         return cls.Exit.OK
 
     @classmethod
-    def _emit_error(cls, kind: str, message: str) -> None:
+    def _emit_error(cls, wiring: CallWiring, kind: str, message: str) -> None:
         reply = ReplyError(kind=kind, message=message)
 
-        fd = cls._result_fd()
-        if fd is not None:
-            cls._write_envelope(fd, reply)
+        if wiring.result_fd >= 0:
+            cls._write_envelope(wiring.result_fd, reply)
             return
 
         print(f"{kind}: {message}", file=sys.stderr)  # noqa: T201
-
-    @staticmethod
-    def _result_fd() -> int | None:
-        raw = os.environ.get(ToolChannel.RESULT.env_name)
-        if raw is None:
-            return None
-
-        return int(raw)
 
     @staticmethod
     def _write_envelope(fd: int, reply: ReplyOk | ReplyError) -> None:

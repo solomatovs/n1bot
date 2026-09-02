@@ -1,18 +1,23 @@
-"""Кадры вызова инструмента: бинарный фрейминг, кодек и гостевая среда ToolIo.
+"""Кадры данных вызова инструмента: формат на проводе, кодек и среда ToolIo.
 
-Вызов инструмента всегда потоковый: stdin несёт кадры (первым — config с
-injected-конфигом, последним — eos), канал tool_frames несёт кадры тела
-наружу. Кадр — конверт границы процесса: JSON-заголовок и сырое тело;
-типизацию заголовка держат края (модели инструмента и хоста), транспорт
-видит байты. Формат на проводе: [u32 длина заголовка][заголовок JSON][u32
-длина тела][тело], числа big-endian.
+Потоковый инструмент получает данные порциями и отдаёт результаты
+порциями, не дожидаясь конца вызова (аудио с микрофона внутрь, гипотезы
+распознавания наружу). Порция называется кадром: JSON-заголовок с
+метаданными плюс сырое тело (байты аудио, файла, текста). Формат на
+проводе: [u32 длина заголовка][заголовок][u32 длина тела][тело],
+big-endian. Транспорт видит только байты; какие модели лежат в заголовках,
+знают инструмент и его вызывающий.
+
+Кадры ходят по двум пайпам вызова: stdin несёт кадры входа до EOF, канал
+tool_frames — кадры тела наружу. Служебных кадров нет: конфиг едет
+отдельным каналом --injected-fd, конец входа — EOF пайпа. Хост пишет вход
+через FrameInput и читает выход через CallInbox (boba.toolkit.pump);
+тело инструмента пользуется средой ToolIo.
 
 Ошибки:
 FrameProtocolError — поток кадров нарушает контракт: длина за потолком,
-    заголовок не разбирается моделью, обрыв внутри кадра, первым кадром
-    пришёл не config.
-OSError — дескриптор канала закрыт или недоступен; поднимают config,
-    inbound и emit.
+    заголовок не разбирается моделью, обрыв внутри кадра.
+OSError — дескриптор канала закрыт или недоступен; поднимают inbound и emit.
 """
 
 from __future__ import annotations
@@ -22,7 +27,7 @@ import os
 import queue
 import threading
 from collections.abc import Iterator, Sequence
-from enum import IntEnum, StrEnum
+from enum import IntEnum
 from typing import Any, ClassVar, TypeVar
 
 from pydantic import BaseModel, ConfigDict, GetCoreSchemaHandler, ValidationError
@@ -34,7 +39,6 @@ __all__ = [
     "CallInbox",
     "FrameCodec",
     "FrameHead",
-    "FrameKind",
     "FrameLimit",
     "FrameProtocolError",
     "ToolFrame",
@@ -50,22 +54,25 @@ class FrameProtocolError(Exception):
     """Поток кадров нарушает контракт: работать с ним дальше нельзя."""
 
 
-class FrameKind(StrEnum):
-    """Служебные kind'ы кадров; прикладные объявляет инструмент."""
-
-    CONFIG = "config"
-    EOS = "eos"
-
-
 class FrameLimit(IntEnum):
-    """Потолки кадра в байтах: контракт обеих сторон границы процесса."""
+    """Потолки размера кадра в байтах, одинаковые на обеих сторонах границы
+    процесса.
+
+    Ограничивают память на сборку одного кадра и отсекают битый поток, в
+    котором поле длины — мусор.
+    """
 
     HEADER_BYTES = 65_536
     BODY_BYTES = 67_108_864
 
 
 class FrameHead(BaseModel):
-    """Минимальный заголовок кадра: только kind, лишние поля прозрачны."""
+    """Минимальный заголовок кадра — только поле kind (вид данных).
+
+    Нужен, чтобы прочитать kind кадра, не зная прикладной модели заголовка:
+    прикладные заголовки объявляет сам инструмент, лишние поля здесь
+    игнорируются.
+    """
 
     model_config = ConfigDict(frozen=True, extra="ignore")
 
@@ -73,7 +80,12 @@ class FrameHead(BaseModel):
 
 
 class ToolFrame(BaseModel):
-    """Один кадр: JSON-заголовок байтами и сырое тело."""
+    """Один кадр: JSON-заголовок сырыми байтами и тело.
+
+    Заголовок хранится байтами, а не моделью, потому что транспорт
+    прикладных моделей не знает — типизация живёт на краях: of()
+    упаковывает модель в заголовок, header_as() разбирает его обратно.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -84,10 +96,6 @@ class ToolFrame(BaseModel):
     def of(cls, head: BaseModel, body: bytes = b"") -> ToolFrame:
         header = head.model_dump_json().encode("utf-8")
         return cls(header=header, body=body)
-
-    @classmethod
-    def service(cls, kind: FrameKind, body: bytes = b"") -> ToolFrame:
-        return cls.of(FrameHead(kind=kind.value), body)
 
     def header_as(self, model: type[HeadModel]) -> HeadModel:
         try:
@@ -102,7 +110,13 @@ class ToolFrame(BaseModel):
 
 
 class FrameCodec:
-    """Кодек кадров: encode в байты, инкрементальный разбор потока чанков."""
+    """Кодек кадров: encode собирает кадр в байты, feed инкрементально
+    разбирает поток порций.
+
+    Кадр может приходить хоть по байту, поэтому кодек хранит недособранный
+    хвост — свой экземпляр на каждый поток. finish() зовётся на EOF: если
+    в буфере остался кусок кадра, это обрыв, а не тишина.
+    """
 
     LEN_BYTES: ClassVar[int] = 4
 
@@ -191,11 +205,13 @@ class FrameCodec:
 
 
 class CallInbox:
-    """Кадры канала tool_frames: приёмник для насоса, итератор для вызывающего.
+    """Мост кадров между потоком насоса и читателем вызова на хосте.
 
-    feed зовёт насос в своём потоке, frames читает поток вызывающего;
-    итератор кончается вместе с каналом. Ошибка разбора не теряется: она
-    поднимается на стороне читателя.
+    Насос (ChannelPump) складывает сюда порции канала tool_frames из
+    своего потока; вызывающий читает собранные кадры итератором frames()
+    из своего. Итератор кончается вместе с каналом, ошибка разбора не
+    глотается — читатель получит её после уже собранных кадров. Читатель
+    один: за этим следит PumpedCall.
     """
 
     def __init__(self) -> None:
@@ -238,15 +254,16 @@ class CallInbox:
 
 
 class ToolIo:
-    """Кадровая среда вызова на гостевой стороне.
+    """Среда потокового вызова на стороне тела инструмента.
 
-    Строится гостевым ToolMain на каждый вызов: config отдаёт первый кадр
-    stdin с injected-конфигом, inbound — прикладные кадры до eos или EOF,
-    emit пишет кадр в канал tool_frames. Тело получает io Injected-параметром,
-    только если объявило его в подписи.
+    Через неё тело общается кадрами с вызывающим: inbound() отдаёт кадры
+    входа со stdin до EOF, emit() пишет кадр наружу в канал tool_frames.
+    Тело объявляет параметр `io: Annotated[ToolIo, Injected]` в подписи и
+    получает готовый объект — его строит ToolMain из номеров дескрипторов,
+    приехавших в аргументах команды.
 
-    Вне вызова лончером (CLI, `--injected` файлом) среда отвязана: входа нет,
-    заголовки emit уходят в лог.
+    При запуске человеком (--injected файлом, без каналов лончера) среда
+    отвязана: вход пуст, заголовки emit уходят в лог.
     """
 
     READ_BYTES: ClassVar[int] = 65536
@@ -281,29 +298,11 @@ class ToolIo:
     ) -> CoreSchema:
         return core_schema.is_instance_schema(cls)
 
-    def config(self) -> bytes:
-        """Injected-конфиг первым кадром входа; другой kind — нарушение контракта."""
-        frame = self._next()
-        if frame is None:
-            msg = "call stream ended before the config frame"
-            raise FrameProtocolError(msg)
-
-        kind = frame.kind
-        if kind != FrameKind.CONFIG:
-            msg = f"first frame must be {FrameKind.CONFIG}, got {kind!r}"
-            raise FrameProtocolError(msg)
-
-        return frame.body
-
     def inbound(self) -> Iterator[ToolFrame]:
-        """Прикладные кадры входа; eos и EOF завершают итерацию."""
+        """Прикладные кадры входа; EOF пайпа завершает итерацию."""
         while True:
             frame = self._next()
             if frame is None:
-                return
-
-            if frame.kind == FrameKind.EOS:
-                self._eof = True
                 return
 
             yield frame

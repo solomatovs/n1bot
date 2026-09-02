@@ -12,7 +12,6 @@ from pydantic import BaseModel
 from boba.toolkit.frames import (
     CallInbox,
     FrameCodec,
-    FrameKind,
     FrameLimit,
     FrameProtocolError,
     ToolFrame,
@@ -80,12 +79,6 @@ class TestCodec:
         with pytest.raises(FrameProtocolError, match="inside a frame"):
             codec.finish()
 
-    def test_service_frame_carries_kind(self) -> None:
-        frame = ToolFrame.service(FrameKind.CONFIG, b"{}")
-
-        assert frame.kind == FrameKind.CONFIG
-        assert frame.body == b"{}"
-
 
 def _read_all(fd: int) -> bytes:
     """Читает пайп до EOF; зовётся после закрытия пишущего конца."""
@@ -100,22 +93,18 @@ def _read_all(fd: int) -> bytes:
 
 
 class TestCallInput:
-    def test_frames_arrive_in_order_with_eos(self) -> None:
+    def test_frames_arrive_in_order_and_finish_gives_eof(self) -> None:
         read_fd, write_fd = os.pipe()
         entry = FrameInput(write_fd)
 
-        entry.send_config(b"{}")
         entry.send(ToolFrame.of(Head(seq=1), b"a"))
+        entry.send(ToolFrame.of(Head(seq=2), b"b"))
         entry.finish()
 
         decoded = _codec().feed(_read_all(read_fd))
         os.close(read_fd)
 
-        assert [frame.kind for frame in decoded] == [
-            FrameKind.CONFIG,
-            "chunk",
-            FrameKind.EOS,
-        ]
+        assert [frame.header_as(Head).seq for frame in decoded] == [1, 2]
 
     def test_send_blocks_until_the_reader_catches_up(self) -> None:
         """Полный буфер пайпа держит send — это и есть backpressure."""
@@ -174,17 +163,6 @@ class TestCallInput:
 
         entry.finish()
         entry.finish()
-        entry.abandon()
-
-        decoded = _codec().feed(_read_all(read_fd))
-        os.close(read_fd)
-
-        assert [frame.kind for frame in decoded] == [FrameKind.EOS]
-
-    def test_abandon_gives_eof_without_farewell(self) -> None:
-        read_fd, write_fd = os.pipe()
-        entry = FrameInput(write_fd)
-
         entry.abandon()
 
         assert _read_all(read_fd) == b""
