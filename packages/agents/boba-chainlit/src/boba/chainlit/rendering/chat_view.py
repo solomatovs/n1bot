@@ -167,7 +167,8 @@ class TokenSpend(BaseModel):
     output_tokens: int = 0
     reasoning_tokens: int = 0
 
-    ARROW: ClassVar[str] = " → "
+    IN: ClassVar[str] = "in: "
+    OUT: ClassVar[str] = ", out: "
     SEPARATOR: ClassVar[str] = " · "
 
     def plus(self, other: TokenSpend) -> TokenSpend:
@@ -188,9 +189,8 @@ class TokenSpend(BaseModel):
             return ""
 
         spend = (
-            f"{TokenCount.of(self.input_tokens)}"
-            f"{self.ARROW}"
-            f"{TokenCount.of(self.output_tokens)}"
+            f"{self.IN}{TokenCount.of(self.input_tokens)}"
+            f"{self.OUT}{TokenCount.of(self.output_tokens)}"
         )
         if not self.reasoning_tokens:
             return spend

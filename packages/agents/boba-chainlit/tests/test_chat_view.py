@@ -546,12 +546,12 @@ class TestTokenSpendLabel:
 
     def test_reasoning_is_shown_apart(self) -> None:
         spend = TokenSpend(input_tokens=10856, output_tokens=400, reasoning_tokens=305)
-        if spend.label() != "10.9k → 400 (305 reasoning)":
+        if spend.label() != "in: 10.9k, out: 400 (305 reasoning)":
             raise AssertionError(spend.label())
 
     def test_without_reasoning_brackets_are_dropped(self) -> None:
         spend = TokenSpend(input_tokens=1200, output_tokens=64)
-        if spend.label() != "1.2k → 64":
+        if spend.label() != "in: 1.2k, out: 64":
             raise AssertionError(spend.label())
 
     def test_uncounted_spend_leaves_the_name_alone(self) -> None:
@@ -576,11 +576,11 @@ class TestTokensInTheFeed:
 
         names = {str(step.get(StepField.NAME, "")) for step in sink.steps}
         thinking = [n for n in names if StepText.THINKING in n]
-        if thinking != ["○ thinking · 10.9k → 400 (305 reasoning)"]:
+        if thinking != ["○ thinking · in: 10.9k, out: 400 (305 reasoning)"]:
             raise AssertionError(f"шаг рассуждений: {thinking}")
 
         container = [n for n in names if n.startswith(StepText.CONTAINER)]
-        if container != ["process... · 10.9k → 400 (305 reasoning)"]:
+        if container != ["process... · in: 10.9k, out: 400 (305 reasoning)"]:
             raise AssertionError(f"контейнер: {container}")
 
     @pytest.mark.anyio
@@ -596,7 +596,7 @@ class TestTokensInTheFeed:
 
         names = _names(sink.steps)
         container = [n for n in names if n.startswith(StepText.CONTAINER)]
-        if container != ["process... · 26.8k → 618 (418 reasoning)"]:
+        if container != ["process... · in: 26.8k, out: 618 (418 reasoning)"]:
             raise AssertionError(f"сумма хода: {container}")
 
     @pytest.mark.anyio
@@ -612,7 +612,7 @@ class TestTokensInTheFeed:
 
         names = _names(sink.steps)
         container = [n for n in names if n.startswith(StepText.CONTAINER)]
-        if container != ["process... · 1.2k → 64"]:
+        if container != ["process... · in: 1.2k, out: 64"]:
             raise AssertionError(f"контейнер после ответа: {container}")
 
     @pytest.mark.anyio
@@ -628,5 +628,5 @@ class TestTokensInTheFeed:
         names = _names(sink.steps)
         if any(StepText.THINKING in name for name in names):
             raise AssertionError(f"шага рассуждений быть не должно: {names}")
-        if "process... · 900 → 32" not in names:
+        if "process... · in: 900, out: 32" not in names:
             raise AssertionError(f"итог хода: {names}")
