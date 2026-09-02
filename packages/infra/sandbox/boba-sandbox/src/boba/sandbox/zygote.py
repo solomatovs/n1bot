@@ -92,7 +92,6 @@ from boba.toolkit.pump import (
     CallInput,
     CallSinks,
     ChannelPump,
-    FrameInput,
     OpenRun,
     PumpedCall,
 )
@@ -1338,7 +1337,7 @@ class ZygoteToolCaller(ToolLauncher):
             self._release_leaf(manager, leaf)
             raise
 
-        entry = FrameInput(wired.channels.take_stdin())
+        entry = CallSinks.stdin_input(wired.channels.take_stdin())
 
         def run(cancellation: RunCancellation) -> ZygoteOutcome:
             try:

@@ -105,11 +105,12 @@ class ToolStream(ChannelSinks, CallStream, LiveStream):
     def sink_of(self, channel: JournalChannel) -> StreamSink:
         """Приёмник канала; рекордер открывается при первом обращении.
 
-        Канал кадров журналируется заголовками: тела кадров бинарны и растут
-        как поток данных (аудио, файлы), в разборе сбоев от них толку нет.
+        Кадровые каналы (вход stdin и кадры наружу) журналируются одними
+        заголовками: тела кадров бинарны и растут как поток данных (аудио,
+        файлы), в разборе сбоев от них толку нет.
         """
         recorder = self._open(channel)
-        if channel is not ToolChannel.FRAMES:
+        if channel not in (ToolChannel.FRAMES, ToolChannel.STDIN):
             return recorder
 
         return FrameHeadsSink(recorder)

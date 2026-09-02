@@ -15,7 +15,7 @@ import pytest
 from pydantic import SecretStr
 
 from boba.cancellation import ToolStopped, run_cancellation
-from boba.stand.fake_toolmod import FakeConfig, FakePidHead
+from boba.stand.fake_toolmod import FakeChunkHead, FakeConfig, FakePidHead
 from boba.toolkit.frames import FrameProtocolError, ToolFrame
 from boba.toolkit.launcher import LauncherError
 from boba.toolkit.protocol import ToolCommand
@@ -150,6 +150,22 @@ class TestDeadBody:
                 call.result()
 
 
+class TestForeignKind:
+    def test_undeclared_kind_fails_the_call_loudly(self, tmp_path: Path) -> None:
+        """Кадр с kind вне декларации порта: тело падает на границе, вызов
+        кончается внятной ошибкой, а не молчаливым пропуском данных."""
+        launcher = _launcher(tmp_path)
+
+        with launcher.open(_command("fake_stream", "--prefix", "k:")) as call:
+            call.send(ToolFrame.of(FakePidHead(pid=1), b"alien"))
+            call.done_sending()
+
+            list(call.frames())
+
+            with pytest.raises(LauncherError, match="no envelope"):
+                call.result()
+
+
 class TestBrokenFrames:
     def test_garbage_frames_raise_at_reader_but_result_survives(
         self, tmp_path: Path
@@ -182,6 +198,37 @@ class TestSingleReader:
             call.result()
 
 
+class TestPassthroughChain:
+    def test_model_stream_flows_through_raw_relay(self, tmp_path: Path) -> None:
+        """Цепочка из двух живых процессов: модельный выход fake_stream идёт
+        в сырой вход fake_relay, тела кадров доезжают байт-в-байт."""
+        launcher = _launcher(tmp_path)
+
+        source_cmd = _command("fake_stream", "--prefix", "x:")
+        sink_cmd = _command("fake_relay")
+
+        with (
+            launcher.open(source_cmd) as source,
+            launcher.open(sink_cmd) as sink,
+        ):
+            source.send(ToolFrame.of(FakeChunkHead(seq=1), b"one"))
+            source.send(ToolFrame.of(FakeChunkHead(seq=2), b"two"))
+            source.done_sending()
+
+            for frame in source.frames():
+                sink.send(frame)
+
+            sink.done_sending()
+
+            source_outcome = source.result()
+            relayed = [frame.body for frame in sink.frames()]
+            sink_outcome = sink.result()
+
+        assert relayed == [b"x:one", b"x:two", b""]
+        assert "streamed 2" in str(source_outcome.reply)
+        assert "relayed 10" in str(sink_outcome.reply)
+
+
 class TestResources:
     def test_no_fd_leak_across_calls(self, tmp_path: Path) -> None:
         """Дескрипторы после серии вызовов — как до неё: успех, отказ, отмена."""
@@ -189,7 +236,7 @@ class TestResources:
 
         def one_ok() -> None:
             with launcher.open(_command("fake_stream", "--prefix", "p:")) as call:
-                call.send(ToolFrame.of(FakePidHead(pid=0), b"data"))
+                call.send(ToolFrame.of(FakeChunkHead(seq=1), b"data"))
                 call.done_sending()
                 list(call.frames())
                 call.result()

@@ -49,6 +49,7 @@ __all__ = [
     "CallSinks",
     "ChannelPump",
     "FrameInput",
+    "JournaledFrameInput",
     "OpenRun",
     "PumpEnd",
     "PumpedCall",
@@ -79,6 +80,16 @@ class CallSinks:
     своего приёмника пишутся только в журнал. Зовётся в потоке вызывающего:
     в поток насоса contextvar не переезжает, и журнал там уже не найти.
     """
+
+    @staticmethod
+    def stdin_input(fd: int) -> FrameInput:
+        """Вход кадров вызова: с журналом входных заголовков, когда тап
+        поставлен; без журнала — обычный FrameInput."""
+        journal = ToolChannelsTap.get()
+        if journal is None:
+            return FrameInput(fd)
+
+        return JournaledFrameInput(fd, journal.sink_of(ToolChannel.STDIN).feed)
 
     @staticmethod
     def merged(
@@ -190,6 +201,24 @@ class FrameInput(CallInput):
 
     def send(self, frame: ToolFrame) -> None:
         self.send_bytes(self._codec.encode(frame))
+
+
+class JournaledFrameInput(FrameInput):
+    """Наследник FrameInput, дублирующий отправляемые байты в журнал вызова.
+
+    Журнальный приёмник канала tool_stdin пишет заголовки кадров (тела
+    пропускает — FrameHeadsSink), поэтому по журналу видно, что хост слал
+    телу. Создаётся через CallSinks.stdin_input, когда журнальный тап
+    поставлен.
+    """
+
+    def __init__(self, fd: int, tap: ChunkSink) -> None:
+        super().__init__(fd)
+        self._tap = tap
+
+    def send_bytes(self, data: bytes) -> None:
+        self._tap(data)
+        super().send_bytes(data)
 
 
 @dataclass(frozen=True)

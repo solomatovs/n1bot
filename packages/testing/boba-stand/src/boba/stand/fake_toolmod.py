@@ -14,13 +14,13 @@ import sys
 import time
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import Annotated, ClassVar, Final
+from typing import Annotated, ClassVar, Final, Literal
 
 from pydantic import BaseModel, Field, SecretStr
 
 from boba.toolkit.entry import EntryFlag, ToolMain
 from boba.toolkit.facade import Injected, tool
-from boba.toolkit.frames import ToolIo
+from boba.toolkit.ports import Inbound, Outbound, RawInbound, RawOutbound
 from boba.toolkit.result import TextResult, ToolResult, render_for_llm
 
 
@@ -66,24 +66,17 @@ async def fake_echo(
     return render_for_llm(artifact), artifact
 
 
-class FakeFrameKind(StrEnum):
-    """Прикладные kind'ы кадров потокового инструмента стенда."""
-
-    CHUNK = "chunk"
-    DONE = "done"
-
-
 class FakeChunkHead(BaseModel):
     """Заголовок кадра потока: порядковый номер порции."""
 
-    kind: str = FakeFrameKind.CHUNK.value
+    kind: Literal["chunk"] = "chunk"
     seq: int
 
 
 class FakeDoneHead(BaseModel):
     """Заголовок последнего кадра: сколько порций прошло через тело."""
 
-    kind: str = FakeFrameKind.DONE.value
+    kind: Literal["done"] = "done"
     total: int
 
 
@@ -91,16 +84,17 @@ class FakeDoneHead(BaseModel):
 async def fake_stream(
     prefix: Annotated[str, Field(description="Приставка к каждой порции")],
     cfg: Annotated[FakeConfig, Injected],
-    io: Annotated[ToolIo, Injected],
+    feed: Annotated[Inbound[FakeChunkHead], Injected],
+    out: Annotated[Outbound[FakeChunkHead | FakeDoneHead], Injected],
 ) -> tuple[str, ToolResult]:
     """Отвечает кадром на каждый кадр входа: образец потокового инструмента."""
     total = 0
-    for frame in io.inbound():
+    for item in feed:
         total += 1
-        body = prefix.encode("utf-8") + frame.body
-        io.emit(FakeChunkHead(seq=total), body)
+        body = prefix.encode("utf-8") + item.body
+        out.emit(FakeChunkHead(seq=total), body)
 
-    io.emit(FakeDoneHead(total=total))
+    out.emit(FakeDoneHead(total=total))
 
     artifact = TextResult(text=f"streamed {total}|{cfg.token.get_secret_value()}")
     return render_for_llm(artifact), artifact
@@ -109,7 +103,7 @@ async def fake_stream(
 class FakePidHead(BaseModel):
     """Заголовок кадра заложника: pid тела для убийства извне."""
 
-    kind: str = "pid"
+    kind: Literal["pid"] = "pid"
     pid: int
 
 
@@ -128,13 +122,14 @@ async def fake_deaf(
 @tool
 async def fake_hostage(
     cfg: Annotated[FakeConfig, Injected],
-    io: Annotated[ToolIo, Injected],
+    feed: Annotated[Inbound[FakePidHead], Injected],
+    out: Annotated[Outbound[FakePidHead], Injected],
 ) -> tuple[str, ToolResult]:
     """Заложник: называет свой pid кадром и ждёт входа, которого не будет."""
-    io.emit(FakePidHead(pid=os.getpid()))
+    out.emit(FakePidHead(pid=os.getpid()))
 
     total = 0
-    for _frame in io.inbound():
+    for _item in feed:
         total += 1
 
     artifact = TextResult(text=f"hostage got {total}|{cfg.token.get_secret_value()}")
@@ -159,12 +154,28 @@ async def fake_garbage(
     return render_for_llm(artifact), artifact
 
 
+@tool
+async def fake_relay(
+    cfg: Annotated[FakeConfig, Injected],
+    feed: Annotated[RawInbound, Injected],
+    out: Annotated[RawOutbound, Injected],
+) -> tuple[str, ToolResult]:
+    """Passthrough: переливает сырой поток со входа на выход без разбора."""
+    total = 0
+    for chunk in feed:
+        total += len(chunk)
+        out.write(chunk)
+
+    artifact = TextResult(text=f"relayed {total}|{cfg.token.get_secret_value()}")
+    return render_for_llm(artifact), artifact
+
+
 EXPECTED: Mapping[type[Exception], FakeErrorKind] = {
     FakeUnavailableError: FakeErrorKind.UNAVAILABLE,
 }
 
 TOOLS: Final = ToolMain.toolset(
-    fake_echo, fake_stream, fake_deaf, fake_hostage, fake_garbage
+    fake_echo, fake_stream, fake_deaf, fake_hostage, fake_garbage, fake_relay
 )
 
 if __name__ == "__main__":
