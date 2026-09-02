@@ -1,6 +1,6 @@
 #!/bin/sh
 # Образ корня песочницы: дерево $1 -> ext4-файл $2 тем же mke2fs, что делает шаблон workspace.
-# Размер — занятое место с запасом в пятую часть и 512M; inode с тем же запасом.
+# Размер — занятое место с запасом в 5% и reserve_mb; образ монтируется read-only.
 set -eu
 
 tree=$1
@@ -14,7 +14,7 @@ PYTHONHOME="$tree/usr/local" "$tree/usr/local/bin/python3" -m compileall -q -j 0
     "$tree/usr/local/lib/python$python_version" "$tree/usr/src"
 
 used_mb=$(du -sm "$tree" | cut -f1)
-size_mb=$(( used_mb + used_mb / 5 + reserve_mb ))
+size_mb=$(( used_mb + used_mb / 20 + reserve_mb ))
 inodes=$(find "$tree" | wc -l)
 inodes=$(( inodes + inodes / 5 + 1000 ))
 

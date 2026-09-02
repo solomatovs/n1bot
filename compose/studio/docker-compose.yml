@@ -23,6 +23,7 @@ services:
       - ./data:/app/boba/data:rw
       - ./app_root:/app/boba/app_root:rw
       - ./models:/app/boba/models:ro
+      - ../../build/studio/src/sandbox:/app/boba/sandbox:ro
       - /sys/fs/cgroup/boba.slice:/cgroup:rw
     ports:
       - 127.0.0.1:8502:8502

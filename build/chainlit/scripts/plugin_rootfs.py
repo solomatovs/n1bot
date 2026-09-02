@@ -10,7 +10,7 @@ apt     — системные пакеты декларации (по стро�
 root    — каталог-оверлей корня внутри пакета; пусто — нет.
 setup   — setup-скрипт внутри пакета; пусто — нет.
 imports — модули smoke-проверки образа (по строке).
-data    — пары <артефакт src>:<путь в образе> по закрытию (по строке).
+data    — гостевые пути данных по закрытию: точки монтирования (по строке).
 list    — пакеты репозитория с entry points группы boba.tools (по строке).
 """
 
@@ -182,12 +182,13 @@ class Commands:
         return packages
 
     def data(self) -> list[str]:
-        """Пары артефакт:путь всех деклараций закрытия: данные fetch в образ."""
+        """Гостевые пути данных всех деклараций закрытия: их монтирует рантайм,
+        а образ обязан нести пустые точки монтирования."""
         found: list[str] = []
         for name in self._closure():
-            for pair in self._projects.sandbox_of(name).get("data", []):
-                if pair not in found:
-                    found.append(pair)
+            for path in self._projects.sandbox_of(name).get("data", []):
+                if path not in found:
+                    found.append(path)
 
         return found
 

@@ -24,7 +24,7 @@ include = ["boba*"]
 namespaces = true
 
 [tool.boba.sandbox]
+data = ["/usr/share/tessdata"]
 apt = ["imagemagick", "libreoffice-writer", "libreoffice-calc", "libreoffice-impress", "ghostscript", "fonts-dejavu-core"]
-data = ["tessdata:/usr/share/tessdata"]
 root = "sandbox-root"
 setup = "sandbox-setup.sh"
