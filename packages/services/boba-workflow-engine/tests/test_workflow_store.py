@@ -254,6 +254,21 @@ async def test_drafts_are_keyed_per_user_and_count_revisions(
         await store.get_draft(UUID(int=1), key)
 
 
+async def test_drafts_list_is_per_user_and_fresh_first(store: WorkflowStore) -> None:
+    owner = UUID(int=1)
+    stranger = UUID(int=2)
+    older = DraftKey.of_workflow(UUID(int=7))
+    newer = DraftKey.parse("new:0f3b2a10-1111-4222-8333-444455556666")
+
+    await store.put_draft(owner, older, "name: old\ntasks: {}\n", {})
+    await store.put_draft(owner, newer, "name: fresh\ntasks: {}\n", {})
+    await store.put_draft(stranger, older, "name: foreign\ntasks: {}\n", {})
+
+    listed = await store.list_drafts(owner)
+    assert [draft.key for draft in listed] == [newer.render(), older.render()]
+    assert all(draft.user_id == owner for draft in listed)
+
+
 async def test_draft_key_renders_and_parses() -> None:
     assert DraftKey.of_workflow(UUID(int=12)).render() == f"workflow:{UUID(int=12)}"
     parsed = DraftKey.parse("new:0f3b2a10-1111-4222-8333-444455556666")

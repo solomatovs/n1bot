@@ -24,11 +24,11 @@ const SSO_ERRORS: Record<string, string> = {
 function nextOf(state: unknown): string {
   const parsed = NextStateSchema.safeParse(state);
   if (!parsed.success) {
-    return "/observe";
+    return "/workflow";
   }
 
   if (parsed.data.next === "" || parsed.data.next.startsWith("/login")) {
-    return "/observe";
+    return "/workflow";
   }
 
   return parsed.data.next;

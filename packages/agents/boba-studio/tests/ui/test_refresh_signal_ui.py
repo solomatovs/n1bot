@@ -39,7 +39,7 @@ def test_refresh_signal_makes_the_page_post_refresh_with_its_mark(
 
     page.route(f"**{REFRESH_PATH}", intercept)
     page.goto(
-        f"{stand.config.base_url}/workflow/observe", wait_until="domcontentloaded"
+        f"{stand.config.base_url}/workflow/workflow", wait_until="domcontentloaded"
     )
     expect(page.locator(".lamp--connected")).to_be_visible(timeout=30_000)
 

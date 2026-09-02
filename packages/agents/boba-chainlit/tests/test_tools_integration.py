@@ -1214,3 +1214,79 @@ class TestKbTools:
         columns = set(result.rows[0])
         if not {"distance", "format_content", "page_title"} <= columns:
             raise AssertionError(f"в выдаче нет нужных колонок: {sorted(columns)}")
+
+
+class TestPgCopyPipeline:
+    """Насосы pg_copy_out/pg_copy_in: перекачка pg->pg конвейером через ядро."""
+
+    async def _prepare(self, pg_tools) -> None:
+        await Call.ok(
+            pg_tools["pg_query"],
+            connection_name="main",
+            sql=(
+                "drop table if exists it_pipe_src, it_pipe_dst;"
+                " create table it_pipe_src(id int, note text);"
+                " create table it_pipe_dst(id int, note text);"
+                " insert into it_pipe_src"
+                " select g, 'строка ' || g from generate_series(1, 1000) g"
+            ),
+        )
+
+    async def test_pipeline_moves_rows_between_tables(self, pg_tools) -> None:
+        from boba.toolrun.invoke import ToolInvoker
+        from boba.toolrun.pipeline import PipelineService
+
+        await self._prepare(pg_tools)
+
+        plan = json.dumps(
+            {
+                "nodes": [
+                    {
+                        "tool": "pg_copy_out",
+                        "args": {
+                            "connection_name": "main",
+                            "sql": "COPY it_pipe_src TO STDOUT",
+                        },
+                    },
+                    {
+                        "tool": "pg_copy_in",
+                        "args": {
+                            "connection_name": "main",
+                            "sql": "COPY it_pipe_dst FROM STDIN",
+                        },
+                    },
+                ]
+            }
+        )
+
+        invoker = ToolInvoker(pg_tools)
+        outcome = await PipelineService().run(invoker, plan)
+
+        if not isinstance(outcome, TextResult):
+            raise AssertionError(f"pipeline failed: {outcome}")
+        if "copied out" not in outcome.text or "COPY 1000" not in outcome.text:
+            raise AssertionError(f"итог без счётчиков узлов: {outcome.text!r}")
+
+        rows = await Call.ok(
+            pg_tools["pg_query"],
+            connection_name="main",
+            sql="select count(*) as total, min(note) as first_note from it_pipe_dst",
+        )
+        if rows.rows[0]["total"] != 1000:
+            raise AssertionError(f"строки не доехали: {rows.rows[0]}")
+        if rows.rows[0]["first_note"] != "строка 1":
+            raise AssertionError(f"текст исказился: {rows.rows[0]}")
+
+    async def test_wrong_direction_is_refused_before_the_database(
+        self, pg_tools
+    ) -> None:
+        """Стейтмент не того направления валится подсказкой, а не ошибкой psycopg."""
+        with pytest.raises(PayloadFailureError) as caught:
+            await Call.result(
+                pg_tools["pg_copy_out"],
+                connection_name="main",
+                sql="COPY it_pipe_src FROM STDIN",
+            )
+
+        if "TO STDOUT" not in str(caught.value):
+            raise AssertionError(f"нет подсказки направления: {caught.value}")

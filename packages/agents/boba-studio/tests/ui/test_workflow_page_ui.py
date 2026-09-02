@@ -44,10 +44,11 @@ class Selector:
     """Селекторы страницы: одно место, чтобы разметка менялась в одном."""
 
     BRAND: ClassVar[str] = ".topbar__brand"
-    RAIL_ITEM: ClassVar[str] = ".rail__item"
     LIST_NEW: ClassVar[str] = ".list__new"
     LIST_ITEM: ClassVar[str] = ".list .item"
     LIST_ITEM_ON: ClassVar[str] = ".list .item--on"
+    LIST_ITEM_SUB: ClassVar[str] = ".list .item--sub"
+    ITEM_TOGGLE: ClassVar[str] = ".item__toggle"
     CRUMB_CURRENT: ClassVar[str] = ".crumbs__current"
     YAML_TEXT: ClassVar[str] = 'textarea[aria-label="workflow yaml"]'
     NOTICE: ClassVar[str] = "[data-notice]"
@@ -62,7 +63,6 @@ class Selector:
     TABLE: ClassVar[str] = ".table"
     OUTPUT_TEXT: ClassVar[str] = ".output__text"
     SOCKET_LAMP: ClassVar[str] = ".topbar .lamp"
-    PROFILE_SELECT: ClassVar[str] = 'select[aria-label="profile"]'
 
 
 class BrowserLog:
@@ -117,6 +117,14 @@ def _button(page: Page, label: str):
     return page.get_by_role("button", name=label, exact=True)
 
 
+def _expand_runs(page: Page, name: str) -> None:
+    """Разворачивает историю запусков workflow стрелкой его строки."""
+    row = page.locator(Selector.LIST_ITEM, has_text=name).first
+    toggle = row.locator(Selector.ITEM_TOGGLE)
+    if toggle.get_attribute("aria-expanded") != "true":
+        toggle.click()
+
+
 def _apply_yaml(page: Page, spec: str) -> None:
     """Режим YAML билдера: текст спеки целиком, Apply, обратно в граф."""
     _button(page, "YAML").click()
@@ -127,23 +135,23 @@ def _apply_yaml(page: Page, spec: str) -> None:
 
 
 def test_shell_navigation(page: Page, stand: StandProcess) -> None:
-    """Рейл переключает History/Workflows, сегмент Observe/Build — то же самое."""
-    _open(page, stand, "/observe")
-    expect(page.locator(Selector.RAIL_ITEM)).to_have_count(2)
-    expect(page.locator(".list[aria-label='runs']")).to_be_visible()
-
-    page.get_by_role("link", name="Workflows").first.click()
-    expect(page).to_have_url(re.compile(r"/workflow/build$"))
+    """Сцена одна: без рейла и сегмента, список workflow — и выбор, и история."""
+    _open(page, stand, "/workflow")
+    expect(page.locator(".rail")).to_have_count(0)
+    expect(page.locator('.topbar [role="tablist"]')).to_have_count(0)
     expect(page.locator(".list[aria-label='workflows']")).to_be_visible()
     expect(page.locator(Selector.LIST_NEW)).to_have_text("+ New workflow")
 
-    page.get_by_role("link", name="Observe").click()
-    expect(page).to_have_url(re.compile(r"/workflow/observe$"))
+    # старые адреса живут редиректами
+    _open(page, stand, "/workflow")
+    expect(page).to_have_url(re.compile(r"/workflow/workflow$"))
+    _open(page, stand, "/workflow")
+    expect(page).to_have_url(re.compile(r"/workflow/workflow$"))
 
 
 def test_tool_menu_and_form_build_a_task(page: Page, stand: StandProcess) -> None:
     """Узел из меню «+ Tool», аргумент в форме — и всё это видно в YAML."""
-    _open(page, stand, "/build/new")
+    _open(page, stand, "/workflow/new")
 
     _button(page, "Tool").click()
     page.get_by_role("menuitem", name="bash").click()
@@ -166,7 +174,7 @@ def test_tool_menu_and_form_build_a_task(page: Page, stand: StandProcess) -> Non
 
 
 def test_builder_validates_saves_and_runs_live(page: Page, stand: StandProcess) -> None:
-    _open(page, stand, "/build/new")
+    _open(page, stand, "/workflow/new")
     _apply_yaml(page, QUICK_SPEC)
     expect(page.locator(Selector.EDITOR_NODE)).to_have_count(2)
 
@@ -175,12 +183,12 @@ def test_builder_validates_saves_and_runs_live(page: Page, stand: StandProcess) 
 
     _button(page, "Save").click()
     expect(page.locator(Selector.NOTICE)).to_contain_text('saved "ui-page-flow"')
-    expect(page).to_have_url(re.compile(r"/workflow/build/[0-9a-f-]{36}$"))
+    expect(page).to_have_url(re.compile(r"/workflow/workflow/[0-9a-f-]{36}$"))
     expect(page.locator(Selector.CRUMB_CURRENT)).to_have_text("ui-page-flow")
     expect(page.locator(Selector.LIST_ITEM_ON)).to_contain_text("ui-page-flow")
 
     _button(page, "Run").click()
-    expect(page).to_have_url(re.compile(r"/workflow/observe/[0-9a-f-]+$"))
+    expect(page).to_have_url(re.compile(r"/workflow/runs/[0-9a-f-]+$"))
     # лампочка в топбаре: живые снимки идут по websocket через фронт стенда
     expect(page.locator(Selector.SOCKET_LAMP)).to_have_attribute(
         "data-socket", "connected"
@@ -189,7 +197,10 @@ def test_builder_validates_saves_and_runs_live(page: Page, stand: StandProcess) 
     # статусы приходят по сокету: узлы доходят до done без перезагрузки
     expect(page.locator(Selector.RUN_STATUS)).to_have_text("done")
     expect(page.locator(f'{Selector.TASK_NODE}[data-status="done"]')).to_have_count(2)
-    expect(page.locator(Selector.LIST_ITEM_ON)).to_contain_text("ui-page-flow")
+    # выбранный запуск подсвечен под своим развёрнутым workflow
+    expect(page.locator(Selector.LIST_ITEM_ON)).to_be_visible()
+    parent = page.locator(Selector.LIST_ITEM, has_text="ui-page-flow").first
+    expect(parent).to_be_visible()
 
     page.get_by_role("tab", name="Timeline").click()
     expect(page.locator(Selector.TIMELINE_ROW)).to_have_count(2)
@@ -217,7 +228,7 @@ def test_builder_validates_saves_and_runs_live(page: Page, stand: StandProcess) 
 
 
 def test_stop_button_stops_a_running_workflow(page: Page, stand: StandProcess) -> None:
-    _open(page, stand, "/build/new")
+    _open(page, stand, "/workflow/new")
     _apply_yaml(page, LONG_SPEC)
     _button(page, "Save").click()
     expect(page.locator(Selector.NOTICE)).to_contain_text('saved "ui-page-long"')
@@ -235,25 +246,26 @@ def test_stop_button_stops_a_running_workflow(page: Page, stand: StandProcess) -
 
 
 def test_lists_show_saved_workflows_and_runs(page: Page, stand: StandProcess) -> None:
-    _open(page, stand, "/observe")
-    runs = page.locator(Selector.LIST_ITEM, has_text="ui-page-flow")
-    expect(runs.first).to_be_visible()
-    runs.first.click()
-    expect(page).to_have_url(re.compile(r"/workflow/observe/[0-9a-f-]+$"))
+    _open(page, stand, "/workflow")
+    _expand_runs(page, "ui-page-flow")
+    run_row = page.locator(Selector.LIST_ITEM_SUB).first
+    expect(run_row).to_be_visible()
+    run_row.click()
+    expect(page).to_have_url(re.compile(r"/workflow/runs/[0-9a-f-]+$"))
     expect(page.locator(Selector.RUN_STATUS)).to_have_text("done")
 
-    _open(page, stand, "/build")
     item = page.locator(Selector.LIST_ITEM, has_text="ui-page-flow")
     expect(item.first).to_contain_text("runs")
-    item.first.click()
-    expect(page).to_have_url(re.compile(r"/workflow/build/[0-9a-f-]{36}$"))
+    item.first.locator(".item__body").click()
+    expect(page).to_have_url(re.compile(r"/workflow/workflow/[0-9a-f-]{36}$"))
     expect(page.locator(Selector.EDITOR_NODE)).to_have_count(2)
 
 
 def test_finished_run_loads_lists_once(page: Page, stand: StandProcess) -> None:
     """Снимок законченного запуска не крутит перезапрос списков по кругу."""
-    _open(page, stand, "/observe")
-    page.locator(Selector.LIST_ITEM, has_text="ui-page-flow").first.click()
+    _open(page, stand, "/workflow")
+    _expand_runs(page, "ui-page-flow")
+    page.locator(Selector.LIST_ITEM_SUB).first.click()
     expect(page.locator(Selector.RUN_STATUS)).to_have_text("done")
     expect(page.locator(Selector.TASK_NODE).first).to_be_visible()
 
@@ -268,30 +280,6 @@ def test_finished_run_loads_lists_once(page: Page, stand: StandProcess) -> None:
     expect(page.locator(Selector.TASK_NODE)).to_have_count(2)
 
 
-def test_profile_chip_switches_the_catalog_and_survives_reload(
-    page: Page, stand: StandProcess
-) -> None:
-    """Профиль search без bash: меню инструментов меняется, выбор переживает reload."""
-    _open(page, stand, "/build/new")
-    expect(page.locator(Selector.PROFILE_SELECT)).to_have_value("general")
-    _button(page, "Tool").click()
-    expect(page.get_by_role("menuitem", name="bash")).to_be_enabled()
-    page.keyboard.press("Escape")
-
-    # у search нет bash: в каталоге он остаётся, но недоступным (denied → disabled)
-    page.locator(Selector.PROFILE_SELECT).select_option("search")
-    expect(page.locator(Selector.PROFILE_SELECT)).to_have_value("search")
-    _button(page, "Tool").click()
-    expect(page.get_by_role("menuitem", name="bash")).to_be_disabled()
-    page.keyboard.press("Escape")
-
-    page.reload(wait_until="domcontentloaded")
-    expect(page.locator(Selector.PROFILE_SELECT)).to_have_value("search")
-
-    page.locator(Selector.PROFILE_SELECT).select_option("general")
-    expect(page.locator(Selector.PROFILE_SELECT)).to_have_value("general")
-
-
 def test_second_tab_sees_a_new_run_through_the_bus(
     page: Page, browser: Browser, stand: StandProcess
 ) -> None:
@@ -301,26 +289,23 @@ def test_second_tab_sees_a_new_run_through_the_bus(
     other = context.new_page()
     other.set_default_timeout(PAGE_TIMEOUT_MS)
     try:
-        _open(other, stand, "/observe")
-        items = other.locator(Selector.LIST_ITEM, has_text="ui-page-flow")
+        _open(other, stand, "/workflow")
+        _expand_runs(other, "ui-page-flow")
+        items = other.locator(Selector.LIST_ITEM_SUB)
         expect(items.first).to_be_visible()
         before = items.count()
         requests: list[str] = []
         other.on("request", lambda request: requests.append(request.url))
 
-        _open(page, stand, "/observe")
-        page.locator(Selector.LIST_ITEM, has_text="ui-page-flow").first.click()
+        _open(page, stand, "/workflow")
+        _expand_runs(page, "ui-page-flow")
+        page.locator(Selector.LIST_ITEM_SUB).first.click()
         page.get_by_role("button", name=re.compile("Re-run")).click()
-        expect(page).to_have_url(re.compile(r"/workflow/observe/[0-9a-f-]+$"))
+        expect(page).to_have_url(re.compile(r"/workflow/runs/[0-9a-f-]+$"))
         expect(page.locator(Selector.RUN_STATUS)).to_have_text("done")
 
-        expect(
-            other.locator(Selector.LIST_ITEM, has_text="ui-page-flow")
-        ).to_have_count(before + 1)
+        expect(other.locator(Selector.LIST_ITEM_SUB)).to_have_count(before + 1)
         assert any("/workflow-runs?" in url for url in requests)
-        assert not any(
-            url.endswith("/observe") and "navigate" in url for url in requests
-        )
     finally:
         context.close()
 
@@ -331,9 +316,10 @@ def test_second_tab_follows_builder_edits_through_the_bus(
     """Правка в билдере одной вкладки — общий черновик: вторая вкладка того же workflow
     видит новый узел без перезагрузки, а после перезагрузки черновик остаётся.
     """
-    _open(page, stand, "/build")
-    page.locator(Selector.LIST_ITEM, has_text="ui-page-flow").first.click()
-    expect(page).to_have_url(re.compile(r"/workflow/build/[0-9a-f-]{36}$"))
+    _open(page, stand, "/workflow")
+    row = page.locator(Selector.LIST_ITEM, has_text="ui-page-flow").first
+    row.locator(".item__body").click()
+    expect(page).to_have_url(re.compile(r"/workflow/workflow/[0-9a-f-]{36}$"))
     expect(page.locator(Selector.EDITOR_NODE).first).to_be_visible()
     before = page.locator(Selector.EDITOR_NODE).count()
 
@@ -359,56 +345,23 @@ def test_second_tab_follows_builder_edits_through_the_bus(
         context.close()
 
 
-def test_profile_choice_reaches_another_tab_through_the_bus(
-    page: Page, browser: Browser, stand: StandProcess
-) -> None:
-    """Профиль studio хранится на пользователе: выбор в одной вкладке меняет профиль в
-    другой без перезагрузки, а новая вкладка открывается с ним.
-    """
-    _open(page, stand, "/build")
-    page.locator(Selector.PROFILE_SELECT).select_option("general")
-    expect(page.locator(Selector.PROFILE_SELECT)).to_have_value("general")
-
-    context = browser.new_context(viewport={"width": 1280, "height": 900})
-    context.add_cookies(login_cookies(stand))
-    other = context.new_page()
-    other.set_default_timeout(PAGE_TIMEOUT_MS)
-    try:
-        _open(other, stand, "/build")
-        expect(other.locator(Selector.PROFILE_SELECT)).to_have_value("general")
-
-        page.locator(Selector.PROFILE_SELECT).select_option("search")
-        expect(page.locator(Selector.PROFILE_SELECT)).to_have_value("search")
-        expect(other.locator(Selector.PROFILE_SELECT)).to_have_value("search")
-
-        fresh = context.new_page()
-        fresh.set_default_timeout(PAGE_TIMEOUT_MS)
-        _open(fresh, stand, "/build")
-        expect(fresh.locator(Selector.PROFILE_SELECT)).to_have_value("search")
-    finally:
-        # выбор хранится на пользователе: возвращаем профиль остальных тестов
-        page.locator(Selector.PROFILE_SELECT).select_option("general")
-        expect(page.locator(Selector.PROFILE_SELECT)).to_have_value("general")
-        context.close()
-
-
 def test_narrow_screen_drawer_opens_and_closes_the_list(
     page: Page, browser: Browser, stand: StandProcess
 ) -> None:
     """На узком экране список — ящик: кнопка в топбаре открывает его, выбор записи
     закрывает.
     """
-    _open(page, stand, "/build/new")
+    _open(page, stand, "/workflow/new")
     _apply_yaml(page, QUICK_SPEC)
     _button(page, "Save").click()
-    expect(page).to_have_url(re.compile(r"/workflow/build/[0-9a-f-]{36}$"))
+    expect(page).to_have_url(re.compile(r"/workflow/workflow/[0-9a-f-]{36}$"))
 
     context = browser.new_context(viewport={"width": 700, "height": 800})
     context.add_cookies(login_cookies(stand))
     narrow = context.new_page()
     narrow.set_default_timeout(PAGE_TIMEOUT_MS)
     try:
-        _open(narrow, stand, "/build")
+        _open(narrow, stand, "/workflow")
         drawer = narrow.locator(".topbar__drawer")
         expect(drawer).to_be_visible()
         panel = narrow.locator("aside.list")
@@ -425,7 +378,9 @@ def test_narrow_screen_drawer_opens_and_closes_the_list(
         assert box_open is not None
         assert box_open["x"] >= 0
 
-        narrow.locator(Selector.LIST_ITEM, has_text="ui-page-flow").first.click()
+        narrow.locator(Selector.LIST_ITEM, has_text="ui-page-flow").first.locator(
+            ".item__body"
+        ).click()
         expect(panel).not_to_have_class(re.compile(r"list--open"))
     finally:
         context.close()

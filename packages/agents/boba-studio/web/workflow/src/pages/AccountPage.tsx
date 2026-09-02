@@ -41,7 +41,7 @@ export function AccountPage(): ReactElement {
     <div className="account__who">
       <span className="account__login">{value.login}</span>
       <span className="account__meta">
-        roles: {value.roles.length === 0 ? "—" : value.roles.join(", ")} · profile: {value.profile} · sign-in:{" "}
+        roles: {value.roles.length === 0 ? "—" : value.roles.join(", ")} · sign-in:{" "}
         {value.sign_in.provider === "" ? "—" : value.sign_in.provider}
         {value.sign_in.principal !== "" && ` (${value.sign_in.principal})`}
         {value.sign_in.ticket && " · delegated ticket"}
@@ -52,7 +52,7 @@ export function AccountPage(): ReactElement {
   return (
     <div className="account">
       <header className="topbar">
-        <Link to="/observe" className="icon-btn" aria-label="Back to studio" title="Back to studio">
+        <Link to="/workflow" className="icon-btn" aria-label="Back to studio" title="Back to studio">
           <ArrowLeft size={16} />
         </Link>
         <div className="topbar__brand">

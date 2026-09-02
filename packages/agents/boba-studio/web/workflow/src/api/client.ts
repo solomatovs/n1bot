@@ -236,6 +236,10 @@ export class WorkflowApi {
     return this.call("post", "/v1/workflows", {}, undefined, { spec, layout }, StoredWorkflowSchema);
   }
 
+  listDrafts(): Promise<WorkflowDraft[]> {
+    return this.call("get", "/v1/workflows/drafts", {}, undefined, undefined, WorkflowDraftSchema.array());
+  }
+
   /** Черновик билдера по ключу; нет черновика — null. */
   async getDraft(key: string): Promise<WorkflowDraft | null> {
     try {

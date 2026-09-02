@@ -318,7 +318,7 @@ def test_refresh_signal_makes_the_page_refresh_its_ticket(
     page = sso_context.new_page()
     page.goto(_domain_url(sso_stand, "/workflow/login"), wait_until="domcontentloaded")
     page.get_by_role("link", name="Sign in with SSO").click()
-    expect(page).to_have_url(re.compile(r"/workflow/observe$"), timeout=60_000)
+    expect(page).to_have_url(re.compile(r"/workflow/workflow$"), timeout=60_000)
     expect(page.locator(".lamp").first).to_be_visible(timeout=30_000)
 
     me = page.request.get(_domain_url(sso_stand, "/api/v1/me")).json()

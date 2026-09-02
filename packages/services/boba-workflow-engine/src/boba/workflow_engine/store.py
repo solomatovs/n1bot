@@ -348,6 +348,28 @@ class WorkflowStore(PostgresTable, WorkflowRepository):
 
         return WorkflowDraft.model_validate(dict(row))
 
+    async def list_drafts(self, user_id: UUID) -> Sequence[WorkflowDraft]:
+        """Черновики пользователя, свежие сверху."""
+        query = self._sql(
+            """
+            select
+                {d_key}, {d_user_id}, {d_revision}, {d_spec}, {d_layout}, {d_updated_at}
+            from
+                {drafts}
+            where 1=1
+                and {d_user_id} = %(user_id)s
+            order by
+                {d_updated_at} desc
+            """
+        )
+
+        pool = await self._pool()
+        async with self._guarded("list_drafts"), pool.dict_cursor() as cur:
+            await cur.execute(query, {"user_id": user_id})
+            rows = await cur.fetchall()
+
+        return [WorkflowDraft.model_validate(dict(row)) for row in rows]
+
     async def drop_draft(self, user_id: UUID, key: DraftKey) -> bool:
         query = self._sql(
             """

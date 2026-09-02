@@ -4,12 +4,9 @@ import { NavLink } from "react-router-dom";
 
 import type { StoredRun, StoredWorkflow } from "../../model/workflow";
 import { ThemeToggle } from "../ThemeToggle";
-import { ProfileChip } from "./ProfileChip";
 import { SocketLamp } from "./SocketLamp";
-import type { Mode } from "./Shell";
 
 type Props = {
-  mode: Mode;
   run: StoredRun | null;
   workflow: StoredWorkflow | null;
   listOpen: boolean;
@@ -20,15 +17,16 @@ export function shortRunId(runId: string): string {
   return runId.slice(0, 8);
 }
 
-/** Топбар: бренд, хлебные крошки текущего выбора, переключатель Observe/Build. */
-export function Topbar({ mode, run, workflow, listOpen, onToggleList }: Props): ReactElement {
-  const crumb = mode === "observe" ? "History" : "Workflows";
+/** Топбар: бренд и хлебные крошки текущего выбора — workflow и его запуск. */
+export function Topbar({ run, workflow, listOpen, onToggleList }: Props): ReactElement {
+  const crumb = "Workflows";
   let current = "";
-  if (mode === "observe" && run !== null) {
-    current = `${run.state.graph.spec.name} · ${shortRunId(run.id)}`;
-  }
-  if (mode === "build" && workflow !== null) {
+  if (workflow !== null) {
     current = workflow.name;
+  }
+  if (run !== null) {
+    const name = workflow?.name ?? run.state.graph.spec.name;
+    current = `${name} · ${shortRunId(run.id)}`;
   }
 
   return (
@@ -56,21 +54,6 @@ export function Topbar({ mode, run, workflow, listOpen, onToggleList }: Props): 
         )}
       </nav>
       <span className="topbar__spacer" />
-      <div className="segmented" role="tablist" aria-label="mode">
-        <NavLink
-          to="/observe"
-          className={({ isActive }) => `segmented__item${isActive ? " segmented__item--on" : ""}`}
-        >
-          Observe
-        </NavLink>
-        <NavLink
-          to="/build"
-          className={({ isActive }) => `segmented__item${isActive ? " segmented__item--on" : ""}`}
-        >
-          Build
-        </NavLink>
-      </div>
-      <ProfileChip />
       <SocketLamp />
       <ThemeToggle />
       <NavLink to="/account" className="icon-btn" aria-label="Account" title="Account">

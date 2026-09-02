@@ -117,6 +117,7 @@ class WorkflowApi:
             (WorkflowUrl.VALIDATE, self.validate, "POST"),
             (WorkflowUrl.WORKFLOWS, self.list_workflows, "GET"),
             (WorkflowUrl.WORKFLOWS, self.save, "POST"),
+            (WorkflowUrl.DRAFTS, self.list_drafts, "GET"),
             (WorkflowUrl.WORKFLOW, self.get, "GET"),
             (WorkflowUrl.WORKFLOW, self.delete, "DELETE"),
             (WorkflowUrl.DRAFT, self.get_draft, "GET"),
@@ -170,6 +171,11 @@ class WorkflowApi:
 
         deleted = await self._guarded(service.delete(identity.subject, workflow_id))
         return Deleted(deleted=deleted)
+
+    async def list_drafts(self, identity: CurrentSubject) -> Sequence[WorkflowDraft]:
+        service = await self._resolved()
+
+        return await self._guarded(service.list_drafts(identity.subject))
 
     async def get_draft(self, key: str, identity: CurrentSubject) -> WorkflowDraft:
         service = await self._resolved()

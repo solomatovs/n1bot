@@ -1,4 +1,4 @@
-import { Code2, Play, Save, ShieldCheck } from "lucide-react";
+import { Code2, Play, Save, ShieldCheck, Trash2 } from "lucide-react";
 import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { z } from "zod";
@@ -77,14 +77,14 @@ export function BuildPage(): ReactElement {
   const { api } = useServices();
   const location = useLocation();
   const navigate = useNavigate();
-  const isNew = location.pathname.endsWith("/build/new");
+  const isNew = location.pathname.endsWith("/workflow/new");
   const draftParam = new URLSearchParams(location.search).get("draft");
   const draftKey = draftKeyOf(workflowId, draftParam);
 
   // новый workflow получает uuid черновика в адресе: вторая вкладка по нему же его и откроет
   useEffect(() => {
     if (isNew && draftParam === null) {
-      void navigate(`/build/new?draft=${crypto.randomUUID()}`, { replace: true });
+      void navigate(`/workflow/new?draft=${crypto.randomUUID()}`, { replace: true });
     }
   }, [isNew, draftParam, navigate]);
 
@@ -104,7 +104,7 @@ export function BuildPage(): ReactElement {
       <main className="stage stage--build">
         <div className="empty" style={{ gridRow: "1 / -1" }}>
           <span className="empty__title">Build workflows</span>
-          <span>Pick a workflow on the left or press “+ New workflow”.</span>
+          <span>Pick a workflow or a run on the left, or press “+ New workflow”.</span>
         </div>
       </main>
     );
@@ -362,12 +362,35 @@ function Builder({ catalog, stored, draft, draftKey }: BuilderProps): ReactEleme
       if (stored === null) {
         // черновик нового workflow свою роль сыграл: дальше вкладки правят сохранённый
         await api.dropDraft(draftKey, socket.id);
-        await navigate(`/build/${saved.id}`, { replace: true, state: { notice: text } });
+        await navigate(`/workflow/${saved.id}`, { replace: true, state: { notice: text } });
       }
     } catch (error: unknown) {
       remember(error);
     }
   }, [api, specText, positions, remember, report, navigate, stored, shell, draftKey, socket]);
+
+  const deleteDraft = useCallback(async () => {
+    try {
+      await api.dropDraft(draftKey, socket.id);
+      shell.reload();
+      if (stored === null) {
+        await navigate("/workflow");
+        return;
+      }
+
+      // черновик сохранённого workflow снят: сцена возвращается к сохранённому
+      const fresh = await api.getWorkflow(stored.id);
+      const parsed = parseSpecText(fresh.spec);
+      remote.current = true;
+      revision.current = 0;
+      setWorkflow(parsed);
+      setPositions(positionsOf(fresh.layout, parsed, catalog));
+      setIssues([]);
+      report("draft deleted", false);
+    } catch (error: unknown) {
+      report(errorText(error), true);
+    }
+  }, [api, draftKey, socket, shell, stored, navigate, catalog, report]);
 
   const run = useCallback(async () => {
     if (savedId === null) {
@@ -378,7 +401,7 @@ function Builder({ catalog, stored, draft, draftKey }: BuilderProps): ReactEleme
     try {
       const runId = await api.run(savedId);
       shell.reload();
-      await navigate(`/observe/${runId}`);
+      await navigate(`/runs/${runId}`);
     } catch (error: unknown) {
       remember(error);
     }
@@ -459,6 +482,9 @@ function Builder({ catalog, stored, draft, draftKey }: BuilderProps): ReactEleme
         </button>
         <span className="builder__hint">edges: drag then → after · result → args · fd → fd</span>
         <span className="viewbar__spacer" />
+        <button type="button" className="btn" onClick={() => void deleteDraft()}>
+          <Trash2 size={12} /> Delete draft
+        </button>
         <button type="button" className="btn" onClick={() => void validate()}>
           <ShieldCheck size={12} /> Validate
         </button>
