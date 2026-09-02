@@ -402,6 +402,12 @@ class PgMessageBus(MessageBus):
         logger.info("message bus ready: instance %s", self._instance)
 
     def _ddl(self) -> tuple[sql.Composed, ...]:
+        """DDL-шаги setup; порядок захвата таблиц — events раньше commands.
+
+        Тот же порядок держат purge и purge_idle работающих узлов: alter берёт
+        AccessExclusive, и обратный порядок даёт дедлок между стартующим узлом
+        и чисткой соседа (advisory-lock сериализует только setup'ы).
+        """
         instances = self._table(LiveTable.INSTANCES)
         return (
             sql.SQL(
@@ -430,6 +436,7 @@ class PgMessageBus(MessageBus):
                 )
                 """
             ).format(events=self._table(LiveTable.EVENTS)),
+            ScopeKindCheck.of(self._schema, LiveTable.EVENTS),
             sql.SQL(
                 """
                 create unlogged table if not exists {commands} (
@@ -459,16 +466,8 @@ class PgMessageBus(MessageBus):
                 on {commands} (scope_kind, scope_id)
                 """
             ).format(commands=self._table(LiveTable.COMMANDS)),
-            *self._scope_kind_checks(),
+            ScopeKindCheck.of(self._schema, LiveTable.COMMANDS),
         )
-
-    def _scope_kind_checks(self) -> tuple[sql.Composed, ...]:
-        """Перечень видов областей в check-ограничениях уже созданных таблиц."""
-        checks: list[sql.Composed] = []
-        for table in (LiveTable.EVENTS, LiveTable.COMMANDS):
-            checks.append(ScopeKindCheck.of(self._schema, table))
-
-        return tuple(checks)
 
     async def start(self) -> None:
         await self._listener.start()

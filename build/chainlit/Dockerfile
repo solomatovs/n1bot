@@ -228,25 +228,20 @@ COPY --from=python-dist /opt/python/usr/local  /tree/usr/local/
 COPY --from=plugin-site /opt/site              /tree/usr/local/lib/python${PYTHON_VERSION}/site-packages/
 COPY --from=plugin-site /opt/code-sandbox      /tree/usr/src/
 COPY --from=plugin-site /opt/plugin-data.txt   /tmp/plugin-data.txt
-COPY build/chainlit/scripts/mkrootfs.sh           /tmp/mkrootfs.sh
-
-# данные деклараций (модели эмбеддера, tessdata): из fetch-артефактов в образ;
-# путь назначения может нести ${BOBA_DIR} — раскрывается значением стадии
-RUN --mount=type=bind,source=build/chainlit/src,target=/build-data                \
-    for pair in $(cat /tmp/plugin-data.txt); do                                \
-        src="/build-data/${pair%%:*}";                                       \
-        dst="/tree$(eval echo \"${pair#*:}\")";                            \
-        mkdir -p "$dst" && cp -a "$src/." "$dst/"; done
+COPY build/chainlit/scripts/mkrootfs.sh        /tmp/mkrootfs.sh
 
 # статическая libpython, tests и инструменты установки телу не нужны:
 # python внутри образа только исполняет модуль инструментов
+# данные (веса эмбеддера, tessdata) монтирует рантайм: образ несёт точки монтирования
+RUN for path in $(cat /tmp/plugin-data.txt); do mkdir -p "/tree$path"; done
+
 RUN mkdir -p "/tree${BOBA_DIR}/conf/krb" "/tree${SANDBOX_DEV_KRB}"                        \
     && lib="/tree/usr/local/lib/python${PYTHON_VERSION}"                                  \
     && rm -rf "$lib/test" "$lib/idlelib" "$lib/tkinter" "$lib/lib2to3" "$lib/ensurepip"   \
               "$lib/config-${PYTHON_VERSION}-x86_64-linux-gnu"                            \
               "$lib/site-packages/pip" "$lib/site-packages/setuptools"                    \
               "$lib/site-packages/pkg_resources"                                          \
-    && sh /tmp/mkrootfs.sh /tree /out/plugin-rootfs.ext4 ${PYTHON_VERSION} 64
+    && sh /tmp/mkrootfs.sh /tree /out/plugin-rootfs.ext4 ${PYTHON_VERSION} 16
 
 
 FROM ${GLIBC_IMAGE} AS runtime-base
@@ -269,11 +264,8 @@ COPY --from=base /usr/lib/x86_64-linux-gnu/libstdc++.so.${LIBSTDCXX_VERSION}  ${
 COPY --from=base /usr/local/bin/uv                                            ${BOBA_DIR}/third/bin/uv
 COPY --from=bwrap-build /out/bwrap                                            ${BOBA_DIR}/third/bin/bwrap
 COPY --from=fuse2fs-build /out/fuse2fs                                        ${BOBA_DIR}/third/bin/fuse2fs
-COPY --from=fuse2fs-build /out/sandbox-workspace.ext4                         ${BOBA_DIR}/sandbox/workspace.ext4
 COPY --from=app-site /opt/app-site                                            ${BOBA_DIR}/app/
 COPY --from=app-site /opt/app-packages.txt                                    ${BOBA_DIR}/app/packages.txt
-# веса эмбеддера и tessdata запечены в образы плагинов: рантайму они не нужны
-COPY build/chainlit/src/sandbox/plugins/                                              ${BOBA_DIR}/sandbox/plugins/
 
 RUN mkdir -p ${BOBA_DIR}/conf ${BOBA_DIR}/app_root/public
 
@@ -281,6 +273,7 @@ RUN mkdir -p ${BOBA_DIR}/conf ${BOBA_DIR}/app_root/public
 RUN sed -i "1s|^#!.*python3.*|#!${BOBA_DIR}/third/bin/python3|" ${BOBA_DIR}/app/bin/*
 
 # TrustedBinaries не примет third/bin, доступный на запись посторонним
+RUN mkdir -p ${BOBA_DIR}/sandbox
 RUN chmod -R go-w ${BOBA_DIR}/third ${BOBA_DIR}/sandbox                                   \
     && test -z "$(find ${BOBA_DIR}/third/bin -maxdepth 1 -type f -perm /022)"             \
     && ${BOBA_DIR}/third/bin/bwrap --version                                              \
@@ -312,7 +305,6 @@ COPY packages/agents/boba-chainlit/assets/.chainlit/translations/ ${BOBA_DIR}/ap
 COPY packages/agents/boba-chainlit/assets/chainlit.md             ${BOBA_DIR}/app_root/
 COPY packages/agents/boba-chainlit/assets/public/                 ${BOBA_DIR}/app_root/public/
 COPY build/chainlit/src/webassets/                                         ${BOBA_DIR}/app_root/public/vendor/
-COPY build/chainlit/src/onnx-genai/                                        ${BOBA_DIR}/models/onnx-genai/
 
 # фронт chainlit тянет шрифт и стили формул с CDN: переводим на public/vendor
 RUN index=${BOBA_DIR}/app/chainlit/frontend/dist/index.html                                                  \

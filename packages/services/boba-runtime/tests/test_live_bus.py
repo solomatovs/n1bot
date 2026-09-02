@@ -7,8 +7,10 @@ from collections.abc import AsyncIterator
 from uuid import UUID, uuid4
 
 import pytest
+from psycopg import sql
 
 from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres.names import SqlNames
 from boba.identity.context import Scope
 from boba.messaging import (
     BusLimit,
@@ -23,7 +25,7 @@ from boba.messaging import (
     RunListChanged,
     StopRequested,
 )
-from boba.messaging.bus import ListenerState
+from boba.messaging.bus import ListenerState, LiveTable
 from boba.runtime.bus import LiveListener, PgMessageBus, Pointer
 from boba.runtime.config import AppName, RuntimeConfig
 
@@ -356,3 +358,63 @@ async def test_user_scopes_of_two_applications_do_not_cross(
     finally:
         await studio.stop()
         await chat.stop()
+
+
+async def test_neighbour_setup_does_not_deadlock_with_purge(
+    runtime_config: RuntimeConfig, test_database: str, pool: AsyncPostgresPool
+) -> None:
+    """Старт узла (setup с ALTER'ами) во время чистки соседа.
+
+    Чистка держит замок live_events и добирает live_commands; setup обязан
+    захватывать таблицы в том же порядке — при инверсии одна из сторон
+    падала с DeadlockDetected.
+    """
+    first = await _bus(runtime_config, test_database, pool, "node1-studio")
+    schema = runtime_config.pg_messaging().db_schema
+    scope = Scope.chat(str(uuid4()))
+    token = LockToken.local()
+
+    try:
+        await first.publish(scope, _token("hold"), token)
+        await first.command(
+            scope, StopRequested(by_user=UUID(int=1), by_instance=first.instance)
+        )
+
+        async with pool.connection() as sweeper, sweeper.transaction():
+            await sweeper.execute(
+                sql.SQL("delete from {events}").format(
+                    events=SqlNames.table(schema, LiveTable.EVENTS)
+                )
+            )
+
+            second_task = asyncio.create_task(
+                _bus(runtime_config, test_database, pool, "node2-studio")
+            )
+
+            deadline = asyncio.get_running_loop().time() + WAIT_SEC
+            blocked = 0
+            while blocked == 0:
+                assert asyncio.get_running_loop().time() < deadline
+
+                async with pool.cursor() as cur:
+                    await cur.execute(
+                        "select count(*) from pg_stat_activity"
+                        " where wait_event_type = 'Lock'"
+                        "   and query ilike '%alter table%'"
+                    )
+                    row = await cur.fetchone()
+
+                assert row is not None
+                blocked = int(row[0])
+                await asyncio.sleep(0.05)
+
+            await sweeper.execute(
+                sql.SQL("delete from {commands}").format(
+                    commands=SqlNames.table(schema, LiveTable.COMMANDS)
+                )
+            )
+
+        second = await asyncio.wait_for(second_task, timeout=WAIT_SEC)
+        await second.stop()
+    finally:
+        await first.stop()

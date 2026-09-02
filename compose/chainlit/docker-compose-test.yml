@@ -23,6 +23,7 @@ services:
       - ./data:/app/boba/data:rw
       - ./app_root:/app/boba/app_root:rw
       - ./models:/app/boba/models:ro
+      - ../../build/chainlit/src/sandbox:/app/boba/sandbox:ro
       - /sys/fs/cgroup/boba.slice:/cgroup:rw
     networks:
       default:
@@ -45,6 +46,7 @@ services:
       - ./data-node2:/app/boba/data:rw
       - ./app_root:/app/boba/app_root:rw
       - ./models:/app/boba/models:ro
+      - ../../build/chainlit/src/sandbox:/app/boba/sandbox:ro
       - /sys/fs/cgroup/boba.slice:/cgroup:rw
     networks:
       default:

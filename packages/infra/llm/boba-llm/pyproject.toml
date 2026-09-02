@@ -39,4 +39,4 @@ include = ["boba*"]
 namespaces = true
 
 [tool.boba.sandbox]
-data = ["fastembed:/var/cache/fastembed"]
+data = ["/var/cache/fastembed"]

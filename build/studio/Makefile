@@ -362,7 +362,7 @@ test: build
 # что обязано лежать в дереве установки
 RELEASE_PARTS_common := sandbox/plugins sandbox/workspace.ext4 third/bin/bwrap third/bin/fuse2fs \
                         app/bin app_root/public
-RELEASE_PARTS := $(RELEASE_PARTS_common) app_root/public/workflow
+RELEASE_PARTS := $(RELEASE_PARTS_common) app_root/public/workflow models/fastembed models/tessdata
 
 # дерево установки из готового образа: пути и шебанги переводятся с DEST_DIR на INSTALL_DIR
 .PHONY: release
@@ -374,9 +374,14 @@ release:
 	rm -rf "$(OUT)"
 	mkdir -p "$(OUT)/conf"
 	$(call image-copy,$(RELEASE_IMAGE),$(DEST_DIR)/.,$(OUT)/)
+	mkdir -p "$(OUT)/sandbox" "$(OUT)/models"
 	if [ -d "$(SANDBOX_DIR)/plugins" ]; then
 	    cp -a "$(SANDBOX_DIR)/plugins" "$(OUT)/sandbox/plugins"
 	fi
+	cp -a "$(SANDBOX_DIR)/workspace.ext4" "$(OUT)/sandbox/workspace.ext4"
+	cp -al "$(DEPS_DIR)/fastembed" "$(OUT)/models/fastembed"
+	cp -al "$(DEPS_DIR)/tessdata" "$(OUT)/models/tessdata"
+	cp -al "$(DEPS_DIR)/tessdata" "$(OUT)/models/tessdata"
 	sed -i "1s|^#!.*python3.*|#!$(INSTALL_DIR)/third/bin/python3|" "$(OUT)/app/bin"/*
 	export BOBA_BASE="$(INSTALL_DIR)" BOBA_VERSION="$(VERSION)" INSTALL_DIR="$(INSTALL_DIR)" BOBA_DATA="$(DATA_DIR)"
 	envsubst '$${INSTALL_DIR} $${BOBA_DATA}' < "$(CONF_DIR)/boba-$(APP).service" > "$(OUT)/boba-$(APP).service"
@@ -406,6 +411,7 @@ dev:
 	rm -rf "$(OUT)/models"
 	mkdir -p "$(OUT)/models"
 	cp -al "$(DEPS_DIR)/fastembed" "$(OUT)/models/fastembed"
+	cp -al "$(DEPS_DIR)/tessdata" "$(OUT)/models/tessdata"
 	install -m 0755 "$(CONF_DIR)/cgroup-init.sh" "$(OUT)/cgroup-init.sh"
 	# dev-хост работает process-режимом: образы песочницы живут только в релизе,
 	# но bwrap и fuse2fs нужны хранилищу приложения (workspace.ext4 канваса)
