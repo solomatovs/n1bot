@@ -91,7 +91,7 @@ async def fake_stream(
     total = 0
     for item in feed:
         total += 1
-        body = prefix.encode("utf-8") + item.body
+        body = prefix.encode("utf-8") + bytes(item.body)
         out.emit(FakeChunkHead(seq=total), body)
 
     out.emit(FakeDoneHead(total=total))

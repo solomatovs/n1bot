@@ -134,31 +134,60 @@ class FrameCodec:
         self._body_limit = body_limit
         self._buffer = bytearray()
 
-    def encode(self, frame: ToolFrame) -> bytes:
-        if len(frame.header) > self._header_limit:
+    def encode_parts(self, header: bytes, body: Chunk) -> tuple[bytes, Chunk]:
+        """Префикс кадра и тело для раздельной записи (writev): тело не
+        копируется — оно уходит в запись тем же объектом."""
+        if len(header) > self._header_limit:
             msg = (
-                f"frame header of {len(frame.header)} bytes exceeds "
+                f"frame header of {len(header)} bytes exceeds "
                 f"{self._header_limit} bytes"
             )
             raise FrameProtocolError(msg)
 
-        if len(frame.body) > self._body_limit:
-            msg = (
-                f"frame body of {len(frame.body)} bytes exceeds "
-                f"{self._body_limit} bytes"
-            )
+        if len(body) > self._body_limit:
+            msg = f"frame body of {len(body)} bytes exceeds {self._body_limit} bytes"
             raise FrameProtocolError(msg)
 
-        header_len = len(frame.header).to_bytes(self.LEN_BYTES, "big")
-        body_len = len(frame.body).to_bytes(self.LEN_BYTES, "big")
+        prefix = b"".join(
+            (
+                len(header).to_bytes(self.LEN_BYTES, "big"),
+                header,
+                len(body).to_bytes(self.LEN_BYTES, "big"),
+            )
+        )
 
-        return b"".join((header_len, frame.header, body_len, frame.body))
+        return prefix, body
+
+    def encode(self, frame: ToolFrame) -> bytes:
+        prefix, body = self.encode_parts(frame.header, frame.body)
+
+        return prefix + bytes(body)
 
     def feed(self, chunk: Chunk) -> Sequence[ToolFrame]:
-        """Принять порцию потока и отдать кадры, собравшиеся целиком."""
+        """Принять порцию потока и отдать кадры, собравшиеся целиком.
+
+        Быстрый путь: при пустом буфере кадры вырезаются прямо из порции,
+        без копии в накопительный буфер; в буфер уходит только неполный
+        хвост.
+        """
+        frames: list[ToolFrame] = []
+
+        offset = 0
+        if not self._buffer:
+            view = memoryview(chunk)
+            while True:
+                parsed = self._parse_at(view, offset)
+                if parsed is None:
+                    break
+
+                frame, offset = parsed
+                frames.append(frame)
+
+            self._buffer.extend(view[offset:])
+            return frames
+
         self._buffer.extend(chunk)
 
-        frames: list[ToolFrame] = []
         while True:
             frame = self._next_frame()
             if frame is None:
@@ -175,16 +204,32 @@ class FrameCodec:
         raise FrameProtocolError(msg)
 
     def _next_frame(self) -> ToolFrame | None:
-        view = self._buffer
-        if len(view) < self.LEN_BYTES:
+        view = memoryview(self._buffer)
+        parsed = self._parse_at(view, 0)
+        view.release()
+
+        if parsed is None:
             return None
 
-        header_len = int.from_bytes(view[: self.LEN_BYTES], "big")
+        frame, consumed = parsed
+        del self._buffer[:consumed]
+
+        return frame
+
+    def _parse_at(
+        self, view: memoryview, offset: int
+    ) -> tuple[ToolFrame, int] | None:
+        """Кадр по смещению view; None — данных на целый кадр не хватает."""
+        remaining = len(view) - offset
+        if remaining < self.LEN_BYTES:
+            return None
+
+        header_len = int.from_bytes(view[offset : offset + self.LEN_BYTES], "big")
         if header_len > self._header_limit:
             msg = f"frame header of {header_len} bytes exceeds {self._header_limit}"
             raise FrameProtocolError(msg)
 
-        body_len_at = self.LEN_BYTES + header_len
+        body_len_at = offset + self.LEN_BYTES + header_len
         if len(view) < body_len_at + self.LEN_BYTES:
             return None
 
@@ -198,11 +243,10 @@ class FrameCodec:
         if len(view) < total:
             return None
 
-        header = bytes(view[self.LEN_BYTES : body_len_at])
+        header = bytes(view[offset + self.LEN_BYTES : body_len_at])
         body = bytes(view[body_len_at + self.LEN_BYTES : total])
-        del view[:total]
 
-        return ToolFrame(header=header, body=body)
+        return ToolFrame(header=header, body=body), total
 
 
 class CallInbox:
@@ -273,14 +317,12 @@ class ToolIo:
     """
 
     READ_BYTES: ClassVar[int] = 65536
+    LEN_PREFIX: ClassVar[int] = FrameCodec.LEN_BYTES
 
     def __init__(self, inbound_fd: int, outbound_fd: int) -> None:
         self._inbound_fd = inbound_fd
         self._outbound_fd = outbound_fd
-        self._codec_in = FrameCodec(FrameLimit.HEADER_BYTES, FrameLimit.BODY_BYTES)
         self._codec_out = FrameCodec(FrameLimit.HEADER_BYTES, FrameLimit.BODY_BYTES)
-        self._pending: list[ToolFrame] = []
-        self._eof = False
         self._write_lock = threading.Lock()
 
     @classmethod
@@ -304,30 +346,65 @@ class ToolIo:
     ) -> CoreSchema:
         return core_schema.is_instance_schema(cls)
 
-    def inbound(self) -> Iterator[ToolFrame]:
-        """Прикладные кадры входа; EOF пайпа завершает итерацию."""
+    def read_frames(self) -> Iterator[tuple[bytes, memoryview]]:
+        """Кадры входа точным чтением по границам: заголовок байтами и тело
+        отдельным view.
+
+        Тело читается readinto в собственный буфер нужного размера — одна
+        копия из ядра, без накопительного буфера и вырезок. View владеет
+        своим буфером: его можно держать сколько угодно. EOF на границе
+        кадров завершает итерацию, обрыв посреди кадра — FrameProtocolError.
+        """
+        if self._inbound_fd < 0:
+            return
+
         while True:
-            frame = self._next()
-            if frame is None:
+            head_len_raw = self._read_exact(self.LEN_PREFIX, at_boundary=True)
+            if head_len_raw is None:
                 return
 
-            yield frame
+            header_len = int.from_bytes(head_len_raw, "big")
+            if header_len > FrameLimit.HEADER_BYTES:
+                msg = (
+                    f"frame header of {header_len} bytes exceeds "
+                    f"{FrameLimit.HEADER_BYTES}"
+                )
+                raise FrameProtocolError(msg)
 
-    def emit(self, head: BaseModel, body: bytes = b"") -> None:
-        """Кадр наружу; запись атомарна относительно других потоков тела."""
-        frame = ToolFrame.of(head, body)
-        data = self._codec_out.encode(frame)
+            header = self._require(self._read_exact(header_len, at_boundary=False))
+
+            body_len_raw = self._require(
+                self._read_exact(self.LEN_PREFIX, at_boundary=False)
+            )
+            body_len = int.from_bytes(body_len_raw, "big")
+            if body_len > FrameLimit.BODY_BYTES:
+                msg = (
+                    f"frame body of {body_len} bytes exceeds "
+                    f"{FrameLimit.BODY_BYTES}"
+                )
+                raise FrameProtocolError(msg)
+
+            body = bytearray(body_len)
+            self._readinto_exact(memoryview(body))
+
+            yield header, memoryview(body)
+
+    def emit(self, head: BaseModel, body: Chunk = b"") -> None:
+        """Кадр наружу; тело пишется writev без копии, запись атомарна
+        относительно других потоков тела."""
+        header = head.model_dump_json().encode("utf-8")
+        prefix, body = self._codec_out.encode_parts(header, body)
 
         if self._outbound_fd < 0:
             logger.info(
                 "frame emitted (detached): %s, %d body bytes",
-                frame.header.decode("utf-8", errors="replace"),
-                len(frame.body),
+                header.decode("utf-8", errors="replace"),
+                len(body),
             )
             return
 
         with self._write_lock:
-            self._write_all(self._outbound_fd, data)
+            self._writev_all(self._outbound_fd, prefix, body)
 
     def read_chunks(self) -> Iterator[bytes]:
         """Сырой вход: порции байтов как есть, EOF пайпа завершает итерацию."""
@@ -341,7 +418,7 @@ class ToolIo:
 
             yield chunk
 
-    def write_chunk(self, chunk: bytes) -> None:
+    def write_chunk(self, chunk: Chunk) -> None:
         """Сырой выход: порция пишется без кадрирования, атомарно к другим
         потокам тела."""
         if self._outbound_fd < 0:
@@ -349,35 +426,71 @@ class ToolIo:
             return
 
         with self._write_lock:
-            self._write_all(self._outbound_fd, chunk)
+            self._writev_all(self._outbound_fd, b"", chunk)
 
-    def _next(self) -> ToolFrame | None:
-        """Следующий кадр входа; None — поток кончился."""
-        if self._pending:
-            return self._pending.pop(0)
+    def _read_exact(self, count: int, *, at_boundary: bool) -> bytes | None:
+        """Ровно count байт входа; None — чистый EOF на границе кадров.
 
-        if self._eof:
-            return None
+        EOF посреди начатого кадра (at_boundary=False либо часть уже
+        прочитана) — обрыв потока, FrameProtocolError.
+        """
+        collected = bytearray()
 
-        if self._inbound_fd < 0:
-            self._eof = True
-            return None
-
-        while not self._pending:
-            chunk = os.read(self._inbound_fd, self.READ_BYTES)
+        while len(collected) < count:
+            chunk = os.read(self._inbound_fd, count - len(collected))
             if not chunk:
-                self._eof = True
-                self._codec_in.finish()
-                return None
+                if at_boundary and not collected:
+                    return None
 
-            self._pending.extend(self._codec_in.feed(chunk))
+                msg = "stream ended inside a frame"
+                raise FrameProtocolError(msg)
 
-        return self._pending.pop(0)
+            collected.extend(chunk)
+
+        return bytes(collected)
 
     @staticmethod
-    def _write_all(fd: int, data: bytes) -> None:
-        view = memoryview(data)
+    def _require(data: bytes | None) -> bytes:
+        if data is None:
+            msg = "stream ended inside a frame"
+            raise FrameProtocolError(msg)
 
-        while view.nbytes:
-            written = os.write(fd, view)
-            view = view[written:]
+        return data
+
+    def _readinto_exact(self, target: memoryview) -> None:
+        """Заполнить буфер тела целиком; EOF раньше — обрыв потока."""
+        filled = 0
+
+        while filled < target.nbytes:
+            got = os.readv(self._inbound_fd, [target[filled:]])
+            if got == 0:
+                msg = "stream ended inside a frame"
+                raise FrameProtocolError(msg)
+
+            filled += got
+
+    @staticmethod
+    def _writev_all(fd: int, first: bytes, second: Chunk) -> None:
+        """Записать обе части целиком; тело не склеивается с префиксом."""
+        parts: list[memoryview] = []
+
+        head = memoryview(first)
+        if head.nbytes:
+            parts.append(head)
+
+        tail = memoryview(second)
+        if tail.nbytes:
+            parts.append(tail)
+
+        while parts:
+            written = os.writev(fd, parts)
+
+            while written and parts:
+                head = parts[0]
+                if written >= head.nbytes:
+                    written -= head.nbytes
+                    parts.pop(0)
+                    continue
+
+                parts[0] = head[written:]
+                written = 0

@@ -23,13 +23,13 @@ from omegaconf import DictConfig
 from boba.runtime.plugins import EntryPointPlugins
 from boba.sandbox import SandboxProfile
 from boba.sandbox.zygote import (
-    ZygoteCallError,
     ZygoteRegistry,
     ZygoteState,
     ZygoteToolCaller,
 )
 from boba.stand.sandbox import section_profile
 from boba.stand.zygote import ZygoteStand
+from boba.toolkit.launcher import ChannelOverflowError
 
 needs_bwrap = pytest.mark.skipif(shutil.which("bwrap") is None, reason="нет bubblewrap")
 needs_userns = pytest.mark.skipif(
@@ -292,7 +292,7 @@ class TestChannelCapStopsTheFlood:
         )
 
         flood = f"head -c {self.LIMIT * 8} /dev/zero | tr '\\0' 'A'"
-        with pytest.raises(ZygoteCallError) as failure:
+        with pytest.raises(ChannelOverflowError) as failure:
             caller.call_text(flood, stdin="")
 
         if "exceeded" not in str(failure.value):

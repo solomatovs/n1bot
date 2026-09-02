@@ -90,6 +90,22 @@ class TestInbound:
         assert isinstance(second.head, DoneHead)
         assert second.head.total == 1
 
+    def test_bodies_are_owning_views_without_copies(self) -> None:
+        """Тело кадра — memoryview на собственный буфер: живёт после
+        итерации и склеивается с bytes явной копией."""
+        io = _feed_io(
+            ToolFrame.of(ChunkHead(seq=1), b"first"),
+            ToolFrame.of(ChunkHead(seq=2), b"second"),
+        )
+        port = StreamPorts.build(Inbound[ChunkHead], io)
+
+        assert isinstance(port, Inbound)
+        kept = list(port)
+
+        assert isinstance(kept[0].body, memoryview)
+        assert bytes(kept[0].body) == b"first"
+        assert bytes(kept[1].body) == b"second"
+
     def test_foreign_kind_raises_at_the_reader(self) -> None:
         io = _feed_io(ToolFrame.of(DoneHead(total=9)))
         port = StreamPorts.build(Inbound[ChunkHead], io)

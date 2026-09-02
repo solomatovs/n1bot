@@ -160,11 +160,17 @@ class CallInput:
         self._open = True
         self._broken = False
 
-    def send_bytes(self, data: bytes) -> None:
+    def send_bytes(self, data: Chunk) -> None:
         """Байты входа телу; после finish, abandon или разрыва — LauncherError."""
         with self._lock:
             self._require_open()
-            self._write(data)
+            self._write_parts(b"", data)
+
+    def send_parts(self, first: bytes, second: Chunk) -> None:
+        """Две части одной записью (writev): префикс кадра и тело без склейки."""
+        with self._lock:
+            self._require_open()
+            self._write_parts(first, second)
 
     def finish(self) -> None:
         """Конец входа: EOF телу закрытием пайпа; повтор безвреден."""
@@ -205,19 +211,36 @@ class CallInput:
         msg = "call input is already closed"
         raise LauncherError(msg)
 
-    def _write(self, data: bytes) -> None:
-        """Записать всё; разрыв пайпа закрывает вход молча (см. докстринг класса)."""
-        view = memoryview(data)
+    def _write_parts(self, first: bytes, second: Chunk) -> None:
+        """Записать обе части writev'ом; разрыв пайпа закрывает вход молча
+        (см. докстринг класса)."""
+        parts: list[memoryview] = []
 
-        while view.nbytes:
+        head = memoryview(first)
+        if head.nbytes:
+            parts.append(head)
+
+        tail = memoryview(second)
+        if tail.nbytes:
+            parts.append(tail)
+
+        while parts:
             try:
-                written = os.write(self._fd, view)
+                written = os.writev(self._fd, parts)
             except OSError:
                 self._broken = True
                 self._close()
                 return
 
-            view = view[written:]
+            while written and parts:
+                lead = parts[0]
+                if written >= lead.nbytes:
+                    written -= lead.nbytes
+                    parts.pop(0)
+                    continue
+
+                parts[0] = lead[written:]
+                written = 0
 
     def _close(self) -> None:
         self._open = False
@@ -238,7 +261,8 @@ class FrameInput(CallInput):
         self._codec = FrameCodec(FrameLimit.HEADER_BYTES, FrameLimit.BODY_BYTES)
 
     def send(self, frame: ToolFrame) -> None:
-        self.send_bytes(self._codec.encode(frame))
+        prefix, body = self._codec.encode_parts(frame.header, frame.body)
+        self.send_parts(prefix, body)
 
 
 class JournaledFrameInput(FrameInput):
@@ -254,9 +278,15 @@ class JournaledFrameInput(FrameInput):
         super().__init__(fd)
         self._tap = tap
 
-    def send_bytes(self, data: bytes) -> None:
+    def send_bytes(self, data: Chunk) -> None:
         self._tap(data)
         super().send_bytes(data)
+
+    def send_parts(self, first: bytes, second: Chunk) -> None:
+        # журнальный кодек инкрементален: части скармливаются по очереди
+        self._tap(first)
+        self._tap(second)
+        super().send_parts(first, second)
 
 
 class RawStdinInput(FrameInput):
