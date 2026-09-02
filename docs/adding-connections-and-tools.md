@@ -159,8 +159,134 @@ packages/tools/boba-tool-redis/
 ### Шаг 2. Напишите инструменты
 
 `src/boba/tool/redis/tools.py` — функции с декоратором `@tool` из toolkit,
-собранные в кортеж `TOOLS` (смотрите живой пример
+собранные в кортеж `TOOLS` (живой пример —
 `packages/tools/boba-tool-postgres/src/boba/tool/pg/tools.py`).
+
+У параметра инструмента бывает три вида, и вид задаётся аннотацией:
+
+- **аргумент для LLM** — обычное поле (`sql: Annotated[str, Field(...)]`);
+  модель его видит и заполняет, лончер кодирует во флаг команды;
+- **injected-конфиг** — `Annotated[RedisToolConfig, Injected]`; LLM его не
+  видит, значение собирает приложение из toml секции (`SECTION` на модели)
+  и присылает телу отдельным каналом — секреты в argv не попадают;
+- **порт данных** — `Annotated[Inbound[...] | Outbound[...] | RawInbound |
+  RawOutbound, Injected]`; это канал, по которому данные текут во время
+  вызова. Про порты — раздел ниже.
+
+Обычный (накопительный) инструмент выглядит так и остаётся самым частым
+случаем:
+
+```python
+@tool
+async def redis_query(
+    connection_name: RedisConnection,
+    command: Annotated[str, Field(min_length=1, description="Команда redis")],
+    cfg: Annotated[RedisToolConfig, Injected],
+) -> tuple[str, ToolResult]:
+    """Выполняет команду на соединении и возвращает ответ."""
+    ...
+    artifact = TextResult(text=reply)
+    return render_for_llm(artifact), artifact
+```
+
+Ожидаемые отказы тела объявляются картой `EXPECTED` на уровне модуля
+(исключение -> kind), неожиданные исключения уходят наверх как дефект.
+
+#### Потоковые инструменты: порты в подписи
+
+Если инструменту нужно получать данные порциями или отдавать результаты по
+ходу работы (аудио, выгрузки, длинные генерации) — он объявляет каналы
+прямо в подписи. Единица обмена — кадр: маленький JSON-заголовок с
+метаданными плюс сырое тело байтами.
+
+Сначала модели заголовков; обязательное правило — поле `kind` со строковым
+`Literal` (по нему pydantic разводит союз моделей на границе):
+
+```python
+class RowsChunk(BaseModel):
+    """Порция строк выгрузки."""
+
+    kind: Literal["redis.rows"] = "redis.rows"
+    seq: int
+
+class ScanDone(BaseModel):
+    """Финальный кадр: сколько всего отдано."""
+
+    kind: Literal["redis.done"] = "redis.done"
+    total: int
+```
+
+Потом порты в подписи (`boba.toolkit.ports`):
+
+```python
+@tool
+async def redis_scan_stream(
+    pattern: Annotated[str, Field(description="Шаблон ключей")],
+    cfg: Annotated[RedisToolConfig, Injected],
+    out: Annotated[Outbound[RowsChunk | ScanDone], Injected],
+) -> tuple[str, ToolResult]:
+    """Отдаёт ключи порциями по мере обхода."""
+    seq = 0
+    async for batch in _scan(cfg, pattern):
+        seq += 1
+        out.emit(RowsChunk(seq=seq), _encode(batch))
+
+    out.emit(ScanDone(total=seq))
+
+    artifact = TextResult(text=f"streamed {seq} batches")
+    return render_for_llm(artifact), artifact
+```
+
+Входной порт — итератор: `for item in feed:` отдаёт `Framed` с уже
+провалидированным заголовком (`item.head` — экземпляр вашей модели) и телом
+(`item.body` — байты; это memoryview, для склейки с bytes — `bytes(item.body)`).
+Конец входа — просто конец цикла (EOF канала), никаких служебных кадров.
+Кадр с kind вне декларации роняет вызов на границе с внятной ошибкой — до
+тела мусор не доходит.
+
+Правила и свойства:
+
+- не больше одного входного и одного выходного порта на инструмент;
+  несколько видов данных — союз моделей в одном порте;
+- `return` никуда не девается: потоковый инструмент всё равно возвращает
+  итог конвертом, кадры — то, что происходит по дороге;
+- запись в порт блокируется, когда потребитель не успевает (backpressure):
+  заливать хост данными тело не может;
+- декларация машиночитаема: `StreamSpec.of_schema` отдаёт входные и
+  выходные kind'ы для манифеста и проверки стыковки цепочек
+  (`ChainCheck` в `boba.toolkit.chain`), по ней же цепочки A -> B
+  соединяются перекачкой `CallRelay` (в том числе zero-copy через ядро).
+
+#### Сырые порты: passthrough без структур
+
+Когда формат потока задаёт внешняя система и разбирать его не нужно
+(COPY между базами, файлы, PCM) — берите истинно сырые порты: никаких
+моделей, на проводе голые байты без какого-либо кадрирования:
+
+```python
+@tool
+async def redis_restore(
+    cfg: Annotated[RedisToolConfig, Injected],
+    feed: Annotated[RawInbound, Injected],       # порции bytes как есть
+) -> tuple[str, ToolResult]:
+    """Грузит поток дампа со входа."""
+    total = 0
+    for chunk in feed:
+        total += len(chunk)
+        await _restore(cfg, chunk)
+
+    artifact = TextResult(text=f"restored {total} bytes")
+    return render_for_llm(artifact), artifact
+```
+
+Сырой канал совместим только с сырым (кадровый поток в сырой вход не
+собирается — это ловит `ChainCheck` до запуска); хост сырой канал не
+разбирает и не журналирует, его путь перекачки — splice через ядро.
+
+Образцы потоковых тел — в стенде:
+`packages/testing/boba-stand/src/boba/stand/fake_toolmod.py`
+(`fake_stream` — модельные порты, `fake_relay` — сырой passthrough).
+Архитектура канала вызова целиком — `docs/streaming-tools-rework-plan.md`.
 
 ### Шаг 3. Напишите манифест
 
@@ -408,3 +534,14 @@ Tool-плагины (часть 2 вживую):
   типа не установлен в этом развёртывании.
 - Зигота секции не поднимается в контейнере — образ плагина не собран или
   собран до правок деклараций: `make plugin-rootfs PLUGIN=<пакет>`.
+- Вызовы падают «control closed on call …» или зигота умирает на первом
+  вызове — гость внутри rootfs отстал от хоста по протоколу каналов: после
+  правок boba-toolkit/boba-sandbox образы обязаны пересобираться
+  (`make plugin-rootfs-all`); у chainlit и studio песочницы свои —
+  `build/chainlit` и `build/studio`, пересобирать обе.
+- Потоковый вызов падает «inbound frame does not match the declared port»
+  — источник шлёт kind, которого нет в декларации входа: расширьте союз
+  моделей входного порта либо почините источник; стыковку цепочки заранее
+  проверяет `ChainCheck.ensure`.
+- Ошибка «raw and framed ports do not mix» — кадровый выход соединили с
+  сырым входом (или наоборот): сырое совместимо только с сырым.
