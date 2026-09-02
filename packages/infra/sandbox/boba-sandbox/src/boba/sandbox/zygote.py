@@ -19,7 +19,6 @@ from __future__ import annotations
 import array
 import logging
 import os
-import select
 import shlex
 import signal
 import socket
@@ -37,7 +36,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.cancellation import current_cancellation
+from boba.cancellation import RunCancellation, current_cancellation
 from boba.sandbox.argv import build_zygote_argv
 from boba.sandbox.cgroup import CgroupManager, GroupLimits
 from boba.sandbox.diagnostics import SandboxDiagnostics
@@ -70,17 +69,28 @@ from boba.sandbox.runner import (
     StderrTee,
 )
 from boba.toolkit.channels import ToolChannel
+from boba.toolkit.frames import CallInbox
 from boba.toolkit.launcher import (
+    CappedChannel,
+    ChannelTail,
+    EnvelopeReply,
     LauncherError,
     LaunchOutcome,
     RunResult,
+    ToolCall,
     ToolLauncher,
     ToolOutcome,
 )
-from boba.toolkit.protocol import REPLY, ToolCommand
+from boba.toolkit.protocol import ToolCommand
+from boba.toolkit.pump import (
+    CallSinks,
+    ChannelPump,
+    FrameInput,
+    InputFeeder,
+    PumpedCall,
+)
 from boba.toolkit.stream import (
     ChannelSinks,
-    Chunk,
     ChunkSink,
     ToolChannelsTap,
 )
@@ -233,6 +243,7 @@ class _CallChannels:
         self.stdout_r, self.stdout_w = os.pipe()
         self.stderr_r, self.stderr_w = os.pipe()
         self.result_r, self.result_w = os.pipe()
+        self.frames_r, self.frames_w = os.pipe()
         self.control_host, self.control_child = socket.socketpair(
             socket.AF_UNIX, socket.SOCK_SEQPACKET
         )
@@ -246,6 +257,7 @@ class _CallChannels:
             self.stdout_w,
             self.stderr_w,
             self.result_w,
+            self.frames_w,
             self.control_child.fileno(),
         ]
         if self.cgroup_fd >= 0:
@@ -258,7 +270,20 @@ class _CallChannels:
         os.close(self.stdout_w)
         os.close(self.stderr_w)
         os.close(self.result_w)
+        os.close(self.frames_w)
         self.control_child.close()
+
+    def stdin_alive(self) -> bool:
+        return self._stdin_open
+
+    def take_stdin(self) -> int:
+        """Отдать stdin_w владельцу входа: каналы его больше не закрывают."""
+        if not self._stdin_open:
+            msg = "call stdin is already taken or closed"
+            raise LauncherError(msg)
+
+        self._stdin_open = False
+        return self.stdin_w
 
     def close_stdin(self) -> None:
         if not self._stdin_open:
@@ -272,6 +297,7 @@ class _CallChannels:
         os.close(self.stdout_r)
         os.close(self.stderr_r)
         os.close(self.result_r)
+        os.close(self.frames_r)
         self.control_host.close()
 
 
@@ -296,7 +322,7 @@ class ZygoteSupervisor:
         self._root = root
         self._journal = LifecycleJournal(name)
         self._tail_bytes = stderr_tail_bytes
-        self._stderr = _TailSink(stderr_tail_bytes)
+        self._stderr = ChannelTail(stderr_tail_bytes)
         self._calls_total = 0
         self._in_flight: dict[str, float] = {}
         self._born = 0.0
@@ -481,26 +507,26 @@ class ZygoteSupervisor:
         self._journal.stopped(self._report(proc))
         self._spawns.shutdown(wait=False)
 
-    def call(  # noqa: PLR0913
+    def begin(  # noqa: PLR0913
         self,
         call_id: str,
         argv: Sequence[str],
-        stdin_data: bytes,
         limits: ChildLimits,
-        sinks: Mapping[ToolChannel, ChunkSink],
         *,
         isolate: bool,
         mounts: CallMounts,
-        timeout_sec: float,
-        kill_grace_sec: float,
         cgroup_leaf: str = "",
         images: Sequence[ImageMount] = (),
         mounting: ImageMounting | None = None,
         staging: Sequence[str] = (),
         cwd: str = "",
         kind: CallKind = CallKind.MODULE,
-    ) -> ZygoteOutcome:
-        """Один вызов: запрос, handshake, насос каналов, код выхода."""
+    ) -> _WiredCall:
+        """Открыть проводку вызова: каналы и запрос зиготе, без насоса.
+
+        Идёт в потоке вызывающего: после возврата stdin вызова готов к
+        прямой записи, а run_wired качает каналы до выхода исполнителя.
+        """
         with self._lock:
             sock = self._sock
             if self._state is not ZygoteState.READY or sock is None:
@@ -536,6 +562,8 @@ class ZygoteSupervisor:
         except OSError as exc:
             channels.close_child_ends()
             channels.close_host_ends()
+            with self._lock:
+                self._in_flight.pop(call_id, None)
             msg = f"zygote {self._name}: request not sent: {exc}"
             raise ZygoteUnavailableError(msg) from exc
 
@@ -543,22 +571,93 @@ class ZygoteSupervisor:
         if cgroup_fd >= 0:
             os.close(cgroup_fd)
 
-        pump = _CallPump(
+        return _WiredCall(request=request, channels=channels)
+
+    def run_wired(
+        self,
+        wired: _WiredCall,
+        sinks: Mapping[ToolChannel, ChunkSink],
+        *,
+        timeout_sec: float,
+        kill_grace_sec: float,
+        cancellation: RunCancellation,
+    ) -> ZygoteOutcome:
+        """Качать каналы открытого вызова до выхода исполнителя."""
+        pump = _ZygotePump(
             name=self._name,
-            request=request,
-            channels=channels,
+            request=wired.request,
+            channels=wired.channels,
             sinks=sinks,
             timeout_sec=timeout_sec,
             poll_sec=self._policy.call_poll_sec,
-            kill_grace_sec=kill_grace_sec,
         )
 
         try:
-            return pump.run(stdin_data)
+            return pump.run_call(cancellation)
+        except BaseException:
+            # сорвался приёмник вывода: без добивания исполнитель и его
+            # fuse2fs остались бы жить и держать образ пользователя
+            pump.abort(kill_grace_sec)
+            raise
         finally:
-            channels.close_host_ends()
+            pump.close()
+            wired.channels.close_host_ends()
             with self._lock:
-                self._in_flight.pop(call_id, None)
+                self._in_flight.pop(wired.request.call_id, None)
+
+    def abandon_wired(self, wired: _WiredCall) -> None:
+        """Прибрать проводку, чей насос так и не родился; повтор безвреден."""
+        wired.channels.close_host_ends()
+
+        with self._lock:
+            self._in_flight.pop(wired.request.call_id, None)
+
+    def call(  # noqa: PLR0913
+        self,
+        call_id: str,
+        argv: Sequence[str],
+        stdin: bytes,
+        limits: ChildLimits,
+        sinks: Mapping[ToolChannel, ChunkSink],
+        *,
+        isolate: bool,
+        mounts: CallMounts,
+        timeout_sec: float,
+        kill_grace_sec: float,
+        cgroup_leaf: str = "",
+        images: Sequence[ImageMount] = (),
+        mounting: ImageMounting | None = None,
+        staging: Sequence[str] = (),
+        cwd: str = "",
+        kind: CallKind = CallKind.MODULE,
+    ) -> ZygoteOutcome:
+        """Вызов с заранее известным входом: проводка, весь stdin, насос."""
+        wired = self.begin(
+            call_id,
+            argv,
+            limits,
+            isolate=isolate,
+            mounts=mounts,
+            cgroup_leaf=cgroup_leaf,
+            images=images,
+            mounting=mounting,
+            staging=staging,
+            cwd=cwd,
+            kind=kind,
+        )
+
+        feeder = InputFeeder(wired.channels.take_stdin(), stdin)
+
+        try:
+            return self.run_wired(
+                wired,
+                sinks,
+                timeout_sec=timeout_sec,
+                kill_grace_sec=kill_grace_sec,
+                cancellation=current_cancellation(),
+            )
+        finally:
+            feeder.join()
 
     def _try_start(self) -> bool:
         """Запуск идёт на своём треде супервизора.
@@ -583,7 +682,7 @@ class ZygoteSupervisor:
 
         child_sock.close()
 
-        self._stderr = _TailSink(self._tail_bytes)
+        self._stderr = ChannelTail(self._tail_bytes)
         self._pump_stderr(proc)
         self._journal.spawned(proc.pid, self._root, self._modules)
 
@@ -699,23 +798,22 @@ class ZygoteSupervisor:
 
 
 @dataclass(frozen=True)
-class _ReadSlot:
-    """Читаемый канал вызова: читатель дескриптора и приёмник порций."""
+class _WiredCall:
+    """Открытая проводка вызова: запрос уехал зиготе, каналы у хоста."""
 
-    reader: FdReader
-    sink: ChunkSink
-
-    @classmethod
-    def of(cls, fd: int, sink: ChunkSink) -> _ReadSlot:
-        return cls(reader=FdReader(fd), sink=sink)
+    request: CallRequest
+    channels: _CallChannels
 
 
-class _CallPump:
-    """Насос одного вызова: stdin, каналы, control-события, дедлайн, отмена."""
+class _ZygotePump(ChannelPump):
+    """Насос вызова зиготы: каналы тела плюс control-события исполнителя.
 
-    WRITE_CHUNK: ClassVar[int] = FdReader.CHUNK
+    Жизнь исполнителя определяет control-сокет: born несёт host-pid, exit —
+    код выхода; EOF сокета до exit — смерть зиготы посреди вызова. Вход
+    тела насос не пишет: им владеет вызывающий через FrameInput/InputFeeder.
+    """
 
-    def __init__(  # noqa: PLR0913
+    def __init__(  # noqa: PLR0913 — насос держит все части одного вызова
         self,
         name: str,
         request: CallRequest,
@@ -723,134 +821,50 @@ class _CallPump:
         sinks: Mapping[ToolChannel, ChunkSink],
         timeout_sec: float,
         poll_sec: float,
-        kill_grace_sec: float,
     ) -> None:
+        super().__init__(poll_sec, timeout_sec)
         self._name = name
         self._request = request
         self._channels = channels
-        self._poll_sec = poll_sec
-        self._kill_grace_sec = kill_grace_sec
-
-        self._started = time.monotonic()
-        self._deadline = self._started + timeout_sec
-
-        self._slots: dict[int, _ReadSlot] = {
-            channels.stdout_r: _ReadSlot.of(
-                channels.stdout_r, sinks.get(ToolChannel.STDOUT, _discard)
-            ),
-            channels.stderr_r: _ReadSlot.of(
-                channels.stderr_r, sinks.get(ToolChannel.STDERR, _discard)
-            ),
-            channels.result_r: _ReadSlot.of(
-                channels.result_r, sinks.get(ToolChannel.RESULT, _discard)
-            ),
-        }
-        self._open_reads = set(self._slots)
+        self._opened = time.monotonic()
 
         self._child_pid = 0
         self._exit_code: int | None = None
-        self._timed_out = False
         self._setup_failure = SetupFailure.NONE
         self._setup_detail = ""
 
-    def run(self, stdin_data: bytes) -> ZygoteOutcome:
-        pending = memoryview(stdin_data)
-        os.set_blocking(self._channels.stdin_w, False)
-
-        cancellation = current_cancellation()
-
-        try:
-            with cancellation.abort_with(self._kill):
-                while self._exit_code is None or self._open_reads:
-                    if cancellation.cancelled:
-                        self._kill()
-
-                    if self._deadline_hit():
-                        break
-
-                    pending = self._step(pending)
-        except BaseException:
-            # сорвался приёмник вывода: без добивания исполнитель и его
-            # fuse2fs остались бы жить и держать образ пользователя
-            self._abort()
-            raise
-
-        cancellation.raise_if_cancelled()
-
-        return self._outcome()
-
-    def _abort(self) -> None:
-        """Добить исполнителя и дождаться выхода: образ должен отпуститься."""
-        self._kill()
-
-        for fd, slot in list(self._slots.items()):
-            self._slots[fd] = replace(slot, sink=_discard)
-
-        deadline = time.monotonic() + self._kill_grace_sec
-        pending = memoryview(b"")
-
-        while self._exit_code is None and time.monotonic() < deadline:
-            try:
-                pending = self._step(pending)
-            except (OSError, ZygoteCallError):
-                return
-
-    def _deadline_hit(self) -> bool:
-        """True — дедлайн истёк и ждать больше некого."""
-        if time.monotonic() < self._deadline:
-            return False
-
-        if not self._timed_out:
-            self._timed_out = True
-            self._kill()
-
-        return self._child_pid == 0
-
-    def _step(self, pending: memoryview) -> memoryview:
-        rlist = list(self._open_reads)
-        if self._exit_code is None:
-            rlist.append(self._channels.control_host.fileno())
-
-        wlist: list[int] = []
-        if pending.nbytes:
-            wlist.append(self._channels.stdin_w)
-
-        ready_r, ready_w, _ = select.select(rlist, wlist, [], self._poll_sec)
-
-        if ready_w:
-            pending = self._feed(pending)
-
-        for fd in ready_r:
-            if fd == self._channels.control_host.fileno():
-                self._control_event()
+        reads = {
+            ToolChannel.STDOUT: channels.stdout_r,
+            ToolChannel.STDERR: channels.stderr_r,
+            ToolChannel.RESULT: channels.result_r,
+            ToolChannel.FRAMES: channels.frames_r,
+        }
+        for channel, fd in reads.items():
+            sink = sinks.get(channel)
+            if sink is None:
+                self.add_drain(fd)
                 continue
 
-            self._read(fd)
+            self.add_read(fd, sink)
 
-        return pending
+        self.add_event(channels.control_host.fileno(), self._control_event)
 
-    def _feed(self, pending: memoryview) -> memoryview:
-        try:
-            written = os.write(self._channels.stdin_w, pending[: self.WRITE_CHUNK])
-        except BrokenPipeError:
-            self._channels.close_stdin()
-            return memoryview(b"")
+    def run_call(self, cancellation: RunCancellation) -> ZygoteOutcome:
+        """Прогнать вызов и собрать его итог."""
+        end = self.run(cancellation)
 
-        rest = pending[written:]
-        if rest.nbytes:
-            return rest
+        return self._outcome(end.timed_out)
 
-        self._channels.close_stdin()
-        return memoryview(b"")
+    def _finished(self) -> bool:
+        return self._exit_code is not None
 
-    def _read(self, fd: int) -> None:
-        slot = self._slots[fd]
-        chunk = slot.reader.read()
-        if not chunk:
-            self._open_reads.discard(fd)
-            return
+    def _quit_on_timeout(self) -> bool:
+        """После таймаута ждать нечего, только если исполнитель не родился."""
+        return self._child_pid == 0
 
-        slot.sink(chunk)
+    def _kill(self) -> None:
+        if self._child_pid:
+            _kill_quietly(self._child_pid)
 
     def _control_event(self) -> None:
         """born с host-pid исполнителя либо exit с кодом; EOF — смерть зиготы."""
@@ -870,6 +884,7 @@ class _CallPump:
 
         exit_message = CallExit.model_validate_json(data)
         self._exit_code = exit_message.code
+        self.drop_event(self._channels.control_host.fileno())
 
     def _setup_failed(self, data: bytes) -> bool:
         """Отчёт исполнителя о сорванной подготовке: тело до него не дожило."""
@@ -893,15 +908,11 @@ class _CallPump:
         msg = "zygote handshake: born without SCM_CREDENTIALS"
         raise ZygoteCallError(msg)
 
-    def _kill(self) -> None:
-        if self._child_pid:
-            _kill_quietly(self._child_pid)
-
-    def _outcome(self) -> ZygoteOutcome:
+    def _outcome(self, timed_out: bool) -> ZygoteOutcome:
         exit_code = self._exit_code
 
         if exit_code is None:
-            if not self._timed_out:
+            if not timed_out:
                 msg = f"zygote {self._name}: died mid-call {self._request.call_id}"
                 raise ZygoteCallError(msg)
 
@@ -909,16 +920,12 @@ class _CallPump:
 
         return ZygoteOutcome(
             exit_code=exit_code,
-            duration_ms=int((time.monotonic() - self._started) * 1000),
-            timed_out=self._timed_out,
+            duration_ms=int((time.monotonic() - self._opened) * 1000),
+            timed_out=timed_out,
             child_pid=self._child_pid,
             setup_failure=self._setup_failure,
             setup_detail=self._setup_detail,
         )
-
-
-def _discard(_data: Chunk) -> None:
-    """Приёмник канала без потребителя."""
 
 
 def _kill_quietly(pid: int) -> None:
@@ -1115,57 +1122,11 @@ class ZygoteSpawner:
         )
 
 
-class _CappedBuffer:
-    """Канал целиком, но не длиннее потолка: конверт и вывод shell-команды.
-
-    Тело вызова живёт под лимитом памяти своей группы, а копится его вывод в
-    памяти приложения, на которую эти лимиты не распространяются: без
-    потолка тело выносит хост потоком в несколько гигабайт. Превышение
-    обрывает вызов — насос добивает исполнителя, а причина уезжает в чат и
-    модели обычной ошибкой инструмента.
-    """
-
-    def __init__(self, limit: int, channel: ToolChannel) -> None:
-        self._limit = limit
-        self._channel = channel
-        self._data = bytearray()
-
-    def feed(self, chunk: Chunk) -> None:
-        self._data.extend(chunk)
-        if len(self._data) <= self._limit:
-            return
-
-        msg = (
-            f"sandbox: {self._channel.value} exceeded {self._limit} bytes; "
-            "the call was killed"
-        )
-        raise ZygoteCallError(msg)
-
-    def text(self) -> str:
-        return self._data.decode("utf-8", errors="replace")
-
-    def data(self) -> bytearray:
-        """Конверт как есть: pydantic разбирает bytes-like без копии."""
-        return self._data
-
-
-class _Tee:
-    """Тройник двух приёмников одного канала."""
-
-    def __init__(self, first: ChunkSink, second: ChunkSink) -> None:
-        self._first = first
-        self._second = second
-
-    def feed(self, chunk: Chunk) -> None:
-        self._first(chunk)
-        self._second(chunk)
-
-
 class _RelayTee(StderrTee):
     """Tee релея: сырые строки stderr — в журнал вызова и в свой приёмник."""
 
     def __init__(
-        self, sinks: ChannelSinks | None, own: _CappedBuffer | _TailSink
+        self, sinks: ChannelSinks | None, own: CappedChannel | ChannelTail
     ) -> None:
         super().__init__(sinks, ToolChannel.STDERR)
         self._own = own
@@ -1173,22 +1134,6 @@ class _RelayTee(StderrTee):
     def raw(self, line: str) -> None:
         super().raw(line)
         self._own.feed(f"{line}\n".encode())
-
-
-class _TailSink:
-    """Хвост канала: объяснение сбоя, когда конверта нет."""
-
-    def __init__(self, limit: int) -> None:
-        self._limit = limit
-        self._tail = bytearray()
-
-    def feed(self, chunk: Chunk) -> None:
-        self._tail.extend(chunk)
-        if len(self._tail) > self._limit:
-            del self._tail[: len(self._tail) - self._limit]
-
-    def text(self) -> str:
-        return self._tail.decode("utf-8", errors="replace")
 
 
 class ZygoteToolCaller(ToolLauncher):
@@ -1214,14 +1159,32 @@ class ZygoteToolCaller(ToolLauncher):
     def supervisor(self) -> ZygoteSupervisor:
         return self._supervisor
 
+    MODULE_JOURNAL: ClassVar[tuple[ToolChannel, ...]] = (
+        ToolChannel.STDOUT,
+        ToolChannel.RESULT,
+        ToolChannel.FRAMES,
+    )
+    """Каналы вызова модуля для журнального тапа; stderr ведёт релей сам."""
+
+    SHELL_JOURNAL: ClassVar[tuple[ToolChannel, ...]] = (
+        ToolChannel.STDOUT,
+        ToolChannel.RESULT,
+    )
+    """Каналы shell-команды для журнального тапа."""
+
     def call_text(self, command: str, stdin: str) -> LaunchOutcome:
         """Shell-команда в изолированном ребёнке: stdout/stderr/rc как есть."""
         limit = self._profile.host.channel_limit_bytes
-        stdout = _CappedBuffer(limit, ToolChannel.STDOUT)
-        stderr = _CappedBuffer(limit, ToolChannel.STDERR)
+        stdout = CappedChannel(limit, ToolChannel.STDOUT.value)
+        stderr = CappedChannel(limit, ToolChannel.STDERR.value)
 
         relay = SandboxLogRelay(self._tool, _RelayTee(ToolChannelsTap.get(), stderr))
-        sinks = self._sinks(ToolChannel.STDOUT, stdout.feed, relay)
+
+        own: dict[ToolChannel, ChunkSink] = {
+            ToolChannel.STDERR: relay.feed,
+            ToolChannel.STDOUT: stdout.feed,
+        }
+        sinks = CallSinks.merged(own, self.SHELL_JOURNAL)
 
         shell = self._profile.run.shell
         if not shell:
@@ -1229,12 +1192,11 @@ class ZygoteToolCaller(ToolLauncher):
             raise ZygoteCallError(msg)
 
         argv = (shell, "-c", command)
+        plan = self._plan()
+
         try:
             outcome = self._grouped_call(
-                ToolCommand(argv=argv, stdin=stdin.encode("utf-8")),
-                argv,
-                sinks,
-                kind=CallKind.SHELL,
+                stdin.encode("utf-8"), argv, sinks, plan, kind=CallKind.SHELL
             )
         finally:
             relay.flush()
@@ -1253,25 +1215,90 @@ class ZygoteToolCaller(ToolLauncher):
 
         return LaunchOutcome(self._tool, run, self._diagnose(run, ""))
 
-    def run_tool(self, command: ToolCommand) -> ToolOutcome:
-        """Граница слоя: наружу только ошибки из контракта модуля."""
-        argv_tail = self._argv_tail(command)
+    def open(self, command: ToolCommand) -> ToolCall:
+        """Вызов модуля в песочнице: конфиг первым кадром, кадры тела наружу.
 
-        envelope = _CappedBuffer(
-            self._profile.host.channel_limit_bytes, ToolChannel.RESULT
+        Проводка и cgroup-leaf готовятся в потоке вызывающего; насос живёт
+        в PumpedCall и на любом исходе отпускает leaf и host-концы каналов.
+        """
+        argv_tail = self._argv_tail(command)
+        plan = self._plan()
+
+        envelope = CappedChannel(
+            self._profile.host.channel_limit_bytes, ToolChannel.RESULT.value
         )
-        stderr_tail = _TailSink(self._profile.host.stderr_tail_bytes)
+        stderr_tail = ChannelTail(self._profile.host.stderr_tail_bytes)
+        inbox = CallInbox()
 
         relay = SandboxLogRelay(
             self._tool, _RelayTee(ToolChannelsTap.get(), stderr_tail)
         )
-        sinks = self._sinks(ToolChannel.RESULT, envelope.feed, relay)
+
+        own: dict[ToolChannel, ChunkSink] = {
+            ToolChannel.STDERR: relay.feed,
+            ToolChannel.RESULT: envelope.feed,
+            ToolChannel.FRAMES: inbox.feed,
+        }
+        sinks = CallSinks.merged(own, self.MODULE_JOURNAL)
+
+        manager, leaf = self._acquire_leaf()
 
         try:
-            outcome = self._grouped_call(command, argv_tail, sinks)
-        finally:
-            relay.flush()
+            wired = self._supervisor.begin(
+                uuid.uuid4().hex,
+                argv_tail,
+                plan.limits,
+                isolate=True,
+                mounts=self._call_mounts,
+                cgroup_leaf=leaf,
+                images=plan.images,
+                mounting=plan.mounting,
+                staging=plan.staging,
+                cwd=plan.cwd,
+                kind=CallKind.MODULE,
+            )
+        except BaseException:
+            self._release_leaf(manager, leaf)
+            raise
 
+        entry = FrameInput(wired.channels.take_stdin())
+
+        def run(cancellation: RunCancellation) -> ZygoteOutcome:
+            try:
+                return self._supervisor.run_wired(
+                    wired,
+                    sinks,
+                    timeout_sec=plan.timeout_sec,
+                    kill_grace_sec=plan.kill_grace_sec,
+                    cancellation=cancellation,
+                )
+            finally:
+                relay.flush()
+                self._release_leaf(manager, leaf)
+
+        def finish(outcome: ZygoteOutcome) -> ToolOutcome:
+            return self.outcome_of(outcome, envelope, stderr_tail)
+
+        try:
+            call = PumpedCall(self._tool, entry, inbox, run, finish)
+        except BaseException:
+            # ход уже отменён: насос не родился, проводку прибираем сами;
+            # EOF stdin выведет тело, зигота пожнёт его сама
+            entry.abandon()
+            self._supervisor.abandon_wired(wired)
+            self._release_leaf(manager, leaf)
+            raise
+
+        entry.send_config(command.config)
+        return call
+
+    def outcome_of(
+        self,
+        outcome: ZygoteOutcome,
+        envelope: CappedChannel,
+        stderr_tail: ChannelTail,
+    ) -> ToolOutcome:
+        """Итог вызова модуля: диагностика песочницы плюс разбор конверта."""
         run = RunResult(
             exit_code=outcome.exit_code,
             stdout="",
@@ -1285,24 +1312,7 @@ class ZygoteToolCaller(ToolLauncher):
             self._log_failure(run, self._profile.host.fail_tail_chars)
 
         diagnostic = self._diagnose(run, stderr_tail.text())
-
-        reply_raw = envelope.data()
-        if not reply_raw:
-            msg = (
-                f"{self._tool}: no envelope on tool_result "
-                f"(rc={outcome.exit_code}, timed_out={outcome.timed_out}); "
-                f"tool_stderr={stderr_tail.text()!r}"
-            )
-            if diagnostic:
-                msg = f"{msg}; {diagnostic}"
-
-            raise ZygoteCallError(msg)
-
-        try:
-            reply = REPLY.validate_json(reply_raw)
-        except ValueError as exc:
-            msg = f"{self._tool}: envelope does not match contract: {exc}"
-            raise ZygoteCallError(msg) from exc
+        reply = EnvelopeReply.parse(self._tool, envelope.data(), run, diagnostic)
 
         return ToolOutcome(reply=reply, run=run, diagnostic=diagnostic)
 
@@ -1340,41 +1350,8 @@ class ZygoteToolCaller(ToolLauncher):
 
         return diagnostic
 
-    def _grouped_call(
-        self,
-        command: ToolCommand,
-        argv_tail: tuple[str, ...],
-        sinks: Mapping[ToolChannel, ChunkSink],
-        *,
-        kind: CallKind = CallKind.MODULE,
-    ) -> ZygoteOutcome:
-        """Вызов в собственном cgroup-leaf'е, если профиль его требует."""
-        group = GroupLimits.of_profile(self._profile)
-
-        if not group.requested:
-            return self._call(command, argv_tail, sinks, cgroup_leaf="", kind=kind)
-
-        manager = CgroupManager(self._profile.host.cgroup_base)
-        leaf = manager.acquire(group)
-
-        try:
-            return self._call(
-                command, argv_tail, sinks, cgroup_leaf=str(leaf), kind=kind
-            )
-        finally:
-            if note := manager.throttling(leaf):
-                logger.warning("zygote[%s]: %s", self._tool, note)
-            manager.release(leaf)
-
-    def _call(
-        self,
-        command: ToolCommand,
-        argv_tail: tuple[str, ...],
-        sinks: Mapping[ToolChannel, ChunkSink],
-        *,
-        cgroup_leaf: str,
-        kind: CallKind = CallKind.MODULE,
-    ) -> ZygoteOutcome:
+    def _plan(self) -> _CallPlan:
+        """Параметры одного вызова из профиля: лимиты, образы, пути."""
         timeout_sec = self._profile.limits.timeout_sec
         if timeout_sec is None:
             msg = f"zygote {self._tool}: profile without timeout_sec"
@@ -1392,23 +1369,70 @@ class ZygoteToolCaller(ToolLauncher):
         rendered = self._profile.render(dict(self._path_vars()))
         images = self._images_of(rendered)
 
-        return self._supervisor.call(
-            uuid.uuid4().hex,
-            argv_tail,
-            command.stdin,
-            limits,
-            sinks,
-            isolate=True,
-            mounts=self._call_mounts,
+        return _CallPlan(
             timeout_sec=float(timeout_sec),
             kill_grace_sec=self._profile.host.kill_grace_sec,
-            cgroup_leaf=cgroup_leaf,
+            limits=limits,
             images=images,
             mounting=self._mounting_of(images),
             staging=ZygoteMounts(rendered).staging(),
             cwd=rendered.run.cwd,
-            kind=kind,
         )
+
+    def _acquire_leaf(self) -> tuple[CgroupManager | None, str]:
+        """Cgroup-leaf вызова, если профиль требует групповые лимиты."""
+        group = GroupLimits.of_profile(self._profile)
+        if not group.requested:
+            return None, ""
+
+        manager = CgroupManager(self._profile.host.cgroup_base)
+        leaf = manager.acquire(group)
+
+        return manager, str(leaf)
+
+    def _release_leaf(self, manager: CgroupManager | None, leaf: str) -> None:
+        """Отпустить leaf вызова; отпускается ровно одной стороной."""
+        if manager is None:
+            return
+
+        leaf_path = Path(leaf)
+        if note := manager.throttling(leaf_path):
+            logger.warning("zygote[%s]: %s", self._tool, note)
+
+        manager.release(leaf_path)
+
+    def _grouped_call(
+        self,
+        stdin: bytes,
+        argv: tuple[str, ...],
+        sinks: Mapping[ToolChannel, ChunkSink],
+        plan: _CallPlan,
+        *,
+        kind: CallKind,
+    ) -> ZygoteOutcome:
+        """Вызов с готовым входом в собственном cgroup-leaf'е, если он нужен."""
+        manager, leaf = self._acquire_leaf()
+
+        try:
+            return self._supervisor.call(
+                uuid.uuid4().hex,
+                argv,
+                stdin,
+                plan.limits,
+                sinks,
+                isolate=True,
+                mounts=self._call_mounts,
+                timeout_sec=plan.timeout_sec,
+                kill_grace_sec=plan.kill_grace_sec,
+                cgroup_leaf=leaf,
+                images=plan.images,
+                mounting=plan.mounting,
+                staging=plan.staging,
+                cwd=plan.cwd,
+                kind=kind,
+            )
+        finally:
+            self._release_leaf(manager, leaf)
 
     def _images_of(self, rendered: SandboxProfile) -> tuple[ImageMount, ...]:
         """Образ workspace путями внутри зиготы; путь уже отрендерен профилем."""
@@ -1449,37 +1473,18 @@ class ZygoteToolCaller(ToolLauncher):
 
         return argv[self.ARGV_HEAD :]
 
-    @staticmethod
-    def _sinks(
-        own_channel: ToolChannel,
-        own: ChunkSink,
-        relay: SandboxLogRelay,
-    ) -> dict[ToolChannel, ChunkSink]:
-        """Приёмники вызова: stderr — через релей кадров, остальное — тройником.
 
-        Кадры `sandbox-mount:`/`sandbox-log:` из ребёнка поднимаются в журнал
-        приложения и не попадают ни в вывод команды, ни в хвост tool_stderr.
-        """
-        sinks: dict[ToolChannel, ChunkSink] = {
-            ToolChannel.STDERR: relay.feed,
-        }
+@dataclass(frozen=True)
+class _CallPlan:
+    """Параметры одного вызова, выведенные из профиля секции."""
 
-        journal = ToolChannelsTap.get()
-        journal_sink: ChunkSink | None = None
-        if journal is not None:
-            journal_sink = journal.sink_of(own_channel).feed
-
-        if journal_sink is None:
-            sinks[own_channel] = own
-        else:
-            sinks[own_channel] = _Tee(own, journal_sink).feed
-
-        if journal is not None:
-            for channel in (ToolChannel.STDOUT, ToolChannel.RESULT):
-                if channel not in sinks:
-                    sinks[channel] = journal.sink_of(channel).feed
-
-        return sinks
+    timeout_sec: float
+    kill_grace_sec: float
+    limits: ChildLimits
+    images: tuple[ImageMount, ...]
+    mounting: ImageMounting | None
+    staging: tuple[str, ...]
+    cwd: str
 
 
 class ZygoteRegistry:

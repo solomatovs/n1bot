@@ -33,9 +33,16 @@ from boba.canvas.journal import (
 from boba.identity.run import LiveStream, RunRegistry
 from boba.messaging import StreamAppended, StreamFeed
 from boba.toolkit.channels import JournalChannel, JournalChannels, ToolChannel
-from boba.toolkit.stream import ChannelSinks, StreamSink
+from boba.toolkit.frames import (
+    FrameCodec,
+    FrameLimit,
+    FrameProtocolError,
+    ToolFrame,
+)
+from boba.toolkit.stream import ChannelSinks, Chunk, StreamSink
 
 __all__ = [
+    "FrameHeadsSink",
     "JournalWatchSource",
     "StreamPump",
     "StreamPumps",
@@ -93,8 +100,16 @@ class ToolStream(ChannelSinks, CallStream, LiveStream):
         return all(recorder.closed for recorder in recorders)
 
     def sink_of(self, channel: JournalChannel) -> StreamSink:
-        """Приёмник канала; рекордер открывается при первом обращении."""
-        return self._open(channel)
+        """Приёмник канала; рекордер открывается при первом обращении.
+
+        Канал кадров журналируется заголовками: тела кадров бинарны и растут
+        как поток данных (аудио, файлы), в разборе сбоев от них толку нет.
+        """
+        recorder = self._open(channel)
+        if channel is not ToolChannel.FRAMES:
+            return recorder
+
+        return FrameHeadsSink(recorder)
 
     def close(self, note: str) -> None:
         """Закрыть все каналы вызова одной пометкой и разбудить слежение; повтор
@@ -171,6 +186,36 @@ class ToolStream(ChannelSinks, CallStream, LiveStream):
                 loop.call_soon_threadsafe(event.set)
             except RuntimeError:
                 logger.debug("stream wakeup after loop shutdown: %s", self._key.call_id)
+
+
+class FrameHeadsSink(StreamSink):
+    """Журнал канала кадров: строка заголовка и размер тела вместо тела.
+
+    Кадр, который не разбирается, отмечается строкой отказа: канал ведёт
+    сам лончер, и молчать о нарушении протокола здесь нельзя.
+    """
+
+    def __init__(self, recorder: StreamSink) -> None:
+        self._recorder = recorder
+        self._codec = FrameCodec(FrameLimit.HEADER_BYTES, FrameLimit.BODY_BYTES)
+
+    def feed(self, data: Chunk) -> None:
+        try:
+            frames = self._codec.feed(data)
+        except FrameProtocolError as exc:
+            self._recorder.feed_text(f"frame stream broken: {exc}\n")
+            return
+
+        for frame in frames:
+            self._recorder.feed_text(self._line(frame))
+
+    def feed_text(self, text: str) -> None:
+        self._recorder.feed_text(text)
+
+    @staticmethod
+    def _line(frame: ToolFrame) -> str:
+        header = frame.header.decode("utf-8", errors="replace")
+        return f"{header} +{len(frame.body)}b\n"
 
 
 class StreamPump:

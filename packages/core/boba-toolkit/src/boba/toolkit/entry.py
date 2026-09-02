@@ -1,9 +1,9 @@
 """Вход модуля инструментов и контракт вызова: адрес, argv, конверт, CLI.
 
 Одна и та же команда `python -m <модуль> <имя> --флаги` исполняется под
-launcher'ом приложения и человеком в терминале; разница только в источнике
-Injected-конфига (stdin либо файл --injected) и приёмнике результата (конверт
-в fd из env против stdout).
+launcher'ом приложения и человеком в терминале; разница в источнике
+Injected-конфига (кадр config от лончера, stdin либо файл --injected у
+человека) и приёмнике результата (конверт в fd из env против stdout).
 
 Ошибки:
 ArgumentTooLargeError — значение аргумента не помещается в argv (MAX_ARG_STRLEN).
@@ -39,6 +39,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 from boba.toolkit.calls import ToolCallView, ToolCallViews
 from boba.toolkit.channels import ToolChannel
 from boba.toolkit.failure import ValidationText
+from boba.toolkit.frames import FrameProtocolError, ToolIo
 from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.protocol import ReplyError, ReplyOk, ToolCommand
 from boba.toolkit.timing import Elapsed
@@ -178,8 +179,11 @@ class ToolArgv:
     """kwargs <-> argv по args_schema: одна логика у обёртки запуска и CLI.
 
     Правило одно: параметр, видимый LLM, — флаг argv; параметр с injected-
-    метадатой — ключ в JSON на stdin. Текстовые значения едут как есть,
-    остальные — JSON'ом в значении флага.
+    метадатой — ключ в JSON конфига, который едет телу первым кадром входа.
+    Текстовые значения едут как есть, остальные — JSON'ом в значении флага.
+
+    Особый случай — параметр типа ToolIo: это среда вызова, а не значение.
+    Хост его не сериализует, гость подставляет свой объект.
     """
 
     MAX_VALUE_BYTES: ClassVar[int] = 131_071
@@ -198,17 +202,20 @@ class ToolArgv:
         schema: type[BaseModel],
         kwargs: Mapping[str, object],
     ) -> ToolCommand:
-        """LLM-аргументы во флаги, injected-параметры в stdin."""
+        """LLM-аргументы во флаги, injected-параметры в конфиг вызова."""
         argv = address.argv_head()
 
-        stdin_payload: dict[str, Any] = {}
+        config_payload: dict[str, Any] = {}
         for name, field in schema.model_fields.items():
+            if cls.is_io(field.annotation):
+                continue
+
             if name not in kwargs:
                 continue
 
             value = kwargs[name]
             if cls._injected(field.metadata):
-                stdin_payload[name] = cls.reveal(field.annotation, value)
+                config_payload[name] = cls.reveal(field.annotation, value)
                 continue
 
             if value is None:
@@ -218,17 +225,17 @@ class ToolArgv:
             argv.append(cls.flag_of(name))
             argv.append(encoded)
 
-        stdin = json.dumps(stdin_payload, ensure_ascii=False).encode("utf-8")
-        return ToolCommand(argv=tuple(argv), stdin=stdin)
+        config = json.dumps(config_payload, ensure_ascii=False).encode("utf-8")
+        return ToolCommand(argv=tuple(argv), config=config)
 
     @classmethod
     def parse(
         cls,
         tool: ToolLike,
         argv: Sequence[str],
-        stdin: bytes,
+        config: bytes,
     ) -> dict[str, Any]:
-        """Обратный разбор: флаги и stdin в kwargs вызова тела."""
+        """Обратный разбор: флаги и конфиг вызова в kwargs тела."""
         schema = cls.schema_of(tool)
         by_flag: dict[str, str] = {}
         for name in schema.model_fields:
@@ -251,7 +258,7 @@ class ToolArgv:
             field = schema.model_fields[name]
             kwargs[name] = cls._decode(name, field.annotation, raw)
 
-        kwargs.update(cls._parse_injected(tool, schema, stdin))
+        kwargs.update(cls._parse_injected(tool, schema, config))
         return kwargs
 
     @classmethod
@@ -265,13 +272,30 @@ class ToolArgv:
 
     @classmethod
     def injected_fields(cls, schema: type[BaseModel]) -> dict[str, Any]:
-        """Injected-параметры схемы: имя -> аннотация."""
+        """Injected-параметры схемы: имя -> аннотация. Среда вызова не в счёт."""
         fields: dict[str, Any] = {}
         for name, field in schema.model_fields.items():
+            if cls.is_io(field.annotation):
+                continue
+
             if cls._injected(field.metadata):
                 fields[name] = field.annotation
 
         return fields
+
+    @classmethod
+    def io_field(cls, schema: type[BaseModel]) -> str:
+        """Имя параметра среды вызова; пусто — тело её не просило."""
+        for name, field in schema.model_fields.items():
+            if cls.is_io(field.annotation):
+                return name
+
+        return ""
+
+    @staticmethod
+    def is_io(annotation: Any) -> bool:
+        """Параметр — среда вызова: значение подставляет гость, а не хост."""
+        return annotation is ToolIo
 
     @staticmethod
     def flag_of(param: str) -> str:
@@ -355,26 +379,26 @@ class ToolArgv:
 
     @classmethod
     def _parse_injected(
-        cls, tool: ToolLike, schema: type[BaseModel], stdin: bytes
+        cls, tool: ToolLike, schema: type[BaseModel], config: bytes
     ) -> dict[str, Any]:
         injected = cls.injected_fields(schema)
         if not injected:
             return {}
 
         try:
-            payload = json.loads(stdin.decode("utf-8")) if stdin else {}
+            payload = json.loads(config.decode("utf-8")) if config else {}
         except ValueError as exc:
-            msg = f"stdin config is not valid JSON: {exc}"
+            msg = f"call config is not valid JSON: {exc}"
             raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from exc
 
         if not isinstance(payload, dict):
-            msg = "stdin config must be a JSON object keyed by parameter names"
+            msg = "call config must be a JSON object keyed by parameter names"
             raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
 
         kwargs: dict[str, Any] = {}
         for name, annotation in injected.items():
             if name not in payload:
-                msg = f"injected parameter {name!r} is missing from stdin config"
+                msg = f"injected parameter {name!r} is missing from the call config"
                 raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
 
             try:
@@ -391,8 +415,10 @@ class ToolMain:
 
     Конверт пишется в fd из env-переменной канала tool_result, когда она
     есть, — так зовёт launcher; без неё content печатается в stdout — так
-    зовёт человек. Injected-конфиг приезжает JSON'ом со stdin либо файлом
-    --injected; сборка его из toml приложения — дело CLI над модулем.
+    зовёт человек. Injected-конфиг приезжает первым кадром входа (kind
+    config) либо файлом --injected; сборка его из toml приложения — дело CLI
+    над модулем. Тело, объявившее параметр ToolIo, получает кадровую среду
+    вызова: у запуска лончером она привязана к каналам, у человека отвязана.
     """
 
     class Exit(IntEnum):
@@ -503,13 +529,19 @@ class ToolMain:
         injected_path = cls._pop_path(arguments, EntryFlag.INJECTED)
 
         config_read = Elapsed()
-        stdin = cls._config_source(tool, injected_path)
-        kwargs = ToolArgv.parse(tool, arguments, stdin)
+        io = cls._call_io(injected_path)
+        config = cls._config_source(tool, io, injected_path)
+        kwargs = ToolArgv.parse(tool, arguments, config)
+
+        io_param = ToolArgv.io_field(ToolArgv.schema_of(tool))
+        if io_param:
+            kwargs[io_param] = io
+
         logger.info(
             "tool[%s]: args ready in %dms (config %d bytes)",
             tool.name,
             config_read.ms(),
-            len(stdin),
+            len(config),
         )
 
         reply = cls._call(tool, kwargs)
@@ -538,22 +570,66 @@ class ToolMain:
         arguments.pop(index)
         return arguments.pop(index)
 
-    @classmethod
-    def _config_source(cls, tool: ToolLike, injected_path: str | None) -> bytes:
-        """Injected-конфиг: файл --injected либо JSON со stdin."""
-        schema = ToolArgv.schema_of(tool)
-        injected = ToolArgv.injected_fields(schema)
-        if not injected:
-            return b"{}"
+    @staticmethod
+    def _call_io(injected_path: str | None) -> ToolIo:
+        """Среда вызова: каналы лончера либо отвязанная среда человека.
 
+        Признак запуска лончером — канал кадров в env: без него читать кадры
+        неоткуда, и вход остаётся пустым.
+        """
+        if injected_path is not None:
+            return ToolIo.detached()
+
+        raw = os.environ.get(ToolChannel.FRAMES.env_name)
+        if raw is None:
+            return ToolIo.detached()
+
+        try:
+            frames_fd = int(raw)
+        except ValueError as exc:
+            msg = f"{ToolChannel.FRAMES.env_name} is not a descriptor number: {raw!r}"
+            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from exc
+
+        return ToolIo.on_channels(sys.stdin.fileno(), frames_fd)
+
+    @classmethod
+    def _config_source(
+        cls, tool: ToolLike, io: ToolIo, injected_path: str | None
+    ) -> bytes:
+        """Injected-конфиг: файл --injected, кадр config либо stdin человека.
+
+        Лончер всегда шлёт конфиг первым кадром; у человека кадров нет, и
+        JSON приезжает обычным stdin либо файлом флага.
+        """
         if injected_path is not None:
             return cls._config_from_file(injected_path)
 
+        schema = ToolArgv.schema_of(tool)
+        injected = ToolArgv.injected_fields(schema)
+        io_param = ToolArgv.io_field(schema)
+        if not injected and not io_param:
+            return b"{}"
+
+        if io.attached:
+            return cls._config_frame(io)
+
+        return cls._config_from_stdin()
+
+    @staticmethod
+    def _config_frame(io: ToolIo) -> bytes:
+        try:
+            return io.config()
+        except FrameProtocolError as exc:
+            msg = f"the call stream carries no config frame: {exc}"
+            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from exc
+
+    @staticmethod
+    def _config_from_stdin() -> bytes:
         data = sys.stdin.buffer.read()
         if not data:
             msg = (
                 "injected config expected on stdin "
-                f"(or pass {EntryFlag.INJECTED} <json>)"
+                f"(or pass {EntryFlag.INJECTED} <path>)"
             )
             raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
 
@@ -561,7 +637,7 @@ class ToolMain:
 
     @staticmethod
     def _config_from_file(path: str) -> bytes:
-        """Файл с тем же JSON, что launcher кладёт в stdin."""
+        """Файл с тем же JSON, что лончер шлёт кадром config."""
         try:
             return Path(path).read_bytes()
         except OSError as exc:

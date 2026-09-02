@@ -94,7 +94,7 @@ class TestAddress:
 
 
 class TestArgv:
-    def test_llm_args_go_to_flags_injected_to_stdin(self) -> None:
+    def test_llm_args_go_to_flags_injected_to_config(self) -> None:
         command = ToolArgv.render(
             ToolAddress.of(FAKE),
             ToolArgv.schema_of(FAKE),
@@ -105,7 +105,7 @@ class TestArgv:
         if argv[4:] != ["--text", "hi there", "--repeat", "3"]:
             raise AssertionError('argv[4:] == ["--text", "hi there", "--repeat", "3"]')
 
-        payload = json.loads(command.stdin)
+        payload = json.loads(command.config)
         if payload["cfg"]["token"] != "s3cret-token":
             raise AssertionError('payload["cfg"]["token"] == "s3cret-token"')
 
@@ -126,7 +126,7 @@ class TestArgv:
             {"text": "план б", "repeat": 2, "cfg": CFG},
         )
 
-        kwargs = ToolArgv.parse(FAKE, command.argv[4:], command.stdin)
+        kwargs = ToolArgv.parse(FAKE, command.argv[4:], command.config)
 
         if kwargs["text"] != "план б":
             raise AssertionError('kwargs["text"] == "план б"')

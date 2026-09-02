@@ -2,7 +2,7 @@
 
 Ставится первой, на нетронутое тело: захватывает адрес модуля, оригинальную
 схему и само тело; вызов уезжает командой модуля инструментов через порт
-ToolLauncher.
+ToolLauncher накопительно (CollectedCall) — модели нужен итог, а не кадры.
 
 Ошибки:
 PayloadFailureError — ожидаемый отказ тела (EXPECTED), отказ контракта
@@ -28,7 +28,7 @@ from boba.toolkit.entry import (
     ToolArgv,
     ToolLike,
 )
-from boba.toolkit.launcher import PayloadFailureError, ToolLauncher
+from boba.toolkit.launcher import CollectedCall, PayloadFailureError, ToolLauncher
 
 __all__ = ["ToolProcessWrap", "WrapErrorKind"]
 
@@ -82,7 +82,7 @@ class ToolProcessWrap:
                     str(WrapErrorKind.ARGUMENT_TOO_LARGE), str(exc)
                 ) from exc
 
-            outcome = launcher.run_tool(command)
+            outcome = CollectedCall.of(launcher, command)
 
             reply = outcome.reply
             if isinstance(reply, ReplyError):

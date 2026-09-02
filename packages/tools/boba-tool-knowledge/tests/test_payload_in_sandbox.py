@@ -22,7 +22,7 @@ from boba.sandbox import (
 )
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
 from boba.stand.sandbox import needs_sandbox, needs_userns, sandbox_profile
-from boba.toolkit.launcher import LauncherError, ToolOutcome
+from boba.toolkit.launcher import CollectedCall, LauncherError, ToolOutcome
 from boba.toolkit.protocol import ReplyError, ReplyOk, ToolCommand
 
 _TESSDATA = "/usr/share/tessdata"
@@ -87,8 +87,8 @@ def _run_doc(
         argv.append(f"--{flag}")
         argv.append(value)
 
-    stdin = json.dumps({"cfg": cfg}).encode("utf-8")
-    return caller.run_tool(ToolCommand(argv=tuple(argv), stdin=stdin))
+    config = json.dumps({"cfg": cfg}).encode("utf-8")
+    return CollectedCall.of(caller, ToolCommand(argv=tuple(argv), config=config))
 
 
 @pytest.fixture

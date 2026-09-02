@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
 
 import pytest
 from pydantic import SecretStr
 
 from boba.stand.fake_toolmod import FakeConfig
 from boba.toolkit.entry import ToolMain
+from boba.toolkit.frames import ToolFrame
 from boba.toolkit.launcher import (
     LaunchOutcome,
     PayloadFailureError,
     RunResult,
+    ToolCall,
     ToolLauncher,
     ToolOutcome,
 )
@@ -42,15 +45,22 @@ def fresh_tool():
     return ToolMain.toolset(fake_toolmod.fake_echo)[0]
 
 
-class RecordingLauncher(ToolLauncher):
-    """Порт запуска в тестах: запоминает команду, отдаёт заданный конверт."""
+class RecordedCall(ToolCall):
+    """Вызов-заглушка: кадров у тела нет, конверт задан тестом."""
 
     def __init__(self, reply_json: str) -> None:
-        self.commands: list[ToolCommand] = []
         self._reply = reply_json
 
-    def run_tool(self, command: ToolCommand) -> ToolOutcome:
-        self.commands.append(command)
+    def send(self, frame: ToolFrame) -> None:
+        raise NotImplementedError
+
+    def done_sending(self) -> None:
+        return
+
+    def frames(self) -> Iterator[ToolFrame]:
+        return iter(())
+
+    def result(self) -> ToolOutcome:
         return ToolOutcome(
             reply=REPLY.validate_json(self._reply),
             run=RunResult(
@@ -58,6 +68,21 @@ class RecordingLauncher(ToolLauncher):
             ),
             diagnostic="",
         )
+
+    def close(self) -> None:
+        return
+
+
+class RecordingLauncher(ToolLauncher):
+    """Порт запуска в тестах: запоминает команду, отдаёт заданный конверт."""
+
+    def __init__(self, reply_json: str) -> None:
+        self.commands: list[ToolCommand] = []
+        self._reply = reply_json
+
+    def open(self, command: ToolCommand) -> ToolCall:
+        self.commands.append(command)
+        return RecordedCall(self._reply)
 
     def call_text(self, command: str, stdin: str) -> LaunchOutcome:
         raise NotImplementedError
@@ -94,8 +119,8 @@ class TestSandboxMode:
             raise AssertionError('"--text" in command.argv')
         if "t0ken" in " ".join(command.argv):
             raise AssertionError('"t0ken" not in " ".join(command.argv)')
-        if b"t0ken" not in command.stdin:
-            raise AssertionError('b"t0ken" in command.stdin')
+        if b"t0ken" not in command.config:
+            raise AssertionError('b"t0ken" in command.config')
 
     def test_error_reply_raises_payload_failure(self) -> None:
         tool = fresh_tool()

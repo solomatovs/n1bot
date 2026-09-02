@@ -16,6 +16,7 @@ from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
 from boba.stand.sandbox import needs_sandbox, needs_userns, sandbox_profile
 from boba.tool.kb.confluence.ingest_tools import IngestWarmupConfig
 from boba.toolkit.entry import ToolArgv
+from boba.toolkit.launcher import CollectedCall
 from boba.toolkit.protocol import ReplyError, ToolCommand
 
 MODULE = "boba.tool.kb.confluence.ingest_tools"
@@ -68,11 +69,11 @@ def test_module_loads_and_validates_config(raw_config: DictConfig) -> None:
             "--page-ids",
             '["1"]',
         ),
-        stdin=b'{"cfg": {}}',
+        config=b'{"cfg": {}}',
     )
 
     try:
-        outcome = _caller(raw_config).run_tool(command)
+        outcome = CollectedCall.of(_caller(raw_config), command)
     finally:
         ZygoteRegistry.stop_all()
 
