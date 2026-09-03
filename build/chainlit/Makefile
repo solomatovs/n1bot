@@ -115,8 +115,18 @@ MERMAID_VERSION ?= 11.16.1
 MERMAID_URL     ?= https://registry.npmjs.org/mermaid/-/mermaid-$(MERMAID_VERSION).tgz
 WEB_FILES       := $(WEBASSETS_DIR)/katex/katex.min.css $(WEBASSETS_DIR)/inter/inter.css $(WEBASSETS_DIR)/mermaid/mermaid.min.js
 
+# фронт chainlit собирается из исходников тега с overlay web/chainlit-ui поверх:
+# версия — в UPSTREAM рядом с overlay, offline-сборку кормит pnpm-store из fetch
+UI_DIR          := $(WEB_DIR)/web/chainlit-ui
+CHAINLIT_VERSION := $(shell cat $(UI_DIR)/UPSTREAM)
+CHAINLIT_SRC_URL ?= https://codeload.github.com/Chainlit/chainlit/tar.gz/refs/tags/$(CHAINLIT_VERSION)
+CHAINLIT_TARBALL := $(DEPS_DIR)/chainlit-$(CHAINLIT_VERSION).tar.gz
+CHAINLIT_STORE  := $(DEPS_DIR)/chainlit-ui-store-$(CHAINLIT_VERSION).tar.gz
+UI_DIST         := $(SRC_DIR)/compose/$(APP)/app_root/ui
+
 INPUTS          := $(BWRAP_TARBALL) $(LIBFUSE_TARBALL) $(E2FSPROGS_TARBALL) $(UV_BIN) \
-                   $(TESS_FILES) $(FASTEMBED_STAMPS) $(ONNX_DIRS) $(WEB_FILES)
+                   $(TESS_FILES) $(FASTEMBED_STAMPS) $(ONNX_DIRS) $(WEB_FILES) \
+                   $(CHAINLIT_TARBALL) $(CHAINLIT_STORE)
 
 # что кладёт цель sandbox: нужно dev-дереву и релизу
 SANDBOX_PARTS   := $(SANDBOX_DIR)/third/bin/bwrap $(SANDBOX_DIR)/third/bin/fuse2fs $(SANDBOX_DIR)/workspace.ext4
@@ -149,7 +159,8 @@ DOCKER_ARGS      = --build-arg GLIBC_IMAGE=$(GLIBC_IMAGE)              \
     --build-arg LIBFUSE_VERSION=$(LIBFUSE_VERSION)                     \
     --build-arg E2FSPROGS_VERSION=$(E2FSPROGS_VERSION)                 \
     --build-arg SANDBOX_WS_SIZE=$(SANDBOX_WS_SIZE)                     \
-    --build-arg NODE_IMAGE=$(NODE_IMAGE)
+    --build-arg NODE_IMAGE=$(NODE_IMAGE)                               \
+    --build-arg CHAINLIT_VERSION=$(CHAINLIT_VERSION)
 
 # аргументы стадий одного приложения
 APP_ARGS         = --build-arg APP=$(APP)                           \
@@ -235,12 +246,14 @@ help:
 	echo "  make all       fetch + sandbox + plugin-rootfs-all + build"
 	echo "  make web       скрипт страницы для dev-дерева: npm ci/check/build в $(NODE_IMAGE) -> assets/public/page.js"
 	echo "                 (в образ его собирает стадия web-build, отдельно звать не нужно)"
+	echo "  make chainlit-ui  фронт chainlit $(CHAINLIT_VERSION) с overlay web/chainlit-ui (offline) -> $(UI_DIST);"
+	echo "                 dev зовёт сам, в образ его собирает стадия chainlit-ui-build"
 	echo ""
 	echo "  Версия одна на все пакеты: version — показать, version-set VER=X.Y.Z — проставить"
 	echo ""
 	echo "  Закрытый контур: conf/{pip.conf,uv.toml} — индексы, conf/ca-chain.crt — CA;"
 	echo "  прокси из env уходит в docker; зеркала tarball'ов: UV_URL, BWRAP_URL, LIBFUSE_URL,"
-	echo "  E2FSPROGS_URL, TESSDATA_REPO, KATEX_URL, INTER_URL, MERMAID_URL, ONNX_HUB_URL"
+	echo "  E2FSPROGS_URL, TESSDATA_REPO, KATEX_URL, INTER_URL, MERMAID_URL, ONNX_HUB_URL, CHAINLIT_SRC_URL"
 	echo ""
 	echo "  Переменные: BOBA_TAG, NO_CACHE=1, PYTHON_VERSION=$(PYTHON_VERSION), GLIBC_IMAGE, GCC_IMAGE,"
 	echo "              PYTHON_IMAGE, INSTALL_DIR, DATA_DIR, DEST_DIR; хосту нужен python >= 3.11"
@@ -321,6 +334,17 @@ $(WEBASSETS_DIR)/mermaid/mermaid.min.js:
 	cp "$$tmp/package/dist/mermaid.min.js" "$@"
 	rm -rf "$$tmp"
 
+$(CHAINLIT_TARBALL):
+	@$(call fetch,$(CHAINLIT_SRC_URL),$@)
+
+# зависимости фронта chainlit одним архивом pnpm-store: сборка потом идёт без сети
+$(CHAINLIT_STORE): $(CHAINLIT_TARBALL)
+	@echo "== pnpm-store фронта chainlit $(CHAINLIT_VERSION): $(NODE_IMAGE) =="
+	docker run --rm $(PROXY_ENV) --entrypoint /bin/sh -u "$$(id -u):$$(id -g)" \
+	    -v "$(DEPS_DIR):/deps" -v "$(SCRIPTS_DIR):/scripts:ro" $(NODE_IMAGE) \
+	    /scripts/chainlit_ui.sh store "/deps/$(notdir $(CHAINLIT_TARBALL))" "/deps/$(notdir $@)"
+	ls -la "$@"
+
 # среда сборки и качалок моделей: gcc + python + индексы и CA закрытого контура
 .PHONY: base
 base: $(UV_BIN)
@@ -400,7 +424,7 @@ test: build
 
 # что обязано лежать в дереве установки
 RELEASE_PARTS_common := sandbox/plugins sandbox/workspace.ext4 third/bin/bwrap third/bin/fuse2fs \
-                        app/bin app_root/public app_root/public/page.js app_root/public/vendor
+                        app/bin app_root/public app_root/public/page.js app_root/public/vendor app_root/ui
 RELEASE_PARTS := $(RELEASE_PARTS_common) models/onnx-genai models/fastembed models/tessdata
 
 # дерево установки из готового образа: пути и шебанги переводятся с DEST_DIR на INSTALL_DIR
@@ -465,6 +489,7 @@ dev: $(PAGE_JS)
 	cp -a "$(ASSETS_DIR)/.chainlit/config.toml" "$(ASSETS_DIR)/.chainlit/translations" "$(OUT)/app_root/.chainlit/"
 	cp -a "$(ASSETS_DIR)/chainlit.md" "$(OUT)/app_root/"
 	cp -a "$(ASSETS_DIR)/public/." "$(OUT)/app_root/public/"
+	$(MAKE) -f $(MAKEFILE) chainlit-ui
 	export BOBA_BASE="$(DEST_DIR)" BOBA_VERSION="$(VERSION)" BOBA_DATA="$(DEST_DIR)/data"
 	envsubst '$${BOBA_BASE} $${BOBA_VERSION} $${BOBA_DATA}' < "$(CONF_DIR)/boba.env" > "$(OUT)/conf/boba.env"
 	chmod go-w "$(OUT)"
@@ -500,3 +525,15 @@ $(PAGE_JS): $(PAGE_SRCS)
 
 .PHONY: web
 web: $(PAGE_JS)
+
+# фронт chainlit для dev-дерева: тот же скрипт, что у стадии chainlit-ui-build
+.PHONY: chainlit-ui
+chainlit-ui:
+	@$(check-inputs)
+	echo "== фронт chainlit $(CHAINLIT_VERSION) + overlay: $(NODE_IMAGE) -> $(UI_DIST) =="
+	mkdir -p "$(UI_DIST)"
+	docker run --rm --network none --entrypoint /bin/sh -u "$$(id -u):$$(id -g)" \
+	    -v "$(DEPS_DIR):/deps:ro" -v "$(SCRIPTS_DIR):/scripts:ro" -v "$(UI_DIR):/ui:ro" \
+	    -v "$(UI_DIST):/out" $(NODE_IMAGE) \
+	    /scripts/chainlit_ui.sh build "/deps/$(notdir $(CHAINLIT_TARBALL))" "/deps/$(notdir $(CHAINLIT_STORE))" /ui/overlay /out
+	ls -la "$(UI_DIST)/assets" | head -5
