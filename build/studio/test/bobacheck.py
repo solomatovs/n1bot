@@ -76,6 +76,7 @@ check("pip module", lambda: run(sys.executable, "-m", "pip", "--version"))
 
 # 2) внешние зависимости, поставленные offline из wheelhouse
 print("== third-party imports ==")
+import glob
 import importlib
 
 THIRD_PARTY = {
@@ -211,7 +212,7 @@ if APP == "studio":
     print("== workflow page ==")
     check("workflow page built", t_workflow_page)
 
-# 7) веса эмбеддера: лежат рядом с моделями чата и едут в песочницу биндом
+# 7) образы корня плагинов: по одному rootfs.ext4 на пакет с entry point boba.tools
 print("== plugin rootfs images ==")
 PLUGINS_DIR = os.path.join(BASE_DIR, "sandbox", "plugins")
 
@@ -233,27 +234,27 @@ def t_plugin_images_present():
 
 check("plugin images present", t_plugin_images_present)
 
-print("== fastembed weights baked into kb plugin image ==")
+# 8) веса эмбеддера: лежат в релизе рядом с моделями и едут в песочницу kb биндом
+print("== fastembed weights shipped next to the models ==")
 EMBED_DIR = os.path.join(BASE_DIR, "models", "fastembed")
 KB_IMAGE = os.path.join(PLUGINS_DIR, "boba-tool-knowledge", "rootfs.ext4")
-KB_MIN_BYTES = 2 * 1024**3
 
 
-def t_embed_weights_baked():
-    if os.path.isdir(EMBED_DIR):
-        msg = f"веса эмбеддера в релизе, а должны быть в образе: {EMBED_DIR}"
-        raise RuntimeError(msg)
+def t_embed_weights_shipped():
+    if not os.path.isdir(EMBED_DIR):
+        raise RuntimeError(f"нет каталога {EMBED_DIR}")
+
+    weights = glob.glob(os.path.join(EMBED_DIR, "models--*", "**", "*.onnx"), recursive=True)
+    if not weights:
+        raise RuntimeError(f"нет весов *.onnx в {EMBED_DIR}")
 
     if not os.path.isfile(KB_IMAGE):
         raise RuntimeError(f"нет образа {KB_IMAGE}")
 
-    size = os.path.getsize(KB_IMAGE)
-    if size < KB_MIN_BYTES:
-        msg = f"образ kb подозрительно мал ({size} байт): весов внутри нет"
-        raise RuntimeError(msg)
+    print(f"  файлов весов: {len(weights)}")
 
 
-check("weights baked", t_embed_weights_baked)
+check("weights shipped", t_embed_weights_shipped)
 
 print()
 if failures:
