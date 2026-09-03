@@ -11,6 +11,7 @@ __pycache__
 !/docs/llm-params-verification.md
 !/docs/chainlit-frontend-patch.md
 !/docs/nginx-recommended-config.md
+!/docs/user-connections-redesign-plan.md
 .claude
 CLAUDE.md
 
