@@ -22,18 +22,16 @@ from boba.toolkit.entry import EntryFlag, ToolMain
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.ports import Inbound, Outbound, RawInbound, RawOutbound
 from boba.toolkit.result import TextResult, ToolResult, render_for_llm
+from boba.toolkit.types import SecretRevealing
 
 
-class FakeConfig(BaseModel):
-    """Конфиг с секретом: проверяет stdin-доставку и revealed()."""
+class FakeConfig(SecretRevealing):
+    """Конфиг с секретом: проверяет доставку каналом injected и раскрытие SecretStr."""
 
     SECTION: ClassVar[str] = "tool.fake"
 
     token: SecretStr
     limit: int = Field(gt=0)
-
-    def revealed(self) -> dict[str, object]:
-        return {"token": self.token.get_secret_value(), "limit": self.limit}
 
 
 class FakeUnavailableError(Exception):

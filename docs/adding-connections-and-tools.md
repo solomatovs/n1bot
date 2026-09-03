@@ -84,10 +84,9 @@ LLM  ──tool_call {sql: "...", connection_name: "main"}──▶  прило�
   содержимое ложится в конфиг как секция `tool.<секция>`, интерполяции
   `${env.*}`, `${postgres}`, `${site.*}` резолвятся от корня.
 - **Launcher / провайдер** — способ исполнения тела: секция
-  `[tool_launcher]`, `provider = "process"` (dev-хост, субпроцесс) или
-  `"sandbox"` (контейнер/релиз, зигота в bwrap).
-- **Зигота** — резидентный процесс внутри песочницы одной секции: импортирует
-  модули инструментов один раз, на каждый вызов форкает исполнителя.
+  `[tool_launcher]`, `provider = "process"` (используется для отладки, запускает обычный sub-process) или
+  `"sandbox"` (используется в релиз, запуск процесса происходит внутри изолированного контейнера с использованием утилиты bwrap).
+- **Зигота** — заранее подготовленный процесс (стартует вместе со стартом самого приложения), который готовиться для каждого отдельного плагина. Подготовка заключается в том, что процесс импортирует всё необходимое для работы (прогревает кэш), и соответственно когда нужно запустить инструмент приложение просто делает fork зиготы, что сокращает время на старта, по сравнению если бы мы поднимали процесс каждый раз заново.
 - **Конверт** — JSON-ответ тела: `ReplyOk(content, artifact)` либо
   `ReplyError(kind, message)`. Уезжает дескриптором `--fd-result`.
 
@@ -167,6 +166,7 @@ class WordCountErrorKind(StrEnum):
 ### Шаг 3. Тело
 
 ```python
+# tools.py
 @tool
 async def wordcount(
     text: Annotated[str, Field(min_length=1, description="Текст для подсчёта")],
@@ -217,7 +217,7 @@ if __name__ == "__main__":
 
 ```python
 """Манифест плагина wordcount: entry point группы boba.tools."""
-
+# plugin.py
 from typing import Final
 
 from boba.tool.wordcount.tools import TOOLS
@@ -226,14 +226,12 @@ from boba.toolkit.manifest import ToolPluginManifest
 MANIFEST: Final = ToolPluginManifest(section="wordcount", tools=tuple(TOOLS))
 ```
 
-`section` — идентификатор плагина. Он же секция `tool.wordcount` и файл
-`conf/plugins/wordcount.toml`. `config_model` и `build` манифеста не
-нужны: это старый фабричный путь (так собран `bash`), новые плагины
-получают конфиг только injected-параметром.
+`section` — идентификатор плагина. Когда приложение стартует, оно загружает основной конфиг приложения `config.toml`, а дальше выполняет поиск плагинов по entrypoint'ам внутри установленных пакетов. Каждый плагин рассматривается как tool у которого есть свой собственный под конфиг, который ищется приложением в локации `conf/plugins/<section>.toml`. Далее загружает этот файл как если бы, содержимое этого файла находилось в основном конфиге приложения в секции `[tool.<section>]`. Для тебя это означает, что можно использовать интерполяцию и в конфиге plugin'а использовать ключи из основного конфига приложения, например вот так можно отрендерить порт приложения `${env.port}`
 
 ### Шаг 5. pyproject
 
 ```toml
+# pyproject.toml
 [project]
 name = "boba-tool-wordcount"
 version = "0.0.15.dev6"
@@ -249,15 +247,13 @@ payload = []
 imports = ["boba.tool.wordcount.tools"]
 ```
 
-- `payload` — зависимости только тела (клиенты, парсеры, ML). Хост их не
-  ставит: в его процессе тела не исполняются. У wordcount их нет.
-- `[tool.boba.sandbox]` — из чего собрать образ песочницы; подробно в
-  разделе 7. `imports` — смоук-проверка образа после сборки.
+- `payload` — зависимости тела tools'а (различные клиенты, например psycopg2 или clickhouse драйверы, парсеры, например bs4, markdownlify и прочее). Основное приложение (его называют Хост) не знает об этих зависимостях ничего и никогда не ставит их у себя. Таким образом каждый tool это упакованный мини проект на python с pyproject.toml, entrypoint и функциями, со своими зависимостями и логикой, которую можно запустить и проверить без участия LLM.
+- `[tool.boba.sandbox]` — это описание для release-сборщика. Ему необходимо знать какие python-пакеты нужно поставить внутрь изолированной песочницы, какие apt/yum зависимости (к примеру для распознавания текста используется tessdata, а для чтения pdf/xlsx/odt/docs и прочего нативный пакет liteparce); подробно в
+  разделе 7. `imports` — смоук-проверка образа после сборки. Запускает release-сборщик косле того как sandbox твоего плагина будет собран. Позволяет тебе как разработчику плагина определить логику проверки работоспособности пакета после сборки. Например можно попробовать выполнить `import psycopg3` в плагине для работы с postgres и проверить таким образом, установился ли psycopg3 внутрь песочницы
 
-### Шаг 6. Файл конфига в развёртывании
+### Шаг 6. Файл конфига
 
-Обязательный шаг: установленный плагин без файла — ошибка старта
-`conf/plugins/wordcount.toml is missing`. Файл кладётся в каждое
+Плагин не стартует без файла конфигураций - `conf/plugins/wordcount.toml is missing`. Файл кладётся в каждое
 развёртывание, где плагин установлен: `compose/chainlit/conf/plugins/` и
 `compose/studio/conf/plugins/`.
 
@@ -271,40 +267,80 @@ top       = 20
 ```
 
 - `enable` — выключенная секция не загружается вовсе.
-- `tools` — allowlist имён: инструмент, которого нет в списке, LLM не
-  получит, даже если он есть в `TOOLS`. Так администратор режет плагин.
-- Остальные ключи корня — поля вашей модели (`WordCountConfig`).
-- `[sandbox]` — изоляция тела в sandbox-режиме: по умолчанию нет сети,
+- `tools` — allowlist имён инструментов которые доступны llm. Инструменты, которых нет в списке, LLM не получит, даже если они есть в `TOOLS`. Так администратор контролирует список доступных инструментов.
+- Остальные ключи конфига — это поля вашей модели (`WordCountConfig`).
+- `[sandbox]` — особенности изоляции в sandbox-режиме запуска: по умолчанию нет сети,
   нет воркспейса, 1 GiB памяти. Пустая таблица значит «дефолт». Все ключи
   в разделе 5.6.
 
-### Шаг 7. Что уезжает по проводу
+### Шаг 7. Что находится в cfg и откуда берётся каждый параметр
 
-Хост собирает значение `cfg` так: читает `SECTION` с аннотации, зовёт
-`bind(config, "tool.wordcount", WordCountConfig)`, получает модель. На
-вызове `ToolArgv.render` раскладывает kwargs: LLM-аргументы во флаги,
-injected — в один JSON-объект, ключ которого равен имени параметра:
+Команда тела собирается из подписи функции. У `wordcount` два параметра,
+и каждый приезжает своим путём:
+
+```python
+async def wordcount(
+    text: Annotated[str, Field(...)],            # LLM-аргумент  → флаг argv  --text
+    cfg:  Annotated[WordCountConfig, Injected],  # injected      → JSON-канал, ключ "cfg"
+)
+```
+
+| Параметр подписи | Признак | Откуда значение | Как едет в тело |
+|---|---|---|---|
+| `text` | нет маркера `Injected` | его придумала LLM в tool_call (или разработчик при ручном запуске) | флаг `--text "..."`: имя параметра, `_` → `-` |
+| `cfg` | есть маркер `Injected` | хост читает `SECTION` модели, зовёт `bind(config, "tool.wordcount", WordCountConfig)`, pydantic превращает toml в модель | один JSON-объект `{"cfg": {...}}`, ключ равен имени параметра, канал `--injected-fd` |
+
+Вызов LLM `wordcount(text="a b a")` хост (`ToolArgv.render`) превращает в:
 
 ```
 argv:      python3 -m boba.tool.wordcount.tools wordcount --text "a b a"
+                                                 ^^^^^^^^^ ^^^^^^^^^^^^^^
+                                                 имя тула  параметр text
 injected:  {"cfg": {"max_chars": 200000, "top": 20}}
+            ^^^^^   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            параметр cfg   поля WordCountConfig из conf/plugins/wordcount.toml
 ```
 
-Тело делает обратное: `ToolArgv.parse` собирает kwargs из флагов и
-валидирует `payload["cfg"]` в `WordCountConfig`. Отсутствие ключа `cfg`
-или невалидное значение — `ReplyError(kind="invalid_request")`.
+Будь в подписи третий LLM-аргумент `top_n: int`, появился бы флаг
+`--top-n 5`; будь второй injected-параметр `limits: Annotated[LimitsConfig,
+Injected]`, в JSON появился бы второй ключ `"limits"` со своей секцией.
+
+Тело делает обратное (`ToolArgv.parse`): флаг `--text` находит поле `text`
+схемы и валидирует значение его типом; ключ `"cfg"` из JSON валидируется в
+`WordCountConfig`. Дальше `await wordcount(text=..., cfg=...)`. Нет ключа
+`cfg` или значение не проходит модель — `ReplyError(kind="invalid_request")`.
 
 ### Шаг 8. Проверка руками
 
-Без приложения, по файлу конфига (тот же JSON, что шлёт launcher):
+Запуск руками — та же команда, только вместо канала `--injected-fd` от
+launcher'а вы даёте файл `--injected`, а результат читаете из stdout.
+Служебные флаги, которых нет в подписи функции:
+
+| Флаг | Кто передаёт | Зачем |
+|---|---|---|
+| `--injected <файл>` | человек | JSON с injected-параметрами; тот же объект, что launcher шлёт по `--injected-fd` |
+| `--injected-fd <n>` | launcher | номер дескриптора с тем же JSON |
+| `--fd-result <n>` | launcher | куда писать конверт; без него `content` печатается в stdout |
+| `--artifact` | человек | вдобавок к `content` напечатать JSON артефакта (`TableResult` и т.п.) |
 
 ```bash
 cat > /tmp/wc.json <<'EOF'
 {"cfg": {"max_chars": 1000, "top": 3}}
 EOF
+
 .venv/bin/python -m boba.tool.wordcount.tools wordcount \
-    --text "a b a c" --injected /tmp/wc.json --artifact
+    --text "a b a c" \
+    --injected /tmp/wc.json \
+    --artifact
 ```
+
+Здесь `--text "a b a c"` — LLM-аргумент `text`; `--injected /tmp/wc.json` —
+injected-параметр `cfg` (файл с ключом `"cfg"` и полями `WordCountConfig`);
+`--artifact` — служебный флаг «показать ещё и артефакт».
+
+Подсказку по флагам конкретного инструмента печатает
+`python -m boba.tool.wordcount.tools wordcount --help`: в ней перечислены
+только LLM-аргументы, injected-параметры в argv не принимаются.
 
 По toml приложения, injected собирает CLI хоста:
 
@@ -328,23 +364,27 @@ EOF
 Инструмент `weather`: ходит во внешний API по ключу. Ключ лежит в конфиге
 и обязан доехать до тела, но не попасть ни в argv, ни в лог, ни в дамп.
 
-### 3.1. Как секрет живёт в модели
+### 3.1. Как секрет живёт в модели и что сделать, чтобы он доехал до тела
 
-Поле объявляется типом `SecretStr`. Это даёт маскирование в `repr`,
-`model_dump`, трейсбеке. Но этого **недостаточно**, чтобы секрет доехал до
-тела: `model_dump(mode="json")` у голого `SecretStr` всегда отдаёт
-`**********`, даже с контекстом раскрытия. Проверено:
+Секретное поле объявляется типом `SecretStr`. Сам по себе он только
+маскирует: `repr`, `model_dump`, трейсбек показывают `**********`. Чтобы
+секрет **раскрылся** при отправке в тело и **собрался обратно** в
+`SecretStr` на его стороне, нужно ровно три шага:
 
-```python
-class C(SecretRevealing):
-    api_key: SecretStr
+1. **Объявить поле типом `SecretStr`**, а не `str`:
+   `api_key: SecretStr = Field(min_length=1)`. На любой глубине: во
+   вложенной модели, в `dict[str, SecretStr]`, в списке моделей.
+2. **Унаследовать модель конфига от `SecretRevealing`**
+   (`boba.toolkit.types`). Это даёт метод `revealed()`, который хост зовёт
+   вместо обычного дампа: он дампит модель с контекстом
+   `{"reveal_secrets": True}` и обходом заменяет каждый голый `SecretStr`
+   открытой строкой (`SecretReveal`). Никаких сериализаторов писать не
+   нужно.
+3. **В теле читать секрет только через `get_secret_value()`** в момент
+   использования (заголовок, параметр `connect`), не сохраняя строку в
+   переменные и не подставляя её в сообщения об ошибках.
 
-C(api_key="real").revealed()   # {'api_key': '**********'}
-```
-
-Поэтому раскрытие пишется явно, сериализатором поля, который смотрит на
-контекст дампа. Контекст — единый ключ `SecretRevealing.REVEAL_CONTEXT`
-(`"reveal_secrets"`); его выставляет только хост в момент отправки injected.
+Так это выглядит целиком:
 
 ```python
 """Инструмент weather: прогноз по внешнему API.
@@ -355,11 +395,10 @@ WeatherRequestError — API недоступен или ответил стат�
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Annotated, ClassVar
 
 import httpx
-from pydantic import ConfigDict, Field, SecretStr, SerializationInfo, field_serializer
+from pydantic import ConfigDict, Field, SecretStr
 
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import TextResult, ToolResult, pack_result
@@ -380,45 +419,27 @@ class WeatherConfig(SecretRevealing):
     base_url: str = Field(min_length=1)
     api_key: SecretStr = Field(min_length=1)
     timeout_sec: float = Field(default=10.0, gt=0)
-
-    @field_serializer("api_key", when_used="json")
-    def _dump_api_key(self, value: SecretStr, info: SerializationInfo) -> str | None:
-        """Ключ уходит в дамп только с REVEAL_CONTEXT: он нужен телу."""
-        context = info.context
-        if not isinstance(context, Mapping):
-            return None
-
-        if not context.get(self.REVEAL_CONTEXT):
-            return None
-
-        return value.get_secret_value()
 ```
 
-Три вещи, каждая обязательна:
+Что происходит и что будет, если шаг пропустить:
 
-1. `SecretRevealing` в базах модели. Хост на отправке зовёт
-   `value.revealed()`, если метод есть, иначе обычный json-дамп. Без этой
-   базы контекст никто не выставит, и сериализатор вернёт `None`.
-2. `field_serializer(..., when_used="json")` с проверкой контекста. Без
-   него уедут звёздочки, тело получит `**********` как ключ и упадёт на
-   первом запросе непонятной 401.
-3. `None` в замаскированном режиме, а не звёздочки: `SecretStr` с
-   `min_length=1` на стороне тела тогда не соберётся, и ошибка «invalid
-   config for 'cfg'» всплывёт на входе, а не в середине работы.
+- Хост на отправке (`ToolArgv.reveal`) смотрит, есть ли у значения метод
+  `revealed()`. Есть — зовёт его. Нет — обычный `dump_python(mode="json")`,
+  где pydantic дампит `SecretStr` как `**********`. Пропущен шаг 2 — тело
+  соберёт модель успешно, получит звёздочки вместо ключа и упадёт
+  непонятной 401 на первом запросе, далеко от причины.
+- На стороне тела ничего делать не нужно: `ToolArgv.parse` валидирует JSON
+  в ту же модель, и открытая строка снова становится `SecretStr`. Поэтому
+  в теле секрет читается как обычно — `cfg.api_key.get_secret_value()`.
+- Ключ контекста один на весь проект: `SecretRevealing.REVEAL_CONTEXT`
+  (`"reveal_secrets"`). Свою строку не придумывайте.
 
-Так устроены все секреты инфра-профилей: `PasswordAuth._dump_password` в
-`boba.db.postgres.profile.auth`, `BearerAuth._dump_token` в
-`boba.transport.http.profile`. Если ваш конфиг вкладывает готовый профиль
-(`HttpProfile`, `PostgresConfig`), писать сериализатор не нужно: он уже
-есть внутри, а `revealed()` внешней модели прокинет контекст вглубь.
-Это самый частый и самый простой случай:
-
-```python
-class ConfluenceToolsConfig(SecretRevealing):
-    SECTION: ClassVar[str] = "tool.confluence"
-
-    confluence: HttpProfile     # bearer/basic/negotiate внутри, секреты уже умеют раскрываться
-```
+Единственное исключение: поле, у которого объявлен свой
+`@field_serializer`, обход не трогает — считается, что у поля своя
+политика. Сериализатор нужен только там, где поле должно вести себя
+иначе, чем «раскрыть при отправке в тело»: например, пароль
+`KerberosPasswordAuth` маскируется всегда, потому что в песочницу едет
+билет, а не он. Для обычного секрета сериализатор писать не надо.
 
 ### 3.2. Как секрет читается в теле
 
@@ -475,9 +496,8 @@ api_key  = "${site.weather_api_key}"
 `--unshare-net`, и никакой API недоступен. Бинды `resolv.conf` и `hosts`
 нужны для разрешения имён внутри песочницы.
 
-Готовый профиль подключается ссылкой на секцию целиком:
-`confluence = "${web.wiki}"` берёт всю таблицу `[web.wiki]` из
-`config.toml`, включая её auth-секцию.
+Целая секция подключается ссылкой: `confluence = "${web.wiki}"` берёт
+таблицу `[web.wiki]` из `config.toml` вместе с её auth-частью.
 
 ### 3.4. Kerberos в статическом конфиге
 
@@ -511,8 +531,9 @@ api_key  = "${site.weather_api_key}"
 Живые примеры: `packages/tools/boba-tool-knowledge/src/boba/tool/kb/confluence/tools.py`
 (`ConfluenceToolsConfig` с `HttpProfile`), `kb/tools.py` (`KbToolConfig` с
 `connection: PostgresConfig` и `@warmup`), стендовый
-`packages/testing/boba-stand/src/boba/stand/fake_toolmod.py` (`FakeConfig`
-с ручным `revealed()`).
+`packages/testing/boba-stand/src/boba/stand/fake_toolmod.py` (`FakeConfig`:
+голый `SecretStr` под `SecretRevealing`, без сериализаторов). Тесты
+раскрытия — `packages/core/boba-toolkit/tests/test_secret_reveal.py`.
 
 ---
 
@@ -551,13 +572,11 @@ api_key  = "${site.weather_api_key}"
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Literal, Self
 
-from pydantic import Field, SecretStr, SerializationInfo, field_serializer
+from pydantic import Field, SecretStr
 
 from boba.connections.base import ConnectionProfileBase
-from boba.toolkit.types import SecretRevealing
 
 
 class RedisConfig(ConnectionProfileBase):
@@ -579,17 +598,6 @@ class RedisConfig(ConnectionProfileBase):
 
     def labeled(self, label: str) -> Self:
         return self.model_copy(update={"client_name": label})
-
-    @field_serializer("password", when_used="json")
-    def _dump_password(self, value: SecretStr, info: SerializationInfo) -> str | None:
-        context = info.context
-        if not isinstance(context, Mapping):
-            return None
-
-        if not context.get(SecretRevealing.REVEAL_CONTEXT):
-            return None
-
-        return value.get_secret_value()
 ```
 
 Что и зачем:
@@ -602,8 +610,11 @@ class RedisConfig(ConnectionProfileBase):
 - `labeled(label)` — если сервер умеет подписывать сессию именем клиента
   (`application_name` у postgres, `CLIENT SETNAME` у redis). Хост подставит
   `boba:<логин>:<инструмент>`, чтобы DBA видел, кто пришёл.
-- Сериализатор пароля — тот же паттерн, что в разделе 3.1: без него пароль
-  в тело не доедет.
+- `password: SecretStr` — и больше ничего: в базе поле шифруется само
+  (`SecretCipher` обходит значения), а в тело раскрывается обходом
+  `SecretReveal` из конфига инструмента (раздел 3.1). Профиль наследовать
+  от `SecretRevealing` не нужно: контекст приходит снаружи, от модели
+  секции.
 - Kerberos. Если тип умеет kerberos, реализуйте ещё три метода базового
   класса. `kerberos_section()` — где в профиле лежит секция
   (`self.auth`, если это `KerberosAuthBase`); `service_name()` — SPN в
@@ -682,7 +693,16 @@ class RedisToolConfig(SecretRevealing, SqlProfiles[RedisConfig]):
 
 `SqlProfiles` даёт поля `profiles`, `names`, `max_rows`, `max_bytes` и
 методы `resolve(name)`, `targets_table()`. `SecretRevealing` первой в
-базах — чтобы пароли профилей раскрылись при отправке.
+базах — она включает раскрытие секретов при отправке в тело (раздел 3.1).
+Профили лежат внутри как обычные поля, поэтому их пароли раскрываются тем
+же обходом, на любой глубине: `profiles["cache"].password`,
+`profiles["main"].auth.password`, токен внутри `HttpProfile`.
+
+Готовые профили других пакетов вкладываются так же и работают без правок:
+`SqlProfiles[PostgresConfig]` у pg, `SqlProfiles[ClickHouseConfig]` у ch,
+`WebConnection` с `HttpProfile` у web. Отдельный случай — kerberos: keytab
+и пароль kerberos наружу не уезжают никогда, вместо них хост подставляет
+билет вызова (раздел 4.9).
 
 ### 4.4. Аргумент выбора соединения
 
@@ -1243,8 +1263,9 @@ Entry points материализуются установкой: после п�
   забыт `SECTION: ClassVar[str]`.
 - Старт падает «[tool.<name>] takes its connections from the connections
   table» — `ConnectedToolManifest` при `[connections] enable = false`.
-- Тело получает `**********` вместо секрета — нет `field_serializer` с
-  проверкой контекста или модель не наследует `SecretRevealing` (раздел 3.1).
+- Тело получает `**********` вместо секрета — модель конфига не наследует
+  `SecretRevealing` (раздел 3.1) либо у поля объявлен свой
+  `field_serializer`, который маскирует.
 - «credentials may not leave the application» — keytab/пароль kerberos
   дошёл до дампа: профиль не наследует `ConnectionProfileBase`, не
   реализует `kerberos_section`/`service_name`/`with_call_ticket`, либо это
