@@ -1,28 +1,16 @@
-"""Соединения субъекта на вызов: адресация секцией инструмента, отказы сборки,
-метка клиента и строка журнала.
+"""Отказы работы с соединениями субъекта: их kind уходит в чат и в историю.
+
+Вид соединения инструмент объявляет типом параметра (маркер UserConnection),
+подпись клиента и строку журнала пишет сам профиль.
 
 Ошибки: своих не выпускает.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from enum import StrEnum
-from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict
-
-from boba.connections.base import ConnectionProfileBase
-from boba.connections.whitelist import ConnectionKeying
-from boba.toolkit.manifest import ToolPluginManifest
-
-__all__ = [
-    "ClientLabel",
-    "ConnectedToolManifest",
-    "ConnectionRefusal",
-    "ConnectionTrace",
-    "UserConnectionsSpec",
-]
+__all__ = ["ConnectionRefusal"]
 
 
 class ConnectionRefusal(StrEnum):
@@ -34,65 +22,3 @@ class ConnectionRefusal(StrEnum):
     NOT_VISIBLE = "connection_not_visible"
     NOT_OWNED = "connection_not_owned"
     NAME_TAKEN = "connection_name_taken"
-
-
-@dataclass(frozen=True)
-class UserConnectionsSpec:
-    """Как секция инструментов адресует соединения: вид и ключ вызова."""
-
-    kind: str
-    keying: ConnectionKeying
-
-
-@dataclass(frozen=True, kw_only=True)
-class ConnectedToolManifest(ToolPluginManifest):
-    """Манифест плагина, чьи инструменты берут соединения пользователя."""
-
-    connections: UserConnectionsSpec
-
-
-class ConnectionTrace:
-    """Как соединение выглядит в журнале: способ авторизации и под кем идём.
-
-    Пишется по профилю, который уже уехал бы в песочницу, поэтому у
-    делегированных строк здесь виден выпущенный билет вызова, а не строка
-    таблицы.
-    """
-
-    @staticmethod
-    def of(profile: ConnectionProfileBase) -> str:
-        return profile.trace()
-
-
-class ClientLabel(BaseModel):
-    """Метка соединения для сервера: приложение, логин пользователя, инструмент.
-
-    Уходит в application_name postgres и client_name clickhouse, поэтому режется
-    до 63 байт — предела application_name.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    MAX_BYTES: ClassVar[int] = 63
-    SEPARATOR: ClassVar[str] = ":"
-    APPLICATION: ClassVar[str] = "boba"
-
-    application: str
-    login: str
-    tool: str
-
-    @classmethod
-    def of(cls, login: str, tool: str) -> ClientLabel:
-        return cls(application=cls.APPLICATION, login=login, tool=tool)
-
-    def render(self) -> str:
-        joined = self.SEPARATOR.join((self.application, self.login, self.tool))
-        raw = joined.encode("utf-8")
-        if len(raw) <= self.MAX_BYTES:
-            return joined
-
-        return raw[: self.MAX_BYTES].decode("utf-8", errors="ignore")
-
-    def applied(self, profile: ConnectionProfileBase) -> ConnectionProfileBase:
-        """Профиль с меткой в поле, которым сервер подписывает сессию."""
-        return profile.labeled(self.render())

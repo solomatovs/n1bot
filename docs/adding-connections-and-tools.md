@@ -631,7 +631,7 @@ api_key  = "${site.weather_api_key}"
 Как их писать — раздел 4.2.
 
 Живые примеры: `packages/tools/boba-tool-knowledge/src/boba/tool/kb/confluence/tools.py`
-(`ConfluenceToolsConfig` с `HttpProfile`), `kb/tools.py` (`KbToolConfig` с
+(`ConfluenceToolsConfig` с `HttpConnection`), `kb/tools.py` (`KbToolConfig` с
 `connection: PostgresConfig` и `@warmup`), стендовый
 `packages/testing/boba-stand/src/boba/stand/fake_toolmod.py` (`FakeConfig`:
 голый `SecretStr` под `SecretRevealing`, без сериализаторов). Тесты
@@ -1106,11 +1106,11 @@ class KbToolConfig(SecretRevealing, PostgresKnowledgeBaseConfig):
 раскрытие секретов при отправке в тело (раздел 3.1). Профили лежат внутри
 как обычные поля, поэтому их пароли раскрываются тем же обходом на любой
 глубине: `profiles["cache"].password`, `profiles["main"].auth.password`,
-токен внутри `HttpProfile`.
+токен внутри `HttpConnection`.
 
 Готовые профили других пакетов вкладываются так же и работают без правок:
 `SqlProfiles[PostgresConfig]` у pg, `SqlProfiles[ClickHouseConfig]` у ch,
-`WebConnection` с `HttpProfile` у web. Отдельный случай — kerberos: keytab
+`WebConnection` с `HttpConnection` у web. Отдельный случай — kerberos: keytab
 и пароль kerberos наружу не уезжают никогда, вместо них хост подставляет
 билет вызова (раздел 4.9).
 
@@ -1229,7 +1229,7 @@ LLM вызвала `redis_query(connection_name="cache", command="GET x")`.
 | 5 | `ConnectionWhitelist.of(rows, NAME)` | группировка по `name`; имя, выданное дважды (лично и через роль, две роли), уходит в `ambiguous` и в whitelist не попадает |
 | 6 | `keying.requested(kwargs)` | читает `kwargs["connection_name"]` → `"cache"` |
 | 7 | `whitelist.pick("cache")` | профиль; `None`, если такого имени у субъекта нет; `AmbiguousConnectionError` → `RefusalError(ambiguous_connection)` |
-| 8 | `_at_host` | только для `HttpProfile`: привязка к хосту URL, раздел 4.10 |
+| 8 | `_at_host` | только для `HttpConnection`: привязка к хосту URL, раздел 4.10 |
 | 9 | `ClientLabel.of(login, "redis_query").applied(profile)` | `profile.labeled("boba:ivanov:redis_query")` |
 | 10 | `_armed` | `credentials.for_connection(profile, credential)`: kerberos-секция → билет вызова (раздел 4.9); строка с уже готовым `TicketAuth` в таблице — `ToolConfigError` |
 | 11 | сборка | `base.model_copy(update={"profiles": {"cache": armed}, "names": [все имена whitelist]})` → `kwargs["cfg"]` |
@@ -1284,7 +1284,7 @@ LLM вызвала `redis_query(connection_name="cache", command="GET x")`.
 ### 4.10. Web-вариант: соединение покрывает хост
 
 У `web`-инструментов есть второй аргумент, который читает хост: `url`.
-Профиль `HttpProfile` покрывает хост `base_url` (точное имя или шаблон
+Профиль `HttpConnection` покрывает хост `base_url` (точное имя или шаблон
 `*.corp.example`, поддомены любой глубины, но не сам apex). Хост в
 `UserConnections._at_host` проверяет, что хост URL попадает под выбранное
 соединение — иначе `RefusalError(host_not_allowed)` — и привязывает

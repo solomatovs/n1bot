@@ -21,7 +21,7 @@ WebConnection)`.
 
 **Сервис знает про транспорт.** `boba-connection-broker` держит
 `boba-transport-http` в обычных зависимостях только ради `WebConnection`,
-`HttpProfile` и `HostPattern`: в обвязке есть web-специфичный шаг `_at_host`,
+`HttpConnection` и `HostPattern`: в обвязке есть web-специфичный шаг `_at_host`,
 который читает аргумент `url` и привязывает профиль к хосту.
 
 **Инструмент делает работу хоста.** Тело получает whitelist и само достаёт из

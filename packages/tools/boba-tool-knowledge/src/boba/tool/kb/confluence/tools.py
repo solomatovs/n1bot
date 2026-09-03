@@ -28,7 +28,7 @@ from boba.toolkit.result import TableResult, TextResult, ToolResult, pack_result
 from boba.toolkit.sql import RowOffset
 from boba.toolkit.types import LLMStringList, SecretRevealing
 from boba.transport.http import HttpxAuth
-from boba.transport.http.profile import HttpProfile
+from boba.transport.http.profile import HttpConnection
 
 _PAGE_ID_DESCRIPTION = "ID страницы Confluence (из URL `viewpage.action?pageId=<id>`)."
 
@@ -50,7 +50,7 @@ class ConfluenceToolsConfig(SecretRevealing):
 
     SECTION: ClassVar[str] = "tool.confluence"
 
-    confluence: HttpProfile = Field(
+    confluence: HttpConnection = Field(
         description='Web-профиль Confluence ссылкой `confluence = "${web.<name>}"`.',
     )
     body_format: Literal["view", "export_view", "storage"] = Field(
