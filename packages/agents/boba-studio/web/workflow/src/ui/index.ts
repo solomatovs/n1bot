@@ -22,4 +22,5 @@ export { Segmented } from "./Segmented";
 export { StatusDot } from "./StatusDot";
 export { StatusPill } from "./StatusPill";
 export { TextArea } from "./TextArea";
+export { ToastProvider, useToast, type ToastFn, type ToastTone } from "./Toast";
 export { Toolbar, ToolbarHint, ToolbarLabel, ToolbarSpacer } from "./Toolbar";

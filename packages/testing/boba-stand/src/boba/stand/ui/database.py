@@ -101,7 +101,6 @@ class StandDatabase:
 
             workflow_tables = (
                 WorkflowTable.RUNS,
-                WorkflowTable.DRAFTS,
                 WorkflowTable.WORKFLOWS,
             )
             for table in workflow_tables:

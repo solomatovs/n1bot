@@ -384,7 +384,7 @@ class _Draft(BaseModel):
 
     name: WorkflowName
     description: str = ""
-    tasks: Mapping[Ident, TaskSpec] = Field(min_length=1)
+    tasks: Mapping[Ident, TaskSpec] = Field(default_factory=dict)
     edges: Sequence[str] = ()
 
 

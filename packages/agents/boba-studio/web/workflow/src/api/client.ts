@@ -9,7 +9,6 @@ import {
   StoppedSchema,
   StoredRunSchema,
   StoredWorkflowSchema,
-  WorkflowDraftSchema,
   ChannelViewSchema,
   StreamSliceSchema,
   ToolCatalogSchema,
@@ -18,7 +17,6 @@ import {
   type RunState,
   type StoredRun,
   type StoredWorkflow,
-  type WorkflowDraft,
   type ChannelView,
   type StreamSlice,
   type ToolCatalog,
@@ -236,31 +234,40 @@ export class WorkflowApi {
     return this.call("post", "/v1/workflows", {}, undefined, { spec, layout }, StoredWorkflowSchema);
   }
 
-  listDrafts(): Promise<WorkflowDraft[]> {
-    return this.call("get", "/v1/workflows/drafts", {}, undefined, undefined, WorkflowDraftSchema.array());
+  /** Сохранение строки по id: черновик становится истиной той же строки. */
+  saveInto(id: string, spec: string, layout: Record<string, unknown>): Promise<StoredWorkflow> {
+    return this.call(
+      "put",
+      "/v1/workflows/{workflow_id}",
+      { workflow_id: id },
+      undefined,
+      { spec, layout },
+      StoredWorkflowSchema,
+    );
   }
 
-  /** Черновик билдера по ключу; нет черновика — null. */
-  async getDraft(key: string): Promise<WorkflowDraft | null> {
-    try {
-      return await this.call("get", "/v1/workflows/drafts/{key}", { key }, undefined, undefined, WorkflowDraftSchema);
-    } catch (error: unknown) {
-      if (error instanceof ApiError && error.status === 404) {
-        return null;
-      }
-
-      throw error;
-    }
+  /** Черновик строки workflow; sid — сокет этой вкладки, чтобы не применять своё же изменение. */
+  putWorkflowDraft(id: string, spec: string, layout: Record<string, unknown>, sid: string): Promise<StoredWorkflow> {
+    return this.call(
+      "put",
+      "/v1/workflows/{workflow_id}/draft",
+      { workflow_id: id },
+      undefined,
+      { spec, layout, sid },
+      StoredWorkflowSchema,
+    );
   }
 
-  /** Запись черновика; sid — сокет этой вкладки, чтобы не применять своё же изменение. */
-  putDraft(key: string, spec: string, layout: Record<string, unknown>, sid: string): Promise<WorkflowDraft> {
-    return this.call("put", "/v1/workflows/drafts/{key}", { key }, undefined, { spec, layout, sid }, WorkflowDraftSchema);
-  }
-
-  async dropDraft(key: string, sid: string): Promise<boolean> {
-    const reply = await this.call("delete", "/v1/workflows/drafts/{key}", { key }, { sid }, undefined, DeletedSchema);
-    return reply.deleted;
+  /** Сброс черновика: строка возвращается к сохранённому состоянию. */
+  clearWorkflowDraft(id: string, sid: string): Promise<StoredWorkflow> {
+    return this.call(
+      "delete",
+      "/v1/workflows/{workflow_id}/draft",
+      { workflow_id: id },
+      { sid },
+      undefined,
+      StoredWorkflowSchema,
+    );
   }
 
   async remove(id: string): Promise<boolean> {

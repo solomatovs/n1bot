@@ -1,15 +1,16 @@
 import { type ReactElement, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 
+import { useServices } from "../../app";
+import { errorText } from "../Async";
 import { runsOfWorkflow } from "../../hooks/useShellData";
-import { parseSpecText } from "../../model/spec";
+import { renderSpecText } from "../../model/spec";
 import { formatAgo, formatDuration } from "../../model/time";
-import type { Initiator, StoredRun, StoredWorkflow, WorkflowDraft } from "../../model/workflow";
-import { Chip, EmptyState, Eyebrow, ListRow } from "../../ui";
+import type { Initiator, StoredRun, StoredWorkflow } from "../../model/workflow";
+import { Chip, EmptyState, Eyebrow, ListRow, useToast } from "../../ui";
 
 type Props = {
   workflows: StoredWorkflow[];
-  drafts: WorkflowDraft[];
   runs: StoredRun[];
   selectedWorkflow: string | null;
   selectedRun: string | null;
@@ -29,28 +30,19 @@ export function describeInitiator(initiator: Initiator): string {
   }
 }
 
-/** Имя черновика — из его спеки; битый YAML не роняет список. */
-export function draftName(draft: WorkflowDraft): string {
-  try {
-    const name = parseSpecText(draft.spec).name.trim();
-    if (name !== "") {
-      return name;
+/** Свободное имя нового workflow: new-workflow, new-workflow-2, … */
+export function freeWorkflowName(taken: Iterable<string>): string {
+  const used = new Set(taken);
+  if (!used.has("new-workflow")) {
+    return "new-workflow";
+  }
+
+  for (let index = 2; ; index += 1) {
+    const candidate = `new-workflow-${index}`;
+    if (!used.has(candidate)) {
+      return candidate;
     }
-  } catch {
-    // черновик правится по ходу: спека бывает недописанной
   }
-
-  return "unnamed";
-}
-
-/** Адрес черновика: новый открывается своим uuid, черновик сохранённого — самим workflow. */
-export function draftHref(draft: WorkflowDraft): string {
-  const [kind, ident] = draft.key.split(":", 2);
-  if (kind === "new") {
-    return `/workflow/new?draft=${ident}`;
-  }
-
-  return `/workflow/${ident}`;
 }
 
 function taskCount(run: StoredRun): number {
@@ -61,16 +53,18 @@ function failedCount(run: StoredRun): number {
   return Object.values(run.state.tasks).filter((task) => task.status === "failed").length;
 }
 
-/** Список workflow — и выбор, и история: черновики с пометкой сверху, у каждого
- * workflow стрелка разворачивает его запуски, свежие сверху. */
+/** Список workflow — и выбор, и история: New сразу создаёт строку, правки
+ * помечаются chip'ом draft, у каждого workflow стрелка разворачивает запуски. */
 export function WorkflowList({
   workflows,
-  drafts,
   runs,
   selectedWorkflow,
   selectedRun,
   onPick,
 }: Props): ReactElement {
+  const { api } = useServices();
+  const navigate = useNavigate();
+  const toast = useToast();
   const [filter, setFilter] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
 
@@ -82,30 +76,6 @@ export function WorkflowList({
 
     return workflows.filter((item) => item.name.toLowerCase().includes(needle));
   }, [workflows, filter]);
-
-  // отдельной строкой живут только черновики НОВЫХ workflow: черновик
-  // сохранённого — это его правки, они открываются самим workflow
-  const shownDrafts = useMemo(() => {
-    const fresh = drafts.filter((draft) => draft.key.startsWith("new:"));
-    const needle = filter.trim().toLowerCase();
-    if (needle === "") {
-      return fresh;
-    }
-
-    return fresh.filter((draft) => draftName(draft).toLowerCase().includes(needle));
-  }, [drafts, filter]);
-
-  const editedWorkflows = useMemo(() => {
-    const edited = new Set<string>();
-    for (const draft of drafts) {
-      const [kind, ident] = draft.key.split(":", 2);
-      if (kind === "workflow" && ident !== undefined) {
-        edited.add(ident);
-      }
-    }
-
-    return edited;
-  }, [drafts]);
 
   // выбранный запуск держит свой workflow развёрнутым
   const runWorkflow = useMemo(() => {
@@ -144,6 +114,20 @@ export function WorkflowList({
     });
   };
 
+  // New сразу пишет строку в хранилище: workflow существует до первой правки
+  const create = async (): Promise<void> => {
+    const name = freeWorkflowName(workflows.map((item) => item.name));
+    const spec = renderSpecText({ name, description: "", tasks: [], edges: [] });
+
+    try {
+      const saved = await api.save(spec, { positions: {} });
+      onPick();
+      await navigate(`/workflow/${saved.id}`);
+    } catch (error: unknown) {
+      toast(`workflow not created: ${errorText(error)}`, "error");
+    }
+  };
+
   return (
     <>
       <div className="list__head">
@@ -160,22 +144,10 @@ export function WorkflowList({
         aria-label="filter workflows"
       />
       <div className="list__scroll">
-        <Link to="/workflow/new" className="list__new" onClick={onPick}>
+        <button type="button" className="list__new" onClick={() => void create()}>
           + New workflow
-        </Link>
-        {shownDrafts.map((draft) => (
-          <ListRow
-            key={draft.key}
-            href={draftHref(draft)}
-            draft
-            dotColor="var(--muted)"
-            dataDraft={draft.key}
-            name={draftName(draft)}
-            pills={<Chip tone="draft">draft</Chip>}
-            onClick={onPick}
-          />
-        ))}
-        {shown.length === 0 && shownDrafts.length === 0 && <EmptyState>No workflows in this filter.</EmptyState>}
+        </button>
+        {shown.length === 0 && <EmptyState>No workflows in this filter.</EmptyState>}
         {shown.map((item) => {
           const own = runsOfWorkflow(runs, item.id);
           const opened = expanded.has(item.id);
@@ -194,7 +166,7 @@ export function WorkflowList({
                 name={item.name}
                 pills={
                   <>
-                    {editedWorkflows.has(item.id) && <Chip tone="draft">draft</Chip>}
+                    {item.draft_spec !== null && <Chip tone="draft">draft</Chip>}
                     {item.tools.map((tool) => (
                       <Chip key={tool}>{tool}</Chip>
                     ))}

@@ -55,13 +55,12 @@ from boba.workflow import (
 from boba.workflow.events import RunSnapshot
 from boba.workflow.ports import RunSink
 from boba.workflow.records import (
-    DraftKey,
     RunOutcome,
     StopOutcome,
     StoredRun,
     StoredWorkflow,
-    WorkflowDraft,
     WorkflowError,
+    WorkflowNameTakenError,
     WorkflowNotFoundError,
     WorkflowRefusal,
 )
@@ -228,57 +227,95 @@ class WorkflowService:
         )
         await self._bus.publish(Scope.user(subject.user_id), changed, LockToken.local())
 
-        # сохранённое становится истиной: черновик вкладок этого workflow снимается
-        await self.drop_draft(subject, DraftKey.of_workflow(saved.id), "")
+        # сохранённое становится истиной: черновик строки снят самим save,
+        # вкладки узнают об этом той же ревизией
+        await self._draft_changed(
+            subject.user_id, saved.id, saved.draft_revision, "", ChangeAction.DELETED
+        )
+
+        return saved
+
+    async def save_into(
+        self,
+        subject: Subject,
+        workflow_id: UUID,
+        spec_text: str,
+        layout: Mapping[str, Any],
+    ) -> StoredWorkflow:
+        """Сохраняет строку по id: черновик становится истиной той же строки."""
+        graph = await self.validate(subject, spec_text)
+
+        try:
+            saved = await self._store.save_into(
+                subject.user_id, workflow_id, graph.spec, layout
+            )
+        except WorkflowNotFoundError as exc:
+            raise WorkflowError(WorkflowRefusal.NOT_FOUND, str(exc)) from exc
+        except WorkflowNameTakenError as exc:
+            raise WorkflowError(WorkflowRefusal.BAD_SPEC, str(exc)) from exc
+
+        changed = WorkflowChanged(
+            workflow_id=saved.id, name=saved.name, action=ChangeAction.UPDATED
+        )
+        await self._bus.publish(Scope.user(subject.user_id), changed, LockToken.local())
+
+        await self._draft_changed(
+            subject.user_id, saved.id, saved.draft_revision, "", ChangeAction.DELETED
+        )
 
         return saved
 
     async def put_draft(
         self,
         subject: Subject,
-        key: DraftKey,
+        workflow_id: UUID,
         spec: str,
         layout: Mapping[str, Any],
         by_sid: str,
-    ) -> WorkflowDraft:
-        """Пишет общий черновик билдера без проверки спеки — она правится по ходу — и
-        сообщает вкладкам пользователя новую revision.
+    ) -> StoredWorkflow:
+        """Пишет черновик строки workflow без проверки спеки — она правится по
+        ходу — и сообщает вкладкам пользователя новую ревизию.
         """
-        draft = await self._store.put_draft(subject.user_id, key, spec, layout)
-        await self._draft_changed(
-            subject.user_id, key, draft.revision, by_sid, ChangeAction.UPDATED
-        )
-
-        return draft
-
-    async def get_draft(self, subject: Subject, key: DraftKey) -> WorkflowDraft:
         try:
-            return await self._store.get_draft(subject.user_id, key)
+            stored = await self._store.put_draft(
+                subject.user_id, workflow_id, spec, layout
+            )
         except WorkflowNotFoundError as exc:
             raise WorkflowError(WorkflowRefusal.NOT_FOUND, str(exc)) from exc
 
-    async def list_drafts(self, subject: Subject) -> Sequence[WorkflowDraft]:
-        """Черновики пользователя для списка workflow, свежие сверху."""
-        return await self._store.list_drafts(subject.user_id)
+        await self._draft_changed(
+            subject.user_id, workflow_id, stored.draft_revision, by_sid,
+            ChangeAction.UPDATED,
+        )
 
-    async def drop_draft(self, subject: Subject, key: DraftKey, by_sid: str) -> bool:
-        dropped = await self._store.drop_draft(subject.user_id, key)
-        if not dropped:
-            return False
+        return stored
 
-        await self._draft_changed(subject.user_id, key, 0, by_sid, ChangeAction.DELETED)
-        return True
+    async def clear_draft(
+        self, subject: Subject, workflow_id: UUID, by_sid: str
+    ) -> StoredWorkflow:
+        """Сбрасывает черновик к сохранённому состоянию строки."""
+        try:
+            stored = await self._store.clear_draft(subject.user_id, workflow_id)
+        except WorkflowNotFoundError as exc:
+            raise WorkflowError(WorkflowRefusal.NOT_FOUND, str(exc)) from exc
+
+        await self._draft_changed(
+            subject.user_id, workflow_id, stored.draft_revision, by_sid,
+            ChangeAction.DELETED,
+        )
+
+        return stored
 
     async def _draft_changed(
         self,
         user_id: UUID,
-        key: DraftKey,
+        workflow_id: UUID,
         revision: int,
         by_sid: str,
         action: ChangeAction,
     ) -> None:
         message = WorkflowDraftChanged(
-            key=key.render(), revision=revision, by_sid=by_sid, action=action
+            workflow_id=workflow_id, revision=revision, by_sid=by_sid, action=action
         )
         await self._bus.publish(Scope.user(user_id), message, LockToken.local())
 
@@ -347,6 +384,11 @@ class WorkflowService:
     ) -> StartedRun:
         """Проверка и запись запуска."""
         graph = await self.validate(context.subject, stored.spec)
+
+        if not graph.spec.tasks:
+            raise WorkflowError(
+                WorkflowRefusal.BAD_SPEC, "workflow has no tasks to run"
+            )
         registry = await self._registry()
         subject = context.subject
         invoker = ToolInvoker(registry.for_headless(subject.roles, subject.profile))

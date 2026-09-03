@@ -15,7 +15,7 @@ import { useClock } from "../hooks/useClock";
 import { useShellData } from "../hooks/useShellData";
 import { runFinished } from "../model/status";
 import type { RunSnapshot, StoredRun } from "../model/workflow";
-import { Button, EmptyState, Notice, Toolbar, ToolbarHint, ToolbarSpacer } from "../ui";
+import { Button, EmptyState, Toolbar, ToolbarHint, ToolbarSpacer, useToast } from "../ui";
 
 type View = "grid" | "table" | "timeline";
 
@@ -34,7 +34,7 @@ export function ObservePage(): ReactElement {
   const [run, setRun] = useState<Loadable<StoredRun>>({ kind: "loading" });
   const [view, setView] = useState<View>("grid");
   const [selectedTask, setSelectedTask] = useState<string | null>(null);
-  const [notice, setNotice] = useState("");
+  const toast = useToast();
   const finishedRef = useRef(false);
   // снимок, пришедший раньше первого GET: сокет общий и уже подключён, гонка обычна
   const pendingRef = useRef<RunSnapshot | null>(null);
@@ -103,12 +103,15 @@ export function ObservePage(): ReactElement {
       finishedRef.current = finished;
     };
 
-    const unsubscribe = socket.subscribe(runId, applySnapshot, setNotice);
+    const report = (text: string): void => {
+      toast(text, "error");
+    };
+    const unsubscribe = socket.subscribe(runId, applySnapshot, report);
 
     return () => {
       unsubscribe();
     };
-  }, [socket, runId, reloadLists]);
+  }, [socket, runId, reloadLists, toast]);
 
   const stop = useCallback(async () => {
     if (runId === undefined) {
@@ -117,12 +120,12 @@ export function ObservePage(): ReactElement {
 
     const outcome = await api.stop(runId);
     if (outcome === "finished") {
-      setNotice("nothing to stop: the run is already finished");
+      toast("nothing to stop: the run is already finished");
     }
     if (outcome === "accepted") {
-      setNotice("stop requested: the run is executed by another instance");
+      toast("stop requested: the run is executed by another instance");
     }
-  }, [api, runId]);
+  }, [api, runId, toast]);
 
   const rerun = useCallback(async () => {
     if (run.kind !== "ready" || run.value.workflow_id === null) {
@@ -134,9 +137,9 @@ export function ObservePage(): ReactElement {
       shell.reload();
       await navigate(`/runs/${started}`);
     } catch (error: unknown) {
-      setNotice(errorText(error));
+      toast(errorText(error), "error");
     }
-  }, [api, run, navigate, shell]);
+  }, [api, run, navigate, shell, toast]);
 
   const live = run.kind === "ready" && !runFinished(run.value.status);
   const now = useClock(live);
@@ -187,11 +190,6 @@ export function ObservePage(): ReactElement {
           Stop
         </Button>
       </Toolbar>
-      {notice !== "" && (
-        <div className="stage__float">
-          <Notice tone="error">{notice}</Notice>
-        </div>
-      )}
       {view === "grid" && (
         <div className="view">
           <RunGraph run={loaded.state} selectedTask={selectedTask} onSelectTask={setSelectedTask} />

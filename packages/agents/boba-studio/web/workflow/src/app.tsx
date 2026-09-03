@@ -5,6 +5,7 @@ import { WorkflowApi } from "./api/client";
 import { RunSocket } from "./api/socket";
 import { Shell } from "./components/shell/Shell";
 import { PageUrls, pageConfig } from "./config";
+import { ToastProvider } from "./ui";
 import { AccountPage } from "./pages/AccountPage";
 import { BuildPage } from "./pages/BuildPage";
 import { LoginPage } from "./pages/LoginPage";
@@ -44,9 +45,8 @@ function LegacyWorkflow(): ReactElement {
 
 function LegacyBuild(): ReactElement {
   const { workflowId } = useParams();
-  const { search } = useLocation();
   if (workflowId === "new") {
-    return <Navigate to={`/workflow/new${search}`} replace />;
+    return <Navigate to="/workflow" replace />;
   }
 
   return <Navigate to={`/workflow/${workflowId ?? ""}`} replace />;
@@ -104,13 +104,13 @@ export function App(): ReactElement {
   return (
     <ServicesContext.Provider value={services}>
       <BrowserRouter basename={services.urls.routerBase}>
+        <ToastProvider>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route element={<SignedInOnly />}>
             <Route path="/account" element={<AccountPage />} />
             <Route element={<Shell />}>
               <Route path="/workflow" element={<BuildPage />} />
-              <Route path="/workflow/new" element={<BuildPage />} />
               <Route path="/workflow/:workflowId" element={<BuildPage />} />
               <Route path="/runs/:runId" element={<ObservePage />} />
             </Route>
@@ -121,9 +121,10 @@ export function App(): ReactElement {
           <Route path="/build/:workflowId" element={<LegacyBuild />} />
           <Route path="/build" element={<Navigate to="/workflow" replace />} />
           <Route path="/w/:workflowId" element={<LegacyWorkflow />} />
-          <Route path="/new" element={<Navigate to="/workflow/new" replace />} />
+          <Route path="/new" element={<Navigate to="/workflow" replace />} />
           <Route path="*" element={<Navigate to="/workflow" replace />} />
         </Routes>
+        </ToastProvider>
       </BrowserRouter>
     </ServicesContext.Provider>
   );

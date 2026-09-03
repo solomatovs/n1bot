@@ -4,7 +4,7 @@ import { Outlet, useParams } from "react-router-dom";
 import { useServices } from "../../app";
 import { errorText } from "../Async";
 import { ShellDataContext, type ShellData } from "../../hooks/useShellData";
-import type { StoredRun, StoredWorkflow, WorkflowDraft } from "../../model/workflow";
+import type { StoredRun, StoredWorkflow } from "../../model/workflow";
 import { Panel } from "../../ui";
 import { Topbar } from "./Topbar";
 import { WorkflowList } from "./WorkflowList";
@@ -38,7 +38,6 @@ export function Shell(): ReactElement {
   const { api, socket } = useServices();
   const { runId, workflowId } = useParams();
   const [workflows, setWorkflows] = useState<StoredWorkflow[]>([]);
-  const [drafts, setDrafts] = useState<WorkflowDraft[]>([]);
   const [runs, setRuns] = useState<StoredRun[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -75,14 +74,13 @@ export function Shell(): ReactElement {
 
   useEffect(() => {
     let alive = true;
-    Promise.all([api.listWorkflows(), api.listDrafts(), api.listRuns(200)]).then(
-      ([loadedWorkflows, loadedDrafts, loadedRuns]) => {
+    Promise.all([api.listWorkflows(), api.listRuns(200)]).then(
+      ([loadedWorkflows, loadedRuns]) => {
         if (!alive) {
           return;
         }
 
         setWorkflows(loadedWorkflows);
-        setDrafts(loadedDrafts);
         setRuns(loadedRuns);
         setError("");
         setLoading(false);
@@ -120,8 +118,8 @@ export function Shell(): ReactElement {
   );
 
   const data = useMemo<ShellData>(
-    () => ({ workflows, drafts, runs, loading, error, reload }),
-    [workflows, drafts, runs, loading, error, reload],
+    () => ({ workflows, runs, loading, error, reload }),
+    [workflows, runs, loading, error, reload],
   );
 
   // на узком экране список — ящик: выбор записи его закрывает
@@ -160,7 +158,6 @@ export function Shell(): ReactElement {
           >
             <WorkflowList
               workflows={workflows}
-              drafts={drafts}
               runs={runs}
               selectedWorkflow={workflowId ?? null}
               selectedRun={runId ?? null}

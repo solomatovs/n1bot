@@ -1,12 +1,11 @@
-import { Code2, Play, Save, ShieldCheck, Trash2 } from "lucide-react";
+import { Code2, Eraser, Play, Save, ShieldCheck, Trash2 } from "lucide-react";
 import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { z } from "zod";
 
 import { ApiError } from "../api/client";
 import { useServices } from "../app";
 import { Async, errorText } from "../components/Async";
-import { IssueList } from "../components/build/IssueList";
 import { ToolMenu } from "../components/build/ToolMenu";
 import { EditorGraph } from "../components/editor/EditorGraph";
 import { TaskForm } from "../components/editor/TaskForm";
@@ -30,78 +29,38 @@ import {
   type EditableWorkflow,
   type SpecIssue,
 } from "../model/spec";
-import type { StoredWorkflow, ToolCatalog, WorkflowDraft } from "../model/workflow";
-import { Button, EmptyState, Notice, Toolbar, ToolbarHint, ToolbarLabel, ToolbarSpacer } from "../ui";
+import type { StoredWorkflow, ToolCatalog } from "../model/workflow";
+import { Button, EmptyState, Toolbar, ToolbarHint, ToolbarLabel, ToolbarSpacer, useToast } from "../ui";
 import { Input, TextArea } from "../ui";
-
-const EMPTY: EditableWorkflow = { name: "new-workflow", description: "", tasks: [], edges: [] };
 
 /** Пауза перед отправкой черновика: серия правок уходит одной записью. */
 const DRAFT_DEBOUNCE_MS = 300;
-
-/** Ключ черновика: сохранённый workflow по id, новый — по uuid из адреса вкладки. */
-function draftKeyOf(workflowId: string | undefined, draftParam: string | null): string {
-  if (workflowId !== undefined) {
-    return `workflow:${workflowId}`;
-  }
-
-  if (draftParam !== null) {
-    return `new:${draftParam}`;
-  }
-
-  return "";
-}
 
 const LayoutSchema = z.object({
   positions: z.record(z.object({ x: z.number(), y: z.number() })),
 });
 
-const NoticeStateSchema = z.object({ notice: z.string() });
-
-function noticeOf(state: unknown): string {
-  const parsed = NoticeStateSchema.safeParse(state);
-  if (!parsed.success) {
-    return "";
-  }
-
-  return parsed.data.notice;
-}
-
 type Loaded = {
   catalog: ToolCatalog;
-  stored: StoredWorkflow | null;
-  draft: WorkflowDraft | null;
+  stored: StoredWorkflow;
 };
 
-/** Сцена Build: пусто без выбора, иначе билдер выбранного или нового workflow. */
+/** Сцена Build: пусто без выбора, иначе билдер выбранного workflow. */
 export function BuildPage(): ReactElement {
   const { workflowId } = useParams();
   const { api } = useServices();
-  const location = useLocation();
-  const navigate = useNavigate();
-  const isNew = location.pathname.endsWith("/workflow/new");
-  const draftParam = new URLSearchParams(location.search).get("draft");
-  const draftKey = draftKeyOf(workflowId, draftParam);
 
-  // новый workflow получает uuid черновика в адресе: вторая вкладка по нему же его и откроет
-  useEffect(() => {
-    if (isNew && draftParam === null) {
-      void navigate(`/workflow/new?draft=${crypto.randomUUID()}`, { replace: true });
-    }
-  }, [isNew, draftParam, navigate]);
-
-  const load = useCallback(async (): Promise<Loaded> => {
-    const catalog = await api.catalog();
-    const draft = draftKey === "" ? null : await api.getDraft(draftKey);
+  const load = useCallback(async (): Promise<Loaded | null> => {
     if (workflowId === undefined) {
-      return { catalog, stored: null, draft };
+      return null;
     }
 
-    return { catalog, stored: await api.getWorkflow(workflowId), draft };
-  }, [api, workflowId, draftKey]);
+    const catalog = await api.catalog();
+    return { catalog, stored: await api.getWorkflow(workflowId) };
+  }, [api, workflowId]);
   const [loaded] = useLoadable(load);
 
-  if (workflowId === undefined && !isNew) {
+  if (workflowId === undefined) {
     return (
       <main className="stage stage--build">
         <EmptyState fill title="Build workflows">
@@ -114,28 +73,26 @@ export function BuildPage(): ReactElement {
   return (
     <Async
       state={loaded}
-      render={({ catalog, stored, draft }) => (
-        <Builder key={draftKey} catalog={catalog} stored={stored} draft={draft} draftKey={draftKey} />
-      )}
+      render={(data) => {
+        if (data === null) {
+          return <></>;
+        }
+
+        return <Builder key={data.stored.id} catalog={data.catalog} stored={data.stored} />;
+      }}
     />
   );
 }
 
 type BuilderProps = {
   catalog: ToolCatalog;
-  stored: StoredWorkflow | null;
-  draft: WorkflowDraft | null;
-  draftKey: string;
+  stored: StoredWorkflow;
 };
 
 /** Черновик главнее сохранённого: он и есть то, что вкладки правят сейчас. */
-function initialWorkflow(stored: StoredWorkflow | null, draft: WorkflowDraft | null): EditableWorkflow {
-  if (draft !== null) {
-    return parseSpecText(draft.spec);
-  }
-
-  if (stored === null) {
-    return EMPTY;
+function initialWorkflow(stored: StoredWorkflow): EditableWorkflow {
+  if (stored.draft_spec !== null) {
+    return parseSpecText(stored.draft_spec);
   }
 
   return parseSpecText(stored.spec);
@@ -171,38 +128,46 @@ function positionsOf(layout: unknown, workflow: EditableWorkflow, catalog: ToolC
   return autoPositions(workflow, catalog);
 }
 
-function initialPositions(
-  stored: StoredWorkflow | null,
-  draft: WorkflowDraft | null,
-  workflow: EditableWorkflow,
-  catalog: ToolCatalog,
-): TaskPositions {
-  if (draft !== null) {
-    return positionsOf(draft.layout, workflow, catalog);
+function initialPositions(stored: StoredWorkflow, workflow: EditableWorkflow, catalog: ToolCatalog): TaskPositions {
+  if (stored.draft_spec !== null) {
+    return positionsOf(stored.draft_layout, workflow, catalog);
   }
 
-  return positionsOf(stored?.layout ?? null, workflow, catalog);
+  return positionsOf(stored.layout, workflow, catalog);
 }
 
-function Builder({ catalog, stored, draft, draftKey }: BuilderProps): ReactElement {
+/** Текст ошибок спеки для всплывашки: каждая строка — одна ошибка. */
+function issuesText(issues: SpecIssue[]): string {
+  const lines: string[] = [];
+  for (const issue of issues) {
+    if (issue.where === "") {
+      lines.push(issue.message);
+      continue;
+    }
+
+    lines.push(`${issue.where}: ${issue.message}`);
+  }
+
+  return lines.join("\n");
+}
+
+function Builder({ catalog, stored }: BuilderProps): ReactElement {
   const { api, socket } = useServices();
   const shell = useShellData();
   const navigate = useNavigate();
-  const location = useLocation();
-  const [workflow, setWorkflow] = useState<EditableWorkflow>(() => initialWorkflow(stored, draft));
-  const [positions, setPositions] = useState<TaskPositions>(() => initialPositions(stored, draft, workflow, catalog));
-  const revision = useRef(draft?.revision ?? 0);
+  const toast = useToast();
+  const [workflow, setWorkflow] = useState<EditableWorkflow>(() => initialWorkflow(stored));
+  const [positions, setPositions] = useState<TaskPositions>(() => initialPositions(stored, workflow, catalog));
+  const [hasDraft, setHasDraft] = useState(stored.draft_spec !== null);
+  const revision = useRef(stored.draft_revision);
   const remote = useRef(false);
   const untouched = useRef(true);
-  // черновик закрыт (сохранён или удалён): отложенная запись не должна его воскресить
-  const draftClosed = useRef(false);
+  // workflow закрыт (удалён): отложенная запись черновика не должна его искать
+  const closed = useRef(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [yamlMode, setYamlMode] = useState(false);
   const [yamlText, setYamlText] = useState("");
   const [issues, setIssues] = useState<SpecIssue[]>([]);
-  const [notice, setNotice] = useState(() => noticeOf(location.state));
-  const [failed, setFailed] = useState(false);
-  const [savedId, setSavedId] = useState<string | null>(stored?.id ?? null);
 
   const issuesByTask = useMemo(() => {
     const found = new Map<string, string>();
@@ -217,10 +182,18 @@ function Builder({ catalog, stored, draft, draftKey }: BuilderProps): ReactEleme
 
   const specText = useCallback(() => renderSpecText(workflow), [workflow]);
 
-  const report = useCallback((text: string, isError: boolean) => {
-    setNotice(text);
-    setFailed(isError);
-  }, []);
+  /** Ставит редактор в присланное состояние, не отправляя его черновиком обратно. */
+  const applyRemote = useCallback(
+    (spec: string, layout: unknown, freshRevision: number, freshDraft: boolean) => {
+      const parsed = parseSpecText(spec);
+      remote.current = true;
+      revision.current = freshRevision;
+      setWorkflow(parsed);
+      setPositions(positionsOf(layout, parsed, catalog));
+      setHasDraft(freshDraft);
+    },
+    [catalog],
+  );
 
   // своя правка уходит черновиком через паузу; пришедшая с шины обратно не отправляется
   useEffect(() => {
@@ -234,34 +207,31 @@ function Builder({ catalog, stored, draft, draftKey }: BuilderProps): ReactEleme
       return;
     }
 
-    if (draftKey === "") {
-      return;
-    }
-
     const timer = window.setTimeout(() => {
-      if (draftClosed.current) {
+      if (closed.current) {
         return;
       }
 
-      void api.putDraft(draftKey, renderSpecText(workflow), { positions }, socket.id).then(
+      void api.putWorkflowDraft(stored.id, renderSpecText(workflow), { positions }, socket.id).then(
         (saved) => {
-          revision.current = Math.max(revision.current, saved.revision);
+          revision.current = Math.max(revision.current, saved.draft_revision);
+          setHasDraft(true);
         },
         (error: unknown) => {
-          report(`draft not shared: ${errorText(error)}`, true);
+          toast(`draft not shared: ${errorText(error)}`, "error");
         },
       );
     }, DRAFT_DEBOUNCE_MS);
     return () => {
       window.clearTimeout(timer);
     };
-  }, [workflow, positions, api, socket, draftKey, report]);
+  }, [workflow, positions, api, socket, stored.id, toast]);
 
-  // чужая правка черновика: перечитать и применить, если она новее нашей
+  // чужая правка черновика: перечитать строку и применить, если она новее нашей
   useEffect(
     () =>
       socket.onUser((event) => {
-        if (event.kind !== "workflow_draft_changed" || event.key !== draftKey) {
+        if (event.kind !== "workflow_draft_changed" || event.workflow_id !== stored.id) {
           return;
         }
 
@@ -269,38 +239,24 @@ function Builder({ catalog, stored, draft, draftKey }: BuilderProps): ReactEleme
           return;
         }
 
-        if (event.action === "deleted") {
-          if (stored === null) {
-            return;
-          }
-
-          void api.getWorkflow(stored.id).then((fresh) => {
-            const parsed = parseSpecText(fresh.spec);
-            remote.current = true;
-            revision.current = 0;
-            setWorkflow(parsed);
-            setPositions(positionsOf(fresh.layout, parsed, catalog));
-          });
-          return;
-        }
-
         if (event.revision <= revision.current) {
           return;
         }
 
-        void api.getDraft(draftKey).then((fresh) => {
-          if (fresh === null || fresh.revision <= revision.current) {
+        void api.getWorkflow(stored.id).then((fresh) => {
+          if (fresh.draft_revision <= revision.current) {
             return;
           }
 
-          const parsed = parseSpecText(fresh.spec);
-          remote.current = true;
-          revision.current = fresh.revision;
-          setWorkflow(parsed);
-          setPositions(positionsOf(fresh.layout, parsed, catalog));
+          if (fresh.draft_spec === null) {
+            applyRemote(fresh.spec, fresh.layout, fresh.draft_revision, false);
+            return;
+          }
+
+          applyRemote(fresh.draft_spec, fresh.draft_layout, fresh.draft_revision, true);
         });
       }),
-    [socket, api, draftKey, stored, catalog],
+    [socket, api, stored.id, applyRemote],
   );
 
   const toggleYaml = useCallback(() => {
@@ -324,98 +280,89 @@ function Builder({ catalog, stored, draft, draftKey }: BuilderProps): ReactEleme
         return autoPositions(parsed, catalog);
       });
       setIssues([]);
-      report("yaml applied", false);
+      toast("yaml applied", "success");
     } catch (error: unknown) {
       if (error instanceof SpecTextError) {
         setIssues([{ code: "yaml", where: "", message: error.message }]);
+        toast(error.message, "error");
         return;
       }
 
-      report(errorText(error), true);
+      toast(errorText(error), "error");
     }
-  }, [yamlText, report, catalog]);
+  }, [yamlText, toast, catalog]);
 
   const remember = useCallback(
     (error: unknown) => {
       if (error instanceof ApiError && error.status === 400) {
-        setIssues(parseIssues(error.detail));
-        setNotice("");
+        const parsed = parseIssues(error.detail);
+        setIssues(parsed);
+        toast(issuesText(parsed), "error");
         return;
       }
 
-      report(errorText(error), true);
+      toast(errorText(error), "error");
     },
-    [report],
+    [toast],
   );
 
   const validate = useCallback(async () => {
     try {
       const state = await api.validate(specText());
       setIssues([]);
-      report(`valid: ${state.graph.stages.length} stage(s)`, false);
+      toast(`valid: ${state.graph.stages.length} stage(s)`, "success");
     } catch (error: unknown) {
       remember(error);
     }
-  }, [api, specText, remember, report]);
+  }, [api, specText, remember, toast]);
 
   const save = useCallback(async () => {
     try {
-      const saved = await api.save(specText(), { positions });
-      const text = `saved "${saved.name}" (id ${saved.id})`;
-      setSavedId(saved.id);
+      const saved = await api.saveInto(stored.id, specText(), { positions });
+      revision.current = saved.draft_revision;
       setIssues([]);
-      report(text, false);
+      setHasDraft(false);
+      toast(`saved "${saved.name}"`, "success");
       shell.reload();
-      if (stored === null) {
-        // черновик нового workflow свою роль сыграл: дальше вкладки правят сохранённый
-        draftClosed.current = true;
-        await api.dropDraft(draftKey, socket.id);
-        await navigate(`/workflow/${saved.id}`, { replace: true, state: { notice: text } });
-      }
     } catch (error: unknown) {
       remember(error);
     }
-  }, [api, specText, positions, remember, report, navigate, stored, shell, draftKey, socket]);
+  }, [api, specText, positions, remember, toast, stored.id, shell]);
 
-  const deleteDraft = useCallback(async () => {
+  const clearDraft = useCallback(async () => {
     try {
-      draftClosed.current = true;
-      await api.dropDraft(draftKey, socket.id);
-      shell.reload();
-      if (stored === null) {
-        await navigate("/workflow");
-        return;
-      }
-
-      // черновик сохранённого workflow снят: сцена возвращается к сохранённому
-      const fresh = await api.getWorkflow(stored.id);
-      const parsed = parseSpecText(fresh.spec);
-      remote.current = true;
-      revision.current = 0;
-      draftClosed.current = false;
-      setWorkflow(parsed);
-      setPositions(positionsOf(fresh.layout, parsed, catalog));
+      const fresh = await api.clearWorkflowDraft(stored.id, socket.id);
+      applyRemote(fresh.spec, fresh.layout, fresh.draft_revision, false);
       setIssues([]);
-      report("draft deleted", false);
+      shell.reload();
+      toast("draft cleared", "success");
     } catch (error: unknown) {
-      report(errorText(error), true);
+      toast(errorText(error), "error");
     }
-  }, [api, draftKey, socket, shell, stored, navigate, catalog, report]);
+  }, [api, stored.id, socket, applyRemote, shell, toast]);
+
+  const removeWorkflow = useCallback(async () => {
+    try {
+      closed.current = true;
+      await api.remove(stored.id);
+      shell.reload();
+      toast(`deleted "${workflow.name}"`, "success");
+      await navigate("/workflow");
+    } catch (error: unknown) {
+      closed.current = false;
+      toast(errorText(error), "error");
+    }
+  }, [api, stored.id, shell, toast, navigate, workflow.name]);
 
   const run = useCallback(async () => {
-    if (savedId === null) {
-      report("save the workflow first", true);
-      return;
-    }
-
     try {
-      const runId = await api.run(savedId);
+      const runId = await api.run(stored.id);
       shell.reload();
       await navigate(`/runs/${runId}`);
     } catch (error: unknown) {
       remember(error);
     }
-  }, [api, savedId, remember, report, navigate, shell]);
+  }, [api, stored.id, remember, navigate, shell]);
 
   const addTask = useCallback(
     (tool: string) => {
@@ -490,28 +437,25 @@ function Builder({ catalog, stored, draft, draftKey }: BuilderProps): ReactEleme
           YAML
         </Button>
         <ToolbarHint variant="builder">edges: drag then → after · result → args · fd → fd</ToolbarHint>
-        <ToolbarSpacer />
-        <Button icon={Trash2} onClick={() => void deleteDraft()}>
-          Delete draft
-        </Button>
+      </Toolbar>
+      <Toolbar variant="builder">
         <Button icon={ShieldCheck} onClick={() => void validate()}>
           Validate
         </Button>
         <Button tone="signal" icon={Save} onClick={() => void save()}>
           Save
         </Button>
-        <Button tone="primary" icon={Play} disabled={savedId === null} onClick={() => void run()}>
+        <Button tone="primary" icon={Play} onClick={() => void run()}>
           Run
         </Button>
+        <Button icon={Eraser} disabled={!hasDraft} onClick={() => void clearDraft()}>
+          Clear
+        </Button>
+        <ToolbarSpacer />
+        <Button tone="danger" icon={Trash2} onClick={() => void removeWorkflow()}>
+          Delete
+        </Button>
       </Toolbar>
-      <div>
-        {notice !== "" && (
-          <Toolbar variant="view">
-            <Notice tone={failed ? "error" : "info"}>{notice}</Notice>
-          </Toolbar>
-        )}
-        <IssueList issues={issues} />
-      </div>
       {yamlMode ? (
         <div className="yaml">
           <TextArea
@@ -543,7 +487,7 @@ function Builder({ catalog, stored, draft, draftKey }: BuilderProps): ReactEleme
             onRemoveEdge={removeEdge}
             onRemoveTask={remove}
             onBadConnection={() => {
-              report("only result → args.*, task → task and fd → fd edges are allowed", true);
+              toast("only result → args.*, task → task and fd → fd edges are allowed", "error");
             }}
           />
           {selectedTask !== null && (

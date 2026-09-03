@@ -8,6 +8,7 @@
 Ошибки:
 WorkflowStoreError — таблицы недоступны или запись не сохранена.
 WorkflowNotFoundError — определения или запуска с таким id у владельца нет.
+WorkflowNameTakenError — имя занято другой строкой того же пользователя.
 """
 
 from __future__ import annotations
@@ -28,12 +29,10 @@ from boba.db.postgres.profile import PostgresConfig
 from boba.workflow import RunState, RunStatus, WorkflowSpec
 from boba.workflow.ports import WorkflowRepository
 from boba.workflow.records import (
-    DraftKey,
-    DraftsColumn,
     RunsColumn,
     StoredRun,
     StoredWorkflow,
-    WorkflowDraft,
+    WorkflowNameTakenError,
     WorkflowNotFoundError,
     WorkflowsColumn,
     WorkflowStoreError,
@@ -95,23 +94,16 @@ class WorkflowStore(PostgresTable, WorkflowRepository):
     def _runs(self) -> sql.Identifier:
         return self._table(WorkflowTable.RUNS)
 
-    def _drafts(self) -> sql.Identifier:
-        return self._table(WorkflowTable.DRAFTS)
-
     def _names(self) -> dict[str, sql.Composable]:
-        """Имена из enum'ов: w_* — workflows, r_* — runs, d_* — drafts."""
+        """Имена из enum'ов: w_* — workflows, r_* — runs."""
         names: dict[str, sql.Composable] = {
             "workflows": self._workflows(),
             "runs": self._runs(),
-            "drafts": self._drafts(),
         }
         for column in WorkflowsColumn:
             names[f"w_{column.value}"] = SqlNames.ident(column)
         for column in RunsColumn:
             names[f"r_{column.value}"] = SqlNames.ident(column)
-        for column in DraftsColumn:
-            names[f"d_{column.value}"] = SqlNames.ident(column)
-
         return names
 
     def _sql(self, text: LiteralString) -> sql.Composed:
@@ -131,7 +123,6 @@ class WorkflowStore(PostgresTable, WorkflowRepository):
         ddl = (
             *self._workflows_ddl(),
             *self._runs_ddl(),
-            *self._drafts_ddl(),
             *self._migrations(),
         )
         async with self._guarded("setup"):
@@ -152,8 +143,19 @@ class WorkflowStore(PostgresTable, WorkflowRepository):
                     {layout}     jsonb not null default '{{}}'::jsonb,
                     {created_at} timestamptz not null default now(),
                     {updated_at} timestamptz not null default now(),
+                    {draft_spec}     text,
+                    {draft_layout}   jsonb,
+                    {draft_revision} int not null default 0,
                     unique ({user_id}, {name})
                 )
+                """
+            ).format(workflows=self._workflows(), **self._columns(WorkflowsColumn)),
+            sql.SQL(
+                """
+                alter table {workflows}
+                    add column if not exists {draft_spec} text,
+                    add column if not exists {draft_layout} jsonb,
+                    add column if not exists {draft_revision} int not null default 0
                 """
             ).format(workflows=self._workflows(), **self._columns(WorkflowsColumn)),
         )
@@ -194,23 +196,6 @@ class WorkflowStore(PostgresTable, WorkflowRepository):
                     on {runs} ({status})
                 """
             ).format(runs=self._runs(), **self._columns(RunsColumn)),
-        )
-
-    def _drafts_ddl(self) -> tuple[sql.Composed, ...]:
-        return (
-            sql.SQL(
-                """
-                create table if not exists {drafts} (
-                    {user_id}    uuid not null,
-                    {key}        text not null,
-                    {revision}   integer not null default 1,
-                    {spec}       text not null,
-                    {layout}     jsonb not null default '{{}}'::jsonb,
-                    {updated_at} timestamptz not null default now(),
-                    primary key ({user_id}, {key})
-                )
-                """
-            ).format(drafts=self._drafts(), **self._columns(DraftsColumn)),
         )
 
     def _migrations(self) -> tuple[sql.Composed, ...]:
@@ -257,13 +242,18 @@ class WorkflowStore(PostgresTable, WorkflowRepository):
                 %(layout)s
             )
             on conflict ({w_user_id}, {w_name}) do update set
-                {w_spec}       = excluded.{w_spec},
-                {w_tools}      = excluded.{w_tools},
-                {w_layout}     = excluded.{w_layout},
-                {w_updated_at} = now()
+                {w_spec}           = excluded.{w_spec},
+                {w_tools}          = excluded.{w_tools},
+                {w_layout}         = excluded.{w_layout},
+                {w_draft_spec}     = null,
+                {w_draft_layout}   = null,
+                {w_draft_revision} = {workflows}.{w_draft_revision} + 1,
+                {w_updated_at}     = now()
             returning
                 {w_id}, {w_user_id}, {w_name}, {w_spec},
-                {w_tools}, {w_layout}, {w_created_at}, {w_updated_at}
+                {w_tools}, {w_layout},
+                {w_draft_spec}, {w_draft_layout}, {w_draft_revision},
+                {w_created_at}, {w_updated_at}
             """
         )
         params = {
@@ -285,30 +275,88 @@ class WorkflowStore(PostgresTable, WorkflowRepository):
 
         return StoredWorkflow.model_validate(dict(row))
 
+    async def save_into(
+        self,
+        user_id: UUID,
+        workflow_id: UUID,
+        spec: WorkflowSpec,
+        layout: Mapping[str, Any],
+    ) -> StoredWorkflow:
+        """Переписывает строку по id: имя, спека, раскладка; черновик снимается."""
+        query = self._sql(
+            """
+            update {workflows} set
+                {w_name}           = %(name)s,
+                {w_spec}           = %(spec)s,
+                {w_tools}          = %(tools)s,
+                {w_layout}         = %(layout)s,
+                {w_draft_spec}     = null,
+                {w_draft_layout}   = null,
+                {w_draft_revision} = {w_draft_revision} + 1,
+                {w_updated_at}     = now()
+            where 1=1
+                and {w_id} = %(id)s
+                and {w_user_id} = %(user_id)s
+            returning
+                {w_id}, {w_user_id}, {w_name}, {w_spec},
+                {w_tools}, {w_layout},
+                {w_draft_spec}, {w_draft_layout}, {w_draft_revision},
+                {w_created_at}, {w_updated_at}
+            """
+        )
+        params = {
+            "id": workflow_id,
+            "user_id": user_id,
+            "name": spec.name,
+            "spec": spec.render_yaml(),
+            "tools": self._tools_of(spec),
+            "layout": Jsonb(dict(layout)),
+        }
+
+        pool = await self._pool()
+        async with self._guarded("save_into"), pool.dict_cursor() as cur:
+            try:
+                await cur.execute(query, params)
+            except psycopg.errors.UniqueViolation as exc:
+                msg = f"workflow name already taken: {spec.name!r}"
+                raise WorkflowNameTakenError(msg) from exc
+
+            row = await cur.fetchone()
+
+        if row is None:
+            msg = f"workflow: {workflow_id!r} not found"
+            raise WorkflowNotFoundError(msg)
+
+        return StoredWorkflow.model_validate(dict(row))
+
     async def get(self, user_id: UUID, workflow_id: UUID) -> StoredWorkflow:
         where = self._sql("w.{w_id} = %(key)s")
 
         return await self._one_workflow(user_id, where, workflow_id)
 
     async def put_draft(
-        self, user_id: UUID, key: DraftKey, spec: str, layout: Mapping[str, Any]
-    ) -> WorkflowDraft:
+        self, user_id: UUID, workflow_id: UUID, spec: str, layout: Mapping[str, Any]
+    ) -> StoredWorkflow:
+        """Пишет черновик в строку workflow; draft_revision растёт на единицу."""
         query = self._sql(
             """
-            insert into {drafts} ({d_user_id}, {d_key}, {d_spec}, {d_layout})
-            values (%(user_id)s, %(key)s, %(spec)s, %(layout)s)
-            on conflict ({d_user_id}, {d_key}) do update set
-                {d_revision}   = {drafts}.{d_revision} + 1,
-                {d_spec}       = excluded.{d_spec},
-                {d_layout}     = excluded.{d_layout},
-                {d_updated_at} = now()
+            update {workflows} set
+                {w_draft_spec}     = %(spec)s,
+                {w_draft_layout}   = %(layout)s,
+                {w_draft_revision} = {w_draft_revision} + 1
+            where 1=1
+                and {w_id} = %(id)s
+                and {w_user_id} = %(user_id)s
             returning
-                {d_key}, {d_user_id}, {d_revision}, {d_spec}, {d_layout}, {d_updated_at}
+                {w_id}, {w_user_id}, {w_name}, {w_spec},
+                {w_tools}, {w_layout},
+                {w_draft_spec}, {w_draft_layout}, {w_draft_revision},
+                {w_created_at}, {w_updated_at}
             """
         )
         params = {
+            "id": workflow_id,
             "user_id": user_id,
-            "key": key.render(),
             "spec": spec,
             "layout": Jsonb(dict(layout)),
         }
@@ -319,71 +367,40 @@ class WorkflowStore(PostgresTable, WorkflowRepository):
             row = await cur.fetchone()
 
         if row is None:
-            msg = f"draft {key.render()!r} was not saved"
-            raise WorkflowStoreError(msg)
+            msg = f"workflow: {workflow_id!r} not found"
+            raise WorkflowNotFoundError(msg)
 
-        return WorkflowDraft.model_validate(dict(row))
+        return StoredWorkflow.model_validate(dict(row))
 
-    async def get_draft(self, user_id: UUID, key: DraftKey) -> WorkflowDraft:
+    async def clear_draft(self, user_id: UUID, workflow_id: UUID) -> StoredWorkflow:
+        """Сбрасывает черновик: строка возвращается к сохранённому состоянию."""
         query = self._sql(
             """
-            select
-                {d_key}, {d_user_id}, {d_revision}, {d_spec}, {d_layout}, {d_updated_at}
-            from
-                {drafts}
+            update {workflows} set
+                {w_draft_spec}     = null,
+                {w_draft_layout}   = null,
+                {w_draft_revision} = {w_draft_revision} + 1
             where 1=1
-                and {d_user_id} = %(user_id)s
-                and {d_key} = %(key)s
+                and {w_id} = %(id)s
+                and {w_user_id} = %(user_id)s
+            returning
+                {w_id}, {w_user_id}, {w_name}, {w_spec},
+                {w_tools}, {w_layout},
+                {w_draft_spec}, {w_draft_layout}, {w_draft_revision},
+                {w_created_at}, {w_updated_at}
             """
         )
 
         pool = await self._pool()
-        async with self._guarded("get_draft"), pool.dict_cursor() as cur:
-            await cur.execute(query, {"user_id": user_id, "key": key.render()})
+        async with self._guarded("clear_draft"), pool.dict_cursor() as cur:
+            await cur.execute(query, {"id": workflow_id, "user_id": user_id})
             row = await cur.fetchone()
 
         if row is None:
-            msg = f"draft {key.render()!r} not found"
+            msg = f"workflow: {workflow_id!r} not found"
             raise WorkflowNotFoundError(msg)
 
-        return WorkflowDraft.model_validate(dict(row))
-
-    async def list_drafts(self, user_id: UUID) -> Sequence[WorkflowDraft]:
-        """Черновики пользователя, свежие сверху."""
-        query = self._sql(
-            """
-            select
-                {d_key}, {d_user_id}, {d_revision}, {d_spec}, {d_layout}, {d_updated_at}
-            from
-                {drafts}
-            where 1=1
-                and {d_user_id} = %(user_id)s
-            order by
-                {d_updated_at} desc
-            """
-        )
-
-        pool = await self._pool()
-        async with self._guarded("list_drafts"), pool.dict_cursor() as cur:
-            await cur.execute(query, {"user_id": user_id})
-            rows = await cur.fetchall()
-
-        return [WorkflowDraft.model_validate(dict(row)) for row in rows]
-
-    async def drop_draft(self, user_id: UUID, key: DraftKey) -> bool:
-        query = self._sql(
-            """
-            delete from {drafts}
-            where 1=1
-                and {d_user_id} = %(user_id)s
-                and {d_key} = %(key)s
-            """
-        )
-
-        pool = await self._pool()
-        async with self._guarded("drop_draft"), pool.dict_cursor() as cur:
-            await cur.execute(query, {"user_id": user_id, "key": key.render()})
-            return cur.rowcount > 0
+        return StoredWorkflow.model_validate(dict(row))
 
     async def get_by_name(self, user_id: UUID, name: str) -> StoredWorkflow:
         where = self._sql("w.{w_name} = %(key)s")
@@ -395,7 +412,9 @@ class WorkflowStore(PostgresTable, WorkflowRepository):
             """
             select
                 {w_id}, {w_user_id}, {w_name}, {w_spec},
-                {w_tools}, {w_layout}, {w_created_at}, {w_updated_at}
+                {w_tools}, {w_layout},
+                {w_draft_spec}, {w_draft_layout}, {w_draft_revision},
+                {w_created_at}, {w_updated_at}
             from
                 {workflows} w
             where
@@ -659,7 +678,9 @@ class WorkflowStore(PostgresTable, WorkflowRepository):
             """
             select
                 {w_id}, {w_user_id}, {w_name}, {w_spec},
-                {w_tools}, {w_layout}, {w_created_at}, {w_updated_at}
+                {w_tools}, {w_layout},
+                {w_draft_spec}, {w_draft_layout}, {w_draft_revision},
+                {w_created_at}, {w_updated_at}
             from
                 {workflows} w
             where 1=1

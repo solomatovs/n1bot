@@ -123,7 +123,8 @@ def test_schema_issues_name_the_field() -> None:
     codes = {issue.code for issue in caught.value.issues}
     wheres = {issue.where for issue in caught.value.issues}
     assert codes == {IssueCode.SCHEMA}
-    assert wheres == {"name", "tasks", "extra"}
+    # пустой tasks валиден: New создаёт workflow без задач
+    assert wheres == {"name", "extra"}
 
 
 def test_yaml_error_is_one_issue() -> None:
