@@ -245,12 +245,19 @@ RUN mkdir -p "/tree${BOBA_DIR}/conf/krb" "/tree${SANDBOX_DEV_KRB}"              
     && sh /tmp/mkrootfs.sh /tree /out/plugin-rootfs.ext4 ${PYTHON_VERSION} 16
 
 
-# страница workflow: собирается node'ом стадии, на хосте node не нужен
+# контракт api: OpenAPI-документ из установленного приложения, без хоста и конфига
+FROM app-site AS openapi
+
+RUN python3 -m boba.studio.api.schema > /tmp/openapi.json
+
+
+# страница workflow: типы из openapi.json стадии выше, сборка node'ом стадии, на хосте node не нужен
 FROM ${NODE_IMAGE} AS web-build
 
 COPY packages/agents/boba-studio/web/workflow/  /src/web/workflow/
+COPY --from=openapi /tmp/openapi.json           /src/web/workflow/openapi.json
 WORKDIR /src/web/workflow
-RUN npm ci --no-audit --no-fund && npm run check && npm run build
+RUN npm ci --no-audit --no-fund && npm run generate && npm run check && npm run build
 
 
 FROM ${GLIBC_IMAGE} AS runtime-base
