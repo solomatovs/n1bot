@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-db-clickhouse"
-version = "0.0.15.dev5"
+version = "0.0.15.dev6"
 description = "Boba ClickHouse: ClickHouseConfig + подключение payload'а по HTTP, пароль или Kerberos SPNEGO на каждый запрос."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-toolkit==0.0.15.dev5",
-    "boba-connections==0.0.15.dev5",
-    "boba-kerberos==0.0.15.dev5",
-    "boba-krb==0.0.15.dev5",
+    "boba-toolkit==0.0.15.dev6",
+    "boba-connections==0.0.15.dev6",
+    "boba-kerberos==0.0.15.dev6",
+    "boba-krb==0.0.15.dev6",
 ]
 
 [project.optional-dependencies]
@@ -19,7 +19,7 @@ payload = [
     "clickhouse-connect[async]>=1.6,<2",
 ]
 dev = [
-    "boba-stand==0.0.15.dev5",
+    "boba-stand==0.0.15.dev6",
     "pydantic>=2.10,<2.11",
     "pytest>=8",
 ]

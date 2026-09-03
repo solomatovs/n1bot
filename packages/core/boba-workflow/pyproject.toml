@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-workflow"
-version = "0.0.15.dev5"
+version = "0.0.15.dev6"
 description = "Boba workflow: граф вычислений над инструментами — спека, стадии, порядок, автомат запуска."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-access==0.0.15.dev5",
-    "boba-identity==0.0.15.dev5",
-    "boba-toolkit==0.0.15.dev5",
-    "boba-messaging==0.0.15.dev5",
+    "boba-access==0.0.15.dev6",
+    "boba-identity==0.0.15.dev6",
+    "boba-toolkit==0.0.15.dev6",
+    "boba-messaging==0.0.15.dev6",
     "pydantic>=2.10,<3",
     "pyyaml>=6.0,<7",
     "jinja2>=3.1,<4",
