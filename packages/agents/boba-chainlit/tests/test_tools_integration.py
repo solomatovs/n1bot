@@ -48,6 +48,7 @@ from boba.toolkit.result import (
     TextResult,
     ToolArtifact,
 )
+from boba.toolkit.types import SecretReveal
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.injected import InjectedConfig
 from boba.transport.http.profile import HttpConnection
@@ -1053,7 +1054,7 @@ class TestPgTools:
         """Стейтмент уходит как есть: приговор выносит сервер, не инструмент."""
         with pytest.raises(PayloadFailureError) as caught:
             await Call.result(
-                pg_tools["pg_copy"], connection_name="main", sql="select 1"
+                pg_tools["pg_copy"], connection=pg_connection, sql="select 1"
             )
 
         if caught.value.kind != "sql_failed":
@@ -1106,16 +1107,6 @@ class TestPgTools:
         )
         if list(after.rows) != [{"gone": True}]:
             raise AssertionError("таблица первой команды откачена")
-
-    async def test_unknown_target_is_rejected(self, pg_tools, pg_connection) -> None:
-        """Отказ нового пути — исключение с kind, а не ErrorResult-успех."""
-        with pytest.raises(PayloadFailureError) as caught:
-            await Call.result(
-                pg_tools["pg_query"], connection_name="нет-такого", sql="select 1"
-            )
-
-        if caught.value.kind != "unknown_target":
-            raise AssertionError('caught.value.kind == "unknown_target"')
 
 
 class TestIngestTools:
@@ -1245,7 +1236,7 @@ class TestKbTools:
 class TestPgCopyPipeline:
     """Насосы pg_copy_out/pg_copy_in: перекачка pg->pg конвейером через ядро."""
 
-    async def _prepare(self, pg_tools) -> None:
+    async def _prepare(self, pg_tools, pg_connection) -> None:
         await Call.ok(
             pg_tools["pg_query"],
             connection=pg_connection,
@@ -1264,22 +1255,23 @@ class TestPgCopyPipeline:
         from boba.toolrun.invoke import ToolInvoker
         from boba.toolrun.pipeline import PipelineService
 
-        await self._prepare(pg_tools)
+        await self._prepare(pg_tools, pg_connection)
 
+        profile = SecretReveal.dumped(pg_connection)
         plan = json.dumps(
             {
                 "nodes": [
                     {
                         "tool": "pg_copy_out",
                         "args": {
-                            "connection_name": "main",
+                            "connection": profile,
                             "sql": "COPY it_pipe_src TO STDOUT",
                         },
                     },
                     {
                         "tool": "pg_copy_in",
                         "args": {
-                            "connection_name": "main",
+                            "connection": profile,
                             "sql": "COPY it_pipe_dst FROM STDIN",
                         },
                     },
@@ -1306,7 +1298,7 @@ class TestPgCopyPipeline:
             raise AssertionError(f"текст исказился: {rows.rows[0]}")
 
     async def test_wrong_direction_is_refused_before_the_database(
-        self, pg_tools
+        self, pg_tools, pg_connection
     ) -> None:
         """Стейтмент не того направления валится подсказкой, а не ошибкой psycopg."""
         with pytest.raises(PayloadFailureError) as caught:

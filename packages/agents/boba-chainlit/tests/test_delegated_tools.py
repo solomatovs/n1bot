@@ -34,13 +34,20 @@ from boba.auth.credentials import KerberosCredentialSource
 from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.config import bind
+from boba.connection_broker.catalog import (
+    ConnectionCatalogConfig,
+    build_connection_tools,
+)
+from boba.connection_broker.service import UserConnectionsService
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connection_broker.user_connections import UserConnections
 from boba.connections.manifest import ConnectionTypes
+from boba.connections.marks import ConnectionRefusal
 from boba.connections.profile import ConnectionProfileBase, GrantTarget
 from boba.db.clickhouse.profile import ClickHouseConfig
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.profile import PostgresConfig
+from boba.identity.errors import RefusalError
 from boba.identity.session import UserMetadataField
 from boba.kerberos import (
     AcceptConfig,
@@ -256,6 +263,14 @@ class Tools:
 
 
 @pytest.fixture
+def catalog(store: ConnectionStore) -> Any:
+    """Общий connection_list над тем же хранилищем, что и инструменты."""
+    service = UserConnectionsService(lambda: store)
+
+    return build_connection_tools(ConnectionCatalogConfig(), service)[0]
+
+
+@pytest.fixture
 def pg_tools(raw_config: Any, store: ConnectionStore, tickets: SsoTickets):
     return Tools.of(
         raw_config,
@@ -394,6 +409,7 @@ async def test_confluence_page_is_fetched_as_the_signed_in_principal(
 
 async def test_targets_list_only_granted_connections(  # noqa: PLR0913 — три вида сразу
     pg_tools: dict[str, Any],
+    catalog: Any,
     ch_tools: dict[str, Any],
     web_tools: dict[str, Any],
     store: ConnectionStore,
@@ -407,16 +423,17 @@ async def test_targets_list_only_granted_connections(  # noqa: PLR0913 — тр�
     await _granted(store, session, "ch-me", delegated_ch)
     await _granted(store, session, "confl", delegated_confluence)
 
-    pg_targets = await Call.ok(pg_tools["pg_connection_list"])
-    ch_targets = await Call.ok(ch_tools["ch_connection_list"])
-    web_targets = await Call.ok(web_tools["web_connection_list"])
+    listed = await Call.ok(catalog)
+    by_kind: dict[str, list[str]] = {}
+    for row in listed.rows:
+        by_kind.setdefault(str(row["kind"]), []).append(str(row["connection"]))
 
-    if [row["connection"] for row in pg_targets.rows] != ["pg-me"]:
-        raise AssertionError(f"pg targets: {pg_targets.rows}")
-    if [row["connection"] for row in ch_targets.rows] != ["ch-me"]:
-        raise AssertionError(f"ch targets: {ch_targets.rows}")
-    if [row["connection"] for row in web_targets.rows] != ["confl"]:
-        raise AssertionError(f"web targets: {web_targets.rows}")
+    if by_kind.get("postgres") != ["pg-me"]:
+        raise AssertionError(f"pg targets: {listed.rows}")
+    if by_kind.get("clickhouse") != ["ch-me"]:
+        raise AssertionError(f"ch targets: {listed.rows}")
+    if by_kind.get("web") != ["confl"]:
+        raise AssertionError(f"web targets: {listed.rows}")
 
 
 async def test_revoked_connection_stops_working_at_once(
@@ -433,13 +450,10 @@ async def test_revoked_connection_stops_working_at_once(
 
     await store.revoke(connection_id, target)
 
-    from boba.toolkit.launcher import PayloadFailureError
-    from boba.toolkit.sql import SqlErrorKind
-
-    with pytest.raises(PayloadFailureError) as caught:
+    with pytest.raises(RefusalError) as caught:
         await Call.result(
             pg_tools["pg_query"], connection="pg-me", sql="select 1 as one"
         )
 
-    if caught.value.kind != SqlErrorKind.UNKNOWN_TARGET:
-        raise AssertionError(f"unexpected failure kind: {caught.value.kind}")
+    if caught.value.kind != ConnectionRefusal.NOT_VISIBLE:
+        raise AssertionError(f"unexpected refusal kind: {caught.value.kind}")
