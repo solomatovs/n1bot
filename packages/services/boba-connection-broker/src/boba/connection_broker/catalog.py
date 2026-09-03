@@ -12,12 +12,14 @@ RefusalError — вызов идёт вне сессии пользовател�
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Sequence
 from typing import Any, ClassVar
 
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, ConfigDict
 
-from boba.connection_broker.service import UserConnectionsService
+from boba.connection_broker.service import UserConnectionsService, VisibleConnection
+from boba.connections.profile import StoredConnection
 from boba.identity.context import CallContext
 from boba.toolkit.result import TableResult, ToolResult, pack_result
 
@@ -59,18 +61,37 @@ class ConnectionCatalog:
         visible = await self._service.visible_all(subject)
 
         rows: list[dict[str, Any]] = []
-        for item in visible.rows:
+        for row in self._unambiguous(visible.rows):
             rows.append(
                 {
-                    CatalogColumn.NAME: item.row.name,
-                    CatalogColumn.KIND: item.row.kind,
-                    CatalogColumn.DESCRIPTION: item.row.profile.description,
+                    CatalogColumn.NAME: row.name,
+                    CatalogColumn.KIND: row.kind,
+                    CatalogColumn.DESCRIPTION: row.profile.description,
                 }
             )
 
         rows.sort(key=lambda row: (row[CatalogColumn.KIND], row[CatalogColumn.NAME]))
 
         return TableResult(rows=rows, note=self._note(len(rows)))
+
+    @staticmethod
+    def _unambiguous(
+        visible: Sequence[VisibleConnection],
+    ) -> Iterator[StoredConnection]:
+        """Строки, чьё имя внутри своего вида выдано субъекту один раз.
+
+        Имя-дубль вызов всё равно отвергнет как неоднозначное, поэтому модели
+        его не показываем: выбрать из двух одинаковых строк нечего.
+        """
+        groups: dict[tuple[str, str], list[StoredConnection]] = {}
+        for item in visible:
+            groups.setdefault((item.row.kind, item.row.name), []).append(item.row)
+
+        for group in groups.values():
+            if len(group) != 1:
+                continue
+
+            yield group[0]
 
     @staticmethod
     def _note(count: int) -> str | None:

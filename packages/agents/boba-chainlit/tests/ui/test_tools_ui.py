@@ -140,6 +140,11 @@ class ProbeSql(StrEnum):
         "TO STDOUT WITH (FORMAT CSV, HEADER)"
     )
     COPY_TEXT = "id,name\n1,alpha\n2,beta\n"
+    COPY_TABLE = "ui_probe_copy"
+    COPY_TARGET = (
+        "drop table if exists public.ui_probe_copy; "
+        "create table public.ui_probe_copy (id integer, name text, note text)"
+    )
     CH_SELECT = "select currentUser() as who, 1 as a"
     CH_USER = "boba-svc"
     CH_SYSTEM = "system"
@@ -829,7 +834,7 @@ def probe_table(module_feed: ToolFeed) -> str:
     """Таблица стенда создаётся pg_query: набор команд одной транзакцией."""
     call = ToolCall(
         tool="pg_query",
-        arguments={"connection_name": "main", "sql": ProbeSql.CREATE.value},
+        arguments={"connection": "main", "sql": ProbeSql.CREATE.value},
         view=ScriptCall(arg="sql", lang="sql"),
     )
     result = MultiResult(
@@ -903,13 +908,17 @@ class UsagePattern:
         return f"^- {re.escape(thread_id)}: {cls.SIZE} in \\d+ calls$"
 
 
-def _connections(name: str) -> TableResult:
-    return TableResult(rows=[{"connection_name": name}])
+def _connection_catalog() -> TableResult:
+    """Выдача connection_list: все строки стенда, по виду и имени."""
+    rows: list[dict[str, Any]] = []
+    for name, kind in (("main", "clickhouse"), ("main", "postgres"), ("stand", "web")):
+        rows.append({"connection": name, "kind": kind, "description": ""})
+
+    return TableResult(rows=rows)
 
 
-def _web_connections() -> TableResult:
-    """Web-список несёт ещё и хост профиля: у стенда это адрес фейка."""
-    return TableResult(rows=[{"connection_name": "stand", "host": StandUrl.HOST.value}])
+CATALOG_DOM: tuple[str, ...] = ("main", "stand", "postgres", "clickhouse", "web")
+"""Фрагменты каталога, которые обязаны быть видны в раскрытом шаге."""
 
 
 class TestBash:
@@ -1028,9 +1037,9 @@ class TestWebTools:
     """web: страницы фейкового сервера по whitelist-соединению stand."""
 
     def test_connection_list(self, feed: ToolFeed) -> None:
-        call = ToolCall(tool="web_connection_list")
-        expect = ToolExpect.of(_web_connections(), dom=["stand", StandUrl.HOST.value])
-        feed.call(call, expect)
+        """Общий каталог показывает web-строку stand рядом с остальными."""
+        call = ToolCall(tool="connection_list")
+        feed.call(call, ToolExpect.of(_connection_catalog(), dom=CATALOG_DOM))
 
     def test_fetch_raw_html(self, feed: ToolFeed, llm_port: int) -> None:
         url = StandUrl.of(llm_port, FakePage.HTML.route.value)
@@ -1038,7 +1047,7 @@ class TestWebTools:
             tool="web_fetch_page",
             arguments={
                 "url": url,
-                "connection_name": "stand",
+                "connection": "stand",
                 "as_markdown": False,
                 "line_offset": 0,
                 "line_count": 50,
@@ -1055,7 +1064,7 @@ class TestWebTools:
             tool="web_fetch_page",
             arguments={
                 "url": url,
-                "connection_name": "stand",
+                "connection": "stand",
                 "as_markdown": False,
                 "line_offset": 1,
                 "line_count": 1,
@@ -1079,7 +1088,7 @@ class TestWebTools:
             tool="web_grep_page",
             arguments={
                 "url": url,
-                "connection_name": "stand",
+                "connection": "stand",
                 "as_markdown": False,
                 **grep.arguments(),
             },
@@ -1100,7 +1109,7 @@ class TestWebTools:
             tool="web_grep_page",
             arguments={
                 "url": url,
-                "connection_name": "stand",
+                "connection": "stand",
                 "as_markdown": False,
                 **grep.arguments(),
             },
@@ -1319,8 +1328,9 @@ class TestPgTools:
     """pg: соединение main стенда, своя таблица, каждый инструмент по разу."""
 
     def test_connection_list(self, feed: ToolFeed) -> None:
-        call = ToolCall(tool="pg_connection_list")
-        feed.call(call, ToolExpect.of(_connections("main"), dom=["main"]))
+        """Общий каталог показывает postgres-строку main."""
+        call = ToolCall(tool="connection_list")
+        feed.call(call, ToolExpect.of(_connection_catalog(), dom=CATALOG_DOM))
 
     def test_query_creates_table(self, probe_table: str) -> None:
         """Сам вызов проверен фикстурой: набор команд одной транзакцией."""
@@ -1330,7 +1340,7 @@ class TestPgTools:
     def test_query_update(self, feed: ToolFeed, probe_table: str) -> None:
         call = ToolCall(
             tool="pg_query",
-            arguments={"connection_name": "main", "sql": ProbeSql.UPDATE.value},
+            arguments={"connection": "main", "sql": ProbeSql.UPDATE.value},
             view=ScriptCall(arg="sql", lang="sql"),
         )
         result = AffectedSqlResult(affected_rows=1, status="UPDATE 1")
@@ -1339,7 +1349,7 @@ class TestPgTools:
     def test_query_select(self, feed: ToolFeed, probe_table: str) -> None:
         call = ToolCall(
             tool="pg_query",
-            arguments={"connection_name": "main", "sql": ProbeSql.SELECT.value},
+            arguments={"connection": "main", "sql": ProbeSql.SELECT.value},
             view=ScriptCall(arg="sql", lang="sql"),
         )
         result = TableResult(
@@ -1351,7 +1361,7 @@ class TestPgTools:
         call = ToolCall(
             tool="pg_list_tables",
             arguments={
-                "connection_name": "main",
+                "connection": "main",
                 "pg_schema": ProbeSql.SCHEMA.value,
                 "table_pattern": probe_table,
                 **RowWindowArgs.of(),
@@ -1387,7 +1397,7 @@ class TestPgTools:
         call = ToolCall(
             tool="pg_describe_table",
             arguments={
-                "connection_name": "main",
+                "connection": "main",
                 "table": probe_table,
                 "pg_schema": ProbeSql.SCHEMA.value,
                 **RowWindowArgs.of(),
@@ -1423,7 +1433,7 @@ class TestPgTools:
     def test_copy(self, feed: ToolFeed, probe_table: str) -> None:
         call = ToolCall(
             tool="pg_copy",
-            arguments={"connection_name": "main", "sql": ProbeSql.COPY.value},
+            arguments={"connection": "main", "sql": ProbeSql.COPY.value},
             view=ScriptCall(arg="sql", lang="sql"),
         )
         result = TextResult(text=ProbeSql.COPY_TEXT.value, language="csv")
@@ -1434,13 +1444,14 @@ class TestChTools:
     """ch: соединение main стенда под kerberos-учёткой приложения."""
 
     def test_connection_list(self, feed: ToolFeed) -> None:
-        call = ToolCall(tool="ch_connection_list")
-        feed.call(call, ToolExpect.of(_connections("main"), dom=["main"]))
+        """Общий каталог показывает clickhouse-строку main."""
+        call = ToolCall(tool="connection_list")
+        feed.call(call, ToolExpect.of(_connection_catalog(), dom=CATALOG_DOM))
 
     def test_query(self, feed: ToolFeed) -> None:
         call = ToolCall(
             tool="ch_query",
-            arguments={"sql": ProbeSql.CH_SELECT.value, "connection_name": "main"},
+            arguments={"sql": ProbeSql.CH_SELECT.value, "connection": "main"},
             view=ScriptCall(arg="sql", lang="sql"),
         )
         result = TableResult(rows=[{"who": ProbeSql.CH_USER.value, "a": 1}])
@@ -1450,7 +1461,7 @@ class TestChTools:
         call = ToolCall(
             tool="ch_describe_table",
             arguments={
-                "connection_name": "main",
+                "connection": "main",
                 "table": ProbeSql.CH_ONE.value,
                 "ch_database": ProbeSql.CH_SYSTEM.value,
                 **RowWindowArgs.of(),
@@ -1470,7 +1481,7 @@ class TestChTools:
         call = ToolCall(
             tool="ch_list_tables",
             arguments={
-                "connection_name": "main",
+                "connection": "main",
                 "ch_database": ProbeSql.CH_SYSTEM.value,
                 **RowWindowArgs.of(max_rows=2),
             },
@@ -1639,12 +1650,73 @@ class TestWorkflowTools:
         module_feed.call(call, expect, timeout_sec=TURN_TIMEOUT_SEC * 2)
 
 
+class TestPipeline:
+    """Конвейер: каталог узлов и перекачка строк pg -> pg через ядро."""
+
+    def test_catalog_lists_streaming_nodes(self, feed: ToolFeed) -> None:
+        call = ToolCall(tool="pipeline_catalog")
+        expect = ToolExpect(
+            patterns=[r"^streaming tools", r"pg_copy_out", r"pg_copy_in"],
+            dom=["pg_copy_out", "pg_copy_in"],
+        )
+        feed.call(call, expect)
+
+    def test_run_moves_rows_between_tables(
+        self, feed: ToolFeed, probe_table: str
+    ) -> None:
+        """Строки стенда уезжают в копию таблицы: оба насоса отчитались."""
+        prepare = ToolCall(
+            tool="pg_query",
+            arguments={"connection": "main", "sql": ProbeSql.COPY_TARGET.value},
+            view=ScriptCall(arg="sql", lang="sql"),
+        )
+        prepared = MultiResult(
+            items=[
+                AffectedSqlResult(affected_rows=None, status="DROP TABLE"),
+                AffectedSqlResult(affected_rows=None, status="CREATE TABLE"),
+            ]
+        )
+        feed.call(prepare, ToolExpect.of(prepared, dom=["CREATE TABLE"]))
+
+        copy_table = ProbeSql.COPY_TABLE.value
+        plan = json.dumps(
+            {
+                "nodes": [
+                    {
+                        "tool": "pg_copy_out",
+                        "args": {
+                            "connection": "main",
+                            "sql": f"COPY public.{probe_table} TO STDOUT",
+                        },
+                    },
+                    {
+                        "tool": "pg_copy_in",
+                        "args": {
+                            "connection": "main",
+                            "sql": f"COPY public.{copy_table} FROM STDIN",
+                        },
+                    },
+                ]
+            }
+        )
+        run = ToolCall(
+            tool="pipeline_run",
+            arguments={"plan": plan},
+            view=ScriptCall(arg="plan", lang="json"),
+        )
+        expect = ToolExpect(
+            patterns=[r"copied out \d+ bytes", r"COPY 2"],
+            dom=["COPY 2"],
+        )
+        feed.call(run, expect)
+
+
 class TestCoverage:
     """Прогон вызвал каждый инструмент, который стенд отдаёт модели."""
 
     def test_every_stand_tool_is_called(self, feed: ToolFeed, llm_port: int) -> None:
-        call = ToolCall(tool="web_connection_list")
-        feed.call(call, ToolExpect.of(_web_connections()))
+        call = ToolCall(tool="connection_list")
+        feed.call(call, ToolExpect.of(_connection_catalog()))
 
         response = httpx.get(
             StandUrl.of(llm_port, FakeRoute.REQUESTS.value), timeout=5.0

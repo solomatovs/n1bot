@@ -26,6 +26,11 @@ from boba.auth.credentials import KerberosCredentialSource
 from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.config import bind
+from boba.connection_broker.catalog import (
+    ConnectionCatalogConfig,
+    build_connection_tools,
+)
+from boba.connection_broker.service import UserConnectionsService
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connection_broker.user_connections import UserConnections
 from boba.connections.manifest import ConnectionTypes
@@ -140,6 +145,14 @@ def sso(tmp_path: Path) -> tuple[SsoTickets, str]:
 
 
 @pytest.fixture
+def catalog(store: ConnectionStore) -> Any:
+    """Общий connection_list над тем же хранилищем, что и инструменты."""
+    service = UserConnectionsService(lambda: store)
+
+    return build_connection_tools(ConnectionCatalogConfig(), service)[0]
+
+
+@pytest.fixture
 def pg_tools(
     raw_config: Any, store: ConnectionStore, sso: tuple[SsoTickets, str]
 ) -> dict[str, Any]:
@@ -218,6 +231,7 @@ class Session:
 
 async def test_granted_connection_is_visible_and_works(
     pg_tools: dict[str, Any],
+    catalog: Any,
     store: ConnectionStore,
     layer: PostgresDataLayer,
     service_pg: PostgresConfig,
@@ -227,7 +241,7 @@ async def test_granted_connection_is_visible_and_works(
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     Session.enter(user)
 
-    targets = await Call.ok(pg_tools["pg_connection_list"])
+    targets = await Call.ok(catalog)
     names = [row["connection"] for row in targets.rows]
     if names != ["main"]:
         raise AssertionError(f"whitelist must hold the granted row only: {names}")
@@ -241,6 +255,7 @@ async def test_granted_connection_is_visible_and_works(
 
 async def test_role_grant_reaches_every_role_holder(
     pg_tools: dict[str, Any],
+    catalog: Any,
     store: ConnectionStore,
     layer: PostgresDataLayer,
     service_pg: PostgresConfig,
@@ -251,7 +266,7 @@ async def test_role_grant_reaches_every_role_holder(
     await store.grant(connection_id, GrantTarget.role(roles[ROLE]))
     Session.enter(user)
 
-    targets = await Call.ok(pg_tools["pg_connection_list"])
+    targets = await Call.ok(catalog)
     names = [row["connection"] for row in targets.rows]
     if names != ["shared"]:
         raise AssertionError(f"role grant must be visible: {names}")
@@ -259,6 +274,7 @@ async def test_role_grant_reaches_every_role_holder(
 
 async def test_stranger_sees_nothing(
     pg_tools: dict[str, Any],
+    catalog: Any,
     store: ConnectionStore,
     layer: PostgresDataLayer,
     service_pg: PostgresConfig,
@@ -269,19 +285,20 @@ async def test_stranger_sees_nothing(
     await store.grant(connection_id, GrantTarget.user(UUID(owner.id)))
     Session.enter(stranger)
 
-    targets = await Call.ok(pg_tools["pg_connection_list"])
+    targets = await Call.ok(catalog)
     if targets.rows:
         raise AssertionError(f"stranger must see no connections: {targets.rows}")
 
-    with pytest.raises(PayloadFailureError) as caught:
+    with pytest.raises(RefusalError) as caught:
         await Call.result(pg_tools["pg_query"], connection="main", sql="select 1")
 
-    if caught.value.kind != SqlErrorKind.UNKNOWN_TARGET:
-        raise AssertionError(f"unexpected failure kind: {caught.value.kind}")
+    if caught.value.kind != ConnectionRefusal.NOT_VISIBLE:
+        raise AssertionError(f"unexpected refusal kind: {caught.value.kind}")
 
 
 async def test_revoke_applies_to_the_next_call(
     pg_tools: dict[str, Any],
+    catalog: Any,
     store: ConnectionStore,
     layer: PostgresDataLayer,
     service_pg: PostgresConfig,
@@ -292,19 +309,20 @@ async def test_revoke_applies_to_the_next_call(
     await store.grant(connection_id, target)
     Session.enter(user)
 
-    before = await Call.ok(pg_tools["pg_connection_list"])
+    before = await Call.ok(catalog)
     if not before.rows:
         raise AssertionError("granted row must be visible before revoke")
 
     await store.revoke(connection_id, target)
 
-    after = await Call.ok(pg_tools["pg_connection_list"])
+    after = await Call.ok(catalog)
     if after.rows:
         raise AssertionError("revoked row must disappear without a restart")
 
 
 async def test_ambiguous_name_is_refused(
     pg_tools: dict[str, Any],
+    catalog: Any,
     store: ConnectionStore,
     layer: PostgresDataLayer,
     service_pg: PostgresConfig,
@@ -316,7 +334,7 @@ async def test_ambiguous_name_is_refused(
     await store.grant(second, GrantTarget.user(UUID(user.id)))
     Session.enter(user)
 
-    targets = await Call.ok(pg_tools["pg_connection_list"])
+    targets = await Call.ok(catalog)
     if targets.rows:
         raise AssertionError(f"ambiguous name must not be listed: {targets.rows}")
 
@@ -469,14 +487,14 @@ async def test_web_negotiate_connection_authenticates_as_the_principal(
         raise AssertionError(f"clickhouse must see the principal: {result.text}")
 
 
-async def test_call_outside_session_is_refused(pg_tools: dict[str, Any]) -> None:
+async def test_call_outside_session_is_refused(catalog: Any) -> None:
     from chainlit.context import init_http_context
 
     init_http_context(user=None)
     CallContext.reset()
 
     with pytest.raises(RefusalError) as caught:
-        await Call.result(pg_tools["pg_connection_list"])
+        await Call.result(catalog)
 
     if caught.value.kind != ContextKind.NO_CONTEXT:
         raise AssertionError(f"unexpected refusal kind: {caught.value.kind}")
