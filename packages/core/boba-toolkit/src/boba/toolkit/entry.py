@@ -53,6 +53,7 @@ from boba.toolkit.ports import (
 )
 from boba.toolkit.protocol import ReplyError, ReplyOk, ToolCommand
 from boba.toolkit.timing import Elapsed
+from boba.toolkit.types import SecretReveal
 
 __all__ = [
     "ArgumentTooLargeError",
@@ -272,6 +273,9 @@ class ToolArgv:
     """Имена injected-маркеров по MRO: Injected — свой (facade), остальные —
     langchain-метадата; её типов toolkit не импортирует."""
 
+    CONNECTION_MARKERS: ClassVar[frozenset[str]] = frozenset({"UserConnection"})
+    """Имя маркера соединения: значение подаёт хост из строк субъекта вызова."""
+
     @classmethod
     def render(
         cls,
@@ -292,6 +296,10 @@ class ToolArgv:
 
             value = kwargs[name]
             if cls._injected(field.metadata):
+                config_payload[name] = cls.reveal(field.annotation, value)
+                continue
+
+            if cls._connection(field.metadata):
                 config_payload[name] = cls.reveal(field.annotation, value)
                 continue
 
@@ -342,7 +350,7 @@ class ToolArgv:
             field = schema.model_fields[name]
             kwargs[name] = cls._decode(name, field.annotation, raw)
 
-        kwargs.update(cls._parse_injected(tool, schema, config))
+        kwargs.update(cls._parse_config(schema, config))
         return kwargs
 
     @classmethod
@@ -368,6 +376,19 @@ class ToolArgv:
         return fields
 
     @classmethod
+    def connection_fields(cls, schema: type[BaseModel]) -> dict[str, Any]:
+        """Параметры-соединения схемы: имя -> аннотация профиля."""
+        fields: dict[str, Any] = {}
+        for name, field in schema.model_fields.items():
+            if cls.is_io(field.annotation):
+                continue
+
+            if cls._connection(field.metadata):
+                fields[name] = field.annotation
+
+        return fields
+
+    @classmethod
     def port_fields(cls, schema: type[BaseModel]) -> dict[str, Any]:
         """Порты схемы: имя параметра -> аннотация Inbound/Outbound."""
         fields: dict[str, Any] = {}
@@ -388,10 +409,18 @@ class ToolArgv:
 
     @classmethod
     def _injected(cls, metadata: Sequence[Any]) -> bool:
+        return cls._marked(metadata, cls.INJECTED_MARKERS)
+
+    @classmethod
+    def _connection(cls, metadata: Sequence[Any]) -> bool:
+        return cls._marked(metadata, cls.CONNECTION_MARKERS)
+
+    @staticmethod
+    def _marked(metadata: Sequence[Any], markers: frozenset[str]) -> bool:
         for item in metadata:
             klass = item if isinstance(item, type) else type(item)
             names = {parent.__name__ for parent in klass.__mro__}
-            if names & cls.INJECTED_MARKERS:
+            if names & markers:
                 return True
 
         return False
@@ -455,19 +484,26 @@ class ToolArgv:
 
     @staticmethod
     def reveal(annotation: Any, value: object) -> Any:
-        """JSON-совместимый дамп injected-значения с раскрытыми секретами."""
+        """JSON-совместимый дамп значения канала конфига с раскрытыми секретами.
+
+        Канал доверенный: по нему едут секции конфига и профили соединений,
+        и секреты в них нужны телу живыми.
+        """
         revealed = getattr(value, "revealed", None)
         if callable(revealed):
             return revealed()
 
+        if isinstance(value, BaseModel):
+            return SecretReveal.dumped(value)
+
         return TypeAdapter(annotation).dump_python(value, mode="json")
 
     @classmethod
-    def _parse_injected(
-        cls, tool: ToolLike, schema: type[BaseModel], config: bytes
-    ) -> dict[str, Any]:
-        injected = cls.injected_fields(schema)
-        if not injected:
+    def _parse_config(cls, schema: type[BaseModel], config: bytes) -> dict[str, Any]:
+        """Ключи канала конфига в kwargs: injected-модели и профили соединений."""
+        expected = dict(cls.injected_fields(schema))
+        expected.update(cls.connection_fields(schema))
+        if not expected:
             return {}
 
         try:
@@ -481,9 +517,9 @@ class ToolArgv:
             raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
 
         kwargs: dict[str, Any] = {}
-        for name, annotation in injected.items():
+        for name, annotation in expected.items():
             if name not in payload:
-                msg = f"injected parameter {name!r} is missing from the call config"
+                msg = f"parameter {name!r} is missing from the call config"
                 raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
 
             try:
@@ -718,9 +754,9 @@ class ToolMain:
             return cls._config_from_fd(wiring.injected_fd)
 
         schema = ToolArgv.schema_of(tool)
-        injected = ToolArgv.injected_fields(schema)
-        if not injected:
-            return b"{}"
+        if not ToolArgv.injected_fields(schema):
+            if not ToolArgv.connection_fields(schema):
+                return b"{}"
 
         msg = (
             "injected config is required: the launcher passes "
@@ -856,13 +892,16 @@ class ToolMain:
             if doc:
                 lines.append(doc.splitlines()[0])
 
+        hidden = dict(ToolArgv.injected_fields(schema))
+        hidden.update(ToolArgv.connection_fields(schema))
+
         for name, field in schema.model_fields.items():
-            if ToolArgv._injected(field.metadata):
+            if name in hidden:
                 continue
 
             description = field.description or ""
             lines.append(f"  {ToolArgv.flag_of(name)} {description}".rstrip())
 
-        injected_help = "injected config as JSON, what the launcher sends on stdin"
+        injected_help = "call config as JSON: injected sections and connection profiles"
         lines.append(f"  {EntryFlag.INJECTED} PATH  {injected_help}")
         return "\n".join(lines)

@@ -28,6 +28,21 @@ class SecretReveal:
     kerberos не уезжает никогда, keytab роняет дамп).
     """
 
+    REVEAL_CONTEXT: ClassVar[str] = "reveal_secrets"
+    """Ключ контекста дампа; его же читают field_serializer инфра-профилей."""
+
+    @classmethod
+    def dumped(cls, model: BaseModel) -> dict[str, object]:
+        """JSON-дамп модели с раскрытыми секретами: контекст плюс обход значений.
+
+        Работает с любой моделью, а не только с наследником SecretRevealing:
+        профили соединений приходят из пакетов-владельцев и своей базы не имеют.
+        """
+        dump = model.model_dump(mode="json", context={cls.REVEAL_CONTEXT: True})
+        cls.apply(model, dump)
+
+        return dump
+
     @classmethod
     def apply(cls, model: BaseModel, dumped: object) -> None:
         if not isinstance(dumped, dict):
@@ -101,13 +116,10 @@ class SecretRevealing(BaseModel):
     тот же ключ контекста и решают сами.
     """
 
-    REVEAL_CONTEXT: ClassVar[str] = "reveal_secrets"
+    REVEAL_CONTEXT: ClassVar[str] = SecretReveal.REVEAL_CONTEXT
 
     def revealed(self) -> dict[str, object]:
-        dumped = self.model_dump(mode="json", context={self.REVEAL_CONTEXT: True})
-        SecretReveal.apply(self, dumped)
-
-        return dumped
+        return SecretReveal.dumped(self)
 
 
 class StringLists:
