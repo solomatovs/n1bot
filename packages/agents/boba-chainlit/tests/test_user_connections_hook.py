@@ -49,8 +49,9 @@ from boba.runtime.refresh import BusRefreshSignal
 from boba.stand.site import Stand
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebGrepConfig
-from boba.toolkit.facade import Injected
+from boba.toolkit.facade import Injected, UserConnection
 from boba.toolrun.injected import InjectedConfig
+from boba.transport.http.profile import HttpConnection
 
 pytestmark = pytest.mark.anyio
 
@@ -169,7 +170,7 @@ class Capture:
     def tool(raw_config: Any, store: ConnectionStore, tickets: SsoTickets | None):
         schema = create_model(
             "CaptureArgs",
-            connection=(str, ...),
+            connection=(Annotated[PostgresConfig, UserConnection], ...),
             cfg=(Annotated[PgToolConfig, Injected], ...),
         )
 
@@ -202,7 +203,7 @@ class Capture:
         schema = create_model(
             "CaptureWebArgs",
             url=(str, ...),
-            connection=(str, ...),
+            connection=(Annotated[HttpConnection, UserConnection], ...),
             cfg=(Annotated[WebGrepConfig, Injected], ...),
         )
 
@@ -231,12 +232,13 @@ class Capture:
         return tool
 
     @staticmethod
-    async def config(tool: StructuredTool, connection_name: str) -> PgToolConfig:
+    async def profile(tool: StructuredTool, connection_name: str) -> PostgresConfig:
+        """Профиль, который хост подставил бы телу этого вызова."""
         kwargs = await tool.ainvoke({"connection": connection_name})
-        cfg = kwargs["cfg"]
-        if not isinstance(cfg, PgToolConfig):
-            raise AssertionError(f"cfg must be PgToolConfig: {type(cfg)}")
-        return cfg
+        profile = kwargs["connection"]
+        if not isinstance(profile, PostgresConfig):
+            raise AssertionError(f"connection must be PostgresConfig: {type(profile)}")
+        return profile
 
 
 class Session:
@@ -312,14 +314,18 @@ async def test_only_requested_profile_is_shipped(
     await store.grant(second, GrantTarget.user(UUID(user.id)))
     Session.enter(user, dict(user.metadata))
 
-    cfg = await Capture.config(Capture.tool(raw_config, store, None), "alpha")
+    profile = await Capture.profile(Capture.tool(raw_config, store, None), "alpha")
 
-    if list(cfg.profiles) != ["alpha"]:
-        raise AssertionError(f"only the requested profile may ship: {cfg.profiles}")
-    if cfg.names != ["alpha", "beta"]:
-        raise AssertionError(f"all granted names must ship: {cfg.names}")
-    if cfg.targets() != ["alpha", "beta"]:
-        raise AssertionError("connection_list must see every granted name")
+    if profile.dbname != plain.dbname:
+        raise AssertionError("the requested row must reach the body")
+
+    with pytest.raises(RefusalError) as caught:
+        await Capture.profile(Capture.tool(raw_config, store, None), "gamma")
+
+    if caught.value.kind != ConnectionRefusal.NOT_VISIBLE:
+        raise AssertionError(f"unknown name must be refused: {caught.value.kind}")
+    if "beta" not in str(caught.value):
+        raise AssertionError("the refusal must name the granted connections")
 
 
 async def test_client_label_names_the_user_and_the_tool(
@@ -336,9 +342,9 @@ async def test_client_label_names_the_user_and_the_tool(
     await store.grant(await store.add("alpha", plain), GrantTarget.user(UUID(user.id)))
     Session.enter(user, dict(user.metadata))
 
-    cfg = await Capture.config(Capture.tool(raw_config, store, None), "alpha")
+    profile = await Capture.profile(Capture.tool(raw_config, store, None), "alpha")
 
-    shipped = cfg.profiles["alpha"]
+    shipped = profile
     if not isinstance(shipped, PostgresConfig):
         raise AssertionError(f"postgres profile expected: {type(shipped)}")
     if shipped.application_name != "boba:hook-label:capture":
@@ -359,12 +365,13 @@ async def test_unrequested_call_ships_names_only(
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     Session.enter(user, dict(user.metadata))
 
-    cfg = await Capture.config(Capture.tool(raw_config, store, None), "nothing")
+    with pytest.raises(RefusalError) as caught:
+        await Capture.profile(Capture.tool(raw_config, store, None), "nothing")
 
-    if cfg.profiles:
-        raise AssertionError(f"no profile may ship for an unknown name: {cfg.profiles}")
-    if cfg.names != ["alpha"]:
-        raise AssertionError(f"names must still ship: {cfg.names}")
+    if caught.value.kind != ConnectionRefusal.NOT_VISIBLE:
+        raise AssertionError(f"unknown name must be refused: {caught.value.kind}")
+    if "alpha" not in str(caught.value):
+        raise AssertionError("the refusal must name the granted connections")
 
 
 @live_kdc
@@ -379,9 +386,9 @@ async def test_keytab_row_ships_a_service_ticket_only(
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     Session.enter(user, dict(user.metadata))
 
-    cfg = await Capture.config(Capture.tool(raw_config, store, None), "main")
+    profile = await Capture.profile(Capture.tool(raw_config, store, None), "main")
 
-    shipped = cfg.profiles["main"].auth
+    shipped = profile.auth
     if not isinstance(shipped, TicketAuth):
         raise AssertionError(f"keytab row must ship a ticket: {type(shipped)}")
     if shipped.principal != SERVICE_PRINCIPAL:
@@ -408,9 +415,8 @@ async def test_delegated_row_uses_the_session_principal(
     await store.grant(connection_id, GrantTarget.user(UUID(user.id)))
     Session.enter(user, sso_meta)
 
-    cfg = await Capture.config(Capture.tool(raw_config, store, sso[0]), "main")
+    profile = await Capture.profile(Capture.tool(raw_config, store, sso[0]), "main")
 
-    profile = cfg.profiles["main"]
     shipped = profile.auth
     if not isinstance(shipped, TicketAuth):
         raise AssertionError(f"delegated row must ship a ticket: {type(shipped)}")
@@ -443,10 +449,10 @@ async def test_role_shared_delegated_row_gives_each_user_their_own_ticket(
     second = await Session.user(layer, "hook-role-b", second_meta)
 
     Session.enter(first, first_meta)
-    ticket_a = (await Capture.config(tool, "shared")).profiles["shared"].auth
+    ticket_a = (await Capture.profile(tool, "shared")).auth
 
     Session.enter(second, second_meta)
-    ticket_b = (await Capture.config(tool, "shared")).profiles["shared"].auth
+    ticket_b = (await Capture.profile(tool, "shared")).auth
 
     if not isinstance(ticket_a, TicketAuth) or not isinstance(ticket_b, TicketAuth):
         raise AssertionError("both users must receive tickets")
@@ -474,7 +480,7 @@ async def test_delegated_row_refuses_session_without_sso(
     Session.enter(user, dict(user.metadata))
 
     with pytest.raises(RefusalError) as caught:
-        await Capture.config(Capture.tool(raw_config, store, sso[0]), "main")
+        await Capture.profile(Capture.tool(raw_config, store, sso[0]), "main")
 
     if caught.value.kind != ConnectionRefusal.NO_DELEGATION:
         raise AssertionError(f"unexpected refusal: {caught.value.kind}")
@@ -497,7 +503,7 @@ async def test_delegated_row_refuses_unknown_principal(
     Session.enter(user, sso_meta)
 
     with pytest.raises(RefusalError) as caught:
-        await Capture.config(Capture.tool(raw_config, store, sso[0]), "main")
+        await Capture.profile(Capture.tool(raw_config, store, sso[0]), "main")
 
     if caught.value.kind != ConnectionRefusal.NO_DELEGATION:
         raise AssertionError(f"unexpected refusal: {caught.value.kind}")
@@ -516,7 +522,7 @@ async def test_delegated_row_refuses_without_sso_configured(
     Session.enter(user, sso_meta)
 
     with pytest.raises(RefusalError) as caught:
-        await Capture.config(Capture.tool(raw_config, store, None), "main")
+        await Capture.profile(Capture.tool(raw_config, store, None), "main")
 
     if caught.value.kind != ConnectionRefusal.NO_DELEGATION:
         raise AssertionError(f"unexpected refusal: {caught.value.kind}")
@@ -538,7 +544,7 @@ async def test_stale_users_row_does_not_grant_a_local_login(
     Session.enter(user, Session.local_metadata())
 
     with pytest.raises(RefusalError) as caught:
-        await Capture.config(Capture.tool(raw_config, store, sso[0]), "main")
+        await Capture.profile(Capture.tool(raw_config, store, sso[0]), "main")
 
     if caught.value.kind != ConnectionRefusal.NO_DELEGATION:
         raise AssertionError(f"unexpected refusal: {caught.value.kind}")
@@ -560,7 +566,7 @@ async def test_login_label_must_match_its_principal(
     Session.enter(user, forged)
 
     with pytest.raises(RefusalError) as caught:
-        await Capture.config(Capture.tool(raw_config, store, sso[0]), "main")
+        await Capture.profile(Capture.tool(raw_config, store, sso[0]), "main")
 
     if caught.value.kind != ConnectionRefusal.NO_DELEGATION:
         raise AssertionError(f"unexpected refusal: {caught.value.kind}")

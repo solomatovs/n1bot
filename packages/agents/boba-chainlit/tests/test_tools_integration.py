@@ -106,7 +106,6 @@ trailer<</Root 1 0 R/Size 8>>
 %%EOF"""
 
 WORKSPACE_PDF = "/workspace/integration.pdf"
-WEB_CONNECTION = "confluence"
 
 
 ZYGOTE = ZygotePolicy(
@@ -150,13 +149,17 @@ class ToolSetup:
 
     @staticmethod
     def web_config(raw: Any) -> WebGrepConfig:
-        """[tool.web] с whitelist'ом из [tool.ingest.confluence]."""
-        limits = bind(raw, path="tool.web", model=WebGrepConfig)
+        """Лимиты выдачи [tool.web]: соединение приходит параметром вызова."""
+        return bind(raw, path="tool.web", model=WebGrepConfig)
+
+    @staticmethod
+    def web_connection(raw: Any) -> HttpConnection:
+        """Профиль соединения теста: в бою его подаёт хост из строк субъекта."""
         service = bind(raw, path="tool.ingest.confluence", model=HttpConnection)
         if service.base_url is None:
             raise AssertionError("[tool.ingest.confluence] has no base_url")
 
-        return limits.model_copy(update={"profiles": {WEB_CONNECTION: service}})
+        return service
 
     @staticmethod
     def sandbox_raw(raw: Any) -> Any:
@@ -300,9 +303,15 @@ def web_tools(raw_config):
 
 
 @pytest.fixture(scope="module")
-def whitelisted_url(raw_config) -> str:
-    """Адрес для web-тестов берётся из whitelist'а: другие хосты запрещены."""
-    host = ToolSetup.web_config(raw_config).profiles[WEB_CONNECTION].host()
+def web_connection(raw_config) -> HttpConnection:
+    """Соединение web-тестов: тело проверит, что URL под него попадает."""
+    return ToolSetup.web_connection(raw_config)
+
+
+@pytest.fixture(scope="module")
+def covered_url(raw_config) -> str:
+    """Адрес под хостом соединения: другие хосты тело отвергнет."""
+    host = ToolSetup.web_connection(raw_config).host()
     return f"https://{host}/"
 
 
@@ -713,11 +722,11 @@ class TestChartTool:
 class TestWebTools:
     """web: HTTP-запрос и разбор HTML идут внутри песочницы."""
 
-    async def test_fetch_page(self, web_tools, whitelisted_url) -> None:
+    async def test_fetch_page(self, web_tools, web_connection, covered_url) -> None:
         result = await Call.ok(
             web_tools["web_fetch_page"],
-            url=whitelisted_url,
-            connection_name=WEB_CONNECTION,
+            url=covered_url,
+            connection=web_connection,
             as_markdown=True,
             line_offset=0,
             line_count=20,
@@ -730,16 +739,16 @@ class TestWebTools:
             raise AssertionError("окно не длиннее line_count")
         if result.note is None:
             raise AssertionError("result.note is not None")
-        if whitelisted_url not in result.note:
+        if covered_url not in result.note:
             raise AssertionError("подпись называет источник")
         if " of " not in result.note:
             raise AssertionError("подпись называет общее число строк")
 
-    async def test_grep_page(self, web_tools, whitelisted_url) -> None:
+    async def test_grep_page(self, web_tools, web_connection, covered_url) -> None:
         result = await Call.ok(
             web_tools["web_grep_page"],
-            url=whitelisted_url,
-            connection_name=WEB_CONNECTION,
+            url=covered_url,
+            connection=web_connection,
             pattern="Confluence",
             limit=3,
         )
@@ -754,13 +763,13 @@ class TestWebTools:
         if "matches:" not in result.note:
             raise AssertionError("подпись считает совпадения")
 
-    async def test_host_outside_whitelist(self, web_tools) -> None:
-        """Отказ нового пути — исключение с kind, а не ErrorResult-успех."""
+    async def test_host_outside_the_connection(self, web_tools, web_connection) -> None:
+        """Проверку хоста делает тело: чужой URL — исключение с kind."""
         with pytest.raises(PayloadFailureError) as caught:
             await Call.result(
                 web_tools["web_fetch_page"],
                 url="https://example.com/",
-                connection_name=WEB_CONNECTION,
+                connection=web_connection,
                 as_markdown=True,
                 line_offset=0,
                 line_count=5,
@@ -768,8 +777,8 @@ class TestWebTools:
 
         if caught.value.kind != "unknown_host":
             raise AssertionError('caught.value.kind == "unknown_host"')
-        if "outside connection" not in str(caught.value):
-            msg = f"host refusal must name the connection: {caught.value}"
+        if "outside the chosen connection" not in str(caught.value):
+            msg = f"host refusal must explain the coverage: {caught.value}"
             raise AssertionError(msg)
 
 
