@@ -99,7 +99,7 @@ class ClickHouseConfig(ConnectionProfileBase):
 
     # не аргументы конструктора клиента: настройки сессии и креды kerberos
     NOT_CLIENT_FIELDS: ClassVar[frozenset[str]] = frozenset(
-        {"kind", "settings", "auth"}
+        {"kind", "settings", "auth", "description"}
     )
 
     kind: Literal["clickhouse"] = Field(

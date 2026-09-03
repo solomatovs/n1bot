@@ -120,7 +120,7 @@ class PostgresConfig(ConnectionProfileBase):
 
     # не connect-параметры: конструктор пула, строка '-c k=v', способ авторизации
     NOT_CONNECT_FIELDS: ClassVar[frozenset[str]] = frozenset(
-        {"pool", "options", "kind", "auth"}
+        {"pool", "options", "kind", "auth", "description"}
     )
 
     kind: Literal["postgres"] = Field(
