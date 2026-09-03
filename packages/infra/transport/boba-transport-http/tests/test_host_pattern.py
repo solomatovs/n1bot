@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from boba.transport.http.profile import HostPattern, HttpProfile
+from boba.transport.http.profile import HostPattern, HttpConnection
 
 
 class TestHostPattern:
@@ -42,7 +42,7 @@ class TestHostPattern:
 
 class TestProfileBinding:
     def test_covers_and_bound_to_keep_scheme_port_and_path(self) -> None:
-        profile = HttpProfile(
+        profile = HttpConnection(
             base_url="https://*.example.com:8443/wiki", ssl_verify=False
         )
         if not profile.covers("wiki.example.com"):
@@ -55,10 +55,10 @@ class TestProfileBinding:
             raise AssertionError(bound.base_url)
 
     def test_exact_profile_is_not_copied(self) -> None:
-        profile = HttpProfile(base_url="https://wiki.example.com", ssl_verify=False)
+        profile = HttpConnection(base_url="https://wiki.example.com", ssl_verify=False)
         if profile.bound_to("x") is not profile:
             raise AssertionError("exact profile must not be copied")
 
     def test_profile_without_base_url_covers_nothing(self) -> None:
-        if HttpProfile(ssl_verify=False).covers("any.example.com"):
+        if HttpConnection(ssl_verify=False).covers("any.example.com"):
             raise AssertionError("no base_url, no host")

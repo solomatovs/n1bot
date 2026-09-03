@@ -10,14 +10,14 @@ from __future__ import annotations
 
 from boba.connections.base import ConnectionProfileBase, ConnectionTypeError
 from boba.connections.manifest import ConnectionTypeManifest
-from boba.transport.http.profile import HttpProfile
+from boba.transport.http.profile import HttpConnection
 from boba.transport.http.transport import HttpRequest, HttpTransport
 
 __all__ = ["MANIFEST"]
 
 
 async def _probe(profile: ConnectionProfileBase) -> str:
-    if not isinstance(profile, HttpProfile):
+    if not isinstance(profile, HttpConnection):
         raise ConnectionTypeError(f"web probe got a {profile.kind!r} profile")
 
     if not profile.base_url:
@@ -34,6 +34,6 @@ async def _probe(profile: ConnectionProfileBase) -> str:
 
 MANIFEST = ConnectionTypeManifest(
     kind="web",
-    profile=HttpProfile,
+    profile=HttpConnection,
     probe=_probe,
 )

@@ -30,9 +30,8 @@ from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connection_broker.user_connections import UserConnections
 from boba.connections.manifest import ConnectionTypes
-from boba.connections.marks import ConnectionRefusal, UserConnectionsSpec
+from boba.connections.marks import ConnectionRefusal
 from boba.connections.profile import GrantTarget, StoredRole
-from boba.connections.whitelist import ConnectionKeying
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.profile import PostgresConfig, TrustAuth
 from boba.identity.errors import RefusalError
@@ -170,7 +169,7 @@ class Capture:
     def tool(raw_config: Any, store: ConnectionStore, tickets: SsoTickets | None):
         schema = create_model(
             "CaptureArgs",
-            connection_name=(str, ...),
+            connection=(str, ...),
             cfg=(Annotated[PgToolConfig, Injected], ...),
         )
 
@@ -187,15 +186,13 @@ class Capture:
         def resolve(name: str, annotation: Any) -> object:
             return bind(raw_config, path="tool.pg", model=PgToolConfig)
 
-        spec = UserConnectionsSpec("postgres", ConnectionKeying.NAME)
         UserConnections.bind_all(
             [tool],
             lambda: store,
             lambda: KerberosCredentialSource(
                 tickets, BusRefreshSignal(lambda: MemoryMessageBus("test"))
             ),
-            spec,
-            resolve,
+            ConnectionTypes.discover,
         )
         InjectedConfig.bind_all([tool], resolve)
         return tool
@@ -205,7 +202,7 @@ class Capture:
         schema = create_model(
             "CaptureWebArgs",
             url=(str, ...),
-            connection_name=(str, ...),
+            connection=(str, ...),
             cfg=(Annotated[WebGrepConfig, Injected], ...),
         )
 
@@ -222,22 +219,20 @@ class Capture:
         def resolve(name: str, annotation: Any) -> object:
             return bind(raw_config, path="tool.web", model=WebGrepConfig)
 
-        spec = UserConnectionsSpec("web", ConnectionKeying.NAME)
         UserConnections.bind_all(
             [tool],
             lambda: store,
             lambda: KerberosCredentialSource(
                 tickets, BusRefreshSignal(lambda: MemoryMessageBus("test"))
             ),
-            spec,
-            resolve,
+            ConnectionTypes.discover,
         )
         InjectedConfig.bind_all([tool], resolve)
         return tool
 
     @staticmethod
     async def config(tool: StructuredTool, connection_name: str) -> PgToolConfig:
-        kwargs = await tool.ainvoke({"connection_name": connection_name})
+        kwargs = await tool.ainvoke({"connection": connection_name})
         cfg = kwargs["cfg"]
         if not isinstance(cfg, PgToolConfig):
             raise AssertionError(f"cfg must be PgToolConfig: {type(cfg)}")

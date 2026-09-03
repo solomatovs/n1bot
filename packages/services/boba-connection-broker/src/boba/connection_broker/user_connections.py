@@ -1,97 +1,97 @@
-"""Соединения пользователя в конфиг инструмента перед каждым вызовом.
+"""Профиль соединения в параметр инструмента перед каждым вызовом.
 
-Whitelist SQL/web-инструмента не лежит в конфиге: на каждый вызов он
-собирается из таблицы connections по грантам пользователя и его ролей и
-подставляется в injected-параметр вместо статического конфига секции.
-В песочницу уезжает профиль только того соединения, которое вызов назвал;
-остальные — именами. Kerberos-секцию профиля источник кредов заменяет
-билетом вызова: одним сервисным билетом к этому соединению, выпущенным из
-делегированных пользователем кредов либо из keytab строки. Тело инструмента
-получает готовый whitelist и про пользователя не знает.
+Инструмент объявляет соединение параметром `Annotated[<Профиль>, UserConnection]`.
+Модель видит на этом месте строку — имя соединения; хост по типу параметра
+узнаёт вид, ищет строку среди выданных субъекту вызова, заменяет kerberos-секцию
+билетом этого вызова и подставляет готовый профиль. Тело получает профиль и про
+пользователя, гранты и билеты не знает.
 
 Ошибки:
-RefusalError — вызов вне сессии chainlit, соединение выдано пользователю
-    дважды, хост URL вне web-соединения или делегированных кредов у сессии
-    нет; kind из ConnectionRefusal.
+RefusalError — вызов вне сессии, имя не выдано субъекту, выдано дважды либо
+    делегированных кредов у сессии нет; kind из ConnectionRefusal.
 ConnectionStoreError — таблица соединений недоступна.
 KerberosError — билет к соединению не выпущен, вызов начинать нечем.
-ToolConfigError — профиль строки непригоден для песочницы.
-InjectedAsyncOnlyError — тело инструмента вызвано синхронно: whitelist
-    собирается только в async-теле.
+ToolConfigError — параметр объявлен непригодной моделью либо строка таблицы
+    несёт готовый билет.
+InjectedAsyncOnlyError — тело инструмента вызвано синхронно: профиль
+    подставляется только в async-теле.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping, Sequence
-from enum import StrEnum
+from typing import ClassVar
 
 from langchain_core.tools import BaseTool
-from pydantic import BaseModel
+from pydantic.fields import FieldInfo
 
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.tickets import CredentialsRef
+from boba.connections.base import ClientIdentity, ConnectionProfileBase
 from boba.connections.credentials import ProfileSections
-from boba.connections.marks import (
-    ClientLabel,
-    ConnectionRefusal,
-    ConnectionTrace,
-    UserConnectionsSpec,
-)
-from boba.connections.profile import ConnectionProfileBase
-from boba.connections.whitelist import (
-    AmbiguousConnectionError,
-    ConnectionWhitelist,
-)
+from boba.connections.manifest import ConnectionTypes, UnknownConnectionKindError
+from boba.connections.marks import ConnectionRefusal
+from boba.connections.whitelist import AmbiguousConnectionError, ConnectionWhitelist
 from boba.identity.context import CallContext
 from boba.identity.errors import RefusalError
 from boba.kerberos import TicketAuth
-from boba.toolkit.sql import SqlProfiles
-from boba.toolrun.injected import (
-    AsyncInjected,
-    ConfigResolver,
-    ToolConfigError,
-)
-from boba.transport.http.profile import HostPattern, HttpProfile
-from boba.transport.http.web import WebConnection
+from boba.toolkit.entry import ToolArgv
+from boba.toolrun.injected import AsyncInjected, ToolConfigError
+from boba.toolrun.wrapping import ToolBody, ToolSchema
 
 __all__ = [
-    "ClientLabel",
     "ConnectionRefusal",
     "CredentialsRef",
     "StoreRef",
+    "TypesRef",
     "UserConnections",
-    "UserConnectionsSpec",
 ]
 
 logger = logging.getLogger(__name__)
 
+
+class CallerApplication:
+    """Имя приложения в подписи сессии: под ним ходят все инструменты."""
+
+    NAME: ClassVar[str] = "boba"
+
 StoreRef = Callable[[], ConnectionStore]
 """Хранилище соединений; зовётся на вызов, а не при загрузке инструментов."""
 
+TypesRef = Callable[[], ConnectionTypes]
+"""Реестр установленных типов; по нему модель профиля превращается в kind."""
 
-class WebArg(StrEnum):
-    """Tool-arg'и web-инструментов, которые читает обвязка."""
 
-    URL = "url"
+class ConnectionArgument:
+    """Поле, которым параметр-соединение показывается модели: имя строки."""
+
+    DESCRIPTION: ClassVar[str] = (
+        "Имя соединения из connection_list. Бери имя строки, чей kind подходит "
+        "инструменту, а описание — задаче пользователя."
+    )
+
+    @classmethod
+    def field(cls) -> tuple[type[str], FieldInfo]:
+        return str, FieldInfo(min_length=1, description=cls.DESCRIPTION)
 
 
 class UserConnections(AsyncInjected):
-    """Обвязка одного инструмента: профили субъекта в injected-конфиг на вызов."""
+    """Обвязка одного параметра-соединения: имя от модели, профиль от хоста."""
 
     def __init__(
         self,
         store_ref: StoreRef,
         credentials_ref: CredentialsRef,
-        spec: UserConnectionsSpec,
+        types_ref: TypesRef,
         param: str,
-        base: BaseModel,
+        kind: str,
     ) -> None:
-        super().__init__(param, base)
+        super().__init__(param, None)
         self._store_ref = store_ref
         self._credentials_ref = credentials_ref
-        self._spec = spec
-        self._base = base
+        self._types_ref = types_ref
+        self._kind = kind
 
     @classmethod
     def bind_all(
@@ -99,36 +99,104 @@ class UserConnections(AsyncInjected):
         tools: Sequence[BaseTool],
         store_ref: StoreRef,
         credentials_ref: CredentialsRef,
-        spec: UserConnectionsSpec,
-        resolve: ConfigResolver,
+        types_ref: TypesRef,
     ) -> None:
-        """Ставит обвязку на инструменты, чей injected-конфиг несёт profiles.
+        """Ставит обвязку на каждый параметр-соединение и правит схему для LLM.
 
-        Зовётся до InjectedConfig: injected-поля читаются со схемы, пока их
-        с неё не сняли.
+        Зовётся до InjectedConfig: параметры читаются со схемы, пока она полная.
+        Вид соединения берётся из типа параметра — реестр знает, какому пакету
+        принадлежит модель профиля.
         """
+        for tool in tools:
+            cls._bind_one(tool, store_ref, credentials_ref, types_ref)
 
-        def make(param: str, base: object) -> AsyncInjected:
-            if not isinstance(base, BaseModel):
-                raise ToolConfigError(f"{param}: injected value is not a model")
+    @classmethod
+    def _bind_one(
+        cls,
+        tool: BaseTool,
+        store_ref: StoreRef,
+        credentials_ref: CredentialsRef,
+        types_ref: TypesRef,
+    ) -> None:
+        schema = ToolSchema.of(tool)
+        if schema is None:
+            return
 
-            return cls(store_ref, credentials_ref, spec, param, base)
+        fields = ToolArgv.connection_fields(schema)
+        if not fields:
+            return
 
-        cls.bind_each(tools, resolve, cls._accepts, make)
+        shown: dict[str, tuple[type[str], FieldInfo]] = {}
+        for param, annotation in fields.items():
+            kind = cls._kind_of(tool.name, param, annotation, types_ref)
+
+            ToolBody.hook_all(
+                [tool], cls(store_ref, credentials_ref, types_ref, param, kind)
+            )
+            shown[param] = ConnectionArgument.field()
+
+            logger.info(
+                "tool %s: %s is a %s connection of the caller", tool.name, param, kind
+            )
+
+        tool.args_schema = ToolSchema.rebuild(schema, shown, ())
 
     @staticmethod
-    def _accepts(base: object) -> bool:
-        return isinstance(base, SqlProfiles | WebConnection)
+    def _kind_of(tool: str, param: str, annotation: object, types_ref: TypesRef) -> str:
+        """Вид соединения по модели профиля параметра."""
+        if not isinstance(annotation, type):
+            msg = f"tool {tool!r}: {param} is not annotated with a profile model"
+            raise ToolConfigError(msg)
+
+        if not issubclass(annotation, ConnectionProfileBase):
+            msg = (
+                f"tool {tool!r}: {param} is annotated with {annotation.__name__}, "
+                "which is not a connection profile"
+            )
+            raise ToolConfigError(msg)
+
+        try:
+            return types_ref().kind_of(annotation)
+        except UnknownConnectionKindError as exc:
+            msg = (
+                f"tool {tool!r}: {param} needs connection type "
+                f"{annotation.__name__}, whose package is not installed"
+            )
+            raise ToolConfigError(msg) from exc
 
     async def value(self, name: str, kwargs: dict[str, object]) -> object:
-        return await self._config(name, kwargs)
+        requested = self._requested(name, kwargs)
 
-    async def _config(self, name: str, kwargs: dict[str, object]) -> BaseModel:
         subject = CallContext.current().subject
-        rows = await self._store_ref().for_subject(subject, self._spec.kind)
-        whitelist = ConnectionWhitelist.of(rows, self._spec.keying)
+        rows = await self._store_ref().for_subject(subject, self._kind)
+        whitelist = ConnectionWhitelist.of(rows)
 
-        requested = self._spec.keying.requested(kwargs)
+        picked = self._pick(whitelist, requested)
+        profile = self._labelled(picked.profile, name)
+        armed = await self._armed(profile)
+
+        logger.info(
+            "tool %s: connection %r (%s) %s",
+            name,
+            picked.name,
+            self._kind,
+            armed.trace(),
+        )
+
+        return armed
+
+    def _requested(self, tool: str, kwargs: Mapping[str, object]) -> str:
+        value = kwargs.get(self._param)
+        if isinstance(value, str) and value:
+            return value
+
+        msg = (
+            f"{tool} needs a connection name in {self._param!r}; "
+            "call connection_list to see the names available to you"
+        )
+        raise RefusalError(ConnectionRefusal.NOT_VISIBLE, msg)
+
+    def _pick(self, whitelist: ConnectionWhitelist, requested: str):
         try:
             picked = whitelist.pick(requested)
         except AmbiguousConnectionError as exc:
@@ -138,69 +206,25 @@ class UserConnections(AsyncInjected):
             )
             raise RefusalError(ConnectionRefusal.AMBIGUOUS, msg) from exc
 
-        shipped: dict[str, ConnectionProfileBase] = {}
         if picked is not None:
-            profile = self._at_host(requested, picked.profile, kwargs)
-            armed = await self._armed(self._labelled(profile, name))
-            shipped[requested] = armed
-            logger.info(
-                "tool %s: connection %r (%s) %s",
-                name,
-                requested,
-                self._spec.kind,
-                ConnectionTrace.of(armed),
-            )
+            return picked
 
-        update: dict[str, object] = {
-            "profiles": shipped,
-            "names": sorted(whitelist.profiles),
-        }
-        if isinstance(self._base, WebConnection):
-            update["hosts"] = self._hosts(whitelist.profiles)
-
-        return self._base.model_copy(update=update)
+        known = ", ".join(whitelist.names())
+        msg = (
+            f"connection {requested!r} of kind {self._kind!r} is not available "
+            f"to you; yours are: {known or 'none'}"
+        )
+        raise RefusalError(ConnectionRefusal.NOT_VISIBLE, msg)
 
     @staticmethod
     def _labelled(profile: ConnectionProfileBase, tool: str) -> ConnectionProfileBase:
-        """Профиль с меткой клиента: логин субъекта вызова."""
+        """Профиль, подписанный клиентом вызова; как подписать, решает профиль."""
         login = CallContext.current().subject.login
+        client = ClientIdentity(
+            application=CallerApplication.NAME, login=login, tool=tool
+        )
 
-        return ClientLabel.of(login, tool).applied(profile)
-
-    @staticmethod
-    def _at_host(
-        name: str, profile: ConnectionProfileBase, kwargs: Mapping[str, object]
-    ) -> ConnectionProfileBase:
-        """Web-профиль привязывается к хосту URL вызова; чужой хост — отказ.
-
-        Билет negotiate выпускается к реальному хосту, поэтому привязка идёт
-        до арминга; тело проверит то же самое ещё раз.
-        """
-        if not isinstance(profile, HttpProfile):
-            return profile
-
-        url = kwargs.get(WebArg.URL)
-        if not isinstance(url, str):
-            return profile
-
-        host = HostPattern.host_of(url)
-        if not profile.covers(host):
-            msg = (
-                f"host {host!r} is outside connection {name!r} "
-                f"(it covers {profile.host()!r})"
-            )
-            raise RefusalError(ConnectionRefusal.HOST_NOT_ALLOWED, msg)
-
-        return profile.bound_to(host)
-
-    @staticmethod
-    def _hosts(profiles: Mapping[str, ConnectionProfileBase]) -> dict[str, str]:
-        hosts: dict[str, str] = {}
-        for name, profile in profiles.items():
-            if isinstance(profile, HttpProfile):
-                hosts[name] = profile.host()
-
-        return hosts
+        return profile.labeled(client)
 
     async def _armed(self, profile: ConnectionProfileBase) -> ConnectionProfileBase:
         """Профиль с билетом вызова вместо kerberos-секции строки."""

@@ -26,7 +26,7 @@ from boba.stand.auth import NoUsers, StubAuthenticator
 from boba.stand.refs import StandRefs
 from boba.studio.api.app import ApiAccess, ApiApp
 from boba.studio.api.urls import ApiVersion, ConnectionUrl
-from boba.transport.http.profile import HttpProfile
+from boba.transport.http.profile import HttpConnection
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -82,10 +82,10 @@ async def granted(
     postgres = await store.add("main", studio_config.data_layer.postgres)
     await store.grant(postgres, GrantTarget.role(roles[ROLE]))
 
-    web = await store.add("site", HttpProfile(base_url="https://example.test"))
+    web = await store.add("site", HttpConnection(base_url="https://example.test"))
     await store.grant(web, GrantTarget.role(roles[ROLE]))
 
-    stranger = await store.add("secret", HttpProfile(base_url="https://other.test"))
+    stranger = await store.add("secret", HttpConnection(base_url="https://other.test"))
     await store.grant(stranger, GrantTarget.user(UUID(int=999_999)))
 
     return {"postgres": postgres, "web": web, "stranger": stranger}

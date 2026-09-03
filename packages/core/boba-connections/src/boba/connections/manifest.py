@@ -36,7 +36,11 @@ class ConnectionTypesError(Exception):
 
 
 class UnknownConnectionKindError(ConnectionTypesError):
-    """В реестре нет типа с таким kind: пакет-владелец не установлен."""
+    """В реестре нет такого типа: пакет-владелец не установлен.
+
+    Именуется видом соединения (строка kind) либо именем модели профиля —
+    смотря что было на руках у вызывающего.
+    """
 
     def __init__(self, kind: str) -> None:
         super().__init__(f"connection type {kind!r} is not installed")
@@ -92,6 +96,18 @@ class ConnectionTypes:
 
     def kinds(self) -> tuple[str, ...]:
         return tuple(sorted(self._table))
+
+    def kind_of(self, profile: type[ConnectionProfileBase]) -> str:
+        """Вид соединения по модели профиля: так его объявляет параметр тула.
+
+        Ошибки:
+        UnknownConnectionKindError — пакет-владелец этой модели не установлен.
+        """
+        for kind, manifest in self._table.items():
+            if manifest.profile is profile:
+                return kind
+
+        raise UnknownConnectionKindError(profile.__name__)
 
     def manifest_of(self, kind: str) -> ConnectionTypeManifest:
         found = self._table.get(kind)

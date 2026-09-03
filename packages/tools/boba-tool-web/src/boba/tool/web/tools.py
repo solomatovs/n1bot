@@ -19,22 +19,21 @@ from enum import StrEnum
 from typing import Annotated, ClassVar, Final
 
 import httpx
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from boba.text.grep import GrepLimits, TextGrep
 from boba.toolkit.entry import ToolMain
-from boba.toolkit.facade import Injected, tool
+from boba.toolkit.facade import Injected, UserConnection, tool
 from boba.toolkit.result import (
     ResultTooLargeError,
     TextResult,
     ToolResult,
     pack_result,
 )
-from boba.toolkit.sql import ConnectionName, UnknownConnectionError
 from boba.toolkit.types import SecretRevealing
 from boba.transport.http import HttpxAuth
-from boba.transport.http.profile import HttpProfile
-from boba.transport.http.web import UnknownHostError, WebConnection
+from boba.transport.http.profile import HttpConnection
+from boba.transport.http.web import UnknownHostError, WebHost
 
 
 class WebRequestError(Exception):
@@ -50,8 +49,14 @@ class WebErrorKind(StrEnum):
     RESULT_TOO_LARGE = "result_too_large"
 
 
-class WebGrepConfig(SecretRevealing, WebConnection):
-    """Конфиг web-инструментов: whitelist соединений и лимиты выдачи; [tool.web]."""
+WebTarget = Annotated[HttpConnection, UserConnection]
+"""Параметр-соединение web-инструментов: имя от модели, профиль от хоста."""
+
+
+class WebGrepConfig(SecretRevealing):
+    """Лимиты выдачи web-инструментов; [tool.web]."""
+
+    model_config = ConfigDict(extra="ignore")
 
     SECTION: ClassVar[str] = "tool.web"
 
@@ -121,7 +126,7 @@ class WebPage:
     async def load(
         cls,
         url: str,
-        profile: HttpProfile,
+        profile: HttpConnection,
         *,
         as_markdown: bool,
         max_chars: int,
@@ -154,19 +159,9 @@ class WebPage:
 
 
 @tool
-async def web_connection_list(
-    cfg: Annotated[WebGrepConfig, Injected],
-) -> tuple[str, ToolResult]:
-    """Доступные соединения web-инструментов: connection_name и хост, который
-    оно покрывает (точный либо шаблон *.domain). Выбери connection_name,
-    чей хост покрывает URL запроса."""
-    return pack_result(cfg.targets_table())
-
-
-@tool
 async def web_fetch_page(  # noqa: PLR0913
     url: Annotated[str, Field(min_length=1, description="URL для скачивания")],
-    connection_name: ConnectionName,
+    connection: WebTarget,
     as_markdown: Annotated[
         bool,
         Field(description="true — конвертирует HTML->Markdown"),
@@ -181,10 +176,10 @@ async def web_fetch_page(  # noqa: PLR0913
     ],
     cfg: Annotated[WebGrepConfig, Injected],
 ) -> tuple[str, ToolResult]:
-    """Скачивает URL соединением connection_name (см. web_connection_list) и
-    возвращает окно строк; строка под текстом называет срез и общее число
-    строк — по ней листай страницу дальше."""
-    profile = cfg.resolve_for(connection_name, url)
+    """Скачивает URL соединением connection (см. connection_list) и возвращает
+    окно строк; строка под текстом называет срез и общее число строк — по ней
+    листай страницу дальше."""
+    profile = WebHost.bound(connection, url)
 
     page = await WebPage.load(
         url, profile, as_markdown=as_markdown, max_chars=cfg.max_result_chars
@@ -207,7 +202,7 @@ async def web_grep_page(  # noqa: PLR0913
         str,
         Field(min_length=1, description="URL для скачивания."),
     ],
-    connection_name: ConnectionName,
+    connection: WebTarget,
     pattern: Annotated[
         str,
         Field(min_length=1, description="Python-regex; литерал при fixed_string=true."),
@@ -236,8 +231,8 @@ async def web_grep_page(  # noqa: PLR0913
     cfg: Annotated[WebGrepConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Найти совпадения pattern в содержимом страницы, скачанной соединением
-    connection_name (см. web_connection_list)."""
-    profile = cfg.resolve_for(connection_name, url)
+    connection (см. connection_list)."""
+    profile = WebHost.bound(connection, url)
 
     text = await WebPage.load(
         url, profile, as_markdown=as_markdown, max_chars=cfg.max_result_chars
@@ -261,12 +256,11 @@ async def web_grep_page(  # noqa: PLR0913
 
 EXPECTED: Mapping[type[Exception], WebErrorKind] = {
     WebRequestError: WebErrorKind.REQUEST_FAILED,
-    UnknownConnectionError: WebErrorKind.UNKNOWN_TARGET,
     UnknownHostError: WebErrorKind.UNKNOWN_HOST,
     ResultTooLargeError: WebErrorKind.RESULT_TOO_LARGE,
 }
 
-TOOLS: Final = ToolMain.toolset(web_connection_list, web_fetch_page, web_grep_page)
+TOOLS: Final = ToolMain.toolset(web_fetch_page, web_grep_page)
 
 if __name__ == "__main__":
     sys.exit(ToolMain.run(TOOLS))

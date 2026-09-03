@@ -1,100 +1,41 @@
-"""WebConnection: whitelist соединений web-инструментов по имени.
+"""Привязка web-профиля к хосту запроса: проверка покрытия делается в теле.
 
-Соединение выбирается tool-arg'ом connection_name, URL запроса обязан попасть
-под хост base_url соединения (точный или шаблон `*.domain`); профиль уезжает
-в запрос уже с конкретным хостом.
+Профиль соединения приходит инструменту параметром вызова; хост URL, который
+инструмент собирается открыть, обязан попадать под base_url профиля — точный
+или шаблон `*.domain`. Проверку делает сам инструмент: только он знает, какой
+именно URL запрашивает.
 
 Ошибки:
-UnknownConnectionError — имя соединения вне whitelist'а; текст готов
-    для пользователя.
 UnknownHostError — хост URL не покрыт соединением; текст готов для пользователя.
 """
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from boba.transport.http.profile import HostPattern, HttpConnection
 
-from pydantic import BaseModel, ConfigDict, Field
-
-from boba.toolkit.result import TableResult
-from boba.toolkit.sql import UnknownConnectionError
-from boba.transport.http.profile import HostPattern, HttpProfile
-
-__all__ = ["UnknownHostError", "WebConnection"]
+__all__ = ["UnknownHostError", "WebHost"]
 
 
 class UnknownHostError(Exception):
     """Хост URL не покрыт выбранным соединением; текст готов для пользователя."""
 
 
-class WebConnection(BaseModel):
-    """Whitelist web-соединений: connection_name -> HttpProfile."""
+class WebHost:
+    """Профиль, привязанный к конкретному хосту запроса."""
 
-    model_config = ConfigDict(extra="ignore")
+    @staticmethod
+    def bound(profile: HttpConnection, url: str) -> HttpConnection:
+        """Профиль под этот URL; чужой хост — отказ.
 
-    SECTION: ClassVar[str]
-    """Секция конфига инструмента; подкласс обязан задать."""
-
-    profiles: dict[str, HttpProfile] = Field(
-        default_factory=dict,
-        description=(
-            "dict[connection_name, web-профиль]. Ключ — значение tool-arg "
-            "`connection_name`. Приложение собирает whitelist из соединений "
-            "пользователя на каждый вызов."
-        ),
-    )
-    names: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Имена соединений, доступных пользователю, без профилей: видны в "
-            "connection_list, а профиль приезжает только у выбранного соединения."
-        ),
-    )
-    hosts: dict[str, str] = Field(
-        default_factory=dict,
-        description="dict[connection_name, хост base_url]: что покрывает соединение.",
-    )
-
-    def targets(self) -> list[str]:
-        known = set(self.names)
-        known.update(self.profiles)
-        return sorted(known)
-
-    def targets_table(self) -> TableResult:
-        """Выдача connection_list: имя соединения и хост (или шаблон) под ним."""
-        rows: list[dict[str, Any]] = []
-        for target in self.targets():
-            rows.append({"connection_name": target, "host": self._host_of(target)})
-
-        return TableResult(rows=rows)
-
-    def _host_of(self, target: str) -> str:
-        profile = self.profiles.get(target)
-        if profile is not None:
-            return profile.host()
-
-        return self.hosts.get(target, "")
-
-    def resolve(self, connection_name: str) -> HttpProfile:
-        profile = self.profiles.get(connection_name)
-        if profile is None:
-            msg = (
-                f"{type(self).SECTION}: connection_name {connection_name!r} is not "
-                f"in the whitelist (allowed={self.targets()})"
-            )
-            raise UnknownConnectionError(msg)
-
-        return profile
-
-    def resolve_for(self, connection_name: str, url: str) -> HttpProfile:
-        """Профиль соединения, привязанный к хосту URL; чужой хост — отказ."""
-        profile = self.resolve(connection_name)
+        Ошибки:
+        UnknownHostError — хост URL вне покрытия профиля.
+        """
         host = HostPattern.host_of(url)
 
         if not profile.covers(host):
             msg = (
-                f"web: host {host!r} is outside connection {connection_name!r} "
-                f"(covers {profile.host()!r}). URL={url!r}"
+                f"web: host {host!r} is outside the chosen connection "
+                f"(it covers {profile.host()!r}). URL={url!r}"
             )
             raise UnknownHostError(msg)
 

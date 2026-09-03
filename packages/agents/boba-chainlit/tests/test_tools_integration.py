@@ -50,7 +50,7 @@ from boba.toolkit.result import (
 )
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.injected import InjectedConfig
-from boba.transport.http.profile import HttpProfile
+from boba.transport.http.profile import HttpConnection
 
 _REPO = Path(__file__).resolve().parents[4]
 _SANDBOX_STAGING = _REPO / "build" / "chainlit" / "src" / "sandbox"
@@ -152,7 +152,7 @@ class ToolSetup:
     def web_config(raw: Any) -> WebGrepConfig:
         """[tool.web] с whitelist'ом из [tool.ingest.confluence]."""
         limits = bind(raw, path="tool.web", model=WebGrepConfig)
-        service = bind(raw, path="tool.ingest.confluence", model=HttpProfile)
+        service = bind(raw, path="tool.ingest.confluence", model=HttpConnection)
         if service.base_url is None:
             raise AssertionError("[tool.ingest.confluence] has no base_url")
 
