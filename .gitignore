@@ -16,7 +16,6 @@ CLAUDE.md
 /compose/*/*
 !/compose/*/docker-compose.yml
 !/compose/*/docker-compose-test.yml
-uv.lock
 
 packages/**/build/
 packages/**/dist/

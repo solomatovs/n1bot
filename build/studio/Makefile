@@ -202,6 +202,13 @@ for path in $(SANDBOX_PARTS); do
 done
 endef
 
+define check-plugins
+if [ ! -d "$(SANDBOX_DIR)/plugins" ]; then
+    echo "нет $(SANDBOX_DIR)/plugins — запусти: make plugin-rootfs-all" >&2
+    exit 1
+fi
+endef
+
 define openapi
 $(VENV_PYTHON) -m boba.studio.api.schema > "$(WEB_PROJECT)/openapi.json"
 echo "== openapi: $(WEB_PROJECT)/openapi.json =="
@@ -365,11 +372,19 @@ build: version-check
 # проверка релиза внутри образа тем же окружением, что уедет в compose и systemd
 .PHONY: test
 test: build
-	@echo "== проверка релиза $(VERSION) в образе $(IMAGE) =="
+	@$(check-sandbox)
+	$(check-plugins)
+	echo "== проверка релиза $(VERSION) в образе $(IMAGE) =="
 	env_file="$(DEPS_DIR)/boba-$(APP).env"
 	export BOBA_BASE="$(DEST_DIR)" BOBA_VERSION="$(VERSION)"
 	envsubst '$${BOBA_BASE} $${BOBA_VERSION}' < "$(CONF_DIR)/boba.env" > "$$env_file"
-	docker run --rm -i --env-file "$$env_file" --entrypoint sh $(IMAGE) \
+	# модели и песочница в образе не лежат, в релизе они рядом: подставляем их биндами
+	docker run --rm -i --env-file "$$env_file" --entrypoint sh                              \
+	    -v "$(DEPS_DIR)/fastembed:$(DEST_DIR)/models/fastembed:ro"                            \
+	    -v "$(DEPS_DIR)/tessdata:$(DEST_DIR)/models/tessdata:ro"                              \
+	    -v "$(SANDBOX_DIR)/plugins:$(DEST_DIR)/sandbox/plugins:ro"                            \
+	    -v "$(SANDBOX_DIR)/workspace.ext4:$(DEST_DIR)/sandbox/workspace.ext4:ro"              \
+	    $(IMAGE)                                                                              \
 	    -c '"$$PYTHONHOME/bin/python3" - --names "$(DEST_DIR)/app/packages.txt"' < "$(TEST_DIR)/bobacheck.py"
 
 # что обязано лежать в дереве установки
@@ -386,10 +401,7 @@ release:
 	fi
 	$(check-inputs)
 	$(check-sandbox)
-	if [ ! -d "$(SANDBOX_DIR)/plugins" ]; then
-	    echo "нет $(SANDBOX_DIR)/plugins — запусти: make plugin-rootfs-all" >&2
-	    exit 1
-	fi
+	$(check-plugins)
 	rm -rf "$(OUT)"
 	mkdir -p "$(OUT)/conf"
 	$(call image-copy,$(RELEASE_IMAGE),$(DEST_DIR)/.,$(OUT)/)
