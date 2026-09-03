@@ -2,6 +2,7 @@ ARG PYTHON_VERSION=3.11
 ARG GLIBC_IMAGE=dmp/glibc:2.28
 ARG GCC_IMAGE=dmp/gcc:8.5.0
 ARG PYTHON_IMAGE=dmp/python:${PYTHON_VERSION}-dist
+ARG NODE_IMAGE=dmp/nodejs:20
 
 FROM ${PYTHON_IMAGE} AS python-dist
 
@@ -292,6 +293,14 @@ urllib.request.urlopen(url, timeout=4)"
 ENTRYPOINT ["python3"]
 
 
+# скрипт страницы chainlit (web/page, TypeScript): собирается node'ом стадии, на хосте node не нужен
+FROM ${NODE_IMAGE} AS web-build
+
+COPY packages/agents/boba-chainlit/web/page/  /src/web/page/
+WORKDIR /src/web/page
+RUN npm ci --no-audit --no-fund && npm run check && npm run build
+
+
 # образ чата: ассеты chainlit, vendor-шрифты и стили формул вместо CDN, локальная
 # модель переформулировщика. .files создаётся заранее: chainlit делает mkdir на импорте
 FROM runtime-base AS runtime-chainlit
@@ -304,7 +313,8 @@ COPY packages/agents/boba-chainlit/assets/.chainlit/config.toml   ${BOBA_DIR}/ap
 COPY packages/agents/boba-chainlit/assets/.chainlit/translations/ ${BOBA_DIR}/app_root/.chainlit/translations/
 COPY packages/agents/boba-chainlit/assets/chainlit.md             ${BOBA_DIR}/app_root/
 COPY packages/agents/boba-chainlit/assets/public/                 ${BOBA_DIR}/app_root/public/
-COPY build/chainlit/src/webassets/                                         ${BOBA_DIR}/app_root/public/vendor/
+COPY --from=web-build /src/assets/public/page.js                  ${BOBA_DIR}/app_root/public/page.js
+COPY build/chainlit/src/webassets/                                ${BOBA_DIR}/app_root/public/vendor/
 
 # фронт chainlit тянет шрифт и стили формул с CDN: переводим на public/vendor
 RUN index=${BOBA_DIR}/app/chainlit/frontend/dist/index.html                                                  \
