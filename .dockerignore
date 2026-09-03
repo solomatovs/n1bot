@@ -20,5 +20,7 @@ build/*/src/wheels
 
 # страницы: зависимости ставит и сборку делает стадия web-build
 packages/agents/boba-studio/assets/workflow
+packages/agents/boba-studio/web/workflow/openapi.json
+packages/agents/boba-studio/web/workflow/src/api/schema.d.ts
 packages/agents/boba-chainlit/assets/public/page.js
 packages/agents/boba-chainlit/assets/public/vendor
