@@ -473,7 +473,8 @@ class ChatTurn(RunPort):
 
             attachments.append({"name": name, "path": key.in_workspace()})
 
-        extra = ChatTurnAttachments.extra(attachments)
+        # extra здесь — сборка additional_kwargs, а не Django ORM
+        extra = ChatTurnAttachments.extra(attachments)  # nosec B610
         return HumanMessage(content=msg.content, id=msg.id, additional_kwargs=extra)
 
     async def run(

@@ -39,6 +39,7 @@ def _token(identifier: str, expires_in: int) -> str:
         "iat": now,
         "since": now,
     }
+    # nosemgrep: jwt-python-hardcoded-secret — секрет теста
     return jwt.encode(claims, SECRET, algorithm="HS256")
 
 

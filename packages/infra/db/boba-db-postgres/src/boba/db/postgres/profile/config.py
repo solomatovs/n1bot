@@ -266,7 +266,6 @@ class PostgresConfig(ConnectionProfileBase):
         """Подпись сессии в application_name: его же показывает pg_stat_activity."""
         return self.model_copy(update={"application_name": ApplicationName.of(client)})
 
-
     @field_serializer("auth", when_used="json")
     def _dump_auth(
         self, value: PostgresAuth, info: SerializationInfo

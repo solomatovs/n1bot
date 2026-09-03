@@ -57,6 +57,7 @@ class CallerApplication:
 
     NAME: ClassVar[str] = "boba"
 
+
 StoreRef = Callable[[], ConnectionStore]
 """Хранилище соединений; зовётся на вызов, а не при загрузке инструментов."""
 

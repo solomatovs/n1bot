@@ -491,6 +491,10 @@ const useChatSession = () => {
 
       socket.on('window_message', (data: any) => {
         if (window.parent) {
+          // Код chainlit: канал окна вьювера. Целевой origin не сужаем —
+          // страница встраивается на произвольный хост, а данные несут
+          // только имя окна и уже отрисованное содержимое панели.
+          // nosemgrep: wildcard-postmessage-configuration
           window.parent.postMessage(data, '*');
         }
       });

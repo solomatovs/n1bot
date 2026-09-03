@@ -132,20 +132,27 @@ class ToolSetup:
 
     @staticmethod
     def pg_config(raw: Any) -> PgToolConfig:
-        """[tool.pg] с whitelist'ом из сервисного [postgres]: в приложении
-        whitelist собирает обвязка из таблицы соединений, а kerberos-секция
-        едет внутрь билетом вызова — ccache сервиса в песочнице нет."""
-        limits = bind(raw, path="tool.pg", model=PgToolConfig)
+        """Лимиты выдачи [tool.pg]: соединение приходит параметром вызова."""
+        return bind(raw, path="tool.pg", model=PgToolConfig)
+
+    @staticmethod
+    def pg_connection(raw: Any) -> PostgresConfig:
+        """Профиль соединения теста: сервисный [postgres] с билетом вызова.
+
+        В приложении профиль подаёт обвязка из таблицы соединений, а
+        kerberos-секция едет внутрь билетом — ccache сервиса в песочнице нет.
+        """
         service = bind(raw, path="postgres", model=PostgresConfig)
 
         auth = service.auth
-        if isinstance(auth, KeytabAuth):
-            issuer = ServiceTicketIssuer(auth.min_lifetime)
-            source = KeytabCredentials.of(auth)
-            ticket = issuer.issue(source, service.service_name())
-            service = service.model_copy(update={"auth": ticket})
+        if not isinstance(auth, KeytabAuth):
+            return service
 
-        return limits.model_copy(update={"profiles": {"main": service}})
+        issuer = ServiceTicketIssuer(auth.min_lifetime)
+        source = KeytabCredentials.of(auth)
+        ticket = issuer.issue(source, service.service_name())
+
+        return service.model_copy(update={"auth": ticket})
 
     @staticmethod
     def web_config(raw: Any) -> WebGrepConfig:
@@ -335,6 +342,12 @@ def confluence_tools(raw_config):
     InjectedConfig.bind_all(functions, resolve)
 
     return ToolSetup.by_name(functions)
+
+
+@pytest.fixture(scope="module")
+def pg_connection(raw_config) -> PostgresConfig:
+    """Соединение pg-тестов: то, что в бою пришло бы из таблицы."""
+    return ToolSetup.pg_connection(raw_config)
 
 
 @pytest.fixture(scope="module")
@@ -848,18 +861,10 @@ class TestConfluenceTools:
 class TestPgTools:
     """pg: соединение, kerberos и SQL исполняются внутри песочницы."""
 
-    async def test_connection_list(self, pg_tools) -> None:
-        result = await Call.ok(pg_tools["pg_connection_list"])
-        targets = []
-        for row in result.rows:
-            targets.append(row["connection_name"])
-        if not (targets):
-            raise AssertionError("targets")
-
-    async def test_list_tables(self, pg_tools) -> None:
+    async def test_list_tables(self, pg_tools, pg_connection) -> None:
         result = await Call.ok(
             pg_tools["pg_list_tables"],
-            connection_name="main",
+            connection=pg_connection,
             pg_schema="pg_catalog",
             offset=0,
             max_rows=50,
@@ -870,11 +875,11 @@ class TestPgTools:
         if set(result.rows[0]) < {"schema", "table_name", "kind", "owner"}:
             raise AssertionError('set(result.rows[0]) >= {"schema", "table_name", "ki…')
 
-    async def test_system_schemas_are_not_hidden(self, pg_tools) -> None:
+    async def test_system_schemas_are_not_hidden(self, pg_tools, pg_connection) -> None:
         """Каталог не прячется: системные схемы видны наравне с остальными."""
         result = await Call.ok(
             pg_tools["pg_list_tables"],
-            connection_name="main",
+            connection=pg_connection,
             offset=0,
             max_rows=50,
             max_chars=20000,
@@ -885,10 +890,10 @@ class TestPgTools:
         if not (schemas):
             raise AssertionError("schemas")
 
-    async def test_table_pattern_filters_by_name(self, pg_tools) -> None:
+    async def test_table_pattern_filters_by_name(self, pg_tools, pg_connection) -> None:
         result = await Call.ok(
             pg_tools["pg_list_tables"],
-            connection_name="main",
+            connection=pg_connection,
             pg_schema="pg_catalog",
             table_pattern="pg_cl%",
             offset=0,
@@ -901,10 +906,10 @@ class TestPgTools:
             if not (row["table_name"].startswith("pg_cl")):
                 raise AssertionError('row["table_name"].startswith("pg_cl")')
 
-    async def test_describe_table(self, pg_tools) -> None:
+    async def test_describe_table(self, pg_tools, pg_connection) -> None:
         tables = await Call.ok(
             pg_tools["pg_list_tables"],
-            connection_name="main",
+            connection=pg_connection,
             pg_schema="pg_catalog",
             table_pattern="pg_class",
             offset=0,
@@ -914,7 +919,7 @@ class TestPgTools:
         first = tables.rows[0]
         result = await Call.ok(
             pg_tools["pg_describe_table"],
-            connection_name="main",
+            connection=pg_connection,
             table=first["table_name"],
             pg_schema=first["schema"],
             offset=0,
@@ -926,11 +931,11 @@ class TestPgTools:
         if set(result.rows[0]) < {"column_name", "type", "nullable", "primary_key"}:
             raise AssertionError('set(result.rows[0]) >= {"column_name", "type", "nul…')
 
-    async def test_pages_do_not_overlap(self, pg_tools) -> None:
+    async def test_pages_do_not_overlap(self, pg_tools, pg_connection) -> None:
         """Окно листается: вторая страница продолжает первую, а не повторяет."""
         first = await Call.ok(
             pg_tools["pg_list_tables"],
-            connection_name="main",
+            connection=pg_connection,
             pg_schema="pg_catalog",
             offset=0,
             max_rows=2,
@@ -944,7 +949,7 @@ class TestPgTools:
 
         second = await Call.ok(
             pg_tools["pg_list_tables"],
-            connection_name="main",
+            connection=pg_connection,
             pg_schema="pg_catalog",
             offset=2,
             max_rows=2,
@@ -961,11 +966,11 @@ class TestPgTools:
             if row["table_name"] in names:
                 raise AssertionError(f"строка {row['table_name']!r} пришла дважды")
 
-    async def test_char_limit_cuts_the_page(self, pg_tools) -> None:
+    async def test_char_limit_cuts_the_page(self, pg_tools, pg_connection) -> None:
         """Потолок символов обрывает страницу, остаток достаётся следующей."""
         result = await Call.ok(
             pg_tools["pg_list_tables"],
-            connection_name="main",
+            connection=pg_connection,
             pg_schema="pg_catalog",
             offset=0,
             max_rows=100,
@@ -977,10 +982,10 @@ class TestPgTools:
         if "next offset=" not in str(result.note):
             raise AssertionError(f"note зовёт за остатком, дано {result.note!r}")
 
-    async def test_query_returns_rows(self, pg_tools) -> None:
+    async def test_query_returns_rows(self, pg_tools, pg_connection) -> None:
         result = await Call.ok(
             pg_tools["pg_query"],
-            connection_name="main",
+            connection=pg_connection,
             sql="select 1 as one, 'два' as two",
         )
         if not (isinstance(result, TableResult)):
@@ -990,11 +995,13 @@ class TestPgTools:
         if result.rows[0]["two"] != "два":
             raise AssertionError('result.rows[0]["two"] == "два"')
 
-    async def test_statement_without_rows_reports_status(self, pg_tools) -> None:
+    async def test_statement_without_rows_reports_status(
+        self, pg_tools, pg_connection
+    ) -> None:
         """DDL проходит и отчитывается статусом; временная таблица живёт в сессии."""
         result = await Call.ok(
             pg_tools["pg_query"],
-            connection_name="main",
+            connection=pg_connection,
             sql="create temp table integration_probe(x int)",
         )
         if not (isinstance(result, AffectedSqlResult)):
@@ -1002,11 +1009,13 @@ class TestPgTools:
         if result.status != "CREATE TABLE":
             raise AssertionError('result.status == "CREATE TABLE"')
 
-    async def test_copy_unloads_the_statement_as_is(self, pg_tools) -> None:
+    async def test_copy_unloads_the_statement_as_is(
+        self, pg_tools, pg_connection
+    ) -> None:
         """Формат выбирает запрос: csv-дамп доезжает как есть и помечен языком."""
         result = await Call.ok(
             pg_tools["pg_copy"],
-            connection_name="main",
+            connection=pg_connection,
             sql=(
                 "COPY (select 1 as one, 'два' as two) "
                 "TO STDOUT WITH (FORMAT CSV, HEADER)"
@@ -1019,7 +1028,9 @@ class TestPgTools:
         if result.language != "csv":
             raise AssertionError('result.language == "csv"')
 
-    async def test_copy_decodes_in_the_connection_encoding(self, pg_tools) -> None:
+    async def test_copy_decodes_in_the_connection_encoding(
+        self, pg_tools, pg_connection
+    ) -> None:
         """Кириллица доезжает целой: дамп читается кодировкой подключения.
 
         Символ склеивается из блоков COPY, поэтому проверяется и длинная
@@ -1027,7 +1038,7 @@ class TestPgTools:
         """
         result = await Call.ok(
             pg_tools["pg_copy"],
-            connection_name="main",
+            connection=pg_connection,
             sql=("COPY (select repeat('ё', 4000) as long) TO STDOUT WITH (FORMAT CSV)"),
         )
 
@@ -1036,7 +1047,9 @@ class TestPgTools:
         if result.text.strip() != "ё" * 4000:
             raise AssertionError('result.text.strip() == "ё" * 4000')
 
-    async def test_copy_statement_is_judged_by_postgres(self, pg_tools) -> None:
+    async def test_copy_statement_is_judged_by_postgres(
+        self, pg_tools, pg_connection
+    ) -> None:
         """Стейтмент уходит как есть: приговор выносит сервер, не инструмент."""
         with pytest.raises(PayloadFailureError) as caught:
             await Call.result(
@@ -1046,11 +1059,13 @@ class TestPgTools:
         if caught.value.kind != "sql_failed":
             raise AssertionError('caught.value.kind == "sql_failed"')
 
-    async def test_many_statements_run_in_one_call(self, pg_tools) -> None:
+    async def test_many_statements_run_in_one_call(
+        self, pg_tools, pg_connection
+    ) -> None:
         """Несколько команд через `;`: итог каждой по порядку одним набором."""
         result = await Call.ok(
             pg_tools["pg_query"],
-            connection_name="main",
+            connection=pg_connection,
             sql=(
                 "create temp table multi_probe(x int); "
                 "insert into multi_probe values (1), (2); "
@@ -1070,12 +1085,14 @@ class TestPgTools:
         if list(last.rows) != [{"n": 2}]:
             raise AssertionError('rows == [{"n": 2}]')
 
-    async def test_failed_statement_rolls_the_set_back(self, pg_tools) -> None:
+    async def test_failed_statement_rolls_the_set_back(
+        self, pg_tools, pg_connection
+    ) -> None:
         """Набор идёт одной транзакцией: падение второй команды сносит первую."""
         with pytest.raises(PayloadFailureError):
             await Call.result(
                 pg_tools["pg_query"],
-                connection_name="main",
+                connection=pg_connection,
                 sql=(
                     "create temp table rollback_probe(x int); "
                     "select * from no_such_table_here;"
@@ -1084,13 +1101,13 @@ class TestPgTools:
 
         after = await Call.result(
             pg_tools["pg_query"],
-            connection_name="main",
+            connection=pg_connection,
             sql="select to_regclass('rollback_probe') is null as gone",
         )
         if list(after.rows) != [{"gone": True}]:
             raise AssertionError("таблица первой команды откачена")
 
-    async def test_unknown_target_is_rejected(self, pg_tools) -> None:
+    async def test_unknown_target_is_rejected(self, pg_tools, pg_connection) -> None:
         """Отказ нового пути — исключение с kind, а не ErrorResult-успех."""
         with pytest.raises(PayloadFailureError) as caught:
             await Call.result(
@@ -1231,7 +1248,7 @@ class TestPgCopyPipeline:
     async def _prepare(self, pg_tools) -> None:
         await Call.ok(
             pg_tools["pg_query"],
-            connection_name="main",
+            connection=pg_connection,
             sql=(
                 "drop table if exists it_pipe_src, it_pipe_dst;"
                 " create table it_pipe_src(id int, note text);"
@@ -1241,7 +1258,9 @@ class TestPgCopyPipeline:
             ),
         )
 
-    async def test_pipeline_moves_rows_between_tables(self, pg_tools) -> None:
+    async def test_pipeline_moves_rows_between_tables(
+        self, pg_tools, pg_connection
+    ) -> None:
         from boba.toolrun.invoke import ToolInvoker
         from boba.toolrun.pipeline import PipelineService
 
@@ -1278,7 +1297,7 @@ class TestPgCopyPipeline:
 
         rows = await Call.ok(
             pg_tools["pg_query"],
-            connection_name="main",
+            connection=pg_connection,
             sql="select count(*) as total, min(note) as first_note from it_pipe_dst",
         )
         if rows.rows[0]["total"] != 1000:
@@ -1293,7 +1312,7 @@ class TestPgCopyPipeline:
         with pytest.raises(PayloadFailureError) as caught:
             await Call.result(
                 pg_tools["pg_copy_out"],
-                connection_name="main",
+                connection=pg_connection,
                 sql="COPY it_pipe_src FROM STDIN",
             )
 

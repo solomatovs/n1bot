@@ -208,9 +208,7 @@ class StandDatabase:
             "update {} "
             "set data = jsonb_set(data, '{{kind}}', to_jsonb(%(kind)s::text)) "
             "where name = %(name)s"
-        ).format(
-            SqlNames.table(connections.db_schema, ConnectionTable.CONNECTIONS)
-        )
+        ).format(SqlNames.table(connections.db_schema, ConnectionTable.CONNECTIONS))
 
         async with self._pool() as pool, pool.cursor() as cur:
             await cur.execute(query, {"kind": kind, "name": name})

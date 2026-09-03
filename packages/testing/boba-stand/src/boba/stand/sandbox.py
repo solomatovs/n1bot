@@ -197,7 +197,7 @@ def sandbox_profile(
             "env": {
                 "PATH": "/usr/local/bin:/usr/bin:/bin",
                 "PYTHONPATH": SandboxLayout.python_path(),
-                "HOME": "/tmp",  # noqa: S108
+                "HOME": "/tmp",  # noqa: S108  # nosec B108
                 "LANG": "C.UTF-8",
             },
             "reap_poll_sec": 0.05,
@@ -212,7 +212,7 @@ def sandbox_profile(
         },
         "run": {
             "shell": "/bin/bash",
-            "cwd": "/tmp",  # noqa: S108
+            "cwd": "/tmp",  # noqa: S108  # nosec B108
         },
     }
     return _merged(profile, kw)

@@ -236,7 +236,6 @@ class ClickHouseConfig(ConnectionProfileBase):
         """Подпись сессии в client_name: его показывает system.query_log."""
         return self.model_copy(update={"client_name": ClientName.of(client)})
 
-
     def _spn_host(self) -> str:
         """Хост в SPN: явное имя сервера, иначе адрес соединения."""
         if self.server_host_name:
