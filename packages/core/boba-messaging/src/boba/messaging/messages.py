@@ -7,10 +7,10 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated, ClassVar, Literal
+from typing import Annotated, ClassVar, Literal, Self
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from boba.messaging.payloads import PayloadRef
 
@@ -21,6 +21,7 @@ __all__ = [
     "AnyCommand",
     "AnyMessage",
     "CanvasChanged",
+    "CatalogChanged",
     "ChangeAction",
     "ChatSettingsChanged",
     "Command",
@@ -106,6 +107,7 @@ class MessageKind(StrEnum):
     ELEMENT_REMOVED = "element_removed"
     CHAT_SETTINGS_CHANGED = "chat_settings_changed"
     STUDIO_PROFILE_CHANGED = "studio_profile_changed"
+    CATALOG_CHANGED = "catalog_changed"
 
 
 _HOLDER_ONLY: frozenset[MessageKind] = frozenset(
@@ -542,6 +544,36 @@ class StudioProfileChanged(Message):
     by_sid: str
 
 
+class CatalogChanged(Message):
+    """Каталог данных изменился: порция или закрытие черновика draft_id, публикация
+    версии version либо правка вида view_id. Заполнен ровно один из трёх
+    идентификаторов.
+    """
+
+    kind: Literal[MessageKind.CATALOG_CHANGED] = MessageKind.CATALOG_CHANGED
+    draft_id: UUID | None = None
+    version: int | None = None
+    view_id: UUID | None = None
+    action: ChangeAction
+
+    @model_validator(mode="after")
+    def _exactly_one_target(self) -> Self:
+        targets = (self.draft_id, self.version, self.view_id)
+
+        filled = 0
+        for target in targets:
+            if target is None:
+                continue
+
+            filled += 1
+
+        if filled != 1:
+            msg = "catalog_changed: exactly one of draft_id, version, view_id expected"
+            raise ValueError(msg)
+
+        return self
+
+
 class StopRequested(Command):
     """Пользователь by_user попросил остановить область; просьба принята инстансом
     by_instance.
@@ -587,7 +619,8 @@ AnyMessage = Annotated[
     | ChatSettingsChanged
     | StudioProfileChanged
     | WorkflowChanged
-    | ConnectionsChanged,
+    | ConnectionsChanged
+    | CatalogChanged,
     Field(discriminator="kind"),
 ]
 
