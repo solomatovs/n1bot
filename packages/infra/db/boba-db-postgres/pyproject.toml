@@ -4,21 +4,21 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-db-postgres"
-version = "0.0.15.dev5"
+version = "0.0.15.dev6"
 description = "Boba PostgreSQL: PostgresConfig + AsyncPostgresPool — единственный async-пул системы, с kerberos-кредами на подключение."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-connections==0.0.15.dev5",
-    "boba-kerberos==0.0.15.dev5",
-    "boba-cancellation==0.0.15.dev5",
-    "boba-krb==0.0.15.dev5",
-    "boba-toolkit==0.0.15.dev5",
+    "boba-connections==0.0.15.dev6",
+    "boba-kerberos==0.0.15.dev6",
+    "boba-cancellation==0.0.15.dev6",
+    "boba-krb==0.0.15.dev6",
+    "boba-toolkit==0.0.15.dev6",
     "psycopg[binary,pool]>=3.3",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "boba-stand==0.0.15.dev5",
+    "boba-stand==0.0.15.dev6",
     "pydantic>=2.10,<2.11",
     "pytest>=8",
 ]
