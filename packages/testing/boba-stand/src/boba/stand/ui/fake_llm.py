@@ -81,6 +81,8 @@ class ScenarioName(StrEnum):
     TOOL = "scenario:tool"
     TOOL_ERROR = "scenario:tool-error"
     DIAGRAM = "scenario:diagram"
+    LONG = "scenario:long"
+    """Длинный ход для замеров: рассуждения, вызов инструмента и ответ на много токенов."""
 
     @classmethod
     def of(cls, text: str) -> ScenarioName:
@@ -160,10 +162,24 @@ class ScenarioBook:
 
     CALL_ANSWER: str = "the tool has answered"
 
+    LONG_WORDS: ClassVar[tuple[str, ...]] = tuple(
+        (
+            "the model reasons about the request step by step checking tables joins "
+            "filters and the expected shape of the answer before calling any tool"
+        ).split(" ")
+    )
+    """Словарь длинного хода: текст собирается по кругу, токен — слово."""
+
+    LONG_REASONING_WORDS: ClassVar[int] = 60
+    LONG_ANSWER_WORDS: ClassVar[int] = 40
+
     @classmethod
     def of(cls, name: ScenarioName, text: str = "") -> Scenario:
         if name is ScenarioName.CALL:
             return cls._call(text)
+
+        if name is ScenarioName.LONG:
+            return cls._long(text)
 
         builders = {
             ScenarioName.THINKING: cls._thinking,
@@ -209,6 +225,38 @@ class ScenarioBook:
             turns=[
                 TurnScript(reasoning=f"I will call {name}", tool_calls=[call]),
                 TurnScript(content=cls.CALL_ANSWER),
+            ]
+        )
+
+    @classmethod
+    def _words(cls, count: int, seed: int) -> str:
+        words: list[str] = []
+        for index in range(count):
+            words.append(cls.LONG_WORDS[(index + seed) % len(cls.LONG_WORDS)])
+
+        return " ".join(words)
+
+    @classmethod
+    def _long(cls, text: str) -> Scenario:
+        """Длинный ход: id вызова несёт хеш сообщения, как у scenario:call."""
+        digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:8]  # noqa: S324
+        call = ToolCallSpec(
+            call_id=f"call_long_{digest}",
+            name="stream_logs_usage",
+            arguments="{}",
+        )
+        answer = (
+            f"**Result.** {cls._words(cls.LONG_ANSWER_WORDS, 3)}\n\n"
+            f"- {cls._words(8, 5)}\n- {cls._words(8, 7)}"
+        )
+
+        return Scenario(
+            turns=[
+                TurnScript(
+                    reasoning=cls._words(cls.LONG_REASONING_WORDS, 0),
+                    tool_calls=[call],
+                ),
+                TurnScript(content=answer),
             ]
         )
 
@@ -349,6 +397,9 @@ class FakeLlmApp:
         Иначе второй вызов в том же чате получил бы не tool_call, а ответ.
         """
         if name is ScenarioName.CALL:
+            return text
+
+        if name is ScenarioName.LONG:
             return text
 
         return name.value
