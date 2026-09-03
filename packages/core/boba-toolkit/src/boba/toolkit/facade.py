@@ -39,6 +39,7 @@ __all__ = [
     "Injected",
     "PayloadTool",
     "ToolFacadeError",
+    "UserConnection",
     "WarmupHook",
     "WarmupHooks",
     "tool",
@@ -58,6 +59,19 @@ class Injected:
 
     Распознаётся по имени класса (ToolArgv.INJECTED_MARKERS), как и
     langchain-маркеры, — сравнение типов между процессами невозможно.
+    """
+
+
+class UserConnection:
+    """Маркер параметра-соединения: имя выбирает LLM, профиль подаёт хост.
+
+    Тип параметра — модель профиля пакета-владельца (PostgresConfig,
+    HttpProfile, ...); по ней хост узнаёт вид соединения и ищет строку среди
+    выданных субъекту вызова. Модель видит на этом месте строку с именем
+    соединения, тело получает готовый профиль с кредами.
+
+    Как и Injected, распознаётся по имени класса (ToolArgv.CONNECTION_MARKERS):
+    значение едет телу каналом injected, а не через argv.
     """
 
 
