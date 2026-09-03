@@ -190,21 +190,13 @@ export const StoredWorkflowSchema = z.object({
   spec: z.string(),
   tools: z.array(z.string()),
   layout: z.record(z.unknown()),
+  draft_spec: z.string().nullable(),
+  draft_layout: z.record(z.unknown()).nullable(),
+  draft_revision: z.number().int(),
   created_at: z.string(),
   updated_at: z.string(),
 });
 export type StoredWorkflow = z.infer<typeof StoredWorkflowSchema>;
-
-/** Черновик билдера, общий для вкладок пользователя: последняя запись побеждает. */
-export const WorkflowDraftSchema = z.object({
-  key: z.string(),
-  user_id: z.string().uuid(),
-  revision: z.number().int(),
-  spec: z.string(),
-  layout: z.record(z.unknown()),
-  updated_at: z.string(),
-});
-export type WorkflowDraft = z.infer<typeof WorkflowDraftSchema>;
 
 export const InitiatorSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("chat"), thread_id: z.string(), turn_id: z.string() }),
@@ -373,7 +365,7 @@ export const UserEventSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("workflow_draft_changed"),
-    key: z.string(),
+    workflow_id: z.string().uuid(),
     revision: z.number().int(),
     by_sid: z.string(),
     action: z.enum(["created", "updated", "deleted"]),

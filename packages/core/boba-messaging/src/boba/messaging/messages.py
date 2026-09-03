@@ -491,14 +491,14 @@ class ThreadChanged(Message):
 
 
 class WorkflowDraftChanged(Message):
-    """Черновик билдера key пользователя записан (revision) или удалён; by_sid — сокет
-    вкладки, которая его изменила, чтобы она не применяла своё же изменение.
+    """Черновик workflow записан (revision) или сброшен к сохранённому; by_sid —
+    сокет вкладки, которая его изменила, чтобы она не применяла своё же изменение.
     """
 
     kind: Literal[MessageKind.WORKFLOW_DRAFT_CHANGED] = (
         MessageKind.WORKFLOW_DRAFT_CHANGED
     )
-    key: str = Field(min_length=1)
+    workflow_id: UUID
     revision: int = Field(ge=0)
     by_sid: str
     action: ChangeAction

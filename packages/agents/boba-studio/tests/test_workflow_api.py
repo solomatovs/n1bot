@@ -322,36 +322,50 @@ async def test_abandoned_runs_are_closed_on_startup_and_stop_is_honest(
 async def test_draft_round_trip(
     client: AsyncClient, studio_config: StudioRuntimeConfig
 ) -> None:
-    """Черновик билдера: 404 до записи, PUT растит revision, DELETE снимает."""
+    """Черновик строки workflow: PUT растит draft_revision, DELETE возвращает
+    строку к сохранённому состоянию, чужой id даёт 404."""
     profile = _profile_of(studio_config)
-    key = "new:0f3b2a10-1111-4222-8333-444455556666"
 
-    missing = await client.get(
-        f"/v1/workflows/drafts/{key}", params={"profile": profile}
+    saved = await client.post(
+        "/v1/workflows",
+        json={
+            "profile": profile,
+            "spec": "name: draft-flow\ntasks: {}\n",
+            "layout": {},
+        },
     )
-    assert missing.status_code == 404
+    assert saved.status_code == 200, saved.text
+    workflow_id = saved.json()["id"]
+    assert saved.json()["draft_spec"] is None
+    assert saved.json()["draft_revision"] == 0
 
-    bad = await client.get("/v1/workflows/drafts/nope", params={"profile": profile})
-    assert bad.status_code == 400
-
-    body = {"spec": "name: draft\n", "layout": {"positions": {}}, "sid": "sid-1"}
+    body = {"spec": "name: edited\n", "layout": {"positions": {}}, "sid": "sid-1"}
     first = await client.put(
-        f"/v1/workflows/drafts/{key}", params={"profile": profile}, json=body
+        f"/v1/workflows/{workflow_id}/draft", params={"profile": profile}, json=body
     )
     assert first.status_code == 200, first.text
-    assert first.json()["revision"] == 1
+    assert first.json()["draft_revision"] == 1
+    assert first.json()["draft_spec"] == "name: edited\n"
 
     second = await client.put(
-        f"/v1/workflows/drafts/{key}", params={"profile": profile}, json=body
+        f"/v1/workflows/{workflow_id}/draft", params={"profile": profile}, json=body
     )
-    assert second.json()["revision"] == 2
+    assert second.json()["draft_revision"] == 2
 
-    found = await client.get(f"/v1/workflows/drafts/{key}", params={"profile": profile})
-    assert found.json()["spec"] == "name: draft\n"
-
-    dropped = await client.delete(
-        f"/v1/workflows/drafts/{key}", params={"profile": profile, "sid": "sid-1"}
+    found = await client.get(
+        f"/v1/workflows/{workflow_id}", params={"profile": profile}
     )
-    assert dropped.json() == {"deleted": True}
-    gone = await client.get(f"/v1/workflows/drafts/{key}", params={"profile": profile})
-    assert gone.status_code == 404
+    assert found.json()["draft_spec"] == "name: edited\n"
+
+    cleared = await client.delete(
+        f"/v1/workflows/{workflow_id}/draft",
+        params={"profile": profile, "sid": "sid-1"},
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["draft_spec"] is None
+    assert cleared.json()["draft_revision"] == 3
+
+    missing = await client.put(
+        f"/v1/workflows/{uuid4()}/draft", params={"profile": profile}, json=body
+    )
+    assert missing.status_code == 404

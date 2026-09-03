@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import itertools
 import re
 import time
 from collections.abc import Iterator
@@ -101,7 +102,6 @@ class Sel:
     ITEM_ON: ClassVar[str] = ".list .item--on"
     ITEM_DOT: ClassVar[str] = ".item__dot"
     ITEM_TOGGLE: ClassVar[str] = ".item__toggle"
-    ITEM_DRAFT: ClassVar[str] = ".item--draft"
     ITEM_SUB: ClassVar[str] = ".item--sub"
     CHIP: ClassVar[str] = ".chip"
     VITALS: ClassVar[str] = ".vitals"
@@ -143,8 +143,7 @@ class Sel:
     REQUIRED: ClassVar[str] = ".field__required"
     ARG_COMMAND: ClassVar[str] = 'textarea[aria-label="arg command"]'
     YAML_TEXT: ClassVar[str] = 'textarea[aria-label="workflow yaml"]'
-    ISSUE: ClassVar[str] = ".issues__item"
-    NOTICE: ClassVar[str] = "[data-notice]"
+    TOAST: ClassVar[str] = ".toast"
     SHELL_BODY: ClassVar[str] = ".shell__body"
 
 
@@ -261,6 +260,13 @@ def _tab(page: Page, label: str) -> None:
 def _add_tool(page: Page, tool: str) -> None:
     page.get_by_role("button", name="Tool", exact=True).click()
     page.get_by_role("menuitem", name=tool).click()
+
+
+def _new(page: Page, stand: StandProcess) -> None:
+    """Кнопка New создаёт строку сразу и открывает её билдер."""
+    _open(page, stand, "/workflow")
+    page.locator(Sel.LIST_NEW).click()
+    expect(page).to_have_url(re.compile(r"/workflow/workflow/[0-9a-f-]{36}$"))
 
 
 class TestShell:
@@ -420,32 +426,79 @@ class TestLists:
         item.hover()
         assert Css.of(item, "background-color") == tokens.rgb("raised")
 
-    def test_draft_rows_stay_on_top_with_a_badge(
+    def test_draft_badge_clear_and_delete(
         self, page: Page, stand: StandProcess, tokens: Tokens
     ) -> None:
-        """Начатый workflow виден в списке черновиком: сверху, только имя и
-        пометка draft; удаляется кнопкой билдера рядом с Validate/Save/Run."""
-        _open(page, stand, "/workflow/new")
-        page.locator('input[aria-label="workflow name"]').fill("look-draft")
-        _add_tool(page, "bash")
+        """New создаёт строку сразу; правка вешает на неё пометку draft;
+        Clear сбрасывает правки, Delete удаляет workflow целиком."""
+        _new(page, stand)
+        row = page.locator(Sel.ITEM, has_text="new-workflow").first
+        expect(row).to_be_visible()
 
-        draft = page.locator(Sel.ITEM_DRAFT, has_text="look-draft")
-        expect(draft).to_have_count(1)
-        badge = draft.locator(".chip--draft")
+        clear = page.get_by_role("button", name="Clear", exact=True)
+        expect(clear).to_be_disabled()
+
+        _add_tool(page, "bash")
+        badge = row.locator(".chip--draft")
         expect(badge).to_have_text("draft")
         assert Css.of(badge, "color") == tokens.rgb("signal")
-        # у черновика нет ни времени, ни кнопок — имя и пометка
-        expect(draft.locator(".chip")).to_have_count(1)
-        expect(draft.locator("button")).to_have_count(0)
+        expect(clear).to_be_enabled()
 
-        # черновики стоят выше сохранённых workflow
-        first_saved = page.locator(f"{Sel.ITEM}:not({Sel.ITEM_DRAFT})").first
-        assert Css.box(draft).y < Css.box(first_saved).y
+        # Clear возвращает строку к сохранённому состоянию
+        clear.click()
+        expect(row.locator(".chip--draft")).to_have_count(0)
+        expect(page.locator(Sel.EDITOR_NODE)).to_have_count(0)
 
-        delete = page.get_by_role("button", name="Delete draft", exact=True)
+        # Delete убирает workflow независимо от черновика
+        delete = page.get_by_role("button", name="Delete", exact=True)
         expect(delete).to_be_visible()
+        assert Css.of(delete, "color") == tokens.rgb("error")
         delete.click()
-        expect(page.locator(Sel.ITEM_DRAFT, has_text="look-draft")).to_have_count(0)
+        expect(page).to_have_url(re.compile(r"/workflow/workflow$"))
+        expect(page.locator(Sel.ITEM, has_text="new-workflow")).to_have_count(0)
+
+    def test_builder_actions_row_layout(
+        self, page: Page, stand: StandProcess, tokens: Tokens
+    ) -> None:
+        """Validate/Save/Run/Clear стоят в линию слева, красная Delete — справа."""
+        _new(page, stand)
+
+        validate = page.get_by_role("button", name="Validate", exact=True)
+        save = page.get_by_role("button", name="Save", exact=True)
+        run = page.get_by_role("button", name="Run", exact=True)
+        clear = page.get_by_role("button", name="Clear", exact=True)
+        delete = page.get_by_role("button", name="Delete", exact=True)
+
+        boxes = [Css.box(button) for button in (validate, save, run, clear)]
+        for left, right in itertools.pairwise(boxes):
+            assert left.x < right.x
+
+        assert Css.box(delete).x > boxes[-1].x + 100
+        assert Css.of(delete, "color") == tokens.rgb("error")
+
+        page.get_by_role("button", name="Delete", exact=True).click()
+        expect(page).to_have_url(re.compile(r"/workflow/workflow$"))
+
+    def test_toast_floats_and_fades(
+        self, page: Page, stand: StandProcess, tokens: Tokens
+    ) -> None:
+        """Уведомление — фиксированная всплывашка: не двигает сцену и уходит сама."""
+        _new(page, stand)
+        stage_before = Css.box(page.locator(".stage"))
+
+        page.get_by_role("button", name="Validate", exact=True).click()
+        toast = page.locator(Sel.TOAST)
+        expect(toast).to_be_visible()
+        assert Css.of(toast, "position") in ("fixed", "static")
+        assert Css.of(page.locator(".toasts"), "position") == "fixed"
+
+        # сцена не сдвинулась: всплывашка живёт поверх, а не в потоке
+        stage_after = Css.box(page.locator(".stage"))
+        assert stage_after.y == stage_before.y
+
+        expect(toast).to_have_count(0, timeout=8_000)
+
+        page.get_by_role("button", name="Delete", exact=True).click()
         expect(page).to_have_url(re.compile(r"/workflow/workflow$"))
 
 
@@ -647,16 +700,15 @@ class TestBuild:
     def test_builder_bar_and_menu(
         self, page: Page, stand: StandProcess, tokens: Tokens
     ) -> None:
-        _open(page, stand, "/workflow/new")
-        bar = page.locator(Sel.BUILDER)
+        _new(page, stand)
+        bar = page.locator(Sel.BUILDER).first
         assert Css.box(bar).height >= tokens.px("h-vitals")
         label = page.locator(Sel.BUILDER_LABEL)
         assert Css.of(label, "color") == tokens.rgb("signal")
         assert "space grotesk" in Css.of(label, "font-family").lower()
         run = page.get_by_role("button", name="Run", exact=True)
-        expect(run).to_be_disabled()
+        expect(run).to_be_enabled()
         assert Css.of(run, "background-color") == tokens.rgb("signal")
-        assert Css.of(run, "opacity") == "0.5"
 
         page.get_by_role("button", name="Tool", exact=True).click()
         menu = page.locator(Sel.MENU_LIST)
@@ -670,7 +722,7 @@ class TestBuild:
     def test_editor_node_form_and_issues(
         self, page: Page, stand: StandProcess, tokens: Tokens
     ) -> None:
-        _open(page, stand, "/workflow/new")
+        _new(page, stand)
         _add_tool(page, "bash")
 
         node = page.locator(Sel.EDITOR_NODE)
@@ -698,10 +750,9 @@ class TestBuild:
         )
 
         page.get_by_role("button", name="Validate", exact=True).click()
-        issue = page.locator(Sel.ISSUE)
-        expect(issue).to_contain_text("required argument: command")
-        assert Css.of(issue, "border-radius") == tokens.raw("r-pill")
-        assert Css.of(issue.locator(".issues__code"), "color") == tokens.rgb("error")
+        toast = page.locator(f"{Sel.TOAST}--error")
+        expect(toast).to_contain_text("required argument: command")
+        assert Css.of(toast, "color") == tokens.rgb("error")
         assert Css.of(node, "border-top-color") == tokens.rgb("error")
 
         # строки тела = порты: ключ цветом, пустой обязательный — ошибкой
@@ -735,12 +786,12 @@ class TestBuild:
     ) -> None:
         """Потоково-связанные узлы билда обведены той же карточкой стадии,
         что в Observe: один визуальный язык на обоих экранах."""
-        _open(page, stand, "/workflow/new")
+        _new(page, stand)
         yaml_button = page.get_by_role("button", name="YAML", exact=True)
         yaml_button.click()
         page.locator(Sel.YAML_TEXT).fill(STREAM_SPEC)
         page.get_by_role("button", name="Apply YAML", exact=True).click()
-        expect(page.locator(Sel.NOTICE)).to_have_text("yaml applied")
+        expect(page.locator(Sel.TOAST)).to_have_text("yaml applied")
         yaml_button.click()
 
         nodes = page.locator(Sel.EDITOR_NODE)
@@ -759,7 +810,7 @@ class TestBuild:
     def test_yaml_mode_and_notices(
         self, page: Page, stand: StandProcess, tokens: Tokens
     ) -> None:
-        _open(page, stand, "/workflow/new")
+        _new(page, stand)
         yaml_button = page.get_by_role("button", name="YAML", exact=True)
         yaml_button.click()
         expect(yaml_button).to_have_attribute("aria-pressed", "true")
@@ -770,16 +821,15 @@ class TestBuild:
 
         text.fill("name: [broken")
         page.get_by_role("button", name="Apply YAML", exact=True).click()
-        issue = page.locator(Sel.ISSUE)
-        expect(issue).to_contain_text("yaml")
+        expect(page.locator(f"{Sel.TOAST}--error")).to_be_visible()
 
         text.fill(SPEC)
         page.get_by_role("button", name="Apply YAML", exact=True).click()
-        notice = page.locator(Sel.NOTICE)
-        expect(notice).to_have_text("yaml applied")
-        assert Css.of(notice, "border-radius") == tokens.raw("r-pill")
-        assert Css.of(notice, "color") == tokens.rgb("muted")
-        assert Css.of(notice, "background-color") == tokens.rgb("surface")
+        toast = page.locator(f"{Sel.TOAST}--success", has_text="yaml applied")
+        expect(toast).to_be_visible()
+        assert Css.of(toast, "border-radius") == tokens.raw("r-pill")
+        assert Css.of(toast, "color") == tokens.rgb("signal")
+        assert Css.of(toast, "background-color") == tokens.rgb("surface")
 
 
 class TestLightTheme:

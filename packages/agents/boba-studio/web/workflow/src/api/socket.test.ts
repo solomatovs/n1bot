@@ -57,7 +57,7 @@ describe("UserEventSchema", () => {
   it("accepts a draft change and keeps its author socket", () => {
     const parsed = UserEventSchema.parse({
       kind: "workflow_draft_changed",
-      key: "workflow:7",
+      workflow_id: "0f3b2a10-1111-4222-8333-444455556666",
       revision: 3,
       by_sid: "sid-1",
       action: "updated",

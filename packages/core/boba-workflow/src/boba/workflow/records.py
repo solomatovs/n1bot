@@ -10,26 +10,22 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, ClassVar
+from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, computed_field
 
 from boba.identity.errors import RefusalError
 from boba.toolkit.result import ToolResult
 from boba.workflow.graph import RunState, RunStatus, TaskStatus
 
 __all__ = [
-    "DraftKey",
-    "DraftKind",
-    "DraftsColumn",
     "RunOutcome",
     "RunsColumn",
     "StopOutcome",
     "StoredRun",
     "StoredWorkflow",
     "TaskOutcome",
-    "WorkflowDraft",
     "WorkflowError",
     "WorkflowNotFoundError",
     "WorkflowRefusal",
@@ -41,11 +37,10 @@ __all__ = [
 
 
 class WorkflowTable(StrEnum):
-    """Таблицы workflow: определения, запуски и черновики."""
+    """Таблицы workflow: определения и запуски; черновик — поля строки workflows."""
 
     WORKFLOWS = "workflows"
     RUNS = "workflow_runs"
-    DRAFTS = "workflow_drafts"
 
 
 class WorkflowsColumn(StrEnum):
@@ -57,6 +52,9 @@ class WorkflowsColumn(StrEnum):
     SPEC = "spec"
     TOOLS = "tools"
     LAYOUT = "layout"
+    DRAFT_SPEC = "draft_spec"
+    DRAFT_LAYOUT = "draft_layout"
+    DRAFT_REVISION = "draft_revision"
     CREATED_AT = "created_at"
     UPDATED_AT = "updated_at"
 
@@ -76,78 +74,16 @@ class RunsColumn(StrEnum):
     FINISHED_AT = "finished_at"
 
 
-class DraftsColumn(StrEnum):
-    """Колонки workflow_drafts."""
-
-    USER_ID = "user_id"
-    KEY = "key"
-    REVISION = "revision"
-    SPEC = "spec"
-    LAYOUT = "layout"
-    UPDATED_AT = "updated_at"
-
-
 class WorkflowStoreError(Exception):
-    """Хранилище workflow недоступно или отказало."""
+    """База отказала или строка не сохранилась."""
 
 
 class WorkflowNotFoundError(WorkflowStoreError):
-    """У владельца нет определения или запуска с таким id."""
+    """Строки нет либо она принадлежит другому пользователю."""
 
 
-class DraftKind(StrEnum):
-    """Чей черновик: сохранённого workflow по id либо нового по uuid вкладки."""
-
-    WORKFLOW = "workflow"
-    NEW = "new"
-
-
-class DraftKey(BaseModel):
-    """Ключ черновика билдера: вид и идентификатор; сборка и разбор строки в одном
-    месте.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    SEP: ClassVar[str] = ":"
-
-    kind: DraftKind
-    ident: str = Field(min_length=1, max_length=64, pattern=r"^[0-9a-f-]+$")
-
-    def render(self) -> str:
-        return f"{self.kind.value}{self.SEP}{self.ident}"
-
-    @classmethod
-    def of_workflow(cls, workflow_id: UUID) -> DraftKey:
-        return cls(kind=DraftKind.WORKFLOW, ident=str(workflow_id))
-
-    @classmethod
-    def parse(cls, raw: str) -> DraftKey:
-        kind, sep, ident = raw.partition(cls.SEP)
-        if not sep:
-            msg = f"bad draft key: {raw!r}"
-            raise ValueError(msg)
-
-        try:
-            return cls(kind=DraftKind(kind), ident=ident)
-        except ValueError as exc:
-            msg = f"bad draft key: {raw!r}"
-            raise ValueError(msg) from exc
-
-
-class WorkflowDraft(BaseModel):
-    """Черновик билдера, общий для вкладок пользователя: последняя правка побеждает,
-    revision растёт с каждой записью.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    key: str
-    user_id: UUID
-    revision: int
-    spec: str
-    layout: Mapping[str, Any]
-    updated_at: datetime
+class WorkflowNameTakenError(WorkflowStoreError):
+    """Имя занято другой строкой того же пользователя."""
 
 
 class StoredWorkflow(BaseModel):
@@ -164,6 +100,11 @@ class StoredWorkflow(BaseModel):
     """Инструменты спеки: поиск «кто использует pg_query» без разбора YAML."""
     layout: Mapping[str, Any]
     """Позиции узлов редактора; пусто — страница раскладывает сама."""
+    draft_spec: str | None = None
+    """Несохранённые правки: YAML черновика; None — правок нет, строка чистая."""
+    draft_layout: Mapping[str, Any] | None = None
+    draft_revision: int = 0
+    """Растёт с каждой записью черновика: вкладки применяют только новее своего."""
     created_at: datetime
     updated_at: datetime
 

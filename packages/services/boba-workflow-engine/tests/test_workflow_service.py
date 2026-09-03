@@ -28,7 +28,6 @@ from boba.toolkit.result import (
 )
 from boba.toolrun.registry import ToolRegistry
 from boba.workflow import RunStatus, TaskStatus
-from boba.workflow.records import DraftKey
 from boba.workflow.report import ReportKey
 from boba.workflow_engine.service import (
     StopOutcome,
@@ -430,16 +429,23 @@ async def test_draft_changes_reach_the_user_scope_and_save_drops_the_draft(
     leave = service.bus.subscribe(Scope.user(context.subject.user_id), collect)
     try:
         stored = await service.save(context.subject, PARALLEL, {})
-        key = DraftKey.of_workflow(stored.id)
         draft = await service.put_draft(
-            context.subject, key, "name: broken\n", {"positions": {}}, "sid-1"
+            context.subject, stored.id, "name: broken\n", {"positions": {}}, "sid-1"
         )
-        assert draft.revision == 1
-        assert (await service.get_draft(context.subject, key)).spec == "name: broken\n"
+        assert draft.draft_revision == 1
+        assert draft.draft_spec == "name: broken\n"
 
-        await service.save(context.subject, PARALLEL, {})
-        with pytest.raises(WorkflowError):
-            await service.get_draft(context.subject, key)
+        fetched = await service.get(context.subject, stored.id)
+        assert fetched.draft_spec == "name: broken\n"
+
+        cleared = await service.clear_draft(context.subject, stored.id, "sid-1")
+        assert cleared.draft_spec is None
+        assert cleared.draft_revision == 2
+
+        await service.put_draft(context.subject, stored.id, "name: x\n", {}, "sid-2")
+        saved = await service.save(context.subject, PARALLEL, {})
+        assert saved.draft_spec is None
+        assert saved.draft_revision == 4
     finally:
         leave()
 
@@ -450,10 +456,19 @@ async def test_draft_changes_reach_the_user_scope_and_save_drops_the_draft(
             continue
 
         drafts.append(
-            (message.key, message.revision, message.by_sid, message.action.value)
+            (
+                str(message.workflow_id),
+                message.revision,
+                message.by_sid,
+                message.action.value,
+            )
         )
 
+    workflow_id = str(saved.id)
     assert drafts == [
-        (key.render(), 1, "sid-1", "updated"),
-        (key.render(), 0, "", "deleted"),
+        (workflow_id, 0, "", "deleted"),
+        (workflow_id, 1, "sid-1", "updated"),
+        (workflow_id, 2, "sid-1", "deleted"),
+        (workflow_id, 3, "sid-2", "updated"),
+        (workflow_id, 4, "", "deleted"),
     ]

@@ -18,7 +18,7 @@ from boba.workflow import (
     WorkflowGraph,
     WorkflowSpec,
 )
-from boba.workflow.records import DraftKey, DraftKind, WorkflowNotFoundError
+from boba.workflow.records import WorkflowNotFoundError
 from boba.workflow_engine.store import WorkflowConfig, WorkflowStore
 
 pytestmark = pytest.mark.anyio
@@ -227,53 +227,54 @@ async def test_snapshot_is_independent_of_the_definition(store: WorkflowStore) -
         raise AssertionError("editing the definition must not touch the run")
 
 
-async def test_drafts_are_keyed_per_user_and_count_revisions(
+async def test_draft_lives_in_workflow_row_and_counts_revisions(
     store: WorkflowStore,
 ) -> None:
-    key = DraftKey.of_workflow(UUID(int=7))
-    first = await store.put_draft(
-        UUID(int=1), key, "name: a\ntasks: {}\n", {"positions": {}}
-    )
+    saved = await store.save(OWNER, _spec(), {})
+    assert saved.draft_spec is None
+    assert saved.draft_layout is None
+    assert saved.draft_revision == 0
+
+    first = await store.put_draft(OWNER, saved.id, "name: a\n", {"positions": {}})
     second = await store.put_draft(
-        UUID(int=1), key, "name: b\ntasks: {}\n", {"positions": {"t": 1}}
+        OWNER, saved.id, "name: b\n", {"positions": {"t": 1}}
     )
-    assert first.revision == 1
-    assert second.revision == 2
-    assert second.spec.startswith("name: b")
+    assert first.draft_revision == 1
+    assert second.draft_revision == 2
+    assert second.draft_spec == "name: b\n"
+    assert second.draft_layout == {"positions": {"t": 1}}
 
-    found = await store.get_draft(UUID(int=1), key)
-    assert found.revision == 2
-    assert found.layout == {"positions": {"t": 1}}
+    found = await store.get(OWNER, saved.id)
+    assert found.draft_spec == "name: b\n"
+    assert found.draft_revision == 2
 
     with pytest.raises(WorkflowNotFoundError):
-        await store.get_draft(UUID(int=2), key)
+        await store.put_draft(STRANGER, saved.id, "name: x\n", {})
 
-    assert await store.drop_draft(UUID(int=1), key) is True
-    assert await store.drop_draft(UUID(int=1), key) is False
     with pytest.raises(WorkflowNotFoundError):
-        await store.get_draft(UUID(int=1), key)
+        await store.put_draft(OWNER, uuid4(), "name: x\n", {})
 
 
-async def test_drafts_list_is_per_user_and_fresh_first(store: WorkflowStore) -> None:
-    owner = UUID(int=1)
-    stranger = UUID(int=2)
-    older = DraftKey.of_workflow(UUID(int=7))
-    newer = DraftKey.parse("new:0f3b2a10-1111-4222-8333-444455556666")
+async def test_clear_draft_returns_row_to_saved_state(store: WorkflowStore) -> None:
+    saved = await store.save(OWNER, _spec(), {})
+    await store.put_draft(OWNER, saved.id, "name: edited\n", {})
 
-    await store.put_draft(owner, older, "name: old\ntasks: {}\n", {})
-    await store.put_draft(owner, newer, "name: fresh\ntasks: {}\n", {})
-    await store.put_draft(stranger, older, "name: foreign\ntasks: {}\n", {})
+    cleared = await store.clear_draft(OWNER, saved.id)
+    assert cleared.draft_spec is None
+    assert cleared.draft_layout is None
+    assert cleared.draft_revision == 2
+    assert cleared.spec == saved.spec
 
-    listed = await store.list_drafts(owner)
-    assert [draft.key for draft in listed] == [newer.render(), older.render()]
-    assert all(draft.user_id == owner for draft in listed)
+    with pytest.raises(WorkflowNotFoundError):
+        await store.clear_draft(STRANGER, saved.id)
 
 
-async def test_draft_key_renders_and_parses() -> None:
-    assert DraftKey.of_workflow(UUID(int=12)).render() == f"workflow:{UUID(int=12)}"
-    parsed = DraftKey.parse("new:0f3b2a10-1111-4222-8333-444455556666")
-    assert parsed.kind is DraftKind.NEW
-    with pytest.raises(ValueError, match="bad draft key"):
-        DraftKey.parse("draft-12")
-    with pytest.raises(ValueError, match="bad draft key"):
-        DraftKey.parse("other:1")
+async def test_save_drops_the_draft_and_bumps_revision(store: WorkflowStore) -> None:
+    saved = await store.save(OWNER, _spec(), {})
+    await store.put_draft(OWNER, saved.id, "name: edited\n", {})
+
+    again = await store.save(OWNER, _spec(), {"dump": {"x": 5}})
+    assert again.id == saved.id
+    assert again.draft_spec is None
+    assert again.draft_layout is None
+    assert again.draft_revision == 2

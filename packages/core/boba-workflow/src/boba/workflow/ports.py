@@ -9,7 +9,7 @@ from uuid import UUID
 
 from boba.messaging import StreamFeed
 from boba.workflow.graph import RunState
-from boba.workflow.records import DraftKey, StoredRun, StoredWorkflow, WorkflowDraft
+from boba.workflow.records import StoredRun, StoredWorkflow
 from boba.workflow.spec import WorkflowSpec
 
 __all__ = ["RunSink", "WorkflowRepository"]
@@ -34,6 +34,17 @@ class WorkflowRepository(Protocol):
     ) -> StoredWorkflow: ...
 
     @abstractmethod
+    async def save_into(
+        self,
+        user_id: UUID,
+        workflow_id: UUID,
+        spec: WorkflowSpec,
+        layout: Mapping[str, Any],
+    ) -> StoredWorkflow:
+        """Переписывает строку по id: имя, спека, раскладка; черновик снимается."""
+        ...
+
+    @abstractmethod
     async def get(self, user_id: UUID, workflow_id: UUID) -> StoredWorkflow: ...
 
     @abstractmethod
@@ -47,18 +58,15 @@ class WorkflowRepository(Protocol):
 
     @abstractmethod
     async def put_draft(
-        self, user_id: UUID, key: DraftKey, spec: str, layout: Mapping[str, Any]
-    ) -> WorkflowDraft:
-        """Пишет черновик пользователя под ключом; revision растёт на единицу."""
+        self, user_id: UUID, workflow_id: UUID, spec: str, layout: Mapping[str, Any]
+    ) -> StoredWorkflow:
+        """Пишет черновик в строку workflow; draft_revision растёт на единицу."""
         ...
 
     @abstractmethod
-    async def get_draft(self, user_id: UUID, key: DraftKey) -> WorkflowDraft:
-        """Черновик пользователя; нет — WorkflowNotFoundError."""
+    async def clear_draft(self, user_id: UUID, workflow_id: UUID) -> StoredWorkflow:
+        """Сбрасывает черновик: строка возвращается к сохранённому состоянию."""
         ...
-
-    @abstractmethod
-    async def drop_draft(self, user_id: UUID, key: DraftKey) -> bool: ...
 
     @abstractmethod
     async def start_run(  # noqa: PLR0913 — запуск описывается всеми полями сразу

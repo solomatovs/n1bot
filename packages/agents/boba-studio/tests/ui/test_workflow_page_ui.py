@@ -51,8 +51,7 @@ class Selector:
     ITEM_TOGGLE: ClassVar[str] = ".item__toggle"
     CRUMB_CURRENT: ClassVar[str] = ".crumbs__current"
     YAML_TEXT: ClassVar[str] = 'textarea[aria-label="workflow yaml"]'
-    NOTICE: ClassVar[str] = "[data-notice]"
-    ISSUE: ClassVar[str] = ".issues__item"
+    TOAST: ClassVar[str] = ".toast"
     RUN_STATUS: ClassVar[str] = ".vitals__badge"
     TASK_NODE: ClassVar[str] = ".task-node"
     EDITOR_NODE: ClassVar[str] = ".editor-node"
@@ -117,6 +116,13 @@ def _button(page: Page, label: str):
     return page.get_by_role("button", name=label, exact=True)
 
 
+def _new_workflow(page: Page, stand: StandProcess) -> None:
+    """New создаёт строку сразу: список ведёт в билдер новой строки."""
+    _open(page, stand, "/workflow")
+    page.locator(Selector.LIST_NEW).click()
+    expect(page).to_have_url(re.compile(r"/workflow/workflow/[0-9a-f-]{36}$"))
+
+
 def _expand_runs(page: Page, name: str) -> None:
     """Разворачивает историю запусков workflow стрелкой его строки."""
     row = page.locator(Selector.LIST_ITEM, has_text=name).first
@@ -130,7 +136,7 @@ def _apply_yaml(page: Page, spec: str) -> None:
     _button(page, "YAML").click()
     page.locator(Selector.YAML_TEXT).fill(spec)
     _button(page, "Apply YAML").click()
-    expect(page.locator(Selector.NOTICE)).to_contain_text("yaml applied")
+    expect(page.locator(Selector.TOAST, has_text="yaml applied")).to_be_visible()
     _button(page, "YAML").click()
 
 
@@ -151,7 +157,7 @@ def test_shell_navigation(page: Page, stand: StandProcess) -> None:
 
 def test_tool_menu_and_form_build_a_task(page: Page, stand: StandProcess) -> None:
     """Узел из меню «+ Tool», аргумент в форме — и всё это видно в YAML."""
-    _open(page, stand, "/workflow/new")
+    _new_workflow(page, stand)
 
     _button(page, "Tool").click()
     page.get_by_role("menuitem", name="bash").click()
@@ -169,20 +175,24 @@ def test_tool_menu_and_form_build_a_task(page: Page, stand: StandProcess) -> Non
     _button(page, "YAML").click()
 
     _button(page, "Validate").click()
-    expect(page.locator(Selector.ISSUE)).to_contain_text("required argument: command")
+    expect(page.locator(f"{Selector.TOAST}--error")).to_contain_text(
+        "required argument: command"
+    )
     expect(page.locator(f'{Selector.EDITOR_NODE}[data-issue="true"]')).to_have_count(1)
 
 
 def test_builder_validates_saves_and_runs_live(page: Page, stand: StandProcess) -> None:
-    _open(page, stand, "/workflow/new")
+    _new_workflow(page, stand)
     _apply_yaml(page, QUICK_SPEC)
     expect(page.locator(Selector.EDITOR_NODE)).to_have_count(2)
 
     _button(page, "Validate").click()
-    expect(page.locator(Selector.NOTICE)).to_contain_text("valid: 2 stage(s)")
+    expect(page.locator(Selector.TOAST, has_text="valid: 2 stage(s)")).to_be_visible()
 
     _button(page, "Save").click()
-    expect(page.locator(Selector.NOTICE)).to_contain_text('saved "ui-page-flow"')
+    expect(
+        page.locator(Selector.TOAST, has_text='saved "ui-page-flow"')
+    ).to_be_visible()
     expect(page).to_have_url(re.compile(r"/workflow/workflow/[0-9a-f-]{36}$"))
     expect(page.locator(Selector.CRUMB_CURRENT)).to_have_text("ui-page-flow")
     expect(page.locator(Selector.LIST_ITEM_ON)).to_contain_text("ui-page-flow")
@@ -228,10 +238,12 @@ def test_builder_validates_saves_and_runs_live(page: Page, stand: StandProcess) 
 
 
 def test_stop_button_stops_a_running_workflow(page: Page, stand: StandProcess) -> None:
-    _open(page, stand, "/workflow/new")
+    _new_workflow(page, stand)
     _apply_yaml(page, LONG_SPEC)
     _button(page, "Save").click()
-    expect(page.locator(Selector.NOTICE)).to_contain_text('saved "ui-page-long"')
+    expect(
+        page.locator(Selector.TOAST, has_text='saved "ui-page-long"')
+    ).to_be_visible()
 
     _button(page, "Run").click()
     expect(page.locator(f'{Selector.TASK_NODE}[data-status="running"]')).to_have_count(
@@ -351,10 +363,10 @@ def test_narrow_screen_drawer_opens_and_closes_the_list(
     """На узком экране список — ящик: кнопка в топбаре открывает его, выбор записи
     закрывает.
     """
-    _open(page, stand, "/workflow/new")
-    _apply_yaml(page, QUICK_SPEC)
-    _button(page, "Save").click()
-    expect(page).to_have_url(re.compile(r"/workflow/workflow/[0-9a-f-]{36}$"))
+    _open(page, stand, "/workflow")
+    expect(
+        page.locator(Selector.LIST_ITEM, has_text="ui-page-flow").first
+    ).to_be_visible()
 
     context = browser.new_context(viewport={"width": 700, "height": 800})
     context.add_cookies(login_cookies(stand))
