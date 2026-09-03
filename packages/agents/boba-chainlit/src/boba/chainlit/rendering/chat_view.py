@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar, Protocol, cast
 from uuid import UUID, uuid5
 
 from literalai.observability.step import TrueStepType
@@ -44,6 +45,7 @@ __all__ = [
     "StepRole",
     "StepStatus",
     "StepText",
+    "StreamBatch",
     "ToolStepLabel",
     "TurnDraft",
     "TurnPulse",
@@ -364,6 +366,113 @@ class RecordingSink(ChatSink):
         return list(self._steps.values())
 
 
+class Streamable(Protocol):
+    """Шаг ленты, принимающий токены: chainlit Step и Message подходят структурно."""
+
+    @abstractmethod
+    async def stream_token(self, token: str) -> None: ...
+
+
+class StreamBatch:
+    """Склейка токенов стримящегося шага: кадр уходит в ленту не чаще окна.
+
+    Кадр на каждый токен заставлял фронт перерисовывать ленту на каждый токен.
+    Токены копятся, таймер event loop отдаёт пачку одним stream_token; смена
+    шага и любой другой кадр ленты (BatchedSink, закрытие ответа) сначала
+    сбрасывают пачку, поэтому порядок кадров совпадает с порядком событий.
+    Ошибка отложенной отправки не глотается: её поднимает ближайший flush.
+    """
+
+    WINDOW_SEC: ClassVar[float] = 0.05
+
+    def __init__(self) -> None:
+        self._parts: list[str] = []
+        self._target: Streamable | None = None
+        self._timer: asyncio.TimerHandle | None = None
+        self._deferred: asyncio.Task[None] | None = None
+        self._lock = asyncio.Lock()
+
+    async def push(self, target: Streamable, token: str) -> None:
+        """Токен в пачку; токен другого шага сначала выталкивает накопленное."""
+        if self._target is not None and self._target is not target:
+            await self.flush()
+
+        self._target = target
+        self._parts.append(token)
+
+        if self._timer is None:
+            loop = asyncio.get_running_loop()
+            self._timer = loop.call_later(self.WINDOW_SEC, self._fire)
+
+    async def flush(self) -> None:
+        """Отдаёт накопленное сейчас; поднимает ошибку отложенной отправки."""
+        self._cancel_timer()
+
+        async with self._lock:
+            await self._send()
+
+        deferred = self._deferred
+        if deferred is None:
+            return
+
+        if not deferred.done():
+            return
+
+        self._deferred = None
+        deferred.result()
+
+    def _fire(self) -> None:
+        self._timer = None
+        self._deferred = asyncio.create_task(self._send_locked())
+
+    async def _send_locked(self) -> None:
+        async with self._lock:
+            await self._send()
+
+    async def _send(self) -> None:
+        target = self._target
+        text = "".join(self._parts)
+        self._parts.clear()
+
+        if target is None:
+            return
+
+        if not text:
+            return
+
+        await target.stream_token(text)
+
+    def _cancel_timer(self) -> None:
+        timer = self._timer
+        if timer is None:
+            return
+
+        timer.cancel()
+        self._timer = None
+
+
+class BatchedSink(ChatSink):
+    """Sink, выталкивающий пачку токенов перед каждым своим кадром: шаг не может
+    обогнать токены, отправленные раньше него.
+    """
+
+    def __init__(self, inner: ChatSink, batch: StreamBatch) -> None:
+        self._inner = inner
+        self._batch = batch
+
+    @property
+    def emits_elements(self) -> bool:
+        return self._inner.EMITS_ELEMENTS
+
+    async def put(self, step: Step) -> None:
+        await self._batch.flush()
+        await self._inner.put(step)
+
+    async def drop(self, step: Step) -> None:
+        await self._batch.flush()
+        await self._inner.drop(step)
+
+
 class TurnPulse:
     """Кружок ожидания в конце ленты: ход идёт, чем бы он сейчас ни был занят.
 
@@ -455,7 +564,8 @@ class ChatView:
         user_name: str | None = None,
     ) -> None:
         self._thread_id = thread_id
-        self._sink = sink
+        self._batch = StreamBatch()
+        self._sink = BatchedSink(sink, self._batch)
         display_name = user_name
         if not display_name:
             display_name = "User"
@@ -502,6 +612,7 @@ class ChatView:
 
     async def finish_turn(self) -> None:
         """Ход закончен любым исходом: кружок ожидания снимается."""
+        await self._batch.flush()
         await self._pulse.stop()
 
     def _new_pulse(self, key: str | None) -> TurnPulse:
@@ -556,13 +667,14 @@ class ChatView:
             self._turn.answer = self._open_answer(key)
 
         await self._pulse.hold()
-        await self._turn.answer.stream_token(token)
+        await self._batch.push(self._turn.answer, token)
 
     async def close_answer(self, key: str | None = None) -> None:
         """Финальная отправка ответа; пустой ход тоже получает сообщение."""
         if self._turn.answer is None:
             self._turn.answer = self._open_answer(key)
 
+        await self._batch.flush()
         await self._turn.answer.send()
 
     async def rewrite_answer(self, content: str, key: str | None = None) -> None:
@@ -571,8 +683,27 @@ class ChatView:
             await self.answer(content, key)
             return
 
+        await self._batch.flush()
         self._turn.answer.content = content
         await self._turn.answer.send()
+
+    async def interrupt_answer(self, note: str, key: str | None = None) -> None:
+        """Дописывает к накопленному ответу курсивную пометку об остановке; без
+        ответа пометка становится ответом. Накопленное — вместе с токенами, ещё
+        не ушедшими из пачки.
+        """
+        marker = f"_{note}_"
+        if self._turn.answer is None:
+            await self.answer(marker, key)
+            return
+
+        await self._batch.flush()
+        partial = self._turn.answer.content
+        if not partial:
+            await self.rewrite_answer(marker, key)
+            return
+
+        await self.rewrite_answer(f"{partial}\n\n{marker}", key)
 
     async def _seal_answer(self) -> None:
         """Закрывает текущий ответ перед инструментом.
@@ -586,6 +717,7 @@ class ChatView:
         if message is None:
             return
 
+        await self._batch.flush()
         await message.send()
         await self._pulse.resume()
 
@@ -667,7 +799,7 @@ class ChatView:
         if self._turn.thinking is None:
             self._turn.thinking = await self._open_thinking(key)
 
-        await self._turn.thinking.stream_token(token)
+        await self._batch.push(self._turn.thinking, token)
 
     async def close_thinking(self) -> None:
         """Закрывает шаг рассуждений; без открытого шага закрывать нечего."""
@@ -818,7 +950,7 @@ class ChatView:
 
     def _stream_button(self, name: str, key: str | None) -> CustomElement | None:
         """Кнопка живого вывода: только live-лента и только потоковые тулы."""
-        if not self._sink.EMITS_ELEMENTS:
+        if not self._sink.emits_elements:
             return None
 
         if not key:
@@ -929,7 +1061,7 @@ class ChatView:
             title = ""
         step.output = title
 
-        if self._sink.EMITS_ELEMENTS:
+        if self._sink.emits_elements:
             element = rendering.chat_element()
             element_id = self.derive_id(self._thread_id, tool_call_id, StepRole.ELEMENT)
             if not element_id:

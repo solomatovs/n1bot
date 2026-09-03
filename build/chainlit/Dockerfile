@@ -293,6 +293,18 @@ urllib.request.urlopen(url, timeout=4)"
 ENTRYPOINT ["python3"]
 
 
+# фронт chainlit из исходников тега с overlay web/chainlit-ui поверх: offline из pnpm-store,
+# который кладёт make fetch. Что и зачем правится — docs/chainlit-frontend-patch.md
+FROM ${NODE_IMAGE} AS chainlit-ui-build
+
+ARG CHAINLIT_VERSION
+COPY build/chainlit/scripts/chainlit_ui.sh                             /tmp/chainlit_ui.sh
+COPY build/chainlit/src/chainlit-${CHAINLIT_VERSION}.tar.gz             /tmp/chainlit.tar.gz
+COPY build/chainlit/src/chainlit-ui-store-${CHAINLIT_VERSION}.tar.gz    /tmp/chainlit-ui-store.tar.gz
+COPY packages/agents/boba-chainlit/web/chainlit-ui/overlay/            /tmp/overlay/
+RUN sh /tmp/chainlit_ui.sh build /tmp/chainlit.tar.gz /tmp/chainlit-ui-store.tar.gz /tmp/overlay /out/ui
+
+
 # скрипт страницы chainlit (web/page, TypeScript): собирается node'ом стадии, на хосте node не нужен
 FROM ${NODE_IMAGE} AS web-build
 
@@ -314,10 +326,11 @@ COPY packages/agents/boba-chainlit/assets/.chainlit/translations/ ${BOBA_DIR}/ap
 COPY packages/agents/boba-chainlit/assets/chainlit.md             ${BOBA_DIR}/app_root/
 COPY packages/agents/boba-chainlit/assets/public/                 ${BOBA_DIR}/app_root/public/
 COPY --from=web-build /src/assets/public/page.js                  ${BOBA_DIR}/app_root/public/page.js
+COPY --from=chainlit-ui-build /out/ui/                             ${BOBA_DIR}/app_root/ui/
 COPY build/chainlit/src/webassets/                                ${BOBA_DIR}/app_root/public/vendor/
 
 # фронт chainlit тянет шрифт и стили формул с CDN: переводим на public/vendor
-RUN index=${BOBA_DIR}/app/chainlit/frontend/dist/index.html                                                  \
+RUN index=${BOBA_DIR}/app_root/ui/index.html                                                                 \
     && sed -i                                                                                                \
         -e '/rel="preconnect"/d'                                                                             \
         -e 's#https://fonts.googleapis.com/css2?family=Inter[^"]*#/public/vendor/inter/inter.css#'           \
