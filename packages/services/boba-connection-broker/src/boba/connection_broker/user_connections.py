@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping, Sequence
-from typing import ClassVar
+from typing import Annotated, Any, ClassVar
 
 from langchain_core.tools import BaseTool
 from pydantic.fields import FieldInfo
@@ -36,6 +36,7 @@ from boba.connections.whitelist import AmbiguousConnectionError, ConnectionWhite
 from boba.identity.context import CallContext
 from boba.identity.errors import RefusalError
 from boba.kerberos import TicketAuth
+from boba.toolkit.calls import ConnectionArg
 from boba.toolkit.entry import ToolArgv
 from boba.toolrun.injected import AsyncInjected, ToolConfigError
 from boba.toolrun.wrapping import ToolBody, ToolSchema
@@ -64,7 +65,11 @@ TypesRef = Callable[[], ConnectionTypes]
 
 
 class ConnectionArgument:
-    """Поле, которым параметр-соединение показывается модели: имя строки."""
+    """Поле, которым параметр-соединение показывается модели: имя строки.
+
+    Вид соединения едет метадатой ConnectionArg: по ней страницы workflow
+    рисуют выбор из соединений нужного вида, а не поле для ввода текста.
+    """
 
     DESCRIPTION: ClassVar[str] = (
         "Имя соединения из connection_list. Бери имя строки, чей kind подходит "
@@ -72,8 +77,10 @@ class ConnectionArgument:
     )
 
     @classmethod
-    def field(cls) -> tuple[type[str], FieldInfo]:
-        return str, FieldInfo(min_length=1, description=cls.DESCRIPTION)
+    def field(cls, kind: str) -> tuple[Any, FieldInfo]:
+        annotation = Annotated[str, ConnectionArg(family=kind)]
+
+        return annotation, FieldInfo(min_length=1, description=cls.DESCRIPTION)
 
 
 class UserConnections(AsyncInjected):
@@ -126,14 +133,14 @@ class UserConnections(AsyncInjected):
         if not fields:
             return
 
-        shown: dict[str, tuple[type[str], FieldInfo]] = {}
+        shown: dict[str, tuple[Any, FieldInfo]] = {}
         for param, annotation in fields.items():
             kind = cls._kind_of(tool.name, param, annotation, types_ref)
 
             ToolBody.hook_all(
                 [tool], cls(store_ref, credentials_ref, types_ref, param, kind)
             )
-            shown[param] = ConnectionArgument.field()
+            shown[param] = ConnectionArgument.field(kind)
 
             logger.info(
                 "tool %s: %s is a %s connection of the caller", tool.name, param, kind

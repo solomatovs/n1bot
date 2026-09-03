@@ -30,6 +30,7 @@ from boba.identity.context import (
     Subject,
 )
 from boba.identity.errors import RefusalError
+from boba.toolkit.calls import ArgViews, ConnectionArg, JsonCall
 from boba.toolkit.entry import ToolArgv
 from boba.toolkit.facade import UserConnection
 from boba.toolrun.injected import ToolConfigError
@@ -190,6 +191,19 @@ class TestSchemaShownToTheModel:
         schema = ToolSchema.of(tool)
         assert schema is not None
         assert schema.model_fields["connection"].annotation is str
+
+    def test_kind_travels_to_the_page_widget(self) -> None:
+        """Страницы workflow рисуют выбор соединения по виду из метадаты."""
+        tool = _bound(_one_connection(), [_probe_row("main", "db.local")])
+
+        schema = ToolSchema.of(tool)
+        assert schema is not None
+
+        view = ArgViews.of_field(
+            "connection", schema.model_fields["connection"], JsonCall()
+        )
+        assert isinstance(view, ConnectionArg)
+        assert view.family == "probe"
 
     def test_no_connection_fields_are_left_in_the_shown_schema(self) -> None:
         tool = _bound(_one_connection(), [_probe_row("main", "db.local")])
