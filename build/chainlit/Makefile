@@ -103,6 +103,9 @@ ASSETS_VENDOR   := $(ASSETS_DIR)/public/vendor
 WEB_DIR         := $(SRC_DIR)/packages/agents/boba-chainlit
 WEB_PROJECT     := $(WEB_DIR)/web/page
 NODE_IMAGE      ?= dmp/nodejs:20
+# скрипт страницы: в образ его собирает стадия web-build, в dev-дерево — цель web
+PAGE_JS         := $(ASSETS_DIR)/public/page.js
+PAGE_SRCS       := $(shell find $(WEB_PROJECT) -name node_modules -prune -o -name .vite -prune -o -name .eslintcache -prune -o -name "*.tsbuildinfo" -prune -o -type f -print)
 KATEX_VERSION   ?= 0.16.22
 KATEX_URL       ?= https://github.com/KaTeX/KaTeX/releases/download/v$(KATEX_VERSION)/katex.tar.gz
 INTER_VERSION   ?= 5.3.0
@@ -114,6 +117,9 @@ WEB_FILES       := $(WEBASSETS_DIR)/katex/katex.min.css $(WEBASSETS_DIR)/inter/i
 
 INPUTS          := $(BWRAP_TARBALL) $(LIBFUSE_TARBALL) $(E2FSPROGS_TARBALL) $(UV_BIN) \
                    $(TESS_FILES) $(FASTEMBED_STAMPS) $(ONNX_DIRS) $(WEB_FILES)
+
+# что кладёт цель sandbox: нужно dev-дереву и релизу
+SANDBOX_PARTS   := $(SANDBOX_DIR)/third/bin/bwrap $(SANDBOX_DIR)/third/bin/fuse2fs $(SANDBOX_DIR)/workspace.ext4
 
 # пакеты репозитория: их src едут в песочницу dev-дерева биндом
 PYPROJECTS      := $(shell find $(SRC_DIR)/packages -name pyproject.toml -not -path '*/build/*')
@@ -143,6 +149,7 @@ DOCKER_ARGS      = --build-arg GLIBC_IMAGE=$(GLIBC_IMAGE)              \
     --build-arg LIBFUSE_VERSION=$(LIBFUSE_VERSION)                     \
     --build-arg E2FSPROGS_VERSION=$(E2FSPROGS_VERSION)                 \
     --build-arg SANDBOX_WS_SIZE=$(SANDBOX_WS_SIZE)                     \
+    --build-arg NODE_IMAGE=$(NODE_IMAGE)
 
 # аргументы стадий одного приложения
 APP_ARGS         = --build-arg APP=$(APP)                           \
@@ -194,6 +201,16 @@ for path in $(INPUTS); do
 done
 endef
 
+# dev и release берут песочницу из src/sandbox, а не собирают её сами
+define check-sandbox
+for path in $(SANDBOX_PARTS); do
+    if [ ! -e "$$path" ]; then
+        echo "нет $$path — запусти: make sandbox" >&2
+        exit 1
+    fi
+done
+endef
+
 # --- справка --------------------------------------------------------------------
 
 .PHONY: help
@@ -208,8 +225,9 @@ help:
 	echo "  make release   дерево установки из образа RELEASE_IMAGE -> $(OUT),"
 	echo "                 ставится в INSTALL_DIR=$(INSTALL_DIR), данные — в DATA_DIR=$(DATA_DIR)"
 	echo "  make clean     удалить release и src/, кроме моделей"
-	echo "  make all       fetch + sandbox + build"
-	echo "  make web       скрипт страницы chainlit: npm ci/check/build в $(NODE_IMAGE) -> assets/public/page.js"
+	echo "  make all       fetch + sandbox + plugin-rootfs-all + build"
+	echo "  make web       скрипт страницы для dev-дерева: npm ci/check/build в $(NODE_IMAGE) -> assets/public/page.js"
+	echo "                 (в образ его собирает стадия web-build, отдельно звать не нужно)"
 	echo ""
 	echo "  Версия одна на все пакеты: version — показать, version-set VER=X.Y.Z — проставить"
 	echo ""
@@ -366,7 +384,7 @@ test: build
 
 # что обязано лежать в дереве установки
 RELEASE_PARTS_common := sandbox/plugins sandbox/workspace.ext4 third/bin/bwrap third/bin/fuse2fs \
-                        app/bin app_root/public
+                        app/bin app_root/public app_root/public/page.js app_root/public/vendor
 RELEASE_PARTS := $(RELEASE_PARTS_common) models/onnx-genai models/fastembed models/tessdata
 
 # дерево установки из готового образа: пути и шебанги переводятся с DEST_DIR на INSTALL_DIR
@@ -376,17 +394,20 @@ release:
 	    echo "нет образа $(RELEASE_IMAGE) — собери: make build" >&2
 	    exit 1
 	fi
+	$(check-inputs)
+	$(check-sandbox)
+	if [ ! -d "$(SANDBOX_DIR)/plugins" ]; then
+	    echo "нет $(SANDBOX_DIR)/plugins — запусти: make plugin-rootfs-all" >&2
+	    exit 1
+	fi
 	rm -rf "$(OUT)"
 	mkdir -p "$(OUT)/conf"
 	$(call image-copy,$(RELEASE_IMAGE),$(DEST_DIR)/.,$(OUT)/)
 	mkdir -p "$(OUT)/sandbox" "$(OUT)/models"
-	if [ -d "$(SANDBOX_DIR)/plugins" ]; then
-	    cp -a "$(SANDBOX_DIR)/plugins" "$(OUT)/sandbox/plugins"
-	fi
+	cp -a "$(SANDBOX_DIR)/plugins" "$(OUT)/sandbox/plugins"
 	cp -a "$(SANDBOX_DIR)/workspace.ext4" "$(OUT)/sandbox/workspace.ext4"
 	cp -al "$(DEPS_DIR)/onnx-genai" "$(OUT)/models/onnx-genai"
 	cp -al "$(DEPS_DIR)/fastembed" "$(OUT)/models/fastembed"
-	cp -al "$(DEPS_DIR)/tessdata" "$(OUT)/models/tessdata"
 	cp -al "$(DEPS_DIR)/tessdata" "$(OUT)/models/tessdata"
 	sed -i "1s|^#!.*python3.*|#!$(INSTALL_DIR)/third/bin/python3|" "$(OUT)/app/bin"/*
 	export BOBA_BASE="$(INSTALL_DIR)" BOBA_VERSION="$(VERSION)" INSTALL_DIR="$(INSTALL_DIR)" BOBA_DATA="$(DATA_DIR)"
@@ -409,8 +430,9 @@ release:
 # src/, без образа; docker-compose*.yml лежат в нём же и трекаются git'ом
 .PHONY: dev
 dev: OUT = $(SRC_DIR)/compose/$(APP)
-dev:
+dev: $(PAGE_JS)
 	@$(check-inputs)
+	$(check-sandbox)
 	echo "== рантайм $(APP) в $(OUT) =="
 	mkdir -p "$(OUT)/conf" "$(OUT)/data/workspace" "$(OUT)/data/tool-logs" "$(OUT)/data/dump" "$(OUT)/data/krb"
 	# в dev веса эмбеддера нужны process-режиму отладки; релиз их не таскает
@@ -450,17 +472,18 @@ sec:
 # модели не трогаем: качаются долго
 clean:
 	rm -rf $(RELEASE_DIR) $(DEPS_DIR)/uv $(DEPS_DIR)/tessdata $(WEBASSETS_DIR) $(SANDBOX_DIR) \
-	       $(DEPS_DIR)/*.tar.xz $(DEPS_DIR)/*.env
+	       $(DEPS_DIR)/*.tar.xz $(DEPS_DIR)/*.env $(PAGE_JS) $(ASSETS_VENDOR)
 
 all: fetch sandbox plugin-rootfs-all build
 
-# скрипт страницы (web/page, TypeScript): собирается node'ом образа, на хосте node не нужен
-web:
-	echo "== page script: $(NODE_IMAGE) =="
+# скрипт страницы для dev-дерева: пересобирается, когда web/page новее сборки;
+# node'ом образа, на хосте node не нужен. В образ страницу собирает стадия web-build
+$(PAGE_JS): $(PAGE_SRCS)
+	@echo "== page script: $(NODE_IMAGE) =="
 	docker run --rm --entrypoint /bin/sh -u "$$(id -u):$$(id -g)" -e HOME=/tmp \
 	    -v "$(WEB_DIR):/pkg" -w /pkg/web/page $(NODE_IMAGE) \
 	    -c 'npm ci --no-audit --no-fund && npm run check && npm run build'
-	ls -la $(WEB_DIR)/assets/public/page.js
-	echo "    в app_root стенда сборку кладёт: make dev"
+	ls -la "$@"
 
 .PHONY: web
+web: $(PAGE_JS)

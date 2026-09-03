@@ -99,6 +99,9 @@ WEB_FILES       := $(WEBASSETS_DIR)/katex/katex.min.css $(WEBASSETS_DIR)/inter/i
 INPUTS          := $(BWRAP_TARBALL) $(LIBFUSE_TARBALL) $(E2FSPROGS_TARBALL) $(UV_BIN) \
                    $(TESS_FILES) $(FASTEMBED_STAMPS) $(WEB_FILES)
 
+# что кладёт цель sandbox: нужно dev-дереву и релизу
+SANDBOX_PARTS   := $(SANDBOX_DIR)/third/bin/bwrap $(SANDBOX_DIR)/third/bin/fuse2fs $(SANDBOX_DIR)/workspace.ext4
+
 # пакеты репозитория: их src едут в песочницу dev-дерева биндом
 PYPROJECTS      := $(shell find $(SRC_DIR)/packages -name pyproject.toml -not -path '*/build/*')
 PACKAGE_SRCS    := $(wildcard $(PYPROJECTS:%/pyproject.toml=%/src))
@@ -184,6 +187,16 @@ define check-inputs
 for path in $(INPUTS); do
     if [ ! -e "$$path" ]; then
         echo "нет $$path — запусти: make fetch" >&2
+        exit 1
+    fi
+done
+endef
+
+# dev и release берут песочницу из src/sandbox, а не собирают её сами
+define check-sandbox
+for path in $(SANDBOX_PARTS); do
+    if [ ! -e "$$path" ]; then
+        echo "нет $$path — запусти: make sandbox" >&2
         exit 1
     fi
 done
@@ -371,16 +384,19 @@ release:
 	    echo "нет образа $(RELEASE_IMAGE) — собери: make build" >&2
 	    exit 1
 	fi
+	$(check-inputs)
+	$(check-sandbox)
+	if [ ! -d "$(SANDBOX_DIR)/plugins" ]; then
+	    echo "нет $(SANDBOX_DIR)/plugins — запусти: make plugin-rootfs-all" >&2
+	    exit 1
+	fi
 	rm -rf "$(OUT)"
 	mkdir -p "$(OUT)/conf"
 	$(call image-copy,$(RELEASE_IMAGE),$(DEST_DIR)/.,$(OUT)/)
 	mkdir -p "$(OUT)/sandbox" "$(OUT)/models"
-	if [ -d "$(SANDBOX_DIR)/plugins" ]; then
-	    cp -a "$(SANDBOX_DIR)/plugins" "$(OUT)/sandbox/plugins"
-	fi
+	cp -a "$(SANDBOX_DIR)/plugins" "$(OUT)/sandbox/plugins"
 	cp -a "$(SANDBOX_DIR)/workspace.ext4" "$(OUT)/sandbox/workspace.ext4"
 	cp -al "$(DEPS_DIR)/fastembed" "$(OUT)/models/fastembed"
-	cp -al "$(DEPS_DIR)/tessdata" "$(OUT)/models/tessdata"
 	cp -al "$(DEPS_DIR)/tessdata" "$(OUT)/models/tessdata"
 	sed -i "1s|^#!.*python3.*|#!$(INSTALL_DIR)/third/bin/python3|" "$(OUT)/app/bin"/*
 	export BOBA_BASE="$(INSTALL_DIR)" BOBA_VERSION="$(VERSION)" INSTALL_DIR="$(INSTALL_DIR)" BOBA_DATA="$(DATA_DIR)"
@@ -405,6 +421,11 @@ release:
 dev: OUT = $(SRC_DIR)/compose/$(APP)
 dev:
 	@$(check-inputs)
+	$(check-sandbox)
+	if [ ! -d "$(WEB_DIR)/assets/workflow" ]; then
+	    echo "нет $(WEB_DIR)/assets/workflow — запусти: make web" >&2
+	    exit 1
+	fi
 	echo "== рантайм $(APP) в $(OUT) =="
 	mkdir -p "$(OUT)/conf" "$(OUT)/data/workspace" "$(OUT)/data/tool-logs" "$(OUT)/data/dump" "$(OUT)/data/krb"
 	# в dev веса эмбеддера нужны process-режиму отладки; релиз их не таскает

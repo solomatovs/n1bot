@@ -16,3 +16,5 @@ build/chainlit/src/sandbox
 build/chainlit/src/wheels
 
 packages/agents/boba-studio/assets/workflow
+packages/agents/boba-chainlit/assets/public/page.js
+packages/agents/boba-chainlit/assets/public/vendor
