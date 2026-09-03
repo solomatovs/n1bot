@@ -9,6 +9,7 @@ __pycache__
 /docs/*
 !/docs/adding-connections-and-tools.md
 !/docs/llm-params-verification.md
+!/docs/nginx-recommended-config.md
 .claude
 CLAUDE.md
 
