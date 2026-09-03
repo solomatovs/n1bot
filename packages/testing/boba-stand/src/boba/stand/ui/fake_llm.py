@@ -163,10 +163,7 @@ class ScenarioBook:
     CALL_ANSWER: str = "the tool has answered"
 
     LONG_WORDS: ClassVar[tuple[str, ...]] = tuple(
-        (
-            "the model reasons about the request step by step checking tables joins "
-            "filters and the expected shape of the answer before calling any tool"
-        ).split(" ")
+        ["the", "model", "reasons", "about", "the", "request", "step", "by", "step", "checking", "tables", "joins", "filters", "and", "the", "expected", "shape", "of", "the", "answer", "before", "calling", "any", "tool"]
     )
     """Словарь длинного хода: текст собирается по кругу, токен — слово."""
 
