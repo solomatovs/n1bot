@@ -371,21 +371,7 @@ class ChatRenderer:
         await self._surface.refresh_step(message.step_id)
 
     async def _interrupt_answer(self, key: str, note: str) -> None:
-        """Дописывает к накопленному ответу курсивную пометку об остановке; без ответа
-        пометка становится ответом.
-        """
-        marker = f"_{note}_"
-        answer = self._view.answer_message
-        if answer is None:
-            await self._view.answer(marker, key)
-            return
-
-        partial = answer.content
-        if not partial:
-            await self._view.rewrite_answer(marker, key)
-            return
-
-        await self._view.rewrite_answer(f"{partial}\n\n{marker}", key)
+        await self._view.interrupt_answer(note, key)
 
     async def _finish_turn(self) -> None:
         for step in list(self._tool_steps.values()):
