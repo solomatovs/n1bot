@@ -329,7 +329,6 @@ class HttpConnection(ConnectionProfileBase):
     def trace(self) -> str:
         return f"{self.auth.trace()} url={self.base_url}"
 
-
     def login_url(self) -> str | None:
         """URL login-сервлета negotiate-профиля; None — сервлета нет."""
         if not isinstance(self.auth, NegotiateAuth):

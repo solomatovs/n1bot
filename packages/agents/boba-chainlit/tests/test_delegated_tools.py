@@ -249,7 +249,7 @@ class Tools:
                 tickets, BusRefreshSignal(lambda: MemoryMessageBus("test"))
             ),
             ConnectionTypes.discover,
-    )
+        )
         InjectedConfig.bind_all(functions, resolve)
 
         return ToolSetup.by_name(functions)

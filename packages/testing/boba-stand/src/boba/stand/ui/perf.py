@@ -137,8 +137,11 @@ class TurnSeries:
     def mean_script_ms(self) -> float:
         return self._mean_script(self._samples)
 
+    MIN_HEAP_SAMPLES: ClassVar[int] = 2
+    """Рост кучи считается между первым и последним ходом: нужны хотя бы два."""
+
     def heap_kb_per_turn(self) -> float:
-        if len(self._samples) < 2:
+        if len(self._samples) < self.MIN_HEAP_SAMPLES:
             raise PerfError("heap growth needs at least two turns")
 
         first = self._samples[0]

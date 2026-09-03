@@ -21,7 +21,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "boba-cancellation==0.0.15.dev6",
     "boba-db-clickhouse==0.0.15.dev6",
+    "boba-transport-http==0.0.15.dev6",
     "boba-auth==0.0.15.dev6",
     "boba-stand==0.0.15.dev6",
     "pytest>=8",

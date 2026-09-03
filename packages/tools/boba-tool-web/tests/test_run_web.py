@@ -15,6 +15,7 @@ from boba.transport.http.profile import HttpConnection
 
 pytestmark = [pytest.mark.run, pytest.mark.anyio]
 
+
 @pytest.fixture(scope="module")
 def web_cfg(raw_config) -> WebGrepConfig:
     """Лимиты выдачи из [tool.web]."""

@@ -285,7 +285,7 @@ async def ch_query(
     connection: ChConnection,
     cfg: Annotated[ChToolConfig, Injected],
 ) -> Annotated[tuple[str, ToolResult], Produces.of(TableResult)]:
-    """Выполнить SQL на подключении connection_name."""
+    """Выполнить SQL на выбранном соединении."""
 
     return await _query_rows(connection, CatalogQuery(text=sql, params={}), cfg)
 

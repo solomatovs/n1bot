@@ -310,6 +310,8 @@ class ChainlitSessions(SessionSource, LiveSessions):
         try:
             claims = self._tokens.read(token)
         except TokenRejectedError as exc:
+            # в лог идёт причина отказа, сам токен туда не попадает
+            # nosemgrep: python-logger-credential-disclosure
             logger.info("sign-in token rejected: %s", exc.reason)
             return None
 
