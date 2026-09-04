@@ -24,10 +24,12 @@ from typing import Any, ClassVar
 
 import httpx
 import pytest
+from catalog_ui import Api, api_client
 from chat_ui import ChatOpener, login_cookies
 from playwright.sync_api import Browser, expect
 
 from boba.canvas.diagram import DiagramPrompt
+from boba.catalog.samples import PgSample
 from boba.chainlit.rendering.tool import ToolCallMarkdown, ToolResultMarkdown
 from boba.config import bind
 from boba.liteparse.engine import LiteParseEngine
@@ -1507,14 +1509,16 @@ class TestChTools:
 
 
 class ProbeCatalog:
-    """Каталог стенда: слой и набор, которые модель предлагает в черновик."""
+    """Каталог стенда: слой и узлы над источником prod, которые модель
+    предлагает в черновик."""
 
     LAYER_ID: ClassVar[str] = "00000000-0000-0000-0000-00000000c001"
-    DATASET_ID: ClassVar[str] = "00000000-0000-0000-0000-00000000c002"
-    LIVE_DATASET_ID: ClassVar[str] = "00000000-0000-0000-0000-00000000c003"
+    NODE_ID: ClassVar[str] = "00000000-0000-0000-0000-00000000c002"
+    LIVE_NODE_ID: ClassVar[str] = "00000000-0000-0000-0000-00000000c003"
     LAYER: ClassVar[str] = "ui-raw"
-    DATASET: ClassVar[str] = "ui_orders"
-    LIVE_DATASET: ClassVar[str] = "ui_customers"
+    SOURCE: ClassVar[str] = "src_ui_prod"
+    NODE: ClassVar[str] = "prod/public/orders"
+    LIVE_NODE: ClassVar[str] = "prod/public/customers"
     PAGE_READY: ClassVar[str] = '[data-testid="canvas"][data-ready="true"]'
     DRAFT: ClassVar[str] = "ui draft"
     UUID: ClassVar[str] = (
@@ -1524,42 +1528,60 @@ class ProbeCatalog:
     @classmethod
     def repeated_layer(cls) -> str:
         """Тот же слой ещё раз: id занят, порция отвергается на операции #0."""
-        ops = [{"op": "add_layer", "layer": {"id": cls.LAYER_ID, "name": cls.LAYER}}]
+        ops = [cls._layer()]
         return json.dumps(ops, ensure_ascii=False)
 
     @classmethod
-    def operations(cls) -> str:
-        ops = [
-            {"op": "add_layer", "layer": {"id": cls.LAYER_ID, "name": cls.LAYER}},
-            {
-                "op": "add_dataset",
-                "dataset": {
-                    "id": cls.DATASET_ID,
-                    "layer_id": cls.LAYER_ID,
-                    "name": cls.DATASET,
+    def _layer(cls) -> dict[str, Any]:
+        layer = {"id": cls.LAYER_ID, "name": cls.LAYER, "position": 0}
+        return {"op": "add_layer", "layer": layer}
+
+    @classmethod
+    def _node(cls, node_id: str, source_id: str, address: str) -> dict[str, Any]:
+        return {
+            "op": "add_node",
+            "node": {
+                "id": node_id,
+                "layer_id": cls.LAYER_ID,
+                "ref": {
+                    "source_id": source_id,
+                    "kind": "relation",
+                    "path": address.split("/"),
                 },
             },
+        }
+
+    @classmethod
+    def operations(cls, source_id: str) -> str:
+        ops = [
+            cls._layer(),
+            cls._node(cls.NODE_ID, source_id, cls.NODE),
         ]
         return json.dumps(ops, ensure_ascii=False)
 
     @classmethod
-    def live_operations(cls) -> str:
-        """Ещё один набор в тот же слой: его ждёт открытая страница черновика."""
-        ops = [
-            {
-                "op": "add_dataset",
-                "dataset": {
-                    "id": cls.LIVE_DATASET_ID,
-                    "layer_id": cls.LAYER_ID,
-                    "name": cls.LIVE_DATASET,
-                },
-            },
-        ]
+    def live_operations(cls, source_id: str) -> str:
+        """Ещё один узел в тот же слой: его ждёт открытая страница черновика."""
+        ops = [cls._node(cls.LIVE_NODE_ID, source_id, cls.LIVE_NODE)]
         return json.dumps(ops, ensure_ascii=False)
 
     @classmethod
-    def node(cls, name: str) -> str:
-        return f'[data-testid="dataset-node"][data-dataset="{name}"]'
+    def node(cls, address: str) -> str:
+        return f'[data-testid="catalog-node"][data-node="{address}"]'
+
+
+@pytest.fixture(scope="module")
+def catalog_source(sandbox_stand: StandProcess) -> Iterator[str]:
+    """Источник prod с версией 1 из образца домена; на выходе удаляется."""
+    with api_client(sandbox_stand, "admin") as admin:
+        api = Api(admin)
+        source_id = api.create_source("postgres", ProbeCatalog.SOURCE)
+        snapshot = PgSample().snapshot().model_dump(mode="json")
+        api.write_source_version(source_id, snapshot)
+        try:
+            yield source_id
+        finally:
+            api.delete_source(source_id)
 
 
 @dataclass(frozen=True)
@@ -1592,6 +1614,7 @@ class TestCatalogTools:
 
     def test_propose_writes_a_portion(
         self,
+        catalog_source: str,
         canvas_feed: ToolFeed,
         catalog_draft: CatalogDraftProbe,
         stand_db: StandDatabase,
@@ -1602,7 +1625,7 @@ class TestCatalogTools:
             tool="catalog_propose",
             arguments={
                 "draft_id": catalog_draft.draft_id,
-                "operations": ProbeCatalog.operations(),
+                "operations": ProbeCatalog.operations(catalog_source),
             },
             view=ScriptCall(arg="operations", lang="json"),
         )
@@ -1611,9 +1634,9 @@ class TestCatalogTools:
                 rf"^draft '{ProbeCatalog.DRAFT}' \({catalog_draft.draft_id}\) "
                 r"at seq 1 ",
                 f"^added layer '{ProbeCatalog.LAYER}'$",
-                f"^added dataset '{ProbeCatalog.DATASET}'$",
+                f"^added node '{ProbeCatalog.NODE}'$",
             ],
-            dom=[f"added dataset '{ProbeCatalog.DATASET}'"],
+            dom=[f"added node '{ProbeCatalog.NODE}'"],
         )
         canvas_feed.call(call, expect)
 
@@ -1623,6 +1646,7 @@ class TestCatalogTools:
 
     def test_propose_shows_up_on_the_open_page(
         self,
+        catalog_source: str,
         canvas_feed: ToolFeed,
         catalog_draft: CatalogDraftProbe,
         sandbox_stand: StandProcess,
@@ -1639,28 +1663,26 @@ class TestCatalogTools:
                 f"{catalog_draft.draft_id}"
             )
             page.wait_for_selector(ProbeCatalog.PAGE_READY, timeout=30_000)
+            expect(page.locator(ProbeCatalog.node(ProbeCatalog.NODE))).to_be_visible()
             expect(
-                page.locator(ProbeCatalog.node(ProbeCatalog.DATASET))
-            ).to_be_visible()
-            expect(
-                page.locator(ProbeCatalog.node(ProbeCatalog.LIVE_DATASET))
+                page.locator(ProbeCatalog.node(ProbeCatalog.LIVE_NODE))
             ).to_have_count(0)
 
             call = ToolCall(
                 tool="catalog_propose",
                 arguments={
                     "draft_id": catalog_draft.draft_id,
-                    "operations": ProbeCatalog.live_operations(),
+                    "operations": ProbeCatalog.live_operations(catalog_source),
                 },
                 view=ScriptCall(arg="operations", lang="json"),
             )
             expected = ToolExpect(
-                patterns=[f"^added dataset '{ProbeCatalog.LIVE_DATASET}'$"],
-                dom=[f"added dataset '{ProbeCatalog.LIVE_DATASET}'"],
+                patterns=[f"^added node '{ProbeCatalog.LIVE_NODE}'$"],
+                dom=[f"added node '{ProbeCatalog.LIVE_NODE}'"],
             )
             canvas_feed.call(call, expected)
 
-            live = page.locator(ProbeCatalog.node(ProbeCatalog.LIVE_DATASET))
+            live = page.locator(ProbeCatalog.node(ProbeCatalog.LIVE_NODE))
             expect(live).to_be_visible(timeout=15_000)
             expect(live).to_have_attribute("data-status", "added")
         finally:
@@ -1675,7 +1697,7 @@ class TestCatalogTools:
         expect = ToolExpect(
             patterns=[
                 f"^added layer '{ProbeCatalog.LAYER}'$",
-                f"^added dataset '{ProbeCatalog.DATASET}'$",
+                f"^added node '{ProbeCatalog.NODE}'$",
             ],
             dom=[f"added layer '{ProbeCatalog.LAYER}'"],
         )
@@ -1706,17 +1728,17 @@ class TestCatalogTools:
 
     def test_read_lists_the_published_catalog(self, canvas_feed: ToolFeed) -> None:
         """Черновик не опубликован: в снимке его наборов нет, ключи снимка на месте."""
-        call = ToolCall(tool="catalog_read", arguments={"datasets": ""})
+        call = ToolCall(tool="catalog_read", arguments={"nodes": ""})
         expect = ToolExpect(
             patterns=[
                 r'^\s*"version": \d+,$',
                 r'^\s*"load_kinds": \[',
-                r'^\s*"datasets": \[',
+                r'^\s*"nodes": \[',
             ],
             dom=['"version"'],
         )
         step = canvas_feed.call(call, expect)
-        if ProbeCatalog.DATASET in step.output:
+        if ProbeCatalog.NODE in step.output:
             raise AssertionError("an unpublished draft must not leak into the snapshot")
 
     def test_open_leaves_a_link_in_the_chat(

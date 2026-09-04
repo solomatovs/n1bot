@@ -8,22 +8,15 @@ CatalogDiff.between(base, other) даёт статус каждой сущнос
 from __future__ import annotations
 
 from collections.abc import Iterator
-from enum import StrEnum
 
-from boba.catalog.model import CatalogModel, CatalogSnapshot, EntityKind, EntityRef
+from boba.catalog.base import CatalogModel, ChangeStatus
+from boba.catalog.model import CatalogSnapshot, EntityKind, EntityRef
 
 __all__ = [
     "CatalogDiff",
     "ChangeStatus",
     "DiffEntry",
 ]
-
-
-class ChangeStatus(StrEnum):
-    ADDED = "added"
-    REMOVED = "removed"
-    MODIFIED = "modified"
-    UNCHANGED = "unchanged"
 
 
 class DiffEntry(CatalogModel):

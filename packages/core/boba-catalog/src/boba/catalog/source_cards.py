@@ -11,6 +11,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
+from boba.catalog.base import CatalogError, CatalogModel
 from boba.catalog.clickhouse_snapshot import (
     ChColumn,
     ChDictionary,
@@ -18,7 +19,6 @@ from boba.catalog.clickhouse_snapshot import (
     ChSnapshot,
     ChTable,
 )
-from boba.catalog.model import CatalogError, CatalogModel
 from boba.catalog.postgres_snapshot import (
     PgColumn,
     PgConstraint,

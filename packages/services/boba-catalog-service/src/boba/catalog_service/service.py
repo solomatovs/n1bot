@@ -15,7 +15,7 @@ CatalogOpError — порция операций не применима к сн
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import ClassVar
 from uuid import UUID
 
@@ -28,9 +28,12 @@ from boba.catalog import (
     ObjectKind,
     ObjectRef,
     OperationList,
+    PinnedSnapshot,
+    SnapshotResolver,
     SourceDiff,
     SourceOperationList,
     SourceSnapshot,
+    Staleness,
     TreeNode,
 )
 from boba.catalog_service.config import CatalogConfig
@@ -44,6 +47,7 @@ from boba.catalog_service.records import (
     DraftState,
     DraftStatus,
     NodePosition,
+    PinBump,
     RebaseResult,
     ShareTargetKind,
     Source,
@@ -121,9 +125,12 @@ class CatalogService:
         return await self._store.versions()
 
     async def create_draft(self, subject: Subject, name: str) -> Draft:
+        """Черновик над текущей версией, привязанный к последним версиям всех
+        источников на момент создания."""
         self._require_edit(subject)
 
-        draft = await self._store.create_draft(name, subject.user_id)
+        pins = await self._latest_pins()
+        draft = await self._store.create_draft(name, subject.user_id, pins)
         await self._changed(
             subject, CatalogChanged(draft_id=draft.id, action=ChangeAction.CREATED)
         )
@@ -152,7 +159,9 @@ class CatalogService:
         self._require_edit(subject)
 
         author = DraftAuthor(user_id=subject.user_id, via=via)
-        await self._store.append_ops(draft_id, expected_seq, author, ops)
+        draft = await self._store.get_draft(draft_id)
+        resolver = await self._resolver_of(draft.pins)
+        await self._store.append_ops(draft_id, expected_seq, author, ops, resolver)
         await self._changed(
             subject, CatalogChanged(draft_id=draft_id, action=ChangeAction.UPDATED)
         )
@@ -180,7 +189,11 @@ class CatalogService:
     ) -> RebaseResult:
         self._require_edit(subject)
 
-        result = await self._store.rebase(draft_id, drop_conflicts=drop_conflicts)
+        draft = await self._store.get_draft(draft_id)
+        resolver = await self._resolver_of(draft.pins)
+        result = await self._store.rebase(
+            draft_id, drop_conflicts=drop_conflicts, resolver=resolver
+        )
         if result.issues and not drop_conflicts:
             return result
 
@@ -199,6 +212,100 @@ class CatalogService:
         )
 
         return draft
+
+    async def published_pins(self, subject: Subject) -> Mapping[UUID, int]:
+        """Привязки последней версии процесса; без версий — пусто."""
+        self._require_view(subject)
+
+        versions = await self._store.versions()
+        if not versions:
+            return {}
+
+        return versions[-1].pins
+
+    async def resolver_of(
+        self, subject: Subject, pins: Mapping[UUID, int]
+    ) -> SnapshotResolver:
+        """Резолвер объектов по привязанным версиям источников."""
+        self._require_view(subject)
+
+        return await self._resolver_of(pins)
+
+    async def staleness(self, subject: Subject) -> Staleness:
+        """Устаревание опубликованного процесса относительно последних версий
+        источников, по привязкам последней версии процесса."""
+        self._require_view(subject)
+
+        versions = await self._store.versions()
+        if not versions:
+            return Staleness(entries=())
+
+        snapshot = await self._store.snapshot()
+        return await self._staleness_of(snapshot, versions[-1].pins)
+
+    async def draft_staleness(self, subject: Subject, draft_id: UUID) -> Staleness:
+        self._require_view(subject)
+
+        state = await self._store.draft_state(draft_id)
+        return await self._staleness_of(state.snapshot, state.draft.pins)
+
+    async def bump_pins(self, subject: Subject, draft_id: UUID) -> PinBump:
+        """Привязки черновика поднимаются до последних версий источников; что
+        после этого перестало сходиться, перечисляется, но не чинится."""
+        self._require_edit(subject)
+
+        pins = await self._latest_pins()
+        draft = await self._store.set_pins(draft_id, pins)
+        state = await self._store.draft_state(draft_id)
+        resolver = await self._resolver_of(pins)
+        violations = tuple(state.snapshot.source_violations(resolver))
+        await self._changed(
+            subject, CatalogChanged(draft_id=draft_id, action=ChangeAction.UPDATED)
+        )
+
+        return PinBump(draft=draft, violations=violations)
+
+    async def _latest_pins(self) -> dict[UUID, int]:
+        pins: dict[UUID, int] = {}
+        for source in await self._sources.list_sources():
+            if source.latest_version == 0:
+                continue
+
+            pins[source.id] = source.latest_version
+
+        return pins
+
+    async def _resolver_of(self, pins: Mapping[UUID, int]) -> SnapshotResolver:
+        snapshots: dict[UUID, SourceSnapshot] = {}
+        for source_id, version in pins.items():
+            snapshots[source_id] = await self._sources.snapshot_of(source_id, version)
+
+        return SnapshotResolver(snapshots)
+
+    async def _staleness_of(
+        self, snapshot: CatalogSnapshot, pins: Mapping[UUID, int]
+    ) -> Staleness:
+        pinned: dict[UUID, PinnedSnapshot] = {}
+        latest: dict[UUID, PinnedSnapshot] = {}
+        for source_id in snapshot.sources():
+            pinned_version = pins.get(source_id)
+            if pinned_version is None:
+                continue
+
+            source = await self._sources.get_source(source_id)
+            if source.latest_version == pinned_version:
+                continue
+
+            pinned[source_id] = PinnedSnapshot(
+                version=pinned_version,
+                snapshot=await self._sources.snapshot_of(source_id, pinned_version),
+            )
+            latest[source_id] = PinnedSnapshot(
+                version=source.latest_version,
+                snapshot=await self._sources.latest_snapshot(source_id),
+            )
+
+        return Staleness.compute(snapshot, pinned, latest)
 
     async def views(self, subject: Subject) -> Sequence[View]:
         """Виды субъекта: все при праве на каталог, иначе свои и расшаренные."""
@@ -228,7 +335,7 @@ class CatalogService:
         return ViewState(
             view=view,
             version=version,
-            snapshot=snapshot.restricted(view.dataset_ids, view.layer_ids),
+            snapshot=snapshot.restricted(view.node_ids, view.layer_ids),
             layout=layout,
             owned=owned,
         )

@@ -39,6 +39,7 @@ from boba.catalog import (
     SourceOperationList,
     SourceOpError,
     SourceSnapshot,
+    Staleness,
     TreeNode,
 )
 from boba.catalog_service import (
@@ -54,6 +55,7 @@ from boba.catalog_service import (
     DraftStaleError,
     DraftState,
     NodePosition,
+    PinBump,
     RebaseResult,
     ShareTargetKind,
     Source,
@@ -131,6 +133,9 @@ class CatalogUrl(StrEnum):
     DRAFT_OPS = "/drafts/{draft_id}/ops"
     DRAFT_PUBLISH = "/drafts/{draft_id}/publish"
     DRAFT_REBASE = "/drafts/{draft_id}/rebase"
+    DRAFT_STALENESS = "/drafts/{draft_id}/staleness"
+    DRAFT_PINS = "/drafts/{draft_id}/pins"
+    STALENESS = "/staleness"
     VIEWS = "/views"
     VIEW = "/views/{view_id}"
     VIEW_STATE = "/views/{view_id}/state"
@@ -288,6 +293,9 @@ class CatalogApi:
             (CatalogUrl.DRAFT_OPS, self.append_ops, "POST"),
             (CatalogUrl.DRAFT_PUBLISH, self.publish, "POST"),
             (CatalogUrl.DRAFT_REBASE, self.rebase, "POST"),
+            (CatalogUrl.DRAFT_STALENESS, self.draft_staleness, "GET"),
+            (CatalogUrl.DRAFT_PINS, self.bump_pins, "POST"),
+            (CatalogUrl.STALENESS, self.staleness, "GET"),
             (CatalogUrl.VIEWS, self.list_views, "GET"),
             (CatalogUrl.VIEWS, self.create_view, "POST"),
             (CatalogUrl.VIEW, self.get_view, "GET"),
@@ -406,6 +414,26 @@ class CatalogApi:
         return await self._guarded(
             service.rebase(subject, draft_id, drop_conflicts=body.drop_conflicts)
         )
+
+    async def staleness(self, current_user: CurrentUser) -> Staleness:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(service.staleness(subject))
+
+    async def draft_staleness(
+        self, draft_id: UUID, current_user: CurrentUser
+    ) -> Staleness:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(service.draft_staleness(subject, draft_id))
+
+    async def bump_pins(self, draft_id: UUID, current_user: CurrentUser) -> PinBump:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(service.bump_pins(subject, draft_id))
 
     async def list_views(self, current_user: CurrentUser) -> Sequence[View]:
         subject = self._subject(current_user)

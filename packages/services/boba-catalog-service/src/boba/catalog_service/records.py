@@ -21,6 +21,7 @@ CatalogRefusalError — у субъекта нет прав на действи�
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
@@ -55,6 +56,7 @@ __all__ = [
     "DraftState",
     "DraftStatus",
     "NodePosition",
+    "PinBump",
     "RebaseIssue",
     "RebaseResult",
     "ShareMode",
@@ -221,6 +223,7 @@ class Version(BaseModel):
     number: int = Field(ge=1)
     operations: OperationList
     author: DraftAuthor
+    pins: Mapping[UUID, int] = Field(default_factory=dict)
     published_at: datetime
 
 
@@ -233,6 +236,7 @@ class Draft(BaseModel):
     name: str = Field(min_length=1)
     base_version: int = Field(ge=0)
     status: DraftStatus
+    pins: Mapping[UUID, int] = Field(default_factory=dict)
     created_by: UUID
     created_at: datetime
 
@@ -258,6 +262,15 @@ class DraftState(BaseModel):
     snapshot: CatalogSnapshot
     diff: CatalogDiff
     seq: int = Field(ge=0)
+
+
+class PinBump(BaseModel):
+    """Черновик после поднятия привязок и что в нём перестало сходиться."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    draft: Draft
+    violations: tuple[str, ...]
 
 
 class RebaseIssue(BaseModel):
@@ -314,7 +327,7 @@ class ViewSpec(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str = Field(min_length=1)
-    dataset_ids: tuple[UUID, ...] = ()
+    node_ids: tuple[UUID, ...] = ()
     layer_ids: tuple[UUID, ...] = ()
 
 
@@ -326,13 +339,13 @@ class View(BaseModel):
     id: UUID
     name: str = Field(min_length=1)
     owner_id: UUID
-    dataset_ids: tuple[UUID, ...]
+    node_ids: tuple[UUID, ...]
     layer_ids: tuple[UUID, ...]
     created_at: datetime
 
     def spec(self) -> ViewSpec:
         return ViewSpec(
-            name=self.name, dataset_ids=self.dataset_ids, layer_ids=self.layer_ids
+            name=self.name, node_ids=self.node_ids, layer_ids=self.layer_ids
         )
 
 
@@ -341,7 +354,7 @@ class NodePosition(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    dataset_id: UUID
+    node_id: UUID
     x: float
     y: float
 

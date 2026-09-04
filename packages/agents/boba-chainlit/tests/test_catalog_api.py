@@ -13,8 +13,8 @@ from fastapi import APIRouter, FastAPI
 from httpx import ASGITransport, AsyncClient
 from psycopg import sql
 
-from boba.catalog import AddDataset, AddLayer, Dataset, Layer, OperationList
-from boba.catalog.samples import PgSample
+from boba.catalog import AddLayer, OperationList, SourceKind
+from boba.catalog.samples import PgSample, ProcessSample
 from boba.catalog_service import (
     CatalogConfig,
     CatalogService,
@@ -34,8 +34,6 @@ SCHEMA = "catalog_api_test"
 EDITOR_ID = UUID(int=21)
 VIEWER_ID = UUID(int=22)
 STRANGER_ID = UUID(int=23)
-RAW = Layer(id=UUID(int=201), name="raw")
-ORDERS = Dataset(id=UUID(int=210), layer_id=RAW.id, name="orders")
 
 
 def _config() -> CatalogConfig:
@@ -94,6 +92,28 @@ async def stand(pool: AsyncPostgresPool, app_config: AppConfig) -> Stand:
     return Stand(service, ChatProfiles(app_config.profiles))
 
 
+@pytest.fixture
+async def process(stand: Stand) -> ProcessSample:
+    """Источник prod с версией 1 из образца, заведённый через api; процесс
+    ссылается на него."""
+    async with stand.client(_user(EDITOR_ID, "wrt")) as client:
+        created = await client.post(
+            stand.url(CatalogUrl.SOURCES),
+            json={"kind": SourceKind.POSTGRES.value, "name": "prod"},
+        )
+        assert created.status_code == 200
+        source_id = UUID(created.json()["id"])
+
+        snapshot = PgSample().snapshot().model_dump(mode="json")
+        written = await client.post(
+            stand.url(CatalogUrl.SOURCE_VERSIONS, source_id=source_id),
+            json={"snapshot": snapshot},
+        )
+        assert written.status_code == 200
+
+    return ProcessSample(source_id)
+
+
 def _ops_body(expected_seq: int, ops: OperationList) -> Mapping[str, Any]:
     return {"expected_seq": expected_seq, "operations": ops.model_dump(mode="json")}
 
@@ -120,8 +140,8 @@ async def test_roles_map_to_403(stand: Stand) -> None:
         assert draft.status_code == 403
 
 
-async def test_draft_cycle_over_http(stand: Stand) -> None:
-    ops = OperationList(root=(AddLayer(layer=RAW), AddDataset(dataset=ORDERS)))
+async def test_draft_cycle_over_http(stand: Stand, process: ProcessSample) -> None:
+    ops = process.ops()
 
     async with stand.client(_user(EDITOR_ID, "wrt")) as client:
         created = await client.post(
@@ -137,7 +157,8 @@ async def test_draft_cycle_over_http(stand: Stand) -> None:
         assert appended.status_code == 200
         state = appended.json()
         assert state["seq"] == 1
-        assert state["snapshot"]["datasets"][str(ORDERS.id)]["name"] == "orders"
+        orders = state["snapshot"]["nodes"][str(process.orders.id)]
+        assert orders["ref"]["path"] == ["prod", "public", "orders"]
         assert {entry["status"] for entry in state["diff"]["entries"]} == {"added"}
 
         conflict = await client.post(
@@ -174,7 +195,7 @@ async def test_draft_cycle_over_http(stand: Stand) -> None:
         assert closed.status_code == 409
 
         snapshot = await client.get(stand.url(CatalogUrl.SNAPSHOT))
-        assert str(RAW.id) in snapshot.json()["layers"]
+        assert str(process.raw.id) in snapshot.json()["layers"]
 
         versions = await client.get(stand.url(CatalogUrl.VERSIONS))
         assert [v["number"] for v in versions.json()] == [1]
@@ -183,7 +204,9 @@ async def test_draft_cycle_over_http(stand: Stand) -> None:
         assert missing.status_code == 404
 
 
-async def test_stale_draft_conflicts_and_rebases(stand: Stand) -> None:
+async def test_stale_draft_conflicts_and_rebases(
+    stand: Stand, process: ProcessSample
+) -> None:
     async with stand.client(_user(EDITOR_ID, "wrt")) as client:
         lagging = (
             await client.post(stand.url(CatalogUrl.DRAFTS), json={"name": "lag"})
@@ -192,7 +215,7 @@ async def test_stale_draft_conflicts_and_rebases(stand: Stand) -> None:
             await client.post(stand.url(CatalogUrl.DRAFTS), json={"name": "race"})
         ).json()
 
-        ops = OperationList(root=(AddLayer(layer=RAW),))
+        ops = OperationList(root=(AddLayer(layer=process.raw),))
         await client.post(
             stand.url(CatalogUrl.DRAFT_OPS, draft_id=racing["id"]),
             json=_ops_body(0, ops),
@@ -224,8 +247,10 @@ async def test_stale_draft_conflicts_and_rebases(stand: Stand) -> None:
         assert discarded.json()["status"] == "discarded"
 
 
-async def test_views_layout_and_shares_over_http(stand: Stand) -> None:
-    ops = OperationList(root=(AddLayer(layer=RAW), AddDataset(dataset=ORDERS)))
+async def test_views_layout_and_shares_over_http(
+    stand: Stand, process: ProcessSample
+) -> None:
+    ops = process.ops()
 
     async with stand.client(_user(EDITOR_ID, "wrt")) as client:
         draft = await client.post(stand.url(CatalogUrl.DRAFTS), json={"name": "base"})
@@ -240,14 +265,18 @@ async def test_views_layout_and_shares_over_http(stand: Stand) -> None:
 
         created = await client.post(
             stand.url(CatalogUrl.VIEWS),
-            json={"name": "orders", "dataset_ids": [str(ORDERS.id)], "layer_ids": []},
+            json={
+                "name": "orders",
+                "node_ids": [str(process.orders.id)],
+                "layer_ids": [],
+            },
         )
         assert created.status_code == 200
         view_id = created.json()["id"]
 
         layout = await client.put(
             stand.url(CatalogUrl.VIEW_LAYOUT, view_id=view_id),
-            json={"positions": [{"dataset_id": str(ORDERS.id), "x": 1.5, "y": 2}]},
+            json={"positions": [{"node_id": str(process.orders.id), "x": 1.5, "y": 2}]},
         )
         assert layout.status_code == 200
         assert layout.json()["positions"][0]["x"] == 1.5
@@ -275,7 +304,7 @@ async def test_views_layout_and_shares_over_http(stand: Stand) -> None:
         assert state.status_code == 200
         assert state.json()["owned"] is False
         assert state.json()["version"] == 1
-        assert list(state.json()["snapshot"]["datasets"]) == [str(ORDERS.id)]
+        assert list(state.json()["snapshot"]["nodes"]) == [str(process.orders.id)]
         assert state.json()["layout"]["positions"][0]["x"] == 1.5
         assert (await client.get(stand.url(CatalogUrl.SNAPSHOT))).status_code == 403
 
@@ -284,7 +313,7 @@ async def test_views_layout_and_shares_over_http(stand: Stand) -> None:
 
         forbidden = await client.put(
             stand.url(CatalogUrl.VIEW, view_id=view_id),
-            json={"name": "mine", "dataset_ids": [], "layer_ids": []},
+            json={"name": "mine", "node_ids": [], "layer_ids": []},
         )
         assert forbidden.status_code == 403
 

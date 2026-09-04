@@ -4,17 +4,19 @@
 
 from __future__ import annotations
 
-import json
 from uuid import UUID
 
 import pytest
 from psycopg import sql
 
+from boba.catalog import AddLayer, AddNode, OperationList, SourceKind
+from boba.catalog.samples import PgSample, ProcessSample
 from boba.catalog_service import (
     AuthorVia,
     CatalogConfig,
     CatalogService,
     CatalogStore,
+    SourceSpec,
     SourceStore,
     ViewSpec,
 )
@@ -35,9 +37,6 @@ pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 SCHEMA = "catalog_tools_test"
 PREFIX = "/boba-test"
-LAYER_ID = UUID(int=301)
-DATASET_ID = UUID(int=310)
-COLUMN_ID = UUID(int=320)
 
 
 def _config() -> CatalogConfig:
@@ -73,31 +72,21 @@ def editor(monkeypatch: pytest.MonkeyPatch) -> Subject:
     return use_context(monkeypatch, thread_id="catalog-thread", roles=("wrt",)).subject
 
 
-def _operations() -> str:
-    ops = [
-        {"op": "add_layer", "layer": {"id": str(LAYER_ID), "name": "raw"}},
-        {
-            "op": "add_dataset",
-            "dataset": {
-                "id": str(DATASET_ID),
-                "layer_id": str(LAYER_ID),
-                "name": "orders",
-            },
-        },
-        {
-            "op": "add_column",
-            "column": {
-                "id": str(COLUMN_ID),
-                "dataset_id": str(DATASET_ID),
-                "name": "order_id",
-                "type": "int",
-                "nullable": False,
-                "is_key": True,
-                "position": 0,
-            },
-        },
-    ]
-    return json.dumps(ops)
+@pytest.fixture
+async def process(service: CatalogService, editor: Subject) -> ProcessSample:
+    """Источник prod с версией 1 из образца; процесс ссылается на него."""
+    source = await service.create_source(
+        editor, SourceSpec(kind=SourceKind.POSTGRES, name="prod")
+    )
+    await service.write_source_version(editor, source.id, PgSample().snapshot())
+    return ProcessSample(source.id)
+
+
+def _operations(process: ProcessSample) -> str:
+    ops = OperationList(
+        root=(AddLayer(layer=process.raw), AddNode(node=process.orders))
+    )
+    return ops.model_dump_json()
 
 
 async def test_read_empty_catalog(tools: CatalogTools, editor: Subject) -> None:
@@ -105,10 +94,12 @@ async def test_read_empty_catalog(tools: CatalogTools, editor: Subject) -> None:
 
     assert isinstance(result, JsonResult)
     assert result.payload["version"] == 0
-    assert result.payload["datasets"] == []
+    assert result.payload["nodes"] == []
 
 
-async def test_draft_propose_diff_open(tools: CatalogTools, editor: Subject) -> None:
+async def test_draft_propose_diff_open(
+    tools: CatalogTools, editor: Subject, process: ProcessSample
+) -> None:
     _, listed = await tools.draft("")
     assert isinstance(listed, TextResult)
     assert "no open drafts" in listed.text
@@ -122,17 +113,17 @@ async def test_draft_propose_diff_open(tools: CatalogTools, editor: Subject) -> 
     assert isinstance(table, TableResult)
     assert [row["draft_id"] for row in table.rows] == [draft_id]
 
-    _, proposed = await tools.propose(draft_id, _operations())
+    _, proposed = await tools.propose(draft_id, _operations(process))
     assert isinstance(proposed, TextResult)
     assert proposed.metadata["seq"] == "1"
     assert "added layer 'raw'" in proposed.text
-    assert "added dataset 'orders'" in proposed.text
+    assert f"added node '{process.orders.ref.render()}'" in proposed.text
 
     _, diff = await tools.diff(draft_id)
     assert isinstance(diff, TextResult)
-    assert "at seq 1 over version 0: 3 change(s)" in diff.text
+    assert "at seq 1 over version 0: 2 change(s)" in diff.text
 
-    _, rejected = await tools.propose(draft_id, _operations())
+    _, rejected = await tools.propose(draft_id, _operations(process))
     assert isinstance(rejected, ErrorResult)
     assert rejected.error_kind == "catalog_operation_rejected"
     assert "operation #0 (add_layer) was rejected" in rejected.message
@@ -146,22 +137,39 @@ async def test_draft_propose_diff_open(tools: CatalogTools, editor: Subject) -> 
 
 
 async def test_read_slice_with_neighbours(
-    tools: CatalogTools, editor: Subject, service: CatalogService
+    tools: CatalogTools,
+    editor: Subject,
+    service: CatalogService,
+    process: ProcessSample,
 ) -> None:
+    """Срез по узлу orders тянет v_orders по потоку и clients как второго
+    соседа v_orders, колонки берутся из привязанной версии источника,
+    неизвестная подпись возвращается списком."""
     _, created = await tools.draft("seed")
     assert isinstance(created, TextResult)
     draft_id = created.metadata["draft_id"]
-    await tools.propose(draft_id, _operations())
+    await tools.propose(draft_id, process.ops().model_dump_json())
 
     await service.publish(editor, UUID(draft_id), AuthorVia.USER)
 
     _, sliced = await tools.read("orders, missing")
     assert isinstance(sliced, JsonResult)
     assert sliced.payload["version"] == 1
-    assert [d["name"] for d in sliced.payload["datasets"]] == ["orders"]
-    assert sliced.payload["datasets"][0]["layer"] == "raw"
-    assert [c["name"] for c in sliced.payload["datasets"][0]["columns"]] == ["order_id"]
-    assert sliced.payload["unknown_datasets"] == ["missing"]
+    assert sliced.payload["pins"] == {str(process.source_id): 1}
+    assert {n["label"] for n in sliced.payload["nodes"]} == {
+        process.orders.label,
+        process.v_orders.label,
+        process.customers.label,
+    }
+    by_label = {n["label"]: n for n in sliced.payload["nodes"]}
+    assert by_label[process.orders.label]["layer"] == "raw"
+    assert [c["name"] for c in by_label[process.orders.label]["columns"]] == [
+        "id",
+        "amount",
+        "created_at",
+    ]
+    assert len(sliced.payload["flows"]) == 2
+    assert sliced.payload["unknown_nodes"] == ["missing"]
 
 
 async def test_bad_inputs_are_error_results(

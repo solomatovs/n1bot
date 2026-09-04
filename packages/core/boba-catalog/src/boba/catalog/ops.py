@@ -1,61 +1,56 @@
-"""Операции над снимком каталога и их применение списком.
-
-Список операций это единица правки: порция черновика, тело версии, запрос
-инструмента LLM. OperationList разбирает JSON на границе и применяет
-операции к снимку по одной, после каждой проверяя инварианты; снимок на
-входе не меняется, наружу выходит новый.
+"""Операции над снимком процесса: по три на слой, узел, вид загрузки и поток,
+плюс перенацеливание узла на другой адрес. Список операций разбирается из
+JSON на границе и применяется к снимку по одной с проверкой инвариантов
+после каждой; ссылки на объекты и колонки источников проверяются по
+резолверу, который даёт сервис.
 
 Ошибки:
-CatalogOpError — операция из списка не применима: занят или не найден id,
-    остались зависимые сущности, нарушен инвариант; index — номер в списке.
-CatalogInvariantError — та же причина у одиночной операции, применённой
-    напрямую через apply_to.
+CatalogOpError — операция не применима; index и op называют её, reason —
+    причину из инвариантов.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Literal
 from uuid import UUID
 
-from pydantic import ConfigDict, Field, RootModel
+from pydantic import ConfigDict, RootModel
 
+from boba.catalog.base import CatalogError, CatalogInvariantError, CatalogModel
 from boba.catalog.model import (
-    CatalogError,
-    CatalogInvariantError,
-    CatalogModel,
     CatalogSnapshot,
-    Column,
-    Dataset,
     EntityKind,
     EntityRef,
     Flow,
     Layer,
     LoadKind,
+    Node,
+    ObjectResolver,
 )
+from boba.catalog.sources import ObjectRef
 
 __all__ = [
-    "AddColumn",
-    "AddDataset",
+    "AcceptAll",
     "AddFlow",
     "AddLayer",
     "AddLoadKind",
+    "AddNode",
     "CatalogOp",
     "CatalogOpBase",
     "CatalogOpError",
     "CatalogOpKind",
     "OperationList",
-    "RemoveColumn",
-    "RemoveDataset",
     "RemoveFlow",
     "RemoveLayer",
     "RemoveLoadKind",
-    "SetColumn",
-    "SetDataset",
+    "RemoveNode",
+    "RetargetNode",
     "SetFlow",
     "SetLayer",
     "SetLoadKind",
+    "SetNode",
 ]
 
 
@@ -63,12 +58,10 @@ class CatalogOpKind(StrEnum):
     ADD_LAYER = "add_layer"
     SET_LAYER = "set_layer"
     REMOVE_LAYER = "remove_layer"
-    ADD_DATASET = "add_dataset"
-    SET_DATASET = "set_dataset"
-    REMOVE_DATASET = "remove_dataset"
-    ADD_COLUMN = "add_column"
-    SET_COLUMN = "set_column"
-    REMOVE_COLUMN = "remove_column"
+    ADD_NODE = "add_node"
+    SET_NODE = "set_node"
+    REMOVE_NODE = "remove_node"
+    RETARGET_NODE = "retarget_node"
     ADD_LOAD_KIND = "add_load_kind"
     SET_LOAD_KIND = "set_load_kind"
     REMOVE_LOAD_KIND = "remove_load_kind"
@@ -91,7 +84,7 @@ class CatalogOpBase(CatalogModel, ABC):
         """Новый снимок с применённой операцией.
 
         Ошибки:
-        CatalogInvariantError — операция не применима к этому снимку.
+        CatalogInvariantError — операция не применима; причина в сообщении.
         """
 
 
@@ -122,7 +115,7 @@ class SetLayer(CatalogOpBase):
 
 
 class RemoveLayer(CatalogOpBase):
-    """Удаление слоя; отказывает, пока в слое есть наборы."""
+    """Удаление слоя; отказывает, пока в слое есть узлы."""
 
     op: Literal[CatalogOpKind.REMOVE_LAYER] = CatalogOpKind.REMOVE_LAYER
     id: UUID
@@ -130,82 +123,70 @@ class RemoveLayer(CatalogOpBase):
     def apply_to(self, snapshot: CatalogSnapshot) -> CatalogSnapshot:
         ref = EntityRef(kind=EntityKind.LAYER, id=self.id)
 
-        held = list(snapshot.datasets_in(self.id))
+        held = list(snapshot.nodes_in(self.id))
         if held:
             label = snapshot.label(ref)
-            msg = f"{label} still holds {len(held)} dataset(s); remove them first"
+            msg = f"{label} still holds {len(held)} node(s); remove them first"
             raise CatalogInvariantError([msg])
 
         return snapshot.removed(ref)
 
 
-class AddDataset(CatalogOpBase):
-    op: Literal[CatalogOpKind.ADD_DATASET] = CatalogOpKind.ADD_DATASET
-    dataset: Dataset
+class AddNode(CatalogOpBase):
+    op: Literal[CatalogOpKind.ADD_NODE] = CatalogOpKind.ADD_NODE
+    node: Node
 
     def apply_to(self, snapshot: CatalogSnapshot) -> CatalogSnapshot:
-        return snapshot.added(self.dataset)
+        return snapshot.added(self.node)
 
 
-class SetDataset(CatalogOpBase):
-    op: Literal[CatalogOpKind.SET_DATASET] = CatalogOpKind.SET_DATASET
-    dataset: Dataset
+class SetNode(CatalogOpBase):
+    """Замена узла целиком: слой, псевдоним, заметка; адрес меняет RetargetNode."""
+
+    op: Literal[CatalogOpKind.SET_NODE] = CatalogOpKind.SET_NODE
+    node: Node
 
     def apply_to(self, snapshot: CatalogSnapshot) -> CatalogSnapshot:
-        return snapshot.replaced(self.dataset)
+        current = snapshot.nodes.get(self.node.id)
+        if current is not None and current.ref != self.node.ref:
+            label = snapshot.label(EntityRef.of(current))
+            msg = f"{label}: use retarget_node to change the object address"
+            raise CatalogInvariantError([msg])
+
+        return snapshot.replaced(self.node)
 
 
-class RemoveDataset(CatalogOpBase):
-    """Удаление набора с его колонками; отказывает, пока на набор ссылается поток."""
+class RetargetNode(CatalogOpBase):
+    """Узел указывает на другой объект: например, с ручного источника на
+    реальный. Потоки узла остаются."""
 
-    op: Literal[CatalogOpKind.REMOVE_DATASET] = CatalogOpKind.REMOVE_DATASET
+    op: Literal[CatalogOpKind.RETARGET_NODE] = CatalogOpKind.RETARGET_NODE
+    id: UUID
+    ref: ObjectRef
+
+    def apply_to(self, snapshot: CatalogSnapshot) -> CatalogSnapshot:
+        entity = EntityRef(kind=EntityKind.NODE, id=self.id)
+        current = snapshot.nodes.get(self.id)
+        if current is None:
+            msg = f"{snapshot.label(entity)} not found"
+            raise CatalogInvariantError([msg])
+
+        return snapshot.replaced(current.model_copy(update={"ref": self.ref}))
+
+
+class RemoveNode(CatalogOpBase):
+    """Удаление узла; отказывает, пока на узел ссылается поток."""
+
+    op: Literal[CatalogOpKind.REMOVE_NODE] = CatalogOpKind.REMOVE_NODE
     id: UUID
 
     def apply_to(self, snapshot: CatalogSnapshot) -> CatalogSnapshot:
-        ref = EntityRef(kind=EntityKind.DATASET, id=self.id)
+        ref = EntityRef(kind=EntityKind.NODE, id=self.id)
 
         flows = list(snapshot.flows_of(self.id))
         if flows:
             label = snapshot.label(ref)
             msg = f"{label} is used by {len(flows)} flow(s); remove them first"
-            raise CatalogInvariantError([msg])
-
-        current = snapshot.removed(ref)
-        for column in snapshot.columns_of(self.id):
-            current = current.removed(EntityRef.of(column))
-
-        return current
-
-
-class AddColumn(CatalogOpBase):
-    op: Literal[CatalogOpKind.ADD_COLUMN] = CatalogOpKind.ADD_COLUMN
-    column: Column
-
-    def apply_to(self, snapshot: CatalogSnapshot) -> CatalogSnapshot:
-        return snapshot.added(self.column)
-
-
-class SetColumn(CatalogOpBase):
-    op: Literal[CatalogOpKind.SET_COLUMN] = CatalogOpKind.SET_COLUMN
-    column: Column
-
-    def apply_to(self, snapshot: CatalogSnapshot) -> CatalogSnapshot:
-        return snapshot.replaced(self.column)
-
-
-class RemoveColumn(CatalogOpBase):
-    """Удаление колонки; отказывает, пока колонка упомянута в значениях потока."""
-
-    op: Literal[CatalogOpKind.REMOVE_COLUMN] = CatalogOpKind.REMOVE_COLUMN
-    id: UUID
-
-    def apply_to(self, snapshot: CatalogSnapshot) -> CatalogSnapshot:
-        ref = EntityRef(kind=EntityKind.COLUMN, id=self.id)
-
-        flows = list(snapshot.flows_using_column(self.id))
-        if flows:
-            label = snapshot.label(ref)
-            msg = f"{label} is referenced by {len(flows)} flow(s); change them first"
             raise CatalogInvariantError([msg])
 
         return snapshot.removed(ref)
@@ -228,7 +209,7 @@ class SetLoadKind(CatalogOpBase):
 
 
 class RemoveLoadKind(CatalogOpBase):
-    """Удаление вида загрузки; отказывает, пока есть потоки этого вида."""
+    """Удаление вида; отказывает, пока есть потоки этого вида."""
 
     op: Literal[CatalogOpKind.REMOVE_LOAD_KIND] = CatalogOpKind.REMOVE_LOAD_KIND
     id: UUID
@@ -239,7 +220,7 @@ class RemoveLoadKind(CatalogOpBase):
         flows = list(snapshot.flows_of_kind(self.id))
         if flows:
             label = snapshot.label(ref)
-            msg = f"{label} is used by {len(flows)} flow(s); remove them first"
+            msg = f"{label} is used by {len(flows)} flow(s); change them first"
             raise CatalogInvariantError([msg])
 
         return snapshot.removed(ref)
@@ -250,8 +231,7 @@ class AddFlow(CatalogOpBase):
     flow: Flow
 
     def apply_to(self, snapshot: CatalogSnapshot) -> CatalogSnapshot:
-        flow = snapshot.conformed(self.flow)
-        return snapshot.added(flow)
+        return snapshot.added(self.flow)
 
 
 class SetFlow(CatalogOpBase):
@@ -259,8 +239,7 @@ class SetFlow(CatalogOpBase):
     flow: Flow
 
     def apply_to(self, snapshot: CatalogSnapshot) -> CatalogSnapshot:
-        flow = snapshot.conformed(self.flow)
-        return snapshot.replaced(flow)
+        return snapshot.replaced(self.flow)
 
 
 class RemoveFlow(CatalogOpBase):
@@ -268,28 +247,36 @@ class RemoveFlow(CatalogOpBase):
     id: UUID
 
     def apply_to(self, snapshot: CatalogSnapshot) -> CatalogSnapshot:
-        ref = EntityRef(kind=EntityKind.FLOW, id=self.id)
-        return snapshot.removed(ref)
+        return snapshot.removed(EntityRef(kind=EntityKind.FLOW, id=self.id))
 
 
-CatalogOp = Annotated[
+CatalogOp = (
     AddLayer
     | SetLayer
     | RemoveLayer
-    | AddDataset
-    | SetDataset
-    | RemoveDataset
-    | AddColumn
-    | SetColumn
-    | RemoveColumn
+    | AddNode
+    | SetNode
+    | RetargetNode
+    | RemoveNode
     | AddLoadKind
     | SetLoadKind
     | RemoveLoadKind
     | AddFlow
     | SetFlow
-    | RemoveFlow,
-    Field(discriminator="op"),
-]
+    | RemoveFlow
+)
+
+
+class AcceptAll(ObjectResolver):
+    """Резолвер без знаний об источниках: любой объект существует, колонки
+    неизвестны. Для мест, где источники не нужны: тесты домена, свёртка
+    истории версий."""
+
+    def exists(self, ref: ObjectRef) -> bool:
+        return True
+
+    def columns_of(self, ref: ObjectRef) -> None:
+        return None
 
 
 class OperationList(RootModel[tuple[CatalogOp, ...]]):
@@ -301,7 +288,9 @@ class OperationList(RootModel[tuple[CatalogOp, ...]]):
 
     model_config = ConfigDict(frozen=True)
 
-    def apply(self, snapshot: CatalogSnapshot) -> CatalogSnapshot:
+    def apply(
+        self, snapshot: CatalogSnapshot, resolver: ObjectResolver
+    ) -> CatalogSnapshot:
         """Новый снимок после всех операций; входной не меняется.
 
         Ошибки:
@@ -312,6 +301,7 @@ class OperationList(RootModel[tuple[CatalogOp, ...]]):
             try:
                 current = op.apply_to(current)
                 current.check()
+                current.check_against(resolver)
             except CatalogInvariantError as exc:
                 raise CatalogOpError(index, op, str(exc)) from exc
 

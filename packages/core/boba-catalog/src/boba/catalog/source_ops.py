@@ -17,6 +17,7 @@ from typing import Literal, TypeVar
 
 from pydantic import Field, RootModel
 
+from boba.catalog.base import CatalogError, CatalogInvariantError, CatalogModel
 from boba.catalog.clickhouse_snapshot import (
     ChColumn,
     ChDatabase,
@@ -24,7 +25,6 @@ from boba.catalog.clickhouse_snapshot import (
     ChTable,
     ChTableKind,
 )
-from boba.catalog.model import CatalogError, CatalogInvariantError, CatalogModel
 from boba.catalog.postgres_snapshot import (
     PgColumn,
     PgDatabase,

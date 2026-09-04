@@ -13,9 +13,8 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
+from boba.catalog.base import CatalogError, CatalogModel, ChangeStatus
 from boba.catalog.clickhouse_snapshot import ChSnapshot
-from boba.catalog.diff import ChangeStatus
-from boba.catalog.model import CatalogError, CatalogModel
 from boba.catalog.postgres_snapshot import PgSnapshot
 from boba.catalog.sources import ObjectKind, ObjectRef, SourceRecord
 

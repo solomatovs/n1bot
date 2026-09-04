@@ -21,8 +21,7 @@ from uuid import UUID
 
 from pydantic import Field
 
-from boba.catalog.diff import ChangeStatus
-from boba.catalog.model import CatalogInvariantError, CatalogModel
+from boba.catalog.base import CatalogInvariantError, CatalogModel, ChangeStatus
 
 __all__ = [
     "ObjectKind",
