@@ -4,24 +4,24 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-auth"
-version = "0.0.15.dev6"
+version = "0.0.15.dev7"
 description = "Boba auth: вход пользователя общий для chainlit и studio — токены, пароли, SPNEGO, креды."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-identity==0.0.15.dev6",
-    "boba-connections==0.0.15.dev6",
-    "boba-kerberos==0.0.15.dev6",
-    "boba-krb[seal]==0.0.15.dev6",
-    "boba-toolkit==0.0.15.dev6",
+    "boba-identity==0.0.15.dev7",
+    "boba-connections==0.0.15.dev7",
+    "boba-kerberos==0.0.15.dev7",
+    "boba-krb[seal]==0.0.15.dev7",
+    "boba-toolkit==0.0.15.dev7",
     "pydantic>=2.10,<3",
     "pyjwt>=2.8",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "boba-ldap==0.0.15.dev6",
-    "boba-config==0.0.15.dev6",
-    "boba-stand==0.0.15.dev6",
+    "boba-ldap==0.0.15.dev7",
+    "boba-config==0.0.15.dev7",
+    "boba-stand==0.0.15.dev7",
     "omegaconf>=2.3,<3",
     "pytest>=8",
 ]

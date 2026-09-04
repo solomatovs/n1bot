@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-chat"
-version = "0.0.15.dev6"
+version = "0.0.15.dev7"
 description = "Boba chat: конверты и порт LLM-провайдера, конфиги бэкендов чата и генерации по схеме — модели без I/O."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-access==0.0.15.dev6",
-    "boba-identity==0.0.15.dev6",
-    "boba-toolkit==0.0.15.dev6",
+    "boba-access==0.0.15.dev7",
+    "boba-identity==0.0.15.dev7",
+    "boba-toolkit==0.0.15.dev7",
     "pydantic>=2.10,<3",
 ]
 
