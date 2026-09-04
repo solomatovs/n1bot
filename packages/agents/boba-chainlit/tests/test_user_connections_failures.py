@@ -388,7 +388,7 @@ class TestDelegationUnavailable:
             result,
             ConnectionRefusal.NO_DELEGATION,
             "you signed in with LocalAuth",
-            "Kerberos SSO button",
+            "Kerberos SSO instead",
         )
 
     @live_kdc
@@ -552,7 +552,7 @@ class TestRefusalText:
 
         expected = (
             "LocalAuth",
-            "Kerberos SSO button",
+            "Kerberos SSO instead",
             KerberosCredentialSource.RETRY_HINT,
         )
         for phrase in expected:
