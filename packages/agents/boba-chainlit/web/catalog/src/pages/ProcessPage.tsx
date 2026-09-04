@@ -1,14 +1,13 @@
 import { ReactFlowProvider } from "@xyflow/react";
 import { Layers, PanelLeft, Pencil, Workflow } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { ApiError, type CatalogApi } from "../api/client";
 import { useServices } from "../app";
 import { Canvas } from "../components/canvas/Canvas";
 import { CanvasToolbar } from "../components/CanvasToolbar";
 import { DetailPanel } from "../components/DetailPanel";
-import { Dialog } from "../components/edit/Dialog";
 import { DiagramsDialog } from "../components/edit/DiagramsDialog";
 import { DraftActions } from "../components/edit/DraftActions";
 import { DraftsDialog } from "../components/edit/DraftsDialog";
@@ -38,7 +37,35 @@ import type { EditActions } from "../model/editing";
 import { nodesInView, type GraphOptions, type ShowMode } from "../model/graph";
 import { blankFlow, blankLayer, blankNode, removeNodeWithFlows, type CatalogOp } from "../model/ops";
 import { readUrlState, writeUrlState, type UrlState } from "../model/urlState";
-import { Alert, Button, Chip, EmptyState, IconButton, Select, useToast } from "../ui";
+import {
+  Alert,
+  Button,
+  Chip,
+  Detail,
+  Dialog,
+  EmptyState,
+  IconButton,
+  Index,
+  List,
+  ListAside,
+  ListName,
+  ListRow,
+  Note,
+  Page,
+  PageBody,
+  PageNotices,
+  Pane,
+  Scene,
+  Select,
+  Toolbar,
+  Topbar,
+  TopbarGroup,
+  TopbarHint,
+  TopbarLink,
+  TopbarSpacer,
+  TopbarTitle,
+  useToast,
+} from "../ui";
 
 /** Что показывает страница: опубликованный процесс, его срез через диаграмму
  * либо черновик. */
@@ -125,7 +152,10 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
       api
         .draftContext(draftState.draft.id)
         .then((context) => {
-          setState({ status: "ready", loaded: loadedOfDraft(draftState, context, base) });
+          setState({
+            status: "ready",
+            loaded: loadedOfDraft(draftState, context, base),
+          });
         })
         .catch((error: unknown) => {
           setState({ status: "failed", message: describe(error) });
@@ -163,18 +193,28 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
           editor.current = new DraftEditor(api, result.state.draft.id, result.state, (next) => {
             takeDraft(next, base);
           });
-          setState({ status: "ready", loaded: loadedOfDraft(result.state, result.context, base) });
+          setState({
+            status: "ready",
+            loaded: loadedOfDraft(result.state, result.context, base),
+          });
           return;
         }
 
         editor.current = null;
         if (result.kind === "denied") {
-          setState({ status: "denied", access: result.access, views: result.views });
+          setState({
+            status: "denied",
+            access: result.access,
+            views: result.views,
+          });
           return;
         }
 
         if (result.kind === "view") {
-          setState({ status: "ready", loaded: loadedOfView(result.access, result.state, result.context) });
+          setState({
+            status: "ready",
+            loaded: loadedOfView(result.access, result.state, result.context),
+          });
           return;
         }
 
@@ -304,7 +344,12 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
           update({ active: node.id, object: undefined });
         },
         newFlow: (from: ProcessNode) => {
-          setDialog({ kind: "flow", flow: blankFlow(from.id, ""), fresh: true, pickTarget: true });
+          setDialog({
+            kind: "flow",
+            flow: blankFlow(from.id, ""),
+            fresh: true,
+            pickTarget: true,
+          });
         },
         editFlow: (flow: Flow) => {
           setDialog({ kind: "flow", flow, fresh: false, pickTarget: false });
@@ -331,9 +376,8 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
 
   return (
     <ReactFlowProvider>
-      <div
-        className="page"
-        data-testid="catalog-page"
+      <Page
+        mark="catalog-page"
         data-source={source.kind}
         data-editable={editable}
         data-owned={owned}
@@ -341,7 +385,7 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
         data-layout-saves={layoutSaves}
         data-stale={catalog.staleCount}
       >
-        <header className="topbar">
+        <Topbar>
           <IconButton
             aria-label={paneOpen ? "hide the left pane" : "show the left pane"}
             aria-pressed={paneOpen}
@@ -349,23 +393,19 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
               setPaneOpen((open) => !open);
             }}
           >
-            <PanelLeft size={16} />
+            <PanelLeft size={14} />
           </IconButton>
-          <Link to="/" className="topbar__home">
-            catalog
-          </Link>
-          <span className="topbar__title" data-testid="page-title">
-            {state.loaded.title}
-          </span>
+          <TopbarLink to="/">catalog</TopbarLink>
+          <TopbarTitle>{state.loaded.title}</TopbarTitle>
           <Chip tone="muted">{state.loaded.version}</Chip>
           {catalog.staleCount > 0 && (
-            <Chip tone="draft" mark="stale-chip">
+            <Chip tone="warn" mark="stale-chip">
               {catalog.staleCount} stale
             </Chip>
           )}
           {draft !== undefined && (
             <Button
-              size="tiny"
+              size="sm"
               tone={url.showDiff ? "signal" : "ghost"}
               aria-pressed={url.showDiff}
               onClick={() => {
@@ -376,7 +416,7 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
             </Button>
           )}
           {source.kind === "published" && access.can_view && (
-            <Button size="tiny" tone="primary" icon={Pencil} onClick={openDrafts} data-testid="edit-button">
+            <Button size="sm" tone="primary" icon={Pencil} onClick={openDrafts} data-testid="edit-button">
               edit{drafts.length > 0 ? ` · ${drafts.length}` : ""}
             </Button>
           )}
@@ -405,41 +445,47 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
               }}
             />
           )}
-          <Button
-            size="tiny"
-            tone="ghost"
-            icon={Layers}
-            data-testid="load-kinds-button"
-            onClick={() => {
-              setDialog({ kind: "load-kinds" });
-            }}
-          >
-            load kinds
-          </Button>
-          <Button
-            size="tiny"
-            tone="ghost"
-            icon={Workflow}
-            data-testid="diagrams-button"
-            onClick={() => {
-              setDialog({ kind: "diagrams" });
-            }}
-          >
-            diagrams
-          </Button>
-          <span className="topbar__spacer" />
-          <span className="topbar__hint mono">
+          <TopbarGroup>
+            <Button
+              size="sm"
+              tone="ghost"
+              icon={Layers}
+              collapsible
+              data-testid="load-kinds-button"
+              onClick={() => {
+                setDialog({ kind: "load-kinds" });
+              }}
+            >
+              load kinds
+            </Button>
+            <Button
+              size="sm"
+              tone="ghost"
+              icon={Workflow}
+              collapsible
+              data-testid="diagrams-button"
+              onClick={() => {
+                setDialog({ kind: "diagrams" });
+              }}
+            >
+              diagrams
+            </Button>
+          </TopbarGroup>
+          <TopbarSpacer />
+          <TopbarHint>
             {nodes.length} nodes · {catalog.flows.length} flows
-          </span>
-        </header>
-        {draft !== undefined && draft.status !== "open" && (
-          <Alert tone="info" mark="draft-closed">
-            This draft is {draft.status}; it is read-only now.
-          </Alert>
-        )}
-        <div className="page__body" data-pane={paneOpen} data-detail={active !== undefined || selectedObject !== undefined}>
+          </TopbarHint>
+        </Topbar>
+        <PageNotices>
+          {draft !== undefined && draft.status !== "open" && (
+            <Alert tone="info" mark="draft-closed">
+              This draft is {draft.status}; it is read-only now.
+            </Alert>
+          )}
+        </PageNotices>
+        <PageBody pane={paneOpen} detail={active !== undefined || selectedObject !== undefined}>
           {paneOpen && (
-            <aside className="page__pane">
+            <Pane>
               <LeftPane
                 api={api}
                 catalog={catalog}
@@ -469,17 +515,14 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
                   update({ hidden });
                 }}
               />
-            </aside>
+            </Pane>
           )}
-          <main className="page__scene">
+          <Scene>
             {empty && (
               <EmptyState fill title="the process is empty">
-                <p>
-                  Pull the structure of your databases in as metadata sources, then put their objects into layers.
-                </p>
-                <div className="form__actions" data-testid="empty-actions">
+                <p>Pull the structure of your databases in as metadata sources, then put their objects into layers.</p>
+                <Toolbar mark="empty-actions">
                   <Button
-                    size="tiny"
                     tone="primary"
                     onClick={() => {
                       void navigate("/sources");
@@ -488,7 +531,6 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
                     add a source
                   </Button>
                   <Button
-                    size="tiny"
                     tone="ghost"
                     onClick={() => {
                       void navigate("/sources?manual=1");
@@ -496,12 +538,8 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
                   >
                     manual source
                   </Button>
-                  {editable && (
-                    <Button size="tiny" onClick={editing?.addLayer}>
-                      add a layer
-                    </Button>
-                  )}
-                </div>
+                  {editable && <Button onClick={editing?.addLayer}>add a layer</Button>}
+                </Toolbar>
               </EmptyState>
             )}
             {!empty && (
@@ -527,7 +565,12 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
                   onConnect={
                     editable
                       ? (from, to) => {
-                          setDialog({ kind: "flow", flow: blankFlow(from, to), fresh: true, pickTarget: false });
+                          setDialog({
+                            kind: "flow",
+                            flow: blankFlow(from, to),
+                            fresh: true,
+                            pickTarget: false,
+                          });
                         }
                       : undefined
                   }
@@ -536,7 +579,12 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
                       ? (flowId) => {
                           const flow = catalog.flows.find((item) => item.id === flowId);
                           if (flow !== undefined) {
-                            setDialog({ kind: "flow", flow, fresh: false, pickTarget: false });
+                            setDialog({
+                              kind: "flow",
+                              flow,
+                              fresh: false,
+                              pickTarget: false,
+                            });
                           }
                         }
                       : undefined
@@ -568,9 +616,9 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
                 />
               </>
             )}
-          </main>
+          </Scene>
           {active !== undefined && (
-            <aside className="page__detail">
+            <Detail>
               <DetailPanel
                 key={active.id}
                 api={api}
@@ -591,10 +639,10 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
                   update({ active: undefined });
                 }}
               />
-            </aside>
+            </Detail>
           )}
           {active === undefined && selectedObject !== undefined && (
-            <aside className="page__detail">
+            <Detail>
               <ObjectPanel
                 key={`${selectedObject.source_id}:${selectedObject.kind}:${selectedObject.path.join("/")}`}
                 api={api}
@@ -609,9 +657,9 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
                   update({ object: undefined });
                 }}
               />
-            </aside>
+            </Detail>
           )}
-        </div>
+        </PageBody>
         {dialog?.kind === "layer" && (
           <NamePrompt
             title={dialog.layer === undefined ? "new layer" : "rename layer"}
@@ -621,7 +669,12 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
             onSubmit={(name) => {
               const layer = dialog.layer;
               if (layer === undefined) {
-                apply([{ op: "add_layer", layer: blankLayer(name, catalog.nextLayerPosition()) }]);
+                apply([
+                  {
+                    op: "add_layer",
+                    layer: blankLayer(name, catalog.nextLayerPosition()),
+                  },
+                ]);
               } else {
                 apply([{ op: "set_layer", layer: { ...layer, name } }]);
               }
@@ -688,7 +741,10 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
           <DiagramsDialog
             api={api}
             access={access}
-            slice={{ node_ids: view?.node_ids ?? [], layer_ids: view?.layer_ids ?? [] }}
+            slice={{
+              node_ids: view?.node_ids ?? [],
+              layer_ids: view?.layer_ids ?? [],
+            }}
             onCreated={(created) => {
               setDialog(null);
               void navigate(`/views/${created.id}`);
@@ -708,7 +764,7 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
             }}
           />
         )}
-      </div>
+      </Page>
     </ReactFlowProvider>
   );
 }
@@ -716,24 +772,24 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
 /** Вход без права читать процесс: только диаграммы, которыми поделились. */
 function SharedOnly({ access, views }: { access: Access; views: View[] }): ReactElement {
   return (
-    <div className="index" data-testid="shared-only" data-login={access.login}>
+    <Index mark="shared-only" data-login={access.login}>
       <EmptyState title="no role to read the catalog">
         <p>Diagrams shared with you open here; ask an editor for a share or a catalog role.</p>
       </EmptyState>
-      <section className="index__section" data-testid="shared-views">
-        {views.length === 0 && <p className="index__empty">nothing is shared with you yet</p>}
-        <ul className="index__list">
+      <section data-testid="shared-views">
+        {views.length === 0 && <Note mark="shared-empty">nothing is shared with you yet</Note>}
+        <List kind="spaced">
           {views.map((item) => (
-            <li key={item.id} data-view={item.name}>
-              <Link to={`/views/${item.id}`} className="index__link">
-                {item.name}
-              </Link>
-              <Chip tone="muted">shared with you</Chip>
-            </li>
+            <ListRow key={item.id} data-view={item.name}>
+              <ListName to={`/views/${item.id}`}>{item.name}</ListName>
+              <ListAside>
+                <Chip tone="muted">shared with you</Chip>
+              </ListAside>
+            </ListRow>
           ))}
-        </ul>
+        </List>
       </section>
-    </div>
+    </Index>
   );
 }
 
@@ -750,8 +806,9 @@ function DropPrompt({ catalog, object, onSubmit, onClose }: DropProps): ReactEle
 
   return (
     <Dialog title="which layer?" mark="drop-layer" onClose={onClose}>
-      <p className="form__note mono">{object.path.join("/")}</p>
+      <Note mono>{object.path.join("/")}</Note>
       <Select
+        fill
         aria-label="layer for the dropped object"
         value={layerId}
         onChange={(event) => {
@@ -764,7 +821,7 @@ function DropPrompt({ catalog, object, onSubmit, onClose }: DropProps): ReactEle
           </option>
         ))}
       </Select>
-      <div className="form__actions">
+      <Toolbar>
         <Button
           tone="primary"
           disabled={layerId === ""}
@@ -777,7 +834,7 @@ function DropPrompt({ catalog, object, onSubmit, onClose }: DropProps): ReactEle
         <Button tone="ghost" onClick={onClose}>
           cancel
         </Button>
-      </div>
+      </Toolbar>
     </Dialog>
   );
 }
@@ -804,9 +861,22 @@ function loadedOfDraft(state: DraftState, context: ProcessContext, base: Base): 
 
 type LoadResult =
   | { kind: "denied"; access: Access; views: View[] }
-  | { kind: "draft"; access: Access; state: DraftState; context: ProcessContext; currentVersion: number }
+  | {
+      kind: "draft";
+      access: Access;
+      state: DraftState;
+      context: ProcessContext;
+      currentVersion: number;
+    }
   | { kind: "view"; access: Access; state: ViewState; context: ProcessContext }
-  | { kind: "published"; access: Access; snapshot: DraftState["snapshot"]; context: ProcessContext; version: number; drafts: Draft[] };
+  | {
+      kind: "published";
+      access: Access;
+      snapshot: DraftState["snapshot"];
+      context: ProcessContext;
+      version: number;
+      drafts: Draft[];
+    };
 
 async function load(api: CatalogApi, source: PageSource): Promise<LoadResult> {
   const access = await api.access();
@@ -834,7 +904,14 @@ async function load(api: CatalogApi, source: PageSource): Promise<LoadResult> {
   const snapshot = await api.snapshot();
   const context = await api.context();
   const drafts = await api.drafts();
-  return { kind: "published", access, snapshot, context, version: versions.at(-1)?.number ?? 0, drafts };
+  return {
+    kind: "published",
+    access,
+    snapshot,
+    context,
+    version: versions.at(-1)?.number ?? 0,
+    drafts,
+  };
 }
 
 function loadedOfView(access: Access, state: ViewState, context: ProcessContext): Loaded {

@@ -1,0 +1,27 @@
+.note {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-data);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.note--micro {
+  font-size: var(--fs-micro);
+}
+
+.note--faint {
+  color: var(--faint);
+}
+
+.note--error {
+  color: var(--error);
+}
+
+.note--pad {
+  padding: var(--s2) var(--s3);
+}
+
+.note.mono {
+  font-family: var(--font-mono);
+}

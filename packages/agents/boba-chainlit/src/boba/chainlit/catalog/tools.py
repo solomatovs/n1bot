@@ -5,7 +5,8 @@ catalog_read отдаёт модели снимок процесса или ср
 источников, соседями по потокам и видами загрузки; catalog_draft создаёт
 черновик или перечисляет открытые; catalog_propose шлёт порцию операций
 JSON-списком; catalog_diff показывает черновик относительно его базовой
-версии; catalog_open оставляет в чате ссылку на страницу черновика или вида.
+версии; catalog_open оставляет в чате ссылку на страницу черновика или вида;
+catalog_sync снимает структуру источника инструментом его вида и ждёт итога.
 
 Ошибки: ErrorResult — нет хода чата, нет прав, черновик или вид не найден,
 операции не разбираются или не применимы, хранилище недоступно; остальное
@@ -44,6 +45,15 @@ from boba.catalog_service import (
     DraftNotFoundError,
     DraftStaleError,
     DraftState,
+    Source,
+    SourceNotFoundError,
+    SyncCaller,
+    SyncConnectionNotBoundError,
+    SyncRequest,
+    SyncRunningError,
+    SyncScope,
+    SyncSetupError,
+    SyncStatus,
     ViewNotFoundError,
 )
 from boba.identity.context import CallContext, Subject
@@ -94,6 +104,8 @@ class CatalogToolError(StrEnum):
     OPERATION_REJECTED = "catalog_operation_rejected"
     BAD_ID = "catalog_bad_id"
     STORE = "catalog_store_error"
+    SYNC_REFUSED = "catalog_sync_refused"
+    SYNC_AMBIGUOUS = "catalog_sync_ambiguous"
 
 
 class CatalogLinkKind(StrEnum):
@@ -154,6 +166,15 @@ class CatalogPrompt(StrEnum):
     LINK_KIND = "What to open: 'draft' or 'view'."
     LINK_ID = "Id (uuid) of the draft or the view."
     OPENED_NOTE = "the link stays in the chat and opens the catalog page"
+    SYNC_SOURCE = "Metadata source: its name or id (uuid) from catalog_sources."
+    SYNC_CONNECTION = (
+        "Id (uuid) of a connection bound to the source; empty string picks the "
+        "only bound connection."
+    )
+    SYNC_SCHEMAS = (
+        "Comma-separated schemas to snapshot; empty string takes every "
+        "non-system schema of the database."
+    )
 
 
 class ColumnView(BaseModel):
@@ -492,6 +513,92 @@ class CatalogTools:
 
         return content, link
 
+    async def sync(
+        self, source: str, connection: str, schemas: str
+    ) -> tuple[str, ToolResult]:
+        """Синхронизация источника до конца: запись версии или причина отказа."""
+        try:
+            context = CallContext.current()
+            service = await self._service()
+            source_row = await self._source_by(service, context.subject, source)
+            connection_id = await self._connection_of(
+                service, context.subject, source_row, connection
+            )
+            request = SyncRequest(
+                connection_id=connection_id,
+                scope=SyncScope(schemas=self._schemas(schemas)),
+            )
+            caller = SyncCaller(
+                subject=context.subject,
+                initiator=context.initiator,
+                credential=context.credential,
+            )
+            started = await service.start_sync(caller, source_row.id, request)
+            finished = await service.syncs.wait(started.id)
+        except (RefusalError, CatalogServiceError) as exc:
+            return pack_result(self._error(exc))
+
+        payload = finished.model_dump(mode="json")
+        payload["source_name"] = source_row.name
+        if finished.status is SyncStatus.DONE:
+            return pack_result(JsonResult(payload=payload))
+
+        message = (
+            f"sync {finished.id} of source {source_row.name!r} ended as "
+            f"{finished.status.value}: {finished.error}"
+        )
+        return pack_result(
+            ErrorResult(message=message, error_kind=CatalogToolError.SYNC_REFUSED)
+        )
+
+    async def _source_by(
+        self, service: CatalogService, subject: Subject, raw: str
+    ) -> Source:
+        """Источник по id либо по имени.
+
+        Ошибки:
+        SourceNotFoundError — ни по id, ни по имени.
+        """
+        sources = await service.list_sources(subject)
+        for source in sources:
+            if source.name == raw.strip():
+                return source
+
+        source_id = self._uuid(raw)
+        return await service.source(subject, source_id)
+
+    async def _connection_of(
+        self, service: CatalogService, subject: Subject, source: Source, raw: str
+    ) -> UUID:
+        """Подключение по id либо единственное привязанное.
+
+        Ошибки:
+        RefusalError — привязок нет или их несколько, а id не задан.
+        """
+        if raw.strip():
+            return self._uuid(raw)
+
+        bound = await service.source_connections(subject, source.id)
+        if len(bound) != 1:
+            ids = [str(item.connection_id) for item in bound]
+            msg = (
+                f"source {source.name!r} has {len(bound)} bound connection(s) "
+                f"{ids}; pass the connection id explicitly"
+            )
+            raise RefusalError(CatalogToolError.SYNC_AMBIGUOUS.value, msg)
+
+        return bound[0].connection_id
+
+    @staticmethod
+    def _schemas(raw: str) -> tuple[str, ...]:
+        names: list[str] = []
+        for piece in raw.split(","):
+            name = piece.strip()
+            if name:
+                names.append(name)
+
+        return tuple(names)
+
     async def _append(
         self,
         service: CatalogService,
@@ -537,7 +644,7 @@ class CatalogTools:
         try:
             return UUID(raw.strip())
         except ValueError as exc:
-            msg = f"not a uuid: {raw!r}"
+            msg = f"expected a uuid id, got {raw!r}: {exc}"
             raise RefusalError(CatalogToolError.BAD_ID.value, msg) from exc
 
     @staticmethod
@@ -554,7 +661,7 @@ class CatalogTools:
             return OperationList.model_validate_json(raw)
         except ValidationError as exc:
             details = ValidationText.of(exc)
-            msg = f"operations do not parse: {details}"
+            msg = f"operations json {raw[:200]!r} does not parse: {details}"
             raise RefusalError(CatalogToolError.BAD_OPERATIONS.value, msg) from exc
 
     @staticmethod
@@ -592,6 +699,10 @@ class CatalogTools:
         (ViewNotFoundError, CatalogToolError.NOT_FOUND),
         (DraftClosedError, CatalogToolError.DRAFT_CLOSED),
         (DraftStaleError, CatalogToolError.DRAFT_STALE),
+        (SourceNotFoundError, CatalogToolError.NOT_FOUND),
+        (SyncRunningError, CatalogToolError.SYNC_REFUSED),
+        (SyncSetupError, CatalogToolError.SYNC_REFUSED),
+        (SyncConnectionNotBoundError, CatalogToolError.SYNC_REFUSED),
     )
     """Ошибки сервиса, у которых виду отказа хватает текста самой ошибки."""
 
@@ -620,8 +731,9 @@ class CatalogTools:
             if isinstance(exc, error_type):
                 return ErrorResult(message=str(exc), error_kind=kind)
 
-        logger.error("catalog tool: %s", exc)
-        return ErrorResult(message=str(exc), error_kind=CatalogToolError.STORE)
+        logger.error("catalog tool: store failure: %s", exc)
+        message = f"catalog store failure: {exc}"
+        return ErrorResult(message=message, error_kind=CatalogToolError.STORE)
 
 
 def build_catalog_tools(
@@ -686,4 +798,25 @@ def build_catalog_tools(
         the user can open the diagram."""
         return await tools.open(kind, entity_id)
 
-    return [catalog_read, catalog_draft, catalog_propose, catalog_diff, catalog_open]
+    @tool(response_format="content_and_artifact")
+    async def catalog_sync(
+        source: Annotated[
+            str, Field(min_length=1, description=CatalogPrompt.SYNC_SOURCE)
+        ],
+        connection: Annotated[str, Field(description=CatalogPrompt.SYNC_CONNECTION)],
+        schemas: Annotated[str, Field(description=CatalogPrompt.SYNC_SCHEMAS)],
+    ) -> tuple[str, ToolResult]:
+        """Snapshot the structure of a metadata source through one of its
+        bound connections and store it as a new source version. Waits for the
+        sync to finish and returns its record: version number, object counts
+        or the failure reason."""
+        return await tools.sync(source, connection, schemas)
+
+    return [
+        catalog_read,
+        catalog_draft,
+        catalog_propose,
+        catalog_diff,
+        catalog_open,
+        catalog_sync,
+    ]

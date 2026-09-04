@@ -618,27 +618,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/PgRelationCard"
-                    },
-                    {
-                      "$ref": "#/components/schemas/PgRoutineCard"
-                    },
-                    {
-                      "$ref": "#/components/schemas/PgSequenceCard"
-                    },
-                    {
-                      "$ref": "#/components/schemas/PgTypeCard"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ChTableCard"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ChDictionaryCard"
-                    }
-                  ],
-                  "title": "Response View Object Api Catalog Views  View Id  Nodes  Node Id  Object Get"
+                  "$ref": "#/components/schemas/ObjectCard"
                 }
               }
             }
@@ -1162,6 +1142,79 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/source-kinds": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Source Kinds",
+        "description": "Виды источников с установленным снимком: kind типов соединений.",
+        "operationId": "source_kinds_api_catalog_source_kinds_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array",
+                  "title": "Response Source Kinds Api Catalog Source Kinds Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/connections": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Connections",
+        "description": "Подключения вида, видимые пользователю входа: кандидаты на привязку\nи выбор в диалоге синхронизации.",
+        "operationId": "connections_api_catalog_connections_get",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Kind"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ConnectionEntry"
+                  },
+                  "title": "Response Connections Api Catalog Connections Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
               }
             }
           }
@@ -1741,27 +1794,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/PgRelationCard"
-                    },
-                    {
-                      "$ref": "#/components/schemas/PgRoutineCard"
-                    },
-                    {
-                      "$ref": "#/components/schemas/PgSequenceCard"
-                    },
-                    {
-                      "$ref": "#/components/schemas/PgTypeCard"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ChTableCard"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ChDictionaryCard"
-                    }
-                  ],
-                  "title": "Response Source Object Api Catalog Sources  Source Id  Object Get"
+                  "$ref": "#/components/schemas/ObjectCard"
                 }
               }
             }
@@ -1823,6 +1856,189 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SourceDiff"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/sources/{source_id}/syncs": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Source Syncs",
+        "operationId": "source_syncs_api_catalog_sources__source_id__syncs_get",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Source Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Sync"
+                  },
+                  "title": "Response Source Syncs Api Catalog Sources  Source Id  Syncs Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Start Sync",
+        "description": "Синхронизация источника инструментом вида от имени пользователя\nвхода: возвращает запись сразу, ход виден по GET и событиям.",
+        "operationId": "start_sync_api_catalog_sources__source_id__syncs_post",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Source Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SyncRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Sync"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/syncs/{sync_id}": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Get Sync",
+        "operationId": "get_sync_api_catalog_syncs__sync_id__get",
+        "parameters": [
+          {
+            "name": "sync_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Sync Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Sync"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Cancel Sync",
+        "operationId": "cancel_sync_api_catalog_syncs__sync_id__delete",
+        "parameters": [
+          {
+            "name": "sync_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Sync Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Sync"
                 }
               }
             }
@@ -2180,27 +2396,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/PgRelationCard"
-                    },
-                    {
-                      "$ref": "#/components/schemas/PgRoutineCard"
-                    },
-                    {
-                      "$ref": "#/components/schemas/PgSequenceCard"
-                    },
-                    {
-                      "$ref": "#/components/schemas/PgTypeCard"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ChTableCard"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ChDictionaryCard"
-                    }
-                  ],
-                  "title": "Response Source Draft Object Api Catalog Source Drafts  Draft Id  Object Get"
+                  "$ref": "#/components/schemas/ObjectCard"
                 }
               }
             }
@@ -2528,612 +2724,6 @@
         "title": "CatalogSnapshot",
         "description": "Полное состояние процесса одной версии.\n\nТаблицы сущностей по id. Методы added/replaced/removed возвращают новый\nснимок, не меняя текущий; check() проверяет внутренние инварианты,\ncheck_against() — ссылки на объекты и колонки источников."
       },
-      "ChColumn": {
-        "properties": {
-          "database": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Database"
-          },
-          "table": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Table"
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Name"
-          },
-          "position": {
-            "type": "integer",
-            "minimum": 1.0,
-            "title": "Position"
-          },
-          "type": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Type"
-          },
-          "default_kind": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Default Kind"
-          },
-          "default_expression": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Default Expression"
-          },
-          "comment": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Comment"
-          },
-          "codec": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Codec"
-          },
-          "ttl": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ttl"
-          },
-          "in_partition_key": {
-            "type": "boolean",
-            "title": "In Partition Key",
-            "default": false
-          },
-          "in_sorting_key": {
-            "type": "boolean",
-            "title": "In Sorting Key",
-            "default": false
-          },
-          "in_primary_key": {
-            "type": "boolean",
-            "title": "In Primary Key",
-            "default": false
-          },
-          "in_sampling_key": {
-            "type": "boolean",
-            "title": "In Sampling Key",
-            "default": false
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "database",
-          "table",
-          "name",
-          "position",
-          "type"
-        ],
-        "title": "ChColumn"
-      },
-      "ChDatabase": {
-        "properties": {
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Name"
-          },
-          "engine": {
-            "type": "string",
-            "title": "Engine",
-            "default": ""
-          },
-          "comment": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Comment"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "name"
-        ],
-        "title": "ChDatabase"
-      },
-      "ChDictionary": {
-        "properties": {
-          "database": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Database"
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Name"
-          },
-          "status": {
-            "type": "string",
-            "title": "Status",
-            "default": ""
-          },
-          "layout": {
-            "type": "string",
-            "title": "Layout",
-            "default": ""
-          },
-          "source": {
-            "type": "string",
-            "title": "Source",
-            "default": ""
-          },
-          "key_columns": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Key Columns",
-            "default": []
-          },
-          "lifetime_min": {
-            "type": "integer",
-            "title": "Lifetime Min",
-            "default": 0
-          },
-          "lifetime_max": {
-            "type": "integer",
-            "title": "Lifetime Max",
-            "default": 0
-          },
-          "comment": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Comment"
-          },
-          "create_query": {
-            "type": "string",
-            "title": "Create Query",
-            "default": ""
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "database",
-          "name"
-        ],
-        "title": "ChDictionary"
-      },
-      "ChDictionaryAttribute": {
-        "properties": {
-          "database": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Database"
-          },
-          "dictionary": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Dictionary"
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Name"
-          },
-          "position": {
-            "type": "integer",
-            "minimum": 1.0,
-            "title": "Position"
-          },
-          "type": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Type"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "database",
-          "dictionary",
-          "name",
-          "position",
-          "type"
-        ],
-        "title": "ChDictionaryAttribute"
-      },
-      "ChDictionaryCard": {
-        "properties": {
-          "card": {
-            "type": "string",
-            "const": "ch_dictionary",
-            "title": "Card",
-            "default": "ch_dictionary"
-          },
-          "ref": {
-            "$ref": "#/components/schemas/ObjectRef"
-          },
-          "dictionary": {
-            "$ref": "#/components/schemas/ChDictionary"
-          },
-          "attributes": {
-            "items": {
-              "$ref": "#/components/schemas/ChDictionaryAttribute"
-            },
-            "type": "array",
-            "title": "Attributes"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "ref",
-          "dictionary",
-          "attributes"
-        ],
-        "title": "ChDictionaryCard"
-      },
-      "ChSnapshot-Input": {
-        "properties": {
-          "kind": {
-            "type": "string",
-            "const": "clickhouse",
-            "title": "Kind",
-            "default": "clickhouse"
-          },
-          "databases": {
-            "items": {
-              "$ref": "#/components/schemas/ChDatabase"
-            },
-            "type": "array",
-            "title": "Databases",
-            "default": []
-          },
-          "tables": {
-            "items": {
-              "$ref": "#/components/schemas/ChTable"
-            },
-            "type": "array",
-            "title": "Tables",
-            "default": []
-          },
-          "columns": {
-            "items": {
-              "$ref": "#/components/schemas/ChColumn"
-            },
-            "type": "array",
-            "title": "Columns",
-            "default": []
-          },
-          "dictionaries": {
-            "items": {
-              "$ref": "#/components/schemas/ChDictionary"
-            },
-            "type": "array",
-            "title": "Dictionaries",
-            "default": []
-          },
-          "dictionary_attributes": {
-            "items": {
-              "$ref": "#/components/schemas/ChDictionaryAttribute"
-            },
-            "type": "array",
-            "title": "Dictionary Attributes",
-            "default": []
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "title": "ChSnapshot",
-        "description": "Снимок ClickHouse одной версии: плоские таблицы записей. Дерево:\nбаза → группа → объект."
-      },
-      "ChSnapshot-Output": {
-        "properties": {
-          "kind": {
-            "type": "string",
-            "const": "clickhouse",
-            "title": "Kind",
-            "default": "clickhouse"
-          },
-          "databases": {
-            "items": {
-              "$ref": "#/components/schemas/ChDatabase"
-            },
-            "type": "array",
-            "title": "Databases",
-            "default": []
-          },
-          "tables": {
-            "items": {
-              "$ref": "#/components/schemas/ChTable"
-            },
-            "type": "array",
-            "title": "Tables",
-            "default": []
-          },
-          "columns": {
-            "items": {
-              "$ref": "#/components/schemas/ChColumn"
-            },
-            "type": "array",
-            "title": "Columns",
-            "default": []
-          },
-          "dictionaries": {
-            "items": {
-              "$ref": "#/components/schemas/ChDictionary"
-            },
-            "type": "array",
-            "title": "Dictionaries",
-            "default": []
-          },
-          "dictionary_attributes": {
-            "items": {
-              "$ref": "#/components/schemas/ChDictionaryAttribute"
-            },
-            "type": "array",
-            "title": "Dictionary Attributes",
-            "default": []
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "title": "ChSnapshot",
-        "description": "Снимок ClickHouse одной версии: плоские таблицы записей. Дерево:\nбаза → группа → объект."
-      },
-      "ChTable": {
-        "properties": {
-          "database": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Database"
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Name"
-          },
-          "kind": {
-            "$ref": "#/components/schemas/ChTableKind"
-          },
-          "engine": {
-            "type": "string",
-            "title": "Engine",
-            "default": ""
-          },
-          "engine_full": {
-            "type": "string",
-            "title": "Engine Full",
-            "default": ""
-          },
-          "comment": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Comment"
-          },
-          "partition_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Partition Key"
-          },
-          "sorting_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Sorting Key"
-          },
-          "primary_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Primary Key"
-          },
-          "sampling_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Sampling Key"
-          },
-          "ttl": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ttl"
-          },
-          "settings": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "type": "object",
-            "title": "Settings"
-          },
-          "definition": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Definition"
-          },
-          "target": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Target"
-          },
-          "dependencies": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Dependencies",
-            "default": []
-          },
-          "total_rows": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Total Rows"
-          },
-          "total_bytes": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Total Bytes"
-          },
-          "metadata_modified_at": {
-            "type": "string",
-            "title": "Metadata Modified At",
-            "default": ""
-          },
-          "create_query": {
-            "type": "string",
-            "title": "Create Query",
-            "default": ""
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "database",
-          "name",
-          "kind"
-        ],
-        "title": "ChTable",
-        "description": "Таблица, представление или материализованное представление."
-      },
-      "ChTableCard": {
-        "properties": {
-          "card": {
-            "type": "string",
-            "const": "ch_table",
-            "title": "Card",
-            "default": "ch_table"
-          },
-          "ref": {
-            "$ref": "#/components/schemas/ObjectRef"
-          },
-          "table": {
-            "$ref": "#/components/schemas/ChTable"
-          },
-          "columns": {
-            "items": {
-              "$ref": "#/components/schemas/ChColumn"
-            },
-            "type": "array",
-            "title": "Columns"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "ref",
-          "table",
-          "columns"
-        ],
-        "title": "ChTableCard"
-      },
-      "ChTableKind": {
-        "type": "string",
-        "enum": [
-          "table",
-          "view",
-          "materialized",
-          "live",
-          "dictionary_table"
-        ],
-        "title": "ChTableKind"
-      },
       "ChangeStatus": {
         "type": "string",
         "enum": [
@@ -3169,6 +2759,37 @@
           "connection_id"
         ],
         "title": "ConnectionBody"
+      },
+      "ConnectionEntry": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "mine": {
+            "type": "boolean",
+            "title": "Mine"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "mine"
+        ],
+        "title": "ConnectionEntry",
+        "description": "Подключение из справочника глазами субъекта: id, имя, вид и владение."
       },
       "Deleted": {
         "properties": {
@@ -3938,7 +3559,7 @@
           "key"
         ],
         "title": "NodeColumn",
-        "description": "Колонка объекта глазами процесса: имя, тип, nullable и вхождение в\nпервичный ключ. Общая форма для Postgres и ClickHouse, чтобы карточка\nузла рисовалась одинаково."
+        "description": "Колонка объекта глазами процесса: имя, тип, nullable и вхождение в\nпервичный ключ. Общая форма для всех видов источников, чтобы карточка\nузла рисовалась одинаково."
       },
       "NodePosition": {
         "properties": {
@@ -3965,6 +3586,20 @@
         ],
         "title": "NodePosition",
         "description": "Положение узла набора на диаграмме вида."
+      },
+      "ObjectCard": {
+        "properties": {
+          "ref": {
+            "$ref": "#/components/schemas/ObjectRef"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ref"
+        ],
+        "title": "ObjectCard",
+        "description": "База карточек объектов для панели деталей: подкласс держит запись и\nеё части в родной форме и различается литералом card, который объявляет\nпакет-владелец вида."
       },
       "ObjectChange": {
         "properties": {
@@ -4204,1337 +3839,7 @@
           "attribute"
         ],
         "title": "PartKind",
-        "description": "Что за часть объекта изменилась."
-      },
-      "PgColumn": {
-        "properties": {
-          "database": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Database"
-          },
-          "schema_name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Schema Name"
-          },
-          "relation": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Relation"
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Name"
-          },
-          "ordinal": {
-            "type": "integer",
-            "minimum": 1.0,
-            "title": "Ordinal"
-          },
-          "type": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Type"
-          },
-          "nullable": {
-            "type": "boolean",
-            "title": "Nullable",
-            "default": true
-          },
-          "default": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Default"
-          },
-          "identity": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Identity"
-          },
-          "generated": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Generated"
-          },
-          "collation": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Collation"
-          },
-          "comment": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Comment"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "database",
-          "schema_name",
-          "relation",
-          "name",
-          "ordinal",
-          "type"
-        ],
-        "title": "PgColumn"
-      },
-      "PgConstraint": {
-        "properties": {
-          "database": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Database"
-          },
-          "schema_name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Schema Name"
-          },
-          "relation": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Relation"
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Name"
-          },
-          "kind": {
-            "$ref": "#/components/schemas/PgConstraintKind"
-          },
-          "columns": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Columns",
-            "default": []
-          },
-          "ref_schema": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ref Schema"
-          },
-          "ref_relation": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ref Relation"
-          },
-          "ref_columns": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ref Columns"
-          },
-          "on_update": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "On Update"
-          },
-          "on_delete": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "On Delete"
-          },
-          "deferrable": {
-            "type": "boolean",
-            "title": "Deferrable",
-            "default": false
-          },
-          "initially_deferred": {
-            "type": "boolean",
-            "title": "Initially Deferred",
-            "default": false
-          },
-          "definition": {
-            "type": "string",
-            "title": "Definition",
-            "default": ""
-          },
-          "comment": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Comment"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "database",
-          "schema_name",
-          "relation",
-          "name",
-          "kind"
-        ],
-        "title": "PgConstraint"
-      },
-      "PgConstraintKind": {
-        "type": "string",
-        "enum": [
-          "primary",
-          "unique",
-          "foreign",
-          "check",
-          "exclusion"
-        ],
-        "title": "PgConstraintKind"
-      },
-      "PgDatabase": {
-        "properties": {
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Name"
-          },
-          "owner": {
-            "type": "string",
-            "title": "Owner",
-            "default": ""
-          },
-          "encoding": {
-            "type": "string",
-            "title": "Encoding",
-            "default": ""
-          },
-          "collate": {
-            "type": "string",
-            "title": "Collate",
-            "default": ""
-          },
-          "comment": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Comment"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "name"
-        ],
-        "title": "PgDatabase"
-      },
-      "PgIndex": {
-        "properties": {
-          "database": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Database"
-          },
-          "schema_name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Schema Name"
-          },
-          "relation": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Relation"
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Name"
-          },
-          "method": {
-            "type": "string",
-            "title": "Method",
-            "default": "btree"
-          },
-          "unique": {
-            "type": "boolean",
-            "title": "Unique",
-            "default": false
-          },
-          "primary": {
-            "type": "boolean",
-            "title": "Primary",
-            "default": false
-          },
-          "columns": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Columns",
-            "default": []
-          },
-          "predicate": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Predicate"
-          },
-          "definition": {
-            "type": "string",
-            "title": "Definition",
-            "default": ""
-          },
-          "total_bytes": {
-            "type": "integer",
-            "title": "Total Bytes",
-            "default": 0
-          },
-          "comment": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Comment"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "database",
-          "schema_name",
-          "relation",
-          "name"
-        ],
-        "title": "PgIndex"
-      },
-      "PgRelation": {
-        "properties": {
-          "database": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Database"
-          },
-          "schema_name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Schema Name"
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Name"
-          },
-          "kind": {
-            "$ref": "#/components/schemas/PgRelationKind"
-          },
-          "owner": {
-            "type": "string",
-            "title": "Owner",
-            "default": ""
-          },
-          "comment": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Comment"
-          },
-          "tablespace": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Tablespace"
-          },
-          "persistence": {
-            "type": "string",
-            "title": "Persistence",
-            "default": "permanent"
-          },
-          "row_estimate": {
-            "type": "integer",
-            "title": "Row Estimate",
-            "default": 0
-          },
-          "total_bytes": {
-            "type": "integer",
-            "title": "Total Bytes",
-            "default": 0
-          },
-          "partition_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Partition Key"
-          },
-          "partition_of": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Partition Of"
-          },
-          "partition_bound": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Partition Bound"
-          },
-          "definition": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Definition"
-          },
-          "check_option": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Check Option"
-          },
-          "populated": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Populated"
-          },
-          "foreign_server": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Foreign Server"
-          },
-          "options": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "type": "object",
-            "title": "Options"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "database",
-          "schema_name",
-          "name",
-          "kind"
-        ],
-        "title": "PgRelation",
-        "description": "Таблица, секционированная таблица, секция, представление,\nматериализованное представление или foreign-таблица."
-      },
-      "PgRelationCard": {
-        "properties": {
-          "card": {
-            "type": "string",
-            "const": "pg_relation",
-            "title": "Card",
-            "default": "pg_relation"
-          },
-          "ref": {
-            "$ref": "#/components/schemas/ObjectRef"
-          },
-          "relation": {
-            "$ref": "#/components/schemas/PgRelation"
-          },
-          "columns": {
-            "items": {
-              "$ref": "#/components/schemas/PgColumn"
-            },
-            "type": "array",
-            "title": "Columns"
-          },
-          "constraints": {
-            "items": {
-              "$ref": "#/components/schemas/PgConstraint"
-            },
-            "type": "array",
-            "title": "Constraints"
-          },
-          "indexes": {
-            "items": {
-              "$ref": "#/components/schemas/PgIndex"
-            },
-            "type": "array",
-            "title": "Indexes"
-          },
-          "partitions": {
-            "items": {
-              "$ref": "#/components/schemas/PgRelation"
-            },
-            "type": "array",
-            "title": "Partitions"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "ref",
-          "relation",
-          "columns",
-          "constraints",
-          "indexes",
-          "partitions"
-        ],
-        "title": "PgRelationCard"
-      },
-      "PgRelationKind": {
-        "type": "string",
-        "enum": [
-          "table",
-          "partitioned",
-          "partition",
-          "view",
-          "materialized",
-          "foreign"
-        ],
-        "title": "PgRelationKind"
-      },
-      "PgRoutine": {
-        "properties": {
-          "database": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Database"
-          },
-          "schema_name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Schema Name"
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Name"
-          },
-          "signature": {
-            "type": "string",
-            "title": "Signature",
-            "default": ""
-          },
-          "kind": {
-            "$ref": "#/components/schemas/PgRoutineKind"
-          },
-          "owner": {
-            "type": "string",
-            "title": "Owner",
-            "default": ""
-          },
-          "language": {
-            "type": "string",
-            "title": "Language",
-            "default": ""
-          },
-          "arguments": {
-            "type": "string",
-            "title": "Arguments",
-            "default": ""
-          },
-          "returns": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Returns"
-          },
-          "returns_set": {
-            "type": "boolean",
-            "title": "Returns Set",
-            "default": false
-          },
-          "volatility": {
-            "type": "string",
-            "title": "Volatility",
-            "default": "volatile"
-          },
-          "strict": {
-            "type": "boolean",
-            "title": "Strict",
-            "default": false
-          },
-          "security_definer": {
-            "type": "boolean",
-            "title": "Security Definer",
-            "default": false
-          },
-          "parallel": {
-            "type": "string",
-            "title": "Parallel",
-            "default": "unsafe"
-          },
-          "cost": {
-            "type": "number",
-            "title": "Cost",
-            "default": 100.0
-          },
-          "rows": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Rows"
-          },
-          "body": {
-            "type": "string",
-            "title": "Body",
-            "default": ""
-          },
-          "definition": {
-            "type": "string",
-            "title": "Definition",
-            "default": ""
-          },
-          "comment": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Comment"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "database",
-          "schema_name",
-          "name",
-          "kind"
-        ],
-        "title": "PgRoutine",
-        "description": "Функция, процедура, агрегат или оконная функция; перегрузки различаются\nсигнатурой, она входит в ключ и в адрес."
-      },
-      "PgRoutineArg": {
-        "properties": {
-          "database": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Database"
-          },
-          "schema_name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Schema Name"
-          },
-          "routine": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Routine"
-          },
-          "signature": {
-            "type": "string",
-            "title": "Signature",
-            "default": ""
-          },
-          "position": {
-            "type": "integer",
-            "minimum": 0.0,
-            "title": "Position"
-          },
-          "name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Name"
-          },
-          "type": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Type"
-          },
-          "mode": {
-            "type": "string",
-            "title": "Mode",
-            "default": "in"
-          },
-          "default": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Default"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "database",
-          "schema_name",
-          "routine",
-          "position",
-          "type"
-        ],
-        "title": "PgRoutineArg"
-      },
-      "PgRoutineCard": {
-        "properties": {
-          "card": {
-            "type": "string",
-            "const": "pg_routine",
-            "title": "Card",
-            "default": "pg_routine"
-          },
-          "ref": {
-            "$ref": "#/components/schemas/ObjectRef"
-          },
-          "routine": {
-            "$ref": "#/components/schemas/PgRoutine"
-          },
-          "arguments": {
-            "items": {
-              "$ref": "#/components/schemas/PgRoutineArg"
-            },
-            "type": "array",
-            "title": "Arguments"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "ref",
-          "routine",
-          "arguments"
-        ],
-        "title": "PgRoutineCard"
-      },
-      "PgRoutineKind": {
-        "type": "string",
-        "enum": [
-          "function",
-          "procedure",
-          "aggregate",
-          "window"
-        ],
-        "title": "PgRoutineKind"
-      },
-      "PgSchema": {
-        "properties": {
-          "database": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Database"
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Name"
-          },
-          "owner": {
-            "type": "string",
-            "title": "Owner",
-            "default": ""
-          },
-          "comment": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Comment"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "database",
-          "name"
-        ],
-        "title": "PgSchema"
-      },
-      "PgSequence": {
-        "properties": {
-          "database": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Database"
-          },
-          "schema_name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Schema Name"
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Name"
-          },
-          "type": {
-            "type": "string",
-            "title": "Type",
-            "default": "bigint"
-          },
-          "start": {
-            "type": "integer",
-            "title": "Start",
-            "default": 1
-          },
-          "minimum": {
-            "type": "integer",
-            "title": "Minimum",
-            "default": 1
-          },
-          "maximum": {
-            "type": "integer",
-            "title": "Maximum",
-            "default": 9223372036854775807
-          },
-          "increment": {
-            "type": "integer",
-            "title": "Increment",
-            "default": 1
-          },
-          "cycle": {
-            "type": "boolean",
-            "title": "Cycle",
-            "default": false
-          },
-          "cache": {
-            "type": "integer",
-            "title": "Cache",
-            "default": 1
-          },
-          "last_value": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Value"
-          },
-          "owned_by": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Owned By"
-          },
-          "comment": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Comment"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "database",
-          "schema_name",
-          "name"
-        ],
-        "title": "PgSequence"
-      },
-      "PgSequenceCard": {
-        "properties": {
-          "card": {
-            "type": "string",
-            "const": "pg_sequence",
-            "title": "Card",
-            "default": "pg_sequence"
-          },
-          "ref": {
-            "$ref": "#/components/schemas/ObjectRef"
-          },
-          "sequence": {
-            "$ref": "#/components/schemas/PgSequence"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "ref",
-          "sequence"
-        ],
-        "title": "PgSequenceCard"
-      },
-      "PgSnapshot-Input": {
-        "properties": {
-          "kind": {
-            "type": "string",
-            "const": "postgres",
-            "title": "Kind",
-            "default": "postgres"
-          },
-          "databases": {
-            "items": {
-              "$ref": "#/components/schemas/PgDatabase"
-            },
-            "type": "array",
-            "title": "Databases",
-            "default": []
-          },
-          "schemas": {
-            "items": {
-              "$ref": "#/components/schemas/PgSchema"
-            },
-            "type": "array",
-            "title": "Schemas",
-            "default": []
-          },
-          "relations": {
-            "items": {
-              "$ref": "#/components/schemas/PgRelation"
-            },
-            "type": "array",
-            "title": "Relations",
-            "default": []
-          },
-          "columns": {
-            "items": {
-              "$ref": "#/components/schemas/PgColumn"
-            },
-            "type": "array",
-            "title": "Columns",
-            "default": []
-          },
-          "constraints": {
-            "items": {
-              "$ref": "#/components/schemas/PgConstraint"
-            },
-            "type": "array",
-            "title": "Constraints",
-            "default": []
-          },
-          "indexes": {
-            "items": {
-              "$ref": "#/components/schemas/PgIndex"
-            },
-            "type": "array",
-            "title": "Indexes",
-            "default": []
-          },
-          "routines": {
-            "items": {
-              "$ref": "#/components/schemas/PgRoutine"
-            },
-            "type": "array",
-            "title": "Routines",
-            "default": []
-          },
-          "routine_args": {
-            "items": {
-              "$ref": "#/components/schemas/PgRoutineArg"
-            },
-            "type": "array",
-            "title": "Routine Args",
-            "default": []
-          },
-          "sequences": {
-            "items": {
-              "$ref": "#/components/schemas/PgSequence"
-            },
-            "type": "array",
-            "title": "Sequences",
-            "default": []
-          },
-          "types": {
-            "items": {
-              "$ref": "#/components/schemas/PgType"
-            },
-            "type": "array",
-            "title": "Types",
-            "default": []
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "title": "PgSnapshot",
-        "description": "Снимок Postgres одной версии: плоские таблицы записей.\n\nПроверяет инварианты целиком (check), находит объект по адресу,\nраскрывается в дерево любой глубины: база → схема → группа → объект,\nу секционированной таблицы дети — её секции."
-      },
-      "PgSnapshot-Output": {
-        "properties": {
-          "kind": {
-            "type": "string",
-            "const": "postgres",
-            "title": "Kind",
-            "default": "postgres"
-          },
-          "databases": {
-            "items": {
-              "$ref": "#/components/schemas/PgDatabase"
-            },
-            "type": "array",
-            "title": "Databases",
-            "default": []
-          },
-          "schemas": {
-            "items": {
-              "$ref": "#/components/schemas/PgSchema"
-            },
-            "type": "array",
-            "title": "Schemas",
-            "default": []
-          },
-          "relations": {
-            "items": {
-              "$ref": "#/components/schemas/PgRelation"
-            },
-            "type": "array",
-            "title": "Relations",
-            "default": []
-          },
-          "columns": {
-            "items": {
-              "$ref": "#/components/schemas/PgColumn"
-            },
-            "type": "array",
-            "title": "Columns",
-            "default": []
-          },
-          "constraints": {
-            "items": {
-              "$ref": "#/components/schemas/PgConstraint"
-            },
-            "type": "array",
-            "title": "Constraints",
-            "default": []
-          },
-          "indexes": {
-            "items": {
-              "$ref": "#/components/schemas/PgIndex"
-            },
-            "type": "array",
-            "title": "Indexes",
-            "default": []
-          },
-          "routines": {
-            "items": {
-              "$ref": "#/components/schemas/PgRoutine"
-            },
-            "type": "array",
-            "title": "Routines",
-            "default": []
-          },
-          "routine_args": {
-            "items": {
-              "$ref": "#/components/schemas/PgRoutineArg"
-            },
-            "type": "array",
-            "title": "Routine Args",
-            "default": []
-          },
-          "sequences": {
-            "items": {
-              "$ref": "#/components/schemas/PgSequence"
-            },
-            "type": "array",
-            "title": "Sequences",
-            "default": []
-          },
-          "types": {
-            "items": {
-              "$ref": "#/components/schemas/PgType"
-            },
-            "type": "array",
-            "title": "Types",
-            "default": []
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "title": "PgSnapshot",
-        "description": "Снимок Postgres одной версии: плоские таблицы записей.\n\nПроверяет инварианты целиком (check), находит объект по адресу,\nраскрывается в дерево любой глубины: база → схема → группа → объект,\nу секционированной таблицы дети — её секции."
-      },
-      "PgType": {
-        "properties": {
-          "database": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Database"
-          },
-          "schema_name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Schema Name"
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Name"
-          },
-          "kind": {
-            "$ref": "#/components/schemas/PgTypeKind"
-          },
-          "owner": {
-            "type": "string",
-            "title": "Owner",
-            "default": ""
-          },
-          "labels": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Labels"
-          },
-          "base_type": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Base Type"
-          },
-          "constraint": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Constraint"
-          },
-          "attributes": {
-            "anyOf": [
-              {
-                "items": {
-                  "$ref": "#/components/schemas/PgTypeAttribute"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Attributes"
-          },
-          "comment": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Comment"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "database",
-          "schema_name",
-          "name",
-          "kind"
-        ],
-        "title": "PgType"
-      },
-      "PgTypeAttribute": {
-        "properties": {
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Name"
-          },
-          "type": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Type"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "name",
-          "type"
-        ],
-        "title": "PgTypeAttribute"
-      },
-      "PgTypeCard": {
-        "properties": {
-          "card": {
-            "type": "string",
-            "const": "pg_type",
-            "title": "Card",
-            "default": "pg_type"
-          },
-          "ref": {
-            "$ref": "#/components/schemas/ObjectRef"
-          },
-          "type": {
-            "$ref": "#/components/schemas/PgType"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "ref",
-          "type"
-        ],
-        "title": "PgTypeCard"
-      },
-      "PgTypeKind": {
-        "type": "string",
-        "enum": [
-          "enum",
-          "domain",
-          "composite",
-          "range"
-        ],
-        "title": "PgTypeKind"
+        "description": "Что за часть объекта: колонки, ограничения, индексы, аргументы,\nатрибуты. Ими различаются изменения в diff и подчасти семейства."
       },
       "PinBump": {
         "properties": {
@@ -5997,22 +4302,8 @@
       "SnapshotBody": {
         "properties": {
           "snapshot": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/PgSnapshot-Input"
-              },
-              {
-                "$ref": "#/components/schemas/ChSnapshot-Input"
-              }
-            ],
-            "title": "Snapshot",
-            "discriminator": {
-              "propertyName": "kind",
-              "mapping": {
-                "clickhouse": "#/components/schemas/ChSnapshot-Input",
-                "postgres": "#/components/schemas/PgSnapshot-Input"
-              }
-            }
+            "type": "object",
+            "title": "Snapshot"
           }
         },
         "additionalProperties": false,
@@ -6021,7 +4312,7 @@
           "snapshot"
         ],
         "title": "SnapshotBody",
-        "description": "Снимок целиком: путь стенда и переноса из staging."
+        "description": "Снимок целиком: путь стенда и переноса из staging. Форма снимка зависит\nот вида источника, поэтому тело разбирает реестр видов сервиса."
       },
       "Source": {
         "properties": {
@@ -6031,7 +4322,9 @@
             "title": "Id"
           },
           "kind": {
-            "$ref": "#/components/schemas/SourceKind"
+            "type": "string",
+            "minLength": 1,
+            "title": "Kind"
           },
           "name": {
             "type": "string",
@@ -6185,22 +4478,7 @@
             "$ref": "#/components/schemas/SourceDraft"
           },
           "snapshot": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/PgSnapshot-Output"
-              },
-              {
-                "$ref": "#/components/schemas/ChSnapshot-Output"
-              }
-            ],
-            "title": "Snapshot",
-            "discriminator": {
-              "propertyName": "kind",
-              "mapping": {
-                "clickhouse": "#/components/schemas/ChSnapshot-Output",
-                "postgres": "#/components/schemas/PgSnapshot-Output"
-              }
-            }
+            "$ref": "#/components/schemas/SourceSnapshot"
           },
           "diff": {
             "$ref": "#/components/schemas/SourceDiff"
@@ -6221,15 +4499,6 @@
         ],
         "title": "SourceDraftState",
         "description": "Черновик ручного источника, свёрнутый в снимок, и его diff относительно\nбазовой версии источника."
-      },
-      "SourceKind": {
-        "type": "string",
-        "enum": [
-          "postgres",
-          "clickhouse"
-        ],
-        "title": "SourceKind",
-        "description": "Форма снимка: системные каталоги какого сервера описывают источник."
       },
       "SourceOperationList": {
         "items": {
@@ -6269,10 +4538,27 @@
         "title": "SourceOpsBody",
         "description": "Порция операций ручного источника с номером, на который она рассчитана."
       },
+      "SourceSnapshot": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "title": "SourceSnapshot",
+        "description": "Снимок источника одной версии: плоские таблицы записей по частям.\n\nПодкласс объявляет вид (литерал kind), префикс таблиц хранения, части\n(PARTS, в порядке от родителей к детям) и семейства объектов\n(FAMILIES). По этим объявлениям база проверяет инварианты, считает\nобъекты, находит объект и колонки по адресу, отдаёт записи по частям.\nРодное у подкласса: дерево (children), карточка объекта (card), колонки\nузла (node_columns) и правки ручного источника (with_object,\nwithout_object). Каждый подкласс регистрируется в SourceKinds по своему\nвиду при объявлении."
+      },
       "SourceSpec": {
         "properties": {
           "kind": {
-            "$ref": "#/components/schemas/SourceKind"
+            "type": "string",
+            "minLength": 1,
+            "title": "Kind"
           },
           "name": {
             "type": "string",
@@ -6444,6 +4730,163 @@
         ],
         "title": "Staleness",
         "description": "Список устареваний процесса; пустой — всё сходится."
+      },
+      "Sync": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "source_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Source Id"
+          },
+          "connection_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Connection Id"
+          },
+          "started_by": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Started By"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SyncStatus"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/SyncScope"
+          },
+          "objects_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Objects Total"
+          },
+          "objects_done": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Objects Done",
+            "default": 0
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "source_id",
+          "connection_id",
+          "started_by",
+          "started_at",
+          "status"
+        ],
+        "title": "Sync",
+        "description": "Синхронизация источника: прогресс и итог."
+      },
+      "SyncRequest": {
+        "properties": {
+          "connection_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Connection Id"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/SyncScope"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "connection_id"
+        ],
+        "title": "SyncRequest",
+        "description": "Запрос синхронизации: привязанное подключение и охват."
+      },
+      "SyncScope": {
+        "properties": {
+          "schemas": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Schemas",
+            "default": []
+          },
+          "batch_size": {
+            "type": "integer",
+            "maximum": 10000.0,
+            "minimum": 1.0,
+            "title": "Batch Size",
+            "default": 200
+          },
+          "pause_ms": {
+            "type": "integer",
+            "maximum": 60000.0,
+            "minimum": 0.0,
+            "title": "Pause Ms",
+            "default": 0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "SyncScope",
+        "description": "Что и как снимать: схемы (пусто — все несистемные), размер порции и\nпауза между заходами инструмента в каталог базы."
+      },
+      "SyncStatus": {
+        "type": "string",
+        "enum": [
+          "running",
+          "done",
+          "failed",
+          "cancelled"
+        ],
+        "title": "SyncStatus"
       },
       "TreeKind": {
         "type": "string",

@@ -4,7 +4,20 @@ import { useEffect, useState, type ReactElement } from "react";
 import { ApiError, type CatalogApi } from "../api/client";
 import { renderRef, type Catalog, type ObjectCard, type ObjectRef, type ProcessNode } from "../model/catalog";
 import type { EditActions } from "../model/editing";
-import { Alert, Button, Chip, EmptyState, Eyebrow, IconButton, Select } from "../ui";
+import {
+  Alert,
+  Button,
+  Chip,
+  EmptyState,
+  Facts,
+  IconButton,
+  Note,
+  Panel,
+  PanelHead,
+  Section,
+  Select,
+  Toolbar,
+} from "../ui";
 import { ObjectCardPanel } from "./sources/ObjectCardPanel";
 
 type Props = {
@@ -42,7 +55,10 @@ export function ObjectPanel({ api, catalog, object, editing, retargetFor, onOpen
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setState({ status: "failed", message: error instanceof ApiError ? error.detail : String(error) });
+          setState({
+            status: "failed",
+            message: error instanceof ApiError ? error.detail : String(error),
+          });
         }
       });
 
@@ -54,99 +70,113 @@ export function ObjectPanel({ api, catalog, object, editing, retargetFor, onOpen
   const chosenLayer = layerId === "" ? catalog.layers[0]?.id : layerId;
 
   return (
-    <div className="detail" data-testid="object-panel" data-object={address} data-in-process={existing !== undefined}>
-      <header className="detail__head">
-        <div className="detail__title">
-          <Eyebrow>source object</Eyebrow>
-          <h2 className="detail__name mono">{ref.path.at(-1) ?? address}</h2>
-        </div>
-        <Chip tone="muted">{ref.kind}</Chip>
-        <IconButton aria-label="close details" onClick={onClose}>
-          <X size={16} />
-        </IconButton>
-      </header>
+    <div data-testid="object-panel" data-object={address} data-in-process={existing !== undefined}>
+      <Panel>
+        <PanelHead
+          eyebrow="source object"
+          name={ref.path.at(-1) ?? address}
+          mono
+          actions={
+            <>
+              <Chip tone="muted">{ref.kind}</Chip>
+              <IconButton size="sm" ghost aria-label="close details" onClick={onClose}>
+                <X size={14} />
+              </IconButton>
+            </>
+          }
+        />
 
-      <section className="detail__section" data-testid="object-actions">
-        <dl className="detail__facts">
-          <dt>address</dt>
-          <dd className="mono">{address}</dd>
-          <dt>version</dt>
-          <dd>{version < 0 ? "latest" : `v${version}`}</dd>
-        </dl>
-        {existing !== undefined && (
-          <div className="form__actions">
-            <Chip tone="draft">in layer {catalog.layer(existing.layer_id)?.name ?? "?"}</Chip>
-            <Button
-              size="tiny"
-              onClick={() => {
-                onOpenNode(existing.id);
-              }}
-            >
-              open node
-            </Button>
-          </div>
-        )}
-        {editing !== undefined && retargetFor !== undefined && (
-          <div className="form__actions">
-            <Button
-              size="tiny"
-              tone="signal"
-              icon={Crosshair}
-              disabled={existing !== undefined}
-              onClick={() => {
-                editing.retargetNode(retargetFor, ref);
-              }}
-            >
-              retarget {catalog.label(retargetFor.id)} here
-            </Button>
-          </div>
-        )}
-        {editing !== undefined && existing === undefined && retargetFor === undefined && (
-          <div className="form__actions object-panel__add">
-            <Select
-              aria-label="layer for the new node"
-              value={chosenLayer ?? ""}
-              onChange={(event) => {
-                setLayerId(event.target.value);
-              }}
-            >
-              {catalog.layers.map((layer) => (
-                <option key={layer.id} value={layer.id}>
-                  {layer.name}
-                </option>
-              ))}
-            </Select>
-            <Button
-              size="tiny"
-              tone="primary"
-              icon={Plus}
-              disabled={chosenLayer === undefined}
-              onClick={() => {
-                if (chosenLayer !== undefined) {
-                  editing.addNode(chosenLayer, ref);
-                }
-              }}
-            >
-              add to layer
-            </Button>
-          </div>
-        )}
-        {editing !== undefined && catalog.layers.length === 0 && (
-          <Alert tone="info" mark="no-layers">
-            Add a layer first: nodes live in layers.
-          </Alert>
-        )}
-      </section>
+        <Section mark="object-actions">
+          <Facts
+            facts={[
+              {
+                key: "address",
+                label: "address",
+                value: <span className="mono">{address}</span>,
+              },
+              {
+                key: "version",
+                label: "version",
+                value: version < 0 ? "latest" : `v${version}`,
+              },
+            ]}
+          />
+          {existing !== undefined && (
+            <Toolbar>
+              <Chip tone="draft">in layer {catalog.layer(existing.layer_id)?.name ?? "?"}</Chip>
+              <Button
+                size="sm"
+                onClick={() => {
+                  onOpenNode(existing.id);
+                }}
+              >
+                open node
+              </Button>
+            </Toolbar>
+          )}
+          {editing !== undefined && retargetFor !== undefined && (
+            <Toolbar>
+              <Button
+                size="sm"
+                tone="signal"
+                icon={Crosshair}
+                disabled={existing !== undefined}
+                onClick={() => {
+                  editing.retargetNode(retargetFor, ref);
+                }}
+              >
+                retarget {catalog.label(retargetFor.id)} here
+              </Button>
+            </Toolbar>
+          )}
+          {editing !== undefined && existing === undefined && retargetFor === undefined && (
+            <Toolbar mark="object-add">
+              <Select
+                aria-label="layer for the new node"
+                value={chosenLayer ?? ""}
+                onChange={(event) => {
+                  setLayerId(event.target.value);
+                }}
+              >
+                {catalog.layers.map((layer) => (
+                  <option key={layer.id} value={layer.id}>
+                    {layer.name}
+                  </option>
+                ))}
+              </Select>
+              <Button
+                tone="primary"
+                icon={Plus}
+                disabled={chosenLayer === undefined}
+                onClick={() => {
+                  if (chosenLayer !== undefined) {
+                    editing.addNode(chosenLayer, ref);
+                  }
+                }}
+              >
+                add to layer
+              </Button>
+            </Toolbar>
+          )}
+          {editing !== undefined && catalog.layers.length === 0 && (
+            <Alert tone="info" mark="no-layers">
+              Add a layer first: nodes live in layers.
+            </Alert>
+          )}
+        </Section>
 
-      {state.status === "loading" && <p className="detail__empty">loading the object…</p>}
-      {state.status === "failed" && (
-        <EmptyState title="the object is not available">{state.message}</EmptyState>
-      )}
-      {state.status === "card" && (
-        <section className="detail__section detail__source-card" data-testid="object-card-section">
-          <ObjectCardPanel card={state.card} />
-        </section>
-      )}
+        {state.status === "loading" && (
+          <Section>
+            <Note mark="detail-empty">loading the object…</Note>
+          </Section>
+        )}
+        {state.status === "failed" && <EmptyState title="the object is not available">{state.message}</EmptyState>}
+        {state.status === "card" && (
+          <Section mark="object-card-section">
+            <ObjectCardPanel card={state.card} flat />
+          </Section>
+        )}
+      </Panel>
     </div>
   );
 }

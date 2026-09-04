@@ -15,8 +15,8 @@ type Props = {
   invalid?: boolean;
   /** Ряд контролов в строку вместо колонки с подписью. */
   row?: boolean;
-  /** Контрол перед подписью: чекбокс в строку. */
-  controlFirst?: boolean;
+  /** Чекбокс с подписью в строку высотой в контрол. */
+  check?: boolean;
   /** Группа контролов со своими label внутри: обёртка div, а не label. */
   group?: boolean;
   dataArg?: string | undefined;
@@ -35,7 +35,7 @@ export function Field({
   issue,
   invalid = false,
   row = false,
-  controlFirst = false,
+  check = false,
   group = false,
   dataArg,
   dataPath,
@@ -45,16 +45,18 @@ export function Field({
   if (row) {
     classes.push("field--row");
   }
+  if (check) {
+    classes.push("field--check");
+  }
   if (invalid) {
     classes.push("field--invalid");
   }
 
-  const control =
-    bound !== undefined && bound !== "" ? <span className="field__bound">◂ {bound}</span> : children;
+  const control = bound !== undefined && bound !== "" ? <span className="field__bound">◂ {bound}</span> : children;
 
   const body = (
     <>
-      {controlFirst && control}
+      {check && control}
       {label !== undefined && (
         <span className={mono ? "field__label mono" : "field__label"}>
           {label}
@@ -62,7 +64,7 @@ export function Field({
         </span>
       )}
       {hint !== undefined && hint !== "" && <span className="field__hint">{hint}</span>}
-      {!controlFirst && control}
+      {!check && control}
       {issue !== undefined && issue !== "" && <span className="field__issue">{issue}</span>}
     </>
   );

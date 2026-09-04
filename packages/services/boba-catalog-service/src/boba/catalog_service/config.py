@@ -34,7 +34,10 @@ class CatalogConfig(BaseModel):
 
     def require_conn(self) -> PostgresConfig:
         if self.connection is None:
-            msg = 'catalog.connection is not set: connection = "${postgres}"'
+            msg = (
+                "section [catalog]: key connection is not set, expected a postgres "
+                'profile reference such as connection = "${postgres}"'
+            )
             raise ValueError(msg)
 
         return self.connection

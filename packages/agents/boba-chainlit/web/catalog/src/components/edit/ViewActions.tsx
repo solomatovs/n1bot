@@ -3,8 +3,24 @@ import { useEffect, useState, type FormEvent, type ReactElement } from "react";
 
 import { ApiError, type CatalogApi } from "../../api/client";
 import { Catalog, type Share, type Snapshot, type View, type ViewSpec } from "../../model/catalog";
-import { Alert, Button, Chip, Field, IconButton, Input, Select, useToast } from "../../ui";
-import { Dialog } from "./Dialog";
+import {
+  Alert,
+  Button,
+  Chip,
+  Dialog,
+  Field,
+  Form,
+  IconButton,
+  Input,
+  List,
+  ListAside,
+  ListName,
+  ListRow,
+  Note,
+  Select,
+  Toolbar,
+  useToast,
+} from "../../ui";
 
 type Props = {
   api: CatalogApi;
@@ -96,7 +112,7 @@ export function ViewActions({ api, view, onChanged, onDeleted }: Props): ReactEl
           <Alert tone="info">
             The view “{view.name}” and its saved layout will be deleted. The catalog itself is not touched.
           </Alert>
-          <div className="form__actions">
+          <Toolbar>
             <Button
               tone="danger"
               disabled={busy}
@@ -124,7 +140,7 @@ export function ViewActions({ api, view, onChanged, onDeleted }: Props): ReactEl
             >
               cancel
             </Button>
-          </div>
+          </Toolbar>
         </Dialog>
       )}
     </>
@@ -176,10 +192,11 @@ function ViewForm({ api, view, busy, onSave, onClose }: FormProps): ReactElement
 
   return (
     <Dialog title="view" mark="view-form" onClose={onClose}>
-      <form className="form" onSubmit={submit} data-testid="view-form">
+      <Form onSubmit={submit} mark="view-form">
         <Field label="name" required>
           <Input
             mono
+            fill
             autoFocus
             aria-label="view name"
             value={name}
@@ -188,7 +205,7 @@ function ViewForm({ api, view, busy, onSave, onClose }: FormProps): ReactElement
             }}
           />
         </Field>
-        {choices.status === "loading" && <p className="form__note">loading the catalog…</p>}
+        {choices.status === "loading" && <Note>loading the catalog…</Note>}
         {choices.status === "failed" && <Alert tone="error">{choices.message}</Alert>}
         {choices.status === "ready" && (
           <>
@@ -196,7 +213,10 @@ function ViewForm({ api, view, busy, onSave, onClose }: FormProps): ReactElement
               mark="view-layers"
               label="layers"
               hint="whole layers; nothing checked means no layer filter"
-              items={choices.catalog.layers.map((layer) => ({ id: layer.id, label: layer.name }))}
+              items={choices.catalog.layers.map((layer) => ({
+                id: layer.id,
+                label: layer.name,
+              }))}
               chosen={layers}
               onChange={setLayers}
             />
@@ -213,15 +233,15 @@ function ViewForm({ api, view, busy, onSave, onClose }: FormProps): ReactElement
             />
           </>
         )}
-        <div className="form__actions">
+        <Toolbar>
           <Button tone="primary" type="submit" disabled={busy || name.trim() === ""}>
             save view
           </Button>
           <Button tone="ghost" onClick={onClose}>
             cancel
           </Button>
-        </div>
-      </form>
+        </Toolbar>
+      </Form>
     </Dialog>
   );
 }
@@ -250,10 +270,10 @@ function ChoiceList({ mark, label, hint, items, chosen, onChange }: ChoiceProps)
 
   return (
     <Field label={label} hint={hint} group>
-      <ul className="choices" data-testid={mark}>
+      <List kind="boxed" mark={mark}>
         {items.map((item) => (
           <li key={item.id}>
-            <label className="choices__item mono">
+            <Field check mono label={item.label}>
               <input
                 type="checkbox"
                 checked={chosen.has(item.id)}
@@ -261,12 +281,15 @@ function ChoiceList({ mark, label, hint, items, chosen, onChange }: ChoiceProps)
                   toggle(item.id);
                 }}
               />
-              {item.label}
-            </label>
+            </Field>
           </li>
         ))}
-        {items.length === 0 && <li className="choices__empty">nothing to choose from</li>}
-      </ul>
+        {items.length === 0 && (
+          <li>
+            <Note>nothing to choose from</Note>
+          </li>
+        )}
+      </List>
     </Field>
   );
 }
@@ -331,25 +354,28 @@ function SharesDialog({ api, view, onClose }: SharesProps): ReactElement {
     <Dialog title="who can see this view" mark="view-shares" onClose={onClose}>
       {state.status === "failed" && <Alert tone="error">{state.message}</Alert>}
       {state.status === "ready" && (
-        <ul className="shares" data-testid="shares-list">
-          {state.shares.length === 0 && <li className="choices__empty">only you so far</li>}
+        <List kind="spaced" mark="shares-list" empty="only you so far">
           {state.shares.map((share) => (
-            <li key={`${share.kind}:${share.target}`} className="shares__item" data-share={`${share.kind}:${share.target}`}>
+            <ListRow key={`${share.kind}:${share.target}`} data-share={`${share.kind}:${share.target}`}>
               <Chip tone="muted">{share.kind}</Chip>
-              <span className="mono">{share.target}</span>
-              <IconButton
-                aria-label={`revoke ${share.kind} ${share.target}`}
-                onClick={() => {
-                  remove(share);
-                }}
-              >
-                <Trash2 size={12} />
-              </IconButton>
-            </li>
+              <ListName>{share.target}</ListName>
+              <ListAside>
+                <IconButton
+                  size="sm"
+                  ghost
+                  aria-label={`revoke ${share.kind} ${share.target}`}
+                  onClick={() => {
+                    remove(share);
+                  }}
+                >
+                  <Trash2 size={12} />
+                </IconButton>
+              </ListAside>
+            </ListRow>
           ))}
-        </ul>
+        </List>
       )}
-      <form className="form shares__add" onSubmit={add} data-testid="share-form">
+      <Form inline onSubmit={add} mark="share-form">
         <Select
           aria-label="share target kind"
           value={kind}
@@ -362,6 +388,7 @@ function SharesDialog({ api, view, onClose }: SharesProps): ReactElement {
         </Select>
         <Input
           mono
+          fill
           aria-label="share target"
           placeholder={kind === "role" ? "role name" : "user id"}
           value={target}
@@ -369,10 +396,10 @@ function SharesDialog({ api, view, onClose }: SharesProps): ReactElement {
             setTarget(event.target.value);
           }}
         />
-        <Button tone="primary" size="tiny" type="submit" disabled={target.trim() === ""}>
+        <Button tone="primary" type="submit" disabled={target.trim() === ""}>
           share
         </Button>
-      </form>
+      </Form>
     </Dialog>
   );
 }

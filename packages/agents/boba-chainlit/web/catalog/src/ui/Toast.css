@@ -1,6 +1,6 @@
 .toasts {
   position: fixed;
-  top: calc(var(--topbar-h, 44px) + 10px);
+  top: calc(var(--h-topbar) + var(--s2));
   left: 50%;
   transform: translateX(-50%);
   z-index: 90;
@@ -9,12 +9,12 @@
   align-items: center;
   gap: var(--s2);
   pointer-events: none;
-  max-width: min(560px, calc(100vw - 32px));
+  max-width: min(560px, calc(100vw - var(--s8)));
 }
 
 .toast {
   pointer-events: auto;
-  padding: 8px 14px;
+  padding: var(--s2) var(--s4);
   border: 1px solid var(--hairline);
   border-radius: var(--r-pill);
   background: var(--surface);
@@ -23,10 +23,12 @@
   font-size: var(--fs-micro);
   text-align: left;
   white-space: pre-wrap;
-  box-shadow: var(--shadow-2, var(--shadow-1));
+  box-shadow: var(--shadow-pop);
   cursor: pointer;
   animation: toast-in 0.18s ease-out;
-  transition: opacity 0.3s ease, transform 0.3s ease;
+  transition:
+    opacity 0.3s ease,
+    transform 0.3s ease;
 }
 
 .toast--success {

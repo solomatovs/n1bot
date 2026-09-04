@@ -1,9 +1,8 @@
 import { Pencil, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { useServices } from "../app";
-import { Dialog } from "../components/edit/Dialog";
 import { ObjectCardPanel } from "../components/sources/ObjectCardPanel";
 import { ObjectForm } from "../components/sources/ObjectForm";
 import { SourceTree } from "../components/sources/SourceTree";
@@ -19,12 +18,35 @@ import type {
 } from "../model/catalog";
 import { RefParam } from "../model/refParam";
 import { SourceDraftEditor } from "../model/sourceEditor";
-import { Alert, Button, Chip, EmptyState, IconButton, useToast } from "../ui";
+import {
+  Alert,
+  Button,
+  Chip,
+  Dialog,
+  EmptyState,
+  IconButton,
+  Page,
+  PageBody,
+  PageNotices,
+  Pane,
+  Scene,
+  Toolbar,
+  Topbar,
+  TopbarHint,
+  TopbarLink,
+  TopbarSpacer,
+  TopbarTitle,
+  useToast,
+} from "../ui";
 import { describe } from "./SourcePage";
 
 type Loaded = { access: Access; source: Source; state: SourceDraftState };
 type LoadState = { status: "loading" } | { status: "failed"; message: string } | { status: "ready"; loaded: Loaded };
-type Panel = { status: "empty" } | { status: "loading" } | { status: "failed"; message: string } | { status: "card"; card: ObjectCard };
+type Panel =
+  | { status: "empty" }
+  | { status: "loading" }
+  | { status: "failed"; message: string }
+  | { status: "card"; card: ObjectCard };
 type DialogState = { kind: "none" } | { kind: "add" } | { kind: "edit"; initial: ManualObject } | { kind: "discard" };
 
 /** Черновик ручного источника: дерево свёрнутого снимка с пометками, карточка
@@ -55,7 +77,10 @@ function DraftView({ sourceId, draftId }: { sourceId: string; draftId: string })
         return current;
       }
 
-      return { status: "ready", loaded: { ...current.loaded, state: draftState } };
+      return {
+        status: "ready",
+        loaded: { ...current.loaded, state: draftState },
+      };
     });
   }, []);
 
@@ -68,7 +93,10 @@ function DraftView({ sourceId, draftId }: { sourceId: string; draftId: string })
         }
 
         editor.current = new SourceDraftEditor(api, draftId, draftState, takeState);
-        setState({ status: "ready", loaded: { access, source, state: draftState } });
+        setState({
+          status: "ready",
+          loaded: { access, source, state: draftState },
+        });
       })
       .catch((error: unknown) => {
         if (!cancelled) {
@@ -215,55 +243,48 @@ function DraftView({ sourceId, draftId }: { sourceId: string; draftId: string })
     return undefined;
   };
 
-  const actions = card !== undefined && open && editable ? (
-    <>
-      <IconButton
-        aria-label="edit object"
-        onClick={() => {
-          const initial = objectOf();
-          if (initial !== undefined) {
-            setDialog({ kind: "edit", initial });
-          }
-        }}
-      >
-        <Pencil size={16} />
-      </IconButton>
-      <IconButton
-        aria-label="remove object"
-        onClick={() => {
-          apply([{ op: "remove_object", path: card.ref.path }], () => {
-            setRef(undefined);
-          });
-        }}
-      >
-        <Trash2 size={16} />
-      </IconButton>
-    </>
-  ) : undefined;
+  const actions =
+    card !== undefined && open && editable ? (
+      <>
+        <IconButton
+          size="sm"
+          ghost
+          aria-label="edit object"
+          onClick={() => {
+            const initial = objectOf();
+            if (initial !== undefined) {
+              setDialog({ kind: "edit", initial });
+            }
+          }}
+        >
+          <Pencil size={14} />
+        </IconButton>
+        <IconButton
+          size="sm"
+          ghost
+          aria-label="remove object"
+          onClick={() => {
+            apply([{ op: "remove_object", path: card.ref.path }], () => {
+              setRef(undefined);
+            });
+          }}
+        >
+          <Trash2 size={14} />
+        </IconButton>
+      </>
+    ) : undefined;
 
   return (
-    <div
-      className="page"
-      data-testid="source-draft-page"
-      data-source={source.name}
-      data-seq={draftState.seq}
-      data-editable={open}
-    >
-      <header className="topbar">
-        <Link to="/" className="topbar__home">
-          catalog
-        </Link>
-        <Link to={`/sources/${source.id}`} className="topbar__home">
-          {source.name}
-        </Link>
-        <span className="topbar__title" data-testid="page-title">
-          {draftState.draft.name}
-        </span>
+    <Page mark="source-draft-page" data-source={source.name} data-seq={draftState.seq} data-editable={open}>
+      <Topbar>
+        <TopbarLink to="/">catalog</TopbarLink>
+        <TopbarLink to={`/sources/${source.id}`}>{source.name}</TopbarLink>
+        <TopbarTitle>{draftState.draft.name}</TopbarTitle>
         <Chip tone="muted">{`draft · seq ${draftState.seq} · over v${draftState.draft.base_version}`}</Chip>
         {open && (
           <>
             <Button
-              size="tiny"
+              size="sm"
               icon={Plus}
               onClick={() => {
                 setDialog({ kind: "add" });
@@ -273,7 +294,7 @@ function DraftView({ sourceId, draftId }: { sourceId: string; draftId: string })
               object
             </Button>
             <Button
-              size="tiny"
+              size="sm"
               tone="primary"
               data-testid="publish-source-draft"
               onClick={() => {
@@ -291,7 +312,7 @@ function DraftView({ sourceId, draftId }: { sourceId: string; draftId: string })
               publish
             </Button>
             <Button
-              size="tiny"
+              size="sm"
               tone="ghost"
               data-testid="discard-source-draft"
               onClick={() => {
@@ -302,19 +323,21 @@ function DraftView({ sourceId, draftId }: { sourceId: string; draftId: string })
             </Button>
           </>
         )}
-        <span className="topbar__spacer" />
-        <span className="topbar__hint mono">{draftState.diff.entries.length} changes</span>
-      </header>
-      {draftState.draft.status !== "open" && (
-        <Alert tone="info" mark="source-draft-closed">
-          This draft is {draftState.draft.status}; it is read-only now.
-        </Alert>
-      )}
-      <div className="page__body" data-pane={true} data-detail={panel.status !== "empty"}>
-        <aside className="page__pane">
+        <TopbarSpacer />
+        <TopbarHint>{draftState.diff.entries.length} changes</TopbarHint>
+      </Topbar>
+      <PageNotices>
+        {draftState.draft.status !== "open" && (
+          <Alert tone="info" mark="source-draft-closed">
+            This draft is {draftState.draft.status}; it is read-only now.
+          </Alert>
+        )}
+      </PageNotices>
+      <PageBody pane={true} detail={false}>
+        <Pane>
           <SourceTree load={loadTree} reloadKey={String(draftState.seq)} selected={selected} onSelect={select} />
-        </aside>
-        <main className="page__scene page__scene--panel">
+        </Pane>
+        <Scene panel>
           {panel.status === "empty" && (
             <EmptyState fill title="pick an object in the tree">
               {open ? "or add a new one" : ""}
@@ -327,8 +350,8 @@ function DraftView({ sourceId, draftId }: { sourceId: string; draftId: string })
             </EmptyState>
           )}
           {card !== undefined && <ObjectCardPanel card={card} actions={actions} />}
-        </main>
-      </div>
+        </Scene>
+      </PageBody>
       {dialog.kind === "add" && (
         <ObjectForm
           kind={source.kind}
@@ -336,7 +359,11 @@ function DraftView({ sourceId, draftId }: { sourceId: string; draftId: string })
           onSave={(object) => {
             setDialog({ kind: "none" });
             apply([{ op: "add_object", object }], () => {
-              setRef({ source_id: source.id, kind: source.kind === "postgres" ? "relation" : "table", path: object.path });
+              setRef({
+                source_id: source.id,
+                kind: source.kind === "postgres" ? "relation" : "table",
+                path: object.path,
+              });
             });
           }}
           onClose={() => {
@@ -366,7 +393,7 @@ function DraftView({ sourceId, draftId }: { sourceId: string; draftId: string })
           }}
         >
           <Alert tone="info">The draft “{draftState.draft.name}” will be closed as discarded.</Alert>
-          <div className="form__actions">
+          <Toolbar>
             <Button
               tone="danger"
               onClick={() => {
@@ -391,9 +418,9 @@ function DraftView({ sourceId, draftId }: { sourceId: string; draftId: string })
             >
               keep editing
             </Button>
-          </div>
+          </Toolbar>
         </Dialog>
       )}
-    </div>
+    </Page>
   );
 }

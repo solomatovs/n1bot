@@ -1,7 +1,15 @@
 import { useMemo, useState, type FormEvent, type ReactElement } from "react";
 
-import { renderRef, type Catalog, type Flow, type LoadField, type LoadValue, type NodeColumn, type ObjectRef } from "../../model/catalog";
-import { Button, Field, Input, Select, TextArea } from "../../ui";
+import {
+  renderRef,
+  type Catalog,
+  type Flow,
+  type LoadField,
+  type LoadValue,
+  type NodeColumn,
+  type ObjectRef,
+} from "../../model/catalog";
+import { Button, Field, Form, Input, Note, Select, TextArea, Toolbar, ToolbarSpacer } from "../../ui";
 
 type Props = {
   catalog: Catalog;
@@ -18,7 +26,9 @@ type Props = {
  * узлов-рутин процесса; описание. Форма строится по fields вида. */
 export function FlowForm({ catalog, flow, pickTarget = false, onSave, onCancel, onDelete }: Props): ReactElement {
   const [kindId, setKindId] = useState(flow.load.kind_id);
-  const [values, setValues] = useState<Record<string, LoadValue>>({ ...flow.load.values });
+  const [values, setValues] = useState<Record<string, LoadValue>>({
+    ...flow.load.values,
+  });
   const [description, setDescription] = useState(flow.description);
   const [targetId, setTargetId] = useState(flow.to_node_id);
 
@@ -47,7 +57,12 @@ export function FlowForm({ catalog, flow, pickTarget = false, onSave, onCancel, 
 
   const submit = (event: FormEvent): void => {
     event.preventDefault();
-    onSave({ ...flow, to_node_id: targetId, load: { kind_id: kindId, values }, description: description.trim() });
+    onSave({
+      ...flow,
+      to_node_id: targetId,
+      load: { kind_id: kindId, values },
+      description: description.trim(),
+    });
   };
 
   const missing = (kind?.fields ?? []).filter((field) => field.required && values[field.name] === undefined);
@@ -65,13 +80,14 @@ export function FlowForm({ catalog, flow, pickTarget = false, onSave, onCancel, 
   };
 
   return (
-    <form className="form" onSubmit={submit} data-testid="flow-form">
-      <p className="form__note mono">
+    <Form onSubmit={submit} mark="flow-form">
+      <Note mono>
         {source} → {target}
-      </p>
+      </Note>
       {pickTarget && (
         <Field label="to node" required>
           <Select
+            fill
             value={targetId}
             aria-label="flow target"
             onChange={(event) => {
@@ -90,6 +106,7 @@ export function FlowForm({ catalog, flow, pickTarget = false, onSave, onCancel, 
       )}
       <Field label="load kind" required>
         <Select
+          fill
           value={kindId}
           aria-label="load kind"
           onChange={(event) => {
@@ -111,13 +128,17 @@ export function FlowForm({ catalog, flow, pickTarget = false, onSave, onCancel, 
             field={field}
             value={values[field.name]}
             columns={columnsFor(field)}
-            routines={routines.map((node) => ({ ref: node.ref, label: catalog.label(node.id) }))}
+            routines={routines.map((node) => ({
+              ref: node.ref,
+              label: catalog.label(node.id),
+            }))}
             onChange={set}
           />
         </Field>
       ))}
       <Field label="description">
         <TextArea
+          fill
           value={description}
           aria-label="flow description"
           rows={2}
@@ -126,7 +147,7 @@ export function FlowForm({ catalog, flow, pickTarget = false, onSave, onCancel, 
           }}
         />
       </Field>
-      <div className="form__actions">
+      <Toolbar>
         <Button tone="primary" type="submit" disabled={kindId === "" || targetId === "" || missing.length > 0}>
           save flow
         </Button>
@@ -135,14 +156,14 @@ export function FlowForm({ catalog, flow, pickTarget = false, onSave, onCancel, 
         </Button>
         {onDelete !== undefined && (
           <>
-            <span className="form__spacer" />
+            <ToolbarSpacer />
             <Button tone="danger" onClick={onDelete}>
               remove flow
             </Button>
           </>
         )}
-      </div>
-    </form>
+      </Toolbar>
+    </Form>
   );
 }
 
@@ -177,6 +198,7 @@ function LoadValueInput({ field, value, columns, routines, onChange }: InputProp
     return (
       <Input
         mono
+        fill
         type="number"
         aria-label={label}
         value={typeof value === "number" ? String(value) : ""}
@@ -191,6 +213,7 @@ function LoadValueInput({ field, value, columns, routines, onChange }: InputProp
     const chosen = typeof value === "string" ? value : "";
     return (
       <Select
+        fill
         aria-label={label}
         value={chosen}
         onChange={(event) => {
@@ -211,6 +234,7 @@ function LoadValueInput({ field, value, columns, routines, onChange }: InputProp
     const chosen = Array.isArray(value) ? value : [];
     return (
       <Select
+        fill
         multiple
         aria-label={label}
         value={chosen}
@@ -232,6 +256,7 @@ function LoadValueInput({ field, value, columns, routines, onChange }: InputProp
     const chosen = typeof value === "object" && !Array.isArray(value) ? renderRef(value) : "";
     return (
       <Select
+        fill
         aria-label={label}
         value={chosen}
         onChange={(event) => {
@@ -252,6 +277,7 @@ function LoadValueInput({ field, value, columns, routines, onChange }: InputProp
   return (
     <Input
       mono
+      fill
       aria-label={label}
       value={typeof value === "string" ? value : ""}
       onChange={(event) => {

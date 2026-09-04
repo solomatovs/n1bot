@@ -12,12 +12,17 @@ dependencies = [
     "boba-db-postgres==0.0.15.dev8",
     "boba-identity==0.0.15.dev8",
     "boba-messaging==0.0.15.dev8",
+    "boba-cancellation==0.0.15.dev8",
+    "boba-toolkit==0.0.15.dev8",
+    "boba-toolrun==0.0.15.dev8",
     "pydantic>=2.10,<3",
     "psycopg[binary,pool]>=3.2,<4",
 ]
 
 [project.optional-dependencies]
 dev = [
+    "boba-db-clickhouse==0.0.15.dev8",
+    "boba-stand==0.0.15.dev8",
     "pytest>=8",
 ]
 

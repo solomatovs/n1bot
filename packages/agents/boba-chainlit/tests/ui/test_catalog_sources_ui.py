@@ -203,8 +203,8 @@ class TestPostgresTree:
 
         card = page.get_by_test_id("object-card")
         expect(card).to_have_attribute("data-card", "pg_relation")
-        expect(card.locator(".detail__name")).to_have_text("orders")
-        expect(card.locator(".detail__description--head")).to_have_text("Заказы")
+        expect(card.get_by_test_id("panel-name")).to_have_text("orders")
+        expect(card.get_by_test_id("card-comment")).to_have_text("Заказы")
         facts = card.get_by_test_id("card-facts")
         expect(facts).to_contain_text("partition key")
         expect(facts).to_contain_text("RANGE (created_at)")
@@ -213,14 +213,14 @@ class TestPostgresTree:
         rows = card.get_by_test_id("card-columns").locator("tbody tr")
         expect(rows).to_have_count(4)
         amount = rows.filter(has_text="amount")
-        expect(amount.locator(".detail__col-type")).to_have_text("numeric(12,2)")
-        expect(amount.locator(".detail__col-null")).to_have_text("not null")
-        expect(amount.locator(".detail__col-comment")).to_have_text("Сумма")
+        expect(amount.locator('[data-col="type"]')).to_have_text("numeric(12,2)")
+        expect(amount.locator('[data-col="null"]')).to_have_text("not null")
+        expect(amount.locator('[data-col="comment"]')).to_have_text("Сумма")
         expect(
-            rows.filter(has_text="created_at").locator(".detail__col-extra")
+            rows.filter(has_text="created_at").locator('[data-col="extra"]')
         ).to_contain_text("default now()")
         expect(
-            rows.filter(has_text="id").first.locator(".detail__icon svg")
+            rows.filter(has_text="id").first.locator("td.table__icon svg")
         ).to_have_count(1)
 
         expect(card.get_by_test_id("card-constraints")).to_contain_text(
@@ -249,7 +249,7 @@ class TestPostgresTree:
 
         card = page.get_by_test_id("object-card")
         expect(card).to_have_attribute("data-card", "pg_routine")
-        expect(card.locator(".detail__name")).to_have_text("load_orders(date)")
+        expect(card.get_by_test_id("panel-name")).to_have_text("load_orders(date)")
         expect(card.get_by_test_id("card-facts")).to_contain_text("plpgsql")
         expect(card.get_by_test_id("card-arguments").locator("tbody tr")).to_have_count(
             1
@@ -325,10 +325,10 @@ class TestClickHouseTree:
         rows = card.get_by_test_id("card-columns").locator("tbody tr")
         expect(rows).to_have_count(3)
         expect(
-            rows.filter(has_text="payload").locator(".detail__col-extra")
+            rows.filter(has_text="payload").locator('[data-col="extra"]')
         ).to_contain_text("codec ZSTD(3)")
         expect(
-            rows.filter(has_text="ts").first.locator(".detail__icon svg")
+            rows.filter(has_text="ts").first.locator("td.table__icon svg")
         ).to_have_count(1)
         expect(card.get_by_test_id("card-create-query")).to_contain_text(
             "CREATE TABLE dwh.events"
@@ -404,16 +404,14 @@ class TestManualSource:
         expect(form).to_have_count(0)
         card = page.get_by_test_id("object-card")
         expect(card).to_have_attribute("data-path", "planned/dm/sales")
-        expect(card.locator(".detail__description--head")).to_have_text(
-            "Витрина продаж"
-        )
+        expect(card.get_by_test_id("card-comment")).to_have_text("Витрина продаж")
         rows = card.get_by_test_id("card-columns").locator("tbody tr")
         expect(rows).to_have_count(2)
-        expect(rows.filter(has_text="day").locator(".detail__col-null")).to_have_text(
+        expect(rows.filter(has_text="day").locator('[data-col="null"]')).to_have_text(
             "not null"
         )
         expect(
-            rows.filter(has_text="total").locator(".detail__col-comment")
+            rows.filter(has_text="total").locator('[data-col="comment"]')
         ).to_have_text("Сумма")
         expect(_node(page, "planned")).to_have_attribute("data-status", "modified")
         _expand(page, "planned", "planned")
@@ -431,7 +429,7 @@ class TestManualSource:
         form.get_by_role("button", name="save object").click()
         expect(draft_page).to_have_attribute("data-seq", "2", timeout=15_000)
         expect(card.get_by_test_id("card-columns").locator("tbody tr")).to_have_count(1)
-        expect(card.locator(".detail__head")).to_contain_text("view")
+        expect(card.locator("header")).to_contain_text("view")
 
     def test_draft_removes_an_object_and_publishes(
         self, tabs: Tabs, stand: StandProcess, catalog_api: Api, source_seed: SourceSeed

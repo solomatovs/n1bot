@@ -1,11 +1,29 @@
 import { Plus } from "lucide-react";
 import { useEffect, useState, type FormEvent, type ReactElement } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { ApiError, type CatalogApi } from "../api/client";
 import { useServices } from "../app";
 import type { Access, Source, SourceKind } from "../model/catalog";
-import { Button, Chip, EmptyState, Eyebrow, Field, Input, Select, useToast } from "../ui";
+import {
+  Button,
+  Chip,
+  EmptyState,
+  Eyebrow,
+  Field,
+  Form,
+  Index,
+  IndexHead,
+  Input,
+  List,
+  ListAside,
+  ListName,
+  ListRow,
+  Note,
+  Select,
+  TopbarLink,
+  useToast,
+} from "../ui";
 
 type Lists = { access: Access; sources: Source[] };
 type LoadState = { status: "loading" } | { status: "failed"; message: string } | { status: "ready"; lists: Lists };
@@ -28,7 +46,10 @@ export function SourcesPage(): ReactElement {
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setState({ status: "failed", message: error instanceof ApiError ? error.detail : String(error) });
+          setState({
+            status: "failed",
+            message: error instanceof ApiError ? error.detail : String(error),
+          });
         }
       });
 
@@ -52,13 +73,11 @@ export function SourcesPage(): ReactElement {
   const { access, sources } = state.lists;
 
   return (
-    <div className="index" data-testid="sources-page" data-can-edit={access.can_edit}>
-      <header className="index__head">
-        <Link to="/" className="topbar__home">
-          catalog
-        </Link>
+    <Index mark="sources-page" data-can-edit={access.can_edit}>
+      <IndexHead>
+        <TopbarLink to="/">catalog</TopbarLink>
         <Eyebrow as="h4">sources</Eyebrow>
-      </header>
+      </IndexHead>
       {access.can_edit && (
         <NewSourceForm
           onCreate={(source) => {
@@ -69,21 +88,24 @@ export function SourcesPage(): ReactElement {
           }}
         />
       )}
-      {sources.length === 0 && <p className="index__empty">no sources yet</p>}
-      <ul className="index__list" data-testid="sources-list">
+      <List kind="spaced" mark="sources-list" empty="no sources yet">
         {sources.map((source) => (
-          <li key={source.id} data-source={source.name}>
-            <Link to={`/sources/${source.id}`} className="index__link">
-              {source.name}
-            </Link>
-            <Chip tone="muted">{source.kind}</Chip>
-            {source.manual && <Chip tone="draft">manual</Chip>}
-            <Chip tone="muted">{source.latest_version === 0 ? "no versions" : `v${source.latest_version}`}</Chip>
-            {source.description !== "" && <span className="index__note">{source.description}</span>}
-          </li>
+          <ListRow key={source.id} data-source={source.name}>
+            <ListName to={`/sources/${source.id}`}>{source.name}</ListName>
+            <ListAside>
+              <Chip tone="muted">{source.kind}</Chip>
+              {source.manual && <Chip tone="draft">manual</Chip>}
+              <Chip tone="muted">{source.latest_version === 0 ? "no versions" : `v${source.latest_version}`}</Chip>
+              {source.description !== "" && (
+                <Note micro tone="faint">
+                  {source.description}
+                </Note>
+              )}
+            </ListAside>
+          </ListRow>
         ))}
-      </ul>
-    </div>
+      </List>
+    </Index>
   );
 }
 
@@ -100,21 +122,50 @@ type FormProps = {
 
 function NewSourceForm({ onCreate, onError }: FormProps): ReactElement {
   const { api } = useServices();
-  const [kind, setKind] = useState<SourceKind>("postgres");
+  const [kinds, setKinds] = useState<string[]>([]);
+  const [kind, setKind] = useState<SourceKind>("");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [params] = useSearchParams();
   const [manual, setManual] = useState(params.get("manual") === "1");
   const trimmed = name.trim();
 
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .sourceKinds()
+      .then((loaded) => {
+        if (cancelled) {
+          return;
+        }
+
+        setKinds(loaded);
+        setKind((current) => (current === "" ? (loaded[0] ?? "") : current));
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          onError(error instanceof ApiError ? error.detail : String(error));
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [api, onError]);
+
   const submit = (event: FormEvent): void => {
     event.preventDefault();
-    if (trimmed === "") {
+    if (trimmed === "" || kind === "") {
       return;
     }
 
     api
-      .createSource({ kind, name: trimmed, description: description.trim(), manual })
+      .createSource({
+        kind,
+        name: trimmed,
+        description: description.trim(),
+        manual,
+      })
       .then(onCreate)
       .catch((error: unknown) => {
         onError(error instanceof ApiError ? error.detail : String(error));
@@ -122,22 +173,27 @@ function NewSourceForm({ onCreate, onError }: FormProps): ReactElement {
   };
 
   return (
-    <form className="form form--inline" onSubmit={submit} data-testid="new-source">
+    <Form inline onSubmit={submit} mark="new-source">
       <Field label="kind">
         <Select
+          fill
           aria-label="source kind"
           value={kind}
           onChange={(event) => {
-            setKind(event.target.value === "clickhouse" ? "clickhouse" : "postgres");
+            setKind(event.target.value);
           }}
         >
-          <option value="postgres">postgres</option>
-          <option value="clickhouse">clickhouse</option>
+          {kinds.map((item) => (
+            <option key={item} value={item}>
+              {item}
+            </option>
+          ))}
         </Select>
       </Field>
       <Field label="name" required>
         <Input
           mono
+          fill
           aria-label="source name"
           value={name}
           onChange={(event) => {
@@ -147,6 +203,7 @@ function NewSourceForm({ onCreate, onError }: FormProps): ReactElement {
       </Field>
       <Field label="description">
         <Input
+          fill
           aria-label="source description"
           value={description}
           onChange={(event) => {
@@ -154,7 +211,7 @@ function NewSourceForm({ onCreate, onError }: FormProps): ReactElement {
           }}
         />
       </Field>
-      <Field label="manual" controlFirst row>
+      <Field label="manual" check>
         <input
           type="checkbox"
           aria-label="manual source"
@@ -164,9 +221,9 @@ function NewSourceForm({ onCreate, onError }: FormProps): ReactElement {
           }}
         />
       </Field>
-      <Button size="tiny" tone="primary" type="submit" icon={Plus} disabled={trimmed === ""}>
+      <Button tone="primary" type="submit" icon={Plus} disabled={trimmed === "" || kind === ""}>
         source
       </Button>
-    </form>
+    </Form>
   );
 }

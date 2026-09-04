@@ -1,0 +1,110 @@
+/* содержимое панели деталей и текстовой сцены */
+
+.panel {
+  display: grid;
+  gap: 0;
+  align-content: start;
+  padding: var(--s3) var(--s4) var(--s6);
+  min-width: 0;
+}
+
+.panel--page {
+  width: 100%;
+  max-width: var(--w-page);
+}
+
+.panel--flat {
+  padding: 0;
+}
+
+.panel__head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: "icon eyebrow actions" "icon name actions" "desc desc desc";
+  column-gap: 0;
+  align-items: start;
+  padding-bottom: var(--s3);
+}
+
+.panel__head-icon {
+  grid-area: icon;
+  display: inline-flex;
+  align-items: center;
+  height: var(--h-ctl-sm);
+  margin-right: var(--s2);
+  color: var(--ember);
+}
+
+.panel__head-icon:empty {
+  display: none;
+}
+
+.panel__head-eyebrow {
+  grid-area: eyebrow;
+  min-width: 0;
+}
+
+.panel__name {
+  grid-area: name;
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-panel);
+  font-weight: 600;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.panel__name.mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-title);
+}
+
+.panel__head-actions {
+  grid-area: actions;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  margin-left: var(--s2);
+}
+
+.panel__description {
+  grid-area: desc;
+  margin: var(--s2) 0 0;
+  color: var(--muted);
+  font-size: var(--fs-data);
+  overflow-wrap: anywhere;
+}
+
+.section {
+  display: grid;
+  gap: var(--s2);
+  padding: var(--s3) 0;
+  border-top: 1px solid var(--hairline);
+  min-width: 0;
+}
+
+.section--scroll {
+  overflow-x: auto;
+}
+
+.section__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  min-height: var(--h-ctl-sm);
+}
+
+.section__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+}
+
+.section__text {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-data);
+  overflow-wrap: anywhere;
+}

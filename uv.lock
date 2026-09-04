@@ -316,7 +316,7 @@ wheels = [
 
 [[package]]
 name = "boba-access"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/core/boba-access" }
 dependencies = [
     { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -338,7 +338,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "boba-auth"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/services/boba-auth" }
 dependencies = [
     { name = "boba-connections", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -378,12 +378,12 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "boba-cancellation"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/core/boba-cancellation" }
 
 [[package]]
 name = "boba-canvas"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/core/boba-canvas" }
 dependencies = [
     { name = "boba-identity", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -407,7 +407,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "boba-catalog"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/core/boba-catalog" }
 dependencies = [
     { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -415,11 +415,15 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "boba-db-clickhouse", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-db-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "boba-db-clickhouse", marker = "extra == 'dev'", editable = "packages/infra/db/boba-db-clickhouse" },
+    { name = "boba-db-postgres", marker = "extra == 'dev'", editable = "packages/infra/db/boba-db-postgres" },
     { name = "pydantic", specifier = ">=2.10,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
 ]
@@ -427,28 +431,42 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "boba-catalog-service"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/services/boba-catalog-service" }
 dependencies = [
+    { name = "boba-cancellation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-catalog", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-db-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-identity", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-messaging", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-toolrun", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "psycopg", extra = ["binary", "pool"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
 [package.optional-dependencies]
 dev = [
+    { name = "boba-access", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-db-clickhouse", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-stand", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "langchain-core", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "boba-access", marker = "extra == 'dev'", editable = "packages/core/boba-access" },
+    { name = "boba-cancellation", editable = "packages/core/boba-cancellation" },
     { name = "boba-catalog", editable = "packages/core/boba-catalog" },
+    { name = "boba-db-clickhouse", marker = "extra == 'dev'", editable = "packages/infra/db/boba-db-clickhouse" },
     { name = "boba-db-postgres", editable = "packages/infra/db/boba-db-postgres" },
     { name = "boba-identity", editable = "packages/core/boba-identity" },
     { name = "boba-messaging", editable = "packages/core/boba-messaging" },
+    { name = "boba-stand", marker = "extra == 'dev'", editable = "packages/testing/boba-stand" },
+    { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
+    { name = "boba-toolrun", editable = "packages/services/boba-toolrun" },
+    { name = "langchain-core", marker = "extra == 'dev'", specifier = ">=1.4,<1.5" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2,<4" },
     { name = "pydantic", specifier = ">=2.10,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
@@ -457,7 +475,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "boba-chainlit"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/agents/boba-chainlit" }
 dependencies = [
     { name = "aiofiles", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -603,7 +621,7 @@ provides-extras = ["tools", "dev"]
 
 [[package]]
 name = "boba-chat"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/core/boba-chat" }
 dependencies = [
     { name = "boba-access", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -629,7 +647,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "boba-config"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/infra/config/boba-config" }
 dependencies = [
     { name = "omegaconf", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -651,7 +669,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "boba-connection-broker"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/services/boba-connection-broker" }
 dependencies = [
     { name = "boba-connections", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -697,7 +715,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "boba-connections"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/core/boba-connections" }
 dependencies = [
     { name = "boba-identity", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -735,9 +753,10 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "boba-db-clickhouse"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/infra/db/boba-db-clickhouse" }
 dependencies = [
+    { name = "boba-catalog", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-connections", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-kerberos", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-krb", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -756,6 +775,7 @@ payload = [
 
 [package.metadata]
 requires-dist = [
+    { name = "boba-catalog", editable = "packages/core/boba-catalog" },
     { name = "boba-connections", editable = "packages/core/boba-connections" },
     { name = "boba-kerberos", editable = "packages/core/boba-kerberos" },
     { name = "boba-krb", editable = "packages/infra/auth/boba-krb" },
@@ -769,7 +789,7 @@ provides-extras = ["payload", "dev"]
 
 [[package]]
 name = "boba-db-pgvector"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/infra/db/boba-db-pgvector" }
 dependencies = [
     { name = "boba-db-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -790,10 +810,11 @@ requires-dist = [
 
 [[package]]
 name = "boba-db-postgres"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/infra/db/boba-db-postgres" }
 dependencies = [
     { name = "boba-cancellation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-catalog", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-connections", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-kerberos", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-krb", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -811,6 +832,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "boba-cancellation", editable = "packages/core/boba-cancellation" },
+    { name = "boba-catalog", editable = "packages/core/boba-catalog" },
     { name = "boba-connections", editable = "packages/core/boba-connections" },
     { name = "boba-kerberos", editable = "packages/core/boba-kerberos" },
     { name = "boba-krb", editable = "packages/infra/auth/boba-krb" },
@@ -824,7 +846,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "boba-identity"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/core/boba-identity" }
 dependencies = [
     { name = "boba-cancellation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -848,7 +870,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "boba-indexing"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/core/boba-indexing" }
 
 [package.optional-dependencies]
@@ -862,7 +884,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "boba-kbdoc"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/infra/format/boba-kbdoc" }
 dependencies = [
     { name = "boba-indexing", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -882,7 +904,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "boba-kerberos"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/core/boba-kerberos" }
 dependencies = [
     { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -904,7 +926,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "boba-krb"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/infra/auth/boba-krb" }
 dependencies = [
     { name = "boba-kerberos", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -946,7 +968,7 @@ provides-extras = ["seal", "dev"]
 
 [[package]]
 name = "boba-ldap"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/infra/auth/boba-ldap" }
 dependencies = [
     { name = "boba-identity", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -968,7 +990,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "boba-liteparse"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/infra/format/boba-liteparse" }
 dependencies = [
     { name = "boba-text", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -992,7 +1014,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "boba-llm"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/infra/llm/boba-llm" }
 dependencies = [
     { name = "boba-chat", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1040,7 +1062,7 @@ provides-extras = ["chat", "payload", "generation", "dev"]
 
 [[package]]
 name = "boba-messaging"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/core/boba-messaging" }
 dependencies = [
     { name = "boba-identity", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1062,7 +1084,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "boba-runtime"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/services/boba-runtime" }
 dependencies = [
     { name = "boba-access", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1138,7 +1160,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "boba-sandbox"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/infra/sandbox/boba-sandbox" }
 dependencies = [
     { name = "boba-cancellation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1172,13 +1194,14 @@ provides-extras = ["payload", "dev"]
 
 [[package]]
 name = "boba-stand"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/testing/boba-stand" }
 dependencies = [
     { name = "anyio", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-access", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-auth", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-cancellation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-catalog", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-catalog-service", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-chat", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-config", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1221,6 +1244,7 @@ requires-dist = [
     { name = "boba-access", editable = "packages/core/boba-access" },
     { name = "boba-auth", editable = "packages/services/boba-auth" },
     { name = "boba-cancellation", editable = "packages/core/boba-cancellation" },
+    { name = "boba-catalog", editable = "packages/core/boba-catalog" },
     { name = "boba-catalog-service", editable = "packages/services/boba-catalog-service" },
     { name = "boba-chainlit", marker = "extra == 'dev'", editable = "packages/agents/boba-chainlit" },
     { name = "boba-chat", editable = "packages/core/boba-chat" },
@@ -1256,7 +1280,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "boba-studio"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/agents/boba-studio" }
 dependencies = [
     { name = "boba-auth", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1358,7 +1382,7 @@ provides-extras = ["tools", "dev"]
 
 [[package]]
 name = "boba-text"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/infra/format/boba-text" }
 dependencies = [
     { name = "boba-indexing", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1380,7 +1404,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "boba-tool-chart"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/tools/boba-tool-chart" }
 dependencies = [
     { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1410,7 +1434,7 @@ provides-extras = ["payload", "dev"]
 
 [[package]]
 name = "boba-tool-clickhouse"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/tools/boba-tool-clickhouse" }
 dependencies = [
     { name = "boba-db-clickhouse", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1442,7 +1466,7 @@ provides-extras = ["payload", "dev"]
 
 [[package]]
 name = "boba-tool-doc"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/tools/boba-tool-doc" }
 dependencies = [
     { name = "boba-text", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1476,7 +1500,7 @@ provides-extras = ["payload", "dev"]
 
 [[package]]
 name = "boba-tool-knowledge"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/tools/boba-tool-knowledge" }
 dependencies = [
     { name = "boba-db-pgvector", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1550,9 +1574,10 @@ provides-extras = ["payload", "dev"]
 
 [[package]]
 name = "boba-tool-postgres"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/tools/boba-tool-postgres" }
 dependencies = [
+    { name = "boba-catalog", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-db-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "psycopg", extra = ["binary", "pool"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1562,13 +1587,18 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "boba-config", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-runtime", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-stand", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "boba-catalog", editable = "packages/core/boba-catalog" },
     { name = "boba-config", marker = "extra == 'dev'", editable = "packages/infra/config/boba-config" },
     { name = "boba-db-postgres", editable = "packages/infra/db/boba-db-postgres" },
+    { name = "boba-runtime", marker = "extra == 'dev'", editable = "packages/services/boba-runtime" },
+    { name = "boba-stand", marker = "extra == 'dev'", editable = "packages/testing/boba-stand" },
     { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2" },
     { name = "pydantic", specifier = ">=2.10,<2.11" },
@@ -1578,7 +1608,7 @@ provides-extras = ["payload", "dev"]
 
 [[package]]
 name = "boba-tool-shell"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/tools/boba-tool-shell" }
 dependencies = [
     { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1602,7 +1632,7 @@ provides-extras = ["payload"]
 
 [[package]]
 name = "boba-tool-web"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/tools/boba-tool-web" }
 dependencies = [
     { name = "boba-text", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1636,7 +1666,7 @@ provides-extras = ["payload", "dev"]
 
 [[package]]
 name = "boba-toolkit"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/core/boba-toolkit" }
 dependencies = [
     { name = "annotated-types", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1664,7 +1694,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "boba-toolrun"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/services/boba-toolrun" }
 dependencies = [
     { name = "boba-access", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1702,7 +1732,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "boba-transport-http"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/infra/transport/boba-transport-http" }
 dependencies = [
     { name = "boba-cancellation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1734,7 +1764,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "boba-workflow"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/core/boba-workflow" }
 dependencies = [
     { name = "boba-access", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1766,7 +1796,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "boba-workflow-engine"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 source = { editable = "packages/services/boba-workflow-engine" }
 dependencies = [
     { name = "boba-cancellation", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },

@@ -24,11 +24,11 @@ from boba.catalog import (
     RemoveNode,
     RetargetNode,
     SnapshotResolver,
-    SourceKind,
+    SourceKinds,
     SourceOperationList,
     StaleReason,
 )
-from boba.catalog.samples import PgSample, ProcessSample
+from boba.catalog.samples import ProcessSample
 from boba.catalog_service import (
     AuthorVia,
     CatalogConfig,
@@ -42,11 +42,18 @@ from boba.catalog_service import (
     ViewShare,
     ViewSpec,
 )
+from boba.db.clickhouse.snapshot import ChSnapshot, ChSourceKind
 from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres.snapshot import PgSnapshot, PgSourceKind
+from boba.db.postgres.snapshot_sample import PgSample
 from boba.identity.context import Scope, Subject
 from boba.messaging import CatalogChanged, Envelope, MemoryMessageBus
+from boba.stand.catalog_ports import StubSyncPorts
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
+
+KINDS = SourceKinds.of(PgSnapshot, ChSnapshot)
+"""Реестр видов теста: оба снимка из пакетов драйверов."""
 
 SCHEMA = "catalog_service_test"
 
@@ -76,16 +83,18 @@ async def service(pool: AsyncPostgresPool) -> CatalogService:
 
     store = CatalogStore(_config(), pool)
     await store.setup()
-    sources = SourceStore(_config(), pool)
+    sources = SourceStore(_config(), KINDS, pool)
     await sources.setup()
-    return CatalogService(store, sources, _config(), MemoryMessageBus("test:0"))
+    return CatalogService(
+        store, sources, _config(), MemoryMessageBus("test:0"), StubSyncPorts()
+    )
 
 
 @pytest.fixture
 async def process(service: CatalogService) -> ProcessSample:
     """Источник prod с версией 1 из образца; процесс ссылается на него."""
     source = await service.create_source(
-        EDITOR, SourceSpec(kind=SourceKind.POSTGRES, name="prod")
+        EDITOR, SourceSpec(kind=PgSourceKind.POSTGRES, name="prod")
     )
     await service.write_source_version(EDITOR, source.id, PgSample().snapshot())
     return ProcessSample(source.id)
@@ -327,11 +336,11 @@ async def test_sources_follow_the_catalog_rights_and_emit_events(
     try:
         with pytest.raises(CatalogRefusalError):
             await service.create_source(
-                VIEWER, SourceSpec(kind=SourceKind.POSTGRES, name="prod")
+                VIEWER, SourceSpec(kind=PgSourceKind.POSTGRES, name="prod")
             )
 
         prod = await service.create_source(
-            EDITOR, SourceSpec(kind=SourceKind.POSTGRES, name="prod")
+            EDITOR, SourceSpec(kind=PgSourceKind.POSTGRES, name="prod")
         )
         sample = PgSample()
         await service.write_source_version(EDITOR, prod.id, sample.snapshot())
@@ -353,7 +362,8 @@ async def test_sources_follow_the_catalog_rights_and_emit_events(
         assert len((await service.source_diff(VIEWER, prod.id, 1, 2)).entries) == 4
 
         planned = await service.create_source(
-            EDITOR, SourceSpec(kind=SourceKind.CLICKHOUSE, name="planned", manual=True)
+            EDITOR,
+            SourceSpec(kind=ChSourceKind.CLICKHOUSE, name="planned", manual=True),
         )
         draft = await service.create_source_draft(EDITOR, planned.id, "shapes")
         obj = ManualObject(

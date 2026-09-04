@@ -17,6 +17,7 @@ dependencies = [
     "boba-workflow==0.0.15.dev8",
     "boba-workflow-engine==0.0.15.dev8",
     "boba-catalog-service==0.0.15.dev8",
+    "boba-catalog==0.0.15.dev8",
     "boba-config==0.0.15.dev8",
     "boba-identity==0.0.15.dev8",
     "boba-messaging==0.0.15.dev8",

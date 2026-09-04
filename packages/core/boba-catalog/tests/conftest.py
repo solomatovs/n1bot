@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from boba.catalog import CatalogSnapshot
-from boba.catalog.samples import PgSample, ProcessSample, SampleResolver
+from boba.catalog import (
+    CatalogSnapshot,
+    SnapshotResolver,
+)
+from boba.catalog.samples import ProcessSample, SampleIds
+from boba.db.postgres.snapshot_sample import PgSample
 
 
 @pytest.fixture(scope="session")
@@ -29,5 +33,5 @@ def snapshot(process: ProcessSample) -> CatalogSnapshot:
 
 
 @pytest.fixture
-def resolver(pg: PgSample) -> SampleResolver:
-    return SampleResolver(pg.snapshot())
+def resolver(pg: PgSample) -> SnapshotResolver:
+    return SnapshotResolver({SampleIds.POSTGRES: pg.snapshot()})

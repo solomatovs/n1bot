@@ -29,7 +29,7 @@ export default defineConfig(
         "error",
         {
           selector:
-            'JSXAttribute[name.name="className"] Literal[value=/^(btn|chip|empty|icon-btn|eyebrow|input|field|segmented|alert|toast)([ -].*)?$/]',
+            'JSXAttribute[name.name="className"] Literal[value=/^(btn|chip|code|dialog|empty|eyebrow|facts|field|icon-btn|index|input|list|note|page|panel|row|search|section|segmented|stack|table|toast|toolbar|topbar|alert)([ _-].*)?$/]',
           message: "widget classes live in src/ui: use the widget component instead",
         },
       ],

@@ -1,7 +1,6 @@
 import { useState, type FormEvent, type ReactElement } from "react";
 
-import { Button, Field, Input } from "../../ui";
-import { Dialog } from "./Dialog";
+import { Button, Dialog, Field, Form, Input, Toolbar } from "../../ui";
 
 type Props = {
   title: string;
@@ -28,10 +27,11 @@ export function NamePrompt({ title, mark, label, initial, onSubmit, onClose }: P
 
   return (
     <Dialog title={title} mark={mark} onClose={onClose}>
-      <form className="form" onSubmit={submit}>
+      <Form onSubmit={submit}>
         <Field label={label} required>
           <Input
             mono
+            fill
             autoFocus
             value={name}
             aria-label={label}
@@ -40,15 +40,15 @@ export function NamePrompt({ title, mark, label, initial, onSubmit, onClose }: P
             }}
           />
         </Field>
-        <div className="form__actions">
+        <Toolbar>
           <Button tone="primary" type="submit" disabled={trimmed === ""}>
             save
           </Button>
           <Button tone="ghost" onClick={onClose}>
             cancel
           </Button>
-        </div>
-      </form>
+        </Toolbar>
+      </Form>
     </Dialog>
   );
 }

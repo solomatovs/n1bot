@@ -1,10 +1,8 @@
 import { Plus } from "lucide-react";
 import { useState, type FormEvent, type ReactElement } from "react";
-import { Link } from "react-router-dom";
 
 import type { Access, Draft } from "../../model/catalog";
-import { Button, Chip, Input } from "../../ui";
-import { Dialog } from "./Dialog";
+import { Button, Chip, Dialog, Form, Input, List, ListAside, ListName, ListRow } from "../../ui";
 
 type Props = {
   access: Access;
@@ -28,24 +26,24 @@ export function DraftsDialog({ access, drafts, onCreate, onClose }: Props): Reac
 
   return (
     <Dialog title="edit the process" mark="drafts" onClose={onClose}>
-      <ul className="index__list" data-testid="drafts-list">
-        {drafts.length === 0 && <li className="choices__empty">no open drafts</li>}
+      <List kind="spaced" mark="drafts-list" empty="no open drafts">
         {drafts.map((draft) => (
-          <li key={draft.id} data-draft={draft.name}>
-            <Link to={`/drafts/${draft.id}`} className="index__link">
-              {draft.name}
-            </Link>
-            <Chip tone="muted">over v{draft.base_version}</Chip>
-            <Chip tone={draft.created_by === access.user_id ? "draft" : "muted"}>
-              {draft.created_by === access.user_id ? "yours" : "someone else's"}
-            </Chip>
-          </li>
+          <ListRow key={draft.id} data-draft={draft.name}>
+            <ListName to={`/drafts/${draft.id}`}>{draft.name}</ListName>
+            <ListAside>
+              <Chip tone="muted">over v{draft.base_version}</Chip>
+              <Chip tone={draft.created_by === access.user_id ? "draft" : "muted"}>
+                {draft.created_by === access.user_id ? "yours" : "someone else's"}
+              </Chip>
+            </ListAside>
+          </ListRow>
         ))}
-      </ul>
+      </List>
       {access.can_edit && (
-        <form className="index__new" onSubmit={submit} data-testid="new-draft">
+        <Form inline onSubmit={submit} mark="new-draft">
           <Input
             mono
+            fill
             autoFocus
             placeholder="new draft name"
             aria-label="new draft name"
@@ -54,10 +52,10 @@ export function DraftsDialog({ access, drafts, onCreate, onClose }: Props): Reac
               setName(event.target.value);
             }}
           />
-          <Button size="tiny" tone="primary" type="submit" icon={Plus} disabled={name.trim() === ""}>
+          <Button tone="primary" type="submit" icon={Plus} disabled={name.trim() === ""}>
             draft
           </Button>
-        </form>
+        </Form>
       )}
     </Dialog>
   );

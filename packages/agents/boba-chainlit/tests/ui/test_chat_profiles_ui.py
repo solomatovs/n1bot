@@ -36,6 +36,7 @@ STAND_TOOLS = frozenset(
         "catalog_propose",
         "catalog_diff",
         "catalog_open",
+        "catalog_sync",
         "pipeline_catalog",
         "pipeline_run",
         "connection_list",

@@ -1,0 +1,33 @@
+.facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--s1) var(--s3);
+  margin: 0;
+  font-size: var(--fs-data);
+  min-width: 0;
+}
+
+.facts dt {
+  color: var(--faint);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.facts dd {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s1);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.facts--micro {
+  gap: 2px var(--s2);
+  font-size: var(--fs-micro);
+}
+
+.facts--micro dd {
+  color: var(--muted);
+}

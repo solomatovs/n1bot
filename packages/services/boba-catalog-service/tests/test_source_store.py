@@ -12,18 +12,17 @@ from psycopg import sql
 from boba.catalog import (
     AddObject,
     ChangeStatus,
-    ChSnapshot,
     ManualColumn,
     ManualObject,
     ObjectKind,
     ObjectRef,
-    PgSnapshot,
     RemoveObject,
-    SourceKind,
+    SourceKinds,
     SourceOperationList,
     SourceOpError,
+    SourceRecord,
+    SourceSnapshot,
 )
-from boba.catalog.samples import ChSample, PgSample
 from boba.catalog_service import (
     AuthorVia,
     CatalogConfig,
@@ -38,9 +37,22 @@ from boba.catalog_service import (
     SourceVersionNotFoundError,
     VersionOrigin,
 )
+from boba.db.clickhouse.snapshot import (
+    ChSnapshot,
+    ChSourceKind,
+)
+from boba.db.clickhouse.snapshot_sample import ChSample
 from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres.snapshot import (
+    PgSnapshot,
+    PgSourceKind,
+)
+from boba.db.postgres.snapshot_sample import PgSample
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
+
+KINDS = SourceKinds.of(PgSnapshot, ChSnapshot)
+"""Реестр видов теста: оба снимка из пакетов драйверов."""
 
 SCHEMA = "catalog_sources_test"
 ADMIN = UUID(int=71)
@@ -64,7 +76,7 @@ async def store(pool: AsyncPostgresPool) -> SourceStore:
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
         )
 
-    built = SourceStore(_config(), pool)
+    built = SourceStore(_config(), KINDS, pool)
     await built.setup()
     await built.setup()
     return built
@@ -72,14 +84,14 @@ async def store(pool: AsyncPostgresPool) -> SourceStore:
 
 async def test_sources_and_connections(store: SourceStore) -> None:
     prod = await store.create_source(
-        SourceSpec(kind=SourceKind.POSTGRES, name="prod", description="Прод"), ADMIN
+        SourceSpec(kind=PgSourceKind.POSTGRES, name="prod", description="Прод"), ADMIN
     )
-    assert prod.kind is SourceKind.POSTGRES
+    assert prod.kind == PgSourceKind.POSTGRES
     assert prod.latest_version == 0
     assert prod.manual is False
 
     dwh = await store.create_source(
-        SourceSpec(kind=SourceKind.CLICKHOUSE, name="dwh"), ADMIN
+        SourceSpec(kind=ChSourceKind.CLICKHOUSE, name="dwh"), ADMIN
     )
     assert [s.name for s in await store.list_sources()] == ["dwh", "prod"]
 
@@ -106,7 +118,7 @@ async def test_sources_and_connections(store: SourceStore) -> None:
 async def test_postgres_version_round_trips(store: SourceStore) -> None:
     sample = PgSample()
     prod = await store.create_source(
-        SourceSpec(kind=SourceKind.POSTGRES, name="prod"), ADMIN
+        SourceSpec(kind=PgSourceKind.POSTGRES, name="prod"), ADMIN
     )
 
     version = await store.write_version(
@@ -151,7 +163,7 @@ async def test_postgres_version_round_trips(store: SourceStore) -> None:
 async def test_clickhouse_version_round_trips(store: SourceStore) -> None:
     sample = ChSample()
     dwh = await store.create_source(
-        SourceSpec(kind=SourceKind.CLICKHOUSE, name="dwh"), ADMIN
+        SourceSpec(kind=ChSourceKind.CLICKHOUSE, name="dwh"), ADMIN
     )
 
     await store.write_version(dwh.id, sample.snapshot(), VersionOrigin(taken_by=ADMIN))
@@ -165,7 +177,7 @@ async def test_clickhouse_version_round_trips(store: SourceStore) -> None:
 
 async def test_snapshot_kind_must_match_source(store: SourceStore) -> None:
     dwh = await store.create_source(
-        SourceSpec(kind=SourceKind.CLICKHOUSE, name="dwh"), ADMIN
+        SourceSpec(kind=ChSourceKind.CLICKHOUSE, name="dwh"), ADMIN
     )
     with pytest.raises(Exception, match="snapshot is postgres"):
         await store.write_version(
@@ -175,13 +187,13 @@ async def test_snapshot_kind_must_match_source(store: SourceStore) -> None:
 
 async def test_manual_source_drafts(store: SourceStore) -> None:
     prod = await store.create_source(
-        SourceSpec(kind=SourceKind.POSTGRES, name="prod"), ADMIN
+        SourceSpec(kind=PgSourceKind.POSTGRES, name="prod"), ADMIN
     )
     with pytest.raises(SourceNotManualError):
         await store.create_draft(prod.id, "nope", ADMIN)
 
     planned = await store.create_source(
-        SourceSpec(kind=SourceKind.POSTGRES, name="planned", manual=True), ADMIN
+        SourceSpec(kind=PgSourceKind.POSTGRES, name="planned", manual=True), ADMIN
     )
     draft = await store.create_draft(planned.id, "first objects", ADMIN)
     assert draft.base_version == 0
@@ -246,16 +258,13 @@ async def test_manual_source_drafts(store: SourceStore) -> None:
     assert await store.open_drafts(planned.id) == []
 
 
-def _sorted(snapshot: PgSnapshot | ChSnapshot) -> dict[str, list[object]]:
-    """Записи по таблицам, отсортированные по ключу: порядок строк из базы не
+def _sorted(snapshot: SourceSnapshot) -> dict[str, list[SourceRecord]]:
+    """Записи по частям, отсортированные по ключу: порядок строк из базы не
     гарантирован, а содержимое должно совпасть целиком."""
-    tables: dict[str, list[object]] = {}
-    for field in type(snapshot).model_fields:
-        if field == "kind":
-            continue
-
-        records = list(getattr(snapshot, field))
+    tables: dict[str, list[SourceRecord]] = {}
+    for part in snapshot.parts():
+        records = list(snapshot.records_of(part.name))
         records.sort(key=lambda record: record.key)
-        tables[field] = records
+        tables[part.name] = records
 
     return tables

@@ -18,11 +18,13 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph.state import CompiledStateGraph
 
 from boba.auth import JwtTokens
+from boba.catalog import SourceKinds
 from boba.catalog_service import (
     CatalogConfig,
     CatalogService,
     CatalogStore,
     SourceStore,
+    SyncPorts,
 )
 from boba.chainlit.agent.flow import (
     AgentGraphBuilder,
@@ -32,6 +34,10 @@ from boba.chainlit.agent.flow import (
     PlainGraphBuilder,
     PrefetchGraphBuilder,
     Rephraser,
+)
+from boba.chainlit.catalog.sync_ports import (
+    BrokerConnectionDirectory,
+    RegistrySyncTools,
 )
 from boba.chainlit.chat.history import CheckpointMessages, TranscriptFeed
 from boba.chainlit.chat.tracing import TracedStage
@@ -62,6 +68,7 @@ from boba.chat.provider import (
     OllamaChatConfig,
     OpenAiChatConfig,
 )
+from boba.connection_broker.service import UserConnectionsService
 from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresSchema
 from boba.identity.errors import InternalServiceError
 from boba.identity.session import SessionSource
@@ -130,7 +137,8 @@ async def catalog_sources(
     if not cfg.enable:
         return None
 
-    sources = SourceStore(cfg)
+    # снимки видов источников приносят пакеты-владельцы драйверов
+    sources = SourceStore(cfg, SourceKinds.discover())
     await sources.setup()
 
     return sources
@@ -149,19 +157,31 @@ def catalog_service(
     if sources is None:
         return None
 
-    return CatalogService(store, sources, cfg, bus)
+    tools = RegistrySyncTools(runtime.tool_registry_ref)
+    names = BrokerConnectionDirectory(
+        UserConnectionsService(runtime.connection_store_ref)
+    )
+    ports = SyncPorts(tools, names)
+
+    return CatalogService(store, sources, cfg, bus, ports)
 
 
 def chainlit_url_prefix() -> str:
     """Префикс адресов приложения из конфига корневого контейнера; зовётся на вызов."""
     root = Container.root
     if root is None:
-        msg = "DI container is not initialised"
+        msg = (
+            "chainlit_url_prefix: Container.root is not initialised, "
+            "bootstrap has not run"
+        )
         raise RuntimeError(msg)
 
     config = root.resolved(get_app_config)
     if not isinstance(config, AppConfig):
-        msg = f"app config provider returned {type(config).__name__}"
+        msg = (
+            "chainlit_url_prefix expects AppConfig from the app config provider, "
+            f"got {type(config).__name__}"
+        )
         raise RuntimeError(msg)
 
     return config.chainlit.url_prefix
@@ -171,7 +191,10 @@ async def catalog_service_ref() -> CatalogService:
     """Сервис каталога из корневого контейнера; зовётся на каждый запрос."""
     root = Container.root
     if root is None:
-        msg = "DI container is not initialised"
+        msg = (
+            "catalog_service_ref: Container.root is not initialised, "
+            "bootstrap has not run"
+        )
         raise RuntimeError(msg)
 
     service = await root.resolve(Depends(catalog_service))

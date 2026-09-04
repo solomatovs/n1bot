@@ -87,6 +87,32 @@ __all__ = [
 Cursor = psycopg.AsyncCursor[DictRow]
 
 
+class LegacyTable(StrEnum):
+    """Таблицы первой очереди, которые миграция оставляет на месте."""
+
+    DATASETS = "datasets"
+    COLUMNS = "columns"
+
+
+class LegacyColumn(StrEnum):
+    """Колонки первой очереди, которые миграция переименовывает в узловые."""
+
+    FROM_DATASET_ID = "from_dataset_id"
+    TO_DATASET_ID = "to_dataset_id"
+    DATASET_IDS = "dataset_ids"
+    DATASET_ID = "dataset_id"
+
+
+class LayoutConstraint(StrEnum):
+    """Ограничения, которые миграция проверяет по имени и заводит по одному."""
+
+    LAYERS_POSITION = "layers_position_key"
+    FLOWS_FROM_DATASET = "flows_from_dataset_id_fkey"
+    FLOWS_TO_DATASET = "flows_to_dataset_id_fkey"
+    FLOWS_FROM_NODE = "flows_from_node_id_fkey"
+    FLOWS_TO_NODE = "flows_to_node_id_fkey"
+
+
 class CatalogTable(StrEnum):
     """Таблицы схемы каталога."""
 
@@ -340,7 +366,7 @@ class CatalogStore(PostgresTable):
         try:
             yield
         except (psycopg.Error, PostgresError) as exc:
-            msg = f"catalog: {action} failed"
+            msg = f"catalog: {action} in schema {self._schema} failed: {exc}"
             raise CatalogStoreError(msg) from exc
 
     @asynccontextmanager
@@ -356,11 +382,212 @@ class CatalogStore(PostgresTable):
             yield cur
 
     async def setup(self) -> None:
-        """Схема и таблицы; повтор безвреден."""
+        """Схема и таблицы; повтор безвреден. После create-if-not-exists идут
+        идемпотентные миграции раскладки первой очереди: недостающие колонки
+        добавляются, колонки наборов переименовываются в узловые, а таблица с
+        данными, которые перенести нельзя, останавливает старт понятной ошибкой."""
         async with self._guarded("setup"):
             await self._apply_ddl(self._ddl())
+            await self._apply_ddl(self._migrations())
 
         logger.info("catalog ready: %s", self._cfg.db_schema)
+
+    def _migrations(self) -> tuple[sql.Composed, ...]:
+        """Перевод таблиц первой очереди (наборы и колонки) в раскладку процесса
+        над источниками. Каждый шаг проверяет, что менять, и ничего не удаляет:
+        строки, которые нельзя перевести, останавливают миграцию с текстом,
+        что и где лежит."""
+        schema = sql.Literal(self._cfg.db_schema)
+        return (
+            self._sql(
+                """
+                alter table {layers}
+                    add column if not exists {l_position} integer,
+                    add column if not exists {l_description} text not null default ''
+                """
+            ),
+            self._sql(
+                """
+                update {layers} as target
+                set {l_position} = numbered.rn - 1
+                from (
+                    select {l_id} as id, row_number() over (order by {l_name}) as rn
+                    from {layers}
+                ) as numbered
+                where target.{l_id} = numbered.id and target.{l_position} is null
+                """
+            ),
+            self._sql("alter table {layers} alter column {l_position} set not null"),
+            self._constraint_ddl(
+                CatalogTable.LAYERS,
+                LayoutConstraint.LAYERS_POSITION,
+                "unique ({l_position}) deferrable initially deferred",
+            ),
+            self._sql(
+                """
+                alter table {load_kinds}
+                    add column if not exists {k_fields} jsonb not null
+                        default '[]'::jsonb
+                """
+            ),
+            self._sql(
+                """
+                alter table {versions}
+                    add column if not exists {v_pins} jsonb not null
+                        default '{{}}'::jsonb
+                """
+            ),
+            self._sql(
+                """
+                alter table {drafts}
+                    add column if not exists {dr_pins} jsonb not null
+                        default '{{}}'::jsonb
+                """
+            ),
+            self._sql(
+                """
+                alter table {flows}
+                    add column if not exists {f_load_values} jsonb not null
+                        default '{{}}'::jsonb
+                """
+            ),
+            self._rename_ddl(
+                CatalogTable.FLOWS,
+                LegacyColumn.FROM_DATASET_ID,
+                FlowsColumn.FROM_NODE_ID,
+                "flows reference datasets, nodes over sources cannot be derived "
+                "from them",
+            ),
+            self._rename_ddl(
+                CatalogTable.FLOWS,
+                LegacyColumn.TO_DATASET_ID,
+                FlowsColumn.TO_NODE_ID,
+                "flows reference datasets, nodes over sources cannot be derived "
+                "from them",
+            ),
+            sql.SQL(
+                """
+                alter table {flows}
+                    drop constraint if exists {from_dataset},
+                    drop constraint if exists {to_dataset}
+                """
+            ).format(
+                flows=self._table(CatalogTable.FLOWS),
+                from_dataset=sql.Identifier(LayoutConstraint.FLOWS_FROM_DATASET.value),
+                to_dataset=sql.Identifier(LayoutConstraint.FLOWS_TO_DATASET.value),
+            ),
+            self._constraint_ddl(
+                CatalogTable.FLOWS,
+                LayoutConstraint.FLOWS_FROM_NODE,
+                "foreign key ({f_from_node_id}) references {nodes} ({n_id}) "
+                "deferrable initially deferred",
+            ),
+            self._constraint_ddl(
+                CatalogTable.FLOWS,
+                LayoutConstraint.FLOWS_TO_NODE,
+                "foreign key ({f_to_node_id}) references {nodes} ({n_id}) "
+                "deferrable initially deferred",
+            ),
+            self._rename_ddl(
+                CatalogTable.VIEWS,
+                LegacyColumn.DATASET_IDS,
+                ViewsColumn.NODE_IDS,
+                "views filter by dataset ids that have no node counterparts",
+            ),
+            self._rename_ddl(
+                CatalogTable.VIEW_LAYOUT,
+                LegacyColumn.DATASET_ID,
+                ViewLayoutColumn.NODE_ID,
+                "layout positions belong to datasets that have no node counterparts",
+            ),
+            sql.SQL(
+                """
+                do $$
+                begin
+                    if exists (
+                        select 1 from information_schema.tables
+                        where table_schema = {schema} and table_name = {legacy}
+                    ) then
+                        raise notice
+                            'catalog migration: legacy table %.% is left in place, '
+                            'the process keeps nodes over sources instead; '
+                            'drop it by hand once it is no longer needed',
+                            {schema}, {legacy};
+                    end if;
+                end $$
+                """
+            ).format(schema=schema, legacy=sql.Literal(LegacyTable.DATASETS.value)),
+        )
+
+    def _constraint_ddl(
+        self, table: CatalogTable, name: LayoutConstraint, definition: LiteralString
+    ) -> sql.Composed:
+        """Ограничение заводится, только если его ещё нет: postgres не знает
+        add constraint if not exists."""
+        body = self._sql(definition)
+        return sql.SQL(
+            """
+            do $$
+            begin
+                if not exists (
+                    select 1 from pg_constraint
+                    where conrelid = {regclass}::regclass and conname = {name}
+                ) then
+                    alter table {table} add constraint {ident} {body};
+                end if;
+            end $$
+            """
+        ).format(
+            regclass=sql.Literal(f"{self._cfg.db_schema}.{table.value}"),
+            name=sql.Literal(name.value),
+            table=self._table(table),
+            ident=sql.Identifier(name.value),
+            body=body,
+        )
+
+    def _rename_ddl(
+        self,
+        table: CatalogTable,
+        legacy: LegacyColumn,
+        current: StrEnum,
+        reason: LiteralString,
+    ) -> sql.Composed:
+        """Колонка первой очереди переименовывается в узловую, только пока
+        таблица пуста: строки со ссылками на наборы перенести нельзя, и старт
+        останавливается с текстом, где они лежат и почему."""
+        return sql.SQL(
+            """
+            do $$
+            declare
+                stale_rows bigint;
+            begin
+                if exists (
+                    select 1 from information_schema.columns
+                    where table_schema = {schema}
+                      and table_name = {table_name}
+                      and column_name = {legacy_name}
+                ) then
+                    select count(*) into stale_rows from {table};
+                    if stale_rows > 0 then
+                        raise exception
+                            'catalog migration: %.% has % row(s) with the legacy '
+                            'column %: {reason}; move or delete these rows by '
+                            'hand before starting',
+                            {schema}, {table_name}, stale_rows, {legacy_name};
+                    end if;
+                    alter table {table} rename column {legacy} to {current};
+                end if;
+            end $$
+            """
+        ).format(
+            schema=sql.Literal(self._cfg.db_schema),
+            table_name=sql.Literal(table.value),
+            legacy_name=sql.Literal(legacy.value),
+            table=self._table(table),
+            legacy=sql.Identifier(legacy.value),
+            current=SqlNames.ident(current),
+            reason=sql.SQL(reason),
+        )
 
     def _ddl(self) -> tuple[sql.Composed, ...]:
         return (
@@ -530,7 +757,7 @@ class CatalogStore(PostgresTable):
 
     async def snapshot_at(self, version: int) -> CatalogSnapshot:
         """Снимок версии: текущая из таблиц, прошлая — свёрткой истории."""
-        async with self._transaction("snapshot at") as cur:
+        async with self._transaction(f"snapshot at version {version}") as cur:
             return await self._snapshot_at(cur, version)
 
     async def create_draft(
@@ -566,7 +793,7 @@ class CatalogStore(PostgresTable):
             """
         )
 
-        async with self._transaction("create draft") as cur:
+        async with self._transaction(f"create draft {name!r}") as cur:
             current = await self._current_version(cur)
             params = {
                 "id": uuid4(),
@@ -580,13 +807,16 @@ class CatalogStore(PostgresTable):
             row = await cur.fetchone()
 
         if row is None:
-            msg = f"catalog: draft {name!r} was not saved"
+            msg = (
+                f"catalog: insert into {self._schema}.drafts returned no row "
+                f"for draft {name!r}"
+            )
             raise CatalogStoreError(msg)
 
         return self._draft_of(row)
 
     async def get_draft(self, draft_id: UUID) -> Draft:
-        async with self._transaction("get draft") as cur:
+        async with self._transaction(f"get draft {draft_id}") as cur:
             return await self._draft(cur, draft_id, lock=False)
 
     async def list_drafts(self, status: DraftStatus) -> Sequence[Draft]:
@@ -610,7 +840,7 @@ class CatalogStore(PostgresTable):
             """
         )
 
-        async with self._transaction("list drafts") as cur:
+        async with self._transaction(f"list {status.value} drafts") as cur:
             await cur.execute(query, {"status": status.value})
             rows = await cur.fetchall()
 
@@ -622,21 +852,21 @@ class CatalogStore(PostgresTable):
 
     async def discard_draft(self, draft_id: UUID) -> Draft:
         """Черновик отброшен; порции остаются в истории."""
-        async with self._transaction("discard draft") as cur:
+        async with self._transaction(f"discard draft {draft_id}") as cur:
             draft = await self._draft(cur, draft_id, lock=True)
             self._require_open(draft)
 
             return await self._set_status(cur, draft_id, DraftStatus.DISCARDED)
 
     async def draft_ops(self, draft_id: UUID) -> Sequence[DraftOp]:
-        async with self._transaction("draft ops") as cur:
+        async with self._transaction(f"ops of draft {draft_id}") as cur:
             await self._draft(cur, draft_id, lock=False)
 
             return await self._ops_of(cur, draft_id)
 
     async def draft_state(self, draft_id: UUID) -> DraftState:
         """Снимок черновика поверх базовой версии и diff к ней."""
-        async with self._transaction("draft state") as cur:
+        async with self._transaction(f"state of draft {draft_id}") as cur:
             draft = await self._draft(cur, draft_id, lock=False)
             base = await self._snapshot_at(cur, draft.base_version)
             ops = await self._ops_of(cur, draft_id)
@@ -684,7 +914,7 @@ class CatalogStore(PostgresTable):
             """
         )
 
-        async with self._transaction("append ops") as cur:
+        async with self._transaction(f"append ops to draft {draft_id}") as cur:
             draft = await self._draft(cur, draft_id, lock=True)
             self._require_open(draft)
 
@@ -708,7 +938,10 @@ class CatalogStore(PostgresTable):
             row = await cur.fetchone()
 
         if row is None:
-            msg = f"catalog: draft {draft_id} seq {seq} was not saved"
+            msg = (
+                f"catalog: insert into {self._schema}.draft_ops returned no row "
+                f"for draft {draft_id} seq {seq}"
+            )
             raise CatalogStoreError(msg)
 
         return DraftOp(
@@ -744,7 +977,7 @@ class CatalogStore(PostgresTable):
             """
         )
 
-        async with self._transaction("publish") as cur:
+        async with self._transaction(f"publish draft {draft_id}") as cur:
             await cur.execute(
                 "select pg_advisory_xact_lock(hashtext(%(key)s))",
                 {"key": f"{self._schema}.{self.PUBLISH_LOCK}"},
@@ -773,7 +1006,10 @@ class CatalogStore(PostgresTable):
             await cur.execute(insert_version, params)
             row = await cur.fetchone()
             if row is None:
-                msg = f"catalog: version {number} was not saved"
+                msg = (
+                    f"catalog: insert into {self._schema}.versions returned no "
+                    f"row for version {number} of draft {draft_id}"
+                )
                 raise CatalogStoreError(msg)
 
             await self._set_status(cur, draft_id, DraftStatus.PUBLISHED)
@@ -788,7 +1024,7 @@ class CatalogStore(PostgresTable):
 
     async def set_pins(self, draft_id: UUID, pins: Mapping[UUID, int]) -> Draft:
         """Привязки черновика к версиям источников: после поднятия до новых."""
-        async with self._transaction("set pins") as cur:
+        async with self._transaction(f"set pins of draft {draft_id}") as cur:
             draft = await self._draft(cur, draft_id, lock=True)
             self._require_open(draft)
             await cur.execute(
@@ -844,7 +1080,7 @@ class CatalogStore(PostgresTable):
             """
         )
 
-        async with self._transaction("rebase") as cur:
+        async with self._transaction(f"rebase draft {draft_id}") as cur:
             draft = await self._draft(cur, draft_id, lock=True)
             self._require_open(draft)
 
@@ -893,7 +1129,10 @@ class CatalogStore(PostgresTable):
             row = await cur.fetchone()
 
         if row is None:
-            msg = f"catalog: draft {draft_id} vanished during rebase"
+            msg = (
+                f"catalog: update of {self._schema}.drafts returned no row for "
+                f"draft {draft_id} while rebasing it to version {current}"
+            )
             raise CatalogStoreError(msg)
 
         return RebaseResult(draft=self._draft_of(row), issues=tuple(issues))
@@ -932,18 +1171,21 @@ class CatalogStore(PostgresTable):
             "layer_ids": list(spec.layer_ids),
         }
 
-        async with self._transaction("create view") as cur:
+        async with self._transaction(f"create view {spec.name!r}") as cur:
             await cur.execute(query, params)
             row = await cur.fetchone()
 
         if row is None:
-            msg = f"catalog: view {spec.name!r} was not saved"
+            msg = (
+                f"catalog: insert into {self._schema}.views returned no row "
+                f"for view {spec.name!r}"
+            )
             raise CatalogStoreError(msg)
 
         return self._view_of(row)
 
     async def get_view(self, view_id: UUID) -> View:
-        async with self._transaction("get view") as cur:
+        async with self._transaction(f"get view {view_id}") as cur:
             return await self._view(cur, view_id)
 
     async def update_view(self, view_id: UUID, spec: ViewSpec) -> View:
@@ -973,7 +1215,7 @@ class CatalogStore(PostgresTable):
             "layer_ids": list(spec.layer_ids),
         }
 
-        async with self._transaction("update view") as cur:
+        async with self._transaction(f"update view {view_id}") as cur:
             await cur.execute(query, params)
             row = await cur.fetchone()
 
@@ -993,7 +1235,7 @@ class CatalogStore(PostgresTable):
             """
         )
 
-        async with self._transaction("delete view") as cur:
+        async with self._transaction(f"delete view {view_id}") as cur:
             await cur.execute(query, {"id": view_id})
             return cur.rowcount > 0
 
@@ -1048,7 +1290,7 @@ class CatalogStore(PostgresTable):
             "roles": sorted(roles),
         }
 
-        async with self._transaction("views for") as cur:
+        async with self._transaction(f"views for user {user_id}") as cur:
             await cur.execute(query, params)
             rows = await cur.fetchall()
 
@@ -1074,7 +1316,7 @@ class CatalogStore(PostgresTable):
             """
         )
 
-        async with self._transaction("layout of") as cur:
+        async with self._transaction(f"layout of view {view_id}") as cur:
             await self._view(cur, view_id)
             await cur.execute(query, {"view_id": view_id})
             rows = await cur.fetchall()
@@ -1127,7 +1369,7 @@ class CatalogStore(PostgresTable):
                 }
             )
 
-        async with self._transaction("put layout") as cur:
+        async with self._transaction(f"put layout of view {view_id}") as cur:
             await self._view(cur, view_id)
             await cur.execute(clear, {"view_id": view_id})
             if rows:
@@ -1152,7 +1394,7 @@ class CatalogStore(PostgresTable):
             """
         )
 
-        async with self._transaction("shares of") as cur:
+        async with self._transaction(f"shares of view {view_id}") as cur:
             await self._view(cur, view_id)
             await cur.execute(query, {"view_id": view_id})
             rows = await cur.fetchall()
@@ -1195,7 +1437,7 @@ class CatalogStore(PostgresTable):
             "mode": share.mode.value,
         }
 
-        async with self._transaction("share view") as cur:
+        async with self._transaction(f"share view {view_id}") as cur:
             await self._view(cur, view_id)
             await cur.execute(query, params)
 
@@ -1216,7 +1458,7 @@ class CatalogStore(PostgresTable):
             "target": share.target,
         }
 
-        async with self._transaction("unshare view") as cur:
+        async with self._transaction(f"unshare view {view_id}") as cur:
             await self._view(cur, view_id)
             await cur.execute(query, params)
             return cur.rowcount > 0
@@ -1291,10 +1533,13 @@ class CatalogStore(PostgresTable):
         try:
             return self._assemble(layers, nodes, kinds, flows)
         except ValidationError as exc:
-            msg = "catalog: a table row is not a valid entity"
+            msg = (
+                f"catalog: a row of the entity tables in {self._schema} "
+                f"is not a valid entity: {exc}"
+            )
             raise CatalogStoreError(msg) from exc
         except CatalogInvariantError as exc:
-            msg = f"catalog: tables are inconsistent: {exc}"
+            msg = f"catalog: entity tables in {self._schema} are inconsistent: {exc}"
             raise CatalogStoreError(msg) from exc
 
     @staticmethod
@@ -1349,7 +1594,10 @@ class CatalogStore(PostgresTable):
         await cur.execute(query)
         row = await cur.fetchone()
         if row is None:
-            msg = "catalog: versions query returned nothing"
+            msg = (
+                f"catalog: reading the latest number from {self._schema}.versions "
+                "returned no row, expected one aggregate row"
+            )
             raise CatalogStoreError(msg)
 
         return int(row["number"])
@@ -1360,7 +1608,10 @@ class CatalogStore(PostgresTable):
             return await self._read_snapshot(cur)
 
         if version > current:
-            msg = f"catalog: version {version} is not published yet (current {current})"
+            msg = (
+                f"catalog: version {version} is not published yet, "
+                f"the latest in {self._schema}.versions is {current}"
+            )
             raise CatalogStoreError(msg)
 
         query = self._sql(
@@ -1388,7 +1639,11 @@ class CatalogStore(PostgresTable):
             try:
                 snapshot = stored.operations.apply(snapshot, AcceptAll())
             except CatalogOpError as exc:
-                msg = f"catalog: version {stored.number} history does not apply: {exc}"
+                msg = (
+                    f"catalog: operations of version {stored.number} from "
+                    f"{self._schema}.versions do not apply on top of the "
+                    f"previous versions: {exc}"
+                )
                 raise CatalogStoreError(msg) from exc
 
         return snapshot
@@ -1470,7 +1725,10 @@ class CatalogStore(PostgresTable):
         await cur.execute(query, {"draft_id": draft_id})
         row = await cur.fetchone()
         if row is None:
-            msg = "catalog: draft_ops query returned nothing"
+            msg = (
+                f"catalog: reading the last seq from {self._schema}.draft_ops "
+                f"for draft {draft_id} returned no row, expected one aggregate row"
+            )
             raise CatalogStoreError(msg)
 
         return int(row["seq"])
@@ -1501,7 +1759,8 @@ class CatalogStore(PostgresTable):
                 ops.append(DraftOp.model_validate(row))
             except ValidationError as exc:
                 msg = (
-                    f"catalog: draft {draft_id} seq {row['seq']} is not a valid portion"
+                    f"catalog: row of {self._schema}.draft_ops for draft "
+                    f"{draft_id} seq {row['seq']} is not a valid portion: {exc}"
                 )
                 raise CatalogStoreError(msg) from exc
 
@@ -1651,26 +1910,32 @@ class CatalogStore(PostgresTable):
 
         return self._view_of(row)
 
-    @staticmethod
-    def _draft_of(row: DictRow) -> Draft:
+    def _draft_of(self, row: DictRow) -> Draft:
         try:
             return Draft.model_validate(row)
         except ValidationError as exc:
-            msg = f"catalog: draft row {row.get('id')} is not valid"
+            msg = (
+                f"catalog: row of {self._schema}.drafts with id {row.get('id')} "
+                f"is not a valid draft: {exc}"
+            )
             raise CatalogStoreError(msg) from exc
 
-    @staticmethod
-    def _version_of(row: DictRow) -> Version:
+    def _version_of(self, row: DictRow) -> Version:
         try:
             return Version.model_validate(row)
         except ValidationError as exc:
-            msg = f"catalog: version row {row.get('number')} is not valid"
+            msg = (
+                f"catalog: row of {self._schema}.versions with number "
+                f"{row.get('number')} is not a valid version: {exc}"
+            )
             raise CatalogStoreError(msg) from exc
 
-    @staticmethod
-    def _view_of(row: DictRow) -> View:
+    def _view_of(self, row: DictRow) -> View:
         try:
             return View.model_validate(row)
         except ValidationError as exc:
-            msg = f"catalog: view row {row.get('id')} is not valid"
+            msg = (
+                f"catalog: row of {self._schema}.views with id {row.get('id')} "
+                f"is not a valid view: {exc}"
+            )
             raise CatalogStoreError(msg) from exc

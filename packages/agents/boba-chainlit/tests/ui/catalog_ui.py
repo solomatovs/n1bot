@@ -16,7 +16,8 @@ from uuid import UUID
 
 import httpx
 
-from boba.catalog.samples import ChSample, PgSample
+from boba.db.clickhouse.snapshot_sample import ChSample
+from boba.db.postgres.snapshot_sample import PgSample
 from boba.stand.ui.stand import StandProcess
 
 
@@ -442,7 +443,11 @@ class Api:
     def discard(self, draft_id: str) -> None:
         response = self.admin.delete(f"/api/catalog/drafts/{draft_id}")
         if response.status_code not in (200, 404, 409):
-            raise RuntimeError(f"discard failed: {response.status_code}")
+            msg = (
+                f"DELETE /api/catalog/drafts/{draft_id}: expected 200, 404 or 409, "
+                f"got {response.status_code} {response.text[:200]}"
+            )
+            raise RuntimeError(msg)
 
     def snapshot(self) -> dict[str, Any]:
         return ok(self.admin.get("/api/catalog/snapshot"))
@@ -484,7 +489,11 @@ class Api:
     def delete_view(self, view_id: str) -> None:
         response = self.admin.delete(f"/api/catalog/views/{view_id}")
         if response.status_code not in (200, 404):
-            raise RuntimeError(f"delete view failed: {response.status_code}")
+            msg = (
+                f"DELETE /api/catalog/views/{view_id}: expected 200 or 404, "
+                f"got {response.status_code} {response.text[:200]}"
+            )
+            raise RuntimeError(msg)
 
     # --- источники ---
 
@@ -514,7 +523,11 @@ class Api:
     def delete_source(self, source_id: str) -> None:
         response = self.admin.delete(f"/api/catalog/sources/{source_id}")
         if response.status_code not in (200, 404):
-            raise RuntimeError(f"delete source failed: {response.status_code}")
+            msg = (
+                f"DELETE /api/catalog/sources/{source_id}: expected 200 or 404, "
+                f"got {response.status_code} {response.text[:200]}"
+            )
+            raise RuntimeError(msg)
 
     def source_draft_state(self, draft_id: str) -> dict[str, Any]:
         return ok(self.admin.get(f"/api/catalog/source-drafts/{draft_id}"))

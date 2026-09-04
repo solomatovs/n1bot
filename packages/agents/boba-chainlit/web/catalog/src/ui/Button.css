@@ -1,17 +1,22 @@
 .btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
+  justify-content: center;
+  gap: var(--s1);
+  height: var(--h-ctl);
+  padding: 0 var(--s3);
   border: 1px solid var(--hairline);
-  border-radius: var(--r-cell);
+  border-radius: var(--r-ctl);
   background: var(--raised);
   color: var(--ink);
   font-family: var(--font-sans);
   font-size: var(--fs-data);
   font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
   text-decoration: none;
+  flex: none;
 }
 
 .btn:hover:not(:disabled) {
@@ -46,8 +51,28 @@
   color: var(--muted);
 }
 
-.btn--tiny {
-  padding: 2px 8px;
-  font-size: 11px;
-  align-self: flex-start;
+.btn--ghost:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+.btn--sm {
+  height: var(--h-ctl-sm);
+  padding: 0 var(--s2);
+  font-size: var(--fs-micro);
+}
+
+.btn[aria-pressed="true"] {
+  color: var(--signal);
+  border-color: color-mix(in srgb, var(--signal) 40%, var(--hairline));
+}
+
+/* на узком экране кнопка с иконкой прячет подпись: остаётся title */
+@media (max-width: 900px) {
+  .btn--collapsible .btn__label {
+    display: none;
+  }
+
+  .btn--collapsible {
+    padding: 0 var(--s2);
+  }
 }

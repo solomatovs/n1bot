@@ -1,11 +1,9 @@
 import { Plus } from "lucide-react";
 import { useEffect, useState, type FormEvent, type ReactElement } from "react";
-import { Link } from "react-router-dom";
 
 import { ApiError, type CatalogApi } from "../../api/client";
 import type { Access, View } from "../../model/catalog";
-import { Alert, Button, Chip, Input, useToast } from "../../ui";
-import { Dialog } from "./Dialog";
+import { Alert, Button, Chip, Dialog, Form, Input, List, ListAside, ListName, ListRow, useToast } from "../../ui";
 
 type Props = {
   api: CatalogApi;
@@ -36,7 +34,10 @@ export function DiagramsDialog({ api, access, slice, onCreated, onClose }: Props
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setState({ status: "failed", message: error instanceof ApiError ? error.detail : String(error) });
+          setState({
+            status: "failed",
+            message: error instanceof ApiError ? error.detail : String(error),
+          });
         }
       });
 
@@ -53,7 +54,11 @@ export function DiagramsDialog({ api, access, slice, onCreated, onClose }: Props
     }
 
     api
-      .createView({ name: trimmed, node_ids: slice.node_ids, layer_ids: slice.layer_ids })
+      .createView({
+        name: trimmed,
+        node_ids: slice.node_ids,
+        layer_ids: slice.layer_ids,
+      })
       .then(onCreated)
       .catch((error: unknown) => {
         toast(error instanceof ApiError ? error.detail : String(error), "error");
@@ -64,22 +69,22 @@ export function DiagramsDialog({ api, access, slice, onCreated, onClose }: Props
     <Dialog title="diagrams" mark="diagrams" onClose={onClose}>
       {state.status === "failed" && <Alert tone="error">{state.message}</Alert>}
       {state.status === "ready" && (
-        <ul className="index__list" data-testid="diagrams-list">
-          {state.views.length === 0 && <li className="choices__empty">no diagrams yet</li>}
+        <List kind="spaced" mark="diagrams-list" empty="no diagrams yet">
           {state.views.map((view) => (
-            <li key={view.id} data-view={view.name}>
-              <Link to={`/views/${view.id}`} className="index__link">
-                {view.name}
-              </Link>
-              <Chip tone="muted">{view.owner_id === access.user_id ? "yours" : "shared with you"}</Chip>
-            </li>
+            <ListRow key={view.id} data-view={view.name}>
+              <ListName to={`/views/${view.id}`}>{view.name}</ListName>
+              <ListAside>
+                <Chip tone="muted">{view.owner_id === access.user_id ? "yours" : "shared with you"}</Chip>
+              </ListAside>
+            </ListRow>
           ))}
-        </ul>
+        </List>
       )}
       {access.can_edit && (
-        <form className="index__new" onSubmit={create} data-testid="new-view">
+        <Form inline onSubmit={create} mark="new-view">
           <Input
             mono
+            fill
             placeholder="new diagram name"
             aria-label="new diagram name"
             value={name}
@@ -87,10 +92,10 @@ export function DiagramsDialog({ api, access, slice, onCreated, onClose }: Props
               setName(event.target.value);
             }}
           />
-          <Button size="tiny" tone="primary" type="submit" icon={Plus} disabled={name.trim() === ""}>
+          <Button tone="primary" type="submit" icon={Plus} disabled={name.trim() === ""}>
             save slice
           </Button>
-        </form>
+        </Form>
       )}
     </Dialog>
   );

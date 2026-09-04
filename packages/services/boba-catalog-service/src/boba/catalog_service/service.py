@@ -11,6 +11,9 @@ CatalogRefusalError — у субъекта нет прав на действи�
 CatalogStoreError, DraftNotFoundError, DraftClosedError, DraftConflictError,
     DraftStaleError, ViewNotFoundError — как у CatalogStore.
 CatalogOpError — порция операций не применима к снимку черновика.
+UnknownSourceKindError — вид источника не из реестра снимков.
+SyncNotFoundError, SyncRunningError, SyncClosedError,
+    SyncConnectionNotBoundError, SyncSetupError — как у SyncRunner.
 """
 
 from __future__ import annotations
@@ -25,7 +28,6 @@ from boba.catalog import (
     ChangeStatus,
     NodeColumn,
     ObjectCard,
-    ObjectCards,
     ObjectKind,
     ObjectRef,
     OperationList,
@@ -43,6 +45,7 @@ from boba.catalog_service.records import (
     CatalogAccess,
     CatalogRefusalError,
     CatalogRefusalKind,
+    ConnectionEntry,
     Draft,
     DraftAuthor,
     DraftState,
@@ -60,6 +63,10 @@ from boba.catalog_service.records import (
     SourceObjectNotFoundError,
     SourceSpec,
     SourceVersion,
+    Sync,
+    SyncRequest,
+    SyncStatus,
+    UnknownSourceKindError,
     Version,
     VersionOrigin,
     View,
@@ -71,6 +78,7 @@ from boba.catalog_service.records import (
 )
 from boba.catalog_service.source_store import SourceStore
 from boba.catalog_service.store import CatalogStore
+from boba.catalog_service.sync_runner import SyncCaller, SyncPorts, SyncRunner
 from boba.identity.context import Scope, Subject
 from boba.identity.locks import LockToken
 from boba.messaging import CatalogChanged, ChangeAction, MessageBus
@@ -90,11 +98,18 @@ class CatalogService:
         sources: SourceStore,
         cfg: CatalogConfig,
         bus: MessageBus,
+        ports: SyncPorts,
     ) -> None:
         self._store = store
         self._sources = sources
         self._cfg = cfg
         self._bus = bus
+        self._connections = ports.connections
+        self._syncs = SyncRunner(sources, ports, self._sync_changed)
+
+    @property
+    def syncs(self) -> SyncRunner:
+        return self._syncs
 
     @property
     def store(self) -> CatalogStore:
@@ -488,14 +503,22 @@ class CatalogService:
         if self.can_view(subject):
             return
 
-        msg = f"user {subject.login!r} has no role to read the catalog"
+        allowed = sorted({*self._cfg.view_roles, *self._cfg.edit_roles})
+        msg = (
+            f"user {subject.login!r} has no role to read the catalog: "
+            f"one of {allowed} is required"
+        )
         raise CatalogRefusalError(CatalogRefusalKind.VIEW_FORBIDDEN, msg)
 
     def _require_edit(self, subject: Subject) -> None:
         if self.can_edit(subject):
             return
 
-        msg = f"user {subject.login!r} has no role to edit the catalog"
+        allowed = sorted(self._cfg.edit_roles)
+        msg = (
+            f"user {subject.login!r} has no role to edit the catalog: "
+            f"one of {allowed} is required"
+        )
         raise CatalogRefusalError(CatalogRefusalKind.EDIT_FORBIDDEN, msg)
 
     async def _accessible_view(self, subject: Subject, view_id: UUID) -> View:
@@ -512,7 +535,10 @@ class CatalogService:
             if self._share_covers(share, subject):
                 return view
 
-        msg = f"user {subject.login!r} has no access to view {view.name!r}"
+        msg = (
+            f"user {subject.login!r} has no access to view {view.name!r} "
+            f"({view.id}): not its owner, not in its shares, no catalog role"
+        )
         raise CatalogRefusalError(CatalogRefusalKind.VIEW_FORBIDDEN, msg)
 
     async def _owned_view(self, subject: Subject, view_id: UUID) -> View:
@@ -523,7 +549,10 @@ class CatalogService:
         if view.owner_id == subject.user_id:
             return view
 
-        msg = f"user {subject.login!r} does not own view {view.name!r}"
+        msg = (
+            f"user {subject.login!r} does not own view {view.name!r} ({view.id}); "
+            "only the owner can change or share it"
+        )
         raise CatalogRefusalError(CatalogRefusalKind.NOT_OWNER, msg)
 
     @staticmethod
@@ -545,8 +574,20 @@ class CatalogService:
 
         return await self._sources.get_source(source_id)
 
+    def source_kinds(self) -> tuple[str, ...]:
+        """Виды источников, у которых установлен снимок: kind типов соединений."""
+        return self._sources.kinds.kinds()
+
+    def _require_kind(self, kind: str) -> None:
+        """Ошибки:
+        UnknownSourceKindError — снимка этого вида нет в реестре.
+        """
+        if not self._sources.kinds.known(kind):
+            raise UnknownSourceKindError(kind, self._sources.kinds.kinds())
+
     async def create_source(self, subject: Subject, spec: SourceSpec) -> Source:
         self._require_edit(subject)
+        self._require_kind(spec.kind)
 
         source = await self._sources.create_source(spec, subject.user_id)
         await self._source_changed(subject, source.id, ChangeAction.CREATED)
@@ -557,6 +598,7 @@ class CatalogService:
         self, subject: Subject, source_id: UUID, spec: SourceSpec
     ) -> Source:
         self._require_edit(subject)
+        self._require_kind(spec.kind)
 
         source = await self._sources.update_source(source_id, spec)
         await self._source_changed(subject, source_id, ChangeAction.UPDATED)
@@ -655,9 +697,10 @@ class CatalogService:
         resolved = self._resolve_version(source, version)
         snapshot = await self._sources.snapshot_of(ref.source_id, resolved)
         try:
-            return ObjectCards.of(snapshot, ref)
+            return snapshot.card(ref)
         except CatalogError as exc:
-            raise SourceObjectNotFoundError(ref) from exc
+            where = f"source {source.name!r} version {resolved}"
+            raise SourceObjectNotFoundError(ref, where, str(exc)) from exc
 
     async def view_object(
         self, subject: Subject, view_id: UUID, node_id: UUID
@@ -685,9 +728,13 @@ class CatalogService:
 
         pinned = await self._sources.snapshot_of(node.ref.source_id, version)
         try:
-            return ObjectCards.of(pinned, node.ref)
+            return pinned.card(node.ref)
         except CatalogError as exc:
-            raise SourceObjectNotFoundError(node.ref) from exc
+            where = (
+                f"source {source.name!r} version {version} pinned by view "
+                f"{view.name!r} for node {node_id}"
+            )
+            raise SourceObjectNotFoundError(node.ref, where, str(exc)) from exc
 
     async def source_diff(
         self, subject: Subject, source_id: UUID, old: int, new: int
@@ -707,6 +754,53 @@ class CatalogService:
         await self._source_changed(subject, source_id, ChangeAction.UPDATED)
 
         return version
+
+    # --- синхронизации ---
+
+    async def connections_for(
+        self, subject: Subject, kind: str
+    ) -> Sequence[ConnectionEntry]:
+        """Подключения вида, видимые субъекту: кандидаты на привязку."""
+        self._require_view(subject)
+        self._require_kind(kind)
+
+        return await self._connections.visible(subject, kind)
+
+    async def start_sync(
+        self, caller: SyncCaller, source_id: UUID, request: SyncRequest
+    ) -> Sync:
+        """Синхронизация источника инструментом вида от имени субъекта:
+        нужны edit_roles, привязанное подключение и доступ к инструменту."""
+        self._require_edit(caller.subject)
+
+        return await self._syncs.start(caller, source_id, request)
+
+    async def cancel_sync(self, subject: Subject, sync_id: UUID) -> Sync:
+        self._require_edit(subject)
+
+        return await self._syncs.cancel(subject, sync_id)
+
+    async def sync(self, subject: Subject, sync_id: UUID) -> Sync:
+        self._require_view(subject)
+
+        return await self._sources.get_sync(sync_id)
+
+    async def source_syncs(self, subject: Subject, source_id: UUID) -> Sequence[Sync]:
+        self._require_view(subject)
+
+        return await self._sources.syncs_of(source_id)
+
+    async def _sync_changed(
+        self, subject: Subject, sync: Sync, action: ChangeAction
+    ) -> None:
+        await self._changed(subject, CatalogChanged(sync_id=sync.id, action=action))
+        if action is ChangeAction.CREATED:
+            return
+
+        if sync.status is SyncStatus.RUNNING:
+            return
+
+        await self._source_changed(subject, sync.source_id, ChangeAction.UPDATED)
 
     # --- черновики ручного источника ---
 
@@ -755,9 +849,10 @@ class CatalogService:
         state = await self._sources.draft_state(draft_id)
         ref = ObjectRef(source_id=state.draft.source_id, kind=kind, path=tuple(path))
         try:
-            return ObjectCards.of(state.snapshot, ref)
+            return state.snapshot.card(ref)
         except CatalogError as exc:
-            raise SourceObjectNotFoundError(ref) from exc
+            where = f"source draft {state.draft.name!r} ({draft_id})"
+            raise SourceObjectNotFoundError(ref, where, str(exc)) from exc
 
     async def append_source_ops(
         self,

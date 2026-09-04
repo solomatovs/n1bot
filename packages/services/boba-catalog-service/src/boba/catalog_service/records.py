@@ -12,21 +12,26 @@ DraftStaleError — base_version черновика отстал от опубл
     current_version — актуальная.
 ViewNotFoundError — вида с таким id нет.
 SourceNotFoundError — источника с таким id нет.
-SourceObjectNotFoundError — по адресу в версии источника нет объекта.
+SourceObjectNotFoundError — по адресу в версии источника или черновике нет
+    объекта; where — где искали, reason — ответ сборки карточки.
 SourceVersionNotFoundError — у источника нет версии с таким номером.
 SourceDraftNotFoundError — черновика ручного источника с таким id нет.
 SourceNotManualError — источник синхронизируемый, правки операциями закрыты.
+SyncNotFoundError — синхронизации с таким id нет.
+SyncRunningError — у источника уже идёт синхронизация.
+SyncClosedError — синхронизация уже завершена, отменять нечего.
+SyncConnectionNotBoundError — подключение не привязано к источнику.
 CatalogRefusalError — у субъекта нет прав на действие; kind из CatalogRefusalKind.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny
 
 from boba.catalog import (
     CatalogDiff,
@@ -35,10 +40,11 @@ from boba.catalog import (
     ObjectRef,
     OperationList,
     SourceDiff,
-    SourceKind,
     SourceOperationList,
+    SourceRecord,
     SourceSnapshot,
     Staleness,
+    SyncBatch,
 )
 from boba.identity.errors import RefusalError
 
@@ -48,6 +54,7 @@ __all__ = [
     "CatalogRefusalKind",
     "CatalogServiceError",
     "CatalogStoreError",
+    "ConnectionEntry",
     "Draft",
     "DraftAuthor",
     "DraftClosedError",
@@ -76,8 +83,16 @@ __all__ = [
     "SourceSpec",
     "SourceVersion",
     "SourceVersionNotFoundError",
+    "StagedBatch",
     "Sync",
+    "SyncClosedError",
+    "SyncConnectionNotBoundError",
+    "SyncNotFoundError",
+    "SyncRequest",
+    "SyncRunningError",
+    "SyncScope",
     "SyncStatus",
+    "UnknownSourceKindError",
     "Version",
     "VersionOrigin",
     "View",
@@ -154,6 +169,42 @@ class SourceNotFoundError(CatalogServiceError):
         self.source_id = source_id
 
 
+class SyncNotFoundError(CatalogServiceError):
+    def __init__(self, sync_id: UUID) -> None:
+        super().__init__(f"catalog: sync {sync_id} not found")
+        self.sync_id = sync_id
+
+
+class SyncRunningError(CatalogServiceError):
+    def __init__(self, source_id: UUID, sync_id: UUID) -> None:
+        msg = (
+            f"catalog: source {source_id} already has a running sync {sync_id}; "
+            "wait for it to finish or cancel it first"
+        )
+        super().__init__(msg)
+        self.source_id = source_id
+        self.sync_id = sync_id
+
+
+class SyncClosedError(CatalogServiceError):
+    def __init__(self, sync_id: UUID, status: SyncStatus) -> None:
+        msg = f"catalog: sync {sync_id} is already {status.value}, nothing to cancel"
+        super().__init__(msg)
+        self.sync_id = sync_id
+        self.status = status
+
+
+class SyncConnectionNotBoundError(CatalogServiceError):
+    def __init__(self, source_id: UUID, connection_id: UUID) -> None:
+        msg = (
+            f"catalog: connection {connection_id} is not bound to source "
+            f"{source_id}; bind it before syncing"
+        )
+        super().__init__(msg)
+        self.source_id = source_id
+        self.connection_id = connection_id
+
+
 class SourceVersionNotFoundError(CatalogServiceError):
     def __init__(self, source_id: UUID, version: int) -> None:
         super().__init__(f"catalog: source {source_id} has no version {version}")
@@ -168,9 +219,14 @@ class SourceDraftNotFoundError(CatalogServiceError):
 
 
 class SourceObjectNotFoundError(CatalogServiceError):
-    def __init__(self, ref: ObjectRef) -> None:
-        super().__init__(f"catalog: no {ref.kind.value} at {ref.render()}")
+    """По адресу нет объекта; where — где искали (версия источника или
+    черновик), reason — ответ сборки карточки."""
+
+    def __init__(self, ref: ObjectRef, where: str, reason: str) -> None:
+        super().__init__(f"catalog: {reason} ({where})")
         self.ref = ref
+        self.where = where
+        self.reason = reason
 
 
 class ViewNodeNotFoundError(CatalogServiceError):
@@ -180,6 +236,18 @@ class ViewNodeNotFoundError(CatalogServiceError):
         super().__init__(f"catalog: view {view_id} has no node {node_id}")
         self.view_id = view_id
         self.node_id = node_id
+
+
+class UnknownSourceKindError(CatalogServiceError):
+    """Вида источника нет в реестре: пакет-владелец снимка не установлен."""
+
+    def __init__(self, kind: str, installed: Sequence[str]) -> None:
+        super().__init__(
+            f"catalog: source kind {kind!r} has no snapshot installed, "
+            f"installed kinds: {list(installed)}"
+        )
+        self.kind = kind
+        self.installed = tuple(installed)
 
 
 class SourceNotManualError(CatalogServiceError):
@@ -423,7 +491,7 @@ class SourceSpec(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    kind: SourceKind
+    kind: str = Field(min_length=1)
     name: str = Field(min_length=1)
     description: str = ""
     manual: bool = False
@@ -435,7 +503,7 @@ class Source(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: UUID
-    kind: SourceKind
+    kind: str = Field(min_length=1)
     name: str = Field(min_length=1)
     description: str = ""
     manual: bool
@@ -496,6 +564,50 @@ class SyncStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class ConnectionEntry(BaseModel):
+    """Подключение из справочника глазами субъекта: id, имя, вид и владение."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: UUID
+    name: str
+    kind: str
+    mine: bool
+
+
+class SyncScope(BaseModel):
+    """Что и как снимать: схемы (пусто — все несистемные), размер порции и
+    пауза между заходами инструмента в каталог базы."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    schemas: tuple[str, ...] = ()
+    batch_size: int = Field(ge=1, le=10_000, default=200)
+    pause_ms: int = Field(ge=0, le=60_000, default=0)
+
+    def schemas_arg(self) -> str:
+        """Схемы одной строкой, как их принимает инструмент снятия."""
+        return ", ".join(self.schemas)
+
+
+class SyncRequest(BaseModel):
+    """Запрос синхронизации: привязанное подключение и охват."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    connection_id: UUID
+    scope: SyncScope = Field(default_factory=SyncScope)
+
+
+class StagedBatch(BaseModel):
+    """Порция синхронизации из staging: заголовок и записи её части."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    batch: SyncBatch
+    records: tuple[SerializeAsAny[SourceRecord], ...]
+
+
 class Sync(BaseModel):
     """Синхронизация источника: прогресс и итог."""
 
@@ -508,7 +620,7 @@ class Sync(BaseModel):
     started_at: datetime
     finished_at: datetime | None = None
     status: SyncStatus
-    scope: dict[str, object] = Field(default_factory=dict)
+    scope: SyncScope = Field(default_factory=SyncScope)
     objects_total: int | None = None
     objects_done: int = Field(ge=0, default=0)
     error: str | None = None
@@ -546,6 +658,6 @@ class SourceDraftState(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     draft: SourceDraft
-    snapshot: SourceSnapshot = Field(discriminator="kind")
+    snapshot: SerializeAsAny[SourceSnapshot]
     diff: SourceDiff
     seq: int = Field(ge=0)

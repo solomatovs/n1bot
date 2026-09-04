@@ -1,12 +1,18 @@
 .chip {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--signal);
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  height: var(--h-chip);
+  padding: 0 var(--s2);
   border: 1px solid color-mix(in srgb, var(--signal) 32%, var(--hairline));
-  border-radius: 4px;
-  padding: 0 5px;
+  border-radius: var(--r-ctl);
+  color: var(--signal);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  line-height: 1;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+  white-space: nowrap;
 }
 
 .chip--draft {
@@ -17,4 +23,9 @@
 .chip--muted {
   color: var(--muted);
   border-color: var(--hairline);
+}
+
+.chip--warn {
+  color: var(--status-modified);
+  border-color: var(--status-modified);
 }

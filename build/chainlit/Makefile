@@ -546,8 +546,16 @@ $(CATALOG_DIST)/index.html: $(CATALOG_SRCS)
 	    -c 'npm ci --no-audit --no-fund && npm run generate && npm run check && npm run build'
 	du -sh "$(CATALOG_DIST)"
 
-.PHONY: web-catalog catalog-openapi
+.PHONY: web-catalog web-catalog-dev catalog-openapi
 web-catalog: $(CATALOG_DIST)/index.html
+
+# страница каталога в dev-дерево: сборка при изменении исходников и копия
+# dist в app_root, откуда её раздаёт приложение из launch.json
+CATALOG_DEV_DIST := $(SRC_DIR)/compose/$(APP)/app_root/public/catalog
+web-catalog-dev: $(CATALOG_DIST)/index.html
+	rm -rf "$(CATALOG_DEV_DIST)"
+	cp -a "$(CATALOG_DIST)" "$(CATALOG_DEV_DIST)"
+	@echo "$(CATALOG_DEV_DIST) обновлён"
 
 # схема JSON API каталога для генерации типов страницы: из кода, venv хоста
 catalog-openapi:

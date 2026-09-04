@@ -6,7 +6,7 @@ import { z } from "zod";
 
 // --- источники метаданных: адреса объектов ---
 
-export const SourceKindSchema = z.enum(["postgres", "clickhouse"]);
+export const SourceKindSchema = z.string().min(1);
 export const ObjectKindSchema = z.enum([
   "database",
   "schema",
@@ -224,6 +224,7 @@ export const CatalogChangedSchema = z.object({
   version: z.number().nullable(),
   view_id: z.string().nullable(),
   source_id: z.string().nullable().default(null),
+  sync_id: z.string().nullable().default(null),
   action: z.enum(["created", "updated", "deleted"]),
 });
 
@@ -488,6 +489,36 @@ export const SourceConnectionSchema = z.object({
   connection_id: z.string(),
   bound_by: z.string(),
   bound_at: z.string(),
+});
+
+export const ConnectionEntrySchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  kind: z.string(),
+  mine: z.boolean(),
+});
+
+export const SyncStatusSchema = z.enum(["running", "done", "failed", "cancelled"]);
+
+export const SyncScopeSchema = z.object({
+  schemas: z.array(z.string()),
+  batch_size: z.number(),
+  pause_ms: z.number(),
+});
+
+export const SyncSchema = z.object({
+  id: z.string(),
+  source_id: z.string(),
+  connection_id: z.string(),
+  started_by: z.string(),
+  started_at: z.string(),
+  finished_at: z.string().nullable(),
+  status: SyncStatusSchema,
+  scope: SyncScopeSchema,
+  objects_total: z.number().nullable(),
+  objects_done: z.number(),
+  error: z.string().nullable(),
+  version: z.number().nullable(),
 });
 
 export const TreeNodeSchema = z.object({
@@ -756,6 +787,10 @@ export const SourceDraftStateSchema = z.object({
 export type Source = z.infer<typeof SourceSchema>;
 export type SourceVersion = z.infer<typeof SourceVersionSchema>;
 export type SourceConnection = z.infer<typeof SourceConnectionSchema>;
+export type ConnectionEntry = z.infer<typeof ConnectionEntrySchema>;
+export type SyncStatus = z.infer<typeof SyncStatusSchema>;
+export type SyncScope = z.infer<typeof SyncScopeSchema>;
+export type Sync = z.infer<typeof SyncSchema>;
 export type TreeNode = z.infer<typeof TreeNodeSchema>;
 export type ObjectCard = z.infer<typeof ObjectCardSchema>;
 export type PgRelation = z.infer<typeof PgRelationSchema>;

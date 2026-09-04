@@ -11,7 +11,7 @@ import asyncio
 from collections.abc import Coroutine
 from concurrent.futures import ThreadPoolExecutor
 from enum import StrEnum
-from typing import Any, ClassVar
+from typing import Any, ClassVar, LiteralString
 
 from psycopg import sql
 from psycopg.errors import InsufficientPrivilege
@@ -235,6 +235,10 @@ class StandDatabase:
 
         async with self._pool() as pool, pool.cursor() as cur:
             await cur.execute(query, {"kind": kind, "name": name})
+
+    def ddl(self, statement: LiteralString) -> None:
+        """DDL в базе стенда: таблицы-пробники для синхронизации каталога."""
+        run_blocking(self._execute(sql.Composed([sql.SQL(statement)]), None))
 
     def seed_connections(self, llm_port: int) -> None:
         """Соединения инструментов стенда: сервисные pg/ch под именем main и web-профиль

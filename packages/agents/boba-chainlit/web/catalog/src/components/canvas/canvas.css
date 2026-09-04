@@ -1,0 +1,283 @@
+/* холст процесса: узел, ребро, дорожка слоя; размеры по сетке контролов */
+
+.canvas {
+  position: relative;
+  min-height: 0;
+  height: 100%;
+}
+
+.canvas .react-flow__pane {
+  cursor: default;
+}
+
+/* до раскладки узлы стоят в нуле только для замера: их не показываем */
+.canvas[data-ready="false"] .react-flow__node,
+.canvas[data-ready="false"] .react-flow__edge {
+  opacity: 0;
+}
+
+.canvas .react-flow__background {
+  color: var(--hairline);
+}
+
+.flow-markers {
+  position: absolute;
+  width: 0;
+  height: 0;
+}
+
+.flow-markers__arrow {
+  fill: var(--muted);
+}
+
+.flow-markers__arrow--highlighted {
+  fill: var(--signal);
+}
+
+/* --- узел процесса --- */
+
+.proc-node {
+  width: var(--node-w);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--r-node);
+  background: var(--raised);
+  box-shadow: var(--shadow-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-data);
+  color: var(--ink);
+  transition:
+    border-color var(--t-std) var(--ease-move),
+    box-shadow var(--t-std) var(--ease-move);
+}
+
+.proc-node[data-highlighted="true"] {
+  border-color: color-mix(in srgb, var(--signal) 60%, var(--hairline-strong));
+}
+
+.proc-node[data-active="true"] {
+  border-color: var(--signal);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--signal) 35%, transparent),
+    var(--shadow-1);
+}
+
+.proc-node[data-status="added"] {
+  border-color: var(--status-added);
+}
+
+.proc-node[data-status="modified"] {
+  border-color: var(--status-modified);
+}
+
+.proc-node[data-status="removed"] {
+  border-color: var(--status-removed);
+  opacity: 0.7;
+}
+
+.proc-node[data-stale="true"] {
+  border-style: dashed;
+  border-color: var(--status-modified);
+}
+
+.proc-node__header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-areas: "layer kind status" "name kind status";
+  column-gap: var(--s2);
+  align-content: center;
+  height: calc(var(--h-row) * 2);
+  padding: 0 var(--s3);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.proc-node__layer {
+  grid-area: layer;
+  font-size: var(--fs-micro);
+  line-height: 1.2;
+  color: var(--faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.proc-node__name {
+  grid-area: name;
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: var(--fs-ui);
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.proc-node__kind {
+  grid-area: kind;
+  align-self: center;
+  font-size: var(--fs-micro);
+  color: var(--faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.proc-node__status,
+.proc-node__stale {
+  grid-area: status;
+  align-self: center;
+  display: inline-flex;
+  font-size: var(--fs-micro);
+  text-transform: uppercase;
+}
+
+.proc-node__stale {
+  color: var(--status-modified);
+}
+
+.proc-node[data-status="added"] .proc-node__status {
+  color: var(--status-added);
+}
+
+.proc-node[data-status="modified"] .proc-node__status {
+  color: var(--status-modified);
+}
+
+.proc-node[data-status="removed"] .proc-node__status {
+  color: var(--status-removed);
+}
+
+.proc-node__columns {
+  list-style: none;
+  margin: 0;
+  padding: var(--s1) 0;
+}
+
+.proc-node__column {
+  display: grid;
+  grid-template-columns: var(--icon-lg) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--s1);
+  height: var(--h-row);
+  padding: 0 var(--s3);
+}
+
+.proc-node__column-icon {
+  display: inline-flex;
+  color: var(--ember);
+}
+
+.proc-node__column-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.proc-node__column[data-nullable="true"] .proc-node__column-name {
+  color: var(--muted);
+}
+
+.proc-node__column-type {
+  color: var(--faint);
+  font-size: var(--fs-micro);
+}
+
+.proc-node__handle.react-flow__handle {
+  width: 6px;
+  height: 6px;
+  border: 0;
+  background: var(--hairline-strong);
+}
+
+/* --- ребро потока --- */
+
+.flow-edge.react-flow__edge-path {
+  stroke: var(--muted);
+  stroke-width: 1.5;
+}
+
+.react-flow__edge:hover .flow-edge.react-flow__edge-path {
+  stroke: var(--ink);
+}
+
+.flow-edge__particle {
+  fill: var(--signal);
+}
+
+.flow-edge__label {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  height: var(--h-chip);
+  padding: 0 var(--s2);
+  pointer-events: all;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-pill);
+  background: var(--bg);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  white-space: nowrap;
+}
+
+.flow-edge__label[data-highlighted="true"] {
+  color: var(--signal);
+  border-color: var(--signal);
+}
+
+.flow-edge__label[data-status="added"] {
+  color: var(--status-added);
+  border-color: var(--status-added);
+}
+
+.flow-edge__label[data-status="removed"] {
+  color: var(--status-removed);
+  border-color: var(--status-removed);
+}
+
+.flow-edge__label[data-status="modified"] {
+  color: var(--status-modified);
+  border-color: var(--status-modified);
+}
+
+.flow-edge__label[data-stale="true"] {
+  border-style: dashed;
+  border-color: var(--status-modified);
+}
+
+/* --- дорожка слоя --- */
+
+.layer-lane {
+  width: 100%;
+  height: 100%;
+  border: 1px dashed var(--hairline-strong);
+  border-radius: var(--r-phase);
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+  pointer-events: none;
+}
+
+.layer-lane[data-status="added"] {
+  border-color: var(--status-added);
+}
+
+.layer-lane[data-status="removed"] {
+  border-color: var(--status-removed);
+}
+
+.layer-lane__title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  height: var(--h-ctl);
+  padding: 0 var(--s3);
+  line-height: var(--h-ctl);
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.layer-lane__count {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--faint);
+}

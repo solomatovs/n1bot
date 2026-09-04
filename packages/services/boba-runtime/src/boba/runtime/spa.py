@@ -113,7 +113,8 @@ class BuiltSpa:
     async def serve(self, path: str = "") -> HTMLResponse:
         index = self._dist / self.INDEX
         if not index.is_file():
-            raise HTTPException(status_code=404, detail="page is not built")
+            detail = f"page is not built: {index} is missing, run the web build first"
+            raise HTTPException(status_code=404, detail=detail)
 
         html = self._stamp.render(index.read_text(encoding="utf-8"))
         return HTMLResponse(html, headers={"Cache-Control": "no-store"})
@@ -161,13 +162,19 @@ class DevSpa:
         try:
             return await self._client.get(url)
         except httpx.HTTPError as exc:
-            detail = f"vite dev server is not reachable at {self._dev_url}: {exc}"
+            detail = (
+                f"GET {url}: vite dev server is not reachable at {self._dev_url}: {exc}"
+            )
             raise HTTPException(status_code=502, detail=detail) from exc
 
     async def serve(self, path: str = "") -> HTMLResponse:
         upstream = await self._fetch(self.INDEX, "")
         if upstream.status_code != httpx.codes.OK:
-            detail = f"vite dev server answered {upstream.status_code} for index.html"
+            body = upstream.text[:200]
+            detail = (
+                f"GET {self._upstream_path(self.INDEX)} on the vite dev server at "
+                f"{self._dev_url}: expected 200, got {upstream.status_code}: {body}"
+            )
             raise HTTPException(status_code=502, detail=detail)
 
         html = self._stamp.render(upstream.text)

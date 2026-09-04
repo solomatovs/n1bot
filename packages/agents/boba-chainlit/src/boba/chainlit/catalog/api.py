@@ -26,7 +26,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny
 
 from boba.catalog import (
     CatalogOpError,
@@ -36,9 +36,9 @@ from boba.catalog import (
     ObjectRef,
     OperationList,
     SourceDiff,
+    SourceKindsError,
     SourceOperationList,
     SourceOpError,
-    SourceSnapshot,
     Staleness,
     TreeNode,
 )
@@ -48,6 +48,7 @@ from boba.catalog_service import (
     CatalogRefusalError,
     CatalogService,
     CatalogStoreError,
+    ConnectionEntry,
     Draft,
     DraftClosedError,
     DraftConflictError,
@@ -70,6 +71,15 @@ from boba.catalog_service import (
     SourceSpec,
     SourceVersion,
     SourceVersionNotFoundError,
+    Sync,
+    SyncCaller,
+    SyncClosedError,
+    SyncConnectionNotBoundError,
+    SyncNotFoundError,
+    SyncRequest,
+    SyncRunningError,
+    SyncSetupError,
+    UnknownSourceKindError,
     Version,
     View,
     ViewLayout,
@@ -81,7 +91,8 @@ from boba.catalog_service import (
 )
 from boba.chainlit.infra.session import ChainlitSession
 from boba.chat.profiles import ChatProfiles
-from boba.identity.context import Scope, Subject
+from boba.identity.context import HumanInitiator, Scope, Subject
+from boba.identity.signin import SignInMetadata
 from boba.messaging import CatalogChanged, Envelope, MessageBus
 from chainlit.auth import get_current_user, reuseable_oauth
 from chainlit.user import PersistedUser, User
@@ -149,6 +160,8 @@ class CatalogUrl(StrEnum):
     VIEW_SHARES = "/views/{view_id}/shares"
     VIEW_SHARE = "/views/{view_id}/shares/{kind}/{target}"
     EVENTS = "/events"
+    SOURCE_KINDS = "/source-kinds"
+    CONNECTIONS = "/connections"
     SOURCES = "/sources"
     SOURCE = "/sources/{source_id}"
     SOURCE_CONNECTIONS = "/sources/{source_id}/connections"
@@ -157,6 +170,8 @@ class CatalogUrl(StrEnum):
     SOURCE_TREE = "/sources/{source_id}/tree"
     SOURCE_OBJECT = "/sources/{source_id}/object"
     SOURCE_DIFF = "/sources/{source_id}/diff"
+    SOURCE_SYNCS = "/sources/{source_id}/syncs"
+    SYNC = "/syncs/{sync_id}"
     SOURCE_DRAFTS = "/sources/{source_id}/drafts"
     SOURCE_DRAFT = "/source-drafts/{draft_id}"
     SOURCE_DRAFT_OPS = "/source-drafts/{draft_id}/ops"
@@ -220,11 +235,12 @@ class SourceOpsBody(BaseModel):
 
 
 class SnapshotBody(BaseModel):
-    """Снимок целиком: путь стенда и переноса из staging."""
+    """Снимок целиком: путь стенда и переноса из staging. Форма снимка зависит
+    от вида источника, поэтому тело разбирает реестр видов сервиса."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    snapshot: SourceSnapshot = Field(discriminator="kind")
+    snapshot: dict[str, Any]
 
 
 class LatestVersion:
@@ -318,6 +334,8 @@ class CatalogApi:
             (CatalogUrl.VIEW_SHARES, self.share, "POST"),
             (CatalogUrl.VIEW_SHARE, self.unshare, "DELETE"),
             (CatalogUrl.EVENTS, self.events, "GET"),
+            (CatalogUrl.SOURCE_KINDS, self.source_kinds, "GET"),
+            (CatalogUrl.CONNECTIONS, self.connections, "GET"),
             (CatalogUrl.SOURCES, self.list_sources, "GET"),
             (CatalogUrl.SOURCES, self.create_source, "POST"),
             (CatalogUrl.SOURCE, self.get_source, "GET"),
@@ -331,6 +349,10 @@ class CatalogApi:
             (CatalogUrl.SOURCE_TREE, self.source_tree, "GET"),
             (CatalogUrl.SOURCE_OBJECT, self.source_object, "GET"),
             (CatalogUrl.SOURCE_DIFF, self.source_diff, "GET"),
+            (CatalogUrl.SOURCE_SYNCS, self.source_syncs, "GET"),
+            (CatalogUrl.SOURCE_SYNCS, self.start_sync, "POST"),
+            (CatalogUrl.SYNC, self.get_sync, "GET"),
+            (CatalogUrl.SYNC, self.cancel_sync, "DELETE"),
             (CatalogUrl.SOURCE_DRAFTS, self.source_drafts, "GET"),
             (CatalogUrl.SOURCE_DRAFTS, self.create_source_draft, "POST"),
             (CatalogUrl.SOURCE_DRAFT, self.source_draft_state, "GET"),
@@ -463,7 +485,7 @@ class CatalogApi:
 
     async def view_object(
         self, view_id: UUID, node_id: UUID, current_user: CurrentUser
-    ) -> ObjectCard:
+    ) -> SerializeAsAny[ObjectCard]:
         subject = self._subject(current_user)
         service = await self._resolved()
 
@@ -561,6 +583,23 @@ class CatalogApi:
 
     # --- источники ---
 
+    async def source_kinds(self, current_user: CurrentUser) -> Sequence[str]:
+        """Виды источников с установленным снимком: kind типов соединений."""
+        self._subject(current_user)
+        service = await self._resolved()
+
+        return service.source_kinds()
+
+    async def connections(
+        self, kind: str, current_user: CurrentUser
+    ) -> Sequence[ConnectionEntry]:
+        """Подключения вида, видимые пользователю входа: кандидаты на привязку
+        и выбор в диалоге синхронизации."""
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(service.connections_for(subject, kind))
+
     async def list_sources(self, current_user: CurrentUser) -> Sequence[Source]:
         subject = self._subject(current_user)
         service = await self._resolved()
@@ -635,14 +674,49 @@ class CatalogApi:
 
         return await self._guarded(service.source_versions(subject, source_id))
 
+    async def source_syncs(
+        self, source_id: UUID, current_user: CurrentUser
+    ) -> Sequence[Sync]:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(service.source_syncs(subject, source_id))
+
+    async def start_sync(
+        self, source_id: UUID, body: SyncRequest, current_user: CurrentUser
+    ) -> Sync:
+        """Синхронизация источника инструментом вида от имени пользователя
+        входа: возвращает запись сразу, ход виден по GET и событиям."""
+        caller = self._caller(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(service.start_sync(caller, source_id, body))
+
+    async def get_sync(self, sync_id: UUID, current_user: CurrentUser) -> Sync:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(service.sync(subject, sync_id))
+
+    async def cancel_sync(self, sync_id: UUID, current_user: CurrentUser) -> Sync:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(service.cancel_sync(subject, sync_id))
+
     async def write_source_version(
         self, source_id: UUID, body: SnapshotBody, current_user: CurrentUser
     ) -> SourceVersion:
         subject = self._subject(current_user)
         service = await self._resolved()
 
+        try:
+            snapshot = service.sources.kinds.parse(body.snapshot)
+        except SourceKindsError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
         return await self._guarded(
-            service.write_source_version(subject, source_id, body.snapshot)
+            service.write_source_version(subject, source_id, snapshot)
         )
 
     async def source_tree(
@@ -666,7 +740,7 @@ class CatalogApi:
         path: Annotated[list[str], Query()],
         current_user: CurrentUser,
         version: int = LatestVersion.QUERY,
-    ) -> ObjectCard:
+    ) -> SerializeAsAny[ObjectCard]:
         subject = self._subject(current_user)
         service = await self._resolved()
 
@@ -732,7 +806,7 @@ class CatalogApi:
         kind: ObjectKind,
         path: Annotated[list[str], Query()],
         current_user: CurrentUser,
-    ) -> ObjectCard:
+    ) -> SerializeAsAny[ObjectCard]:
         subject = self._subject(current_user)
         service = await self._resolved()
 
@@ -765,12 +839,14 @@ class CatalogApi:
     def _subject(self, current_user: User | PersistedUser | None) -> Subject:
         """Субъект по строке users под профилем по умолчанию для ролей входа."""
         if not isinstance(current_user, PersistedUser):
-            raise HTTPException(status_code=401, detail="Unauthorized")
+            got = type(current_user).__name__
+            msg = f"catalog api expects a signed-in persisted user, got {got}"
+            raise HTTPException(status_code=401, detail=msg)
 
         try:
             user_id = UUID(current_user.id)
         except ValueError as exc:
-            msg = f"user id {current_user.id!r} is not the users.id uuid"
+            msg = f"user id {current_user.id!r} is not the users.id uuid: {exc}"
             raise HTTPException(status_code=401, detail=msg) from exc
 
         roles = ChainlitSession.roles_of(current_user)
@@ -778,11 +854,29 @@ class CatalogApi:
 
         return Subject.of_user(user_id, current_user.identifier, roles, profile)
 
+    def _caller(self, current_user: User | PersistedUser | None) -> SyncCaller:
+        """Субъект входа с его секретами: инструмент снятия ходит в базу
+        под билетом пользователя."""
+        subject = self._subject(current_user)
+        if not isinstance(current_user, PersistedUser):
+            got = type(current_user).__name__
+            msg = f"catalog api expects a signed-in persisted user, got {got}"
+            raise HTTPException(status_code=401, detail=msg)
+
+        sign_in = SignInMetadata.parse(current_user.metadata)
+
+        return SyncCaller(
+            subject=subject,
+            initiator=HumanInitiator(via="api"),
+            credential=sign_in.credential(),
+        )
+
     async def _resolved(self) -> CatalogService:
         try:
             return await self._service()
         except RuntimeError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+            msg = f"catalog service is not available: {exc}"
+            raise HTTPException(status_code=503, detail=msg) from exc
 
     @staticmethod
     async def _guarded(action: Awaitable[T]) -> T:
@@ -799,10 +893,17 @@ class CatalogApi:
             SourceObjectNotFoundError,
             SourceDraftNotFoundError,
             ViewNodeNotFoundError,
+            SyncNotFoundError,
         ) as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except SourceNotManualError as exc:
+        except (SourceNotManualError, SyncRunningError, SyncClosedError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (
+            UnknownSourceKindError,
+            SyncConnectionNotBoundError,
+            SyncSetupError,
+        ) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except DraftConflictError as exc:
             detail: dict[str, Any] = {
                 "message": str(exc),
@@ -818,5 +919,6 @@ class CatalogApi:
             detail = {"message": str(exc), "index": exc.index, "reason": exc.reason}
             raise HTTPException(status_code=422, detail=detail) from exc
         except CatalogStoreError as exc:
-            logger.error("catalog api: %s", exc)
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+            logger.error("catalog api: store failure: %s", exc)
+            msg = f"catalog store failure: {exc}"
+            raise HTTPException(status_code=503, detail=msg) from exc

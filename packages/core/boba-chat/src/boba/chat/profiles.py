@@ -318,7 +318,7 @@ class ChatProfiles:
             if profile.default:
                 return name
 
-        msg = "profiles: no default profile"
+        msg = f"section [profiles]: none of {list(self._profiles)} sets default = true"
         raise RuntimeError(msg)
 
     def visible_for(

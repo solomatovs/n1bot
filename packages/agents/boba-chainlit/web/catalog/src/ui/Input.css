@@ -1,14 +1,63 @@
 .input {
-  padding: 6px 10px;
+  height: var(--h-ctl);
+  min-width: 0;
+  padding: 0 var(--s2);
   border: 1px solid var(--hairline);
-  border-radius: var(--r-cell);
+  border-radius: var(--r-ctl);
   background: var(--bg);
   color: var(--ink);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: var(--fs-data);
+  line-height: 1;
+}
+
+.input.mono {
+  font-family: var(--font-mono);
+}
+
+.input:focus-visible {
+  outline: none;
+  border-color: var(--signal);
+}
+
+.input:disabled {
+  opacity: 0.5;
+}
+
+textarea.input {
+  height: auto;
+  min-height: calc(var(--h-ctl) * 2);
+  padding: var(--s2);
+  line-height: 1.4;
+  resize: vertical;
 }
 
 .input--code {
-  min-height: 7em;
+  min-height: calc(var(--h-ctl) * 5);
   tab-size: 2;
+}
+
+.input--fill {
+  width: 100%;
+}
+
+.input--search {
+  padding-left: var(--s6);
+}
+
+.input--narrow {
+  width: calc(var(--h-ctl) * 3);
+}
+
+select.input[multiple] {
+  height: auto;
+  min-height: calc(var(--h-ctl) * 3);
+  padding: var(--s1);
+}
+
+input[type="checkbox"] {
+  width: var(--s4);
+  height: var(--s4);
+  margin: 0;
+  accent-color: var(--signal);
 }

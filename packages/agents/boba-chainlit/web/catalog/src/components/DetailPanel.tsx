@@ -4,7 +4,32 @@ import { useEffect, useState, type FormEvent, type ReactElement } from "react";
 import { ApiError, type CatalogApi } from "../api/client";
 import { renderRef, type Catalog, type Flow, type ObjectCard, type ProcessNode, type Stale } from "../model/catalog";
 import type { EditActions } from "../model/editing";
-import { Alert, Button, Chip, Eyebrow, Field, IconButton, Input, Select, TextArea } from "../ui";
+import {
+  Alert,
+  Button,
+  Cell,
+  Chip,
+  DataTable,
+  Facts,
+  Field,
+  Form,
+  IconButton,
+  Input,
+  List,
+  ListAside,
+  ListName,
+  ListRow,
+  Note,
+  Panel,
+  PanelHead,
+  Row,
+  Section,
+  SectionText,
+  Select,
+  TableRow,
+  TextArea,
+  Toolbar,
+} from "../ui";
 import { ObjectCardPanel } from "./sources/ObjectCardPanel";
 
 /** Откуда брать карточку объекта: по адресу и привязке либо через вид,
@@ -55,129 +80,151 @@ export function DetailPanel({
 
   if (editing !== undefined && mode === "node") {
     return (
-      <div className="detail" data-testid="detail-panel" data-node={address} data-mode={mode}>
-        <NodeForm
-          catalog={catalog}
-          node={node}
-          onSave={(saved) => {
-            editing.apply([{ op: "set_node", node: saved }]);
-            setMode("view");
-          }}
-          onCancel={() => {
-            setMode("view");
-          }}
-        />
+      <div data-testid="detail-panel" data-node={address} data-mode={mode}>
+        <Panel>
+          <NodeForm
+            catalog={catalog}
+            node={node}
+            onSave={(saved) => {
+              editing.apply([{ op: "set_node", node: saved }]);
+              setMode("view");
+            }}
+            onCancel={() => {
+              setMode("view");
+            }}
+          />
+        </Panel>
       </div>
     );
   }
 
   return (
-    <div className="detail" data-testid="detail-panel" data-node={address} data-stale={stale.length > 0}>
-      <header className="detail__head">
-        <div className="detail__title">
-          <Eyebrow>{layer?.name ?? "—"}</Eyebrow>
-          <h2 className="detail__name">{label}</h2>
-        </div>
-        {showDiff && status !== "unchanged" && <Chip tone="draft">{status}</Chip>}
-        {editing !== undefined && (
-          <IconButton
-            aria-label="edit node"
-            onClick={() => {
-              setMode("node");
-            }}
-          >
-            <Pencil size={16} />
-          </IconButton>
-        )}
-        {editing !== undefined && (
-          <IconButton
-            aria-label={retargeting ? "stop retargeting" : "retarget node"}
-            aria-pressed={retargeting}
-            onClick={onRetargetToggle}
-          >
-            <Crosshair size={16} />
-          </IconButton>
-        )}
-        {editing !== undefined && (
-          <IconButton
-            aria-label="remove node"
-            onClick={() => {
-              editing.removeNode(node);
-            }}
-          >
-            <Trash2 size={16} />
-          </IconButton>
-        )}
-        <IconButton aria-label="close details" onClick={onClose}>
-          <X size={16} />
-        </IconButton>
-      </header>
+    <div data-testid="detail-panel" data-node={address} data-stale={stale.length > 0}>
+      <Panel>
+        <PanelHead
+          eyebrow={layer?.name ?? "—"}
+          name={label}
+          description={node.note !== "" ? node.note : undefined}
+          actions={
+            <>
+              {showDiff && status !== "unchanged" && <Chip tone="draft">{status}</Chip>}
+              {editing !== undefined && (
+                <IconButton
+                  size="sm"
+                  ghost
+                  aria-label="edit node"
+                  onClick={() => {
+                    setMode("node");
+                  }}
+                >
+                  <Pencil size={14} />
+                </IconButton>
+              )}
+              {editing !== undefined && (
+                <IconButton
+                  size="sm"
+                  ghost
+                  aria-label={retargeting ? "stop retargeting" : "retarget node"}
+                  aria-pressed={retargeting}
+                  onClick={onRetargetToggle}
+                >
+                  <Crosshair size={14} />
+                </IconButton>
+              )}
+              {editing !== undefined && (
+                <IconButton
+                  size="sm"
+                  ghost
+                  aria-label="remove node"
+                  onClick={() => {
+                    editing.removeNode(node);
+                  }}
+                >
+                  <Trash2 size={14} />
+                </IconButton>
+              )}
+              <IconButton size="sm" ghost aria-label="close details" onClick={onClose}>
+                <X size={14} />
+              </IconButton>
+            </>
+          }
+        />
 
-      <section className="detail__section">
-        <dl className="detail__facts">
-          <dt>object</dt>
-          <dd className="mono" data-testid="node-address">
-            {address}
-          </dd>
-          <dt>kind</dt>
-          <dd>{node.ref.kind}</dd>
-          <dt>pinned</dt>
-          <dd>{pinnedText(catalog.context.pins[node.ref.source_id])}</dd>
-        </dl>
-        {node.note !== "" && <p className="detail__description">{node.note}</p>}
-        {retargeting && (
-          <Alert tone="info" mark="retarget-hint">
-            Pick an object in the sources tree: the node will point at it, its flows stay.
-          </Alert>
-        )}
-      </section>
+        <Section>
+          <Facts
+            facts={[
+              {
+                key: "object",
+                label: "object",
+                value: (
+                  <span className="mono" data-testid="node-address">
+                    {address}
+                  </span>
+                ),
+              },
+              { key: "kind", label: "kind", value: node.ref.kind },
+              {
+                key: "pinned",
+                label: "pinned",
+                value: pinnedText(catalog.context.pins[node.ref.source_id]),
+              },
+            ]}
+          />
+          {retargeting && (
+            <Alert tone="info" mark="retarget-hint">
+              Pick an object in the sources tree: the node will point at it, its flows stay.
+            </Alert>
+          )}
+        </Section>
 
-      {stale.length > 0 && <StaleList entries={stale} />}
+        {stale.length > 0 && <StaleList entries={stale} />}
 
-      <section className="detail__section" data-testid="detail-columns">
-        <Eyebrow as="h4">columns · {columns.length}</Eyebrow>
-        {columns.length === 0 && <p className="detail__empty">none</p>}
-        {columns.length > 0 && (
-          <table className="detail__table">
-            <tbody>
+        <Section title={`columns · ${columns.length}`} mark="detail-columns">
+          {columns.length === 0 && <Note mark="detail-empty">none</Note>}
+          {columns.length > 0 && (
+            <DataTable>
               {columns.map((column) => (
-                <tr key={column.name} data-column={column.name}>
-                  <td className="detail__icon">{column.key && <KeyRound size={11} />}</td>
-                  <td className="detail__col-name">{column.name}</td>
-                  <td className="detail__col-type">{column.type}</td>
-                  <td className="detail__col-null">{column.nullable ? "null" : "not null"}</td>
-                </tr>
+                <TableRow key={column.name} data-column={column.name}>
+                  <Cell mod="icon">{column.key && <KeyRound size={11} />}</Cell>
+                  <Cell data-col="name">{column.name}</Cell>
+                  <Cell mod="dim" data-col="type">
+                    {column.type}
+                  </Cell>
+                  <Cell mod="dim" data-col="null">
+                    {column.nullable ? "null" : "not null"}
+                  </Cell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
-        )}
-      </section>
+            </DataTable>
+          )}
+        </Section>
 
-      <FlowList
-        title="incoming"
-        icon={<ArrowLeft size={12} />}
-        flows={flows.incoming}
-        catalog={catalog}
-        other={(flow) => flow.from_node_id}
-        showDiff={showDiff}
-        editing={editing}
-        onActivate={onActivate}
-      />
-      <FlowList
-        title="outgoing"
-        icon={<ArrowRight size={12} />}
-        flows={flows.outgoing}
-        catalog={catalog}
-        other={(flow) => flow.to_node_id}
-        showDiff={showDiff}
-        editing={editing}
-        onActivate={onActivate}
-        onAdd={() => {
-          editing?.newFlow(node);
-        }}
-      />
+        <FlowList
+          title="incoming"
+          icon={<ArrowLeft size={12} />}
+          flows={flows.incoming}
+          catalog={catalog}
+          other={(flow) => flow.from_node_id}
+          showDiff={showDiff}
+          editing={editing}
+          onActivate={onActivate}
+        />
+        <FlowList
+          title="outgoing"
+          icon={<ArrowRight size={12} />}
+          flows={flows.outgoing}
+          catalog={catalog}
+          other={(flow) => flow.to_node_id}
+          showDiff={showDiff}
+          editing={editing}
+          onActivate={onActivate}
+          onAdd={() => {
+            editing?.newFlow(node);
+          }}
+        />
 
-      <SourceCard api={api} catalog={catalog} node={node} cardSource={cardSource} />
+        <SourceCard api={api} catalog={catalog} node={node} cardSource={cardSource} />
+      </Panel>
     </div>
   );
 }
@@ -190,30 +237,41 @@ function pinnedText(version: number | undefined): string {
  * привязанной версии. */
 export function StaleList({ entries }: { entries: Stale[] }): ReactElement {
   return (
-    <section className="detail__section detail__stale" data-testid="detail-stale">
-      <Eyebrow as="h4">
-        <TriangleAlert size={12} /> stale · {entries.length}
-      </Eyebrow>
-      <ul className="detail__stale-list">
+    <Section
+      title={
+        <>
+          <TriangleAlert size={12} /> stale · {entries.length}
+        </>
+      }
+      mark="detail-stale"
+    >
+      <List kind="cards">
         {entries.map((entry, index) => (
-          <li key={`${entry.reason}-${index}`} className="mono" data-reason={entry.reason}>
-            <span>{entry.reason.replaceAll("_", " ")}</span>
-            <span className="detail__stale-versions">
-              v{entry.pinned_version} → v{entry.since_version}
-            </span>
-            {Object.entries(entry.detail).map(([key, value]) => (
-              <span key={key} className="detail__stale-detail">
-                {key}: {value}
-              </span>
-            ))}
-          </li>
+          <ListRow key={`${entry.reason}-${index}`} stale data-reason={entry.reason}>
+            <Row wrap>
+              <span className="mono">{entry.reason.replaceAll("_", " ")}</span>
+              <Note micro tone="faint" mono>
+                v{entry.pinned_version} → v{entry.since_version}
+              </Note>
+              {Object.entries(entry.detail).map(([key, value]) => (
+                <Note key={key} micro tone="faint" mono>
+                  {key}: {value}
+                </Note>
+              ))}
+            </Row>
+          </ListRow>
         ))}
-      </ul>
-    </section>
+      </List>
+    </Section>
   );
 }
 
-type CardProps = { api: CatalogApi; catalog: Catalog; node: ProcessNode; cardSource: CardSource };
+type CardProps = {
+  api: CatalogApi;
+  catalog: Catalog;
+  node: ProcessNode;
+  cardSource: CardSource;
+};
 
 /** Родная карточка объекта из привязанной версии источника, ниже фактов узла. */
 function SourceCard({ api, catalog, node, cardSource }: CardProps): ReactElement {
@@ -237,7 +295,10 @@ function SourceCard({ api, catalog, node, cardSource }: CardProps): ReactElement
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setState({ status: "failed", message: error instanceof ApiError ? error.detail : String(error) });
+          setState({
+            status: "failed",
+            message: error instanceof ApiError ? error.detail : String(error),
+          });
         }
       });
 
@@ -247,22 +308,27 @@ function SourceCard({ api, catalog, node, cardSource }: CardProps): ReactElement
   }, [api, ref, version, viewId, node.id]);
 
   if (state.status === "loading") {
-    return <p className="detail__empty">loading the source object…</p>;
+    return (
+      <Section>
+        <Note mark="detail-empty">loading the source object…</Note>
+      </Section>
+    );
   }
 
   if (state.status === "failed") {
     return (
-      <Alert tone="error" mark="node-card-missing">
-        {state.message}
-      </Alert>
+      <Section>
+        <Alert tone="error" mark="node-card-missing">
+          {state.message}
+        </Alert>
+      </Section>
     );
   }
 
   return (
-    <section className="detail__section detail__source-card" data-testid="node-card">
-      <Eyebrow as="h4">in the source</Eyebrow>
-      <ObjectCardPanel card={state.card} />
-    </section>
+    <Section title="in the source" mark="node-card">
+      <ObjectCardPanel card={state.card} flat />
+    </Section>
   );
 }
 
@@ -282,14 +348,20 @@ function NodeForm({ catalog, node, onSave, onCancel }: FormProps): ReactElement 
   const submit = (event: FormEvent): void => {
     event.preventDefault();
     const trimmed = alias.trim();
-    onSave({ ...node, layer_id: layerId, alias: trimmed === "" ? null : trimmed, note: note.trim() });
+    onSave({
+      ...node,
+      layer_id: layerId,
+      alias: trimmed === "" ? null : trimmed,
+      note: note.trim(),
+    });
   };
 
   return (
-    <form className="form" onSubmit={submit} data-testid="node-form">
-      <p className="form__note mono">{renderRef(node.ref)}</p>
+    <Form onSubmit={submit} mark="node-form">
+      <Note mono>{renderRef(node.ref)}</Note>
       <Field label="layer" required>
         <Select
+          fill
           value={layerId}
           aria-label="node layer"
           onChange={(event) => {
@@ -306,6 +378,7 @@ function NodeForm({ catalog, node, onSave, onCancel }: FormProps): ReactElement 
       <Field label="alias" hint="shown instead of the object name">
         <Input
           mono
+          fill
           aria-label="node alias"
           value={alias}
           onChange={(event) => {
@@ -315,6 +388,7 @@ function NodeForm({ catalog, node, onSave, onCancel }: FormProps): ReactElement 
       </Field>
       <Field label="note">
         <TextArea
+          fill
           aria-label="node note"
           rows={3}
           value={note}
@@ -323,15 +397,15 @@ function NodeForm({ catalog, node, onSave, onCancel }: FormProps): ReactElement 
           }}
         />
       </Field>
-      <div className="form__actions">
+      <Toolbar>
         <Button tone="primary" type="submit">
           save node
         </Button>
         <Button tone="ghost" onClick={onCancel}>
           cancel
         </Button>
-      </div>
-    </form>
+      </Toolbar>
+    </Form>
   );
 }
 
@@ -347,69 +421,87 @@ type FlowListProps = {
   onAdd?: (() => void) | undefined;
 };
 
-function FlowList({ title, icon, flows, catalog, other, showDiff, editing, onActivate, onAdd }: FlowListProps): ReactElement {
+function FlowList({
+  title,
+  icon,
+  flows,
+  catalog,
+  other,
+  showDiff,
+  editing,
+  onActivate,
+  onAdd,
+}: FlowListProps): ReactElement {
   return (
-    <section className="detail__section" data-testid={`detail-${title}`}>
-      <div className="detail__section-head">
-        <Eyebrow as="h4">
-          {title} · {flows.length}
-        </Eyebrow>
-        {editing !== undefined && onAdd !== undefined && (
-          <Button size="tiny" icon={Plus} onClick={onAdd}>
+    <Section
+      title={`${title} · ${flows.length}`}
+      mark={`detail-${title}`}
+      actions={
+        editing !== undefined &&
+        onAdd !== undefined && (
+          <Button size="sm" icon={Plus} onClick={onAdd}>
             flow
           </Button>
-        )}
-      </div>
-      {flows.length === 0 && <p className="detail__empty">none</p>}
-      <ul className="detail__flows">
-        {flows.map((flow) => {
-          const otherId = other(flow);
-          const neighbour = catalog.label(otherId);
-          const status = showDiff ? catalog.statusOf("flow", flow.id) : "unchanged";
-          const stale = catalog.staleOf("flow", flow.id);
-          return (
-            <li key={flow.id} className="detail__flow" data-status={status} data-stale={stale.length > 0}>
-              <button
-                type="button"
-                className="detail__flow-target"
-                onClick={() => {
-                  onActivate(otherId);
-                }}
-              >
-                {icon}
-                <span>{neighbour}</span>
-              </button>
-              <Chip>{catalog.loadKindName(flow)}</Chip>
-              {stale.length > 0 && (
-                <Chip tone="draft">
-                  <TriangleAlert size={10} /> stale
-                </Chip>
-              )}
-              {editing !== undefined && (
-                <IconButton
-                  className="detail__flow-edit"
-                  aria-label={`edit flow to ${neighbour}`}
-                  onClick={() => {
-                    editing.editFlow(flow);
-                  }}
-                >
-                  <Pencil size={12} />
-                </IconButton>
-              )}
-              <dl className="detail__values">
-                {catalog.loadValues(flow).map((value) => (
-                  <div key={value.field} className="detail__value">
-                    <dt>{value.field}</dt>
-                    <dd>{value.text}</dd>
-                  </div>
-                ))}
-              </dl>
-              {flow.description !== "" && <p className="detail__description">{flow.description}</p>}
-              {stale.length > 0 && <StaleList entries={stale} />}
-            </li>
-          );
-        })}
-      </ul>
-    </section>
+        )
+      }
+    >
+      {flows.length === 0 && <Note mark="detail-empty">none</Note>}
+      {flows.length > 0 && (
+        <List kind="cards">
+          {flows.map((flow) => {
+            const otherId = other(flow);
+            const neighbour = catalog.label(otherId);
+            const status = showDiff ? catalog.statusOf("flow", flow.id) : "unchanged";
+            const stale = catalog.staleOf("flow", flow.id);
+            const values = catalog.loadValues(flow);
+            return (
+              <ListRow key={flow.id} status={status} stale={stale.length > 0} mark="detail-flow" data-flow={flow.id}>
+                <Row>
+                  <ListName
+                    onClick={() => {
+                      onActivate(otherId);
+                    }}
+                  >
+                    {icon} {neighbour}
+                  </ListName>
+                  <ListAside>
+                    <Chip>{catalog.loadKindName(flow)}</Chip>
+                    {stale.length > 0 && (
+                      <Chip tone="warn">
+                        <TriangleAlert size={10} /> stale
+                      </Chip>
+                    )}
+                    {editing !== undefined && (
+                      <IconButton
+                        size="sm"
+                        ghost
+                        aria-label={`edit flow to ${neighbour}`}
+                        onClick={() => {
+                          editing.editFlow(flow);
+                        }}
+                      >
+                        <Pencil size={12} />
+                      </IconButton>
+                    )}
+                  </ListAside>
+                </Row>
+                {values.length > 0 && (
+                  <Facts
+                    micro
+                    facts={values.map((value) => ({
+                      key: value.field,
+                      label: value.field,
+                      value: value.text,
+                    }))}
+                  />
+                )}
+                {flow.description !== "" && <SectionText>{flow.description}</SectionText>}
+                {stale.length > 0 && <StaleList entries={stale} />}
+              </ListRow>
+            );
+          })}
+        </List>
+      )}
+    </Section>
   );
 }

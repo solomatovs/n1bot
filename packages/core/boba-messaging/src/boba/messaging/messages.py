@@ -546,9 +546,9 @@ class StudioProfileChanged(Message):
 
 class CatalogChanged(Message):
     """Каталог данных изменился: порция или закрытие черновика draft_id, публикация
-    версии version, правка вида view_id либо источник source_id (новая версия,
-    привязка, черновик ручного источника). Заполнен ровно один из четырёх
-    идентификаторов.
+    версии version, правка вида view_id, источник source_id (новая версия,
+    привязка, черновик ручного источника) либо синхронизация sync_id (старт,
+    прогресс, итог). Заполнен ровно один из пяти идентификаторов.
     """
 
     kind: Literal[MessageKind.CATALOG_CHANGED] = MessageKind.CATALOG_CHANGED
@@ -556,11 +556,18 @@ class CatalogChanged(Message):
     version: int | None = None
     view_id: UUID | None = None
     source_id: UUID | None = None
+    sync_id: UUID | None = None
     action: ChangeAction
 
     @model_validator(mode="after")
     def _exactly_one_target(self) -> Self:
-        targets = (self.draft_id, self.version, self.view_id, self.source_id)
+        targets = (
+            self.draft_id,
+            self.version,
+            self.view_id,
+            self.source_id,
+            self.sync_id,
+        )
 
         filled = 0
         for target in targets:
@@ -572,7 +579,10 @@ class CatalogChanged(Message):
         if filled != 1:
             msg = (
                 "catalog_changed: exactly one of draft_id, version, view_id,"
-                " source_id expected"
+                f" source_id, sync_id expected, got {filled} of them set: "
+                f"draft_id={self.draft_id}, version={self.version}, "
+                f"view_id={self.view_id}, source_id={self.source_id}, "
+                f"sync_id={self.sync_id}"
             )
             raise ValueError(msg)
 

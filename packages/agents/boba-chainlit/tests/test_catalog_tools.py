@@ -4,13 +4,19 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from uuid import UUID
 
 import pytest
 from psycopg import sql
 
-from boba.catalog import AddLayer, AddNode, OperationList, SourceKind
-from boba.catalog.samples import PgSample, ProcessSample
+from boba.catalog import (
+    AddLayer,
+    AddNode,
+    OperationList,
+    SourceKinds,
+)
+from boba.catalog.samples import ProcessSample
 from boba.catalog_service import (
     AuthorVia,
     CatalogConfig,
@@ -21,9 +27,13 @@ from boba.catalog_service import (
     ViewSpec,
 )
 from boba.chainlit.catalog.tools import CatalogTools
+from boba.db.clickhouse.snapshot import ChSnapshot
 from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres.snapshot import PgSnapshot, PgSourceKind
+from boba.db.postgres.snapshot_sample import PgSample
 from boba.identity.context import Subject
 from boba.messaging import MemoryMessageBus
+from boba.stand.catalog_ports import FakeSyncPorts, StubSyncPorts
 from boba.stand.context import use_context
 from boba.toolkit.result import (
     CustomElementResult,
@@ -34,6 +44,9 @@ from boba.toolkit.result import (
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
+
+KINDS = SourceKinds.of(PgSnapshot, ChSnapshot)
+"""Реестр видов теста: оба снимка из пакетов драйверов."""
 
 SCHEMA = "catalog_tools_test"
 PREFIX = "/boba-test"
@@ -54,9 +67,11 @@ async def service(pool: AsyncPostgresPool) -> CatalogService:
 
     store = CatalogStore(_config(), pool)
     await store.setup()
-    sources = SourceStore(_config(), pool)
+    sources = SourceStore(_config(), KINDS, pool)
     await sources.setup()
-    return CatalogService(store, sources, _config(), MemoryMessageBus("test:0"))
+    return CatalogService(
+        store, sources, _config(), MemoryMessageBus("test:0"), StubSyncPorts()
+    )
 
 
 @pytest.fixture
@@ -76,7 +91,7 @@ def editor(monkeypatch: pytest.MonkeyPatch) -> Subject:
 async def process(service: CatalogService, editor: Subject) -> ProcessSample:
     """Источник prod с версией 1 из образца; процесс ссылается на него."""
     source = await service.create_source(
-        editor, SourceSpec(kind=SourceKind.POSTGRES, name="prod")
+        editor, SourceSpec(kind=PgSourceKind.POSTGRES, name="prod")
     )
     await service.write_source_version(editor, source.id, PgSample().snapshot())
     return ProcessSample(source.id)
@@ -211,3 +226,71 @@ async def test_view_link_and_role_refusal(
     _, refused = await tools.read("")
     assert isinstance(refused, ErrorResult)
     assert refused.error_kind == "catalog_view_forbidden"
+
+
+class FakeKindSnapshot(PgSnapshot):
+    """Снимок вида postgres, чей инструмент снятия — фейк стенда."""
+
+    SYNC_TOOL = "fake_pg_snapshot"
+
+
+CONNECTION_ID = UUID(int=77)
+
+
+@pytest.fixture
+async def sync_service(
+    pool: AsyncPostgresPool, tmp_path: Path, editor: Subject
+) -> CatalogService:
+    """Сервис с фейком снятия, видимым редактору."""
+    async with pool.connection() as conn:
+        await conn.execute(
+            sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
+        )
+
+    store = CatalogStore(_config(), pool)
+    await store.setup()
+    sources = SourceStore(_config(), SourceKinds.of(FakeKindSnapshot, ChSnapshot), pool)
+    await sources.setup()
+    ports = FakeSyncPorts(
+        tmp_path, "wrt", editor.profile, {CONNECTION_ID: "prod-pg"}, (editor.user_id,)
+    )
+    return CatalogService(store, sources, _config(), MemoryMessageBus("test:0"), ports)
+
+
+@pytest.fixture
+def sync_tools(sync_service: CatalogService) -> CatalogTools:
+    async def source() -> CatalogService:
+        return sync_service
+
+    return CatalogTools(source, lambda: PREFIX)
+
+
+async def test_sync_by_source_name(
+    sync_tools: CatalogTools, sync_service: CatalogService, editor: Subject
+) -> None:
+    """Источник по имени, единственное привязанное подключение подставляется,
+    ответ — запись синхронизации с номером версии; без привязки — отказ."""
+    service = sync_service
+    source = await service.create_source(
+        editor, SourceSpec(kind=PgSourceKind.POSTGRES, name="prod")
+    )
+
+    _, refused = await sync_tools.sync("prod", "", "")
+    assert isinstance(refused, ErrorResult)
+    assert "0 bound connection(s)" in refused.message
+
+    await service.bind_connection(editor, source.id, CONNECTION_ID)
+
+    _, done = await sync_tools.sync("prod", "", "")
+    assert isinstance(done, JsonResult), done
+    assert done.payload["status"] == "done"
+    assert done.payload["version"] == 1
+    assert done.payload["source_name"] == "prod"
+
+    _, failed = await sync_tools.sync(str(source.id), str(CONNECTION_ID), "crash")
+    assert isinstance(failed, ErrorResult)
+    assert "crashed on purpose" in failed.message
+
+    _, missing = await sync_tools.sync("nowhere", "", "")
+    assert isinstance(missing, ErrorResult)
+    assert "expected a uuid id" in missing.message

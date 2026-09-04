@@ -253,7 +253,7 @@ class TestToolbar:
             "aria-selected", "false"
         )
         expect(
-            page.locator(catalog_seed.node(Ed.ORDERS)).locator(".ds-node__column")
+            page.locator(catalog_seed.node(Ed.ORDERS)).locator(".proc-node__column")
         ).to_have_count(0)
         assert "mode=TABLE_NAME" in page.url
 
@@ -318,7 +318,7 @@ class TestPaneAndHighlight:
 
         search.fill("zzz")
         expect(pane.get_by_test_id("pane-item")).to_have_count(0)
-        expect(pane.locator(".pane__empty")).to_have_text("nothing matches")
+        expect(pane.get_by_test_id("pane-empty")).to_have_text("nothing matches")
 
         search.fill("")
         expect(pane.get_by_test_id("pane-item")).to_have_count(_members(catalog_seed))
@@ -412,7 +412,7 @@ class TestPaneAndHighlight:
         )
         expect(panel.get_by_test_id("detail-incoming")).to_contain_text(Ed.ORDERS)
         expect(
-            panel.get_by_test_id("detail-outgoing").locator(".detail__empty")
+            panel.get_by_test_id("detail-outgoing").get_by_test_id("detail-empty")
         ).to_have_text("none")
 
 
@@ -463,7 +463,7 @@ class TestDialogClosing:
         form.get_by_label("node alias").fill("ed_changed")
         form.get_by_role("button", name="cancel").click()
         expect(form).to_have_count(0)
-        expect(panel.locator(".detail__name").first).to_have_text(Ed.ORDERS)
+        expect(panel.get_by_test_id("panel-name").first).to_have_text(Ed.ORDERS)
 
         panel.get_by_role("button", name="retarget node").click()
         expect(panel.locator('[data-notice="retarget-hint"]')).to_be_visible()
@@ -616,7 +616,7 @@ class TestLoadKinds:
         form.get_by_role("button", name="field", exact=True).click()
         form.get_by_role("button", name="field", exact=True).click()
         fields = form.get_by_test_id("load-kind-fields")
-        expect(fields.locator("li")).to_have_count(2)
+        expect(fields.locator("tbody tr")).to_have_count(2)
         fields.get_by_label("field 0 name").fill("period_column")
         fields.get_by_label("field 0 type").select_option("column")
         fields.get_by_label("field 0 side").select_option("source")
@@ -627,7 +627,7 @@ class TestLoadKinds:
         fields.get_by_label("field 1 type").select_option("int")
         expect(fields.get_by_label("field 1 side")).to_be_disabled()
         fields.get_by_role("button", name="remove field 1").click()
-        expect(fields.locator("li")).to_have_count(1)
+        expect(fields.locator("tbody tr")).to_have_count(1)
         form.get_by_role("button", name="save load kind").click()
         _landed(page, 1)
         expect(listing.locator('li[data-kind="ed_period"] li')).to_have_text(
@@ -717,10 +717,10 @@ class TestFlowForm:
 
         flow = (
             page.get_by_test_id("detail-outgoing")
-            .locator(".detail__flow")
+            .get_by_test_id("detail-flow")
             .filter(has_text=Ed.RETURNS)
         )
-        values = flow.locator(".detail__value")
+        values = flow.locator("dd[data-fact]")
         expect(values).to_have_count(5)
         shown = {
             Ed.TYPED_INT: "7",
@@ -730,8 +730,7 @@ class TestFlowForm:
             Ed.TYPED_ROUTINE: catalog_seed.address(Ed.LOADER),
         }
         for field, text in shown.items():
-            value = values.filter(has=page.locator("dt", has_text=field))
-            expect(value.locator("dd")).to_have_text(text)
+            expect(flow.locator(f'dd[data-fact="{field}"]')).to_have_text(text)
 
         flows = catalog_api.state(draft_id)["snapshot"]["flows"]
         typed = [
@@ -855,7 +854,7 @@ class TestAnonymousAndNarrow:
         page.get_by_role("button", name="layer", exact=True).click()
         dialog = _dialog(page, "layer-name")
         expect(dialog).to_be_visible()
-        assert Css.box(dialog.locator(".dialog")).right <= NARROW["width"]
+        assert Css.box(dialog.get_by_role("dialog")).right <= NARROW["width"]
         assert no_horizontal_scroll(page)
 
 
