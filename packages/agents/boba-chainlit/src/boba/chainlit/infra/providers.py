@@ -127,6 +127,21 @@ def catalog_service(
     return CatalogService(store, cfg, bus)
 
 
+def chainlit_url_prefix() -> str:
+    """Префикс адресов приложения из конфига корневого контейнера; зовётся на вызов."""
+    root = Container.root
+    if root is None:
+        msg = "DI container is not initialised"
+        raise RuntimeError(msg)
+
+    config = root.resolved(get_app_config)
+    if not isinstance(config, AppConfig):
+        msg = f"app config provider returned {type(config).__name__}"
+        raise RuntimeError(msg)
+
+    return config.chainlit.url_prefix
+
+
 async def catalog_service_ref() -> CatalogService:
     """Сервис каталога из корневого контейнера; зовётся на каждый запрос."""
     root = Container.root

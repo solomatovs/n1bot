@@ -77,6 +77,9 @@ STREAM_ELEMENT = "CanvasStream"
 CANVAS_ELEMENT = "CanvasView"
 """Имя элемента карточки диаграммы в ленте."""
 
+CATALOG_LINK_ELEMENT = "CatalogLink"
+"""Имя элемента ссылки на страницу каталога в ленте."""
+
 
 class StepMark(StrEnum):
     """Статусный кружок в названии шага: им лента показывает исход вызова."""
@@ -1489,6 +1492,176 @@ class TestChTools:
             dom=["aggregate_function_combinators", "next offset=2"],
         )
         feed.call(call, expect)
+
+
+class ProbeCatalog:
+    """Каталог стенда: слой и набор, которые модель предлагает в черновик."""
+
+    LAYER_ID: ClassVar[str] = "00000000-0000-0000-0000-00000000c001"
+    DATASET_ID: ClassVar[str] = "00000000-0000-0000-0000-00000000c002"
+    LAYER: ClassVar[str] = "ui-raw"
+    DATASET: ClassVar[str] = "ui_orders"
+    DRAFT: ClassVar[str] = "ui draft"
+    UUID: ClassVar[str] = (
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    )
+
+    @classmethod
+    def repeated_layer(cls) -> str:
+        """Тот же слой ещё раз: id занят, порция отвергается на операции #0."""
+        ops = [{"op": "add_layer", "layer": {"id": cls.LAYER_ID, "name": cls.LAYER}}]
+        return json.dumps(ops, ensure_ascii=False)
+
+    @classmethod
+    def operations(cls) -> str:
+        ops = [
+            {"op": "add_layer", "layer": {"id": cls.LAYER_ID, "name": cls.LAYER}},
+            {
+                "op": "add_dataset",
+                "dataset": {
+                    "id": cls.DATASET_ID,
+                    "layer_id": cls.LAYER_ID,
+                    "name": cls.DATASET,
+                },
+            },
+        ]
+        return json.dumps(ops, ensure_ascii=False)
+
+
+@dataclass(frozen=True)
+class CatalogDraftProbe:
+    """Черновик, созданный catalog_draft: его id знают остальные вызовы."""
+
+    draft_id: str
+
+
+@pytest.fixture(scope="module")
+def catalog_draft(canvas_feed: ToolFeed) -> CatalogDraftProbe:
+    call = ToolCall(tool="catalog_draft", arguments={"name": ProbeCatalog.DRAFT})
+    pattern = (
+        f"^draft created: ({ProbeCatalog.UUID}) "
+        f"\\('{ProbeCatalog.DRAFT}'\\) over version \\d+;"
+    )
+    step = canvas_feed.call(
+        call, ToolExpect(patterns=[pattern], dom=["draft created:"])
+    )
+
+    found = re.search(pattern, step.output, re.MULTILINE)
+    if found is None:
+        raise AssertionError(f"draft id is not in the output: {step.output}")
+
+    return CatalogDraftProbe(draft_id=found.group(1))
+
+
+class TestCatalogTools:
+    """Инструменты каталога: черновик, порция операций, diff, ссылка, снимок."""
+
+    def test_propose_writes_a_portion(
+        self,
+        canvas_feed: ToolFeed,
+        catalog_draft: CatalogDraftProbe,
+        stand_db: StandDatabase,
+    ) -> None:
+        before = stand_db.catalog_portions(catalog_draft.draft_id)
+
+        call = ToolCall(
+            tool="catalog_propose",
+            arguments={
+                "draft_id": catalog_draft.draft_id,
+                "operations": ProbeCatalog.operations(),
+            },
+            view=ScriptCall(arg="operations", lang="json"),
+        )
+        expect = ToolExpect(
+            patterns=[
+                rf"^draft '{ProbeCatalog.DRAFT}' \({catalog_draft.draft_id}\) "
+                r"at seq 1 ",
+                f"^added layer '{ProbeCatalog.LAYER}'$",
+                f"^added dataset '{ProbeCatalog.DATASET}'$",
+            ],
+            dom=[f"added dataset '{ProbeCatalog.DATASET}'"],
+        )
+        canvas_feed.call(call, expect)
+
+        after = stand_db.catalog_portions(catalog_draft.draft_id)
+        if after != before + 1:
+            raise AssertionError(f"portion is not stored: was {before}, now {after}")
+
+    def test_diff_repeats_the_changes(
+        self, canvas_feed: ToolFeed, catalog_draft: CatalogDraftProbe
+    ) -> None:
+        call = ToolCall(
+            tool="catalog_diff", arguments={"draft_id": catalog_draft.draft_id}
+        )
+        expect = ToolExpect(
+            patterns=[
+                f"^added layer '{ProbeCatalog.LAYER}'$",
+                f"^added dataset '{ProbeCatalog.DATASET}'$",
+            ],
+            dom=[f"added layer '{ProbeCatalog.LAYER}'"],
+        )
+        canvas_feed.call(call, expect)
+
+    def test_rejected_operation_names_its_index(
+        self, canvas_feed: ToolFeed, catalog_draft: CatalogDraftProbe
+    ) -> None:
+        """Слой с занятым id: список отвергнут целиком с номером операции."""
+        call = ToolCall(
+            tool="catalog_propose",
+            arguments={
+                "draft_id": catalog_draft.draft_id,
+                "operations": ProbeCatalog.repeated_layer(),
+            },
+            view=ScriptCall(arg="operations", lang="json"),
+        )
+        expect = ToolExpect(
+            mark=StepMark.FAILED,
+            patterns=[
+                r"operation #0 \(add_layer\) was rejected: "
+                r"layer 'ui-raw' already exists",
+            ],
+            dom=["already exists"],
+            log_errors=True,
+        )
+        canvas_feed.call(call, expect)
+
+    def test_read_lists_the_published_catalog(self, canvas_feed: ToolFeed) -> None:
+        """Черновик не опубликован: в снимке его наборов нет, ключи снимка на месте."""
+        call = ToolCall(tool="catalog_read", arguments={"datasets": ""})
+        expect = ToolExpect(
+            patterns=[
+                r'^\s*"version": \d+,$',
+                r'^\s*"load_kinds": \[',
+                r'^\s*"datasets": \[',
+            ],
+            dom=['"version"'],
+        )
+        step = canvas_feed.call(call, expect)
+        if ProbeCatalog.DATASET in step.output:
+            raise AssertionError("an unpublished draft must not leak into the snapshot")
+
+    def test_open_leaves_a_link_in_the_chat(
+        self,
+        canvas_feed: ToolFeed,
+        catalog_draft: CatalogDraftProbe,
+        stand_db: StandDatabase,
+    ) -> None:
+        before = stand_db.elements_named(CATALOG_LINK_ELEMENT)
+
+        call = ToolCall(
+            tool="catalog_open",
+            arguments={"kind": "draft", "entity_id": catalog_draft.draft_id},
+        )
+        label = f"element rendered: {ProbeCatalog.DRAFT}"
+        expect = ToolExpect(output=label, dom=[label])
+        canvas_feed.call(call, expect)
+
+        after = stand_db.elements_named(CATALOG_LINK_ELEMENT)
+        if after <= before:
+            raise AssertionError(
+                f"element {CATALOG_LINK_ELEMENT} is not stored: "
+                f"was {before}, now {after}"
+            )
 
 
 class TestCanvasTools:
