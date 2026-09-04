@@ -53,3 +53,11 @@ packages/agents/boba-chainlit/web/page/.vite/
 packages/agents/boba-chainlit/web/page/.eslintcache
 packages/agents/boba-chainlit/web/page/*.tsbuildinfo
 packages/agents/boba-chainlit/assets/public/page.js
+
+# страница каталога: зависимости, кэши и сборка (собирает Dockerfile / make web-catalog)
+packages/agents/boba-chainlit/web/catalog/node_modules/
+packages/agents/boba-chainlit/web/catalog/.vite/
+packages/agents/boba-chainlit/web/catalog/src/api/schema.d.ts
+packages/agents/boba-chainlit/web/catalog/.eslintcache
+packages/agents/boba-chainlit/web/catalog/*.tsbuildinfo
+packages/agents/boba-chainlit/assets/catalog/

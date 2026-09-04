@@ -31,6 +31,11 @@ STAND_TOOLS = frozenset(
         "canvas_open",
         "stream_logs_usage",
         "stream_logs_cleanup",
+        "catalog_read",
+        "catalog_draft",
+        "catalog_propose",
+        "catalog_diff",
+        "catalog_open",
     }
 )
 """Инструменты, собранные стендом: песочные секции выключены StandConfig."""

@@ -1,13 +1,12 @@
-"""Раздача SPA страницы workflow: любой адрес под {prefix}/workflow — index.html.
+"""Раздача одностраничного приложения под префиксом: любой адрес страницы отдаёт
+index.html, модули идут со сборки в dist либо проксируются с vite dev-сервера.
 
-Источник задаёт [studio] page: сборка в dist (WorkflowPage, модули из
-{prefix}/workflow/assets) либо vite dev-сервер (WorkflowDevPage) — тогда модули
-и HMR-сокет vite проксируются под {prefix}/workflow-dev, и бандл собирать не
-нужно. В index.html вписываются <base href> и конфиг страницы (префикс, адрес
-api, путь socket.io): фронт про префикс не знает.
+В index.html вписываются <base href> и конфиг страницы: фронт про префикс
+приложения не знает. Страница (workflow в studio, каталог в chainlit) задаёт
+только свои пути SpaPaths и словарь конфига для окна.
 
 Ошибки (HTTP):
-404 — сборка фронта не выложена в public/workflow.
+404 — сборка фронта не выложена в dist.
 502 — vite dev-сервер недоступен.
 """
 
@@ -16,92 +15,96 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from enum import StrEnum
+from collections.abc import Mapping
 from pathlib import Path
 from typing import ClassVar
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, Response
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.routing import WebSocketRoute
 from starlette.staticfiles import StaticFiles
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import WebSocketException
 
-from boba.runtime.config import StudioConfig
-
 __all__ = [
-    "PageAssets",
-    "PageStamp",
-    "PageUrl",
-    "WorkflowDevPage",
-    "WorkflowPage",
+    "BuiltSpa",
+    "DevSpa",
+    "SpaPaths",
+    "SpaStamp",
 ]
 
 logger = logging.getLogger(__name__)
 
 
-class PageUrl(StrEnum):
-    """Маршруты страницы, её модулей и dev-прокси относительно url_prefix."""
+class SpaPaths(BaseModel):
+    """Пути страницы относительно url_prefix: маршрут любого адреса страницы,
+    точка монтирования модулей сборки, маршрут dev-прокси и базы модулей.
+    """
 
-    PAGE = "/workflow/{path:path}"
-    ASSETS = "/workflow/assets"
-    DEV = "/workflow-dev/{path:path}"
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
-    def under(self, url_prefix: str) -> str:
-        return f"{url_prefix}{self.value}"
+    name: str = Field(min_length=1)
+    page: str = Field(pattern=r"^/.+\{path:path\}$")
+    assets: str = Field(pattern=r"^/.+")
+    dev: str = Field(pattern=r"^/.+\{path:path\}$")
+    built_base: str = Field(pattern=r"^/.+/$")
+    dev_base: str = Field(pattern=r"^/.+/$")
+
+    @staticmethod
+    def under(url_prefix: str, path: str) -> str:
+        return f"{url_prefix}{path}"
 
 
-class PageAssets(StrEnum):
-    """Откуда браузер берёт модули страницы относительно url_prefix."""
-
-    BUILT = "/workflow/"
-    DEV = "/workflow-dev/"
-
-
-class PageStamp:
-    """Что сервер вписывает в index.html вместо плейсхолдера."""
+class SpaStamp:
+    """Что сервер вписывает в index.html вместо плейсхолдера: base и конфиг окна."""
 
     PLACEHOLDER: ClassVar[str] = "<!--BOBA_PAGE-->"
+    WINDOW_KEY: ClassVar[str] = "__BOBA_PAGE__"
 
-    def __init__(self, url_prefix: str, assets: PageAssets, api: StudioConfig) -> None:
+    def __init__(
+        self, url_prefix: str, assets_base: str, config: Mapping[str, str]
+    ) -> None:
         self._prefix = url_prefix
-        self._assets = assets
-        self._api = api
+        self._assets_base = assets_base
+        self._config = dict(config)
 
     def render(self, html: str) -> str:
-        config = {
-            "prefix": self._prefix,
-            "apiPrefix": self._api.api_prefix(),
-            "socketPath": self._api.socket_path(),
-        }
         stamp = (
-            f'<base href="{self._prefix}{self._assets}">'
-            f"<script>window.__BOBA_PAGE__ = {json.dumps(config)};</script>"
+            f'<base href="{self._prefix}{self._assets_base}">'
+            f"<script>window.{self.WINDOW_KEY} = {json.dumps(self._config)};</script>"
         )
         return html.replace(self.PLACEHOLDER, stamp, 1)
 
 
-class WorkflowPage:
+class BuiltSpa:
     """index.html и модули собранной страницы из каталога dist."""
 
     INDEX: ClassVar[str] = "index.html"
     ASSETS_DIR: ClassVar[str] = "assets"
 
-    def __init__(self, dist: Path, url_prefix: str, api: StudioConfig) -> None:
+    def __init__(
+        self,
+        paths: SpaPaths,
+        dist: Path,
+        url_prefix: str,
+        config: Mapping[str, str],
+    ) -> None:
+        self._paths = paths
         self._dist = dist
         self._prefix = url_prefix
-        self._stamp = PageStamp(url_prefix, PageAssets.BUILT, api)
+        self._stamp = SpaStamp(url_prefix, paths.built_base, config)
 
     def mount(self, app: FastAPI) -> None:
         # модули раньше страницы: иначе их перехватит маршрут любого пути
         app.mount(
-            PageUrl.ASSETS.under(self._prefix),
+            self._paths.under(self._prefix, self._paths.assets),
             StaticFiles(directory=self._dist / self.ASSETS_DIR, check_dir=False),
-            name="workflow-assets",
+            name=self._paths.name,
         )
         app.add_api_route(
-            PageUrl.PAGE.under(self._prefix),
+            self._paths.under(self._prefix, self._paths.page),
             self.serve,
             methods=["GET"],
             include_in_schema=False,
@@ -110,43 +113,45 @@ class WorkflowPage:
     async def serve(self, path: str = "") -> HTMLResponse:
         index = self._dist / self.INDEX
         if not index.is_file():
-            raise HTTPException(status_code=404, detail="workflow page is not built")
+            raise HTTPException(status_code=404, detail="page is not built")
 
         html = self._stamp.render(index.read_text(encoding="utf-8"))
         return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
-class WorkflowDevPage:
+class DevSpa:
     """Прокси vite dev-сервера: index.html со штампом, модули и HMR-сокет."""
 
     INDEX: ClassVar[str] = "index.html"
-    HMR_PROTOCOL: ClassVar[str] = "vite-hmr"
 
-    def __init__(self, dev_url: str, url_prefix: str, api: StudioConfig) -> None:
+    def __init__(
+        self,
+        paths: SpaPaths,
+        dev_url: str,
+        url_prefix: str,
+        config: Mapping[str, str],
+    ) -> None:
+        self._paths = paths
         self._dev_url = dev_url
         self._prefix = url_prefix
-        self._stamp = PageStamp(url_prefix, PageAssets.DEV, api)
+        self._stamp = SpaStamp(url_prefix, paths.dev_base, config)
         self._client = httpx.AsyncClient(base_url=dev_url, timeout=30.0)
 
     def mount(self, app: FastAPI) -> None:
+        dev = self._paths.under(self._prefix, self._paths.dev)
         app.router.routes.append(
-            WebSocketRoute(PageUrl.DEV.under(self._prefix), self.relay, name="hmr")
+            WebSocketRoute(dev, self.relay, name=f"{self._paths.name}-hmr")
         )
+        app.add_api_route(dev, self.proxy, methods=["GET"], include_in_schema=False)
         app.add_api_route(
-            PageUrl.DEV.under(self._prefix),
-            self.proxy,
-            methods=["GET"],
-            include_in_schema=False,
-        )
-        app.add_api_route(
-            PageUrl.PAGE.under(self._prefix),
+            self._paths.under(self._prefix, self._paths.page),
             self.serve,
             methods=["GET"],
             include_in_schema=False,
         )
 
     def _upstream_path(self, path: str) -> str:
-        return f"{self._prefix}{PageAssets.DEV}{path}"
+        return f"{self._prefix}{self._paths.dev_base}{path}"
 
     async def _fetch(self, path: str, query: str) -> httpx.Response:
         url = self._upstream_path(path)
@@ -228,8 +233,9 @@ class WorkflowDevPage:
             async for frame in upstream:
                 if isinstance(frame, bytes):
                     await browser.send_bytes(frame)
-                else:
-                    await browser.send_text(frame)
+                    continue
+
+                await browser.send_text(frame)
         except WebSocketException:
             return
 
@@ -237,17 +243,17 @@ class WorkflowDevPage:
     async def _to_upstream(browser: WebSocket, upstream: ClientConnection) -> None:
         try:
             while True:
-                event = await browser.receive()
-                if event["type"] == "websocket.disconnect":
+                message = await browser.receive()
+                if message["type"] == "websocket.disconnect":
                     return
 
-                text = event.get("text")
+                text = message.get("text")
                 if text is not None:
                     await upstream.send(text)
                     continue
 
-                data = event.get("bytes")
-                if data is not None:
-                    await upstream.send(data)
-        except (WebSocketDisconnect, WebSocketException):
+                payload = message.get("bytes")
+                if payload is not None:
+                    await upstream.send(payload)
+        except WebSocketDisconnect:
             return

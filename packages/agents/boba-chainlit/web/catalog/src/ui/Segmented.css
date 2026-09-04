@@ -1,0 +1,31 @@
+.segmented {
+  display: inline-flex;
+  background: var(--bg);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-pill);
+  padding: 2px;
+}
+
+.segmented__item {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-sans);
+  font-size: var(--fs-data);
+  font-weight: 500;
+  padding: 5px 14px;
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  text-decoration: none;
+  transition: color var(--t-micro) var(--ease-move);
+}
+
+.segmented__item:hover {
+  color: var(--ink);
+}
+
+.segmented__item--on {
+  background: var(--raised-2);
+  color: var(--ink);
+  box-shadow: var(--shadow-1);
+}

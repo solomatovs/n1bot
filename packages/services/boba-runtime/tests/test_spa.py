@@ -1,5 +1,6 @@
-"""Раздача страницы workflow: штамп в index.html, модули из dist, 404 без сборки,
-прокси vite dev-сервера — index, модули, HMR-сокет, 502 без сервера."""
+"""Раздача SPA под {prefix}/{segment}: штамп в index.html, модули из dist, 404 без
+сборки, прокси vite dev-сервера — index, модули, HMR-сокет, 502 без сервера;
+вложенное монтирование (маршруты без префикса, base href с ним)."""
 
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 
 from boba.runtime.config import BuiltPage, DevPage, StudioConfig
-from boba.studio.page import PageStamp, WorkflowDevPage, WorkflowPage
+from boba.runtime.spa import BuiltSpa, DevSpa, SpaMount, SpaStamp
 
 pytestmark = pytest.mark.anyio
 
@@ -114,15 +115,28 @@ def _studio(page: str) -> StudioConfig:
     )
 
 
+def _stamp() -> dict[str, str]:
+    api = _api()
+    return {
+        "prefix": PREFIX,
+        "apiPrefix": api.api_prefix(),
+        "socketPath": api.socket_path(),
+    }
+
+
+def _mount() -> SpaMount:
+    return SpaMount.at_root(PREFIX, "workflow")
+
+
 def _built_app(dist: Path) -> FastAPI:
     app = FastAPI()
-    WorkflowPage(dist, PREFIX, _api()).mount(app)
+    BuiltSpa(dist, _mount(), _stamp()).mount(app)
     return app
 
 
 def _dev_app(dev_url: str) -> FastAPI:
     app = FastAPI()
-    WorkflowDevPage(dev_url, PREFIX, _api()).mount(app)
+    DevSpa(dev_url, _mount(), _stamp()).mount(app)
     return app
 
 
@@ -134,7 +148,7 @@ async def _get(app: FastAPI, path: str) -> tuple[int, str, str]:
 
 
 async def test_index_is_stamped_for_any_page_path(tmp_path: Path) -> None:
-    (tmp_path / WorkflowPage.INDEX).write_text(INDEX)
+    (tmp_path / BuiltSpa.INDEX).write_text(INDEX)
 
     status, text, _ = await _get(_built_app(tmp_path), f"{PREFIX}/workflow/run/abc")
 
@@ -143,7 +157,24 @@ async def test_index_is_stamped_for_any_page_path(tmp_path: Path) -> None:
     assert '"prefix": "/boba-debug"' in text
     assert '"apiPrefix": "/boba-debug/api"' in text
     assert '"socketPath": "/boba-debug/api/socket.io"' in text
-    assert PageStamp.PLACEHOLDER not in text
+    assert SpaStamp.PLACEHOLDER not in text
+
+
+async def test_nested_mount_serves_without_prefix_but_stamps_it(
+    tmp_path: Path,
+) -> None:
+    """Приложение под префиксом (chainlit): маршруты относительные, base href полный."""
+    (tmp_path / BuiltSpa.INDEX).write_text(INDEX)
+    app = FastAPI()
+    BuiltSpa(tmp_path, SpaMount.nested(PREFIX, "catalog"), _stamp()).mount(app)
+
+    status, text, _ = await _get(app, "/catalog/views/abc")
+
+    assert status == 200
+    assert '<base href="/boba-debug/catalog/">' in text
+
+    missing, _, _ = await _get(app, f"{PREFIX}/catalog/views/abc")
+    assert missing == 404
 
 
 async def test_missing_build_is_reported(tmp_path: Path) -> None:
@@ -154,8 +185,8 @@ async def test_missing_build_is_reported(tmp_path: Path) -> None:
 
 
 async def test_built_modules_are_served_from_assets(tmp_path: Path) -> None:
-    (tmp_path / WorkflowPage.INDEX).write_text(INDEX)
-    assets = tmp_path / WorkflowPage.ASSETS_DIR
+    (tmp_path / BuiltSpa.INDEX).write_text(INDEX)
+    assets = tmp_path / BuiltSpa.ASSETS_DIR
     assets.mkdir()
     (assets / "app-1.js").write_text("export const built = true;")
 
@@ -187,7 +218,7 @@ async def test_dev_index_is_stamped_with_dev_assets(vite: FakeVite) -> None:
     assert '<base href="/boba-debug/workflow-dev/">' in text
     assert 'src="/boba-debug/workflow-dev/src/main.tsx"' in text
     assert '"socketPath": "/boba-debug/api/socket.io"' in text
-    assert PageStamp.PLACEHOLDER not in text
+    assert SpaStamp.PLACEHOLDER not in text
 
 
 async def test_dev_modules_are_proxied_with_query(vite: FakeVite) -> None:

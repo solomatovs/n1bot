@@ -1,0 +1,20 @@
+.chip {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--signal);
+  border: 1px solid color-mix(in srgb, var(--signal) 32%, var(--hairline));
+  border-radius: 4px;
+  padding: 0 5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.chip--draft {
+  color: var(--signal);
+  border-color: var(--signal);
+}
+
+.chip--muted {
+  color: var(--muted);
+  border-color: var(--hairline);
+}

@@ -8,6 +8,7 @@ import logging.config
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import ClassVar
 
 import uvicorn
 from engineio.payload import Payload
@@ -232,22 +233,50 @@ def _use_stream_journal(c: AppConfig) -> None:
 
 
 def _use_catalog(c: AppConfig) -> None:
-    """JSON API каталога под {prefix}/api/catalog; сервис поднимает провайдер."""
+    """JSON API под {prefix}/api/catalog и страница под {prefix}/catalog; сервис
+    поднимает провайдер. Маршруты встают перед catch-all chainlit."""
     from fastapi import APIRouter  # noqa: PLC0415
 
     from boba.chainlit.catalog.api import CatalogApi, CatalogUrl  # noqa: PLC0415
     from boba.chat.profiles import ChatProfiles  # noqa: PLC0415
+    from boba.runtime.config import DevPage  # noqa: PLC0415
+    from boba.runtime.spa import BuiltSpa, DevSpa, SpaMount  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
     if not c.catalog.enable:
         return
 
+    before = len(chainlit_app.router.routes)
+
     router = APIRouter(prefix=CatalogUrl.PREFIX.value)
     CatalogApi(providers.catalog_service_ref, ChatProfiles(c.profiles)).mount(router)
-
-    # catch-all маршрут chainlit стоит раньше: новые маршруты переезжают в начало
-    before = len(chainlit_app.router.routes)
     chainlit_app.include_router(router)
+
+    prefix = c.chainlit.url_prefix
+    mount = SpaMount.nested(prefix, CatalogPage.SEGMENT)
+    stamp = {
+        "prefix": prefix,
+        "apiPrefix": f"{prefix}{CatalogUrl.PREFIX.value}",
+        "socketPath": f"{prefix}{CatalogPage.SOCKET}",
+    }
+    if isinstance(c.catalog.page, DevPage):
+        DevSpa(c.catalog.page.url, mount, stamp).mount(chainlit_app)
+    else:
+        BuiltSpa(c.catalog.dist, mount, stamp).mount(chainlit_app)
+
+    _prepend_routes(chainlit_app, before)
+
+
+class CatalogPage:
+    """Где страница каталога живёт под префиксом chainlit."""
+
+    SEGMENT: ClassVar[str] = "catalog"
+    SOCKET: ClassVar[str] = "/ws/socket.io"
+
+
+def _prepend_routes(chainlit_app: FastAPI, before: int) -> None:
+    """Маршруты, добавленные после позиции before, переезжают в начало: catch-all
+    chainlit стоит раньше и иначе перехватил бы их."""
     added = chainlit_app.router.routes[before:]
     del chainlit_app.router.routes[before:]
     chainlit_app.router.routes[0:0] = added
