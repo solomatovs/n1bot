@@ -39,6 +39,9 @@ type Props = {
   onActivate: (datasetId: string | undefined) => void;
   /** Счётчик «прибрать»: каждое изменение заново раскладывает узлы ELK. */
   tidyCount: number;
+  /** Правки черновика: соединение handle'ов заводит поток, клик по ребру открывает его. */
+  onConnect: ((from: string, to: string) => void) | undefined;
+  onFlowClick: ((flowId: string) => void) | undefined;
 };
 
 /** Ключ раскладки: что меняет размеры или состав узлов, то и перекладывает граф. */
@@ -68,7 +71,16 @@ function sizesOf(nodes: DatasetFlowNode[]): string {
 /** Холст диаграммы в два прохода, как в liam: узлы рендерятся невидимыми и
  * React Flow их замеряет, затем ELK раскладывает по реальным размерам и холст
  * показывается. Дорожки слоёв и подсветка считаются от разложенных узлов. */
-export function Canvas({ catalog, options, saved, activeId, onActivate, tidyCount }: Props): ReactElement {
+export function Canvas({
+  catalog,
+  options,
+  saved,
+  activeId,
+  onActivate,
+  tidyCount,
+  onConnect,
+  onFlowClick,
+}: Props): ReactElement {
   const { fitView } = useReactFlow();
   const initialized = useNodesInitialized();
   const [hoverId, setHoverId] = useState<string | undefined>(undefined);
@@ -141,10 +153,18 @@ export function Canvas({ catalog, options, saved, activeId, onActivate, tidyCoun
         onNodesChange={onNodesChange as (changes: NodeChange[]) => void}
         nodeTypes={NODE_TYPES}
         edgeTypes={EDGE_TYPES}
-        nodesConnectable={false}
+        nodesConnectable={onConnect !== undefined}
         nodesDraggable={false}
         elementsSelectable
         minZoom={0.1}
+        onConnect={(connection) => {
+          if (onConnect !== undefined && connection.source !== connection.target) {
+            onConnect(connection.source, connection.target);
+          }
+        }}
+        onEdgeClick={(_event, edge) => {
+          onFlowClick?.(edge.id);
+        }}
         onNodeClick={(_event, node) => {
           if (node.type === "dataset") {
             onActivate(node.id);

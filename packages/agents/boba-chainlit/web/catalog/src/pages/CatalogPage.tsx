@@ -1,18 +1,25 @@
 import { ReactFlowProvider } from "@xyflow/react";
 import { PanelLeft } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
-import { ApiError } from "../api/client";
+import { ApiError, type CatalogApi } from "../api/client";
 import { useServices } from "../app";
 import { Canvas } from "../components/canvas/Canvas";
 import { CanvasToolbar } from "../components/CanvasToolbar";
 import { DetailPanel } from "../components/DetailPanel";
+import { Dialog } from "../components/edit/Dialog";
+import { DraftActions } from "../components/edit/DraftActions";
+import { FlowForm } from "../components/edit/FlowForm";
+import { NamePrompt } from "../components/edit/NamePrompt";
 import { LeftPane } from "../components/LeftPane";
-import { Catalog, type Draft, type NodePosition, type View } from "../model/catalog";
+import { Catalog, type Dataset, type Draft, type DraftState, type Flow, type Layer, type NodePosition, type View } from "../model/catalog";
+import { DraftEditor } from "../model/editor";
+import type { EditActions } from "../model/editing";
 import { datasetsInView, type GraphOptions, type ShowMode } from "../model/graph";
+import { blankDataset, newId, removeDatasetWithFlows, type CatalogOp } from "../model/ops";
 import { readUrlState, writeUrlState, type UrlState } from "../model/urlState";
-import { Button, Chip, EmptyState, IconButton } from "../ui";
+import { Alert, Button, Chip, EmptyState, IconButton, useToast } from "../ui";
 
 /** Что показывает страница: опубликованный каталог сквозь вид либо черновик. */
 export type PageSource = { kind: "view"; viewId: string } | { kind: "draft"; draftId: string };
@@ -21,20 +28,33 @@ type Loaded = {
   catalog: Catalog;
   title: string;
   version: string;
+  currentVersion: number;
   draft: Draft | undefined;
   view: View | undefined;
   saved: NodePosition[];
+  /** Номер последней порции черновика; у вида 0. Виден тестам как data-seq. */
+  seq: number;
 };
 
 type LoadState = { status: "loading" } | { status: "failed"; message: string } | { status: "ready"; loaded: Loaded };
 
-/** Страница диаграммы: загрузка снимка и вида, состояние в адресе, три панели. */
+/** Диалоги правок: имя новой сущности, форма потока. */
+type DialogState =
+  | { kind: "layer"; layer: Layer | undefined }
+  | { kind: "dataset"; layerId: string }
+  | { kind: "flow"; flow: Flow; fresh: boolean; pickTarget: boolean };
+
+/** Страница диаграммы: загрузка снимка и вида, состояние в адресе, три панели;
+ * на черновике — правки операциями, публикация и живое обновление по событиям. */
 export function CatalogPage({ source }: { source: PageSource }): ReactElement {
   const { api } = useServices();
+  const toast = useToast();
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const [params, setParams] = useSearchParams();
   const [paneOpen, setPaneOpen] = useState(() => !narrowScreen());
   const [tidyCount, setTidyCount] = useState(0);
+  const [dialog, setDialog] = useState<DialogState | null>(null);
+  const editor = useRef<DraftEditor | null>(null);
   const url = useMemo(() => readUrlState(params), [params]);
 
   const update = useCallback(
@@ -44,14 +64,31 @@ export function CatalogPage({ source }: { source: PageSource }): ReactElement {
     [setParams],
   );
 
-  useEffect(() => {
+  const takeDraft = useCallback(
+    (draftState: DraftState, currentVersion: number) => {
+      setState({ status: "ready", loaded: loadedOfDraft(draftState, currentVersion) });
+    },
+    [],
+  );
+
+  const reload = useCallback(() => {
     let cancelled = false;
-    setState({ status: "loading" });
     load(api, source)
       .then((loaded) => {
-        if (!cancelled) {
-          setState({ status: "ready", loaded });
+        if (cancelled) {
+          return;
         }
+
+        if (loaded.kind === "draft") {
+          editor.current = new DraftEditor(api, loaded.state.draft.id, loaded.state, (next) => {
+            takeDraft(next, loaded.currentVersion);
+          });
+          takeDraft(loaded.state, loaded.currentVersion);
+          return;
+        }
+
+        editor.current = null;
+        setState({ status: "ready", loaded: loaded.loaded });
       })
       .catch((error: unknown) => {
         if (!cancelled) {
@@ -62,7 +99,55 @@ export function CatalogPage({ source }: { source: PageSource }): ReactElement {
     return () => {
       cancelled = true;
     };
-  }, [api, source]);
+  }, [api, source, takeDraft]);
+
+  useEffect(() => {
+    setState({ status: "loading" });
+    return reload();
+  }, [reload]);
+
+  // живое обновление: чужие порции в этот черновик, новая версия, правка вида
+  useEffect(() => {
+    return api.events((message) => {
+      if (source.kind === "draft" && message.draft_id === source.draftId) {
+        void editor.current?.refresh().catch((error: unknown) => {
+          toast(describe(error), "error");
+        });
+        return;
+      }
+
+      // новая версия: черновик мог устареть, вид показывает уже другой каталог
+      if (message.version !== null) {
+        reload();
+        return;
+      }
+
+      if (source.kind === "view" && message.view_id === source.viewId) {
+        reload();
+      }
+    });
+  }, [api, source, reload, toast]);
+
+  const apply = useCallback(
+    (ops: CatalogOp[]) => {
+      const current = editor.current;
+      if (current === null) {
+        return;
+      }
+
+      current
+        .apply(ops)
+        .then((outcome) => {
+          if (outcome.kind === "rejected") {
+            toast(outcome.reason, "error");
+          }
+        })
+        .catch((error: unknown) => {
+          toast(describe(error), "error");
+        });
+    },
+    [toast],
+  );
 
   if (state.status === "loading") {
     return <EmptyState fill title="loading the catalog" />;
@@ -76,7 +161,8 @@ export function CatalogPage({ source }: { source: PageSource }): ReactElement {
     );
   }
 
-  const { catalog, draft, view, saved } = state.loaded;
+  const { catalog, draft, view, saved, currentVersion, seq } = state.loaded;
+  const editable = draft?.status === "open";
   const options: GraphOptions = {
     showMode: url.showMode,
     showDiff: draft !== undefined && url.showDiff,
@@ -87,9 +173,38 @@ export function CatalogPage({ source }: { source: PageSource }): ReactElement {
   const datasets = datasetsInView(catalog, options);
   const active = url.active === undefined ? undefined : catalog.dataset(url.active);
 
+  const editing: EditActions | undefined = editable
+    ? {
+        apply,
+        addLayer: () => {
+          setDialog({ kind: "layer", layer: undefined });
+        },
+        renameLayer: (layer) => {
+          setDialog({ kind: "layer", layer });
+        },
+        removeLayer: (layer) => {
+          apply([{ op: "remove_layer", id: layer.id }]);
+        },
+        addDataset: (layerId) => {
+          setDialog({ kind: "dataset", layerId });
+        },
+        removeDataset: (dataset: Dataset) => {
+          const flows = catalog.flowsOf(dataset.id);
+          apply(removeDatasetWithFlows(dataset.id, [...flows.incoming, ...flows.outgoing]));
+          update({ active: undefined });
+        },
+        newFlow: (from: Dataset) => {
+          setDialog({ kind: "flow", flow: blankFlow(from.id, ""), fresh: true, pickTarget: true });
+        },
+        editFlow: (flow: Flow) => {
+          setDialog({ kind: "flow", flow, fresh: false, pickTarget: false });
+        },
+      }
+    : undefined;
+
   return (
     <ReactFlowProvider>
-      <div className="page" data-testid="catalog-page" data-source={source.kind}>
+      <div className="page" data-testid="catalog-page" data-source={source.kind} data-editable={editable} data-seq={seq}>
         <header className="topbar">
           <IconButton
             aria-label={paneOpen ? "hide the dataset list" : "show the dataset list"}
@@ -119,11 +234,19 @@ export function CatalogPage({ source }: { source: PageSource }): ReactElement {
               diff
             </Button>
           )}
+          {draft?.status === "open" && (
+            <DraftActions api={api} draft={draft} currentVersion={currentVersion} onChanged={reload} />
+          )}
           <span className="topbar__spacer" />
           <span className="topbar__hint mono">
             {datasets.length} datasets · {catalog.flows.length} flows
           </span>
         </header>
+        {draft !== undefined && draft.status !== "open" && (
+          <Alert tone="info" mark="draft-closed">
+            This draft is {draft.status}; it is read-only now.
+          </Alert>
+        )}
         <div className="page__body" data-pane={paneOpen} data-detail={active !== undefined}>
           {paneOpen && (
             <aside className="page__pane">
@@ -133,6 +256,7 @@ export function CatalogPage({ source }: { source: PageSource }): ReactElement {
                 activeId={url.active}
                 hidden={url.hidden}
                 showDiff={options.showDiff}
+                editing={editing}
                 onActivate={(id) => {
                   update({ active: id });
                 }}
@@ -167,14 +291,33 @@ export function CatalogPage({ source }: { source: PageSource }): ReactElement {
               onActivate={(id) => {
                 update({ active: id });
               }}
+              onConnect={
+                editable
+                  ? (from, to) => {
+                      setDialog({ kind: "flow", flow: blankFlow(from, to), fresh: true, pickTarget: false });
+                    }
+                  : undefined
+              }
+              onFlowClick={
+                editable
+                  ? (flowId) => {
+                      const flow = catalog.flows.find((item) => item.id === flowId);
+                      if (flow !== undefined) {
+                        setDialog({ kind: "flow", flow, fresh: false, pickTarget: false });
+                      }
+                    }
+                  : undefined
+              }
             />
           </main>
           {active !== undefined && (
             <aside className="page__detail">
               <DetailPanel
+                key={active.id}
                 catalog={catalog}
                 dataset={active}
                 showDiff={options.showDiff}
+                editing={editing}
                 onActivate={(id) => {
                   update({ active: id });
                 }}
@@ -185,6 +328,73 @@ export function CatalogPage({ source }: { source: PageSource }): ReactElement {
             </aside>
           )}
         </div>
+        {dialog?.kind === "layer" && (
+          <NamePrompt
+            title={dialog.layer === undefined ? "new layer" : "rename layer"}
+            mark="layer-name"
+            label="layer name"
+            initial={dialog.layer?.name ?? ""}
+            onSubmit={(name) => {
+              const layer = dialog.layer;
+              if (layer === undefined) {
+                apply([{ op: "add_layer", layer: { id: newId(), name } }]);
+              } else {
+                apply([{ op: "set_layer", layer: { ...layer, name } }]);
+              }
+              setDialog(null);
+            }}
+            onClose={() => {
+              setDialog(null);
+            }}
+          />
+        )}
+        {dialog?.kind === "dataset" && (
+          <NamePrompt
+            title="new dataset"
+            mark="dataset-name"
+            label="dataset name"
+            initial=""
+            onSubmit={(name) => {
+              const dataset = blankDataset(dialog.layerId, name);
+              apply([{ op: "add_dataset", dataset }]);
+              update({ active: dataset.id });
+              setDialog(null);
+            }}
+            onClose={() => {
+              setDialog(null);
+            }}
+          />
+        )}
+        {dialog?.kind === "flow" && (
+          <Dialog
+            title={dialog.fresh ? "new flow" : "flow"}
+            mark="flow"
+            onClose={() => {
+              setDialog(null);
+            }}
+          >
+            <FlowForm
+              catalog={catalog}
+              flow={dialog.flow}
+              pickTarget={dialog.pickTarget}
+              onSave={(flow) => {
+                apply([dialog.fresh ? { op: "add_flow", flow } : { op: "set_flow", flow }]);
+                setDialog(null);
+              }}
+              onCancel={() => {
+                setDialog(null);
+              }}
+              onDelete={
+                dialog.fresh
+                  ? undefined
+                  : () => {
+                      apply([{ op: "remove_flow", id: dialog.flow.id }]);
+                      setDialog(null);
+                    }
+              }
+            />
+          </Dialog>
+        )}
       </div>
     </ReactFlowProvider>
   );
@@ -197,33 +407,47 @@ function narrowScreen(): boolean {
   return window.matchMedia(`(max-width: ${NARROW_MAX_WIDTH}px)`).matches;
 }
 
-async function load(api: ReturnType<typeof useServices>["api"], source: PageSource): Promise<Loaded> {
+function blankFlow(from: string, to: string): Flow {
+  return { id: newId(), from_dataset_id: from, to_dataset_id: to, load: { kind_id: "", values: {} }, description: "" };
+}
+
+function loadedOfDraft(state: DraftState, currentVersion: number): Loaded {
+  return {
+    catalog: new Catalog(state.snapshot, state.diff),
+    title: state.draft.name,
+    version: `draft · seq ${state.seq} · over v${state.draft.base_version}`,
+    currentVersion,
+    draft: state.draft,
+    view: undefined,
+    saved: [],
+    seq: state.seq,
+  };
+}
+
+type LoadResult = { kind: "draft"; state: DraftState; currentVersion: number } | { kind: "view"; loaded: Loaded };
+
+async function load(api: CatalogApi, source: PageSource): Promise<LoadResult> {
+  const versions = await api.versions();
+  const currentVersion = versions.at(-1)?.number ?? 0;
+
   if (source.kind === "draft") {
     const state = await api.draft(source.draftId);
-    return {
-      catalog: new Catalog(state.snapshot, state.diff),
-      title: state.draft.name,
-      version: `draft · seq ${state.seq} · over v${state.draft.base_version}`,
-      draft: state.draft,
-      view: undefined,
-      saved: [],
-    };
+    return { kind: "draft", state, currentVersion };
   }
 
-  const [view, snapshot, layout, versions] = await Promise.all([
-    api.view(source.viewId),
-    api.snapshot(),
-    api.layout(source.viewId),
-    api.versions(),
-  ]);
-  const last = versions.at(-1);
+  const [view, snapshot, layout] = await Promise.all([api.view(source.viewId), api.snapshot(), api.layout(source.viewId)]);
   return {
-    catalog: new Catalog(snapshot),
-    title: view.name,
-    version: last === undefined ? "v0" : `v${last.number}`,
-    draft: undefined,
-    view,
-    saved: layout.positions,
+    kind: "view",
+    loaded: {
+      catalog: new Catalog(snapshot),
+      title: view.name,
+      version: `v${currentVersion}`,
+      currentVersion,
+      draft: undefined,
+      view,
+      saved: layout.positions,
+      seq: 0,
+    },
   };
 }
 

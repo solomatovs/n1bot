@@ -17,13 +17,15 @@ users и ролям входа под профилем по умолчанию: 
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, TypeVar
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.catalog import CatalogOpError, CatalogSnapshot, OperationList
@@ -50,12 +52,14 @@ from boba.catalog_service import (
 )
 from boba.chainlit.infra.session import ChainlitSession
 from boba.chat.profiles import ChatProfiles
-from boba.identity.context import Subject
+from boba.identity.context import Scope, Subject
+from boba.messaging import CatalogChanged, Envelope, MessageBus
 from chainlit.auth import get_current_user, reuseable_oauth
 from chainlit.user import PersistedUser, User
 
 __all__ = [
     "CatalogApi",
+    "CatalogEvents",
     "CatalogUrl",
     "DraftBody",
     "LayoutBody",
@@ -106,6 +110,7 @@ class CatalogUrl(StrEnum):
     VIEW_LAYOUT = "/views/{view_id}/layout"
     VIEW_SHARES = "/views/{view_id}/shares"
     VIEW_SHARE = "/views/{view_id}/shares/{kind}/{target}"
+    EVENTS = "/events"
 
 
 class DraftBody(BaseModel):
@@ -147,6 +152,51 @@ class Deleted(BaseModel):
     deleted: bool
 
 
+class CatalogEvents:
+    """Поток server-sent events с CatalogChanged области пользователя.
+
+    Страница каталога живёт вне чата, сокет chainlit ей недоступен, поэтому
+    правки черновиков и видов доходят до неё этим потоком: одна строка data на
+    сообщение, комментарий-пульс, пока тихо. Подписка снимается с обрывом
+    соединения.
+    """
+
+    MEDIA_TYPE: ClassVar[str] = "text/event-stream"
+    HEARTBEAT_SEC: ClassVar[float] = 15.0
+    HEARTBEAT: ClassVar[str] = ": ping\n\n"
+
+    def __init__(self, bus: MessageBus, user_id: UUID) -> None:
+        self._bus = bus
+        self._scope = Scope.user(user_id)
+
+    def response(self) -> StreamingResponse:
+        headers = {"Cache-Control": "no-store", "X-Accel-Buffering": "no"}
+        return StreamingResponse(
+            self.frames(), media_type=self.MEDIA_TYPE, headers=headers
+        )
+
+    async def frames(self) -> AsyncIterator[str]:
+        queue: asyncio.Queue[CatalogChanged] = asyncio.Queue()
+
+        async def deliver(envelope: Envelope) -> None:
+            if isinstance(envelope.message, CatalogChanged):
+                await queue.put(envelope.message)
+
+        leave = self._bus.subscribe(self._scope, deliver)
+        try:
+            yield self.HEARTBEAT
+            while True:
+                try:
+                    message = await asyncio.wait_for(queue.get(), self.HEARTBEAT_SEC)
+                except TimeoutError:
+                    yield self.HEARTBEAT
+                    continue
+
+                yield f"data: {message.model_dump_json()}\n\n"
+        finally:
+            leave()
+
+
 class CatalogApi:
     """Обработчики JSON API каталога; сервис берётся на каждый запрос."""
 
@@ -177,9 +227,20 @@ class CatalogApi:
             (CatalogUrl.VIEW_SHARES, self.shares, "GET"),
             (CatalogUrl.VIEW_SHARES, self.share, "POST"),
             (CatalogUrl.VIEW_SHARE, self.unshare, "DELETE"),
+            (CatalogUrl.EVENTS, self.events, "GET"),
         )
         for path, handler, method in routes:
             router.add_api_route(path.value, handler, methods=[method], tags=[self.TAG])
+
+    async def events(self, current_user: CurrentUser) -> StreamingResponse:
+        """Поток CatalogChanged пользователя; право — как на чтение каталога."""
+        subject = self._subject(current_user)
+        service = await self._resolved()
+        if not service.can_view(subject):
+            msg = f"user {subject.login!r} has no role to read the catalog"
+            raise HTTPException(status_code=403, detail=msg)
+
+        return CatalogEvents(service.bus, subject.user_id).response()
 
     async def snapshot(self, current_user: CurrentUser) -> CatalogSnapshot:
         subject = self._subject(current_user)

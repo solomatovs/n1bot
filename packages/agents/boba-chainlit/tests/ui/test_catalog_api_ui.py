@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -61,3 +63,29 @@ def test_stand_roles_reach_the_catalog(stand: StandProcess) -> None:
         discarded = admin.delete(f"{DRAFTS}/{draft_id}")
         assert discarded.status_code == 200
         assert discarded.json()["status"] == "discarded"
+
+
+def test_events_stream_delivers_catalog_changes(stand: StandProcess) -> None:
+    """Поток событий: после первого пульса создание черновика приходит строкой data."""
+    with (
+        _client(stand, "admin") as admin,
+        admin.stream("GET", "/api/catalog/events") as events,
+    ):
+        assert events.status_code == 200
+        assert events.headers["content-type"].startswith("text/event-stream")
+        lines = events.iter_lines()
+        assert next(lines) == ": ping"
+
+        created = admin.post(DRAFTS, json={"name": "events draft"})
+        assert created.status_code == 200
+
+        payload = ""
+        for line in lines:
+            if line.startswith("data: "):
+                payload = line.removeprefix("data: ")
+                break
+
+        event = json.loads(payload)
+        assert event["kind"] == "catalog_changed"
+        assert event["draft_id"] == created.json()["id"]
+        assert event["action"] == "created"

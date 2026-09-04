@@ -9,6 +9,7 @@ const LAYOUT_OPTIONS: LayoutOptions = {
   "elk.algorithm": "layered",
   "elk.direction": "RIGHT",
   "elk.partitioning.activate": "true",
+  "elk.separateConnectedComponents": "false",
   "elk.layered.spacing.baseValue": "40",
   "elk.spacing.componentComponent": "80",
   "elk.layered.spacing.edgeNodeBetweenLayers": "120",
