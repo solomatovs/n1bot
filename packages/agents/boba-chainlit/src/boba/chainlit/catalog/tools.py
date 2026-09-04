@@ -305,11 +305,21 @@ class CatalogView(BaseModel):
     def _dataset(snapshot: CatalogSnapshot, dataset: Dataset) -> DatasetView:
         layer_name = snapshot.layers[dataset.layer_id].name
 
+        ordered = sorted(snapshot.columns_of(dataset.id), key=attrgetter("position"))
+
         columns: list[ColumnView] = []
-        for column in sorted(
-            snapshot.columns_of(dataset.id), key=attrgetter("position")
-        ):
-            columns.append(ColumnView.model_validate(column.model_dump()))
+        for column in ordered:
+            columns.append(
+                ColumnView(
+                    id=column.id,
+                    name=column.name,
+                    type=column.type,
+                    nullable=column.nullable,
+                    is_key=column.is_key,
+                    position=column.position,
+                    description=column.description,
+                )
+            )
 
         return DatasetView(
             id=dataset.id,

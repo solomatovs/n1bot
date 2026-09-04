@@ -1,11 +1,13 @@
 import js from "@eslint/js";
+import { defineConfig, globalIgnores } from "eslint/config";
 import reactHooks from "eslint-plugin-react-hooks";
 import tseslint from "typescript-eslint";
 
-export default tseslint.config(
+export default defineConfig(
+  globalIgnores(["dist", "node_modules", "eslint.config.js", "vite.config.ts", "src/api/schema.d.ts"]),
   js.configs.recommended,
-  ...tseslint.configs.strictTypeChecked,
-  ...tseslint.configs.stylisticTypeChecked,
+  tseslint.configs.strictTypeChecked,
+  tseslint.configs.stylisticTypeChecked,
   {
     languageOptions: {
       parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname },
@@ -33,5 +35,4 @@ export default tseslint.config(
       ],
     },
   },
-  { ignores: ["dist", "node_modules", "eslint.config.js", "vite.config.ts", "src/api/schema.d.ts"] },
 );

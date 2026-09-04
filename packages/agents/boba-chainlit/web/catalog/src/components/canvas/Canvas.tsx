@@ -91,7 +91,7 @@ export function Canvas({ catalog, options, saved, activeId, onActivate, tidyCoun
 
     const lit = highlight(laid.nodes, laid.edges, { activeId, hoverId });
     const lanes = laneNodes(catalog, lit.nodes, options.showDiff);
-    return { nodes: [...lanes, ...lit.nodes] as Node[], edges: lit.edges as Edge[] };
+    return { nodes: [...lanes, ...lit.nodes] as Node[], edges: lit.edges };
   }, [laid, activeId, hoverId, catalog, options.showDiff]);
 
   return (

@@ -313,6 +313,14 @@ WORKDIR /src/web/page
 RUN npm ci --no-audit --no-fund && npm run check && npm run build
 
 
+# страница каталога (web/catalog, vite): типы из openapi.json репозитория, node'ом стадии
+FROM ${NODE_IMAGE} AS catalog-build
+
+COPY packages/agents/boba-chainlit/web/catalog/  /src/web/catalog/
+WORKDIR /src/web/catalog
+RUN npm ci --no-audit --no-fund && npm run generate && npm run check && npm run build
+
+
 # образ чата: ассеты chainlit, vendor-шрифты и стили формул вместо CDN, локальная
 # модель переформулировщика. .files создаётся заранее: chainlit делает mkdir на импорте
 FROM runtime-base AS runtime-chainlit
@@ -326,6 +334,7 @@ COPY packages/agents/boba-chainlit/assets/.chainlit/translations/ ${BOBA_DIR}/ap
 COPY packages/agents/boba-chainlit/assets/chainlit.md             ${BOBA_DIR}/app_root/
 COPY packages/agents/boba-chainlit/assets/public/                 ${BOBA_DIR}/app_root/public/
 COPY --from=web-build /src/assets/public/page.js                  ${BOBA_DIR}/app_root/public/page.js
+COPY --from=catalog-build /src/assets/catalog/                    ${BOBA_DIR}/app_root/public/catalog/
 COPY --from=chainlit-ui-build /out/ui/                             ${BOBA_DIR}/app_root/ui/
 COPY build/chainlit/src/webassets/                                ${BOBA_DIR}/app_root/public/vendor/
 

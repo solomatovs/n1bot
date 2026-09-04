@@ -36,6 +36,7 @@ SCHEMA = "catalog_tools_test"
 PREFIX = "/boba-test"
 LAYER_ID = UUID(int=301)
 DATASET_ID = UUID(int=310)
+COLUMN_ID = UUID(int=320)
 
 
 def _config() -> CatalogConfig:
@@ -80,6 +81,18 @@ def _operations() -> str:
                 "name": "orders",
             },
         },
+        {
+            "op": "add_column",
+            "column": {
+                "id": str(COLUMN_ID),
+                "dataset_id": str(DATASET_ID),
+                "name": "order_id",
+                "type": "int",
+                "nullable": False,
+                "is_key": True,
+                "position": 0,
+            },
+        },
     ]
     return json.dumps(ops)
 
@@ -114,7 +127,7 @@ async def test_draft_propose_diff_open(tools: CatalogTools, editor: Subject) -> 
 
     _, diff = await tools.diff(draft_id)
     assert isinstance(diff, TextResult)
-    assert "at seq 1 over version 0: 2 change(s)" in diff.text
+    assert "at seq 1 over version 0: 3 change(s)" in diff.text
 
     _, rejected = await tools.propose(draft_id, _operations())
     assert isinstance(rejected, ErrorResult)
@@ -144,6 +157,7 @@ async def test_read_slice_with_neighbours(
     assert sliced.payload["version"] == 1
     assert [d["name"] for d in sliced.payload["datasets"]] == ["orders"]
     assert sliced.payload["datasets"][0]["layer"] == "raw"
+    assert [c["name"] for c in sliced.payload["datasets"][0]["columns"]] == ["order_id"]
     assert sliced.payload["unknown_datasets"] == ["missing"]
 
 

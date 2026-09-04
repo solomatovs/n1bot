@@ -33,10 +33,15 @@ class Tokens:
         self._light = light
 
     @classmethod
-    def load(cls) -> Tokens:
+    def load(cls, path: Path | None = None) -> Tokens:
+        """Токены страницы workflow; path — tokens.css другой страницы (каталог)."""
+        source = path
+        if source is None:
+            source = cls.PATH
+
         dark: dict[str, str] = {}
         light: dict[str, str] = {}
-        for selector, body in cls.BLOCK.findall(cls.PATH.read_text(encoding="utf-8")):
+        for selector, body in cls.BLOCK.findall(source.read_text(encoding="utf-8")):
             target = light if cls.LIGHT in selector else dark
             for name, value in cls.TOKEN.findall(body):
                 target[name] = value.strip()
