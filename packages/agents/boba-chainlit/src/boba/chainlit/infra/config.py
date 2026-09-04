@@ -11,7 +11,6 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    field_validator,
 )
 
 from boba.access import RoleConfig
@@ -24,13 +23,7 @@ from boba.chat.profiles import (
 )
 from boba.db.postgres.profile import PostgresConfig
 from boba.krb import KerberosWorkspaceConfig
-from boba.runtime.config import (
-    BuiltPage,
-    DataLayerConfig,
-    DevPage,
-    PageSource,
-    RuntimeConfig,
-)
+from boba.runtime.config import DataLayerConfig, RuntimeConfig
 
 LOGGING_CONFIG: dict[str, Any] = {
     "version": 1,
@@ -182,18 +175,9 @@ class CheckpointerConfig(BaseModel):
 
 
 class ChainlitCatalogConfig(CatalogConfig):
-    """Секция [catalog] chainlit: к хранилищу и ролям добавляется страница каталога."""
+    """Секция [catalog] chainlit: к хранилищу и ролям добавляется сборка страницы."""
 
-    page: BuiltPage | DevPage = Field(
-        discriminator="kind",
-        description="'built' — сборка из dist; адрес — vite dev-сервер.",
-    )
     dist: Path = Field(description="Каталог сборки страницы: index.html и assets/.")
-
-    @field_validator("page", mode="before")
-    @classmethod
-    def _parse_page(cls, raw: object) -> object:
-        return PageSource.parse(raw)
 
 
 class AppConfig(RuntimeConfig):

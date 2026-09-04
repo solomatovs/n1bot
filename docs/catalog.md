@@ -293,16 +293,12 @@ tools  = ["catalog_read", "catalog_draft", "catalog_propose", "catalog_diff", "c
 Секция `[catalog]` в `config.toml` chainlit:
 
 ```toml
-[env]
-    catalog_page = "built"
-
 [catalog]
     enable     = true
     connection = "${postgres}"
     db_schema  = "catalog"
     view_roles = ["read"]
     edit_roles = ["wrt"]
-    page       = "${env.catalog_page}"
     dist       = "${env.app_root}/public/catalog"
 ```
 
@@ -312,10 +308,7 @@ tools  = ["catalog_read", "catalog_draft", "catalog_propose", "catalog_diff", "c
 | `connection` | Postgres-профиль ссылкой |
 | `db_schema` | схема таблиц каталога: `versions`, `drafts`, `draft_ops`, `layers`, `datasets`, `columns`, `load_kinds`, `flows`, `views`, `view_layout`, `view_shares` |
 | `view_roles`, `edit_roles` | роли чтения и правок |
-| `page` | `built` — раздавать сборку из `dist`; адрес — проксировать vite dev-сервер |
-| `dist` | каталог сборки страницы (`index.html`, `assets/`) |
-
-Оверрайд средой: `BOBA_CATALOG_PAGE`.
+| `dist` | каталог сборки страницы (`index.html`, `assets/`); страница всегда раздаётся из сборки |
 
 Страница `web/catalog` (vite, React 18, @xyflow/react, elkjs, react-router,
 zod, типы из OpenAPI) собирается node'ом образа:
@@ -326,8 +319,10 @@ make -C build/chainlit catalog-openapi    # обновить web/catalog/openapi
 cp -a packages/agents/boba-chainlit/assets/catalog compose/chainlit/app_root/public/catalog
 ```
 
-В образ страницу собирает стадия `catalog-build` Dockerfile. После правок
-фронта dev-стенд показывает старую сборку, пока dist не скопирован заново.
+В образ страницу собирает стадия `catalog-build` Dockerfile. Отдельного
+dev-сервера у страницы нет: node живёт только в образе, правки фронта
+проверяются пересборкой и копией dist; пока dist не скопирован заново,
+dev-стенд показывает старую сборку.
 
 ## 10. Пакеты и слои
 

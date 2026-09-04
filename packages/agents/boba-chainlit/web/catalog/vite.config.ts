@@ -1,25 +1,12 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
-/** Dev-сервер живёт под {BOBA_URL_PREFIX}/catalog-dev/ — туда его проксирует
- * приложение; сборка относительная: index.html отдаёт сервер с <base href>. */
-function devBase(): string {
-  const prefix = process.env["BOBA_URL_PREFIX"];
-  if (prefix === undefined) {
-    throw new Error("BOBA_URL_PREFIX is required to run the dev server");
-  }
-
-  return `${prefix}/catalog-dev/`;
-}
-
-export default defineConfig(({ command, mode }) => ({
+/** Сборка относительная: index.html отдаёт chainlit с <base href> под своим
+ * префиксом. Отдельного dev-сервера у страницы нет: правки проверяются
+ * пересборкой (make web-catalog) и копией dist в app_root/public/catalog. */
+export default defineConfig(() => ({
   plugins: [react()],
-  base: command === "serve" && mode !== "test" ? devBase() : "./",
-  server: {
-    host: true,
-    port: 5174,
-    strictPort: true,
-  },
+  base: "./",
   build: {
     outDir: "../../assets/catalog",
     emptyOutDir: true,
