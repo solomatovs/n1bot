@@ -249,6 +249,7 @@ class StandConfig:
 
         self._use_fake_llm(doc)
         self._use_test_profiles(doc)
+        self._use_catalog_roles(doc)
         self._use_test_database(doc)
         self._use_local_storage(doc)
         self._use_local_auth(doc)
@@ -313,6 +314,15 @@ class StandConfig:
         env.pop("KRB5_CLIENT_KTNAME", None)
         env.pop("KRB5CCNAME", None)
         return env
+
+    @staticmethod
+    def _use_catalog_roles(doc: MutableMapping[str, Any]) -> None:
+        """Каталог стенда: DEV читает, ADM правит; без секции ничего не меняется."""
+        if "catalog" not in doc:
+            return
+
+        doc["catalog"]["view_roles"] = ["DEV"]
+        doc["catalog"]["edit_roles"] = ["ADM"]
 
     def _use_fake_llm(self, doc: MutableMapping[str, Any]) -> None:
         """Транспорт стенда: поведение общее, адрес фейка — в профилях."""

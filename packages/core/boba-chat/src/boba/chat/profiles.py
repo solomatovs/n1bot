@@ -307,6 +307,15 @@ class ChatProfiles:
     def all(self) -> Mapping[str, ChatProfileConfig]:
         return self._profiles
 
+    def default_name(self) -> str:
+        """Имя профиля по умолчанию; конструктор гарантирует ровно один."""
+        for name, profile in self._profiles.items():
+            if profile.default:
+                return name
+
+        msg = "profiles: no default profile"
+        raise RuntimeError(msg)
+
     def visible_for(
         self, user_roles: frozenset[str]
     ) -> Mapping[str, ChatProfileConfig]:
