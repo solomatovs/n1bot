@@ -114,6 +114,27 @@ export const ViewLayoutSchema = z.object({
   positions: z.array(NodePositionSchema),
 });
 
+export const ViewStateSchema = z.object({
+  view: ViewSchema,
+  version: z.number(),
+  snapshot: SnapshotSchema,
+  layout: ViewLayoutSchema,
+  owned: z.boolean(),
+});
+
+export const AccessSchema = z.object({
+  user_id: z.string(),
+  login: z.string(),
+  can_view: z.boolean(),
+  can_edit: z.boolean(),
+});
+
+export const ShareSchema = z.object({
+  kind: z.enum(["role", "user"]),
+  target: z.string(),
+  mode: z.literal("view"),
+});
+
 export const VersionSchema = z.object({
   number: z.number(),
   author: z.object({ user_id: z.string(), via: z.enum(["user", "llm"]) }),
@@ -151,6 +172,11 @@ export type DraftState = z.infer<typeof DraftStateSchema>;
 export type View = z.infer<typeof ViewSchema>;
 export type NodePosition = z.infer<typeof NodePositionSchema>;
 export type ViewLayout = z.infer<typeof ViewLayoutSchema>;
+export type ViewState = z.infer<typeof ViewStateSchema>;
+export type Access = z.infer<typeof AccessSchema>;
+export type Share = z.infer<typeof ShareSchema>;
+/** Фильтр вида: пустые списки — весь каталог. */
+export type ViewSpec = { name: string; dataset_ids: string[]; layer_ids: string[] };
 export type Version = z.infer<typeof VersionSchema>;
 export type RebaseIssue = z.infer<typeof RebaseIssueSchema>;
 export type RebaseResult = z.infer<typeof RebaseResultSchema>;

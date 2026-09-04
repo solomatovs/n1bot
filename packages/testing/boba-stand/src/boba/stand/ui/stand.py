@@ -211,14 +211,17 @@ class StandConfig:
     STAND_USERS: ClassVar[dict[str, str]] = {
         "admin": "stand-admin-pass",
         "dev": "stand-dev-pass",
+        "guest": "stand-guest-pass",
     }
     """Учётки стенда: фиксированы кодом, рабочий конфиг их не задаёт."""
 
     STAND_ROLES: ClassVar[dict[str, list[str]]] = {
         "admin": ["ADM"],
         "dev": ["DEV"],
+        "guest": ["GST"],
     }
-    """Роли учёток стенда: согласованы с [roles] стенда, а не рабочего конфига."""
+    """Роли учёток стенда: согласованы с [roles] стенда, а не рабочего конфига.
+    GST — роль без инструментов и без прав на каталог: ей вид открывают шарингом."""
 
     def credential(self, login: str = "") -> StandCredential:
         """Логин и пароль стенда; без аргумента — первый логин по алфавиту."""
@@ -345,6 +348,7 @@ class StandConfig:
                     "stream_logs_cleanup",
                 ]
             },
+            "GST": {"tools": []},
         }
 
         doc["profiles"] = {

@@ -11,14 +11,12 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from enum import StrEnum
-from typing import Any, ClassVar
+from typing import Any
 from uuid import UUID
 
-import httpx
 import pytest
+from catalog_ui import Api, Cleanup, Ed, Seed, Selector, api_client
 from playwright.sync_api import Browser, FloatRect, Locator, Page, ViewportSize, expect
-from test_catalog_look_ui import EDGE_LABEL, LANE, NODE, READY, _client, _ok
 
 from boba.stand.ui.look import Css
 from boba.stand.ui.stand import StandProcess
@@ -26,194 +24,13 @@ from boba.stand.ui.stand import StandProcess
 pytestmark = pytest.mark.ui
 
 WIDE: ViewportSize = {"width": 1400, "height": 900}
-EDITABLE = '[data-testid="catalog-page"][data-editable="true"]'
+EDITABLE = f'{Selector.PAGE}[data-editable="true"]'
 LIVE_TIMEOUT_MS = 15_000
-
-
-class Ed(StrEnum):
-    """Имена посеянных сущностей: всё с префиксом ed_, по нему же и убирается."""
-
-    PREFIX = "ed_"
-    SRC = "ed_src"
-    DST = "ed_dst"
-    ORDERS = "ed_orders"
-    SALES = "ed_sales"
-    RETURNS = "ed_returns"
-    FULL = "ed_full"
-    HASH = "ed_hash"
-    HASH_FIELD = "hash_columns"
-
-
-class Seed:
-    """Каталог модуля: два слоя, три набора, два вида загрузки, один поток."""
-
-    ID_BASE: ClassVar[int] = 0xE000
-    DATASETS: ClassVar[dict[str, str]] = {
-        Ed.ORDERS: Ed.SRC,
-        Ed.SALES: Ed.DST,
-        Ed.RETURNS: Ed.DST,
-    }
-    COLUMNS: ClassVar[tuple[str, ...]] = ("id", "name")
-
-    def __init__(self) -> None:
-        self.ids: dict[str, str] = {}
-
-    def id_of(self, name: str) -> str:
-        if name not in self.ids:
-            self.ids[name] = str(UUID(int=len(self.ids) + self.ID_BASE))
-
-        return self.ids[name]
-
-    def operations(self) -> list[dict[str, Any]]:
-        ops: list[dict[str, Any]] = []
-        for layer in (Ed.SRC, Ed.DST):
-            ops.append(
-                {"op": "add_layer", "layer": {"id": self.id_of(layer), "name": layer}}
-            )
-
-        for dataset, layer in self.DATASETS.items():
-            ops.append(
-                {
-                    "op": "add_dataset",
-                    "dataset": {
-                        "id": self.id_of(dataset),
-                        "layer_id": self.id_of(layer),
-                        "name": dataset,
-                    },
-                }
-            )
-            for position, column in enumerate(self.COLUMNS):
-                ops.append(
-                    {
-                        "op": "add_column",
-                        "column": {
-                            "id": self.id_of(f"{dataset}.{column}"),
-                            "dataset_id": self.id_of(dataset),
-                            "name": column,
-                            "type": "text",
-                            "nullable": position > 0,
-                            "is_key": position == 0,
-                            "position": position,
-                        },
-                    }
-                )
-
-        ops.append(
-            {
-                "op": "add_load_kind",
-                "load_kind": {"id": self.id_of(Ed.FULL), "name": Ed.FULL, "fields": []},
-            }
-        )
-        ops.append(
-            {
-                "op": "add_load_kind",
-                "load_kind": {
-                    "id": self.id_of(Ed.HASH),
-                    "name": Ed.HASH,
-                    "fields": [
-                        {"name": Ed.HASH_FIELD, "type": "columns", "required": True}
-                    ],
-                },
-            }
-        )
-        ops.append(
-            {
-                "op": "add_flow",
-                "flow": {
-                    "id": self.id_of("orders->sales"),
-                    "from_dataset_id": self.id_of(Ed.ORDERS),
-                    "to_dataset_id": self.id_of(Ed.SALES),
-                    "load": {"kind_id": self.id_of(Ed.FULL), "values": {}},
-                },
-            }
-        )
-        return ops
-
-
-class Cleanup:
-    """Операции удаления всего с префиксом ed_ из опубликованного снимка."""
-
-    def __init__(self, snapshot: dict[str, Any]) -> None:
-        self.snapshot = snapshot
-
-    def _mine(self, table: str) -> Iterator[dict[str, Any]]:
-        for entity in self.snapshot[table].values():
-            if str(entity["name"]).startswith(Ed.PREFIX):
-                yield entity
-
-    def operations(self) -> list[dict[str, Any]]:
-        dataset_ids = {entity["id"] for entity in self._mine("datasets")}
-        ops: list[dict[str, Any]] = []
-        for flow in self.snapshot["flows"].values():
-            touches = flow["from_dataset_id"] in dataset_ids
-            if flow["to_dataset_id"] in dataset_ids:
-                touches = True
-
-            if touches:
-                ops.append({"op": "remove_flow", "id": flow["id"]})
-
-        for dataset_id in dataset_ids:
-            ops.append({"op": "remove_dataset", "id": dataset_id})
-
-        for layer in self._mine("layers"):
-            ops.append({"op": "remove_layer", "id": layer["id"]})
-
-        for kind in self._mine("load_kinds"):
-            ops.append({"op": "remove_load_kind", "id": kind["id"]})
-
-        return ops
-
-
-class Api:
-    """Ходы в JSON API стенда от имени администратора."""
-
-    def __init__(self, admin: httpx.Client) -> None:
-        self.admin = admin
-
-    def new_draft(self, name: str) -> str:
-        draft = _ok(self.admin.post("/api/catalog/drafts", json={"name": name}))
-        return str(draft["id"])
-
-    def state(self, draft_id: str) -> dict[str, Any]:
-        return _ok(self.admin.get(f"/api/catalog/drafts/{draft_id}"))
-
-    def append(self, draft_id: str, ops: list[dict[str, Any]]) -> dict[str, Any]:
-        seq = self.state(draft_id)["seq"]
-        return _ok(
-            self.admin.post(
-                f"/api/catalog/drafts/{draft_id}/ops",
-                json={"expected_seq": seq, "operations": ops},
-            )
-        )
-
-    def publish(self, draft_id: str) -> int:
-        version = _ok(self.admin.post(f"/api/catalog/drafts/{draft_id}/publish"))
-        return int(version["number"])
-
-    def discard(self, draft_id: str) -> None:
-        response = self.admin.delete(f"/api/catalog/drafts/{draft_id}")
-        if response.status_code not in (200, 404, 409):
-            raise RuntimeError(f"discard failed: {response.status_code}")
-
-    def snapshot(self) -> dict[str, Any]:
-        return _ok(self.admin.get("/api/catalog/snapshot"))
-
-    def publish_ops(self, name: str, ops: list[dict[str, Any]]) -> int:
-        draft_id = self.new_draft(name)
-        self.append(draft_id, ops)
-        return self.publish(draft_id)
-
-    def dataset_names(self) -> set[str]:
-        names: set[str] = set()
-        for dataset in self.snapshot()["datasets"].values():
-            names.add(str(dataset["name"]))
-
-        return names
 
 
 @pytest.fixture(scope="module")
 def api(stand: StandProcess) -> Iterator[Api]:
-    with _client(stand, "admin") as admin:
+    with api_client(stand, "admin") as admin:
         yield Api(admin)
 
 
@@ -254,13 +71,13 @@ def page(
 
 def _open_draft(page: Page, stand: StandProcess, draft_id: str) -> None:
     page.goto(f"{stand.config.base_url}/catalog/drafts/{draft_id}")
-    page.wait_for_selector(READY, timeout=30_000)
+    page.wait_for_selector(Selector.READY, timeout=30_000)
     page.wait_for_selector(EDITABLE, timeout=30_000)
-    page.wait_for_selector(NODE, timeout=30_000)
+    page.wait_for_selector(Selector.NODE, timeout=30_000)
 
 
 def _node(page: Page, name: str) -> Locator:
-    return page.locator(f'{NODE}[data-dataset="{name}"]')
+    return page.locator(f'{Selector.NODE}[data-dataset="{name}"]')
 
 
 def _dialog(page: Page, mark: str) -> Locator:
@@ -346,13 +163,13 @@ class TestLanes:
         дорожки слоёв не пересекаются, каждая карточка лежит в своей."""
         _open_draft(page, stand, draft_id)
 
-        src = Css.box(page.locator(f'{LANE}[data-layer="{Ed.SRC}"]'))
-        dst = Css.box(page.locator(f'{LANE}[data-layer="{Ed.DST}"]'))
+        src = Css.box(page.locator(f'{Selector.LANE}[data-layer="{Ed.SRC}"]'))
+        dst = Css.box(page.locator(f'{Selector.LANE}[data-layer="{Ed.DST}"]'))
         assert src.right <= dst.x + 1, f"lanes overlap: {src} vs {dst}"
 
         for dataset, layer in Seed.DATASETS.items():
             node = Css.box(_node(page, dataset))
-            lane = Css.box(page.locator(f'{LANE}[data-layer="{layer}"]'))
+            lane = Css.box(page.locator(f'{Selector.LANE}[data-layer="{layer}"]'))
             assert lane.contains(node, slack=2), f"{dataset} is outside {layer}"
 
 
@@ -415,7 +232,7 @@ class TestDatasetPanel:
         self, page: Page, stand: StandProcess, api: Api, draft_id: str
     ) -> None:
         _open_draft(page, stand, draft_id)
-        expect(page.locator(EDGE_LABEL)).to_have_count(1)
+        expect(page.locator(Selector.EDGE_LABEL)).to_have_count(1)
 
         _node(page, Ed.SALES).click()
         page.get_by_test_id("detail-panel").get_by_role(
@@ -423,7 +240,7 @@ class TestDatasetPanel:
         ).click()
 
         expect(_node(page, Ed.SALES)).to_have_count(0)
-        expect(page.locator(EDGE_LABEL)).to_have_count(0)
+        expect(page.locator(Selector.EDGE_LABEL)).to_have_count(0)
         expect(page.get_by_test_id("detail-panel")).to_have_count(0)
 
         state = api.state(draft_id)
@@ -451,8 +268,10 @@ class TestFlows:
         form.get_by_role("button", name="save flow").click()
 
         expect(form).to_have_count(0)
-        expect(page.locator(EDGE_LABEL)).to_have_count(2)
-        expect(page.locator(EDGE_LABEL).filter(has_text=Ed.HASH)).to_have_count(1)
+        expect(page.locator(Selector.EDGE_LABEL)).to_have_count(2)
+        expect(
+            page.locator(Selector.EDGE_LABEL).filter(has_text=Ed.HASH)
+        ).to_have_count(1)
 
         flows = api.state(draft_id)["snapshot"]["flows"]
         assert len(flows) == 2
@@ -470,7 +289,7 @@ class TestFlows:
         page.get_by_test_id("flow-form").get_by_role(
             "button", name="remove flow"
         ).click()
-        expect(page.locator(EDGE_LABEL)).to_have_count(1)
+        expect(page.locator(Selector.EDGE_LABEL)).to_have_count(1)
         assert len(api.state(draft_id)["snapshot"]["flows"]) == 1
 
     def test_connecting_nodes_on_the_canvas_opens_the_flow_form(
@@ -496,14 +315,14 @@ class TestFlows:
         form.get_by_label("load kind").select_option(label=Ed.FULL)
         form.get_by_role("button", name="save flow").click()
 
-        expect(page.locator(EDGE_LABEL)).to_have_count(2)
+        expect(page.locator(Selector.EDGE_LABEL)).to_have_count(2)
         assert len(api.state(draft_id)["snapshot"]["flows"]) == 2
 
     def test_clicking_an_edge_edits_its_flow(
         self, page: Page, stand: StandProcess, api: Api, draft_id: str
     ) -> None:
         _open_draft(page, stand, draft_id)
-        page.locator(EDGE_LABEL).first.click()
+        page.locator(Selector.EDGE_LABEL).first.click()
 
         form = page.get_by_test_id("flow-form")
         expect(form).to_be_visible()

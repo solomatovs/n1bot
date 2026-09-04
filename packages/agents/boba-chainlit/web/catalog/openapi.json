@@ -5,6 +5,27 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/catalog/access": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Access",
+        "operationId": "access_api_catalog_access_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogAccess"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/catalog/snapshot": {
       "get": {
         "tags": [
@@ -547,6 +568,49 @@
         }
       }
     },
+    "/api/catalog/views/{view_id}/state": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "View State",
+        "operationId": "view_state_api_catalog_views__view_id__state_get",
+        "parameters": [
+          {
+            "name": "view_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "View Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewState"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/catalog/views/{view_id}/layout": {
       "get": {
         "tags": [
@@ -796,6 +860,26 @@
           }
         }
       }
+    },
+    "/api/catalog/events": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Events",
+        "description": "Поток CatalogChanged пользователя; право — как на чтение каталога.",
+        "operationId": "events_api_catalog_events_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -941,6 +1025,37 @@
         ],
         "title": "AuthorVia",
         "description": "Кем внесена порция: человеком со страницы или моделью из чата."
+      },
+      "CatalogAccess": {
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "User Id"
+          },
+          "login": {
+            "type": "string",
+            "title": "Login"
+          },
+          "can_view": {
+            "type": "boolean",
+            "title": "Can View"
+          },
+          "can_edit": {
+            "type": "boolean",
+            "title": "Can Edit"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "user_id",
+          "login",
+          "can_view",
+          "can_edit"
+        ],
+        "title": "CatalogAccess",
+        "description": "Права субъекта на каталог: страница по ним решает, что показывать."
       },
       "CatalogDiff": {
         "properties": {
@@ -2286,6 +2401,39 @@
         ],
         "title": "ViewSpec",
         "description": "Имя вида и фильтр наборов и слоёв; пустой фильтр — весь каталог."
+      },
+      "ViewState": {
+        "properties": {
+          "view": {
+            "$ref": "#/components/schemas/View"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Version"
+          },
+          "snapshot": {
+            "$ref": "#/components/schemas/CatalogSnapshot"
+          },
+          "layout": {
+            "$ref": "#/components/schemas/ViewLayout"
+          },
+          "owned": {
+            "type": "boolean",
+            "title": "Owned"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "view",
+          "version",
+          "snapshot",
+          "layout",
+          "owned"
+        ],
+        "title": "ViewState",
+        "description": "Всё для страницы вида одним ответом: сам вид, номер текущей версии,\nсрез опубликованного каталога по фильтру вида, сохранённая раскладка и\nпризнак, что вид принадлежит субъекту и он вправе его править."
       }
     }
   }

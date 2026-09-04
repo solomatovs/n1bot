@@ -18,6 +18,7 @@ from boba.catalog_service import (
     CatalogRefusalKind,
     CatalogService,
     CatalogStore,
+    NodePosition,
     ViewShare,
     ViewSpec,
 )
@@ -147,6 +148,47 @@ async def test_view_access_by_share(service: CatalogService, sample: Sample) -> 
         await service.view(ANALYST, view.id)
 
     assert await service.delete_view(EDITOR, view.id)
+
+
+async def test_view_state_slices_the_catalog_for_a_shared_stranger(
+    service: CatalogService, sample: Sample
+) -> None:
+    """Расшаренный вид открывает срез каталога тому, у кого нет ролей на
+    каталог; версия и раскладка приходят тем же ответом, владение — только
+    у владельца с правом правок."""
+    draft = await service.create_draft(EDITOR, "initial")
+    await service.append_ops(EDITOR, draft.id, 0, sample.ops(), AuthorVia.LLM)
+    await service.publish(EDITOR, draft.id, AuthorVia.USER)
+
+    view = await service.create_view(
+        EDITOR, ViewSpec(name="raw", layer_ids=(sample.raw.id,))
+    )
+    await service.put_layout(
+        EDITOR, view.id, [NodePosition(dataset_id=sample.raw_orders.id, x=10, y=20)]
+    )
+    await service.share_view(EDITOR, view.id, ViewShare.user(STRANGER.user_id))
+
+    with pytest.raises(CatalogRefusalError):
+        await service.snapshot(STRANGER)
+
+    state = await service.view_state(STRANGER, view.id)
+    assert state.version == 1
+    assert set(state.snapshot.datasets) == {
+        sample.raw_orders.id,
+        sample.raw_items.id,
+    }
+    assert set(state.snapshot.layers) == {sample.raw.id}
+    assert state.snapshot.flows == {}
+    assert state.layout.positions[0].x == 10
+    assert state.owned is False
+
+    assert (await service.view_state(EDITOR, view.id)).owned is True
+    assert (await service.view_state(VIEWER, view.id)).owned is False
+
+    access = service.access(STRANGER)
+    assert (access.can_view, access.can_edit) == (False, False)
+    assert service.access(VIEWER).can_view is True
+    assert service.access(EDITOR).can_edit is True
 
 
 async def test_catalog_changed_reaches_bus_subscriber(

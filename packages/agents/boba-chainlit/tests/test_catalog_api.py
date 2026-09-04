@@ -221,7 +221,19 @@ async def test_stale_draft_conflicts_and_rebases(stand: Stand) -> None:
 
 
 async def test_views_layout_and_shares_over_http(stand: Stand) -> None:
+    ops = OperationList(root=(AddLayer(layer=RAW), AddDataset(dataset=ORDERS)))
+
     async with stand.client(_user(EDITOR_ID, "wrt")) as client:
+        draft = await client.post(stand.url(CatalogUrl.DRAFTS), json={"name": "base"})
+        draft_id = draft.json()["id"]
+        await client.post(
+            stand.url(CatalogUrl.DRAFT_OPS, draft_id=draft_id), json=_ops_body(0, ops)
+        )
+        published = await client.post(
+            stand.url(CatalogUrl.DRAFT_PUBLISH, draft_id=draft_id)
+        )
+        assert published.status_code == 200
+
         created = await client.post(
             stand.url(CatalogUrl.VIEWS),
             json={"name": "orders", "dataset_ids": [str(ORDERS.id)], "layer_ids": []},
@@ -249,6 +261,19 @@ async def test_views_layout_and_shares_over_http(stand: Stand) -> None:
         seen = await client.get(stand.url(CatalogUrl.VIEW, view_id=view_id))
         assert seen.status_code == 200
         assert seen.json()["name"] == "orders"
+
+        access = await client.get(stand.url(CatalogUrl.ACCESS))
+        assert access.status_code == 200
+        assert access.json()["can_view"] is False
+        assert access.json()["user_id"] == str(STRANGER_ID)
+
+        state = await client.get(stand.url(CatalogUrl.VIEW_STATE, view_id=view_id))
+        assert state.status_code == 200
+        assert state.json()["owned"] is False
+        assert state.json()["version"] == 1
+        assert list(state.json()["snapshot"]["datasets"]) == [str(ORDERS.id)]
+        assert state.json()["layout"]["positions"][0]["x"] == 1.5
+        assert (await client.get(stand.url(CatalogUrl.SNAPSHOT))).status_code == 403
 
         listed = await client.get(stand.url(CatalogUrl.VIEWS))
         assert [v["id"] for v in listed.json()] == [view_id]

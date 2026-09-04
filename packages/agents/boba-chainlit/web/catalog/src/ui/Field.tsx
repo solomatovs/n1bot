@@ -17,6 +17,8 @@ type Props = {
   row?: boolean;
   /** Контрол перед подписью: чекбокс в строку. */
   controlFirst?: boolean;
+  /** Группа контролов со своими label внутри: обёртка div, а не label. */
+  group?: boolean;
   dataArg?: string | undefined;
   dataPath?: string | undefined;
   children?: ReactNode;
@@ -34,6 +36,7 @@ export function Field({
   invalid = false,
   row = false,
   controlFirst = false,
+  group = false,
   dataArg,
   dataPath,
   children,
@@ -64,7 +67,7 @@ export function Field({
     </>
   );
 
-  if (row && label === undefined) {
+  if (group || (row && label === undefined)) {
     return (
       <div className={classes.join(" ")} data-arg={dataArg} data-path={dataPath}>
         {body}

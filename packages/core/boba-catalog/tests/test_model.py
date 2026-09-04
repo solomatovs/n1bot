@@ -186,6 +186,42 @@ class TestQueries:
             f"column {UUID(int=404)}"
         )
 
+    def test_restricted_by_layer_keeps_inner_flows_only(
+        self, sample: Sample, snapshot: CatalogSnapshot
+    ) -> None:
+        """Слой raw целиком плюс stg_orders: поток raw→stg orders внутри среза,
+        поток customers обрезан, слои и виды загрузки — только задействованные."""
+        sliced = snapshot.restricted([sample.stg_orders.id], [sample.raw.id])
+
+        assert set(sliced.datasets) == {
+            sample.raw_orders.id,
+            sample.raw_customers.id,
+            sample.stg_orders.id,
+        }
+        assert set(sliced.layers) == {sample.raw.id, sample.stg.id}
+        assert set(sliced.flows) == {sample.flow_orders.id}
+        assert set(sliced.load_kinds) == {sample.flow_orders.load.kind_id}
+        assert all(
+            column.dataset_id in sliced.datasets for column in sliced.columns.values()
+        )
+        assert len(list(sliced.columns_of(sample.raw_orders.id))) == 4
+        sliced.check()
+
+    def test_restricted_with_empty_filter_is_the_whole_catalog(
+        self, snapshot: CatalogSnapshot
+    ) -> None:
+        assert snapshot.restricted([], []) is snapshot
+
+    def test_restricted_keeps_an_empty_listed_layer(
+        self, sample: Sample, snapshot: CatalogSnapshot
+    ) -> None:
+        sliced = snapshot.restricted([sample.dm_sales.id], [])
+
+        assert set(sliced.datasets) == {sample.dm_sales.id}
+        assert set(sliced.layers) == {sample.dm.id}
+        assert sliced.flows == {}
+        assert sliced.load_kinds == {}
+
     def test_entity_kind_of_every_entity(self, sample: Sample) -> None:
         assert EntityKind.of(sample.raw) is EntityKind.LAYER
         assert EntityKind.of(sample.raw_orders) is EntityKind.DATASET

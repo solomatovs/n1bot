@@ -22,6 +22,7 @@ from boba.catalog import CatalogSnapshot, OperationList
 from boba.catalog_service.config import CatalogConfig
 from boba.catalog_service.records import (
     AuthorVia,
+    CatalogAccess,
     CatalogRefusalError,
     CatalogRefusalKind,
     Draft,
@@ -36,6 +37,7 @@ from boba.catalog_service.records import (
     ViewLayout,
     ViewShare,
     ViewSpec,
+    ViewState,
 )
 from boba.catalog_service.store import CatalogStore
 from boba.identity.context import Scope, Subject
@@ -174,6 +176,35 @@ class CatalogService:
 
     async def view(self, subject: Subject, view_id: UUID) -> View:
         return await self._accessible_view(subject, view_id)
+
+    async def view_state(self, subject: Subject, view_id: UUID) -> ViewState:
+        """Страница вида для владельца, читателя каталога и того, кому вид
+        расшарен: снимок обрезан по фильтру вида, права на каталог не нужны."""
+        view = await self._accessible_view(subject, view_id)
+
+        snapshot = await self._store.snapshot()
+        version = await self._store.current_version()
+        layout = await self._store.layout_of(view_id)
+
+        owned = False
+        if view.owner_id == subject.user_id:
+            owned = self.can_edit(subject)
+
+        return ViewState(
+            view=view,
+            version=version,
+            snapshot=snapshot.restricted(view.dataset_ids, view.layer_ids),
+            layout=layout,
+            owned=owned,
+        )
+
+    def access(self, subject: Subject) -> CatalogAccess:
+        return CatalogAccess(
+            user_id=subject.user_id,
+            login=subject.login,
+            can_view=self.can_view(subject),
+            can_edit=self.can_edit(subject),
+        )
 
     async def create_view(self, subject: Subject, spec: ViewSpec) -> View:
         self._require_edit(subject)

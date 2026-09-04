@@ -1,3 +1,8 @@
+.field {
+  display: grid;
+  gap: var(--s1);
+}
+
 .field__hint {
   font-family: var(--font-sans);
   font-size: var(--fs-micro);
