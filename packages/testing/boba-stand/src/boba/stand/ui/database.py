@@ -16,6 +16,7 @@ from typing import Any, ClassVar
 from psycopg import sql
 from psycopg.errors import InsufficientPrivilege
 
+from boba.catalog_service import CatalogConfig, CatalogTable
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connections.manifest import ConnectionTypes
@@ -106,6 +107,14 @@ class StandDatabase:
             for table in workflow_tables:
                 await cur.execute(self._drop(workflow.db_schema, table.value))
 
+        catalog = bind(self._built, path="catalog", model=CatalogConfig)
+        async with self._pool() as pool, pool.cursor() as cur:
+            await cur.execute(
+                sql.SQL("drop schema if exists {} cascade").format(
+                    sql.Identifier(catalog.db_schema)
+                )
+            )
+
         await self._forget_studio_profiles()
 
     @staticmethod
@@ -182,6 +191,18 @@ class StandDatabase:
 
         return int(row[0])
 
+    def catalog_portions(self, draft_id: str) -> int:
+        """Сколько порций операций записано в черновик каталога."""
+        catalog = bind(self._built, path="catalog", model=CatalogConfig)
+        query = sql.SQL("select count(*) from {} where draft_id = %s").format(
+            SqlNames.table(catalog.db_schema, CatalogTable.DRAFT_OPS)
+        )
+        row = run_blocking(self._execute(query, (draft_id,)))
+        if row is None:
+            return 0
+
+        return int(row[0])
+
     def llm_settings_of(self, identifier: str) -> dict[str, Any]:
         """Ключ llm из users.meta: тест сверяет, что именно сохранилось."""
         query = sql.SQL(
@@ -208,9 +229,7 @@ class StandDatabase:
             "update {} "
             "set data = jsonb_set(data, '{{kind}}', to_jsonb(%(kind)s::text)) "
             "where name = %(name)s"
-        ).format(
-            SqlNames.table(connections.db_schema, ConnectionTable.CONNECTIONS)
-        )
+        ).format(SqlNames.table(connections.db_schema, ConnectionTable.CONNECTIONS))
 
         async with self._pool() as pool, pool.cursor() as cur:
             await cur.execute(query, {"kind": kind, "name": name})

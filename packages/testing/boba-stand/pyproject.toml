@@ -16,6 +16,7 @@ dependencies = [
     "boba-sandbox==0.0.15.dev6",
     "boba-workflow==0.0.15.dev6",
     "boba-workflow-engine==0.0.15.dev6",
+    "boba-catalog-service==0.0.15.dev6",
     "boba-config==0.0.15.dev6",
     "boba-identity==0.0.15.dev6",
     "boba-messaging==0.0.15.dev6",

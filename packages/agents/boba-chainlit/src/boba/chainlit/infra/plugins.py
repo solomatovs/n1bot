@@ -13,6 +13,8 @@ from boba.chainlit.agent.tools.send_file import build_send_file_tool
 from boba.chainlit.canvas.diagram import build_diagram_tools
 from boba.chainlit.canvas.stream_logs import build_stream_logs_tools
 from boba.chainlit.canvas.tools import CanvasToolConfig, build_canvas_tools
+from boba.chainlit.catalog.tools import CatalogToolConfig, build_catalog_tools
+from boba.chainlit.infra import providers
 from boba.runtime.plugins import CoreTools, ToolLoader, ToolPlugin
 from boba.runtime.refs import RuntimeRefs
 from boba.toolkit.launcher import LauncherFactory
@@ -59,6 +61,13 @@ class ChatPlugins:
             build=cls._canvas,
             sandboxed=False,
         )
+        table["catalog"] = ToolPlugin(
+            section="catalog",
+            chat_only=True,
+            config_model=CatalogToolConfig,
+            build=cls._catalog,
+            sandboxed=False,
+        )
         table["stream_logs"] = ToolPlugin(
             section="stream_logs",
             build=cls._stream_logs,
@@ -78,6 +87,12 @@ class ChatPlugins:
     @staticmethod
     def _canvas(cfg: CanvasToolConfig, launchers: LauncherFactory) -> list[BaseTool]:
         return build_canvas_tools(cfg)
+
+    @staticmethod
+    def _catalog(cfg: CatalogToolConfig, launchers: LauncherFactory) -> list[BaseTool]:
+        return build_catalog_tools(
+            cfg, providers.catalog_service_ref, providers.chainlit_url_prefix
+        )
 
     @staticmethod
     def _stream_logs(cfg: None, launchers: LauncherFactory) -> list[BaseTool]:
