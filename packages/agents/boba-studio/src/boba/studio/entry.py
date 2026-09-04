@@ -29,13 +29,13 @@ from boba.runtime.config import (
 )
 from boba.runtime.di import Container
 from boba.runtime.plugins import CoreTools
+from boba.runtime.spa import BuiltSpa, DevSpa, SpaMount
 from boba.runtime.users import UsersTable
 from boba.sandbox.zygote import ZygoteRegistry
 from boba.studio.api.app import ApiAccess, ApiApp
 from boba.studio.api.signin import PageUrls, SignInWiring
 from boba.studio.api.urls import ApiVersion, SignInUrl
 from boba.studio.api.workflow_socket import StudioSessions
-from boba.studio.page import WorkflowDevPage, WorkflowPage
 
 __all__ = ["StudioEntry", "StudioHost"]
 
@@ -129,11 +129,18 @@ class StudioHost:
         )
 
     @staticmethod
-    def page_of(studio: StudioConfig) -> WorkflowPage | WorkflowDevPage:
+    def page_of(studio: StudioConfig) -> BuiltSpa | DevSpa:
+        """Страница workflow под {prefix}/workflow: сборка из dist или прокси vite."""
+        mount = SpaMount.at_root(studio.url_prefix, StudioPath.PAGE.lstrip("/"))
+        config = {
+            "prefix": studio.url_prefix,
+            "apiPrefix": studio.api_prefix(),
+            "socketPath": studio.socket_path(),
+        }
         if isinstance(studio.page, DevPage):
-            return WorkflowDevPage(studio.page.url, studio.url_prefix, studio)
+            return DevSpa(studio.page.url, mount, config)
 
-        return WorkflowPage(studio.dist, studio.url_prefix, studio)
+        return BuiltSpa(studio.dist, mount, config)
 
     @classmethod
     @asynccontextmanager
