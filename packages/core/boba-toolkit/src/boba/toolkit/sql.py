@@ -1,11 +1,9 @@
-"""Общее у SQL-инструментов: whitelist профилей, лимиты, каталожный запрос.
+"""Общее у SQL-инструментов: окно выдачи, лимиты секции, каталожный запрос.
 
-Коннектор (postgres, clickhouse, ...) параметризует профиль своим типом
-соединения; исполнение и показ живут в самих функциях инструментов.
+Профиль соединения инструмент получает параметром (маркер UserConnection),
+поэтому здесь остались только границы выдачи и сборка страницы результата.
 
-Ошибки:
-UnknownConnectionError — имя подключения вне whitelist'а; текст готов
-    для пользователя.
+Ошибки: своих не выпускает.
 """
 
 from __future__ import annotations
@@ -22,7 +20,6 @@ from boba.toolkit.result import ResultTooLargeError, TableResult
 
 __all__ = [
     "CatalogQuery",
-    "ConnectionName",
     "MaxChars",
     "MaxRows",
     "RowBudget",
@@ -30,8 +27,7 @@ __all__ = [
     "RowPage",
     "RowWindow",
     "SqlErrorKind",
-    "SqlProfiles",
-    "UnknownConnectionError",
+    "SqlLimits",
 ]
 
 
@@ -43,9 +39,6 @@ class SqlErrorKind(StrEnum):
     SQL_FAILED = "sql_failed"
     RESULT_TOO_LARGE = "result_too_large"
 
-
-ConnectionName = Annotated[str, Field(min_length=1, description="Имя подключения")]
-"""LLM-аргумент connection_name: выбор БД по whitelist'у профилей."""
 
 RowOffset = Annotated[
     int,
@@ -209,40 +202,18 @@ class RowPage:
         return f"{shown}; more rows available, next offset={last}"
 
 
-TConn = TypeVar("TConn", bound=BaseModel)
-"""Профиль соединения коннектора: PostgresConfig, ClickHouseConfig, ..."""
-
 TParams = TypeVar("TParams")
 """Стиль параметров драйвера: позиционный кортеж psycopg, именованный dict ch."""
 
 
-class UnknownConnectionError(RuntimeError):
-    """Имя подключения не значится в whitelist'е инструмента."""
-
-
-class SqlProfiles(BaseModel, Generic[TConn]):
-    """Whitelist профилей подключения и потолки выдачи SQL-инструмента."""
+class SqlLimits(BaseModel):
+    """Потолки выдачи SQL-инструмента; секцию задаёт наследник в плагине."""
 
     model_config = ConfigDict(extra="ignore")
 
     SECTION: ClassVar[str]
     """Секция конфига инструмента (tool.pg, tool.ch); подкласс обязан задать."""
 
-    profiles: dict[str, TConn] = Field(
-        default_factory=dict,
-        description=(
-            "dict[connection_name, профиль соединения]. Ключ — значение tool-arg "
-            "`connection_name`, по нему LLM выбирает БД. Приложение собирает "
-            "whitelist из соединений пользователя на каждый вызов."
-        ),
-    )
-    names: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Имена соединений, доступных пользователю, без профилей: видны в "
-            "connection_list, а профиль приезжает только у выбранного соединения."
-        ),
-    )
     max_rows: int = Field(
         default=100,
         ge=1,
@@ -260,29 +231,6 @@ class SqlProfiles(BaseModel, Generic[TConn]):
             "окном (list_tables, describe_table) сюда не смотрят."
         ),
     )
-
-    def targets(self) -> list[str]:
-        known = set(self.names)
-        known.update(self.profiles)
-        return sorted(known)
-
-    def targets_table(self) -> TableResult:
-        """Выдача connection_list: строка на каждое имя подключения."""
-        rows: list[dict[str, Any]] = []
-        for target in self.targets():
-            rows.append({"connection_name": target})
-
-        return TableResult(rows=rows)
-
-    def resolve(self, connection_name: str) -> TConn:
-        conn = self.profiles.get(connection_name)
-        if conn is None:
-            msg = (
-                f"{type(self).SECTION}: connection_name {connection_name!r} is not "
-                f"in the whitelist (allowed={self.targets()})"
-            )
-            raise UnknownConnectionError(msg)
-        return conn
 
 
 @dataclass(frozen=True)

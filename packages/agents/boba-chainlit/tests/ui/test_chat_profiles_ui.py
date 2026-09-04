@@ -31,9 +31,13 @@ STAND_TOOLS = frozenset(
         "canvas_open",
         "stream_logs_usage",
         "stream_logs_cleanup",
+        "pipeline_catalog",
+        "pipeline_run",
+        "connection_list",
     }
 )
-"""Инструменты, собранные стендом: песочные секции выключены StandConfig."""
+"""Инструменты, собранные стендом: песочные секции выключены StandConfig,
+встроенные (конвейер, каталог соединений) остаются."""
 
 DEV_ROLE_TOOLS = frozenset(
     {"diagram_save", "send_file", "stream_logs_usage", "stream_logs_cleanup"}

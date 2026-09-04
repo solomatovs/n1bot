@@ -32,6 +32,7 @@
 |---|---|---|---|
 | LLM-аргумент | `sql: Annotated[str, Field(...)]` | модель | флаг argv `--sql "..."` |
 | Injected-конфиг | `cfg: Annotated[MyConfig, Injected]` | приложение из toml | JSON отдельным дескриптором `--injected-fd` |
+| Соединение пользователя | `connection: Annotated[PgConn, UserConnection]` | хост по имени, которое назвала модель | тем же каналом конфига |
 | Порт данных | `out: Annotated[Outbound[...], Injected]` | гость на вызове | канал кадров, см. раздел 6 |
 
 Три правила, которые объясняют почти всё дальнейшее:
@@ -47,13 +48,13 @@
 ### 1.2. Что происходит при вызове
 
 ```
-LLM  ──tool_call {sql: "...", connection_name: "main"}──▶  приложение (хост)
+LLM  ──tool_call {sql: "...", connection: "main"}──▶  приложение (хост)
                                                               │
         обвязки на хосте, снаружи внутрь:                     │
         1. доступ по ролям, журнал, отмена                    │
         2. InjectedConfig   — статический конфиг секции в kwargs["cfg"]
         3. ServiceTickets   — keytab статического конфига → билет вызова
-        4. UserConnections  — соединения пользователя → kwargs["cfg"]
+        4. UserConnections  — профиль соединения → kwargs["connection"]
         5. ToolProcessWrap  — kwargs → argv + JSON injected
                                                               │
                                         launcher ([tool_launcher] provider)
@@ -294,24 +295,6 @@ async def wordcount(
 | `cfg` | есть маркер `Injected` | хост читает `SECTION` модели, зовёт `bind(config, "tool.wordcount", WordCountConfig)`, pydantic превращает toml в модель | один JSON-объект `{"cfg": {...}}`, ключ равен имени параметра, канал `--injected-fd` |
 
 Вызов LLM `wordcount(text="a b a")` хост (`ToolArgv.render`) превращает в:
-### Шаг 7. Что находится в cfg и откуда берётся каждый параметр
-
-Команда тела собирается из подписи функции. У `wordcount` два параметра,
-и каждый приезжает своим путём:
-
-```python
-async def wordcount(
-    text: Annotated[str, Field(...)],            # LLM-аргумент  → флаг argv  --text
-    cfg:  Annotated[WordCountConfig, Injected],  # injected      → JSON-канал, ключ "cfg"
-)
-```
-
-| Параметр подписи | Признак | Откуда значение | Как едет в тело |
-|---|---|---|---|
-| `text` | нет маркера `Injected` | его придумала LLM в tool_call (или разработчик при ручном запуске) | флаг `--text "..."`: имя параметра, `_` → `-` |
-| `cfg` | есть маркер `Injected` | хост читает `SECTION` модели, зовёт `bind(config, "tool.wordcount", WordCountConfig)`, pydantic превращает toml в модель | один JSON-объект `{"cfg": {...}}`, ключ равен имени параметра, канал `--injected-fd` |
-
-Вызов LLM `wordcount(text="a b a")` хост (`ToolArgv.render`) превращает в:
 
 ```
 argv:      python3 -m boba.tool.wordcount.tools wordcount --text "a b a"
@@ -418,27 +401,6 @@ injected-параметр `cfg` (файл с ключом `"cfg"` и полям�
 Инструмент `weather`: ходит во внешний API по ключу. Ключ лежит в конфиге
 и обязан доехать до тела, но не попасть ни в argv, ни в лог, ни в дамп.
 
-### 3.1. Как секрет живёт в модели и что сделать, чтобы он доехал до тела
-
-Секретное поле объявляется типом `SecretStr`. Сам по себе он только
-маскирует: `repr`, `model_dump`, трейсбек показывают `**********`. Чтобы
-секрет **раскрылся** при отправке в тело и **собрался обратно** в
-`SecretStr` на его стороне, нужно ровно три шага:
-
-1. **Объявить поле типом `SecretStr`**, а не `str`:
-   `api_key: SecretStr = Field(min_length=1)`. На любой глубине: во
-   вложенной модели, в `dict[str, SecretStr]`, в списке моделей.
-2. **Унаследовать модель конфига от `SecretRevealing`**
-   (`boba.toolkit.types`). Это даёт метод `revealed()`, который хост зовёт
-   вместо обычного дампа: он дампит модель с контекстом
-   `{"reveal_secrets": True}` и обходом заменяет каждый голый `SecretStr`
-   открытой строкой (`SecretReveal`). Никаких сериализаторов писать не
-   нужно.
-3. **В теле читать секрет только через `get_secret_value()`** в момент
-   использования (заголовок, параметр `connect`), не сохраняя строку в
-   переменные и не подставляя её в сообщения об ошибках.
-
-Так это выглядит целиком:
 ### 3.1. Как секрет живёт в модели и что сделать, чтобы он доехал до тела
 
 Секретное поле объявляется типом `SecretStr`. Сам по себе он только
@@ -631,7 +593,7 @@ api_key  = "${site.weather_api_key}"
 Как их писать — раздел 4.2.
 
 Живые примеры: `packages/tools/boba-tool-knowledge/src/boba/tool/kb/confluence/tools.py`
-(`ConfluenceToolsConfig` с `HttpProfile`), `kb/tools.py` (`KbToolConfig` с
+(`ConfluenceToolsConfig` с `HttpConnection`), `kb/tools.py` (`KbToolConfig` с
 `connection: PostgresConfig` и `@warmup`), стендовый
 `packages/testing/boba-stand/src/boba/stand/fake_toolmod.py` (`FakeConfig`:
 голый `SecretStr` под `SecretRevealing`, без сериализаторов). Тесты
@@ -642,35 +604,32 @@ api_key  = "${site.weather_api_key}"
 
 ---
 
-## 4. Пример 3. Инструмент с connection пользователя
-## 4. Пример 3. Инструмент с connection пользователя
+## 4. Пример 3. Инструмент с соединением пользователя
 
-Connection лежат в таблице, которые выдаются пользователям или ролям,
-и на каждый tool call, хост собирает whitelist доступных connection.
-Connection лежат в таблице, которые выдаются пользователям или ролям,
-и на каждый tool call, хост собирает whitelist доступных connection.
+Соединения лежат в таблице и выдаются пользователям и ролям. Какое из них
+доступно этому вызову, решает хост: инструмент только объявляет, что ему
+нужно соединение, и получает готовый профиль.
 
-### 4.1. Откуда берутся connection пользователя
-### 4.1. Откуда берутся connection пользователя
+### 4.1. Откуда берутся соединения пользователя
 
 Таблицы `connections` (id, name, data jsonb с зашифрованным профилем),
-`roles`, `grants` содержат логику доступных connection для пользователей и ролей.
-Секретная часть connection шифруется `SecretCipher` ключом из конфига - 
-`[connections] encryption_key`
+`roles` и `grants` описывают, кому что выдано. Секретная часть профиля
+шифруется `SecretCipher` ключом из секции `[connections]` конфига.
 
-Каждый connection должен иметь поле **kind** - дискриминатор типа connection'а.
-По полю kind реестр типов (`ConnectionTypes`, entry points `boba.connections`) находит модель, которую натягивают на содержимое connection. 
-Поэтому у tool с connection всегда две части:
+Каждый профиль несёт поле **kind** — дискриминатор типа. По нему реестр
+`ConnectionTypes` (entry points `boba.connections`) находит модель, в
+которую разбирается содержимое строки. Поэтому у инструмента с соединением
+всегда две части:
 
-- **тип connection**'а: модель профиля и проба, entry point `boba.connections`
-  — раздел 4.2;
+- **тип соединения**: модель профиля и проба, entry point `boba.connections`
+  — раздел 4.3;
 - **tool-плагин**: инструменты, которые на тип ссылаются, entry point
-  `boba.tools` — разделы 4.3–4.6.
+  `boba.tools` — разделы 4.4–4.6.
 
-Части разные, а вот пакетов может быть один или два: это ваш выбор, и
-следующий раздел объясняет, как выбрать.
+Части разные, а пакетов может быть один или два: это ваш выбор, и следующий
+раздел объясняет, как выбрать.
 
-### 4.1.1. Один пакет или два
+### 4.2. Один пакет или два
 
 Раскладка ни на что в рантайме не влияет: реестры типов и инструментов
 независимы, и приложение находит оба entry point у любого установленного
@@ -699,7 +658,7 @@ packages/tools/boba-tool-redis/
     src/boba/tool/redis/
         profile.py       # модель профиля
         client.py        # клиент
-        connection.py    # MANIFEST типа   -> boba.connections
+        connection.py    # MANIFEST типа    -> boba.connections
         tools.py         # инструменты
         plugin.py        # MANIFEST плагина -> boba.tools
 ```
@@ -722,24 +681,19 @@ redis = "boba.tool.redis.plugin:MANIFEST"
 
 Имя entry point в первой группе обязано совпадать с `kind` профиля, во
 второй — быть идентификатором секции (`tool.redis`, файл
-`conf/plugins/redis.toml`). Совпадение имён между группами — совпадение
-случайное и ни на что не влияет.
+`conf/plugins/redis.toml`).
 
 **Что важно учесть в варианте B.** Модуль с манифестом типа импортируется
 при старте приложения: `ConnectionTypes.discover()` зовёт `entry.load()` без
 обработки ошибок, и неудачный импорт роняет запуск. Поэтому всё, что этот
-модуль тянет на уровне модуля, обязано лежать в обычных зависимостях
-пакета, а не в `payload`. Клиент базы сюда попадает неизбежно: проба ходит в
-систему по-настоящему, значит библиотека нужна и приложению, а не только
-телу в песочнице. Если клиент тяжёлый, это заметная плата за компактность.
+модуль тянет на уровне модуля, обязано лежать в обычных зависимостях пакета,
+а не в `payload`. Клиент базы сюда попадает неизбежно: проба ходит в систему
+по-настоящему, значит библиотека нужна и приложению.
 
 Второе следствие: тип начинает жить и умирать вместе с плагином. Приложения
-ставят tool-пакеты дополнительной группой `tools` (она объявлена и у
-chainlit, и у studio), поэтому entry point виден. Но сборка без этой группы
-останется и без типа, а строки таких соединений в списках получат пометку
-«type not installed».
-
-**Как выбрать.**
+ставят tool-пакеты дополнительной группой `tools`, поэтому entry point виден.
+Но сборка без этой группы останется и без типа, а строки таких соединений
+получат пометку «type not installed».
 
 | Берите один пакет | Берите два пакета |
 |---|---|
@@ -750,114 +704,10 @@ chainlit, и у studio), поэтому entry point виден. Но сборк�
 
 Перейти с одного пакета на два потом несложно: код профиля и пробы
 переезжает в новый пакет, entry point `boba.connections` — вместе с ним,
-а tool-пакет получает зависимость. Значение `kind` при этом не меняется,
-поэтому строки в базе править не нужно.
+а tool-пакет получает зависимость. Значение `kind` не меняется, поэтому
+строки в базе править не нужно.
 
-Дальше в примере показан вариант A как более общий; при варианте B меняются
-только пути файлов и `pyproject`, содержимое остаётся тем же.
-`roles`, `grants` содержат логику доступных connection для пользователей и ролей.
-Секретная часть connection шифруется `SecretCipher` ключом из конфига - 
-`[connections] encryption_key`
-
-Каждый connection должен иметь поле **kind** - дискриминатор типа connection'а.
-По полю kind реестр типов (`ConnectionTypes`, entry points `boba.connections`) находит модель, которую натягивают на содержимое connection. 
-Поэтому у tool с connection всегда две части:
-
-- **тип connection**'а: модель профиля и проба, entry point `boba.connections`
-  — раздел 4.2;
-- **tool-плагин**: инструменты, которые на тип ссылаются, entry point
-  `boba.tools` — разделы 4.3–4.6.
-
-Части разные, а вот пакетов может быть один или два: это ваш выбор, и
-следующий раздел объясняет, как выбрать.
-
-### 4.1.1. Один пакет или два
-
-Раскладка ни на что в рантайме не влияет: реестры типов и инструментов
-независимы, и приложение находит оба entry point у любого установленного
-пакета. Разница только в том, кто и что вынужден ставить себе.
-
-**Вариант A: два пакета.** Тип живёт в инфра-пакете (`packages/infra/db/…`,
-`packages/infra/transport/…`), инструменты — в `packages/tools/…`, второй
-зависит от первого. Так сделаны postgres, clickhouse и web.
-
-```
-packages/infra/db/boba-db-redis/         # тип: профиль + клиент + проба
-    pyproject.toml                       # [project.entry-points."boba.connections"]
-    src/boba/db/redis/{profile,client,connection}.py
-
-packages/tools/boba-tool-redis/          # инструменты поверх типа
-    pyproject.toml                       # [project.entry-points."boba.tools"]
-                                         # dependencies = ["boba-db-redis==…"]
-    src/boba/tool/redis/{tools,plugin}.py
-```
-
-**Вариант B: один пакет.** Пакет объявляет оба entry point сразу:
-
-```
-packages/tools/boba-tool-redis/
-    pyproject.toml
-    src/boba/tool/redis/
-        profile.py       # модель профиля
-        client.py        # клиент
-        connection.py    # MANIFEST типа   -> boba.connections
-        tools.py         # инструменты
-        plugin.py        # MANIFEST плагина -> boba.tools
-```
-
-```toml
-[project]
-name = "boba-tool-redis"
-dependencies = [
-    "boba-toolkit==0.0.15.dev6",
-    "boba-connections==0.0.15.dev6",
-    "redis>=5",
-]
-
-[project.entry-points."boba.connections"]
-redis = "boba.tool.redis.connection:MANIFEST"
-
-[project.entry-points."boba.tools"]
-redis = "boba.tool.redis.plugin:MANIFEST"
-```
-
-Имя entry point в первой группе обязано совпадать с `kind` профиля, во
-второй — быть идентификатором секции (`tool.redis`, файл
-`conf/plugins/redis.toml`). Совпадение имён между группами — совпадение
-случайное и ни на что не влияет.
-
-**Что важно учесть в варианте B.** Модуль с манифестом типа импортируется
-при старте приложения: `ConnectionTypes.discover()` зовёт `entry.load()` без
-обработки ошибок, и неудачный импорт роняет запуск. Поэтому всё, что этот
-модуль тянет на уровне модуля, обязано лежать в обычных зависимостях
-пакета, а не в `payload`. Клиент базы сюда попадает неизбежно: проба ходит в
-систему по-настоящему, значит библиотека нужна и приложению, а не только
-телу в песочнице. Если клиент тяжёлый, это заметная плата за компактность.
-
-Второе следствие: тип начинает жить и умирать вместе с плагином. Приложения
-ставят tool-пакеты дополнительной группой `tools` (она объявлена и у
-chainlit, и у studio), поэтому entry point виден. Но сборка без этой группы
-останется и без типа, а строки таких соединений в списках получат пометку
-«type not installed».
-
-**Как выбрать.**
-
-| Берите один пакет | Берите два пакета |
-|---|---|
-| типом пользуется только этот плагин | типом пользуется несколько плагинов |
-| клиент лёгкий, приложению его не жалко | клиент тяжёлый и приложению не нужен |
-| инфра-пакета для этой системы ещё нет | инфра-пакет уже есть — добавляйте тип туда |
-| | тип нужен studio отдельно от инструментов |
-
-Перейти с одного пакета на два потом несложно: код профиля и пробы
-переезжает в новый пакет, entry point `boba.connections` — вместе с ним,
-а tool-пакет получает зависимость. Значение `kind` при этом не меняется,
-поэтому строки в базе править не нужно.
-
-Дальше в примере показан вариант A как более общий; при варианте B меняются
-только пути файлов и `pyproject`, содержимое остаётся тем же.
-
-### 4.2. Тип соединения: профиль, проба, entry point
+### 4.3. Тип соединения: профиль, проба, entry point
 
 Пакет `packages/infra/db/boba-db-redis`. Если инфра-пакет для системы уже
 есть — добавляйте туда.
@@ -873,10 +723,26 @@ from typing import Literal, Self
 
 from pydantic import Field, SecretStr
 
-from boba.connections.base import ConnectionProfileBase
+from boba.connections.base import ClientIdentity, ConnectionProfileBase
 
 
-class RedisConfig(ConnectionProfileBase):
+class ClientName:
+    """Подпись сессии для redis: CLIENT SETNAME не принимает пробелы и длинное."""
+
+    MAX_BYTES: ClassVar[int] = 63
+    SEPARATOR: ClassVar[str] = ":"
+
+    @classmethod
+    def of(cls, client: ClientIdentity) -> str:
+        joined = cls.SEPARATOR.join((client.application, client.login, client.tool))
+        raw = joined.encode("utf-8")
+        if len(raw) <= cls.MAX_BYTES:
+            return joined
+
+        return raw[: cls.MAX_BYTES].decode("utf-8", errors="ignore")
+
+
+class RedisConnection(ConnectionProfileBase):
     """Подключение к redis: адрес, база и пароль."""
 
     kind: Literal["redis"] = Field(
@@ -893,36 +759,32 @@ class RedisConfig(ConnectionProfileBase):
     def trace(self) -> str:
         return f"auth=password host={self.host} db={self.db}"
 
-    def labeled(self, label: str) -> Self:
-        return self.model_copy(update={"client_name": label})
+    def labeled(self, client: ClientIdentity) -> Self:
+        return self.model_copy(update={"client_name": ClientName.of(client)})
 ```
 
 Что и зачем:
 
 - `kind: Literal["redis"]` — по нему строка из базы находит свою модель.
   Хранится в jsonb, менять потом нельзя.
+- `description` наследуется от базового класса: это текст, который читает
+  модель в `connection_list`, выбирая соединение под задачу пользователя.
+  Заполняет его администратор на странице соединений.
 - `trace()` обязателен: строка журнала «под кем идём». Пишется по профилю,
   который реально уедет в тело, поэтому у kerberos-строк здесь виден билет
   вызова, а не keytab.
-- `labeled(label)` — если сервер умеет подписывать сессию именем клиента
-  (`application_name` у postgres, `CLIENT SETNAME` у redis). Хост подставит
-  `boba:<логин>:<инструмент>`, чтобы DBA видел, кто пришёл.
-- `password: SecretStr` — и больше ничего: в базе поле шифруется само
-  (`SecretCipher` обходит значения), а в тело раскрывается обходом
-  `SecretReveal` из конфига инструмента (раздел 3.1). Профиль наследовать
-  от `SecretRevealing` не нужно: контекст приходит снаружи, от модели
-  секции.
-- `password: SecretStr` — и больше ничего: в базе поле шифруется само
-  (`SecretCipher` обходит значения), а в тело раскрывается обходом
-  `SecretReveal` из конфига инструмента (раздел 3.1). Профиль наследовать
-  от `SecretRevealing` не нужно: контекст приходит снаружи, от модели
-  секции.
+- `labeled(client)` — подпись сессии, если сервер такое умеет. Хост передаёт
+  только данные (`ClientIdentity`: приложение, логин, инструмент), а как их
+  отрендерить и куда положить, решает профиль. У postgres это
+  `application_name`, у clickhouse — `client_name`, и предел длины у каждого
+  свой. Сервер без такого поля метод не переопределяет.
+- `password: SecretStr` — и больше ничего: в базе поле шифруется само, а в
+  тело раскрывается обходом `SecretReveal` (раздел 3.1).
 - Kerberos. Если тип умеет kerberos, реализуйте ещё три метода базового
-  класса. `kerberos_section()` — где в профиле лежит секция
-  (`self.auth`, если это `KerberosAuthBase`); `service_name()` — SPN в
-  форме `service@host`, к которому выпускать билет; `with_call_ticket(ticket)`
-  — копия профиля с `TicketAuth` на месте секции. Без них хост при виде
-  kerberos-секции упадёт `ConnectionTypeError`. Живой образец —
+  класса: `kerberos_section()` — где в профиле лежит секция;
+  `service_name()` — SPN в форме `service@host`, к которому выпускать билет;
+  `with_call_ticket(ticket)` — копия профиля с `TicketAuth` на месте секции.
+  Хост типов не разбирает: он зовёт эти методы. Живой образец —
   `packages/infra/db/boba-db-postgres/src/boba/db/postgres/profile/config.py`.
   Обратная сторона в теле: `ClientCredentials.of(auth)` и `applied_async()`
   вокруг открытия соединения, как в `boba.db.postgres.payload`.
@@ -936,13 +798,13 @@ class RedisConfig(ConnectionProfileBase):
 from boba.connections.base import ConnectionProfileBase, ConnectionTypeError
 from boba.connections.manifest import ConnectionTypeManifest
 from boba.db.redis.client import open_redis
-from boba.db.redis.profile import RedisConfig
+from boba.db.redis.profile import RedisConnection
 
 __all__ = ["MANIFEST"]
 
 
 async def _probe(profile: ConnectionProfileBase) -> str:
-    if not isinstance(profile, RedisConfig):
+    if not isinstance(profile, RedisConnection):
         raise ConnectionTypeError(f"redis probe got a {profile.kind!r} profile")
 
     client = await open_redis(profile)
@@ -954,7 +816,7 @@ async def _probe(profile: ConnectionProfileBase) -> str:
     return f"PONG {pong}"
 
 
-MANIFEST = ConnectionTypeManifest(kind="redis", profile=RedisConfig, probe=_probe)
+MANIFEST = ConnectionTypeManifest(kind="redis", profile=RedisConnection, probe=_probe)
 ```
 
 Исключения пробы глотать не нужно: граница превратит их в
@@ -975,180 +837,65 @@ redis = "boba.db.redis.connection:MANIFEST"
 ```
 
 Страница «Соединения» покажет тип сама: форма строится из json-schema
-реестра. Если пакет типа потом удалить, строки его kind в списках
-помечаются «type not installed», использование падает
-`UnknownConnectionKindError`.
+реестра. Если пакет типа удалить, строки его вида в списках помечаются
+«type not installed», а использование падает `UnknownConnectionKindError`.
 
-### 4.3. Конфиг инструмента: подкласс `SqlProfiles` или `WebConnection`
+### 4.4. Параметр-соединение в инструменте
 
-Сначала о том, зачем этот базовый класс вообще нужен, потому что вопрос
-законный: секреты уже умеет `SecretStr`, конфиг уже собирается из toml, что
-ещё?
-
-`SecretStr` и `SqlProfiles` отвечают на разные вопросы. `SecretStr` — на
-вопрос «как значение доедет до тела и не утечёт по дороге». `SqlProfiles` —
-на вопрос «откуда вообще возьмётся профиль на этот конкретный вызов». В
-обычном инструменте профиль берётся из toml и одинаков для всех
-пользователей. В инструменте с соединениями пользователя его в toml нет
-вовсе: он приходит из таблицы, зависит от того, кто сейчас пишет в чат, и
-собирается заново на каждый вызов. `SqlProfiles` — это способ сказать хосту:
-«вот сюда клади соединения пользователя».
+Соединение объявляется прямо в подписи: тип параметра — модель профиля,
+маркер `UserConnection` рядом с ним.
 
 ```python
-class RedisToolConfig(SecretRevealing, SqlProfiles[RedisConfig]):
-    """Whitelist соединений и лимиты redis-инструментов; [tool.redis]."""
+RedisTarget = Annotated[RedisConnection, UserConnection]
+```
+
+У такого параметра две ипостаси:
+
+- **для модели** это строка: имя соединения, которое она выбирает по выдаче
+  `connection_list`. Схему правит хост при загрузке инструментов, поэтому в
+  описании поля модель видит подсказку про `connection_list`, а не модель
+  профиля;
+- **для тела** это готовый профиль с кредами внутри.
+
+Ничего наследовать, регистрировать и перечислять не нужно: вид соединения
+хост выводит из типа параметра через реестр типов. Параметров может быть
+несколько — например источник и приёмник перекачки:
+
+```python
+@tool
+async def redis_copy(
+    source: Annotated[RedisConnection, UserConnection],
+    target: Annotated[RedisConnection, UserConnection],
+    pattern: Annotated[str, Field(description="Шаблон ключей")],
+) -> tuple[str, ToolResult]: ...
+```
+
+### 4.5. Конфиг секции рядом с соединением
+
+Секция плагина остаётся обычным injected-конфигом: в ней живут потолки
+выдачи и прочие настройки администратора. Соединений в ней больше нет.
+
+```python
+class RedisToolConfig(SecretRevealing, SqlLimits):
+    """Лимиты выдачи redis-инструментов; [tool.redis]."""
 
     SECTION: ClassVar[str] = "tool.redis"
 ```
 
-Дальше — что конкретно даёт наследование, по кейсам.
+`SqlLimits` из `boba.toolkit.sql` даёт `max_rows` и `max_bytes` — общие
+границы выдачи SQL-инструментов. Если ваши инструменты не про SQL, берите
+обычную модель с `SECTION`, как в разделе 2.
 
-**Кейс 1. Без него подстановка не включится вообще.** На загрузке хост
-перебирает injected-параметры инструментов и вешает обвязку только на те,
-чья модель прошла проверку:
-
-```python
-@staticmethod
-def _accepts(base: object) -> bool:
-    return isinstance(base, SqlProfiles | WebConnection)
-```
-
-Это `isinstance`, а не «есть ли поле profiles». Своя модель с точно таким же
-полем проверку не пройдёт, обвязка не встанет, и инструмент будет запускаться
-со статическим конфигом из toml. Диагностировать это неприятно: ошибок нет,
-логов нет, просто `cfg.profiles` всегда пустой и любое имя соединения даёт
-«unknown target». Наследование здесь — не украшение, а объявление намерения,
-которое хост читает.
-
-**Кейс 2. Фиксированный контракт полей.** Хост не вызывает у вашей модели
-никаких методов, он делает копию с подменой полей по именам:
+### 4.6. Тела
 
 ```python
-update = {"profiles": shipped, "names": sorted(whitelist.profiles)}
-if isinstance(self._base, WebConnection):
-    update["hosts"] = self._hosts(whitelist.profiles)
-
-return self._base.model_copy(update=update)
-```
-
-Имена `profiles`, `names`, `hosts` и их типы — часть контракта. Базовый класс
-существует ровно для того, чтобы этот контракт был объявлен в одном месте, а
-не переписывался в каждом плагине по памяти. Опечались в имени поля — и
-подстановка снова «работает», но данные уходят в никуда.
-
-**Кейс 3. Готовый разбор запроса в теле с внятной ошибкой.** Тело пишет одну
-строку:
-
-```python
-connection = cfg.resolve(connection_name)
-```
-
-За ней стоит поведение, которое иначе пришлось бы повторять в каждом
-инструменте: если имени нет, поднимается `UnknownConnectionError` с текстом
-`connection_name 'cache' is not in the whitelist (allowed=['main', 'reports'])`.
-Этот текст уезжает в чат как ожидаемый отказ, и модель видит список
-допустимых имён — то есть у неё есть шанс исправиться и повторить вызов. Если
-писать самому, получится `KeyError` без подсказки, а это уже дефект: модель
-не поймёт, что делать.
-
-**Кейс 4. Разделение «что видно» и «что дано».** Поля два, и они не
-дублируют друг друга: в `profiles` лежит ровно одно соединение, которое вызов
-назвал, с паролем внутри; в `names` — все имена, доступные пользователю, без
-профилей. Метод `targets_table()` собирает из них выдачу для
-`*_connection_list`, и модель видит полный список, хотя в песочницу уехал
-единственный секрет. Это тот самый принцип наименьших привилегий, и он
-реализован в базовом классе, а не в каждом плагине.
-
-**Кейс 5. Типизация.** `SqlProfiles` параметризован типом профиля, поэтому
-`cfg.resolve(name)` возвращает `RedisConfig`, а не `Any`. Дальше pyright
-проверяет, что вы передаёте в клиент именно те поля, которые у профиля есть.
-С самодельным `dict[str, Any]` проверка типов заканчивается на первой же
-строке тела.
-
-**Кейс 6. Специфика web.** У `WebConnection` та же схема плюс третье поле
-`hosts` и метод `resolve_for(connection_name, url)`, который проверяет, что
-хост запрошенного URL покрывается выбранным соединением. Проверка нужна с
-двух сторон: хост делает её до выпуска билета, тело — повторно, уже перед
-запросом. В базовом классе она написана один раз.
-
-**Когда этот базовый класс не нужен.** Если соединение задаёт администратор в
-конфиге и оно одинаково для всех, брать `SqlProfiles` не надо — это лишняя
-сущность. Так устроен поиск по базе знаний: соединение приходит ссылкой на
-секцию, а конфиг — обычная модель.
-
-```toml
-# conf/plugins/kb.toml
-connection = "${postgres}"
-```
-
-```python
-class KbToolConfig(SecretRevealing, PostgresKnowledgeBaseConfig):
-    """Конфиг kb-поиска: подключение, таблицы, эмбеддер; секция [tool.kb]."""
-
-    SECTION: ClassVar[str] = "tool.kb"
-```
-
-Здесь `SecretRevealing` есть (секреты профиля должны доехать), а `SqlProfiles`
-нет (выбирать пользователю нечего). Аргумента `connection_name` у таких
-инструментов тоже нет.
-
-Коротко, в одной таблице:
-
-| Задача | Кто решает |
-|---|---|
-| секрет доедет до тела и не утечёт в argv и логи | `SecretStr` + `SecretRevealing` |
-| в конфиг попадут соединения именно этого пользователя | наследование `SqlProfiles` / `WebConnection` |
-| тело достанет профиль по имени и внятно откажет | `resolve()` из базового класса |
-| модель узнает список доступных имён | `names` + `targets_table()` |
-| keytab не уедет наружу, вместо него поедет билет вызова | обвязка кредов (раздел 4.9) |
-
-Наследование `SecretRevealing` идёт первым в списке баз: оно включает
-раскрытие секретов при отправке в тело (раздел 3.1). Профили лежат внутри
-как обычные поля, поэтому их пароли раскрываются тем же обходом на любой
-глубине: `profiles["cache"].password`, `profiles["main"].auth.password`,
-токен внутри `HttpProfile`.
-
-Готовые профили других пакетов вкладываются так же и работают без правок:
-`SqlProfiles[PostgresConfig]` у pg, `SqlProfiles[ClickHouseConfig]` у ch,
-`WebConnection` с `HttpProfile` у web. Отдельный случай — kerberos: keytab
-и пароль kerberos наружу не уезжают никогда, вместо них хост подставляет
-билет вызова (раздел 4.9).
-
-### 4.4. Аргумент выбора соединения
-
-```python
-RedisConnection = Annotated[ConnectionName, ConnectionArg(family="redis")]
-```
-
-- `ConnectionName` из `boba.toolkit.sql` — `Annotated[str, Field(min_length=1,
-  description="Имя подключения")]`. Для LLM это просто обязательная строка
-  `connection_name`. Список допустимых значений модель получает отдельным
-  инструментом `*_connection_list`, а не из схемы.
-- Имя параметра обязано быть `connection_name`: это значение
-  `ConnectionKeying.NAME`, по нему хост читает kwargs.
-- `ConnectionArg(family=...)` — метаданные для страниц studio (виджет
-  выбора соединения в workflow). На LLM и валидацию не влияет.
-
-### 4.5. Тела
-
-```python
-@tool
-async def redis_connection_list(
-    cfg: Annotated[RedisToolConfig, Injected],
-) -> tuple[str, ToolResult]:
-    """Список доступных значений connection_name для redis-инструментов."""
-    return pack_result(cfg.targets_table())
-
-
 @tool
 async def redis_query(
-    connection_name: RedisConnection,
+    connection: RedisTarget,
     command: Annotated[str, Field(min_length=1, description="Команда redis, например GET key")],
     cfg: Annotated[RedisToolConfig, Injected],
 ) -> tuple[str, ToolResult]:
     """Выполнить команду redis на выбранном соединении."""
-    connection = cfg.resolve(connection_name)
-
     client = await open_redis(connection)
     try:
         reply = await client.execute_command(*command.split())
@@ -1160,49 +907,40 @@ async def redis_query(
 
 EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
     RedisError: SqlErrorKind.DATABASE_UNAVAILABLE,
-    UnknownConnectionError: SqlErrorKind.UNKNOWN_TARGET,
 }
 ```
 
-- `cfg.resolve(connection_name)` — единственная валидация имени в теле.
-  Профиль есть только у соединения, которое вызов назвал; чужое имя даёт
-  `UnknownConnectionError` с перечнем допустимых.
-- Инструменты с соединениями обязаны быть `async def`: обвязка ждёт
-  таблицу и билет, синхронный вызов падает `InjectedAsyncOnlyError`.
-- `*_connection_list` нужен всегда: без него модель не узнает имён.
+Обратите внимание, чего в теле **нет**: поиска соединения по имени, проверки
+прав, работы с billетами, whitelist'а. Всё это осталось на хосте. Тело
+получает профиль и работает с ним.
 
-### 4.6. Манифест и конфиг развёртывания
+Единственное требование: инструмент обязан быть `async def`. Обвязка ждёт
+таблицу и билет, синхронный вызов падает `InjectedAsyncOnlyError`.
+
+Отдельного `*_connection_list` писать не надо: список доступных соединений
+всех видов отдаёт общий инструмент `connection_list` (раздел 4.8).
+
+### 4.7. Манифест и конфиг развёртывания
 
 ```python
 """Манифест плагина redis: entry point группы boba.tools."""
 
 from typing import Final
 
-from boba.connections.marks import ConnectedToolManifest, UserConnectionsSpec
-from boba.connections.whitelist import ConnectionKeying
-from boba.db.redis.connection import MANIFEST as REDIS_CONNECTION
 from boba.tool.redis.tools import TOOLS
+from boba.toolkit.manifest import ToolPluginManifest
 
-MANIFEST: Final = ConnectedToolManifest(
-    section="redis",
-    tools=tuple(TOOLS),
-    connections=UserConnectionsSpec(REDIS_CONNECTION.kind, ConnectionKeying.NAME),
-)
+MANIFEST: Final = ToolPluginManifest(section="redis", tools=tuple(TOOLS))
 ```
 
-- `ConnectedToolManifest` вместо `ToolPluginManifest` — признак, что секция
-  берёт соединения из таблицы.
-- `UserConnectionsSpec.kind` — какой kind строк запрашивать у хранилища.
-  Берётся из манифеста типа, а не строкой: опечатка тогда не пройдёт.
-- `ConnectionKeying.NAME` — единственный ключ адресации сегодня: аргумент
-  `connection_name` сопоставляется с колонкой `name`. Enum существует под
-  будущие ключи.
+Манифест обычный: про соединения он ничего не объявляет, потому что это
+сказано в подписях инструментов.
 
 Файл `conf/plugins/redis.toml`:
 
 ```toml
 enable   = true
-tools    = ["redis_connection_list", "redis_query"]
+tools    = ["redis_query"]
 max_rows = 200
 
 [sandbox]
@@ -1210,126 +948,160 @@ max_rows = 200
     binds   = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts"]
 ```
 
-В корне нет `profiles`: они приходят из таблицы на каждый вызов. Секция с
-`ConnectedToolManifest` требует `[connections] enable = true` в
+Профилей в файле нет: они приходят из таблицы на каждый вызов. Инструменты с
+соединениями работают только при `[connections] enable = true` в
 `config.toml`, иначе старт падает с понятным текстом. Для kerberos-типов
-добавьте бинд `"${env.krb}/krb5.conf:/etc/krb5.conf"`: имена сервисов тело
-разбирает конфигом своей песочницы.
+добавьте бинд `"${env.krb}/krb5.conf:/etc/krb5.conf"`.
 
-### 4.7. Что происходит на вызове, по шагам
+### 4.8. Как модель узнаёт имена: connection_list
 
-LLM вызвала `redis_query(connection_name="cache", command="GET x")`.
+Встроенный инструмент `connection_list` (секция `[tool.connections]`) отдаёт
+все соединения, доступные пользователю, тремя колонками:
+
+| connection | kind | description |
+|---|---|---|
+| `analytics` | `postgres` | витрины продаж, только чтение |
+| `events` | `clickhouse` | сырые события, партиции по дням |
+| `wiki` | `web` | внутренняя вики, доступ по SSO |
+
+По виду модель понимает, какому инструменту имя годится: `postgres` — для
+pg-инструментов, `web` — для web. По описанию выбирает нужное под задачу.
+Описание берётся из поля `description` профиля, поэтому заполнять его стоит
+осмысленно: это единственная подсказка, которую модель видит.
+
+Конфиг развёртывания:
+
+```toml
+# conf/plugins/connections.toml
+enable = true
+tools  = ["connection_list"]
+```
+
+### 4.9. Что происходит на вызове, по шагам
+
+Модель вызвала `redis_query(connection="cache", command="GET x")`.
 
 | # | Где | Что делает |
 |---|---|---|
-| 1 | `InjectedConfig._Partial.before` | `kwargs.setdefault("cfg", <статический RedisToolConfig из toml>)`: `profiles={}`, `names=[]`, `max_rows=200` |
-| 2 | `ServiceTickets` | не установлена: в статическом значении kerberos-секций нет |
-| 3 | `UserConnections._config` | `subject = CallContext.current().subject` (user_id, login, roles); вне контекста вызова — `RefusalError(no_context)` |
-| 4 | `ConnectionStore.for_subject(subject, "redis")` | один SQL: гранты на пользователя ∪ гранты на его роли, фильтр `data->>'kind' = 'redis'`; профили расшифрованы и разобраны реестром |
-| 5 | `ConnectionWhitelist.of(rows, NAME)` | группировка по `name`; имя, выданное дважды (лично и через роль, две роли), уходит в `ambiguous` и в whitelist не попадает |
-| 6 | `keying.requested(kwargs)` | читает `kwargs["connection_name"]` → `"cache"` |
-| 7 | `whitelist.pick("cache")` | профиль; `None`, если такого имени у субъекта нет; `AmbiguousConnectionError` → `RefusalError(ambiguous_connection)` |
-| 8 | `_at_host` | только для `HttpProfile`: привязка к хосту URL, раздел 4.10 |
-| 9 | `ClientLabel.of(login, "redis_query").applied(profile)` | `profile.labeled("boba:ivanov:redis_query")` |
-| 10 | `_armed` | `credentials.for_connection(profile, credential)`: kerberos-секция → билет вызова (раздел 4.9); строка с уже готовым `TicketAuth` в таблице — `ToolConfigError` |
-| 11 | сборка | `base.model_copy(update={"profiles": {"cache": armed}, "names": [все имена whitelist]})` → `kwargs["cfg"]` |
-| 12 | `ToolProcessWrap` | `ToolArgv.render`: `--connection-name cache --command "GET x"` в argv, `cfg.revealed()` в JSON injected |
-| 13 | launcher | процесс или форк зиготы, раздел 5 |
-| 14 | тело | `ToolArgv.parse` → `RedisToolConfig`; `cfg.resolve("cache")` → `RedisConfig` с открытым паролем; `open_redis` |
+| 1 | загрузка | у инструмента найден параметр с маркером, вид выведен из типа: `redis` |
+| 2 | загрузка | схема для модели: на месте параметра строка с описанием и меткой вида |
+| 3 | `UserConnections.value` | читает `kwargs["connection"]` → `"cache"` |
+| 4 | `CallContext.current()` | субъект вызова: user_id, логин, роли |
+| 5 | `store.for_subject(subject, "redis")` | один SQL: гранты на пользователя и его роли, фильтр по виду |
+| 6 | `ConnectionWhitelist.of(rows)` | группировка по имени; имя, выданное дважды, уходит в `ambiguous` |
+| 7 | `whitelist.pick("cache")` | строка; нет такой — отказ со списком доступных; дубль — отказ `ambiguous_connection` |
+| 8 | `profile.labeled(client)` | профиль подписывает сессию сам: `boba:ivanov:redis_query` |
+| 9 | `credentials.for_connection` | kerberos-секция меняется на билет этого вызова (раздел 4.10) |
+| 10 | `ToolArgv.render` | имя остаётся строкой в аргументах, профиль уезжает каналом конфига |
+| 11 | launcher | процесс или форк зиготы, раздел 5 |
+| 12 | тело | `ToolArgv.parse` собирает профиль обратно в `RedisConnection`; тело открывает соединение |
 
-Обратите внимание на шаг 7: неизвестное имя хост не отвергает. Он просто
-отправляет пустой `profiles`, и уже тело отвечает `UnknownConnectionError`
-со списком допустимых имён — так LLM получает подсказку, а не голый отказ.
+Ключевое отличие от прежней схемы: в песочницу уезжает ровно один профиль —
+тот, который назвал вызов. Остальные соединения пользователя туда не
+попадают вовсе, даже именами.
 
-### 4.8. `profiles` против `names`
-
-Принцип наименьших привилегий:
-
-- `profiles` — не больше одного элемента: профиль соединения, которое
-  вызов назвал. Только он покидает процесс приложения.
-- `names` — все имена, выданные субъекту, без профилей. Их видит
-  `*_connection_list` через `targets_table()`.
-
-Даже если у пользователя двадцать соединений, в песочницу уезжает пароль
-одного.
-
-### 4.9. Kerberos: как строка таблицы превращается в билет
+### 4.10. Kerberos: как строка таблицы превращается в билет
 
 Строка таблицы может нести kerberos-секцию двух видов:
 
 - `{method = "kerberos_delegated"}` — в сервис идёт сам пользователь.
-  Работает только если он вошёл через SSO и браузер делегировал креды:
-  `CallContext.current().credential` тогда `DelegatedTicket`. Иначе
+  Работает, если он вошёл через SSO и браузер делегировал креды. Иначе
   `RefusalError(no_delegated_credentials)`.
-- `{method = "kerberos_keytab", principal, keytab}` — сервисная учётка;
+- `{method = "kerberos_keytab", principal, keytab}` — сервисная учётка,
   keytab лежит на хосте приложения.
 
-В обоих случаях `KerberosCredentialSource.for_connection`:
+В обоих случаях хост зовёт `KerberosCredentialSource.for_connection`, а тот
+работает только через методы профиля:
 
-1. `profile.service_name()` → SPN, например `postgres@db01.corp`.
-2. `ServiceTicketIssuer.issue_async(source, service)`: GSSAPI-шаг кладёт
-   сервисный билет в ccache источника, затем ровно этот билет копируется
-   в свежий FILE-ccache и читается байтами. Остаток жизни билета обязан
-   быть ≥ `min_lifetime` секции.
-3. `TicketAuth.of_bytes(principal, service, blob, min_lifetime)` → секция
-   `method = "kerberos_ticket"` с `ccache: SecretStr` (base64).
+1. `profile.service_name()` → SPN, например `postgres@db01.corp`;
+2. `ServiceTicketIssuer` выпускает билет к этому SPN и копирует его в свежий
+   FILE-ccache; остаток жизни обязан быть не меньше `min_lifetime`;
+3. `TicketAuth.of_bytes(...)` — секция с ccache в base64;
 4. `profile.with_call_ticket(ticket)` — билет на месте старой секции.
-   Форма профиля не меняется: тело не знает, как билет получен.
 
-Дальше `revealed()`: `TicketAuth._dump_ccache` раскрывает байты по
-контексту; keytab или пароль, добравшиеся до дампа с контекстом, роняют
-`KerberosDump.json`. В теле `TicketCredentials.applied_async()`
-материализует ccache во временный файл вызова и выставляет `KRB5CCNAME`.
+Форма профиля не меняется, и тело не знает, как билет получен. Keytab или
+пароль, добравшиеся до дампа, роняют его с сообщением «may not leave the
+application». В теле `TicketCredentials.applied_async()` материализует ccache
+во временный файл вызова и выставляет `KRB5CCNAME`.
 
-### 4.10. Web-вариант: соединение покрывает хост
+### 4.11. Web: проверку хоста делает инструмент
 
-У `web`-инструментов есть второй аргумент, который читает хост: `url`.
-Профиль `HttpProfile` покрывает хост `base_url` (точное имя или шаблон
-`*.corp.example`, поддомены любой глубины, но не сам apex). Хост в
-`UserConnections._at_host` проверяет, что хост URL попадает под выбранное
-соединение — иначе `RefusalError(host_not_allowed)` — и привязывает
-профиль к конкретному хосту (`bound_to`). Это делается **до** выпуска
-билета, потому что SPN `HTTP@host` требует конкретного хоста, а не шаблона.
+Профиль `HttpConnection` покрывает хост своего `base_url` — точное имя или
+шаблон `*.corp.example`. Проверить, что запрошенный URL под него попадает,
+обязан сам инструмент: только он знает, какой URL собирается открыть.
 
-Тело проверяет то же ещё раз: `cfg.resolve_for(connection_name, url)` →
-`UnknownHostError` (`kind = unknown_host`). Конфиг `WebConnection` несёт
-третье поле `hosts: dict[name, host]`, чтобы `web_connection_list`
-показывал, какой хост покрывает каждое имя, не отправляя профили.
+```python
+@tool
+async def web_fetch_page(
+    url: Annotated[str, Field(min_length=1, description="URL для скачивания")],
+    connection: Annotated[HttpConnection, UserConnection],
+    cfg: Annotated[WebGrepConfig, Injected],
+) -> tuple[str, ToolResult]:
+    """Скачивает URL выбранным соединением."""
+    profile = WebHost.bound(connection, url)
+```
 
-### 4.11. Ошибки по kind
+`WebHost.bound` из `boba.transport.http.web` проверяет покрытие и возвращает
+профиль, привязанный к конкретному хосту; чужой хост — `UnknownHostError`,
+который объявлен в `EXPECTED` модуля как `unknown_host`.
+
+Ограничение, о котором стоит помнить: для профиля с шаблоном и Negotiate
+билет выпускается по `service_name()` профиля, а тот требует конкретного
+хоста. Для kerberos-соединений указывайте в `base_url` точное имя.
+
+### 4.12. Ошибки по kind
 
 | Ситуация | Кто поднимает | Kind |
 |---|---|---|
-| имя неизвестно субъекту | тело, `cfg.resolve` | `unknown_target` (из `EXPECTED`) |
+| имя не выдано субъекту | хост | `connection_not_visible` |
 | имя выдано дважды | хост | `ambiguous_connection` |
-| хост URL вне web-соединения | хост / тело | `host_not_allowed` / `unknown_host` |
+| параметр пуст | хост | `connection_not_visible` |
 | delegated-строка без SSO-кредов | хост | `no_delegated_credentials` |
-| строка таблицы с `kerberos_ticket` | хост | `ToolConfigError` |
-| delegated в статическом конфиге | хост, `ServiceTickets` | `ToolConfigError` |
+| строка таблицы с готовым билетом | хост | `ToolConfigError` |
+| параметр объявлен не моделью профиля | загрузка | `ToolConfigError` |
+| пакет типа не установлен | загрузка | `ToolConfigError` |
 | синхронный вызов | хост | `InjectedAsyncOnlyError` |
-| тип строки не установлен | хранилище | `UnknownConnectionKindError` |
+| хост URL вне соединения | тело | `unknown_host` |
 
 Отказы хоста (`RefusalError`) — это `ToolRefusalError` с kind из
-`ConnectionRefusal`; `ToolErrorGuard` превращает их в `ErrorResult`, и LLM
-получает текст.
+`ConnectionRefusal`; `ToolErrorGuard` превращает их в `ErrorResult`, и модель
+получает текст. Отказ по неизвестному имени называет доступные имена, чтобы
+модель могла исправиться и повторить вызов.
 
-### 4.12. Отладка тела с соединением
+### 4.13. Отладка тела с соединением
 
-CLI `boba.runtime.toolcli` собирает injected из toml и раскрывает секреты
-через тот же `reveal`. Для профиля с keytab это упадёт «may not leave the
-application»: билет CLI не выпускает. Поэтому для отладки под дебаггером
-injected-файл пишется руками — `.vscode/injected/pg.json` содержит
-`{"cfg": {"profiles": {"main": {...keytab...}}, "names": ["main"]}}`, а
-цель `launch.json` передаёт `--injected` этим файлом плюс `--config` ради
-секции `[krb]` (рабочий каталог kerberos на хосте).
+Профиль в бою подаёт хост, поэтому при ручном запуске его надо передать
+самому — тем же каналом конфига, ключом по имени параметра:
 
-Живые примеры: `packages/tools/boba-tool-postgres/` (pg), `boba-tool-clickhouse/`
-(ch), `boba-tool-web/` (web с хостами); типы —
+```bash
+cat > /tmp/pg.json <<'EOF'
+{
+  "connection": {
+    "kind": "postgres",
+    "host": "db01.corp",
+    "dbname": "boba",
+    "auth": {"method": "password", "user": "u", "password": "…"}
+  },
+  "cfg": {"max_rows": 100}
+}
+EOF
+
+.venv/bin/python -m boba.tool.pg.tools pg_query \
+    --sql "select 42" --injected /tmp/pg.json --artifact
+```
+
+Профиль с keytab так передать нельзя: дамп упадёт «may not leave the
+application», потому что билет выпускает приложение. Для отладки таких
+соединений подставляйте в файл готовую секцию `kerberos_ticket` либо
+профиль с паролем.
+
+Живые примеры: `packages/tools/boba-tool-postgres/` (pg),
+`boba-tool-clickhouse/` (ch), `boba-tool-web/` (web); типы —
 `packages/infra/db/boba-db-postgres/src/boba/db/postgres/{profile,connection.py}`,
-`boba-db-clickhouse`, `packages/infra/transport/boba-transport-http/src/boba/transport/http/`.
-Хостовая обвязка — `packages/services/boba-connection-broker/src/boba/connection_broker/user_connections.py`.
-
----
+`boba-db-clickhouse`, `packages/infra/transport/boba-transport-http/`.
+Хостовая обвязка —
+`packages/services/boba-connection-broker/src/boba/connection_broker/user_connections.py`,
+её тесты — `test_connection_binding.py` в том же пакете.
 
 ## 5. Как это устроено внутри launcher'а
 
@@ -1343,8 +1115,9 @@ injected-файл пишется руками — `.vscode/injected/pg.json` с�
    функции теперь «собрать команду и запустить launcher'ом». Схема
    аргументов запоминается полной, с injected-полями: по ней рендерится
    команда.
-2. `UserConnections.bind_all` — только если манифест `ConnectedToolManifest`
-   и параметр наследует `SqlProfiles | WebConnection`.
+2. `UserConnections.bind_all` — только если у инструмента есть параметры с
+   маркером `UserConnection`. Заодно правит схему для модели: на месте
+   параметра появляется строка с именем и меткой вида соединения.
 3. `ServiceTickets.bind_all` — только если статическое значение параметра
    содержит профиль с keytab/password/delegated-секцией.
 4. `InjectedConfig.bind_all` — партиал статических значений и **снятие
@@ -1671,20 +1444,23 @@ Entry points материализуются установкой: после п�
   файла в развёртывании нет (в studio тоже).
 - Старт падает «injected parameter 'cfg' has no SECTION on its model» —
   забыт `SECTION: ClassVar[str]`.
-- Старт падает «[tool.<name>] takes its connections from the connections
-  table» — `ConnectedToolManifest` при `[connections] enable = false`.
+- Старт падает «takes its connections from the connections table» — у
+  инструментов есть параметры-соединения при `[connections] enable = false`.
+- Старт падает «is not a connection profile» или «package is not installed»
+  — параметр с маркером объявлен не моделью профиля либо пакет типа не
+  установлен в этом развёртывании.
 - Тело получает `**********` вместо секрета — модель конфига не наследует
   `SecretRevealing` (раздел 3.1) либо у поля объявлен свой
   `field_serializer`, который маскирует.
 - «credentials may not leave the application» — keytab/пароль kerberos
   дошёл до дампа: профиль не наследует `ConnectionProfileBase`, не
   реализует `kerberos_section`/`service_name`/`with_call_ticket`, либо это
-  toolcli без `--injected` (раздел 4.12).
+  ручной запуск с keytab-профилем (раздел 4.13).
 - «is built in the async body only» — инструмент с соединениями объявлен
   `def`, а не `async def`.
-- Соединение есть в таблице, а `resolve` даёт unknown — имя выдано дважды
-  (лично и ролью) и попало в `ambiguous`; либо грант есть, а kind строки не
-  тот, что в `UserConnectionsSpec`.
+- Соединение есть в таблице, а вызов получает «not available to you» — имя
+  выдано дважды (лично и ролью) и попало в `ambiguous`, либо грант есть, но
+  вид строки не тот, что объявлен типом параметра.
 - Строка соединения с пометкой «type not installed» — пакет типа не
   установлен в этом развёртывании.
 - Зигота секции не поднимается в контейнере — образ плагина не собран или

@@ -289,6 +289,9 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     ChainlitSessions.install(sessions)
     container.provide(providers.session_source, sessions)
     container.provide(runtime.live_sessions, sessions)
+    # реестр типов нужен загрузчику плагинов ещё до старта контейнера:
+    # по нему параметры-соединения получают вид; сам реестр — чистый discover
+    container.provide(runtime.connection_types, runtime.connection_types())
     container.eager(providers.get_app_config)
     container.eager(runtime.users_table)
     container.eager(runtime.auth_service)

@@ -17,13 +17,12 @@ from boba.tool.kb.confluence.tools import (
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
 from boba.tool.kb.tools import TOOLS as KB_TOOLS
 from boba.tool.pg.tools import TOOLS as PG_TOOLS
-from boba.tool.pg.tools import PgToolConfig, pg_connection_list
+from boba.tool.pg.tools import PgToolConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.result import (
-    TableResult,
     ToolArtifact,
 )
-from boba.transport.http.profile import HttpProfile
+from boba.transport.http.profile import HttpConnection
 
 # порт 1 закрыт всегда: тест проверяет ошибку соединения, а не адрес
 DEAD_URL = "{}://{}:1".format("http", "127.0.0.1")
@@ -49,18 +48,7 @@ def _no_launcher(tool: str) -> Any:
 
 
 def pg_config() -> PgToolConfig:
-    return PgToolConfig.model_validate(
-        {
-            "profiles": {
-                "main": {
-                    "host": "h",
-                    "dbname": "d",
-                    "auth": {"method": "trust", "user": "u"},
-                }
-            },
-            "sandbox": _SANDBOX,
-        }
-    )
+    return PgToolConfig.model_validate({"max_rows": 10, "sandbox": _SANDBOX})
 
 
 def kb_config() -> PostgresKnowledgeBaseConfig:
@@ -103,7 +91,6 @@ class TestPgTools:
     pytestmark = pytest.mark.anyio
 
     _NAMES: ClassVar[list[str]] = [
-        "pg_connection_list",
         "pg_list_tables",
         "pg_describe_table",
         "pg_query",
@@ -115,36 +102,29 @@ class TestPgTools:
     def test_module_declares_the_toolset(self) -> None:
         names = [t.name for t in PG_TOOLS]
         if names != self._NAMES:
-            raise AssertionError("names == self._NAMES")
+            raise AssertionError(f"names == self._NAMES, got {names}")
 
-    async def test_connection_list_returns_whitelist(self) -> None:
-        body = ToolMain.toolset(pg_connection_list)[0].coroutine
-        if body is None:
-            raise AssertionError("body is not None")
-        _content, artifact = await body(cfg=pg_config())
+    def test_every_tool_takes_a_connection_parameter(self) -> None:
+        """Профиль подаёт хост: у каждого инструмента параметр с маркером."""
+        from boba.db.postgres.profile import PostgresConfig
+        from boba.toolkit.entry import ToolArgv
 
-        if not (isinstance(artifact, TableResult)):
-            raise AssertionError("isinstance(artifact, TableResult)")
-        if list(artifact.rows) != [{"connection_name": "main"}]:
-            raise AssertionError('list(artifact.rows) == [{"connection_name": "main"}]')
-        if artifact.ok is not True:
-            raise AssertionError("artifact.ok is True")
+        for payload in PG_TOOLS:
+            fields = ToolArgv.connection_fields(payload.args_schema)
+            if list(fields) != ["connection"]:
+                raise AssertionError(f"{payload.name}: connection parameter is missing")
 
-    async def test_unknown_target_raises_domain_error(self) -> None:
-        """Профиль не в whitelist — доменное исключение с kind в EXPECTED."""
-        from boba.tool.pg.tools import EXPECTED, pg_query
-        from boba.toolkit.entry import ExpectedErrors
-        from boba.toolkit.sql import UnknownConnectionError
+            if fields["connection"] is not PostgresConfig:
+                raise AssertionError(f"{payload.name}: profile type must be declared")
 
-        body = ToolMain.toolset(pg_query)[0].coroutine
-        if body is None:
-            raise AssertionError("body is not None")
-        with pytest.raises(UnknownConnectionError) as caught:
-            await body(connection_name="нет-такого", sql="select 1", cfg=pg_config())
+    def test_section_config_holds_limits_only(self) -> None:
+        """Whitelist ушёл на хост: в секции остались только границы выдачи."""
+        cfg = pg_config()
+        if cfg.max_rows != 10:
+            raise AssertionError("section keys must reach the model")
 
-        kind = ExpectedErrors.kind_of(caught.value, dict(EXPECTED))
-        if kind != "unknown_target":
-            raise AssertionError('kind == "unknown_target"')
+        if hasattr(cfg, "profiles"):
+            raise AssertionError("profiles must not live in the section any more")
 
 
 class TestKbTools:
@@ -245,7 +225,7 @@ class TestConfluenceTools:
         from boba.tool.kb.confluence.tools import confluence_fetch
 
         cfg = ConfluenceToolsConfig(
-            confluence=HttpProfile(base_url=DEAD_URL),
+            confluence=HttpConnection(base_url=DEAD_URL),
         )
 
         body = ToolMain.toolset(confluence_fetch)[0].coroutine

@@ -50,7 +50,7 @@ from boba.tool.kb.indexing_log import (
 from boba.tool.kb.warm import EmbeddingConfig, WarmEmbedder
 from boba.toolkit.timing import Elapsed
 from boba.toolkit.types import StringList
-from boba.transport.http.profile import HttpProfile
+from boba.transport.http.profile import HttpConnection
 
 __all__ = ["ConfluenceIngest", "ConfluenceIngestConfig"]
 
@@ -63,7 +63,7 @@ class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams, LiteParseParams
     model_config = ConfigDict(extra="ignore")
 
     embedding: EmbeddingConfig
-    confluence: HttpProfile
+    confluence: HttpConnection
     body_format: Literal["view", "export_view", "storage"] = Field(
         default="view",
         description="Confluence body-формат: view/export_view/storage.",
