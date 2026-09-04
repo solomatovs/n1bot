@@ -112,7 +112,7 @@ WEB_PROJECT     := $(WEB_DIR)/web/workflow
 VENV_PYTHON     ?= $(SRC_DIR)/.venv/bin/python
 WEB_DEV_NAME    ?= boba-web-dev
 WEB_DEV_PORT    ?= 5173
-BOBA_URL_PREFIX ?= /boba-debug
+BOBA_URL_PREFIX ?= /boba-studio-debug
 WEB_DEV_URL      = http://127.0.0.1:$(WEB_DEV_PORT)$(BOBA_URL_PREFIX)/workflow-dev/
 WEB_DEV_WAIT    ?= 180
 
@@ -230,7 +230,7 @@ help:
 	echo "  make web       страница workflow: npm ci/check/build в $(NODE_IMAGE) -> assets/workflow"
 	echo "  make web-dev   vite dev-сервер страницы (127.0.0.1:$(WEB_DEV_PORT)); STOP=1 — остановить"
 	echo "  make clean     удалить release и src/, кроме моделей"
-	echo "  make all       fetch + sandbox + build"
+	echo "  make all       fetch + sandbox + plugin-rootfs-all + web + build + dev: образ и дерево compose/studio"
 	echo ""
 	echo "  Версия одна на все пакеты: version — показать, version-set VER=X.Y.Z — проставить"
 	echo ""
@@ -359,7 +359,7 @@ plugin-rootfs: version-check
 .PHONY: plugin-rootfs-all
 plugin-rootfs-all:
 	@for name in $$(python3 "$(BASE_DIR)/scripts/plugin_rootfs.py" list "$(SRC_DIR)/packages"); do
-	    $(MAKE) plugin-rootfs PLUGIN=$$name || exit 1
+	    $(MAKE) -f $(MAKEFILE) plugin-rootfs PLUGIN=$$name || exit 1
 	done
 
 
@@ -525,4 +525,4 @@ clean:
 	rm -rf $(RELEASE_DIR) $(DEPS_DIR)/uv $(DEPS_DIR)/tessdata $(WEBASSETS_DIR) $(SANDBOX_DIR) \
 	       $(DEPS_DIR)/*.tar.xz $(DEPS_DIR)/*.env
 
-all: fetch sandbox plugin-rootfs-all build
+all: fetch sandbox plugin-rootfs-all web build dev
