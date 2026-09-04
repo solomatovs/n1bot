@@ -18,6 +18,7 @@ import httpx
 
 from boba.db.clickhouse.snapshot_sample import ChSample
 from boba.db.postgres.snapshot_sample import PgSample
+from boba.stand.ui.database import StandDatabase
 from boba.stand.ui.stand import StandProcess
 
 
@@ -415,10 +416,19 @@ def _field(
 
 
 class Api:
-    """Ходы в JSON API стенда от имени администратора."""
+    """Ходы в JSON API стенда от имени администратора. Источник заводится от
+    подключения, поэтому на каждый источник сеятель добавляет в базу стенда
+    подключение `<имя источника>_conn` того же вида."""
 
-    def __init__(self, admin: httpx.Client) -> None:
+    CONNECTION_SUFFIX: ClassVar[str] = "_conn"
+
+    def __init__(self, admin: httpx.Client, stand_db: StandDatabase) -> None:
         self.admin = admin
+        self.stand_db = stand_db
+
+    @classmethod
+    def connection_name(cls, source_name: str) -> str:
+        return f"{source_name}{cls.CONNECTION_SUFFIX}"
 
     def new_draft(self, name: str) -> str:
         draft = ok(self.admin.post("/api/catalog/drafts", json={"name": name}))
@@ -497,16 +507,17 @@ class Api:
 
     # --- источники ---
 
-    def create_source(
-        self, kind: str, name: str, *, manual: bool = False, description: str = ""
-    ) -> str:
+    def create_source(self, kind: str, name: str, *, description: str = "") -> str:
+        connection_id = self.stand_db.add_connection(self.connection_name(name), kind)
         body = {
-            "kind": kind,
             "name": name,
-            "manual": manual,
             "description": description,
+            "connection_id": str(connection_id),
         }
         return str(ok(self.admin.post("/api/catalog/sources", json=body))["id"])
+
+    def connections(self) -> list[dict[str, Any]]:
+        return list(ok_list(self.admin.get("/api/catalog/connections")))
 
     def write_source_version(self, source_id: str, snapshot: dict[str, Any]) -> int:
         version = ok(
@@ -521,6 +532,8 @@ class Api:
         return list(ok_list(self.admin.get("/api/catalog/sources")))
 
     def delete_source(self, source_id: str) -> None:
+        """Источник и его подключение стенда; исчезнувший источник не ошибка."""
+        found = self.admin.get(f"/api/catalog/sources/{source_id}")
         response = self.admin.delete(f"/api/catalog/sources/{source_id}")
         if response.status_code not in (200, 404):
             msg = (
@@ -529,8 +542,9 @@ class Api:
             )
             raise RuntimeError(msg)
 
-    def source_draft_state(self, draft_id: str) -> dict[str, Any]:
-        return ok(self.admin.get(f"/api/catalog/source-drafts/{draft_id}"))
+        if found.status_code == 200:
+            name = str(found.json()["name"])
+            self.stand_db.remove_connections(self.connection_name(name))
 
 
 def ok_list(response: httpx.Response) -> list[dict[str, Any]]:
@@ -543,11 +557,11 @@ def ok_list(response: httpx.Response) -> list[dict[str, Any]]:
 
 class SourceSeed:
     """Три источника из образцов домена: prod (postgres, v1 и v2), dwh
-    (clickhouse, v1), planned (postgres, ручной, без версий)."""
+    (clickhouse, v1), empty (postgres, без версий)."""
 
     PROD: ClassVar[str] = "src_prod"
     DWH: ClassVar[str] = "src_dwh"
-    PLANNED: ClassVar[str] = "src_planned"
+    EMPTY: ClassVar[str] = "src_empty"
 
     def __init__(self, api: Api) -> None:
         self.api = api
@@ -560,9 +574,11 @@ class SourceSeed:
         api.write_source_version(self.prod, pg.next_version().model_dump(mode="json"))
         self.dwh = api.create_source("clickhouse", self.DWH)
         api.write_source_version(self.dwh, ch.snapshot().model_dump(mode="json"))
-        self.planned = api.create_source("postgres", self.PLANNED, manual=True)
+        self.empty = api.create_source("postgres", self.EMPTY)
 
     def cleanup(self) -> None:
         for source in self.api.sources():
             if str(source["name"]).startswith("src_"):
                 self.api.delete_source(str(source["id"]))
+
+        self.api.stand_db.remove_connections("src_")

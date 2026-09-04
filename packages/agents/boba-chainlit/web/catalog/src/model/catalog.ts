@@ -467,10 +467,10 @@ export const SourceSchema = z.object({
   kind: SourceKindSchema,
   name: z.string(),
   description: z.string(),
-  manual: z.boolean(),
   created_by: z.string(),
   created_at: z.string(),
   latest_version: z.number(),
+  connection_ids: z.array(z.string()),
 });
 
 export const SourceVersionSchema = z.object({
@@ -491,11 +491,19 @@ export const SourceConnectionSchema = z.object({
   bound_at: z.string(),
 });
 
-export const ConnectionEntrySchema = z.object({
+export const ConnectionViewSchema = z.object({
   id: z.string(),
   name: z.string(),
   kind: z.string(),
   mine: z.boolean(),
+  available: z.boolean(),
+  profile: z.record(z.unknown()).nullable(),
+});
+
+export const ProbeResultSchema = z.object({
+  ok: z.boolean(),
+  message: z.string(),
+  elapsed_ms: z.number(),
 });
 
 export const SyncStatusSchema = z.enum(["running", "done", "failed", "cancelled"]);
@@ -767,27 +775,13 @@ export const ObjectChangeSchema = z.object({
 
 export const SourceDiffSchema = z.object({ entries: z.array(ObjectChangeSchema) });
 
-export const SourceDraftSchema = z.object({
-  id: z.string(),
-  source_id: z.string(),
-  name: z.string(),
-  base_version: z.number(),
-  status: z.enum(["open", "published", "discarded"]),
-  created_by: z.string(),
-  created_at: z.string(),
-});
-
-export const SourceDraftStateSchema = z.object({
-  draft: SourceDraftSchema,
-  snapshot: z.object({ kind: SourceKindSchema }).passthrough(),
-  diff: SourceDiffSchema,
-  seq: z.number(),
-});
-
 export type Source = z.infer<typeof SourceSchema>;
 export type SourceVersion = z.infer<typeof SourceVersionSchema>;
 export type SourceConnection = z.infer<typeof SourceConnectionSchema>;
-export type ConnectionEntry = z.infer<typeof ConnectionEntrySchema>;
+export type ConnectionView = z.infer<typeof ConnectionViewSchema>;
+export type ProbeResult = z.infer<typeof ProbeResultSchema>;
+/** Имя и сырой профиль подключения по схеме api. */
+export type ConnectionBody = { name: string; profile: Record<string, unknown> };
 export type SyncStatus = z.infer<typeof SyncStatusSchema>;
 export type SyncScope = z.infer<typeof SyncScopeSchema>;
 export type Sync = z.infer<typeof SyncSchema>;
@@ -801,19 +795,7 @@ export type FieldChange = z.infer<typeof FieldChangeSchema>;
 export type PartChange = z.infer<typeof PartChangeSchema>;
 export type ObjectChange = z.infer<typeof ObjectChangeSchema>;
 export type SourceDiff = z.infer<typeof SourceDiffSchema>;
-export type SourceDraft = z.infer<typeof SourceDraftSchema>;
-export type SourceDraftState = z.infer<typeof SourceDraftStateSchema>;
 /** Что задаёт пользователь, заводя источник. */
-export type SourceSpec = { kind: SourceKind; name: string; description: string; manual: boolean };
-/** Объект ручного источника коротким набором полей. */
-export type ManualColumn = { name: string; type: string; nullable: boolean; comment: string | null };
-export type ManualObject = {
-  kind: "table" | "view";
-  path: string[];
-  comment: string | null;
-  columns: ManualColumn[];
-};
-export type SourceOp =
-  | { op: "add_object"; object: ManualObject }
-  | { op: "set_object"; object: ManualObject }
-  | { op: "remove_object"; path: string[] };
+export type SourceSpec = { name: string; description: string };
+/** Новый источник от подключения: вид берётся у подключения. */
+export type SourceCreate = SourceSpec & { connection_id: string };

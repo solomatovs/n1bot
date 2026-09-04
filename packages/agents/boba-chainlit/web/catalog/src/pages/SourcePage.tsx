@@ -1,10 +1,9 @@
-import { GitCompare, Link2, Plus, RefreshCw, Trash2, XCircle } from "lucide-react";
+import { GitCompare, Link2, RefreshCw, Trash2, XCircle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { ApiError, type CatalogApi } from "../api/client";
 import { useServices } from "../app";
-import { NamePrompt } from "../components/edit/NamePrompt";
 import { ConnectionsDialog, connectionLabel } from "../components/sources/ConnectionsDialog";
 import { DiffPanel } from "../components/sources/DiffPanel";
 import { ObjectCardPanel } from "../components/sources/ObjectCardPanel";
@@ -12,13 +11,12 @@ import { SourceTree } from "../components/sources/SourceTree";
 import { SyncDialog } from "../components/sources/SyncDialog";
 import type {
   Access,
-  ConnectionEntry,
+  ConnectionView,
   ObjectCard,
   ObjectRef,
   Source,
   SourceConnection,
   SourceDiff,
-  SourceDraft,
   SourceVersion,
   Sync,
   TreeNode,
@@ -47,12 +45,11 @@ import {
   useToast,
 } from "../ui";
 
-type Directory = { entries: ConnectionEntry[]; error: string | null };
+type Directory = { entries: ConnectionView[]; error: string | null };
 type Loaded = {
   access: Access;
   source: Source;
   versions: SourceVersion[];
-  drafts: SourceDraft[];
   connections: SourceConnection[];
   directory: Directory;
   syncs: Sync[];
@@ -83,7 +80,7 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const [panel, setPanel] = useState<Panel>({ status: "empty" });
   const [diff, setDiff] = useState<SourceDiff | null>(null);
-  const [dialog, setDialog] = useState<"none" | "draft" | "delete" | "connections" | "sync">("none");
+  const [dialog, setDialog] = useState<"none" | "delete" | "connections" | "sync">("none");
   const [reloads, setReloads] = useState(0);
   const [latestSync, setLatestSync] = useState<Sync | null>(null);
 
@@ -204,8 +201,8 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
     );
   }
 
-  const { access, source, versions, drafts, connections, directory } = state.loaded;
-  const canSync = access.can_edit && !source.manual;
+  const { access, source, versions, connections, directory } = state.loaded;
+  const canSync = access.can_edit;
   const setParam = (patch: Record<string, string | undefined>): void => {
     setParams(
       (current) => {
@@ -238,7 +235,6 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
         <TopbarLink to="/sources">sources</TopbarLink>
         <TopbarTitle>{source.name}</TopbarTitle>
         <Chip tone="muted">{source.kind}</Chip>
-        {source.manual && <Chip tone="draft">manual</Chip>}
         <Select
           aria-label="source version"
           value={String(version)}
@@ -268,34 +264,19 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
           </Button>
         )}
         <TopbarGroup>
-          {source.manual && access.can_edit && (
-            <Button
-              size="sm"
-              tone="primary"
-              icon={Plus}
-              onClick={() => {
-                setDialog("draft");
-              }}
-              data-testid="new-source-draft"
-            >
-              draft
-            </Button>
-          )}
-          {!source.manual && (
-            <Button
-              size="sm"
-              tone="ghost"
-              icon={Link2}
-              collapsible
-              title="connections"
-              onClick={() => {
-                setDialog("connections");
-              }}
-              data-testid="source-connections"
-            >
-              connections · {connections.length}
-            </Button>
-          )}
+          <Button
+            size="sm"
+            tone="ghost"
+            icon={Link2}
+            collapsible
+            title="connections"
+            onClick={() => {
+              setDialog("connections");
+            }}
+            data-testid="source-connections"
+          >
+            connections · {connections.length}
+          </Button>
           {canSync && (
             <Button
               size="sm"
@@ -343,23 +324,11 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
             }}
           />
         )}
-        {drafts.length > 0 && (
-          <Alert tone="info" mark="source-drafts">
-            open drafts:{" "}
-            {drafts.map((draft) => (
-              <Link key={draft.id} to={`/sources/${source.id}/drafts/${draft.id}`}>
-                {draft.name}
-              </Link>
-            ))}
-          </Alert>
-        )}
       </PageNotices>
       <PageBody pane={true} detail={false}>
         <Pane>
           {versions.length === 0 ? (
-            <EmptyState title="no versions yet">
-              {source.manual ? "create a draft and add objects" : "run a synchronisation"}
-            </EmptyState>
+            <EmptyState title="no versions yet">bind a connection and run a synchronisation</EmptyState>
           ) : (
             <SourceTree load={loadTree} reloadKey={`${version}:${reloads}`} selected={selected} onSelect={select} />
           )}
@@ -372,28 +341,6 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
           )}
         </Scene>
       </PageBody>
-      {dialog === "draft" && (
-        <NamePrompt
-          title="new draft"
-          mark="source-draft-name"
-          label="draft name"
-          initial=""
-          onSubmit={(name) => {
-            api
-              .createSourceDraft(source.id, name)
-              .then((draft) => {
-                setDialog("none");
-                void navigate(`/sources/${source.id}/drafts/${draft.id}`);
-              })
-              .catch((error: unknown) => {
-                toast(describe(error), "error");
-              });
-          }}
-          onClose={() => {
-            setDialog("none");
-          }}
-        />
-      )}
       {dialog === "connections" && (
         <ConnectionsDialog
           sourceName={source.name}
@@ -568,19 +515,11 @@ async function load(api: CatalogApi, sourceId: string): Promise<Loaded> {
   const access = await api.access();
   const source = await api.source(sourceId);
   const versions = await api.sourceVersions(sourceId);
-  let drafts: SourceDraft[] = [];
-  let connections: SourceConnection[] = [];
-  let syncs: Sync[] = [];
-  let directory: Directory = { entries: [], error: null };
-  if (source.manual) {
-    drafts = await api.sourceDrafts(sourceId);
-  } else {
-    connections = await api.sourceConnections(sourceId);
-    syncs = await api.sourceSyncs(sourceId);
-    directory = await loadDirectory(api, source.kind);
-  }
+  const connections = await api.sourceConnections(sourceId);
+  const syncs = await api.sourceSyncs(sourceId);
+  const directory = await loadDirectory(api, source.kind);
 
-  return { access, source, versions, drafts, connections, directory, syncs };
+  return { access, source, versions, connections, directory, syncs };
 }
 
 /** Справочник подключений вида; отказ брокера не роняет страницу, а

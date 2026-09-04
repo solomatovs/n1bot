@@ -42,9 +42,6 @@ from boba.catalog.base import (
 
 __all__ = [
     "Keyed",
-    "ManualColumn",
-    "ManualObject",
-    "ManualObjectKind",
     "NodeColumn",
     "ObjectCard",
     "ObjectFamily",
@@ -114,6 +111,18 @@ class SourceRecord(CatalogModel):
     position); пусто — порядок ключа."""
     COLUMN_NAMES: ClassVar[Mapping[str, str]] = {}
     """Поля, чьё имя в таблице хранения другое (schema_name → schema)."""
+    VOLATILE: ClassVar[frozenset[str]] = frozenset()
+    """Статистика, которая меняется без изменения структуры (число строк,
+    размер, последнее значение последовательности): хранится в версии, но
+    разницей версий не считается."""
+
+    def structural(self) -> Mapping[str, Any]:
+        """Поля записи без летучей статистики: то, что сравнивает diff."""
+        dumped: dict[str, Any] = self.model_dump(mode="json")
+        for field in self.VOLATILE:
+            dumped.pop(field, None)
+
+        return dumped
 
     @property
     def key(self) -> tuple[str, ...]:
@@ -190,28 +199,6 @@ class TreeNode(CatalogModel):
     comment: str | None = None
     ref: ObjectRef | None = None
     status: ChangeStatus = ChangeStatus.UNCHANGED
-
-
-class ManualObjectKind(StrEnum):
-    TABLE = "table"
-    VIEW = "view"
-
-
-class ManualColumn(CatalogModel):
-    name: str = Field(min_length=1)
-    type: str = Field(min_length=1)
-    nullable: bool = True
-    comment: str | None = None
-
-
-class ManualObject(CatalogModel):
-    """Объект ручного источника: путь как у реального (Postgres: база, схема,
-    имя; ClickHouse: база, имя), вид, комментарий, колонки по порядку."""
-
-    kind: ManualObjectKind = ManualObjectKind.TABLE
-    path: tuple[str, ...] = Field(min_length=2)
-    comment: str | None = None
-    columns: tuple[ManualColumn, ...] = ()
 
 
 class SnapshotPart(CatalogModel):
@@ -353,20 +340,17 @@ class SourceSnapshot(CatalogModel):
     (PARTS, в порядке от родителей к детям) и семейства объектов
     (FAMILIES). По этим объявлениям база проверяет инварианты, считает
     объекты, находит объект и колонки по адресу, отдаёт записи по частям.
-    Родное у подкласса: дерево (children), карточка объекта (card), колонки
-    узла (node_columns) и правки ручного источника (with_object,
-    without_object). Каждый подкласс регистрируется в SourceKinds по своему
-    виду при объявлении.
+    Родное у подкласса: дерево (children), карточка объекта (card) и колонки
+    узла (node_columns). Каждый подкласс регистрируется в SourceKinds по
+    своему виду при объявлении.
     """
 
     TABLE_PREFIX: ClassVar[str] = ""
     PARTS: ClassVar[tuple[SnapshotPart, ...]] = ()
     FAMILIES: ClassVar[tuple[ObjectFamily, ...]] = ()
-    MANUAL_KIND: ClassVar[ObjectKind] = ObjectKind.TABLE
-    """Вид объектов, которые заводит ручной источник."""
     SYNC_TOOL: ClassVar[str] = ""
     """Имя инструмента, который снимает структуру источника кадрами
-    синхронизации; пусто — вид синхронизируется только вручную."""
+    синхронизации; пусто — у вида нет синхронизации."""
 
     kind: str
     """kind типа соединения; подкласс закрепляет его литералом."""
@@ -511,11 +495,6 @@ class SourceSnapshot(CatalogModel):
         except CatalogError:
             return False
 
-    def has_manual_object(self, path: Sequence[str]) -> bool:
-        """Есть ли объект ручного вида по пути."""
-        family = self.family(self.MANUAL_KIND)
-        return tuple(path) in Keyed.keys_of(self.records_of(family.part))
-
     def parts_of(self, ref: ObjectRef, kind: PartKind) -> tuple[SourceRecord, ...]:
         """Записи подчасти объекта (колонки, ограничения, …) в порядке снимка;
         пусто, если у семейства нет такой подчасти."""
@@ -567,26 +546,6 @@ class SourceSnapshot(CatalogModel):
     @abstractmethod
     def node_columns(self, ref: ObjectRef) -> tuple[NodeColumn, ...]:
         """Колонки объекта для карточки узла; у объектов без колонок пусто."""
-
-    @abstractmethod
-    def with_object(self, obj: ManualObject) -> Self:
-        """Снимок с объектом ручного источника; база и схема заводятся по пути.
-
-        Ошибки:
-        CatalogInvariantError — путь не той длины для этого вида источника.
-        """
-
-    @abstractmethod
-    def without_object(self, path: Sequence[str]) -> Self:
-        """Снимок без объекта по пути и без его подчастей."""
-
-    @abstractmethod
-    def manual_object(self, ref: ObjectRef) -> ManualObject:
-        """Короткое описание объекта для формы правки ручного источника.
-
-        Ошибки:
-        CatalogError — по адресу нет объекта или его вид не редактируется.
-        """
 
 
 class SourceKindsError(CatalogError):

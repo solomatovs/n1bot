@@ -28,11 +28,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import abstractmethod
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar, Protocol
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.cancellation import RunCancellation, StopReason, ToolStopped
 from boba.catalog import (
@@ -48,7 +48,6 @@ from boba.catalog import (
 )
 from boba.catalog_service.records import (
     CatalogServiceError,
-    ConnectionEntry,
     Sync,
     SyncClosedError,
     SyncConnectionNotBoundError,
@@ -69,6 +68,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "ConnectionDirectory",
+    "ConnectionInfo",
     "SyncCaller",
     "SyncObserver",
     "SyncPorts",
@@ -112,21 +112,28 @@ class SyncTools(Protocol):
     async def invoker(self, subject: Subject) -> ToolInvoker: ...
 
 
+class ConnectionInfo(BaseModel):
+    """Подключение глазами субъекта: имя для инструмента снятия и вид для
+    привязки к источнику."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: UUID
+    name: str = Field(min_length=1)
+    kind: str = Field(min_length=1)
+
+
 class ConnectionDirectory(Protocol):
-    """Справочник подключений глазами субъекта: список по виду для привязки
-    и имя по id для инструмента снятия.
+    """Справочник подключений глазами субъекта.
 
     Ошибки:
     SyncSetupError — подключение субъекту не видно или справочник недоступен.
     """
 
     @abstractmethod
-    async def visible(
-        self, subject: Subject, kind: str
-    ) -> Sequence[ConnectionEntry]: ...
-
-    @abstractmethod
-    async def name_of(self, subject: Subject, connection_id: UUID) -> str: ...
+    async def info_of(
+        self, subject: Subject, connection_id: UUID
+    ) -> ConnectionInfo: ...
 
 
 class SyncPorts:
@@ -333,9 +340,8 @@ class SyncRunner:
         if not await self._store.is_bound(source_id, request.connection_id):
             raise SyncConnectionNotBoundError(source_id, request.connection_id)
 
-        connection_name = await self._names.name_of(
-            caller.subject, request.connection_id
-        )
+        connection = await self._names.info_of(caller.subject, request.connection_id)
+        connection_name = connection.name
         sync_id = uuid4()
         sync = await self._store.start_sync(
             sync_id, source_id, request, caller.subject.user_id

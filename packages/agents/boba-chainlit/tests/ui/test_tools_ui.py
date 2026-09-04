@@ -1571,10 +1571,12 @@ class ProbeCatalog:
 
 
 @pytest.fixture(scope="module")
-def catalog_source(sandbox_stand: StandProcess) -> Iterator[str]:
+def catalog_source(
+    sandbox_stand: StandProcess, stand_db: StandDatabase
+) -> Iterator[str]:
     """Источник prod с версией 1 из образца домена; на выходе удаляется."""
     with api_client(sandbox_stand, "admin") as admin:
-        api = Api(admin)
+        api = Api(admin, stand_db)
         source_id = api.create_source("postgres", ProbeCatalog.SOURCE)
         snapshot = PgSample().snapshot().model_dump(mode="json")
         api.write_source_version(source_id, snapshot)

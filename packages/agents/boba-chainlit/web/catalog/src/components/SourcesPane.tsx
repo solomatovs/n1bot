@@ -136,7 +136,6 @@ function SourceBranch({ api, source, version, selected, onSelect, draggable }: B
       actions={
         <>
           <Chip tone="muted">{source.kind}</Chip>
-          {source.manual && <Chip tone="draft">manual</Chip>}
           <Chip tone="muted">{source.latest_version === 0 ? "no versions" : pinned}</Chip>
         </>
       }

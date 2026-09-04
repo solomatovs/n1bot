@@ -1,14 +1,14 @@
 import { RefreshCw } from "lucide-react";
 import { useState, type FormEvent, type ReactElement } from "react";
 
-import type { ConnectionEntry, SourceConnection, SyncScope } from "../../model/catalog";
+import type { ConnectionView, SourceConnection, SyncScope } from "../../model/catalog";
 import { Alert, Button, Dialog, Field, Form, Input, Row, Select, Toolbar } from "../../ui";
 import { connectionLabel } from "./ConnectionsDialog";
 
 type Props = {
   sourceName: string;
   bound: SourceConnection[];
-  directory: ConnectionEntry[];
+  directory: ConnectionView[];
   onStart: (connectionId: string, scope: SyncScope) => void;
   onClose: () => void;
 };

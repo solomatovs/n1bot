@@ -24,7 +24,7 @@ from enum import StrEnum
 from typing import Annotated, Any, ClassVar, TypeVar
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny
 
@@ -37,8 +37,6 @@ from boba.catalog import (
     OperationList,
     SourceDiff,
     SourceKindsError,
-    SourceOperationList,
-    SourceOpError,
     Staleness,
     TreeNode,
 )
@@ -48,7 +46,7 @@ from boba.catalog_service import (
     CatalogRefusalError,
     CatalogService,
     CatalogStoreError,
-    ConnectionEntry,
+    ConnectionAlreadyBoundError,
     Draft,
     DraftClosedError,
     DraftConflictError,
@@ -62,11 +60,9 @@ from boba.catalog_service import (
     ShareTargetKind,
     Source,
     SourceConnection,
-    SourceDraft,
-    SourceDraftNotFoundError,
-    SourceDraftState,
+    SourceCreate,
+    SourceKindMismatchError,
     SourceNotFoundError,
-    SourceNotManualError,
     SourceObjectNotFoundError,
     SourceSpec,
     SourceVersion,
@@ -89,12 +85,9 @@ from boba.catalog_service import (
     ViewSpec,
     ViewState,
 )
-from boba.chainlit.infra.session import ChainlitSession
-from boba.chat.profiles import ChatProfiles
+from boba.chainlit.catalog.subjects import ChainlitSubjects, SignedIn
 from boba.identity.context import HumanInitiator, Scope, Subject
-from boba.identity.signin import SignInMetadata
 from boba.messaging import CatalogChanged, Envelope, MessageBus
-from chainlit.auth import get_current_user, reuseable_oauth
 from chainlit.user import PersistedUser, User
 
 __all__ = [
@@ -113,22 +106,6 @@ logger = logging.getLogger(__name__)
 ServiceSource = Callable[[], Awaitable[CatalogService]]
 
 T = TypeVar("T")
-
-
-class SignedIn:
-    """Пользователь входа chainlit по запросу: токен из cookie или Authorization.
-
-    Обёртка вместо прямого Depends(get_current_user): схема безопасности
-    chainlit ломает генерацию OpenAPI, а тесты подменяют одну зависимость.
-    """
-
-    @staticmethod
-    async def user(request: Request) -> User | PersistedUser | None:
-        token = await reuseable_oauth(request)
-        if token is None:
-            return None
-
-        return await get_current_user(token)
 
 
 CurrentUser = Annotated[User | PersistedUser | None, Depends(SignedIn.user)]
@@ -161,7 +138,6 @@ class CatalogUrl(StrEnum):
     VIEW_SHARE = "/views/{view_id}/shares/{kind}/{target}"
     EVENTS = "/events"
     SOURCE_KINDS = "/source-kinds"
-    CONNECTIONS = "/connections"
     SOURCES = "/sources"
     SOURCE = "/sources/{source_id}"
     SOURCE_CONNECTIONS = "/sources/{source_id}/connections"
@@ -172,12 +148,6 @@ class CatalogUrl(StrEnum):
     SOURCE_DIFF = "/sources/{source_id}/diff"
     SOURCE_SYNCS = "/sources/{source_id}/syncs"
     SYNC = "/syncs/{sync_id}"
-    SOURCE_DRAFTS = "/sources/{source_id}/drafts"
-    SOURCE_DRAFT = "/source-drafts/{draft_id}"
-    SOURCE_DRAFT_OPS = "/source-drafts/{draft_id}/ops"
-    SOURCE_DRAFT_TREE = "/source-drafts/{draft_id}/tree"
-    SOURCE_DRAFT_OBJECT = "/source-drafts/{draft_id}/object"
-    SOURCE_DRAFT_PUBLISH = "/source-drafts/{draft_id}/publish"
 
 
 class DraftBody(BaseModel):
@@ -223,15 +193,6 @@ class ConnectionBody(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     connection_id: UUID
-
-
-class SourceOpsBody(BaseModel):
-    """Порция операций ручного источника с номером, на который она рассчитана."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    expected_seq: int = Field(ge=0)
-    operations: SourceOperationList
 
 
 class SnapshotBody(BaseModel):
@@ -299,9 +260,9 @@ class CatalogApi:
 
     TAG: ClassVar[str] = "catalog"
 
-    def __init__(self, service: ServiceSource, profiles: ChatProfiles) -> None:
+    def __init__(self, service: ServiceSource, subjects: ChainlitSubjects) -> None:
         self._service = service
-        self._profiles = profiles
+        self._subjects = subjects
 
     def mount(self, router: APIRouter) -> None:
         routes = (
@@ -335,7 +296,6 @@ class CatalogApi:
             (CatalogUrl.VIEW_SHARE, self.unshare, "DELETE"),
             (CatalogUrl.EVENTS, self.events, "GET"),
             (CatalogUrl.SOURCE_KINDS, self.source_kinds, "GET"),
-            (CatalogUrl.CONNECTIONS, self.connections, "GET"),
             (CatalogUrl.SOURCES, self.list_sources, "GET"),
             (CatalogUrl.SOURCES, self.create_source, "POST"),
             (CatalogUrl.SOURCE, self.get_source, "GET"),
@@ -353,14 +313,6 @@ class CatalogApi:
             (CatalogUrl.SOURCE_SYNCS, self.start_sync, "POST"),
             (CatalogUrl.SYNC, self.get_sync, "GET"),
             (CatalogUrl.SYNC, self.cancel_sync, "DELETE"),
-            (CatalogUrl.SOURCE_DRAFTS, self.source_drafts, "GET"),
-            (CatalogUrl.SOURCE_DRAFTS, self.create_source_draft, "POST"),
-            (CatalogUrl.SOURCE_DRAFT, self.source_draft_state, "GET"),
-            (CatalogUrl.SOURCE_DRAFT, self.discard_source_draft, "DELETE"),
-            (CatalogUrl.SOURCE_DRAFT_OPS, self.append_source_ops, "POST"),
-            (CatalogUrl.SOURCE_DRAFT_TREE, self.source_draft_tree, "GET"),
-            (CatalogUrl.SOURCE_DRAFT_OBJECT, self.source_draft_object, "GET"),
-            (CatalogUrl.SOURCE_DRAFT_PUBLISH, self.publish_source_draft, "POST"),
         )
         for path, handler, method in routes:
             router.add_api_route(path.value, handler, methods=[method], tags=[self.TAG])
@@ -590,16 +542,6 @@ class CatalogApi:
 
         return service.source_kinds()
 
-    async def connections(
-        self, kind: str, current_user: CurrentUser
-    ) -> Sequence[ConnectionEntry]:
-        """Подключения вида, видимые пользователю входа: кандидаты на привязку
-        и выбор в диалоге синхронизации."""
-        subject = self._subject(current_user)
-        service = await self._resolved()
-
-        return await self._guarded(service.connections_for(subject, kind))
-
     async def list_sources(self, current_user: CurrentUser) -> Sequence[Source]:
         subject = self._subject(current_user)
         service = await self._resolved()
@@ -607,8 +549,10 @@ class CatalogApi:
         return await self._guarded(service.list_sources(subject))
 
     async def create_source(
-        self, body: SourceSpec, current_user: CurrentUser
+        self, body: SourceCreate, current_user: CurrentUser
     ) -> Source:
+        """Источник от подключения: вид берётся у подключения, оно сразу
+        привязывается."""
         subject = self._subject(current_user)
         service = await self._resolved()
 
@@ -755,120 +699,19 @@ class CatalogApi:
 
         return await self._guarded(service.source_diff(subject, source_id, old, new))
 
-    async def source_drafts(
-        self, source_id: UUID, current_user: CurrentUser
-    ) -> Sequence[SourceDraft]:
-        subject = self._subject(current_user)
-        service = await self._resolved()
-
-        return await self._guarded(service.source_drafts(subject, source_id))
-
-    async def create_source_draft(
-        self, source_id: UUID, body: DraftBody, current_user: CurrentUser
-    ) -> SourceDraft:
-        subject = self._subject(current_user)
-        service = await self._resolved()
-
-        return await self._guarded(
-            service.create_source_draft(subject, source_id, body.name)
-        )
-
-    async def source_draft_state(
-        self, draft_id: UUID, current_user: CurrentUser
-    ) -> SourceDraftState:
-        subject = self._subject(current_user)
-        service = await self._resolved()
-
-        return await self._guarded(service.source_draft_state(subject, draft_id))
-
-    async def discard_source_draft(
-        self, draft_id: UUID, current_user: CurrentUser
-    ) -> SourceDraft:
-        subject = self._subject(current_user)
-        service = await self._resolved()
-
-        return await self._guarded(service.discard_source_draft(subject, draft_id))
-
-    async def source_draft_tree(
-        self,
-        draft_id: UUID,
-        current_user: CurrentUser,
-        path: Annotated[list[str], Query()] = [],  # noqa: B006
-    ) -> Sequence[TreeNode]:
-        subject = self._subject(current_user)
-        service = await self._resolved()
-
-        return await self._guarded(service.source_draft_tree(subject, draft_id, path))
-
-    async def source_draft_object(
-        self,
-        draft_id: UUID,
-        kind: ObjectKind,
-        path: Annotated[list[str], Query()],
-        current_user: CurrentUser,
-    ) -> SerializeAsAny[ObjectCard]:
-        subject = self._subject(current_user)
-        service = await self._resolved()
-
-        return await self._guarded(
-            service.source_draft_object(subject, draft_id, kind, path)
-        )
-
-    async def append_source_ops(
-        self, draft_id: UUID, body: SourceOpsBody, current_user: CurrentUser
-    ) -> SourceDraftState:
-        subject = self._subject(current_user)
-        service = await self._resolved()
-
-        return await self._guarded(
-            service.append_source_ops(
-                subject, draft_id, body.expected_seq, body.operations, AuthorVia.USER
-            )
-        )
-
-    async def publish_source_draft(
-        self, draft_id: UUID, current_user: CurrentUser
-    ) -> SourceVersion:
-        subject = self._subject(current_user)
-        service = await self._resolved()
-
-        return await self._guarded(
-            service.publish_source_draft(subject, draft_id, AuthorVia.USER)
-        )
-
     def _subject(self, current_user: User | PersistedUser | None) -> Subject:
         """Субъект по строке users под профилем по умолчанию для ролей входа."""
-        if not isinstance(current_user, PersistedUser):
-            got = type(current_user).__name__
-            msg = f"catalog api expects a signed-in persisted user, got {got}"
-            raise HTTPException(status_code=401, detail=msg)
-
-        try:
-            user_id = UUID(current_user.id)
-        except ValueError as exc:
-            msg = f"user id {current_user.id!r} is not the users.id uuid: {exc}"
-            raise HTTPException(status_code=401, detail=msg) from exc
-
-        roles = ChainlitSession.roles_of(current_user)
-        profile = self._profiles.default_name()
-
-        return Subject.of_user(user_id, current_user.identifier, roles, profile)
+        return self._subjects.of_user(current_user).subject
 
     def _caller(self, current_user: User | PersistedUser | None) -> SyncCaller:
         """Субъект входа с его секретами: инструмент снятия ходит в базу
         под билетом пользователя."""
-        subject = self._subject(current_user)
-        if not isinstance(current_user, PersistedUser):
-            got = type(current_user).__name__
-            msg = f"catalog api expects a signed-in persisted user, got {got}"
-            raise HTTPException(status_code=401, detail=msg)
-
-        sign_in = SignInMetadata.parse(current_user.metadata)
+        identity = self._subjects.of_user(current_user)
 
         return SyncCaller(
-            subject=subject,
+            subject=identity.subject,
             initiator=HumanInitiator(via="api"),
-            credential=sign_in.credential(),
+            credential=identity.credential,
         )
 
     async def _resolved(self) -> CatalogService:
@@ -891,12 +734,16 @@ class CatalogApi:
             SourceNotFoundError,
             SourceVersionNotFoundError,
             SourceObjectNotFoundError,
-            SourceDraftNotFoundError,
             ViewNodeNotFoundError,
             SyncNotFoundError,
         ) as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except (SourceNotManualError, SyncRunningError, SyncClosedError) as exc:
+        except (
+            SyncRunningError,
+            SyncClosedError,
+            SourceKindMismatchError,
+            ConnectionAlreadyBoundError,
+        ) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except (
             UnknownSourceKindError,
@@ -915,7 +762,7 @@ class CatalogApi:
             raise HTTPException(status_code=409, detail=detail) from exc
         except DraftClosedError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except (CatalogOpError, SourceOpError) as exc:
+        except CatalogOpError as exc:
             detail = {"message": str(exc), "index": exc.index, "reason": exc.reason}
             raise HTTPException(status_code=422, detail=detail) from exc
         except CatalogStoreError as exc:

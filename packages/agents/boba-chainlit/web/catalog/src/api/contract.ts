@@ -1,6 +1,6 @@
 import type { components } from "./schema";
 import type {
-  ConnectionEntry,
+  ConnectionView,
   Draft,
   ObjectCard,
   ProcessContext,
@@ -16,7 +16,8 @@ import type {
 
 /** Сверка zod-моделей страницы с OpenAPI-схемой API на этапе компиляции:
  * разбор на границе остаётся у zod, а расхождение полей ломает сборку.
- * Версии сравниваются без operations: страница их не читает. */
+ * Версии сравниваются без operations, подключения без profile: профиль
+ * страница разбирает по JSON Schema api, а не по типу. */
 type Schemas = components["schemas"];
 type Extends<A, B> = [A] extends [B] ? true : false;
 type Assert<T extends true> = T;
@@ -32,6 +33,6 @@ export type Contract = [
   Assert<Extends<Staleness, Schemas["Staleness"]>>,
   Assert<Extends<Source, Schemas["Source"]>>,
   Assert<Extends<Sync, Schemas["Sync"]>>,
-  Assert<Extends<ConnectionEntry, Schemas["ConnectionEntry"]>>,
+  Assert<Extends<Omit<ConnectionView, "profile">, Omit<Schemas["ConnectionView"], "profile">>>,
   Assert<Extends<ObjectCard["ref"], Schemas["ObjectRef"]>>,
 ];

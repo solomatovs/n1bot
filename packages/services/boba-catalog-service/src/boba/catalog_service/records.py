@@ -15,8 +15,8 @@ SourceNotFoundError — источника с таким id нет.
 SourceObjectNotFoundError — по адресу в версии источника или черновике нет
     объекта; where — где искали, reason — ответ сборки карточки.
 SourceVersionNotFoundError — у источника нет версии с таким номером.
-SourceDraftNotFoundError — черновика ручного источника с таким id нет.
-SourceNotManualError — источник синхронизируемый, правки операциями закрыты.
+SourceKindMismatchError — подключение другого вида, чем источник.
+ConnectionAlreadyBoundError — подключение уже стоит в другом источнике.
 SyncNotFoundError — синхронизации с таким id нет.
 SyncRunningError — у источника уже идёт синхронизация.
 SyncClosedError — синхронизация уже завершена, отменять нечего.
@@ -39,10 +39,7 @@ from boba.catalog import (
     NodeColumn,
     ObjectRef,
     OperationList,
-    SourceDiff,
-    SourceOperationList,
     SourceRecord,
-    SourceSnapshot,
     Staleness,
     SyncBatch,
 )
@@ -54,7 +51,7 @@ __all__ = [
     "CatalogRefusalKind",
     "CatalogServiceError",
     "CatalogStoreError",
-    "ConnectionEntry",
+    "ConnectionAlreadyBoundError",
     "Draft",
     "DraftAuthor",
     "DraftClosedError",
@@ -73,12 +70,9 @@ __all__ = [
     "ShareTargetKind",
     "Source",
     "SourceConnection",
-    "SourceDraft",
-    "SourceDraftNotFoundError",
-    "SourceDraftOp",
-    "SourceDraftState",
+    "SourceCreate",
+    "SourceKindMismatchError",
     "SourceNotFoundError",
-    "SourceNotManualError",
     "SourceObjectNotFoundError",
     "SourceSpec",
     "SourceVersion",
@@ -205,17 +199,38 @@ class SyncConnectionNotBoundError(CatalogServiceError):
         self.connection_id = connection_id
 
 
+class SourceKindMismatchError(CatalogServiceError):
+    """Подключение другого вида, чем источник: снимки не сравнимы."""
+
+    def __init__(self, source_id: UUID, source_kind: str, connection_kind: str) -> None:
+        msg = (
+            f"catalog: source {source_id} is {source_kind}, connection is "
+            f"{connection_kind}; a source groups connections of one kind"
+        )
+        super().__init__(msg)
+        self.source_id = source_id
+        self.source_kind = source_kind
+        self.connection_kind = connection_kind
+
+
+class ConnectionAlreadyBoundError(CatalogServiceError):
+    """Подключение уже стоит в другом источнике: одно подключение — один источник."""
+
+    def __init__(self, connection_id: UUID, source_id: UUID) -> None:
+        msg = (
+            f"catalog: connection {connection_id} is already bound to source "
+            f"{source_id}; unbind it first"
+        )
+        super().__init__(msg)
+        self.connection_id = connection_id
+        self.source_id = source_id
+
+
 class SourceVersionNotFoundError(CatalogServiceError):
     def __init__(self, source_id: UUID, version: int) -> None:
         super().__init__(f"catalog: source {source_id} has no version {version}")
         self.source_id = source_id
         self.version = version
-
-
-class SourceDraftNotFoundError(CatalogServiceError):
-    def __init__(self, draft_id: UUID) -> None:
-        super().__init__(f"catalog: source draft {draft_id} not found")
-        self.draft_id = draft_id
 
 
 class SourceObjectNotFoundError(CatalogServiceError):
@@ -248,14 +263,6 @@ class UnknownSourceKindError(CatalogServiceError):
         )
         self.kind = kind
         self.installed = tuple(installed)
-
-
-class SourceNotManualError(CatalogServiceError):
-    """Правки операциями открыты только ручному источнику."""
-
-    def __init__(self, source_id: UUID) -> None:
-        super().__init__(f"catalog: source {source_id} is synchronised, not manual")
-        self.source_id = source_id
 
 
 class CatalogRefusalKind(StrEnum):
@@ -487,18 +494,23 @@ class CatalogAccess(BaseModel):
 
 
 class SourceSpec(BaseModel):
-    """Что задаёт пользователь, заводя источник."""
+    """Имя и описание источника: то, чем пользователь помечает подключения."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    kind: str = Field(min_length=1)
     name: str = Field(min_length=1)
     description: str = ""
-    manual: bool = False
+
+
+class SourceCreate(SourceSpec):
+    """Новый источник от подключения: вид берётся у подключения."""
+
+    connection_id: UUID
 
 
 class Source(BaseModel):
-    """Источник метаданных: форма снимка, имя, ручной или синхронизируемый."""
+    """Источник метаданных: форма снимка (kind подключения), имя, описание и
+    номер последней версии."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -506,18 +518,14 @@ class Source(BaseModel):
     kind: str = Field(min_length=1)
     name: str = Field(min_length=1)
     description: str = ""
-    manual: bool
     created_by: UUID
     created_at: datetime
     latest_version: int = Field(ge=0)
+    connection_ids: tuple[UUID, ...] = ()
+    """Привязанные подключения по порядку привязки."""
 
     def spec(self) -> SourceSpec:
-        return SourceSpec(
-            kind=self.kind,
-            name=self.name,
-            description=self.description,
-            manual=self.manual,
-        )
+        return SourceSpec(name=self.name, description=self.description)
 
 
 class SourceConnection(BaseModel):
@@ -562,17 +570,6 @@ class SyncStatus(StrEnum):
     DONE = "done"
     FAILED = "failed"
     CANCELLED = "cancelled"
-
-
-class ConnectionEntry(BaseModel):
-    """Подключение из справочника глазами субъекта: id, имя, вид и владение."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    id: UUID
-    name: str
-    kind: str
-    mine: bool
 
 
 class SyncScope(BaseModel):
@@ -625,39 +622,3 @@ class Sync(BaseModel):
     objects_done: int = Field(ge=0, default=0)
     error: str | None = None
     version: int | None = None
-
-
-class SourceDraft(BaseModel):
-    """Черновик правок ручного источника над его версией base_version."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    id: UUID
-    source_id: UUID
-    name: str = Field(min_length=1)
-    base_version: int = Field(ge=0)
-    status: DraftStatus
-    created_by: UUID
-    created_at: datetime
-
-
-class SourceDraftOp(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    draft_id: UUID
-    seq: int = Field(ge=1)
-    author: DraftAuthor
-    operations: SourceOperationList
-    created_at: datetime
-
-
-class SourceDraftState(BaseModel):
-    """Черновик ручного источника, свёрнутый в снимок, и его diff относительно
-    базовой версии источника."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    draft: SourceDraft
-    snapshot: SerializeAsAny[SourceSnapshot]
-    diff: SourceDiff
-    seq: int = Field(ge=0)

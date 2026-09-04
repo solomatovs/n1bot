@@ -530,14 +530,6 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
                   >
                     add a source
                   </Button>
-                  <Button
-                    tone="ghost"
-                    onClick={() => {
-                      void navigate("/sources?manual=1");
-                    }}
-                  >
-                    manual source
-                  </Button>
                   {editable && <Button onClick={editing?.addLayer}>add a layer</Button>}
                 </Toolbar>
               </EmptyState>

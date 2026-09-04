@@ -70,7 +70,9 @@ describe("DraftEditor", () => {
     const { editor, seen } = editorOf(fake);
     fake.someoneElse();
 
-    const outcome = await editor.apply([{ op: "add_layer", layer: { id: "a", name: "a", position: 0, description: "" } }]);
+    const outcome = await editor.apply([
+      { op: "add_layer", layer: { id: "a", name: "a", position: 0, description: "" } },
+    ]);
 
     expect(outcome.kind).toBe("applied");
     expect(fake.conflicts).toBe(1);
@@ -84,7 +86,9 @@ describe("DraftEditor", () => {
     const { editor } = editorOf(fake);
 
     const rejected = await editor.apply([{ op: "remove_layer", id: "nope" }]);
-    const applied = await editor.apply([{ op: "add_layer", layer: { id: "a", name: "a", position: 0, description: "" } }]);
+    const applied = await editor.apply([
+      { op: "add_layer", layer: { id: "a", name: "a", position: 0, description: "" } },
+    ]);
 
     expect(rejected).toEqual({ kind: "rejected", reason: "layer not found" });
     expect(applied.kind).toBe("applied");

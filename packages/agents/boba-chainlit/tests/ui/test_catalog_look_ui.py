@@ -29,6 +29,7 @@ from catalog_ui import (
 )
 from playwright.sync_api import Browser, Page, ViewportSize, expect
 
+from boba.stand.ui.database import StandDatabase
 from boba.stand.ui.look import Css, Tokens, close, no_horizontal_scroll
 from boba.stand.ui.stand import REPO_ROOT, StandProcess
 
@@ -128,12 +129,12 @@ class Seeded:
 
 
 @pytest.fixture(scope="module")
-def seeded(stand: StandProcess) -> Iterator[Seeded]:
+def seeded(stand: StandProcess, stand_db: StandDatabase) -> Iterator[Seeded]:
     """Источник, процесс, вид и черновик через API: публикуется ровно один раз
     на модуль, на выходе черновик отменяется, вид удаляется, посеянное
     снимается публикацией и источник удаляется."""
     with api_client(stand, "admin") as admin:
-        api = Api(admin)
+        api = Api(admin, stand_db)
         seed = LookSeed(api, Look.spec())
         seed.publish("look seed")
         view_id = api.create_view("look view", [], [])
@@ -145,7 +146,7 @@ def seeded(stand: StandProcess) -> Iterator[Seeded]:
         yield seeded
     finally:
         with api_client(stand, "admin") as admin:
-            api = Api(admin)
+            api = Api(admin, stand_db)
             seed.api = api
             api.discard(seeded.draft_id)
             api.delete_view(seeded.view_id)

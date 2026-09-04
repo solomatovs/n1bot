@@ -246,7 +246,11 @@ def _use_catalog(c: AppConfig) -> None:
     from fastapi import APIRouter  # noqa: PLC0415
 
     from boba.chainlit.catalog.api import CatalogApi, CatalogUrl  # noqa: PLC0415
+    from boba.chainlit.catalog.subjects import ChainlitSubjects  # noqa: PLC0415
+    from boba.chainlit.catalog.sync_ports import BoundConnectionGuard  # noqa: PLC0415
     from boba.chat.profiles import ChatProfiles  # noqa: PLC0415
+    from boba.connection_broker.api import ConnectionsApi  # noqa: PLC0415
+    from boba.connection_broker.service import UserConnectionsService  # noqa: PLC0415
     from boba.runtime.spa import BuiltSpa  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
@@ -256,7 +260,18 @@ def _use_catalog(c: AppConfig) -> None:
     before = len(chainlit_app.router.routes)
 
     router = APIRouter(prefix=CatalogUrl.PREFIX.value)
-    CatalogApi(providers.catalog_service_ref, ChatProfiles(c.profiles)).mount(router)
+    subjects = ChainlitSubjects(ChatProfiles(c.profiles))
+    CatalogApi(providers.catalog_service_ref, subjects).mount(router)
+    # общий API соединений: подключения заводятся прямо в каталоге; привязанное
+    # к источнику подключение удалить нельзя
+    guards = (BoundConnectionGuard(providers.catalog_service_ref),)
+    ConnectionsApi(
+        UserConnectionsService(runtime.connection_store_ref, guards),
+        subjects.of_request,
+        runtime.credential_source_ref,
+        runtime.message_bus_ref,
+        runtime.connection_types_ref(),
+    ).mount(router)
     chainlit_app.include_router(router)
 
     prefix = c.chainlit.url_prefix

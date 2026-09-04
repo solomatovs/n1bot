@@ -12,6 +12,7 @@ from collections.abc import Coroutine
 from concurrent.futures import ThreadPoolExecutor
 from enum import StrEnum
 from typing import Any, ClassVar, LiteralString
+from uuid import UUID
 
 from psycopg import sql
 from psycopg.errors import InsufficientPrivilege
@@ -20,8 +21,14 @@ from boba.catalog_service import CatalogConfig, CatalogTable
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connections.manifest import ConnectionTypes
-from boba.connections.profile import ConnectionTable, GrantTarget, StoredRole
+from boba.connections.profile import (
+    ConnectionProfileBase,
+    ConnectionTable,
+    GrantTarget,
+    StoredRole,
+)
 from boba.db.clickhouse.profile import ClickHouseConfig
+from boba.db.clickhouse.snapshot import ChSourceKind
 from boba.db.postgres import AsyncPostgresPool, SqlNames
 from boba.db.postgres.profile.config import PostgresConfig
 from boba.identity.session import UserMetadataField
@@ -107,13 +114,15 @@ class StandDatabase:
             for table in workflow_tables:
                 await cur.execute(self._drop(workflow.db_schema, table.value))
 
-        catalog = bind(self._built, path="catalog", model=CatalogConfig)
-        async with self._pool() as pool, pool.cursor() as cur:
-            await cur.execute(
-                sql.SQL("drop schema if exists {} cascade").format(
-                    sql.Identifier(catalog.db_schema)
+        # секция каталога есть только у chainlit: у studio сносить нечего
+        if "catalog" in self._built:
+            catalog = bind(self._built, path="catalog", model=CatalogConfig)
+            async with self._pool() as pool, pool.cursor() as cur:
+                await cur.execute(
+                    sql.SQL("drop schema if exists {} cascade").format(
+                        sql.Identifier(catalog.db_schema)
+                    )
                 )
-            )
 
         await self._forget_studio_profiles()
 
@@ -239,6 +248,40 @@ class StandDatabase:
     def ddl(self, statement: LiteralString) -> None:
         """DDL в базе стенда: таблицы-пробники для синхронизации каталога."""
         run_blocking(self._execute(sql.Composed([sql.SQL(statement)]), None))
+
+    def add_connection(self, name: str, kind: str) -> UUID:
+        """Подключение стенда к своей базе под именем name: копия профиля
+        postgres или clickhouse стенда, выдана всем ролям стенда. Сеятели
+        каталога заводят по подключению на источник."""
+        return run_blocking(self._add_connection(name, kind))
+
+    async def _add_connection(self, name: str, kind: str) -> UUID:
+        connections = bind(self._built, path="connections", model=ConnectionsConfig)
+        profile: ConnectionProfileBase = self._postgres
+        if kind == ChSourceKind.CLICKHOUSE:
+            profile = bind(self._built, path="clickhouse", model=ClickHouseConfig)
+
+        async with self._pool() as pool:
+            store = ConnectionStore(connections, ConnectionTypes.discover(), pool)
+            connection_id = await store.add(name, profile)
+            roles = StoredRole.by_name(await store.roles())
+            for role_names in StandConfig.STAND_ROLES.values():
+                for role in role_names:
+                    await store.grant(connection_id, GrantTarget.role(roles[role]))
+
+        return connection_id
+
+    def remove_connections(self, prefix: str) -> None:
+        """Подключения стенда по префиксу имени: снос за сеятелями каталога."""
+        run_blocking(self._remove_connections(prefix))
+
+    async def _remove_connections(self, prefix: str) -> None:
+        connections = bind(self._built, path="connections", model=ConnectionsConfig)
+        async with self._pool() as pool:
+            store = ConnectionStore(connections, ConnectionTypes.discover(), pool)
+            for row in await store.list_all():
+                if row.name.startswith(prefix):
+                    await store.remove(row.id)
 
     def seed_connections(self, llm_port: int) -> None:
         """Соединения инструментов стенда: сервисные pg/ch под именем main и web-профиль

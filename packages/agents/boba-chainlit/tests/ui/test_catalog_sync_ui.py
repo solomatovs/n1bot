@@ -48,6 +48,7 @@ class Probe:
     TABLE: ClassVar[str] = "sync_probe"
     COLUMN: ClassVar[str] = "probe_note"
     CONNECTION: ClassVar[str] = "main"
+    CATALOG_SCHEMA: ClassVar[str] = "catalog"
 
     CREATE: Final = "create table public.sync_probe (id integer primary key, name text)"
     ALTER: Final = "alter table public.sync_probe add column probe_note text"
@@ -84,10 +85,14 @@ def sync_stand(
 
 
 class SyncApi:
-    """JSON API синхронизации от имени учётки стенда."""
+    """JSON API синхронизации от имени учётки стенда. Источник заводится от
+    подключения, поэтому на каждый источник в базу стенда кладётся копия
+    подключения стенда `<имя>_conn`; связка source_id и connection_id
+    возвращается парой."""
 
-    def __init__(self, client: httpx.Client) -> None:
+    def __init__(self, client: httpx.Client, stand_db: StandDatabase) -> None:
         self.client = client
+        self.stand_db = stand_db
 
     def connection_id(self, kind: str, name: str) -> str:
         entries = ok_list(
@@ -101,17 +106,15 @@ class SyncApi:
             f"connection {name!r} of kind {kind!r} is not visible: {entries}"
         )
 
-    def create_source(self, name: str) -> str:
-        body = {"kind": "postgres", "name": name, "manual": False, "description": ""}
-        return str(ok(self.client.post("/api/catalog/sources", json=body))["id"])
+    def add_connection(self, name: str) -> str:
+        return str(self.stand_db.add_connection(f"{name}_conn", "postgres"))
 
-    def bind(self, source_id: str, connection_id: str) -> None:
-        ok(
-            self.client.post(
-                f"/api/catalog/sources/{source_id}/connections",
-                json={"connection_id": connection_id},
-            )
-        )
+    def create_source(self, name: str) -> tuple[str, str]:
+        """Источник от нового подключения стенда: (source_id, connection_id)."""
+        connection_id = self.add_connection(name)
+        body = {"name": name, "description": "", "connection_id": connection_id}
+        source_id = str(ok(self.client.post("/api/catalog/sources", json=body))["id"])
+        return source_id, connection_id
 
     def start(
         self, source_id: str, connection_id: str, schemas: list[str]
@@ -171,11 +174,13 @@ class SyncApi:
             if str(source["name"]).startswith("src_sync"):
                 self.delete_source(str(source["id"]))
 
+        self.stand_db.remove_connections("src_sync")
+
 
 @pytest.fixture(scope="module")
-def sync_api(sync_stand: StandProcess) -> Iterator[SyncApi]:
+def sync_api(sync_stand: StandProcess, stand_db: StandDatabase) -> Iterator[SyncApi]:
     with api_client(sync_stand, "admin") as admin:
-        api = SyncApi(admin)
+        api = SyncApi(admin, stand_db)
         api.cleanup()
         try:
             yield api
@@ -230,9 +235,7 @@ class TestSyncApi:
     def test_full_sync_then_alter_and_drop(
         self, sync_api: SyncApi, stand_db: StandDatabase, stand_database: str
     ) -> None:
-        connection_id = sync_api.connection_id("postgres", Probe.CONNECTION)
-        source_id = sync_api.create_source(Probe.SOURCE)
-        sync_api.bind(source_id, connection_id)
+        source_id, connection_id = sync_api.create_source(Probe.SOURCE)
 
         stand_db.ddl(Probe.CREATE)
         first = sync_api.synced(source_id, connection_id, ["public"])
@@ -277,12 +280,43 @@ class TestSyncApi:
         listed = ok_list(sync_api.client.get(f"/api/catalog/sources/{source_id}/syncs"))
         assert [item["version"] for item in listed] == [3, 2, 1]
 
+    def test_repeated_sync_of_an_unchanged_database_has_no_diff(
+        self, sync_api: SyncApi, stand_database: str
+    ) -> None:
+        """Две синхронизации подряд без изменений в базе: версии равны, хотя
+        таблицы самого каталога между ними выросли — число строк и размер не
+        считаются изменением структуры. Схема каталога исключена: в ней на
+        время синхронизации живёт её же staging-таблица."""
+        source_id, connection_id = sync_api.create_source(f"{Probe.SOURCE}_twice")
+
+        probe = sync_api.synced(source_id, connection_id, [])
+        assert probe["version"] == 1
+        schemas: list[str] = []
+        for node in sync_api.tree(source_id, 1, [stand_database]):
+            if node["label"] != Probe.CATALOG_SCHEMA:
+                schemas.append(str(node["label"]))
+
+        assert Probe.CATALOG_SCHEMA not in schemas
+        assert len(schemas) > 1
+
+        second = sync_api.synced(source_id, connection_id, schemas)
+        third = sync_api.synced(source_id, connection_id, schemas)
+        assert second["version"] == 2
+        assert third["version"] == 3
+
+        assert sync_api.diff(source_id, 2, 3) == []
+        roots = sync_api.tree(source_id, 3, [])
+        assert [node["status"] for node in roots] == ["unchanged"]
+        statuses = {
+            str(node["label"]): str(node["status"])
+            for node in sync_api.tree(source_id, 3, [stand_database])
+        }
+        assert set(statuses.values()) == {"unchanged"}, statuses
+
     def test_reader_cannot_sync(
         self, sync_stand: StandProcess, sync_api: SyncApi
     ) -> None:
-        connection_id = sync_api.connection_id("postgres", Probe.CONNECTION)
-        source_id = sync_api.create_source(f"{Probe.SOURCE}_reader")
-        sync_api.bind(source_id, connection_id)
+        source_id, connection_id = sync_api.create_source(f"{Probe.SOURCE}_reader")
 
         with api_client(sync_stand, "dev") as reader:
             response = reader.post(
@@ -298,31 +332,49 @@ class TestSyncApi:
 class TestSyncPage:
     """Страница источника: подключения, диалог синхронизации, прогресс."""
 
-    def test_bind_sync_and_browse_the_new_version(
+    def test_assign_creates_a_source_then_sync_fills_it(
         self,
         tabs: Tabs,
         sync_stand: StandProcess,
         sync_api: SyncApi,
         stand_database: str,
     ) -> None:
-        connection_id = sync_api.connection_id("postgres", Probe.CONNECTION)
-        source_id = sync_api.create_source(Probe.UI_SOURCE)
+        """Подключение на странице источников помечается новым источником
+        (имя и описание), страница источника открывается, синхронизация через
+        это подключение даёт первую версию с деревом базы."""
+        name = Probe.UI_SOURCE
+        sync_api.add_connection(name)
+        connection = f"{name}_conn"
         page = tabs.page("admin")
-        _open_source(page, sync_stand, source_id)
-        expect(page.get_by_test_id("source-sync")).to_be_visible()
+        page.goto(f"{sync_stand.config.base_url}/catalog/sources")
+        expect(page.get_by_test_id("sources-page")).to_be_visible()
 
-        page.get_by_test_id("source-connections").click()
-        dialog = page.locator('[data-dialog="source-connections"]')
-        expect(dialog.get_by_test_id("no-connections")).to_be_visible()
-        dialog.get_by_label("connection to bind").select_option(connection_id)
-        dialog.get_by_test_id("bind-connection").click()
-        expect(dialog.get_by_test_id("bound-connections")).to_contain_text(
-            Probe.CONNECTION
+        row = page.locator(
+            f'[data-testid="connections-list"] li[data-connection="{connection}"]'
         )
-        dialog.get_by_role("button", name="close", exact=True).click()
+        expect(row.get_by_test_id("connection-source")).to_have_text("no source")
+        row.get_by_role("button", name=f"assign {connection} to a source").click()
+        dialog = page.locator('[data-dialog="assign-source"]')
+        dialog.get_by_role("tab", name="new source").click()
+        dialog.get_by_label("new source name").fill(name)
+        dialog.get_by_label("new source description").fill("made from the page")
+        dialog.get_by_test_id("assign-submit").click()
+
+        page.wait_for_url(
+            re.compile(r"/catalog/sources/[0-9a-f-]{36}$"), timeout=30_000
+        )
+        expect(page.get_by_test_id("page-title")).to_have_text(name)
+        expect(page.locator(".topbar")).to_contain_text("postgres")
         expect(page.get_by_test_id("source-connections")).to_contain_text(
             "connections · 1"
         )
+
+        page.get_by_test_id("source-connections").click()
+        connections = page.locator('[data-dialog="source-connections"]')
+        expect(connections.get_by_test_id("bound-connections")).to_contain_text(
+            connection
+        )
+        connections.get_by_role("button", name="close", exact=True).click()
 
         page.get_by_test_id("source-sync").click()
         sync_dialog = page.locator('[data-dialog="source-sync"]')
@@ -338,19 +390,23 @@ class TestSyncPage:
         expect(progress).to_have_attribute(
             "data-status", "done", timeout=SYNC_TIMEOUT_SEC * 1000
         )
-        expect(progress).to_contain_text(f"synced v1 via {Probe.CONNECTION}")
+        expect(progress).to_contain_text(f"synced v1 via {connection}")
         expect(page.get_by_label("source version")).to_have_value("1")
         expect(
             page.locator(f'[data-testid="tree-node"][data-path="{stand_database}"]')
         ).to_be_visible()
         expect(page.get_by_test_id("source-sync")).to_be_enabled()
 
+        page.goto(f"{sync_stand.config.base_url}/catalog/sources")
+        expect(row.get_by_test_id("connection-source")).to_have_text(name)
+        expect(
+            page.locator(f'[data-testid="sources-list"] li[data-source="{name}"]')
+        ).to_contain_text("1 connection")
+
     def test_cancel_stops_a_slow_sync(
         self, tabs: Tabs, sync_stand: StandProcess, sync_api: SyncApi
     ) -> None:
-        connection_id = sync_api.connection_id("postgres", Probe.CONNECTION)
-        source_id = sync_api.create_source(f"{Probe.UI_SOURCE}_slow")
-        sync_api.bind(source_id, connection_id)
+        source_id, _ = sync_api.create_source(f"{Probe.UI_SOURCE}_slow")
         page = tabs.page("admin")
         _open_source(page, sync_stand, source_id)
 
@@ -372,9 +428,8 @@ class TestSyncPage:
     def test_reader_sees_connections_without_controls(
         self, tabs: Tabs, sync_stand: StandProcess, sync_api: SyncApi
     ) -> None:
-        connection_id = sync_api.connection_id("postgres", Probe.CONNECTION)
-        source_id = sync_api.create_source(f"{Probe.UI_SOURCE}_reader")
-        sync_api.bind(source_id, connection_id)
+        name = f"{Probe.UI_SOURCE}_reader"
+        source_id, _ = sync_api.create_source(name)
         page = tabs.page("dev")
         _open_source(page, sync_stand, source_id)
 
@@ -382,7 +437,7 @@ class TestSyncPage:
         page.get_by_test_id("source-connections").click()
         dialog = page.locator('[data-dialog="source-connections"]')
         expect(dialog.get_by_test_id("bound-connections")).to_contain_text(
-            Probe.CONNECTION
+            f"{name}_conn"
         )
         expect(dialog.get_by_test_id("bind-connection")).to_have_count(0)
         expect(dialog.get_by_role("button", name=re.compile("^unbind"))).to_have_count(
@@ -402,9 +457,7 @@ class TestSyncLook:
     def test_dialogs_and_status_bar_follow_tokens(
         self, tabs: Tabs, sync_stand: StandProcess, sync_api: SyncApi, tokens: Tokens
     ) -> None:
-        connection_id = sync_api.connection_id("postgres", Probe.CONNECTION)
-        source_id = sync_api.create_source(f"{Probe.UI_SOURCE}_look")
-        sync_api.bind(source_id, connection_id)
+        source_id, connection_id = sync_api.create_source(f"{Probe.UI_SOURCE}_look")
         sync_api.synced(source_id, connection_id, ["public"])
 
         page = tabs.page("admin")
@@ -419,11 +472,10 @@ class TestSyncLook:
         page.get_by_test_id("source-connections").click()
         dialog = page.locator('[data-dialog="source-connections"] [role="dialog"]')
         expect(dialog).to_be_visible()
-        expect(dialog.get_by_test_id("bound-connections")).to_contain_text(
-            Probe.CONNECTION
-        )
-        expect(dialog.get_by_label("connection to bind")).to_be_disabled()
-        expect(dialog.get_by_test_id("bind-connection")).to_be_disabled()
+        expect(dialog.get_by_test_id("bound-connections")).to_contain_text("_conn")
+        # свободные подключения того же вида (main стенда) предлагаются к привязке
+        expect(dialog.get_by_label("connection to bind")).to_be_enabled()
+        expect(dialog.get_by_test_id("bind-connection")).to_be_enabled()
         page.keyboard.press("Escape")
         expect(dialog).to_have_count(0)
 
@@ -440,9 +492,7 @@ class TestSyncLook:
     def test_narrow_screen_keeps_the_page_without_horizontal_scroll(
         self, tabs: Tabs, sync_stand: StandProcess, sync_api: SyncApi
     ) -> None:
-        connection_id = sync_api.connection_id("postgres", Probe.CONNECTION)
-        source_id = sync_api.create_source(f"{Probe.UI_SOURCE}_narrow")
-        sync_api.bind(source_id, connection_id)
+        source_id, connection_id = sync_api.create_source(f"{Probe.UI_SOURCE}_narrow")
         sync_api.synced(source_id, connection_id, ["public"])
 
         page = tabs.page("admin", NARROW)

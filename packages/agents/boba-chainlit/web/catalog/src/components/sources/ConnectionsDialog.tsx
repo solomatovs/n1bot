@@ -1,7 +1,7 @@
 import { Link2, Unlink } from "lucide-react";
 import { useState, type ReactElement } from "react";
 
-import type { ConnectionEntry, SourceConnection } from "../../model/catalog";
+import type { ConnectionView, SourceConnection } from "../../model/catalog";
 import {
   Alert,
   Button,
@@ -22,7 +22,7 @@ import {
 type Props = {
   sourceName: string;
   bound: SourceConnection[];
-  directory: ConnectionEntry[];
+  directory: ConnectionView[];
   directoryError: string | null;
   canEdit: boolean;
   onBind: (connectionId: string) => void;
@@ -31,7 +31,7 @@ type Props = {
 };
 
 /** Имя подключения по id из справочника; чужая или удалённая строка — сам id. */
-export function connectionLabel(connectionId: string, directory: ConnectionEntry[]): string {
+export function connectionLabel(connectionId: string, directory: ConnectionView[]): string {
   const entry = directory.find((item) => item.id === connectionId);
   if (entry === undefined) {
     return connectionId;

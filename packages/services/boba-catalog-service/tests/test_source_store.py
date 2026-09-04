@@ -10,28 +10,18 @@ import pytest
 from psycopg import sql
 
 from boba.catalog import (
-    AddObject,
     ChangeStatus,
-    ManualColumn,
-    ManualObject,
     ObjectKind,
     ObjectRef,
-    RemoveObject,
     SourceKinds,
-    SourceOperationList,
-    SourceOpError,
     SourceRecord,
     SourceSnapshot,
 )
 from boba.catalog_service import (
-    AuthorVia,
     CatalogConfig,
-    DraftAuthor,
-    DraftConflictError,
-    DraftStaleError,
-    DraftStatus,
+    ConnectionAlreadyBoundError,
+    SourceKindMismatchError,
     SourceNotFoundError,
-    SourceNotManualError,
     SourceSpec,
     SourceStore,
     SourceVersionNotFoundError,
@@ -57,16 +47,13 @@ KINDS = SourceKinds.of(PgSnapshot, ChSnapshot)
 SCHEMA = "catalog_sources_test"
 ADMIN = UUID(int=71)
 CONNECTION = UUID(int=72)
+OTHER = UUID(int=73)
 
 
 def _config() -> CatalogConfig:
     return CatalogConfig(
         enable=True, db_schema=SCHEMA, view_roles=("viewer",), edit_roles=("editor",)
     )
-
-
-def _author() -> DraftAuthor:
-    return DraftAuthor(user_id=ADMIN, via=AuthorVia.USER)
 
 
 @pytest.fixture
@@ -84,14 +71,13 @@ async def store(pool: AsyncPostgresPool) -> SourceStore:
 
 async def test_sources_and_connections(store: SourceStore) -> None:
     prod = await store.create_source(
-        SourceSpec(kind=PgSourceKind.POSTGRES, name="prod", description="Прод"), ADMIN
+        SourceSpec(name="prod", description="Прод"), PgSourceKind.POSTGRES, ADMIN
     )
     assert prod.kind == PgSourceKind.POSTGRES
     assert prod.latest_version == 0
-    assert prod.manual is False
 
     dwh = await store.create_source(
-        SourceSpec(kind=ChSourceKind.CLICKHOUSE, name="dwh"), ADMIN
+        SourceSpec(name="dwh"), ChSourceKind.CLICKHOUSE, ADMIN
     )
     assert [s.name for s in await store.list_sources()] == ["dwh", "prod"]
 
@@ -101,9 +87,19 @@ async def test_sources_and_connections(store: SourceStore) -> None:
     assert renamed.name == "prod2"
     assert (await store.get_source(prod.id)).name == "prod2"
 
-    bound = await store.bind_connection(prod.id, CONNECTION, ADMIN)
+    bound = await store.bind_connection(
+        prod.id, CONNECTION, PgSourceKind.POSTGRES, ADMIN
+    )
     assert bound.connection_id == CONNECTION
-    await store.bind_connection(prod.id, CONNECTION, ADMIN)
+    await store.bind_connection(prod.id, CONNECTION, PgSourceKind.POSTGRES, ADMIN)
+    assert (await store.holder_of(CONNECTION)) == await store.get_source(prod.id)
+
+    with pytest.raises(SourceKindMismatchError):
+        await store.bind_connection(prod.id, OTHER, ChSourceKind.CLICKHOUSE, ADMIN)
+
+    with pytest.raises(ConnectionAlreadyBoundError):
+        await store.bind_connection(dwh.id, CONNECTION, ChSourceKind.CLICKHOUSE, ADMIN)
+
     assert [c.connection_id for c in await store.connections_of(prod.id)] == [
         CONNECTION
     ]
@@ -118,7 +114,7 @@ async def test_sources_and_connections(store: SourceStore) -> None:
 async def test_postgres_version_round_trips(store: SourceStore) -> None:
     sample = PgSample()
     prod = await store.create_source(
-        SourceSpec(kind=PgSourceKind.POSTGRES, name="prod"), ADMIN
+        SourceSpec(name="prod"), PgSourceKind.POSTGRES, ADMIN
     )
 
     version = await store.write_version(
@@ -163,7 +159,7 @@ async def test_postgres_version_round_trips(store: SourceStore) -> None:
 async def test_clickhouse_version_round_trips(store: SourceStore) -> None:
     sample = ChSample()
     dwh = await store.create_source(
-        SourceSpec(kind=ChSourceKind.CLICKHOUSE, name="dwh"), ADMIN
+        SourceSpec(name="dwh"), ChSourceKind.CLICKHOUSE, ADMIN
     )
 
     await store.write_version(dwh.id, sample.snapshot(), VersionOrigin(taken_by=ADMIN))
@@ -177,85 +173,12 @@ async def test_clickhouse_version_round_trips(store: SourceStore) -> None:
 
 async def test_snapshot_kind_must_match_source(store: SourceStore) -> None:
     dwh = await store.create_source(
-        SourceSpec(kind=ChSourceKind.CLICKHOUSE, name="dwh"), ADMIN
+        SourceSpec(name="dwh"), ChSourceKind.CLICKHOUSE, ADMIN
     )
     with pytest.raises(Exception, match="snapshot is postgres"):
         await store.write_version(
             dwh.id, PgSample().snapshot(), VersionOrigin(taken_by=ADMIN)
         )
-
-
-async def test_manual_source_drafts(store: SourceStore) -> None:
-    prod = await store.create_source(
-        SourceSpec(kind=PgSourceKind.POSTGRES, name="prod"), ADMIN
-    )
-    with pytest.raises(SourceNotManualError):
-        await store.create_draft(prod.id, "nope", ADMIN)
-
-    planned = await store.create_source(
-        SourceSpec(kind=PgSourceKind.POSTGRES, name="planned", manual=True), ADMIN
-    )
-    draft = await store.create_draft(planned.id, "first objects", ADMIN)
-    assert draft.base_version == 0
-    assert draft.status is DraftStatus.OPEN
-    assert [d.id for d in await store.open_drafts(planned.id)] == [draft.id]
-
-    sales = ManualObject(
-        path=("planned", "dm", "sales"),
-        comment="Витрина",
-        columns=(ManualColumn(name="day", type="date", nullable=False),),
-    )
-    state = await store.append_ops(
-        draft.id, 0, SourceOperationList(root=(AddObject(object=sales),)), _author()
-    )
-    assert state.seq == 1
-    assert isinstance(state.snapshot, PgSnapshot)
-    assert state.snapshot.relation(("planned", "dm", "sales")) is not None
-    added = ObjectRef(
-        source_id=planned.id, kind=ObjectKind.RELATION, path=("planned", "dm", "sales")
-    )
-    assert state.diff.status_of(added) is ChangeStatus.ADDED
-
-    with pytest.raises(DraftConflictError) as conflict:
-        await store.append_ops(
-            draft.id, 0, SourceOperationList(root=(AddObject(object=sales),)), _author()
-        )
-
-    assert conflict.value.current_seq == 1
-
-    with pytest.raises(SourceOpError):
-        await store.append_ops(
-            draft.id, 1, SourceOperationList(root=(AddObject(object=sales),)), _author()
-        )
-
-    reread = await store.draft_state(draft.id)
-    assert reread.seq == 1
-    assert reread.snapshot == state.snapshot
-
-    version = await store.publish_draft(draft.id, _author())
-    assert version.version == 1
-    assert version.sync_id is None
-    assert (await store.get_draft(draft.id)).status is DraftStatus.PUBLISHED
-    published = await store.snapshot_of(planned.id, 1)
-    assert isinstance(published, PgSnapshot)
-    assert [r.name for r in published.relations] == ["sales"]
-
-    stale = await store.create_draft(planned.id, "stale", ADMIN)
-    await store.write_version(planned.id, published, VersionOrigin(taken_by=ADMIN))
-    await store.append_ops(
-        stale.id,
-        0,
-        SourceOperationList(root=(RemoveObject(path=("planned", "dm", "sales")),)),
-        _author(),
-    )
-    with pytest.raises(DraftStaleError) as error:
-        await store.publish_draft(stale.id, _author())
-
-    assert error.value.current_version == 2
-
-    discarded = await store.discard_draft(stale.id)
-    assert discarded.status is DraftStatus.DISCARDED
-    assert await store.open_drafts(planned.id) == []
 
 
 def _sorted(snapshot: SourceSnapshot) -> dict[str, list[SourceRecord]]:

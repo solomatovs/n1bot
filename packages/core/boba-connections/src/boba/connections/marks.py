@@ -22,3 +22,4 @@ class ConnectionRefusal(StrEnum):
     NOT_VISIBLE = "connection_not_visible"
     NOT_OWNED = "connection_not_owned"
     NAME_TAKEN = "connection_name_taken"
+    IN_USE = "connection_in_use"

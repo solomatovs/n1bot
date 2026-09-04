@@ -122,6 +122,13 @@ class ApiAuth:
         """Зависимость FastAPI: субъект текущего запроса под профилем из ?profile=."""
         return await ApiAuth.of_app(request.app).subject_of_request(request, profile)
 
+    @staticmethod
+    async def subject_of(request: Request) -> ApiSubject:
+        """Резолвер для общих API (соединения): профиль из ?profile= запроса."""
+        profile = request.query_params.get("profile")
+
+        return await ApiAuth.of_app(request.app).subject_of_request(request, profile)
+
 
 CurrentUser = Annotated[AuthenticatedUser, Depends(ApiAuth.current)]
 CurrentSubject = Annotated[ApiSubject, Depends(ApiAuth.subject)]

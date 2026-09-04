@@ -1,8 +1,7 @@
 """Хранилище источников метаданных в Postgres: источники, привязки
 подключений, версии со снимками в родной структуре (по таблице на род
 записи, полная копия на версию), записи синхронизаций со staging-таблицей
-порций на время синхронизации, черновики ручных источников с порциями
-операций.
+порций на время синхронизации.
 
 Таблицы снимков выводятся из объявления частей снимка каждого вида
 (SourceSnapshot.parts): спецификация SnapshotTable строится по модели записи
@@ -15,16 +14,12 @@ CatalogStoreError — Postgres недоступен, ответ битый, ст
     в снимок.
 SourceNotFoundError — источника с таким id нет.
 SourceVersionNotFoundError — у источника нет такой версии.
-SourceDraftNotFoundError — черновика ручного источника нет.
-SourceNotManualError — черновики открыты только ручному источнику.
-DraftClosedError — черновик уже опубликован или отброшен.
-DraftConflictError — expected_seq не равен последнему seq черновика.
-DraftStaleError — base_version черновика отстал от версии источника.
-SourceOpError — порция не применима к снимку черновика.
 SyncNotFoundError — синхронизации с таким id нет.
 SyncRunningError — у источника уже идёт синхронизация.
 SyncClosedError — синхронизация уже завершена.
 SyncConnectionNotBoundError — подключение синхронизации не привязано к источнику.
+SourceKindMismatchError — подключение другого вида, чем источник.
+ConnectionAlreadyBoundError — подключение уже стоит в другом источнике.
 """
 
 from __future__ import annotations
@@ -47,7 +42,6 @@ from boba.catalog import (
     SnapshotPart,
     SourceDiff,
     SourceKinds,
-    SourceOperationList,
     SourceRecord,
     SourceSnapshot,
     SyncBatch,
@@ -56,19 +50,11 @@ from boba.catalog import (
 from boba.catalog_service.config import CatalogConfig
 from boba.catalog_service.records import (
     CatalogStoreError,
-    DraftAuthor,
-    DraftClosedError,
-    DraftConflictError,
-    DraftStaleError,
-    DraftStatus,
+    ConnectionAlreadyBoundError,
     Source,
     SourceConnection,
-    SourceDraft,
-    SourceDraftNotFoundError,
-    SourceDraftOp,
-    SourceDraftState,
+    SourceKindMismatchError,
     SourceNotFoundError,
-    SourceNotManualError,
     SourceSpec,
     SourceVersion,
     SourceVersionNotFoundError,
@@ -99,8 +85,6 @@ class SourceTable(StrEnum):
     SOURCE_CONNECTIONS = "source_connections"
     SOURCE_VERSIONS = "source_versions"
     SYNCS = "syncs"
-    SOURCE_DRAFTS = "source_drafts"
-    SOURCE_DRAFT_OPS = "source_draft_ops"
 
 
 class SqlType(StrEnum):
@@ -262,7 +246,6 @@ class SourcesColumn(StrEnum):
     KIND = "kind"
     NAME = "name"
     DESCRIPTION = "description"
-    MANUAL = "manual"
     CREATED_BY = "created_by"
     CREATED_AT = "created_at"
 
@@ -298,26 +281,6 @@ class SyncsColumn(StrEnum):
     OBJECTS_DONE = "objects_done"
     ERROR = "error"
     VERSION = "version"
-
-
-class SourceDraftsColumn(StrEnum):
-    ID = "id"
-    SOURCE_ID = "source_id"
-    NAME = "name"
-    BASE_VERSION = "base_version"
-    STATUS = "status"
-    CREATED_BY = "created_by"
-    CREATED_AT = "created_at"
-    CLOSED_AT = "closed_at"
-
-
-class SourceDraftOpsColumn(StrEnum):
-    DRAFT_ID = "draft_id"
-    SEQ = "seq"
-    AUTHOR_ID = "author_id"
-    VIA = "via"
-    OPERATIONS = "operations"
-    CREATED_AT = "created_at"
 
 
 class SnapshotKey(StrEnum):
@@ -376,8 +339,7 @@ class SourceStore(PostgresTable):
 
     def _sql(self, text: LiteralString) -> sql.Composed:
         """SQL с именами таблиц по значению enum и колонок с префиксом:
-        s_ sources, sc_ source_connections, sv_ source_versions, sy_ syncs,
-        sd_ source_drafts, so_ source_draft_ops."""
+        s_ sources, sc_ source_connections, sv_ source_versions, sy_ syncs."""
         names: dict[str, sql.Composable] = {}
         for table in SourceTable:
             names[table.value] = self._table(table)
@@ -387,8 +349,6 @@ class SourceStore(PostgresTable):
             "sc": SourceConnectionsColumn,
             "sv": SourceVersionsColumn,
             "sy": SyncsColumn,
-            "sd": SourceDraftsColumn,
-            "so": SourceDraftOpsColumn,
         }
         for prefix, columns in prefixed.items():
             for column in columns:
@@ -431,7 +391,6 @@ class SourceStore(PostgresTable):
                     {s_kind}        text not null,
                     {s_name}        text not null unique,
                     {s_description} text not null default '',
-                    {s_manual}      boolean not null default false,
                     {s_created_by}  uuid not null,
                     {s_created_at}  timestamptz not null default now()
                 )
@@ -484,36 +443,17 @@ class SourceStore(PostgresTable):
                 )
                 """
             ),
-            self._sql(
-                """
-                create table if not exists {source_drafts} (
-                    {sd_id}           uuid primary key,
-                    {sd_source_id}    uuid not null references {sources} ({s_id})
-                                      on delete cascade,
-                    {sd_name}         text not null,
-                    {sd_base_version} integer not null,
-                    {sd_status}       text not null,
-                    {sd_created_by}   uuid not null,
-                    {sd_created_at}   timestamptz not null default now(),
-                    {sd_closed_at}    timestamptz null
-                )
-                """
-            ),
-            self._sql(
-                """
-                create table if not exists {source_draft_ops} (
-                    {so_draft_id}   uuid not null references {source_drafts} ({sd_id})
-                                    on delete cascade,
-                    {so_seq}        integer not null,
-                    {so_author_id}  uuid not null,
-                    {so_via}        text not null,
-                    {so_operations} jsonb not null,
-                    {so_created_at} timestamptz not null default now(),
-                    primary key ({so_draft_id}, {so_seq})
-                )
-                """
-            ),
         ]
+        # одно подключение — не больше чем в одном источнике; дубли из старых
+        # развёртываний ломают создание индекса, и ошибка называет таблицу
+        statements.append(
+            self._sql(
+                """
+                create unique index if not exists source_connections_connection_uq
+                on {source_connections} ({sc_connection_id})
+                """
+            )
+        )
         for spec in self._tables.all():
             statements.append(self._snapshot_ddl(spec))
 
@@ -555,26 +495,26 @@ class SourceStore(PostgresTable):
 
     # --- источники ---
 
-    async def create_source(self, spec: SourceSpec, created_by: UUID) -> Source:
+    async def create_source(
+        self, spec: SourceSpec, kind: str, created_by: UUID
+    ) -> Source:
+        """Источник заданного вида; вид приходит от первого подключения."""
         source_id = uuid4()
         async with self._transaction(f"create source {spec.name!r}") as cur:
             await cur.execute(
                 self._sql(
                     """
                     insert into {sources}
-                        ({s_id}, {s_kind}, {s_name}, {s_description}, {s_manual},
-                         {s_created_by})
+                        ({s_id}, {s_kind}, {s_name}, {s_description}, {s_created_by})
                     values
-                        (%(id)s, %(kind)s, %(name)s, %(description)s, %(manual)s,
-                         %(created_by)s)
+                        (%(id)s, %(kind)s, %(name)s, %(description)s, %(created_by)s)
                     """
                 ),
                 {
                     "id": source_id,
-                    "kind": spec.kind,
+                    "kind": kind,
                     "name": spec.name,
                     "description": spec.description,
-                    "manual": spec.manual,
                     "created_by": created_by,
                 },
             )
@@ -603,8 +543,7 @@ class SourceStore(PostgresTable):
                     """
                     update {sources}
                     set {s_name} = %(name)s,
-                        {s_description} = %(description)s,
-                        {s_manual} = %(manual)s
+                        {s_description} = %(description)s
                     where {s_id} = %(id)s
                     """
                 ),
@@ -612,7 +551,6 @@ class SourceStore(PostgresTable):
                     "id": source_id,
                     "name": spec.name,
                     "description": spec.description,
-                    "manual": spec.manual,
                 },
             )
             return await self._source(cur, source_id)
@@ -628,12 +566,25 @@ class SourceStore(PostgresTable):
     # --- подключения ---
 
     async def bind_connection(
-        self, source_id: UUID, connection_id: UUID, bound_by: UUID
+        self, source_id: UUID, connection_id: UUID, kind: str, bound_by: UUID
     ) -> SourceConnection:
+        """Привязка подключения вида kind; повтор той же привязки безвреден.
+
+        Ошибки:
+        SourceKindMismatchError — вид подключения не совпадает с видом источника.
+        ConnectionAlreadyBoundError — подключение стоит в другом источнике.
+        """
         async with self._transaction(
             f"bind connection {connection_id} to source {source_id}"
         ) as cur:
-            await self._source(cur, source_id)
+            source = await self._source(cur, source_id, lock=True)
+            if source.kind != kind:
+                raise SourceKindMismatchError(source_id, source.kind, kind)
+
+            holder = await self._holder(cur, connection_id)
+            if holder is not None and holder != source_id:
+                raise ConnectionAlreadyBoundError(connection_id, holder)
+
             await cur.execute(
                 self._sql(
                     """
@@ -688,6 +639,31 @@ class SourceStore(PostgresTable):
                 {"source_id": source_id, "connection_id": connection_id},
             )
             return cur.rowcount > 0
+
+    async def holder_of(self, connection_id: UUID) -> Source | None:
+        """Источник, в котором стоит подключение; None — свободно."""
+        async with self._transaction(f"holder of connection {connection_id}") as cur:
+            source_id = await self._holder(cur, connection_id)
+            if source_id is None:
+                return None
+
+            return await self._source(cur, source_id)
+
+    async def _holder(self, cur: Cursor, connection_id: UUID) -> UUID | None:
+        await cur.execute(
+            self._sql(
+                """
+                select {sc_source_id} from {source_connections}
+                where {sc_connection_id} = %(connection_id)s
+                """
+            ),
+            {"connection_id": connection_id},
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+
+        return row[SourceConnectionsColumn.SOURCE_ID.value]
 
     async def is_bound(self, source_id: UUID, connection_id: UUID) -> bool:
         async with self._transaction(
@@ -1150,178 +1126,16 @@ class SourceStore(PostgresTable):
         for row in rows:
             await self._drop_staging(cur, row[SyncsColumn.ID.value])
 
-    # --- черновики ручного источника ---
-
-    async def create_draft(
-        self, source_id: UUID, name: str, created_by: UUID
-    ) -> SourceDraft:
-        async with self._transaction(
-            f"create draft {name!r} of source {source_id}"
-        ) as cur:
-            source = await self._source(cur, source_id)
-            if not source.manual:
-                raise SourceNotManualError(source_id)
-
-            draft_id = uuid4()
-            await cur.execute(
-                self._sql(
-                    """
-                    insert into {source_drafts}
-                        ({sd_id}, {sd_source_id}, {sd_name}, {sd_base_version},
-                         {sd_status}, {sd_created_by})
-                    values
-                        (%(id)s, %(source_id)s, %(name)s, %(base_version)s,
-                         %(status)s, %(created_by)s)
-                    """
-                ),
-                {
-                    "id": draft_id,
-                    "source_id": source_id,
-                    "name": name,
-                    "base_version": source.latest_version,
-                    "status": DraftStatus.OPEN.value,
-                    "created_by": created_by,
-                },
-            )
-            return await self._draft(cur, draft_id, lock=False)
-
-    async def get_draft(self, draft_id: UUID) -> SourceDraft:
-        async with self._transaction(f"get source draft {draft_id}") as cur:
-            return await self._draft(cur, draft_id, lock=False)
-
-    async def open_drafts(self, source_id: UUID) -> Sequence[SourceDraft]:
-        async with self._transaction(f"open drafts of source {source_id}") as cur:
-            await cur.execute(
-                self._sql(
-                    """
-                    select {sd_id}, {sd_source_id}, {sd_name}, {sd_base_version},
-                           {sd_status}, {sd_created_by}, {sd_created_at}
-                    from {source_drafts}
-                    where {sd_source_id} = %(source_id)s
-                      and {sd_status} = %(status)s
-                    order by {sd_created_at}
-                    """
-                ),
-                {"source_id": source_id, "status": DraftStatus.OPEN.value},
-            )
-            rows = await cur.fetchall()
-
-        drafts: list[SourceDraft] = []
-        for row in rows:
-            drafts.append(self._parse(SourceDraft, dict(row)))
-
-        return drafts
-
-    async def discard_draft(self, draft_id: UUID) -> SourceDraft:
-        async with self._transaction(f"discard source draft {draft_id}") as cur:
-            draft = await self._draft(cur, draft_id, lock=True)
-            self._require_open(draft)
-            return await self._set_status(cur, draft_id, DraftStatus.DISCARDED)
-
-    async def draft_state(self, draft_id: UUID) -> SourceDraftState:
-        async with self._transaction(f"state of source draft {draft_id}") as cur:
-            draft = await self._draft(cur, draft_id, lock=False)
-            source = await self._source(cur, draft.source_id)
-            base = await self._base_snapshot(cur, source, draft.base_version)
-            ops = await self._ops_of(cur, draft_id)
-            snapshot = self._fold(base, ops)
-            seq = 0
-            if ops:
-                seq = ops[-1].seq
-
-            return SourceDraftState(
-                draft=draft,
-                snapshot=snapshot,
-                diff=SourceDiff.between(source.id, base, snapshot),
-                seq=seq,
-            )
-
-    async def append_ops(
-        self,
-        draft_id: UUID,
-        expected_seq: int,
-        operations: SourceOperationList,
-        author: DraftAuthor,
-    ) -> SourceDraftState:
-        """Порция операций с проверкой номера: seq черновика под блокировкой.
-
-        Ошибки:
-        DraftConflictError — expected_seq отстал.
-        SourceOpError — порция не применима к текущему снимку черновика.
-        """
-        async with self._transaction(f"append ops to source draft {draft_id}") as cur:
-            draft = await self._draft(cur, draft_id, lock=True)
-            self._require_open(draft)
-            source = await self._source(cur, draft.source_id)
-            ops = await self._ops_of(cur, draft_id)
-            current_seq = 0
-            if ops:
-                current_seq = ops[-1].seq
-
-            if current_seq != expected_seq:
-                raise DraftConflictError(draft_id, expected_seq, current_seq)
-
-            base = await self._base_snapshot(cur, source, draft.base_version)
-            folded = self._fold(base, ops)
-            snapshot = operations.apply(folded)
-
-            await cur.execute(
-                self._sql(
-                    """
-                    insert into {source_draft_ops}
-                        ({so_draft_id}, {so_seq}, {so_author_id}, {so_via},
-                         {so_operations})
-                    values (%(draft_id)s, %(seq)s, %(author_id)s, %(via)s,
-                            %(operations)s)
-                    """
-                ),
-                {
-                    "draft_id": draft_id,
-                    "seq": current_seq + 1,
-                    "author_id": author.user_id,
-                    "via": author.via.value,
-                    "operations": Jsonb(operations.model_dump(mode="json")),
-                },
-            )
-
-            return SourceDraftState(
-                draft=draft,
-                snapshot=snapshot,
-                diff=SourceDiff.between(source.id, base, snapshot),
-                seq=current_seq + 1,
-            )
-
-    async def publish_draft(self, draft_id: UUID, author: DraftAuthor) -> SourceVersion:
-        """Свёрнутый снимок черновика становится новой версией источника.
-
-        Ошибки:
-        DraftStaleError — источник ушёл вперёд после base_version.
-        """
-        async with self._transaction(f"publish source draft {draft_id}") as cur:
-            draft = await self._draft(cur, draft_id, lock=True)
-            self._require_open(draft)
-            source = await self._source(cur, draft.source_id, lock=True)
-            if source.latest_version != draft.base_version:
-                raise DraftStaleError(
-                    draft_id, draft.base_version, source.latest_version
-                )
-
-            base = await self._base_snapshot(cur, source, draft.base_version)
-            ops = await self._ops_of(cur, draft_id)
-            snapshot = self._fold(base, ops)
-            snapshot.check()
-            origin = VersionOrigin(taken_by=author.user_id)
-            version = await self._write_version(cur, source, snapshot, origin)
-            await self._set_status(cur, draft_id, DraftStatus.PUBLISHED)
-            return version
-
     # --- внутреннее: источники и версии ---
 
     SOURCE_SELECT: ClassVar[LiteralString] = """
-        select s.{s_id}, s.{s_kind}, s.{s_name}, s.{s_description}, s.{s_manual},
+        select s.{s_id}, s.{s_kind}, s.{s_name}, s.{s_description},
                s.{s_created_by}, s.{s_created_at},
                coalesce((select max(v.{sv_version}) from {source_versions} v
-                         where v.{sv_source_id} = s.{s_id}), 0) as latest_version
+                         where v.{sv_source_id} = s.{s_id}), 0) as latest_version,
+               coalesce((select array_agg(c.{sc_connection_id} order by c.{sc_bound_at})
+                         from {source_connections} c
+                         where c.{sc_source_id} = s.{s_id}), '{{}}') as connection_ids
         from {sources} s
         """
 
@@ -1379,14 +1193,6 @@ class SourceStore(PostgresTable):
 
     def _empty(self, kind: str) -> SourceSnapshot:
         return self._kinds.empty(kind)
-
-    async def _base_snapshot(
-        self, cur: Cursor, source: Source, version: int
-    ) -> SourceSnapshot:
-        if version == 0:
-            return self._empty(source.kind)
-
-        return await self._read_snapshot(cur, source, version)
 
     # --- внутреннее: строки снимка ---
 
@@ -1478,86 +1284,6 @@ class SourceStore(PostgresTable):
             payload[column.field] = row[column.column]
 
         return self._parse(spec.model, payload)
-
-    # --- внутреннее: черновики ---
-
-    async def _draft(self, cur: Cursor, draft_id: UUID, *, lock: bool) -> SourceDraft:
-        query: LiteralString = """
-            select {sd_id}, {sd_source_id}, {sd_name}, {sd_base_version},
-                   {sd_status}, {sd_created_by}, {sd_created_at}
-            from {source_drafts}
-            where {sd_id} = %(id)s
-            """
-        if lock:
-            query = query + " for update"
-
-        await cur.execute(self._sql(query), {"id": draft_id})
-        row = await cur.fetchone()
-        if row is None:
-            raise SourceDraftNotFoundError(draft_id)
-
-        return self._parse(SourceDraft, dict(row))
-
-    @staticmethod
-    def _require_open(draft: SourceDraft) -> None:
-        if draft.status is DraftStatus.OPEN:
-            return
-
-        raise DraftClosedError(draft.id, draft.status)
-
-    async def _set_status(
-        self, cur: Cursor, draft_id: UUID, status: DraftStatus
-    ) -> SourceDraft:
-        await cur.execute(
-            self._sql(
-                """
-                update {source_drafts}
-                set {sd_status} = %(status)s, {sd_closed_at} = now()
-                where {sd_id} = %(id)s
-                """
-            ),
-            {"id": draft_id, "status": status.value},
-        )
-        return await self._draft(cur, draft_id, lock=False)
-
-    async def _ops_of(self, cur: Cursor, draft_id: UUID) -> Sequence[SourceDraftOp]:
-        await cur.execute(
-            self._sql(
-                """
-                select {so_draft_id}, {so_seq}, {so_author_id}, {so_via},
-                       {so_operations}, {so_created_at}
-                from {source_draft_ops}
-                where {so_draft_id} = %(draft_id)s
-                order by {so_seq}
-                """
-            ),
-            {"draft_id": draft_id},
-        )
-        rows = await cur.fetchall()
-        ops: list[SourceDraftOp] = []
-        for row in rows:
-            ops.append(
-                self._parse(
-                    SourceDraftOp,
-                    {
-                        "draft_id": row["draft_id"],
-                        "seq": row["seq"],
-                        "author": {"user_id": row["author_id"], "via": row["via"]},
-                        "operations": row["operations"],
-                        "created_at": row["created_at"],
-                    },
-                )
-            )
-
-        return ops
-
-    @staticmethod
-    def _fold(base: SourceSnapshot, ops: Sequence[SourceDraftOp]) -> SourceSnapshot:
-        current = base
-        for op in ops:
-            current = op.operations.apply(current)
-
-        return current
 
     def _parse(self, model: type[ModelT], payload: dict[str, Any]) -> ModelT:
         try:

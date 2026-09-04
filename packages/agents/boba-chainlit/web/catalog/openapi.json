@@ -1174,53 +1174,6 @@
         }
       }
     },
-    "/api/catalog/connections": {
-      "get": {
-        "tags": [
-          "catalog"
-        ],
-        "summary": "Connections",
-        "description": "Подключения вида, видимые пользователю входа: кандидаты на привязку\nи выбор в диалоге синхронизации.",
-        "operationId": "connections_api_catalog_connections_get",
-        "parameters": [
-          {
-            "name": "kind",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Kind"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/ConnectionEntry"
-                  },
-                  "title": "Response Connections Api Catalog Connections Get"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/catalog/sources": {
       "get": {
         "tags": [
@@ -1250,12 +1203,13 @@
           "catalog"
         ],
         "summary": "Create Source",
+        "description": "Источник от подключения: вид берётся у подключения, оно сразу\nпривязывается.",
         "operationId": "create_source_api_catalog_sources_post",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/SourceSpec"
+                "$ref": "#/components/schemas/SourceCreate"
               }
             }
           },
@@ -1489,7 +1443,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ConnectionBody"
+                "$ref": "#/components/schemas/boba__chainlit__catalog__api__ConnectionBody"
               }
             }
           }
@@ -2056,22 +2010,51 @@
         }
       }
     },
-    "/api/catalog/sources/{source_id}/drafts": {
+    "/api/catalog/connections/schema": {
       "get": {
         "tags": [
-          "catalog"
+          "connections"
         ],
-        "summary": "Source Drafts",
-        "operationId": "source_drafts_api_catalog_sources__source_id__drafts_get",
+        "summary": "Schema",
+        "description": "Схема профиля с вариантами по kind и method; секреты — format=password.",
+        "operationId": "schema_api_catalog_connections_schema_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Schema Api Catalog Connections Schema Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/connections": {
+      "get": {
+        "tags": [
+          "connections"
+        ],
+        "summary": "List Connections",
+        "operationId": "list_connections_api_catalog_connections_get",
         "parameters": [
           {
-            "name": "source_id",
-            "in": "path",
-            "required": true,
+            "name": "kind",
+            "in": "query",
+            "required": false,
             "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Source Id"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
             }
           }
         ],
@@ -2083,9 +2066,9 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/SourceDraft"
+                    "$ref": "#/components/schemas/ConnectionView"
                   },
-                  "title": "Response Source Drafts Api Catalog Sources  Source Id  Drafts Get"
+                  "title": "Response List Connections Api Catalog Connections Get"
                 }
               }
             }
@@ -2104,28 +2087,16 @@
       },
       "post": {
         "tags": [
-          "catalog"
+          "connections"
         ],
-        "summary": "Create Source Draft",
-        "operationId": "create_source_draft_api_catalog_sources__source_id__drafts_post",
-        "parameters": [
-          {
-            "name": "source_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Source Id"
-            }
-          }
-        ],
+        "summary": "Create",
+        "operationId": "create_api_catalog_connections_post",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/DraftBody"
+                "$ref": "#/components/schemas/boba__connection_broker__api__ConnectionBody"
               }
             }
           }
@@ -2136,7 +2107,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SourceDraft"
+                  "$ref": "#/components/schemas/ConnectionView"
                 }
               }
             }
@@ -2154,22 +2125,65 @@
         }
       }
     },
-    "/api/catalog/source-drafts/{draft_id}": {
-      "get": {
+    "/api/catalog/connections/check": {
+      "post": {
         "tags": [
-          "catalog"
+          "connections"
         ],
-        "summary": "Source Draft State",
-        "operationId": "source_draft_state_api_catalog_source_drafts__draft_id__get",
+        "summary": "Check",
+        "description": "Пробное соединение по профилю из формы; делегирование — билетом входа.",
+        "operationId": "check_api_catalog_connections_check_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProbeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProbeResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/connections/{connection_id}/check": {
+      "post": {
+        "tags": [
+          "connections"
+        ],
+        "summary": "Check Stored",
+        "description": "Пробное соединение по сохранённой строке: видимой пользователю.",
+        "operationId": "check_stored_api_catalog_connections__connection_id__check_post",
         "parameters": [
           {
-            "name": "draft_id",
+            "name": "connection_id",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string",
               "format": "uuid",
-              "title": "Draft Id"
+              "title": "Connection Id"
             }
           }
         ],
@@ -2179,7 +2193,60 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SourceDraftState"
+                  "$ref": "#/components/schemas/ProbeResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/connections/{connection_id}": {
+      "put": {
+        "tags": [
+          "connections"
+        ],
+        "summary": "Replace",
+        "operationId": "replace_api_catalog_connections__connection_id__put",
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Connection Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/boba__connection_broker__api__ConnectionBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionView"
                 }
               }
             }
@@ -2198,19 +2265,19 @@
       },
       "delete": {
         "tags": [
-          "catalog"
+          "connections"
         ],
-        "summary": "Discard Source Draft",
-        "operationId": "discard_source_draft_api_catalog_source_drafts__draft_id__delete",
+        "summary": "Delete",
+        "operationId": "delete_api_catalog_connections__connection_id__delete",
         "parameters": [
           {
-            "name": "draft_id",
+            "name": "connection_id",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string",
               "format": "uuid",
-              "title": "Draft Id"
+              "title": "Connection Id"
             }
           }
         ],
@@ -2220,226 +2287,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SourceDraft"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/catalog/source-drafts/{draft_id}/ops": {
-      "post": {
-        "tags": [
-          "catalog"
-        ],
-        "summary": "Append Source Ops",
-        "operationId": "append_source_ops_api_catalog_source_drafts__draft_id__ops_post",
-        "parameters": [
-          {
-            "name": "draft_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Draft Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SourceOpsBody"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SourceDraftState"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/catalog/source-drafts/{draft_id}/tree": {
-      "get": {
-        "tags": [
-          "catalog"
-        ],
-        "summary": "Source Draft Tree",
-        "operationId": "source_draft_tree_api_catalog_source_drafts__draft_id__tree_get",
-        "parameters": [
-          {
-            "name": "draft_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Draft Id"
-            }
-          },
-          {
-            "name": "path",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": [],
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/TreeNode"
-                  },
-                  "title": "Response Source Draft Tree Api Catalog Source Drafts  Draft Id  Tree Get"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/catalog/source-drafts/{draft_id}/object": {
-      "get": {
-        "tags": [
-          "catalog"
-        ],
-        "summary": "Source Draft Object",
-        "operationId": "source_draft_object_api_catalog_source_drafts__draft_id__object_get",
-        "parameters": [
-          {
-            "name": "draft_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Draft Id"
-            }
-          },
-          {
-            "name": "kind",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/ObjectKind"
-            }
-          },
-          {
-            "name": "path",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ObjectCard"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/catalog/source-drafts/{draft_id}/publish": {
-      "post": {
-        "tags": [
-          "catalog"
-        ],
-        "summary": "Publish Source Draft",
-        "operationId": "publish_source_draft_api_catalog_source_drafts__draft_id__publish_post",
-        "parameters": [
-          {
-            "name": "draft_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Draft Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SourceVersion"
+                  "$ref": "#/components/schemas/ConnectionDeleted"
                 }
               }
             }
@@ -2593,25 +2441,6 @@
         ],
         "title": "AddNode"
       },
-      "AddObject": {
-        "properties": {
-          "op": {
-            "type": "string",
-            "const": "add_object",
-            "title": "Op",
-            "default": "add_object"
-          },
-          "object": {
-            "$ref": "#/components/schemas/ManualObject"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "object"
-        ],
-        "title": "AddObject"
-      },
       "AuthorVia": {
         "type": "string",
         "enum": [
@@ -2745,22 +2574,42 @@
         "title": "ColumnSide",
         "description": "С какого конца потока берутся колонки поля вида."
       },
-      "ConnectionBody": {
+      "ConnectionDeleted": {
         "properties": {
-          "connection_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Connection Id"
+          "deleted": {
+            "type": "boolean",
+            "title": "Deleted"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "connection_id"
+          "deleted"
         ],
-        "title": "ConnectionBody"
+        "title": "ConnectionDeleted"
       },
-      "ConnectionEntry": {
+      "ConnectionProfileBase": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "description": "Дискриминатор типа: значение задаёт наследник."
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "description": "Для чего это соединение: текст читает LLM в connection_list, чтобы выбрать имя под задачу пользователя.",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "title": "ConnectionProfileBase",
+        "description": "Профиль соединения; наследник сужает kind до Literal своего значения."
+      },
+      "ConnectionView": {
         "properties": {
           "id": {
             "type": "string",
@@ -2778,6 +2627,21 @@
           "mine": {
             "type": "boolean",
             "title": "Mine"
+          },
+          "available": {
+            "type": "boolean",
+            "title": "Available",
+            "default": true
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConnectionProfileBase"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false,
@@ -2788,8 +2652,8 @@
           "kind",
           "mine"
         ],
-        "title": "ConnectionEntry",
-        "description": "Подключение из справочника глазами субъекта: id, имя, вид и владение."
+        "title": "ConnectionView",
+        "description": "Строка connections для страницы: профиль с замаскированными секретами.\n\navailable=False — тип строки не установлен в этом развёртывании: профиля\nнет, страница показывает пометку вместо формы."
       },
       "Deleted": {
         "properties": {
@@ -3360,93 +3224,6 @@
         "title": "LoadSpec",
         "description": "Правило загрузки потока: вид и значения по его полям."
       },
-      "ManualColumn": {
-        "properties": {
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Name"
-          },
-          "type": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Type"
-          },
-          "nullable": {
-            "type": "boolean",
-            "title": "Nullable",
-            "default": true
-          },
-          "comment": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Comment"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "name",
-          "type"
-        ],
-        "title": "ManualColumn"
-      },
-      "ManualObject": {
-        "properties": {
-          "kind": {
-            "$ref": "#/components/schemas/ManualObjectKind",
-            "default": "table"
-          },
-          "path": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "minItems": 2,
-            "title": "Path"
-          },
-          "comment": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Comment"
-          },
-          "columns": {
-            "items": {
-              "$ref": "#/components/schemas/ManualColumn"
-            },
-            "type": "array",
-            "title": "Columns",
-            "default": []
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "path"
-        ],
-        "title": "ManualObject",
-        "description": "Объект ручного источника: путь как у реального (Postgres: база, схема,\nимя; ClickHouse: база, имя), вид, комментарий, колонки по порядку."
-      },
-      "ManualObjectKind": {
-        "type": "string",
-        "enum": [
-          "table",
-          "view"
-        ],
-        "title": "ManualObjectKind"
-      },
       "Node-Input": {
         "properties": {
           "id": {
@@ -3863,6 +3640,46 @@
         "title": "PinBump",
         "description": "Черновик после поднятия привязок и что в нём перестало сходиться."
       },
+      "ProbeBody": {
+        "properties": {
+          "profile": {
+            "type": "object",
+            "title": "Profile"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "profile"
+        ],
+        "title": "ProbeBody",
+        "description": "Сырой профиль на проверку: как в форме, ещё не сохранённый."
+      },
+      "ProbeResult": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "elapsed_ms": {
+            "type": "integer",
+            "title": "Elapsed Ms"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ok",
+          "message",
+          "elapsed_ms"
+        ],
+        "title": "ProbeResult",
+        "description": "Исход проверки: удалось ли открыть соединение, что ответил сервер, за сколько."
+      },
       "ProcessContext": {
         "properties": {
           "pins": {
@@ -4054,30 +3871,6 @@
         "title": "RemoveNode",
         "description": "Удаление узла; отказывает, пока на узел ссылается поток."
       },
-      "RemoveObject": {
-        "properties": {
-          "op": {
-            "type": "string",
-            "const": "remove_object",
-            "title": "Op",
-            "default": "remove_object"
-          },
-          "path": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "minItems": 2,
-            "title": "Path"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "path"
-        ],
-        "title": "RemoveObject"
-      },
       "RetargetNode-Input": {
         "properties": {
           "op": {
@@ -4265,25 +4058,6 @@
         "title": "SetNode",
         "description": "Замена узла целиком: слой, псевдоним, заметка; адрес меняет RetargetNode."
       },
-      "SetObject": {
-        "properties": {
-          "op": {
-            "type": "string",
-            "const": "set_object",
-            "title": "Op",
-            "default": "set_object"
-          },
-          "object": {
-            "$ref": "#/components/schemas/ManualObject"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "object"
-        ],
-        "title": "SetObject"
-      },
       "ShareMode": {
         "type": "string",
         "enum": [
@@ -4336,10 +4110,6 @@
             "title": "Description",
             "default": ""
           },
-          "manual": {
-            "type": "boolean",
-            "title": "Manual"
-          },
           "created_by": {
             "type": "string",
             "format": "uuid",
@@ -4354,6 +4124,15 @@
             "type": "integer",
             "minimum": 0.0,
             "title": "Latest Version"
+          },
+          "connection_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "title": "Connection Ids",
+            "default": []
           }
         },
         "additionalProperties": false,
@@ -4362,13 +4141,12 @@
           "id",
           "kind",
           "name",
-          "manual",
           "created_by",
           "created_at",
           "latest_version"
         ],
         "title": "Source",
-        "description": "Источник метаданных: форма снимка, имя, ручной или синхронизируемый."
+        "description": "Источник метаданных: форма снимка (kind подключения), имя, описание и\nномер последней версии."
       },
       "SourceConnection": {
         "properties": {
@@ -4404,6 +4182,33 @@
         "title": "SourceConnection",
         "description": "Подключение брокера, привязанное к источнику."
       },
+      "SourceCreate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "connection_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Connection Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "connection_id"
+        ],
+        "title": "SourceCreate",
+        "description": "Новый источник от подключения: вид берётся у подключения."
+      },
       "SourceDiff": {
         "properties": {
           "entries": {
@@ -4422,144 +4227,8 @@
         "title": "SourceDiff",
         "description": "Список изменений между двумя версиями одного источника.\n\nСчитается по адресам: объект ищется в обеих версиях по ключу, поля\nсравниваются по значению. Базы и схемы тоже входят в список, чтобы дерево\nмогло пометить контейнеры."
       },
-      "SourceDraft": {
-        "properties": {
-          "id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Id"
-          },
-          "source_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Source Id"
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Name"
-          },
-          "base_version": {
-            "type": "integer",
-            "minimum": 0.0,
-            "title": "Base Version"
-          },
-          "status": {
-            "$ref": "#/components/schemas/DraftStatus"
-          },
-          "created_by": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Created By"
-          },
-          "created_at": {
-            "type": "string",
-            "format": "date-time",
-            "title": "Created At"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "id",
-          "source_id",
-          "name",
-          "base_version",
-          "status",
-          "created_by",
-          "created_at"
-        ],
-        "title": "SourceDraft",
-        "description": "Черновик правок ручного источника над его версией base_version."
-      },
-      "SourceDraftState": {
-        "properties": {
-          "draft": {
-            "$ref": "#/components/schemas/SourceDraft"
-          },
-          "snapshot": {
-            "$ref": "#/components/schemas/SourceSnapshot"
-          },
-          "diff": {
-            "$ref": "#/components/schemas/SourceDiff"
-          },
-          "seq": {
-            "type": "integer",
-            "minimum": 0.0,
-            "title": "Seq"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "draft",
-          "snapshot",
-          "diff",
-          "seq"
-        ],
-        "title": "SourceDraftState",
-        "description": "Черновик ручного источника, свёрнутый в снимок, и его diff относительно\nбазовой версии источника."
-      },
-      "SourceOperationList": {
-        "items": {
-          "anyOf": [
-            {
-              "$ref": "#/components/schemas/AddObject"
-            },
-            {
-              "$ref": "#/components/schemas/SetObject"
-            },
-            {
-              "$ref": "#/components/schemas/RemoveObject"
-            }
-          ]
-        },
-        "type": "array",
-        "title": "SourceOperationList",
-        "description": "Список операций ручного источника: разбор JSON на границе и применение\nк снимку с проверкой инвариантов после каждой операции."
-      },
-      "SourceOpsBody": {
-        "properties": {
-          "expected_seq": {
-            "type": "integer",
-            "minimum": 0.0,
-            "title": "Expected Seq"
-          },
-          "operations": {
-            "$ref": "#/components/schemas/SourceOperationList"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "expected_seq",
-          "operations"
-        ],
-        "title": "SourceOpsBody",
-        "description": "Порция операций ручного источника с номером, на который она рассчитана."
-      },
-      "SourceSnapshot": {
-        "properties": {
-          "kind": {
-            "type": "string",
-            "title": "Kind"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "kind"
-        ],
-        "title": "SourceSnapshot",
-        "description": "Снимок источника одной версии: плоские таблицы записей по частям.\n\nПодкласс объявляет вид (литерал kind), префикс таблиц хранения, части\n(PARTS, в порядке от родителей к детям) и семейства объектов\n(FAMILIES). По этим объявлениям база проверяет инварианты, считает\nобъекты, находит объект и колонки по адресу, отдаёт записи по частям.\nРодное у подкласса: дерево (children), карточка объекта (card), колонки\nузла (node_columns) и правки ручного источника (with_object,\nwithout_object). Каждый подкласс регистрируется в SourceKinds по своему\nвиду при объявлении."
-      },
       "SourceSpec": {
         "properties": {
-          "kind": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Kind"
-          },
           "name": {
             "type": "string",
             "minLength": 1,
@@ -4569,21 +4238,15 @@
             "type": "string",
             "title": "Description",
             "default": ""
-          },
-          "manual": {
-            "type": "boolean",
-            "title": "Manual",
-            "default": false
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "kind",
           "name"
         ],
         "title": "SourceSpec",
-        "description": "Что задаёт пользователь, заводя источник."
+        "description": "Имя и описание источника: то, чем пользователь помечает подключения."
       },
       "SourceVersion": {
         "properties": {
@@ -5209,6 +4872,43 @@
         ],
         "title": "ViewState",
         "description": "Всё для страницы вида одним ответом: сам вид, номер текущей версии,\nсрез опубликованного каталога по фильтру вида, сохранённая раскладка и\nпризнак, что вид принадлежит субъекту и он вправе его править."
+      },
+      "boba__chainlit__catalog__api__ConnectionBody": {
+        "properties": {
+          "connection_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Connection Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "connection_id"
+        ],
+        "title": "ConnectionBody"
+      },
+      "boba__connection_broker__api__ConnectionBody": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "profile": {
+            "type": "object",
+            "title": "Profile"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "profile"
+        ],
+        "title": "ConnectionBody",
+        "description": "Имя и сырой профиль соединения: модель выбирает реестр типов на границе."
       }
     }
   }
