@@ -62,7 +62,11 @@ class Container:
     @classmethod
     def begin_call(cls) -> "Container":
         if cls.root is None:
-            raise RuntimeError("DI Container is not initialised (set_root)")
+            msg = (
+                "DI begin_call: the root container is not initialised, "
+                "Container.set_root must run first"
+            )
+            raise RuntimeError(msg)
 
         session = None
         if cls._session_hook:
@@ -92,7 +96,11 @@ class Container:
         owner = self._owner(scope)
         if provider not in owner._cache:
             name = getattr(provider, "__name__", repr(provider))
-            msg = f"provider {name} is not warmed up (eager/start/provide)"
+            msg = (
+                f"DI resolved: provider {name} has no value in the {owner.level} "
+                "container yet; it must be warmed up by eager/start or set by "
+                "provide before a synchronous read"
+            )
             raise RuntimeError(msg)
         return owner._cache[provider]
 
@@ -107,10 +115,13 @@ class Container:
         owner = self._owner(dep.scope)
 
         if _outer is not None and self._RANK[owner.level] > self._RANK[_outer.level]:
-            raise RuntimeError(
-                f"scope violation: provider of level {_outer.level} depends on "
-                f"{dep.scope} (level {owner.level})"
+            dep_name = getattr(dep.provider, "__name__", repr(dep.provider))
+            msg = (
+                f"DI scope violation: a provider of level {_outer.level} depends on "
+                f"{dep_name} of scope {dep.scope} (level {owner.level}), which "
+                "lives shorter than its dependant"
             )
+            raise RuntimeError(msg)
 
         if dep.scope not in self._CACHED:
             kwargs = await self._resolve_sub_deps(dep.provider, owner)
@@ -140,7 +151,11 @@ class Container:
         while c is not None and c.level != target:
             c = c.parent
         if c is None:
-            raise RuntimeError(f"no container of level {target} (scope={scope})")
+            msg = (
+                f"DI container of level {target} for scope {scope} is not in the "
+                f"parent chain of the {self.level} container"
+            )
+            raise RuntimeError(msg)
         return c
 
     async def _resolve_sub_deps(
@@ -204,7 +219,11 @@ def di_inject(fn: Callable) -> Callable:
     @functools.wraps(fn)
     def sync_shim(*args: Any, **kwargs: Any) -> Any:
         if Container.root is None:
-            raise RuntimeError("DI Container is not initialised (set_root)")
+            msg = (
+                f"DI inject of {fn.__name__}: the root container is not "
+                "initialised, Container.set_root must run first"
+            )
+            raise RuntimeError(msg)
         resolved = {
             name: Container.root.resolved(dep.provider, scope=dep.scope)
             for name, dep in deps.items()

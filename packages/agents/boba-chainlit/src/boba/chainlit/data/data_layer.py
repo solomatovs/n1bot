@@ -108,7 +108,10 @@ class AttachmentDataLayer(BaseDataLayer, ABC):
         """Слой данных приложения, адресующий вложения; иной — ошибка сборки."""
         layer = get_data_layer()
         if not isinstance(layer, cls):
-            msg = f"data layer does not address attachments: {type(layer)}"
+            msg = (
+                f"attachments expect a {cls.__name__} data layer, "
+                f"got {type(layer).__name__}"
+            )
             raise RuntimeError(msg)
 
         return layer
@@ -118,15 +121,16 @@ class Codec:
     """Перевод значений между словарями chainlit и строками сервиса."""
 
     @staticmethod
-    def require(value: _T | None) -> _T:
+    def require(value: _T | None, field: str) -> _T:
         if value is None:
-            raise DataBrokenError("codec", "required value is missing")
+            msg = f"chainlit dict field {field!r} is required, got None"
+            raise DataBrokenError("codec", msg)
 
         return value
 
     @staticmethod
-    def uuid(value: str | None) -> UUID:
-        return UUID(Codec.require(value))
+    def uuid(value: str | None, field: str) -> UUID:
+        return UUID(Codec.require(value, field))
 
     @staticmethod
     def uuid_opt(value: str | None) -> UUID | None:
@@ -223,13 +227,13 @@ class ElementDicts:
             props = {}
 
         return StoredElement(
-            id=Codec.uuid(data.get(ElementField.ID)),
+            id=Codec.uuid(data.get(ElementField.ID), ElementField.ID),
             thread_id=Codec.uuid_opt(data.get(ElementField.THREAD_ID)),
             for_id=Codec.uuid_opt(data.get(ElementField.FOR_ID)),
-            type=Codec.require(data.get(ElementField.TYPE)),
+            type=Codec.require(data.get(ElementField.TYPE), ElementField.TYPE),
             chainlit_key=Codec.text(data.get(ElementField.CHAINLIT_KEY)),
-            name=Codec.require(data.get(ElementField.NAME)),
-            display=Codec.require(data.get(ElementField.DISPLAY)),
+            name=Codec.require(data.get(ElementField.NAME), ElementField.NAME),
+            display=Codec.require(data.get(ElementField.DISPLAY), ElementField.DISPLAY),
             size=Codec.text(data.get(ElementField.SIZE)),
             language=Codec.text(data.get(ElementField.LANGUAGE)),
             page=data.get(ElementField.PAGE),
@@ -273,7 +277,7 @@ class FeedbackDicts:
 
         return StoredFeedback(
             id=feedback_id,
-            for_id=Codec.uuid(payload.forId),
+            for_id=Codec.uuid(payload.forId, "forId"),
             thread_id=Codec.uuid_opt(payload.threadId),
             value=payload.value,
             comment=Codec.text(payload.comment),
@@ -291,7 +295,8 @@ class FeedbackDicts:
     @staticmethod
     def _value(value: int) -> Any:
         if value not in (0, 1):
-            raise DataBrokenError("feedback", f"feedback value {value} is not 0 or 1")
+            msg = f"stored feedback value is expected to be 0 or 1, got {value!r}"
+            raise DataBrokenError("feedback", msg)
 
         return value
 
@@ -399,7 +404,7 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
                 mime=mime,
                 overwrite=True,
             )
-            self._require_uploaded(uploaded)
+            self._require_uploaded(uploaded, object_key)
             return
 
         on_disk = False
@@ -409,7 +414,7 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
         if on_disk and element.path:
             source = self._storage.disk_source(element.path)
             uploaded = await self._storage.upload_stream(object_key, source, mime)
-            self._require_uploaded(uploaded)
+            self._require_uploaded(uploaded, object_key)
             return
 
         logger.info("element %s is already in storage as %s", element.id, object_key)
@@ -428,9 +433,10 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
         return not element.path
 
     @staticmethod
-    def _require_uploaded(uploaded: Mapping[str, object]) -> None:
+    def _require_uploaded(uploaded: Mapping[str, object], object_key: str) -> None:
         if not uploaded:
-            raise DataUnavailableError("create_element", "storage refused the upload")
+            msg = f"storage returned no upload record for {object_key}"
+            raise DataUnavailableError("create_element", msg)
 
     @queue_until_user_message()
     @data_boundary
@@ -451,7 +457,8 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
             await self._create_element(element)
         except Exception as e:
             # chainlit зовёт create_element фоновой таской и молча гасит исключение
-            raise DataUnavailableError("create_element", str(e)) from e
+            msg = f"element {element.id} ({element.name!r}) was not stored: {e}"
+            raise DataUnavailableError("create_element", msg) from e
 
     async def _create_element(self, element: ChainlitElement) -> None:
         """Строка описания, затем тело; тело не залилось — строка снимается."""
@@ -500,7 +507,8 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
             try:
                 await self._storage.delete_file(object_key=key.render())
             except Exception as e:
-                raise DataUnavailableError("delete_element", str(e)) from e
+                msg = f"deleting {key.render()} from the storage failed: {e}"
+                raise DataUnavailableError("delete_element", msg) from e
 
         await self._elements.delete(found.id)
 
@@ -653,10 +661,12 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
 
         try:
             journal.purge_thread(str(owner), thread_id)
-        except StreamJournalError:
+        except StreamJournalError as exc:
             logger.warning(
-                "stream journal purge failed for thread %s",
+                "stream journal purge failed for thread %s of user %s: %s",
                 thread_id,
+                owner,
+                exc,
                 exc_info=True,
             )
 
@@ -667,7 +677,8 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
         filters: ThreadFilter,
     ) -> PaginatedResponse[ThreadDict]:
         if not filters.userId:
-            raise DataRejectedError("list_threads", "userId is required")
+            msg = f"filters.userId is required, got {filters.userId!r}"
+            raise DataRejectedError("list_threads", msg)
 
         user_id = UUID(filters.userId)
         user_identifier = await self._identifier_of(user_id)
@@ -705,9 +716,14 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
 
     def _session_user_id(self) -> str:
         """Владелец файлов вложений — пользователь текущей сессии chainlit."""
-        user_id = self._sessions.current().user_id
+        session = self._sessions.current()
+        user_id = session.user_id
         if user_id is None:
-            raise DataBrokenError("_session_user_id", "no chainlit session")
+            msg = (
+                f"chainlit session of {session.label!r} has no persisted user, "
+                "the attachments owner is unknown"
+            )
+            raise DataBrokenError("_session_user_id", msg)
 
         return str(user_id)
 

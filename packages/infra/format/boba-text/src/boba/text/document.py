@@ -165,9 +165,14 @@ class DocumentMedia:
         """Синтетическое имя файла: liteparse узнаёт формат по расширению."""
         return f"document{suffix}"
 
-    @staticmethod
-    def _unsupported(content_type: str | None) -> ValueError:
-        return ValueError(f"unsupported content_type={content_type!r}")
+    @classmethod
+    def _unsupported(cls, content_type: str | None) -> ValueError:
+        supported = ", ".join(cls.media_types())
+        msg = (
+            f"document media: content_type {content_type!r} is not supported, "
+            f"expected one of: {supported}"
+        )
+        return ValueError(msg)
 
 
 class PageSectionBuilder:
@@ -224,7 +229,8 @@ class PagedDocumentReader(Reader[str]):
         try:
             pages = await asyncio.to_thread(self.parse_pages, data, filename)
         except self.PARSE_ERRORS as e:
-            raise self._incompatible(value, str(e)) from e
+            reason = f"parsing {filename!r} of {suffix} document failed: {e}"
+            raise self._incompatible(value, reason) from e
 
         doc_type = DocumentMedia.doc_type_of(suffix)
         for section in PageSectionBuilder.build(value, pages, doc_type):

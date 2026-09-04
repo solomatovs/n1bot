@@ -110,7 +110,10 @@ class NodeSlot:
         try:
             return box.get(timeout=timeout_sec)
         except queue.Empty:
-            msg = f"pipeline node gave no {side} descriptor in {timeout_sec:.0f}s"
+            msg = (
+                f"pipeline node gave no {side} descriptor within "
+                f"{timeout_sec:.0f}s: the call did not open its channel"
+            )
             raise ChainMismatchError(msg) from None
 
     def _drain(self) -> None:
@@ -206,7 +209,15 @@ class ChainCheck:
             if port.direction is direction:
                 return port
 
-        msg = f"{side} declares no {direction} port"
+        declared: list[str] = []
+        for port in spec.ports:
+            declared.append(f"{port.name}:{port.direction}")
+
+        listed = ", ".join(declared)
+        msg = (
+            f"{side} declares no {direction} port, a chain needs one; "
+            f"declared ports: [{listed}]"
+        )
         raise ChainMismatchError(msg)
 
 
@@ -244,7 +255,10 @@ class CallRelay:
         перекачка. Вызов обязан быть прогоном OpenRun (PumpedCall).
         """
         if not isinstance(sink, OpenRun):
-            msg = "sink call does not expose its input descriptor"
+            msg = (
+                f"sink call {type(sink).__name__} does not expose its input "
+                "descriptor: splice needs an OpenRun (PumpedCall)"
+            )
             raise LauncherError(msg)
 
         return sink.entry.take_fd()

@@ -238,7 +238,10 @@ class ChainlitSession(Session):
         thread_id = self.thread_id
         if not thread_id:
             raise InternalServiceError(
-                internal_detail="call context needs a chainlit thread",
+                internal_detail=(
+                    f"call context for turn {turn_id!r}: chainlit session "
+                    f"{self.id!r} has no thread_id"
+                ),
                 user_detail=None,
             )
 
@@ -269,7 +272,10 @@ class ChainlitSession(Session):
             parsed = UUID(user_id)
         except ValueError as exc:
             raise InternalServiceError(
-                internal_detail=f"user id {user_id!r} is not the users.id uuid",
+                internal_detail=(
+                    f"user id {user_id!r} of sign-in {self.label!r} is not the "
+                    f"users.id uuid: {exc}"
+                ),
                 user_detail=None,
             ) from exc
 
@@ -325,7 +331,10 @@ class ChainlitSessions(SessionSource, LiveSessions):
     def installed(cls) -> ChainlitSessions:
         """Отсутствие источника — ошибка сборки: позвали раньше bootstrap."""
         if cls._installed is None:
-            msg = "session source is not installed: bootstrap has not run"
+            msg = (
+                "session_source_ref: the ChainlitSessions source is not installed, "
+                "bootstrap has not run"
+            )
             raise RuntimeError(msg)
 
         return cls._installed

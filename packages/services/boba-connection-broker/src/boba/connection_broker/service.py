@@ -121,7 +121,10 @@ class UserConnectionsService:
             if row.id == connection_id:
                 return row
 
-        msg = f"connection #{connection_id} not found"
+        msg = (
+            f"connection #{connection_id} not found among the connections "
+            f"visible to {subject.login!r}"
+        )
         raise RefusalError(ConnectionRefusal.NOT_VISIBLE, msg)
 
     async def create(
@@ -183,10 +186,16 @@ class UserConnectionsService:
         rows = (await store.for_subject_all(subject)).rows
         for row in rows:
             if row.id == connection_id:
-                msg = f"connection #{connection_id} is shared: only its owner edits it"
+                msg = (
+                    f"connection #{connection_id} ({row.name!r}) is shared, "
+                    f"not owned by {subject.login!r}: only its owner edits it"
+                )
                 raise RefusalError(ConnectionRefusal.NOT_OWNED, msg)
 
-        msg = f"connection #{connection_id} not found"
+        msg = (
+            f"connection #{connection_id} not found among the connections "
+            f"visible to {subject.login!r}"
+        )
         raise RefusalError(ConnectionRefusal.NOT_VISIBLE, msg)
 
     async def _require_free_name(
@@ -202,5 +211,8 @@ class UserConnectionsService:
                 continue
 
             if row.name == name:
-                msg = f"connection name {name!r} is already used"
+                msg = (
+                    f"connection name {name!r} is already used by connection "
+                    f"#{row.id} visible to {subject.login!r}"
+                )
                 raise RefusalError(ConnectionRefusal.NAME_TAKEN, msg)

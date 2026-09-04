@@ -70,7 +70,10 @@ class VaultPath:
         if candidate.startswith(base + os.sep):
             return candidate
 
-        msg = f"path escapes the vault: {candidate!r}"
+        msg = (
+            f"stream journal path {os.path.join(*parts)!r} resolves to "
+            f"{candidate!r}, outside the vault root {base!r}"
+        )
         raise StreamJournalError(msg)
 
 
@@ -83,7 +86,10 @@ class DirVault:
     def root_for(self, user_id: str) -> str:
         """Каталог тома; сегмент сверяется с шаблоном прямо перед сборкой пути."""
         if not PathSegment.SAFE.fullmatch(user_id):
-            msg = f"unsafe vault segment: {user_id!r}"
+            msg = (
+                f"stream journal vault segment must match "
+                f"{PathSegment.SAFE.pattern}, got {user_id!r}"
+            )
             raise StreamJournalError(msg)
 
         path = VaultPath.inside(self._root, user_id)
@@ -164,8 +170,17 @@ class StreamRecorder(StreamRecorderPort):
             self._file.flush()
             self._size += len(data)
         except OSError as exc:
-            logger.warning("stream journal write failed: %s: %s", self._log_path, exc)
-            return f"journal stopped: {exc.strerror or exc}"
+            logger.warning(
+                "stream journal: append of %d bytes to %s failed: %s",
+                len(data),
+                self._log_path,
+                exc,
+            )
+            reason = exc.strerror
+            if not reason:
+                reason = str(exc)
+
+            return f"journal stopped: write to {self._log_path} failed: {reason}"
 
         return ""
 
@@ -192,8 +207,12 @@ class StreamRecorder(StreamRecorderPort):
             with open(tmp, "w", encoding=JournalText.ENCODING) as f:
                 json.dump(self._meta.model_dump(), f, ensure_ascii=False)
             os.rename(tmp, self._meta_path)
-        except OSError:
-            logger.warning("stream meta is not written: %s", self._meta_path)
+        except OSError as exc:
+            logger.warning(
+                "stream journal: meta sidecar %s is not written: %s",
+                self._meta_path,
+                exc,
+            )
 
 
 class StreamFileView:
@@ -280,7 +299,7 @@ class StreamJournal(StreamStorePort):
 
     def __init__(self, vault: DirVault, reserve_bytes: int) -> None:
         if reserve_bytes < 0:
-            msg = f"reserve_bytes must be >= 0, got {reserve_bytes}"
+            msg = f"[stream_journal].reserve_bytes must be >= 0, got {reserve_bytes}"
             raise ValueError(msg)
 
         self._vault = vault
@@ -335,15 +354,18 @@ class StreamJournal(StreamStorePort):
                 return StreamRecorder(log_path, meta_path, tool_name, on_data)
             except OSError as exc:
                 if exc.errno != errno.ENOSPC:
-                    raise StreamJournalError(
-                        f"stream log is not writable: {log_path}: {exc}"
-                    ) from exc
+                    msg = (
+                        f"stream journal: opening {log_path} for writing failed: {exc}"
+                    )
+                    raise StreamJournalError(msg) from exc
 
                 freed = self._evict_oldest(root, protected)
                 if freed < 0:
-                    raise StreamJournalError(
-                        f"stream vault is full, nothing to evict: {log_path}: {exc}"
-                    ) from exc
+                    msg = (
+                        f"stream journal: vault {root} is full and no unprotected "
+                        f"thread is left to evict, cannot open {log_path}: {exc}"
+                    )
+                    raise StreamJournalError(msg) from exc
 
                 logger.info(
                     "stream journal evicted %d bytes to open %s",
@@ -371,7 +393,8 @@ class StreamJournal(StreamStorePort):
         try:
             segment = PathSegment.checked(thread_id)
         except ValueError as exc:
-            raise StreamJournalError(f"unsafe thread segment: {thread_id!r}") from exc
+            msg = f"stream journal purge: thread id is not a safe segment: {exc}"
+            raise StreamJournalError(msg) from exc
 
         path = VaultPath.inside(root, segment)
 
@@ -386,9 +409,8 @@ class StreamJournal(StreamStorePort):
         try:
             shutil.rmtree(path)
         except OSError as exc:
-            raise StreamJournalError(
-                f"stream journal purge failed: {path}: {exc}"
-            ) from exc
+            msg = f"stream journal: removing the thread directory {path} failed: {exc}"
+            raise StreamJournalError(msg) from exc
 
         return freed
 
@@ -401,7 +423,9 @@ class StreamJournal(StreamStorePort):
             freed = self._evict_oldest(root, protected)
             if freed < 0:
                 logger.warning(
-                    "stream journal reserve is not met: %d < %d",
+                    "stream journal: vault %s has %d free bytes, the reserve of "
+                    "%d is not met and nothing unprotected is left to evict",
+                    root,
                     self._free_bytes(root),
                     self._reserve,
                 )
@@ -443,9 +467,13 @@ class StreamJournal(StreamStorePort):
                 os.remove(VaultPath.inside(root, rel))
             except FileNotFoundError:
                 continue
-            except OSError:
+            except OSError as exc:
                 logger.warning(
-                    "stream journal eviction failed on %s", rel, exc_info=True
+                    "stream journal: eviction could not remove %s under %s: %s",
+                    rel,
+                    root,
+                    exc,
+                    exc_info=True,
                 )
 
         try:
@@ -545,9 +573,11 @@ class StreamJournal(StreamStorePort):
                 return view.slice_before(size, JournalWindow.BYTES, size, meta)
             return view.slice_at(offset, JournalWindow.BYTES, size, meta)
         except OSError as exc:
-            raise StreamJournalError(
-                f"stream log is not readable: {key.call_id}/{channel}: {exc}"
-            ) from exc
+            msg = (
+                f"stream journal: reading {key.call_id}/{channel} at offset "
+                f"{offset} failed: {exc}"
+            )
+            raise StreamJournalError(msg) from exc
 
     def slice_before(
         self, key: StreamKey, end: int, channel: JournalChannel
@@ -562,9 +592,11 @@ class StreamJournal(StreamStorePort):
         try:
             return view.slice_before(end, JournalWindow.BYTES, size, meta)
         except OSError as exc:
-            raise StreamJournalError(
-                f"stream log is not readable: {key.call_id}/{channel}: {exc}"
-            ) from exc
+            msg = (
+                f"stream journal: reading {key.call_id}/{channel} before offset "
+                f"{end} failed: {exc}"
+            )
+            raise StreamJournalError(msg) from exc
 
     def stat_of(self, key: StreamKey, channel: JournalChannel) -> StreamStat | None:
         """Размер и итог журнала без чтения тела; None — журнала нет."""

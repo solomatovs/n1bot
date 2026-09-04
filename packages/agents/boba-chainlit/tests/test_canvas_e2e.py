@@ -1350,9 +1350,7 @@ async def test_panel_reopens_after_closing(panel: Any) -> None:
 async def test_missing_file_is_explained(panel: Any) -> None:
     """Пропавший файл объясняется в панели, а не роняет её молча."""
     _show, _, thread, act = panel
-    side = await act(
-        "canvas_open", {"path": _tool_view(thread, "нет-такого.md")}
-    )
+    side = await act("canvas_open", {"path": _tool_view(thread, "нет-такого.md")})
 
     text = await side.inner_text()
     if not text.strip():

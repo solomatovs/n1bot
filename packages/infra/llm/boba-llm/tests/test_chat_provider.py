@@ -156,9 +156,7 @@ class _FakeTokenizer(OnnxTokenizer):
     def create_stream(self) -> OnnxTokenStream:
         return _FakeStream()
 
-    def apply_chat_template(
-        self, messages: str, *, add_generation_prompt: bool
-    ) -> str:
+    def apply_chat_template(self, messages: str, *, add_generation_prompt: bool) -> str:
         return messages
 
 
@@ -468,9 +466,7 @@ class TestOpenAiChatProvider:
             )
             return httpx.Response(200, content=body)
 
-        with pytest.raises(
-            ChatProviderError, match="insufficient_system_resource"
-        ):
+        with pytest.raises(ChatProviderError, match="insufficient_system_resource"):
             await _events(_provider(handler), REQUEST)
 
     async def test_stop_and_tool_calls_finishes_are_complete(self) -> None:

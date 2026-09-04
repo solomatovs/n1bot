@@ -95,10 +95,11 @@ class DiagramFiles:
 
     def _parse(self, spec: str) -> MermaidSpec:
         if len(spec) > self._max_chars:
-            raise DiagramRefusedError(
-                DiagramErrorKind.INVALID_SPEC,
-                f"the spec is longer than the {self._max_chars} character limit",
+            msg = (
+                f"the spec is longer than the {self._max_chars} character limit: "
+                f"got {len(spec)} characters"
             )
+            raise DiagramRefusedError(DiagramErrorKind.INVALID_SPEC, msg)
 
         try:
             return MermaidSpec.parse(spec)
@@ -139,10 +140,8 @@ class DiagramFiles:
         try:
             return blob.decode("utf-8")
         except UnicodeDecodeError as e:
-            raise DiagramRefusedError(
-                DiagramErrorKind.BAD_FILE,
-                f"the file is not utf-8 text: {key.in_workspace()}",
-            ) from e
+            msg = f"the file is not utf-8 text: {key.in_workspace()}: {e}"
+            raise DiagramRefusedError(DiagramErrorKind.BAD_FILE, msg) from e
 
     async def _collect(self, key: ObjectKey) -> bytes:
         """Читает файл потоком; слишком большой отвергается по размеру, до тела."""
@@ -151,10 +150,11 @@ class DiagramFiles:
 
         async with await storage.open_stream(key.render(), ReadWindow.entire()) as body:
             if body.stat.size > max_bytes:
-                raise DiagramRefusedError(
-                    DiagramErrorKind.BAD_FILE,
-                    f"the file is larger than the diagram limit: {key.in_workspace()}",
+                msg = (
+                    f"the file is larger than the diagram limit of {max_bytes} "
+                    f"bytes: {key.in_workspace()} has {body.stat.size} bytes"
                 )
+                raise DiagramRefusedError(DiagramErrorKind.BAD_FILE, msg)
 
             collected = bytearray()
             async for chunk in body.chunks:

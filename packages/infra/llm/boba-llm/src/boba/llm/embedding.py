@@ -298,7 +298,11 @@ class OpenAiEmbedder(Embedder[str]):
             )
             response.raise_for_status()
         except httpx.HTTPError as exc:
-            msg = f"embeddings endpoint failed: {exc}"
+            msg = (
+                f"embeddings endpoint failed: POST {self._endpoint()} with "
+                f"{len(batch)} inputs for model {self._cfg.model!r}: "
+                f"{type(exc).__name__}: {exc}"
+            )
             raise EmbeddingError(msg) from exc
 
         logger.info("embeddings request: %d inputs in %dms", len(batch), elapsed.ms())
@@ -311,7 +315,10 @@ class OpenAiEmbedder(Embedder[str]):
         try:
             return OpenAiEmbeddingsReply.model_validate_json(body)
         except ValidationError as exc:
-            msg = f"embeddings endpoint returned malformed body: {exc}"
+            msg = (
+                f"embeddings endpoint {self._endpoint()} returned malformed body "
+                f"{body[:200]!r}: {exc}"
+            )
             raise EmbeddingError(msg) from exc
 
     def _vectors(
@@ -321,8 +328,8 @@ class OpenAiEmbedder(Embedder[str]):
     ) -> list[Sequence[float]]:
         if len(reply.data) != expected:
             msg = (
-                f"embeddings endpoint returned {len(reply.data)} vectors "
-                f"for {expected} inputs"
+                f"embeddings endpoint {self._endpoint()} returned "
+                f"{len(reply.data)} vectors for {expected} inputs"
             )
             raise EmbeddingError(msg)
 

@@ -53,7 +53,8 @@ class Tokens:
 
         value = values.get(name)
         if value is None:
-            raise KeyError(f"no token --{name} in tokens.css")
+            msg = f"tokens.css has no token --{name} for theme {theme!r}"
+            raise KeyError(msg)
 
         reference = self.REF.match(value)
         if reference is None:
@@ -76,7 +77,8 @@ RGB_HEX_LEN = 6
 def hex_to_rgb(value: str) -> str:
     text = value.strip().lstrip("#")
     if len(text) != RGB_HEX_LEN:
-        raise ValueError(f"not a #rrggbb color: {value}")
+        msg = f"expected a #rrggbb color, got {value!r}"
+        raise ValueError(msg)
 
     r, g, b = (int(text[i : i + 2], 16) for i in (0, 2, 4))
     return f"rgb({r}, {g}, {b})"

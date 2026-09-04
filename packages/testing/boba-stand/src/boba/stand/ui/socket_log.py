@@ -213,7 +213,12 @@ class SocketLog:
             if value:
                 return str(value)
 
-        raise FrameError("no step with a thread id in the socket log")
+        count = len(self.frames)
+        msg = (
+            f"socket log: none of {count} frames carries a step with "
+            f"{StepField.THREAD_ID.value!r}"
+        )
+        raise FrameError(msg)
 
     def has_step_named(self, name: str) -> bool:
         """Был ли шаг с таким именем: так тест узнаёт служебный ход chainlit."""
@@ -246,7 +251,8 @@ class SocketLog:
         try:
             body = json.loads(raw[start:])
         except json.JSONDecodeError as exc:
-            raise FrameError(f"socket.io frame is not json: {raw[:60]!r}") from exc
+            msg = f"socket.io frame expects a JSON list body, got {raw[:60]!r}: {exc}"
+            raise FrameError(msg) from exc
 
         if not isinstance(body, list):
             return None

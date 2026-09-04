@@ -89,9 +89,9 @@ class LiteParseEngine:
             return
 
         msg = (
-            f"ocr_enabled=true, но каталога моделей {params.tessdata_path!r} "
-            "нет в rootfs песочницы: положи туда tessdata или выключи "
-            "ocr_enabled"
+            f"liteparse: ocr_enabled=true expects a tessdata models directory "
+            f"at {params.tessdata_path!r}, but it does not exist in the sandbox "
+            f"rootfs: put tessdata there or set ocr_enabled=false"
         )
         raise LiteParseError(msg)
 
@@ -183,7 +183,8 @@ class LiteParseEngine:
         except LiteParseError:
             raise
         except (ParseError, RuntimeError, OSError) as e:
-            raise LiteParseError(str(e)) from e
+            msg = f"liteparse: parsing {path!r} failed: {e}"
+            raise LiteParseError(msg) from e
 
     @staticmethod
     @contextmanager

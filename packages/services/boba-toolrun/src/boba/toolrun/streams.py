@@ -325,7 +325,9 @@ class StreamPumps:
             if error is None:
                 continue
 
-            logger.error("stream pump failed: %s", error, exc_info=error)
+            logger.error(
+                "stream pump %s failed: %s", task.get_name(), error, exc_info=error
+            )
 
 
 class ToolStreams:
@@ -384,20 +386,25 @@ class ToolStreams:
         context = RunRegistry.active(thread_id)
         if context is None:
             logger.warning(
-                "stream journal skipped call %s of %s: no active run",
+                "stream journal skipped call %s of %s: thread %s has no active run "
+                "to attach the stream to",
                 call_id,
                 tool_name,
+                thread_id,
             )
             return None
 
         try:
             key = StreamKey(user_id=user_id, thread_id=thread_id, call_id=call_id)
             stream = ToolStream(key, tool_name, journal, RunRegistry.live_prefixes())
-        except (StreamJournalError, ValidationError):
+        except (StreamJournalError, ValidationError) as exc:
             logger.warning(
-                "stream journal refused call %s of %s",
+                "stream journal refused call %s of %s in thread %s of user %s: %s",
                 call_id,
                 tool_name,
+                thread_id,
+                user_id,
+                exc,
                 exc_info=True,
             )
             return None
@@ -466,8 +473,16 @@ class ToolStreams:
         try:
             key = StreamKey(user_id=user_id, thread_id=thread_id, call_id=call_id)
             written = journal.channels_of(key)
-        except (StreamJournalError, ValidationError):
-            logger.warning("stream journal scan failed: %s", call_id, exc_info=True)
+        except (StreamJournalError, ValidationError) as exc:
+            logger.warning(
+                "stream journal: listing channels of call %s in thread %s of "
+                "user %s failed: %s",
+                call_id,
+                thread_id,
+                user_id,
+                exc,
+                exc_info=True,
+            )
             return ()
 
         readable: list[JournalChannel] = []
@@ -494,8 +509,15 @@ class ToolStreams:
         try:
             key = StreamKey(user_id=user_id, thread_id=thread_id, call_id=call_id)
             return read(journal, key)
-        except (StreamJournalError, ValidationError):
-            logger.warning("stream journal read failed: %s", call_id, exc_info=True)
+        except (StreamJournalError, ValidationError) as exc:
+            logger.warning(
+                "stream journal: reading call %s in thread %s of user %s failed: %s",
+                call_id,
+                thread_id,
+                user_id,
+                exc,
+                exc_info=True,
+            )
             return None
 
     @classmethod
@@ -526,9 +548,13 @@ class JournalWatchSource(WatchSource):
 
         try:
             stat = self._journal.stat_of(self._key, self._channel)
-        except StreamJournalError:
+        except StreamJournalError as exc:
             logger.warning(
-                "stream journal probe failed: %s", self._key.call_id, exc_info=True
+                "stream journal: stat of %s/%s failed: %s",
+                self._key.call_id,
+                self._channel,
+                exc,
+                exc_info=True,
             )
             return None
 

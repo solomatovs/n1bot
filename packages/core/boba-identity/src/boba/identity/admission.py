@@ -97,20 +97,30 @@ class RoleRules(BaseModel):
     def admit(self, facts: PrincipalFacts) -> list[str]:
         """Роли допущенного без повторов, по алфавиту; отказ — AuthorizationError."""
         if self.by_sid_ex.root and not facts.pac_parsed:
-            logger.warning(
-                "access denied for %s (PAC unavailable, sid exclusions configured)",
-                facts.label(),
+            msg = (
+                f"access denied for {facts.label()}: the ticket carries no "
+                "readable PAC while by_sid_ex exclusions are configured"
             )
-            raise AuthorizationError("Access denied")
+            logger.warning("%s", msg)
+            raise AuthorizationError(msg)
 
         if self._excluded(facts):
-            logger.warning("access denied for %s (excluded)", facts.label())
-            raise AuthorizationError("Access denied")
+            msg = (
+                f"access denied for {facts.label()}: the principal matches "
+                "an exclusion rule (by_principal_ex, by_member_of_ex, by_dn_ex "
+                "or by_sid_ex)"
+            )
+            logger.warning("%s", msg)
+            raise AuthorizationError(msg)
 
         roles = sorted(set(self._matches(facts)))
         if self.require_roles and not roles:
-            logger.warning("access denied for %s (no roles mapped)", facts.label())
-            raise AuthorizationError("Access denied")
+            msg = (
+                f"access denied for {facts.label()}: no role mapping matched "
+                "the principal, its groups, DN or SIDs while require_roles = true"
+            )
+            logger.warning("%s", msg)
+            raise AuthorizationError(msg)
 
         return roles
 

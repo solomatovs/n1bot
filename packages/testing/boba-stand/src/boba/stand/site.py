@@ -105,20 +105,22 @@ class Stand(BaseModel):
     @classmethod
     def load(cls) -> Stand:
         """Стенд из конфига приложения; путь берётся так же, как приложением."""
+        path = ConfigLocator.path()
         try:
-            raw = StandLayers.compose(ConfigLocator.path())
+            raw = StandLayers.compose(path)
         except Exception as exc:
-            msg = f"stand: application config is unavailable: {exc}"
+            msg = f"stand: composing application config {path}: {exc}"
             raise StandError(msg) from exc
 
         section = OmegaConf.select(raw, cls.SECTION, throw_on_missing=True)
         if section is None:
-            msg = f"stand: config has no [{cls.SECTION}] section"
+            msg = f"stand: config {path} has no [{cls.SECTION}] section"
             raise StandError(msg)
 
         values = OmegaConf.to_container(section, resolve=True)
         if not isinstance(values, dict):
-            msg = f"stand: [{cls.SECTION}] is not a table"
+            got = type(values).__name__
+            msg = f"stand: [{cls.SECTION}] in {path} expects a table, got {got}"
             raise StandError(msg)
 
         return cls._of(values)
@@ -136,7 +138,7 @@ class Stand(BaseModel):
         try:
             return cls.model_validate(values)
         except ValidationError as exc:
-            msg = f"stand: [{cls.SECTION}] misses stand keys: {exc}"
+            msg = f"stand: validating [{cls.SECTION}] against the Stand model: {exc}"
             raise StandError(msg) from exc
 
     @property

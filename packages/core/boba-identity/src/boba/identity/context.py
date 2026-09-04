@@ -75,10 +75,15 @@ class Scope(BaseModel):
     def _segment_is_safe(cls, value: str) -> str:
         """id становится сегментом путей журнала и workspace: наружу вести не может."""
         if value in (".", ".."):
-            raise ValueError(f"invalid scope id: {value!r}")
+            msg = f"invalid scope id {value!r}: expected a name, not '.' or '..'"
+            raise ValueError(msg)
 
         if cls.SEPARATOR in value:
-            raise ValueError(f"invalid scope id: {value!r}")
+            msg = (
+                f"invalid scope id {value!r}: separator {cls.SEPARATOR!r} "
+                "is not allowed inside the id"
+            )
+            raise ValueError(msg)
 
         return value
 
@@ -224,9 +229,11 @@ class CallContext(BaseModel):
         """Контекст текущего вызова; вне контекста — RefusalError."""
         context = cls._CURRENT.get()
         if context is None:
-            raise RefusalError(
-                ContextKind.NO_CONTEXT, "the call runs outside a call context"
+            msg = (
+                "CallContext.current(): the call runs outside a call context, "
+                "expected CallContext.applied() up the stack"
             )
+            raise RefusalError(ContextKind.NO_CONTEXT, msg)
 
         return context
 

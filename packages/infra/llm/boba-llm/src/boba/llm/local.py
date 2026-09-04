@@ -126,7 +126,7 @@ class OnnxGenai:
         try:
             self._module = importlib.import_module(self.MODULE)
         except ImportError as exc:
-            msg = f"{self.MODULE} is not installed"
+            msg = f"local chat: importing {self.MODULE} failed: {exc}"
             raise ChatProviderError(msg) from exc
 
         logger.info("onnx runtime: %s imported in %dms", self.MODULE, imports.ms())
@@ -136,7 +136,10 @@ class OnnxGenai:
             model = self._module.Model(self._module.Config(model_dir))
             tokenizer = self._module.Tokenizer(model)
         except Exception as exc:
-            msg = f"model not loaded: {model_dir}"
+            msg = (
+                f"local chat: loading onnx model and tokenizer from {model_dir} "
+                f"failed: {type(exc).__name__}: {exc}"
+            )
             raise ChatProviderError(msg) from exc
 
         return model, tokenizer
@@ -252,7 +255,10 @@ class OnnxChatRuntime:
                 if piece:
                     on_piece(piece)
         except Exception as exc:
-            msg = f"local generation failed: {self._model_dir}"
+            msg = (
+                f"local generation with {self._model_dir} failed after "
+                f"{produced} token(s): {type(exc).__name__}: {exc}"
+            )
             raise ChatProviderError(msg) from exc
         finally:
             logger.info(
@@ -571,7 +577,9 @@ class LocalReplyParser:
         try:
             parsed = ParsedCall.model_validate_json(raw)
         except ValidationError:
-            logger.warning("local chat: malformed tool call: %.200s", raw)
+            logger.warning(
+                "local chat: tool call is not {name, arguments} json: %.200s", raw
+            )
             return None
 
         return ToolCallRequest(
@@ -659,7 +667,10 @@ class LocalChatProvider(ChatProvider):
 
         max_tokens = sampling.get("max_tokens")
         if max_tokens is None:
-            msg = "local chat requires sampling.max_tokens: no other ceiling exists"
+            msg = (
+                "local chat requires sampling.max_tokens (no other ceiling "
+                f"exists), sampling has only {sorted(sampling)}"
+            )
             raise ChatProviderError(msg)
 
         return RunSpec(

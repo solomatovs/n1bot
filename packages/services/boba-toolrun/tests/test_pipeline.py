@@ -86,9 +86,7 @@ class TestCatalog:
 
 
 class TestRun:
-    def test_framed_chain_moves_data_through_the_kernel(
-        self, tmp_path: Path
-    ) -> None:
+    def test_framed_chain_moves_data_through_the_kernel(self, tmp_path: Path) -> None:
         """Цепочка fake_stream -> fake_stream: done-кадр первого узла едет
         сквозь ядро во второй, конверты обоих узлов — в отчёте."""
         invoker = _invoker(tmp_path)

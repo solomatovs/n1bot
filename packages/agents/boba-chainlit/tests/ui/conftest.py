@@ -94,7 +94,8 @@ def _await_llm(port: int) -> None:
         except httpx.HTTPError:
             time.sleep(0.2)
 
-    raise RuntimeError("fake llm did not start")
+    msg = f"fake llm did not answer GET {StandUrl.of(port, '/v1/models')} in 30s"
+    raise RuntimeError(msg)
 
 
 @pytest.fixture(scope="session")

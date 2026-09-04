@@ -93,7 +93,9 @@ async def on_message(  # noqa: PLR0913
     thread_id = session.thread_id
     if thread_id is None:
         raise InternalServiceError(
-            internal_detail="on_message outside a chainlit thread",
+            internal_detail=(
+                f"on_message: chainlit session {session.id!r} has no thread_id"
+            ),
             user_detail=None,
         )
 
@@ -161,7 +163,10 @@ def _root_bus() -> MessageBus:
     root = Container.root
     if root is None:
         raise InternalServiceError(
-            internal_detail="DI container is not initialised", user_detail=None
+            internal_detail=(
+                "_root_bus: Container.root is not initialised, bootstrap has not run"
+            ),
+            user_detail=None,
         )
 
     return root.resolved(runtime.message_bus)
@@ -250,7 +255,11 @@ class SettingsRefresh:
         root = Container.root
         if root is None:
             raise InternalServiceError(
-                internal_detail="DI container is not initialised", user_detail=None
+                internal_detail=(
+                    "settings refresh: Container.root is not initialised, "
+                    "bootstrap has not run"
+                ),
+                user_detail=None,
             )
 
         registry = root.resolved(chat_profiles_registry)
@@ -342,11 +351,17 @@ async def on_settings_update(
 
     user_id = current_session().user_id
     if user_id is None:
-        logger.warning("settings update without a user session, ignored")
+        logger.warning(
+            "settings update: chainlit session %r has no user, ignored",
+            current_session().id,
+        )
         return
 
     if not isinstance(data_layer, PostgresDataLayer):
-        msg = f"data layer is not PostgresDataLayer: {type(data_layer)}"
+        msg = (
+            "settings update expects a PostgresDataLayer data layer, "
+            f"got {type(data_layer).__name__}"
+        )
         raise RuntimeError(msg)
 
     await data_layer.update_user_llm_settings(
@@ -381,13 +396,20 @@ def _session_cookie() -> SessionCookie:
     root = Container.root
     if root is None:
         raise InternalServiceError(
-            internal_detail="DI container is not initialised", user_detail=None
+            internal_detail=(
+                "session cookie: Container.root is not initialised, "
+                "bootstrap has not run"
+            ),
+            user_detail=None,
         )
 
     config = root.resolved(runtime.get_runtime_config)
     if not isinstance(config, RuntimeConfig):
         raise InternalServiceError(
-            internal_detail=f"config provider returned {type(config).__name__}",
+            internal_detail=(
+                "session cookie expects RuntimeConfig from the config provider, "
+                f"got {type(config).__name__}"
+            ),
             user_detail=None,
         )
 

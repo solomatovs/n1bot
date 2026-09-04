@@ -525,8 +525,6 @@ class TestToolIntent:
             raise AssertionError(f"без подписи шаг остаётся running: {step.output!r}")
 
 
-
-
 def _names(steps: list[StepDict]) -> list[str]:
     """Названия шагов ленты: ключ необязательный, поэтому читается через get."""
     found: list[str] = []
@@ -534,6 +532,7 @@ def _names(steps: list[StepDict]) -> list[str]:
         found.append(str(step.get(StepField.NAME, "")))
 
     return found
+
 
 class TestTokenSpendLabel:
     """Расход токенов в подписи: формат числа, reasoning и отсутствие учёта."""

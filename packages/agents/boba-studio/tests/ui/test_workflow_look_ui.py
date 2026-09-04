@@ -177,18 +177,25 @@ class Rest:
         run_id = str(started.json()["run_id"])
 
         deadline = time.monotonic() + 60
+        status = ""
         while time.monotonic() < deadline:
             run = self._client.get(f"{self._base}/api/v1/workflow-runs/{run_id}")
             run.raise_for_status()
-            if run.json()["status"] in ("done", "failed", "stopped"):
-                if run.json()["status"] != expected:
-                    raise AssertionError(f"seed run is {run.json()['status']}")
+            status = run.json()["status"]
+            if status in ("done", "failed", "stopped"):
+                if status != expected:
+                    msg = (
+                        f"seed run {run_id} of workflow {workflow_id}: "
+                        f"expected {expected!r}, got {status!r}"
+                    )
+                    raise AssertionError(msg)
 
                 return SeededRun(workflow_id=workflow_id, run_id=run_id)
 
             time.sleep(0.2)
 
-        raise AssertionError("seed run never finished")
+        msg = f"seed run {run_id} of workflow {workflow_id}: still {status!r} after 60s"
+        raise AssertionError(msg)
 
 
 @pytest.fixture(scope="module")

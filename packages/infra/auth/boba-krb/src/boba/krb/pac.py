@@ -32,7 +32,11 @@ class PacGroupSids:
 
         def take(self, n: int) -> bytes:
             if self.pos + n > len(self.buf):
-                raise ValueError("truncated PAC logon-info buffer")
+                msg = (
+                    f"truncated PAC logon-info buffer: need {n} bytes at offset "
+                    f"{self.pos}, buffer has {len(self.buf)}"
+                )
+                raise ValueError(msg)
             out = self.buf[self.pos : self.pos + n]
             self.pos += n
             return out
@@ -92,16 +96,30 @@ class PacGroupSids:
         return PacGroupSids.parse_logon_info(attr.values[0])
 
     @staticmethod
-    def parse_logon_info(blob: bytes) -> list[str]:  # noqa: C901, PLR0912
+    def _check_common_header(r: PacGroupSids._Ndr) -> None:
+        """Common type header (MS-RPCE type serialization v1): версия, LE."""
+        version = r.u8()
+        if version != PacGroupSids.NDR_VERSION:
+            msg = (
+                f"PAC logon-info NDR header: expected version "
+                f"{PacGroupSids.NDR_VERSION}, got {version}"
+            )
+            raise ValueError(msg)
+
+        endianness = r.u8()
+        if endianness != PacGroupSids.NDR_LITTLE_ENDIAN:
+            msg = (
+                f"PAC logon-info NDR header: expected little-endian marker "
+                f"{PacGroupSids.NDR_LITTLE_ENDIAN:#x}, got {endianness:#x}"
+            )
+            raise ValueError(msg)
+
+    @staticmethod
+    def parse_logon_info(blob: bytes) -> list[str]:  # noqa: C901
         """KERB_VALIDATION_INFO (NDR) -> SID-ы групп пользователя."""
         r = PacGroupSids._Ndr(blob)
 
-        # common type header (MS-RPCE type serialization v1): версия, LE
-        if (
-            r.u8() != PacGroupSids.NDR_VERSION
-            or r.u8() != PacGroupSids.NDR_LITTLE_ENDIAN
-        ):
-            raise ValueError("unexpected PAC logon-info NDR header")
+        PacGroupSids._check_common_header(r)
         r.skip(6)  # остаток common header
         r.skip(8)  # private header (ObjectBufferLength, Filler)
 

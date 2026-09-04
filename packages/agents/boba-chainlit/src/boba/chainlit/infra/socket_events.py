@@ -227,8 +227,10 @@ class SocketEvents:
         """Хендлер chainlit до подмены; без него оборачивать нечего."""
         handler = handlers.get(event.value)
         if handler is None:
+            registered = ", ".join(sorted(handlers))
             raise InternalServiceError(
-                f"chainlit socket handler is missing: event={event.value}",
+                f"chainlit socket handler is missing: event={event.value}, "
+                f"registered handlers: {registered}",
                 None,
             )
 

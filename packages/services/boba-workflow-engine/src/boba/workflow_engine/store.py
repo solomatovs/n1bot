@@ -67,7 +67,10 @@ class WorkflowConfig(BaseModel):
 
     def require_conn(self) -> PostgresConfig:
         if self.connection is None:
-            msg = 'workflow.connection is not set: connection = "${postgres}"'
+            msg = (
+                "[workflow].connection is not set: expected a postgres "
+                'reference such as connection = "${postgres}"'
+            )
             raise ValueError(msg)
 
         return self.connection
@@ -115,7 +118,7 @@ class WorkflowStore(PostgresTable, WorkflowRepository):
         try:
             yield
         except (psycopg.Error, PostgresError) as exc:
-            msg = f"workflow: {action} failed"
+            msg = f"workflow: {action} in schema {self._cfg.db_schema} failed: {exc}"
             raise WorkflowStoreError(msg) from exc
 
     async def setup(self) -> None:
@@ -270,7 +273,10 @@ class WorkflowStore(PostgresTable, WorkflowRepository):
             row = await cur.fetchone()
 
         if row is None:
-            msg = f"workflow: {spec.name!r} was not saved"
+            msg = (
+                f"workflow: upsert of {spec.name!r} for user {user_id} into "
+                f"{self._cfg.db_schema}.workflows returned no row"
+            )
             raise WorkflowStoreError(msg)
 
         return StoredWorkflow.model_validate(dict(row))
@@ -318,13 +324,20 @@ class WorkflowStore(PostgresTable, WorkflowRepository):
             try:
                 await cur.execute(query, params)
             except psycopg.errors.UniqueViolation as exc:
-                msg = f"workflow name already taken: {spec.name!r}"
+                msg = (
+                    f"workflow name {spec.name!r} is already taken by another "
+                    f"workflow of user {user_id}, cannot rename #{workflow_id}: "
+                    f"{exc}"
+                )
                 raise WorkflowNameTakenError(msg) from exc
 
             row = await cur.fetchone()
 
         if row is None:
-            msg = f"workflow: {workflow_id!r} not found"
+            msg = (
+                f"workflow #{workflow_id} of user {user_id} not found in "
+                f"{self._cfg.db_schema}.workflows: nothing to save into"
+            )
             raise WorkflowNotFoundError(msg)
 
         return StoredWorkflow.model_validate(dict(row))
@@ -367,7 +380,10 @@ class WorkflowStore(PostgresTable, WorkflowRepository):
             row = await cur.fetchone()
 
         if row is None:
-            msg = f"workflow: {workflow_id!r} not found"
+            msg = (
+                f"workflow #{workflow_id} of user {user_id} not found in "
+                f"{self._cfg.db_schema}.workflows: draft not written"
+            )
             raise WorkflowNotFoundError(msg)
 
         return StoredWorkflow.model_validate(dict(row))
@@ -397,7 +413,10 @@ class WorkflowStore(PostgresTable, WorkflowRepository):
             row = await cur.fetchone()
 
         if row is None:
-            msg = f"workflow: {workflow_id!r} not found"
+            msg = (
+                f"workflow #{workflow_id} of user {user_id} not found in "
+                f"{self._cfg.db_schema}.workflows: draft not cleared"
+            )
             raise WorkflowNotFoundError(msg)
 
         return StoredWorkflow.model_validate(dict(row))
@@ -495,7 +514,10 @@ class WorkflowStore(PostgresTable, WorkflowRepository):
             row = await cur.fetchone()
 
         if row is None:
-            msg = f"workflow: run {run_id} was not saved"
+            msg = (
+                f"workflow: insert of run {run_id} into "
+                f"{self._cfg.db_schema}.workflow_runs returned no row"
+            )
             raise WorkflowStoreError(msg)
 
         return StoredRun.model_validate(dict(row))
@@ -526,7 +548,11 @@ class WorkflowStore(PostgresTable, WorkflowRepository):
         async with self._guarded("update run"), pool.cursor() as cur:
             await cur.execute(query, params)
             if cur.rowcount == 0:
-                msg = f"workflow: run {run_id} not found"
+                msg = (
+                    f"workflow: run {run_id} not found in "
+                    f"{self._cfg.db_schema}.workflow_runs: state {state.status.value} "
+                    "not written"
+                )
                 raise WorkflowNotFoundError(msg)
 
     async def get_run(self, user_id: UUID, run_id: UUID) -> StoredRun:
@@ -550,7 +576,10 @@ class WorkflowStore(PostgresTable, WorkflowRepository):
             row = await cur.fetchone()
 
         if row is None:
-            msg = f"workflow: run {run_id} not found"
+            msg = (
+                f"workflow: run {run_id} of user {user_id} not found in "
+                f"{self._cfg.db_schema}.workflow_runs"
+            )
             raise WorkflowNotFoundError(msg)
 
         return StoredRun.model_validate(dict(row))
@@ -576,7 +605,10 @@ class WorkflowStore(PostgresTable, WorkflowRepository):
             row = await cur.fetchone()
 
         if row is None:
-            msg = f"workflow: run {run_id} not found"
+            msg = (
+                f"workflow: run {run_id} not found in "
+                f"{self._cfg.db_schema}.workflow_runs"
+            )
             raise WorkflowNotFoundError(msg)
 
         return StoredRun.model_validate(dict(row))
@@ -695,7 +727,10 @@ class WorkflowStore(PostgresTable, WorkflowRepository):
             row = await cur.fetchone()
 
         if row is None:
-            msg = f"workflow: {key!r} not found"
+            msg = (
+                f"workflow {key!r} of user {user_id} not found in "
+                f"{self._cfg.db_schema}.workflows"
+            )
             raise WorkflowNotFoundError(msg)
 
         return StoredWorkflow.model_validate(dict(row))

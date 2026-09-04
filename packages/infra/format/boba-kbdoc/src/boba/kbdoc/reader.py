@@ -86,11 +86,12 @@ class KbDocFormatError(IndexingError):
     def __init__(self, source_id: SourceId, missing: Iterable[str]) -> None:
         self.source_id = source_id
         self.missing = tuple(missing)
+        required = list(_REQUIRED_KEYS)
         super().__init__(
-            f"kbdoc {str(source_id)!r} не по формату: "
-            f"нет обязательных header-полей {list(self.missing)} "
-            f"(требуются {list(_REQUIRED_KEYS)}; "
-            f"header — плоские `key: value` строки до `---`)"
+            f"kbdoc: reading {str(source_id)!r} failed: "
+            f"required header fields {list(self.missing)} are missing, "
+            f"expected {required} as flat `key: value` lines before `---` "
+            f"followed by a non-empty body"
         )
 
 

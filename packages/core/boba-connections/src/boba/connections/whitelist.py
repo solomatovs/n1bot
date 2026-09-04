@@ -70,7 +70,10 @@ class ConnectionWhitelist(BaseModel):
         AmbiguousConnectionError — имя выдано субъекту дважды.
         """
         if requested in self.ambiguous:
-            msg = f"connection {requested!r} is granted more than once"
+            msg = (
+                f"connection {requested!r} is granted to the subject more than "
+                "once, the name is ambiguous"
+            )
             raise AmbiguousConnectionError(msg)
 
         profile = self.profiles.get(requested)

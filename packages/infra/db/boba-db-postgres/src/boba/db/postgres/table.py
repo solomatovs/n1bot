@@ -37,7 +37,10 @@ class PostgresTable:
     ) -> None:
         """Без готового пула нужен конфиг подключения: пул возьмётся по нему."""
         if postgres is None and pool is None:
-            msg = f"table in {db_schema}: neither a pool nor a connection config"
+            msg = (
+                f"table in schema {db_schema}: expected a pool or a postgres "
+                "connection config, got neither"
+            )
             raise PostgresError(msg)
 
         self._postgres = postgres
@@ -53,7 +56,10 @@ class PostgresTable:
             return self._pool_ref
 
         if self._postgres is None:
-            msg = f"table in {self._schema}: no connection config for the pool"
+            msg = (
+                f"table in schema {self._schema}: no pool given and no postgres "
+                "connection config to build one"
+            )
             raise PostgresError(msg)
 
         self._pool_ref = await AsyncPostgresPool.get(self._postgres)
@@ -83,7 +89,11 @@ class PostgresTable:
                     for statement in statements:
                         await conn.execute(statement, prepare=False)
         except psycopg.Error as exc:
-            raise PostgresError(f"ddl failed in {self._schema}: {exc}") from exc
+            msg = (
+                f"applying {len(statements)} ddl statements in schema "
+                f"{self._schema} failed: {exc}"
+            )
+            raise PostgresError(msg) from exc
 
     async def _execute(self, query: sql.Composed, params: Mapping[str, Any]) -> None:
         try:
@@ -91,7 +101,8 @@ class PostgresTable:
             async with pool.connection() as conn:
                 await conn.execute(query, params)
         except psycopg.Error as exc:
-            raise PostgresError(f"query failed in {self._schema}: {exc}") from exc
+            msg = f"executing a statement in schema {self._schema} failed: {exc}"
+            raise PostgresError(msg) from exc
 
     async def _fetch(
         self, query: sql.Composed, params: Mapping[str, Any]
@@ -105,4 +116,5 @@ class PostgresTable:
                 await cur.execute(query, params)
                 return await cur.fetchall()
         except psycopg.Error as exc:
-            raise PostgresError(f"query failed in {self._schema}: {exc}") from exc
+            msg = f"fetching rows in schema {self._schema} failed: {exc}"
+            raise PostgresError(msg) from exc

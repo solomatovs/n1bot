@@ -319,7 +319,9 @@ class TestConnectionsConfig:
 
     def test_key_must_be_32_bytes(self) -> None:
         short = SecretStr(base64.b64encode(std_secrets.token_bytes(16)).decode())
-        with pytest.raises(ValueError, match="32-byte key required"):
+        with pytest.raises(
+            ValueError, match="expected 32 bytes in base64, got 16 bytes"
+        ):
             ConnectionsConfig(db_schema="chainlit", encryption_key=short)
 
     def test_valid_key_decodes(self) -> None:
@@ -367,7 +369,9 @@ class TestGrantTarget:
             raise AssertionError("role target must point into roles")
 
     def test_connection_is_not_a_target(self) -> None:
-        with pytest.raises(ValueError, match="user or a role"):
+        with pytest.raises(
+            ValueError, match="expected 'users' or 'roles', got 'connections'"
+        ):
             GrantTarget(kind=GrantKind.CONNECTIONS, id=UUID(int=1))
 
     def test_unknown_kind_rejected(self) -> None:

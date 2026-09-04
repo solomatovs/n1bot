@@ -24,7 +24,8 @@ class PgTable(PostgresTable):
         try:
             await self._apply_ddl(statements)
         except PostgresError as exc:
-            raise DataUnavailableError(operation, str(exc)) from exc
+            detail = f"ddl in schema {self._schema} failed: {exc}"
+            raise DataUnavailableError(operation, detail) from exc
 
     async def _execute_as(
         self, query: sql.Composed, params: Mapping[str, Any], operation: str
@@ -32,7 +33,8 @@ class PgTable(PostgresTable):
         try:
             await self._execute(query, params)
         except PostgresError as exc:
-            raise DataUnavailableError(operation, str(exc)) from exc
+            detail = f"statement in schema {self._schema} failed: {exc}"
+            raise DataUnavailableError(operation, detail) from exc
 
     async def _fetch_as(
         self, query: sql.Composed, params: Mapping[str, Any], operation: str
@@ -40,4 +42,5 @@ class PgTable(PostgresTable):
         try:
             return await self._fetch(query, params)
         except PostgresError as exc:
-            raise DataUnavailableError(operation, str(exc)) from exc
+            detail = f"query in schema {self._schema} failed: {exc}"
+            raise DataUnavailableError(operation, detail) from exc

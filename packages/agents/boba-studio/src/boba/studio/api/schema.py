@@ -44,11 +44,17 @@ class NoUsers(AuthUsers):
     """Строки users для схемы: никого не читает и не пишет."""
 
     async def get_user(self, identifier: str) -> AuthenticatedUser | None:
-        msg = "users table is not part of the schema stand"
+        msg = (
+            f"get_user({identifier!r}) while rendering the OpenAPI schema: "
+            f"the users table is not part of the schema stand"
+        )
         raise RuntimeError(msg)
 
     async def ensure_user(self, signed: SignedIn) -> AuthenticatedUser:
-        msg = "users table is not part of the schema stand"
+        msg = (
+            f"ensure_user({signed.identifier!r}) while rendering the "
+            f"OpenAPI schema: the users table is not part of the schema stand"
+        )
         raise RuntimeError(msg)
 
 
@@ -95,8 +101,7 @@ class OpenApiDocument:
 
     @classmethod
     def _no_users(cls) -> UsersTable:
-        msg = "users table is not part of the schema stand"
-        raise RuntimeError(msg)
+        raise RuntimeError(cls._stub_called("users table"))
 
     @classmethod
     def _profiles(cls) -> ChatProfiles:

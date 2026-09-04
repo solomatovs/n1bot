@@ -191,13 +191,24 @@ class ClickHouseConfig(ConnectionProfileBase):
     @model_validator(mode="after")
     def _validate(self) -> Self:
         if not self.host:
-            msg = "clickhouse connection: host обязателен"
+            msg = (
+                "clickhouse connection: host must be a non-empty server name, "
+                f"got {self.host!r}"
+            )
             raise ValueError(msg)
+
         if not self.port:
-            msg = "clickhouse connection: port обязателен"
+            msg = (
+                "clickhouse connection: port must be a non-zero number, "
+                f"got {self.port!r}"
+            )
             raise ValueError(msg)
+
         if not self.interface:
-            msg = "clickhouse connection: interface обязателен (http или https)"
+            msg = (
+                "clickhouse connection: interface must be http or https, "
+                f"got {self.interface!r}"
+            )
             raise ValueError(msg)
 
         if not isinstance(self.auth, KerberosAuthBase):
@@ -205,8 +216,9 @@ class ClickHouseConfig(ConnectionProfileBase):
 
         if self.connect_timeout is None:
             msg = (
-                f"clickhouse connection: {self.auth.method} требует connect_timeout — "
-                "GSS-обмен идёт под процессным локом"
+                f"clickhouse connection to {self.host}: auth {self.auth.method} "
+                "requires connect_timeout (the GSS exchange runs under a process "
+                "lock), got none"
             )
             raise ValueError(msg)
 
@@ -215,7 +227,10 @@ class ClickHouseConfig(ConnectionProfileBase):
     def service_name(self) -> str:
         """SPN сервиса в форме hostbased: <service>@<имя сервера>."""
         if not isinstance(self.auth, KerberosAuthBase):
-            msg = f"clickhouse connection: {self.auth.method} has no kerberos service"
+            msg = (
+                f"clickhouse connection to {self.host}: auth {self.auth.method} "
+                "has no kerberos service name, expected a kerberos_* auth"
+            )
             raise ValueError(msg)
 
         return f"{ClickHouseKerberos.service_of(self.auth)}@{self._spn_host()}"
@@ -242,7 +257,10 @@ class ClickHouseConfig(ConnectionProfileBase):
             return self.server_host_name
 
         if not self.host:
-            msg = "clickhouse connection: SPN нужен host или server_host_name"
+            msg = (
+                "clickhouse connection: SPN host needs host or server_host_name, "
+                "both are empty"
+            )
             raise ValueError(msg)
 
         return self.host

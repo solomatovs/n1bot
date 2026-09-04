@@ -113,8 +113,8 @@ async def test_action_of_a_gone_session_is_refused_without_the_handler() -> None
 
     if answer.status_code != StaleActionMiddleware.STATUS:
         raise AssertionError("answer.status_code == StaleActionMiddleware.STATUS")
-    if answer.json()["detail"] != "session is gone":
-        raise AssertionError('answer.json()["detail"] == "session is gone"')
+    if "session session-gone-1 is gone" not in answer.json()["detail"]:
+        raise AssertionError('"session session-gone-1 is gone" in detail')
     if probe.calls:
         raise AssertionError("not probe.calls")
 

@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from boba.identity.context import DelegatedTicket
 from boba.identity.signin import SignedIn, SignInMetadata
+from boba.toolkit.failure import ValidationText
 
 __all__ = [
     "ClaimKey",
@@ -138,7 +139,11 @@ class SessionClaims(BaseModel):
         try:
             return cls.model_validate(raw)
         except ValidationError as exc:
-            raise TokenRejectedError(TokenRejection.MALFORMED, str(exc)) from exc
+            msg = (
+                f"session token claims {sorted(raw)} do not fit SessionClaims: "
+                f"{ValidationText.of(exc)}"
+            )
+            raise TokenRejectedError(TokenRejection.MALFORMED, msg) from exc
 
     def render(self) -> dict[str, Any]:
         return {
@@ -264,7 +269,8 @@ class CookieJar:
 
     def __init__(self, name: str) -> None:
         if not name:
-            raise ValueError("cookie name is empty")
+            msg = "cookie jar: expected a non-empty cookie name, got ''"
+            raise ValueError(msg)
 
         self._name = name
 

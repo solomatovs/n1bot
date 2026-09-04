@@ -143,7 +143,7 @@ async def test_http_failure_is_an_embedding_error(monkeypatch) -> None:
     _patch(monkeypatch, handler)
 
     embedder = OpenAiEmbedder(_config(2))
-    with pytest.raises(EmbeddingError, match="endpoint failed"):
+    with pytest.raises(EmbeddingError, match="endpoint failed: POST"):
         await embedder.embed_query("вопрос")
 
 

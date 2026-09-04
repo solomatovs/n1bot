@@ -139,8 +139,8 @@ class LockBusy(BaseModel):
 
     def describe(self, scope: Scope) -> str:
         return (
-            f"{scope.kind.value} is busy: {self.holder} {self.purpose.describe()} "
-            f"(last seen {self.silent_sec}s ago)"
+            f"{scope.kind.value} {scope.id} is busy: {self.holder} "
+            f"{self.purpose.describe()} (last seen {self.silent_sec}s ago)"
         )
 
 
@@ -259,18 +259,27 @@ class LockKeeper:
         loop = asyncio.get_running_loop()
         while True:
             await asyncio.sleep(self._heartbeat_sec)
+            reason = "the lock store reports the lock as taken away"
             try:
                 alive = await self._locks.heartbeat(self._lock.token)
-            except Exception:
+            except Exception as exc:
                 if failing_since is None:
                     failing_since = loop.time()
 
                 logger.warning(
-                    "heartbeat of %s failed", self._lock.scope.render(), exc_info=True
+                    "heartbeat of lock %s held by %s failed: %s",
+                    self._lock.scope.render(),
+                    self._lock.holder,
+                    exc,
+                    exc_info=True,
                 )
                 if loop.time() - failing_since < self._lock.ttl_sec:
                     continue
 
+                reason = (
+                    f"heartbeats kept failing for ttl {self._lock.ttl_sec}s, "
+                    f"last error: {exc}"
+                )
                 alive = False
 
             if alive:
@@ -278,7 +287,10 @@ class LockKeeper:
                 continue
 
             logger.error(
-                "lock lost: %s held by %s", self._lock.scope.render(), self._lock.holder
+                "lock %s held by %s is lost: %s",
+                self._lock.scope.render(),
+                self._lock.holder,
+                reason,
             )
             self._cancellation.cancel(StopReason.LOCK_LOST)
             return

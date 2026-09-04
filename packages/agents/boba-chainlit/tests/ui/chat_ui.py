@@ -40,7 +40,8 @@ def login_cookies(stand: StandProcess, login: str = "") -> list[SetCookieParam]:
         )
 
     if not cookies:
-        raise RuntimeError("login returned no cookies")
+        msg = f"POST {stand.config.base_url}/login for {login!r} returned no cookies"
+        raise RuntimeError(msg)
 
     return cookies
 

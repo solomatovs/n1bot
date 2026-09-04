@@ -164,6 +164,11 @@ class ChatExchange:
         self._api_key = api_key
         self._label = label
 
+    @property
+    def _where(self) -> str:
+        """Метка провайдера и адрес запроса для текстов ошибок."""
+        return f"{self._label}: POST {self._endpoint}"
+
     async def complete(self, payload: dict[str, Any]) -> bytes:
         """Один запрос-ответ: тело ответа целиком, разбор — у провайдера."""
         attempts = self._cfg.max_retries + 1
@@ -178,7 +183,7 @@ class ChatExchange:
 
                 if response.is_error:
                     msg = (
-                        f"chat endpoint returned {response.status_code}: "
+                        f"{self._where} expected 2xx, got {response.status_code}: "
                         f"{response.content[:500]!r}"
                     )
                     raise ChatProviderError(msg)
@@ -188,18 +193,26 @@ class ChatExchange:
                 raise
             except httpx.HTTPError as exc:
                 if attempt + 1 >= attempts:
-                    msg = f"chat endpoint failed: {exc}"
+                    msg = (
+                        f"{self._where} failed after {attempts} attempt(s): "
+                        f"{type(exc).__name__}: {exc}"
+                    )
                     raise ChatProviderError(msg) from exc
 
                 logger.warning(
-                    "%s: attempt %d/%d failed: %s",
-                    self._label,
+                    "%s: attempt %d/%d failed: %s: %s",
+                    self._where,
                     attempt + 1,
                     attempts,
+                    type(exc).__name__,
                     exc,
                 )
 
-        raise ChatProviderError("chat endpoint failed: no attempts were made")
+        msg = (
+            f"{self._where}: no attempts were made, "
+            f"max_retries={self._cfg.max_retries} gives {attempts} attempt(s)"
+        )
+        raise ChatProviderError(msg)
 
     async def stream(
         self,
@@ -221,18 +234,25 @@ class ChatExchange:
                 raise
             except httpx.HTTPError as exc:
                 if streamed:
-                    msg = f"chat stream broke mid-reply: {exc}"
+                    msg = (
+                        f"{self._where}: stream broke mid-reply: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
                     raise ChatProviderError(msg) from exc
 
                 if attempt + 1 >= attempts:
-                    msg = f"chat endpoint failed: {exc}"
+                    msg = (
+                        f"{self._where} failed after {attempts} attempt(s): "
+                        f"{type(exc).__name__}: {exc}"
+                    )
                     raise ChatProviderError(msg) from exc
 
                 logger.warning(
-                    "%s: attempt %d/%d failed: %s",
-                    self._label,
+                    "%s: attempt %d/%d failed: %s: %s",
+                    self._where,
                     attempt + 1,
                     attempts,
+                    type(exc).__name__,
                     exc,
                 )
 
@@ -250,7 +270,10 @@ class ChatExchange:
 
             if response.is_error:
                 body = await response.aread()
-                msg = f"chat endpoint returned {response.status_code}: {body[:500]!r}"
+                msg = (
+                    f"{self._where} expected 2xx, got {response.status_code}: "
+                    f"{body[:500]!r}"
+                )
                 raise ChatProviderError(msg)
 
             lines = response.aiter_lines()
@@ -281,7 +304,10 @@ class ChatExchange:
                     return await anext(lines, None)
             return await anext(lines, None)
         except TimeoutError as exc:
-            msg = f"chat stream stalled: no chunk for {ceiling}s"
+            msg = (
+                f"{self._where}: stream stalled, no line within "
+                f"stream_chunk_timeout={ceiling}s"
+            )
             raise ChatProviderError(msg) from exc
 
     def _headers(self) -> dict[str, str]:

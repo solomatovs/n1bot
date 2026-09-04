@@ -60,10 +60,11 @@ class RetryPolicy:
 
     def log(self, attempt: int, request: HttpRequest, exc: httpx.HTTPError) -> None:
         logger.warning(
-            "HTTP %s %s неудачно (%s); retry %d/%d через %.1fs",
+            "HTTP %s %s failed (%s: %s); retry %d/%d in %.1fs",
             request.method,
             request.url,
             type(exc).__name__,
+            exc,
             attempt,
             self._attempts,
             self.delay(attempt),
@@ -73,7 +74,8 @@ class RetryPolicy:
     def exhausted(request: HttpRequest) -> httpx.HTTPError:
         """Недостижимая ветка: цикл либо вернул ответ, либо запомнил ошибку."""
         return httpx.HTTPError(
-            f"HTTP {request.method} {request.url}: неизвестная ошибка",
+            f"HTTP {request.method} {request.url}: retry loop ended without "
+            "a response or a recorded error",
         )
 
 

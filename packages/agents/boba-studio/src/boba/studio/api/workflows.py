@@ -115,7 +115,6 @@ class WorkflowApi:
             (WorkflowUrl.VALIDATE, self.validate, "POST"),
             (WorkflowUrl.WORKFLOWS, self.list_workflows, "GET"),
             (WorkflowUrl.WORKFLOWS, self.save, "POST"),
-
             (WorkflowUrl.WORKFLOW, self.get, "GET"),
             (WorkflowUrl.WORKFLOW, self.save_into, "PUT"),
             (WorkflowUrl.WORKFLOW, self.delete, "DELETE"),

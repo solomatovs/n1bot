@@ -20,7 +20,8 @@ class CollectionNotFoundError(KeyError):
     """Коллекция (значение колонки collection в kb_chunks) не зарегистрирована."""
 
     def __init__(self, name: str) -> None:
-        super().__init__(name)
+        msg = f"knowledge base collection {name!r} is not registered in kb_chunks"
+        super().__init__(msg)
         self.name = name
 
 

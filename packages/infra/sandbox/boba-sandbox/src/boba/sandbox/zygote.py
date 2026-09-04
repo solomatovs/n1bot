@@ -406,6 +406,7 @@ class ZygoteSupervisor:
         self._in_flight: dict[str, float] = {}
         self._born = 0.0
         self._chain_lost = ""
+        self._last_failure = ""
 
         self._lock = threading.Lock()
         self._settled = threading.Condition(self._lock)
@@ -537,7 +538,8 @@ class ZygoteSupervisor:
                     self._journal.gave_up(self._attempts)
                     msg = (
                         f"zygote {self._name}: not ready after "
-                        f"{self._attempts} attempt(s)"
+                        f"{self._attempts} attempt(s), last attempt: "
+                        f"{self._last_failure}"
                     )
                     raise ZygoteStartError(msg)
 
@@ -558,7 +560,10 @@ class ZygoteSupervisor:
         if self._state is ZygoteState.READY:
             return
 
-        msg = f"zygote {self._name}: start by another caller ended as {self._state}"
+        msg = (
+            f"zygote {self._name}: waited {limit:.1f}s for a start by another "
+            f"caller, it ended as {self._state}"
+        )
         raise ZygoteStartError(msg)
 
     def stop(self) -> None:
@@ -609,7 +614,10 @@ class ZygoteSupervisor:
         with self._lock:
             sock = self._sock
             if self._state is not ZygoteState.READY or sock is None:
-                msg = f"zygote {self._name} is not ready: {self._state}"
+                msg = (
+                    f"zygote {self._name}: call {call_id} refused, "
+                    f"the section is not ready: {self._state}"
+                )
                 raise ZygoteUnavailableError(msg)
 
         with self._lock:
@@ -643,7 +651,10 @@ class ZygoteSupervisor:
             channels.close_host_ends()
             with self._lock:
                 self._in_flight.pop(call_id, None)
-            msg = f"zygote {self._name}: request not sent: {exc}"
+            msg = (
+                f"zygote {self._name}: sending call {call_id} request "
+                f"over the control socket failed: {exc}"
+            )
             raise ZygoteUnavailableError(msg) from exc
 
         channels.close_child_ends()
@@ -773,7 +784,8 @@ class ZygoteSupervisor:
         except OSError as exc:
             host_sock.close()
             child_sock.close()
-            self._journal.failed(f"spawn failed: {exc}", self._stderr.text().strip())
+            self._last_failure = f"spawn failed: {exc}"
+            self._journal.failed(self._last_failure, self._stderr.text().strip())
             return False
 
         child_sock.close()
@@ -788,14 +800,19 @@ class ZygoteSupervisor:
             message, _fds = ZygoteWire.recv(host_sock)
         except (TimeoutError, OSError) as exc:
             tail = self._stderr.text().strip()
-            self._journal.failed(f"no ready message: {exc}", tail)
+            self._last_failure = (
+                f"no ready message within {self._policy.start_timeout_sec}s "
+                f"from pid {proc.pid}: {exc}"
+            )
+            self._journal.failed(self._last_failure, tail)
             self._abandon(proc, host_sock)
             return False
 
         if message.get("op") != "ready":
-            self._journal.failed(
-                f"unexpected hello: {message}", self._stderr.text().strip()
+            self._last_failure = (
+                f"expected op=ready from pid {proc.pid}, got {str(message)[:200]}"
             )
+            self._journal.failed(self._last_failure, self._stderr.text().strip())
             self._abandon(proc, host_sock)
             return False
 
@@ -971,7 +988,7 @@ class _ZygotePump(ChannelPump):
             raise ZygoteCallError(msg)
 
         if data == ControlMark.BORN.bytes():
-            self._child_pid = self._creds_pid(ancdata)
+            self._child_pid = self._creds_pid(ancdata, self._request.call_id)
             return
 
         if self._setup_failed(data):
@@ -993,14 +1010,17 @@ class _ZygotePump(ChannelPump):
         return True
 
     @staticmethod
-    def _creds_pid(ancdata: list[tuple[int, int, bytes]]) -> int:
+    def _creds_pid(ancdata: list[tuple[int, int, bytes]], call_id: str) -> int:
         for level, kind, blob in ancdata:
             if level == socket.SOL_SOCKET and kind == socket.SCM_CREDENTIALS:
                 creds = array.array("i")
                 creds.frombytes(blob[: 3 * creds.itemsize])
                 return creds[0]
 
-        msg = "zygote handshake: born without SCM_CREDENTIALS"
+        msg = (
+            f"zygote handshake: born message of call {call_id} "
+            f"came without SCM_CREDENTIALS"
+        )
         raise ZygoteCallError(msg)
 
     def _outcome(self, timed_out: bool) -> ZygoteOutcome:
@@ -1295,7 +1315,10 @@ class ZygoteToolCaller(ToolLauncher):
 
         shell = self._profile.run.shell
         if not shell:
-            msg = f"{self._tool}: profile declares no shell for text commands"
+            msg = (
+                f"zygote {self._tool}: text command cannot run, "
+                f"profile run.shell is empty"
+            )
             raise ZygoteCallError(msg)
 
         argv = (shell, "-c", command)
@@ -1478,7 +1501,10 @@ class ZygoteToolCaller(ToolLauncher):
             raise SandboxChainError(msg)
 
         if outcome.setup_failure is SetupFailure.MOUNT_ERROR:
-            msg = f"sandbox: image not mounted: {outcome.setup_detail}"
+            msg = (
+                f"sandbox: call setup in section {self._tool} failed, "
+                f"image not mounted: {outcome.setup_detail}"
+            )
             raise SandboxMountError(msg)
 
     def _diagnose(self, result: RunResult, tool_stderr: str) -> str:
@@ -1497,7 +1523,10 @@ class ZygoteToolCaller(ToolLauncher):
         """Параметры одного вызова из профиля: лимиты, образы, пути."""
         timeout_sec = self._profile.limits.timeout_sec
         if timeout_sec is None:
-            msg = f"zygote {self._tool}: profile without timeout_sec"
+            msg = (
+                f"zygote {self._tool}: call cannot be planned, "
+                f"profile limits.timeout_sec is not set"
+            )
             raise ZygoteCallError(msg)
 
         limits = ChildLimits(
@@ -1612,7 +1641,10 @@ class ZygoteToolCaller(ToolLauncher):
         """Команда модуля без префикса python: имя тула и флаги."""
         argv = command.argv
         if len(argv) <= self.ARGV_HEAD or argv[1] != "-m":
-            msg = f"{self._tool}: not a tool module command: {argv[:3]}"
+            msg = (
+                f"zygote {self._tool}: expected a `python -m <tool>` command, "
+                f"got argv {argv[:3]}"
+            )
             raise ZygoteCallError(msg)
 
         return argv[self.ARGV_HEAD :]

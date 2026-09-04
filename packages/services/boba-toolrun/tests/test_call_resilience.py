@@ -324,9 +324,7 @@ class TestSpliceChain:
         tapped = launcher.open_tap(_command("fake_stream", "--prefix", "t:"))
 
         with tapped.call as source:
-            relay = _SpliceWorker(
-                tapped.frames_fd, os.open(os.devnull, os.O_WRONLY)
-            )
+            relay = _SpliceWorker(tapped.frames_fd, os.open(os.devnull, os.O_WRONLY))
 
             source.done_sending()
             drained = relay.wait()

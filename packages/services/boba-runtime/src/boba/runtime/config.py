@@ -70,7 +70,11 @@ class ConfigLocator:
 
         base = os.environ.get(cls.BASE_ENV)
         if not base:
-            msg = f"{cls.CONFIG_ENV} or {cls.BASE_ENV} is required"
+            msg = (
+                f"config path: neither {cls.CONFIG_ENV} nor {cls.BASE_ENV} is set "
+                f"in the environment; expected {cls.CONFIG_ENV}=<path to toml> "
+                f"or {cls.BASE_ENV}=<dir with {cls.CONFIG_RELATIVE}>"
+            )
             raise RuntimeError(msg)
 
         return Path(base) / cls.CONFIG_RELATIVE
@@ -190,7 +194,10 @@ class RawConfig:
     @classmethod
     def get(cls) -> DictConfig:
         if cls._raw is None:
-            msg = "raw config is not loaded: call RawConfig.load() first"
+            msg = (
+                "RawConfig.get: raw config is not loaded yet, "
+                "RawConfig.load(config_path) must run first"
+            )
             raise RuntimeError(msg)
 
         return cls._raw
@@ -283,7 +290,10 @@ class StreamJournalConfig(BaseModel):
             return self
 
         if not self.dir:
-            msg = "stream_journal: dir is required"
+            msg = (
+                "[stream_journal]: dir is required when enable = true, "
+                "got an empty string"
+            )
             raise ValueError(msg)
 
         return self
@@ -330,7 +340,11 @@ class ClusterConfig(BaseModel):
     @model_validator(mode="after")
     def _heartbeat_fits_ttl(self) -> Self:
         if self.heartbeat_sec * 2 > self.lock_ttl_sec:
-            msg = "cluster: heartbeat_sec must be at most half of lock_ttl_sec"
+            msg = (
+                "[cluster]: heartbeat_sec must be at most half of lock_ttl_sec, "
+                f"got heartbeat_sec = {self.heartbeat_sec} and "
+                f"lock_ttl_sec = {self.lock_ttl_sec}"
+            )
             raise ValueError(msg)
 
         return self
@@ -409,7 +423,11 @@ class SessionConfig(BaseModel):
     @model_validator(mode="after")
     def _max_covers_ttl(self) -> SessionConfig:
         if self.session_max_sec < self.session_ttl_sec:
-            msg = "session_max_sec must not be shorter than session_ttl_sec"
+            msg = (
+                "[session]: session_max_sec must not be shorter than "
+                f"session_ttl_sec, got session_max_sec = {self.session_max_sec} "
+                f"and session_ttl_sec = {self.session_ttl_sec}"
+            )
             raise ValueError(msg)
 
         return self
@@ -542,7 +560,10 @@ class RuntimeConfig(BaseModel):
 
         if found > 1:
             # один SPNEGO-обмен на приложение: второй [auth.kerberos] — ошибка конфига
-            msg = "kerberos authorization configured twice"
+            msg = (
+                "[auth]: expected at most one kerberos entry, "
+                f"got {found} entries with kind = kerberos"
+            )
             raise ValueError(msg)
 
         return value
@@ -552,7 +573,10 @@ class RuntimeConfig(BaseModel):
         if isinstance(self.messaging, PostgresMessagingConfig):
             return self.messaging
 
-        msg = "[messaging] provider is not postgres"
+        msg = (
+            "[messaging]: a postgres provider is required here, "
+            f"got provider = {self.messaging.provider!r}"
+        )
         raise RuntimeError(msg)
 
     def kerberos(self) -> KerberosAuthConfig | None:
@@ -566,7 +590,10 @@ class RuntimeConfig(BaseModel):
         """Путь SPNEGO-обмена из [auth.kerberos]; без него — RuntimeError."""
         kerberos = self.kerberos()
         if kerberos is None:
-            msg = "sso is configured without [auth.kerberos]"
+            msg = (
+                "sso path: [auth] has no entry with kind = kerberos, "
+                "so no SPNEGO exchange path exists"
+            )
             raise RuntimeError(msg)
 
         return kerberos.sso_path

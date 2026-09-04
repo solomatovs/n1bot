@@ -132,7 +132,11 @@ class LiveServer:
         while not self._server.started:
             if self._task.done():
                 self._task.result()
-                raise RuntimeError("uvicorn stopped before it started")
+                msg = (
+                    "fake confluence uvicorn on 127.0.0.1: serve() returned "
+                    "before the server reported started"
+                )
+                raise RuntimeError(msg)
 
             await asyncio.sleep(self.STARTUP_POLL_SEC)
 

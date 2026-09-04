@@ -102,7 +102,7 @@ def to_domain(e: Exception) -> BaseError:
         return e
 
     wrapped = InternalServiceError(
-        internal_detail=str(e),
+        internal_detail=FailureText.of(e),
         user_detail=None,
     )
     # __cause__ хранит оригинал: у wrapped нет __traceback__, у e — есть

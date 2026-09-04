@@ -175,7 +175,11 @@ class DumpingTransport(httpx.AsyncHTTPTransport):
                 raise
 
             if not isinstance(response.stream, httpx.AsyncByteStream):
-                raise TypeError(f"response.stream is not valid: {response.stream}")
+                msg = (
+                    "dump transport expected an httpx.AsyncByteStream response "
+                    f"body, got {type(response.stream).__name__}"
+                )
+                raise TypeError(msg)
 
             return httpx.Response(
                 status_code=response.status_code,

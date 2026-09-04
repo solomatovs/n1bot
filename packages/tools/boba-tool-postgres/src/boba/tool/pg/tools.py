@@ -86,7 +86,11 @@ class CopyStatement:
         if marker in folded:
             return
 
-        msg = f"{tool_name} needs a full COPY statement with {marker.upper()}"
+        head = sql[:200]
+        msg = (
+            f"{tool_name} expects a full COPY statement with {marker.upper()}, "
+            f"got {head!r}"
+        )
         raise CopyDirectionError(msg)
 
 

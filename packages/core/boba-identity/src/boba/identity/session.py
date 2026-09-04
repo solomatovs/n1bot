@@ -85,7 +85,8 @@ class LoginTemplate:
         try:
             FieldTemplate.parse(text).having(cls.FIELD)
         except TemplateError as exc:
-            raise ValueError(str(exc)) from exc
+            msg = f"login template {text!r} is not usable: {exc}"
+            raise ValueError(msg) from exc
 
         return text
 
@@ -95,7 +96,8 @@ class LoginTemplate:
         try:
             FieldTemplate.parse(text).single(cls.FIELD)
         except TemplateError as exc:
-            raise ValueError(str(exc)) from exc
+            msg = f"principal format {text!r} is not usable: {exc}"
+            raise ValueError(msg) from exc
 
         return text
 

@@ -143,7 +143,8 @@ class StandDatabase:
                 try:
                     await cur.execute(extension.statement())
                 except InsufficientPrivilege as exc:
-                    raise StandError(extension.manual_hint(self._name)) from exc
+                    msg = f"{extension.manual_hint(self._name)}: {exc}"
+                    raise StandError(msg) from exc
 
     async def _forget_studio_profiles(self) -> None:
         """Выбор профиля studio хранится на пользователе и пережил бы прогон."""
@@ -190,7 +191,8 @@ class StandDatabase:
         ).format(sql.Identifier(self._schema))
         row = run_blocking(self._execute(query, (identifier,)))
         if row is None:
-            raise RuntimeError(f"user {identifier} is not stored")
+            msg = f"user {identifier!r} has no row in {self._schema}.users"
+            raise RuntimeError(msg)
 
         return dict(row[0])
 

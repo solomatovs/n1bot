@@ -192,9 +192,7 @@ class PipelineService:
 
         slots: list[NodeSlot] = []
         for index in range(len(plan.nodes)):
-            slots.append(
-                NodeSlot(has_upstream=index > 0, has_downstream=index < last)
-            )
+            slots.append(NodeSlot(has_upstream=index > 0, has_downstream=index < last))
 
         node_tasks = self._start_nodes(invoker, plan, slots)
 
@@ -300,9 +298,7 @@ class PipelineService:
 
         return TextResult(text=f"pipeline finished:\n{text}")
 
-    def _node_line(
-        self, name: str, spec: StreamSpec, invoker: ToolInvoker
-    ) -> str:
+    def _node_line(self, name: str, spec: StreamSpec, invoker: ToolInvoker) -> str:
         described = invoker.tool(name).description.strip().split("\n")[0]
 
         inbound = self._side(spec, PortDirection.INBOUND)

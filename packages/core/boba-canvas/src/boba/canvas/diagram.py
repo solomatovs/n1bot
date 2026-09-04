@@ -144,20 +144,29 @@ class MermaidSpec(BaseModel):
         text = cls._strip_fence(raw)
 
         if not text:
-            raise DiagramSpecError("the spec is empty")
+            msg = (
+                "mermaid spec is empty after stripping the fence: "
+                f"expected a diagram, got {raw[:200]!r}"
+            )
+            raise DiagramSpecError(msg)
 
         title, body = cls._split_frontmatter(text)
 
         head = cls._first_token(body)
         if head is None:
-            raise DiagramSpecError("the spec has no meaningful lines")
+            msg = (
+                "mermaid spec has no meaningful lines besides comments and "
+                f"frontmatter: expected a diagram type line, got {text[:200]!r}"
+            )
+            raise DiagramSpecError(msg)
 
         if head not in cls.TYPES:
             known = ", ".join(sorted(cls.TYPES))
-            raise DiagramSpecError(
-                f"the first line must name a mermaid diagram type, "
+            msg = (
+                f"mermaid spec: the first line must name a diagram type, "
                 f"got {head!r}; supported: {known}"
             )
+            raise DiagramSpecError(msg)
 
         return cls(text=text, diagram_type=head, title=title)
 

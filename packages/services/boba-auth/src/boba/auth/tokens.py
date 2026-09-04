@@ -30,11 +30,17 @@ class JwtTokens(TokenIssuer, TokenReader):
 
     def __init__(self, secret: str, ttl_sec: int) -> None:
         if not secret:
-            msg = "jwt secret is empty: [session].auth_secret is required"
+            msg = (
+                "jwt tokens: [session].auth_secret is required to sign the "
+                "sign-in token, got an empty string"
+            )
             raise ValueError(msg)
 
         if ttl_sec <= 0:
-            msg = f"jwt ttl must be positive, got {ttl_sec}"
+            msg = (
+                "jwt tokens: [session] token ttl must be a positive number of "
+                f"seconds, got {ttl_sec}"
+            )
             raise ValueError(msg)
 
         self._secret = secret
@@ -50,7 +56,8 @@ class JwtTokens(TokenIssuer, TokenReader):
 
     def read(self, token: str) -> SessionClaims:
         if not token:
-            raise TokenRejectedError(TokenRejection.MALFORMED, "token is empty")
+            msg = "sign-in token read: expected a JWT string, got an empty one"
+            raise TokenRejectedError(TokenRejection.MALFORMED, msg)
 
         raw = self._decode(token, verify_exp=True)
 
@@ -58,13 +65,17 @@ class JwtTokens(TokenIssuer, TokenReader):
 
     def read_stale(self, token: str, grace_sec: int) -> SessionClaims:
         if not token:
-            raise TokenRejectedError(TokenRejection.MALFORMED, "token is empty")
+            msg = "sign-in token read: expected a JWT string, got an empty one"
+            raise TokenRejectedError(TokenRejection.MALFORMED, msg)
 
         claims = SessionClaims.parse(self._decode(token, verify_exp=False))
-        if claims.exp + grace_sec < int(time.time()):
-            raise TokenRejectedError(
-                TokenRejection.EXPIRED, "token expired beyond grace"
+        now = int(time.time())
+        if claims.exp + grace_sec < now:
+            msg = (
+                f"sign-in token of {claims.identifier!r} expired at {claims.exp} "
+                f"and the grace of {grace_sec}s is over at {now}"
             )
+            raise TokenRejectedError(TokenRejection.EXPIRED, msg)
 
         return claims
 
@@ -80,10 +91,14 @@ class JwtTokens(TokenIssuer, TokenReader):
                 options={"verify_exp": verify_exp},
             )
         except jwt.ExpiredSignatureError as exc:
-            raise TokenRejectedError(TokenRejection.EXPIRED, "token expired") from exc
+            message = f"sign-in token expired: {exc}"
+            raise TokenRejectedError(TokenRejection.EXPIRED, message) from exc
         except jwt.InvalidSignatureError as exc:
-            message = "token signature mismatch"
+            message = (
+                "sign-in token is signed with a secret other than "
+                f"[session].auth_secret: {exc}"
+            )
             raise TokenRejectedError(TokenRejection.SIGNATURE, message) from exc
         except jwt.PyJWTError as exc:
-            message = f"token malformed: {exc}"
+            message = f"sign-in token is not a valid HS256 JWT: {exc}"
             raise TokenRejectedError(TokenRejection.MALFORMED, message) from exc

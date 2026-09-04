@@ -142,7 +142,10 @@ class SessionRefresh:
         и кнопки SSO — ошибка развёртывания, не режим работы.
         """
         if not self._script_path.is_file():
-            msg = f"page script is not built: {self._script_path}"
+            msg = (
+                "sign-in page script is not built: expected a file at "
+                f"{self._script_path}"
+            )
             raise RuntimeError(msg)
 
         template = self._script_path.read_text(encoding="utf-8")

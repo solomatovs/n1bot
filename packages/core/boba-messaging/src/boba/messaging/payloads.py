@@ -65,11 +65,17 @@ class MemoryPayloadStore(PayloadStore):
     async def get(self, ref: PayloadRef) -> object:
         bodies = self._bodies.get(ref.scope)
         if bodies is None:
-            msg = f"payload {ref.id} of {ref.scope.render()} is gone"
+            msg = (
+                f"payload {ref.id} of {ref.scope.render()}: the scope has no bodies "
+                "in the memory store (purged or never written here)"
+            )
             raise PayloadMissingError(msg)
 
         if ref.id not in bodies:
-            msg = f"payload {ref.id} of {ref.scope.render()} is unknown"
+            msg = (
+                f"payload {ref.id} of {ref.scope.render()}: no such id among "
+                f"{len(bodies)} bodies of the scope in the memory store"
+            )
             raise PayloadMissingError(msg)
 
         return bodies[ref.id]
