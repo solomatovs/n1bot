@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 
 from boba.runtime.config import BuiltPage, DevPage, StudioConfig
-from boba.runtime.spa import BuiltSpa, DevSpa, SpaMount, SpaStamp
+from boba.runtime.spa import BuiltSpa, DevSpa, SpaPaths, SpaStamp
 
 pytestmark = pytest.mark.anyio
 
@@ -124,19 +124,38 @@ def _stamp() -> dict[str, str]:
     }
 
 
-def _mount() -> SpaMount:
-    return SpaMount.at_root(PREFIX, "workflow")
+def _paths() -> SpaPaths:
+    return SpaPaths(
+        name="workflow",
+        page="/workflow/{path:path}",
+        assets="/workflow/assets",
+        dev="/workflow-dev/{path:path}",
+        built_base="/workflow/",
+        dev_base="/workflow-dev/",
+    )
+
+
+def _nested_paths() -> SpaPaths:
+    """Страница вложенного приложения: пути относительные, базы с префиксом."""
+    return SpaPaths(
+        name="catalog",
+        page="/catalog/{path:path}",
+        assets="/catalog/assets",
+        dev="/catalog-dev/{path:path}",
+        built_base=f"{PREFIX}/catalog/",
+        dev_base=f"{PREFIX}/catalog-dev/",
+    )
 
 
 def _built_app(dist: Path) -> FastAPI:
     app = FastAPI()
-    BuiltSpa(dist, _mount(), _stamp()).mount(app)
+    BuiltSpa(_paths(), dist, PREFIX, _stamp()).mount(app)
     return app
 
 
 def _dev_app(dev_url: str) -> FastAPI:
     app = FastAPI()
-    DevSpa(dev_url, _mount(), _stamp()).mount(app)
+    DevSpa(_paths(), dev_url, PREFIX, _stamp()).mount(app)
     return app
 
 
@@ -166,7 +185,7 @@ async def test_nested_mount_serves_without_prefix_but_stamps_it(
     """Приложение под префиксом (chainlit): маршруты относительные, base href полный."""
     (tmp_path / BuiltSpa.INDEX).write_text(INDEX)
     app = FastAPI()
-    BuiltSpa(tmp_path, SpaMount.nested(PREFIX, "catalog"), _stamp()).mount(app)
+    BuiltSpa(_nested_paths(), tmp_path, "", _stamp()).mount(app)
 
     status, text, _ = await _get(app, "/catalog/views/abc")
 
