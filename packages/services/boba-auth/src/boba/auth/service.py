@@ -218,6 +218,8 @@ class AuthService(Authenticator):
         try:
             claims = self._tokens.read_stale(token, self._renewal.grace_sec)
         except TokenRejectedError as exc:
+            # в лог идёт причина отказа, сам токен туда не попадает
+            # nosemgrep: python-logger-credential-disclosure
             logger.info("sign-in token rejected on refresh: %s", exc.reason)
             return None
 

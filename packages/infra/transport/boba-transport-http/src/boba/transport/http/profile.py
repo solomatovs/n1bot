@@ -33,7 +33,7 @@ __all__ = [
     "BearerAuth",
     "DigestAuth",
     "HostPattern",
-    "HttpProfile",
+    "HttpConnection",
     "NegotiateAuth",
     "NoneAuth",
     "WebAuth",
@@ -201,7 +201,7 @@ class HostPattern(BaseModel):
         return host.lower()
 
 
-class HttpProfile(ConnectionProfileBase):
+class HttpConnection(ConnectionProfileBase):
     """Транспортный профиль: timeout/ssl/retry + auth. Без url."""
 
     model_config = ConfigDict(extra="ignore")
@@ -280,7 +280,7 @@ class HttpProfile(ConnectionProfileBase):
 
         return HostPattern(value=own).matches(host)
 
-    def bound_to(self, host: str) -> HttpProfile:
+    def bound_to(self, host: str) -> HttpConnection:
         """Профиль с конкретным хостом вместо шаблона в base_url."""
         if self.base_url is None:
             return self
@@ -319,7 +319,7 @@ class HttpProfile(ConnectionProfileBase):
 
         return None
 
-    def with_call_ticket(self, ticket: TicketAuth) -> HttpProfile:
+    def with_call_ticket(self, ticket: TicketAuth) -> HttpConnection:
         if not isinstance(self.auth, NegotiateAuth):
             return self
 
@@ -328,7 +328,6 @@ class HttpProfile(ConnectionProfileBase):
 
     def trace(self) -> str:
         return f"{self.auth.trace()} url={self.base_url}"
-
 
     def login_url(self) -> str | None:
         """URL login-сервлета negotiate-профиля; None — сервлета нет."""

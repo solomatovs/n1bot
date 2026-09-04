@@ -487,7 +487,8 @@ class ThreadRewind:
             HumanMessage(
                 content=content,
                 id=message_id,
-                additional_kwargs=ChatTurnAttachments.extra(rewind.attachments),
+                # extra здесь — сборка additional_kwargs, а не Django ORM
+                additional_kwargs=ChatTurnAttachments.extra(rewind.attachments),  # nosec B610
             )
         )
         await self._graph.aupdate_state(self._config, {"messages": updates})

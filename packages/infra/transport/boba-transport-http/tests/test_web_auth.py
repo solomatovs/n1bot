@@ -26,7 +26,7 @@ from boba.transport.http import HttpRequest, HttpTransport
 from boba.transport.http.profile import (
     BasicAuth,
     BearerAuth,
-    HttpProfile,
+    HttpConnection,
     NegotiateAuth,
     NoneAuth,
 )
@@ -59,19 +59,19 @@ def workspace(tmp_path: Path) -> Iterator[None]:
         yield
 
 
-def _clickhouse(auth: Any) -> HttpProfile:
-    return HttpProfile(
+def _clickhouse(auth: Any) -> HttpConnection:
+    return HttpConnection(
         base_url=f"http://{STAND.ch_addr}:{STAND.ch_port}",
         auth=auth,
         timeout_sec=15.0,
     )
 
 
-def _confluence(auth: Any) -> HttpProfile:
-    return HttpProfile(base_url=STAND.confluence_url, auth=auth, ssl_verify=False)
+def _confluence(auth: Any) -> HttpConnection:
+    return HttpConnection(base_url=STAND.confluence_url, auth=auth, ssl_verify=False)
 
 
-async def _body(profile: HttpProfile, request: HttpRequest) -> tuple[int, str]:
+async def _body(profile: HttpConnection, request: HttpRequest) -> tuple[int, str]:
     async with HttpTransport(profile) as transport, transport.fetch(request) as resp:
         payload = await resp.stream.read()
 

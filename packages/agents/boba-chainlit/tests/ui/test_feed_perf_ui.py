@@ -64,34 +64,35 @@ class TestLongThread:
         long = TurnSeries(self._long_turns(chat, meter, "long"))
 
         growth = long.mean_script_ms() / short.mean_script_ms()
-        report = (
-            f"growth x{growth:.2f}, js/frame max {long.max_script_ms_per_frame():.1f} ms, "
-            f"frames max {long.max_frames()}, heap {long.heap_kb_per_turn():.0f} KB/turn\n"
-            f"short thread:\n{short.describe()}\nlong thread:\n{long.describe()}"
+        per_frame_ms = long.max_script_ms_per_frame()
+        heap_kb = long.heap_kb_per_turn()
+        summary = (
+            f"growth x{growth:.2f}, js/frame max {per_frame_ms:.1f} ms, "
+            f"frames max {long.max_frames()}, heap {heap_kb:.0f} KB/turn"
         )
+        threads = f"short thread:\n{short.describe()}\nlong thread:\n{long.describe()}"
+        report = f"{summary}\n{threads}"
         print(f"\n{report}")
 
         if growth > FeedSla.LONG_THREAD_GROWTH:
-            raise AssertionError(
-                f"turn cost grew x{growth:.2f} > x{FeedSla.LONG_THREAD_GROWTH.value}\n{report}"
-            )
+            limit = FeedSla.LONG_THREAD_GROWTH.value
+            msg = f"turn cost grew x{growth:.2f} > x{limit}\n{report}"
+            raise AssertionError(msg)
 
         if long.max_frames() > FeedSla.FRAMES_PER_TURN:
-            raise AssertionError(
-                f"frames per turn {long.max_frames()} > {FeedSla.FRAMES_PER_TURN.value}\n{report}"
-            )
+            limit = FeedSla.FRAMES_PER_TURN.value
+            msg = f"frames per turn {long.max_frames()} > {limit}\n{report}"
+            raise AssertionError(msg)
 
-        per_frame = long.max_script_ms_per_frame()
-        if per_frame > FeedSla.SCRIPT_MS_PER_FRAME:
-            raise AssertionError(
-                f"js per frame {per_frame:.1f} ms > {FeedSla.SCRIPT_MS_PER_FRAME.value}\n{report}"
-            )
+        if per_frame_ms > FeedSla.SCRIPT_MS_PER_FRAME:
+            limit = FeedSla.SCRIPT_MS_PER_FRAME.value
+            msg = f"js per frame {per_frame_ms:.1f} ms > {limit}\n{report}"
+            raise AssertionError(msg)
 
-        heap = long.heap_kb_per_turn()
-        if heap > FeedSla.HEAP_KB_PER_TURN:
-            raise AssertionError(
-                f"heap grows {heap:.0f} KB per turn > {FeedSla.HEAP_KB_PER_TURN.value}\n{report}"
-            )
+        if heap_kb > FeedSla.HEAP_KB_PER_TURN:
+            limit = FeedSla.HEAP_KB_PER_TURN.value
+            msg = f"heap grows {heap_kb:.0f} KB per turn > {limit}\n{report}"
+            raise AssertionError(msg)
 
     @staticmethod
     def _long_turns(chat: ChatPage, meter: PageMeter, label: str) -> list[TurnSample]:

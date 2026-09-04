@@ -33,6 +33,8 @@ class PasswordCallback:
         try:
             signed = await self._auth.sign_in(username, password)
         except AuthenticationError as exc:
+            # в лог идут логин и причина отказа, пароля здесь нет
+            # nosemgrep: python-logger-credential-disclosure
             logger.info("password sign-in refused [user=%s]: %s", username, exc)
             return None
 

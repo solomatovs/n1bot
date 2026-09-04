@@ -14,7 +14,7 @@ from pydantic import (
     model_validator,
 )
 
-from boba.connections.base import ConnectionProfileBase
+from boba.connections.base import ClientIdentity, ConnectionProfileBase
 from boba.db.postgres.profile.auth import PostgresAuth, PostgresKerberos, PostgresLibpq
 from boba.kerberos import KerberosAuthBase, KerberosDump, TicketAuth
 
@@ -93,6 +93,26 @@ class PostgresOptionsConfig(BaseModel):
         return " ".join(parts)
 
 
+class ApplicationName:
+    """Подпись сессии для postgres: application_name режется до 63 байт.
+
+    Длиннее сервер обрезает сам, и в журнале остаётся кусок без имени
+    инструмента, поэтому режем осознанно — по границе байтов utf-8.
+    """
+
+    MAX_BYTES: ClassVar[int] = 63
+    SEPARATOR: ClassVar[str] = ":"
+
+    @classmethod
+    def of(cls, client: ClientIdentity) -> str:
+        joined = cls.SEPARATOR.join((client.application, client.login, client.tool))
+        raw = joined.encode("utf-8")
+        if len(raw) <= cls.MAX_BYTES:
+            return joined
+
+        return raw[: cls.MAX_BYTES].decode("utf-8", errors="ignore")
+
+
 class PostgresConfig(ConnectionProfileBase):
     """libpq connection keywords + поведение connect() psycopg; см. PostgreSQL docs."""
 
@@ -100,7 +120,7 @@ class PostgresConfig(ConnectionProfileBase):
 
     # не connect-параметры: конструктор пула, строка '-c k=v', способ авторизации
     NOT_CONNECT_FIELDS: ClassVar[frozenset[str]] = frozenset(
-        {"pool", "options", "kind", "auth"}
+        {"pool", "options", "kind", "auth", "description"}
     )
 
     kind: Literal["postgres"] = Field(
@@ -242,9 +262,9 @@ class PostgresConfig(ConnectionProfileBase):
     def trace(self) -> str:
         return self.auth.trace()
 
-    def labeled(self, label: str) -> PostgresConfig:
-        return self.model_copy(update={"application_name": label})
-
+    def labeled(self, client: ClientIdentity) -> PostgresConfig:
+        """Подпись сессии в application_name: его же показывает pg_stat_activity."""
+        return self.model_copy(update={"application_name": ApplicationName.of(client)})
 
     @field_serializer("auth", when_used="json")
     def _dump_auth(

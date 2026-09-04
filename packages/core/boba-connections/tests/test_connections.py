@@ -36,7 +36,7 @@ from boba.transport.http.profile import (
     BasicAuth,
     BearerAuth,
     DigestAuth,
-    HttpProfile,
+    HttpConnection,
     NoneAuth,
 )
 
@@ -234,14 +234,16 @@ class TestRealProfiles:
     )
     def test_web_auth_variants_roundtrip(self, auth) -> None:
         cipher = _cipher()
-        sealed = cipher.encrypt(HttpProfile(base_url="https://x", auth=auth))
+        sealed = cipher.encrypt(HttpConnection(base_url="https://x", auth=auth))
         blob = json.dumps(sealed, ensure_ascii=False)
         if FakeSecret.HTTP_BASIC in blob:
             raise AssertionError("пароль утёк в зашифрованный профиль")
         if FakeSecret.HTTP_BEARER in blob:
             raise AssertionError("токен утёк в зашифрованный профиль")
-        if HttpProfile.model_validate(cipher.decrypt(sealed)).auth != auth:
-            raise AssertionError("HttpProfile.model_validate(cipher.decrypt(sealed)).…")
+        if HttpConnection.model_validate(cipher.decrypt(sealed)).auth != auth:
+            raise AssertionError(
+                "HttpConnection.model_validate(cipher.decrypt(sealed)).…"
+            )
 
     def test_httpx_auth_still_built(self) -> None:
         bearer = BearerAuth(method="bearer", token=SecretStr(FakeSecret.HTTP_BEARER))
@@ -249,7 +251,7 @@ class TestRealProfiles:
             raise AssertionError("HttpxAuth.of(bearer) is not None")
 
     def test_token_masked_in_dump(self) -> None:
-        profile = HttpProfile(
+        profile = HttpConnection(
             base_url="https://x",
             auth=BearerAuth(method="bearer", token=SecretStr(FakeSecret.HTTP_BEARER)),
         )
@@ -274,14 +276,14 @@ class TestConnectionKind:
             raise AssertionError("clickhouse profile must carry kind clickhouse")
 
     def test_kind_of_web(self) -> None:
-        if HttpProfile().kind != "web":
+        if HttpConnection().kind != "web":
             raise AssertionError("http profile must carry kind web")
 
     def test_kind_is_part_of_the_model(self) -> None:
         if PostgresConfig.model_fields["kind"].default != "postgres":
             raise AssertionError('PostgresConfig.model_fields["kind"].default == "pos…')
-        if HttpProfile.model_fields["kind"].default != "web":
-            raise AssertionError('HttpProfile.model_fields["kind"].default == "web"')
+        if HttpConnection.model_fields["kind"].default != "web":
+            raise AssertionError('HttpConnection.model_fields["kind"].default == "web"')
 
     def test_stored_profile_is_picked_by_kind(self) -> None:
         profile = {

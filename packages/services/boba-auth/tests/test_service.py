@@ -188,6 +188,7 @@ class TestRenew:
 
     async def test_session_older_than_the_cap_is_refused(self) -> None:
         service = self._service(Users(), ttl=60, max_sec=120)
+        # nosemgrep: jwt-python-hardcoded-secret — секрет теста
         old = jwt.encode(
             {
                 "identifier": "reader",

@@ -1,7 +1,7 @@
-"""Ручной прогон pg-инструментов: функции вызываются напрямую с явным cfg.
+"""Ручной прогон pg-инструментов: функции вызываются напрямую.
 
-Соединение берётся из [tool.pg] конфига приложения, аргументы прогона
-задаются в RunArgs.
+Профиль соединения в бою подаёт хост из строк пользователя; здесь он
+берётся из сервисной секции [postgres] и передаётся параметром.
 """
 
 from __future__ import annotations
@@ -21,39 +21,44 @@ pytestmark = [pytest.mark.run, pytest.mark.anyio]
 class RunArgs:
     """Аргументы прогона: правятся перед запуском."""
 
-    CONNECTION: ClassVar[str] = "main"
-
     SQL: ClassVar[str] = "select 1 as answer"
+
+    COPY_SQL: ClassVar[str] = "copy (select 1 as answer) to stdout with (format csv)"
+    """pg_copy принимает только COPY ... TO STDOUT: обычный SELECT он не берёт."""
 
 
 @pytest.fixture(scope="module")
 def pg_cfg(raw_config) -> PgToolConfig:
-    """Лимиты из [tool.pg], whitelist — сервисный [postgres] под именем main."""
-    limits = bind(raw_config, path="tool.pg", model=PgToolConfig)
-    service = bind(raw_config, path="postgres", model=PostgresConfig)
-    return limits.model_copy(update={"profiles": {RunArgs.CONNECTION: service}})
+    """Лимиты выдачи из [tool.pg]."""
+    return bind(raw_config, path="tool.pg", model=PgToolConfig)
 
 
-async def test_run_pg_query(pg_cfg: PgToolConfig) -> None:
+@pytest.fixture(scope="module")
+def connection(raw_config) -> PostgresConfig:
+    """Профиль соединения: сервисный [postgres] на месте строки пользователя."""
+    return bind(raw_config, path="postgres", model=PostgresConfig)
+
+
+async def test_run_pg_query(pg_cfg: PgToolConfig, connection: PostgresConfig) -> None:
     body = ToolMain.toolset(pg_query)[0].coroutine
     if body is None:
         raise AssertionError("body is not None")
 
-    content, artifact = await body(
-        connection_name=RunArgs.CONNECTION, sql=RunArgs.SQL, cfg=pg_cfg
-    )
+    content, artifact = await body(connection=connection, sql=RunArgs.SQL, cfg=pg_cfg)
 
     print(content)
     print(artifact)
 
 
-async def test_run_pg_list_tables(pg_cfg: PgToolConfig) -> None:
+async def test_run_pg_list_tables(
+    pg_cfg: PgToolConfig, connection: PostgresConfig
+) -> None:
     body = ToolMain.toolset(pg_list_tables)[0].coroutine
     if body is None:
         raise AssertionError("body is not None")
 
     content, _artifact = await body(
-        connection_name=RunArgs.CONNECTION,
+        connection=connection,
         pg_schema="public",
         table_pattern=None,
         offset=0,
@@ -65,13 +70,13 @@ async def test_run_pg_list_tables(pg_cfg: PgToolConfig) -> None:
     print(content)
 
 
-async def test_run_pg_copy(pg_cfg: PgToolConfig) -> None:
+async def test_run_pg_copy(pg_cfg: PgToolConfig, connection: PostgresConfig) -> None:
     body = ToolMain.toolset(pg_copy)[0].coroutine
     if body is None:
         raise AssertionError("body is not None")
 
     content, _artifact = await body(
-        connection_name=RunArgs.CONNECTION, sql=RunArgs.SQL, cfg=pg_cfg
+        connection=connection, sql=RunArgs.COPY_SQL, cfg=pg_cfg
     )
 
     print(content)

@@ -18,7 +18,7 @@ from boba.transport.http.profile import (
     BasicAuth,
     BearerAuth,
     DigestAuth,
-    HttpProfile,
+    HttpConnection,
     NegotiateAuth,
     WebAuth,
 )
@@ -123,7 +123,7 @@ class HttpxAuth:
     """Аутентификатор httpx по профилю: negotiate получает SPN и login-URL."""
 
     @classmethod
-    def of(cls, profile: HttpProfile) -> httpx.Auth | None:
+    def of(cls, profile: HttpConnection) -> httpx.Auth | None:
         login_url = profile.login_url()
         if isinstance(profile.auth, NegotiateAuth):
             return cls.of_auth(profile.auth, profile.service_name(), login_url)

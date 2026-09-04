@@ -162,7 +162,7 @@ class SandboxDefaults:
         "reap_poll_sec": 0.1,
         "env": {
             "PATH": "/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin",
-            "HOME": "/tmp",  # noqa: S108 — путь внутри песочницы
+            "HOME": "/tmp",  # noqa: S108 — путь внутри песочницы  # nosec B108
             "LANG": "C.UTF-8",
         },
     }
@@ -206,7 +206,7 @@ class SandboxDefaults:
             },
             "isolation": dict(cls.ISOLATION),
             "limits": dict(cls.LIMITS),
-            "run": {"cwd": "/tmp", "shell": cls.SHELL},  # noqa: S108 — внутри песочницы
+            "run": {"cwd": "/tmp", "shell": cls.SHELL},  # noqa: S108 — внутри песочницы  # nosec B108
         }
 
     @classmethod

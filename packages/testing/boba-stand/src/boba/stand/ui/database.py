@@ -27,7 +27,7 @@ from boba.identity.session import UserMetadataField
 from boba.runtime.config import DataLayerConfig
 from boba.stand.site import StandLayers
 from boba.stand.ui.stand import REPO_ROOT, StandApp, StandConfig, StandError, StandUrl
-from boba.transport.http.profile import HttpProfile
+from boba.transport.http.profile import HttpConnection
 from boba.workflow.records import WorkflowTable
 from boba.workflow_engine.store import WorkflowConfig
 
@@ -208,9 +208,7 @@ class StandDatabase:
             "update {} "
             "set data = jsonb_set(data, '{{kind}}', to_jsonb(%(kind)s::text)) "
             "where name = %(name)s"
-        ).format(
-            SqlNames.table(connections.db_schema, ConnectionTable.CONNECTIONS)
-        )
+        ).format(SqlNames.table(connections.db_schema, ConnectionTable.CONNECTIONS))
 
         async with self._pool() as pool, pool.cursor() as cur:
             await cur.execute(query, {"kind": kind, "name": name})
@@ -225,7 +223,7 @@ class StandDatabase:
     async def _seed_connections(self, llm_port: int) -> None:
         connections = bind(self._built, path="connections", model=ConnectionsConfig)
         clickhouse = bind(self._built, path="clickhouse", model=ClickHouseConfig)
-        web = HttpProfile(base_url=StandUrl.of(llm_port), ssl_verify=False)
+        web = HttpConnection(base_url=StandUrl.of(llm_port), ssl_verify=False)
         async with self._pool() as pool:
             store = ConnectionStore(connections, ConnectionTypes.discover(), pool)
             # строки прошлых прогонов могут не проходить нынешний валидатор

@@ -22,9 +22,9 @@ from pydantic import Field
 from boba.db.clickhouse import ClickHouseError
 from boba.db.clickhouse.payload import PayloadClickHouse
 from boba.db.clickhouse.profile import ClickHouseConfig
-from boba.toolkit.calls import ConnectionArg, ScriptCall
+from boba.toolkit.calls import ScriptCall
 from boba.toolkit.entry import ToolMain
-from boba.toolkit.facade import Injected, tool
+from boba.toolkit.facade import Injected, UserConnection, tool
 from boba.toolkit.result import (
     Produces,
     ResultTooLargeError,
@@ -34,7 +34,6 @@ from boba.toolkit.result import (
 )
 from boba.toolkit.sql import (
     CatalogQuery,
-    ConnectionName,
     MaxChars,
     MaxRows,
     RowBudget,
@@ -42,8 +41,7 @@ from boba.toolkit.sql import (
     RowPage,
     RowWindow,
     SqlErrorKind,
-    SqlProfiles,
-    UnknownConnectionError,
+    SqlLimits,
 )
 from boba.toolkit.types import SecretRevealing
 
@@ -51,22 +49,13 @@ ChParams = dict[str, Any]
 """Именованные параметры ClickHouse под подстановку {name:Type}."""
 
 
-ChConnection = Annotated[ConnectionName, ConnectionArg(family="clickhouse")]
+ChConnection = Annotated[ClickHouseConfig, UserConnection]
 
 
-class ChToolConfig(SecretRevealing, SqlProfiles[ClickHouseConfig]):
-    """Whitelist подключений и лимиты выдачи ch-инструментов; [tool.ch]."""
+class ChToolConfig(SecretRevealing, SqlLimits):
+    """Лимиты выдачи ch-инструментов; [tool.ch]."""
 
     SECTION: ClassVar[str] = "tool.ch"
-
-    profiles: dict[str, ClickHouseConfig] = Field(
-        default_factory=dict,
-        description=(
-            "dict[connection_name, clickhouse-профиль ссылкой]: "
-            '`[tool.ch.profiles] main = "${clickhouse.main}"`. '
-            "Ключ — значение tool-arg `connection_name` (LLM выбирает БД по нему)."
-        ),
-    )
 
 
 class ChCatalog:
@@ -224,16 +213,8 @@ async def _query_rows(
 
 
 @tool
-async def ch_connection_list(
-    cfg: Annotated[ChToolConfig, Injected],
-) -> Annotated[tuple[str, ToolResult], Produces.of(TableResult)]:
-    """Список доступных значений connection_name для ClickHouse-инструментов."""
-    return pack_result(cfg.targets_table())
-
-
-@tool
 async def ch_list_tables(  # noqa: PLR0913 — окно выдачи задаёт вызов
-    connection_name: ChConnection,
+    connection: ChConnection,
     ch_database: Annotated[
         str | None,
         Field(
@@ -254,7 +235,6 @@ async def ch_list_tables(  # noqa: PLR0913 — окно выдачи задаё�
 
     Выдача постраничная: сколько показано и как листать, сказано в note.
     """
-    connection = cfg.resolve(connection_name)
     window = RowWindow(offset=offset, max_rows=max_rows, max_chars=max_chars)
 
     return await _catalog_page(connection, ChCatalog.tables(ch_database), window)
@@ -262,7 +242,7 @@ async def ch_list_tables(  # noqa: PLR0913 — окно выдачи задаё�
 
 @tool
 async def ch_describe_table(  # noqa: PLR0913 — окно выдачи задаёт вызов
-    connection_name: ChConnection,
+    connection: ChConnection,
     table: Annotated[
         str,
         Field(min_length=1, description="Имя таблицы (без базы)"),
@@ -283,7 +263,6 @@ async def ch_describe_table(  # noqa: PLR0913 — окно выдачи зада
 
     Широкая таблица приходит частями: как листать, сказано в note.
     """
-    connection = cfg.resolve(connection_name)
     window = RowWindow(offset=offset, max_rows=max_rows, max_chars=max_chars)
 
     return await _catalog_page(
@@ -303,24 +282,21 @@ async def ch_query(
             ),
         ),
     ],
-    connection_name: ChConnection,
+    connection: ChConnection,
     cfg: Annotated[ChToolConfig, Injected],
 ) -> Annotated[tuple[str, ToolResult], Produces.of(TableResult)]:
-    """Выполнить SQL на подключении connection_name."""
-    connection = cfg.resolve(connection_name)
+    """Выполнить SQL на выбранном соединении."""
 
     return await _query_rows(connection, CatalogQuery(text=sql, params={}), cfg)
 
 
 EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
     ClickHouseError: SqlErrorKind.DATABASE_UNAVAILABLE,
-    UnknownConnectionError: SqlErrorKind.UNKNOWN_TARGET,
     DriverError: SqlErrorKind.SQL_FAILED,
     ResultTooLargeError: SqlErrorKind.RESULT_TOO_LARGE,
 }
 
 TOOLS: Final = ToolMain.toolset(
-    ch_connection_list,
     ch_list_tables,
     ch_describe_table,
     ch_query,

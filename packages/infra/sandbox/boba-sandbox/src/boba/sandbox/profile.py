@@ -305,10 +305,10 @@ class SandboxMount(StrEnum):
     тело видело бы каталог образов всех пользователей.
     """
 
-    ROOTFS = "/tmp/boba-rootfs"  # noqa: S108
+    ROOTFS = "/tmp/boba-rootfs"  # noqa: S108  # nosec B108
     PROC = "/proc"
     DEV = "/dev"
-    TMP = "/tmp"  # noqa: S108 — путь внутри песочницы
+    TMP = "/tmp"  # noqa: S108 — путь внутри песочницы  # nosec B108
     SETUP = "/mnt"
     SETUP_TEMPLATE = "/mnt/template.ext4"
     SETUP_FUSE2FS = "/mnt/fuse2fs"
