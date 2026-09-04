@@ -3,12 +3,11 @@ import { z } from "zod";
 import type { PageUrls } from "../config";
 import {
   AccessSchema,
-  ConnectionEntrySchema,
+  ConnectionViewSchema,
+  ProbeResultSchema,
   ObjectCardSchema,
   SourceConnectionSchema,
   SourceDiffSchema,
-  SourceDraftSchema,
-  SourceDraftStateSchema,
   SourceSchema,
   SourceVersionSchema,
   SyncSchema,
@@ -27,15 +26,15 @@ import {
   ViewStateSchema,
   type Access,
   type CatalogChanged,
-  type ConnectionEntry,
+  type ConnectionBody,
+  type ConnectionView,
+  type ProbeResult,
   type ObjectCard,
   type ObjectKind,
   type Source,
   type SourceConnection,
   type SourceDiff,
-  type SourceDraft,
-  type SourceDraftState,
-  type SourceOp,
+  type SourceCreate,
   type SourceSpec,
   type SourceVersion,
   type Sync,
@@ -59,11 +58,17 @@ import type { CatalogOp } from "../model/ops";
 import type { paths } from "./schema";
 
 /** Отказ API: статус и текст detail; тело 409/422 сохраняется целиком. */
+/** Ошибка поля из ответа 422 FastAPI: путь без «body» и текст. */
+export type FieldIssue = { loc: (string | number)[]; message: string };
+
+const ValidationErrorSchema = z.array(z.object({ loc: z.array(z.union([z.string(), z.number()])), msg: z.string() }));
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
     readonly detail: string,
     readonly payload: unknown,
+    readonly issues: FieldIssue[] = [],
   ) {
     super(`${status}: ${detail}`);
   }
@@ -72,6 +77,16 @@ export class ApiError extends Error {
     const detail = detailOf(payload);
     if (typeof detail === "string") {
       return new ApiError(status, detail, payload);
+    }
+
+    const validation = ValidationErrorSchema.safeParse(detail);
+    if (validation.success) {
+      const issues: FieldIssue[] = validation.data.map((item) => ({
+        loc: item.loc.filter((part) => part !== "body"),
+        message: item.msg,
+      }));
+      const text = issues.map((issue) => `${issue.loc.join(".")}: ${issue.message}`).join("\n");
+      return new ApiError(status, text, payload, issues);
     }
 
     if (typeof detail === "object" && detail !== null && "message" in detail) {
@@ -251,7 +266,7 @@ export class CatalogApi {
     return this.call("get", `/api/catalog/sources/${sourceId}`, undefined, SourceSchema);
   }
 
-  createSource(spec: SourceSpec): Promise<Source> {
+  createSource(spec: SourceCreate): Promise<Source> {
     return this.call("post", "/api/catalog/sources", spec, SourceSchema);
   }
 
@@ -278,9 +293,36 @@ export class CatalogApi {
     return this.call("delete", path, undefined, DeletedSchema).then(() => undefined);
   }
 
-  connections(kind: string): Promise<ConnectionEntry[]> {
-    const query = new URLSearchParams({ kind });
-    return this.call("get", `/api/catalog/connections?${query.toString()}`, undefined, z.array(ConnectionEntrySchema));
+  /** Подключения пользователя: общий API брокера под префиксом каталога. */
+  connections(kind?: string): Promise<ConnectionView[]> {
+    const query = kind === undefined ? "" : `?${new URLSearchParams({ kind }).toString()}`;
+    return this.call("get", `/api/catalog/connections${query}`, undefined, z.array(ConnectionViewSchema));
+  }
+
+  connectionSchema(): Promise<unknown> {
+    return this.call("get", "/api/catalog/connections/schema", undefined, z.unknown());
+  }
+
+  createConnection(body: ConnectionBody): Promise<ConnectionView> {
+    return this.call("post", "/api/catalog/connections", body, ConnectionViewSchema);
+  }
+
+  replaceConnection(connectionId: string, body: ConnectionBody): Promise<ConnectionView> {
+    return this.call("put", `/api/catalog/connections/${connectionId}`, body, ConnectionViewSchema);
+  }
+
+  removeConnection(connectionId: string): Promise<void> {
+    return this.call("delete", `/api/catalog/connections/${connectionId}`, undefined, DeletedSchema).then(
+      () => undefined,
+    );
+  }
+
+  checkConnection(profile: Record<string, unknown>): Promise<ProbeResult> {
+    return this.call("post", "/api/catalog/connections/check", { profile }, ProbeResultSchema);
+  }
+
+  checkStoredConnection(connectionId: string): Promise<ProbeResult> {
+    return this.call("post", `/api/catalog/connections/${connectionId}/check`, undefined, ProbeResultSchema);
   }
 
   sourceSyncs(sourceId: string): Promise<Sync[]> {
@@ -319,42 +361,6 @@ export class CatalogApi {
   sourceDiff(sourceId: string, oldVersion: number, newVersion: number): Promise<SourceDiff> {
     const query = new URLSearchParams({ old: String(oldVersion), new: String(newVersion) });
     return this.call("get", `/api/catalog/sources/${sourceId}/diff?${query.toString()}`, undefined, SourceDiffSchema);
-  }
-
-  sourceDrafts(sourceId: string): Promise<SourceDraft[]> {
-    const path = `/api/catalog/sources/${sourceId}/drafts`;
-    return this.call("get", path, undefined, z.array(SourceDraftSchema));
-  }
-
-  createSourceDraft(sourceId: string, name: string): Promise<SourceDraft> {
-    return this.call("post", `/api/catalog/sources/${sourceId}/drafts`, { name }, SourceDraftSchema);
-  }
-
-  sourceDraft(draftId: string): Promise<SourceDraftState> {
-    return this.call("get", `/api/catalog/source-drafts/${draftId}`, undefined, SourceDraftStateSchema);
-  }
-
-  discardSourceDraft(draftId: string): Promise<SourceDraft> {
-    return this.call("delete", `/api/catalog/source-drafts/${draftId}`, undefined, SourceDraftSchema);
-  }
-
-  appendSourceOps(draftId: string, expectedSeq: number, operations: SourceOp[]): Promise<SourceDraftState> {
-    const body = { expected_seq: expectedSeq, operations };
-    return this.call("post", `/api/catalog/source-drafts/${draftId}/ops`, body, SourceDraftStateSchema);
-  }
-
-  publishSourceDraft(draftId: string): Promise<SourceVersion> {
-    return this.call("post", `/api/catalog/source-drafts/${draftId}/publish`, undefined, SourceVersionSchema);
-  }
-
-  sourceDraftTree(draftId: string, path: string[]): Promise<TreeNode[]> {
-    const query = treeQuery(path, {});
-    return this.call("get", `/api/catalog/source-drafts/${draftId}/tree?${query}`, undefined, z.array(TreeNodeSchema));
-  }
-
-  sourceDraftObject(draftId: string, kind: ObjectKind, path: string[]): Promise<ObjectCard> {
-    const query = treeQuery(path, { kind });
-    return this.call("get", `/api/catalog/source-drafts/${draftId}/object?${query}`, undefined, ObjectCardSchema);
   }
 
   /** Поток CatalogChanged пользователя: server-sent events с cookie входа. */

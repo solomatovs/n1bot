@@ -4,7 +4,6 @@ import { BrowserRouter, Route, Routes, useParams } from "react-router-dom";
 import { CatalogApi } from "./api/client";
 import { PageUrls, pageConfig } from "./config";
 import { ProcessPage, type PageSource } from "./pages/ProcessPage";
-import { SourceDraftPage } from "./pages/SourceDraftPage";
 import { SourcePage } from "./pages/SourcePage";
 import { SourcesPage } from "./pages/SourcesPage";
 import { EmptyState, ToastProvider } from "./ui";
@@ -67,7 +66,6 @@ export function App(): ReactElement {
             <Route path="/drafts/:draftId" element={<DraftRoute />} />
             <Route path="/sources" element={<SourcesPage />} />
             <Route path="/sources/:sourceId" element={<SourcePage />} />
-            <Route path="/sources/:sourceId/drafts/:draftId" element={<SourceDraftPage />} />
             <Route path="*" element={<EmptyState fill title="no such page" />} />
           </Routes>
         </BrowserRouter>

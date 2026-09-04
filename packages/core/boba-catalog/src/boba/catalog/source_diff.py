@@ -1,6 +1,8 @@
 """Разница двух версий снимка источника по адресам объектов и по полям:
 какие объекты появились, исчезли, изменились; у изменённых — какие поля и
-какие части (колонки, ограничения, индексы, аргументы, атрибуты).
+какие части (колонки, ограничения, индексы, аргументы, атрибуты). Летучая
+статистика записей (SourceRecord.VOLATILE: число строк, размер) в разницу
+не входит.
 
 Ошибки:
 CatalogError — снимки разного вида сравнить нельзя.
@@ -8,8 +10,7 @@ CatalogError — снимки разного вида сравнить нель�
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Mapping, Sequence
-from typing import Any
+from collections.abc import Iterable, Iterator, Sequence
 from uuid import UUID
 
 from boba.catalog.base import CatalogError, CatalogModel, ChangeStatus
@@ -240,8 +241,8 @@ class SourceDiff(CatalogModel):
     def _field_changes(
         before: SourceRecord, after: SourceRecord
     ) -> Iterator[FieldChange]:
-        was: Mapping[str, Any] = before.model_dump(mode="json")
-        now: Mapping[str, Any] = after.model_dump(mode="json")
+        was = before.structural()
+        now = after.structural()
         for field in was:
             if was[field] == now.get(field):
                 continue

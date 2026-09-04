@@ -13,19 +13,21 @@
 401 — вход не сохранён слоем данных.
 403 — профиль недоступен ролям пользователя; соединение общее, а не своё.
 404 — соединение не видно пользователю.
-409 — имя занято среди видимых пользователю соединений.
+409 — имя занято среди видимых пользователю соединений; соединение держит
+    другой компонент (каталог), удалять нельзя.
 422 — в профиле замаскированный секрет из ответа GET вместо настоящего.
 503 — секция [connections] выключена или хранилище недоступно.
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
+from enum import StrEnum
 from typing import Any, ClassVar
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -35,7 +37,6 @@ from pydantic import (
     ValidationError,
 )
 
-from boba.chat.profiles import ChatProfiles
 from boba.connection_broker.probe import ConnectionProbe
 from boba.connection_broker.service import UserConnectionsService
 from boba.connection_broker.store import ConnectionStoreError
@@ -53,17 +54,32 @@ from boba.identity.context import Scope, Subject
 from boba.identity.errors import RefusalError
 from boba.identity.locks import LockToken
 from boba.messaging import ChangeAction, ConnectionsChanged, MessageBus
-from boba.studio.api.auth import CurrentSubject, CurrentUser
-from boba.studio.api.urls import ConnectionUrl
 
 __all__ = [
     "ConnectionBody",
     "ConnectionDeleted",
+    "ConnectionUrl",
     "ConnectionView",
     "ConnectionsApi",
     "ProbeBody",
     "ProfileSchema",
+    "SubjectResolver",
 ]
+
+
+class ConnectionUrl(StrEnum):
+    """Соединения пользователя относительно префикса приложения: список,
+    схема профилей, проверка, свои — создание, замена, удаление."""
+
+    CONNECTIONS = "/connections"
+    SCHEMA = "/connections/schema"
+    CHECK = "/connections/check"
+    CONNECTION = "/connections/{connection_id}"
+    CONNECTION_CHECK = "/connections/{connection_id}/check"
+
+
+SubjectResolver = Callable[[Request], Awaitable[ApiSubject]]
+"""Субъект входа по запросу; отказ входа резолвер поднимает сам (401/403)."""
 
 
 class MaskedSecrets:
@@ -153,6 +169,7 @@ class RefusalStatus:
         ConnectionRefusal.NOT_VISIBLE: 404,
         ConnectionRefusal.NOT_OWNED: 403,
         ConnectionRefusal.NAME_TAKEN: 409,
+        ConnectionRefusal.IN_USE: 409,
     }
 
     @classmethod
@@ -173,13 +190,13 @@ class ConnectionsApi:
     def __init__(
         self,
         service: UserConnectionsService,
-        profiles: ChatProfiles,
+        subjects: SubjectResolver,
         credentials: CredentialsRef,
         bus: BusSource,
         types: ConnectionTypes,
     ) -> None:
         self._service = service
-        self._profiles = profiles
+        self._subjects = subjects
         self._credentials = credentials
         self._bus = bus
         self._types = types
@@ -248,16 +265,18 @@ class ConnectionsApi:
         for path, handler, method in routes:
             router.add_api_route(path.value, handler, methods=[method], tags=[self.TAG])
 
-    async def schema(self, current_user: CurrentUser) -> Mapping[str, Any]:
+    async def schema(self, request: Request) -> Mapping[str, Any]:
         """Схема профиля с вариантами по kind и method; секреты — format=password."""
+        await self._subjects(request)
 
         return ProfileSchema.render(self._types)
 
     async def list_connections(
         self,
-        identity: CurrentSubject,
+        request: Request,
         kind: str | None = None,
     ) -> Sequence[ConnectionView]:
+        identity = await self._subjects(request)
         if kind is not None:
             async with self._served():
                 visible = await self._service.visible(identity.subject, [kind])
@@ -281,11 +300,8 @@ class ConnectionsApi:
 
         return views
 
-    async def create(
-        self,
-        body: ConnectionBody,
-        identity: CurrentSubject,
-    ) -> ConnectionView:
+    async def create(self, body: ConnectionBody, request: Request) -> ConnectionView:
+        identity = await self._subjects(request)
         subject = identity.subject
         async with self._served():
             profile = self._parsed(body.profile)
@@ -295,11 +311,9 @@ class ConnectionsApi:
         return ConnectionView.of(row, mine=True)
 
     async def replace(
-        self,
-        connection_id: UUID,
-        body: ConnectionBody,
-        identity: CurrentSubject,
+        self, connection_id: UUID, body: ConnectionBody, request: Request
     ) -> ConnectionView:
+        identity = await self._subjects(request)
         subject = identity.subject
         async with self._served():
             row = await self._service.replace(
@@ -309,9 +323,8 @@ class ConnectionsApi:
         await self._changed(subject, row.id, row.name, ChangeAction.UPDATED)
         return ConnectionView.of(row, mine=True)
 
-    async def delete(
-        self, connection_id: UUID, identity: CurrentSubject
-    ) -> ConnectionDeleted:
+    async def delete(self, connection_id: UUID, request: Request) -> ConnectionDeleted:
+        identity = await self._subjects(request)
         subject = identity.subject
         async with self._served():
             outcome = await self._service.delete(subject, connection_id)
@@ -323,15 +336,15 @@ class ConnectionsApi:
 
         return ConnectionDeleted(deleted=outcome.deleted)
 
-    async def check(self, body: ProbeBody, identity: CurrentSubject) -> ProbeResult:
+    async def check(self, body: ProbeBody, request: Request) -> ProbeResult:
         """Пробное соединение по профилю из формы; делегирование — билетом входа."""
+        identity = await self._subjects(request)
 
         return await self._probed(identity, self._parsed(body.profile))
 
-    async def check_stored(
-        self, connection_id: UUID, identity: CurrentSubject
-    ) -> ProbeResult:
+    async def check_stored(self, connection_id: UUID, request: Request) -> ProbeResult:
         """Пробное соединение по сохранённой строке: видимой пользователю."""
+        identity = await self._subjects(request)
         async with self._served():
             row = await self._service.visible_row(identity.subject, connection_id)
 

@@ -9,6 +9,7 @@ from typing import ClassVar
 from fastapi import APIRouter, FastAPI
 
 from boba.chat.profiles import ChatProfiles
+from boba.connection_broker.api import ConnectionsApi
 from boba.connection_broker.service import UserConnectionsService
 from boba.identity.api import Authenticator
 from boba.runtime.config import StudioPath
@@ -16,7 +17,6 @@ from boba.runtime.http import DomainErrorMiddleware, RequestTokens
 from boba.runtime.refs import RuntimeRefs
 from boba.studio.api.account import AccountApi, UsersSource
 from boba.studio.api.auth import ApiAuth
-from boba.studio.api.connections import ConnectionsApi
 from boba.studio.api.signin import SignInApi, SignInWiring
 from boba.studio.api.streams import StreamApi
 from boba.studio.api.tools import ToolCalling
@@ -73,7 +73,7 @@ class ApiApp:
         AccountApi(profiles, access.users, refs.message_bus).mount(router)
         ConnectionsApi(
             UserConnectionsService(refs.connection_store),
-            profiles,
+            ApiAuth.subject_of,
             refs.credentials,
             refs.message_bus,
             refs.connection_types(),

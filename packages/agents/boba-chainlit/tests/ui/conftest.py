@@ -187,10 +187,11 @@ def module_chats(browser: Browser, llm_port: int) -> Iterator[ChatOpener]:
 
 
 @pytest.fixture(scope="module")
-def catalog_api(stand: StandProcess) -> Iterator[Api]:
-    """JSON API каталога от имени admin; один клиент на модуль."""
+def catalog_api(stand: StandProcess, stand_db: StandDatabase) -> Iterator[Api]:
+    """JSON API каталога от имени admin; один клиент на модуль. Подключения
+    для источников сеятели кладут в базу стенда напрямую."""
     with api_client(stand, "admin") as admin:
-        yield Api(admin)
+        yield Api(admin, stand_db)
 
 
 @pytest.fixture(scope="module")

@@ -11,7 +11,8 @@ CatalogRefusalError — у субъекта нет прав на действи�
 CatalogStoreError, DraftNotFoundError, DraftClosedError, DraftConflictError,
     DraftStaleError, ViewNotFoundError — как у CatalogStore.
 CatalogOpError — порция операций не применима к снимку черновика.
-UnknownSourceKindError — вид источника не из реестра снимков.
+UnknownSourceKindError — у вида подключения нет снимка в реестре.
+SourceKindMismatchError, ConnectionAlreadyBoundError — как у SourceStore.
 SyncNotFoundError, SyncRunningError, SyncClosedError,
     SyncConnectionNotBoundError, SyncSetupError — как у SyncRunner.
 """
@@ -28,13 +29,11 @@ from boba.catalog import (
     ChangeStatus,
     NodeColumn,
     ObjectCard,
-    ObjectKind,
     ObjectRef,
     OperationList,
     PinnedSnapshot,
     SnapshotResolver,
     SourceDiff,
-    SourceOperationList,
     SourceSnapshot,
     Staleness,
     TreeNode,
@@ -45,7 +44,7 @@ from boba.catalog_service.records import (
     CatalogAccess,
     CatalogRefusalError,
     CatalogRefusalKind,
-    ConnectionEntry,
+    ConnectionAlreadyBoundError,
     Draft,
     DraftAuthor,
     DraftState,
@@ -57,8 +56,7 @@ from boba.catalog_service.records import (
     ShareTargetKind,
     Source,
     SourceConnection,
-    SourceDraft,
-    SourceDraftState,
+    SourceCreate,
     SourceNotFoundError,
     SourceObjectNotFoundError,
     SourceSpec,
@@ -585,11 +583,31 @@ class CatalogService:
         if not self._sources.kinds.known(kind):
             raise UnknownSourceKindError(kind, self._sources.kinds.kinds())
 
-    async def create_source(self, subject: Subject, spec: SourceSpec) -> Source:
-        self._require_edit(subject)
-        self._require_kind(spec.kind)
+    async def create_source(self, subject: Subject, spec: SourceCreate) -> Source:
+        """Источник от подключения: вид берётся у подключения, оно сразу
+        привязывается к новому источнику.
 
-        source = await self._sources.create_source(spec, subject.user_id)
+        Ошибки:
+        SyncSetupError — подключение субъекту не видно.
+        UnknownSourceKindError — у вида подключения нет снимка.
+        ConnectionAlreadyBoundError — подключение уже стоит в другом источнике.
+        """
+        self._require_edit(subject)
+        connection = await self._connections.info_of(subject, spec.connection_id)
+        self._require_kind(connection.kind)
+
+        holder = await self._sources.holder_of(connection.id)
+        if holder is not None:
+            raise ConnectionAlreadyBoundError(connection.id, holder.id)
+
+        source = await self._sources.create_source(
+            SourceSpec(name=spec.name, description=spec.description),
+            connection.kind,
+            subject.user_id,
+        )
+        await self._sources.bind_connection(
+            source.id, connection.id, connection.kind, subject.user_id
+        )
         await self._source_changed(subject, source.id, ChangeAction.CREATED)
 
         return source
@@ -598,7 +616,6 @@ class CatalogService:
         self, subject: Subject, source_id: UUID, spec: SourceSpec
     ) -> Source:
         self._require_edit(subject)
-        self._require_kind(spec.kind)
 
         source = await self._sources.update_source(source_id, spec)
         await self._source_changed(subject, source_id, ChangeAction.UPDATED)
@@ -626,10 +643,16 @@ class CatalogService:
     async def bind_connection(
         self, subject: Subject, source_id: UUID, connection_id: UUID
     ) -> SourceConnection:
+        """Ошибки:
+        SyncSetupError — подключение субъекту не видно.
+        SourceKindMismatchError — вид подключения не совпадает с видом источника.
+        ConnectionAlreadyBoundError — подключение уже стоит в другом источнике.
+        """
         self._require_edit(subject)
+        connection = await self._connections.info_of(subject, connection_id)
 
         bound = await self._sources.bind_connection(
-            source_id, connection_id, subject.user_id
+            source_id, connection.id, connection.kind, subject.user_id
         )
         await self._source_changed(subject, source_id, ChangeAction.UPDATED)
 
@@ -757,15 +780,6 @@ class CatalogService:
 
     # --- синхронизации ---
 
-    async def connections_for(
-        self, subject: Subject, kind: str
-    ) -> Sequence[ConnectionEntry]:
-        """Подключения вида, видимые субъекту: кандидаты на привязку."""
-        self._require_view(subject)
-        self._require_kind(kind)
-
-        return await self._connections.visible(subject, kind)
-
     async def start_sync(
         self, caller: SyncCaller, source_id: UUID, request: SyncRequest
     ) -> Sync:
@@ -801,97 +815,6 @@ class CatalogService:
             return
 
         await self._source_changed(subject, sync.source_id, ChangeAction.UPDATED)
-
-    # --- черновики ручного источника ---
-
-    async def source_drafts(
-        self, subject: Subject, source_id: UUID
-    ) -> Sequence[SourceDraft]:
-        self._require_view(subject)
-
-        return await self._sources.open_drafts(source_id)
-
-    async def create_source_draft(
-        self, subject: Subject, source_id: UUID, name: str
-    ) -> SourceDraft:
-        self._require_edit(subject)
-
-        draft = await self._sources.create_draft(source_id, name, subject.user_id)
-        await self._source_changed(subject, source_id, ChangeAction.UPDATED)
-
-        return draft
-
-    async def source_draft_state(
-        self, subject: Subject, draft_id: UUID
-    ) -> SourceDraftState:
-        self._require_view(subject)
-
-        return await self._sources.draft_state(draft_id)
-
-    async def source_draft_tree(
-        self, subject: Subject, draft_id: UUID, path: Sequence[str]
-    ) -> Sequence[TreeNode]:
-        """Дерево свёрнутого снимка черновика с пометками относительно его базы."""
-        self._require_view(subject)
-
-        state = await self._sources.draft_state(draft_id)
-        nodes = state.snapshot.children(state.draft.source_id, path)
-        return list(self._marked(nodes, state.diff))
-
-    async def source_draft_object(
-        self, subject: Subject, draft_id: UUID, kind: ObjectKind, path: Sequence[str]
-    ) -> ObjectCard:
-        """Ошибки:
-        SourceObjectNotFoundError — по адресу нет объекта.
-        """
-        self._require_view(subject)
-
-        state = await self._sources.draft_state(draft_id)
-        ref = ObjectRef(source_id=state.draft.source_id, kind=kind, path=tuple(path))
-        try:
-            return state.snapshot.card(ref)
-        except CatalogError as exc:
-            where = f"source draft {state.draft.name!r} ({draft_id})"
-            raise SourceObjectNotFoundError(ref, where, str(exc)) from exc
-
-    async def append_source_ops(
-        self,
-        subject: Subject,
-        draft_id: UUID,
-        expected_seq: int,
-        operations: SourceOperationList,
-        via: AuthorVia,
-    ) -> SourceDraftState:
-        self._require_edit(subject)
-
-        author = DraftAuthor(user_id=subject.user_id, via=via)
-        state = await self._sources.append_ops(
-            draft_id, expected_seq, operations, author
-        )
-        await self._source_changed(subject, state.draft.source_id, ChangeAction.UPDATED)
-
-        return state
-
-    async def publish_source_draft(
-        self, subject: Subject, draft_id: UUID, via: AuthorVia
-    ) -> SourceVersion:
-        self._require_edit(subject)
-
-        author = DraftAuthor(user_id=subject.user_id, via=via)
-        version = await self._sources.publish_draft(draft_id, author)
-        await self._source_changed(subject, version.source_id, ChangeAction.UPDATED)
-
-        return version
-
-    async def discard_source_draft(
-        self, subject: Subject, draft_id: UUID
-    ) -> SourceDraft:
-        self._require_edit(subject)
-
-        draft = await self._sources.discard_draft(draft_id)
-        await self._source_changed(subject, draft.source_id, ChangeAction.UPDATED)
-
-        return draft
 
     @staticmethod
     def _resolve_version(source: Source, version: int) -> int:

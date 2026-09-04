@@ -22,14 +22,15 @@ from boba.catalog_service import (
     CatalogConfig,
     CatalogService,
     CatalogStore,
-    SourceSpec,
+    ConnectionInfo,
+    SourceCreate,
     SourceStore,
     ViewSpec,
 )
 from boba.chainlit.catalog.tools import CatalogTools
 from boba.db.clickhouse.snapshot import ChSnapshot
 from boba.db.postgres import AsyncPostgresPool
-from boba.db.postgres.snapshot import PgSnapshot, PgSourceKind
+from boba.db.postgres.snapshot import PgSnapshot
 from boba.db.postgres.snapshot_sample import PgSample
 from boba.identity.context import Subject
 from boba.messaging import MemoryMessageBus
@@ -70,7 +71,11 @@ async def service(pool: AsyncPostgresPool) -> CatalogService:
     sources = SourceStore(_config(), KINDS, pool)
     await sources.setup()
     return CatalogService(
-        store, sources, _config(), MemoryMessageBus("test:0"), StubSyncPorts()
+        store,
+        sources,
+        _config(),
+        MemoryMessageBus("test:0"),
+        StubSyncPorts((PG_CONNECTION,)),
     )
 
 
@@ -91,7 +96,7 @@ def editor(monkeypatch: pytest.MonkeyPatch) -> Subject:
 async def process(service: CatalogService, editor: Subject) -> ProcessSample:
     """Источник prod с версией 1 из образца; процесс ссылается на него."""
     source = await service.create_source(
-        editor, SourceSpec(kind=PgSourceKind.POSTGRES, name="prod")
+        editor, SourceCreate(name="prod", connection_id=PG_CONNECTION.id)
     )
     await service.write_source_version(editor, source.id, PgSample().snapshot())
     return ProcessSample(source.id)
@@ -235,6 +240,8 @@ class FakeKindSnapshot(PgSnapshot):
 
 
 CONNECTION_ID = UUID(int=77)
+PG_CONNECTION = ConnectionInfo(id=CONNECTION_ID, name="prod-pg", kind="postgres")
+SPARE_CONNECTION = ConnectionInfo(id=UUID(int=78), name="prod-replica", kind="postgres")
 
 
 @pytest.fixture
@@ -252,7 +259,11 @@ async def sync_service(
     sources = SourceStore(_config(), SourceKinds.of(FakeKindSnapshot, ChSnapshot), pool)
     await sources.setup()
     ports = FakeSyncPorts(
-        tmp_path, "wrt", editor.profile, {CONNECTION_ID: "prod-pg"}, (editor.user_id,)
+        tmp_path,
+        "wrt",
+        editor.profile,
+        (PG_CONNECTION, SPARE_CONNECTION),
+        (editor.user_id,),
     )
     return CatalogService(store, sources, _config(), MemoryMessageBus("test:0"), ports)
 
@@ -269,17 +280,12 @@ async def test_sync_by_source_name(
     sync_tools: CatalogTools, sync_service: CatalogService, editor: Subject
 ) -> None:
     """Источник по имени, единственное привязанное подключение подставляется,
-    ответ — запись синхронизации с номером версии; без привязки — отказ."""
+    ответ — запись синхронизации с номером версии; при двух привязках нужен
+    явный id подключения."""
     service = sync_service
     source = await service.create_source(
-        editor, SourceSpec(kind=PgSourceKind.POSTGRES, name="prod")
+        editor, SourceCreate(name="prod", connection_id=PG_CONNECTION.id)
     )
-
-    _, refused = await sync_tools.sync("prod", "", "")
-    assert isinstance(refused, ErrorResult)
-    assert "0 bound connection(s)" in refused.message
-
-    await service.bind_connection(editor, source.id, CONNECTION_ID)
 
     _, done = await sync_tools.sync("prod", "", "")
     assert isinstance(done, JsonResult), done
@@ -290,6 +296,11 @@ async def test_sync_by_source_name(
     _, failed = await sync_tools.sync(str(source.id), str(CONNECTION_ID), "crash")
     assert isinstance(failed, ErrorResult)
     assert "crashed on purpose" in failed.message
+
+    await service.bind_connection(editor, source.id, SPARE_CONNECTION.id)
+    _, ambiguous = await sync_tools.sync("prod", "", "")
+    assert isinstance(ambiguous, ErrorResult)
+    assert "2 bound connection(s)" in ambiguous.message
 
     _, missing = await sync_tools.sync("nowhere", "", "")
     assert isinstance(missing, ErrorResult)

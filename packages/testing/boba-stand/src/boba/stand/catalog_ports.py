@@ -1,16 +1,16 @@
 """Порты синхронизации каталога для стендов.
 
 StubSyncPorts — стенд без синхронизаций: инструментов у субъекта нет,
-подключения не видны. FakeSyncPorts — стенд синхронизации: реестр с фейком
-снятия fake_pg_snapshot поверх субпроцессного лончера, как в приложении, и
-таблица имён подключений, видимых заданным пользователям.
+подключения из заданной таблицы видны всем. FakeSyncPorts — стенд
+синхронизации: реестр с фейком снятия fake_pg_snapshot поверх субпроцессного
+лончера, как в приложении, и таблица подключений, видимых заданным
+пользователям.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable
 from pathlib import Path
-from typing import ClassVar
 from uuid import UUID
 
 from langchain_core.tools import StructuredTool
@@ -18,7 +18,7 @@ from langchain_core.tools import StructuredTool
 from boba.access import ProfileGrant, RoleConfig, ToolAccess
 from boba.catalog_service import (
     ConnectionDirectory,
-    ConnectionEntry,
+    ConnectionInfo,
     SyncPorts,
     SyncSetupError,
     SyncTools,
@@ -41,22 +41,12 @@ class NoSyncTools(SyncTools):
         return ToolInvoker({})
 
 
-class NoConnectionDirectory(ConnectionDirectory):
-    """Реализация ConnectionDirectory, которой не видно ни одного подключения."""
-
-    async def visible(self, subject: Subject, kind: str) -> Sequence[ConnectionEntry]:
-        return ()
-
-    async def name_of(self, subject: Subject, connection_id: UUID) -> str:
-        msg = f"connection {connection_id} is not visible to {subject.login!r}"
-        raise SyncSetupError(msg)
-
-
 class StubSyncPorts(SyncPorts):
-    """Порты стенда без синхронизаций."""
+    """Порты стенда без синхронизаций: инструментов нет, подключения из
+    таблицы видны всем."""
 
-    def __init__(self) -> None:
-        super().__init__(NoSyncTools(), NoConnectionDirectory())
+    def __init__(self, connections: Iterable[ConnectionInfo] = ()) -> None:
+        super().__init__(NoSyncTools(), KnownConnectionDirectory(connections, None))
 
 
 class FakeSyncRegistry:
@@ -127,37 +117,27 @@ class RegistrySyncTools(SyncTools):
 
 
 class KnownConnectionDirectory(ConnectionDirectory):
-    """Реализация ConnectionDirectory таблицей: имена по id, видимые
-    перечисленным пользователям; все строки — вида KIND."""
+    """Реализация ConnectionDirectory таблицей подключений, видимых
+    перечисленным пользователям; None — видны всем."""
 
-    KIND: ClassVar[str] = "postgres"
+    def __init__(
+        self, connections: Iterable[ConnectionInfo], visible_to: Iterable[UUID] | None
+    ) -> None:
+        self._connections: dict[UUID, ConnectionInfo] = {}
+        for connection in connections:
+            self._connections[connection.id] = connection
 
-    def __init__(self, names: Mapping[UUID, str], visible_to: Iterable[UUID]) -> None:
-        self._names = dict(names)
-        self._visible_to = frozenset(visible_to)
+        self._visible_to: frozenset[UUID] | None = None
+        if visible_to is not None:
+            self._visible_to = frozenset(visible_to)
 
-    async def visible(self, subject: Subject, kind: str) -> Sequence[ConnectionEntry]:
-        if subject.user_id not in self._visible_to:
-            return ()
+    async def info_of(self, subject: Subject, connection_id: UUID) -> ConnectionInfo:
+        found = self._connections.get(connection_id)
+        if self._visible_to is not None and subject.user_id not in self._visible_to:
+            found = None
 
-        if kind != self.KIND:
-            return ()
-
-        entries: list[ConnectionEntry] = []
-        for connection_id, name in self._names.items():
-            entries.append(
-                ConnectionEntry(id=connection_id, name=name, kind=kind, mine=True)
-            )
-
-        return entries
-
-    async def name_of(self, subject: Subject, connection_id: UUID) -> str:
-        name = self._names.get(connection_id)
-        if subject.user_id not in self._visible_to:
-            name = None
-
-        if name is not None:
-            return name
+        if found is not None:
+            return found
 
         msg = f"connection {connection_id} is not visible to {subject.login!r}"
         raise SyncSetupError(msg)
@@ -171,10 +151,9 @@ class FakeSyncPorts(SyncPorts):
         workdir: Path,
         role: str,
         profile: str,
-        names: Mapping[UUID, str],
+        connections: Iterable[ConnectionInfo],
         visible_to: Iterable[UUID],
     ) -> None:
         registry = FakeSyncRegistry.build(workdir, role, profile)
-        super().__init__(
-            RegistrySyncTools(registry), KnownConnectionDirectory(names, visible_to)
-        )
+        directory = KnownConnectionDirectory(connections, visible_to)
+        super().__init__(RegistrySyncTools(registry), directory)

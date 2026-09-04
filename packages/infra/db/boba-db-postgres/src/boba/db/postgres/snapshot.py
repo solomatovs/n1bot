@@ -20,12 +20,8 @@ from uuid import UUID
 
 from pydantic import Field
 
-from boba.catalog.base import CatalogError, CatalogInvariantError, CatalogModel
+from boba.catalog.base import CatalogModel
 from boba.catalog.sources import (
-    Keyed,
-    ManualColumn,
-    ManualObject,
-    ManualObjectKind,
     NodeColumn,
     ObjectCard,
     ObjectFamily,
@@ -178,6 +174,7 @@ class PgRelation(SourceObject):
     persistence: str = "permanent"
     row_estimate: int = 0
     total_bytes: int = 0
+    VOLATILE: ClassVar[frozenset[str]] = frozenset({"row_estimate", "total_bytes"})
     partition_key: str | None = None
     partition_of: str | None = None
     partition_bound: str | None = None
@@ -289,6 +286,7 @@ class PgIndex(SourceRecord):
     KEY: ClassVar[tuple[str, ...]] = ("database", "schema_name", "relation", "name")
     PARENT: ClassVar[tuple[str, ...]] = ("database", "schema_name", "relation")
     COLUMN_NAMES: ClassVar[Mapping[str, str]] = {"schema_name": "schema"}
+    VOLATILE: ClassVar[frozenset[str]] = frozenset({"total_bytes"})
 
 
 class PgRoutine(SourceObject):
@@ -377,6 +375,7 @@ class PgSequence(SourceObject):
     last_value: int | None = None
     owned_by: str | None = None
     comment: str | None = None
+    VOLATILE: ClassVar[frozenset[str]] = frozenset({"last_value"})
 
     KEY: ClassVar[tuple[str, ...]] = ("database", "schema_name", "name")
     PARENT: ClassVar[tuple[str, ...]] = ("database", "schema_name")
@@ -500,7 +499,6 @@ class PgSnapshot(SourceSnapshot):
 
     TABLE_PREFIX: ClassVar[str] = "pg"
     SYNC_TOOL: ClassVar[str] = "pg_schema_snapshot"
-    MANUAL_KIND: ClassVar[ObjectKind] = ObjectKind.RELATION
     PARTS: ClassVar[tuple[SnapshotPart, ...]] = (
         SnapshotPart(name=PgPart.DATABASES, model=PgDatabase, label="database"),
         SnapshotPart(
@@ -609,92 +607,6 @@ class PgSnapshot(SourceSnapshot):
             )
 
         return tuple(columns)
-
-    def with_object(self, obj: ManualObject) -> PgSnapshot:
-        if len(obj.path) != PgPathDepth.OBJECT:
-            rendered = "/".join(obj.path)
-            msg = f"postgres object path must be database/schema/name: {rendered}"
-            raise CatalogInvariantError([msg])
-
-        database, schema, name = obj.path
-        databases = self.databases
-        if (database,) not in Keyed.keys_of(self.databases):
-            databases = (*databases, PgDatabase(name=database))
-
-        schemas = self.schemas
-        if (database, schema) not in Keyed.keys_of(self.schemas):
-            schemas = (*schemas, PgSchema(database=database, name=schema))
-
-        kind = PgRelationKind.TABLE
-        if obj.kind is ManualObjectKind.VIEW:
-            kind = PgRelationKind.VIEW
-
-        relation = PgRelation(
-            database=database,
-            schema_name=schema,
-            name=name,
-            kind=kind,
-            comment=obj.comment,
-        )
-        columns = list(self.columns)
-        for ordinal, column in enumerate(obj.columns, start=1):
-            columns.append(
-                PgColumn(
-                    database=database,
-                    schema_name=schema,
-                    relation=name,
-                    name=column.name,
-                    ordinal=ordinal,
-                    type=column.type,
-                    nullable=column.nullable,
-                    comment=column.comment,
-                )
-            )
-
-        return self.model_copy(
-            update={
-                "databases": databases,
-                "schemas": schemas,
-                "relations": (*self.relations, relation),
-                "columns": tuple(columns),
-            }
-        )
-
-    def without_object(self, path: Sequence[str]) -> PgSnapshot:
-        wanted = tuple(path)
-        return self.model_copy(
-            update={
-                "relations": Records.without_key(self.relations, wanted),
-                "columns": Records.without_parent(self.columns, wanted),
-                "constraints": Records.without_parent(self.constraints, wanted),
-                "indexes": Records.without_parent(self.indexes, wanted),
-            }
-        )
-
-    def manual_object(self, ref: ObjectRef) -> ManualObject:
-        found = self.require_object(ref)
-        if not isinstance(found, PgRelation):
-            msg = f"{ref.kind.value} at {ref.render()} is not a manual object"
-            raise CatalogError(msg)
-
-        kind = ManualObjectKind.TABLE
-        if found.kind is PgRelationKind.VIEW:
-            kind = ManualObjectKind.VIEW
-
-        columns: list[ManualColumn] = []
-        for column in self.columns_of(ref.path):
-            columns.append(
-                ManualColumn(
-                    name=column.name,
-                    type=column.type,
-                    nullable=column.nullable,
-                    comment=column.comment,
-                )
-            )
-
-        return ManualObject(
-            kind=kind, path=found.key, comment=found.comment, columns=tuple(columns)
-        )
 
     def relation(self, path: Sequence[str]) -> PgRelation | None:
         for relation in self.relations:

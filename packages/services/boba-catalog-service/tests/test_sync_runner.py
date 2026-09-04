@@ -22,7 +22,8 @@ from boba.catalog_service import (
     CatalogRefusalError,
     CatalogService,
     CatalogStore,
-    SourceSpec,
+    ConnectionInfo,
+    SourceCreate,
     SourceStore,
     StagingTable,
     SyncCaller,
@@ -34,9 +35,9 @@ from boba.catalog_service import (
     SyncSetupError,
     SyncStatus,
 )
-from boba.db.clickhouse.snapshot import ChSnapshot, ChSourceKind
+from boba.db.clickhouse.snapshot import ChSnapshot
 from boba.db.postgres import AsyncPostgresPool
-from boba.db.postgres.snapshot import PgSnapshot, PgSourceKind
+from boba.db.postgres.snapshot import PgSnapshot
 from boba.db.postgres.snapshot_sample import PgSample
 from boba.identity.context import HumanInitiator, NoUserCredential, Scope, Subject
 from boba.messaging import CatalogChanged, ChangeAction, Envelope, MemoryMessageBus
@@ -51,6 +52,8 @@ SCHEMA = "catalog_sync_test"
 ROLE = "editor"
 CONNECTION_ID = UUID(int=77)
 CONNECTION_NAME = "prod-pg"
+CONNECTION = ConnectionInfo(id=CONNECTION_ID, name=CONNECTION_NAME, kind="postgres")
+CH_CONNECTION = ConnectionInfo(id=UUID(int=78), name="dwh-ch", kind="clickhouse")
 
 
 def _config() -> CatalogConfig:
@@ -96,11 +99,7 @@ async def service(pool: AsyncPostgresPool, tmp_path: Path) -> CatalogService:
     await sources.setup()
 
     ports = FakeSyncPorts(
-        tmp_path,
-        ROLE,
-        TEST_PROFILE,
-        {CONNECTION_ID: CONNECTION_NAME},
-        (EDITOR.user_id,),
+        tmp_path, ROLE, TEST_PROFILE, (CONNECTION, CH_CONNECTION), (EDITOR.user_id,)
     )
     return CatalogService(store, sources, _config(), MemoryMessageBus("test:0"), ports)
 
@@ -109,9 +108,8 @@ async def service(pool: AsyncPostgresPool, tmp_path: Path) -> CatalogService:
 async def source_id(service: CatalogService) -> UUID:
     """Источник prod с привязанным подключением, без версий."""
     source = await service.create_source(
-        EDITOR, SourceSpec(kind=PgSourceKind.POSTGRES, name="prod")
+        EDITOR, SourceCreate(name="prod", connection_id=CONNECTION_ID)
     )
-    await service.bind_connection(EDITOR, source.id, CONNECTION_ID)
     return source.id
 
 
@@ -338,12 +336,13 @@ async def test_setup_refusals(service: CatalogService, source_id: UUID) -> None:
         )
 
     no_tool = await service.create_source(
-        EDITOR, SourceSpec(kind=ChSourceKind.CLICKHOUSE, name="events")
+        EDITOR, SourceCreate(name="events", connection_id=CH_CONNECTION.id)
     )
-    await service.bind_connection(EDITOR, no_tool.id, CONNECTION_ID)
     with pytest.raises(SyncSetupError, match="declare no sync tool"):
         await service.start_sync(
-            _caller(EDITOR), no_tool.id, _request(FakeSyncScenario.SAMPLE)
+            _caller(EDITOR),
+            no_tool.id,
+            SyncRequest(connection_id=CH_CONNECTION.id, scope=SyncScope()),
         )
 
     stranger = _subject(UUID(int=9), ROLE)

@@ -12,12 +12,9 @@ import pytest
 from psycopg import sql
 
 from boba.catalog import (
-    AddObject,
     CatalogOpError,
     CatalogSnapshot,
     ChangeStatus,
-    ManualColumn,
-    ManualObject,
     ObjectKind,
     OperationList,
     RemoveFlow,
@@ -25,7 +22,6 @@ from boba.catalog import (
     RetargetNode,
     SnapshotResolver,
     SourceKinds,
-    SourceOperationList,
     StaleReason,
 )
 from boba.catalog.samples import ProcessSample
@@ -36,15 +32,19 @@ from boba.catalog_service import (
     CatalogRefusalKind,
     CatalogService,
     CatalogStore,
+    ConnectionAlreadyBoundError,
+    ConnectionInfo,
     NodePosition,
-    SourceSpec,
+    SourceCreate,
+    SourceKindMismatchError,
     SourceStore,
+    SyncSetupError,
     ViewShare,
     ViewSpec,
 )
-from boba.db.clickhouse.snapshot import ChSnapshot, ChSourceKind
+from boba.db.clickhouse.snapshot import ChSnapshot
 from boba.db.postgres import AsyncPostgresPool
-from boba.db.postgres.snapshot import PgSnapshot, PgSourceKind
+from boba.db.postgres.snapshot import PgSnapshot
 from boba.db.postgres.snapshot_sample import PgSample
 from boba.identity.context import Scope, Subject
 from boba.messaging import CatalogChanged, Envelope, MemoryMessageBus
@@ -68,6 +68,8 @@ def _subject(user_id: UUID, *roles: str) -> Subject:
     return Subject.of_user(user_id, f"user-{user_id.int}", roles, "test")
 
 
+PG_CONNECTION = ConnectionInfo(id=UUID(int=71), name="prod-pg", kind="postgres")
+CH_CONNECTION = ConnectionInfo(id=UUID(int=72), name="dwh-ch", kind="clickhouse")
 EDITOR = _subject(UUID(int=1), "editor")
 VIEWER = _subject(UUID(int=2), "viewer")
 ANALYST = _subject(UUID(int=3), "analyst")
@@ -86,7 +88,11 @@ async def service(pool: AsyncPostgresPool) -> CatalogService:
     sources = SourceStore(_config(), KINDS, pool)
     await sources.setup()
     return CatalogService(
-        store, sources, _config(), MemoryMessageBus("test:0"), StubSyncPorts()
+        store,
+        sources,
+        _config(),
+        MemoryMessageBus("test:0"),
+        StubSyncPorts((PG_CONNECTION, CH_CONNECTION)),
     )
 
 
@@ -94,7 +100,7 @@ async def service(pool: AsyncPostgresPool) -> CatalogService:
 async def process(service: CatalogService) -> ProcessSample:
     """Источник prod с версией 1 из образца; процесс ссылается на него."""
     source = await service.create_source(
-        EDITOR, SourceSpec(kind=PgSourceKind.POSTGRES, name="prod")
+        EDITOR, SourceCreate(name="prod", connection_id=PG_CONNECTION.id)
     )
     await service.write_source_version(EDITOR, source.id, PgSample().snapshot())
     return ProcessSample(source.id)
@@ -336,12 +342,26 @@ async def test_sources_follow_the_catalog_rights_and_emit_events(
     try:
         with pytest.raises(CatalogRefusalError):
             await service.create_source(
-                VIEWER, SourceSpec(kind=PgSourceKind.POSTGRES, name="prod")
+                VIEWER, SourceCreate(name="prod", connection_id=PG_CONNECTION.id)
             )
 
         prod = await service.create_source(
-            EDITOR, SourceSpec(kind=PgSourceKind.POSTGRES, name="prod")
+            EDITOR, SourceCreate(name="prod", connection_id=PG_CONNECTION.id)
         )
+        assert prod.kind == "postgres"
+        bound = await service.source_connections(VIEWER, prod.id)
+        assert [item.connection_id for item in bound] == [PG_CONNECTION.id]
+
+        with pytest.raises(ConnectionAlreadyBoundError):
+            await service.create_source(
+                EDITOR, SourceCreate(name="prod2", connection_id=PG_CONNECTION.id)
+            )
+
+        with pytest.raises(SourceKindMismatchError):
+            await service.bind_connection(EDITOR, prod.id, CH_CONNECTION.id)
+
+        with pytest.raises(SyncSetupError):
+            await service.bind_connection(EDITOR, prod.id, UUID(int=404))
         sample = PgSample()
         await service.write_source_version(EDITOR, prod.id, sample.snapshot())
         await service.write_source_version(EDITOR, prod.id, sample.next_version())
@@ -360,27 +380,6 @@ async def test_sources_follow_the_catalog_rights_and_emit_events(
         first = await service.source_tree(VIEWER, prod.id, 1, ("prod",))
         assert {node.status for node in first} == {ChangeStatus.UNCHANGED}
         assert len((await service.source_diff(VIEWER, prod.id, 1, 2)).entries) == 4
-
-        planned = await service.create_source(
-            EDITOR,
-            SourceSpec(kind=ChSourceKind.CLICKHOUSE, name="planned", manual=True),
-        )
-        draft = await service.create_source_draft(EDITOR, planned.id, "shapes")
-        obj = ManualObject(
-            path=("dwh", "orders"), columns=(ManualColumn(name="id", type="UInt64"),)
-        )
-        state = await service.append_source_ops(
-            EDITOR,
-            draft.id,
-            0,
-            SourceOperationList(root=(AddObject(object=obj),)),
-            AuthorVia.LLM,
-        )
-        assert state.seq == 1
-        version = await service.publish_source_draft(EDITOR, draft.id, AuthorVia.USER)
-        assert version.version == 1
-        with pytest.raises(CatalogRefusalError):
-            await service.create_source_draft(VIEWER, planned.id, "nope")
     finally:
         leave()
 
@@ -392,4 +391,3 @@ async def test_sources_follow_the_catalog_rights_and_emit_events(
         source_ids.append(message.source_id)
 
     assert source_ids.count(prod.id) == 3
-    assert source_ids.count(planned.id) == 4

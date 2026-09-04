@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+from boba.connection_broker.api import ConnectionUrl
+
 __all__ = [
     "AccountUrl",
     "ApiVersion",
@@ -36,16 +38,6 @@ class AccountUrl(StrEnum):
     ME = "/me"
     PROFILE = "/me/profile"
     PROFILES = "/profiles"
-
-
-class ConnectionUrl(StrEnum):
-    """Соединения пользователя: список, свои — создание, замена, удаление."""
-
-    CONNECTIONS = "/connections"
-    SCHEMA = "/connections/schema"
-    CHECK = "/connections/check"
-    CONNECTION = "/connections/{connection_id}"
-    CONNECTION_CHECK = "/connections/{connection_id}/check"
 
 
 class ToolCallUrl(StrEnum):

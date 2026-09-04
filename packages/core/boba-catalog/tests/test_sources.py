@@ -6,30 +6,22 @@ from __future__ import annotations
 import pytest
 
 from boba.catalog import (
-    AddObject,
     CatalogInvariantError,
     ChangeStatus,
-    ManualColumn,
-    ManualObject,
-    ManualObjectKind,
     ObjectKind,
     ObjectRef,
     PartKind,
-    RemoveObject,
-    SetObject,
     SourceDiff,
-    SourceOperationList,
-    SourceOpError,
     TreeKind,
 )
 from boba.catalog.samples import SampleIds
-from boba.db.clickhouse.snapshot import (
-    ChSnapshot,
-)
+from boba.db.clickhouse.snapshot import ChTable
 from boba.db.clickhouse.snapshot_sample import ChSample
 from boba.db.postgres.snapshot import (
     PgColumn,
-    PgSnapshot,
+    PgIndex,
+    PgRelation,
+    PgSequence,
 )
 from boba.db.postgres.snapshot_sample import PgSample
 
@@ -240,100 +232,72 @@ class TestDiff:
         diff = SourceDiff.between(CH_SOURCE_ID, ch.snapshot(), ch.snapshot())
         assert diff.entries == ()
 
+    def test_volatile_statistics_are_not_changes(
+        self, pg: PgSample, ch: ChSample
+    ) -> None:
+        """Число строк, размер и последнее значение последовательности меняются
+        без изменения структуры: вторая синхронизация той же базы даёт пустой
+        diff, а настоящее изменение поля всё так же видно."""
+        before = pg.snapshot()
+        relations: list[PgRelation] = []
+        for relation in before.relations:
+            grown_bytes = relation.total_bytes + 147456
+            relations.append(
+                relation.model_copy(
+                    update={"row_estimate": 504, "total_bytes": grown_bytes}
+                )
+            )
+
+        indexes: list[PgIndex] = []
+        for index in before.indexes:
+            indexes.append(index.model_copy(update={"total_bytes": 65536}))
+
+        sequences: list[PgSequence] = []
+        for sequence in before.sequences:
+            sequences.append(sequence.model_copy(update={"last_value": 777}))
+
+        grown = before.model_copy(
+            update={
+                "relations": tuple(relations),
+                "indexes": tuple(indexes),
+                "sequences": tuple(sequences),
+            }
+        )
+        assert SourceDiff.between(SOURCE_ID, before, grown).entries == ()
+
+        ch_before = ch.snapshot()
+        tables: list[ChTable] = []
+        for table in ch_before.tables:
+            tables.append(
+                table.model_copy(
+                    update={
+                        "total_rows": 10,
+                        "total_bytes": 20,
+                        "metadata_modified_at": "2026-09-05 00:00:00",
+                    }
+                )
+            )
+
+        ch_grown = ch_before.model_copy(update={"tables": tuple(tables)})
+        assert SourceDiff.between(CH_SOURCE_ID, ch_before, ch_grown).entries == ()
+
+        owned: list[PgRelation] = []
+        for relation in relations:
+            owned.append(relation.model_copy(update={"owner": "other"}))
+
+        changed = SourceDiff.between(
+            SOURCE_ID, before, grown.model_copy(update={"relations": tuple(owned)})
+        )
+        statuses: set[ChangeStatus] = set()
+        fields: set[str] = set()
+        for entry in changed.entries:
+            statuses.add(entry.status)
+            for field in entry.fields:
+                fields.add(field.field)
+
+        assert statuses == {ChangeStatus.MODIFIED}
+        assert fields == {"owner"}
+
     def test_kinds_must_match(self, pg: PgSample, ch: ChSample) -> None:
         with pytest.raises(Exception, match="cannot diff postgres against clickhouse"):
             SourceDiff.between(SOURCE_ID, pg.snapshot(), ch.snapshot())
-
-
-class TestManualOps:
-    def test_add_set_remove_on_an_empty_postgres_source(self) -> None:
-        obj = ManualObject(
-            kind=ManualObjectKind.TABLE,
-            path=("planned", "dm", "sales"),
-            comment="Витрина продаж",
-            columns=(
-                ManualColumn(name="day", type="date", nullable=False),
-                ManualColumn(name="total", type="numeric(14,2)", comment="Сумма"),
-            ),
-        )
-        ops = SourceOperationList(root=(AddObject(object=obj),))
-        snapshot = ops.apply(PgSnapshot.empty())
-        assert isinstance(snapshot, PgSnapshot)
-
-        assert [d.name for d in snapshot.databases] == ["planned"]
-        assert [s.key for s in snapshot.schemas] == [("planned", "dm")]
-        relation = snapshot.relation(("planned", "dm", "sales"))
-        assert relation is not None
-        assert relation.comment == "Витрина продаж"
-        columns = list(snapshot.columns_of(("planned", "dm", "sales")))
-        assert [(c.name, c.type, c.nullable, c.ordinal) for c in columns] == [
-            ("day", "date", False, 1),
-            ("total", "numeric(14,2)", True, 2),
-        ]
-        ref = ObjectRef(source_id=SOURCE_ID, kind=ObjectKind.RELATION, path=obj.path)
-        assert snapshot.manual_object(ref) == obj
-
-        changed = obj.model_copy(update={"columns": (obj.columns[0],)})
-        snapshot = SourceOperationList(root=(SetObject(object=changed),)).apply(
-            snapshot
-        )
-        assert isinstance(snapshot, PgSnapshot)
-        assert len(list(snapshot.columns_of(("planned", "dm", "sales")))) == 1
-
-        snapshot = SourceOperationList(root=(RemoveObject(path=obj.path),)).apply(
-            snapshot
-        )
-        assert isinstance(snapshot, PgSnapshot)
-        assert snapshot.relations == ()
-        assert snapshot.columns == ()
-        assert [s.key for s in snapshot.schemas] == [("planned", "dm")]
-
-    def test_clickhouse_object_has_two_level_path(self) -> None:
-        obj = ManualObject(
-            path=("dwh", "orders"), columns=(ManualColumn(name="id", type="UInt64"),)
-        )
-        snapshot = SourceOperationList(root=(AddObject(object=obj),)).apply(
-            ChSnapshot.empty()
-        )
-        assert isinstance(snapshot, ChSnapshot)
-        assert snapshot.table(("dwh", "orders")) is not None
-        assert [c.position for c in snapshot.columns_of(("dwh", "orders"))] == [1]
-
-        wrong = ManualObject(path=("dwh", "x", "orders"))
-        with pytest.raises(SourceOpError) as error:
-            SourceOperationList(root=(AddObject(object=wrong),)).apply(
-                ChSnapshot.empty()
-            )
-
-        assert error.value.index == 0
-        assert "database/name" in error.value.reason
-
-    def test_rejections_name_the_operation(self, pg: PgSample) -> None:
-        existing = ManualObject(path=("prod", "public", "orders"))
-        with pytest.raises(SourceOpError) as error:
-            SourceOperationList(root=(AddObject(object=existing),)).apply(pg.snapshot())
-
-        assert "already exists" in error.value.reason
-
-        with pytest.raises(SourceOpError) as error:
-            SourceOperationList(
-                root=(RemoveObject(path=("prod", "public", "nope")),)
-            ).apply(pg.snapshot())
-
-        assert error.value.index == 0
-        assert "not found" in error.value.reason
-
-    def test_operations_parse_from_json(self) -> None:
-        raw = (
-            '[{"op": "add_object", "object": {"path": ["planned", "dm", "sales"],'
-            ' "columns": [{"name": "id", "type": "bigint", "nullable": false}]}},'
-            ' {"op": "remove_object", "path": ["planned", "dm", "sales"]}]'
-        )
-        ops = SourceOperationList.model_validate_json(raw)
-        assert [op.op.value for op in ops.root] == ["add_object", "remove_object"]
-
-        snapshot = ops.apply(PgSnapshot.empty())
-        assert isinstance(snapshot, PgSnapshot)
-        assert snapshot.relations == ()
-        assert [d.name for d in snapshot.databases] == ["planned"]
-        assert [s.name for s in snapshot.schemas] == ["dm"]

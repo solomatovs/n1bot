@@ -17,19 +17,13 @@ from uuid import UUID
 
 from pydantic import Field
 
-from boba.catalog.base import CatalogError, CatalogInvariantError
 from boba.catalog.sources import (
-    Keyed,
-    ManualColumn,
-    ManualObject,
-    ManualObjectKind,
     NodeColumn,
     ObjectCard,
     ObjectFamily,
     ObjectKind,
     ObjectRef,
     PartKind,
-    Records,
     SnapshotPart,
     SourceObject,
     SourceRecord,
@@ -125,6 +119,9 @@ class ChTable(SourceObject):
     total_bytes: int | None = None
     metadata_modified_at: str = ""
     create_query: str = ""
+    VOLATILE: ClassVar[frozenset[str]] = frozenset(
+        {"total_rows", "total_bytes", "metadata_modified_at"}
+    )
 
     KEY: ClassVar[tuple[str, ...]] = ("database", "name")
     PARENT: ClassVar[tuple[str, ...]] = ("database",)
@@ -170,6 +167,7 @@ class ChDictionary(SourceObject):
     database: str = Field(min_length=1)
     name: str = Field(min_length=1)
     status: str = ""
+    VOLATILE: ClassVar[frozenset[str]] = frozenset({"status"})
     layout: str = ""
     source: str = ""
     key_columns: tuple[str, ...] = ()
@@ -273,7 +271,6 @@ class ChSnapshot(SourceSnapshot):
     """
 
     TABLE_PREFIX: ClassVar[str] = "ch"
-    MANUAL_KIND: ClassVar[ObjectKind] = ObjectKind.TABLE
     PARTS: ClassVar[tuple[SnapshotPart, ...]] = (
         SnapshotPart(name=ChPart.DATABASES, model=ChDatabase, label="database"),
         SnapshotPart(
@@ -333,76 +330,6 @@ class ChSnapshot(SourceSnapshot):
             )
 
         return tuple(columns)
-
-    def with_object(self, obj: ManualObject) -> ChSnapshot:
-        if len(obj.path) != ChPathDepth.OBJECT:
-            msg = f"clickhouse object path must be database/name: {'/'.join(obj.path)}"
-            raise CatalogInvariantError([msg])
-
-        database, name = obj.path
-        databases = self.databases
-        if (database,) not in Keyed.keys_of(self.databases):
-            databases = (*databases, ChDatabase(name=database))
-
-        kind = ChTableKind.TABLE
-        if obj.kind is ManualObjectKind.VIEW:
-            kind = ChTableKind.VIEW
-
-        table = ChTable(database=database, name=name, kind=kind, comment=obj.comment)
-        columns = list(self.columns)
-        for position, column in enumerate(obj.columns, start=1):
-            columns.append(
-                ChColumn(
-                    database=database,
-                    table=name,
-                    name=column.name,
-                    position=position,
-                    type=column.type,
-                    comment=column.comment,
-                )
-            )
-
-        return self.model_copy(
-            update={
-                "databases": databases,
-                "tables": (*self.tables, table),
-                "columns": tuple(columns),
-            }
-        )
-
-    def without_object(self, path: Sequence[str]) -> ChSnapshot:
-        wanted = tuple(path)
-        return self.model_copy(
-            update={
-                "tables": Records.without_key(self.tables, wanted),
-                "columns": Records.without_parent(self.columns, wanted),
-            }
-        )
-
-    def manual_object(self, ref: ObjectRef) -> ManualObject:
-        found = self.require_object(ref)
-        if not isinstance(found, ChTable):
-            msg = f"{ref.kind.value} at {ref.render()} is not a manual object"
-            raise CatalogError(msg)
-
-        kind = ManualObjectKind.TABLE
-        if found.kind is ChTableKind.VIEW:
-            kind = ManualObjectKind.VIEW
-
-        columns: list[ManualColumn] = []
-        for column in self.columns_of(ref.path):
-            columns.append(
-                ManualColumn(
-                    name=column.name,
-                    type=column.type,
-                    nullable=ChNullable.wraps(column.type),
-                    comment=column.comment,
-                )
-            )
-
-        return ManualObject(
-            kind=kind, path=found.key, comment=found.comment, columns=tuple(columns)
-        )
 
     def table(self, path: Sequence[str]) -> ChTable | None:
         for table in self.tables:

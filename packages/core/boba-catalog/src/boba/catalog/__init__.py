@@ -1,6 +1,6 @@
 """Домен каталога данных: сущности, снимок, операции и diff; источники
-метаданных в родной структуре Postgres и ClickHouse, их версии, diff и
-операции ручного источника. Без I/O."""
+метаданных в родной структуре, их версии, diff и кадры синхронизации.
+Без I/O."""
 
 from boba.catalog.diff import CatalogDiff, ChangeStatus, DiffEntry
 from boba.catalog.model import (
@@ -52,20 +52,8 @@ from boba.catalog.source_diff import (
     PartChange,
     SourceDiff,
 )
-from boba.catalog.source_ops import (
-    AddObject,
-    RemoveObject,
-    SetObject,
-    SourceOp,
-    SourceOperationList,
-    SourceOpError,
-    SourceOpKind,
-)
 from boba.catalog.sources import (
     Keyed,
-    ManualColumn,
-    ManualObject,
-    ManualObjectKind,
     NodeColumn,
     ObjectCard,
     ObjectFamily,
@@ -105,7 +93,6 @@ __all__ = [
     "AddLayer",
     "AddLoadKind",
     "AddNode",
-    "AddObject",
     "CatalogDiff",
     "CatalogEntity",
     "CatalogError",
@@ -131,9 +118,6 @@ __all__ = [
     "LoadKind",
     "LoadSpec",
     "LoadValue",
-    "ManualColumn",
-    "ManualObject",
-    "ManualObjectKind",
     "Node",
     "NodeColumn",
     "ObjectCard",
@@ -151,13 +135,11 @@ __all__ = [
     "RemoveLayer",
     "RemoveLoadKind",
     "RemoveNode",
-    "RemoveObject",
     "RetargetNode",
     "SetFlow",
     "SetLayer",
     "SetLoadKind",
     "SetNode",
-    "SetObject",
     "SnapshotAssembler",
     "SnapshotBatches",
     "SnapshotPart",
@@ -166,10 +148,6 @@ __all__ = [
     "SourceKinds",
     "SourceKindsError",
     "SourceObject",
-    "SourceOp",
-    "SourceOpError",
-    "SourceOpKind",
-    "SourceOperationList",
     "SourceRecord",
     "SourceSnapshot",
     "Stale",

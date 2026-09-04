@@ -1,5 +1,6 @@
-"""Порты синхронизации каталога над рантаймом приложения: инструменты
-субъекта из реестра процесса и имена подключений из брокера соединений.
+"""Порты каталога над рантаймом приложения: инструменты субъекта из реестра
+процесса, подключения из брокера соединений и охранник удаления подключения,
+которое стоит в источнике каталога.
 
 Ошибки:
 SyncSetupError — подключение субъекту не видно или брокер соединений
@@ -8,22 +9,23 @@ SyncSetupError — подключение субъекту не видно ил�
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable
 from uuid import UUID
 
 from boba.catalog_service import (
+    CatalogService,
     ConnectionDirectory,
-    ConnectionEntry,
+    ConnectionInfo,
     SyncSetupError,
     SyncTools,
 )
-from boba.connection_broker.service import UserConnectionsService
+from boba.connection_broker.service import DeleteGuard, UserConnectionsService
 from boba.identity.context import Subject
 from boba.identity.errors import RefusalError
 from boba.toolrun.invoke import ToolInvoker
 from boba.toolrun.registry import ToolRegistry
 
-__all__ = ["BrokerConnectionDirectory", "RegistrySyncTools"]
+__all__ = ["BoundConnectionGuard", "BrokerConnectionDirectory", "RegistrySyncTools"]
 
 
 class RegistrySyncTools(SyncTools):
@@ -39,33 +41,13 @@ class RegistrySyncTools(SyncTools):
 
 
 class BrokerConnectionDirectory(ConnectionDirectory):
-    """Реализация ConnectionDirectory брокером соединений: строки вида глазами
-    субъекта для привязки, строка по id для инструмента снятия."""
+    """Реализация ConnectionDirectory брокером соединений: строка по id
+    глазами субъекта, имя — аргумент инструмента снятия."""
 
     def __init__(self, connections: UserConnectionsService) -> None:
         self._connections = connections
 
-    async def visible(self, subject: Subject, kind: str) -> Sequence[ConnectionEntry]:
-        try:
-            rows = await self._connections.visible(subject, [kind])
-        except RuntimeError as exc:
-            msg = (
-                f"listing {kind} connections for {subject.login!r}: the connection "
-                f"broker is unavailable: {exc}"
-            )
-            raise SyncSetupError(msg) from exc
-
-        entries: list[ConnectionEntry] = []
-        for item in rows:
-            entries.append(
-                ConnectionEntry(
-                    id=item.row.id, name=item.row.name, kind=kind, mine=item.mine
-                )
-            )
-
-        return entries
-
-    async def name_of(self, subject: Subject, connection_id: UUID) -> str:
+    async def info_of(self, subject: Subject, connection_id: UUID) -> ConnectionInfo:
         try:
             row = await self._connections.visible_row(subject, connection_id)
         except RefusalError as exc:
@@ -78,4 +60,25 @@ class BrokerConnectionDirectory(ConnectionDirectory):
             )
             raise SyncSetupError(msg) from exc
 
-        return row.name
+        return ConnectionInfo(id=row.id, name=row.name, kind=row.kind)
+
+
+class BoundConnectionGuard(DeleteGuard):
+    """Реализация DeleteGuard брокера каталогом: привязанное к источнику
+    подключение удалять нельзя, пока его не отвязали. Каталог выключен —
+    держать некому."""
+
+    def __init__(self, service: Callable[[], Awaitable[CatalogService]]) -> None:
+        self._service = service
+
+    async def holds(self, connection_id: UUID) -> str:
+        try:
+            service = await self._service()
+        except RuntimeError:
+            return ""
+
+        holder = await service.sources.holder_of(connection_id)
+        if holder is None:
+            return ""
+
+        return f"it is bound to catalog source {holder.name!r} ({holder.id})"

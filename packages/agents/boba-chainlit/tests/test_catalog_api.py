@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import base64
+import json
+import secrets as std_secrets
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -10,9 +13,10 @@ from uuid import UUID, uuid4
 import pytest
 from chainlit.user import PersistedUser
 from chainlit_stand import AppConfig
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, FastAPI, Request
 from httpx import ASGITransport, AsyncClient
 from psycopg import sql
+from pydantic import SecretStr
 
 from boba.catalog import (
     AddLayer,
@@ -24,18 +28,32 @@ from boba.catalog_service import (
     CatalogConfig,
     CatalogService,
     CatalogStore,
+    ConnectionInfo,
     ShareTargetKind,
     SourceStore,
+    SyncPorts,
 )
-from boba.chainlit.catalog.api import CatalogApi, CatalogUrl, SignedIn
+from boba.chainlit.catalog.api import CatalogApi, CatalogUrl
+from boba.chainlit.catalog.subjects import ChainlitSubjects, SignedIn
+from boba.chainlit.catalog.sync_ports import (
+    BoundConnectionGuard,
+    BrokerConnectionDirectory,
+)
 from boba.chat.profiles import ChatProfiles
+from boba.connection_broker.api import ConnectionsApi, ConnectionUrl
+from boba.connection_broker.service import UserConnectionsService
+from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
+from boba.connection_broker.tickets import CredentialSource
+from boba.connections.manifest import ConnectionTypes
+from boba.connections.profile import GrantTarget, StoredRole
 from boba.db.clickhouse.snapshot import ChSnapshot
 from boba.db.postgres import AsyncPostgresPool
-from boba.db.postgres.snapshot import PgSnapshot, PgSourceKind
+from boba.db.postgres.snapshot import PgSnapshot
 from boba.db.postgres.snapshot_sample import PgSample
 from boba.identity.signin import SignInMetadata
 from boba.messaging import MemoryMessageBus
-from boba.stand.catalog_ports import FakeSyncPorts, StubSyncPorts
+from boba.stand.catalog_ports import FakeSyncPorts, NoSyncTools, StubSyncPorts
+from boba.transport.http.profile import HttpConnection
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -47,6 +65,10 @@ EDITOR_ID = UUID(int=21)
 VIEWER_ID = UUID(int=22)
 STRANGER_ID = UUID(int=23)
 CONNECTION_ID = UUID(int=77)
+PG_CONNECTION = ConnectionInfo(id=CONNECTION_ID, name="prod-pg", kind="postgres")
+CH_CONNECTION = ConnectionInfo(id=UUID(int=78), name="dwh-ch", kind="clickhouse")
+ORACLE_CONNECTION = ConnectionInfo(id=UUID(int=79), name="ora", kind="oracle")
+STAND_CONNECTIONS = (PG_CONNECTION, CH_CONNECTION, ORACLE_CONNECTION)
 
 
 def _config() -> CatalogConfig:
@@ -66,9 +88,15 @@ def _user(user_id: UUID, *roles: str) -> PersistedUser:
 
 
 class Stand:
-    """Приложение с маршрутами каталога и подменой пользователя входа."""
+    """Приложение с маршрутами каталога, общим API соединений под тем же
+    префиксом и подменой пользователя входа."""
 
-    def __init__(self, service: CatalogService, profiles: ChatProfiles) -> None:
+    def __init__(
+        self,
+        service: CatalogService,
+        profiles: ChatProfiles,
+        connections: ConnectionStore | None = None,
+    ) -> None:
         self.service = service
         self.app = FastAPI()
         router = APIRouter(prefix=CatalogUrl.PREFIX.value)
@@ -76,10 +104,30 @@ class Stand:
         async def source() -> CatalogService:
             return service
 
-        CatalogApi(source, profiles).mount(router)
+        async def signed_in(request: Request) -> PersistedUser | None:
+            return self.user
+
+        subjects = ChainlitSubjects(profiles, signed_in)
+        CatalogApi(source, subjects).mount(router)
+        if connections is not None:
+            store = connections
+            guards = (BoundConnectionGuard(source),)
+            ConnectionsApi(
+                UserConnectionsService(lambda: store, guards),
+                subjects.of_request,
+                self._no_credentials,
+                lambda: service.bus,
+                ConnectionTypes.discover(),
+            ).mount(router)
+
         self.app.include_router(router)
         self.user: PersistedUser | None = None
         self.app.dependency_overrides[SignedIn.user] = lambda: self.user
+
+    @staticmethod
+    def _no_credentials() -> CredentialSource:
+        msg = "the catalog api stand carries no kerberos credentials"
+        raise RuntimeError(msg)
 
     def client(self, user: PersistedUser | None) -> AsyncClient:
         self.user = user
@@ -103,7 +151,11 @@ async def stand(pool: AsyncPostgresPool, app_config: AppConfig) -> Stand:
     sources = SourceStore(_config(), KINDS, pool)
     await sources.setup()
     service = CatalogService(
-        store, sources, _config(), MemoryMessageBus("test:0"), StubSyncPorts()
+        store,
+        sources,
+        _config(),
+        MemoryMessageBus("test:0"),
+        StubSyncPorts(STAND_CONNECTIONS),
     )
     return Stand(service, ChatProfiles(app_config.profiles))
 
@@ -130,11 +182,7 @@ async def sync_stand(
     await sources.setup()
     profiles = ChatProfiles(app_config.profiles)
     ports = FakeSyncPorts(
-        tmp_path,
-        "wrt",
-        profiles.default_name(),
-        {CONNECTION_ID: "prod-pg"},
-        (EDITOR_ID,),
+        tmp_path, "wrt", profiles.default_name(), (PG_CONNECTION,), (EDITOR_ID,)
     )
     service = CatalogService(
         store, sources, _config(), MemoryMessageBus("test:0"), ports
@@ -149,7 +197,7 @@ async def process(stand: Stand) -> ProcessSample:
     async with stand.client(_user(EDITOR_ID, "wrt")) as client:
         created = await client.post(
             stand.url(CatalogUrl.SOURCES),
-            json={"kind": PgSourceKind.POSTGRES.value, "name": "prod"},
+            json={"name": "prod", "connection_id": str(PG_CONNECTION.id)},
         )
         assert created.status_code == 200
         source_id = UUID(created.json()["id"])
@@ -307,15 +355,39 @@ async def test_source_kinds_come_from_the_registry(stand: Stand) -> None:
         assert kinds.json() == ["clickhouse", "postgres"]
 
         refused = await client.post(
-            stand.url(CatalogUrl.SOURCES), json={"kind": "oracle", "name": "ora"}
+            stand.url(CatalogUrl.SOURCES),
+            json={"name": "ora", "connection_id": str(ORACLE_CONNECTION.id)},
         )
         assert refused.status_code == 422
         assert "source kind 'oracle' has no snapshot installed" in refused.text
 
         created = await client.post(
-            stand.url(CatalogUrl.SOURCES), json={"kind": "postgres", "name": "p"}
+            stand.url(CatalogUrl.SOURCES),
+            json={"name": "p", "connection_id": str(PG_CONNECTION.id)},
         )
+        assert created.status_code == 200, created.text
+        assert created.json()["kind"] == "postgres"
         source_id = created.json()["id"]
+
+        taken = await client.post(
+            stand.url(CatalogUrl.SOURCES),
+            json={"name": "p2", "connection_id": str(PG_CONNECTION.id)},
+        )
+        assert taken.status_code == 409
+        assert "already bound" in taken.json()["detail"]
+
+        mismatch = await client.post(
+            stand.url(CatalogUrl.SOURCE_CONNECTIONS, source_id=source_id),
+            json={"connection_id": str(CH_CONNECTION.id)},
+        )
+        assert mismatch.status_code == 409
+        assert "one kind" in mismatch.json()["detail"]
+
+        unseen = await client.post(
+            stand.url(CatalogUrl.SOURCE_CONNECTIONS, source_id=source_id),
+            json={"connection_id": str(uuid4())},
+        )
+        assert unseen.status_code == 422
         rejected = await client.post(
             stand.url(CatalogUrl.SOURCE_VERSIONS, source_id=source_id),
             json={"snapshot": {"kind": "oracle"}},
@@ -511,7 +583,9 @@ async def test_disabled_service_gives_503(app_config: AppConfig) -> None:
 
     app = FastAPI()
     router = APIRouter(prefix=CatalogUrl.PREFIX.value)
-    CatalogApi(source, ChatProfiles(app_config.profiles)).mount(router)
+    CatalogApi(source, ChainlitSubjects(ChatProfiles(app_config.profiles))).mount(
+        router
+    )
     app.include_router(router)
     app.dependency_overrides[SignedIn.user] = lambda: _user(EDITOR_ID, "wrt")
 
@@ -530,7 +604,11 @@ async def test_sources_over_http(stand: Stand) -> None:
     async with stand.client(_user(EDITOR_ID, "wrt")) as client:
         created = await client.post(
             stand.url(CatalogUrl.SOURCES),
-            json={"kind": "postgres", "name": "prod", "description": "Prod"},
+            json={
+                "name": "prod",
+                "description": "Prod",
+                "connection_id": str(PG_CONNECTION.id),
+            },
         )
         assert created.status_code == 200
         source_id = created.json()["id"]
@@ -548,15 +626,23 @@ async def test_sources_over_http(stand: Stand) -> None:
         )
         assert [v["version"] for v in versions.json()] == [1, 2]
 
-        bound = await client.post(
-            stand.url(CatalogUrl.SOURCE_CONNECTIONS, source_id=source_id),
-            json={"connection_id": str(STRANGER_ID)},
-        )
-        assert bound.status_code == 200
         listed = await client.get(
             stand.url(CatalogUrl.SOURCE_CONNECTIONS, source_id=source_id)
         )
-        assert [c["connection_id"] for c in listed.json()] == [str(STRANGER_ID)]
+        assert [c["connection_id"] for c in listed.json()] == [str(PG_CONNECTION.id)]
+        unbound = await client.delete(
+            stand.url(
+                CatalogUrl.SOURCE_CONNECTION,
+                source_id=source_id,
+                connection_id=PG_CONNECTION.id,
+            )
+        )
+        assert unbound.status_code == 200
+        rebound = await client.post(
+            stand.url(CatalogUrl.SOURCE_CONNECTIONS, source_id=source_id),
+            json={"connection_id": str(PG_CONNECTION.id)},
+        )
+        assert rebound.status_code == 200
 
     async with stand.client(_user(VIEWER_ID, "read")) as client:
         roots = await client.get(stand.url(CatalogUrl.SOURCE_TREE, source_id=source_id))
@@ -611,77 +697,10 @@ async def test_sources_over_http(stand: Stand) -> None:
         assert statuses[("prod", "public", "customers")] == "removed"
 
         refused = await client.post(
-            stand.url(CatalogUrl.SOURCES), json={"kind": "postgres", "name": "x"}
+            stand.url(CatalogUrl.SOURCES),
+            json={"name": "x", "connection_id": str(CH_CONNECTION.id)},
         )
         assert refused.status_code == 403
-
-
-async def test_manual_source_drafts_over_http(stand: Stand) -> None:
-    async with stand.client(_user(EDITOR_ID, "wrt")) as client:
-        synced = await client.post(
-            stand.url(CatalogUrl.SOURCES), json={"kind": "postgres", "name": "prod"}
-        )
-        not_manual = await client.post(
-            stand.url(CatalogUrl.SOURCE_DRAFTS, source_id=synced.json()["id"]),
-            json={"name": "no"},
-        )
-        assert not_manual.status_code == 409
-
-        planned = await client.post(
-            stand.url(CatalogUrl.SOURCES),
-            json={"kind": "clickhouse", "name": "planned", "manual": True},
-        )
-        planned_id = planned.json()["id"]
-
-        draft = await client.post(
-            stand.url(CatalogUrl.SOURCE_DRAFTS, source_id=planned_id),
-            json={"name": "shapes"},
-        )
-        draft_id = draft.json()["id"]
-        ops = [
-            {
-                "op": "add_object",
-                "object": {
-                    "path": ["dwh", "orders"],
-                    "comment": "Planned",
-                    "columns": [{"name": "id", "type": "UInt64", "nullable": False}],
-                },
-            }
-        ]
-        appended = await client.post(
-            stand.url(CatalogUrl.SOURCE_DRAFT_OPS, draft_id=draft_id),
-            json={"expected_seq": 0, "operations": ops},
-        )
-        assert appended.status_code == 200
-        assert appended.json()["seq"] == 1
-        assert appended.json()["snapshot"]["kind"] == "clickhouse"
-
-        rejected = await client.post(
-            stand.url(CatalogUrl.SOURCE_DRAFT_OPS, draft_id=draft_id),
-            json={"expected_seq": 1, "operations": ops},
-        )
-        assert rejected.status_code == 422
-        assert rejected.json()["detail"]["index"] == 0
-
-        state = await client.get(stand.url(CatalogUrl.SOURCE_DRAFT, draft_id=draft_id))
-        assert state.json()["diff"]["entries"][0]["status"] == "added"
-
-        published = await client.post(
-            stand.url(CatalogUrl.SOURCE_DRAFT_PUBLISH, draft_id=draft_id)
-        )
-        assert published.status_code == 200
-        assert published.json()["version"] == 1
-
-        tree = await client.get(
-            stand.url(CatalogUrl.SOURCE_TREE, source_id=planned_id),
-            params=[("path", "dwh"), ("path", "tables")],
-        )
-        assert [node["label"] for node in tree.json()] == ["orders"]
-
-        deleted = await client.delete(
-            stand.url(CatalogUrl.SOURCE, source_id=planned_id)
-        )
-        assert deleted.json()["deleted"] is True
 
 
 async def test_sync_over_http(sync_stand: Stand) -> None:
@@ -691,23 +710,17 @@ async def test_sync_over_http(sync_stand: Stand) -> None:
     async with stand.client(_user(EDITOR_ID, "wrt")) as client:
         created = await client.post(
             stand.url(CatalogUrl.SOURCES),
-            json={"kind": PgSourceKind.POSTGRES.value, "name": "prod"},
+            json={"name": "prod", "connection_id": str(CONNECTION_ID)},
         )
-        assert created.status_code == 200
+        assert created.status_code == 200, created.text
         source_id = created.json()["id"]
 
         unbound = await client.post(
             stand.url(CatalogUrl.SOURCE_SYNCS, source_id=source_id),
-            json={"connection_id": str(CONNECTION_ID)},
+            json={"connection_id": str(uuid4())},
         )
         assert unbound.status_code == 422
         assert "not bound" in unbound.json()["detail"]
-
-        bound = await client.post(
-            stand.url(CatalogUrl.SOURCE_CONNECTIONS, source_id=source_id),
-            json={"connection_id": str(CONNECTION_ID)},
-        )
-        assert bound.status_code == 200
 
         started = await client.post(
             stand.url(CatalogUrl.SOURCE_SYNCS, source_id=source_id),
@@ -764,3 +777,176 @@ async def test_sync_over_http(sync_stand: Stand) -> None:
             stand.url(CatalogUrl.SOURCE_SYNCS, source_id=source_id)
         )
         assert visible.status_code == 200
+
+
+CONNECTIONS_SCHEMA = "catalog_api_connections"
+CONNECTION_ROLE = "wrt"
+
+
+def _key() -> SecretStr:
+    return SecretStr(base64.b64encode(std_secrets.token_bytes(32)).decode())
+
+
+@pytest.fixture
+async def connections(pool: AsyncPostgresPool) -> ConnectionStore:
+    async with pool.connection() as conn:
+        await conn.execute(
+            sql.SQL("drop schema if exists {} cascade").format(
+                sql.Identifier(CONNECTIONS_SCHEMA)
+            )
+        )
+
+    cfg = ConnectionsConfig(
+        enable=True, db_schema=CONNECTIONS_SCHEMA, encryption_key=_key()
+    )
+    built = ConnectionStore(cfg, ConnectionTypes.discover(), pool)
+    await built.setup()
+    await built.sync_roles([CONNECTION_ROLE])
+    return built
+
+
+@pytest.fixture
+async def connections_stand(
+    pool: AsyncPostgresPool, app_config: AppConfig, connections: ConnectionStore
+) -> Stand:
+    """Стенд каталога с общим API соединений под тем же префиксом."""
+    async with pool.connection() as conn:
+        await conn.execute(
+            sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
+        )
+
+    store = CatalogStore(_config(), pool)
+    await store.setup()
+    sources = SourceStore(_config(), KINDS, pool)
+    await sources.setup()
+    # каталог видит подключения тем же брокером, что и общий API
+    directory = BrokerConnectionDirectory(UserConnectionsService(lambda: connections))
+    ports = SyncPorts(NoSyncTools(), directory)
+    service = CatalogService(
+        store, sources, _config(), MemoryMessageBus("test:0"), ports
+    )
+    return Stand(service, ChatProfiles(app_config.profiles), connections)
+
+
+def _web_body(name: str, url: str) -> dict[str, object]:
+    return {
+        "name": name,
+        "profile": {"kind": "web", "base_url": url, "ssl_verify": False},
+    }
+
+
+async def test_connections_are_served_under_the_catalog_prefix(
+    connections_stand: Stand, connections: ConnectionStore
+) -> None:
+    """Общий API соединений под /api/catalog: схема профилей, общие по роли
+    строки видны с маскированными секретами, свои создаются, правятся и
+    удаляются, чужие не видны, вход обязателен."""
+    stand = connections_stand
+    roles = StoredRole.by_name(await connections.roles())
+    shared = await connections.add("shared", HttpConnection(base_url="https://a.test"))
+    await connections.grant(shared, GrantTarget.role(roles[CONNECTION_ROLE]))
+    hidden = await connections.add("hidden", HttpConnection(base_url="https://b.test"))
+    await connections.grant(hidden, GrantTarget.user(UUID(int=999_999)))
+
+    async with stand.client(None) as client:
+        anonymous = await client.get(
+            CatalogUrl.PREFIX.value + ConnectionUrl.CONNECTIONS
+        )
+        assert anonymous.status_code == 401
+
+    async with stand.client(_user(EDITOR_ID, CONNECTION_ROLE)) as client:
+        schema = await client.get(CatalogUrl.PREFIX.value + ConnectionUrl.SCHEMA)
+        assert schema.status_code == 200
+        assert "web" in json.dumps(schema.json())
+
+        listed = await client.get(CatalogUrl.PREFIX.value + ConnectionUrl.CONNECTIONS)
+        assert listed.status_code == 200
+        assert {row["name"] for row in listed.json()} == {"shared"}
+        assert listed.json()[0]["mine"] is False
+
+        created = await client.post(
+            CatalogUrl.PREFIX.value + ConnectionUrl.CONNECTIONS,
+            json=_web_body("mine", "https://c.test"),
+        )
+        assert created.status_code == 200, created.text
+        assert created.json()["mine"] is True
+        connection_id = created.json()["id"]
+
+        by_kind = await client.get(
+            CatalogUrl.PREFIX.value + ConnectionUrl.CONNECTIONS, params={"kind": "web"}
+        )
+        assert {row["name"] for row in by_kind.json()} == {"shared", "mine"}
+
+        replaced = await client.put(
+            CatalogUrl.PREFIX.value
+            + ConnectionUrl.CONNECTION.value.format(connection_id=connection_id),
+            json=_web_body("mine2", "https://c.test"),
+        )
+        assert replaced.status_code == 200
+        assert replaced.json()["name"] == "mine2"
+
+        forbidden = await client.delete(
+            CatalogUrl.PREFIX.value
+            + ConnectionUrl.CONNECTION.value.format(connection_id=shared)
+        )
+        assert forbidden.status_code == 403
+
+        deleted = await client.delete(
+            CatalogUrl.PREFIX.value
+            + ConnectionUrl.CONNECTION.value.format(connection_id=connection_id)
+        )
+        assert deleted.status_code == 200
+        assert deleted.json()["deleted"] is True
+
+        gone = await client.get(
+            CatalogUrl.PREFIX.value
+            + ConnectionUrl.CONNECTION_CHECK.value.format(connection_id=hidden)
+        )
+        assert gone.status_code in (404, 405)
+
+
+async def test_bound_connection_cannot_be_deleted(
+    connections_stand: Stand, app_config: AppConfig
+) -> None:
+    """Подключение, из которого заведён источник, удалить нельзя (409), пока
+    его не отвязали; после отвязки — можно."""
+    stand = connections_stand
+    async with stand.client(_user(EDITOR_ID, "wrt")) as client:
+        profile = app_config.data_layer.postgres.model_dump(mode="json")
+        created = await client.post(
+            CatalogUrl.PREFIX.value + ConnectionUrl.CONNECTIONS,
+            json={"name": "mine-pg", "profile": profile},
+        )
+        assert created.status_code == 200, created.text
+        connection_id = created.json()["id"]
+        assert created.json()["kind"] == "postgres"
+
+        source = await client.post(
+            stand.url(CatalogUrl.SOURCES),
+            json={"name": "prod", "connection_id": connection_id},
+        )
+        assert source.status_code == 200, source.text
+        assert source.json()["kind"] == "postgres"
+        source_id = source.json()["id"]
+
+        held = await client.delete(
+            CatalogUrl.PREFIX.value
+            + ConnectionUrl.CONNECTION.value.format(connection_id=connection_id)
+        )
+        assert held.status_code == 409
+        assert "bound to catalog source 'prod'" in held.json()["detail"]
+
+        unbound = await client.delete(
+            stand.url(
+                CatalogUrl.SOURCE_CONNECTION,
+                source_id=source_id,
+                connection_id=connection_id,
+            )
+        )
+        assert unbound.status_code == 200
+
+        deleted = await client.delete(
+            CatalogUrl.PREFIX.value
+            + ConnectionUrl.CONNECTION.value.format(connection_id=connection_id)
+        )
+        assert deleted.status_code == 200

@@ -8,14 +8,16 @@
 Ошибки:
 RefusalError — kind из ConnectionRefusal: NOT_VISIBLE — строки нет среди видимых
     субъекту; NOT_OWNED — строка общая, правит её только владелец; NAME_TAKEN — имя
-    занято среди видимых.
+    занято среди видимых; IN_USE — строку держит другой компонент, удалять нельзя.
 ConnectionStoreError — хранилище недоступно.
 RuntimeError — секция [connections] выключена: ссылка на хранилище отказала.
 """
 
 from __future__ import annotations
 
+from abc import abstractmethod
 from collections.abc import Sequence
+from typing import Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -32,6 +34,7 @@ from boba.identity.context import Subject
 from boba.identity.errors import RefusalError
 
 __all__ = [
+    "DeleteGuard",
     "DeletedConnection",
     "UserConnectionsService",
     "VisibleConnection",
@@ -75,11 +78,22 @@ class DeletedConnection(BaseModel):
     deleted: bool
 
 
-class UserConnectionsService:
-    """Строки connections глазами субъекта: только свои и выданные по роли."""
+class DeleteGuard(Protocol):
+    """Кто ещё держит соединение: каталог не даёт удалить привязанную строку.
+    Возвращает причину отказа либо пустую строку."""
 
-    def __init__(self, store_ref: StoreRef) -> None:
+    @abstractmethod
+    async def holds(self, connection_id: UUID) -> str: ...
+
+
+class UserConnectionsService:
+    """Строки connections глазами субъекта: только свои и выданные по роли.
+    Охранники удаления (DeleteGuard) отвечают отказом IN_USE, пока строку
+    держит другой компонент."""
+
+    def __init__(self, store_ref: StoreRef, guards: Sequence[DeleteGuard] = ()) -> None:
         self._store_ref = store_ref
+        self._guards = tuple(guards)
 
     async def visible(
         self, subject: Subject, kinds: Sequence[str]
@@ -158,6 +172,12 @@ class UserConnectionsService:
         """Удаление своей строки; общая или чужая — отказ."""
         store = self._store_ref()
         await self._require_owned(store, subject, connection_id)
+
+        for guard in self._guards:
+            reason = await guard.holds(connection_id)
+            if reason:
+                msg = f"connection #{connection_id} cannot be deleted: {reason}"
+                raise RefusalError(ConnectionRefusal.IN_USE, msg)
 
         # имя читается без разбора профиля: удаляться должна и строка без типа
         name = await store.name_of(connection_id)

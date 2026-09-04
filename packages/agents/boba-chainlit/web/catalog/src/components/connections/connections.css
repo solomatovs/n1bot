@@ -1,0 +1,35 @@
+/* форма подключения по JSON Schema: вложенные блоки профиля */
+
+.schema-block {
+  display: grid;
+  gap: var(--s2);
+  margin: 0;
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-cell);
+  min-width: 0;
+}
+
+.schema-block__legend {
+  padding: 0 var(--s1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.schema-block__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  height: var(--h-ctl-sm);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}

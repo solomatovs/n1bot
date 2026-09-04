@@ -174,7 +174,12 @@ const EMPTY_LANE_GAP = 40;
 /** Дорожки слоёв под разложенными узлами: рамка по крайним карточкам слоя.
  * Пустой слой на черновике получает пустую дорожку справа от занятых, чтобы в
  * неё можно было бросить объект. */
-export function laneNodes(catalog: Catalog, nodes: ProcessFlowNode[], showDiff: boolean, withEmpty: boolean): LayerNode[] {
+export function laneNodes(
+  catalog: Catalog,
+  nodes: ProcessFlowNode[],
+  showDiff: boolean,
+  withEmpty: boolean,
+): LayerNode[] {
   const lanes: LayerNode[] = [];
   let rightEdge = 0;
   let topEdge = 0;
@@ -208,7 +213,9 @@ export function laneNodes(catalog: Catalog, nodes: ProcessFlowNode[], showDiff: 
     const width = right - left + LANE_PADDING * 2;
     rightEdge = Math.max(rightEdge, x + width);
     topEdge = Math.min(topEdge, y);
-    lanes.push(lane(layer, catalog, showDiff, members.length, x, y, width, bottom - top + LANE_PADDING * 2 + LANE_TITLE));
+    lanes.push(
+      lane(layer, catalog, showDiff, members.length, x, y, width, bottom - top + LANE_PADDING * 2 + LANE_TITLE),
+    );
   }
 
   if (!withEmpty) {
