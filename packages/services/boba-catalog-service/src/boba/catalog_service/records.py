@@ -291,3 +291,28 @@ class ViewLayout(BaseModel):
 
     view_id: UUID
     positions: tuple[NodePosition, ...]
+
+
+class ViewState(BaseModel):
+    """Всё для страницы вида одним ответом: сам вид, номер текущей версии,
+    срез опубликованного каталога по фильтру вида, сохранённая раскладка и
+    признак, что вид принадлежит субъекту и он вправе его править."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    view: View
+    version: int = Field(ge=0)
+    snapshot: CatalogSnapshot
+    layout: ViewLayout
+    owned: bool
+
+
+class CatalogAccess(BaseModel):
+    """Права субъекта на каталог: страница по ним решает, что показывать."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    user_id: UUID
+    login: str
+    can_view: bool
+    can_edit: bool

@@ -42,7 +42,23 @@ type Props = {
   /** Правки черновика: соединение handle'ов заводит поток, клик по ребру открывает его. */
   onConnect: ((from: string, to: string) => void) | undefined;
   onFlowClick: ((flowId: string) => void) | undefined;
+  /** Владелец вида: узлы перетаскиваются, после перетаскивания или «прибрать»
+   * наверх уходят позиции всех разложенных узлов для сохранения раскладки. */
+  onMoved: ((positions: NodePosition[]) => void) | undefined;
 };
+
+function positionsOf(nodes: DatasetFlowNode[]): NodePosition[] {
+  const positions: NodePosition[] = [];
+  for (const node of nodes) {
+    if (node.hidden === true) {
+      continue;
+    }
+
+    positions.push({ dataset_id: node.id, x: node.position.x, y: node.position.y });
+  }
+
+  return positions;
+}
 
 /** Ключ раскладки: что меняет размеры или состав узлов, то и перекладывает граф. */
 function layoutKey(catalog: Catalog, options: GraphOptions, tidyCount: number): string {
@@ -80,6 +96,7 @@ export function Canvas({
   tidyCount,
   onConnect,
   onFlowClick,
+  onMoved,
 }: Props): ReactElement {
   const { fitView } = useReactFlow();
   const initialized = useNodesInitialized();
@@ -122,6 +139,9 @@ export function Canvas({
       setNodes(positioned);
       setLaid(signature);
       setLayouts((count) => count + 1);
+      if (tidyCount > 0 && onMoved !== undefined) {
+        onMoved(positionsOf(positioned));
+      }
       window.setTimeout(() => {
         void fitView({ padding: 0.15, maxZoom: 1 });
       }, 0);
@@ -130,7 +150,7 @@ export function Canvas({
     return () => {
       cancelled = true;
     };
-  }, [initialized, laid, signature, nodes, edges, saved, tidyCount, catalog, fitView]);
+  }, [initialized, laid, signature, nodes, edges, saved, tidyCount, catalog, fitView, onMoved]);
 
   const onNodesChange = useCallback((changes: NodeChange<DatasetFlowNode>[]) => {
     setNodes((current) => applyNodeChanges(changes, current));
@@ -154,7 +174,11 @@ export function Canvas({
         nodeTypes={NODE_TYPES}
         edgeTypes={EDGE_TYPES}
         nodesConnectable={onConnect !== undefined}
-        nodesDraggable={false}
+        nodesDraggable={onMoved !== undefined}
+        onNodeDragStop={(_event, moved) => {
+          const current = nodes.map((node) => (node.id === moved.id ? { ...node, position: moved.position } : node));
+          onMoved?.(positionsOf(current));
+        }}
         elementsSelectable
         minZoom={0.1}
         onConnect={(connection) => {

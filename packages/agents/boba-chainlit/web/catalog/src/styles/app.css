@@ -831,3 +831,57 @@ button {
 .index__new .input {
   flex: 1;
 }
+
+/* --- виды: фильтр и шаринг --- */
+
+.choices {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-cell);
+  padding: var(--s2);
+}
+
+.choices__item {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  font-size: var(--fs-ui);
+  cursor: pointer;
+}
+
+.choices__empty {
+  color: var(--muted);
+  font-size: var(--fs-ui);
+}
+
+.shares {
+  list-style: none;
+  margin: 0 0 var(--s3);
+  padding: 0;
+  display: grid;
+  gap: var(--s1);
+}
+
+.shares__item {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  font-size: var(--fs-ui);
+}
+
+.shares__item .mono {
+  flex: 1;
+}
+
+.shares__add {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: var(--s2);
+  align-items: center;
+}

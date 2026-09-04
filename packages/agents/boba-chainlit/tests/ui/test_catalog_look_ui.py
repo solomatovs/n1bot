@@ -18,6 +18,7 @@ from uuid import UUID
 
 import httpx
 import pytest
+from catalog_ui import api_client, ok
 from playwright.sync_api import Browser, Page, ViewportSize, expect
 
 from boba.stand.ui.look import Css, Tokens, no_horizontal_scroll
@@ -161,54 +162,29 @@ class Seeded:
     draft_id: str
 
 
-def _client(stand: StandProcess, login: str) -> httpx.Client:
-    credential = stand.config.credential(login)
-    response = httpx.post(
-        f"{stand.config.base_url}/login",
-        data={"username": credential.login, "password": credential.password},
-        timeout=30.0,
-    )
-    if response.status_code != 200:
-        raise RuntimeError(
-            f"login failed: {response.status_code} {response.text[:200]}"
-        )
-
-    return httpx.Client(
-        base_url=stand.config.base_url, cookies=response.cookies, timeout=30.0
-    )
-
-
-def _ok(response: httpx.Response) -> dict[str, Any]:
-    if response.status_code != 200:
-        request = f"{response.request.method} {response.request.url}"
-        raise RuntimeError(f"{request}: {response.status_code} {response.text[:300]}")
-
-    return response.json()
-
-
 @pytest.fixture(scope="module")
 def seeded(stand: StandProcess) -> Seeded:
     """Каталог, вид и черновик через API: публикуется ровно один раз на модуль."""
     probe = Probe()
-    with _client(stand, "admin") as admin:
-        draft = _ok(admin.post("/api/catalog/drafts", json={"name": "look seed"}))
-        _ok(
+    with api_client(stand, "admin") as admin:
+        draft = ok(admin.post("/api/catalog/drafts", json={"name": "look seed"}))
+        ok(
             admin.post(
                 f"/api/catalog/drafts/{draft['id']}/ops",
                 json={"expected_seq": 0, "operations": probe.operations()},
             )
         )
-        _ok(admin.post(f"/api/catalog/drafts/{draft['id']}/publish"))
+        ok(admin.post(f"/api/catalog/drafts/{draft['id']}/publish"))
 
-        view = _ok(
+        view = ok(
             admin.post(
                 "/api/catalog/views",
                 json={"name": "look view", "dataset_ids": [], "layer_ids": []},
             )
         )
 
-        edits = _ok(admin.post("/api/catalog/drafts", json={"name": "look edits"}))
-        _ok(
+        edits = ok(admin.post("/api/catalog/drafts", json={"name": "look edits"}))
+        ok(
             admin.post(
                 f"/api/catalog/drafts/{edits['id']}/ops",
                 json={"expected_seq": 0, "operations": probe.draft_operations()},

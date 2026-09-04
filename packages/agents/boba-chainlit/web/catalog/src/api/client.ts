@@ -2,22 +2,30 @@ import { z } from "zod";
 
 import type { PageUrls } from "../config";
 import {
+  AccessSchema,
   CatalogChangedSchema,
   DraftSchema,
   DraftStateSchema,
   RebaseResultSchema,
+  ShareSchema,
   SnapshotSchema,
   VersionSchema,
   ViewLayoutSchema,
   ViewSchema,
+  ViewStateSchema,
+  type Access,
   type CatalogChanged,
   type Draft,
   type DraftState,
+  type NodePosition,
   type RebaseResult,
+  type Share,
   type Snapshot,
   type Version,
   type View,
   type ViewLayout,
+  type ViewSpec,
+  type ViewState,
 } from "../model/catalog";
 import type { CatalogOp } from "../model/ops";
 import type { paths } from "./schema";
@@ -58,6 +66,8 @@ function detailOf(payload: unknown): unknown {
 }
 
 type Method = "get" | "post" | "put" | "delete";
+
+const DeletedSchema = z.object({ deleted: z.boolean() });
 
 /** Пути API из OpenAPI: страница зовёт только их, параметры подставляются в шаблон. */
 export type ApiPath = keyof paths;
@@ -101,6 +111,45 @@ export class CatalogApi {
 
   layout(viewId: string): Promise<ViewLayout> {
     return this.call("get", `/api/catalog/views/${viewId}/layout`, undefined, ViewLayoutSchema);
+  }
+
+  access(): Promise<Access> {
+    return this.call("get", "/api/catalog/access", undefined, AccessSchema);
+  }
+
+  /** Страница вида одним ответом: срез снимка доступен и без ролей на каталог. */
+  viewState(viewId: string): Promise<ViewState> {
+    return this.call("get", `/api/catalog/views/${viewId}/state`, undefined, ViewStateSchema);
+  }
+
+  createView(spec: ViewSpec): Promise<View> {
+    return this.call("post", "/api/catalog/views", spec, ViewSchema);
+  }
+
+  updateView(viewId: string, spec: ViewSpec): Promise<View> {
+    return this.call("put", `/api/catalog/views/${viewId}`, spec, ViewSchema);
+  }
+
+  deleteView(viewId: string): Promise<void> {
+    return this.call("delete", `/api/catalog/views/${viewId}`, undefined, DeletedSchema).then(() => undefined);
+  }
+
+  /** Полная замена раскладки вида. */
+  putLayout(viewId: string, positions: NodePosition[]): Promise<ViewLayout> {
+    return this.call("put", `/api/catalog/views/${viewId}/layout`, { positions }, ViewLayoutSchema);
+  }
+
+  shares(viewId: string): Promise<Share[]> {
+    return this.call("get", `/api/catalog/views/${viewId}/shares`, undefined, z.array(ShareSchema));
+  }
+
+  share(viewId: string, share: Share): Promise<void> {
+    return this.call("post", `/api/catalog/views/${viewId}/shares`, share, z.null()).then(() => undefined);
+  }
+
+  unshare(viewId: string, share: Share): Promise<void> {
+    const path = `/api/catalog/views/${viewId}/shares/${share.kind}/${encodeURIComponent(share.target)}`;
+    return this.call("delete", path, undefined, DeletedSchema).then(() => undefined);
   }
 
   createDraft(name: string): Promise<Draft> {

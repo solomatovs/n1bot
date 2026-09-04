@@ -2,45 +2,51 @@ import { Plus } from "lucide-react";
 import { useEffect, useState, type FormEvent, type ReactElement } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { ApiError } from "../api/client";
+import { ApiError, type CatalogApi } from "../api/client";
 import { useServices } from "../app";
-import type { Draft, View } from "../model/catalog";
+import type { Access, Draft, View } from "../model/catalog";
 import { Button, Chip, EmptyState, Eyebrow, Input, useToast } from "../ui";
 
-type Lists = { views: View[]; drafts: Draft[] };
+type Lists = { access: Access; views: View[]; drafts: Draft[] };
 type LoadState = { status: "loading" } | { status: "failed"; message: string } | { status: "ready"; lists: Lists };
 
-/** Вход на страницу без адреса вида: доступные виды и открытые черновики. */
+/** Вход на страницу без адреса вида: доступные виды и открытые черновики.
+ * Что показывать, решают права: без прав на каталог видны только расшаренные
+ * виды, формы создания — только тому, кто вправе править. */
 export function IndexPage(): ReactElement {
   const { api } = useServices();
   const toast = useToast();
   const navigate = useNavigate();
   const [state, setState] = useState<LoadState>({ status: "loading" });
-  const [draftName, setDraftName] = useState("");
 
-  const createDraft = (event: FormEvent): void => {
-    event.preventDefault();
-    const name = draftName.trim();
-    if (name === "") {
-      return;
-    }
+  const fail = (error: unknown): void => {
+    toast(error instanceof ApiError ? error.detail : String(error), "error");
+  };
 
+  const createDraft = (name: string): void => {
     api
       .createDraft(name)
       .then((draft) => {
         void navigate(`/drafts/${draft.id}`);
       })
-      .catch((error: unknown) => {
-        toast(error instanceof ApiError ? error.detail : String(error), "error");
-      });
+      .catch(fail);
+  };
+
+  const createView = (name: string): void => {
+    api
+      .createView({ name, dataset_ids: [], layer_ids: [] })
+      .then((view) => {
+        void navigate(`/views/${view.id}`);
+      })
+      .catch(fail);
   };
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([api.views(), api.drafts().catch(() => [] as Draft[])])
-      .then(([views, drafts]) => {
+    load(api)
+      .then((lists) => {
         if (!cancelled) {
-          setState({ status: "ready", lists: { views, drafts } });
+          setState({ status: "ready", lists });
         }
       })
       .catch((error: unknown) => {
@@ -67,49 +73,94 @@ export function IndexPage(): ReactElement {
     );
   }
 
+  const { access, views, drafts } = state.lists;
+
   return (
-    <div className="index" data-testid="index-page">
-      <section className="index__section">
+    <div className="index" data-testid="index-page" data-can-edit={access.can_edit}>
+      <section className="index__section" data-testid="index-views">
         <Eyebrow as="h4">views</Eyebrow>
-        {state.lists.views.length === 0 && <p className="index__empty">no views yet</p>}
+        {access.can_edit && <NewNameForm mark="new-view" placeholder="new view name" label="view" onSubmit={createView} />}
+        {views.length === 0 && <p className="index__empty">no views yet</p>}
         <ul className="index__list">
-          {state.lists.views.map((view) => (
-            <li key={view.id}>
+          {views.map((view) => (
+            <li key={view.id} data-view={view.name}>
               <Link to={`/views/${view.id}`} className="index__link">
                 {view.name}
               </Link>
+              <Chip tone="muted">{view.owner_id === access.user_id ? "yours" : "shared with you"}</Chip>
             </li>
           ))}
         </ul>
       </section>
-      <section className="index__section">
-        <Eyebrow as="h4">open drafts</Eyebrow>
-        <form className="index__new" onSubmit={createDraft} data-testid="new-draft">
-          <Input
-            mono
-            placeholder="new draft name"
-            aria-label="new draft name"
-            value={draftName}
-            onChange={(event) => {
-              setDraftName(event.target.value);
-            }}
-          />
-          <Button size="tiny" tone="primary" type="submit" icon={Plus} disabled={draftName.trim() === ""}>
-            draft
-          </Button>
-        </form>
-        {state.lists.drafts.length === 0 && <p className="index__empty">no open drafts</p>}
-        <ul className="index__list">
-          {state.lists.drafts.map((draft) => (
-            <li key={draft.id}>
-              <Link to={`/drafts/${draft.id}`} className="index__link">
-                {draft.name}
-              </Link>
-              <Chip tone="muted">over v{draft.base_version}</Chip>
-            </li>
-          ))}
-        </ul>
-      </section>
+      {access.can_view && (
+        <section className="index__section" data-testid="index-drafts">
+          <Eyebrow as="h4">open drafts</Eyebrow>
+          {access.can_edit && (
+            <NewNameForm mark="new-draft" placeholder="new draft name" label="draft" onSubmit={createDraft} />
+          )}
+          {drafts.length === 0 && <p className="index__empty">no open drafts</p>}
+          <ul className="index__list">
+            {drafts.map((draft) => (
+              <li key={draft.id}>
+                <Link to={`/drafts/${draft.id}`} className="index__link">
+                  {draft.name}
+                </Link>
+                <Chip tone="muted">over v{draft.base_version}</Chip>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
     </div>
+  );
+}
+
+async function load(api: CatalogApi): Promise<Lists> {
+  const access = await api.access();
+  const views = await api.views();
+  let drafts: Draft[] = [];
+  if (access.can_view) {
+    drafts = await api.drafts();
+  }
+
+  return { access, views, drafts };
+}
+
+type NewNameProps = {
+  mark: string;
+  placeholder: string;
+  label: string;
+  onSubmit: (name: string) => void;
+};
+
+/** Однострочная форма «имя + кнопка» для нового вида или черновика. */
+function NewNameForm({ mark, placeholder, label, onSubmit }: NewNameProps): ReactElement {
+  const [name, setName] = useState("");
+  const trimmed = name.trim();
+
+  const submit = (event: FormEvent): void => {
+    event.preventDefault();
+    if (trimmed === "") {
+      return;
+    }
+
+    onSubmit(trimmed);
+  };
+
+  return (
+    <form className="index__new" onSubmit={submit} data-testid={mark}>
+      <Input
+        mono
+        placeholder={placeholder}
+        aria-label={placeholder}
+        value={name}
+        onChange={(event) => {
+          setName(event.target.value);
+        }}
+      />
+      <Button size="tiny" tone="primary" type="submit" icon={Plus} disabled={trimmed === ""}>
+        {label}
+      </Button>
+    </form>
   );
 }

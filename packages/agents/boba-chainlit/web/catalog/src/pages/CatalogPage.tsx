@@ -1,7 +1,7 @@
 import { ReactFlowProvider } from "@xyflow/react";
 import { PanelLeft } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import { ApiError, type CatalogApi } from "../api/client";
 import { useServices } from "../app";
@@ -10,10 +10,22 @@ import { CanvasToolbar } from "../components/CanvasToolbar";
 import { DetailPanel } from "../components/DetailPanel";
 import { Dialog } from "../components/edit/Dialog";
 import { DraftActions } from "../components/edit/DraftActions";
+import { LayoutSaver } from "../model/layoutSaver";
+import { ViewActions } from "../components/edit/ViewActions";
 import { FlowForm } from "../components/edit/FlowForm";
 import { NamePrompt } from "../components/edit/NamePrompt";
 import { LeftPane } from "../components/LeftPane";
-import { Catalog, type Dataset, type Draft, type DraftState, type Flow, type Layer, type NodePosition, type View } from "../model/catalog";
+import {
+  Catalog,
+  type Dataset,
+  type Draft,
+  type DraftState,
+  type Flow,
+  type Layer,
+  type NodePosition,
+  type View,
+  type ViewState,
+} from "../model/catalog";
 import { DraftEditor } from "../model/editor";
 import type { EditActions } from "../model/editing";
 import { datasetsInView, type GraphOptions, type ShowMode } from "../model/graph";
@@ -34,6 +46,8 @@ type Loaded = {
   saved: NodePosition[];
   /** Номер последней порции черновика; у вида 0. Виден тестам как data-seq. */
   seq: number;
+  /** Вид принадлежит пользователю с правом правок: фильтр, шаринг, раскладка. */
+  owned: boolean;
 };
 
 type LoadState = { status: "loading" } | { status: "failed"; message: string } | { status: "ready"; loaded: Loaded };
@@ -55,6 +69,26 @@ export function CatalogPage({ source }: { source: PageSource }): ReactElement {
   const [tidyCount, setTidyCount] = useState(0);
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const editor = useRef<DraftEditor | null>(null);
+  const navigate = useNavigate();
+  const [layoutSaves, setLayoutSaves] = useState(0);
+  const saver = useMemo(
+    () =>
+      new LayoutSaver(api, {
+        onSaved: () => {
+          setLayoutSaves((count) => count + 1);
+        },
+        onFailed: (message) => {
+          toast(message, "error");
+        },
+      }),
+    [api, toast],
+  );
+  useEffect(
+    () => () => {
+      saver.dispose();
+    },
+    [saver],
+  );
   const url = useMemo(() => readUrlState(params), [params]);
 
   const update = useCallback(
@@ -71,6 +105,9 @@ export function CatalogPage({ source }: { source: PageSource }): ReactElement {
     [],
   );
 
+  // одинаковый ответ (своё же событие по SSE после правки) не перекладывает граф
+  const lastLoaded = useRef("");
+
   const reload = useCallback(() => {
     let cancelled = false;
     load(api, source)
@@ -78,6 +115,12 @@ export function CatalogPage({ source }: { source: PageSource }): ReactElement {
         if (cancelled) {
           return;
         }
+
+        const key = JSON.stringify(loaded);
+        if (key === lastLoaded.current) {
+          return;
+        }
+        lastLoaded.current = key;
 
         if (loaded.kind === "draft") {
           editor.current = new DraftEditor(api, loaded.state.draft.id, loaded.state, (next) => {
@@ -88,7 +131,7 @@ export function CatalogPage({ source }: { source: PageSource }): ReactElement {
         }
 
         editor.current = null;
-        setState({ status: "ready", loaded: loaded.loaded });
+        setState({ status: "ready", loaded: loadedOfView(loaded.state) });
       })
       .catch((error: unknown) => {
         if (!cancelled) {
@@ -161,7 +204,7 @@ export function CatalogPage({ source }: { source: PageSource }): ReactElement {
     );
   }
 
-  const { catalog, draft, view, saved, currentVersion, seq } = state.loaded;
+  const { catalog, draft, view, saved, currentVersion, seq, owned } = state.loaded;
   const editable = draft?.status === "open";
   const options: GraphOptions = {
     showMode: url.showMode,
@@ -204,7 +247,11 @@ export function CatalogPage({ source }: { source: PageSource }): ReactElement {
 
   return (
     <ReactFlowProvider>
-      <div className="page" data-testid="catalog-page" data-source={source.kind} data-editable={editable} data-seq={seq}>
+      <div className="page" data-testid="catalog-page" data-source={source.kind} data-editable={editable}
+        data-owned={owned}
+        data-seq={seq}
+        data-layout-saves={layoutSaves}
+      >
         <header className="topbar">
           <IconButton
             aria-label={paneOpen ? "hide the dataset list" : "show the dataset list"}
@@ -236,6 +283,16 @@ export function CatalogPage({ source }: { source: PageSource }): ReactElement {
           )}
           {draft?.status === "open" && (
             <DraftActions api={api} draft={draft} currentVersion={currentVersion} onChanged={reload} />
+          )}
+          {view !== undefined && owned && (
+            <ViewActions
+              api={api}
+              view={view}
+              onChanged={reload}
+              onDeleted={() => {
+                void navigate("/");
+              }}
+            />
           )}
           <span className="topbar__spacer" />
           <span className="topbar__hint mono">
@@ -305,6 +362,13 @@ export function CatalogPage({ source }: { source: PageSource }): ReactElement {
                       if (flow !== undefined) {
                         setDialog({ kind: "flow", flow, fresh: false, pickTarget: false });
                       }
+                    }
+                  : undefined
+              }
+              onMoved={
+                view !== undefined && owned
+                  ? (positions) => {
+                      saver.schedule(view.id, positions);
                     }
                   : undefined
               }
@@ -421,33 +485,36 @@ function loadedOfDraft(state: DraftState, currentVersion: number): Loaded {
     view: undefined,
     saved: [],
     seq: state.seq,
+    owned: false,
   };
 }
 
-type LoadResult = { kind: "draft"; state: DraftState; currentVersion: number } | { kind: "view"; loaded: Loaded };
+type LoadResult = { kind: "draft"; state: DraftState; currentVersion: number } | { kind: "view"; state: ViewState };
 
 async function load(api: CatalogApi, source: PageSource): Promise<LoadResult> {
-  const versions = await api.versions();
-  const currentVersion = versions.at(-1)?.number ?? 0;
-
   if (source.kind === "draft") {
+    const versions = await api.versions();
+    const currentVersion = versions.at(-1)?.number ?? 0;
     const state = await api.draft(source.draftId);
     return { kind: "draft", state, currentVersion };
   }
 
-  const [view, snapshot, layout] = await Promise.all([api.view(source.viewId), api.snapshot(), api.layout(source.viewId)]);
+  // вид приходит одним ответом со срезом каталога: прав на весь каталог не нужно
+  const state = await api.viewState(source.viewId);
+  return { kind: "view", state };
+}
+
+function loadedOfView(state: ViewState): Loaded {
   return {
-    kind: "view",
-    loaded: {
-      catalog: new Catalog(snapshot),
-      title: view.name,
-      version: `v${currentVersion}`,
-      currentVersion,
-      draft: undefined,
-      view,
-      saved: layout.positions,
-      seq: 0,
-    },
+    catalog: new Catalog(state.snapshot),
+    title: state.view.name,
+    version: `v${state.version}`,
+    currentVersion: state.version,
+    draft: undefined,
+    view: state.view,
+    saved: state.layout.positions,
+    seq: 0,
+    owned: state.owned,
   };
 }
 

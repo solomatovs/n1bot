@@ -3,6 +3,7 @@
 from boba.catalog_service.config import CatalogConfig
 from boba.catalog_service.records import (
     AuthorVia,
+    CatalogAccess,
     CatalogRefusalError,
     CatalogRefusalKind,
     CatalogServiceError,
@@ -27,12 +28,14 @@ from boba.catalog_service.records import (
     ViewNotFoundError,
     ViewShare,
     ViewSpec,
+    ViewState,
 )
 from boba.catalog_service.service import CatalogService
 from boba.catalog_service.store import CatalogStore, CatalogTable
 
 __all__ = [
     "AuthorVia",
+    "CatalogAccess",
     "CatalogConfig",
     "CatalogRefusalError",
     "CatalogRefusalKind",
@@ -61,4 +64,5 @@ __all__ = [
     "ViewNotFoundError",
     "ViewShare",
     "ViewSpec",
+    "ViewState",
 ]

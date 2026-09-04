@@ -462,6 +462,84 @@ class CatalogSnapshot(CatalogModel):
 
             yield dataset
 
+    def restricted(
+        self, dataset_ids: Iterable[UUID], layer_ids: Iterable[UUID]
+    ) -> CatalogSnapshot:
+        """Срез каталога по фильтру вида: наборы из списка и из перечисленных
+        слоёв, их слои и колонки, потоки между ними и виды загрузки этих
+        потоков. Пустой фильтр — весь каталог."""
+        chosen_datasets = frozenset(dataset_ids)
+        chosen_layers = frozenset(layer_ids)
+        if not chosen_datasets and not chosen_layers:
+            return self
+
+        datasets = dict(self._chosen_datasets(chosen_datasets, chosen_layers))
+        layers = dict(self._layers_of(datasets.values(), chosen_layers))
+        columns = dict(self._columns_in(datasets))
+        flows = dict(self._flows_between(datasets))
+        load_kinds = dict(self._kinds_of(flows.values()))
+
+        return CatalogSnapshot(
+            layers=layers,
+            datasets=datasets,
+            columns=columns,
+            load_kinds=load_kinds,
+            flows=flows,
+        )
+
+    def _chosen_datasets(
+        self, dataset_ids: frozenset[UUID], layer_ids: frozenset[UUID]
+    ) -> Iterator[tuple[UUID, Dataset]]:
+        for dataset in self.datasets.values():
+            if dataset.id in dataset_ids:
+                yield dataset.id, dataset
+                continue
+
+            if dataset.layer_id in layer_ids:
+                yield dataset.id, dataset
+
+    def _layers_of(
+        self, datasets: Iterable[Dataset], layer_ids: frozenset[UUID]
+    ) -> Iterator[tuple[UUID, Layer]]:
+        wanted = set(layer_ids)
+        for dataset in datasets:
+            wanted.add(dataset.layer_id)
+
+        for layer in self.layers.values():
+            if layer.id not in wanted:
+                continue
+
+            yield layer.id, layer
+
+    def _columns_in(
+        self, datasets: Mapping[UUID, Dataset]
+    ) -> Iterator[tuple[UUID, Column]]:
+        for column in self.columns.values():
+            if column.dataset_id not in datasets:
+                continue
+
+            yield column.id, column
+
+    def _flows_between(
+        self, datasets: Mapping[UUID, Dataset]
+    ) -> Iterator[tuple[UUID, Flow]]:
+        for flow in self.flows.values():
+            if flow.from_dataset_id not in datasets:
+                continue
+
+            if flow.to_dataset_id not in datasets:
+                continue
+
+            yield flow.id, flow
+
+    def _kinds_of(self, flows: Iterable[Flow]) -> Iterator[tuple[UUID, LoadKind]]:
+        used = {flow.load.kind_id for flow in flows}
+        for kind in self.load_kinds.values():
+            if kind.id not in used:
+                continue
+
+            yield kind.id, kind
+
     def columns_of(self, dataset_id: UUID) -> Iterator[Column]:
         for column in self.columns.values():
             if column.dataset_id != dataset_id:

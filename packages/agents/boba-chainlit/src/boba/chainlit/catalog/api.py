@@ -31,6 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from boba.catalog import CatalogOpError, CatalogSnapshot, OperationList
 from boba.catalog_service import (
     AuthorVia,
+    CatalogAccess,
     CatalogRefusalError,
     CatalogService,
     CatalogStoreError,
@@ -49,6 +50,7 @@ from boba.catalog_service import (
     ViewNotFoundError,
     ViewShare,
     ViewSpec,
+    ViewState,
 )
 from boba.chainlit.infra.session import ChainlitSession
 from boba.chat.profiles import ChatProfiles
@@ -98,6 +100,7 @@ class CatalogUrl(StrEnum):
     """Пути ресурсов каталога относительно префикса api."""
 
     PREFIX = "/api/catalog"
+    ACCESS = "/access"
     SNAPSHOT = "/snapshot"
     VERSIONS = "/versions"
     DRAFTS = "/drafts"
@@ -107,6 +110,7 @@ class CatalogUrl(StrEnum):
     DRAFT_REBASE = "/drafts/{draft_id}/rebase"
     VIEWS = "/views"
     VIEW = "/views/{view_id}"
+    VIEW_STATE = "/views/{view_id}/state"
     VIEW_LAYOUT = "/views/{view_id}/layout"
     VIEW_SHARES = "/views/{view_id}/shares"
     VIEW_SHARE = "/views/{view_id}/shares/{kind}/{target}"
@@ -208,6 +212,7 @@ class CatalogApi:
 
     def mount(self, router: APIRouter) -> None:
         routes = (
+            (CatalogUrl.ACCESS, self.access, "GET"),
             (CatalogUrl.SNAPSHOT, self.snapshot, "GET"),
             (CatalogUrl.VERSIONS, self.versions, "GET"),
             (CatalogUrl.DRAFTS, self.list_drafts, "GET"),
@@ -222,6 +227,7 @@ class CatalogApi:
             (CatalogUrl.VIEW, self.get_view, "GET"),
             (CatalogUrl.VIEW, self.update_view, "PUT"),
             (CatalogUrl.VIEW, self.delete_view, "DELETE"),
+            (CatalogUrl.VIEW_STATE, self.view_state, "GET"),
             (CatalogUrl.VIEW_LAYOUT, self.layout, "GET"),
             (CatalogUrl.VIEW_LAYOUT, self.put_layout, "PUT"),
             (CatalogUrl.VIEW_SHARES, self.shares, "GET"),
@@ -241,6 +247,12 @@ class CatalogApi:
             raise HTTPException(status_code=403, detail=msg)
 
         return CatalogEvents(service.bus, subject.user_id).response()
+
+    async def access(self, current_user: CurrentUser) -> CatalogAccess:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return service.access(subject)
 
     async def snapshot(self, current_user: CurrentUser) -> CatalogSnapshot:
         subject = self._subject(current_user)
@@ -325,6 +337,12 @@ class CatalogApi:
         service = await self._resolved()
 
         return await self._guarded(service.view(subject, view_id))
+
+    async def view_state(self, view_id: UUID, current_user: CurrentUser) -> ViewState:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(service.view_state(subject, view_id))
 
     async def update_view(
         self, view_id: UUID, body: ViewSpec, current_user: CurrentUser
