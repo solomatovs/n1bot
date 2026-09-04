@@ -1,7 +1,7 @@
 import ELK, { type ElkExtendedEdge, type ElkNode, type LayoutOptions } from "elkjs/lib/elk.bundled.js";
 
 import type { NodePosition } from "./catalog";
-import { NODE_SIZE, type DatasetNode, type FlowEdge } from "./graph";
+import { measuredOf, type DatasetNode, type FlowEdge } from "./graph";
 
 /** Раскладка ELK слева направо: партиция узла — номер слоя, поэтому источники
  * всегда левее приёмников; перенос из liam erd-core с партициями вместо групп. */
@@ -28,23 +28,26 @@ export type LayoutInput = {
   saved: NodePosition[];
 };
 
-/** Узлы с позициями: сохранённые как есть, остальные от ELK. Скрытые узлы и
- * рёбра к ним в раскладке не участвуют. */
+/** Узлы с позициями: сохранённые как есть, остальные от ELK по размерам, которые
+ * замерил React Flow. Скрытые и ещё не замеренные узлы в раскладке не участвуют. */
 export async function computeLayout(input: LayoutInput): Promise<DatasetNode[]> {
   const savedById = new Map(input.saved.map((position) => [position.dataset_id, position]));
-  const visible = input.nodes.filter((node) => !node.hidden);
-  const hidden = input.nodes.filter((node) => node.hidden);
+  const visible = input.nodes.filter((node) => !node.hidden && measuredOf(node) !== undefined);
   const visibleIds = new Set(visible.map((node) => node.id));
+  const rest = input.nodes.filter((node) => !visibleIds.has(node.id));
 
-  const children: ElkNode[] = visible.map((node) => ({
-    id: node.id,
-    width: node.width ?? NODE_SIZE.width,
-    height: node.height ?? NODE_SIZE.header,
-    layoutOptions: {
-      "elk.partitioning.partition": String(input.partitionOf(node)),
-      "elk.alignment": "LEFT",
-    },
-  }));
+  const children: ElkNode[] = visible.map((node) => {
+    const size = measuredOf(node) ?? { width: 0, height: 0 };
+    return {
+      id: node.id,
+      width: size.width,
+      height: size.height,
+      layoutOptions: {
+        "elk.partitioning.partition": String(input.partitionOf(node)),
+        "elk.alignment": "LEFT",
+      },
+    };
+  });
 
   const edges: ElkExtendedEdge[] = input.edges
     .filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target))
@@ -65,5 +68,5 @@ export async function computeLayout(input: LayoutInput): Promise<DatasetNode[]> 
     return { ...node, position: placed.get(node.id) ?? node.position };
   });
 
-  return [...hidden, ...positioned];
+  return [...rest, ...positioned];
 }

@@ -277,6 +277,12 @@ button {
   cursor: default;
 }
 
+/* до раскладки узлы стоят в нуле только для замера: их не показываем */
+.canvas[data-ready="false"] .react-flow__node,
+.canvas[data-ready="false"] .react-flow__edge {
+  opacity: 0;
+}
+
 .canvas .react-flow__background {
   color: var(--hairline);
 }
