@@ -69,7 +69,11 @@ class SecretCipher:
             try:
                 return self._fernet.decrypt(value[len(self.PREFIX) :]).decode()
             except (InvalidToken, ValueError) as e:
-                msg = "value is not decrypted"
+                msg = (
+                    "decrypting a stored secret failed: the ciphertext does not "
+                    f"match the configured key or is corrupted "
+                    f"({type(e).__name__}: {e})"
+                )
                 raise SecretCryptoError(msg) from e
         if isinstance(value, dict):
             return {key: self.decrypt(item) for key, item in value.items()}

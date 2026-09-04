@@ -42,11 +42,13 @@ class FigureSpec:
         try:
             parsed = json.loads(spec)
         except json.JSONDecodeError as exc:
-            msg = f"spec is not valid JSON: {exc}"
+            head = spec[:200]
+            msg = f"chart spec expects a JSON figure object, got {head!r}: {exc}"
             raise InvalidFigureSpecError(msg) from exc
 
         if not isinstance(parsed, dict):
-            msg = f"spec must be a JSON figure object, got {type(parsed).__name__}"
+            got = type(parsed).__name__
+            msg = f"chart spec expects a JSON figure object, got {got}: {spec[:200]!r}"
             raise InvalidFigureSpecError(msg)
 
         # plotly тяжёлый — потому тело и живёт в песочнице
@@ -55,7 +57,8 @@ class FigureSpec:
         try:
             go.Figure(parsed)
         except (ValueError, TypeError) as exc:
-            msg = f"invalid Plotly figure spec: {exc}"
+            keys = sorted(parsed)
+            msg = f"chart spec with keys {keys} is rejected by plotly Figure: {exc}"
             raise InvalidFigureSpecError(msg) from exc
 
         return parsed

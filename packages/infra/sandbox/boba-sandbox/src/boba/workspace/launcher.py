@@ -166,12 +166,18 @@ class ReadHeader:
     @classmethod
     def parse(cls, line: bytes) -> FileHead:
         if not line.startswith(cls.PREFIX):
-            msg = f"invalid read header: {line!r}"
+            msg = (
+                f"read header: expected a line starting with {cls.PREFIX!r}, "
+                f"got {line[:200]!r}"
+            )
             raise ValueError(msg)
 
         fields = line[len(cls.PREFIX) :].strip().split()
         if not fields:
-            msg = f"invalid read header: {line!r}"
+            msg = (
+                f"read header: expected `{cls.PREFIX.decode()}<size> "
+                f"{cls.REVISION.decode()}<revision>`, got {line[:200]!r}"
+            )
             raise ValueError(msg)
 
         revision = 0
@@ -205,7 +211,7 @@ class HostPath:
 
         path = os.path.realpath(raw)
         if not os.path.isabs(path):
-            msg = f"path must be absolute: {raw!r}"
+            msg = f"launcher argv: host path must be absolute, got {raw!r}"
             raise argparse.ArgumentTypeError(msg)
 
         return path
@@ -235,7 +241,9 @@ class CapabilityDropper:
         data = (self._Data * 2)()
         libc = ctypes.CDLL(None, use_errno=True)
         if libc.capset(ctypes.byref(header), ctypes.byref(data)) != 0:
-            raise OSError(ctypes.get_errno(), "capset")
+            code = ctypes.get_errno()
+            msg = f"capset(drop all capabilities) failed: {os.strerror(code)}"
+            raise OSError(code, msg)
 
 
 class ImagePath:
@@ -299,7 +307,10 @@ class ImagePath:
     def _split(rel: str) -> list[str]:
         norm = os.path.normpath(rel)
         if norm.startswith(("/", "..")):
-            msg = f"invalid relative path {rel!r}"
+            msg = (
+                f"image path: invalid relative path {rel!r}, "
+                f"it must stay inside the image root"
+            )
             raise MountError(msg)
 
         return norm.split(os.sep)
@@ -644,7 +655,7 @@ class Launcher:
             argument = self._single_argument(mode, op_args)
             argv = shlex.split(argument)
             if not argv:
-                msg = "run: empty command"
+                msg = f"run: empty command, got argument {argument!r}"
                 raise MountError(msg)
             return lambda: self._run_command(argv)
 
@@ -763,7 +774,10 @@ class Launcher:
     @staticmethod
     def _single_argument(mode: LauncherMode, op_args: list[str]) -> str:
         if len(op_args) != 1:
-            msg = f"{mode}: exactly one argument expected, got {len(op_args)}"
+            msg = (
+                f"{mode}: exactly one argument expected, "
+                f"got {len(op_args)}: {op_args!r}"
+            )
             raise MountError(msg)
         return op_args[0]
 
@@ -773,13 +787,19 @@ class Launcher:
     @classmethod
     def _read_arguments(cls, op_args: list[str]) -> tuple[str, ReadWindow]:
         if len(op_args) != cls.READ_ARGS:
-            msg = f"read: expected <rel> <offset> <length>, got {len(op_args)} args"
+            msg = (
+                f"read: expected <rel> <offset> <length>, "
+                f"got {len(op_args)} args: {op_args!r}"
+            )
             raise MountError(msg)
 
         try:
             window = ReadWindow.from_argv(op_args[1], op_args[2])
         except ValueError as e:
-            msg = f"read: invalid window: {e}"
+            msg = (
+                f"read {op_args[0]!r}: invalid window "
+                f"offset={op_args[1]!r} length={op_args[2]!r}: {e}"
+            )
             raise MountError(msg) from e
 
         return op_args[0], window
@@ -793,7 +813,10 @@ FUSE_DEVICE = "/dev/fuse"
 def require_fuse(binaries: TrustedBinaries) -> None:
     """Проверяет предпосылки монтирования образов; падает громко и сразу."""
     if not os.path.exists(FUSE_DEVICE):
-        msg = f"workspace: fuse is required, but {FUSE_DEVICE} is missing"
+        msg = (
+            f"workspace: mounting images requires fuse, "
+            f"but {FUSE_DEVICE} is missing on the host"
+        )
         raise RuntimeError(msg)
 
     binaries.resolve(SandboxBinary.FUSE2FS)
@@ -946,7 +969,11 @@ def render_image_path(template: str, variables: Mapping[str, str]) -> str:
     try:
         return template.format_map(dict(variables))
     except KeyError as e:
-        msg = f"workspace: variable {{{e.args[0]}}} in path {template!r} is not defined"
+        known = ", ".join(sorted(variables))
+        msg = (
+            f"workspace: variable {{{e.args[0]}}} in image path {template!r} "
+            f"is not defined (known: {known})"
+        )
         raise RuntimeError(msg) from e
 
 

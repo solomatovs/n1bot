@@ -121,7 +121,10 @@ class ToolBridge:
             return tool
 
         if not isinstance(tool, PayloadTool):
-            msg = f"module tool {tool!r} is neither PayloadTool nor BaseTool"
+            msg = (
+                f"module tool {tool!r}: expected PayloadTool or langchain "
+                f"BaseTool, got {type(tool).__name__}"
+            )
             raise TypeError(msg)
 
         return StructuredTool(
@@ -324,7 +327,11 @@ class ToolLoader:
             try:
                 section = ToolArgv.section_of(param, annotation)
             except ToolEntryError as exc:
-                raise ToolConfigError(str(exc)) from exc
+                msg = (
+                    f"injected parameter {param!r} annotated {annotation!r}: "
+                    f"no config section resolves for it: {exc}"
+                )
+                raise ToolConfigError(msg) from exc
 
             return bind(raw, section, annotation)
 
@@ -333,7 +340,10 @@ class ToolLoader:
     @staticmethod
     def _no_launchers(tool: str) -> ToolLauncher:
         """Плагин живёт в процессе приложения: запускать ему нечего."""
-        msg = f"tool {tool!r} runs in the app process and has no launcher"
+        msg = (
+            f"tool {tool!r} runs in the app process and has no launcher, "
+            "yet a launcher was requested for it"
+        )
         raise RuntimeError(msg)
 
     def _access_of(
@@ -379,11 +389,19 @@ class EntryPointPlugins:
             manifest = entry.load()
             if not isinstance(manifest, ToolPluginManifest):
                 found = type(manifest).__name__
-                msg = f"entry point {entry.name!r}: {found} is not a tool manifest"
+                msg = (
+                    f"entry point {entry.name!r} of group "
+                    f"{ToolPluginManifest.GROUP}: expected a ToolPluginManifest, "
+                    f"got {found}"
+                )
                 raise RuntimeError(msg)
 
             if manifest.section in table:
-                msg = f"tool plugin section {manifest.section!r} is declared twice"
+                msg = (
+                    f"entry point {entry.name!r}: tool plugin section "
+                    f"{manifest.section!r} is already declared by package "
+                    f"{table[manifest.section].package!r}"
+                )
                 raise RuntimeError(msg)
 
             package = cls._package_of(entry)
@@ -396,7 +414,10 @@ class EntryPointPlugins:
         """Дистрибутив entry point'а; по нему ищется образ корня плагина."""
         dist = getattr(entry, "dist", None)
         if dist is None:
-            msg = f"entry point {entry.name!r} carries no distribution"
+            msg = (
+                f"entry point {entry.name!r} of group {ToolPluginManifest.GROUP} "
+                "carries no distribution: the owning package is unknown"
+            )
             raise RuntimeError(msg)
 
         return dist.name

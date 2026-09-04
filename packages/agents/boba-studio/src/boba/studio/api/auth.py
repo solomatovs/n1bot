@@ -60,7 +60,11 @@ class ApiAuth:
         try:
             selected = profiles.resolve_or_default(profile, user.roles).name
         except RefusalError as exc:
-            raise AuthorizationError(str(exc)) from exc
+            msg = (
+                f"resolving profile {profile!r} for user {user.identifier!r} "
+                f"with roles {sorted(user.roles)}: {exc}"
+            )
+            raise AuthorizationError(msg) from exc
 
         return ApiSubject.of(user, selected)
 
@@ -74,7 +78,11 @@ class ApiAuth:
     async def user_of_request(self, request: Request) -> AuthenticatedUser:
         token = self._tokens.of_request(request)
         if token is None:
-            raise AuthenticationError("request carries no sign-in token")
+            msg = (
+                f"{request.method} {request.url.path}: expected a sign-in token "
+                f"in the session cookie or Authorization header, got none"
+            )
+            raise AuthenticationError(msg)
 
         return await self._authenticator.user_of_token(token)
 
@@ -98,7 +106,8 @@ class ApiAuth:
     def of_app(cls, app: Any) -> ApiAuth:
         auth = getattr(app.state, cls.STATE_KEY, None)
         if not isinstance(auth, ApiAuth):
-            msg = "api auth is not installed on the application"
+            got = type(auth).__name__
+            msg = f"app.state.{cls.STATE_KEY}: expected an installed ApiAuth, got {got}"
             raise RuntimeError(msg)
 
         return auth

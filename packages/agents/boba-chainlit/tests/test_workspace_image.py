@@ -238,7 +238,7 @@ class TestConfig:
             _storage_cfg(kind="image")
 
     def test_local_kind_requires_files_dir(self) -> None:
-        with pytest.raises(ValueError, match="requires files_dir"):
+        with pytest.raises(ValueError, match="expects files_dir"):
             _storage_cfg(kind="local")
 
     def test_unknown_kind_rejected(self) -> None:

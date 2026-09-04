@@ -138,7 +138,11 @@ class _StoreSink(RunSink):
     async def snapshot(self, state: RunState) -> None:
         # снимок пишет только живой держатель: зомби не перезапишет чужую работу
         if not await self._locks.heartbeat(self._token):
-            msg = f"lock of {self._scope.render()} is lost: snapshot refused"
+            msg = (
+                f"lock of {self._scope.render()} is not held by token "
+                f"{self._token.value} any more: snapshot of run {self._run_id} "
+                "refused"
+            )
             raise LockLostError(msg)
 
         await self._store.update_run(self._run_id, state)
@@ -214,7 +218,8 @@ class WorkflowService:
             spec = WorkflowSpec.parse_yaml(spec_text)
             return WorkflowGraph.build(spec, catalog)
         except WorkflowSpecError as exc:
-            raise WorkflowError(WorkflowRefusal.BAD_SPEC, str(exc)) from exc
+            msg = f"workflow spec rejected for {subject.login!r}: {exc}"
+            raise WorkflowError(WorkflowRefusal.BAD_SPEC, msg) from exc
 
     async def save(
         self, subject: Subject, spec_text: str, layout: Mapping[str, Any]
@@ -284,7 +289,10 @@ class WorkflowService:
             raise WorkflowError(WorkflowRefusal.NOT_FOUND, str(exc)) from exc
 
         await self._draft_changed(
-            subject.user_id, workflow_id, stored.draft_revision, by_sid,
+            subject.user_id,
+            workflow_id,
+            stored.draft_revision,
+            by_sid,
             ChangeAction.UPDATED,
         )
 
@@ -300,7 +308,10 @@ class WorkflowService:
             raise WorkflowError(WorkflowRefusal.NOT_FOUND, str(exc)) from exc
 
         await self._draft_changed(
-            subject.user_id, workflow_id, stored.draft_revision, by_sid,
+            subject.user_id,
+            workflow_id,
+            stored.draft_revision,
+            by_sid,
             ChangeAction.DELETED,
         )
 
@@ -386,9 +397,11 @@ class WorkflowService:
         graph = await self.validate(context.subject, stored.spec)
 
         if not graph.spec.tasks:
-            raise WorkflowError(
-                WorkflowRefusal.BAD_SPEC, "workflow has no tasks to run"
+            msg = (
+                f"workflow {stored.name!r} (#{stored.id}) has no tasks to run: "
+                "the spec declares an empty task list"
             )
+            raise WorkflowError(WorkflowRefusal.BAD_SPEC, msg)
         registry = await self._registry()
         subject = context.subject
         invoker = ToolInvoker(registry.for_headless(subject.roles, subject.profile))
@@ -509,7 +522,13 @@ class WorkflowService:
         orphans = await self._store.orphans_of(self._instance)
         for record in orphans:
             await self._abandon(record)
-            logger.warning("workflow run %s abandoned: %s", record.id, self.ABANDONED)
+            logger.warning(
+                "workflow run %s of workflow %s abandoned by instance %s: %s",
+                record.id,
+                record.workflow_id,
+                self._instance,
+                self.ABANDONED,
+            )
 
         return len(orphans)
 
@@ -525,7 +544,14 @@ class WorkflowService:
 
             await self._abandon(record)
             closed += 1
-            logger.warning("workflow run %s abandoned: no live holder", record.id)
+            logger.warning(
+                "workflow run %s of workflow %s abandoned: status %s but no live "
+                "lock holder on %s",
+                record.id,
+                record.workflow_id,
+                record.status.value,
+                Scope.workflow(record.id).render(),
+            )
 
         return closed
 

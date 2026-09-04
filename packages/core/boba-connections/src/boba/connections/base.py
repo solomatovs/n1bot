@@ -54,21 +54,27 @@ class ConnectionProfileBase(BaseModel):
 
     def with_call_ticket(self, ticket: TicketAuth) -> Self:
         """Профиль с билетом вызова вместо своей kerberos-секции."""
-        raise ConnectionTypeError(
-            f"{self.kind}: profile carries a kerberos section "
-            "but does not implement with_call_ticket"
+        msg = (
+            f"connection type {self.kind!r}: profile {type(self).__name__} carries "
+            "a kerberos section but does not implement with_call_ticket"
         )
+        raise ConnectionTypeError(msg)
 
     def service_name(self) -> str:
         """SPN сервиса соединения: кому выпускается билет вызова."""
-        raise ConnectionTypeError(
-            f"{self.kind}: profile carries a kerberos section "
-            "but does not implement service_name"
+        msg = (
+            f"connection type {self.kind!r}: profile {type(self).__name__} carries "
+            "a kerberos section but does not implement service_name"
         )
+        raise ConnectionTypeError(msg)
 
     def trace(self) -> str:
         """Строка журнала: способ авторизации и под кем идём."""
-        raise ConnectionTypeError(f"{self.kind}: profile does not implement trace")
+        msg = (
+            f"connection type {self.kind!r}: profile {type(self).__name__} "
+            "does not implement trace"
+        )
+        raise ConnectionTypeError(msg)
 
     def labeled(self, client: ClientIdentity) -> Self:
         """Профиль, подписанный клиентом вызова.

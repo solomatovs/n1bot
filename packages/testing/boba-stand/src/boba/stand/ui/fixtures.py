@@ -23,7 +23,9 @@ def browser(playwright: object) -> Iterator[object]:
     from playwright.sync_api import Playwright  # noqa: PLC0415
 
     if not isinstance(playwright, Playwright):
-        raise TypeError("playwright fixture must be a sync Playwright instance")
+        got = type(playwright).__name__
+        msg = f"playwright fixture: expected a sync Playwright instance, got {got}"
+        raise TypeError(msg)
 
     instance = playwright.chromium.launch(args=["--no-sandbox"])
     try:

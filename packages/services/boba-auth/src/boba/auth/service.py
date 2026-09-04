@@ -115,11 +115,19 @@ class AuthService(Authenticator):
         заводит пользователя и выпускает сессию сам (chainlit).
         """
         if self._password is None:
-            raise ExternalServiceError("auth", "password sign-in is not configured")
+            message = (
+                f"password sign-in of {username!r}: [auth] has no local or ldap "
+                "provider configured"
+            )
+            raise ExternalServiceError("auth", message)
 
         signed = await self._password.sign_in(username, password)
         if signed is None:
-            raise AuthenticationError("Invalid username or password")
+            message = (
+                f"Invalid username or password: no [auth] provider accepted "
+                f"the sign-in of {username!r}"
+            )
+            raise AuthenticationError(message)
 
         return signed
 
@@ -150,7 +158,11 @@ class AuthService(Authenticator):
         перевыпуск JWT; отказ — SsoRefused с причиной, приложение разлогинивает.
         """
         if token is None:
-            return SsoRefused(reason="request carries no sign-in token")
+            reason = (
+                f"session refresh from [{request.client}]: request carries no "
+                "sign-in token"
+            )
+            return SsoRefused(reason=reason)
 
         try:
             claims = self.stale_claims(token)
@@ -166,7 +178,11 @@ class AuthService(Authenticator):
         self, request: SsoRequest, token: str
     ) -> SsoChallenge | SsoRefused | IssuedSession:
         if self._sso is None:
-            return SsoRefused(reason="kerberos sign-in without sso configured")
+            reason = (
+                f"kerberos session refresh from [{request.client}]: [auth] has "
+                "no kerberos provider configured"
+            )
+            return SsoRefused(reason=reason)
 
         return await self.refresh(request, token)
 
@@ -195,12 +211,16 @@ class AuthService(Authenticator):
         try:
             claims = self._tokens.read(token)
         except TokenRejectedError as exc:
-            message = f"sign-in token rejected: {exc.reason}"
+            message = f"sign-in token rejected as {exc.reason}: {exc}"
             raise AuthenticationError(message) from exc
 
         stored = await self._users.get_user(claims.identifier)
         if stored is None:
-            raise AuthenticationError(f"sign-in of {claims.identifier!r} not persisted")
+            message = (
+                f"sign-in of {claims.identifier!r} not persisted: the token is "
+                "valid but the users table has no row with this identifier"
+            )
+            raise AuthenticationError(message)
 
         return AuthenticatedUser(
             id=stored.id,
@@ -230,7 +250,7 @@ class AuthService(Authenticator):
         try:
             return self._tokens.read_stale(token, self._renewal.grace_sec)
         except TokenRejectedError as exc:
-            message = f"sign-in token rejected: {exc.reason}"
+            message = f"sign-in token rejected as {exc.reason}: {exc}"
             raise AuthenticationError(message) from exc
 
     async def renew(self, token: str) -> IssuedSession:
@@ -242,17 +262,28 @@ class AuthService(Authenticator):
         claims = self.stale_claims(token)
         signed = claims.signed()
         if signed.sign_in.is_kerberos():
-            msg = "a kerberos sign-in renews only by a SPNEGO refresh"
+            msg = (
+                f"jwt renewal of {claims.identifier!r}: a kerberos sign-in renews "
+                "only by a SPNEGO refresh"
+            )
             raise AuthenticationError(msg)
 
-        verdict = self._renewal.verdict(claims, int(time.time()))
+        now = int(time.time())
+        verdict = self._renewal.verdict(claims, now)
         if verdict is not RenewVerdict.RENEWABLE:
-            msg = f"sign-in session cannot be renewed: {verdict}"
+            msg = (
+                f"jwt renewal of {claims.identifier!r} at {now}: session cannot "
+                f"be renewed, verdict {verdict} (exp {claims.exp}, iat {claims.iat})"
+            )
             raise AuthenticationError(msg)
 
         stored = await self._users.get_user(claims.identifier)
         if stored is None:
-            raise AuthenticationError(f"sign-in of {claims.identifier!r} not persisted")
+            message = (
+                f"sign-in of {claims.identifier!r} not persisted: the token is "
+                "valid but the users table has no row with this identifier"
+            )
+            raise AuthenticationError(message)
 
         user = AuthenticatedUser(
             id=stored.id,
@@ -265,6 +296,10 @@ class AuthService(Authenticator):
 
     def _exchange(self) -> SpnegoExchange:
         if self._sso is None:
-            raise ExternalServiceError("auth", "sso is not configured")
+            message = (
+                "SPNEGO exchange requested but [auth] has no kerberos provider "
+                "configured"
+            )
+            raise ExternalServiceError("auth", message)
 
         return self._sso

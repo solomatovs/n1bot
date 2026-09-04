@@ -141,8 +141,13 @@ class WebPage:
                 response = await client.get(url)
                 response.raise_for_status()
                 body = await response.aread()
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            head = exc.response.text[:200]
+            msg = f"GET {url}: expected 2xx, got {status}: {head!r}"
+            raise WebRequestError(msg) from exc
         except httpx.HTTPError as exc:
-            msg = f"web request failed: {type(exc).__name__}: {exc}"
+            msg = f"GET {url}: {type(exc).__name__}: {exc}"
             raise WebRequestError(msg) from exc
 
         text = body.decode(cls.ENCODING, errors="replace")

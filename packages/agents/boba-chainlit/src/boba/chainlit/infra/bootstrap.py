@@ -151,7 +151,11 @@ def _use_chainlit_middleware(app: FastAPI, config: ChainlitExtendConfig):
     class ChainlitMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next):
             if not request.url.path.startswith(config.url_prefix):
-                return JSONResponse(status_code=404, content={"detail": "Not found"})
+                detail = (
+                    f"path {request.url.path} is outside the app prefix "
+                    f"{config.url_prefix}"
+                )
+                return JSONResponse(status_code=404, content={"detail": detail})
 
             return await call_next(request)
 
@@ -196,7 +200,10 @@ def _use_file_serving(c: AppConfig) -> None:
         layer = get_data_layer()
         if not isinstance(layer, PostgresDataLayer):
             raise InternalServiceError(
-                internal_detail=f"data layer is not PostgresDataLayer: {type(layer)}",
+                internal_detail=(
+                    "attachment serving expects a PostgresDataLayer data layer, "
+                    f"got {type(layer).__name__}"
+                ),
                 user_detail="Attachment storage is not available",
             )
         return layer
@@ -311,17 +318,26 @@ def _use_auth(container: Container) -> None:
 
     config = container.resolved(providers.get_app_config)
     if not isinstance(config, AppConfig):
-        msg = f"app config provider returned {type(config).__name__}"
+        msg = (
+            "auth setup expects AppConfig from the app config provider, "
+            f"got {type(config).__name__}"
+        )
         raise RuntimeError(msg)
 
     auth = container.resolved(runtime.auth_service)
     if not isinstance(auth, AuthService):
-        msg = f"auth service provider returned {type(auth).__name__}"
+        msg = (
+            "auth setup expects AuthService from the auth service provider, "
+            f"got {type(auth).__name__}"
+        )
         raise RuntimeError(msg)
 
     sessions = container.resolved(providers.session_source)
     if not isinstance(sessions, ChainlitSessions):
-        msg = f"session source provider returned {type(sessions).__name__}"
+        msg = (
+            "auth setup expects ChainlitSessions from the session source "
+            f"provider, got {type(sessions).__name__}"
+        )
         raise RuntimeError(msg)
 
     sso_path = ""
@@ -396,9 +412,11 @@ def _get_or_create_session_container():
         session.remember(Container.SESSION_KEY, container)
 
     if not isinstance(container, Container):
-        raise ValueError(
-            f"UserSession used is not valid DI Container type: {type(container)}"
+        msg = (
+            f"chainlit user session key {Container.SESSION_KEY!r} expects a DI "
+            f"Container, got {type(container).__name__}"
         )
+        raise ValueError(msg)
 
     return container
 

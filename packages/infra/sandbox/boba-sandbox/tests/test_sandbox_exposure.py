@@ -295,7 +295,7 @@ class TestChannelCapStopsTheFlood:
         with pytest.raises(ChannelOverflowError) as failure:
             caller.call_text(flood, stdin="")
 
-        if "exceeded" not in str(failure.value):
+        if "the limit is" not in str(failure.value):
             raise AssertionError(f"обрыв не по лимиту: {failure.value}")
 
     @classmethod

@@ -80,7 +80,7 @@ class ToolStreamBuffer(StreamSink):
 
     def __init__(self, window_bytes: int, on_data: Callable[[], None]) -> None:
         if window_bytes <= 0:
-            msg = f"window_bytes must be positive, got {window_bytes}"
+            msg = f"ToolStreamBuffer window_bytes must be positive, got {window_bytes}"
             raise ValueError(msg)
 
         self._window = window_bytes

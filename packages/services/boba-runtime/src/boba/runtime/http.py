@@ -181,10 +181,11 @@ class DomainErrorMiddleware:
         except Exception as e:
             # http-слой пишет в журнал ту же формулировку, что чат и история
             described = FailureReport.of(e).log
+            request = f"{scope.get('method', '?')} {scope.get('path', '?')}"
             if not isinstance(e, BaseError):
-                self._logger.exception("%s", LogLine.safe(described))
+                self._logger.exception("%s: %s", request, LogLine.safe(described))
             else:
-                self._logger.error("%s", LogLine.safe(described))
+                self._logger.error("%s: %s", request, LogLine.safe(described))
 
             domain = to_domain(e)
 

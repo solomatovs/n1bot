@@ -32,7 +32,10 @@ class ConfluenceConnection(BaseModel):
     @property
     def base_url(self) -> str:
         if self.profile.base_url is None:
-            msg = "confluence base_url is not set: define base_url in the web profile"
+            msg = (
+                "confluence connection: the referenced web profile has no "
+                "base_url, expected the Confluence root url there"
+            )
             raise ValueError(msg)
 
         return self.profile.base_url

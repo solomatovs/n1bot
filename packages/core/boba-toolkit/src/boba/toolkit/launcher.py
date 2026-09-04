@@ -80,7 +80,10 @@ class CappedChannel:
         if len(self._data) <= self._limit:
             return
 
-        msg = f"{self._channel} exceeded {self._limit} bytes; the call was killed"
+        msg = (
+            f"channel {self._channel} collected {len(self._data)} bytes, "
+            f"the limit is {self._limit} bytes; the call was killed"
+        )
         raise ChannelOverflowError(msg)
 
     def text(self) -> str:
@@ -174,7 +177,10 @@ class RowStream:
 
         plain = cls._ANY.dump_python(decoded, mode="json")
         if not isinstance(plain, dict):
-            msg = f"row must dump to an object, got {type(plain).__name__}"
+            msg = (
+                f"RowStream.plain: driver row must dump to a JSON object, "
+                f"got {type(plain).__name__}"
+            )
             raise LauncherError(msg)
 
         return plain
@@ -215,7 +221,7 @@ class ClippedText(BaseModel):
     @classmethod
     def of(cls, text: str, max_bytes: int) -> ClippedText:
         if max_bytes <= 0:
-            msg = f"max_bytes must be positive, got {max_bytes}"
+            msg = f"ClippedText max_bytes must be positive, got {max_bytes}"
             raise ValueError(msg)
 
         raw = text.encode(cls.ENCODING)
@@ -304,7 +310,11 @@ class EnvelopeReply:
         try:
             return REPLY.validate_json(bytes(raw))
         except ValueError as exc:
-            msg = f"{tool}: envelope does not match contract: {exc}"
+            shown = bytes(raw[:200])
+            msg = (
+                f"{tool}: tool_result envelope {shown!r} does not match "
+                f"the reply contract: {exc}"
+            )
             raise LauncherError(msg) from exc
 
 

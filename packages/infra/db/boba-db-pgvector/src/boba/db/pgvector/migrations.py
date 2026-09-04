@@ -69,7 +69,7 @@ class Migrations:
         """Применяет все миграции из migrations/*.sql в лексикографическом порядке."""
         migrations_dir = Migrations._MIGRATIONS_DIR
         if not migrations_dir.is_dir():
-            msg = f"migrations dir not found: {migrations_dir}"
+            msg = f"pgvector migrations: {migrations_dir} is not an existing directory"
             raise RuntimeError(msg)
         files = sorted(migrations_dir.glob("*.sql"))
         if not files:

@@ -281,7 +281,10 @@ class TicketCredentials(KerberosCredentials):
     @property
     def ccache(self) -> str:
         if self._path is None:
-            msg = "ticket ccache exists only inside applied()"
+            msg = (
+                f"ticket ccache for {self._config.principal} to "
+                f"{self._config.service} exists only inside applied()"
+            )
             raise KerberosError(msg)
 
         return f"{self.FILE_TYPE}:{self._path}"
@@ -449,7 +452,10 @@ class KeytabCredentials(IssuedCredentials):
     def of(cls, auth: KeytabAuth) -> KeytabCredentials:
         shared = cls._shared(cls(auth))
         if not isinstance(shared, KeytabCredentials):
-            msg = f"ccache {shared.ccache!r} already serves {type(shared).__name__}"
+            msg = (
+                f"ccache {shared.ccache!r} already serves {type(shared).__name__}, "
+                f"KeytabCredentials for {auth.principal} may not share it"
+            )
             raise KeytabError(msg)
 
         return shared
@@ -499,7 +505,10 @@ class PasswordCredentials(IssuedCredentials):
     def of(cls, auth: KerberosPasswordAuth) -> PasswordCredentials:
         shared = cls._shared(cls(auth))
         if not isinstance(shared, PasswordCredentials):
-            msg = f"ccache {shared.ccache!r} already serves {type(shared).__name__}"
+            msg = (
+                f"ccache {shared.ccache!r} already serves {type(shared).__name__}, "
+                f"PasswordCredentials for {auth.principal} may not share it"
+            )
             raise KeytabError(msg)
 
         return shared
@@ -553,7 +562,10 @@ class DelegatedCredentials(KerberosCredentials):
     @property
     def ccache(self) -> str:
         if self._path is None:
-            msg = "sign-in ccache exists only inside applied()"
+            msg = (
+                f"sign-in ccache of {self._ticket.principal} "
+                "exists only inside applied()"
+            )
             raise KerberosError(msg)
 
         return f"{self.FILE_TYPE}:{self._path}"
@@ -633,7 +645,7 @@ class DelegatedCredentials(KerberosCredentials):
 
         if owner != self._ticket.principal:
             msg = (
-                f"sign-in ccache belongs to {owner}, "
+                f"sign-in ccache {self.ccache} belongs to {owner}, "
                 f"the ticket names {self._ticket.principal}"
             )
             raise KerberosError(msg)

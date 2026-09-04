@@ -135,8 +135,15 @@ class AccountApi:
 
     async def set_profile(self, body: ProfileChoice, current_user: CurrentUser) -> Me:
         user = current_user
-        if body.profile not in self._profiles.visible_for(user.roles):
-            raise AuthorizationError("profile is not available")
+        visible = self._profiles.visible_for(user.roles)
+        if body.profile not in visible:
+            names = sorted(visible)
+            msg = (
+                f"setting profile for user {user.identifier!r}: "
+                f"profile {body.profile!r} is not visible to roles "
+                f"{sorted(user.roles)}, visible are {names}"
+            )
+            raise AuthorizationError(msg)
 
         await self._users().set_studio_profile(user.id, body.profile)
         changed = StudioProfileChanged(profile=body.profile, by_sid=body.sid)

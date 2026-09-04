@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-catalog"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 description = "Boba catalog: домен каталога данных — слои, наборы, колонки, виды загрузки, потоки; снимок, операции, diff. Без I/O."
 requires-python = ">=3.11,<4"
 dependencies = [

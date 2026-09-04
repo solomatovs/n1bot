@@ -180,9 +180,11 @@ class _RunSession:
             await self._sink.snapshot(self._plan.snapshot())
 
         if not self._plan.done:
-            raise WorkflowRunError(
-                "the plan is stuck: nothing runs and nothing is ready"
+            msg = (
+                f"workflow {self._graph.spec.name!r}: the plan is stuck, "
+                "no task runs and none is ready while some are still pending"
             )
+            raise WorkflowRunError(msg)
 
         await asyncio.gather(*self._wires, return_exceptions=True)
 
@@ -245,17 +247,8 @@ class _RunSession:
         одного потокового ребра в каждую сторону; стыковка kind'ов
         проверяется декларациями до старта процессов.
         """
-        follower: dict[str, str] = {}
-        fed: set[str] = set()
-        for edge in stage.streams:
-            if edge.src.task in follower or edge.dst.task in fed:
-                raise ChainMismatchError(
-                    "stream fan-in/fan-out is not supported yet: a task "
-                    "carries at most one stream edge per direction"
-                )
-
-            follower[edge.src.task] = edge.dst.task
-            fed.add(edge.dst.task)
+        follower = self._followers_of(stage)
+        fed = set(follower.values())
 
         heads: list[str] = []
         for name in stage.tasks:
@@ -263,17 +256,24 @@ class _RunSession:
                 heads.append(name)
 
         if len(heads) != 1:
-            raise ChainMismatchError(
-                "stream stage must be one linear chain: cycles and parallel "
-                "chains are not supported yet"
+            msg = (
+                f"stage {stage.id}: stream stage must be one linear chain with "
+                f"a single head, got {len(heads)} heads {heads}; cycles and "
+                "parallel chains are not supported yet"
             )
+            raise ChainMismatchError(msg)
 
         order = [heads[0]]
         while order[-1] in follower:
             order.append(follower[order[-1]])
 
         if len(order) != len(stage.tasks):
-            raise ChainMismatchError("stream stage must be one connected chain")
+            msg = (
+                f"stage {stage.id}: stream stage must be one connected chain, "
+                f"the chain from {heads[0]!r} covers {len(order)} of "
+                f"{len(stage.tasks)} tasks"
+            )
+            raise ChainMismatchError(msg)
 
         specs: list[StreamSpec] = []
         for name in order:
@@ -284,13 +284,39 @@ class _RunSession:
 
         return order
 
+    @staticmethod
+    def _followers_of(stage: Stage) -> dict[str, str]:
+        """Кто за кем в цепочке; второе ребро в ту же сторону — отказ."""
+        follower: dict[str, str] = {}
+        fed: set[str] = set()
+        for edge in stage.streams:
+            if edge.src.task in follower:
+                msg = (
+                    f"stage {stage.id}: task {edge.src.task!r} feeds both "
+                    f"{follower[edge.src.task]!r} and {edge.dst.task!r}; stream "
+                    "fan-out is not supported yet, a task carries at most one "
+                    "stream edge per direction"
+                )
+                raise ChainMismatchError(msg)
+
+            if edge.dst.task in fed:
+                msg = (
+                    f"stage {stage.id}: task {edge.dst.task!r} is fed by more "
+                    "than one stream; stream fan-in is not supported yet, a task "
+                    "carries at most one stream edge per direction"
+                )
+                raise ChainMismatchError(msg)
+
+            follower[edge.src.task] = edge.dst.task
+            fed.add(edge.dst.task)
+
+        return follower
+
     def _refuse_stage(self, stage: Stage, message: str) -> None:
         """Стадия не собирается в цепочку: задачи закрываются отказом."""
         for name in stage.tasks:
             self._plan.started(name, "", self._runner.clock())
-            result = ErrorResult(
-                message=message, error_kind=InvokeErrorKind.CRASHED
-            )
+            result = ErrorResult(message=message, error_kind=InvokeErrorKind.CRASHED)
             self._results[name] = result
             self._plan.finished(
                 name, TaskStatus.FAILED, self._runner.clock(), message, result
@@ -314,14 +340,24 @@ class _RunSession:
                     )
                 )
         except ChainMismatchError as exc:
-            logger.warning("workflow %s: stage wiring failed: %s", order, exc)
+            logger.warning(
+                "workflow %s: wiring of the stream chain %s failed: %s",
+                self._graph.spec.name,
+                order,
+                exc,
+            )
             for slot in slots.values():
                 slot.abort()
 
         moved = await asyncio.gather(*relays, return_exceptions=True)
         for pair, stats in zip(pairwise(order), moved, strict=True):
             if isinstance(stats, BaseException):
-                logger.warning("workflow edge %s: relay failed: %s", pair, stats)
+                logger.warning(
+                    "workflow %s: relay on the stream edge %s failed: %s",
+                    self._graph.spec.name,
+                    pair,
+                    stats,
+                )
                 continue
 
             logger.info("workflow edge %s: %d bytes moved", pair, stats.bytes)
@@ -366,7 +402,12 @@ class _RunSession:
             if running is task:
                 return name
 
-        raise WorkflowRunError("a finished task is not among the running ones")
+        msg = (
+            f"workflow {self._graph.spec.name!r}: finished asyncio task "
+            f"{task.get_name()!r} is not among the running tasks "
+            f"{sorted(self._running)}"
+        )
+        raise WorkflowRunError(msg)
 
     @staticmethod
     def _outcome_of(task: asyncio.Task[InvokeReply]) -> TaskOutcome:

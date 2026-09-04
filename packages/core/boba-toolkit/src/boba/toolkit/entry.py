@@ -76,7 +76,10 @@ class ArgumentTooLargeError(Exception):
     """Значение аргумента не помещается в один элемент argv."""
 
     def __init__(self, param: str, size: int, limit: int) -> None:
-        msg = f"argument {param!r} is {size} bytes, argv value limit is {limit}"
+        msg = (
+            f"argument {param!r} encoded to {size} bytes, the argv value "
+            f"limit is {limit} bytes; pass large values by a channel instead"
+        )
         super().__init__(msg)
         self.param = param
 
@@ -146,7 +149,7 @@ class CallWiring(BaseModel):
             try:
                 values[field] = int(raw)
             except ValueError as exc:
-                msg = f"{flag} is not a descriptor number: {raw!r}"
+                msg = f"{flag} expects a descriptor number, got {raw!r}: {exc}"
                 raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from exc
 
         return cls.model_validate(values)
@@ -158,7 +161,7 @@ class CallWiring(BaseModel):
 
         index = arguments.index(flag)
         if index + 1 >= len(arguments):
-            msg = f"{flag} requires a value"
+            msg = f"{flag} expects a descriptor number after it, got the end of argv"
             raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
 
         arguments.pop(index)
@@ -203,7 +206,10 @@ class ToolAddress(BaseModel):
     def of(cls, tool: ToolLike) -> ToolAddress:
         body = tool.coroutine or tool.func
         if body is None:
-            msg = f"tool {tool.name!r} has neither coroutine nor func"
+            msg = (
+                f"tool {tool.name!r} has neither coroutine nor func: "
+                "its module path for the command line cannot be resolved"
+            )
             raise ToolEntryError(EntryErrorKind.INTERNAL_ERROR, msg)
 
         return cls(module=body.__module__, name=tool.name)
@@ -339,11 +345,18 @@ class ToolArgv:
             flag = pending.pop(0)
             name = by_flag.get(flag)
             if name is None:
-                msg = f"unknown flag {flag!r} for tool {tool.name!r}"
+                known = ", ".join(sorted(by_flag))
+                msg = (
+                    f"unknown flag {flag!r} for tool {tool.name!r}; "
+                    f"known flags: {known}"
+                )
                 raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
 
             if not pending:
-                msg = f"flag {flag!r} has no value"
+                msg = (
+                    f"flag {flag!r} of tool {tool.name!r} expects a value, "
+                    "got the end of argv"
+                )
                 raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
 
             raw = pending.pop(0)
@@ -357,7 +370,10 @@ class ToolArgv:
     def schema_of(cls, tool: ToolLike) -> type[BaseModel]:
         schema = tool.args_schema
         if not isinstance(schema, type) or not issubclass(schema, BaseModel):
-            msg = f"tool {tool.name!r} has no pydantic args_schema"
+            msg = (
+                f"tool {tool.name!r} args_schema must be a pydantic model class, "
+                f"got {schema!r}"
+            )
             raise ToolEntryError(EntryErrorKind.INTERNAL_ERROR, msg)
 
         return schema
@@ -447,10 +463,14 @@ class ToolArgv:
         except ValidationError as exc:
             # значение не пересказываем: в cfg инструмента едут пароли и токены,
             # а traceback печатает причину сам, мимо FailureText
-            msg = f"invalid value for {name!r}: {ValidationText.of(exc)}"
+            detail = ValidationText.of(exc)
+            msg = (
+                f"argument {name!r} does not match its declared type "
+                f"{annotation!r}: {detail}"
+            )
             raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from None
         except ValueError as exc:
-            msg = f"invalid value for {name!r}: {exc}"
+            msg = f"argument {name!r} could not be decoded as {annotation!r}: {exc}"
             raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from exc
 
     @staticmethod
@@ -469,15 +489,24 @@ class ToolArgv:
         """Секция toml, из которой собирается injected-модель параметра."""
         section = getattr(annotation, "SECTION", None)
         if not isinstance(section, str):
-            msg = f"injected parameter {name!r} has no SECTION on its model"
+            msg = (
+                f"injected parameter {name!r}: model {annotation!r} must define "
+                f"SECTION as the toml section name, got {section!r}"
+            )
             raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
 
         if not isinstance(annotation, type):
-            msg = f"injected parameter {name!r} is not a pydantic model"
+            msg = (
+                f"injected parameter {name!r} must be annotated with a pydantic "
+                f"model class, got {annotation!r}"
+            )
             raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
 
         if not issubclass(annotation, BaseModel):
-            msg = f"injected parameter {name!r} is not a pydantic model"
+            msg = (
+                f"injected parameter {name!r} must subclass pydantic BaseModel, "
+                f"got {annotation.__name__}"
+            )
             raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
 
         return section
@@ -506,26 +535,38 @@ class ToolArgv:
         if not expected:
             return {}
 
-        try:
-            payload = json.loads(config.decode("utf-8")) if config else {}
-        except ValueError as exc:
-            msg = f"call config is not valid JSON: {exc}"
-            raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from exc
+        payload: object = {}
+        if config:
+            try:
+                payload = json.loads(config.decode("utf-8"))
+            except ValueError as exc:
+                msg = f"call config ({len(config)} bytes) is not valid JSON: {exc}"
+                raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from exc
 
         if not isinstance(payload, dict):
-            msg = "call config must be a JSON object keyed by parameter names"
+            msg = (
+                "call config must be a JSON object keyed by parameter names, "
+                f"got {type(payload).__name__}"
+            )
             raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
 
         kwargs: dict[str, Any] = {}
         for name, annotation in expected.items():
             if name not in payload:
-                msg = f"parameter {name!r} is missing from the call config"
+                present = ", ".join(sorted(payload))
+                msg = (
+                    f"parameter {name!r} is missing from the call config; "
+                    f"config keys: [{present}]"
+                )
                 raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
 
             try:
                 kwargs[name] = TypeAdapter(annotation).validate_python(payload[name])
             except ValidationError as exc:
-                msg = f"invalid config for {name!r}: {exc}"
+                msg = (
+                    f"call config for parameter {name!r} does not match "
+                    f"{annotation!r}: {exc}"
+                )
                 raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from exc
 
         return kwargs
@@ -574,7 +615,10 @@ class ToolMain:
         for tool in tools:
             for attribute in cls.REQUIRED_ATTRIBUTES:
                 if not hasattr(tool, attribute):
-                    msg = f"{tool!r} is not a tool object: no {attribute!r}"
+                    msg = (
+                        f"{tool!r} is not a tool object: attribute {attribute!r} "
+                        f"is missing, a tool needs {cls.REQUIRED_ATTRIBUTES}"
+                    )
                     raise ToolEntryError(EntryErrorKind.INTERNAL_ERROR, msg)
 
             accepted: Any = tool
@@ -691,7 +735,7 @@ class ToolMain:
 
         index = arguments.index(flag)
         if index + 1 >= len(arguments):
-            msg = f"{flag} requires a path"
+            msg = f"{flag} expects a file path after it, got the end of argv"
             raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
 
         arguments.pop(index)
@@ -715,7 +759,11 @@ class ToolMain:
         try:
             StreamSpec.of_schema(schema)
         except (PortDeclarationError, ValidationError) as exc:
-            msg = f"tool {tool.name!r} declares broken ports: {exc}"
+            listed = ", ".join(sorted(fields))
+            msg = (
+                f"tool {tool.name!r} declares broken ports on parameters "
+                f"[{listed}]: {exc}"
+            )
             raise ToolEntryError(EntryErrorKind.INTERNAL_ERROR, msg) from exc
 
         io = cls._call_io(wiring)
@@ -759,8 +807,8 @@ class ToolMain:
                 return b"{}"
 
         msg = (
-            "injected config is required: the launcher passes "
-            f"{EntryFlag.INJECTED_FD} <fd>, a human passes "
+            f"tool {tool.name!r} needs an injected config and none was given: "
+            f"the launcher passes {EntryFlag.INJECTED_FD} <fd>, a human passes "
             f"{EntryFlag.INJECTED} <path>"
         )
         raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg)
@@ -780,7 +828,7 @@ class ToolMain:
 
                 chunks.append(chunk)
         except OSError as exc:
-            msg = f"injected config channel is not readable: {exc}"
+            msg = f"reading injected config from fd {fd} failed: {exc}"
             raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from exc
         finally:
             with suppress(OSError):
@@ -794,14 +842,17 @@ class ToolMain:
         try:
             return Path(path).read_bytes()
         except OSError as exc:
-            msg = f"injected config is not readable: {path}: {exc}"
+            msg = f"reading injected config file {path!r} failed: {exc}"
             raise ToolEntryError(EntryErrorKind.INVALID_REQUEST, msg) from exc
 
     @classmethod
     def _call(cls, tool: ToolLike, kwargs: dict[str, Any]) -> ReplyOk:
         body = tool.coroutine or tool.func
         if body is None:
-            msg = f"tool {tool.name!r} has no body"
+            msg = (
+                f"tool {tool.name!r} has no body to call: "
+                "both coroutine and func are None"
+            )
             raise ToolEntryError(EntryErrorKind.INTERNAL_ERROR, msg)
 
         expected = ExpectedErrors.of_body(body)
@@ -845,7 +896,10 @@ class ToolMain:
         try:
             return ReplyOk(content=str(content), artifact=artifact)
         except ValidationError as exc:
-            msg = f"tool {tool.name!r} artifact is not a ToolResult: {exc}"
+            msg = (
+                f"tool {tool.name!r} returned artifact of type "
+                f"{type(artifact).__name__}, expected a ToolResult: {exc}"
+            )
             raise ToolEntryError(EntryErrorKind.INTERNAL_ERROR, msg) from exc
 
     @classmethod

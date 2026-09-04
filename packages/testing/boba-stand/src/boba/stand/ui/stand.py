@@ -230,7 +230,7 @@ class StandConfig:
             login = logins[0]
 
         if login not in self.STAND_USERS:
-            msg = f"нет логина {login!r} среди учёток стенда: {logins}"
+            msg = f"stand credential: login {login!r} is not among stand users {logins}"
             raise StandError(msg)
 
         return StandCredential(login=login, password=self.STAND_USERS[login])
@@ -572,7 +572,12 @@ class StandProcess:
         app = self.config.app.value
         while time.monotonic() < deadline:
             if process.poll() is not None:
-                raise StandError(f"{app} exited early:\n{self.tail()}")
+                code = process.returncode
+                msg = (
+                    f"{app} exited with code {code} before answering at {url}:"
+                    f"\n{self.tail()}"
+                )
+                raise StandError(msg)
 
             try:
                 response = httpx.get(url, timeout=2.0)
@@ -585,4 +590,8 @@ class StandProcess:
 
             time.sleep(0.3)
 
-        raise StandError(f"{app} did not answer at {url}:\n{self.tail()}")
+        msg = (
+            f"GET {url}: {app} gave no reply below 500 before the start deadline:"
+            f"\n{self.tail()}"
+        )
+        raise StandError(msg)

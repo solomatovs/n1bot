@@ -264,12 +264,15 @@ class StreamAssembly:
             raise self._ceiling_error()
 
         if self._finish_reason == FinishReason.CONTENT_FILTER:
-            msg = "chat reply blocked by the provider content filter"
+            msg = (
+                "openai chat: reply blocked by the provider content filter "
+                "(finish_reason=content_filter)"
+            )
             raise ChatProviderError(msg)
 
         msg = (
-            "chat generation ended abnormally: "
-            f"finish_reason={self._finish_reason}"
+            "openai chat: generation ended abnormally, expected "
+            f"finish_reason=stop or tool_calls, got finish_reason={self._finish_reason}"
         )
         raise ChatProviderError(msg)
 
@@ -278,7 +281,7 @@ class StreamAssembly:
         spent = self._usage.completion_tokens
         reasoning = self._usage.completion_tokens_details.reasoning_tokens
         msg = (
-            "chat reply hit the token ceiling: finish_reason=length, "
+            "openai chat: reply hit the token ceiling: finish_reason=length, "
             f"{spent} completion tokens spent ({reasoning} reasoning)"
         )
 
@@ -311,11 +314,18 @@ class StreamAssembly:
         try:
             parsed = json.loads(growing.arguments)
         except json.JSONDecodeError as exc:
-            msg = f"provider sent malformed call arguments: {growing.name}"
+            msg = (
+                f"openai chat: provider sent malformed call arguments for "
+                f"{growing.name}: {exc}: {growing.arguments[:200]!r}"
+            )
             raise ChatProviderError(msg) from exc
 
         if not isinstance(parsed, dict):
-            msg = f"provider sent non-object call arguments: {growing.name}"
+            msg = (
+                f"openai chat: provider sent non-object call arguments for "
+                f"{growing.name}, expected a json object, got "
+                f"{type(parsed).__name__}: {growing.arguments[:200]!r}"
+            )
             raise ChatProviderError(msg)
 
         return parsed
@@ -358,7 +368,7 @@ class SseWireStream(WireStream[WireChunk]):
         try:
             return WireChunk.model_validate_json(body)
         except ValidationError as exc:
-            msg = f"chat endpoint sent malformed chunk: {body[:300]!r}"
+            msg = f"openai chat: sse data is not a WireChunk: {body[:300]!r}: {exc}"
             raise ChatProviderError(msg) from exc
 
 
@@ -414,7 +424,9 @@ class OpenAiChatProvider(ChatProvider):
         try:
             return WireChunk.model_validate_json(body)
         except ValidationError as exc:
-            msg = f"chat endpoint returned malformed body: {body[:300]!r}"
+            msg = (
+                f"openai chat: response body is not a WireChunk: {body[:300]!r}: {exc}"
+            )
             raise ChatProviderError(msg) from exc
 
     def _payload(self, request: ChatRequest) -> dict[str, Any]:

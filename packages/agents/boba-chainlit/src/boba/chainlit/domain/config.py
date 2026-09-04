@@ -74,9 +74,14 @@ class LocalStorageConfig(BaseModel):
     @model_validator(mode="after")
     def _validate_kind(self) -> Self:
         if self.kind == "local" and not self.files_dir:
-            msg = "storage: kind=local requires files_dir"
+            msg = (
+                "section [storage] with kind=local expects files_dir as a "
+                f"non-empty path, got {self.files_dir!r}"
+            )
             raise ValueError(msg)
+
         if self.kind == "image" and self.workspace is None:
-            msg = "storage: kind=image requires the workspace record"
+            msg = "section [storage] with kind=image expects the workspace record"
             raise ValueError(msg)
+
         return self

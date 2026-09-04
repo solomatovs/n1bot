@@ -33,7 +33,10 @@ class HttpDumpConfig(BaseModel):
             return self
 
         if not self.path:
-            msg = "http.dump: enable = true требует path"
+            msg = (
+                "section [http.dump]: enable = true requires a dump directory "
+                f"in path, got path={self.path!r}"
+            )
             raise ValueError(msg)
 
         return self

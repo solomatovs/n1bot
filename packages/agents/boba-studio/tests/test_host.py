@@ -77,8 +77,11 @@ class StudioProcess:
 
             time.sleep(1.0)
 
-        self.stop()
-        msg = f"studio did not become ready in {self.STARTUP_SEC}s"
+        output = self.stop()
+        msg = (
+            f"GET {self.api}/openapi.json: no 200 reply within "
+            f"{self.STARTUP_SEC}s of studio start:\n{output}"
+        )
         raise RuntimeError(msg)
 
     def stop(self) -> str:

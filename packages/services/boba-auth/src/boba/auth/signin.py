@@ -89,26 +89,64 @@ class LdapSignIn(PasswordSignIn):
             base_dn=self._config.base_dn,
             filter=LoginTemplate.render(self._config.user_filter, username),
         )
+        server = self._config.server
         try:
             entry = await self._directory.find(binding, search)
         except LDAPUserNotFoundError as e:
-            self._logger.warning("user %s is not registered", username)
-            raise AuthenticationError("User is not registered") from e
+            self._logger.warning(
+                "ldap sign-in of %r: no entry matching %s under %s on %s: %s",
+                username,
+                search.filter,
+                search.base_dn,
+                server,
+                e,
+            )
+            message = (
+                f"User {username!r} is not registered: no entry matching "
+                f"{search.filter} under {search.base_dn} on {server}"
+            )
+            raise AuthenticationError(message) from e
         except LDAPInvalidCredentialsError as e:
-            self._logger.warning("invalid credentials for %s", username)
-            raise AuthenticationError("Invalid username or password") from e
+            self._logger.warning(
+                "ldap sign-in of %r: bind as %s on %s rejected: %s",
+                username,
+                binding.bind_dn,
+                server,
+                e,
+            )
+            message = (
+                f"Invalid username or password: bind as {binding.bind_dn} "
+                f"on {server} rejected"
+            )
+            raise AuthenticationError(message) from e
         except LDAPServerUnavailableError as e:
-            self._logger.error("LDAP is unavailable", exc_info=e)
-            raise ExternalServiceError(
-                "ldap",
-                "LDAP is unavailable, please try again later",
-            ) from e
+            self._logger.error(
+                "ldap sign-in of %r: server %s is unavailable: %s",
+                username,
+                server,
+                e,
+                exc_info=e,
+            )
+            message = (
+                f"LDAP server {server} is unavailable, please try again later: {e}"
+            )
+            raise ExternalServiceError("ldap", message) from e
         except LDAPError as e:
             # access denied / кривой конфиг / прочее — наша вина
-            self._logger.error("LDAP error: %s", e, exc_info=e)
-            raise InternalServiceError(
-                internal_detail=f"ldap error: {e}", user_detail=None
-            ) from e
+            self._logger.error(
+                "ldap sign-in of %r: search %s under %s on %s failed: %s",
+                username,
+                search.filter,
+                search.base_dn,
+                server,
+                e,
+                exc_info=e,
+            )
+            detail = (
+                f"ldap sign-in of {username!r}: search {search.filter} under "
+                f"{search.base_dn} on {server} failed: {e}"
+            )
+            raise InternalServiceError(internal_detail=detail, user_detail=None) from e
 
         # имя берём из каталога, а не из формы: набранный регистр на
         # роли, запреты и строку users влиять не должен

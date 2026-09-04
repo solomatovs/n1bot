@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-doc"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 description = "Инструменты doc: чтение и парсинг документов через liteparse в песочнице."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-toolkit==0.0.15.dev7",
-    "boba-text==0.0.15.dev7",
+    "boba-toolkit==0.0.15.dev8",
+    "boba-text==0.0.15.dev8",
     "pydantic>=2.10,<2.11",
 ]
 
@@ -20,12 +20,12 @@ doc = "boba.tool.doc.plugin:MANIFEST"
 
 [project.optional-dependencies]
 payload = [
-    "boba-liteparse==0.0.15.dev7",
+    "boba-liteparse==0.0.15.dev8",
     "liteparse>=2,<3",
 ]
 dev = [
-    "boba-config==0.0.15.dev7",
-    "boba-stand==0.0.15.dev7",
+    "boba-config==0.0.15.dev8",
+    "boba-stand==0.0.15.dev8",
     "pytest>=8",
 ]
 

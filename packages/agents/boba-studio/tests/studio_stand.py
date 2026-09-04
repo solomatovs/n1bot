@@ -30,7 +30,13 @@ class StandProfiles:
         visible = cls.profiles(config).visible_for(frozenset(cls.roles(config)))
         names = sorted(visible)
         if not names:
-            raise RuntimeError("stand config has no profile visible to its roles")
+            roles = sorted(cls.roles(config))
+            configured = sorted(config.profiles)
+            msg = (
+                f"stand config: no profile among {configured} is visible "
+                f"to stand roles {roles}"
+            )
+            raise RuntimeError(msg)
 
         return names[0]
 

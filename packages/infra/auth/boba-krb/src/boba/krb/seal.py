@@ -50,13 +50,19 @@ class TicketSealer:
         try:
             plain = self._fernet.decrypt(sealed.encode(self.ENCODING))
         except InvalidToken as exc:
-            msg = "sealed sign-in ticket does not open: wrong key or damaged"
+            msg = (
+                f"opening sealed sign-in ticket ({len(sealed)} chars) failed: "
+                "wrong key or damaged token"
+            )
             raise TicketSealError(msg) from exc
 
         try:
             return SignInTicket.model_validate_json(plain)
         except ValidationError as exc:
-            msg = f"sealed sign-in ticket is malformed: {exc}"
+            msg = (
+                f"sealed sign-in ticket opened, but its payload is not a "
+                f"SignInTicket: {exc}"
+            )
             raise TicketSealError(msg) from exc
 
 

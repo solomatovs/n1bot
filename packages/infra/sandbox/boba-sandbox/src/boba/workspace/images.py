@@ -88,7 +88,10 @@ class SparseCopier:
         while start < end:
             chunk = fin.read(min(end - start, self._chunk))
             if not chunk:
-                msg = f"unexpected end of file {fin.name!r} at offset {start}"
+                msg = (
+                    f"sparse copy of {fin.name!r}: unexpected end of file "
+                    f"at offset {start}, data segment expected up to {end}"
+                )
                 raise MountError(msg)
             if chunk != self._zero[: len(chunk)]:
                 fout.seek(start)
@@ -245,7 +248,10 @@ class ImageStore:
 
     def _materialize(self, image: str) -> None:
         if not os.path.exists(self._template):
-            msg = f"template image {self._template!r} not found"
+            msg = (
+                f"cannot create image {image!r}: template image "
+                f"{self._template!r} not found"
+            )
             raise MountError(msg)
 
         tmp = PartialCopy.render(image, os.getpid())
@@ -290,11 +296,11 @@ class FuseMounter:
         # пути приезжают из argv лаунчера: относительный или начинающийся с
         # дефиса fuse2fs разобрал бы как опцию, а не как файл
         if not os.path.isabs(image):
-            msg = f"image path must be absolute: {image!r}"
+            msg = f"fuse2fs mount: image path must be absolute, got {image!r}"
             raise MountError(msg)
 
         if not os.path.isabs(mnt):
-            msg = f"mount point must be absolute: {mnt!r}"
+            msg = f"fuse2fs mount: mount point must be absolute, got {mnt!r}"
             raise MountError(msg)
 
         fuse2fs = self._binaries.resolve(SandboxBinary.FUSE2FS)
@@ -357,12 +363,19 @@ class FuseMounter:
         deadline = time.monotonic() + self._options.mount_wait_sec
         while time.monotonic() < deadline:
             if daemon.poll() is not None:
-                msg = f"fuse2fs exited with code {daemon.returncode}"
+                msg = (
+                    f"fuse2fs pid {daemon.pid} ({daemon.args!r}) exited with "
+                    f"code {daemon.returncode} before {mnt} appeared in "
+                    f"{self.MOUNTINFO}"
+                )
                 raise MountError(msg)
             if self.is_mounted(target):
                 return
             time.sleep(self._options.mount_poll_sec)
-        msg = f"{mnt} was not mounted within {self._options.mount_wait_sec}s"
+        msg = (
+            f"{mnt} was not mounted by fuse2fs pid {daemon.pid} "
+            f"({daemon.args!r}) within {self._options.mount_wait_sec}s"
+        )
         raise MountError(msg)
 
 

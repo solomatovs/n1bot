@@ -125,7 +125,8 @@ class UsersTable(PgTable, UserRows, UserSettingsStore, UsersUpsert):
                 await cur.execute(query, params)
                 row = await cur.fetchone()
         except Exception as exc:
-            raise DataUnavailableError(operation, str(exc)) from exc
+            detail = f"query on {self._schema}.users failed: {exc}"
+            raise DataUnavailableError(operation, detail) from exc
 
         if row is None:
             return None
@@ -174,7 +175,10 @@ class UsersTable(PgTable, UserRows, UserSettingsStore, UsersUpsert):
 
         row = await self._one(query, params, "ensure_user")
         if row is None:
-            raise DataUnavailableError("ensure_user", "users row was not returned")
+            detail = (
+                f"upsert of {identifier!r} into {self._schema}.users returned no row"
+            )
+            raise DataUnavailableError("ensure_user", detail)
 
         return row
 
@@ -267,4 +271,5 @@ class UsersTable(PgTable, UserRows, UserSettingsStore, UsersUpsert):
             async with pool.connection() as conn:
                 await conn.execute(query, params)
         except Exception as exc:
-            raise DataUnavailableError(operation, str(exc)) from exc
+            detail = f"statement on {self._schema}.users failed: {exc}"
+            raise DataUnavailableError(operation, detail) from exc

@@ -64,12 +64,15 @@ class AppEntry:
         raw = AppLayers.compose(config_path)
         section = OmegaConf.select(raw, cls.SECTION)
         if section is None:
-            msg = f"в конфиге нет секции {cls.SECTION}: {config_path}"
+            msg = f"{config_path}: section [{cls.SECTION}] is missing"
             raise ValueError(msg)
 
         root = section.get("root")
         if not root:
-            msg = f"{cls.SECTION}.root не задан: chainlit уедет в текущий каталог"
+            msg = (
+                f"{config_path}: section [{cls.SECTION}] expects root as a "
+                f"non-empty path (chainlit app root), got {root!r}"
+            )
             raise ValueError(msg)
 
         session = bind(raw, cls.SESSION_SECTION, SessionConfig)

@@ -189,13 +189,19 @@ class LiveListener(BusWatch):
         if self._failure is None:
             return
 
-        msg = "live listener has failed and the bus is unusable"
+        msg = (
+            "message bus is unusable: the live listener has stopped with "
+            f"{self._failure}"
+        )
         raise MessageBusError(msg) from self._failure
 
     @property
     def backend_pid(self) -> int:
         if self._conn is None:
-            msg = "listener is not connected"
+            msg = (
+                "live listener backend_pid asked while the listener is not "
+                f"connected (state {self._state.value})"
+            )
             raise MessageBusError(msg)
 
         return self._conn.info.backend_pid
@@ -237,7 +243,10 @@ class LiveListener(BusWatch):
         deadline = asyncio.get_running_loop().time() + timeout_sec
         while self._state is not ListenerState.LISTENING:
             if asyncio.get_running_loop().time() > deadline:
-                msg = "listener did not reconnect in time"
+                msg = (
+                    f"live listener did not reach the listening state within "
+                    f"{timeout_sec}s, still {self._state.value}"
+                )
                 raise MessageBusError(msg)
 
             await asyncio.sleep(0.05)
@@ -257,7 +266,11 @@ class LiveListener(BusWatch):
 
                 self._set_state(ListenerState.CONNECTING)
                 await self._close()
-                logger.warning("live listener lost the connection: %s", exc)
+                logger.warning(
+                    "live listener lost the connection, reconnecting in %.1fs: %s",
+                    delay,
+                    exc,
+                )
                 self._ready.set()
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, self.RETRY_MAX_SEC)
@@ -278,7 +291,9 @@ class LiveListener(BusWatch):
 
                 self._set_state(ListenerState.CONNECTING)
                 await self._close()
-                logger.warning("live listener retries after a bus error: %s", exc)
+                logger.warning(
+                    "live listener retries in %.1fs after a bus error: %s", delay, exc
+                )
                 self._ready.set()
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, self.RETRY_MAX_SEC)
@@ -314,7 +329,10 @@ class LiveListener(BusWatch):
             try:
                 pointer = Pointer.parse(notification.payload)
             except ValidationError as exc:
-                msg = f"bad notification payload: {notification.payload!r}"
+                msg = (
+                    f"live listener: notification on {notification.channel} "
+                    f"is not a pointer, got {notification.payload!r}: {exc}"
+                )
                 raise MessageBusError(msg) from exc
 
             await self._handler(pointer)
@@ -396,7 +414,7 @@ class PgMessageBus(MessageBus):
                 for query in self._ddl():
                     await conn.execute(query, prepare=False)
         except (psycopg.Error, PostgresError) as exc:
-            msg = "message bus: setup failed"
+            msg = f"message bus: setup of schema {self._schema} failed: {exc}"
             raise MessageBusError(msg) from exc
 
         logger.info("message bus ready: instance %s", self._instance)
@@ -480,14 +498,20 @@ class PgMessageBus(MessageBus):
         try:
             return UUID(scope.id)
         except ValueError as exc:
-            msg = f"scope id is not a uuid: {scope.id!r}"
+            msg = (
+                f"message bus: scope {scope.kind.value} id must be a uuid, "
+                f"got {scope.id!r}: {exc}"
+            )
             raise MessageBusError(msg) from exc
 
     async def publish(self, scope: Scope, message: AnyMessage, token: LockToken) -> int:
         self._listener.ensure_alive()
         size = Envelope.body_size(message)
         if size > BusLimit.BODY_MAX_BYTES:
-            msg = f"message {message.kind} of {size} bytes exceeds the bus limit"
+            msg = (
+                f"message {message.kind} to {scope.render()} is {size} bytes, "
+                f"the bus limit is {BusLimit.BODY_MAX_BYTES} bytes"
+            )
             raise MessageTooLargeError(msg)
 
         scope_id = self._scope_id(scope)
@@ -541,7 +565,11 @@ class PgMessageBus(MessageBus):
                 )
                 row = await cur.fetchone()
                 if row is None:
-                    msg = "message bus: insert returned no seq"
+                    msg = (
+                        f"message bus: insert of {message.kind} into "
+                        f"{self._schema}.live_events for {scope.render()} "
+                        "returned no seq"
+                    )
                     raise MessageBusError(msg)
 
                 seq = int(row[0])
@@ -557,7 +585,10 @@ class PgMessageBus(MessageBus):
                     prepare=False,
                 )
         except (psycopg.Error, PostgresError) as exc:
-            msg = f"message bus: publish to {scope.render()} failed"
+            msg = (
+                f"message bus: publish of {message.kind} to {scope.render()} "
+                f"failed: {exc}"
+            )
             raise MessageBusError(msg) from exc
 
         return seq
@@ -601,7 +632,10 @@ class PgMessageBus(MessageBus):
         )
         row = await cur.fetchone()
         if row is None:
-            msg = f"lock of {scope.render()} is lost: publish refused"
+            msg = (
+                f"lock of {scope.render()} is not held by token {token.value} "
+                "any more: publish refused"
+            )
             raise LockLostError(msg)
 
     async def command(self, scope: Scope, command: AnyCommand) -> int:
@@ -650,7 +684,11 @@ class PgMessageBus(MessageBus):
                 )
                 row = await cur.fetchone()
                 if row is None:
-                    msg = "message bus: command insert returned no id"
+                    msg = (
+                        f"message bus: insert of command {command.kind} into "
+                        f"{self._schema}.live_commands for {scope.render()} "
+                        "returned no id"
+                    )
                     raise MessageBusError(msg)
 
                 command_id = int(row[0])
@@ -666,7 +704,9 @@ class PgMessageBus(MessageBus):
                     prepare=False,
                 )
         except (psycopg.Error, PostgresError) as exc:
-            msg = f"message bus: command to {scope.render()} failed"
+            msg = (
+                f"message bus: command {command.kind} to {scope.render()} failed: {exc}"
+            )
             raise MessageBusError(msg) from exc
 
         return command_id
@@ -736,7 +776,9 @@ class PgMessageBus(MessageBus):
                 )
                 return cur.rowcount == 1
         except (psycopg.Error, PostgresError) as exc:
-            msg = f"message bus: take of command {command_id} failed"
+            msg = (
+                f"message bus: take of command {command_id} by {instance} failed: {exc}"
+            )
             raise MessageBusError(msg) from exc
 
     async def purge(self, scope: Scope) -> int:
@@ -780,7 +822,7 @@ class PgMessageBus(MessageBus):
                     prepare=False,
                 )
         except (psycopg.Error, PostgresError) as exc:
-            msg = f"message bus: purge of {scope.render()} failed"
+            msg = f"message bus: purge of {scope.render()} failed: {exc}"
             raise MessageBusError(msg) from exc
 
         self._last_seen.pop(scope, None)
@@ -796,7 +838,7 @@ class PgMessageBus(MessageBus):
                 await cur.execute("select pg_notification_queue_usage()", prepare=False)
                 row = await cur.fetchone()
         except (psycopg.Error, PostgresError) as exc:
-            msg = "message bus: queue usage is not available"
+            msg = f"message bus: select pg_notification_queue_usage() failed: {exc}"
             raise MessageBusError(msg) from exc
 
         if row is None:
@@ -848,7 +890,7 @@ class PgMessageBus(MessageBus):
                     prepare=False,
                 )
         except (psycopg.Error, PostgresError) as exc:
-            msg = "message bus: purge of idle scopes failed"
+            msg = f"message bus: purge of scopes idle for {max_age_sec}s failed: {exc}"
             raise MessageBusError(msg) from exc
 
         return removed
@@ -892,7 +934,10 @@ class PgMessageBus(MessageBus):
                 )
                 return await cur.fetchall()
         except (psycopg.Error, PostgresError) as exc:
-            msg = f"message bus: read of {scope.render()} failed"
+            msg = (
+                f"message bus: read of {scope.render()} after seq {after_seq} "
+                f"failed: {exc}"
+            )
             raise MessageBusError(msg) from exc
 
     def _to_envelope(self, scope: Scope, row: DictRow) -> Envelope:
@@ -940,7 +985,10 @@ class PgMessageBus(MessageBus):
                     failures.append(exc)
 
             if failures:
-                what = f"{scope.render()}: listener failed on seq {envelope.seq}"
+                what = (
+                    f"{scope.render()}: {len(failures)} listener(s) failed on "
+                    f"{envelope.message.kind} seq {envelope.seq}"
+                )
                 raise ListenerFailedError(what, failures)
 
     async def _catch_up_all(self) -> None:
@@ -975,7 +1023,10 @@ class PgMessageBus(MessageBus):
                 )
                 row = await cur.fetchone()
         except (psycopg.Error, PostgresError) as exc:
-            msg = f"message bus: read of command {pointer.seq} failed"
+            msg = (
+                f"message bus: read of command {pointer.seq} for "
+                f"{pointer.scope.render()} failed: {exc}"
+            )
             raise MessageBusError(msg) from exc
 
         if row is None:
@@ -994,5 +1045,8 @@ class PgMessageBus(MessageBus):
                 failures.append(exc)
 
         if failures:
-            what = f"{pointer.scope.render()}: command listener failed on {pointer.seq}"
+            what = (
+                f"{pointer.scope.render()}: {len(failures)} command listener(s) "
+                f"failed on {command.kind} {pointer.seq}"
+            )
             raise ListenerFailedError(what, failures)

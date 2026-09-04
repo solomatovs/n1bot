@@ -135,8 +135,9 @@ class ClickHouseKerberos:
     def client(cls, auth: KerberosAuthBase) -> dict[str, Any]:
         if isinstance(auth, DelegatedAuth):
             msg = (
-                "delegated clickhouse auth is resolved by the application: "
-                "the connection body expects a call ticket"
+                f"delegated clickhouse auth ({auth.method}) is resolved by the "
+                "application: the connection body expects a call ticket, "
+                "not the delegated section"
             )
             raise ClickHouseAuthError(msg)
 

@@ -89,7 +89,10 @@ class PgLiveLocks(LiveLocks):
         try:
             return UUID(scope.id)
         except ValueError as exc:
-            msg = f"scope id is not a uuid: {scope.id!r}"
+            msg = (
+                f"live locks: scope {scope.kind.value} id must be a uuid, "
+                f"got {scope.id!r}: {exc}"
+            )
             raise LockStoreError(msg) from exc
 
     async def acquire(
@@ -181,7 +184,10 @@ class PgLiveLocks(LiveLocks):
                     prepare=False,
                 )
         except (psycopg.Error, PostgresError) as exc:
-            msg = f"live locks: acquire of {scope.render()} failed"
+            msg = (
+                f"live locks: {mode.value} acquire of {scope.render()} for "
+                f"{purpose.value} by {self._instance} failed: {exc}"
+            )
             raise LockStoreError(msg) from exc
 
         logger.info(
@@ -252,7 +258,7 @@ class PgLiveLocks(LiveLocks):
             async with pool.connection() as conn:
                 return await self._holders(conn, scope)
         except (psycopg.Error, PostgresError) as exc:
-            msg = f"live locks: holders of {scope.render()} failed"
+            msg = f"live locks: reading holders of {scope.render()} failed: {exc}"
             raise LockStoreError(msg) from exc
 
     async def heartbeat(self, token: LockToken) -> bool:
@@ -279,7 +285,7 @@ class PgLiveLocks(LiveLocks):
                 )
                 return cur.rowcount == 1
         except (psycopg.Error, PostgresError) as exc:
-            msg = "live locks: heartbeat failed"
+            msg = f"live locks: heartbeat of token {token.value} failed: {exc}"
             raise LockStoreError(msg) from exc
 
     async def setup(self) -> None:
@@ -330,7 +336,7 @@ class PgLiveLocks(LiveLocks):
                 for statement in ddl:
                     await conn.execute(statement, prepare=False)
         except (psycopg.Error, PostgresError) as exc:
-            msg = "live locks: setup failed"
+            msg = f"live locks: setup of schema {self._schema} failed: {exc}"
             raise LockStoreError(msg) from exc
 
     async def register_instance(self) -> None:
@@ -366,7 +372,11 @@ class PgLiveLocks(LiveLocks):
                     prepare=False,
                 )
         except (psycopg.Error, PostgresError) as exc:
-            msg = "live locks: instance registration failed"
+            msg = (
+                f"live locks: registration of instance {self._instance} "
+                f"({self._app.value} on {self._cluster.host}) in "
+                f"{self._schema}.live_instances failed: {exc}"
+            )
             raise LockStoreError(msg) from exc
 
     async def release(self, token: LockToken) -> None:
@@ -385,7 +395,7 @@ class PgLiveLocks(LiveLocks):
                     prepare=False,
                 )
         except (psycopg.Error, PostgresError) as exc:
-            msg = "live locks: release failed"
+            msg = f"live locks: release of token {token.value} failed: {exc}"
             raise LockStoreError(msg) from exc
 
     async def release_all(self, holder: str) -> int:
@@ -408,7 +418,7 @@ class PgLiveLocks(LiveLocks):
                 )
                 return cur.rowcount
         except (psycopg.Error, PostgresError) as exc:
-            msg = "live locks: release_all failed"
+            msg = f"live locks: release of all locks of {holder} failed: {exc}"
             raise LockStoreError(msg) from exc
 
     async def reap(self) -> Sequence[StaleLock]:
@@ -440,7 +450,10 @@ class PgLiveLocks(LiveLocks):
                 )
                 rows = await cur.fetchall()
         except (psycopg.Error, PostgresError) as exc:
-            msg = "live locks: reap failed"
+            msg = (
+                f"live locks: reap of expired locks in {self._schema}.live_locks "
+                f"failed: {exc}"
+            )
             raise LockStoreError(msg) from exc
 
         return [self._stale(row) for row in rows]
@@ -483,7 +496,10 @@ class PgLiveLocks(LiveLocks):
                 )
                 rows = await cur.fetchall()
         except (psycopg.Error, PostgresError) as exc:
-            msg = "live locks: reap of instances failed"
+            msg = (
+                "live locks: reap of instances silent for over "
+                f"{self._cluster.lock_ttl_sec}s failed: {exc}"
+            )
             raise LockStoreError(msg) from exc
 
         return [str(row[0]) for row in rows]
@@ -548,5 +564,10 @@ class LockReaper:
             await asyncio.sleep(self._period_sec)
             try:
                 await self.sweep()
-            except (LockStoreError, MessageBusError, PayloadStoreError):
-                logger.warning("lock reaper sweep failed", exc_info=True)
+            except (LockStoreError, MessageBusError, PayloadStoreError) as exc:
+                logger.warning(
+                    "lock reaper sweep failed, next try in %ds: %s",
+                    self._period_sec,
+                    exc,
+                    exc_info=True,
+                )

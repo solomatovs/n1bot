@@ -97,7 +97,11 @@ class ChatPage:
 
             self.page.wait_for_timeout(100)
 
-        raise ChatPageError(f"chat start is not drawn\n{self.log.describe()}")
+        msg = (
+            f"chat page: no {self.ON_CHAT_START!r} step in the socket log within "
+            f"{timeout_sec}s\n{self.log.describe()}"
+        )
+        raise ChatPageError(msg)
 
     def has_profile_selector(self) -> bool:
         """Есть ли на странице селектор профилей чата."""
@@ -107,7 +111,9 @@ class ChatPage:
         """Текст селектора профилей: какой профиль выбран сейчас."""
         selector = self.page.locator(Selector.PROFILES.value)
         if not selector.count():
-            raise ChatPageError(f"profile selector is not drawn\n{self.dom()[:2000]}")
+            raise ChatPageError(
+                self._missing("profile selector", Selector.PROFILES.value)
+            )
 
         return selector.first.inner_text().strip()
 
@@ -115,7 +121,9 @@ class ChatPage:
         """Открывает меню профилей и отдаёт имена пунктов в порядке DOM."""
         selector = self.page.locator(Selector.PROFILES.value)
         if not selector.count():
-            raise ChatPageError(f"profile selector is not drawn\n{self.dom()[:2000]}")
+            raise ChatPageError(
+                self._missing("profile selector", Selector.PROFILES.value)
+            )
 
         selector.first.click()
         self._await(Selector.PROFILE_ITEM.value)
@@ -143,7 +151,9 @@ class ChatPage:
         """Открыто ли меню: состояние держит сам триггер (aria-expanded)."""
         selector = self.page.locator(Selector.PROFILES.value)
         if not selector.count():
-            raise ChatPageError(f"profile selector is not drawn\n{self.dom()[:2000]}")
+            raise ChatPageError(
+                self._missing("profile selector", Selector.PROFILES.value)
+            )
 
         return selector.first.get_attribute("aria-expanded") == "true"
 
@@ -160,7 +170,10 @@ class ChatPage:
         """Выбирает профиль из открытого меню и ждёт перезапуска чата."""
         item = self.page.locator(Selector.of_profile(name))
         if not item.count():
-            raise ChatPageError(f"profile {name!r} is not in menu\n{self.dom()[:2000]}")
+            msg = self._missing(
+                f"profile menu item {name!r}", Selector.of_profile(name)
+            )
+            raise ChatPageError(msg)
 
         self.log.clear()
         item.first.click()
@@ -199,7 +212,8 @@ class ChatPage:
     def _expand(self, step_type: str) -> None:
         node = self.page.locator(Selector.of_type(step_type))
         if not node.count():
-            raise ChatPageError(f"step {step_type} is not drawn\n{self.dom()[:2000]}")
+            msg = self._missing(f"step {step_type}", Selector.of_type(step_type))
+            raise ChatPageError(msg)
 
         node.first.click()
         self.page.wait_for_timeout(300)
@@ -207,7 +221,8 @@ class ChatPage:
     def _expand_last(self, step_type: str) -> None:
         node = self.page.locator(Selector.of_type(step_type))
         if not node.count():
-            raise ChatPageError(f"step {step_type} is not drawn\n{self.dom()[:2000]}")
+            msg = self._missing(f"step {step_type}", Selector.of_type(step_type))
+            raise ChatPageError(msg)
 
         node.last.click()
         self.page.wait_for_timeout(300)
@@ -228,9 +243,11 @@ class ChatPage:
             self.page.wait_for_timeout(50)
 
         got = len(self.log.tokens_of(step_id))
-        raise ChatPageError(
-            f"step {step_id} got {got} tokens, expected {count}\n{self.log.describe()}"
+        msg = (
+            f"step {step_id}: expected {count} tokens within {timeout_sec}s, "
+            f"got {got}\n{self.log.describe()}"
         )
+        raise ChatPageError(msg)
 
     def await_idle(self, timeout_sec: float = 60.0) -> None:
         """Ждёт конца хода: task_end, пришедший после task_start этого хода.
@@ -245,7 +262,11 @@ class ChatPage:
 
             self.page.wait_for_timeout(100)
 
-        raise ChatPageError(f"turn is not finished\n{self.log.describe()}")
+        msg = (
+            f"chat page: no task_end after task_start within {timeout_sec}s, "
+            f"the turn is still running\n{self.log.describe()}"
+        )
+        raise ChatPageError(msg)
 
     def _turn_finished(self) -> bool:
         started = -1
@@ -293,4 +314,8 @@ class ChatPage:
         try:
             self.page.wait_for_selector(selector, timeout=wait, state="attached")
         except PlaywrightTimeout as exc:
-            raise ChatPageError(f"selector is not found: {selector}") from exc
+            msg = f"selector {selector!r} is not attached within {wait}ms: {exc}"
+            raise ChatPageError(msg) from exc
+
+    def _missing(self, what: str, selector: str) -> str:
+        return f"{what} is not drawn by {selector!r}\n{self.dom()[:2000]}"

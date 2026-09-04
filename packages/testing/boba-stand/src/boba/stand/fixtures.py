@@ -28,9 +28,11 @@ def raw_config() -> DictConfig:
     """Конфиг приложения со стендовым слоем conf/stand.toml поверх."""
     RawConfig.load(ConfigLocator.path())
 
-    raw = StandLayers.compose(ConfigLocator.path())
+    path = ConfigLocator.path()
+    raw = StandLayers.compose(path)
     if not isinstance(raw, DictConfig):
-        msg = "stand config did not compose into a table"
+        got = type(raw).__name__
+        msg = f"stand config {path}: expected to compose into a table, got {got}"
         raise TypeError(msg)
 
     return raw

@@ -241,11 +241,17 @@ class PostgresConfig(ConnectionProfileBase):
     def service_name(self) -> str:
         """SPN сервера в форме hostbased: <service>@<host>; как его ищет libpq."""
         if not self.host:
-            msg = "postgres connection: kerberos needs host, hostaddr is not enough"
+            msg = (
+                f"postgres connection to {self.hostaddr!r}: kerberos SPN needs host, "
+                "hostaddr alone is not enough"
+            )
             raise ValueError(msg)
 
         if not isinstance(self.auth, KerberosAuthBase):
-            msg = f"postgres connection: {self.auth.method} has no kerberos service"
+            msg = (
+                f"postgres connection to {self.host}: auth {self.auth.method} "
+                "has no kerberos service name, expected a kerberos_* auth"
+            )
             raise ValueError(msg)
 
         return f"{PostgresKerberos.service_of(self.auth)}@{self.host}"
@@ -280,15 +286,24 @@ class PostgresConfig(ConnectionProfileBase):
     def _validate(self) -> Self:
         # у делегированного соединения роль — принципал сессии, он известен на вызове
         if not self.dbname:
-            msg = "postgres connection: dbname обязателен"
+            msg = (
+                "postgres connection: dbname must be a non-empty database name, "
+                f"got {self.dbname!r}"
+            )
             raise ValueError(msg)
+
         if not (self.host or self.hostaddr):
-            msg = "postgres connection: host или hostaddr обязателен"
+            msg = (
+                "postgres connection: host or hostaddr must be set, "
+                f"got host={self.host!r} hostaddr={self.hostaddr!r}"
+            )
             raise ValueError(msg)
+
         if self.pool.max_size is not None and self.pool.max_size < self.pool.min_size:
             msg = (
-                f"postgres connection: pool.max_size ({self.pool.max_size}) "
-                f"должен быть ≥ pool.min_size ({self.pool.min_size})"
+                f"postgres connection to {self.host}: pool.max_size "
+                f"({self.pool.max_size}) must be >= pool.min_size "
+                f"({self.pool.min_size})"
             )
             raise ValueError(msg)
 
@@ -297,8 +312,9 @@ class PostgresConfig(ConnectionProfileBase):
 
         if self.connect_timeout is None:
             msg = (
-                f"postgres connection: {self.auth.method} needs connect_timeout: "
-                "the GSS handshake runs under a process-wide lock"
+                f"postgres connection to {self.host}: auth {self.auth.method} "
+                "requires connect_timeout (the GSS handshake runs under a "
+                "process-wide lock), got none"
             )
             raise ValueError(msg)
 

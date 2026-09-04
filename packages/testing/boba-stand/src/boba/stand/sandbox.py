@@ -30,6 +30,7 @@ def plugin_rootfs(package: str) -> Path:
     """Образ корня пакета: make plugin-rootfs PLUGIN=<пакет>."""
     return PLUGIN_IMAGES / package / "rootfs.ext4"
 
+
 """Код пакетов монтируется одним каталогом: точку /usr/src несёт rootfs."""
 
 ADDRESS_SPACE = 16 * 1024 * 1024 * 1024
@@ -109,7 +110,10 @@ class SandboxLayout:
     def models_dir() -> Path:
         base = os.environ.get("BOBA_BASE")
         if base is None:
-            msg = "BOBA_BASE is required to locate model data for the sandbox"
+            msg = (
+                "locating model data for the sandbox: environment variable "
+                "BOBA_BASE is not set, expected the application base directory"
+            )
             raise RuntimeError(msg)
 
         return Path(base) / "models"
@@ -146,7 +150,11 @@ def _place(raw: dict[str, Any], name: str, value: Any) -> None:
         raw[group_name] = group
         return
 
-    msg = f"профиль: поле {name!r} не принадлежит ни одной группе"
+    groups = list(SandboxProfile.GROUPS)
+    msg = (
+        f"sandbox profile: flat field {name!r} belongs to none of the "
+        f"profile groups {groups}"
+    )
     raise KeyError(msg)
 
 
@@ -223,7 +231,8 @@ def plugin_launch_spec(section: str) -> LaunchSpec:
     table = EntryPointPlugins.discover()
     plugin = table.get(section)
     if plugin is None:
-        msg = f"plugin {section!r} is not installed"
+        installed = sorted(table)
+        msg = f"tool plugin {section!r} is not among installed entry points {installed}"
         raise RuntimeError(msg)
 
     return LaunchSpec(

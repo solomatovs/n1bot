@@ -76,7 +76,10 @@ class KerberosAuthBase(BaseModel):
 
     def source_principal(self) -> str:
         """Принципал, от чьего имени идёт соединение; у делегирования его нет."""
-        msg = f"{type(self).__name__}: principal is known only at call time"
+        msg = (
+            f"{type(self).__name__} (method={self.method}): source principal "
+            "is not part of the config, it is known only at call time"
+        )
         raise KerberosError(msg)
 
     def trace(self) -> str:
@@ -177,7 +180,10 @@ class TicketAuth(KerberosAuthBase):
     def service_name(self) -> str:
         """SPN билета; None здесь невозможен — его ловит валидатор."""
         if self.service is None:
-            msg = "ticket service is not set"
+            msg = (
+                f"ticket auth for principal {self.principal!r}: service (SPN) "
+                "is not set, expected service@host"
+            )
             raise KerberosError(msg)
 
         return self.service
@@ -188,7 +194,7 @@ class TicketAuth(KerberosAuthBase):
         try:
             base64.b64decode(value.get_secret_value(), validate=True)
         except (binascii.Error, ValueError) as exc:
-            msg = "ticket ccache: base64 expected"
+            msg = f"ticket ccache: expected base64 text, decoding failed: {exc}"
             raise ValueError(msg) from exc
 
         return value
@@ -196,12 +202,18 @@ class TicketAuth(KerberosAuthBase):
     @model_validator(mode="after")
     def _service_is_named(self) -> Self:
         if self.service is None:
-            msg = "ticket service is required: it names the SPN of the ticket"
+            msg = (
+                f"ticket auth for principal {self.principal!r}: service is "
+                "required (it names the SPN of the ticket), got none"
+            )
             raise ValueError(msg)
 
         name, sep, host = self.service.partition("@")
         if not sep or not name or not host:
-            msg = f"ticket service {self.service!r} is not service@host"
+            msg = (
+                f"ticket auth for principal {self.principal!r}: service must "
+                f"be service@host, got {self.service!r}"
+            )
             raise ValueError(msg)
 
         return self

@@ -102,7 +102,8 @@ class ToolFrame(BaseModel):
         try:
             return model.model_validate_json(self.header)
         except ValidationError as exc:
-            msg = f"frame header does not match {model.__name__}: {exc}"
+            shown = self.header[:200]
+            msg = f"frame header {shown!r} does not match {model.__name__}: {exc}"
             raise FrameProtocolError(msg) from exc
 
     @property
@@ -123,11 +124,11 @@ class FrameCodec:
 
     def __init__(self, header_limit: int, body_limit: int) -> None:
         if header_limit <= 0:
-            msg = f"header_limit must be positive, got {header_limit}"
+            msg = f"FrameCodec header_limit must be positive, got {header_limit}"
             raise ValueError(msg)
 
         if body_limit <= 0:
-            msg = f"body_limit must be positive, got {body_limit}"
+            msg = f"FrameCodec body_limit must be positive, got {body_limit}"
             raise ValueError(msg)
 
         self._header_limit = header_limit
@@ -139,13 +140,16 @@ class FrameCodec:
         копируется — оно уходит в запись тем же объектом."""
         if len(header) > self._header_limit:
             msg = (
-                f"frame header of {len(header)} bytes exceeds "
-                f"{self._header_limit} bytes"
+                f"outbound frame header of {len(header)} bytes exceeds "
+                f"the limit of {self._header_limit} bytes"
             )
             raise FrameProtocolError(msg)
 
         if len(body) > self._body_limit:
-            msg = f"frame body of {len(body)} bytes exceeds {self._body_limit} bytes"
+            msg = (
+                f"outbound frame body of {len(body)} bytes exceeds "
+                f"the limit of {self._body_limit} bytes"
+            )
             raise FrameProtocolError(msg)
 
         prefix = b"".join(
@@ -200,7 +204,10 @@ class FrameCodec:
         if not self._buffer:
             return
 
-        msg = f"stream ended inside a frame: {len(self._buffer)} bytes pending"
+        msg = (
+            f"frame stream ended inside a frame: {len(self._buffer)} bytes "
+            "of an unfinished frame are pending at EOF"
+        )
         raise FrameProtocolError(msg)
 
     def _next_frame(self) -> ToolFrame | None:
@@ -216,9 +223,7 @@ class FrameCodec:
 
         return frame
 
-    def _parse_at(
-        self, view: memoryview, offset: int
-    ) -> tuple[ToolFrame, int] | None:
+    def _parse_at(self, view: memoryview, offset: int) -> tuple[ToolFrame, int] | None:
         """Кадр по смещению view; None — данных на целый кадр не хватает."""
         remaining = len(view) - offset
         if remaining < self.LEN_BYTES:
@@ -226,7 +231,10 @@ class FrameCodec:
 
         header_len = int.from_bytes(view[offset : offset + self.LEN_BYTES], "big")
         if header_len > self._header_limit:
-            msg = f"frame header of {header_len} bytes exceeds {self._header_limit}"
+            msg = (
+                f"inbound frame header of {header_len} bytes exceeds "
+                f"the limit of {self._header_limit} bytes"
+            )
             raise FrameProtocolError(msg)
 
         body_len_at = offset + self.LEN_BYTES + header_len
@@ -236,7 +244,10 @@ class FrameCodec:
         body_len_raw = view[body_len_at : body_len_at + self.LEN_BYTES]
         body_len = int.from_bytes(body_len_raw, "big")
         if body_len > self._body_limit:
-            msg = f"frame body of {body_len} bytes exceeds {self._body_limit}"
+            msg = (
+                f"inbound frame body of {body_len} bytes exceeds "
+                f"the limit of {self._body_limit} bytes"
+            )
             raise FrameProtocolError(msg)
 
         total = body_len_at + self.LEN_BYTES + body_len
@@ -366,8 +377,9 @@ class ToolIo:
             header_len = int.from_bytes(head_len_raw, "big")
             if header_len > FrameLimit.HEADER_BYTES:
                 msg = (
-                    f"frame header of {header_len} bytes exceeds "
-                    f"{FrameLimit.HEADER_BYTES}"
+                    f"inbound fd {self._inbound_fd}: frame header of "
+                    f"{header_len} bytes exceeds the limit of "
+                    f"{FrameLimit.HEADER_BYTES} bytes"
                 )
                 raise FrameProtocolError(msg)
 
@@ -379,8 +391,9 @@ class ToolIo:
             body_len = int.from_bytes(body_len_raw, "big")
             if body_len > FrameLimit.BODY_BYTES:
                 msg = (
-                    f"frame body of {body_len} bytes exceeds "
-                    f"{FrameLimit.BODY_BYTES}"
+                    f"inbound fd {self._inbound_fd}: frame body of "
+                    f"{body_len} bytes exceeds the limit of "
+                    f"{FrameLimit.BODY_BYTES} bytes"
                 )
                 raise FrameProtocolError(msg)
 
@@ -442,7 +455,10 @@ class ToolIo:
                 if at_boundary and not collected:
                     return None
 
-                msg = "stream ended inside a frame"
+                msg = (
+                    f"inbound fd {self._inbound_fd}: stream ended inside a "
+                    f"frame after {len(collected)} of {count} expected bytes"
+                )
                 raise FrameProtocolError(msg)
 
             collected.extend(chunk)
@@ -452,7 +468,10 @@ class ToolIo:
     @staticmethod
     def _require(data: bytes | None) -> bytes:
         if data is None:
-            msg = "stream ended inside a frame"
+            msg = (
+                "inbound frame stream ended inside a frame: the header or "
+                "body length prefix is missing"
+            )
             raise FrameProtocolError(msg)
 
         return data
@@ -464,7 +483,10 @@ class ToolIo:
         while filled < target.nbytes:
             got = os.readv(self._inbound_fd, [target[filled:]])
             if got == 0:
-                msg = "stream ended inside a frame"
+                msg = (
+                    f"inbound fd {self._inbound_fd}: stream ended inside a "
+                    f"frame body after {filled} of {target.nbytes} expected bytes"
+                )
                 raise FrameProtocolError(msg)
 
             filled += got

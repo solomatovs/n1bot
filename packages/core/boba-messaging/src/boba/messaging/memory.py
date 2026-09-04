@@ -60,7 +60,8 @@ class MemoryMessageBus(MessageBus):
                 message=message,
             )
         except ValidationError as exc:
-            raise MessageTooLargeError(str(exc)) from exc
+            msg = f"publishing {message.kind.value} to {scope.render()}: {exc}"
+            raise MessageTooLargeError(msg) from exc
 
         stored.append(envelope)
 
@@ -72,9 +73,9 @@ class MemoryMessageBus(MessageBus):
                 failures.append(exc)
 
         if failures:
-            raise ListenerFailedError(
-                f"{scope}: listener failed on seq {seq}", failures
-            )
+            kind = message.kind.value
+            what = f"{scope.render()}: listener failed on {kind} seq {seq}"
+            raise ListenerFailedError(what, failures)
 
         return seq
 
@@ -95,7 +96,8 @@ class MemoryMessageBus(MessageBus):
                 failures.append(exc)
 
         if failures:
-            what = f"{scope.render()}: command listener failed on {command_id}"
+            kind = command.kind.value
+            what = f"{scope.render()}: command listener failed on {kind} #{command_id}"
             raise ListenerFailedError(what, failures)
 
         return command_id

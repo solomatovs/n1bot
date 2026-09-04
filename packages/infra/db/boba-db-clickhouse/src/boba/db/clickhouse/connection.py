@@ -19,7 +19,11 @@ PROBE_SQL = "select version()"
 
 async def _probe(profile: ConnectionProfileBase) -> str:
     if not isinstance(profile, ClickHouseConfig):
-        raise ConnectionTypeError(f"clickhouse probe got a {profile.kind!r} profile")
+        msg = (
+            "clickhouse probe expects a ClickHouseConfig profile, "
+            f"got kind {profile.kind!r}"
+        )
+        raise ConnectionTypeError(msg)
 
     async with PayloadClickHouse.opened_config(profile) as client:
         result = await client.query(PROBE_SQL)

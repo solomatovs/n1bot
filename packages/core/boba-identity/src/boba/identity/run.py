@@ -30,7 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from boba.cancellation import RunCancellation, StopReason
 from boba.identity.context import CallContext
-from boba.identity.errors import RefusalError
+from boba.identity.errors import FailureText, RefusalError
 from boba.toolkit.channels import CallOutcome
 
 __all__ = [
@@ -192,7 +192,11 @@ class RunRegistry:
         """Владелец с лентой чата; без него — RefusalError(RunRefusal.NO_TURN)."""
         port = cls.port_of(scope_id)
         if port is None:
-            raise RefusalError(RunRefusal.NO_TURN, "the turn is already finished")
+            msg = (
+                f"run registry: scope {scope_id!r} has no active run, "
+                "the turn is already finished"
+            )
+            raise RefusalError(RunRefusal.NO_TURN, msg)
 
         return port
 
@@ -231,8 +235,14 @@ class RunRegistry:
         loop, observer = notify
         try:
             loop.call_soon_threadsafe(observer, call_id, stream)
-        except RuntimeError:
-            logger.warning("stream %s opened after the run loop closed", call_id)
+        except RuntimeError as exc:
+            logger.warning(
+                "run registry of scope %s: stream %s opened after the run loop "
+                "closed, observer not notified: %s",
+                self.scope_id,
+                call_id,
+                exc,
+            )
 
     def stream(self, call_id: str) -> LiveStream | None:
         """Живой журнал вызова; None — вызов не журналируется или закончился."""
@@ -279,7 +289,9 @@ class RunRegistry:
 
         # новый запуск той же области: предыдущий дорабатывать незачем
         logger.warning(
-            "scope %s already had an active run; stopping it", registry.scope_id
+            "run registry: scope %s already had an active run, "
+            "stopping the previous one as superseded",
+            registry.scope_id,
         )
         stale.cancellation.cancel(StopReason.SUPERSEDED)
 
@@ -336,9 +348,16 @@ class BackgroundRuns:
     def _settle(self, task: asyncio.Task[object]) -> None:
         self._tasks.discard(task)
         if task.cancelled():
-            logger.warning("background run %s was cancelled", task.get_name())
+            logger.warning(
+                "background run %s was cancelled before finishing", task.get_name()
+            )
             return
 
         error = task.exception()
         if error is not None:
-            logger.error("background run %s crashed", task.get_name(), exc_info=error)
+            logger.error(
+                "background run %s crashed: %s",
+                task.get_name(),
+                FailureText.of(error),
+                exc_info=error,
+            )

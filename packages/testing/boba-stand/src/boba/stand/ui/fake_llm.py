@@ -96,7 +96,11 @@ class ScenarioName(StrEnum):
             if name.value in text:
                 return name
 
-        raise ScenarioError(f"no scenario in message: {text[:80]!r}")
+        markers = [name.value for name in ordered]
+        msg = (
+            f"fake llm: none of the scenario markers {markers} in message {text[:80]!r}"
+        )
+        raise ScenarioError(msg)
 
 
 @dataclass
@@ -117,9 +121,12 @@ class ToolCallSpec:
     def __post_init__(self) -> None:
         parsed = json.loads(self.arguments)
         if not isinstance(parsed, dict):
-            raise ScenarioError(
-                f"tool call arguments are not an object: {self.arguments}"
+            got = type(parsed).__name__
+            msg = (
+                f"scripted call {self.call_id} of {self.name}: arguments expect a "
+                f"JSON object, got {got}: {self.arguments[:200]}"
             )
+            raise ScenarioError(msg)
 
         if self.INTENT_FIELD not in parsed:
             parsed[self.INTENT_FIELD] = f"stand call of {self.name}"
@@ -211,7 +218,15 @@ class ScenarioBook:
         }
         build = builders.get(name)
         if build is None:
-            raise ScenarioError(f"scenario is not scripted: {name}")
+            scripted: list[str] = []
+            for scenario in builders:
+                scripted.append(scenario.value)
+
+            msg = (
+                f"fake llm: scenario {name.value!r} is not scripted, "
+                f"known are {sorted(scripted)}"
+            )
+            raise ScenarioError(msg)
 
         return build()
 
@@ -226,12 +241,15 @@ class ScenarioBook:
         try:
             request = json.loads(tail.strip())
         except json.JSONDecodeError as exc:
-            msg = f"scenario:call without json: {tail[:120]!r}"
+            msg = (
+                f"scenario:call expects a JSON object after the marker, "
+                f"got {tail[:120]!r}: {exc}"
+            )
             raise ScenarioError(msg) from exc
 
         name = request.get("name")
         if not name:
-            msg = f"scenario:call without tool name: {tail[:120]!r}"
+            msg = f"scenario:call expects a 'name' key in its JSON, got {tail[:120]!r}"
             raise ScenarioError(msg)
 
         digest = hashlib.sha256(tail.encode("utf-8")).hexdigest()[:8]
@@ -428,7 +446,12 @@ class FakeLlmApp:
     def _last_user_text(payload: dict[str, Any]) -> str:
         messages = payload.get("messages")
         if not messages:
-            raise ScenarioError("request has no messages")
+            keys = sorted(payload)
+            msg = (
+                f"fake llm request: expected a non-empty 'messages' list, "
+                f"got keys {keys}"
+            )
+            raise ScenarioError(msg)
 
         for message in reversed(messages):
             if message.get("role") != "user":
@@ -438,7 +461,11 @@ class FakeLlmApp:
             if isinstance(content, str):
                 return content
 
-        raise ScenarioError("request has no user message")
+        roles = [message.get("role") for message in messages]
+        msg = (
+            f"fake llm request: no user message with string content among roles {roles}"
+        )
+        raise ScenarioError(msg)
 
     def _completion(self, script: TurnScript) -> dict[str, Any]:
         """Ответ без стрима: текст, рассуждения и вызовы приходят разом."""
