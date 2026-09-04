@@ -112,7 +112,7 @@ WEB_PROJECT     := $(WEB_DIR)/web/workflow
 VENV_PYTHON     ?= $(SRC_DIR)/.venv/bin/python
 WEB_DEV_NAME    ?= boba-web-dev
 WEB_DEV_PORT    ?= 5173
-BOBA_URL_PREFIX ?= /boba-debug
+BOBA_URL_PREFIX ?= /boba-studio-debug
 WEB_DEV_URL      = http://127.0.0.1:$(WEB_DEV_PORT)$(BOBA_URL_PREFIX)/workflow-dev/
 WEB_DEV_WAIT    ?= 180
 
