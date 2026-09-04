@@ -15,10 +15,19 @@ CatalogOpError — порция операций не применима к сн
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from typing import ClassVar
 from uuid import UUID
 
-from boba.catalog import CatalogSnapshot, OperationList
+from boba.catalog import (
+    CatalogSnapshot,
+    ChangeStatus,
+    OperationList,
+    SourceDiff,
+    SourceOperationList,
+    SourceSnapshot,
+    TreeNode,
+)
 from boba.catalog_service.config import CatalogConfig
 from boba.catalog_service.records import (
     AuthorVia,
@@ -32,13 +41,21 @@ from boba.catalog_service.records import (
     NodePosition,
     RebaseResult,
     ShareTargetKind,
+    Source,
+    SourceConnection,
+    SourceDraft,
+    SourceDraftState,
+    SourceSpec,
+    SourceVersion,
     Version,
+    VersionOrigin,
     View,
     ViewLayout,
     ViewShare,
     ViewSpec,
     ViewState,
 )
+from boba.catalog_service.source_store import SourceStore
 from boba.catalog_service.store import CatalogStore
 from boba.identity.context import Scope, Subject
 from boba.identity.locks import LockToken
@@ -48,18 +65,30 @@ __all__ = ["CatalogService"]
 
 
 class CatalogService:
-    """Сценарии каталога от имени субъекта поверх CatalogStore и шины."""
+    """Сценарии каталога от имени субъекта поверх CatalogStore, SourceStore и
+    шины."""
+
+    FIRST_COMPARABLE_VERSION: ClassVar[int] = 2
 
     def __init__(
-        self, store: CatalogStore, cfg: CatalogConfig, bus: MessageBus
+        self,
+        store: CatalogStore,
+        sources: SourceStore,
+        cfg: CatalogConfig,
+        bus: MessageBus,
     ) -> None:
         self._store = store
+        self._sources = sources
         self._cfg = cfg
         self._bus = bus
 
     @property
     def store(self) -> CatalogStore:
         return self._store
+
+    @property
+    def sources(self) -> SourceStore:
+        return self._sources
 
     @property
     def bus(self) -> MessageBus:
@@ -336,6 +365,225 @@ class CatalogService:
             return share.target == str(subject.user_id)
 
         return share.target in subject.roles
+
+    # --- источники ---
+
+    async def list_sources(self, subject: Subject) -> Sequence[Source]:
+        self._require_view(subject)
+
+        return await self._sources.list_sources()
+
+    async def source(self, subject: Subject, source_id: UUID) -> Source:
+        self._require_view(subject)
+
+        return await self._sources.get_source(source_id)
+
+    async def create_source(self, subject: Subject, spec: SourceSpec) -> Source:
+        self._require_edit(subject)
+
+        source = await self._sources.create_source(spec, subject.user_id)
+        await self._source_changed(subject, source.id, ChangeAction.CREATED)
+
+        return source
+
+    async def update_source(
+        self, subject: Subject, source_id: UUID, spec: SourceSpec
+    ) -> Source:
+        self._require_edit(subject)
+
+        source = await self._sources.update_source(source_id, spec)
+        await self._source_changed(subject, source_id, ChangeAction.UPDATED)
+
+        return source
+
+    async def delete_source(self, subject: Subject, source_id: UUID) -> bool:
+        self._require_edit(subject)
+
+        deleted = await self._sources.delete_source(source_id)
+        if not deleted:
+            return False
+
+        await self._source_changed(subject, source_id, ChangeAction.DELETED)
+
+        return True
+
+    async def source_connections(
+        self, subject: Subject, source_id: UUID
+    ) -> Sequence[SourceConnection]:
+        self._require_view(subject)
+
+        return await self._sources.connections_of(source_id)
+
+    async def bind_connection(
+        self, subject: Subject, source_id: UUID, connection_id: UUID
+    ) -> SourceConnection:
+        self._require_edit(subject)
+
+        bound = await self._sources.bind_connection(
+            source_id, connection_id, subject.user_id
+        )
+        await self._source_changed(subject, source_id, ChangeAction.UPDATED)
+
+        return bound
+
+    async def unbind_connection(
+        self, subject: Subject, source_id: UUID, connection_id: UUID
+    ) -> bool:
+        self._require_edit(subject)
+
+        removed = await self._sources.unbind_connection(source_id, connection_id)
+        if not removed:
+            return False
+
+        await self._source_changed(subject, source_id, ChangeAction.UPDATED)
+
+        return True
+
+    async def source_versions(
+        self, subject: Subject, source_id: UUID
+    ) -> Sequence[SourceVersion]:
+        self._require_view(subject)
+
+        return await self._sources.versions_of(source_id)
+
+    async def source_snapshot(
+        self, subject: Subject, source_id: UUID, version: int
+    ) -> SourceSnapshot:
+        """Снимок версии; version 0 — пустой снимок, отрицательная — последняя."""
+        self._require_view(subject)
+
+        if version < 0:
+            return await self._sources.latest_snapshot(source_id)
+
+        return await self._sources.snapshot_of(source_id, version)
+
+    async def source_tree(
+        self, subject: Subject, source_id: UUID, version: int, path: Sequence[str]
+    ) -> Sequence[TreeNode]:
+        """Дети узла дерева источника с пометками относительно предыдущей версии;
+        у первой версии сравнивать не с чем, пометок нет."""
+        self._require_view(subject)
+
+        source = await self._sources.get_source(source_id)
+        resolved = self._resolve_version(source, version)
+        snapshot = await self._sources.snapshot_of(source_id, resolved)
+        nodes = snapshot.children(source_id, path)
+        if resolved < self.FIRST_COMPARABLE_VERSION:
+            return nodes
+
+        diff = await self._sources.diff_of(source_id, resolved - 1, resolved)
+        return list(self._marked(nodes, diff))
+
+    async def source_diff(
+        self, subject: Subject, source_id: UUID, old: int, new: int
+    ) -> SourceDiff:
+        self._require_view(subject)
+
+        return await self._sources.diff_of(source_id, old, new)
+
+    async def write_source_version(
+        self, subject: Subject, source_id: UUID, snapshot: SourceSnapshot
+    ) -> SourceVersion:
+        """Версия целиком от имени субъекта: путь стенда и переноса из staging."""
+        self._require_edit(subject)
+
+        origin = VersionOrigin(taken_by=subject.user_id)
+        version = await self._sources.write_version(source_id, snapshot, origin)
+        await self._source_changed(subject, source_id, ChangeAction.UPDATED)
+
+        return version
+
+    # --- черновики ручного источника ---
+
+    async def source_drafts(
+        self, subject: Subject, source_id: UUID
+    ) -> Sequence[SourceDraft]:
+        self._require_view(subject)
+
+        return await self._sources.open_drafts(source_id)
+
+    async def create_source_draft(
+        self, subject: Subject, source_id: UUID, name: str
+    ) -> SourceDraft:
+        self._require_edit(subject)
+
+        draft = await self._sources.create_draft(source_id, name, subject.user_id)
+        await self._source_changed(subject, source_id, ChangeAction.UPDATED)
+
+        return draft
+
+    async def source_draft_state(
+        self, subject: Subject, draft_id: UUID
+    ) -> SourceDraftState:
+        self._require_view(subject)
+
+        return await self._sources.draft_state(draft_id)
+
+    async def append_source_ops(
+        self,
+        subject: Subject,
+        draft_id: UUID,
+        expected_seq: int,
+        operations: SourceOperationList,
+        via: AuthorVia,
+    ) -> SourceDraftState:
+        self._require_edit(subject)
+
+        author = DraftAuthor(user_id=subject.user_id, via=via)
+        state = await self._sources.append_ops(
+            draft_id, expected_seq, operations, author
+        )
+        await self._source_changed(subject, state.draft.source_id, ChangeAction.UPDATED)
+
+        return state
+
+    async def publish_source_draft(
+        self, subject: Subject, draft_id: UUID, via: AuthorVia
+    ) -> SourceVersion:
+        self._require_edit(subject)
+
+        author = DraftAuthor(user_id=subject.user_id, via=via)
+        version = await self._sources.publish_draft(draft_id, author)
+        await self._source_changed(subject, version.source_id, ChangeAction.UPDATED)
+
+        return version
+
+    async def discard_source_draft(
+        self, subject: Subject, draft_id: UUID
+    ) -> SourceDraft:
+        self._require_edit(subject)
+
+        draft = await self._sources.discard_draft(draft_id)
+        await self._source_changed(subject, draft.source_id, ChangeAction.UPDATED)
+
+        return draft
+
+    @staticmethod
+    def _resolve_version(source: Source, version: int) -> int:
+        if version < 0:
+            return source.latest_version
+
+        return version
+
+    @staticmethod
+    def _marked(nodes: Sequence[TreeNode], diff: SourceDiff) -> Iterator[TreeNode]:
+        touched = diff.touched_prefixes()
+        for node in nodes:
+            if node.ref is not None:
+                status = diff.status_of(node.ref)
+                yield node.model_copy(update={"status": status})
+                continue
+
+            if node.path in touched:
+                yield node.model_copy(update={"status": ChangeStatus.MODIFIED})
+                continue
+
+            yield node
+
+    async def _source_changed(
+        self, subject: Subject, source_id: UUID, action: ChangeAction
+    ) -> None:
+        await self._changed(subject, CatalogChanged(source_id=source_id, action=action))
 
     async def _changed(self, subject: Subject, message: CatalogChanged) -> None:
         await self._bus.publish(Scope.user(subject.user_id), message, LockToken.local())

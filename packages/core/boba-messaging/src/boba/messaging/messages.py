@@ -546,7 +546,8 @@ class StudioProfileChanged(Message):
 
 class CatalogChanged(Message):
     """Каталог данных изменился: порция или закрытие черновика draft_id, публикация
-    версии version либо правка вида view_id. Заполнен ровно один из трёх
+    версии version, правка вида view_id либо источник source_id (новая версия,
+    привязка, черновик ручного источника). Заполнен ровно один из четырёх
     идентификаторов.
     """
 
@@ -554,11 +555,12 @@ class CatalogChanged(Message):
     draft_id: UUID | None = None
     version: int | None = None
     view_id: UUID | None = None
+    source_id: UUID | None = None
     action: ChangeAction
 
     @model_validator(mode="after")
     def _exactly_one_target(self) -> Self:
-        targets = (self.draft_id, self.version, self.view_id)
+        targets = (self.draft_id, self.version, self.view_id, self.source_id)
 
         filled = 0
         for target in targets:
@@ -568,7 +570,10 @@ class CatalogChanged(Message):
             filled += 1
 
         if filled != 1:
-            msg = "catalog_changed: exactly one of draft_id, version, view_id expected"
+            msg = (
+                "catalog_changed: exactly one of draft_id, version, view_id,"
+                " source_id expected"
+            )
             raise ValueError(msg)
 
         return self

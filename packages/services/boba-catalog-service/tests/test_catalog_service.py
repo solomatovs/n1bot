@@ -10,7 +10,19 @@ import pytest
 from psycopg import sql
 from sample_ops import Sample
 
-from boba.catalog import AddLayer, CatalogSnapshot, Layer, OperationList
+from boba.catalog import (
+    AddLayer,
+    AddObject,
+    CatalogSnapshot,
+    ChangeStatus,
+    Layer,
+    ManualColumn,
+    ManualObject,
+    OperationList,
+    SourceKind,
+    SourceOperationList,
+)
+from boba.catalog.samples import PgSample
 from boba.catalog_service import (
     AuthorVia,
     CatalogConfig,
@@ -19,6 +31,8 @@ from boba.catalog_service import (
     CatalogService,
     CatalogStore,
     NodePosition,
+    SourceSpec,
+    SourceStore,
     ViewShare,
     ViewSpec,
 )
@@ -56,7 +70,9 @@ async def service(pool: AsyncPostgresPool) -> CatalogService:
 
     store = CatalogStore(_config(), pool)
     await store.setup()
-    return CatalogService(store, _config(), MemoryMessageBus("test:0"))
+    sources = SourceStore(_config(), pool)
+    await sources.setup()
+    return CatalogService(store, sources, _config(), MemoryMessageBus("test:0"))
 
 
 @pytest.fixture
@@ -234,3 +250,81 @@ async def test_rebase_without_conflicts_notifies(service: CatalogService) -> Non
     assert collector.seen == [
         CatalogChanged(draft_id=lagging.id, action=ChangeAction.UPDATED)
     ]
+
+
+async def test_sources_follow_the_catalog_rights_and_emit_events(
+    service: CatalogService,
+) -> None:
+    """Читают источники обладатели view_roles, заводят и правят — edit_roles;
+    дерево последней версии несёт пометки относительно предыдущей; каждая правка
+    источника уходит событием с source_id."""
+    collector = Collector()
+    leave = _bus_of(service).subscribe(Scope.user(EDITOR.user_id), collector)
+    try:
+        with pytest.raises(CatalogRefusalError):
+            await service.create_source(
+                VIEWER, SourceSpec(kind=SourceKind.POSTGRES, name="prod")
+            )
+
+        prod = await service.create_source(
+            EDITOR, SourceSpec(kind=SourceKind.POSTGRES, name="prod")
+        )
+        sample = PgSample()
+        await service.write_source_version(EDITOR, prod.id, sample.snapshot())
+        await service.write_source_version(EDITOR, prod.id, sample.next_version())
+
+        assert [s.name for s in await service.list_sources(VIEWER)] == ["prod"]
+        with pytest.raises(CatalogRefusalError):
+            await service.list_sources(STRANGER)
+
+        tables = await service.source_tree(
+            VIEWER, prod.id, -1, ("prod", "public", "tables")
+        )
+        statuses = {node.label: node.status for node in tables}
+        assert statuses == {
+            "orders": ChangeStatus.MODIFIED,
+            "returns": ChangeStatus.ADDED,
+        }
+        schemas = await service.source_tree(VIEWER, prod.id, 2, ("prod",))
+        assert {node.label: node.status for node in schemas} == {
+            "etl": ChangeStatus.MODIFIED,
+            "public": ChangeStatus.MODIFIED,
+        }
+        first = await service.source_tree(VIEWER, prod.id, 1, ("prod",))
+        assert {node.status for node in first} == {ChangeStatus.UNCHANGED}
+
+        diff = await service.source_diff(VIEWER, prod.id, 1, 2)
+        assert len(diff.entries) == 4
+
+        planned = await service.create_source(
+            EDITOR, SourceSpec(kind=SourceKind.CLICKHOUSE, name="planned", manual=True)
+        )
+        draft = await service.create_source_draft(EDITOR, planned.id, "shapes")
+        obj = ManualObject(
+            path=("dwh", "orders"), columns=(ManualColumn(name="id", type="UInt64"),)
+        )
+        state = await service.append_source_ops(
+            EDITOR,
+            draft.id,
+            0,
+            SourceOperationList(root=(AddObject(object=obj),)),
+            AuthorVia.LLM,
+        )
+        assert state.seq == 1
+        version = await service.publish_source_draft(EDITOR, draft.id, AuthorVia.USER)
+        assert version.version == 1
+        assert (await service.source(VIEWER, planned.id)).latest_version == 1
+        with pytest.raises(CatalogRefusalError):
+            await service.create_source_draft(VIEWER, planned.id, "nope")
+    finally:
+        leave()
+
+    source_ids: list[UUID] = []
+    for message in collector.seen:
+        if message.source_id is None:
+            continue
+
+        source_ids.append(message.source_id)
+
+    assert source_ids.count(prod.id) == 3
+    assert source_ids.count(planned.id) == 4
