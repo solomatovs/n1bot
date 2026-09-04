@@ -12,6 +12,7 @@ import pytest
 
 pytest.importorskip("playwright.sync_api", reason="ui-тестам нужен playwright")
 
+from catalog_ui import Api, Cleanup, Ed, Seed, api_client
 from chat_ui import (
     BOOT_TIMEOUT_SEC,
     ChatOpener,
@@ -182,3 +183,28 @@ def module_chats(browser: Browser, llm_port: int) -> Iterator[ChatOpener]:
         yield opener
     finally:
         opener.close()
+
+
+@pytest.fixture(scope="module")
+def catalog_api(stand: StandProcess) -> Iterator[Api]:
+    """JSON API каталога от имени admin; один клиент на модуль."""
+    with api_client(stand, "admin") as admin:
+        yield Api(admin)
+
+
+@pytest.fixture(scope="module")
+def catalog_seed(catalog_api: Api) -> Iterator[Seed]:
+    """Каталог модуля с префиксом ed_: публикуется на входе, на выходе снимаются
+    его виды и публикуется удаление, чтобы соседние модули видели прежний каталог."""
+    seed = Seed()
+    catalog_api.publish_ops("module seed", seed.operations())
+    try:
+        yield seed
+    finally:
+        for view in catalog_api.views():
+            if str(view["name"]).startswith(Ed.PREFIX):
+                catalog_api.delete_view(str(view["id"]))
+
+        cleanup = Cleanup(catalog_api.snapshot()).operations()
+        if cleanup:
+            catalog_api.publish_ops("module cleanup", cleanup)

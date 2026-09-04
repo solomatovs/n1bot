@@ -282,7 +282,15 @@ export function CatalogPage({ source }: { source: PageSource }): ReactElement {
             </Button>
           )}
           {draft?.status === "open" && (
-            <DraftActions api={api} draft={draft} currentVersion={currentVersion} onChanged={reload} />
+            <DraftActions
+              api={api}
+              draft={draft}
+              currentVersion={currentVersion}
+              onChanged={reload}
+              onDiscarded={() => {
+                void navigate("/");
+              }}
+            />
           )}
           {view !== undefined && owned && (
             <ViewActions

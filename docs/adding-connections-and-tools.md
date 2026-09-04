@@ -78,6 +78,12 @@ LLM  ──tool_call {sql: "...", connection: "main"}──▶  приложен
   группы `boba.tools`; приложение находит установленные пакеты само.
 - **Секция** — идентификатор плагина (`pg`, `doc`, `web`). Он же имя секции
   конфига `tool.<секция>` и имя файла `conf/plugins/<секция>.toml`.
+- **Встроенный плагин** — плагин самого chainlit без отдельного пакета и
+  entry point: `send_file`, `diagram`, `canvas`, `catalog`, `stream_logs`
+  из таблицы `ChatPlugins.table` в `boba/chainlit/infra/plugins.py`. Файл
+  `conf/plugins/<секция>.toml` у него обязателен так же, как у внешнего;
+  тела работают in-process над сервисами хоста, песочница им не нужна.
+  Плагин `catalog` описан в `catalog.md`.
 - **`SECTION`** — `ClassVar[str]` на модели injected-конфига: полный путь
   секции в собранном конфиге (`"tool.pg"`). По нему хост находит, из какой
   таблицы toml собрать значение для параметра.

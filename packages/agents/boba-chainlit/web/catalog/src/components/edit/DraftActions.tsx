@@ -11,16 +11,19 @@ type Props = {
   /** Текущая опубликованная версия; черновик над меньшей — устарел. */
   currentVersion: number;
   onChanged: () => void;
+  /** Черновик отменён: страница уходит с него. */
+  onDiscarded: () => void;
 };
 
 type Conflict = { current: number; issues: RebaseIssue[] | null };
 
-/** Публикация и перебазирование черновика с двумя путями при конфликте:
+/** Публикация, отмена и перебазирование черновика с двумя путями при конфликте:
  * обновить черновик из новой версии или вычеркнуть конфликтные операции. */
-export function DraftActions({ api, draft, currentVersion, onChanged }: Props): ReactElement {
+export function DraftActions({ api, draft, currentVersion, onChanged, onDiscarded }: Props): ReactElement {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const [conflict, setConflict] = useState<Conflict | null>(null);
+  const [discarding, setDiscarding] = useState(false);
   const stale = draft.base_version < currentVersion;
 
   const run = async (work: () => Promise<void>): Promise<void> => {
@@ -65,6 +68,15 @@ export function DraftActions({ api, draft, currentVersion, onChanged }: Props): 
     });
   };
 
+  const discard = (): void => {
+    void run(async () => {
+      await api.discardDraft(draft.id);
+      toast("draft discarded", "success");
+      setDiscarding(false);
+      onDiscarded();
+    });
+  };
+
   return (
     <>
       {stale && (
@@ -83,6 +95,44 @@ export function DraftActions({ api, draft, currentVersion, onChanged }: Props): 
       <Button size="tiny" tone="primary" disabled={busy} onClick={publish} data-testid="publish-button">
         publish
       </Button>
+      <Button
+        size="tiny"
+        tone="ghost"
+        disabled={busy}
+        onClick={() => {
+          setDiscarding(true);
+        }}
+        data-testid="discard-button"
+      >
+        discard
+      </Button>
+      {discarding && (
+        <Dialog
+          title="discard the draft"
+          mark="draft-discard"
+          onClose={() => {
+            setDiscarding(false);
+          }}
+        >
+          <Alert tone="info">
+            The draft “{draft.name}” with all its operations will be closed as discarded. The published catalog is
+            not touched.
+          </Alert>
+          <div className="form__actions">
+            <Button tone="danger" disabled={busy} onClick={discard}>
+              discard the draft
+            </Button>
+            <Button
+              tone="ghost"
+              onClick={() => {
+                setDiscarding(false);
+              }}
+            >
+              keep editing
+            </Button>
+          </div>
+        </Dialog>
+      )}
       {conflict !== null && (
         <Dialog
           title="the catalog has moved on"
