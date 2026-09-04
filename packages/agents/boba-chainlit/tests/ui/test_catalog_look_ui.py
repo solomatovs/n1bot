@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from itertools import pairwise
 from typing import Any, ClassVar
@@ -236,6 +236,24 @@ def page(
         context.close()
 
 
+def _relayout(page: Page, action: Callable[[], None]) -> None:
+    """Действие меняет раскладку: ждём следующую раскладку, а не прежнюю готовность."""
+    canvas = page.get_by_test_id("canvas")
+    before = canvas.get_attribute("data-layouts") or "0"
+    action()
+    expect(canvas).not_to_have_attribute("data-layouts", before, timeout=30_000)
+    page.wait_for_selector(READY, timeout=30_000)
+
+
+def _switch_mode(page: Page, mode: str) -> None:
+    """Режим карточек через тулбар с ожиданием новой раскладки."""
+
+    def click() -> None:
+        page.get_by_role("tab", name=mode).click()
+
+    _relayout(page, click)
+
+
 def _open_view(
     page: Page, stand: StandProcess, seeded: Seeded, query: str = ""
 ) -> None:
@@ -294,6 +312,36 @@ class TestViewPage:
                 f"{dataset} is outside its lane {layer}"
             )
 
+    def test_nodes_are_laid_out_by_measured_size_without_overlap(
+        self, page: Page, stand: StandProcess, seeded: Seeded
+    ) -> None:
+        """Раскладка идёт по замеру DOM: карточки не пересекаются в любом режиме,
+        а карточка со всеми колонками выше карточки с одними ключами."""
+        _open_view(page, stand, seeded)
+        node = page.locator(f'{NODE}[data-dataset="orders_raw"]')
+        keys_only = Css.box(node).height
+
+        for mode in ("all fields", "names"):
+            _switch_mode(page, mode)
+            boxes = [
+                Css.box(page.locator(NODE).nth(i)) for i in range(len(Probe.DATASETS))
+            ]
+            for index, first in enumerate(boxes):
+                for second in boxes[index + 1 :]:
+                    overlap = (
+                        first.x < second.right
+                        and second.x < first.right
+                        and first.y < second.bottom
+                        and second.y < first.bottom
+                    )
+                    assert not overlap, (
+                        f"nodes overlap in mode {mode}: {first} {second}"
+                    )
+
+        names_height = Css.box(node).height
+        _switch_mode(page, "all fields")
+        assert Css.box(node).height > keys_only > names_height
+
     def test_key_only_by_default_then_all_fields_and_names(
         self, page: Page, stand: StandProcess, seeded: Seeded
     ) -> None:
@@ -302,11 +350,11 @@ class TestViewPage:
 
         expect(node.locator(".ds-node__column")).to_have_count(Probe.KEY_COLUMNS)
 
-        page.get_by_role("tab", name="all fields").click()
+        _switch_mode(page, "all fields")
         expect(node.locator(".ds-node__column")).to_have_count(Probe.ALL_COLUMNS)
         assert "mode=ALL_FIELDS" in page.url
 
-        page.get_by_role("tab", name="names").click()
+        _switch_mode(page, "names")
         expect(node.locator(".ds-node__column")).to_have_count(0)
         assert "mode=TABLE_NAME" in page.url
 

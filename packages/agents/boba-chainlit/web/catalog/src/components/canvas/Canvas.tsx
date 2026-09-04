@@ -1,18 +1,27 @@
 import {
   Background,
   ReactFlow,
+  applyNodeChanges,
+  useNodesInitialized,
   useReactFlow,
   type EdgeTypes,
-  type NodeTypes,
   type Node,
-  type Edge,
+  type NodeChange,
+  type NodeTypes,
 } from "@xyflow/react";
-import { useEffect, useMemo, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
 
 import "@xyflow/react/dist/style.css";
 
 import type { Catalog, NodePosition } from "../../model/catalog";
-import { buildGraph, laneNodes, type DatasetNode as DatasetFlowNode, type FlowEdge as FlowEdgeType, type GraphOptions } from "../../model/graph";
+import {
+  buildGraph,
+  laneNodes,
+  measuredOf,
+  type DatasetNode as DatasetFlowNode,
+  type FlowEdge as FlowEdgeType,
+  type GraphOptions,
+} from "../../model/graph";
 import { highlight } from "../../model/highlight";
 import { computeLayout } from "../../model/layout";
 import { DatasetNode } from "./DatasetNode";
@@ -32,12 +41,6 @@ type Props = {
   tidyCount: number;
 };
 
-type Laid = {
-  key: string;
-  nodes: DatasetFlowNode[];
-  edges: FlowEdgeType[];
-};
-
 /** Ключ раскладки: что меняет размеры или состав узлов, то и перекладывает граф. */
 function layoutKey(catalog: Catalog, options: GraphOptions, tidyCount: number): string {
   return [
@@ -51,29 +54,62 @@ function layoutKey(catalog: Catalog, options: GraphOptions, tidyCount: number): 
   ].join("|");
 }
 
-/** Холст диаграммы: узлы наборов в дорожках слоёв, рёбра потоков, подсветка
- * цепочки при наведении и выборе. */
+/** Подпись замеров видимых узлов: меняется, когда React Flow отдал новый размер. */
+function sizesOf(nodes: DatasetFlowNode[]): string {
+  return nodes
+    .filter((node) => !node.hidden)
+    .map((node) => {
+      const size = measuredOf(node);
+      return size === undefined ? `${node.id}:?` : `${node.id}:${size.width}x${size.height}`;
+    })
+    .join(",");
+}
+
+/** Холст диаграммы в два прохода, как в liam: узлы рендерятся невидимыми и
+ * React Flow их замеряет, затем ELK раскладывает по реальным размерам и холст
+ * показывается. Дорожки слоёв и подсветка считаются от разложенных узлов. */
 export function Canvas({ catalog, options, saved, activeId, onActivate, tidyCount }: Props): ReactElement {
   const { fitView } = useReactFlow();
+  const initialized = useNodesInitialized();
   const [hoverId, setHoverId] = useState<string | undefined>(undefined);
-  const [laid, setLaid] = useState<Laid | null>(null);
+  const [nodes, setNodes] = useState<DatasetFlowNode[]>([]);
+  const [edges, setEdges] = useState<FlowEdgeType[]>([]);
+  const [laid, setLaid] = useState<string | null>(null);
+  const [layouts, setLayouts] = useState(0);
   const key = layoutKey(catalog, options, tidyCount);
+  // размеры узлов входят в подпись: React Flow может замерить карточку позже,
+  // чем отдал прежний размер, и тогда граф перекладывается по новому замеру
+  const signature = `${key}#${sizesOf(nodes)}`;
 
+  // проход 1: новый состав или режим — узлы в нуле, ждём замера
   useEffect(() => {
-    let cancelled = false;
     const built = buildGraph(catalog, options);
+    setNodes(built.nodes);
+    setEdges(built.edges);
+    setLaid(null);
+  }, [catalog, options, key]);
+
+  // проход 2: все видимые узлы замерены — раскладка по их размерам
+  useEffect(() => {
+    if (!initialized || laid === signature) {
+      return;
+    }
+
+    let cancelled = false;
     const positions = tidyCount > 0 ? [] : saved;
     void computeLayout({
-      nodes: built.nodes,
-      edges: built.edges,
+      nodes,
+      edges,
       partitionOf: (node) => catalog.layerIndex(node.data.dataset.layer_id),
       saved: positions,
-    }).then((nodes) => {
+    }).then((positioned) => {
       if (cancelled) {
         return;
       }
 
-      setLaid({ key, nodes, edges: built.edges });
+      setNodes(positioned);
+      setLaid(signature);
+      setLayouts((count) => count + 1);
       window.setTimeout(() => {
         void fitView({ padding: 0.15, maxZoom: 1 });
       }, 0);
@@ -82,24 +118,27 @@ export function Canvas({ catalog, options, saved, activeId, onActivate, tidyCoun
     return () => {
       cancelled = true;
     };
-  }, [catalog, options, saved, key, tidyCount, fitView]);
+  }, [initialized, laid, signature, nodes, edges, saved, tidyCount, catalog, fitView]);
+
+  const onNodesChange = useCallback((changes: NodeChange<DatasetFlowNode>[]) => {
+    setNodes((current) => applyNodeChanges(changes, current));
+  }, []);
+
+  const ready = laid === signature;
 
   const flow = useMemo(() => {
-    if (laid === null) {
-      return { nodes: [] as Node[], edges: [] as Edge[] };
-    }
-
-    const lit = highlight(laid.nodes, laid.edges, { activeId, hoverId });
-    const lanes = laneNodes(catalog, lit.nodes, options.showDiff);
+    const lit = highlight(nodes, edges, { activeId, hoverId });
+    const lanes = ready ? laneNodes(catalog, lit.nodes, options.showDiff) : [];
     return { nodes: [...lanes, ...lit.nodes] as Node[], edges: lit.edges };
-  }, [laid, activeId, hoverId, catalog, options.showDiff]);
+  }, [nodes, edges, activeId, hoverId, catalog, options.showDiff, ready]);
 
   return (
-    <div className="canvas" data-testid="canvas" data-ready={laid !== null}>
+    <div className="canvas" data-testid="canvas" data-ready={ready} data-layouts={layouts}>
       <ArrowMarkers />
       <ReactFlow
         nodes={flow.nodes}
         edges={flow.edges}
+        onNodesChange={onNodesChange as (changes: NodeChange[]) => void}
         nodeTypes={NODE_TYPES}
         edgeTypes={EDGE_TYPES}
         nodesConnectable={false}

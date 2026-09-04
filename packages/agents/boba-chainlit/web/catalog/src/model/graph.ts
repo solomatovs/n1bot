@@ -51,20 +51,17 @@ export const Z_INDEX = {
   edgeHighlighted: 3,
 } as const;
 
-/** Размер карточки набора без замера DOM: раскладка считается до первого кадра. */
-export const NODE_SIZE = {
-  width: 240,
-  header: 44,
-  row: 22,
-  footer: 8,
-} as const;
+/** Размер узла по замеру React Flow; до замера узел не участвует в раскладке. */
+export type Measured = { width: number; height: number };
 
-export function nodeHeight(columns: number, showMode: ShowMode): number {
-  if (showMode === "TABLE_NAME") {
-    return NODE_SIZE.header;
+export function measuredOf(node: Node): Measured | undefined {
+  const width = node.measured?.width;
+  const height = node.measured?.height;
+  if (width === undefined || height === undefined) {
+    return undefined;
   }
 
-  return NODE_SIZE.header + columns * NODE_SIZE.row + NODE_SIZE.footer;
+  return { width, height };
 }
 
 export function visibleColumns(columns: Column[], showMode: ShowMode): Column[] {
@@ -120,8 +117,6 @@ export function buildGraph(catalog: Catalog, options: GraphOptions): { nodes: Da
       position: { x: 0, y: 0 },
       hidden: options.hidden.has(dataset.id),
       zIndex: Z_INDEX.node,
-      width: NODE_SIZE.width,
-      height: nodeHeight(columns.length, options.showMode),
       data: {
         dataset,
         layer: catalog.layer(dataset.layer_id),
@@ -168,7 +163,9 @@ const LANE_TITLE = 32;
 export function laneNodes(catalog: Catalog, nodes: DatasetNode[], showDiff: boolean): LayerNode[] {
   const lanes: LayerNode[] = [];
   for (const layer of catalog.layers) {
-    const members = nodes.filter((node) => !node.hidden && node.data.dataset.layer_id === layer.id);
+    const members = nodes.filter(
+      (node) => !node.hidden && node.data.dataset.layer_id === layer.id && measuredOf(node) !== undefined,
+    );
     if (members.length === 0) {
       continue;
     }
@@ -178,8 +175,12 @@ export function laneNodes(catalog: Catalog, nodes: DatasetNode[], showDiff: bool
     let right = Number.NEGATIVE_INFINITY;
     let bottom = Number.NEGATIVE_INFINITY;
     for (const node of members) {
-      const width = node.width ?? NODE_SIZE.width;
-      const height = node.height ?? NODE_SIZE.header;
+      const size = measuredOf(node);
+      if (size === undefined) {
+        continue;
+      }
+
+      const { width, height } = size;
       left = Math.min(left, node.position.x);
       top = Math.min(top, node.position.y);
       right = Math.max(right, node.position.x + width);
