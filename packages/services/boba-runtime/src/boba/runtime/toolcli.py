@@ -91,7 +91,11 @@ class ToolCli:
     @classmethod
     def _run(cls, arguments: list[str]) -> int:
         if len(arguments) < 2:  # noqa: PLR2004
-            raise ToolCliError("module and tool name are required")
+            msg = (
+                "toolcli: expected a tool module and a tool name as the first "
+                f"two arguments, got {arguments!r}"
+            )
+            raise ToolCliError(msg)
 
         module_name = arguments.pop(0)
         tool_name = arguments[0]
@@ -121,18 +125,27 @@ class ToolCli:
     @classmethod
     def _pop_config(cls, arguments: list[str]) -> Path:
         if CliFlag.CONFIG not in arguments:
-            raise ToolCliError(f"{CliFlag.CONFIG} <toml> is required")
+            msg = (
+                f"toolcli: {CliFlag.CONFIG} <toml> is required but missing "
+                f"from the arguments {arguments!r}"
+            )
+            raise ToolCliError(msg)
 
         index = arguments.index(CliFlag.CONFIG)
         if index + 1 >= len(arguments):
-            raise ToolCliError(f"{CliFlag.CONFIG} requires a path")
+            msg = (
+                f"toolcli: {CliFlag.CONFIG} is the last argument, expected a "
+                "path after it"
+            )
+            raise ToolCliError(msg)
 
         arguments.pop(index)
         raw = arguments.pop(index)
 
         path = Path(raw)
         if not path.is_file():
-            raise ToolCliError(f"config is not a file: {path}")
+            msg = f"toolcli: {CliFlag.CONFIG} expects an existing toml file, got {path}"
+            raise ToolCliError(msg)
 
         return path
 
@@ -141,11 +154,16 @@ class ToolCli:
         try:
             module = importlib.import_module(module_name)
         except ImportError as exc:
-            raise ToolCliError(f"tool module is not importable: {module_name}") from exc
+            msg = f"toolcli: tool module {module_name!r} is not importable: {exc}"
+            raise ToolCliError(msg) from exc
 
         tools = getattr(module, cls.TOOLS_ATTRIBUTE, None)
         if tools is None:
-            raise ToolCliError(f"{module_name} declares no {cls.TOOLS_ATTRIBUTE}")
+            msg = (
+                f"toolcli: module {module_name!r} declares no "
+                f"{cls.TOOLS_ATTRIBUTE} attribute with its tools"
+            )
+            raise ToolCliError(msg)
 
         return tools
 
@@ -156,7 +174,8 @@ class ToolCli:
                 return tool
 
         known = ", ".join(sorted(tool.name for tool in tools))
-        raise ToolCliError(f"unknown tool {name!r}; known tools: {known}")
+        msg = f"toolcli: unknown tool {name!r}; the module declares: {known}"
+        raise ToolCliError(msg)
 
 
 if __name__ == "__main__":

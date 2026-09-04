@@ -57,7 +57,9 @@ def _profile_name(studio_config: StudioRuntimeConfig) -> str:
         if profile.default:
             return name
 
-    raise AssertionError("no default profile in the config")
+    names = sorted(studio_config.profiles)
+    msg = f"studio config: no profile among {names} is marked default"
+    raise AssertionError(msg)
 
 
 @pytest.fixture

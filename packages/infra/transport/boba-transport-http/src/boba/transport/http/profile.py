@@ -256,7 +256,10 @@ class HttpConnection(ConnectionProfileBase):
             return self
 
         if self.base_url is None:
-            msg = "web profile: negotiate auth needs base_url to name the SPN"
+            msg = (
+                "web profile: negotiate auth needs base_url to name the SPN, "
+                "got no base_url"
+            )
             raise ValueError(msg)
 
         if not self.host():
@@ -304,7 +307,10 @@ class HttpConnection(ConnectionProfileBase):
             host = self.auth.service_host.lower()
 
         if not host:
-            msg = "web profile: service name needs base_url with a host"
+            msg = (
+                f"web profile: SPN needs a host from base_url {self.base_url!r} "
+                "or auth.service_host, both are empty"
+            )
             raise ValueError(msg)
 
         if HostPattern(value=host).wildcard:

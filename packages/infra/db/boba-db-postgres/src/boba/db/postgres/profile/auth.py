@@ -175,8 +175,9 @@ class PostgresKerberos:
     def libpq(cls, auth: KerberosAuthBase) -> dict[str, Any]:
         if isinstance(auth, DelegatedAuth):
             msg = (
-                "delegated postgres auth is resolved by the application: "
-                "the connection body expects a call ticket"
+                f"delegated postgres auth ({auth.method}) is resolved by the "
+                "application: the connection body expects a call ticket, "
+                "not the delegated section"
             )
             raise PostgresAuthError(msg)
 

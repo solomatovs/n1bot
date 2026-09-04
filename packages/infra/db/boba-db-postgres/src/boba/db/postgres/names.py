@@ -63,4 +63,5 @@ class PostgresSchema:
         except PostgresError:
             raise
         except Exception as exc:
-            raise PostgresError(f"schema {schema!r}: {exc}") from exc
+            msg = f"ensuring schema {schema!r} on a pool connection failed: {exc}"
+            raise PostgresError(msg) from exc

@@ -67,7 +67,10 @@ class KerberosAuth:
 
     def _login_redirect(self, exc: BaseError) -> RedirectResponse:
         """Исход SSO кодом на страницу логина: браузер пришёл навигацией, не fetch."""
-        self._logger.error("%s", LogLine.safe(FailureReport.of(exc).log))
+        self._logger.error(
+            "sso sign-in failed, redirecting to the login page: %s",
+            LogLine.safe(FailureReport.of(exc).log),
+        )
 
         code = SsoErrorCode.FAILED
         if isinstance(exc, AuthorizationError):

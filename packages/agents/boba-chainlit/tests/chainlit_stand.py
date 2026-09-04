@@ -130,8 +130,8 @@ def app_config() -> AppConfig:
     config_path = os.environ.get("BOBA_CONFIG_PATH")
     if not config_path:
         raise RuntimeError(
-            "BOBA_CONFIG_PATH не задан — укажи конфиг приложения "
-            "(launch.json 'pytest: текущий файл' его прокидывает)"
+            "the stand expects the app config path in BOBA_CONFIG_PATH, "
+            "the variable is not set (launch.json 'pytest: current file' passes it)"
         )
     built = AppLayers.compose(Path(config_path))
     return bind(built, path="app", model=AppConfig)
@@ -228,7 +228,8 @@ class FakeTurn(RunPort):
 
     def element_target(self, tool_call_id: str) -> ElementTarget:
         if not tool_call_id:
-            raise RefusalError(RunRefusal.NO_TOOL_CALL, "tool call without id")
+            msg = f"stand element target needs a tool call id, got {tool_call_id!r}"
+            raise RefusalError(RunRefusal.NO_TOOL_CALL, msg)
 
         return ElementTarget(
             for_id=self.ANSWER_STEP, element_id=f"element-{tool_call_id}"
@@ -423,7 +424,11 @@ class SsoStand:
 
         secret = get_jwt_secret()
         if not secret:
-            raise RuntimeError("CHAINLIT_AUTH_SECRET is not set for the stand")
+            msg = (
+                "the stand needs a jwt secret to seal sso tickets: "
+                "CHAINLIT_AUTH_SECRET is not set"
+            )
+            raise RuntimeError(msg)
 
         return SsoTickets(sealer=TicketSealer(secret), krb5_config=krb5_config)
 
@@ -487,7 +492,10 @@ class RecordedTurn:
     def recording_sink(self) -> RecordingSink:
         sink = self.sink
         if not isinstance(sink, RecordingSink):
-            msg = "steps are recorded only by RecordingSink"
+            msg = (
+                "steps are recorded only by RecordingSink, the stand sink is "
+                f"{type(sink).__name__}"
+            )
             raise TypeError(msg)
 
         return sink

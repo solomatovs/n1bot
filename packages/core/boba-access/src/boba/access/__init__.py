@@ -211,21 +211,34 @@ class ToolAccess:
         return False
 
     def _check_grants(self) -> None:
+        known = sorted(self._tool_names)
         for role_name, grant in self._roles.items():
             missing = grant.unknown(self._tool_names)
             if missing:
-                raise ToolAccessError(f"role {role_name!r}: unknown tools {missing}")
+                msg = (
+                    f"tool access: section [roles.{role_name!r}] grants tools "
+                    f"{missing} that are not among the built tools {known}"
+                )
+                raise ToolAccessError(msg)
 
         for profile_name, grant in self._profiles.items():
             missing = grant.unknown(self._tool_names)
             if missing:
-                msg = f"profile {profile_name!r}: unknown tools {missing}"
+                msg = (
+                    f"tool access: section [profiles.{profile_name!r}] grants tools "
+                    f"{missing} that are not among the built tools {known}"
+                )
                 raise ToolAccessError(msg)
 
     def _check_chat_only(self) -> None:
         stray = sorted(self._chat_only - self._tool_names)
         if stray:
-            raise ToolAccessError(f"chat-only tools are not built: {stray}")
+            known = sorted(self._tool_names)
+            msg = (
+                f"tool access: chat-only tools {stray} are not among "
+                f"the built tools {known}"
+            )
+            raise ToolAccessError(msg)
 
 
 class RoleConfig(ToolGrant):

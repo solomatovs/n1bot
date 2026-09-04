@@ -21,7 +21,11 @@ PROBE_SQL = sql.SQL("select version()")
 
 async def _probe(profile: ConnectionProfileBase) -> str:
     if not isinstance(profile, PostgresConfig):
-        raise ConnectionTypeError(f"postgres probe got a {profile.kind!r} profile")
+        msg = (
+            "postgres probe expects a PostgresConfig profile, "
+            f"got kind {profile.kind!r}"
+        )
+        raise ConnectionTypeError(msg)
 
     conn = await PayloadPostgres.connect_config(profile)
     try:

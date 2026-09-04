@@ -452,7 +452,11 @@ async def confluence_attachment(  # noqa: PLR0913 — фасад LLM, парам
 
     link = _attachment_link(data, filename)
     if not link:
-        msg = f"attachment {filename!r} not found on page {page_id!r}"
+        titles = _attachment_titles(data)
+        msg = (
+            f"attachment {filename!r} not found on confluence page {page_id!r}; "
+            f"page attachments: {titles}"
+        )
         raise AttachmentNotFoundError(msg)
 
     content = await ConfluenceHttp.get(rest_cfg, link)
@@ -485,6 +489,22 @@ def _attachment_link(data: dict[str, Any], filename: str) -> str:
         if isinstance(links, dict):
             return str(links.get("download") or "")
     return ""
+
+
+def _attachment_titles(data: dict[str, Any]) -> list[str]:
+    children = data.get("children")
+    if not isinstance(children, dict):
+        return []
+
+    attachments = children.get("attachment")
+    if not isinstance(attachments, dict):
+        return []
+
+    titles: list[str] = []
+    for item in attachments.get("results") or []:
+        titles.append(str(item.get("title") or ""))
+
+    return titles
 
 
 EXPECTED: Mapping[type[Exception], IngestErrorKind] = {

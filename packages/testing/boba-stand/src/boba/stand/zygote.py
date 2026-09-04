@@ -59,7 +59,11 @@ class ProfileFields:
             raw[group_name] = group
             return
 
-        msg = f"профиль: поле {name!r} не принадлежит ни одной группе"
+        groups = list(SandboxProfile.GROUPS)
+        msg = (
+            f"sandbox profile: flat field {name!r} belongs to none of the "
+            f"profile groups {groups}"
+        )
         raise KeyError(msg)
 
     @classmethod
@@ -103,7 +107,10 @@ class SandboxStand:
         запись группе, — TrustedBinaries такой каталог не принимает.
         """
         if not cls.FUSE2FS.exists():
-            msg = f"нет {cls.FUSE2FS}: собери развёртывание — make sandbox"
+            msg = (
+                f"sandbox stand: fuse2fs binary {cls.FUSE2FS} does not exist, "
+                f"build the deployment with `make sandbox`"
+            )
             raise RuntimeError(msg)
 
         return str(cls.FUSE2FS)
@@ -219,7 +226,9 @@ class SandboxStand:
         """Шаблон workspace-образа: пустой ext4 на 8 МБ."""
         mkfs = shutil.which("mkfs.ext4")  # noqa: TID251 — стенд ищет по PATH сознательно
         if mkfs is None:
-            msg = "mkfs.ext4 недоступен"
+            msg = (
+                "sandbox stand: mkfs.ext4 is not found on PATH for the workspace image"
+            )
             raise RuntimeError(msg)
 
         template = tmp_path / "workspace.ext4"

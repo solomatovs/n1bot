@@ -104,7 +104,8 @@ class LiveServer:
         while not self._server.started:
             if self._task.done():
                 self._task.result()
-                raise RuntimeError("uvicorn stopped before it started")
+                msg = "uvicorn serve task finished before the server reported started"
+                raise RuntimeError(msg)
 
             await asyncio.sleep(self.STARTUP_POLL_SEC)
 

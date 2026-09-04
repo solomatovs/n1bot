@@ -88,7 +88,15 @@ class ToolInvoker:
     def tool(self, name: str) -> BaseTool:
         tool = self._tools.get(name)
         if tool is None:
-            raise ToolUnavailableError(f"tool {name!r} is not available")
+            known = ", ".join(sorted(self._tools))
+            if not known:
+                known = "none"
+
+            msg = (
+                f"tool {name!r} is not available to the caller; "
+                f"available tools: {known}"
+            )
+            raise ToolUnavailableError(msg)
 
         return tool
 
@@ -114,6 +122,10 @@ class ToolInvoker:
 
         if not isinstance(message, ToolMessage):
             got = type(message).__name__
-            raise ToolContractError(f"tool {call['name']!r} returned {got}")
+            msg = (
+                f"tool {call['name']!r} invoked as {call['id']}: expected a "
+                f"ToolMessage from ainvoke, got {got}"
+            )
+            raise ToolContractError(msg)
 
         return InvokeReply.of(message)

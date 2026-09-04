@@ -126,7 +126,10 @@ class PanelText:
         if found is not None:
             return found
 
-        msg = f"chat.settings.llm.{group.value}.{name}: no translation"
+        msg = (
+            f"chat.settings.llm.{group.value}.{name}.{field.value}: no translation "
+            "in the language texts or in the fallback"
+        )
         raise PanelTextError(msg)
 
     @staticmethod

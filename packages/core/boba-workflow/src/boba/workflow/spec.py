@@ -171,7 +171,9 @@ class PortRef(BaseModel):
             issue = SpecIssue(
                 code=IssueCode.PORT_SYNTAX,
                 where=raw,
-                message=f"bad port reference: {exc.errors()[0]['msg']}",
+                message=(
+                    f"port reference {raw!r} is not valid: {exc.errors()[0]['msg']}"
+                ),
             )
             raise WorkflowSpecError([issue]) from exc
 
@@ -194,7 +196,10 @@ class PortRef(BaseModel):
         issue = SpecIssue(
             code=IssueCode.PORT_SYNTAX,
             where=f"{task}{PortToken.SEP}{rest}",
-            message="expected task, task.result, task.args.<name> or task.<port>",
+            message=(
+                f"expected task, task.result, task.args.<name> or task.<port>, "
+                f"got {task}{PortToken.SEP}{rest}"
+            ),
         )
         raise WorkflowSpecError([issue])
 
@@ -275,7 +280,10 @@ class EdgeText:
             issue = SpecIssue(
                 code=IssueCode.EDGE_SYNTAX,
                 where=raw,
-                message=f"expected exactly one '{cls.ARROW}'",
+                message=(
+                    f"edge must contain exactly one '{cls.ARROW}' between "
+                    f"its sides, got {raw!r}"
+                ),
             )
             raise WorkflowSpecError([issue])
 
@@ -293,7 +301,12 @@ class EdgeText:
         stripped = text.strip()
         if not stripped:
             issue = SpecIssue(
-                code=IssueCode.EDGE_SYNTAX, where=raw, message="empty edge side"
+                code=IssueCode.EDGE_SYNTAX,
+                where=raw,
+                message=(
+                    f"edge side is empty, expected a port or a [list] on both "
+                    f"sides of '{cls.ARROW}'"
+                ),
             )
             raise WorkflowSpecError([issue])
 
@@ -302,7 +315,10 @@ class EdgeText:
             issue = SpecIssue(
                 code=IssueCode.EDGE_SYNTAX,
                 where=raw,
-                message=f"unclosed '{cls.LIST_OPEN}'",
+                message=(
+                    f"port list {stripped!r} opens with '{cls.LIST_OPEN}' "
+                    f"but does not close with '{cls.LIST_CLOSE}'"
+                ),
             )
             raise WorkflowSpecError([issue])
 
@@ -349,7 +365,7 @@ class ArgTemplate:
             issue = SpecIssue(
                 code=IssueCode.TEMPLATE_SYNTAX,
                 where=text,
-                message=f"template is not parsed: {exc.message}",
+                message=f"argument template is not valid Jinja2: {exc.message}",
             )
             raise WorkflowSpecError([issue]) from exc
 
@@ -360,10 +376,13 @@ class ArgTemplate:
         try:
             return cls.ENV.from_string(text).render(**values)
         except TemplateError as exc:
+            given = sorted(values)
             issue = SpecIssue(
                 code=IssueCode.TEMPLATE_SYNTAX,
                 where=text,
-                message=f"template is not rendered: {exc}",
+                message=(
+                    f"argument template rendering failed with values for {given}: {exc}"
+                ),
             )
             raise WorkflowSpecError([issue]) from exc
 
@@ -430,7 +449,10 @@ class WorkflowSpec(BaseModel):
         try:
             raw = yaml.safe_load(text)
         except yaml.YAMLError as exc:
-            issue = SpecIssue(code=IssueCode.YAML, message=f"yaml is not parsed: {exc}")
+            issue = SpecIssue(
+                code=IssueCode.YAML,
+                message=f"workflow spec yaml is not parsed: {exc}",
+            )
             raise WorkflowSpecError([issue]) from exc
 
         return cls.parse(raw)

@@ -108,14 +108,23 @@ class HttpxNegotiateAuth(httpx.Auth):
         follow_redirects его уже прошёл — поэтому смотрим всю историю.
         """
         if response.status_code == httpx.codes.UNAUTHORIZED:
-            msg = f"negotiate login at {self._login_url} was refused"
+            msg = (
+                f"negotiate login of {self._credentials.principal} at "
+                f"{self._login_url} for service {self._service} was refused "
+                f"with 401"
+            )
             raise KerberosError(msg)
 
         for hop in (*response.history, response):
             self._session.extract_cookies(hop)
 
         if not self._session:
-            msg = f"negotiate login at {self._login_url} set no session cookie"
+            hops = len(response.history) + 1
+            msg = (
+                f"negotiate login at {self._login_url} answered "
+                f"{response.status_code} over {hops} hop(s) but set no session "
+                "cookie"
+            )
             raise KerberosError(msg)
 
 

@@ -144,7 +144,7 @@ class StreamLogsOps:
         if thread_id == self.thread_id:
             raise StreamLogsRefusedError(
                 StreamLogsErrorKind.CURRENT_THREAD,
-                "the current thread cannot be purged",
+                f"thread {thread_id} is the current thread and cannot be purged",
             )
 
         if thread_id in ToolStreams.live_scopes():
@@ -172,8 +172,9 @@ def build_stream_logs_tools(cfg: None) -> list[BaseTool]:
         except RefusalError as e:
             return pack_result(ErrorResult(message=str(e), error_kind=e.kind))
         except StreamJournalError as e:
+            message = f"reading the stream journal usage failed: {e}"
             return pack_result(
-                ErrorResult(message=str(e), error_kind=StreamLogsErrorKind.NO_JOURNAL)
+                ErrorResult(message=message, error_kind=StreamLogsErrorKind.NO_JOURNAL)
             )
 
         return pack_result(TextResult(text=text))
@@ -191,9 +192,10 @@ def build_stream_logs_tools(cfg: None) -> list[BaseTool]:
         except RefusalError as e:
             return pack_result(ErrorResult(message=str(e), error_kind=e.kind))
         except StreamJournalError as e:
+            message = f"purging the journals of thread {thread_id} failed: {e}"
             return pack_result(
                 ErrorResult(
-                    message=str(e),
+                    message=message,
                     error_kind=StreamLogsErrorKind.PURGE_FAILED,
                 )
             )

@@ -474,9 +474,7 @@ class TestIsolated:
             ).render(),
         ]
 
-        return subprocess.Popen(
-            argv, pass_fds=(fd,), stdin=subprocess.DEVNULL
-        )
+        return subprocess.Popen(argv, pass_fds=(fd,), stdin=subprocess.DEVNULL)
 
     def test_isolated_call_works(self, supervisor: Any, mounted_root: Path) -> None:
         def spawner(fd: int) -> subprocess.Popen[bytes]:

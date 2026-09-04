@@ -121,7 +121,7 @@ class TestChartInSandbox:
             raise AssertionError('message.content == "[chart rendered: T]"')
 
     def test_invalid_spec_reaches_the_caller(self) -> None:
-        with pytest.raises(PayloadFailureError, match="invalid Plotly") as failure:
+        with pytest.raises(PayloadFailureError, match="rejected by plotly") as failure:
             _invoke('{"data": 42}')
 
         if failure.value.kind != "invalid_figure_spec":

@@ -81,8 +81,13 @@ class ConfluenceHttp:
                 response = await client.get(url)
                 response.raise_for_status()
                 return await response.aread()
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            head = exc.response.text[:200]
+            msg = f"GET {url} on confluence: expected 2xx, got {status}: {head!r}"
+            raise ConfluenceRequestError(msg) from exc
         except httpx.HTTPError as exc:
-            msg = f"Confluence request failed: {type(exc).__name__}: {exc}"
+            msg = f"GET {url} on confluence: {type(exc).__name__}: {exc}"
             raise ConfluenceRequestError(msg) from exc
 
     @classmethod

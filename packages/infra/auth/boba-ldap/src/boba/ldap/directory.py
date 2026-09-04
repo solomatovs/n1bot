@@ -76,7 +76,11 @@ class Ldap3Directory(UserDirectory):
             )
 
             if not connection.entries:
-                raise LDAPUserNotFoundError()
+                msg = (
+                    f"ldap search on {binding.server} under {search.base_dn!r} "
+                    f"with filter {search.filter!r} returned no user entry"
+                )
+                raise LDAPUserNotFoundError(msg)
 
             entry = connection.entries[0]
             member_of: list[str] = []
@@ -92,6 +96,7 @@ class Ldap3Directory(UserDirectory):
     @contextmanager
     def _bound(self, binding: DirectoryBinding) -> Generator[Connection, None, None]:
         connection: Connection | None = None
+        where = f"ldap {binding.server} as {binding.bind_dn!r}"
         try:
             server = Server(
                 host=binding.server,
@@ -117,20 +122,25 @@ class Ldap3Directory(UserDirectory):
             LDAPServerPoolError,
             LDAPStartTLSError,
         ) as exc:
-            raise LDAPServerUnavailableError(str(exc)) from exc
+            msg = f"{where}: server unavailable: {exc}"
+            raise LDAPServerUnavailableError(msg) from exc
         except (LDAPBindError, LDAPInvalidCredentialsResult) as exc:
-            raise LDAPInvalidCredentialsError(str(exc)) from exc
+            msg = f"{where}: bind rejected: {exc}"
+            raise LDAPInvalidCredentialsError(msg) from exc
         except LDAPInsufficientAccessRightsResult as exc:
-            raise LDAPAccessDeniedError(str(exc)) from exc
+            msg = f"{where}: insufficient access rights: {exc}"
+            raise LDAPAccessDeniedError(msg) from exc
         except (
             LDAPNoSuchObjectResult,
             LDAPInvalidDNSyntaxResult,
             LDAPInvalidFilterError,
             LDAPStrongerAuthRequiredResult,
         ) as exc:
-            raise LDAPConfigError(str(exc)) from exc
+            msg = f"{where}: search base, dn, filter or tls policy rejected: {exc}"
+            raise LDAPConfigError(msg) from exc
         except LDAPException as exc:
-            raise LDAPError(str(exc)) from exc
+            msg = f"{where}: ldap3 failed: {exc}"
+            raise LDAPError(msg) from exc
         finally:
             if connection is not None:
                 connection.unbind()

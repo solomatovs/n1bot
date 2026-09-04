@@ -317,7 +317,7 @@ class TestToolMainAsProgram:
 
         if proc.returncode != ToolMain.Exit.ENTRY_ERROR:
             raise AssertionError("proc.returncode == ToolMain.Exit.ENTRY_ERROR")
-        if b"not a descriptor number" not in proc.stderr:
+        if b"expects a descriptor number" not in proc.stderr:
             raise AssertionError(f"stderr={proc.stderr!r}")
 
     def test_injected_file_serves_the_config(self, tmp_path: Path) -> None:

@@ -124,7 +124,7 @@ class PgPayloadStore(PayloadStore):
                 for statement in ddl:
                     await conn.execute(statement, prepare=False)
         except (psycopg.Error, PostgresError) as exc:
-            msg = "payload store: setup failed"
+            msg = f"payloads: setup of {self._schema}.live_payloads failed: {exc}"
             raise PayloadStoreError(msg) from exc
 
     @staticmethod
@@ -132,7 +132,10 @@ class PgPayloadStore(PayloadStore):
         try:
             return UUID(scope.id)
         except ValueError as exc:
-            msg = f"scope id is not a uuid: {scope.id!r}"
+            msg = (
+                f"payloads: scope {scope.kind.value} id must be a uuid, "
+                f"got {scope.id!r}: {exc}"
+            )
             raise PayloadStoreError(msg) from exc
 
     async def put(self, scope: Scope, payload: object) -> PayloadRef:
@@ -162,7 +165,10 @@ class PgPayloadStore(PayloadStore):
                     prepare=False,
                 )
         except (psycopg.Error, PostgresError) as exc:
-            msg = f"payloads: put into {scope.render()} failed"
+            msg = (
+                f"payloads: insert of {ref.id} for {scope.render()} into "
+                f"{self._schema}.live_payloads failed: {exc}"
+            )
             raise PayloadStoreError(msg) from exc
 
         return ref
@@ -196,11 +202,17 @@ class PgPayloadStore(PayloadStore):
                 )
                 row = await cur.fetchone()
         except (psycopg.Error, PostgresError) as exc:
-            msg = f"payloads: get of {ref.id} failed"
+            msg = (
+                f"payloads: reading {ref.id} for {ref.scope.render()} in "
+                f"{self._schema}.live_payloads failed: {exc}"
+            )
             raise PayloadStoreError(msg) from exc
 
         if row is None:
-            msg = f"payload {ref.id} of {ref.scope.render()} is gone"
+            msg = (
+                f"payload {ref.id} of {ref.scope.render()} is gone: no row in "
+                f"{self._schema}.live_payloads"
+            )
             raise PayloadMissingError(msg)
 
         return row[0]
@@ -227,7 +239,10 @@ class PgPayloadStore(PayloadStore):
                 )
                 return cur.rowcount
         except (psycopg.Error, PostgresError) as exc:
-            msg = f"payloads: purge of {scope.render()} failed"
+            msg = (
+                f"payloads: delete of {scope.render()} from "
+                f"{self._schema}.live_payloads failed: {exc}"
+            )
             raise PayloadStoreError(msg) from exc
 
     async def purge_idle(self, max_age_sec: int) -> int:
@@ -252,5 +267,8 @@ class PgPayloadStore(PayloadStore):
                 )
                 return cur.rowcount
         except (psycopg.Error, PostgresError) as exc:
-            msg = "payloads: purge of idle bodies failed"
+            msg = (
+                f"payloads: delete of bodies older than {max_age_sec}s from "
+                f"{self._schema}.live_payloads failed: {exc}"
+            )
             raise PayloadStoreError(msg) from exc

@@ -115,18 +115,26 @@ class PluginSandbox(BaseModel):
         if self.profile is None:
             return self
 
-        delta = (
-            self.network
-            or self.workspace
-            or self.binds
-            or self.host
-            or self.isolation
-            or self.limits
-            or self.run
-            or self.zygote
-        )
-        if delta:
-            msg = "[sandbox]: profile is exclusive with delta fields"
+        deltas = {
+            "network": self.network,
+            "workspace": self.workspace,
+            "binds": self.binds,
+            "host": self.host,
+            "isolation": self.isolation,
+            "limits": self.limits,
+            "run": self.run,
+            "zygote": self.zygote,
+        }
+        given: list[str] = []
+        for key, value in deltas.items():
+            if value:
+                given.append(key)
+
+        if given:
+            msg = (
+                "[sandbox]: a full profile is exclusive with delta fields, "
+                f"got profile together with {', '.join(given)}"
+            )
             raise ValueError(msg)
 
         return self
@@ -213,9 +221,7 @@ class SandboxDefaults:
     def workspace(cls, env: EnvPaths) -> dict[str, Any]:
         return {
             "template": f"{env.sandbox}/workspace.ext4",
-            "mount": (
-                f"{env.data}/workspace/{{user_id}}.ext4:{cls.WORKSPACE_TARGET}"
-            ),
+            "mount": (f"{env.data}/workspace/{{user_id}}.ext4:{cls.WORKSPACE_TARGET}"),
         }
 
     @classmethod
@@ -442,7 +448,10 @@ class ProcessLaunchers(SectionLaunchers):
     def probe(self) -> None:
         workdir = Path(self._cfg.workdir)
         if not workdir.is_dir():
-            msg = f"[tool_launcher] workdir does not exist: {self._cfg.workdir}"
+            msg = (
+                "[tool_launcher] provider = process: workdir must be an existing "
+                f"directory, got {self._cfg.workdir!r}"
+            )
             raise RuntimeError(msg)
 
         # файловые ссылки канваса читают файлы инструментов из workdir
@@ -461,7 +470,10 @@ class ToolLaunchers:
     def of(cls, raw: DictConfig) -> SectionLaunchers:
         node = OmegaConf.select(raw, cls.SECTION)
         if node is None:
-            msg = "[tool_launcher] is required: provider = sandbox | process"
+            msg = (
+                "[tool_launcher] is required but the config has no such section: "
+                "expected provider = sandbox | process"
+            )
             raise RuntimeError(msg)
 
         section = bind(raw, cls.SECTION, ToolLauncherSection).root

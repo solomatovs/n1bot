@@ -58,7 +58,9 @@ class PageMetrics(BaseModel):
                 missing.append(metric.value)
 
         if missing:
-            raise PerfError(f"cdp metrics are missing: {missing}")
+            present = sorted(values)
+            msg = f"Performance.getMetrics reply lacks {missing}, got {present}"
+            raise PerfError(msg)
 
         return cls(
             heap_mb=values[CdpMetric.HEAP_USED] / 1e6,
@@ -120,7 +122,8 @@ class TurnSeries:
 
     def __init__(self, samples: Sequence[TurnSample]) -> None:
         if not samples:
-            raise PerfError("series needs at least one turn")
+            msg = "turn series: expected at least one turn sample, got none"
+            raise PerfError(msg)
 
         self._samples = list(samples)
 
@@ -142,7 +145,11 @@ class TurnSeries:
 
     def heap_kb_per_turn(self) -> float:
         if len(self._samples) < self.MIN_HEAP_SAMPLES:
-            raise PerfError("heap growth needs at least two turns")
+            count = len(self._samples)
+            msg = (
+                f"heap growth per turn: expected at least two turn samples, got {count}"
+            )
+            raise PerfError(msg)
 
         first = self._samples[0]
         last = self._samples[-1]

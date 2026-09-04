@@ -127,8 +127,9 @@ class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams, LiteParseParams
         limit = pool.max_size if pool.max_size is not None else pool.min_size
         if limit < self.page_workers:
             msg = (
-                f"page_workers={self.page_workers} превышает пул соединений "
-                f"postgres ({limit}): подними connection.pool.max_size"
+                f"confluence ingest config: page_workers={self.page_workers} "
+                f"exceeds the postgres connection pool ({limit}), "
+                f"raise connection.pool.max_size"
             )
             raise ValueError(msg)
         return self

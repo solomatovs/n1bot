@@ -65,7 +65,9 @@ class TomlText:
             items = [cls._value(item) for item in value]
             return f"[{', '.join(items)}]"
 
-        raise TomlTypeError(f"unsupported value type: {type(value).__name__}")
+        got = type(value).__name__
+        msg = f"rendering toml value {value!r}: type {got} is not supported"
+        raise TomlTypeError(msg)
 
     @staticmethod
     def _string(value: str) -> str:

@@ -52,6 +52,7 @@ from boba.toolkit.result import ErrorResult, ToolArtifact
 from boba.toolrun.errors import ToolErrorGuard
 from boba.toolrun.injected import InjectedConfig
 from boba.transport.http.profile import HttpConnection
+from boba.transport.http.web import WebHost
 
 pytestmark = pytest.mark.anyio
 
@@ -279,22 +280,39 @@ class Guarded:
 
     @staticmethod
     def web(raw_config: Any, store: ConnectionStore):
+        """Как web_fetch_page: соединение параметром, покрытие хоста URL
+        проверяет само тело через WebHost.bound."""
         schema = create_model(
             "GuardedWebArgs",
             url=(str, ...),
-            connection=(str, ...),
+            connection=(Annotated[HttpConnection, UserConnection], ...),
             cfg=(Annotated[WebGrepConfig, Injected], ...),
         )
 
         def resolve(name: str, annotation: Any) -> object:
             return bind(raw_config, path="tool.web", model=WebGrepConfig)
 
-        return Guarded._build(schema, store, None, resolve)
+        async def body(**kwargs: object) -> tuple[str, dict[str, object]]:
+            connection = kwargs["connection"]
+            url = kwargs["url"]
+            if not isinstance(connection, HttpConnection):
+                raise AssertionError(f"expected an HttpConnection, got {connection!r}")
+
+            if not isinstance(url, str):
+                raise AssertionError(f"expected a url string, got {url!r}")
+
+            WebHost.bound(connection, url)
+            return "ok", kwargs
+
+        return Guarded._build(schema, store, None, resolve, body)
 
     @staticmethod
-    def _build(schema, store, tickets, resolve) -> StructuredTool:
-        async def body(**kwargs: object) -> tuple[str, dict[str, object]]:
+    def _build(schema, store, tickets, resolve, body=None) -> StructuredTool:
+        async def echo(**kwargs: object) -> tuple[str, dict[str, object]]:
             return "ok", kwargs
+
+        if body is None:
+            body = echo
 
         tool = StructuredTool(
             name="guarded",
@@ -567,13 +585,16 @@ class TestNoConnections:
         user = await Session.user(layer, "f-empty", Session.local())
         Session.enter(user, Session.local())
 
-        artifact = await Guarded.call(
+        result = await Guarded.failure(
             Guarded.pg(raw_config, store, None), connection="main"
         )
 
-        cfg = artifact["cfg"]
-        if cfg.profiles or cfg.names:
-            raise AssertionError(f"nothing is granted, whitelist must be empty: {cfg}")
+        _expect(
+            result,
+            ConnectionRefusal.NOT_VISIBLE,
+            "connection 'main' of kind 'postgres' is not available to you",
+            "yours are: none",
+        )
 
     async def test_store_unavailable(
         self, raw_config, layer, app_config, test_database, key: SecretStr
@@ -593,7 +614,7 @@ class TestNoConnections:
             Guarded.pg(raw_config, broken, None), connection="main"
         )
 
-        _expect(result, "ConnectionStoreError", "for subject failed")
+        _expect(result, "ConnectionStoreError", "for subject in schema", "failed")
 
     async def test_row_is_not_a_profile(
         self, raw_config, store, layer, pool: AsyncPostgresPool
@@ -640,7 +661,7 @@ class TestNoConnections:
             Guarded.pg(raw_config, foreign, None), connection="main"
         )
 
-        _expect(result, "SecretCryptoError", "not decrypted")
+        _expect(result, "SecretCryptoError", "decrypting a stored secret failed")
 
     @pytest.mark.parametrize(
         "auth",
@@ -724,8 +745,9 @@ class TestNoConnections:
 
         _expect(
             result,
-            ConnectionRefusal.HOST_NOT_ALLOWED,
-            "outside connection 'blank'",
+            "UnknownHostError",
+            "host 'example.com' is outside the chosen connection",
+            "it covers ''",
         )
 
     async def test_web_url_outside_the_connection_host(
@@ -744,8 +766,8 @@ class TestNoConnections:
 
         _expect(
             result,
-            ConnectionRefusal.HOST_NOT_ALLOWED,
-            "outside connection 'lab'",
+            "UnknownHostError",
+            "host 'example.com' is outside the chosen connection",
             "*.example.com",
         )
 

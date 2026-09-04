@@ -153,7 +153,10 @@ class UserConnections(AsyncInjected):
     def _kind_of(tool: str, param: str, annotation: object, types_ref: TypesRef) -> str:
         """Вид соединения по модели профиля параметра."""
         if not isinstance(annotation, type):
-            msg = f"tool {tool!r}: {param} is not annotated with a profile model"
+            msg = (
+                f"tool {tool!r}: {param} must be annotated with a connection "
+                f"profile model, got {annotation!r}"
+            )
             raise ToolConfigError(msg)
 
         if not issubclass(annotation, ConnectionProfileBase):
@@ -168,7 +171,7 @@ class UserConnections(AsyncInjected):
         except UnknownConnectionKindError as exc:
             msg = (
                 f"tool {tool!r}: {param} needs connection type "
-                f"{annotation.__name__}, whose package is not installed"
+                f"{annotation.__name__}, whose package is not installed: {exc}"
             )
             raise ToolConfigError(msg) from exc
 
@@ -181,7 +184,7 @@ class UserConnections(AsyncInjected):
 
         picked = self._pick(whitelist, requested)
         profile = self._labelled(picked.profile, name)
-        armed = await self._armed(profile)
+        armed = await self._armed(profile, picked.name)
 
         logger.info(
             "tool %s: connection %r (%s) %s",
@@ -199,7 +202,7 @@ class UserConnections(AsyncInjected):
             return value
 
         msg = (
-            f"{tool} needs a connection name in {self._param!r}; "
+            f"{tool} needs a connection name in {self._param!r}, got {value!r}; "
             "call connection_list to see the names available to you"
         )
         raise RefusalError(ConnectionRefusal.NOT_VISIBLE, msg)
@@ -210,7 +213,7 @@ class UserConnections(AsyncInjected):
         except AmbiguousConnectionError as exc:
             msg = (
                 f"connection {requested!r} matches more than one of your "
-                "connections; ask the administrator to resolve the overlap"
+                f"connections: {exc}; ask the administrator to resolve the overlap"
             )
             raise RefusalError(ConnectionRefusal.AMBIGUOUS, msg) from exc
 
@@ -218,9 +221,12 @@ class UserConnections(AsyncInjected):
             return picked
 
         known = ", ".join(whitelist.names())
+        if not known:
+            known = "none"
+
         msg = (
             f"connection {requested!r} of kind {self._kind!r} is not available "
-            f"to you; yours are: {known or 'none'}"
+            f"to you; yours are: {known}"
         )
         raise RefusalError(ConnectionRefusal.NOT_VISIBLE, msg)
 
@@ -234,13 +240,16 @@ class UserConnections(AsyncInjected):
 
         return profile.labeled(client)
 
-    async def _armed(self, profile: ConnectionProfileBase) -> ConnectionProfileBase:
+    async def _armed(
+        self, profile: ConnectionProfileBase, name: str
+    ) -> ConnectionProfileBase:
         """Профиль с билетом вызова вместо kerberos-секции строки."""
         section = ProfileSections.section_of(profile)
         if isinstance(section, TicketAuth):
             msg = (
-                "stored connection carries a ticket kerberos section: "
-                "only delegated or keytab credentials are allowed in the table"
+                f"stored connection {name!r} of kind {self._kind!r} carries a "
+                "ticket kerberos section: only delegated or keytab credentials "
+                "are allowed in the table"
             )
             raise ToolConfigError(msg)
 

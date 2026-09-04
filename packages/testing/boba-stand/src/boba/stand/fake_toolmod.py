@@ -50,11 +50,11 @@ async def fake_echo(
 ) -> tuple[str, ToolResult]:
     """Повторяет текст, приправив секретом из конфига."""
     if text == "boom":
-        msg = "fake backend is down"
+        msg = f"fake_echo({text!r}): fake backend is down"
         raise FakeUnavailableError(msg)
 
     if text == "crash":
-        msg = "unexpected defect"
+        msg = f"fake_echo({text!r}): unexpected defect scripted by the stand"
         raise RuntimeError(msg)
 
     logging.getLogger("fake.tool").info("echo progress: %s", text)

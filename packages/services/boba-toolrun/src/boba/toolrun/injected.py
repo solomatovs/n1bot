@@ -86,7 +86,11 @@ class AsyncInjected(CallHooks[None]):
         args: tuple[object, ...],
         kwargs: dict[str, object],
     ) -> None:
-        msg = f"tool {name!r}: {self._param} is built in the async body only"
+        msg = (
+            f"tool {name!r}: injected {self._param!r} is built by "
+            f"{type(self).__name__} in the async body only, but the tool was "
+            "invoked synchronously"
+        )
         raise InjectedAsyncOnlyError(msg)
 
     async def before_async(

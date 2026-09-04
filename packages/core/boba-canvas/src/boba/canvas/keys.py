@@ -12,6 +12,8 @@ from typing import ClassVar, Self
 
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
+from boba.toolkit.failure import ValidationText
+
 __all__ = [
     "DirKey",
     "ElementProps",
@@ -83,10 +85,15 @@ class KeySegment(BaseModel):
             return value
 
         if value in ("", ".", ".."):
-            raise ValueError(f"invalid key segment: {value!r}")
+            msg = f"invalid key segment {value!r}: expected a name, not '', '.' or '..'"
+            raise ValueError(msg)
 
         if cls.SEPARATOR in value:
-            raise ValueError(f"invalid key segment: {value!r}")
+            msg = (
+                f"invalid key segment {value!r}: "
+                f"separator {cls.SEPARATOR!r} is not allowed inside a segment"
+            )
+            raise ValueError(msg)
 
         return value
 
@@ -127,7 +134,11 @@ class ObjectKey(KeySegment):
         """Ключ хранилища -> модель; проверки полей живут в самой модели."""
         parts = raw.split(cls.SEPARATOR)
         if len(parts) != cls.SEGMENTS:
-            raise ValueError(f"invalid object_key: {raw!r}")
+            msg = (
+                f"invalid object_key {raw!r}: expected {cls.SEGMENTS} segments "
+                f"user_id/thread_id/dir/name, got {len(parts)}"
+            )
+            raise ValueError(msg)
 
         order = (KeyField.USER_ID, KeyField.THREAD_ID, KeyField.DIR, KeyField.NAME)
         fields = dict(zip(order, parts, strict=True))
@@ -135,7 +146,8 @@ class ObjectKey(KeySegment):
         try:
             return cls.model_validate(fields)
         except ValidationError as e:
-            raise ValueError(f"invalid object_key: {raw!r}") from e
+            msg = f"invalid object_key {raw!r}: {ValidationText.of(e)}"
+            raise ValueError(msg) from e
 
     @classmethod
     def from_workspace(cls, user_id: object, thread_id: object, path: str) -> Self:
@@ -245,7 +257,11 @@ class DirKey(KeySegment):
         """Префикс каталога -> модель; проверки полей живут в самой модели."""
         parts = raw.split(cls.SEPARATOR)
         if len(parts) != cls.SEGMENTS:
-            raise ValueError(f"invalid dir key: {raw!r}")
+            msg = (
+                f"invalid dir key {raw!r}: expected {cls.SEGMENTS} segments "
+                f"user_id/thread_id/dir, got {len(parts)}"
+            )
+            raise ValueError(msg)
 
         order = (KeyField.USER_ID, KeyField.THREAD_ID, KeyField.DIR)
         fields = dict(zip(order, parts, strict=True))
@@ -253,7 +269,8 @@ class DirKey(KeySegment):
         try:
             return cls.model_validate(fields)
         except ValidationError as e:
-            raise ValueError(f"invalid dir key: {raw!r}") from e
+            msg = f"invalid dir key {raw!r}: {ValidationText.of(e)}"
+            raise ValueError(msg) from e
 
     def render(self) -> str:
         return self.SEPARATOR.join((self.user_id, self.in_thread()))

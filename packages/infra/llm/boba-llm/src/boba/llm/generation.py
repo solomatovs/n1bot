@@ -73,7 +73,10 @@ class LocalOnnxGenerator(StructuredGenerator):
         try:
             self._runtime.run(prompt, spec, pieces.append, self._never_stopped)
         except ChatProviderError as exc:
-            msg = f"local generation failed: {self._cfg.model_dir}"
+            msg = (
+                f"structured generation with local model {self._cfg.model_dir} "
+                f"failed: {exc}"
+            )
             raise GenerationError(msg) from exc
 
         return "".join(pieces)
@@ -162,7 +165,10 @@ class OpenAiStructuredGenerator(StructuredGenerator):
             )
             response.raise_for_status()
         except httpx.HTTPError as exc:
-            msg = f"chat endpoint failed: {exc}"
+            msg = (
+                f"structured generation: POST {self._endpoint()} for model "
+                f"{self._cfg.model!r} failed: {type(exc).__name__}: {exc}"
+            )
             raise GenerationError(msg) from exc
 
         reply = self._parse(response.content)
@@ -218,19 +224,23 @@ class OpenAiStructuredGenerator(StructuredGenerator):
         """Админская таблица сэмплинга как есть: без проверок и переименований."""
         return dict(self._cfg.sampling)
 
-    @staticmethod
-    def _parse(body: bytes) -> ChatCompletion:
+    def _parse(self, body: bytes) -> ChatCompletion:
         try:
             return ChatCompletion.model_validate_json(body)
         except ValidationError as exc:
-            msg = f"chat endpoint returned malformed body: {exc}"
+            msg = (
+                f"structured generation: {self._endpoint()} returned a body that "
+                f"is not a ChatCompletion: {body[:200]!r}: {exc}"
+            )
             raise GenerationError(msg) from exc
 
-    @staticmethod
-    def _candidate(reply: ChatCompletion) -> str:
+    def _candidate(self, reply: ChatCompletion) -> str:
         """Строка-кандидат ответа: аргументы вызова либо текст сообщения."""
         if not reply.choices:
-            msg = "chat endpoint returned no choices"
+            msg = (
+                f"structured generation: {self._endpoint()} returned a "
+                f"ChatCompletion with no choices for model {self._cfg.model!r}"
+            )
             raise GenerationError(msg)
 
         message = reply.choices[0].message
@@ -258,13 +268,19 @@ class GeneratorFactory:
         match cfg:
             case LocalGeneration():
                 if runtime is None:
-                    msg = f"local generation needs a runtime: {cfg.model_dir}"
+                    msg = (
+                        f"local generation for {cfg.model_dir} needs an "
+                        "OnnxChatRuntime, got None"
+                    )
                     raise ValueError(msg)
 
                 return LocalOnnxGenerator(cfg, runtime)
             case OpenAiGeneration():
                 if client is None:
-                    msg = "openai generation needs an httpx client"
+                    msg = (
+                        f"openai generation for {cfg.base_url} needs an "
+                        "httpx client, got None"
+                    )
                     raise ValueError(msg)
 
                 return OpenAiStructuredGenerator(cfg, client)

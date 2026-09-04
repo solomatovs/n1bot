@@ -30,10 +30,15 @@ class StubAuthenticator(Authenticator):
 
     async def user_of_token(self, token: str) -> AuthenticatedUser:
         if token != self.TOKEN:
-            raise AuthenticationError("stand token mismatch")
+            msg = f"stand authenticator: expected token {self.TOKEN!r}, got {token!r}"
+            raise AuthenticationError(msg)
 
         if self._user is None:
-            raise AuthenticationError("stand has no signed-in user")
+            msg = (
+                f"stand authenticator: token {token!r} is valid but the stand "
+                f"was built without a signed-in user"
+            )
+            raise AuthenticationError(msg)
 
         return self._user
 
@@ -75,7 +80,7 @@ class NoThreads:
 
     @staticmethod
     def source() -> ThreadOwnership:
-        msg = "thread ownership is not part of this stand"
+        msg = "resolving thread ownership: it is not part of the api stand"
         raise RuntimeError(msg)
 
 
@@ -84,5 +89,5 @@ class NoUsers:
 
     @staticmethod
     def source() -> UserSettingsStore:
-        msg = "users store is not part of this stand"
+        msg = "resolving the users store: it is not part of the api stand"
         raise RuntimeError(msg)

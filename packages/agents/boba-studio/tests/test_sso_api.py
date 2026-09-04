@@ -60,7 +60,7 @@ def krb5_env() -> Iterator[None]:
 
 
 def _no_store() -> Any:
-    msg = "connection store is not part of this stand"
+    msg = "resolving the connection store: it is not part of the sso api stand"
     raise RuntimeError(msg)
 
 

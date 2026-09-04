@@ -154,9 +154,12 @@ class ConfluenceJsonDecoder(Decoder):
         try:
             data: dict[str, Any] = json.loads(payload)
         except json.JSONDecodeError as e:
-            raise ConfluencePayloadError(
-                f"ConfluenceJsonDecoder: invalid JSON from Confluence: {e}"
-            ) from e
+            head = payload[:200]
+            msg = (
+                f"ConfluenceJsonDecoder: decoding page {value.source_id} expected "
+                f"a JSON body from Confluence, got {head!r}: {e}"
+            )
+            raise ConfluencePayloadError(msg) from e
         html = ConfluenceJson.body_html(data, self._body_format)
 
         meta = value.metadata.set(TransportKeys.CONTENT_TYPE, self._HTML_CONTENT_TYPE)

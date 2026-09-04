@@ -429,13 +429,19 @@ class ZygoteWire:
         except ValueError as exc:
             for fd in fds:
                 os.close(fd)
-            msg = f"zygote wire: not a JSON message: {data[:120]!r}"
+            msg = (
+                f"zygote wire: expected a JSON object message, "
+                f"got undecodable data {data[:120]!r}: {exc}"
+            )
             raise ZygoteProtocolError(msg) from exc
 
         if not isinstance(message, dict):
             for fd in fds:
                 os.close(fd)
-            msg = f"zygote wire: message must be an object, got {type(message)}"
+            msg = (
+                f"zygote wire: expected a JSON object message, "
+                f"got {type(message).__name__}: {data[:120]!r}"
+            )
             raise ZygoteProtocolError(msg)
 
         return message, fds
@@ -459,7 +465,8 @@ class Isolation:
         rc = cls.libc().umount2(target.encode(), int(MountFlag.DETACH))
         if rc != 0:
             errno = ctypes.get_errno()
-            raise OSError(errno, f"umount2({target}) failed: {os.strerror(errno)}")
+            msg = f"umount2({target}, MNT_DETACH) failed: {os.strerror(errno)}"
+            raise OSError(errno, msg)
 
     class _CloneArgs(ctypes.Structure):
         """Аргументы clone3(2) в порядке ядра; хвост не используется."""
@@ -501,7 +508,8 @@ class Isolation:
         )
         if pid < 0:
             code = ctypes.get_errno()
-            raise OSError(code, f"clone3(into cgroup): {os.strerror(code)}")
+            msg = f"clone3(into cgroup fd {cgroup_fd}) failed: {os.strerror(code)}"
+            raise OSError(code, msg)
 
         return pid
 
@@ -532,7 +540,11 @@ class Isolation:
         )
         if rc != 0:
             code = ctypes.get_errno()
-            raise OSError(code, f"mount({target}): {os.strerror(code)}")
+            msg = (
+                f"mount({source!r} -> {target!r}, fstype={fstype!r}, "
+                f"flags={flags:#x}) failed: {os.strerror(code)}"
+            )
+            raise OSError(code, msg)
 
     class _CapHeader(ctypes.Structure):
         _fields_: ClassVar = [("version", ctypes.c_uint32), ("pid", ctypes.c_int)]
@@ -564,7 +576,8 @@ class Isolation:
         data = (cls._CapData * 2)()
         if cls.libc().capset(ctypes.byref(header), ctypes.byref(data)) != 0:
             code = ctypes.get_errno()
-            raise OSError(code, f"capset: {os.strerror(code)}")
+            msg = f"capset(drop all capabilities) failed: {os.strerror(code)}"
+            raise OSError(code, msg)
 
     PR_SET_NO_NEW_PRIVS: ClassVar[int] = 38
     PR_CAPBSET_DROP: ClassVar[int] = 24
@@ -574,7 +587,8 @@ class Isolation:
         rc = cls.libc().prctl(cls.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
         if rc != 0:
             code = ctypes.get_errno()
-            raise OSError(code, f"prctl(NO_NEW_PRIVS): {os.strerror(code)}")
+            msg = f"prctl(PR_SET_NO_NEW_PRIVS, 1) failed: {os.strerror(code)}"
+            raise OSError(code, msg)
 
     @classmethod
     def _drop_bounding_set(cls) -> None:
@@ -587,7 +601,8 @@ class Isolation:
                 continue
 
             code = ctypes.get_errno()
-            raise OSError(code, f"prctl(CAPBSET_DROP, {cap}): {os.strerror(code)}")
+            msg = f"prctl(PR_CAPBSET_DROP, {cap}) failed: {os.strerror(code)}"
+            raise OSError(code, msg)
 
     @classmethod
     def enter_call_namespaces(cls, mounts: CallMounts) -> None:
@@ -691,9 +706,11 @@ class ZygoteMain:
             for hook in WarmupHooks.of(name):
                 call = sent.pop((name, hook.name), None)
                 if call is None:
+                    sent_names = sorted(f"{m}.{h}" for m, h in sent)
                     msg = (
-                        f"module {name} declares warmup {hook.name!r}, but the "
-                        f"host sent no config for it"
+                        f"zygote warmup: module {name} declares warmup "
+                        f"{hook.name!r}, but the host sent no config for it "
+                        f"(received: {sent_names})"
                     )
                     raise ZygoteProtocolError(msg)
 
@@ -704,9 +721,11 @@ class ZygoteMain:
                 )
 
         for module, hook_name in sent:
+            declared = sorted(h.name for h in WarmupHooks.of(module))
             msg = (
-                f"host sent warmup {hook_name!r} for module {module}, but no such "
-                f"hook is declared there"
+                f"zygote warmup: host sent warmup {hook_name!r} for module "
+                f"{module}, but no such hook is declared there "
+                f"(declared: {declared})"
             )
             raise ZygoteProtocolError(msg)
 
@@ -721,7 +740,11 @@ class ZygoteMain:
             with open(cls.USERNS_SYSCTL, "w") as f:
                 f.write("0")
         except PermissionError:
-            logger.warning("zygote: %s is not writable, plain run", cls.USERNS_SYSCTL)
+            logger.warning(
+                "zygote: %s is not writable (no CAP_SYS_RESOURCE): plain run, "
+                "nested user namespaces stay allowed",
+                cls.USERNS_SYSCTL,
+            )
             return
 
         logger.info("zygote: %s=0, nested user namespaces denied", cls.USERNS_SYSCTL)
@@ -771,7 +794,11 @@ class ZygoteMain:
         if len(fds) != expected:
             for fd in fds:
                 os.close(fd)
-            msg = f"call {request.call_id}: expected {expected} fds, got {len(fds)}"
+            msg = (
+                f"zygote call {request.call_id}: expected {expected} fds "
+                f"with the request (into_cgroup={request.into_cgroup}), "
+                f"got {len(fds)}"
+            )
             raise ZygoteProtocolError(msg)
 
         control = socket.socket(fileno=fds[CallFd.CONTROL])
@@ -818,8 +845,13 @@ class ZygoteMain:
 
             try:
                 ZygoteWire.send(control, CallExit(call_id=call_id, code=code))
-            except OSError:
-                logger.warning("zygote: call %s exit not delivered", call_id)
+            except OSError as exc:
+                logger.warning(
+                    "zygote: call %s exit rc=%d not delivered to the host: %s",
+                    call_id,
+                    code,
+                    exc,
+                )
             finally:
                 control.close()
 
@@ -919,7 +951,8 @@ class ZygoteMain:
         try:
             os.stat("/")
         except OSError as exc:
-            cls._fail_setup(control, request, cls._failure_of(exc), str(exc))
+            detail = f"stat('/') of the section root failed: {exc}"
+            cls._fail_setup(control, request, cls._failure_of(exc), detail)
             os._exit(MountError.EXIT_CODE)
 
     @staticmethod
@@ -1022,10 +1055,15 @@ class ZygoteMain:
         try:
             mounts.mount()
         except MountError as exc:
-            self._fail_setup(control, request, SetupFailure.MOUNT_ERROR, str(exc))
+            detail = f"mounting call images {mounts.describe()} failed: {exc}"
+            self._fail_setup(control, request, SetupFailure.MOUNT_ERROR, detail)
             os._exit(MountError.EXIT_CODE)
         except OSError as exc:
-            self._fail_setup(control, request, self._failure_of(exc), str(exc))
+            detail = (
+                f"mounting call images {mounts.describe()} or detaching "
+                f"staging failed: {exc}"
+            )
+            self._fail_setup(control, request, self._failure_of(exc), detail)
             os._exit(MountError.EXIT_CODE)
 
         timing.mark("images")
@@ -1145,7 +1183,10 @@ class _CallMounts:
 
         mounting = request.mounting
         if mounting is None:
-            msg = "call carries images but no mounting parameters"
+            msg = (
+                f"zygote call {request.call_id}: request carries "
+                f"{len(request.images)} image(s) but no mounting parameters"
+            )
             raise ZygoteProtocolError(msg)
 
         options = mounting.options()
@@ -1163,6 +1204,14 @@ class _CallMounts:
         binaries = TrustedBinaries(dirs=(mounting.fuse2fs_dir,))
         mounter = FuseMounter(options, binaries, pass_fds=())
         return cls(request.images, stores, mounter, request.staging)
+
+    def describe(self) -> str:
+        """Образы вызова с точками монтирования — для текста отказа."""
+        pairs: list[str] = []
+        for spec in self._images:
+            pairs.append(f"{spec.image}->{spec.target}")
+
+        return "[" + ", ".join(pairs) + "]"
 
     def mount(self) -> None:
         if self._mounter is not None:

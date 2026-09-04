@@ -463,6 +463,7 @@ class TestSettingsLifecycle:
         if value != "stay here":
             raise AssertionError(f"user_prompt after reload: {value!r}")
 
+
 class TestSettingsAfterTurn:
     """Панель настроек остаётся рабочей, когда в треде уже есть переписка."""
 
@@ -561,7 +562,5 @@ class TestOtherTabs:
         _open_settings(other)
         _open_tab(other, PanelTab.PROMPT)
         expect(
-            other.page.locator(
-                PanelSelector.textarea_of(UserSetting.USER_PROMPT.value)
-            )
+            other.page.locator(PanelSelector.textarea_of(UserSetting.USER_PROMPT.value))
         ).to_have_value("Sign every answer")

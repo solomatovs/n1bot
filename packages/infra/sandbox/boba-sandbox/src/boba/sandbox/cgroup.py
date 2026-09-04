@@ -85,7 +85,10 @@ class GroupLimits:
     def cpu_max(self) -> str:
         """Значение cpu.max: квота в мкс на период 100000 мкс."""
         if self.cpu_percent is None:
-            msg = "cpu_max is undefined: cpu_percent is not set"
+            msg = (
+                "cgroup limits: cpu.max cannot be rendered because "
+                "cpu_percent is not set in the profile"
+            )
             raise ValueError(msg)
         quota = self.cpu_percent * self.CPU_PERIOD_USEC // 100
         return f"{quota} {self.CPU_PERIOD_USEC}"
@@ -385,8 +388,9 @@ class CgroupManager:
             self._write(leaf / knob, value)
         except OSError as e:
             msg = (
-                f"cgroup: {knob} is not supported here ({e}); "
-                f"set {field} = 0 in the profile or fix the delegation"
+                f"cgroup: writing {value!r} to {leaf / knob} failed: {e}; "
+                f"{knob} is not supported here, set {field} = 0 in the "
+                f"profile or fix the delegation"
             )
             raise CgroupError(msg) from e
 

@@ -120,7 +120,10 @@ class TmpfsSpec(BaseModel):
     def parse(cls, raw: str) -> Self:
         path, sep, size = raw.partition(":")
         if not sep:
-            msg = f"tmpfs {raw!r}: size is required, use `dest:size` (256M, 1G)"
+            msg = (
+                f"tmpfs {raw!r}: size is required, expected `dest:size` "
+                f"(256M, 1G), got no `:` separator"
+            )
             raise ValueError(msg)
         return cls(path=path, size_bytes=cls.parse_size(size))
 
@@ -215,7 +218,10 @@ class WorkspaceSpec(BaseModel):
     def image_of(self, user_id: str) -> str:
         """Путь образа пользователя на хосте."""
         if not user_id:
-            msg = "workspace image requires a user id"
+            msg = (
+                f"workspace image {self.mount.host!r} requires a non-empty "
+                f"user id, got {user_id!r}"
+            )
             raise ValueError(msg)
 
         return BindSpec.substitute(self.mount.host, {"user_id": user_id})
@@ -660,7 +666,10 @@ class SandboxProfile(BaseModel):
                 return raw
 
             if not isinstance(base, Mapping):
-                msg = "sandbox: extends must reference a profile table"
+                msg = (
+                    f"sandbox: extends must reference a profile table, "
+                    f"got {type(base).__name__}: {str(base)[:200]}"
+                )
                 raise ValueError(msg)
 
             raw = cls._merge(dict(base), raw)
