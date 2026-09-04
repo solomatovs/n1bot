@@ -1,6 +1,29 @@
 .field {
   display: grid;
   gap: var(--s1);
+  min-width: 0;
+}
+
+.field--row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+
+.field--row > .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.field__label {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--muted);
+}
+
+.field__label.mono {
+  color: var(--ink);
 }
 
 .field__hint {
@@ -10,15 +33,12 @@
 }
 
 .field__bound {
+  display: inline-flex;
+  align-items: center;
+  height: var(--h-ctl);
   font-family: var(--font-mono);
   font-size: var(--fs-data);
   color: var(--edge-value);
-}
-
-.field__label {
-  font-family: var(--font-mono);
-  font-size: var(--fs-micro);
-  color: var(--muted);
 }
 
 .field__required {
@@ -33,4 +53,13 @@
   color: var(--error);
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
+}
+
+.field--check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  height: var(--h-ctl);
+  font-size: var(--fs-micro);
+  white-space: nowrap;
 }

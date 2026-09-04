@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import signal
@@ -394,10 +395,13 @@ class TestResources:
 
         one_ok()
 
+        # дескрипторы соседних тестов закрываются сборщиком: считать после него
+        gc.collect()
         before = _open_fds()
         for _ in range(3):
             one_ok()
             one_closed()
             one_broken()
 
+        gc.collect()
         assert _open_fds() == before

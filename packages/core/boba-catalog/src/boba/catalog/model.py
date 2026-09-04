@@ -380,7 +380,7 @@ class CatalogSnapshot(CatalogModel):
         ref = EntityRef.of(entity)
         table = dict(self.table(ref.kind))
         if entity.id in table:
-            msg = f"{self.label(ref)} already exists"
+            msg = f"{self.label(ref)} already exists in the catalog (id {entity.id})"
             raise CatalogInvariantError([msg])
 
         table[entity.id] = entity
@@ -395,7 +395,7 @@ class CatalogSnapshot(CatalogModel):
         ref = EntityRef.of(entity)
         table = dict(self.table(ref.kind))
         if entity.id not in table:
-            msg = f"{self.label(ref)} not found"
+            msg = f"{self.label(ref)} not found in the catalog"
             raise CatalogInvariantError([msg])
 
         table[entity.id] = entity
@@ -409,7 +409,7 @@ class CatalogSnapshot(CatalogModel):
         """
         table = dict(self.table(ref.kind))
         if ref.id not in table:
-            msg = f"{self.label(ref)} not found"
+            msg = f"{self.label(ref)} not found in the catalog"
             raise CatalogInvariantError([msg])
 
         del table[ref.id]
@@ -694,7 +694,8 @@ class CatalogSnapshot(CatalogModel):
             if node.layer_id in self.layers:
                 continue
 
-            yield f"{self.label(EntityRef.of(node))} refers to a missing layer"
+            label = self.label(EntityRef.of(node))
+            yield f"{label} refers to a missing layer {node.layer_id}"
 
         for flow in self.flows.values():
             yield from self._flow_references(flow)

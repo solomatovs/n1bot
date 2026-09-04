@@ -11,7 +11,6 @@ from boba.sandbox import SandboxToolConfig
 from boba.stand.sandbox import ROOTFS_IMAGE
 from boba.tool.kb.confluence.tools import TOOLS as CONFLUENCE_TOOLS
 from boba.tool.kb.confluence.tools import (
-    ConfluenceRequestError,
     ConfluenceToolsConfig,
 )
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
@@ -222,14 +221,16 @@ class TestConfluenceTools:
             raise AssertionError('names == [ "confluence_fetch", "confluence_grep", "…')
 
     async def test_network_error_raises_domain_error(self) -> None:
-        from boba.tool.kb.confluence.tools import confluence_fetch
+        # класс ошибки берётся из того же модуля, что и тело: соседние тесты
+        # перезагружают модуль инструментов, и класс с import'а модуля устаревает
+        import boba.tool.kb.confluence.tools as confluence_tools
 
         cfg = ConfluenceToolsConfig(
             confluence=HttpConnection(base_url=DEAD_URL),
         )
 
-        body = ToolMain.toolset(confluence_fetch)[0].coroutine
+        body = ToolMain.toolset(confluence_tools.confluence_fetch)[0].coroutine
         if body is None:
             raise AssertionError("body is not None")
-        with pytest.raises(ConfluenceRequestError):
+        with pytest.raises(confluence_tools.ConfluenceRequestError):
             await body(page_id="1", cfg=cfg)

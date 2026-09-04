@@ -2,8 +2,20 @@ import { Plus, Trash2 } from "lucide-react";
 import { useState, type FormEvent, type ReactElement } from "react";
 
 import type { ManualColumn, ManualObject, SourceKind } from "../../model/catalog";
-import { Button, Field, IconButton, Input, Select } from "../../ui";
-import { Dialog } from "../edit/Dialog";
+import {
+  Button,
+  Cell,
+  DataTable,
+  Dialog,
+  Field,
+  Form,
+  IconButton,
+  Input,
+  Row,
+  Select,
+  TableRow,
+  Toolbar,
+} from "../../ui";
 
 type Props = {
   kind: SourceKind;
@@ -57,16 +69,18 @@ export function ObjectForm({ kind, initial, onSave, onClose }: Props): ReactElem
     });
   };
 
-  const valid = path.every((step) => step.trim() !== "") && columns.every((c) => c.name.trim() !== "" && c.type.trim() !== "");
+  const valid =
+    path.every((step) => step.trim() !== "") && columns.every((c) => c.name.trim() !== "" && c.type.trim() !== "");
 
   return (
-    <Dialog title={editing ? "object" : "new object"} mark="object-form" onClose={onClose}>
-      <form className="form" onSubmit={submit} data-testid="object-form">
-        <div className="form__row">
+    <Dialog title={editing ? "object" : "new object"} mark="object-form" wide onClose={onClose}>
+      <Form onSubmit={submit} mark="object-form">
+        <Row wrap>
           {labels.map((label, index) => (
             <Field key={label} label={label} required>
               <Input
                 mono
+                fill
                 aria-label={`object ${label}`}
                 value={path[index] ?? ""}
                 disabled={editing}
@@ -76,7 +90,7 @@ export function ObjectForm({ kind, initial, onSave, onClose }: Props): ReactElem
               />
             </Field>
           ))}
-        </div>
+        </Row>
         <Field label="kind">
           <Select
             aria-label="object kind"
@@ -91,6 +105,7 @@ export function ObjectForm({ kind, initial, onSave, onClose }: Props): ReactElem
         </Field>
         <Field label="comment">
           <Input
+            fill
             aria-label="object comment"
             value={comment}
             onChange={(event) => {
@@ -98,41 +113,32 @@ export function ObjectForm({ kind, initial, onSave, onClose }: Props): ReactElem
             }}
           />
         </Field>
-        <div className="columns-editor" data-testid="object-columns">
-          <table className="columns-editor__table">
-            <thead>
-              <tr>
-                <th>name</th>
-                <th>type</th>
-                <th>null</th>
-                <th>comment</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {columns.map((column, index) => (
-                <tr key={index}>
-                  <td>
-                    <Input
-                      mono
-                      aria-label="column name"
-                      value={column.name}
-                      onChange={(event) => {
-                        setColumn(index, { name: event.target.value });
-                      }}
-                    />
-                  </td>
-                  <td>
-                    <Input
-                      mono
-                      aria-label="column type"
-                      value={column.type}
-                      onChange={(event) => {
-                        setColumn(index, { type: event.target.value });
-                      }}
-                    />
-                  </td>
-                  <td>
+        <div data-testid="object-columns">
+          <DataTable editor head={["name", "type", "null", "comment", ""]}>
+            {columns.map((column, index) => (
+              <TableRow key={index}>
+                <Cell>
+                  <Input
+                    mono
+                    aria-label="column name"
+                    value={column.name}
+                    onChange={(event) => {
+                      setColumn(index, { name: event.target.value });
+                    }}
+                  />
+                </Cell>
+                <Cell>
+                  <Input
+                    mono
+                    aria-label="column type"
+                    value={column.type}
+                    onChange={(event) => {
+                      setColumn(index, { type: event.target.value });
+                    }}
+                  />
+                </Cell>
+                <Cell>
+                  <Field check>
                     <input
                       type="checkbox"
                       aria-label={`nullable ${column.name}`}
@@ -141,33 +147,33 @@ export function ObjectForm({ kind, initial, onSave, onClose }: Props): ReactElem
                         setColumn(index, { nullable: event.target.checked });
                       }}
                     />
-                  </td>
-                  <td>
-                    <Input
-                      aria-label="column comment"
-                      value={column.comment ?? ""}
-                      onChange={(event) => {
-                        setColumn(index, { comment: event.target.value });
-                      }}
-                    />
-                  </td>
-                  <td>
-                    <IconButton
-                      aria-label={`remove column ${column.name}`}
-                      onClick={() => {
-                        setColumns((current) => current.filter((_, at) => at !== index));
-                      }}
-                    >
-                      <Trash2 size={12} />
-                    </IconButton>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <div className="form__actions">
+                  </Field>
+                </Cell>
+                <Cell>
+                  <Input
+                    aria-label="column comment"
+                    value={column.comment ?? ""}
+                    onChange={(event) => {
+                      setColumn(index, { comment: event.target.value });
+                    }}
+                  />
+                </Cell>
+                <Cell>
+                  <IconButton
+                    aria-label={`remove column ${column.name}`}
+                    onClick={() => {
+                      setColumns((current) => current.filter((_, at) => at !== index));
+                    }}
+                  >
+                    <Trash2 size={12} />
+                  </IconButton>
+                </Cell>
+              </TableRow>
+            ))}
+          </DataTable>
+          <Toolbar>
             <Button
-              size="tiny"
+              size="sm"
               icon={Plus}
               onClick={() => {
                 setColumns((current) => [...current, { name: "", type: "", nullable: true, comment: null }]);
@@ -175,17 +181,17 @@ export function ObjectForm({ kind, initial, onSave, onClose }: Props): ReactElem
             >
               column
             </Button>
-          </div>
+          </Toolbar>
         </div>
-        <div className="form__actions">
+        <Toolbar>
           <Button tone="primary" type="submit" disabled={!valid}>
             save object
           </Button>
           <Button tone="ghost" onClick={onClose}>
             cancel
           </Button>
-        </div>
-      </form>
+        </Toolbar>
+      </Form>
     </Dialog>
   );
 }

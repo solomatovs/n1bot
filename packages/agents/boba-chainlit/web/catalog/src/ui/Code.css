@@ -1,0 +1,15 @@
+.code {
+  margin: 0;
+  padding: var(--s3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-cell);
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: var(--fs-data);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: calc(var(--h-ctl) * 12);
+  overflow: auto;
+  min-width: 0;
+}

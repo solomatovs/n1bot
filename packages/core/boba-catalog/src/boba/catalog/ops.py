@@ -168,7 +168,7 @@ class RetargetNode(CatalogOpBase):
         entity = EntityRef(kind=EntityKind.NODE, id=self.id)
         current = snapshot.nodes.get(self.id)
         if current is None:
-            msg = f"{snapshot.label(entity)} not found"
+            msg = f"{snapshot.label(entity)} not found in the catalog"
             raise CatalogInvariantError([msg])
 
         return snapshot.replaced(current.model_copy(update={"ref": self.ref}))

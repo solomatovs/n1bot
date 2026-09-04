@@ -4,7 +4,8 @@ import { Link } from "react-router-dom";
 
 import { ApiError, type CatalogApi } from "../api/client";
 import type { ObjectRef, Source, TreeNode } from "../model/catalog";
-import { Chip, IconButton } from "../ui";
+import { Button, Chip, IconButton, Note, Toolbar } from "../ui";
+import { PaneGroup } from "./LeftPane";
 import { SourceTree } from "./sources/SourceTree";
 
 type Props = {
@@ -36,7 +37,10 @@ export function SourcesPane({ api, pins, selected, onSelect, draggable }: Props)
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          setState({ status: "failed", message: error instanceof ApiError ? error.detail : String(error) });
+          setState({
+            status: "failed",
+            message: error instanceof ApiError ? error.detail : String(error),
+          });
         }
       });
 
@@ -46,19 +50,27 @@ export function SourcesPane({ api, pins, selected, onSelect, draggable }: Props)
   }, [api]);
 
   if (state.status === "loading") {
-    return <p className="pane__empty">loading sources…</p>;
+    return (
+      <Note pad mark="pane-empty">
+        loading sources…
+      </Note>
+    );
   }
 
   if (state.status === "failed") {
-    return <p className="pane__empty">{state.message}</p>;
+    return (
+      <Note pad tone="error" mark="pane-empty">
+        {state.message}
+      </Note>
+    );
   }
 
   return (
     <div className="pane__scroll" data-testid="sources-pane">
       {state.sources.length === 0 && (
-        <p className="pane__empty">
+        <Note pad mark="pane-empty">
           no sources yet · <Link to="/sources">add one</Link>
-        </p>
+        </Note>
       )}
       {state.sources.map((source) => (
         <SourceBranch
@@ -71,11 +83,13 @@ export function SourcesPane({ api, pins, selected, onSelect, draggable }: Props)
           draggable={draggable}
         />
       ))}
-      <div className="pane__footer">
-        <Link to="/sources" className="index__link" data-testid="sources-link">
-          manage sources
+      <Toolbar pad>
+        <Link to="/sources" data-testid="sources-link">
+          <Button size="sm" tone="ghost">
+            manage sources
+          </Button>
         </Link>
-      </div>
+      </Toolbar>
     </div>
   );
 }
@@ -102,9 +116,15 @@ function SourceBranch({ api, source, version, selected, onSelect, draggable }: B
   };
 
   return (
-    <section className="pane__group" data-testid="source-branch" data-source={source.name} data-open={open}>
-      <div className="pane__group-head">
+    <PaneGroup
+      title={source.name}
+      name
+      mark="source-branch"
+      data={{ "data-source": source.name, "data-open": open }}
+      lead={
         <IconButton
+          size="sm"
+          ghost
           aria-label={`${open ? "collapse" : "expand"} source ${source.name}`}
           onClick={() => {
             setOpen((current) => !current);
@@ -112,15 +132,32 @@ function SourceBranch({ api, source, version, selected, onSelect, draggable }: B
         >
           {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         </IconButton>
-        <span className="pane__source mono">{source.name}</span>
-        <Chip tone="muted">{source.kind}</Chip>
-        {source.manual && <Chip tone="draft">manual</Chip>}
-        <Chip tone="muted">{source.latest_version === 0 ? "no versions" : pinned}</Chip>
-      </div>
-      {open && source.latest_version > 0 && (
-        <SourceTree load={load} reloadKey={`${source.id}:${version}`} selected={own} onSelect={select} draggable={draggable} />
+      }
+      actions={
+        <>
+          <Chip tone="muted">{source.kind}</Chip>
+          {source.manual && <Chip tone="draft">manual</Chip>}
+          <Chip tone="muted">{source.latest_version === 0 ? "no versions" : pinned}</Chip>
+        </>
+      }
+    >
+      {open && (
+        <>
+          {source.latest_version > 0 ? (
+            <SourceTree
+              load={load}
+              reloadKey={`${source.id}:${version}`}
+              selected={own}
+              onSelect={select}
+              draggable={draggable}
+            />
+          ) : (
+            <Note pad mark="pane-empty">
+              no versions yet
+            </Note>
+          )}
+        </>
       )}
-      {open && source.latest_version === 0 && <p className="pane__empty">no versions yet</p>}
-    </section>
+    </PaneGroup>
   );
 }

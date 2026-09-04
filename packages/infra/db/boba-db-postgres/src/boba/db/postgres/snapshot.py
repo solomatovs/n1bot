@@ -12,41 +12,59 @@ CatalogInvariantError — повторы ключей или запись без
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from enum import IntEnum, StrEnum
 from operator import attrgetter
-from typing import Literal
+from typing import ClassVar, Literal
 from uuid import UUID
 
 from pydantic import Field
 
-from boba.catalog.base import CatalogModel
+from boba.catalog.base import CatalogError, CatalogInvariantError, CatalogModel
 from boba.catalog.sources import (
     Keyed,
+    ManualColumn,
+    ManualObject,
+    ManualObjectKind,
+    NodeColumn,
+    ObjectCard,
+    ObjectFamily,
     ObjectKind,
     ObjectRef,
-    SourceKind,
+    PartKind,
+    Records,
+    SnapshotPart,
+    SourceObject,
     SourceRecord,
+    SourceSnapshot,
+    SubPart,
     TreeKind,
     TreeNode,
 )
 
 __all__ = [
+    "PgCardKind",
     "PgColumn",
     "PgConstraint",
     "PgConstraintKind",
     "PgDatabase",
     "PgGroup",
     "PgIndex",
+    "PgPart",
     "PgRelation",
+    "PgRelationCard",
     "PgRelationKind",
     "PgRoutine",
     "PgRoutineArg",
+    "PgRoutineCard",
     "PgRoutineKind",
     "PgSchema",
     "PgSequence",
+    "PgSequenceCard",
     "PgSnapshot",
+    "PgSourceKind",
     "PgType",
+    "PgTypeCard",
     "PgTypeKind",
 ]
 
@@ -132,13 +150,8 @@ class PgDatabase(SourceRecord):
     collate: str = ""
     comment: str | None = None
 
-    @property
-    def key(self) -> tuple[str, ...]:
-        return (self.name,)
-
-    @property
-    def parent(self) -> tuple[str, ...]:
-        return ()
+    KEY: ClassVar[tuple[str, ...]] = ("name",)
+    PARENT: ClassVar[tuple[str, ...]] = ()
 
 
 class PgSchema(SourceRecord):
@@ -147,16 +160,11 @@ class PgSchema(SourceRecord):
     owner: str = ""
     comment: str | None = None
 
-    @property
-    def key(self) -> tuple[str, ...]:
-        return (self.database, self.name)
-
-    @property
-    def parent(self) -> tuple[str, ...]:
-        return (self.database,)
+    KEY: ClassVar[tuple[str, ...]] = ("database", "name")
+    PARENT: ClassVar[tuple[str, ...]] = ("database",)
 
 
-class PgRelation(SourceRecord):
+class PgRelation(SourceObject):
     """Таблица, секционированная таблица, секция, представление,
     материализованное представление или foreign-таблица."""
 
@@ -179,21 +187,47 @@ class PgRelation(SourceRecord):
     foreign_server: str | None = None
     options: dict[str, str] = Field(default_factory=dict)
 
-    @property
-    def key(self) -> tuple[str, ...]:
-        return (self.database, self.schema_name, self.name)
-
-    @property
-    def parent(self) -> tuple[str, ...]:
-        return (self.database, self.schema_name)
+    KEY: ClassVar[tuple[str, ...]] = ("database", "schema_name", "name")
+    PARENT: ClassVar[tuple[str, ...]] = ("database", "schema_name")
+    COLUMN_NAMES: ClassVar[Mapping[str, str]] = {"schema_name": "schema"}
 
     @property
     def object_kind(self) -> ObjectKind:
         return ObjectKind.RELATION
 
     @property
+    def partition_label(self) -> str:
+        """Как секции называют родителя: schema.name."""
+        return f"{self.schema_name}.{self.name}"
+
+    @property
     def label(self) -> str:
         return self.name
+
+    def card(self, snapshot: SourceSnapshot, ref: ObjectRef) -> ObjectCard:
+        siblings = Records.of_type(snapshot.records_of(PgPart.RELATIONS), PgRelation)
+        partitions: list[PgRelation] = []
+        for relation in siblings:
+            if relation.kind is not PgRelationKind.PARTITION:
+                continue
+
+            if relation.database != self.database:
+                continue
+
+            if relation.partition_of != self.partition_label:
+                continue
+
+            partitions.append(relation)
+
+        partitions.sort(key=attrgetter("name"))
+        return PgRelationCard(
+            ref=ref,
+            relation=self,
+            columns=snapshot.parts_of_type(ref, PartKind.COLUMN, PgColumn),
+            constraints=snapshot.parts_of_type(ref, PartKind.CONSTRAINT, PgConstraint),
+            indexes=snapshot.parts_of_type(ref, PartKind.INDEX, PgIndex),
+            partitions=tuple(partitions),
+        )
 
 
 class PgColumn(SourceRecord):
@@ -210,13 +244,10 @@ class PgColumn(SourceRecord):
     collation: str | None = None
     comment: str | None = None
 
-    @property
-    def key(self) -> tuple[str, ...]:
-        return (self.database, self.schema_name, self.relation, self.name)
-
-    @property
-    def parent(self) -> tuple[str, ...]:
-        return (self.database, self.schema_name, self.relation)
+    KEY: ClassVar[tuple[str, ...]] = ("database", "schema_name", "relation", "name")
+    PARENT: ClassVar[tuple[str, ...]] = ("database", "schema_name", "relation")
+    ORDER: ClassVar[tuple[str, ...]] = ("ordinal",)
+    COLUMN_NAMES: ClassVar[Mapping[str, str]] = {"schema_name": "schema"}
 
 
 class PgConstraint(SourceRecord):
@@ -236,13 +267,9 @@ class PgConstraint(SourceRecord):
     definition: str = ""
     comment: str | None = None
 
-    @property
-    def key(self) -> tuple[str, ...]:
-        return (self.database, self.schema_name, self.relation, self.name)
-
-    @property
-    def parent(self) -> tuple[str, ...]:
-        return (self.database, self.schema_name, self.relation)
+    KEY: ClassVar[tuple[str, ...]] = ("database", "schema_name", "relation", "name")
+    PARENT: ClassVar[tuple[str, ...]] = ("database", "schema_name", "relation")
+    COLUMN_NAMES: ClassVar[Mapping[str, str]] = {"schema_name": "schema"}
 
 
 class PgIndex(SourceRecord):
@@ -259,16 +286,12 @@ class PgIndex(SourceRecord):
     total_bytes: int = 0
     comment: str | None = None
 
-    @property
-    def key(self) -> tuple[str, ...]:
-        return (self.database, self.schema_name, self.relation, self.name)
-
-    @property
-    def parent(self) -> tuple[str, ...]:
-        return (self.database, self.schema_name, self.relation)
+    KEY: ClassVar[tuple[str, ...]] = ("database", "schema_name", "relation", "name")
+    PARENT: ClassVar[tuple[str, ...]] = ("database", "schema_name", "relation")
+    COLUMN_NAMES: ClassVar[Mapping[str, str]] = {"schema_name": "schema"}
 
 
-class PgRoutine(SourceRecord):
+class PgRoutine(SourceObject):
     """Функция, процедура, агрегат или оконная функция; перегрузки различаются
     сигнатурой, она входит в ключ и в адрес."""
 
@@ -292,13 +315,9 @@ class PgRoutine(SourceRecord):
     definition: str = ""
     comment: str | None = None
 
-    @property
-    def key(self) -> tuple[str, ...]:
-        return (self.database, self.schema_name, self.name, self.signature)
-
-    @property
-    def parent(self) -> tuple[str, ...]:
-        return (self.database, self.schema_name)
+    KEY: ClassVar[tuple[str, ...]] = ("database", "schema_name", "name", "signature")
+    PARENT: ClassVar[tuple[str, ...]] = ("database", "schema_name")
+    COLUMN_NAMES: ClassVar[Mapping[str, str]] = {"schema_name": "schema"}
 
     @property
     def object_kind(self) -> ObjectKind:
@@ -307,6 +326,13 @@ class PgRoutine(SourceRecord):
     @property
     def label(self) -> str:
         return f"{self.name}({self.signature})"
+
+    def card(self, snapshot: SourceSnapshot, ref: ObjectRef) -> ObjectCard:
+        return PgRoutineCard(
+            ref=ref,
+            routine=self,
+            arguments=snapshot.parts_of_type(ref, PartKind.ARGUMENT, PgRoutineArg),
+        )
 
 
 class PgRoutineArg(SourceRecord):
@@ -320,22 +346,24 @@ class PgRoutineArg(SourceRecord):
     mode: str = "in"
     default: str | None = None
 
-    @property
-    def key(self) -> tuple[str, ...]:
-        return (
-            self.database,
-            self.schema_name,
-            self.routine,
-            self.signature,
-            str(self.position),
-        )
+    KEY: ClassVar[tuple[str, ...]] = (
+        "database",
+        "schema_name",
+        "routine",
+        "signature",
+        "position",
+    )
+    PARENT: ClassVar[tuple[str, ...]] = (
+        "database",
+        "schema_name",
+        "routine",
+        "signature",
+    )
+    ORDER: ClassVar[tuple[str, ...]] = ("position",)
+    COLUMN_NAMES: ClassVar[Mapping[str, str]] = {"schema_name": "schema"}
 
-    @property
-    def parent(self) -> tuple[str, ...]:
-        return (self.database, self.schema_name, self.routine, self.signature)
 
-
-class PgSequence(SourceRecord):
+class PgSequence(SourceObject):
     database: str = Field(min_length=1)
     schema_name: str = Field(min_length=1)
     name: str = Field(min_length=1)
@@ -350,13 +378,9 @@ class PgSequence(SourceRecord):
     owned_by: str | None = None
     comment: str | None = None
 
-    @property
-    def key(self) -> tuple[str, ...]:
-        return (self.database, self.schema_name, self.name)
-
-    @property
-    def parent(self) -> tuple[str, ...]:
-        return (self.database, self.schema_name)
+    KEY: ClassVar[tuple[str, ...]] = ("database", "schema_name", "name")
+    PARENT: ClassVar[tuple[str, ...]] = ("database", "schema_name")
+    COLUMN_NAMES: ClassVar[Mapping[str, str]] = {"schema_name": "schema"}
 
     @property
     def object_kind(self) -> ObjectKind:
@@ -366,13 +390,16 @@ class PgSequence(SourceRecord):
     def label(self) -> str:
         return self.name
 
+    def card(self, snapshot: SourceSnapshot, ref: ObjectRef) -> ObjectCard:
+        return PgSequenceCard(ref=ref, sequence=self)
+
 
 class PgTypeAttribute(CatalogModel):
     name: str = Field(min_length=1)
     type: str = Field(min_length=1)
 
 
-class PgType(SourceRecord):
+class PgType(SourceObject):
     database: str = Field(min_length=1)
     schema_name: str = Field(min_length=1)
     name: str = Field(min_length=1)
@@ -384,13 +411,9 @@ class PgType(SourceRecord):
     attributes: tuple[PgTypeAttribute, ...] | None = None
     comment: str | None = None
 
-    @property
-    def key(self) -> tuple[str, ...]:
-        return (self.database, self.schema_name, self.name)
-
-    @property
-    def parent(self) -> tuple[str, ...]:
-        return (self.database, self.schema_name)
+    KEY: ClassVar[tuple[str, ...]] = ("database", "schema_name", "name")
+    PARENT: ClassVar[tuple[str, ...]] = ("database", "schema_name")
+    COLUMN_NAMES: ClassVar[Mapping[str, str]] = {"schema_name": "schema"}
 
     @property
     def object_kind(self) -> ObjectKind:
@@ -400,16 +423,158 @@ class PgType(SourceRecord):
     def label(self) -> str:
         return self.name
 
+    def card(self, snapshot: SourceSnapshot, ref: ObjectRef) -> ObjectCard:
+        return PgTypeCard(ref=ref, type=self)
 
-class PgSnapshot(CatalogModel):
+
+class PgPart(StrEnum):
+    """Части снимка Postgres: имена полей PgSnapshot."""
+
+    DATABASES = "databases"
+    SCHEMAS = "schemas"
+    RELATIONS = "relations"
+    COLUMNS = "columns"
+    CONSTRAINTS = "constraints"
+    INDEXES = "indexes"
+    ROUTINES = "routines"
+    ROUTINE_ARGS = "routine_args"
+    SEQUENCES = "sequences"
+    TYPES = "types"
+
+
+class PgSourceKind(StrEnum):
+    """kind типа соединения, которым владеет этот пакет; тем же именем снимок
+    зарегистрирован в группе boba.catalog."""
+
+    POSTGRES = "postgres"
+
+
+class PgCardKind(StrEnum):
+    """Дискриминаторы карточек объектов этого вида источника."""
+
+    PG_RELATION = "pg_relation"
+    PG_ROUTINE = "pg_routine"
+    PG_SEQUENCE = "pg_sequence"
+    PG_TYPE = "pg_type"
+
+
+class PgRelationCard(ObjectCard):
+    card: Literal[PgCardKind.PG_RELATION] = PgCardKind.PG_RELATION
+    relation: PgRelation
+    columns: tuple[PgColumn, ...]
+    constraints: tuple[PgConstraint, ...]
+    indexes: tuple[PgIndex, ...]
+    partitions: tuple[PgRelation, ...]
+
+
+class PgRoutineCard(ObjectCard):
+    card: Literal[PgCardKind.PG_ROUTINE] = PgCardKind.PG_ROUTINE
+    routine: PgRoutine
+    arguments: tuple[PgRoutineArg, ...]
+
+
+class PgSequenceCard(ObjectCard):
+    card: Literal[PgCardKind.PG_SEQUENCE] = PgCardKind.PG_SEQUENCE
+    sequence: PgSequence
+
+
+class PgTypeCard(ObjectCard):
+    card: Literal[PgCardKind.PG_TYPE] = PgCardKind.PG_TYPE
+    type: PgType
+
+
+class PgPathDepth(IntEnum):
+    """Длина пути объекта ручного источника: база, схема, имя."""
+
+    OBJECT = 3
+
+
+class PgSnapshot(SourceSnapshot):
     """Снимок Postgres одной версии: плоские таблицы записей.
 
-    Проверяет инварианты целиком (check), находит объект по адресу,
-    раскрывается в дерево любой глубины: база → схема → группа → объект,
-    у секционированной таблицы дети — её секции.
+    Реализация SourceSnapshot: части и семейства объявлены, инварианты и
+    поиск по адресу даёт база; родное здесь — дерево (база → схема → группа
+    → объект, у секционированной таблицы дети — секции), карточки, колонки
+    узла с первичным ключом из ограничений и объекты ручного источника.
     """
 
-    kind: Literal[SourceKind.POSTGRES] = SourceKind.POSTGRES
+    TABLE_PREFIX: ClassVar[str] = "pg"
+    SYNC_TOOL: ClassVar[str] = "pg_schema_snapshot"
+    MANUAL_KIND: ClassVar[ObjectKind] = ObjectKind.RELATION
+    PARTS: ClassVar[tuple[SnapshotPart, ...]] = (
+        SnapshotPart(name=PgPart.DATABASES, model=PgDatabase, label="database"),
+        SnapshotPart(
+            name=PgPart.SCHEMAS,
+            model=PgSchema,
+            label="schema",
+            parent=PgPart.DATABASES,
+        ),
+        SnapshotPart(
+            name=PgPart.RELATIONS,
+            model=PgRelation,
+            label="relation",
+            parent=PgPart.SCHEMAS,
+        ),
+        SnapshotPart(
+            name=PgPart.COLUMNS,
+            model=PgColumn,
+            label="column",
+            parent=PgPart.RELATIONS,
+        ),
+        SnapshotPart(
+            name=PgPart.CONSTRAINTS,
+            model=PgConstraint,
+            label="constraint",
+            parent=PgPart.RELATIONS,
+        ),
+        SnapshotPart(
+            name=PgPart.INDEXES,
+            model=PgIndex,
+            label="index",
+            parent=PgPart.RELATIONS,
+        ),
+        SnapshotPart(
+            name=PgPart.ROUTINES,
+            model=PgRoutine,
+            label="routine",
+            parent=PgPart.SCHEMAS,
+        ),
+        SnapshotPart(
+            name=PgPart.ROUTINE_ARGS,
+            model=PgRoutineArg,
+            label="routine argument",
+            parent=PgPart.ROUTINES,
+        ),
+        SnapshotPart(
+            name=PgPart.SEQUENCES,
+            model=PgSequence,
+            label="sequence",
+            parent=PgPart.SCHEMAS,
+        ),
+        SnapshotPart(
+            name=PgPart.TYPES, model=PgType, label="type", parent=PgPart.SCHEMAS
+        ),
+    )
+    FAMILIES: ClassVar[tuple[ObjectFamily, ...]] = (
+        ObjectFamily(
+            kind=ObjectKind.RELATION,
+            part=PgPart.RELATIONS,
+            subparts=(
+                SubPart(kind=PartKind.COLUMN, part=PgPart.COLUMNS),
+                SubPart(kind=PartKind.CONSTRAINT, part=PgPart.CONSTRAINTS),
+                SubPart(kind=PartKind.INDEX, part=PgPart.INDEXES),
+            ),
+        ),
+        ObjectFamily(
+            kind=ObjectKind.ROUTINE,
+            part=PgPart.ROUTINES,
+            subparts=(SubPart(kind=PartKind.ARGUMENT, part=PgPart.ROUTINE_ARGS),),
+        ),
+        ObjectFamily(kind=ObjectKind.SEQUENCE, part=PgPart.SEQUENCES),
+        ObjectFamily(kind=ObjectKind.TYPE, part=PgPart.TYPES),
+    )
+
+    kind: Literal[PgSourceKind.POSTGRES] = PgSourceKind.POSTGRES
     databases: tuple[PgDatabase, ...] = ()
     schemas: tuple[PgSchema, ...] = ()
     relations: tuple[PgRelation, ...] = ()
@@ -421,45 +586,115 @@ class PgSnapshot(CatalogModel):
     sequences: tuple[PgSequence, ...] = ()
     types: tuple[PgType, ...] = ()
 
-    @classmethod
-    def empty(cls) -> PgSnapshot:
-        return cls()
+    def node_columns(self, ref: ObjectRef) -> tuple[NodeColumn, ...]:
+        if ref.kind is not ObjectKind.RELATION:
+            return ()
 
-    def check(self) -> None:
-        """Ключи уникальны, у каждой записи есть родитель.
+        keys: set[str] = set()
+        for constraint in self.constraints_of(ref.path):
+            if constraint.kind is not PgConstraintKind.PRIMARY:
+                continue
 
-        Ошибки:
-        CatalogInvariantError — с перечнем нарушений.
-        """
-        Keyed.require_unique("database", self.databases)
-        Keyed.require_unique("schema", self.schemas)
-        Keyed.require_unique("relation", self.relations)
-        Keyed.require_unique("column", self.columns)
-        Keyed.require_unique("constraint", self.constraints)
-        Keyed.require_unique("index", self.indexes)
-        Keyed.require_unique("routine", self.routines)
-        Keyed.require_unique("routine argument", self.routine_args)
-        Keyed.require_unique("sequence", self.sequences)
-        Keyed.require_unique("type", self.types)
+            keys.update(constraint.columns)
 
-        databases = Keyed.keys_of(self.databases)
-        schemas = Keyed.keys_of(self.schemas)
-        relations = Keyed.keys_of(self.relations)
-        routines = Keyed.keys_of(self.routines)
-        Keyed.require_parents("schema", self.schemas, databases)
-        Keyed.require_parents("relation", self.relations, schemas)
-        Keyed.require_parents("column", self.columns, relations)
-        Keyed.require_parents("constraint", self.constraints, relations)
-        Keyed.require_parents("index", self.indexes, relations)
-        Keyed.require_parents("routine", self.routines, schemas)
-        Keyed.require_parents("routine argument", self.routine_args, routines)
-        Keyed.require_parents("sequence", self.sequences, schemas)
-        Keyed.require_parents("type", self.types, schemas)
+        columns: list[NodeColumn] = []
+        for column in self.columns_of(ref.path):
+            columns.append(
+                NodeColumn(
+                    name=column.name,
+                    type=column.type,
+                    nullable=column.nullable,
+                    key=column.name in keys,
+                )
+            )
 
-    def objects_count(self) -> int:
-        count = len(self.relations) + len(self.routines)
-        count += len(self.sequences) + len(self.types)
-        return count
+        return tuple(columns)
+
+    def with_object(self, obj: ManualObject) -> PgSnapshot:
+        if len(obj.path) != PgPathDepth.OBJECT:
+            rendered = "/".join(obj.path)
+            msg = f"postgres object path must be database/schema/name: {rendered}"
+            raise CatalogInvariantError([msg])
+
+        database, schema, name = obj.path
+        databases = self.databases
+        if (database,) not in Keyed.keys_of(self.databases):
+            databases = (*databases, PgDatabase(name=database))
+
+        schemas = self.schemas
+        if (database, schema) not in Keyed.keys_of(self.schemas):
+            schemas = (*schemas, PgSchema(database=database, name=schema))
+
+        kind = PgRelationKind.TABLE
+        if obj.kind is ManualObjectKind.VIEW:
+            kind = PgRelationKind.VIEW
+
+        relation = PgRelation(
+            database=database,
+            schema_name=schema,
+            name=name,
+            kind=kind,
+            comment=obj.comment,
+        )
+        columns = list(self.columns)
+        for ordinal, column in enumerate(obj.columns, start=1):
+            columns.append(
+                PgColumn(
+                    database=database,
+                    schema_name=schema,
+                    relation=name,
+                    name=column.name,
+                    ordinal=ordinal,
+                    type=column.type,
+                    nullable=column.nullable,
+                    comment=column.comment,
+                )
+            )
+
+        return self.model_copy(
+            update={
+                "databases": databases,
+                "schemas": schemas,
+                "relations": (*self.relations, relation),
+                "columns": tuple(columns),
+            }
+        )
+
+    def without_object(self, path: Sequence[str]) -> PgSnapshot:
+        wanted = tuple(path)
+        return self.model_copy(
+            update={
+                "relations": Records.without_key(self.relations, wanted),
+                "columns": Records.without_parent(self.columns, wanted),
+                "constraints": Records.without_parent(self.constraints, wanted),
+                "indexes": Records.without_parent(self.indexes, wanted),
+            }
+        )
+
+    def manual_object(self, ref: ObjectRef) -> ManualObject:
+        found = self.require_object(ref)
+        if not isinstance(found, PgRelation):
+            msg = f"{ref.kind.value} at {ref.render()} is not a manual object"
+            raise CatalogError(msg)
+
+        kind = ManualObjectKind.TABLE
+        if found.kind is PgRelationKind.VIEW:
+            kind = ManualObjectKind.VIEW
+
+        columns: list[ManualColumn] = []
+        for column in self.columns_of(ref.path):
+            columns.append(
+                ManualColumn(
+                    name=column.name,
+                    type=column.type,
+                    nullable=column.nullable,
+                    comment=column.comment,
+                )
+            )
+
+        return ManualObject(
+            kind=kind, path=found.key, comment=found.comment, columns=tuple(columns)
+        )
 
     def relation(self, path: Sequence[str]) -> PgRelation | None:
         for relation in self.relations:
@@ -522,16 +757,18 @@ class PgSnapshot(CatalogModel):
             yield arg
 
     def partitions_of(self, path: Sequence[str]) -> Iterator[PgRelation]:
-        parent = tuple(path)
-        parent_label = f"{parent[1]}.{parent[2]}"
+        parent = self.relation(path)
+        if parent is None:
+            return
+
         for relation in self.relations:
             if relation.kind is not PgRelationKind.PARTITION:
                 continue
 
-            if relation.database != parent[0]:
+            if relation.database != parent.database:
                 continue
 
-            if relation.partition_of != parent_label:
+            if relation.partition_of != parent.partition_label:
                 continue
 
             yield relation

@@ -13,6 +13,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "boba-db-clickhouse==0.0.15.dev8",
+    "boba-db-postgres==0.0.15.dev8",
     "pytest>=8",
 ]
 

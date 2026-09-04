@@ -2,8 +2,7 @@ import { useState, type ReactElement } from "react";
 
 import { ApiError, type CatalogApi } from "../../api/client";
 import type { Draft, RebaseIssue } from "../../model/catalog";
-import { Alert, Button, useToast } from "../../ui";
-import { Dialog } from "./Dialog";
+import { Alert, Button, Dialog, List, Note, Toolbar, useToast } from "../../ui";
 
 type Props = {
   api: CatalogApi;
@@ -47,7 +46,10 @@ export function DraftActions({ api, draft, currentVersion, staleCount, onChanged
         onChanged();
       } catch (error: unknown) {
         if (error instanceof ApiError && error.status === 409) {
-          setConflict({ current: currentVersionOf(error) ?? currentVersion, issues: null });
+          setConflict({
+            current: currentVersionOf(error) ?? currentVersion,
+            issues: null,
+          });
           return;
         }
 
@@ -74,7 +76,10 @@ export function DraftActions({ api, draft, currentVersion, staleCount, onChanged
     void run(async () => {
       const bump = await api.bumpPins(draft.id);
       if (bump.violations.length > 0) {
-        toast(`pins raised; ${bump.violations.length} operation(s) no longer hold: ${bump.violations.join("; ")}`, "error");
+        toast(
+          `pins raised; ${bump.violations.length} operation(s) no longer hold: ${bump.violations.join("; ")}`,
+          "error",
+        );
       } else {
         toast("pins raised to the latest source versions", "success");
       }
@@ -95,7 +100,7 @@ export function DraftActions({ api, draft, currentVersion, staleCount, onChanged
     <>
       {stale && (
         <Button
-          size="tiny"
+          size="sm"
           tone="signal"
           disabled={busy}
           onClick={() => {
@@ -107,15 +112,15 @@ export function DraftActions({ api, draft, currentVersion, staleCount, onChanged
         </Button>
       )}
       {staleCount > 0 && (
-        <Button size="tiny" tone="signal" disabled={busy} onClick={bumpPins} data-testid="bump-pins-button">
+        <Button size="sm" tone="signal" disabled={busy} onClick={bumpPins} data-testid="bump-pins-button">
           raise pins · {staleCount} stale
         </Button>
       )}
-      <Button size="tiny" tone="primary" disabled={busy} onClick={publish} data-testid="publish-button">
+      <Button size="sm" tone="primary" disabled={busy} onClick={publish} data-testid="publish-button">
         publish
       </Button>
       <Button
-        size="tiny"
+        size="sm"
         tone="ghost"
         disabled={busy}
         onClick={() => {
@@ -134,10 +139,10 @@ export function DraftActions({ api, draft, currentVersion, staleCount, onChanged
           }}
         >
           <Alert tone="info">
-            The draft “{draft.name}” with all its operations will be closed as discarded. The published catalog is
-            not touched.
+            The draft “{draft.name}” with all its operations will be closed as discarded. The published catalog is not
+            touched.
           </Alert>
-          <div className="form__actions">
+          <Toolbar>
             <Button tone="danger" disabled={busy} onClick={discard}>
               discard the draft
             </Button>
@@ -149,7 +154,7 @@ export function DraftActions({ api, draft, currentVersion, staleCount, onChanged
             >
               keep editing
             </Button>
-          </div>
+          </Toolbar>
         </Dialog>
       )}
       {conflict !== null && (
@@ -165,19 +170,21 @@ export function DraftActions({ api, draft, currentVersion, staleCount, onChanged
             draft from the new version before publishing.
           </Alert>
           {conflict.issues !== null && (
-            <div className="conflicts" data-testid="rebase-issues">
+            <div data-testid="rebase-issues">
               <Alert tone="error" title="these operations no longer apply">
-                <ul className="conflicts__list">
+                <List>
                   {conflict.issues.map((issue) => (
-                    <li key={`${issue.seq}-${issue.index}`} className="mono">
-                      portion {issue.seq} · operation #{issue.index}: {issue.reason}
+                    <li key={`${issue.seq}-${issue.index}`}>
+                      <Note micro mono>
+                        portion {issue.seq} · operation #{issue.index}: {issue.reason}
+                      </Note>
                     </li>
                   ))}
-                </ul>
+                </List>
               </Alert>
             </div>
           )}
-          <div className="form__actions">
+          <Toolbar>
             {conflict.issues === null ? (
               <Button
                 tone="primary"
@@ -207,7 +214,7 @@ export function DraftActions({ api, draft, currentVersion, staleCount, onChanged
             >
               keep the draft as is
             </Button>
-          </div>
+          </Toolbar>
         </Dialog>
       )}
     </>

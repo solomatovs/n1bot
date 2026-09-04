@@ -9,35 +9,24 @@ CatalogError — снимки разного вида сравнить нель�
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
 from boba.catalog.base import CatalogError, CatalogModel, ChangeStatus
-from boba.catalog.clickhouse_snapshot import ChSnapshot
-from boba.catalog.postgres_snapshot import PgSnapshot
-from boba.catalog.sources import ObjectKind, ObjectRef, SourceRecord
+from boba.catalog.sources import (
+    ObjectKind,
+    ObjectRef,
+    PartKind,
+    SourceRecord,
+    SourceSnapshot,
+)
 
 __all__ = [
     "FieldChange",
     "ObjectChange",
     "PartChange",
-    "PartKind",
     "SourceDiff",
-    "SourceSnapshot",
 ]
-
-SourceSnapshot = PgSnapshot | ChSnapshot
-
-
-class PartKind(StrEnum):
-    """Что за часть объекта изменилась."""
-
-    COLUMN = "column"
-    CONSTRAINT = "constraint"
-    INDEX = "index"
-    ARGUMENT = "argument"
-    ATTRIBUTE = "attribute"
 
 
 class FieldChange(CatalogModel):
@@ -95,8 +84,11 @@ class SourceDiff(CatalogModel):
         """Ошибки:
         CatalogError — снимки разных видов.
         """
-        if old.kind is not new.kind:
-            msg = f"cannot diff {old.kind.value} against {new.kind.value}"
+        if old.kind != new.kind:
+            msg = (
+                f"cannot diff {old.kind} against {new.kind}: "
+                f"both snapshots of source {source_id} must be of one kind"
+            )
             raise CatalogError(msg)
 
         tables = list(cls._tables(old, new))
@@ -131,66 +123,24 @@ class SourceDiff(CatalogModel):
 
     @staticmethod
     def _tables(old: SourceSnapshot, new: SourceSnapshot) -> Iterator[RecordTable]:
-        if isinstance(old, PgSnapshot) and isinstance(new, PgSnapshot):
-            yield RecordTable(
-                kind=ObjectKind.DATABASE, old=old.databases, new=new.databases
-            )
-            yield RecordTable(kind=ObjectKind.SCHEMA, old=old.schemas, new=new.schemas)
-            yield RecordTable(
-                kind=ObjectKind.RELATION,
-                old=old.relations,
-                new=new.relations,
-                parts=(
-                    PartTable(part=PartKind.COLUMN, old=old.columns, new=new.columns),
+        """Таблицы сравнения по семействам снимка: объекты семейства и их
+        подчасти."""
+        for family in new.families():
+            parts: list[PartTable] = []
+            for subpart in family.subparts:
+                parts.append(
                     PartTable(
-                        part=PartKind.CONSTRAINT,
-                        old=old.constraints,
-                        new=new.constraints,
-                    ),
-                    PartTable(part=PartKind.INDEX, old=old.indexes, new=new.indexes),
-                ),
-            )
-            yield RecordTable(
-                kind=ObjectKind.ROUTINE,
-                old=old.routines,
-                new=new.routines,
-                parts=(
-                    PartTable(
-                        part=PartKind.ARGUMENT,
-                        old=old.routine_args,
-                        new=new.routine_args,
-                    ),
-                ),
-            )
-            yield RecordTable(
-                kind=ObjectKind.SEQUENCE, old=old.sequences, new=new.sequences
-            )
-            yield RecordTable(kind=ObjectKind.TYPE, old=old.types, new=new.types)
-            return
+                        part=subpart.kind,
+                        old=old.records_of(subpart.part),
+                        new=new.records_of(subpart.part),
+                    )
+                )
 
-        if isinstance(old, ChSnapshot) and isinstance(new, ChSnapshot):
             yield RecordTable(
-                kind=ObjectKind.DATABASE, old=old.databases, new=new.databases
-            )
-            yield RecordTable(
-                kind=ObjectKind.TABLE,
-                old=old.tables,
-                new=new.tables,
-                parts=(
-                    PartTable(part=PartKind.COLUMN, old=old.columns, new=new.columns),
-                ),
-            )
-            yield RecordTable(
-                kind=ObjectKind.DICTIONARY,
-                old=old.dictionaries,
-                new=new.dictionaries,
-                parts=(
-                    PartTable(
-                        part=PartKind.ATTRIBUTE,
-                        old=old.dictionary_attributes,
-                        new=new.dictionary_attributes,
-                    ),
-                ),
+                kind=family.kind,
+                old=old.records_of(family.part),
+                new=new.records_of(family.part),
+                parts=tuple(parts),
             )
 
     @classmethod

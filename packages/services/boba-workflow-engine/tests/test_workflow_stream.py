@@ -161,7 +161,7 @@ async def test_unknown_stream_port_is_refused_on_save(
 
     from boba.workflow_engine.service import WorkflowError
 
-    with pytest.raises(WorkflowError, match="unknown port"):
+    with pytest.raises(WorkflowError, match="is not declared for task"):
         await service.save(
             context.subject, _spec('  - "produce.nope -> consume.feed"\n'), {}
         )

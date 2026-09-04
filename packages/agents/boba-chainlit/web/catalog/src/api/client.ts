@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { PageUrls } from "../config";
 import {
   AccessSchema,
+  ConnectionEntrySchema,
   ObjectCardSchema,
   SourceConnectionSchema,
   SourceDiffSchema,
@@ -10,6 +11,7 @@ import {
   SourceDraftStateSchema,
   SourceSchema,
   SourceVersionSchema,
+  SyncSchema,
   TreeNodeSchema,
   CatalogChangedSchema,
   DraftSchema,
@@ -25,6 +27,7 @@ import {
   ViewStateSchema,
   type Access,
   type CatalogChanged,
+  type ConnectionEntry,
   type ObjectCard,
   type ObjectKind,
   type Source,
@@ -35,6 +38,8 @@ import {
   type SourceOp,
   type SourceSpec,
   type SourceVersion,
+  type Sync,
+  type SyncScope,
   type TreeNode,
   type Draft,
   type DraftState,
@@ -234,6 +239,10 @@ export class CatalogApi {
 
   // --- источники ---
 
+  sourceKinds(): Promise<string[]> {
+    return this.call("get", "/api/catalog/source-kinds", undefined, z.array(z.string()));
+  }
+
   sources(): Promise<Source[]> {
     return this.call("get", "/api/catalog/sources", undefined, z.array(SourceSchema));
   }
@@ -267,6 +276,28 @@ export class CatalogApi {
   unbindConnection(sourceId: string, connectionId: string): Promise<void> {
     const path = `/api/catalog/sources/${sourceId}/connections/${connectionId}`;
     return this.call("delete", path, undefined, DeletedSchema).then(() => undefined);
+  }
+
+  connections(kind: string): Promise<ConnectionEntry[]> {
+    const query = new URLSearchParams({ kind });
+    return this.call("get", `/api/catalog/connections?${query.toString()}`, undefined, z.array(ConnectionEntrySchema));
+  }
+
+  sourceSyncs(sourceId: string): Promise<Sync[]> {
+    return this.call("get", `/api/catalog/sources/${sourceId}/syncs`, undefined, z.array(SyncSchema));
+  }
+
+  startSync(sourceId: string, connectionId: string, scope: SyncScope): Promise<Sync> {
+    const body = { connection_id: connectionId, scope };
+    return this.call("post", `/api/catalog/sources/${sourceId}/syncs`, body, SyncSchema);
+  }
+
+  sync(syncId: string): Promise<Sync> {
+    return this.call("get", `/api/catalog/syncs/${syncId}`, undefined, SyncSchema);
+  }
+
+  cancelSync(syncId: string): Promise<Sync> {
+    return this.call("delete", `/api/catalog/syncs/${syncId}`, undefined, SyncSchema);
   }
 
   sourceVersions(sourceId: string): Promise<SourceVersion[]> {

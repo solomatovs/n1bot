@@ -1,0 +1,58 @@
+/* левая панель: вкладки, поиск, группы со списками, подвал */
+
+.pane {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+}
+
+.pane__bar {
+  padding: var(--s2) var(--s3);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.pane__scroll {
+  overflow-y: auto;
+  min-height: 0;
+  padding-bottom: var(--s2);
+}
+
+.pane__group {
+  padding: var(--s2) var(--s2) var(--s1) var(--s3);
+}
+
+.pane__group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  min-height: var(--h-ctl);
+}
+
+.pane__group-title {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane__group-title--name {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: var(--fs-data);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.pane__group-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}

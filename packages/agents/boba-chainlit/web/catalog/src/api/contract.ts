@@ -1,5 +1,6 @@
 import type { components } from "./schema";
 import type {
+  ConnectionEntry,
   Draft,
   ObjectCard,
   ProcessContext,
@@ -7,6 +8,7 @@ import type {
   Snapshot,
   Source,
   Staleness,
+  Sync,
   Version,
   View,
   ViewLayout,
@@ -29,5 +31,7 @@ export type Contract = [
   Assert<Extends<ProcessContext, Schemas["ProcessContext"]>>,
   Assert<Extends<Staleness, Schemas["Staleness"]>>,
   Assert<Extends<Source, Schemas["Source"]>>,
+  Assert<Extends<Sync, Schemas["Sync"]>>,
+  Assert<Extends<ConnectionEntry, Schemas["ConnectionEntry"]>>,
   Assert<Extends<ObjectCard["ref"], Schemas["ObjectRef"]>>,
 ];

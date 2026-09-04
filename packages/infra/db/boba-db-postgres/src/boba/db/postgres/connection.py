@@ -13,6 +13,7 @@ from boba.connections.base import ConnectionProfileBase, ConnectionTypeError
 from boba.connections.manifest import ConnectionTypeManifest
 from boba.db.postgres.payload import PayloadPostgres
 from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.snapshot import PgSourceKind
 
 __all__ = ["MANIFEST"]
 
@@ -42,7 +43,7 @@ async def _probe(profile: ConnectionProfileBase) -> str:
 
 
 MANIFEST = ConnectionTypeManifest(
-    kind="postgres",
+    kind=PgSourceKind.POSTGRES.value,
     profile=PostgresConfig,
     probe=_probe,
 )

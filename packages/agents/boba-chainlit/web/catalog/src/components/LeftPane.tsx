@@ -5,7 +5,8 @@ import type { CatalogApi } from "../api/client";
 import type { Catalog, ObjectRef, ProcessNode } from "../model/catalog";
 import type { EditActions } from "../model/editing";
 import type { PaneTab } from "../model/urlState";
-import { Button, Eyebrow, IconButton, Input, Segmented } from "../ui";
+import { Button, IconButton, List, ListAside, ListName, ListRow, Note, Search, Segmented, Toolbar } from "../ui";
+import "./pane.css";
 import { SourcesPane } from "./SourcesPane";
 
 type Props = {
@@ -49,8 +50,8 @@ export function LeftPane({
 }: Props): ReactElement {
   return (
     <div className="pane" data-testid="left-pane" data-tab={tab}>
-      <div className="pane__tabs">
-        <Segmented options={TABS} value={tab} onChange={onTab} label="left pane tab" />
+      <div className="pane__bar">
+        <Segmented options={TABS} value={tab} onChange={onTab} label="left pane tab" fill />
       </div>
       {tab === "process" ? (
         <ProcessList
@@ -87,7 +88,16 @@ type ListProps = {
   onToggleHidden: (nodeId: string) => void;
 };
 
-function ProcessList({ catalog, nodes, activeId, hidden, showDiff, editing, onActivate, onToggleHidden }: ListProps): ReactElement {
+function ProcessList({
+  catalog,
+  nodes,
+  activeId,
+  hidden,
+  showDiff,
+  editing,
+  onActivate,
+  onToggleHidden,
+}: ListProps): ReactElement {
   const [query, setQuery] = useState("");
 
   // в черновике пустые слои видны: в них кладут узлы
@@ -105,7 +115,10 @@ function ProcessList({ catalog, nodes, activeId, hidden, showDiff, editing, onAc
             return true;
           }
 
-          return catalog.label(node.id).toLowerCase().includes(needle) || node.ref.path.join("/").toLowerCase().includes(needle);
+          return (
+            catalog.label(node.id).toLowerCase().includes(needle) ||
+            node.ref.path.join("/").toLowerCase().includes(needle)
+          );
         }),
       }))
       .filter((group) => group.nodes.length > 0 || (editing !== undefined && needle === ""));
@@ -113,27 +126,21 @@ function ProcessList({ catalog, nodes, activeId, hidden, showDiff, editing, onAc
 
   return (
     <>
-      <div className="pane__search">
-        <Input
-          type="search"
-          mono
-          placeholder="find a node"
-          aria-label="find a node"
-          value={query}
-          onChange={(event) => {
-            setQuery(event.target.value);
-          }}
-        />
+      <div className="pane__bar">
+        <Search value={query} onChange={setQuery} label="find a node" placeholder="find a node" />
       </div>
       <div className="pane__scroll">
         {groups.map((group) => (
-          <section key={group.layer.id} className="pane__group" data-layer={group.layer.name}>
-            <div className="pane__group-head">
-              <Eyebrow>{group.layer.name}</Eyebrow>
-              {editing !== undefined && (
-                <span className="pane__group-actions">
+          <PaneGroup
+            key={group.layer.id}
+            title={group.layer.name}
+            data={{ "data-layer": group.layer.name }}
+            actions={
+              editing !== undefined && (
+                <>
                   <IconButton
-                    className="pane__eye"
+                    size="sm"
+                    ghost
                     aria-label={`rename layer ${group.layer.name}`}
                     onClick={() => {
                       editing.renameLayer(group.layer);
@@ -143,7 +150,8 @@ function ProcessList({ catalog, nodes, activeId, hidden, showDiff, editing, onAc
                   </IconButton>
                   {group.nodes.length === 0 && (
                     <IconButton
-                      className="pane__eye"
+                      size="sm"
+                      ghost
                       aria-label={`remove layer ${group.layer.name}`}
                       onClick={() => {
                         editing.removeLayer(group.layer);
@@ -152,58 +160,91 @@ function ProcessList({ catalog, nodes, activeId, hidden, showDiff, editing, onAc
                       <Trash2 size={12} />
                     </IconButton>
                   )}
-                </span>
-              )}
-            </div>
-            <ul className="pane__list">
+                </>
+              )
+            }
+          >
+            <List>
               {group.nodes.map((node) => {
                 const status = showDiff ? catalog.statusOf("node", node.id) : "unchanged";
                 const label = catalog.label(node.id);
                 return (
-                  <li
+                  <ListRow
                     key={node.id}
-                    className="pane__item"
-                    data-active={node.id === activeId}
-                    data-hidden={hidden.has(node.id)}
-                    data-status={status}
-                    data-stale={catalog.staleOf("node", node.id).length > 0}
+                    active={node.id === activeId}
+                    hidden={hidden.has(node.id)}
+                    status={status}
+                    stale={catalog.staleOf("node", node.id).length > 0}
                     data-node={node.ref.path.join("/")}
-                    data-testid="pane-item"
+                    mark="pane-item"
                   >
-                    <button
-                      type="button"
-                      className="pane__name"
+                    <ListName
                       onClick={() => {
                         onActivate(node.id);
                       }}
                     >
                       {label}
-                    </button>
-                    <IconButton
-                      className="pane__eye"
-                      aria-label={hidden.has(node.id) ? `show ${label}` : `hide ${label}`}
-                      aria-pressed={hidden.has(node.id)}
-                      onClick={() => {
-                        onToggleHidden(node.id);
-                      }}
-                    >
-                      {hidden.has(node.id) ? <EyeOff size={14} /> : <Eye size={14} />}
-                    </IconButton>
-                  </li>
+                    </ListName>
+                    <ListAside>
+                      <IconButton
+                        size="sm"
+                        ghost
+                        aria-label={hidden.has(node.id) ? `show ${label}` : `hide ${label}`}
+                        aria-pressed={hidden.has(node.id)}
+                        onClick={() => {
+                          onToggleHidden(node.id);
+                        }}
+                      >
+                        {hidden.has(node.id) ? <EyeOff size={14} /> : <Eye size={14} />}
+                      </IconButton>
+                    </ListAside>
+                  </ListRow>
                 );
               })}
-            </ul>
-          </section>
+            </List>
+          </PaneGroup>
         ))}
-        {groups.length === 0 && <p className="pane__empty">nothing matches</p>}
+        {groups.length === 0 && (
+          <Note pad mark="pane-empty">
+            nothing matches
+          </Note>
+        )}
         {editing !== undefined && (
-          <div className="pane__footer">
-            <Button size="tiny" icon={Plus} onClick={editing.addLayer}>
+          <Toolbar pad>
+            <Button size="sm" icon={Plus} onClick={editing.addLayer}>
               layer
             </Button>
-          </div>
+          </Toolbar>
         )}
       </div>
     </>
+  );
+}
+
+type GroupProps = {
+  title: ReactElement | string;
+  /** Заголовок — имя (моно, без капители), не подпись группы. */
+  name?: boolean;
+  actions?: ReactElement | false | undefined;
+  lead?: ReactElement | undefined;
+  data?: Record<string, string | boolean | undefined>;
+  mark?: string | undefined;
+  children?: ReactElement | false | undefined;
+};
+
+/** Группа панели: заголовок капителью (или именем) с действиями и список
+ * под ним. Единственное место, где существуют классы `pane*`. */
+export function PaneGroup({ title, name = false, actions, lead, data, mark, children }: GroupProps): ReactElement {
+  const titleClass = name ? "pane__group-title pane__group-title--name" : "pane__group-title";
+
+  return (
+    <section className="pane__group" data-testid={mark} {...data}>
+      <div className="pane__group-head">
+        {lead}
+        <span className={titleClass}>{title}</span>
+        {actions !== undefined && actions !== false && <span className="pane__group-actions">{actions}</span>}
+      </div>
+      {children}
+    </section>
   );
 }

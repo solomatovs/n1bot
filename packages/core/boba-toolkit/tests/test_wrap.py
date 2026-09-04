@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 
 import pytest
 from pydantic import SecretStr
 
 from boba.stand.fake_toolmod import FakeConfig
 from boba.toolkit.entry import ToolMain
-from boba.toolkit.frames import ToolFrame
+from boba.toolkit.frames import FrameHead, ToolFrame
 from boba.toolkit.launcher import (
+    FrameSink,
+    FrameTap,
     LaunchOutcome,
     PayloadFailureError,
     RunResult,
@@ -47,10 +49,11 @@ def fresh_tool():
 
 
 class RecordedCall(ToolCall):
-    """Вызов-заглушка: кадров у тела нет, конверт задан тестом."""
+    """Вызов-заглушка: кадры и конверт заданы тестом."""
 
-    def __init__(self, reply_json: str) -> None:
+    def __init__(self, reply_json: str, frames: Sequence[ToolFrame] = ()) -> None:
         self._reply = reply_json
+        self._frames = tuple(frames)
 
     def send(self, frame: ToolFrame) -> None:
         raise NotImplementedError
@@ -59,7 +62,7 @@ class RecordedCall(ToolCall):
         return
 
     def frames(self) -> Iterator[ToolFrame]:
-        return iter(())
+        return iter(self._frames)
 
     def result(self) -> ToolOutcome:
         return ToolOutcome(
@@ -77,13 +80,14 @@ class RecordedCall(ToolCall):
 class RecordingLauncher(ToolLauncher):
     """Порт запуска в тестах: запоминает команду, отдаёт заданный конверт."""
 
-    def __init__(self, reply_json: str) -> None:
+    def __init__(self, reply_json: str, frames: Sequence[ToolFrame] = ()) -> None:
         self.commands: list[ToolCommand] = []
         self._reply = reply_json
+        self._frames = tuple(frames)
 
     def open(self, command: ToolCommand) -> ToolCall:
         self.commands.append(command)
-        return RecordedCall(self._reply)
+        return RecordedCall(self._reply, self._frames)
 
     def open_tap(self, command: ToolCommand) -> TappedCall:
         raise NotImplementedError
@@ -169,3 +173,46 @@ class TestSandboxMode:
             raise AssertionError("isinstance(launcher.commands, list)")
         if not (isinstance(REPLY.validate_json(reply), ReplyError)):
             raise AssertionError("isinstance( REPLY.validate_json(reply), ReplyError )")
+
+
+class Collected(FrameSink):
+    """Приёмник кадров теста: копит, что отдала обёртка."""
+
+    def __init__(self) -> None:
+        self.frames: list[ToolFrame] = []
+
+    def take(self, frame: ToolFrame) -> None:
+        self.frames.append(frame)
+
+
+class TestFrameTap:
+    """С приёмником кадров в контексте обёртка отдаёт кадры тела ему, без
+    приёмника — дочитывает в никуда; конверт разбирается одинаково."""
+
+    OK_REPLY = TestSandboxMode.OK_REPLY
+
+    def test_frames_reach_the_sink_only_inside_the_tap(self) -> None:
+        frames = (
+            ToolFrame.of(FrameHead(kind="one"), b"a"),
+            ToolFrame.of(FrameHead(kind="two"), b"bb"),
+        )
+        tool = fresh_tool()
+        launcher = RecordingLauncher(self.OK_REPLY, frames)
+        ToolProcessWrap.guard_all([tool], launcher)
+        if tool.coroutine is None:
+            raise AssertionError("tool.coroutine is not None")
+
+        sink = Collected()
+        with FrameTap.applied(sink):
+            content, _artifact = run_body(
+                tool.coroutine, text="hello", repeat=1, cfg=CFG
+            )
+
+        assert content == "done"
+        assert [frame.kind for frame in sink.frames] == ["one", "two"]
+        assert sink.frames[1].body == b"bb"
+        assert FrameTap.get() is None
+
+        outside = Collected()
+        run_body(tool.coroutine, text="hello", repeat=1, cfg=CFG)
+        assert outside.frames == []

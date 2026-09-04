@@ -33,12 +33,13 @@ from boba.catalog import (
     Staleness,
     StaleReason,
 )
-from boba.catalog.samples import PgSample, ProcessSample, SampleResolver
+from boba.catalog.samples import ProcessSample
+from boba.db.postgres.snapshot_sample import PgSample
 
 
 class TestInvariants:
     def test_sample_is_consistent_with_its_source(
-        self, snapshot: CatalogSnapshot, resolver: SampleResolver
+        self, snapshot: CatalogSnapshot, resolver: SnapshotResolver
     ) -> None:
         snapshot.check()
         snapshot.check_against(resolver)
@@ -65,7 +66,7 @@ class TestInvariants:
         self,
         process: ProcessSample,
         snapshot: CatalogSnapshot,
-        resolver: SampleResolver,
+        resolver: SnapshotResolver,
     ) -> None:
         wrong_shape = process.flow_orders.model_copy(
             update={
@@ -127,7 +128,7 @@ class TestInvariants:
 
 class TestOperations:
     def test_ops_rebuild_the_sample(
-        self, process: ProcessSample, resolver: SampleResolver
+        self, process: ProcessSample, resolver: SnapshotResolver
     ) -> None:
         built = process.ops().apply(CatalogSnapshot.empty(), resolver)
         assert built == process.snapshot()
@@ -136,7 +137,7 @@ class TestOperations:
         self,
         process: ProcessSample,
         snapshot: CatalogSnapshot,
-        resolver: SampleResolver,
+        resolver: SnapshotResolver,
     ) -> None:
         with pytest.raises(CatalogOpError) as error:
             OperationList(root=(RemoveNode(id=process.orders.id),)).apply(
@@ -163,7 +164,7 @@ class TestOperations:
         self,
         process: ProcessSample,
         snapshot: CatalogSnapshot,
-        resolver: SampleResolver,
+        resolver: SnapshotResolver,
     ) -> None:
         target = process.ref(ObjectKind.RELATION, ("prod", "public", "customers"))
         with pytest.raises(CatalogOpError) as error:
@@ -269,7 +270,7 @@ class TestDiffAndStaleness:
         self,
         process: ProcessSample,
         snapshot: CatalogSnapshot,
-        resolver: SampleResolver,
+        resolver: SnapshotResolver,
     ) -> None:
         extra = Flow(
             id=UUID(int=0x7499),

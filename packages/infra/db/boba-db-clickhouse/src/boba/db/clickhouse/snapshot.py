@@ -12,30 +12,46 @@ from __future__ import annotations
 from collections.abc import Iterator, Sequence
 from enum import IntEnum, StrEnum
 from operator import attrgetter
-from typing import Literal
+from typing import ClassVar, Literal
 from uuid import UUID
 
 from pydantic import Field
 
-from boba.catalog.base import CatalogModel
+from boba.catalog.base import CatalogError, CatalogInvariantError
 from boba.catalog.sources import (
     Keyed,
+    ManualColumn,
+    ManualObject,
+    ManualObjectKind,
+    NodeColumn,
+    ObjectCard,
+    ObjectFamily,
     ObjectKind,
     ObjectRef,
-    SourceKind,
+    PartKind,
+    Records,
+    SnapshotPart,
+    SourceObject,
     SourceRecord,
+    SourceSnapshot,
+    SubPart,
     TreeKind,
     TreeNode,
 )
 
 __all__ = [
+    "ChCardKind",
     "ChColumn",
     "ChDatabase",
     "ChDictionary",
     "ChDictionaryAttribute",
+    "ChDictionaryCard",
     "ChGroup",
+    "ChPart",
     "ChSnapshot",
+    "ChSourceKind",
     "ChTable",
+    "ChTableCard",
     "ChTableKind",
 ]
 
@@ -83,16 +99,11 @@ class ChDatabase(SourceRecord):
     engine: str = ""
     comment: str | None = None
 
-    @property
-    def key(self) -> tuple[str, ...]:
-        return (self.name,)
-
-    @property
-    def parent(self) -> tuple[str, ...]:
-        return ()
+    KEY: ClassVar[tuple[str, ...]] = ("name",)
+    PARENT: ClassVar[tuple[str, ...]] = ()
 
 
-class ChTable(SourceRecord):
+class ChTable(SourceObject):
     """Таблица, представление или материализованное представление."""
 
     database: str = Field(min_length=1)
@@ -115,13 +126,8 @@ class ChTable(SourceRecord):
     metadata_modified_at: str = ""
     create_query: str = ""
 
-    @property
-    def key(self) -> tuple[str, ...]:
-        return (self.database, self.name)
-
-    @property
-    def parent(self) -> tuple[str, ...]:
-        return (self.database,)
+    KEY: ClassVar[tuple[str, ...]] = ("database", "name")
+    PARENT: ClassVar[tuple[str, ...]] = ("database",)
 
     @property
     def object_kind(self) -> ObjectKind:
@@ -130,6 +136,13 @@ class ChTable(SourceRecord):
     @property
     def label(self) -> str:
         return self.name
+
+    def card(self, snapshot: SourceSnapshot, ref: ObjectRef) -> ObjectCard:
+        return ChTableCard(
+            ref=ref,
+            table=self,
+            columns=snapshot.parts_of_type(ref, PartKind.COLUMN, ChColumn),
+        )
 
 
 class ChColumn(SourceRecord):
@@ -148,16 +161,12 @@ class ChColumn(SourceRecord):
     in_primary_key: bool = False
     in_sampling_key: bool = False
 
-    @property
-    def key(self) -> tuple[str, ...]:
-        return (self.database, self.table, self.name)
-
-    @property
-    def parent(self) -> tuple[str, ...]:
-        return (self.database, self.table)
+    KEY: ClassVar[tuple[str, ...]] = ("database", "table", "name")
+    PARENT: ClassVar[tuple[str, ...]] = ("database", "table")
+    ORDER: ClassVar[tuple[str, ...]] = ("position",)
 
 
-class ChDictionary(SourceRecord):
+class ChDictionary(SourceObject):
     database: str = Field(min_length=1)
     name: str = Field(min_length=1)
     status: str = ""
@@ -169,13 +178,8 @@ class ChDictionary(SourceRecord):
     comment: str | None = None
     create_query: str = ""
 
-    @property
-    def key(self) -> tuple[str, ...]:
-        return (self.database, self.name)
-
-    @property
-    def parent(self) -> tuple[str, ...]:
-        return (self.database,)
+    KEY: ClassVar[tuple[str, ...]] = ("database", "name")
+    PARENT: ClassVar[tuple[str, ...]] = ("database",)
 
     @property
     def object_kind(self) -> ObjectKind:
@@ -185,6 +189,15 @@ class ChDictionary(SourceRecord):
     def label(self) -> str:
         return self.name
 
+    def card(self, snapshot: SourceSnapshot, ref: ObjectRef) -> ObjectCard:
+        return ChDictionaryCard(
+            ref=ref,
+            dictionary=self,
+            attributes=snapshot.parts_of_type(
+                ref, PartKind.ATTRIBUTE, ChDictionaryAttribute
+            ),
+        )
+
 
 class ChDictionaryAttribute(SourceRecord):
     database: str = Field(min_length=1)
@@ -193,54 +206,203 @@ class ChDictionaryAttribute(SourceRecord):
     position: int = Field(ge=1)
     type: str = Field(min_length=1)
 
-    @property
-    def key(self) -> tuple[str, ...]:
-        return (self.database, self.dictionary, self.name)
-
-    @property
-    def parent(self) -> tuple[str, ...]:
-        return (self.database, self.dictionary)
+    KEY: ClassVar[tuple[str, ...]] = ("database", "dictionary", "name")
+    PARENT: ClassVar[tuple[str, ...]] = ("database", "dictionary")
+    ORDER: ClassVar[tuple[str, ...]] = ("position",)
 
 
-class ChSnapshot(CatalogModel):
-    """Снимок ClickHouse одной версии: плоские таблицы записей. Дерево:
-    база → группа → объект."""
+class ChPart(StrEnum):
+    """Части снимка ClickHouse: имена полей ChSnapshot."""
 
-    kind: Literal[SourceKind.CLICKHOUSE] = SourceKind.CLICKHOUSE
+    DATABASES = "databases"
+    TABLES = "tables"
+    COLUMNS = "columns"
+    DICTIONARIES = "dictionaries"
+    DICTIONARY_ATTRIBUTES = "dictionary_attributes"
+
+
+class ChSourceKind(StrEnum):
+    """kind типа соединения, которым владеет этот пакет; тем же именем снимок
+    зарегистрирован в группе boba.catalog."""
+
+    CLICKHOUSE = "clickhouse"
+
+
+class ChCardKind(StrEnum):
+    """Дискриминаторы карточек объектов этого вида источника."""
+
+    CH_TABLE = "ch_table"
+    CH_DICTIONARY = "ch_dictionary"
+
+
+class ChTableCard(ObjectCard):
+    card: Literal[ChCardKind.CH_TABLE] = ChCardKind.CH_TABLE
+    table: ChTable
+    columns: tuple[ChColumn, ...]
+
+
+class ChDictionaryCard(ObjectCard):
+    card: Literal[ChCardKind.CH_DICTIONARY] = ChCardKind.CH_DICTIONARY
+    dictionary: ChDictionary
+    attributes: tuple[ChDictionaryAttribute, ...]
+
+
+class ChPathDepth(IntEnum):
+    """Длина пути объекта ручного источника: база, имя."""
+
+    OBJECT = 2
+
+
+class ChNullable:
+    """Nullable-обёртка типов ClickHouse: тип колонки говорит о nullable сам."""
+
+    PREFIX: ClassVar[str] = "Nullable("
+
+    @classmethod
+    def wraps(cls, type_name: str) -> bool:
+        return type_name.startswith(cls.PREFIX)
+
+
+class ChSnapshot(SourceSnapshot):
+    """Снимок ClickHouse одной версии: плоские таблицы записей.
+
+    Реализация SourceSnapshot: части и семейства объявлены, инварианты и
+    поиск по адресу даёт база; родное здесь — дерево (база → группа →
+    объект), карточки, колонки узла по ключам движка и объекты ручного
+    источника.
+    """
+
+    TABLE_PREFIX: ClassVar[str] = "ch"
+    MANUAL_KIND: ClassVar[ObjectKind] = ObjectKind.TABLE
+    PARTS: ClassVar[tuple[SnapshotPart, ...]] = (
+        SnapshotPart(name=ChPart.DATABASES, model=ChDatabase, label="database"),
+        SnapshotPart(
+            name=ChPart.TABLES, model=ChTable, label="table", parent=ChPart.DATABASES
+        ),
+        SnapshotPart(
+            name=ChPart.COLUMNS, model=ChColumn, label="column", parent=ChPart.TABLES
+        ),
+        SnapshotPart(
+            name=ChPart.DICTIONARIES,
+            model=ChDictionary,
+            label="dictionary",
+            parent=ChPart.DATABASES,
+        ),
+        SnapshotPart(
+            name=ChPart.DICTIONARY_ATTRIBUTES,
+            model=ChDictionaryAttribute,
+            label="dictionary attribute",
+            parent=ChPart.DICTIONARIES,
+        ),
+    )
+    FAMILIES: ClassVar[tuple[ObjectFamily, ...]] = (
+        ObjectFamily(
+            kind=ObjectKind.TABLE,
+            part=ChPart.TABLES,
+            subparts=(SubPart(kind=PartKind.COLUMN, part=ChPart.COLUMNS),),
+        ),
+        ObjectFamily(
+            kind=ObjectKind.DICTIONARY,
+            part=ChPart.DICTIONARIES,
+            subparts=(
+                SubPart(kind=PartKind.ATTRIBUTE, part=ChPart.DICTIONARY_ATTRIBUTES),
+            ),
+        ),
+    )
+
+    kind: Literal[ChSourceKind.CLICKHOUSE] = ChSourceKind.CLICKHOUSE
     databases: tuple[ChDatabase, ...] = ()
     tables: tuple[ChTable, ...] = ()
     columns: tuple[ChColumn, ...] = ()
     dictionaries: tuple[ChDictionary, ...] = ()
     dictionary_attributes: tuple[ChDictionaryAttribute, ...] = ()
 
-    @classmethod
-    def empty(cls) -> ChSnapshot:
-        return cls()
+    def node_columns(self, ref: ObjectRef) -> tuple[NodeColumn, ...]:
+        if ref.kind is not ObjectKind.TABLE:
+            return ()
 
-    def check(self) -> None:
-        """Ключи уникальны, у каждой записи есть родитель.
+        columns: list[NodeColumn] = []
+        for column in self.columns_of(ref.path):
+            columns.append(
+                NodeColumn(
+                    name=column.name,
+                    type=column.type,
+                    nullable=ChNullable.wraps(column.type),
+                    key=column.in_primary_key,
+                )
+            )
 
-        Ошибки:
-        CatalogInvariantError — с перечнем нарушений.
-        """
-        Keyed.require_unique("database", self.databases)
-        Keyed.require_unique("table", self.tables)
-        Keyed.require_unique("column", self.columns)
-        Keyed.require_unique("dictionary", self.dictionaries)
-        Keyed.require_unique("dictionary attribute", self.dictionary_attributes)
+        return tuple(columns)
 
-        databases = Keyed.keys_of(self.databases)
-        tables = Keyed.keys_of(self.tables)
-        dictionaries = Keyed.keys_of(self.dictionaries)
-        Keyed.require_parents("table", self.tables, databases)
-        Keyed.require_parents("column", self.columns, tables)
-        Keyed.require_parents("dictionary", self.dictionaries, databases)
-        Keyed.require_parents(
-            "dictionary attribute", self.dictionary_attributes, dictionaries
+    def with_object(self, obj: ManualObject) -> ChSnapshot:
+        if len(obj.path) != ChPathDepth.OBJECT:
+            msg = f"clickhouse object path must be database/name: {'/'.join(obj.path)}"
+            raise CatalogInvariantError([msg])
+
+        database, name = obj.path
+        databases = self.databases
+        if (database,) not in Keyed.keys_of(self.databases):
+            databases = (*databases, ChDatabase(name=database))
+
+        kind = ChTableKind.TABLE
+        if obj.kind is ManualObjectKind.VIEW:
+            kind = ChTableKind.VIEW
+
+        table = ChTable(database=database, name=name, kind=kind, comment=obj.comment)
+        columns = list(self.columns)
+        for position, column in enumerate(obj.columns, start=1):
+            columns.append(
+                ChColumn(
+                    database=database,
+                    table=name,
+                    name=column.name,
+                    position=position,
+                    type=column.type,
+                    comment=column.comment,
+                )
+            )
+
+        return self.model_copy(
+            update={
+                "databases": databases,
+                "tables": (*self.tables, table),
+                "columns": tuple(columns),
+            }
         )
 
-    def objects_count(self) -> int:
-        return len(self.tables) + len(self.dictionaries)
+    def without_object(self, path: Sequence[str]) -> ChSnapshot:
+        wanted = tuple(path)
+        return self.model_copy(
+            update={
+                "tables": Records.without_key(self.tables, wanted),
+                "columns": Records.without_parent(self.columns, wanted),
+            }
+        )
+
+    def manual_object(self, ref: ObjectRef) -> ManualObject:
+        found = self.require_object(ref)
+        if not isinstance(found, ChTable):
+            msg = f"{ref.kind.value} at {ref.render()} is not a manual object"
+            raise CatalogError(msg)
+
+        kind = ManualObjectKind.TABLE
+        if found.kind is ChTableKind.VIEW:
+            kind = ManualObjectKind.VIEW
+
+        columns: list[ManualColumn] = []
+        for column in self.columns_of(ref.path):
+            columns.append(
+                ManualColumn(
+                    name=column.name,
+                    type=column.type,
+                    nullable=ChNullable.wraps(column.type),
+                    comment=column.comment,
+                )
+            )
+
+        return ManualObject(
+            kind=kind, path=found.key, comment=found.comment, columns=tuple(columns)
+        )
 
     def table(self, path: Sequence[str]) -> ChTable | None:
         for table in self.tables:

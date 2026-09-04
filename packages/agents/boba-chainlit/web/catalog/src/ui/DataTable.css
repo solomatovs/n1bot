@@ -1,0 +1,77 @@
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: var(--fs-data);
+}
+
+.table th {
+  height: var(--h-row);
+  padding: 0 var(--s1);
+  text-align: left;
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  color: var(--faint);
+  white-space: nowrap;
+}
+
+.table td {
+  height: var(--h-row);
+  padding: 0 var(--s1);
+  border-bottom: 1px solid var(--hairline);
+  vertical-align: middle;
+  min-width: 0;
+}
+
+.table td.table__icon {
+  width: 1%;
+  min-width: var(--icon-lg);
+  white-space: nowrap;
+  color: var(--ember);
+}
+
+.table td.table__icon svg {
+  display: block;
+}
+
+.table td.table__dim {
+  width: 1%;
+  padding-left: var(--s3);
+  white-space: nowrap;
+  color: var(--faint);
+  font-size: var(--fs-micro);
+}
+
+.table td.table__right {
+  text-align: right;
+}
+
+.table td.table__wrap {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: var(--fs-micro);
+}
+
+.table tr[data-status="added"] td {
+  color: var(--status-added);
+}
+
+.table tr[data-status="modified"] td {
+  color: var(--status-modified);
+}
+
+.table tr[data-status="removed"] td {
+  color: var(--status-removed);
+  text-decoration: line-through;
+}
+
+.table--editor td {
+  padding: var(--s1) var(--s1) var(--s1) 0;
+  border-bottom: 0;
+  vertical-align: top;
+}
+
+.table--editor .input {
+  width: 100%;
+}

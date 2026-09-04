@@ -27,11 +27,12 @@ from boba.catalog import (
     SetNode,
     SnapshotResolver,
 )
-from boba.catalog.samples import PgSample, ProcessSample
+from boba.catalog.samples import ProcessSample
 from boba.catalog_service import (
     AuthorVia,
     CatalogConfig,
     CatalogStore,
+    CatalogStoreError,
     DraftAuthor,
     DraftClosedError,
     DraftConflictError,
@@ -42,6 +43,7 @@ from boba.catalog_service import (
     ViewSpec,
 )
 from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres.snapshot_sample import PgSample
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -93,6 +95,153 @@ async def _published(
     await store.publish(draft.id, _author(EDITOR))
 
     return await store.snapshot()
+
+
+LEGACY_DDL = """
+create table {s}.layers (id uuid primary key, name text not null,
+    created_at timestamptz not null default now());
+create table {s}.datasets (id uuid primary key, layer_id uuid not null
+    references {s}.layers (id), name text not null, source text not null default '',
+    description text not null default '', tags text[] not null default '{{}}',
+    owner text not null default '');
+create table {s}.columns (id uuid primary key, dataset_id uuid not null
+    references {s}.datasets (id), name text not null, type text not null,
+    nullable boolean not null, is_key boolean not null, position integer not null,
+    description text not null default '');
+create table {s}.load_kinds (id uuid primary key, name text not null,
+    description text not null default '', fields jsonb not null default '[]');
+create table {s}.flows (id uuid primary key,
+    from_dataset_id uuid not null references {s}.datasets (id),
+    to_dataset_id uuid not null references {s}.datasets (id),
+    load_kind_id uuid not null references {s}.load_kinds (id),
+    load_values jsonb not null default '{{}}', description text not null default '');
+create table {s}.versions (number integer primary key, operations jsonb not null,
+    author jsonb not null, published_at timestamptz not null default now());
+create table {s}.drafts (id uuid primary key, name text not null,
+    base_version integer not null, status text not null, created_by uuid not null,
+    created_at timestamptz not null default now());
+create table {s}.draft_ops (draft_id uuid not null references {s}.drafts (id),
+    seq integer not null, author jsonb not null, operations jsonb not null,
+    created_at timestamptz not null default now(), primary key (draft_id, seq));
+create table {s}.views (id uuid primary key, name text not null,
+    owner_id uuid not null, dataset_ids uuid[] not null default '{{}}',
+    layer_ids uuid[] not null default '{{}}',
+    created_at timestamptz not null default now());
+create table {s}.view_layout (view_id uuid not null references {s}.views (id),
+    dataset_id uuid not null, x double precision not null, y double precision not null,
+    primary key (view_id, dataset_id));
+create table {s}.view_shares (view_id uuid not null references {s}.views (id),
+    target_kind text not null, target text not null, mode text not null,
+    primary key (view_id, target_kind, target));
+"""
+
+
+async def _legacy_schema(pool: AsyncPostgresPool) -> None:
+    """Схема первой очереди как в dev-базе: наборы, колонки, потоки по наборам,
+    версии без привязок, виды по наборам."""
+    async with pool.connection() as conn:
+        await conn.execute(
+            sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
+        )
+        await conn.execute(sql.SQL("create schema {}").format(sql.Identifier(SCHEMA)))
+        for statement in LEGACY_DDL.format(s=SCHEMA).split(";"):
+            if statement.strip() == "":
+                continue
+
+            await conn.execute(statement, prepare=False)
+
+
+async def _columns_of(pool: AsyncPostgresPool, table: str) -> set[str]:
+    async with pool.connection() as conn:
+        rows = await conn.execute(
+            "select column_name from information_schema.columns "
+            "where table_schema = %s and table_name = %s",
+            (SCHEMA, table),
+        )
+        return {row[0] for row in await rows.fetchall()}
+
+
+async def test_setup_migrates_the_legacy_layout_without_dropping_anything(
+    pool: AsyncPostgresPool,
+) -> None:
+    """Схема первой очереди переводится на месте: слои получают позицию и
+    описание, версии и черновики — привязки, потоки и виды — узловые колонки;
+    таблицы наборов остаются, повтор setup безвреден."""
+    await _legacy_schema(pool)
+    async with pool.connection() as conn:
+        await conn.execute(
+            sql.SQL("insert into {} (id, name) values (%s, 'raw'), (%s, 'dm')").format(
+                sql.Identifier(SCHEMA, "layers")
+            ),
+            (UUID(int=1), UUID(int=2)),
+        )
+
+    store = CatalogStore(_config(), pool)
+    await store.setup()
+    await store.setup()
+
+    assert {"position", "description"} <= await _columns_of(pool, "layers")
+    assert "pins" in await _columns_of(pool, "versions")
+    assert "pins" in await _columns_of(pool, "drafts")
+    flows = await _columns_of(pool, "flows")
+    assert {"from_node_id", "to_node_id"} <= flows
+    assert "from_dataset_id" not in flows
+    assert "node_ids" in await _columns_of(pool, "views")
+    assert "node_id" in await _columns_of(pool, "view_layout")
+    assert await _columns_of(pool, "datasets") != set()
+    assert await _columns_of(pool, "nodes") != set()
+    assert [layer.name for layer in (await store.snapshot()).layers.values()] == [
+        "dm",
+        "raw",
+    ]
+
+
+async def test_setup_refuses_to_migrate_rows_that_reference_datasets(
+    pool: AsyncPostgresPool,
+) -> None:
+    """Поток по наборам перенести нельзя: старт останавливается с текстом, в
+    какой таблице сколько строк и что с ними делать; ничего не удалено."""
+    await _legacy_schema(pool)
+    ids = {
+        "l": UUID(int=1),
+        "a": UUID(int=2),
+        "b": UUID(int=3),
+        "k": UUID(int=4),
+        "f": UUID(int=5),
+    }
+    inserts = (
+        sql.SQL("insert into {} (id, name) values (%(l)s, 'raw')").format(
+            sql.Identifier(SCHEMA, "layers")
+        ),
+        sql.SQL(
+            "insert into {} (id, layer_id, name) "
+            "values (%(a)s, %(l)s, 'orders'), (%(b)s, %(l)s, 'sales')"
+        ).format(sql.Identifier(SCHEMA, "datasets")),
+        sql.SQL("insert into {} (id, name) values (%(k)s, 'full')").format(
+            sql.Identifier(SCHEMA, "load_kinds")
+        ),
+        sql.SQL(
+            "insert into {} (id, from_dataset_id, to_dataset_id, load_kind_id) "
+            "values (%(f)s, %(a)s, %(b)s, %(k)s)"
+        ).format(sql.Identifier(SCHEMA, "flows")),
+    )
+    async with pool.connection() as conn:
+        for statement in inserts:
+            await conn.execute(statement, ids)
+
+    store = CatalogStore(_config(), pool)
+    with pytest.raises(CatalogStoreError) as refused:
+        await store.setup()
+
+    text = str(refused.value)
+    assert f"{SCHEMA}.flows has 1 row(s) with the legacy column from_dataset_id" in text
+    assert "move or delete these rows by hand" in text
+    assert "from_dataset_id" in await _columns_of(pool, "flows")
+    async with pool.connection() as conn:
+        rows = await conn.execute(
+            sql.SQL("select count(*) from {}").format(sql.Identifier(SCHEMA, "flows"))
+        )
+        assert (await rows.fetchone()) == (1,)
 
 
 async def test_catalog_starts_empty(store: CatalogStore) -> None:

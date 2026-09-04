@@ -29,9 +29,9 @@ from chat_ui import ChatOpener, login_cookies
 from playwright.sync_api import Browser, expect
 
 from boba.canvas.diagram import DiagramPrompt
-from boba.catalog.samples import PgSample
 from boba.chainlit.rendering.tool import ToolCallMarkdown, ToolResultMarkdown
 from boba.config import bind
+from boba.db.postgres.snapshot_sample import PgSample
 from boba.liteparse.engine import LiteParseEngine
 from boba.runtime.config import AppLayers
 from boba.stand.ui.chat_page import ChatPage, StepKind

@@ -9,16 +9,12 @@ from boba.catalog import (
     AddObject,
     CatalogInvariantError,
     ChangeStatus,
-    ChSnapshot,
     ManualColumn,
     ManualObject,
     ManualObjectKind,
-    ManualObjects,
     ObjectKind,
     ObjectRef,
     PartKind,
-    PgColumn,
-    PgSnapshot,
     RemoveObject,
     SetObject,
     SourceDiff,
@@ -26,7 +22,16 @@ from boba.catalog import (
     SourceOpError,
     TreeKind,
 )
-from boba.catalog.samples import ChSample, PgSample, SampleIds
+from boba.catalog.samples import SampleIds
+from boba.db.clickhouse.snapshot import (
+    ChSnapshot,
+)
+from boba.db.clickhouse.snapshot_sample import ChSample
+from boba.db.postgres.snapshot import (
+    PgColumn,
+    PgSnapshot,
+)
+from boba.db.postgres.snapshot_sample import PgSample
 
 SOURCE_ID = SampleIds.POSTGRES
 CH_SOURCE_ID = SampleIds.CLICKHOUSE
@@ -265,7 +270,8 @@ class TestManualOps:
             ("day", "date", False, 1),
             ("total", "numeric(14,2)", True, 2),
         ]
-        assert ManualObjects.of_relation(snapshot, relation) == obj
+        ref = ObjectRef(source_id=SOURCE_ID, kind=ObjectKind.RELATION, path=obj.path)
+        assert snapshot.manual_object(ref) == obj
 
         changed = obj.model_copy(update={"columns": (obj.columns[0],)})
         snapshot = SourceOperationList(root=(SetObject(object=changed),)).apply(

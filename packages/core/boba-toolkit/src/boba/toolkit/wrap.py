@@ -31,6 +31,8 @@ from boba.toolkit.entry import (
 )
 from boba.toolkit.launcher import (
     CollectedCall,
+    FrameTap,
+    ObservedCall,
     PayloadFailureError,
     ToolLauncher,
     ToolOutcome,
@@ -59,7 +61,10 @@ class ToolProcessWrap:
 
     Внутри конвейера (оркестратор поставил PipelineSlot) вызов открывается
     потоково: каналы узла отдаются слоту дескрипторами, и данные текут
-    между узлами мимо хоста; конверт разворачивается так же. Попутно
+    между узлами мимо хоста; конверт разворачивается так же. Если
+    вызывающий поставил приёмник кадров (FrameTap), кадры тела отдаются ему
+    по одному (ObservedCall) — так хост читает результат, который тело шлёт
+    кадрами, а не конвертом. Попутно
     guard_all публикует потоковую декларацию инструмента в ToolStreamSpecs
     — позже injected-поля снимаются из видимой схемы, и портов в ней уже
     не найти.
@@ -110,10 +115,13 @@ class ToolProcessWrap:
                 ) from exc
 
             slot = PipelineSlot.get()
-            if slot is None:
-                outcome = CollectedCall.of(launcher, command)
-            else:
+            sink = FrameTap.get()
+            if slot is not None:
                 outcome = cls._piped_call(launcher, command, slot)
+            elif sink is not None:
+                outcome = ObservedCall.of(launcher, command, sink)
+            else:
+                outcome = CollectedCall.of(launcher, command)
 
             reply = outcome.reply
             if isinstance(reply, ReplyError):

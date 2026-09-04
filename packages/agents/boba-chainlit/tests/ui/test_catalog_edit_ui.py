@@ -221,7 +221,7 @@ class TestDragAndDrop:
 
         added = page.locator(catalog_seed.node(Ed.EVENTS))
         expect(added).to_be_visible(timeout=LIVE_TIMEOUT_MS)
-        expect(added.locator(".ds-node__layer")).to_have_text(Ed.SRC)
+        expect(added.locator(".proc-node__layer")).to_have_text(Ed.SRC)
         lane_box = Css.box(lane)
         assert lane_box.contains(Css.box(added), slack=2)
 
@@ -258,7 +258,7 @@ class TestDragAndDrop:
 
         added = page.locator(catalog_seed.node(Ed.EVENTS))
         expect(added).to_be_visible(timeout=LIVE_TIMEOUT_MS)
-        expect(added.locator(".ds-node__layer")).to_have_text(Ed.DST)
+        expect(added.locator(".proc-node__layer")).to_have_text(Ed.DST)
         assert catalog_seed.address(Ed.EVENTS) in _node_addresses(
             catalog_api.state(draft_id)
         )
@@ -306,9 +306,11 @@ class TestNodePanel:
         node = page.locator(catalog_seed.node(Ed.ORDERS))
         expect(node).to_have_attribute("data-label", "ed_orders_v2")
         expect(node).to_have_attribute("data-status", "modified")
-        expect(node.locator(".ds-node__layer")).to_have_text(Ed.DST)
-        expect(panel.locator(".detail__name").first).to_have_text("ed_orders_v2")
-        expect(panel.locator(".detail__description")).to_contain_text("moved to dst")
+        expect(node.locator(".proc-node__layer")).to_have_text(Ed.DST)
+        expect(panel.get_by_test_id("panel-name").first).to_have_text("ed_orders_v2")
+        expect(panel.get_by_test_id("panel-description")).to_contain_text(
+            "moved to dst"
+        )
 
         stored = catalog_api.state(draft_id)["snapshot"]["nodes"][
             catalog_seed.id_of(Ed.ORDERS)
@@ -454,7 +456,7 @@ class TestFlows:
 
         form = page.get_by_test_id("flow-form")
         expect(form).to_be_visible()
-        expect(form.locator(".form__note")).to_have_text(f"{Ed.ORDERS} → {Ed.RETURNS}")
+        expect(form.locator("p.note")).to_have_text(f"{Ed.ORDERS} → {Ed.RETURNS}")
         form.get_by_label("load kind").select_option(label=Ed.FULL)
         form.get_by_role("button", name="save flow").click()
 

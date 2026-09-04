@@ -11,6 +11,7 @@ from boba.connections.base import ConnectionProfileBase, ConnectionTypeError
 from boba.connections.manifest import ConnectionTypeManifest
 from boba.db.clickhouse.payload import PayloadClickHouse
 from boba.db.clickhouse.profile import ClickHouseConfig
+from boba.db.clickhouse.snapshot import ChSourceKind
 
 __all__ = ["MANIFEST"]
 
@@ -40,7 +41,7 @@ async def _probe(profile: ConnectionProfileBase) -> str:
 
 
 MANIFEST = ConnectionTypeManifest(
-    kind="clickhouse",
+    kind=ChSourceKind.CLICKHOUSE.value,
     profile=ClickHouseConfig,
     probe=_probe,
 )

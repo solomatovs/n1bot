@@ -29,7 +29,7 @@ from catalog_ui import (
 )
 from playwright.sync_api import Browser, Page, ViewportSize, expect
 
-from boba.stand.ui.look import Css, Tokens, no_horizontal_scroll
+from boba.stand.ui.look import Css, Tokens, close, no_horizontal_scroll
 from boba.stand.ui.stand import REPO_ROOT, StandProcess
 
 pytestmark = pytest.mark.ui
@@ -282,14 +282,14 @@ class TestViewPage:
         _open_view(page, stand, seeded)
         node = page.locator(seeded.node("orders_raw"))
 
-        expect(node.locator(".ds-node__column")).to_have_count(Look.KEY_COLUMNS)
+        expect(node.locator(".proc-node__column")).to_have_count(Look.KEY_COLUMNS)
 
         _switch_mode(page, "all fields")
-        expect(node.locator(".ds-node__column")).to_have_count(Look.ALL_COLUMNS)
+        expect(node.locator(".proc-node__column")).to_have_count(Look.ALL_COLUMNS)
         assert "mode=ALL_FIELDS" in page.url
 
         _switch_mode(page, "names")
-        expect(node.locator(".ds-node__column")).to_have_count(0)
+        expect(node.locator(".proc-node__column")).to_have_count(0)
         assert "mode=TABLE_NAME" in page.url
 
     def test_click_opens_details_and_highlights_neighbours(
@@ -306,10 +306,10 @@ class TestViewPage:
         )
         expect(panel.get_by_test_id("node-card")).to_be_visible(timeout=15_000)
         expect(
-            panel.get_by_test_id("detail-incoming").locator(".detail__flow")
+            panel.get_by_test_id("detail-incoming").get_by_test_id("detail-flow")
         ).to_have_count(1)
         expect(
-            panel.get_by_test_id("detail-outgoing").locator(".detail__flow")
+            panel.get_by_test_id("detail-outgoing").get_by_test_id("detail-flow")
         ).to_have_count(1)
         assert f"active={seeded.seed.id_of('orders_stg')}" in page.url
 
@@ -370,7 +370,7 @@ class TestViewPage:
             "data-node", seeded.seed.address("sales_dm")
         )
         expect(
-            page.locator(f"{seeded.node('sales_dm')} .ds-node__column")
+            page.locator(f"{seeded.node('sales_dm')} .proc-node__column")
         ).to_have_count(0)
 
     def test_narrow_screen_keeps_the_scene_without_horizontal_scroll(
@@ -395,6 +395,99 @@ class TestViewPage:
             context.close()
 
 
+MEDIUM: ViewportSize = {"width": 1100, "height": 800}
+
+
+class TestGrid:
+    """Сетка виджетов: высоты контролов из токенов, ряд шапки выровнен по
+    центру, панели у минимумов на среднем экране, ящики на узком."""
+
+    def test_controls_share_the_height_scale(
+        self, page: Page, stand: StandProcess, seeded: Seeded, tokens: Tokens
+    ) -> None:
+        _open_draft(page, stand, seeded)
+        ctl = tokens.px("h-ctl")
+        small = tokens.px("h-ctl-sm")
+
+        topbar = page.locator(".topbar")
+        heights = {
+            "icon-button": Css.box(topbar.locator(".icon-btn").first).height,
+            "button-sm": Css.box(topbar.get_by_test_id("publish-button")).height,
+            "chip": Css.box(topbar.locator(".chip").first).height,
+        }
+        assert heights["icon-button"] == ctl, heights
+        assert heights["button-sm"] == small, heights
+        assert heights["chip"] == tokens.px("h-chip"), heights
+
+        toolbar = page.get_by_test_id("canvas-toolbar")
+        zoom = Css.box(toolbar.locator(".icon-btn").first)
+        modes = Css.box(toolbar.get_by_role("tablist"))
+        assert zoom.height == ctl
+        assert modes.height == ctl
+        assert close(zoom.y + zoom.height / 2, modes.y + modes.height / 2)
+
+        pane = page.get_by_test_id("left-pane")
+        assert Css.box(pane.get_by_label("find a node")).height == ctl
+        assert Css.box(pane.get_by_test_id("pane-item").first).height == ctl
+
+        page.locator(seeded.node("orders_raw")).click()
+        panel = page.get_by_test_id("detail-panel")
+        expect(panel).to_be_visible()
+        row = panel.get_by_test_id("detail-columns").locator("tbody tr").first
+        assert Css.box(row).height == tokens.px("h-row")
+        for button in panel.locator("header .icon-btn").all():
+            assert Css.box(button).height == small
+
+    def test_medium_screen_shrinks_the_panes_to_their_minimums(
+        self,
+        browser: Browser,
+        stand: StandProcess,
+        seeded: Seeded,
+        auth_cookies: list[Any],
+        tokens: Tokens,
+    ) -> None:
+        context = browser.new_context(viewport=MEDIUM)
+        context.add_cookies(auth_cookies)
+        medium = context.new_page()
+        try:
+            _open_view(medium, stand, seeded)
+            pane = Css.box(medium.locator(".page__pane"))
+            assert pane.width == tokens.px("w-pane-min")
+            medium.locator(seeded.node("orders_raw")).click()
+            expect(medium.get_by_test_id("detail-panel")).to_be_visible()
+            detail = Css.box(medium.locator(".page__detail"))
+            assert detail.width == tokens.px("w-detail-min")
+            assert no_horizontal_scroll(medium)
+            expect(medium.locator(".topbar__hint")).to_be_hidden()
+        finally:
+            context.close()
+
+    def test_narrow_screen_collapses_button_labels_and_dialogs_fit(
+        self,
+        browser: Browser,
+        stand: StandProcess,
+        seeded: Seeded,
+        auth_cookies: list[Any],
+    ) -> None:
+        context = browser.new_context(viewport=NARROW)
+        context.add_cookies(auth_cookies)
+        narrow = context.new_page()
+        try:
+            _open_view(narrow, stand, seeded)
+            kinds = narrow.get_by_test_id("load-kinds-button")
+            expect(kinds.locator(".btn__label")).to_be_hidden()
+            expect(kinds).to_have_attribute("title", "load kinds")
+            kinds.click()
+            dialog = narrow.get_by_role("dialog")
+            expect(dialog).to_be_visible()
+            box = Css.box(dialog)
+            assert box.x >= 0
+            assert box.right <= NARROW["width"]
+            assert no_horizontal_scroll(narrow)
+        finally:
+            context.close()
+
+
 class TestDraftPage:
     def test_draft_shows_added_node_with_diff(
         self, page: Page, stand: StandProcess, seeded: Seeded, tokens: Tokens
@@ -407,7 +500,7 @@ class TestDraftPage:
         added = page.locator(seeded.node(Look.DRAFT_TABLE))
         expect(added).to_have_attribute("data-status", "added")
         expect(added).to_have_css("border-color", tokens.rgb("done"))
-        expect(added.locator(".ds-node__status")).to_have_text("added")
+        expect(added.locator(".proc-node__status")).to_have_text("added")
 
         page.get_by_role("button", name="diff").click()
         expect(added).to_have_attribute("data-status", "unchanged")

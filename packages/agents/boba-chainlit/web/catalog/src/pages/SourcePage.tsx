@@ -1,21 +1,68 @@
-import { GitCompare, Plus, Trash2 } from "lucide-react";
+import { GitCompare, Link2, Plus, RefreshCw, Trash2, XCircle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { ApiError, type CatalogApi } from "../api/client";
 import { useServices } from "../app";
-import { Dialog } from "../components/edit/Dialog";
 import { NamePrompt } from "../components/edit/NamePrompt";
+import { ConnectionsDialog, connectionLabel } from "../components/sources/ConnectionsDialog";
 import { DiffPanel } from "../components/sources/DiffPanel";
 import { ObjectCardPanel } from "../components/sources/ObjectCardPanel";
 import { SourceTree } from "../components/sources/SourceTree";
-import type { Access, ObjectCard, ObjectRef, Source, SourceDiff, SourceDraft, SourceVersion, TreeNode } from "../model/catalog";
+import { SyncDialog } from "../components/sources/SyncDialog";
+import type {
+  Access,
+  ConnectionEntry,
+  ObjectCard,
+  ObjectRef,
+  Source,
+  SourceConnection,
+  SourceDiff,
+  SourceDraft,
+  SourceVersion,
+  Sync,
+  TreeNode,
+} from "../model/catalog";
 import { RefParam } from "../model/refParam";
-import { Alert, Button, Chip, EmptyState, IconButton, Select, useToast } from "../ui";
+import {
+  Alert,
+  Button,
+  Chip,
+  Dialog,
+  EmptyState,
+  IconButton,
+  Page,
+  PageBody,
+  PageNotices,
+  Pane,
+  Scene,
+  Select,
+  Toolbar,
+  Topbar,
+  TopbarGroup,
+  TopbarHint,
+  TopbarLink,
+  TopbarSpacer,
+  TopbarTitle,
+  useToast,
+} from "../ui";
 
-type Loaded = { access: Access; source: Source; versions: SourceVersion[]; drafts: SourceDraft[] };
+type Directory = { entries: ConnectionEntry[]; error: string | null };
+type Loaded = {
+  access: Access;
+  source: Source;
+  versions: SourceVersion[];
+  drafts: SourceDraft[];
+  connections: SourceConnection[];
+  directory: Directory;
+  syncs: Sync[];
+};
 type LoadState = { status: "loading" } | { status: "failed"; message: string } | { status: "ready"; loaded: Loaded };
-type Panel = { status: "empty" } | { status: "loading" } | { status: "failed"; message: string } | { status: "card"; card: ObjectCard };
+type Panel =
+  | { status: "empty" }
+  | { status: "loading" }
+  | { status: "failed"; message: string }
+  | { status: "card"; card: ObjectCard };
 
 /** Страница источника: дерево версии слева, родная карточка объекта справа,
  * выбор версии и разница с предыдущей, у ручного источника — черновики. */
@@ -36,8 +83,9 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const [panel, setPanel] = useState<Panel>({ status: "empty" });
   const [diff, setDiff] = useState<SourceDiff | null>(null);
-  const [dialog, setDialog] = useState<"none" | "draft" | "delete">("none");
+  const [dialog, setDialog] = useState<"none" | "draft" | "delete" | "connections" | "sync">("none");
   const [reloads, setReloads] = useState(0);
+  const [latestSync, setLatestSync] = useState<Sync | null>(null);
 
   const requestedVersion = Number(params.get("v") ?? "-1");
   const showDiff = params.get("mode") === "diff";
@@ -49,6 +97,7 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
       .then((loaded) => {
         if (!cancelled) {
           setState({ status: "ready", loaded });
+          setLatestSync(loaded.syncs[0] ?? null);
           setReloads((count) => count + 1);
         }
       })
@@ -69,9 +118,24 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
     return api.events((message) => {
       if (message.source_id === sourceId) {
         reload();
+        return;
+      }
+
+      if (message.sync_id !== null) {
+        const syncId = message.sync_id;
+        api
+          .sync(syncId)
+          .then((sync) => {
+            if (sync.source_id === sourceId) {
+              setLatestSync(sync);
+            }
+          })
+          .catch((error: unknown) => {
+            toast(describe(error), "error");
+          });
       }
     });
-  }, [api, sourceId, reload]);
+  }, [api, sourceId, reload, toast]);
 
   const version = state.status === "ready" ? resolveVersion(state.loaded.source, requestedVersion) : requestedVersion;
 
@@ -140,7 +204,8 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
     );
   }
 
-  const { access, source, versions, drafts } = state.loaded;
+  const { access, source, versions, drafts, connections, directory } = state.loaded;
+  const canSync = access.can_edit && !source.manual;
   const setParam = (patch: Record<string, string | undefined>): void => {
     setParams(
       (current) => {
@@ -167,17 +232,11 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
   };
 
   return (
-    <div className="page" data-testid="source-page" data-source={source.name} data-version={version} data-can-edit={access.can_edit}>
-      <header className="topbar">
-        <Link to="/" className="topbar__home">
-          catalog
-        </Link>
-        <Link to="/sources" className="topbar__home">
-          sources
-        </Link>
-        <span className="topbar__title" data-testid="page-title">
-          {source.name}
-        </span>
+    <Page mark="source-page" data-source={source.name} data-version={version} data-can-edit={access.can_edit}>
+      <Topbar>
+        <TopbarLink to="/">catalog</TopbarLink>
+        <TopbarLink to="/sources">sources</TopbarLink>
+        <TopbarTitle>{source.name}</TopbarTitle>
         <Chip tone="muted">{source.kind}</Chip>
         {source.manual && <Chip tone="draft">manual</Chip>}
         <Select
@@ -196,9 +255,10 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
         </Select>
         {version >= 2 && (
           <Button
-            size="tiny"
+            size="sm"
             tone={showDiff ? "signal" : "ghost"}
             icon={GitCompare}
+            collapsible
             aria-pressed={showDiff}
             onClick={() => {
               setParam({ mode: showDiff ? undefined : "diff" });
@@ -207,44 +267,95 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
             diff with v{version - 1}
           </Button>
         )}
-        {source.manual && access.can_edit && (
-          <Button
-            size="tiny"
-            tone="primary"
-            icon={Plus}
-            onClick={() => {
-              setDialog("draft");
+        <TopbarGroup>
+          {source.manual && access.can_edit && (
+            <Button
+              size="sm"
+              tone="primary"
+              icon={Plus}
+              onClick={() => {
+                setDialog("draft");
+              }}
+              data-testid="new-source-draft"
+            >
+              draft
+            </Button>
+          )}
+          {!source.manual && (
+            <Button
+              size="sm"
+              tone="ghost"
+              icon={Link2}
+              collapsible
+              title="connections"
+              onClick={() => {
+                setDialog("connections");
+              }}
+              data-testid="source-connections"
+            >
+              connections · {connections.length}
+            </Button>
+          )}
+          {canSync && (
+            <Button
+              size="sm"
+              tone="primary"
+              icon={RefreshCw}
+              disabled={latestSync?.status === "running"}
+              onClick={() => {
+                setDialog("sync");
+              }}
+              data-testid="source-sync"
+            >
+              sync
+            </Button>
+          )}
+          {access.can_edit && (
+            <IconButton
+              aria-label="delete source"
+              onClick={() => {
+                setDialog("delete");
+              }}
+            >
+              <Trash2 size={14} />
+            </IconButton>
+          )}
+        </TopbarGroup>
+        <TopbarSpacer />
+        <TopbarHint>{source.description}</TopbarHint>
+      </Topbar>
+      <PageNotices>
+        {latestSync !== null && (
+          <SyncBar
+            sync={latestSync}
+            label={connectionLabel(latestSync.connection_id, directory.entries)}
+            canCancel={access.can_edit}
+            onCancel={() => {
+              api
+                .cancelSync(latestSync.id)
+                .then((sync) => {
+                  setLatestSync(sync);
+                  toast("sync cancelled", "success");
+                })
+                .catch((error: unknown) => {
+                  toast(describe(error), "error");
+                });
             }}
-            data-testid="new-source-draft"
-          >
-            draft
-          </Button>
+          />
         )}
-        {access.can_edit && (
-          <IconButton
-            aria-label="delete source"
-            onClick={() => {
-              setDialog("delete");
-            }}
-          >
-            <Trash2 size={14} />
-          </IconButton>
+        {drafts.length > 0 && (
+          <Alert tone="info" mark="source-drafts">
+            open drafts:{" "}
+            {drafts.map((draft) => (
+              <Link key={draft.id} to={`/sources/${source.id}/drafts/${draft.id}`}>
+                {draft.name}
+              </Link>
+            ))}
+          </Alert>
         )}
-        <span className="topbar__spacer" />
-        <span className="topbar__hint mono">{source.description}</span>
-      </header>
-      {drafts.length > 0 && (
-        <Alert tone="info" mark="source-drafts">
-          open drafts:{" "}
-          {drafts.map((draft) => (
-            <Link key={draft.id} to={`/sources/${source.id}/drafts/${draft.id}`} className="index__link">
-              {draft.name}
-            </Link>
-          ))}
-        </Alert>
-      )}
-      <div className="page__body" data-pane={true} data-detail={panel.status !== "empty" || diff !== null}>
-        <aside className="page__pane">
+      </PageNotices>
+      <PageBody pane={true} detail={false}>
+        <Pane>
           {versions.length === 0 ? (
             <EmptyState title="no versions yet">
               {source.manual ? "create a draft and add objects" : "run a synchronisation"}
@@ -252,15 +363,15 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
           ) : (
             <SourceTree load={loadTree} reloadKey={`${version}:${reloads}`} selected={selected} onSelect={select} />
           )}
-        </aside>
-        <main className="page__scene page__scene--panel">
+        </Pane>
+        <Scene panel>
           {diff !== null && showDiff ? (
             <DiffPanel diff={diff} title={`v${version - 1} → v${version}`} />
           ) : (
             <ObjectPanel panel={panel} />
           )}
-        </main>
-      </div>
+        </Scene>
+      </PageBody>
       {dialog === "draft" && (
         <NamePrompt
           title="new draft"
@@ -283,6 +394,62 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
           }}
         />
       )}
+      {dialog === "connections" && (
+        <ConnectionsDialog
+          sourceName={source.name}
+          bound={connections}
+          directory={directory.entries}
+          directoryError={directory.error}
+          canEdit={access.can_edit}
+          onBind={(connectionId) => {
+            api
+              .bindConnection(source.id, connectionId)
+              .then(() => {
+                toast("connection bound", "success");
+                reload();
+              })
+              .catch((error: unknown) => {
+                toast(describe(error), "error");
+              });
+          }}
+          onUnbind={(connectionId) => {
+            api
+              .unbindConnection(source.id, connectionId)
+              .then(() => {
+                toast("connection unbound", "success");
+                reload();
+              })
+              .catch((error: unknown) => {
+                toast(describe(error), "error");
+              });
+          }}
+          onClose={() => {
+            setDialog("none");
+          }}
+        />
+      )}
+      {dialog === "sync" && (
+        <SyncDialog
+          sourceName={source.name}
+          bound={connections}
+          directory={directory.entries}
+          onStart={(connectionId, scope) => {
+            api
+              .startSync(source.id, connectionId, scope)
+              .then((sync) => {
+                setDialog("none");
+                setLatestSync(sync);
+                toast("sync started", "success");
+              })
+              .catch((error: unknown) => {
+                toast(describe(error), "error");
+              });
+          }}
+          onClose={() => {
+            setDialog("none");
+          }}
+        />
+      )}
       {dialog === "delete" && (
         <Dialog
           title="delete the source"
@@ -292,7 +459,7 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
           }}
         >
           <Alert tone="info">The source “{source.name}” with all its versions will be deleted.</Alert>
-          <div className="form__actions">
+          <Toolbar>
             <Button
               tone="danger"
               onClick={() => {
@@ -317,10 +484,10 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
             >
               cancel
             </Button>
-          </div>
+          </Toolbar>
         </Dialog>
       )}
-    </div>
+    </Page>
   );
 }
 
@@ -352,16 +519,78 @@ function resolveVersion(source: Source, requested: number): number {
   return requested;
 }
 
+type SyncBarProps = {
+  sync: Sync;
+  label: string;
+  canCancel: boolean;
+  onCancel: () => void;
+};
+
+/** Полоса последней синхронизации: ход с прогрессом и отменой либо итог. */
+function SyncBar({ sync, label, canCancel, onCancel }: SyncBarProps): ReactElement {
+  const started = sync.started_at.slice(0, 16).replace("T", " ");
+  if (sync.status === "running") {
+    const total = sync.objects_total === null ? "?" : String(sync.objects_total);
+    return (
+      <Alert tone="info" mark="sync-status">
+        <span data-testid="sync-progress" data-status={sync.status}>
+          syncing via {label}: {sync.objects_done} / {total} objects
+        </span>{" "}
+        {canCancel && (
+          <Button size="sm" tone="ghost" icon={XCircle} onClick={onCancel} data-testid="cancel-sync">
+            cancel
+          </Button>
+        )}
+      </Alert>
+    );
+  }
+
+  if (sync.status === "done") {
+    return (
+      <Alert tone="ok" mark="sync-status">
+        <span data-testid="sync-progress" data-status={sync.status}>
+          synced v{sync.version} via {label} at {started}: {sync.objects_done} objects
+        </span>
+      </Alert>
+    );
+  }
+
+  return (
+    <Alert tone="error" mark="sync-status" title={`sync ${sync.status} at ${started}`}>
+      <span data-testid="sync-progress" data-status={sync.status}>
+        {sync.error}
+      </span>
+    </Alert>
+  );
+}
+
 async function load(api: CatalogApi, sourceId: string): Promise<Loaded> {
   const access = await api.access();
   const source = await api.source(sourceId);
   const versions = await api.sourceVersions(sourceId);
   let drafts: SourceDraft[] = [];
+  let connections: SourceConnection[] = [];
+  let syncs: Sync[] = [];
+  let directory: Directory = { entries: [], error: null };
   if (source.manual) {
     drafts = await api.sourceDrafts(sourceId);
+  } else {
+    connections = await api.sourceConnections(sourceId);
+    syncs = await api.sourceSyncs(sourceId);
+    directory = await loadDirectory(api, source.kind);
   }
 
-  return { access, source, versions, drafts };
+  return { access, source, versions, drafts, connections, directory, syncs };
+}
+
+/** Справочник подключений вида; отказ брокера не роняет страницу, а
+ * показывается в диалогах. */
+async function loadDirectory(api: CatalogApi, kind: string): Promise<Directory> {
+  try {
+    return { entries: await api.connections(kind), error: null };
+  } catch (error: unknown) {
+    return { entries: [], error: describe(error) };
+  }
 }
 
 export function describe(error: unknown): string {

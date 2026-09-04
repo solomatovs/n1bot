@@ -30,6 +30,7 @@ import { OBJECT_DRAG_TYPE, ObjectParam } from "../../model/refParam";
 import { ArrowMarkers, FlowEdge } from "./FlowEdge";
 import { LayerLane } from "./LayerLane";
 import { ProcessNode } from "./ProcessNode";
+import "./canvas.css";
 
 const NODE_TYPES: NodeTypes = { process: ProcessNode, layer: LayerLane };
 const EDGE_TYPES: EdgeTypes = { flow: FlowEdge };
@@ -248,7 +249,8 @@ function laneAt(lanes: LayerNode[], x: number, y: number): string | undefined {
   for (const lane of lanes) {
     const width = lane.width ?? 0;
     const height = lane.height ?? 0;
-    const inside = x >= lane.position.x && x <= lane.position.x + width && y >= lane.position.y && y <= lane.position.y + height;
+    const inside =
+      x >= lane.position.x && x <= lane.position.x + width && y >= lane.position.y && y <= lane.position.y + height;
     if (inside) {
       return layerOfLane(lane.id);
     }
