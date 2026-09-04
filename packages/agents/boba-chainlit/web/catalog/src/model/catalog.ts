@@ -153,6 +153,7 @@ export const CatalogChangedSchema = z.object({
   draft_id: z.string().nullable(),
   version: z.number().nullable(),
   view_id: z.string().nullable(),
+  source_id: z.string().nullable().default(null),
   action: z.enum(["created", "updated", "deleted"]),
 });
 
@@ -328,3 +329,348 @@ export class Catalog {
     return String(value);
   }
 }
+
+// --- источники метаданных ---
+
+export const SourceKindSchema = z.enum(["postgres", "clickhouse"]);
+export const ObjectKindSchema = z.enum([
+  "database",
+  "schema",
+  "relation",
+  "routine",
+  "sequence",
+  "type",
+  "table",
+  "dictionary",
+]);
+
+export const ObjectRefSchema = z.object({
+  source_id: z.string(),
+  kind: ObjectKindSchema,
+  path: z.array(z.string()),
+});
+
+export const SourceSchema = z.object({
+  id: z.string(),
+  kind: SourceKindSchema,
+  name: z.string(),
+  description: z.string(),
+  manual: z.boolean(),
+  created_by: z.string(),
+  created_at: z.string(),
+  latest_version: z.number(),
+});
+
+export const SourceVersionSchema = z.object({
+  source_id: z.string(),
+  version: z.number(),
+  taken_at: z.string(),
+  taken_by: z.string(),
+  connection_id: z.string().nullable(),
+  sync_id: z.string().nullable(),
+  objects_total: z.number(),
+  server_version: z.string().nullable(),
+});
+
+export const SourceConnectionSchema = z.object({
+  source_id: z.string(),
+  connection_id: z.string(),
+  bound_by: z.string(),
+  bound_at: z.string(),
+});
+
+export const TreeNodeSchema = z.object({
+  path: z.array(z.string()),
+  label: z.string(),
+  kind: z.enum(["database", "schema", "group", "object"]),
+  children_count: z.number(),
+  detail: z.string(),
+  comment: z.string().nullable(),
+  ref: ObjectRefSchema.nullable(),
+  status: ChangeStatusSchema,
+});
+
+const nullableText = z.string().nullable();
+
+export const PgRelationSchema = z.object({
+  database: z.string(),
+  schema_name: z.string(),
+  name: z.string(),
+  kind: z.enum(["table", "partitioned", "partition", "view", "materialized", "foreign"]),
+  owner: z.string(),
+  comment: nullableText,
+  tablespace: nullableText,
+  persistence: z.string(),
+  row_estimate: z.number(),
+  total_bytes: z.number(),
+  partition_key: nullableText,
+  partition_of: nullableText,
+  partition_bound: nullableText,
+  definition: nullableText,
+  check_option: nullableText,
+  populated: z.boolean().nullable(),
+  foreign_server: nullableText,
+  options: z.record(z.string(), z.string()),
+});
+
+export const PgColumnSchema = z.object({
+  database: z.string(),
+  schema_name: z.string(),
+  relation: z.string(),
+  name: z.string(),
+  ordinal: z.number(),
+  type: z.string(),
+  nullable: z.boolean(),
+  default: nullableText,
+  identity: nullableText,
+  generated: nullableText,
+  collation: nullableText,
+  comment: nullableText,
+});
+
+export const PgConstraintSchema = z.object({
+  name: z.string(),
+  kind: z.enum(["primary", "unique", "foreign", "check", "exclusion"]),
+  columns: z.array(z.string()),
+  ref_schema: nullableText,
+  ref_relation: nullableText,
+  ref_columns: z.array(z.string()).nullable(),
+  on_update: nullableText,
+  on_delete: nullableText,
+  deferrable: z.boolean(),
+  initially_deferred: z.boolean(),
+  definition: z.string(),
+  comment: nullableText,
+});
+
+export const PgIndexSchema = z.object({
+  name: z.string(),
+  method: z.string(),
+  unique: z.boolean(),
+  primary: z.boolean(),
+  columns: z.array(z.string()),
+  predicate: nullableText,
+  definition: z.string(),
+  total_bytes: z.number(),
+  comment: nullableText,
+});
+
+export const PgRoutineSchema = z.object({
+  database: z.string(),
+  schema_name: z.string(),
+  name: z.string(),
+  signature: z.string(),
+  kind: z.enum(["function", "procedure", "aggregate", "window"]),
+  owner: z.string(),
+  language: z.string(),
+  arguments: z.string(),
+  returns: nullableText,
+  returns_set: z.boolean(),
+  volatility: z.string(),
+  strict: z.boolean(),
+  security_definer: z.boolean(),
+  parallel: z.string(),
+  cost: z.number(),
+  rows: z.number().nullable(),
+  body: z.string(),
+  definition: z.string(),
+  comment: nullableText,
+});
+
+export const PgRoutineArgSchema = z.object({
+  position: z.number(),
+  name: nullableText,
+  type: z.string(),
+  mode: z.string(),
+  default: nullableText,
+});
+
+export const PgSequenceSchema = z.object({
+  database: z.string(),
+  schema_name: z.string(),
+  name: z.string(),
+  type: z.string(),
+  start: z.number(),
+  minimum: z.number(),
+  maximum: z.number(),
+  increment: z.number(),
+  cycle: z.boolean(),
+  cache: z.number(),
+  last_value: z.number().nullable(),
+  owned_by: nullableText,
+  comment: nullableText,
+});
+
+export const PgTypeSchema = z.object({
+  database: z.string(),
+  schema_name: z.string(),
+  name: z.string(),
+  kind: z.enum(["enum", "domain", "composite", "range"]),
+  owner: z.string(),
+  labels: z.array(z.string()).nullable(),
+  base_type: nullableText,
+  constraint: nullableText,
+  attributes: z.array(z.object({ name: z.string(), type: z.string() })).nullable(),
+  comment: nullableText,
+});
+
+export const ChTableSchema = z.object({
+  database: z.string(),
+  name: z.string(),
+  kind: z.enum(["table", "view", "materialized", "live", "dictionary_table"]),
+  engine: z.string(),
+  engine_full: z.string(),
+  comment: nullableText,
+  partition_key: nullableText,
+  sorting_key: nullableText,
+  primary_key: nullableText,
+  sampling_key: nullableText,
+  ttl: nullableText,
+  settings: z.record(z.string(), z.string()),
+  definition: nullableText,
+  target: nullableText,
+  dependencies: z.array(z.string()),
+  total_rows: z.number().nullable(),
+  total_bytes: z.number().nullable(),
+  metadata_modified_at: z.string(),
+  create_query: z.string(),
+});
+
+export const ChColumnSchema = z.object({
+  name: z.string(),
+  position: z.number(),
+  type: z.string(),
+  default_kind: nullableText,
+  default_expression: nullableText,
+  comment: nullableText,
+  codec: nullableText,
+  ttl: nullableText,
+  in_partition_key: z.boolean(),
+  in_sorting_key: z.boolean(),
+  in_primary_key: z.boolean(),
+  in_sampling_key: z.boolean(),
+});
+
+export const ChDictionarySchema = z.object({
+  database: z.string(),
+  name: z.string(),
+  status: z.string(),
+  layout: z.string(),
+  source: z.string(),
+  key_columns: z.array(z.string()),
+  lifetime_min: z.number(),
+  lifetime_max: z.number(),
+  comment: nullableText,
+  create_query: z.string(),
+});
+
+export const ChDictionaryAttributeSchema = z.object({
+  name: z.string(),
+  position: z.number(),
+  type: z.string(),
+});
+
+export const ObjectCardSchema = z.discriminatedUnion("card", [
+  z.object({
+    card: z.literal("pg_relation"),
+    ref: ObjectRefSchema,
+    relation: PgRelationSchema,
+    columns: z.array(PgColumnSchema),
+    constraints: z.array(PgConstraintSchema),
+    indexes: z.array(PgIndexSchema),
+    partitions: z.array(PgRelationSchema),
+  }),
+  z.object({
+    card: z.literal("pg_routine"),
+    ref: ObjectRefSchema,
+    routine: PgRoutineSchema,
+    arguments: z.array(PgRoutineArgSchema),
+  }),
+  z.object({ card: z.literal("pg_sequence"), ref: ObjectRefSchema, sequence: PgSequenceSchema }),
+  z.object({ card: z.literal("pg_type"), ref: ObjectRefSchema, type: PgTypeSchema }),
+  z.object({
+    card: z.literal("ch_table"),
+    ref: ObjectRefSchema,
+    table: ChTableSchema,
+    columns: z.array(ChColumnSchema),
+  }),
+  z.object({
+    card: z.literal("ch_dictionary"),
+    ref: ObjectRefSchema,
+    dictionary: ChDictionarySchema,
+    attributes: z.array(ChDictionaryAttributeSchema),
+  }),
+]);
+
+export const FieldChangeSchema = z.object({
+  field: z.string(),
+  was: nullableText,
+  now: nullableText,
+});
+
+export const PartChangeSchema = z.object({
+  part: z.enum(["column", "constraint", "index", "argument", "attribute"]),
+  name: z.string(),
+  status: ChangeStatusSchema,
+  fields: z.array(FieldChangeSchema),
+});
+
+export const ObjectChangeSchema = z.object({
+  ref: ObjectRefSchema,
+  label: z.string(),
+  status: ChangeStatusSchema,
+  fields: z.array(FieldChangeSchema),
+  parts: z.array(PartChangeSchema),
+});
+
+export const SourceDiffSchema = z.object({ entries: z.array(ObjectChangeSchema) });
+
+export const SourceDraftSchema = z.object({
+  id: z.string(),
+  source_id: z.string(),
+  name: z.string(),
+  base_version: z.number(),
+  status: z.enum(["open", "published", "discarded"]),
+  created_by: z.string(),
+  created_at: z.string(),
+});
+
+export const SourceDraftStateSchema = z.object({
+  draft: SourceDraftSchema,
+  snapshot: z.object({ kind: SourceKindSchema }).passthrough(),
+  diff: SourceDiffSchema,
+  seq: z.number(),
+});
+
+export type SourceKind = z.infer<typeof SourceKindSchema>;
+export type ObjectKind = z.infer<typeof ObjectKindSchema>;
+export type ObjectRef = z.infer<typeof ObjectRefSchema>;
+export type Source = z.infer<typeof SourceSchema>;
+export type SourceVersion = z.infer<typeof SourceVersionSchema>;
+export type SourceConnection = z.infer<typeof SourceConnectionSchema>;
+export type TreeNode = z.infer<typeof TreeNodeSchema>;
+export type ObjectCard = z.infer<typeof ObjectCardSchema>;
+export type PgRelation = z.infer<typeof PgRelationSchema>;
+export type PgColumn = z.infer<typeof PgColumnSchema>;
+export type ChTable = z.infer<typeof ChTableSchema>;
+export type ChColumn = z.infer<typeof ChColumnSchema>;
+export type FieldChange = z.infer<typeof FieldChangeSchema>;
+export type PartChange = z.infer<typeof PartChangeSchema>;
+export type ObjectChange = z.infer<typeof ObjectChangeSchema>;
+export type SourceDiff = z.infer<typeof SourceDiffSchema>;
+export type SourceDraft = z.infer<typeof SourceDraftSchema>;
+export type SourceDraftState = z.infer<typeof SourceDraftStateSchema>;
+/** Что задаёт пользователь, заводя источник. */
+export type SourceSpec = { kind: SourceKind; name: string; description: string; manual: boolean };
+/** Объект ручного источника коротким набором полей. */
+export type ManualColumn = { name: string; type: string; nullable: boolean; comment: string | null };
+export type ManualObject = {
+  kind: "table" | "view";
+  path: string[];
+  comment: string | null;
+  columns: ManualColumn[];
+};
+export type SourceOp =
+  | { op: "add_object"; object: ManualObject }
+  | { op: "set_object"; object: ManualObject }
+  | { op: "remove_object"; path: string[] };

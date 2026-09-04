@@ -14,6 +14,7 @@ from httpx import ASGITransport, AsyncClient
 from psycopg import sql
 
 from boba.catalog import AddDataset, AddLayer, Dataset, Layer, OperationList
+from boba.catalog.samples import PgSample
 from boba.catalog_service import (
     CatalogConfig,
     CatalogService,
@@ -323,3 +324,164 @@ async def test_disabled_service_gives_503(app_config: AppConfig) -> None:
         response = await client.get(Stand.url(CatalogUrl.SNAPSHOT))
 
     assert response.status_code == 503
+
+
+async def test_sources_over_http(stand: Stand) -> None:
+    """Источник, две версии из образца, дерево с пометками, карточка, diff;
+    читателю всё видно, править нельзя."""
+    sample = PgSample()
+    async with stand.client(_user(EDITOR_ID, "wrt")) as client:
+        created = await client.post(
+            stand.url(CatalogUrl.SOURCES),
+            json={"kind": "postgres", "name": "prod", "description": "Prod"},
+        )
+        assert created.status_code == 200
+        source_id = created.json()["id"]
+        assert created.json()["latest_version"] == 0
+
+        for snapshot in (sample.snapshot(), sample.next_version()):
+            written = await client.post(
+                stand.url(CatalogUrl.SOURCE_VERSIONS, source_id=source_id),
+                json={"snapshot": snapshot.model_dump(mode="json")},
+            )
+            assert written.status_code == 200
+
+        versions = await client.get(
+            stand.url(CatalogUrl.SOURCE_VERSIONS, source_id=source_id)
+        )
+        assert [v["version"] for v in versions.json()] == [1, 2]
+
+        bound = await client.post(
+            stand.url(CatalogUrl.SOURCE_CONNECTIONS, source_id=source_id),
+            json={"connection_id": str(STRANGER_ID)},
+        )
+        assert bound.status_code == 200
+        listed = await client.get(
+            stand.url(CatalogUrl.SOURCE_CONNECTIONS, source_id=source_id)
+        )
+        assert [c["connection_id"] for c in listed.json()] == [str(STRANGER_ID)]
+
+    async with stand.client(_user(VIEWER_ID, "read")) as client:
+        roots = await client.get(stand.url(CatalogUrl.SOURCE_TREE, source_id=source_id))
+        assert roots.status_code == 200
+        assert [node["label"] for node in roots.json()] == ["prod"]
+        assert roots.json()[0]["status"] == "modified"
+
+        tables = await client.get(
+            stand.url(CatalogUrl.SOURCE_TREE, source_id=source_id),
+            params=[("path", "prod"), ("path", "public"), ("path", "tables")],
+        )
+        by_label = {node["label"]: node for node in tables.json()}
+        assert by_label["orders"]["status"] == "modified"
+        assert by_label["returns"]["status"] == "added"
+        assert by_label["orders"]["ref"]["path"] == ["prod", "public", "orders"]
+
+        orders = [("path", "prod"), ("path", "public"), ("path", "orders")]
+        card = await client.get(
+            stand.url(CatalogUrl.SOURCE_OBJECT, source_id=source_id),
+            params=[("kind", "relation"), *orders],
+        )
+        assert card.status_code == 200
+        assert card.json()["card"] == "pg_relation"
+        columns = [c["name"] for c in card.json()["columns"]]
+        assert columns == ["id", "amount", "created_at", "note"]
+        assert card.json()["partitions"][0]["name"] == "orders_2026"
+
+        old_card = await client.get(
+            stand.url(CatalogUrl.SOURCE_OBJECT, source_id=source_id),
+            params=[("kind", "relation"), *orders, ("version", "1")],
+        )
+        assert len(old_card.json()["columns"]) == 3
+
+        missing = await client.get(
+            stand.url(CatalogUrl.SOURCE_OBJECT, source_id=source_id),
+            params=[
+                ("kind", "relation"),
+                ("path", "prod"),
+                ("path", "x"),
+                ("path", "y"),
+            ],
+        )
+        assert missing.status_code == 404
+
+        diff = await client.get(
+            stand.url(CatalogUrl.SOURCE_DIFF, source_id=source_id),
+            params={"old": 1, "new": 2},
+        )
+        statuses = {
+            tuple(e["ref"]["path"]): e["status"] for e in diff.json()["entries"]
+        }
+        assert statuses[("prod", "public", "customers")] == "removed"
+
+        refused = await client.post(
+            stand.url(CatalogUrl.SOURCES), json={"kind": "postgres", "name": "x"}
+        )
+        assert refused.status_code == 403
+
+
+async def test_manual_source_drafts_over_http(stand: Stand) -> None:
+    async with stand.client(_user(EDITOR_ID, "wrt")) as client:
+        synced = await client.post(
+            stand.url(CatalogUrl.SOURCES), json={"kind": "postgres", "name": "prod"}
+        )
+        not_manual = await client.post(
+            stand.url(CatalogUrl.SOURCE_DRAFTS, source_id=synced.json()["id"]),
+            json={"name": "no"},
+        )
+        assert not_manual.status_code == 409
+
+        planned = await client.post(
+            stand.url(CatalogUrl.SOURCES),
+            json={"kind": "clickhouse", "name": "planned", "manual": True},
+        )
+        planned_id = planned.json()["id"]
+
+        draft = await client.post(
+            stand.url(CatalogUrl.SOURCE_DRAFTS, source_id=planned_id),
+            json={"name": "shapes"},
+        )
+        draft_id = draft.json()["id"]
+        ops = [
+            {
+                "op": "add_object",
+                "object": {
+                    "path": ["dwh", "orders"],
+                    "comment": "Planned",
+                    "columns": [{"name": "id", "type": "UInt64", "nullable": False}],
+                },
+            }
+        ]
+        appended = await client.post(
+            stand.url(CatalogUrl.SOURCE_DRAFT_OPS, draft_id=draft_id),
+            json={"expected_seq": 0, "operations": ops},
+        )
+        assert appended.status_code == 200
+        assert appended.json()["seq"] == 1
+        assert appended.json()["snapshot"]["kind"] == "clickhouse"
+
+        rejected = await client.post(
+            stand.url(CatalogUrl.SOURCE_DRAFT_OPS, draft_id=draft_id),
+            json={"expected_seq": 1, "operations": ops},
+        )
+        assert rejected.status_code == 422
+        assert rejected.json()["detail"]["index"] == 0
+
+        state = await client.get(stand.url(CatalogUrl.SOURCE_DRAFT, draft_id=draft_id))
+        assert state.json()["diff"]["entries"][0]["status"] == "added"
+
+        published = await client.post(
+            stand.url(CatalogUrl.SOURCE_DRAFT_PUBLISH, draft_id=draft_id)
+        )
+        assert published.status_code == 200
+        assert published.json()["version"] == 1
+
+        tree = await client.get(
+            stand.url(CatalogUrl.SOURCE_TREE, source_id=planned_id),
+            params=[("path", "dwh"), ("path", "tables")],
+        )
+        assert [node["label"] for node in tree.json()] == ["orders"]
+
+        deleted = await client.delete(
+            stand.url(CatalogUrl.SOURCE, source_id=planned_id)
+        )
+        assert deleted.json()["deleted"] is True

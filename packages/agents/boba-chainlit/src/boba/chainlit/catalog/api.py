@@ -24,11 +24,23 @@ from enum import StrEnum
 from typing import Annotated, Any, ClassVar, TypeVar
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.catalog import CatalogOpError, CatalogSnapshot, OperationList
+from boba.catalog import (
+    CatalogOpError,
+    CatalogSnapshot,
+    ObjectCard,
+    ObjectKind,
+    ObjectRef,
+    OperationList,
+    SourceDiff,
+    SourceOperationList,
+    SourceOpError,
+    SourceSnapshot,
+    TreeNode,
+)
 from boba.catalog_service import (
     AuthorVia,
     CatalogAccess,
@@ -44,6 +56,17 @@ from boba.catalog_service import (
     NodePosition,
     RebaseResult,
     ShareTargetKind,
+    Source,
+    SourceConnection,
+    SourceDraft,
+    SourceDraftNotFoundError,
+    SourceDraftState,
+    SourceNotFoundError,
+    SourceNotManualError,
+    SourceObjectNotFoundError,
+    SourceSpec,
+    SourceVersion,
+    SourceVersionNotFoundError,
     Version,
     View,
     ViewLayout,
@@ -115,6 +138,20 @@ class CatalogUrl(StrEnum):
     VIEW_SHARES = "/views/{view_id}/shares"
     VIEW_SHARE = "/views/{view_id}/shares/{kind}/{target}"
     EVENTS = "/events"
+    SOURCES = "/sources"
+    SOURCE = "/sources/{source_id}"
+    SOURCE_CONNECTIONS = "/sources/{source_id}/connections"
+    SOURCE_CONNECTION = "/sources/{source_id}/connections/{connection_id}"
+    SOURCE_VERSIONS = "/sources/{source_id}/versions"
+    SOURCE_TREE = "/sources/{source_id}/tree"
+    SOURCE_OBJECT = "/sources/{source_id}/object"
+    SOURCE_DIFF = "/sources/{source_id}/diff"
+    SOURCE_DRAFTS = "/sources/{source_id}/drafts"
+    SOURCE_DRAFT = "/source-drafts/{draft_id}"
+    SOURCE_DRAFT_OPS = "/source-drafts/{draft_id}/ops"
+    SOURCE_DRAFT_TREE = "/source-drafts/{draft_id}/tree"
+    SOURCE_DRAFT_OBJECT = "/source-drafts/{draft_id}/object"
+    SOURCE_DRAFT_PUBLISH = "/source-drafts/{draft_id}/publish"
 
 
 class DraftBody(BaseModel):
@@ -154,6 +191,35 @@ class Deleted(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     deleted: bool
+
+
+class ConnectionBody(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    connection_id: UUID
+
+
+class SourceOpsBody(BaseModel):
+    """Порция операций ручного источника с номером, на который она рассчитана."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    expected_seq: int = Field(ge=0)
+    operations: SourceOperationList
+
+
+class SnapshotBody(BaseModel):
+    """Снимок целиком: путь стенда и переноса из staging."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    snapshot: SourceSnapshot = Field(discriminator="kind")
+
+
+class LatestVersion:
+    """Отрицательный номер версии в запросах — последняя версия источника."""
+
+    QUERY = -1
 
 
 class CatalogEvents:
@@ -234,6 +300,27 @@ class CatalogApi:
             (CatalogUrl.VIEW_SHARES, self.share, "POST"),
             (CatalogUrl.VIEW_SHARE, self.unshare, "DELETE"),
             (CatalogUrl.EVENTS, self.events, "GET"),
+            (CatalogUrl.SOURCES, self.list_sources, "GET"),
+            (CatalogUrl.SOURCES, self.create_source, "POST"),
+            (CatalogUrl.SOURCE, self.get_source, "GET"),
+            (CatalogUrl.SOURCE, self.update_source, "PUT"),
+            (CatalogUrl.SOURCE, self.delete_source, "DELETE"),
+            (CatalogUrl.SOURCE_CONNECTIONS, self.source_connections, "GET"),
+            (CatalogUrl.SOURCE_CONNECTIONS, self.bind_connection, "POST"),
+            (CatalogUrl.SOURCE_CONNECTION, self.unbind_connection, "DELETE"),
+            (CatalogUrl.SOURCE_VERSIONS, self.source_versions, "GET"),
+            (CatalogUrl.SOURCE_VERSIONS, self.write_source_version, "POST"),
+            (CatalogUrl.SOURCE_TREE, self.source_tree, "GET"),
+            (CatalogUrl.SOURCE_OBJECT, self.source_object, "GET"),
+            (CatalogUrl.SOURCE_DIFF, self.source_diff, "GET"),
+            (CatalogUrl.SOURCE_DRAFTS, self.source_drafts, "GET"),
+            (CatalogUrl.SOURCE_DRAFTS, self.create_source_draft, "POST"),
+            (CatalogUrl.SOURCE_DRAFT, self.source_draft_state, "GET"),
+            (CatalogUrl.SOURCE_DRAFT, self.discard_source_draft, "DELETE"),
+            (CatalogUrl.SOURCE_DRAFT_OPS, self.append_source_ops, "POST"),
+            (CatalogUrl.SOURCE_DRAFT_TREE, self.source_draft_tree, "GET"),
+            (CatalogUrl.SOURCE_DRAFT_OBJECT, self.source_draft_object, "GET"),
+            (CatalogUrl.SOURCE_DRAFT_PUBLISH, self.publish_source_draft, "POST"),
         )
         for path, handler, method in routes:
             router.add_api_route(path.value, handler, methods=[method], tags=[self.TAG])
@@ -404,6 +491,209 @@ class CatalogApi:
         removed = await self._guarded(service.unshare_view(subject, view_id, share))
         return Deleted(deleted=removed)
 
+    # --- источники ---
+
+    async def list_sources(self, current_user: CurrentUser) -> Sequence[Source]:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(service.list_sources(subject))
+
+    async def create_source(
+        self, body: SourceSpec, current_user: CurrentUser
+    ) -> Source:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(service.create_source(subject, body))
+
+    async def get_source(self, source_id: UUID, current_user: CurrentUser) -> Source:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(service.source(subject, source_id))
+
+    async def update_source(
+        self, source_id: UUID, body: SourceSpec, current_user: CurrentUser
+    ) -> Source:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(service.update_source(subject, source_id, body))
+
+    async def delete_source(
+        self, source_id: UUID, current_user: CurrentUser
+    ) -> Deleted:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        deleted = await self._guarded(service.delete_source(subject, source_id))
+        return Deleted(deleted=deleted)
+
+    async def source_connections(
+        self, source_id: UUID, current_user: CurrentUser
+    ) -> Sequence[SourceConnection]:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(service.source_connections(subject, source_id))
+
+    async def bind_connection(
+        self, source_id: UUID, body: ConnectionBody, current_user: CurrentUser
+    ) -> SourceConnection:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(
+            service.bind_connection(subject, source_id, body.connection_id)
+        )
+
+    async def unbind_connection(
+        self, source_id: UUID, connection_id: UUID, current_user: CurrentUser
+    ) -> Deleted:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        removed = await self._guarded(
+            service.unbind_connection(subject, source_id, connection_id)
+        )
+        return Deleted(deleted=removed)
+
+    async def source_versions(
+        self, source_id: UUID, current_user: CurrentUser
+    ) -> Sequence[SourceVersion]:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(service.source_versions(subject, source_id))
+
+    async def write_source_version(
+        self, source_id: UUID, body: SnapshotBody, current_user: CurrentUser
+    ) -> SourceVersion:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(
+            service.write_source_version(subject, source_id, body.snapshot)
+        )
+
+    async def source_tree(
+        self,
+        source_id: UUID,
+        current_user: CurrentUser,
+        version: int = LatestVersion.QUERY,
+        path: Annotated[list[str], Query()] = [],  # noqa: B006
+    ) -> Sequence[TreeNode]:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(
+            service.source_tree(subject, source_id, version, path)
+        )
+
+    async def source_object(
+        self,
+        source_id: UUID,
+        kind: ObjectKind,
+        path: Annotated[list[str], Query()],
+        current_user: CurrentUser,
+        version: int = LatestVersion.QUERY,
+    ) -> ObjectCard:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        ref = ObjectRef(source_id=source_id, kind=kind, path=tuple(path))
+        return await self._guarded(service.source_object(subject, ref, version))
+
+    async def source_diff(
+        self, source_id: UUID, old: int, new: int, current_user: CurrentUser
+    ) -> SourceDiff:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(service.source_diff(subject, source_id, old, new))
+
+    async def source_drafts(
+        self, source_id: UUID, current_user: CurrentUser
+    ) -> Sequence[SourceDraft]:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(service.source_drafts(subject, source_id))
+
+    async def create_source_draft(
+        self, source_id: UUID, body: DraftBody, current_user: CurrentUser
+    ) -> SourceDraft:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(
+            service.create_source_draft(subject, source_id, body.name)
+        )
+
+    async def source_draft_state(
+        self, draft_id: UUID, current_user: CurrentUser
+    ) -> SourceDraftState:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(service.source_draft_state(subject, draft_id))
+
+    async def discard_source_draft(
+        self, draft_id: UUID, current_user: CurrentUser
+    ) -> SourceDraft:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(service.discard_source_draft(subject, draft_id))
+
+    async def source_draft_tree(
+        self,
+        draft_id: UUID,
+        current_user: CurrentUser,
+        path: Annotated[list[str], Query()] = [],  # noqa: B006
+    ) -> Sequence[TreeNode]:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(service.source_draft_tree(subject, draft_id, path))
+
+    async def source_draft_object(
+        self,
+        draft_id: UUID,
+        kind: ObjectKind,
+        path: Annotated[list[str], Query()],
+        current_user: CurrentUser,
+    ) -> ObjectCard:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(
+            service.source_draft_object(subject, draft_id, kind, path)
+        )
+
+    async def append_source_ops(
+        self, draft_id: UUID, body: SourceOpsBody, current_user: CurrentUser
+    ) -> SourceDraftState:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(
+            service.append_source_ops(
+                subject, draft_id, body.expected_seq, body.operations, AuthorVia.USER
+            )
+        )
+
+    async def publish_source_draft(
+        self, draft_id: UUID, current_user: CurrentUser
+    ) -> SourceVersion:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(
+            service.publish_source_draft(subject, draft_id, AuthorVia.USER)
+        )
+
     def _subject(self, current_user: User | PersistedUser | None) -> Subject:
         """Субъект по строке users под профилем по умолчанию для ролей входа."""
         if not isinstance(current_user, PersistedUser):
@@ -433,8 +723,17 @@ class CatalogApi:
             return await action
         except CatalogRefusalError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
-        except (DraftNotFoundError, ViewNotFoundError) as exc:
+        except (
+            DraftNotFoundError,
+            ViewNotFoundError,
+            SourceNotFoundError,
+            SourceVersionNotFoundError,
+            SourceObjectNotFoundError,
+            SourceDraftNotFoundError,
+        ) as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except SourceNotManualError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except DraftConflictError as exc:
             detail: dict[str, Any] = {
                 "message": str(exc),
@@ -446,7 +745,7 @@ class CatalogApi:
             raise HTTPException(status_code=409, detail=detail) from exc
         except DraftClosedError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except CatalogOpError as exc:
+        except (CatalogOpError, SourceOpError) as exc:
             detail = {"message": str(exc), "index": exc.index, "reason": exc.reason}
             raise HTTPException(status_code=422, detail=detail) from exc
         except CatalogStoreError as exc:
