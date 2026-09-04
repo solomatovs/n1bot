@@ -13,7 +13,7 @@ from pydantic import (
     model_validator,
 )
 
-from boba.connections.base import ConnectionProfileBase
+from boba.connections.base import ClientIdentity, ConnectionProfileBase
 from boba.db.clickhouse.profile.auth import (
     ClickHouseAuth,
     ClickHouseKerberos,
@@ -69,6 +69,26 @@ class ClickHouseSettingsConfig(BaseModel):
         return settings
 
 
+class ClientName:
+    """Подпись сессии для clickhouse: client_name режется до 63 байт.
+
+    Длиннее сервер обрезает сам, и в журнале остаётся кусок без имени
+    инструмента, поэтому режем осознанно — по границе байтов utf-8.
+    """
+
+    MAX_BYTES: ClassVar[int] = 63
+    SEPARATOR: ClassVar[str] = ":"
+
+    @classmethod
+    def of(cls, client: ClientIdentity) -> str:
+        joined = cls.SEPARATOR.join((client.application, client.login, client.tool))
+        raw = joined.encode("utf-8")
+        if len(raw) <= cls.MAX_BYTES:
+            return joined
+
+        return raw[: cls.MAX_BYTES].decode("utf-8", errors="ignore")
+
+
 class ClickHouseConfig(ConnectionProfileBase):
     """Параметры clickhouse_connect.AsyncClient (HTTP-интерфейс) + настройки сессии."""
 
@@ -79,7 +99,7 @@ class ClickHouseConfig(ConnectionProfileBase):
 
     # не аргументы конструктора клиента: настройки сессии и креды kerberos
     NOT_CLIENT_FIELDS: ClassVar[frozenset[str]] = frozenset(
-        {"kind", "settings", "auth"}
+        {"kind", "settings", "auth", "description"}
     )
 
     kind: Literal["clickhouse"] = Field(
@@ -212,9 +232,9 @@ class ClickHouseConfig(ConnectionProfileBase):
     def trace(self) -> str:
         return self.auth.trace()
 
-    def labeled(self, label: str) -> ClickHouseConfig:
-        return self.model_copy(update={"client_name": label})
-
+    def labeled(self, client: ClientIdentity) -> ClickHouseConfig:
+        """Подпись сессии в client_name: его показывает system.query_log."""
+        return self.model_copy(update={"client_name": ClientName.of(client)})
 
     def _spn_host(self) -> str:
         """Хост в SPN: явное имя сервера, иначе адрес соединения."""

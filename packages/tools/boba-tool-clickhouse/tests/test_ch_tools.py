@@ -1,4 +1,4 @@
-"""ClickHouse-инструменты новой модели: состав, whitelist, ошибки, SPNEGO."""
+"""ClickHouse-инструменты: состав, параметр-соединение, ошибки, SPNEGO."""
 
 from __future__ import annotations
 
@@ -10,31 +10,17 @@ from pydantic import ValidationError
 from boba.db.clickhouse.payload import SpnegoHeaders
 from boba.db.clickhouse.profile import ClickHouseConfig
 from boba.tool.ch.tools import TOOLS as CH_TOOLS
-from boba.tool.ch.tools import ChToolConfig, ch_connection_list, ch_query
-from boba.toolkit.entry import ExpectedErrors, ToolMain
-from boba.toolkit.result import TableResult
-from boba.toolkit.sql import UnknownConnectionError
+from boba.tool.ch.tools import ChToolConfig
+from boba.toolkit.entry import ToolArgv
+from boba.toolkit.facade import PayloadTool
 
 
 def ch_config() -> ChToolConfig:
-    return ChToolConfig.model_validate(
-        {
-            "profiles": {
-                "main": {
-                    "host": "h",
-                    "port": 8123,
-                    "interface": "http",
-                    "auth": {"method": "no_password", "user": "u"},
-                }
-            }
-        }
-    )
+    return ChToolConfig.model_validate({"max_rows": 10})
 
 
-@pytest.mark.anyio
 class TestChTools:
     _NAMES: ClassVar[list[str]] = [
-        "ch_connection_list",
         "ch_list_tables",
         "ch_describe_table",
         "ch_query",
@@ -43,39 +29,29 @@ class TestChTools:
     def test_module_declares_the_toolset(self) -> None:
         names = [t.name for t in CH_TOOLS]
         if names != self._NAMES:
-            raise AssertionError("names == self._NAMES")
+            raise AssertionError(f"names == self._NAMES, got {names}")
 
-    async def test_connection_list_returns_whitelist(self) -> None:
-        body = ToolMain.toolset(ch_connection_list)[0].coroutine
-        if body is None:
-            raise AssertionError("body is not None")
-        _content, artifact = await body(cfg=ch_config())
+    def test_every_tool_takes_a_connection_parameter(self) -> None:
+        """Профиль подаёт хост: у каждого инструмента параметр с маркером."""
+        for payload in CH_TOOLS:
+            if not isinstance(payload, PayloadTool):
+                raise AssertionError(f"{payload} is not a PayloadTool")
 
-        if not (isinstance(artifact, TableResult)):
-            raise AssertionError("isinstance(artifact, TableResult)")
-        if list(artifact.rows) != [{"connection_name": "main"}]:
-            raise AssertionError('list(artifact.rows) == [{"connection_name": "main"}]')
-        if artifact.ok is not True:
-            raise AssertionError("artifact.ok is True")
+            fields = ToolArgv.connection_fields(payload.args_schema)
+            if list(fields) != ["connection"]:
+                raise AssertionError(f"{payload.name}: connection parameter is missing")
 
-    async def test_unknown_target_raises_domain_error(self) -> None:
-        """Профиль не в whitelist — доменное исключение с kind в EXPECTED."""
-        from boba.tool.ch.tools import EXPECTED
+            if fields["connection"] is not ClickHouseConfig:
+                raise AssertionError(f"{payload.name}: profile type must be declared")
 
-        body = ToolMain.toolset(ch_query)[0].coroutine
-        if body is None:
-            raise AssertionError("body is not None")
-        with pytest.raises(UnknownConnectionError) as caught:
-            await body(sql="select 1", connection_name="нет-такого", cfg=ch_config())
+    def test_section_config_holds_limits_only(self) -> None:
+        """Whitelist ушёл на хост: в секции остались только границы выдачи."""
+        cfg = ch_config()
+        if cfg.max_rows != 10:
+            raise AssertionError("section keys must reach the model")
 
-        kind = ExpectedErrors.kind_of(caught.value, dict(EXPECTED))
-        if kind != "unknown_target":
-            raise AssertionError('kind == "unknown_target"')
-
-    def test_empty_profiles_are_allowed(self) -> None:
-        """Whitelist подставляет приложение на вызов: пустой — штатное состояние."""
-        if ChToolConfig.model_validate({"profiles": {}}).targets():
-            raise AssertionError("empty whitelist must list no targets")
+        if hasattr(cfg, "profiles"):
+            raise AssertionError("profiles must not live in the section any more")
 
 
 class TestClickHouseConfig:

@@ -29,7 +29,7 @@ from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
 from boba.toolkit.result import ErrorResult
 from boba.toolrun.cancellation import CancellableTools
 from boba.transport.http import CancellableHttpTransport, HttpRequest
-from boba.transport.http.profile import HttpProfile
+from boba.transport.http.profile import HttpConnection
 
 
 def _bin_dirs() -> list[str]:
@@ -296,7 +296,7 @@ class TestHttpAbort:
         """Отмена приходит из чужого потока и обязана оборвать задачу запроса."""
 
         async def read_all() -> int:
-            profile = HttpProfile(base_url=drip_url)
+            profile = HttpConnection(base_url=drip_url)
             async with (
                 CancellableHttpTransport(profile) as transport,
                 transport.fetch(HttpRequest(url=f"{drip_url}/slow")) as resp,

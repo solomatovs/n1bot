@@ -43,8 +43,9 @@ _run_semgrep() {
   echo "== semgrep =="
   # правила скачиваются в sec/semgrep (как остальные артефакты) и в git
   # не попадают: обновляются через sec.sh rules
+  # --jobs 1: io_uring semgrep не поднимается при лимите memlock 8 МБ
   SEMGREP_SEND_METRICS=off "$_uv" tool run --system-certs semgrep \
-    scan --config="$_sec_dir/sec/semgrep" --metrics=off \
+    scan --config="$_sec_dir/sec/semgrep" --metrics=off --jobs 1 \
     --exclude=.venv --exclude=build --exclude=release \
     --error "$_sec_dir/packages" || _rc=1
 }
@@ -56,7 +57,7 @@ _run_full() {
   SEMGREP_SEND_METRICS=off "$_uv" tool run --system-certs semgrep \
     scan --config="$_sec_dir/sec/semgrep"                   \
     --config="$_sec_dir/sec/semgrep-boba"                  \
-    --metrics=off --scan-unknown-extensions --json -q             \
+    --metrics=off --scan-unknown-extensions --jobs 1 --json -q    \
     "$_sec_dir" > "$_full_json" || _rc=1
 
   python3 - "$_full_json" <<'PY'

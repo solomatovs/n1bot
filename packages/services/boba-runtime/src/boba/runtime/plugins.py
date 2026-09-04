@@ -28,10 +28,14 @@ from pydantic import BaseModel, ConfigDict
 from boba.access import GrantCheck, ToolAccess
 from boba.chat.profiles import ProfilesSection, RolesSection
 from boba.config import bind
+from boba.connection_broker.catalog import (
+    ConnectionCatalogConfig,
+    build_connection_tools,
+)
+from boba.connection_broker.service import UserConnectionsService
 from boba.connection_broker.store import ConnectionsConfig
 from boba.connection_broker.tickets import ServiceTickets
 from boba.connection_broker.user_connections import UserConnections
-from boba.connections.marks import ConnectedToolManifest, UserConnectionsSpec
 from boba.identity.context import CallContext
 from boba.runtime.launchers import CallSurface, SectionLaunchers, ToolLaunchers
 from boba.runtime.refs import RuntimeRefs
@@ -51,7 +55,7 @@ from boba.toolrun.pipeline import PipelineToolConfig, build_pipeline_tools
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.run_log import ToolRunLogger
 from boba.toolrun.streams import ToolStreams
-from boba.toolrun.wrapping import ToolAsyncBody
+from boba.toolrun.wrapping import ToolAsyncBody, ToolSchema
 from boba.workflow_engine.tools import WorkflowToolConfig, build_workflow_tools
 
 __all__ = [
@@ -83,9 +87,6 @@ class ToolPlugin:
     """Функции уровня модуля новой модели: обёртка запуска ставится на них."""
     modules: tuple[str, ...] = ()
     """Модули тел module_tools: их прогревает зигота секции."""
-    connections: UserConnectionsSpec | None = None
-    """Whitelist соединений секции собирается из таблицы на вызов; None — секция
-    соединений пользователя не держит."""
     chat_only: bool = False
     """True — инструментам нужна поверхность чата (панель, карточки, вложения):
     вне хода чата они отказывают, в каталог workflow не попадают."""
@@ -172,6 +173,7 @@ class ToolLoader:
         self._plugins = plugins
         self._store_ref = refs.connection_store
         self._credentials_ref = refs.credentials
+        self._types_ref = refs.connection_types
         self._grant_check = grant_check
 
     def load(self) -> ToolRegistry:
@@ -191,9 +193,6 @@ class ToolLoader:
             meta = bind(self._raw, f"tool.{name}", PluginMeta)
             if not meta.enable:
                 continue
-
-            if plugin.connections is not None:
-                self._require_connections(name)
 
             built = self._plugin_tools(name, plugin, meta, launchers)
             tools.extend(built)
@@ -271,16 +270,13 @@ class ToolLoader:
 
         ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
 
-        resolve = self._config_resolver()
-        if plugin.connections is not None:
+        if self._takes_connections(functions):
+            self._require_connections(plugin.section)
             UserConnections.bind_all(
-                functions,
-                self._store_ref,
-                self._credentials_ref,
-                plugin.connections,
-                resolve,
+                functions, self._store_ref, self._credentials_ref, self._types_ref
             )
 
+        resolve = self._config_resolver()
         ServiceTickets.bind_all(functions, self._credentials_ref, resolve)
         InjectedConfig.bind_all(functions, resolve)
 
@@ -306,6 +302,19 @@ class ToolLoader:
             built.append(tool)
 
         return built
+
+    @staticmethod
+    def _takes_connections(tools: Sequence[BaseTool]) -> bool:
+        """Есть ли у инструментов параметры-соединения: их объявляет подпись."""
+        for tool in tools:
+            schema = ToolSchema.of(tool)
+            if schema is None:
+                continue
+
+            if ToolArgv.connection_fields(schema):
+                return True
+
+        return False
 
     def _config_resolver(self) -> Callable[[str, Any], object]:
         """Значения injected-параметров: модель собирается из своей секции."""
@@ -338,7 +347,7 @@ class ToolLoader:
         return ToolAccess(known, roles, profiles, chat_only, self._grant_check)
 
     def _require_connections(self, name: str) -> None:
-        """Секция с соединениями пользователя работает только при [connections]."""
+        """Инструменты с соединениями пользователя работают только при [connections]."""
         cfg = bind(self._raw, "connections", ConnectionsConfig)
         if cfg.enable:
             return
@@ -394,9 +403,6 @@ class EntryPointPlugins:
 
     @classmethod
     def _plugin_of(cls, manifest: ToolPluginManifest, package: str) -> ToolPlugin:
-        connections = None
-        if isinstance(manifest, ConnectedToolManifest):
-            connections = manifest.connections
 
         return ToolPlugin(
             section=manifest.section,
@@ -404,7 +410,6 @@ class EntryPointPlugins:
             config_model=manifest.config_model,
             module_tools=ToolBridge.toolset(manifest.tools),
             modules=ToolBridge.modules_of(manifest.tools),
-            connections=connections,
             discovered=True,
             package=package,
         )
@@ -451,7 +456,29 @@ class CoreTools:
             sandboxed=False,
         )
 
+        table["connections"] = ToolPlugin(
+            section="connections",
+            config_model=ConnectionCatalogConfig,
+            build=cls._connections_builder(refs),
+            sandboxed=False,
+        )
+
         return table
+
+    @staticmethod
+    def _connections_builder(
+        refs: RuntimeRefs,
+    ) -> Callable[[ConnectionCatalogConfig, LauncherFactory], list[BaseTool]]:
+        """Каталог соединений субъекта: строки берутся из таблицы на вызов."""
+
+        def build(
+            cfg: ConnectionCatalogConfig, launchers: LauncherFactory
+        ) -> list[BaseTool]:
+            return build_connection_tools(
+                cfg, UserConnectionsService(refs.connection_store)
+            )
+
+        return build
 
     @staticmethod
     def _pipeline_builder(

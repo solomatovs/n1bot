@@ -11,21 +11,42 @@ from __future__ import annotations
 
 from typing import Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.kerberos import KerberosAuthBase, TicketAuth
 
-__all__ = ["ConnectionProfileBase", "ConnectionTypeError"]
+__all__ = ["ClientIdentity", "ConnectionProfileBase", "ConnectionTypeError"]
 
 
 class ConnectionTypeError(Exception):
     """Наследник профиля не покрыл обязательную часть контракта."""
 
 
+class ClientIdentity(BaseModel):
+    """Кто пришёл в систему этим вызовом: приложение, логин, инструмент.
+
+    Хост знает только это. Как подписать сессию и куда положить подпись —
+    дело профиля: у каждого сервера своё поле и свои пределы длины.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    application: str = Field(min_length=1)
+    login: str = Field(min_length=1)
+    tool: str = Field(min_length=1)
+
+
 class ConnectionProfileBase(BaseModel):
     """Профиль соединения; наследник сужает kind до Literal своего значения."""
 
     kind: str = Field(description="Дискриминатор типа: значение задаёт наследник.")
+    description: str = Field(
+        default="",
+        description=(
+            "Для чего это соединение: текст читает LLM в connection_list, "
+            "чтобы выбрать имя под задачу пользователя."
+        ),
+    )
 
     def kerberos_section(self) -> KerberosAuthBase | None:
         """Kerberos-часть профиля; None — тип аутентифицируется иначе."""
@@ -49,6 +70,10 @@ class ConnectionProfileBase(BaseModel):
         """Строка журнала: способ авторизации и под кем идём."""
         raise ConnectionTypeError(f"{self.kind}: profile does not implement trace")
 
-    def labeled(self, label: str) -> Self:
-        """Профиль с меткой клиента в поле, которым сервер подписывает сессию."""
+    def labeled(self, client: ClientIdentity) -> Self:
+        """Профиль, подписанный клиентом вызова.
+
+        База не подписывает ничего: сервер, который такого поля не имеет,
+        оставляет профиль как есть.
+        """
         return self

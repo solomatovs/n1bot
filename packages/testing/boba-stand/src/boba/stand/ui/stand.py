@@ -458,7 +458,7 @@ class StandConfig:
             return
 
         # SSO-тесты ходят доменным именем площадки, оно резолвится в адрес хоста
-        doc["studio"]["host"] = "0.0.0.0"  # noqa: S104 — стенд, а не прод
+        doc["studio"]["host"] = "0.0.0.0"  # noqa: S104 — стенд, а не прод  # nosec B104
         doc["studio"]["page"] = "built"
 
     def _use_sandbox_artifacts(self, doc: MutableMapping[str, Any]) -> None:

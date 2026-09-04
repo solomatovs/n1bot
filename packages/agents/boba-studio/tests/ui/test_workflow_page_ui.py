@@ -307,6 +307,7 @@ def test_second_tab_sees_a_new_run_through_the_bus(
         expect(items.first).to_be_visible()
         before = items.count()
         requests: list[str] = []
+        # nosemgrep: ssrf-injection-requests — список адресов, не клиент
         other.on("request", lambda request: requests.append(request.url))
 
         _open(page, stand, "/workflow")

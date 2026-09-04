@@ -32,9 +32,8 @@ from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connection_broker.user_connections import UserConnections
 from boba.connections.manifest import ConnectionTypes
-from boba.connections.marks import ConnectionRefusal, UserConnectionsSpec
+from boba.connections.marks import ConnectionRefusal
 from boba.connections.profile import GrantTarget
-from boba.connections.whitelist import ConnectionKeying
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.profile import PasswordAuth, PostgresConfig
 from boba.identity.session import UserMetadataField
@@ -48,11 +47,11 @@ from boba.stand.refs import StandRefs
 from boba.stand.site import Stand
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebGrepConfig
-from boba.toolkit.facade import Injected
+from boba.toolkit.facade import Injected, UserConnection
 from boba.toolkit.result import ErrorResult, ToolArtifact
 from boba.toolrun.errors import ToolErrorGuard
 from boba.toolrun.injected import InjectedConfig
-from boba.transport.http.profile import HttpProfile
+from boba.transport.http.profile import HttpConnection
 
 pytestmark = pytest.mark.anyio
 
@@ -269,33 +268,31 @@ class Guarded:
     def pg(raw_config: Any, store: ConnectionStore, tickets: SsoTickets | None):
         schema = create_model(
             "GuardedPgArgs",
-            connection_name=(str, ...),
+            connection=(Annotated[PostgresConfig, UserConnection], ...),
             cfg=(Annotated[PgToolConfig, Injected], ...),
         )
 
         def resolve(name: str, annotation: Any) -> object:
             return bind(raw_config, path="tool.pg", model=PgToolConfig)
 
-        spec = UserConnectionsSpec("postgres", ConnectionKeying.NAME)
-        return Guarded._build(schema, store, tickets, spec, resolve)
+        return Guarded._build(schema, store, tickets, resolve)
 
     @staticmethod
     def web(raw_config: Any, store: ConnectionStore):
         schema = create_model(
             "GuardedWebArgs",
             url=(str, ...),
-            connection_name=(str, ...),
+            connection=(str, ...),
             cfg=(Annotated[WebGrepConfig, Injected], ...),
         )
 
         def resolve(name: str, annotation: Any) -> object:
             return bind(raw_config, path="tool.web", model=WebGrepConfig)
 
-        spec = UserConnectionsSpec("web", ConnectionKeying.NAME)
-        return Guarded._build(schema, store, None, spec, resolve)
+        return Guarded._build(schema, store, None, resolve)
 
     @staticmethod
-    def _build(schema, store, tickets, spec, resolve) -> StructuredTool:
+    def _build(schema, store, tickets, resolve) -> StructuredTool:
         async def body(**kwargs: object) -> tuple[str, dict[str, object]]:
             return "ok", kwargs
 
@@ -313,8 +310,7 @@ class Guarded:
             lambda: KerberosCredentialSource(
                 tickets, BusRefreshSignal(lambda: MemoryMessageBus("test"))
             ),
-            spec,
-            resolve,
+            ConnectionTypes.discover,
         )
         InjectedConfig.bind_all([tool], resolve)
         ToolErrorGuard.guard_all([tool])
@@ -366,7 +362,7 @@ class TestDelegationUnavailable:
         Session.enter(user, sso)
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, store, None), connection_name="main"
+            Guarded.pg(raw_config, store, None), connection="main"
         )
 
         _expect(
@@ -385,7 +381,7 @@ class TestDelegationUnavailable:
 
         result = await Guarded.failure(
             Guarded.pg(raw_config, store, Tickets.healthy(tmp_path)[0]),
-            connection_name="main",
+            connection="main",
         )
 
         _expect(
@@ -407,7 +403,7 @@ class TestDelegationUnavailable:
 
         result = await Guarded.failure(
             Guarded.pg(raw_config, store, Tickets.healthy(tmp_path)[0]),
-            connection_name="main",
+            connection="main",
         )
 
         _expect(
@@ -433,7 +429,7 @@ class TestDelegationUnavailable:
         Session.enter(user, metadata)
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, store, healthy[0]), connection_name="main"
+            Guarded.pg(raw_config, store, healthy[0]), connection="main"
         )
 
         _expect(
@@ -454,7 +450,7 @@ class TestDelegationUnavailable:
 
         result = await Guarded.failure(
             Guarded.pg(raw_config, store, tickets),
-            connection_name="main",
+            connection="main",
         )
 
         _expect(result, "CredentialsExpiredError", "expired", "sign in again")
@@ -470,7 +466,7 @@ class TestDelegationUnavailable:
 
         result = await Guarded.failure(
             Guarded.pg(raw_config, store, tickets),
-            connection_name="main",
+            connection="main",
         )
 
         _expect(result, "KerberosError", "KDC")
@@ -488,7 +484,7 @@ class TestDelegationUnavailable:
 
         result = await Guarded.failure(
             Guarded.pg(raw_config, store, tickets),
-            connection_name="main",
+            connection="main",
         )
 
         _expect(result, "KerberosError", UNKNOWN_HOST)
@@ -510,7 +506,7 @@ class TestDelegationUnavailable:
 
         result = await Guarded.failure(
             Guarded.pg(raw_config, store, tickets),
-            connection_name="main",
+            connection="main",
         )
 
         _expect(result, "CredentialsExpiredError", "less than", "sign in again")
@@ -534,7 +530,7 @@ class TestRefusalText:
 
         result = await Guarded.failure(
             Guarded.pg(raw_config, store, Tickets.healthy(tmp_path)[0]),
-            connection_name="main",
+            connection="main",
         )
 
         if result.error_kind != ConnectionRefusal.NO_DELEGATION:
@@ -551,7 +547,7 @@ class TestRefusalText:
 
         result = await Guarded.failure(
             Guarded.pg(raw_config, store, Tickets.healthy(tmp_path)[0]),
-            connection_name="main",
+            connection="main",
         )
 
         expected = (
@@ -572,7 +568,7 @@ class TestNoConnections:
         Session.enter(user, Session.local())
 
         artifact = await Guarded.call(
-            Guarded.pg(raw_config, store, None), connection_name="main"
+            Guarded.pg(raw_config, store, None), connection="main"
         )
 
         cfg = artifact["cfg"]
@@ -594,7 +590,7 @@ class TestNoConnections:
         broken = ConnectionStore(cfg, ConnectionTypes.discover(), closed)
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, broken, None), connection_name="main"
+            Guarded.pg(raw_config, broken, None), connection="main"
         )
 
         _expect(result, "ConnectionStoreError", "for subject failed")
@@ -617,7 +613,7 @@ class TestNoConnections:
         Session.enter(user, Session.local())
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, store, None), connection_name="broken"
+            Guarded.pg(raw_config, store, None), connection="broken"
         )
 
         _expect(result, "ConnectionStoreError", "not a valid connection profile")
@@ -641,7 +637,7 @@ class TestNoConnections:
         foreign = ConnectionStore(cfg, ConnectionTypes.discover(), pool)
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, foreign, None), connection_name="main"
+            Guarded.pg(raw_config, foreign, None), connection="main"
         )
 
         _expect(result, "SecretCryptoError", "not decrypted")
@@ -686,7 +682,7 @@ class TestNoConnections:
         Session.enter(user, Session.local())
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, store, None), connection_name="main"
+            Guarded.pg(raw_config, store, None), connection="main"
         )
 
         _expect(result, "ConnectionStoreError", "not a valid connection profile")
@@ -705,7 +701,7 @@ class TestNoConnections:
         Session.enter(user, Session.local())
 
         result = await Guarded.failure(
-            Guarded.pg(raw_config, store, None), connection_name="main"
+            Guarded.pg(raw_config, store, None), connection="main"
         )
 
         _expect(result, "KeytabError", "absent.keytab")
@@ -714,7 +710,7 @@ class TestNoConnections:
         self, raw_config, store, layer
     ) -> None:
         user = await Session.user(layer, "f-web", Session.local())
-        row = HttpProfile(ssl_verify=False)
+        row = HttpConnection(ssl_verify=False)
         await store.grant(
             await store.add("blank", row), GrantTarget.user(UUID(user.id))
         )
@@ -723,7 +719,7 @@ class TestNoConnections:
         result = await Guarded.failure(
             Guarded.web(raw_config, store),
             url="https://example.com/",
-            connection_name="blank",
+            connection="blank",
         )
 
         _expect(
@@ -736,14 +732,14 @@ class TestNoConnections:
         self, raw_config, store, layer
     ) -> None:
         user = await Session.user(layer, "f-web-host", Session.local())
-        row = HttpProfile(base_url="https://*.example.com", ssl_verify=False)
+        row = HttpConnection(base_url="https://*.example.com", ssl_verify=False)
         await store.grant(await store.add("lab", row), GrantTarget.user(UUID(user.id)))
         Session.enter(user, Session.local())
 
         result = await Guarded.failure(
             Guarded.web(raw_config, store),
             url="https://example.com/",
-            connection_name="lab",
+            connection="lab",
         )
 
         _expect(

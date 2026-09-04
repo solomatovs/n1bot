@@ -87,6 +87,8 @@ def app_server() -> Iterator[None]:
 
     log = Path(tempfile.gettempdir()) / "boba-canvas-e2e.log"
     process = subprocess.Popen(
+        # тест запускает собственный лончер конфигом стенда
+        # nosemgrep: dangerous-subprocess-use-tainted-env-args
         [str(LAUNCHER), str(ENTRY), "--config", os.environ["BOBA_CONFIG_PATH"]],
         stdout=log.open("wb"),
         stderr=subprocess.STDOUT,

@@ -18,7 +18,7 @@ from boba.connection_broker.store import ConnectionStore
 from boba.sandbox import ZygoteRegistry
 from boba.stand.refs import StandRefs
 from boba.tool.pg.tools import TOOLS as PG_TOOLS
-from boba.tool.pg.tools import pg_connection_list
+from boba.tool.pg.tools import pg_query
 from boba.toolrun.call_id import ToolCallIdField
 
 
@@ -70,7 +70,7 @@ def test_repeated_load_serves_wrapped_copies(reload_config: DictConfig) -> None:
         raise AssertionError("[t.name for t in first.tools] == [t.name for t in secon…")
 
     by_name = {t.name: t for t in second.tools}
-    loaded = by_name["pg_connection_list"]
+    loaded = by_name["pg_query"]
 
     if ToolCallIdField.NAME not in _schema_fields(loaded):
         raise AssertionError("ToolCallIdField.NAME in _schema_fields(loaded)")
@@ -90,7 +90,7 @@ def test_module_singletons_stay_pristine(reload_config: DictConfig) -> None:
         if "cfg" not in fields:
             raise AssertionError('"cfg" in fields')
 
-    origin = ToolMainBody.of(pg_connection_list)
+    origin = ToolMainBody.of(pg_query)
     if origin.__module__ != "boba.tool.pg.tools":
         raise AssertionError('origin.__module__ == "boba.tool.pg.tools"')
 

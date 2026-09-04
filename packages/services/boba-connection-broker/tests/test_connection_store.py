@@ -34,7 +34,7 @@ from boba.db.postgres.profile import (
 )
 from boba.identity.context import Subject
 from boba.stand.fakes import FakeSecret
-from boba.transport.http.profile import BearerAuth, HttpProfile
+from boba.transport.http.profile import BearerAuth, HttpConnection
 
 pytestmark = pytest.mark.anyio
 
@@ -69,8 +69,8 @@ def _ch() -> ClickHouseConfig:
     )
 
 
-def _web(token: str) -> HttpProfile:
-    return HttpProfile(
+def _web(token: str) -> HttpConnection:
+    return HttpConnection(
         base_url="https://confl",
         auth=BearerAuth(method="bearer", token=SecretStr(token)),
     )
