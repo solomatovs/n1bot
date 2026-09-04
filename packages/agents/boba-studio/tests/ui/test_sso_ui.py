@@ -31,7 +31,7 @@ from boba.stand.ui.stand import (
     free_port,
 )
 from boba.transport.http import HttpRequest, HttpTransport
-from boba.transport.http.profile import HttpProfile, NegotiateAuth
+from boba.transport.http.profile import HttpConnection, NegotiateAuth
 
 pytestmark = pytest.mark.ui
 
@@ -225,7 +225,7 @@ def _delegation_lines(stand: StandProcess) -> list[str]:
     return found
 
 
-def _visit(profile: HttpProfile, request: HttpRequest) -> None:
+def _visit(profile: HttpConnection, request: HttpRequest) -> None:
     """Ходит по адресу и дочитывает тело; редирект входа — штатный ответ."""
 
     async def run() -> None:
@@ -241,7 +241,7 @@ def _visit(profile: HttpProfile, request: HttpRequest) -> None:
 
 def test_studio_accepts_negotiate_on_its_own_url(sso_stand: StandProcess) -> None:
     """Тот же обмен на URL studio: вход принят, делегирование сохранено."""
-    profile = HttpProfile(
+    profile = HttpConnection(
         base_url=_domain_url(sso_stand),
         auth=NegotiateAuth(
             method="negotiate",

@@ -38,7 +38,7 @@ from boba.stand.ui.stand import (
     free_port,
 )
 from boba.transport.http import HttpRequest, HttpTransport
-from boba.transport.http.profile import HttpProfile, NegotiateAuth
+from boba.transport.http.profile import HttpConnection, NegotiateAuth
 
 pytestmark = pytest.mark.ui
 
@@ -239,7 +239,7 @@ def _delegation_lines(stand: StandProcess) -> list[str]:
     return found
 
 
-def _visit(profile: HttpProfile, request: HttpRequest) -> None:
+def _visit(profile: HttpConnection, request: HttpRequest) -> None:
     """Ходит по адресу и дочитывает тело; редирект входа — штатный ответ."""
 
     async def run() -> None:
@@ -261,7 +261,7 @@ def test_server_accepts_negotiate_and_keeps_the_delegated_ticket(
     Проверка идёт до браузера: если она зелёная, а браузерная — нет, дело в
     браузере, а не в приложении.
     """
-    profile = HttpProfile(
+    profile = HttpConnection(
         base_url=_domain_url(sso_stand),
         auth=NegotiateAuth(
             method="negotiate",

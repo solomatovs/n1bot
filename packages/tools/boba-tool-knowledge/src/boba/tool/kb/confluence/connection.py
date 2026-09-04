@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from boba.transport.http.profile import HttpProfile
+from boba.transport.http.profile import HttpConnection
 
 __all__ = ["ConfluenceConnection"]
 
@@ -21,7 +21,7 @@ class ConfluenceConnection(BaseModel):
             "`storage` — raw storage XML."
         ),
     )
-    profile: HttpProfile = Field(
+    profile: HttpConnection = Field(
         description=(
             "Транспортный web-профиль (base_url/timeout/ssl/auth) ссылкой "
             '`profile = "${web.<name>}"`. base_url Confluence задаётся в профиле; '

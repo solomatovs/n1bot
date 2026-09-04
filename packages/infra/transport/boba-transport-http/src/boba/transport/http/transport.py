@@ -1,4 +1,4 @@
-"""HttpTransport: HttpProfile + HttpRequest -> HttpResponse через httpx.AsyncClient.
+"""HttpTransport: HttpConnection + HttpRequest -> HttpResponse через httpx.AsyncClient.
 
 Транспорт только асинхронный: конвейер индексации ведёт несколько источников
 сразу, и синхронного варианта, который занимал бы поток на время сетевого
@@ -18,7 +18,7 @@ import httpx
 
 from boba.cancellation import current_cancellation
 from boba.transport.http import HttpxAuth
-from boba.transport.http.profile import HttpProfile
+from boba.transport.http.profile import HttpConnection
 
 __all__ = [
     "ByteStream",
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 class RetryPolicy:
     """Политика повторов: 5xx и transport-ошибки повторяются, 4xx — нет."""
 
-    def __init__(self, profile: HttpProfile) -> None:
+    def __init__(self, profile: HttpConnection) -> None:
         self._attempts = profile.retry_attempts
         self._backoff = profile.retry_backoff_sec
 
@@ -84,7 +84,7 @@ class HttpTransport:
     ретраится. Тело отдаётся потоком и живёт, пока открыт блок fetch.
     """
 
-    def __init__(self, profile: HttpProfile) -> None:
+    def __init__(self, profile: HttpConnection) -> None:
         self._profile = profile
         self._retry = RetryPolicy(profile)
         # headers/params на клиент не кладём: они целиком per-request
@@ -224,7 +224,7 @@ class CancellableHttpTransport(HttpTransport):
     тела обрываются на ближайшем await, а не дочитываются до конца.
     """
 
-    def __init__(self, profile: HttpProfile) -> None:
+    def __init__(self, profile: HttpConnection) -> None:
         super().__init__(profile)
         self._cancellation = current_cancellation()
         self._cancellation.raise_if_cancelled()

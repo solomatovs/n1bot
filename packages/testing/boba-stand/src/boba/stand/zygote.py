@@ -145,7 +145,7 @@ class SandboxStand:
         return {
             "PATH": "/usr/local/bin:/usr/bin:/bin",
             "PYTHONPATH": cls.python_path(),
-            "HOME": "/tmp",  # noqa: S108
+            "HOME": "/tmp",  # noqa: S108  # nosec B108
             "LANG": "C.UTF-8",
         }
 
@@ -191,7 +191,7 @@ class SandboxStand:
                 "process_open_files": 1024,
                 "process_oom_score_adj": 0,
             },
-            "run": {"cwd": "/tmp", "shell": "/bin/bash"},  # noqa: S108
+            "run": {"cwd": "/tmp", "shell": "/bin/bash"},  # noqa: S108  # nosec B108
         }
 
         return SandboxProfile.model_validate(ProfileFields.merged(raw, overrides))

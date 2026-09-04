@@ -1,4 +1,4 @@
-"""Общее у SQL-инструментов: whitelist профилей, приведение строк, результат."""
+"""Общее у SQL-инструментов: лимиты секции, приведение строк, результат."""
 
 from __future__ import annotations
 
@@ -7,67 +7,37 @@ from decimal import Decimal
 from typing import Any, ClassVar
 from uuid import UUID
 
-import pytest
-from pydantic import BaseModel, ConfigDict, SecretStr
-
 from boba.toolkit.launcher import RowStream
 from boba.toolkit.result import AffectedSqlResult, ToolArtifact, render_for_llm
 from boba.toolkit.sql import (
     RowPage,
     RowWindow,
-    SqlProfiles,
-    UnknownConnectionError,
+    SqlLimits,
 )
 
 
-class FakeConn(BaseModel):
-    """Профиль соединения выдуманного коннектора: минимум, но с секретом."""
+class FakeLimits(SqlLimits):
+    """Лимиты выдуманного коннектора: секцию задаёт плагин."""
 
-    model_config = ConfigDict(extra="ignore")
-
-    host: str
-    password: SecretStr | None = None
-
-
-class FakeProfiles(SqlProfiles[FakeConn]):
     SECTION: ClassVar[str] = "tool.fake"
 
 
-def fake_profiles() -> FakeProfiles:
-    return FakeProfiles.model_validate(
-        {"profiles": {"main": {"host": "h", "password": "s3cret"}}}
-    )
+class TestSqlLimits:
+    def test_defaults_are_sane(self) -> None:
+        limits = FakeLimits.model_validate({})
+        if limits.max_rows <= 0 or limits.max_bytes <= 0:
+            raise AssertionError("limits must be positive")
 
+    def test_section_keys_are_read(self) -> None:
+        limits = FakeLimits.model_validate({"max_rows": 5, "max_bytes": 100})
+        if (limits.max_rows, limits.max_bytes) != (5, 100):
+            raise AssertionError("section keys must reach the model")
 
-class TestSqlProfiles:
-    def test_profile_keeps_connector_type(self) -> None:
-        cfg = fake_profiles()
-        if cfg.targets() != ["main"]:
-            raise AssertionError('cfg.targets() == ["main"]')
-        if not (isinstance(cfg.resolve("main"), FakeConn)):
-            raise AssertionError('isinstance(cfg.resolve("main"), FakeConn)')
-
-    def test_unknown_connection_names_the_section(self) -> None:
-        """Наружу идёт ошибка слоя, а не ValueError изнутри whitelist'а."""
-        with pytest.raises(
-            UnknownConnectionError, match=r"tool\.fake: connection_name"
-        ):
-            fake_profiles().resolve("нет-такого")
-
-    def test_empty_profiles_resolve_nothing(self) -> None:
-        """Whitelist подставляет приложение на вызов: пустой — штатное состояние."""
-        empty = FakeProfiles.model_validate({"profiles": {}})
-        if empty.targets():
-            raise AssertionError("empty whitelist must list no targets")
-
-        with pytest.raises(UnknownConnectionError, match="allowed=\\[\\]"):
-            empty.resolve("main")
-
-    def test_plain_dump_keeps_the_secret_masked(self) -> None:
-        cfg = fake_profiles()
-        dump = cfg.model_dump()
-        if dump["profiles"]["main"]["password"] == "s3cret":
-            raise AssertionError('dump["profiles"]["main"]["password"] != "s3cret"')
+    def test_foreign_keys_are_ignored(self) -> None:
+        """В секции лежат ещё enable/tools/sandbox: модель их не касается."""
+        limits = FakeLimits.model_validate({"max_rows": 5, "enable": True})
+        if limits.max_rows != 5:
+            raise AssertionError("extra keys must not break the model")
 
 
 class TestRowStreamPlain:

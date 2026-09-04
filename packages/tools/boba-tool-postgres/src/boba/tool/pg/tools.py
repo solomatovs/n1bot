@@ -25,9 +25,9 @@ from pydantic import Field
 from boba.db.postgres import PayloadPostgres, PostgresError
 from boba.db.postgres.profile import PostgresConfig
 from boba.tool.pg.catalog import PgCatalog, PgCatalogQuery
-from boba.toolkit.calls import ConnectionArg, ScriptCall
+from boba.toolkit.calls import ScriptCall
 from boba.toolkit.entry import ToolMain
-from boba.toolkit.facade import Injected, tool
+from boba.toolkit.facade import Injected, UserConnection, tool
 from boba.toolkit.ports import RawInbound, RawOutbound
 from boba.toolkit.result import (
     AffectedSqlResult,
@@ -40,7 +40,6 @@ from boba.toolkit.result import (
     pack_result,
 )
 from boba.toolkit.sql import (
-    ConnectionName,
     MaxChars,
     MaxRows,
     RowBudget,
@@ -48,12 +47,11 @@ from boba.toolkit.sql import (
     RowPage,
     RowWindow,
     SqlErrorKind,
-    SqlProfiles,
-    UnknownConnectionError,
+    SqlLimits,
 )
 from boba.toolkit.types import SecretRevealing
 
-PgConnection = Annotated[ConnectionName, ConnectionArg(family="postgres")]
+PgConnection = Annotated[PostgresConfig, UserConnection]
 
 
 class CopyDump:
@@ -92,19 +90,10 @@ class CopyStatement:
         raise CopyDirectionError(msg)
 
 
-class PgToolConfig(SecretRevealing, SqlProfiles[PostgresConfig]):
-    """Whitelist подключений и лимиты выдачи pg-инструментов; [tool.pg]."""
+class PgToolConfig(SecretRevealing, SqlLimits):
+    """Лимиты выдачи pg-инструментов; [tool.pg]."""
 
     SECTION: ClassVar[str] = "tool.pg"
-
-    profiles: dict[str, PostgresConfig] = Field(
-        default_factory=dict,
-        description=(
-            "dict[connection_name, postgres-профиль ссылкой]: "
-            '`[tool.pg.profiles] main = "${postgres.main}"`. '
-            "Ключ — значение tool-arg `connection_name` (LLM выбирает БД по нему)."
-        ),
-    )
 
 
 async def _query_rows(
@@ -199,16 +188,8 @@ def _affected(cur: psycopg.AsyncCursor[Any]) -> AffectedSqlResult:
 
 
 @tool
-async def pg_connection_list(
-    cfg: Annotated[PgToolConfig, Injected],
-) -> Annotated[tuple[str, ToolResult], Produces.of(TableResult)]:
-    """Список доступных значений connection_name для postgres-инструментов."""
-    return pack_result(cfg.targets_table())
-
-
-@tool
 async def pg_list_tables(  # noqa: PLR0913 — окно выдачи задаёт вызов
-    connection_name: PgConnection,
+    connection: PgConnection,
     pg_schema: Annotated[
         str | None,
         Field(
@@ -242,7 +223,6 @@ async def pg_list_tables(  # noqa: PLR0913 — окно выдачи задаё�
     сколько показано и как листать дальше, сказано в note. Сложные условия
     по каталогу пишутся запросом к pg_catalog через pg_query.
     """
-    connection = cfg.resolve(connection_name)
     window = RowWindow(offset=offset, max_rows=max_rows, max_chars=max_chars)
 
     query = PgCatalog.tables(pg_schema, table_pattern)
@@ -251,7 +231,7 @@ async def pg_list_tables(  # noqa: PLR0913 — окно выдачи задаё�
 
 @tool
 async def pg_describe_table(  # noqa: PLR0913 — окно выдачи задаёт вызов
-    connection_name: PgConnection,
+    connection: PgConnection,
     table: Annotated[
         str,
         Field(min_length=1, description="Имя таблицы (без схемы)"),
@@ -277,7 +257,6 @@ async def pg_describe_table(  # noqa: PLR0913 — окно выдачи зада
     default_expression, identity, generated, primary_key, comment. Широкая
     таблица приходит частями: как листать, сказано в note.
     """
-    connection = cfg.resolve(connection_name)
     window = RowWindow(offset=offset, max_rows=max_rows, max_chars=max_chars)
 
     query = PgCatalog.columns(table, pg_schema)
@@ -286,7 +265,7 @@ async def pg_describe_table(  # noqa: PLR0913 — окно выдачи зада
 
 @tool
 async def pg_query(
-    connection_name: PgConnection,
+    connection: PgConnection,
     sql: Annotated[
         str,
         Field(
@@ -306,14 +285,13 @@ async def pg_query(
     tuple[str, ToolResult], Produces.of(TableResult, AffectedSqlResult, MultiResult)
 ]:
     """Выполнить SQL на подключении: строки либо счётчик затронутых."""
-    connection = cfg.resolve(connection_name)
 
     return await _query_rows(connection, PgCatalogQuery(text=sql, params=()), cfg)
 
 
 @tool
 async def pg_copy(
-    connection_name: PgConnection,
+    connection: PgConnection,
     sql: Annotated[
         str,
         Field(
@@ -330,7 +308,6 @@ async def pg_copy(
     cfg: Annotated[PgToolConfig, Injected],
 ) -> Annotated[tuple[str, ToolResult], Produces.of(TextResult)]:
     """Выгрузить данные стейтментом COPY ... TO STDOUT как есть."""
-    connection = cfg.resolve(connection_name)
 
     parts: list[str] = []
     size = 0
@@ -366,7 +343,7 @@ async def pg_copy(
 
 @tool
 async def pg_copy_out(
-    connection_name: PgConnection,
+    connection: PgConnection,
     sql: Annotated[
         str,
         Field(
@@ -392,7 +369,6 @@ async def pg_copy_out(
     """
     CopyStatement.require(sql, CopyStatement.TO_STDOUT, "pg_copy_out")
 
-    connection = cfg.resolve(connection_name)
     total = 0
 
     conn = await PayloadPostgres.connect_config(connection)
@@ -412,7 +388,7 @@ async def pg_copy_out(
 
 @tool
 async def pg_copy_in(
-    connection_name: PgConnection,
+    connection: PgConnection,
     sql: Annotated[
         str,
         Field(
@@ -435,7 +411,6 @@ async def pg_copy_in(
     """
     CopyStatement.require(sql, CopyStatement.FROM_STDIN, "pg_copy_in")
 
-    connection = cfg.resolve(connection_name)
     total = 0
 
     conn = await PayloadPostgres.connect_config(connection)
@@ -456,13 +431,11 @@ async def pg_copy_in(
 EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
     CopyDirectionError: SqlErrorKind.SQL_FAILED,
     PostgresError: SqlErrorKind.DATABASE_UNAVAILABLE,
-    UnknownConnectionError: SqlErrorKind.UNKNOWN_TARGET,
     psycopg.Error: SqlErrorKind.SQL_FAILED,
     ResultTooLargeError: SqlErrorKind.RESULT_TOO_LARGE,
 }
 
 TOOLS: Final = ToolMain.toolset(
-    pg_connection_list,
     pg_list_tables,
     pg_describe_table,
     pg_query,

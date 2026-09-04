@@ -48,7 +48,7 @@ from boba.tool.kb.indexing_log import (
     LoggingChunkStore,
     LoggingReader,
 )
-from boba.transport.http.profile import HttpProfile
+from boba.transport.http.profile import HttpConnection
 
 pytestmark = pytest.mark.anyio
 
@@ -191,7 +191,7 @@ class SkipStand:
         self._reader = reader
 
     def connection(self) -> ConfluenceConnection:
-        profile = HttpProfile(
+        profile = HttpConnection(
             base_url=self._base_url,
             retry_attempts=1,
             retry_backoff_sec=0.0,
