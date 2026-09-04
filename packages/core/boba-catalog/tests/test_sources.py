@@ -33,11 +33,6 @@ CH_SOURCE_ID = SampleIds.CLICKHOUSE
 
 
 @pytest.fixture
-def pg() -> PgSample:
-    return PgSample()
-
-
-@pytest.fixture
 def ch() -> ChSample:
     return ChSample()
 

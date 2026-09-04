@@ -1,10 +1,13 @@
-"""Домен каталога данных: сущности, снимок версии и его инварианты.
+"""Домен процесса загрузки: слои, узлы-ссылки на объекты источников, виды
+загрузки с полями, потоки со значениями; снимок версии и его инварианты.
 
-Снимок это полное состояние каталога одной версии: словари слоёв, наборов,
-колонок, видов загрузки и потоков по id. Он неизменяем: операции из
-boba.catalog.ops получают новый снимок методами added/replaced/removed и
-после каждой операции зовут check(). Хранилище зовёт check() после сборки
-снимка из строк таблиц.
+Снимок это полное состояние процесса одной версии: словари слоёв, узлов,
+видов загрузки и потоков по id. Он неизменяем: операции из boba.catalog.ops
+получают новый снимок методами added/replaced/removed и после каждой
+операции зовут check(). Колонки у узла не хранятся: они читаются из версии
+источника по адресу, поэтому ссылки на колонки в значениях потоков — по
+имени, а их наличие проверяется отдельно, по снимкам источников
+(check_against).
 
 Ошибки:
 CatalogInvariantError — снимок или значения потока нарушают инварианты,
@@ -16,10 +19,13 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Hashable, Iterable, Iterator, Mapping, Sequence
 from enum import StrEnum
-from typing import TypeVar
+from typing import Protocol, TypeVar
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
+
+from boba.catalog.base import CatalogError, CatalogInvariantError, CatalogModel
+from boba.catalog.sources import ObjectKind, ObjectRef
 
 __all__ = [
     "CatalogEntity",
@@ -27,8 +33,7 @@ __all__ = [
     "CatalogInvariantError",
     "CatalogModel",
     "CatalogSnapshot",
-    "Column",
-    "Dataset",
+    "ColumnSide",
     "EntityKind",
     "EntityRef",
     "Flow",
@@ -38,40 +43,32 @@ __all__ = [
     "LoadKind",
     "LoadSpec",
     "LoadValue",
+    "Node",
+    "ObjectResolver",
 ]
 
-LoadValue = str | int | bool | UUID | tuple[UUID, ...]
+LoadValue = str | int | bool | tuple[str, ...] | ObjectRef
 
 KeyT = TypeVar("KeyT", bound=Hashable)
 
 
-class CatalogError(Exception):
-    """Базовая ошибка домена; наследники — CatalogInvariantError и CatalogOpError."""
+class ColumnSide(StrEnum):
+    """С какого конца потока берутся колонки поля вида."""
 
-
-class CatalogInvariantError(CatalogError):
-    """Снимок нарушает инварианты; каждое нарушение отдельной строкой."""
-
-    def __init__(self, violations: Sequence[str]) -> None:
-        self.violations = tuple(violations)
-        text = "; ".join(self.violations)
-        super().__init__(text)
-
-
-class CatalogModel(BaseModel):
-    """Базовая модель домена: неизменяемая, лишние ключи запрещены."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    SOURCE = "source"
+    TARGET = "target"
+    ANY = "any"
 
 
 class LoadFieldType(StrEnum):
-    """Тип поля вида загрузки; знает форму хранения значения и ссылки на колонки."""
+    """Тип поля вида загрузки; знает форму хранения значения."""
 
     TEXT = "text"
     INT = "int"
     BOOL = "bool"
     COLUMN = "column"
     COLUMNS = "columns"
+    ROUTINE = "routine"
 
     def accepts(self, value: LoadValue) -> bool:
         """Значение имеет форму хранения этого типа."""
@@ -85,9 +82,12 @@ class LoadFieldType(StrEnum):
             return isinstance(value, bool)
 
         if self is LoadFieldType.COLUMN:
-            return isinstance(value, UUID)
+            return isinstance(value, str) and value != ""
 
-        return self._is_columns(value)
+        if self is LoadFieldType.COLUMNS:
+            return self._is_columns(value)
+
+        return isinstance(value, ObjectRef) and value.kind is ObjectKind.ROUTINE
 
     @staticmethod
     def _is_int(value: LoadValue) -> bool:
@@ -103,10 +103,10 @@ class LoadFieldType(StrEnum):
 
         return len(value) > 0
 
-    def column_ids(self, value: LoadValue) -> tuple[UUID, ...]:
-        """Ссылки на колонки внутри значения; у скалярных типов пусто."""
+    def column_names(self, value: LoadValue) -> tuple[str, ...]:
+        """Имена колонок внутри значения; у остальных типов пусто."""
         if self is LoadFieldType.COLUMN:
-            if isinstance(value, UUID):
+            if isinstance(value, str):
                 return (value,)
 
             return ()
@@ -119,43 +119,40 @@ class LoadFieldType(StrEnum):
 
         return ()
 
-    def conform(self, value: LoadValue) -> LoadValue:
-        """Значение из JSON в форму хранения: ссылка на колонку строкой становится UUID.
-
-        Ошибки:
-        ValueError — строка не разбирается как UUID.
-        """
-        if self is not LoadFieldType.COLUMN:
-            return value
-
-        if not isinstance(value, str):
-            return value
-
-        return UUID(value)
-
     @staticmethod
     def shape_of(value: LoadValue) -> str:
         """Форма значения для текста нарушения."""
         if isinstance(value, tuple):
             return f"list of {len(value)}"
 
+        if isinstance(value, ObjectRef):
+            return f"{value.kind.value} ref"
+
         return type(value).__name__
 
 
 class LoadField(CatalogModel):
-    """Поле вида загрузки: имя, тип и обязательность."""
+    """Поле вида загрузки: имя, тип, сторона потока для колонок, обязательность."""
 
     name: str = Field(min_length=1)
     type: LoadFieldType
+    side: ColumnSide = ColumnSide.ANY
     required: bool
     description: str = ""
+
+
+class LoadSpec(CatalogModel):
+    """Правило загрузки потока: вид и значения по его полям."""
+
+    kind_id: UUID
+    values: Mapping[str, LoadValue]
 
 
 class LoadKind(CatalogModel):
     """Вид загрузки, заведённый пользователем: имя и описание полей.
 
     Поток хранит значения по именам полей вида; вид проверяет их состав и
-    типы (violations_of) и приводит ссылки на колонки из JSON к UUID (conform).
+    типы (violations_of) и отдаёт ссылки на колонки по сторонам (column_refs).
     """
 
     id: UUID
@@ -182,32 +179,6 @@ class LoadKind(CatalogModel):
             names.append(field.name)
 
         return tuple(names)
-
-    def conform(self, spec: LoadSpec) -> LoadSpec:
-        """Значения потока в форме хранения; неизвестные поля остаются как есть.
-
-        Ошибки:
-        CatalogInvariantError — ссылка на колонку не разбирается как UUID.
-        """
-        by_name = self._fields_by_name()
-
-        values: dict[str, LoadValue] = {}
-        for name, value in spec.values.items():
-            field = by_name.get(name)
-            if field is None:
-                values[name] = value
-                continue
-
-            try:
-                values[name] = field.type.conform(value)
-            except ValueError as exc:
-                msg = (
-                    f"field {name!r} of load kind {self.name!r} "
-                    f"is not a column id: {value!r}"
-                )
-                raise CatalogInvariantError([msg]) from exc
-
-        return LoadSpec(kind_id=spec.kind_id, values=values)
 
     def violations_of(self, spec: LoadSpec) -> Iterator[str]:
         """Нарушения состава и типов значений относительно полей вида."""
@@ -239,8 +210,8 @@ class LoadKind(CatalogModel):
                 f"expects {field.type.value}, got {shape}"
             )
 
-    def column_refs(self, spec: LoadSpec) -> Iterator[tuple[str, UUID]]:
-        """Пары (имя поля, id колонки) по всем ссылкам в значениях."""
+    def column_refs(self, spec: LoadSpec) -> Iterator[tuple[LoadField, str]]:
+        """Пары (поле, имя колонки) по всем ссылкам на колонки в значениях."""
         by_name = self._fields_by_name()
 
         for name, value in spec.values.items():
@@ -248,8 +219,24 @@ class LoadKind(CatalogModel):
             if field is None:
                 continue
 
-            for column_id in field.type.column_ids(value):
-                yield name, column_id
+            for column in field.type.column_names(value):
+                yield field, column
+
+    def routine_refs(self, spec: LoadSpec) -> Iterator[tuple[LoadField, ObjectRef]]:
+        by_name = self._fields_by_name()
+
+        for name, value in spec.values.items():
+            field = by_name.get(name)
+            if field is None:
+                continue
+
+            if field.type is not LoadFieldType.ROUTINE:
+                continue
+
+            if not isinstance(value, ObjectRef):
+                continue
+
+            yield field, value
 
     def _fields_by_name(self) -> dict[str, LoadField]:
         by_name: dict[str, LoadField] = {}
@@ -260,63 +247,49 @@ class LoadKind(CatalogModel):
 
 
 class Layer(CatalogModel):
-    """Слой хранения; только имя, порядок — порядок создания."""
+    """Слой хранения: дорожка на диаграмме, порядок слева направо по position."""
 
     id: UUID
     name: str = Field(min_length=1)
-
-
-class Dataset(CatalogModel):
-    """Набор данных внутри слоя."""
-
-    id: UUID
-    layer_id: UUID
-    name: str = Field(min_length=1)
-    source: str = ""
-    description: str = ""
-    tags: tuple[str, ...] = ()
-    owner: str = ""
-
-
-class Column(CatalogModel):
-    """Колонка набора; position задаёт порядок в карточке."""
-
-    id: UUID
-    dataset_id: UUID
-    name: str = Field(min_length=1)
-    type: str
-    nullable: bool
-    is_key: bool
     position: int = Field(ge=0)
     description: str = ""
 
 
-class LoadSpec(CatalogModel):
-    """Правило загрузки потока: вид и значения по его полям."""
+class Node(CatalogModel):
+    """Объект источника, поставленный в слой; колонки читаются из источника."""
 
-    kind_id: UUID
-    values: Mapping[str, LoadValue]
+    id: UUID
+    layer_id: UUID
+    ref: ObjectRef
+    alias: str | None = None
+    note: str = ""
+
+    @property
+    def label(self) -> str:
+        if self.alias is not None and self.alias != "":
+            return self.alias
+
+        return self.ref.path[-1]
 
 
 class Flow(CatalogModel):
-    """Поток данных между двумя наборами с правилом загрузки."""
+    """Поток из узла в узел с правилом загрузки."""
 
     id: UUID
-    from_dataset_id: UUID
-    to_dataset_id: UUID
+    from_node_id: UUID
+    to_node_id: UUID
     load: LoadSpec
     description: str = ""
 
 
-CatalogEntity = Layer | Dataset | Column | LoadKind | Flow
+CatalogEntity = Layer | Node | LoadKind | Flow
 
 
 class EntityKind(StrEnum):
-    """Вид сущности каталога; знает поле снимка и вид произвольной сущности."""
+    """Виды сущностей снимка; значение — имя таблицы хранения."""
 
     LAYER = "layer"
-    DATASET = "dataset"
-    COLUMN = "column"
+    NODE = "node"
     LOAD_KIND = "load_kind"
     FLOW = "flow"
 
@@ -325,11 +298,8 @@ class EntityKind(StrEnum):
         if isinstance(entity, Layer):
             return cls.LAYER
 
-        if isinstance(entity, Dataset):
-            return cls.DATASET
-
-        if isinstance(entity, Column):
-            return cls.COLUMN
+        if isinstance(entity, Node):
+            return cls.NODE
 
         if isinstance(entity, LoadKind):
             return cls.LOAD_KIND
@@ -338,15 +308,12 @@ class EntityKind(StrEnum):
 
     @property
     def table_field(self) -> str:
-        """Имя поля CatalogSnapshot с таблицей этого вида."""
+        """Имя поля снимка с таблицей сущностей этого вида."""
         if self is EntityKind.LAYER:
             return "layers"
 
-        if self is EntityKind.DATASET:
-            return "datasets"
-
-        if self is EntityKind.COLUMN:
-            return "columns"
+        if self is EntityKind.NODE:
+            return "nodes"
 
         if self is EntityKind.LOAD_KIND:
             return "load_kinds"
@@ -355,43 +322,49 @@ class EntityKind(StrEnum):
 
 
 class EntityRef(CatalogModel):
-    """Ссылка на сущность каталога: вид и id."""
+    """Ссылка на сущность снимка: вид и id."""
 
     kind: EntityKind
     id: UUID
 
     @classmethod
     def of(cls, entity: CatalogEntity) -> EntityRef:
-        kind = EntityKind.of(entity)
-        return cls(kind=kind, id=entity.id)
+        return cls(kind=EntityKind.of(entity), id=entity.id)
+
+
+class ObjectResolver(Protocol):
+    """Что домен знает об объектах источников при проверке значений потоков:
+    существует ли объект и какие у него колонки. Реализует сервис по
+    привязанным версиям источников."""
+
+    def exists(self, ref: ObjectRef) -> bool: ...
+
+    def columns_of(self, ref: ObjectRef) -> Sequence[str] | None: ...
 
 
 class CatalogSnapshot(CatalogModel):
-    """Полное состояние каталога одной версии.
+    """Полное состояние процесса одной версии.
 
     Таблицы сущностей по id. Методы added/replaced/removed возвращают новый
-    снимок, не меняя текущий; check() проверяет инварианты целиком.
+    снимок, не меняя текущий; check() проверяет внутренние инварианты,
+    check_against() — ссылки на объекты и колонки источников.
     """
 
     layers: Mapping[UUID, Layer]
-    datasets: Mapping[UUID, Dataset]
-    columns: Mapping[UUID, Column]
+    nodes: Mapping[UUID, Node]
     load_kinds: Mapping[UUID, LoadKind]
     flows: Mapping[UUID, Flow]
 
     @classmethod
     def empty(cls) -> CatalogSnapshot:
-        return cls(layers={}, datasets={}, columns={}, load_kinds={}, flows={})
+        return cls(layers={}, nodes={}, load_kinds={}, flows={})
 
     def table(self, kind: EntityKind) -> Mapping[UUID, CatalogEntity]:
         if kind is EntityKind.LAYER:
             return self.layers
 
-        if kind is EntityKind.DATASET:
-            return self.datasets
-
-        if kind is EntityKind.COLUMN:
-            return self.columns
+        if kind is EntityKind.NODE:
+            return self.nodes
 
         if kind is EntityKind.LOAD_KIND:
             return self.load_kinds
@@ -442,68 +415,43 @@ class CatalogSnapshot(CatalogModel):
         del table[ref.id]
         return self._with_table(ref.kind, table)
 
-    def conformed(self, flow: Flow) -> Flow:
-        """Поток со значениями в форме хранения по его виду; без вида — как есть.
-
-        Ошибки:
-        CatalogInvariantError — ссылка на колонку не разбирается как UUID.
-        """
-        kind = self.load_kinds.get(flow.load.kind_id)
-        if kind is None:
-            return flow
-
-        load = kind.conform(flow.load)
-        return flow.model_copy(update={"load": load})
-
-    def datasets_in(self, layer_id: UUID) -> Iterator[Dataset]:
-        for dataset in self.datasets.values():
-            if dataset.layer_id != layer_id:
-                continue
-
-            yield dataset
-
     def restricted(
-        self, dataset_ids: Iterable[UUID], layer_ids: Iterable[UUID]
+        self, node_ids: Iterable[UUID], layer_ids: Iterable[UUID]
     ) -> CatalogSnapshot:
-        """Срез каталога по фильтру вида: наборы из списка и из перечисленных
-        слоёв, их слои и колонки, потоки между ними и виды загрузки этих
-        потоков. Пустой фильтр — весь каталог."""
-        chosen_datasets = frozenset(dataset_ids)
+        """Срез по фильтру диаграммы: узлы из списка и из перечисленных слоёв,
+        их слои, потоки между ними и виды загрузки этих потоков. Пустой фильтр —
+        весь процесс."""
+        chosen_nodes = frozenset(node_ids)
         chosen_layers = frozenset(layer_ids)
-        if not chosen_datasets and not chosen_layers:
+        if not chosen_nodes and not chosen_layers:
             return self
 
-        datasets = dict(self._chosen_datasets(chosen_datasets, chosen_layers))
-        layers = dict(self._layers_of(datasets.values(), chosen_layers))
-        columns = dict(self._columns_in(datasets))
-        flows = dict(self._flows_between(datasets))
+        nodes = dict(self._chosen_nodes(chosen_nodes, chosen_layers))
+        layers = dict(self._layers_of(nodes.values(), chosen_layers))
+        flows = dict(self._flows_between(nodes))
         load_kinds = dict(self._kinds_of(flows.values()))
 
         return CatalogSnapshot(
-            layers=layers,
-            datasets=datasets,
-            columns=columns,
-            load_kinds=load_kinds,
-            flows=flows,
+            layers=layers, nodes=nodes, load_kinds=load_kinds, flows=flows
         )
 
-    def _chosen_datasets(
-        self, dataset_ids: frozenset[UUID], layer_ids: frozenset[UUID]
-    ) -> Iterator[tuple[UUID, Dataset]]:
-        for dataset in self.datasets.values():
-            if dataset.id in dataset_ids:
-                yield dataset.id, dataset
+    def _chosen_nodes(
+        self, node_ids: frozenset[UUID], layer_ids: frozenset[UUID]
+    ) -> Iterator[tuple[UUID, Node]]:
+        for node in self.nodes.values():
+            if node.id in node_ids:
+                yield node.id, node
                 continue
 
-            if dataset.layer_id in layer_ids:
-                yield dataset.id, dataset
+            if node.layer_id in layer_ids:
+                yield node.id, node
 
     def _layers_of(
-        self, datasets: Iterable[Dataset], layer_ids: frozenset[UUID]
+        self, nodes: Iterable[Node], layer_ids: frozenset[UUID]
     ) -> Iterator[tuple[UUID, Layer]]:
         wanted = set(layer_ids)
-        for dataset in datasets:
-            wanted.add(dataset.layer_id)
+        for node in nodes:
+            wanted.add(node.layer_id)
 
         for layer in self.layers.values():
             if layer.id not in wanted:
@@ -511,50 +459,48 @@ class CatalogSnapshot(CatalogModel):
 
             yield layer.id, layer
 
-    def _columns_in(
-        self, datasets: Mapping[UUID, Dataset]
-    ) -> Iterator[tuple[UUID, Column]]:
-        for column in self.columns.values():
-            if column.dataset_id not in datasets:
-                continue
-
-            yield column.id, column
-
-    def _flows_between(
-        self, datasets: Mapping[UUID, Dataset]
-    ) -> Iterator[tuple[UUID, Flow]]:
+    def _flows_between(self, nodes: Mapping[UUID, Node]) -> Iterator[tuple[UUID, Flow]]:
         for flow in self.flows.values():
-            if flow.from_dataset_id not in datasets:
+            if flow.from_node_id not in nodes:
                 continue
 
-            if flow.to_dataset_id not in datasets:
+            if flow.to_node_id not in nodes:
                 continue
 
             yield flow.id, flow
 
     def _kinds_of(self, flows: Iterable[Flow]) -> Iterator[tuple[UUID, LoadKind]]:
-        used = {flow.load.kind_id for flow in flows}
+        used: set[UUID] = set()
+        for flow in flows:
+            used.add(flow.load.kind_id)
+
         for kind in self.load_kinds.values():
             if kind.id not in used:
                 continue
 
             yield kind.id, kind
 
-    def columns_of(self, dataset_id: UUID) -> Iterator[Column]:
-        for column in self.columns.values():
-            if column.dataset_id != dataset_id:
+    def nodes_in(self, layer_id: UUID) -> Iterator[Node]:
+        for node in self.nodes.values():
+            if node.layer_id != layer_id:
                 continue
 
-            yield column
+            yield node
 
-    def flows_of(self, dataset_id: UUID) -> Iterator[Flow]:
-        """Потоки, входящие в набор или исходящие из него."""
+    def node_of(self, ref: ObjectRef) -> Node | None:
+        for node in self.nodes.values():
+            if node.ref == ref:
+                return node
+
+        return None
+
+    def flows_of(self, node_id: UUID) -> Iterator[Flow]:
         for flow in self.flows.values():
-            if flow.from_dataset_id == dataset_id:
+            if flow.from_node_id == node_id:
                 yield flow
                 continue
 
-            if flow.to_dataset_id == dataset_id:
+            if flow.to_node_id == node_id:
                 yield flow
 
     def flows_of_kind(self, kind_id: UUID) -> Iterator[Flow]:
@@ -564,24 +510,24 @@ class CatalogSnapshot(CatalogModel):
 
             yield flow
 
-    def flows_using_column(self, column_id: UUID) -> Iterator[Flow]:
-        """Потоки, чьи значения загрузки ссылаются на колонку."""
+    def sources(self) -> set[UUID]:
+        """Источники, на объекты которых ссылаются узлы и рутины потоков."""
+        used: set[UUID] = set()
+        for node in self.nodes.values():
+            used.add(node.ref.source_id)
+
         for flow in self.flows.values():
             kind = self.load_kinds.get(flow.load.kind_id)
             if kind is None:
                 continue
 
-            referenced: list[UUID] = []
-            for _, referenced_id in kind.column_refs(flow.load):
-                referenced.append(referenced_id)
+            for _field, ref in kind.routine_refs(flow.load):
+                used.add(ref.source_id)
 
-            if column_id not in referenced:
-                continue
-
-            yield flow
+        return used
 
     def label(self, ref: EntityRef) -> str:
-        """Подпись сущности для текстов ошибок: вид и имя, без имени — id."""
+        """Подпись сущности для сообщений: вид и имя, без имени — id."""
         entity = self.table(ref.kind).get(ref.id)
         if entity is None:
             return f"{ref.kind.value} {ref.id}"
@@ -589,27 +535,105 @@ class CatalogSnapshot(CatalogModel):
         if isinstance(entity, Flow):
             return self._flow_label(entity)
 
+        if isinstance(entity, Node):
+            return f"node {entity.ref.render()!r}"
+
         return f"{ref.kind.value} {entity.name!r}"
 
     def check(self) -> None:
-        """Проверка инвариантов снимка целиком.
+        """Внутренние инварианты снимка целиком.
 
         Ошибки:
-        CatalogInvariantError — перечень нарушений.
+        CatalogInvariantError — с перечнем нарушений.
         """
         violations = list(self._violations())
-        if not violations:
+        if violations:
+            raise CatalogInvariantError(violations)
+
+    def check_against(self, resolver: ObjectResolver) -> None:
+        """Ссылки на объекты и колонки источников по привязанным версиям.
+
+        Ошибки:
+        CatalogInvariantError — объекта нет, колонки нет у объекта нужной
+            стороны, рутина не найдена.
+        """
+        violations = list(self.source_violations(resolver))
+        if violations:
+            raise CatalogInvariantError(violations)
+
+    def source_violations(self, resolver: ObjectResolver) -> Iterator[str]:
+        for node in self.nodes.values():
+            if resolver.exists(node.ref):
+                continue
+
+            yield f"node {node.ref.render()!r} points to a missing object"
+
+        for flow in self.flows.values():
+            yield from self._flow_source_violations(flow, resolver)
+
+    def _flow_source_violations(
+        self, flow: Flow, resolver: ObjectResolver
+    ) -> Iterator[str]:
+        kind = self.load_kinds.get(flow.load.kind_id)
+        if kind is None:
             return
 
-        raise CatalogInvariantError(violations)
+        label = self._flow_label(flow)
+        for field, column in kind.column_refs(flow.load):
+            allowed = self._side_columns(flow, field.side, resolver)
+            if allowed is None:
+                continue
+
+            if column in allowed:
+                continue
+
+            yield (
+                f"{label}: field {field.name!r} names column {column!r}"
+                f" that is not on the {field.side.value} side"
+            )
+
+        for field, ref in kind.routine_refs(flow.load):
+            if resolver.exists(ref):
+                continue
+
+            yield (
+                f"{label}: field {field.name!r} names a missing routine"
+                f" {ref.render()!r}"
+            )
+
+    def _side_columns(
+        self, flow: Flow, side: ColumnSide, resolver: ObjectResolver
+    ) -> set[str] | None:
+        """Колонки концов потока по стороне поля; None — ни об одном конце
+        источник ничего не знает, проверять нечего."""
+        ends: list[UUID] = []
+        if side is not ColumnSide.TARGET:
+            ends.append(flow.from_node_id)
+
+        if side is not ColumnSide.SOURCE:
+            ends.append(flow.to_node_id)
+
+        known: set[str] | None = None
+        for node_id in ends:
+            node = self.nodes.get(node_id)
+            if node is None:
+                continue
+
+            columns = resolver.columns_of(node.ref)
+            if columns is None:
+                continue
+
+            if known is None:
+                known = set()
+
+            known.update(columns)
+
+        return known
 
     @staticmethod
     def repeated(keys: Iterable[KeyT]) -> Iterator[KeyT]:
-        """Ключи, встреченные больше одного раза, по первому появлению."""
-        counts: Counter[KeyT] = Counter()
-        for key in keys:
-            counts[key] += 1
-
+        """Ключи, встречающиеся больше одного раза."""
+        counts = Counter(keys)
         for key, count in counts.items():
             if count == 1:
                 continue
@@ -621,18 +645,17 @@ class CatalogSnapshot(CatalogModel):
     ) -> CatalogSnapshot:
         return self.model_copy(update={kind.table_field: dict(table)})
 
-    def _dataset_label(self, dataset_id: UUID) -> str:
-        ref = EntityRef(kind=EntityKind.DATASET, id=dataset_id)
-        return self.label(ref)
+    def _node_label(self, node_id: UUID) -> str:
+        return self.label(EntityRef(kind=EntityKind.NODE, id=node_id))
 
     def _flow_label(self, flow: Flow) -> str:
-        source = self._dataset_label(flow.from_dataset_id)
-        target = self._dataset_label(flow.to_dataset_id)
+        source = self._node_label(flow.from_node_id)
+        target = self._node_label(flow.to_node_id)
         return f"flow {source} -> {target}"
 
     def _violations(self) -> Iterator[str]:
         yield from self._duplicate_names()
-        yield from self._duplicate_positions()
+        yield from self._duplicate_refs()
         yield from self._dangling_references()
         yield from self._load_values()
 
@@ -640,74 +663,55 @@ class CatalogSnapshot(CatalogModel):
         for layer in self.layers.values():
             yield layer.name
 
+    def _layer_positions(self) -> Iterator[int]:
+        for layer in self.layers.values():
+            yield layer.position
+
     def _load_kind_names(self) -> Iterator[str]:
         for kind in self.load_kinds.values():
             yield kind.name
-
-    def _dataset_names(self) -> Iterator[tuple[UUID, str]]:
-        for dataset in self.datasets.values():
-            yield dataset.layer_id, dataset.name
-
-    def _column_names(self) -> Iterator[tuple[UUID, str]]:
-        for column in self.columns.values():
-            yield column.dataset_id, column.name
-
-    def _column_positions(self) -> Iterator[tuple[UUID, int]]:
-        for column in self.columns.values():
-            yield column.dataset_id, column.position
 
     def _duplicate_names(self) -> Iterator[str]:
         for name in self.repeated(self._layer_names()):
             yield f"duplicate layer name {name!r}"
 
-        for layer_id, name in self.repeated(self._dataset_names()):
-            layer = self.label(EntityRef(kind=EntityKind.LAYER, id=layer_id))
-            yield f"duplicate dataset name {name!r} in {layer}"
-
-        for dataset_id, name in self.repeated(self._column_names()):
-            dataset = self._dataset_label(dataset_id)
-            yield f"duplicate column name {name!r} in {dataset}"
+        for position in self.repeated(self._layer_positions()):
+            yield f"duplicate layer position {position}"
 
         for name in self.repeated(self._load_kind_names()):
             yield f"duplicate load kind name {name!r}"
 
-    def _duplicate_positions(self) -> Iterator[str]:
-        for dataset_id, position in self.repeated(self._column_positions()):
-            dataset = self._dataset_label(dataset_id)
-            yield f"duplicate column position {position} in {dataset}"
+    def _node_refs(self) -> Iterator[tuple[UUID, ObjectKind, tuple[str, ...]]]:
+        for node in self.nodes.values():
+            yield node.ref.source_id, node.ref.kind, node.ref.path
+
+    def _duplicate_refs(self) -> Iterator[str]:
+        for _source, kind, path in self.repeated(self._node_refs()):
+            yield f"object {kind.value} {'/'.join(path)!r} is placed twice"
 
     def _dangling_references(self) -> Iterator[str]:
-        for dataset in self.datasets.values():
-            if dataset.layer_id in self.layers:
+        for node in self.nodes.values():
+            if node.layer_id in self.layers:
                 continue
 
-            yield f"dataset {dataset.name!r} refers to missing layer {dataset.layer_id}"
-
-        for column in self.columns.values():
-            if column.dataset_id in self.datasets:
-                continue
-
-            yield (
-                f"column {column.name!r} refers to missing dataset {column.dataset_id}"
-            )
+            yield f"{self.label(EntityRef.of(node))} refers to a missing layer"
 
         for flow in self.flows.values():
             yield from self._flow_references(flow)
 
     def _flow_references(self, flow: Flow) -> Iterator[str]:
         label = self._flow_label(flow)
+        if flow.from_node_id not in self.nodes:
+            yield f"{label}: source node is missing"
 
-        if flow.from_dataset_id not in self.datasets:
-            yield f"{label} refers to missing dataset {flow.from_dataset_id}"
+        if flow.to_node_id not in self.nodes:
+            yield f"{label}: target node is missing"
 
-        if flow.to_dataset_id not in self.datasets:
-            yield f"{label} refers to missing dataset {flow.to_dataset_id}"
-
-        if flow.from_dataset_id == flow.to_dataset_id:
-            yield f"{label} loops on the same dataset"
+        if flow.from_node_id == flow.to_node_id:
+            yield f"{label}: a flow cannot loop on one node"
 
         if flow.load.kind_id not in self.load_kinds:
-            yield f"{label} refers to missing load kind {flow.load.kind_id}"
+            yield f"{label}: load kind {flow.load.kind_id} is missing"
 
     def _load_values(self) -> Iterator[str]:
         for flow in self.flows.values():
@@ -716,27 +720,5 @@ class CatalogSnapshot(CatalogModel):
                 continue
 
             label = self._flow_label(flow)
-            for text in kind.violations_of(flow.load):
-                yield f"{label}: {text}"
-
-            for field_name, column_id in kind.column_refs(flow.load):
-                yield from self._column_reference(flow, label, field_name, column_id)
-
-    def _column_reference(
-        self, flow: Flow, label: str, field_name: str, column_id: UUID
-    ) -> Iterator[str]:
-        column = self.columns.get(column_id)
-        if column is None:
-            yield f"{label}: field {field_name!r} refers to missing column {column_id}"
-            return
-
-        if column.dataset_id == flow.from_dataset_id:
-            return
-
-        if column.dataset_id == flow.to_dataset_id:
-            return
-
-        yield (
-            f"{label}: field {field_name!r} refers to column {column.name!r} "
-            f"outside the flow datasets"
-        )
+            for violation in kind.violations_of(flow.load):
+                yield f"{label}: {violation}"

@@ -20,7 +20,7 @@ CatalogOpError — новая порция не применима к снимк
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncGenerator, Iterator, Sequence
+from collections.abc import AsyncGenerator, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from enum import StrEnum
 from typing import Any, ClassVar, LiteralString
@@ -33,6 +33,7 @@ from psycopg.types.json import Jsonb
 from pydantic import ValidationError
 
 from boba.catalog import (
+    AcceptAll,
     CatalogDiff,
     CatalogEntity,
     CatalogInvariantError,
@@ -40,13 +41,15 @@ from boba.catalog import (
     CatalogOpError,
     CatalogSnapshot,
     ChangeStatus,
-    Column,
-    Dataset,
     EntityKind,
     Flow,
     Layer,
     LoadKind,
     LoadSpec,
+    Node,
+    ObjectKind,
+    ObjectRef,
+    ObjectResolver,
     OperationList,
 )
 from boba.catalog_service.config import CatalogConfig
@@ -88,8 +91,7 @@ class CatalogTable(StrEnum):
     """Таблицы схемы каталога."""
 
     LAYERS = "layers"
-    DATASETS = "datasets"
-    COLUMNS = "columns"
+    NODES = "nodes"
     LOAD_KINDS = "load_kinds"
     FLOWS = "flows"
     VERSIONS = "versions"
@@ -104,11 +106,8 @@ class CatalogTable(StrEnum):
         if kind is EntityKind.LAYER:
             return cls.LAYERS
 
-        if kind is EntityKind.DATASET:
-            return cls.DATASETS
-
-        if kind is EntityKind.COLUMN:
-            return cls.COLUMNS
+        if kind is EntityKind.NODE:
+            return cls.NODES
 
         if kind is EntityKind.LOAD_KIND:
             return cls.LOAD_KINDS
@@ -119,28 +118,18 @@ class CatalogTable(StrEnum):
 class LayersColumn(StrEnum):
     ID = "id"
     NAME = "name"
-    CREATED_AT = "created_at"
-
-
-class DatasetsColumn(StrEnum):
-    ID = "id"
-    LAYER_ID = "layer_id"
-    NAME = "name"
-    SOURCE = "source"
-    DESCRIPTION = "description"
-    TAGS = "tags"
-    OWNER = "owner"
-
-
-class ColumnsColumn(StrEnum):
-    ID = "id"
-    DATASET_ID = "dataset_id"
-    NAME = "name"
-    TYPE = "type"
-    NULLABLE = "nullable"
-    IS_KEY = "is_key"
     POSITION = "position"
     DESCRIPTION = "description"
+
+
+class NodesColumn(StrEnum):
+    ID = "id"
+    LAYER_ID = "layer_id"
+    SOURCE_ID = "source_id"
+    OBJECT_KIND = "object_kind"
+    PATH = "path"
+    ALIAS = "alias"
+    NOTE = "note"
 
 
 class LoadKindsColumn(StrEnum):
@@ -152,8 +141,8 @@ class LoadKindsColumn(StrEnum):
 
 class FlowsColumn(StrEnum):
     ID = "id"
-    FROM_DATASET_ID = "from_dataset_id"
-    TO_DATASET_ID = "to_dataset_id"
+    FROM_NODE_ID = "from_node_id"
+    TO_NODE_ID = "to_node_id"
     LOAD_KIND_ID = "load_kind_id"
     LOAD_VALUES = "load_values"
     DESCRIPTION = "description"
@@ -163,6 +152,7 @@ class VersionsColumn(StrEnum):
     NUMBER = "number"
     OPERATIONS = "operations"
     AUTHOR = "author"
+    PINS = "pins"
     PUBLISHED_AT = "published_at"
 
 
@@ -171,6 +161,7 @@ class DraftsColumn(StrEnum):
     NAME = "name"
     BASE_VERSION = "base_version"
     STATUS = "status"
+    PINS = "pins"
     CREATED_BY = "created_by"
     CREATED_AT = "created_at"
 
@@ -187,14 +178,14 @@ class ViewsColumn(StrEnum):
     ID = "id"
     NAME = "name"
     OWNER_ID = "owner_id"
-    DATASET_IDS = "dataset_ids"
+    NODE_IDS = "node_ids"
     LAYER_IDS = "layer_ids"
     CREATED_AT = "created_at"
 
 
 class ViewLayoutColumn(StrEnum):
     VIEW_ID = "view_id"
-    DATASET_ID = "dataset_id"
+    NODE_ID = "node_id"
     X = "x"
     Y = "y"
 
@@ -212,22 +203,18 @@ class EntityRows:
     UPSERT_ORDER: ClassVar[tuple[EntityKind, ...]] = (
         EntityKind.LAYER,
         EntityKind.LOAD_KIND,
-        EntityKind.DATASET,
-        EntityKind.COLUMN,
+        EntityKind.NODE,
         EntityKind.FLOW,
     )
 
     @classmethod
     def columns_of(cls, kind: EntityKind) -> tuple[StrEnum, ...]:
-        """Колонки, которые пишет публикация; created_at слоя ставит база."""
+        """Колонки, которые пишет публикация."""
         if kind is EntityKind.LAYER:
-            return (LayersColumn.ID, LayersColumn.NAME)
+            return tuple(LayersColumn)
 
-        if kind is EntityKind.DATASET:
-            return tuple(DatasetsColumn)
-
-        if kind is EntityKind.COLUMN:
-            return tuple(ColumnsColumn)
+        if kind is EntityKind.NODE:
+            return tuple(NodesColumn)
 
         if kind is EntityKind.LOAD_KIND:
             return tuple(LoadKindsColumn)
@@ -238,15 +225,18 @@ class EntityRows:
     def row_of(entity: CatalogEntity) -> dict[str, Any]:
         """Параметры insert по сущности; jsonb и массивы в форме psycopg."""
         if isinstance(entity, Layer):
-            return {"id": entity.id, "name": entity.name}
-
-        if isinstance(entity, Dataset):
-            row = entity.model_dump()
-            row["tags"] = list(entity.tags)
-            return row
-
-        if isinstance(entity, Column):
             return entity.model_dump()
+
+        if isinstance(entity, Node):
+            return {
+                "id": entity.id,
+                "layer_id": entity.layer_id,
+                "source_id": entity.ref.source_id,
+                "object_kind": entity.ref.kind.value,
+                "path": list(entity.ref.path),
+                "alias": entity.alias,
+                "note": entity.note,
+            }
 
         if isinstance(entity, LoadKind):
             fields = entity.model_dump(mode="json")["fields"]
@@ -260,21 +250,38 @@ class EntityRows:
         values = entity.load.model_dump(mode="json")["values"]
         return {
             "id": entity.id,
-            "from_dataset_id": entity.from_dataset_id,
-            "to_dataset_id": entity.to_dataset_id,
+            "from_node_id": entity.from_node_id,
+            "to_node_id": entity.to_node_id,
             "load_kind_id": entity.load.kind_id,
             "load_values": Jsonb(values),
             "description": entity.description,
         }
 
     @staticmethod
+    def node_of(row: DictRow) -> Node:
+        ref = ObjectRef(
+            source_id=row["source_id"],
+            kind=ObjectKind(row["object_kind"]),
+            path=tuple(row["path"]),
+        )
+        return Node(
+            id=row["id"],
+            layer_id=row["layer_id"],
+            ref=ref,
+            alias=row["alias"],
+            note=row["note"],
+        )
+
+    @staticmethod
     def flow_of(row: DictRow) -> Flow:
-        """Поток из строки flows; значения ещё в форме JSON, приводит снимок."""
-        load = LoadSpec(kind_id=row["load_kind_id"], values=row["load_values"])
+        """Поток из строки flows; значения в форме JSON разбирает модель."""
+        load = LoadSpec.model_validate(
+            {"kind_id": row["load_kind_id"], "values": row["load_values"]}
+        )
         return Flow(
             id=row["id"],
-            from_dataset_id=row["from_dataset_id"],
-            to_dataset_id=row["to_dataset_id"],
+            from_node_id=row["from_node_id"],
+            to_node_id=row["to_node_id"],
             load=load,
             description=row["description"],
         )
@@ -302,8 +309,8 @@ class CatalogStore(PostgresTable):
 
     def _sql(self, text: LiteralString) -> sql.Composed:
         """SQL с именами таблиц по значению enum и колонок с префиксом таблицы:
-        l_ layers, d_ datasets, c_ columns, k_ load_kinds, f_ flows, v_ versions,
-        dr_ drafts, op_ draft_ops, vw_ views, lay_ view_layout, sh_ view_shares.
+        l_ layers, n_ nodes, k_ load_kinds, f_ flows, v_ versions, dr_ drafts,
+        op_ draft_ops, vw_ views, lay_ view_layout, sh_ view_shares.
         """
         names: dict[str, sql.Composable] = {}
         for table in CatalogTable:
@@ -311,8 +318,7 @@ class CatalogStore(PostgresTable):
 
         prefixed: dict[str, type[StrEnum]] = {
             "l": LayersColumn,
-            "d": DatasetsColumn,
-            "c": ColumnsColumn,
+            "n": NodesColumn,
             "k": LoadKindsColumn,
             "f": FlowsColumn,
             "v": VersionsColumn,
@@ -361,10 +367,12 @@ class CatalogStore(PostgresTable):
             self._sql(
                 """
                 create table if not exists {layers} (
-                    {l_id}         uuid primary key,
-                    {l_name}       text not null,
-                    {l_created_at} timestamptz not null default now(),
-                    unique ({l_name}) deferrable initially deferred
+                    {l_id}          uuid primary key,
+                    {l_name}        text not null,
+                    {l_position}    integer not null,
+                    {l_description} text not null default '',
+                    unique ({l_name}) deferrable initially deferred,
+                    unique ({l_position}) deferrable initially deferred
                 )
                 """
             ),
@@ -381,48 +389,32 @@ class CatalogStore(PostgresTable):
             ),
             self._sql(
                 """
-                create table if not exists {datasets} (
-                    {d_id}          uuid primary key,
-                    {d_layer_id}    uuid not null references {layers} ({l_id})
+                create table if not exists {nodes} (
+                    {n_id}          uuid primary key,
+                    {n_layer_id}    uuid not null references {layers} ({l_id})
                                     deferrable initially deferred,
-                    {d_name}        text not null,
-                    {d_source}      text not null default '',
-                    {d_description} text not null default '',
-                    {d_tags}        text[] not null default '{{}}',
-                    {d_owner}       text not null default '',
-                    unique ({d_layer_id}, {d_name}) deferrable initially deferred
-                )
-                """
-            ),
-            self._sql(
-                """
-                create table if not exists {columns} (
-                    {c_id}          uuid primary key,
-                    {c_dataset_id}  uuid not null references {datasets} ({d_id})
-                                    deferrable initially deferred,
-                    {c_name}        text not null,
-                    {c_type}        text not null,
-                    {c_nullable}    boolean not null,
-                    {c_is_key}      boolean not null,
-                    {c_position}    integer not null,
-                    {c_description} text not null default '',
-                    unique ({c_dataset_id}, {c_name}) deferrable initially deferred,
-                    unique ({c_dataset_id}, {c_position}) deferrable initially deferred
+                    {n_source_id}   uuid not null,
+                    {n_object_kind} text not null,
+                    {n_path}        text[] not null,
+                    {n_alias}       text null,
+                    {n_note}        text not null default '',
+                    unique ({n_source_id}, {n_object_kind}, {n_path})
+                        deferrable initially deferred
                 )
                 """
             ),
             self._sql(
                 """
                 create table if not exists {flows} (
-                    {f_id}              uuid primary key,
-                    {f_from_dataset_id} uuid not null references {datasets} ({d_id})
-                                        deferrable initially deferred,
-                    {f_to_dataset_id}   uuid not null references {datasets} ({d_id})
-                                        deferrable initially deferred,
-                    {f_load_kind_id}    uuid not null references {load_kinds} ({k_id})
-                                        deferrable initially deferred,
-                    {f_load_values}     jsonb not null default '{{}}'::jsonb,
-                    {f_description}     text not null default ''
+                    {f_id}           uuid primary key,
+                    {f_from_node_id} uuid not null references {nodes} ({n_id})
+                                     deferrable initially deferred,
+                    {f_to_node_id}   uuid not null references {nodes} ({n_id})
+                                     deferrable initially deferred,
+                    {f_load_kind_id} uuid not null references {load_kinds} ({k_id})
+                                     deferrable initially deferred,
+                    {f_load_values}  jsonb not null default '{{}}'::jsonb,
+                    {f_description}  text not null default ''
                 )
                 """
             ),
@@ -432,6 +424,7 @@ class CatalogStore(PostgresTable):
                     {v_number}       integer primary key,
                     {v_operations}   jsonb not null,
                     {v_author}       jsonb not null,
+                    {v_pins}         jsonb not null default '{{}}'::jsonb,
                     {v_published_at} timestamptz not null default now()
                 )
                 """
@@ -443,6 +436,7 @@ class CatalogStore(PostgresTable):
                     {dr_name}         text not null,
                     {dr_base_version} integer not null,
                     {dr_status}       text not null,
+                    {dr_pins}         jsonb not null default '{{}}'::jsonb,
                     {dr_created_by}   uuid not null,
                     {dr_created_at}   timestamptz not null default now()
                 )
@@ -464,24 +458,24 @@ class CatalogStore(PostgresTable):
             self._sql(
                 """
                 create table if not exists {views} (
-                    {vw_id}          uuid primary key,
-                    {vw_name}        text not null,
-                    {vw_owner_id}    uuid not null,
-                    {vw_dataset_ids} uuid[] not null default '{{}}',
-                    {vw_layer_ids}   uuid[] not null default '{{}}',
-                    {vw_created_at}  timestamptz not null default now()
+                    {vw_id}         uuid primary key,
+                    {vw_name}       text not null,
+                    {vw_owner_id}   uuid not null,
+                    {vw_node_ids}   uuid[] not null default '{{}}',
+                    {vw_layer_ids}  uuid[] not null default '{{}}',
+                    {vw_created_at} timestamptz not null default now()
                 )
                 """
             ),
             self._sql(
                 """
                 create table if not exists {view_layout} (
-                    {lay_view_id}    uuid not null references {views} ({vw_id})
-                                     on delete cascade,
-                    {lay_dataset_id} uuid not null,
-                    {lay_x}          double precision not null,
-                    {lay_y}          double precision not null,
-                    primary key ({lay_view_id}, {lay_dataset_id})
+                    {lay_view_id} uuid not null references {views} ({vw_id})
+                                  on delete cascade,
+                    {lay_node_id} uuid not null,
+                    {lay_x}       double precision not null,
+                    {lay_y}       double precision not null,
+                    primary key ({lay_view_id}, {lay_node_id})
                 )
                 """
             ),
@@ -515,6 +509,7 @@ class CatalogStore(PostgresTable):
                 {v_number},
                 {v_operations},
                 {v_author},
+                {v_pins},
                 {v_published_at}
             from
                 {versions}
@@ -538,7 +533,9 @@ class CatalogStore(PostgresTable):
         async with self._transaction("snapshot at") as cur:
             return await self._snapshot_at(cur, version)
 
-    async def create_draft(self, name: str, created_by: UUID) -> Draft:
+    async def create_draft(
+        self, name: str, created_by: UUID, pins: Mapping[UUID, int]
+    ) -> Draft:
         """Черновик над текущей опубликованной версией."""
         query = self._sql(
             """
@@ -547,6 +544,7 @@ class CatalogStore(PostgresTable):
                 {dr_name},
                 {dr_base_version},
                 {dr_status},
+                {dr_pins},
                 {dr_created_by}
             )
             values (
@@ -554,6 +552,7 @@ class CatalogStore(PostgresTable):
                 %(name)s,
                 %(base_version)s,
                 %(status)s,
+                %(pins)s,
                 %(created_by)s
             )
             returning
@@ -561,6 +560,7 @@ class CatalogStore(PostgresTable):
                 {dr_name},
                 {dr_base_version},
                 {dr_status},
+                {dr_pins},
                 {dr_created_by},
                 {dr_created_at}
             """
@@ -573,6 +573,7 @@ class CatalogStore(PostgresTable):
                 "name": name,
                 "base_version": current,
                 "status": DraftStatus.OPEN.value,
+                "pins": Jsonb(self._pins_json(pins)),
                 "created_by": created_by,
             }
             await cur.execute(query, params)
@@ -596,6 +597,7 @@ class CatalogStore(PostgresTable):
                 {dr_name},
                 {dr_base_version},
                 {dr_status},
+                {dr_pins},
                 {dr_created_by},
                 {dr_created_at}
             from
@@ -649,9 +651,15 @@ class CatalogStore(PostgresTable):
         return DraftState(draft=draft, snapshot=folded, diff=diff, seq=seq)
 
     async def append_ops(
-        self, draft_id: UUID, expected_seq: int, author: DraftAuthor, ops: OperationList
+        self,
+        draft_id: UUID,
+        expected_seq: int,
+        author: DraftAuthor,
+        ops: OperationList,
+        resolver: ObjectResolver,
     ) -> DraftOp:
-        """Порция операций; принимается только с актуальным expected_seq.
+        """Порция операций; принимается только с актуальным expected_seq, ссылки
+        на объекты и колонки проверяются резолвером привязанных версий.
 
         Ошибки:
         DraftConflictError — expected_seq отстал.
@@ -687,7 +695,7 @@ class CatalogStore(PostgresTable):
             base = await self._snapshot_at(cur, draft.base_version)
             stored = await self._ops_of(cur, draft_id)
             state = self._fold(draft, base, stored)
-            ops.apply(state)
+            ops.apply(state, resolver)
 
             seq = current_seq + 1
             params = {
@@ -722,12 +730,14 @@ class CatalogStore(PostgresTable):
             insert into {versions} (
                 {v_number},
                 {v_operations},
-                {v_author}
+                {v_author},
+                {v_pins}
             )
             values (
                 %(number)s,
                 %(operations)s,
-                %(author)s
+                %(author)s,
+                %(pins)s
             )
             returning
                 {v_published_at}
@@ -758,6 +768,7 @@ class CatalogStore(PostgresTable):
                 "number": number,
                 "operations": Jsonb(operations.model_dump(mode="json")),
                 "author": Jsonb(author.model_dump(mode="json")),
+                "pins": Jsonb(self._pins_json(draft.pins)),
             }
             await cur.execute(insert_version, params)
             row = await cur.fetchone()
@@ -771,16 +782,37 @@ class CatalogStore(PostgresTable):
             number=number,
             operations=operations,
             author=author,
+            pins=draft.pins,
             published_at=row["published_at"],
         )
 
-    async def rebase(self, draft_id: UUID, *, drop_conflicts: bool) -> RebaseResult:
+    async def set_pins(self, draft_id: UUID, pins: Mapping[UUID, int]) -> Draft:
+        """Привязки черновика к версиям источников: после поднятия до новых."""
+        async with self._transaction("set pins") as cur:
+            draft = await self._draft(cur, draft_id, lock=True)
+            self._require_open(draft)
+            await cur.execute(
+                self._sql(
+                    """
+                    update {drafts}
+                    set {dr_pins} = %(pins)s
+                    where {dr_id} = %(draft_id)s
+                    """
+                ),
+                {"draft_id": draft_id, "pins": Jsonb(self._pins_json(pins))},
+            )
+            return await self._draft(cur, draft_id, lock=False)
+
+    async def rebase(
+        self, draft_id: UUID, *, drop_conflicts: bool, resolver: ObjectResolver
+    ) -> RebaseResult:
         """Перевод черновика на текущую версию.
 
-        Операции применяются к текущему снимку по одной; не применимые
-        собираются в issues. Без drop_conflicts черновик при конфликтах не
-        меняется; с drop_conflicts конфликтные операции вычёркиваются из
-        порций, и черновик переводится на текущую версию.
+        Операции применяются к текущему снимку по одной с проверкой по
+        резолверу; не применимые собираются в issues. Без drop_conflicts
+        черновик при конфликтах не меняется; с drop_conflicts конфликтные
+        операции вычёркиваются из порций, и черновик переводится на текущую
+        версию.
         """
         update_ops = self._sql(
             """
@@ -806,6 +838,7 @@ class CatalogStore(PostgresTable):
                 {dr_name},
                 {dr_base_version},
                 {dr_status},
+                {dr_pins},
                 {dr_created_by},
                 {dr_created_at}
             """
@@ -829,7 +862,7 @@ class CatalogStore(PostgresTable):
                 kept[portion.seq] = []
                 for index, op in enumerate(portion.operations.root):
                     try:
-                        state = OperationList(root=(op,)).apply(state)
+                        state = OperationList(root=(op,)).apply(state, resolver)
                     except CatalogOpError as exc:
                         issue = RebaseIssue(
                             seq=portion.seq, index=index, reason=exc.reason
@@ -872,21 +905,21 @@ class CatalogStore(PostgresTable):
                 {vw_id},
                 {vw_name},
                 {vw_owner_id},
-                {vw_dataset_ids},
+                {vw_node_ids},
                 {vw_layer_ids}
             )
             values (
                 %(id)s,
                 %(name)s,
                 %(owner_id)s,
-                %(dataset_ids)s,
+                %(node_ids)s,
                 %(layer_ids)s
             )
             returning
                 {vw_id},
                 {vw_name},
                 {vw_owner_id},
-                {vw_dataset_ids},
+                {vw_node_ids},
                 {vw_layer_ids},
                 {vw_created_at}
             """
@@ -895,7 +928,7 @@ class CatalogStore(PostgresTable):
             "id": uuid4(),
             "name": spec.name,
             "owner_id": owner_id,
-            "dataset_ids": list(spec.dataset_ids),
+            "node_ids": list(spec.node_ids),
             "layer_ids": list(spec.layer_ids),
         }
 
@@ -920,7 +953,7 @@ class CatalogStore(PostgresTable):
                 {views}
             set
                 {vw_name} = %(name)s,
-                {vw_dataset_ids} = %(dataset_ids)s,
+                {vw_node_ids} = %(node_ids)s,
                 {vw_layer_ids} = %(layer_ids)s
             where
                 {vw_id} = %(id)s
@@ -928,7 +961,7 @@ class CatalogStore(PostgresTable):
                 {vw_id},
                 {vw_name},
                 {vw_owner_id},
-                {vw_dataset_ids},
+                {vw_node_ids},
                 {vw_layer_ids},
                 {vw_created_at}
             """
@@ -936,7 +969,7 @@ class CatalogStore(PostgresTable):
         params = {
             "id": view_id,
             "name": spec.name,
-            "dataset_ids": list(spec.dataset_ids),
+            "node_ids": list(spec.node_ids),
             "layer_ids": list(spec.layer_ids),
         }
 
@@ -995,7 +1028,7 @@ class CatalogStore(PostgresTable):
                 v.{vw_id},
                 v.{vw_name},
                 v.{vw_owner_id},
-                v.{vw_dataset_ids},
+                v.{vw_node_ids},
                 v.{vw_layer_ids},
                 v.{vw_created_at}
             from
@@ -1029,7 +1062,7 @@ class CatalogStore(PostgresTable):
         query = self._sql(
             """
             select
-                {lay_dataset_id},
+                {lay_node_id},
                 {lay_x},
                 {lay_y}
             from
@@ -1037,7 +1070,7 @@ class CatalogStore(PostgresTable):
             where
                 {lay_view_id} = %(view_id)s
             order by
-                {lay_dataset_id}
+                {lay_node_id}
             """
         )
 
@@ -1049,7 +1082,7 @@ class CatalogStore(PostgresTable):
         positions: list[NodePosition] = []
         for row in rows:
             positions.append(
-                NodePosition(dataset_id=row["dataset_id"], x=row["x"], y=row["y"])
+                NodePosition(node_id=row["node_id"], x=row["x"], y=row["y"])
             )
 
         return ViewLayout(view_id=view_id, positions=tuple(positions))
@@ -1070,13 +1103,13 @@ class CatalogStore(PostgresTable):
             """
             insert into {view_layout} (
                 {lay_view_id},
-                {lay_dataset_id},
+                {lay_node_id},
                 {lay_x},
                 {lay_y}
             )
             values (
                 %(view_id)s,
-                %(dataset_id)s,
+                %(node_id)s,
                 %(x)s,
                 %(y)s
             )
@@ -1088,7 +1121,7 @@ class CatalogStore(PostgresTable):
             rows.append(
                 {
                     "view_id": view_id,
-                    "dataset_id": position.dataset_id,
+                    "node_id": position.node_id,
                     "x": position.x,
                     "y": position.y,
                 }
@@ -1189,55 +1222,38 @@ class CatalogStore(PostgresTable):
             return cur.rowcount > 0
 
     async def _read_snapshot(self, cur: Cursor) -> CatalogSnapshot:
-        """Снимок из таблиц: ссылки на колонки в потоках приводятся по видам."""
+        """Снимок из таблиц процесса, проверенный check()."""
         layers = await self._rows(
             cur,
             """
             select
                 {l_id},
-                {l_name}
+                {l_name},
+                {l_position},
+                {l_description}
             from
                 {layers}
             order by
-                {l_created_at},
+                {l_position},
                 {l_id}
             """,
         )
-        datasets = await self._rows(
+        nodes = await self._rows(
             cur,
             """
             select
-                {d_id},
-                {d_layer_id},
-                {d_name},
-                {d_source},
-                {d_description},
-                {d_tags},
-                {d_owner}
+                {n_id},
+                {n_layer_id},
+                {n_source_id},
+                {n_object_kind},
+                {n_path},
+                {n_alias},
+                {n_note}
             from
-                {datasets}
+                {nodes}
             order by
-                {d_name},
-                {d_id}
-            """,
-        )
-        columns = await self._rows(
-            cur,
-            """
-            select
-                {c_id},
-                {c_dataset_id},
-                {c_name},
-                {c_type},
-                {c_nullable},
-                {c_is_key},
-                {c_position},
-                {c_description}
-            from
-                {columns}
-            order by
-                {c_dataset_id},
-                {c_position}
+                {n_path},
+                {n_id}
             """,
         )
         kinds = await self._rows(
@@ -1260,8 +1276,8 @@ class CatalogStore(PostgresTable):
             """
             select
                 {f_id},
-                {f_from_dataset_id},
-                {f_to_dataset_id},
+                {f_from_node_id},
+                {f_to_node_id},
                 {f_load_kind_id},
                 {f_load_values},
                 {f_description}
@@ -1273,7 +1289,7 @@ class CatalogStore(PostgresTable):
         )
 
         try:
-            return self._assemble(layers, datasets, columns, kinds, flows)
+            return self._assemble(layers, nodes, kinds, flows)
         except ValidationError as exc:
             msg = "catalog: a table row is not a valid entity"
             raise CatalogStoreError(msg) from exc
@@ -1284,8 +1300,7 @@ class CatalogStore(PostgresTable):
     @staticmethod
     def _assemble(
         layers: Sequence[DictRow],
-        datasets: Sequence[DictRow],
-        columns: Sequence[DictRow],
+        nodes: Sequence[DictRow],
         kinds: Sequence[DictRow],
         flows: Sequence[DictRow],
     ) -> CatalogSnapshot:
@@ -1294,37 +1309,28 @@ class CatalogStore(PostgresTable):
             layer = Layer.model_validate(row)
             layer_table[layer.id] = layer
 
-        dataset_table: dict[UUID, Dataset] = {}
-        for row in datasets:
-            dataset = Dataset.model_validate(row)
-            dataset_table[dataset.id] = dataset
-
-        column_table: dict[UUID, Column] = {}
-        for row in columns:
-            column = Column.model_validate(row)
-            column_table[column.id] = column
+        node_table: dict[UUID, Node] = {}
+        for row in nodes:
+            node = EntityRows.node_of(row)
+            node_table[node.id] = node
 
         kind_table: dict[UUID, LoadKind] = {}
         for row in kinds:
             kind = LoadKind.model_validate(row)
             kind_table[kind.id] = kind
 
-        partial = CatalogSnapshot(
-            layers=layer_table,
-            datasets=dataset_table,
-            columns=column_table,
-            load_kinds=kind_table,
-            flows={},
-        )
-
         flow_table: dict[UUID, Flow] = {}
         for row in flows:
-            flow = partial.conformed(EntityRows.flow_of(row))
+            flow = EntityRows.flow_of(row)
             flow_table[flow.id] = flow
 
-        snapshot = partial.model_copy(update={"flows": flow_table})
+        snapshot = CatalogSnapshot(
+            layers=layer_table,
+            nodes=node_table,
+            load_kinds=kind_table,
+            flows=flow_table,
+        )
         snapshot.check()
-
         return snapshot
 
     async def _rows(self, cur: Cursor, text: LiteralString) -> Sequence[DictRow]:
@@ -1363,6 +1369,7 @@ class CatalogStore(PostgresTable):
                 {v_number},
                 {v_operations},
                 {v_author},
+                {v_pins},
                 {v_published_at}
             from
                 {versions}
@@ -1379,7 +1386,7 @@ class CatalogStore(PostgresTable):
         for row in rows:
             stored = self._version_of(row)
             try:
-                snapshot = stored.operations.apply(snapshot)
+                snapshot = stored.operations.apply(snapshot, AcceptAll())
             except CatalogOpError as exc:
                 msg = f"catalog: version {stored.number} history does not apply: {exc}"
                 raise CatalogStoreError(msg) from exc
@@ -1398,6 +1405,7 @@ class CatalogStore(PostgresTable):
                 {dr_name},
                 {dr_base_version},
                 {dr_status},
+                {dr_pins},
                 {dr_created_by},
                 {dr_created_at}
             from
@@ -1507,7 +1515,7 @@ class CatalogStore(PostgresTable):
         state = base
         for portion in ops:
             try:
-                state = portion.operations.apply(state)
+                state = portion.operations.apply(state, AcceptAll())
             except CatalogOpError as exc:
                 msg = (
                     f"catalog: draft {draft.id} seq {portion.seq} no longer applies "
@@ -1516,6 +1524,14 @@ class CatalogStore(PostgresTable):
                 raise CatalogStoreError(msg) from exc
 
         return state
+
+    @staticmethod
+    def _pins_json(pins: Mapping[UUID, int]) -> dict[str, int]:
+        rendered: dict[str, int] = {}
+        for source_id, version in pins.items():
+            rendered[str(source_id)] = version
+
+        return rendered
 
     @staticmethod
     def _concatenated(ops: Sequence[DraftOp]) -> OperationList:
@@ -1619,7 +1635,7 @@ class CatalogStore(PostgresTable):
                 {vw_id},
                 {vw_name},
                 {vw_owner_id},
-                {vw_dataset_ids},
+                {vw_node_ids},
                 {vw_layer_ids},
                 {vw_created_at}
             from

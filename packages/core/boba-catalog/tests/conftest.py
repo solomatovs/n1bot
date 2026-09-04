@@ -1,11 +1,11 @@
-"""Фикстуры домена каталога: образец и снимок; стенд не нужен."""
+"""Фикстуры домена каталога: образцы источников и процесса; стенд не нужен."""
 
 from __future__ import annotations
 
 import pytest
-from sample_catalog import Sample
 
 from boba.catalog import CatalogSnapshot
+from boba.catalog.samples import PgSample, ProcessSample, SampleResolver
 
 
 @pytest.fixture(scope="session")
@@ -14,10 +14,20 @@ def kerberos_workspace() -> None:
 
 
 @pytest.fixture
-def sample() -> Sample:
-    return Sample()
+def pg() -> PgSample:
+    return PgSample()
 
 
 @pytest.fixture
-def snapshot(sample: Sample) -> CatalogSnapshot:
-    return sample.snapshot()
+def process() -> ProcessSample:
+    return ProcessSample()
+
+
+@pytest.fixture
+def snapshot(process: ProcessSample) -> CatalogSnapshot:
+    return process.snapshot()
+
+
+@pytest.fixture
+def resolver(pg: PgSample) -> SampleResolver:
+    return SampleResolver(pg.snapshot())

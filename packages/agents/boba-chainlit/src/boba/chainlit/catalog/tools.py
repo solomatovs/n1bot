@@ -1,11 +1,11 @@
 """Инструменты LLM над каталогом данных: живут на хосте и зовут CatalogService
 от имени субъекта хода чата.
 
-catalog_read отдаёт модели снимок или срез по наборам с соседями по потокам и
-видами загрузки; catalog_draft создаёт черновик или перечисляет открытые;
-catalog_propose шлёт порцию операций JSON-списком; catalog_diff показывает
-черновик относительно его базовой версии; catalog_open оставляет в чате
-ссылку на страницу черновика или вида.
+catalog_read отдаёт модели снимок процесса или срез по узлам с колонками из
+источников, соседями по потокам и видами загрузки; catalog_draft создаёт
+черновик или перечисляет открытые; catalog_propose шлёт порцию операций
+JSON-списком; catalog_diff показывает черновик относительно его базовой
+версии; catalog_open оставляет в чате ссылку на страницу черновика или вида.
 
 Ошибки: ErrorResult — нет хода чата, нет прав, черновик или вид не найден,
 операции не разбираются или не применимы, хранилище недоступно; остальное
@@ -28,9 +28,10 @@ from boba.catalog import (
     CatalogOpError,
     CatalogSnapshot,
     ChangeStatus,
-    Dataset,
     EntityRef,
     Flow,
+    Node,
+    ObjectResolver,
     OperationList,
 )
 from boba.catalog_service import (
@@ -120,28 +121,35 @@ class CatalogPageUrl(StrEnum):
 class CatalogPrompt(StrEnum):
     """Тексты фасада инструментов для модели."""
 
-    DATASETS = (
-        "Comma-separated dataset names to focus on; empty string returns the whole "
-        "catalog. With names the answer holds those datasets, their columns, the "
-        "flows touching them and the datasets on the other end of those flows."
+    NODES = (
+        "Comma-separated node labels to focus on (object name or alias); empty "
+        "string returns the whole process. With labels the answer holds those "
+        "nodes with their source columns, the flows touching them and the nodes "
+        "on the other end of those flows."
     )
     DRAFT_NAME = (
         "Name of a new draft to create; empty string lists the open drafts instead. "
-        "A draft is a branch of operations over the published catalog: propose "
+        "A draft is a branch of operations over the published process: propose "
         "changes into it, then the user publishes it from the page."
     )
     DRAFT_ID = "Draft id (uuid) from catalog_draft."
     OPERATIONS = (
         'JSON array of operations. Each item has "op" and a body: add_layer/'
-        "set_layer {layer}, remove_layer {id}; add_dataset/set_dataset {dataset}, "
-        "remove_dataset {id}; add_column/set_column {column}, remove_column {id}; "
-        "add_load_kind/set_load_kind {load_kind}, remove_load_kind {id}; add_flow/"
-        "set_flow {flow}, remove_flow {id}. Entities carry their own uuid ids: "
+        "set_layer {layer: {id, name, position, description}}, remove_layer {id}; "
+        "add_node/set_node {node: {id, layer_id, ref: {source_id, kind, path[]}, "
+        "alias, note}}, retarget_node {id, ref}, remove_node {id}; "
+        "add_load_kind/set_load_kind {load_kind: {id, name, description, fields: "
+        "[{name, type: text|int|bool|column|columns|routine, side: source|target|any, "
+        "required, description}]}}, remove_load_kind {id}; add_flow/set_flow "
+        "{flow: {id, from_node_id, to_node_id, load: {kind_id, values}, "
+        "description}}, remove_flow {id}. Entities carry their own uuid ids: "
         "generate new uuids for add_*, reuse existing ids for set_* (the whole "
-        "entity is replaced) and remove_*. Flow load values follow the fields of "
-        "its load kind; column references are column ids. Removing a dataset "
-        "removes its columns but is refused while flows use it: remove the flows "
-        "earlier in the same list."
+        "entity is replaced) and remove_*. A node points at an object of a "
+        "metadata source by its address (kind and path as in catalog_sources); "
+        "flow load values follow the fields of the load kind: column fields name "
+        "columns of the flow ends by their names, routine fields carry an object "
+        "address of a function or procedure. Removing a node is refused while "
+        "flows use it: remove the flows earlier in the same list."
     )
     LINK_KIND = "What to open: 'draft' or 'view'."
     LINK_ID = "Id (uuid) of the draft or the view."
@@ -149,45 +157,40 @@ class CatalogPrompt(StrEnum):
 
 
 class ColumnView(BaseModel):
-    """Колонка набора глазами модели."""
+    """Колонка объекта источника глазами модели: имя как в источнике."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    id: UUID
     name: str
-    type: str
-    nullable: bool
-    is_key: bool
-    position: int
-    description: str
 
 
-class DatasetView(BaseModel):
-    """Набор с именем слоя и колонками."""
+class NodeView(BaseModel):
+    """Узел с именем слоя, адресом объекта и колонками из версии источника."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: UUID
     layer: str
     layer_id: UUID
-    name: str
-    source: str
-    description: str
-    tags: tuple[str, ...]
-    owner: str
+    label: str
+    alias: str | None
+    note: str
+    source_id: UUID
+    object_kind: str
+    path: tuple[str, ...]
     columns: tuple[ColumnView, ...]
 
 
 class FlowView(BaseModel):
-    """Поток с именами концов и правилом загрузки."""
+    """Поток с подписями концов и правилом загрузки."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: UUID
-    from_dataset: str
-    from_dataset_id: UUID
-    to_dataset: str
-    to_dataset_id: UUID
+    from_node: str
+    from_node_id: UUID
+    to_node: str
+    to_node_id: UUID
     load_kind: str
     load_kind_id: UUID
     load_values: Mapping[str, Any]
@@ -208,46 +211,56 @@ class LayerView(BaseModel):
 
     id: UUID
     name: str
+    position: int
 
 
 class CatalogView(BaseModel):
-    """Снимок или его срез в форме, удобной модели: имена рядом с id."""
+    """Снимок процесса или его срез в форме, удобной модели: подписи рядом с id,
+    колонки узлов из привязанных версий источников."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     version: int
+    pins: Mapping[str, int]
     layers: tuple[LayerView, ...]
     load_kinds: tuple[LoadKindView, ...]
-    datasets: tuple[DatasetView, ...]
+    nodes: tuple[NodeView, ...]
     flows: tuple[FlowView, ...]
-    unknown_datasets: tuple[str, ...]
+    unknown_nodes: tuple[str, ...]
 
     @classmethod
     def of(
-        cls, snapshot: CatalogSnapshot, version: int, names: Sequence[str]
+        cls,
+        snapshot: CatalogSnapshot,
+        version: int,
+        pins: Mapping[UUID, int],
+        resolver: ObjectResolver,
+        labels: Sequence[str],
     ) -> CatalogView:
-        """Весь каталог без имён; с именами — эти наборы, их потоки и соседи."""
-        chosen, unknown = cls._chosen(snapshot, names)
+        """Весь процесс без подписей; с подписями — эти узлы, их потоки и соседи."""
+        chosen, unknown = cls._chosen(snapshot, labels)
 
         flows: list[FlowView] = []
         for flow in snapshot.flows.values():
             if not cls._touches(flow, chosen):
                 continue
 
-            chosen.add(flow.from_dataset_id)
-            chosen.add(flow.to_dataset_id)
+            chosen.add(flow.from_node_id)
+            chosen.add(flow.to_node_id)
             flows.append(cls._flow(snapshot, flow))
 
-        datasets: list[DatasetView] = []
-        for dataset in snapshot.datasets.values():
-            if dataset.id not in chosen:
+        nodes: list[NodeView] = []
+        for node in snapshot.nodes.values():
+            if node.id not in chosen:
                 continue
 
-            datasets.append(cls._dataset(snapshot, dataset))
+            nodes.append(cls._node(snapshot, node, resolver))
 
         layers: list[LayerView] = []
-        for layer in snapshot.layers.values():
-            layers.append(LayerView(id=layer.id, name=layer.name))
+        for layer in sorted(snapshot.layers.values(), key=attrgetter("position")):
+            layers.append(
+                LayerView(id=layer.id, name=layer.name, position=layer.position)
+            )
 
         kinds: list[LoadKindView] = []
         for kind in snapshot.load_kinds.values():
@@ -261,75 +274,73 @@ class CatalogView(BaseModel):
                 )
             )
 
+        rendered_pins: dict[str, int] = {}
+        for source_id, pinned in pins.items():
+            rendered_pins[str(source_id)] = pinned
+
         return cls(
             version=version,
+            pins=rendered_pins,
             layers=tuple(layers),
             load_kinds=tuple(kinds),
-            datasets=tuple(datasets),
+            nodes=tuple(nodes),
             flows=tuple(flows),
-            unknown_datasets=tuple(unknown),
+            unknown_nodes=tuple(unknown),
         )
 
     @staticmethod
     def _chosen(
-        snapshot: CatalogSnapshot, names: Sequence[str]
+        snapshot: CatalogSnapshot, labels: Sequence[str]
     ) -> tuple[set[UUID], list[str]]:
-        """Наборы по именам; без имён выбран весь каталог."""
-        if not names:
-            return set(snapshot.datasets), []
+        """Узлы по подписям; без подписей выбран весь процесс."""
+        if not labels:
+            return set(snapshot.nodes), []
 
         chosen: set[UUID] = set()
         unknown: list[str] = []
-        for name in names:
+        for label in labels:
             found = False
-            for dataset in snapshot.datasets.values():
-                if dataset.name != name:
+            for node in snapshot.nodes.values():
+                if label not in (node.label, node.ref.path[-1], node.ref.render()):
                     continue
 
-                chosen.add(dataset.id)
+                chosen.add(node.id)
                 found = True
 
             if not found:
-                unknown.append(name)
+                unknown.append(label)
 
         return chosen, unknown
 
     @staticmethod
     def _touches(flow: Flow, chosen: set[UUID]) -> bool:
-        if flow.from_dataset_id in chosen:
+        if flow.from_node_id in chosen:
             return True
 
-        return flow.to_dataset_id in chosen
+        return flow.to_node_id in chosen
 
     @staticmethod
-    def _dataset(snapshot: CatalogSnapshot, dataset: Dataset) -> DatasetView:
-        layer_name = snapshot.layers[dataset.layer_id].name
-
-        ordered = sorted(snapshot.columns_of(dataset.id), key=attrgetter("position"))
+    def _node(
+        snapshot: CatalogSnapshot, node: Node, resolver: ObjectResolver
+    ) -> NodeView:
+        layer_name = snapshot.layers[node.layer_id].name
 
         columns: list[ColumnView] = []
-        for column in ordered:
-            columns.append(
-                ColumnView(
-                    id=column.id,
-                    name=column.name,
-                    type=column.type,
-                    nullable=column.nullable,
-                    is_key=column.is_key,
-                    position=column.position,
-                    description=column.description,
-                )
-            )
+        names = resolver.columns_of(node.ref)
+        if names is not None:
+            for name in names:
+                columns.append(ColumnView(name=name))
 
-        return DatasetView(
-            id=dataset.id,
+        return NodeView(
+            id=node.id,
             layer=layer_name,
-            layer_id=dataset.layer_id,
-            name=dataset.name,
-            source=dataset.source,
-            description=dataset.description,
-            tags=dataset.tags,
-            owner=dataset.owner,
+            layer_id=node.layer_id,
+            label=node.label,
+            alias=node.alias,
+            note=node.note,
+            source_id=node.ref.source_id,
+            object_kind=node.ref.kind.value,
+            path=node.ref.path,
             columns=tuple(columns),
         )
 
@@ -340,10 +351,10 @@ class CatalogView(BaseModel):
 
         return FlowView(
             id=flow.id,
-            from_dataset=snapshot.datasets[flow.from_dataset_id].name,
-            from_dataset_id=flow.from_dataset_id,
-            to_dataset=snapshot.datasets[flow.to_dataset_id].name,
-            to_dataset_id=flow.to_dataset_id,
+            from_node=snapshot.nodes[flow.from_node_id].label,
+            from_node_id=flow.from_node_id,
+            to_node=snapshot.nodes[flow.to_node_id].label,
+            to_node_id=flow.to_node_id,
             load_kind=kind.name,
             load_kind_id=kind.id,
             load_values=values,
@@ -393,17 +404,23 @@ class CatalogTools:
         self._service = service
         self._prefix = prefix
 
-    async def read(self, datasets: str) -> tuple[str, ToolResult]:
+    async def read(self, nodes: str) -> tuple[str, ToolResult]:
         try:
             subject = self._subject()
             service = await self._service()
             snapshot = await service.snapshot(subject)
-            version = await service.store.current_version()
+            versions = await service.versions(subject)
+            pins = await service.published_pins(subject)
+            resolver = await service.resolver_of(subject, pins)
         except (RefusalError, CatalogServiceError) as exc:
             return pack_result(self._error(exc))
 
-        names = self._names(datasets)
-        view = CatalogView.of(snapshot, version, names)
+        version = 0
+        if versions:
+            version = versions[-1].number
+
+        labels = self._names(nodes)
+        view = CatalogView.of(snapshot, version, pins, resolver, labels)
 
         return pack_result(JsonResult(payload=view.model_dump(mode="json")))
 
@@ -615,12 +632,14 @@ def build_catalog_tools(
 
     @tool(response_format="content_and_artifact")
     async def catalog_read(
-        datasets: Annotated[str, Field(description=CatalogPrompt.DATASETS)],
+        nodes: Annotated[str, Field(description=CatalogPrompt.NODES)],
     ) -> tuple[str, ToolResult]:
-        """Read the published data catalog: layers, datasets with columns, load
-        kinds with their fields and flows between datasets. Call it before
-        proposing changes to learn the existing ids, names and load kinds."""
-        return await tools.read(datasets)
+        """Read the published load process: layers, nodes (objects of metadata
+        sources with their columns), load kinds with their fields and flows
+        between nodes. Call it before proposing changes to learn the existing
+        ids, addresses and load kinds; use catalog_sources for the objects a
+        node could point at."""
+        return await tools.read(nodes)
 
     @tool(response_format="content_and_artifact")
     async def catalog_draft(

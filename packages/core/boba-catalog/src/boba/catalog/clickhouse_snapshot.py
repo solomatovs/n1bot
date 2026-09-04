@@ -17,7 +17,7 @@ from uuid import UUID
 
 from pydantic import Field
 
-from boba.catalog.model import CatalogModel
+from boba.catalog.base import CatalogModel
 from boba.catalog.sources import (
     Keyed,
     ObjectKind,

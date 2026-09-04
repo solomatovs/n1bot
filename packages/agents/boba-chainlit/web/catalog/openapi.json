@@ -369,6 +369,113 @@
         }
       }
     },
+    "/api/catalog/drafts/{draft_id}/staleness": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Draft Staleness",
+        "operationId": "draft_staleness_api_catalog_drafts__draft_id__staleness_get",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Staleness"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/drafts/{draft_id}/pins": {
+      "post": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Bump Pins",
+        "operationId": "bump_pins_api_catalog_drafts__draft_id__pins_post",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PinBump"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/staleness": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Staleness",
+        "operationId": "staleness_api_catalog_staleness_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Staleness"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/catalog/views": {
       "get": {
         "tags": [
@@ -1977,44 +2084,6 @@
   },
   "components": {
     "schemas": {
-      "AddColumn": {
-        "properties": {
-          "op": {
-            "type": "string",
-            "const": "add_column",
-            "title": "Op",
-            "default": "add_column"
-          },
-          "column": {
-            "$ref": "#/components/schemas/Column"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "column"
-        ],
-        "title": "AddColumn"
-      },
-      "AddDataset": {
-        "properties": {
-          "op": {
-            "type": "string",
-            "const": "add_dataset",
-            "title": "Op",
-            "default": "add_dataset"
-          },
-          "dataset": {
-            "$ref": "#/components/schemas/Dataset"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "dataset"
-        ],
-        "title": "AddDataset"
-      },
       "AddFlow-Input": {
         "properties": {
           "op": {
@@ -2024,7 +2093,7 @@
             "default": "add_flow"
           },
           "flow": {
-            "$ref": "#/components/schemas/Flow"
+            "$ref": "#/components/schemas/Flow-Input"
           }
         },
         "additionalProperties": false,
@@ -2043,7 +2112,7 @@
             "default": "add_flow"
           },
           "flow": {
-            "$ref": "#/components/schemas/Flow"
+            "$ref": "#/components/schemas/Flow-Output"
           }
         },
         "additionalProperties": false,
@@ -2109,6 +2178,44 @@
           "load_kind"
         ],
         "title": "AddLoadKind"
+      },
+      "AddNode-Input": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "add_node",
+            "title": "Op",
+            "default": "add_node"
+          },
+          "node": {
+            "$ref": "#/components/schemas/Node-Input"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "node"
+        ],
+        "title": "AddNode"
+      },
+      "AddNode-Output": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "add_node",
+            "title": "Op",
+            "default": "add_node"
+          },
+          "node": {
+            "$ref": "#/components/schemas/Node-Output"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "node"
+        ],
+        "title": "AddNode"
       },
       "AddObject": {
         "properties": {
@@ -2199,25 +2306,15 @@
             "type": "object",
             "title": "Layers"
           },
-          "datasets": {
+          "nodes": {
             "additionalProperties": {
-              "$ref": "#/components/schemas/Dataset"
+              "$ref": "#/components/schemas/Node-Output"
             },
             "propertyNames": {
               "format": "uuid"
             },
             "type": "object",
-            "title": "Datasets"
-          },
-          "columns": {
-            "additionalProperties": {
-              "$ref": "#/components/schemas/Column"
-            },
-            "propertyNames": {
-              "format": "uuid"
-            },
-            "type": "object",
-            "title": "Columns"
+            "title": "Nodes"
           },
           "load_kinds": {
             "additionalProperties": {
@@ -2231,7 +2328,7 @@
           },
           "flows": {
             "additionalProperties": {
-              "$ref": "#/components/schemas/Flow"
+              "$ref": "#/components/schemas/Flow-Output"
             },
             "propertyNames": {
               "format": "uuid"
@@ -2244,13 +2341,12 @@
         "type": "object",
         "required": [
           "layers",
-          "datasets",
-          "columns",
+          "nodes",
           "load_kinds",
           "flows"
         ],
         "title": "CatalogSnapshot",
-        "description": "Полное состояние каталога одной версии.\n\nТаблицы сущностей по id. Методы added/replaced/removed возвращают новый\nснимок, не меняя текущий; check() проверяет инварианты целиком."
+        "description": "Полное состояние процесса одной версии.\n\nТаблицы сущностей по id. Методы added/replaced/removed возвращают новый\nснимок, не меняя текущий; check() проверяет внутренние инварианты,\ncheck_against() — ссылки на объекты и колонки источников."
       },
       "ChColumn": {
         "properties": {
@@ -2866,61 +2962,18 @@
           "modified",
           "unchanged"
         ],
-        "title": "ChangeStatus"
+        "title": "ChangeStatus",
+        "description": "Статус сущности или объекта относительно другой версии."
       },
-      "Column": {
-        "properties": {
-          "id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Id"
-          },
-          "dataset_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Dataset Id"
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Name"
-          },
-          "type": {
-            "type": "string",
-            "title": "Type"
-          },
-          "nullable": {
-            "type": "boolean",
-            "title": "Nullable"
-          },
-          "is_key": {
-            "type": "boolean",
-            "title": "Is Key"
-          },
-          "position": {
-            "type": "integer",
-            "minimum": 0.0,
-            "title": "Position"
-          },
-          "description": {
-            "type": "string",
-            "title": "Description",
-            "default": ""
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "id",
-          "dataset_id",
-          "name",
-          "type",
-          "nullable",
-          "is_key",
-          "position"
+      "ColumnSide": {
+        "type": "string",
+        "enum": [
+          "source",
+          "target",
+          "any"
         ],
-        "title": "Column",
-        "description": "Колонка набора; position задаёт порядок в карточке."
+        "title": "ColumnSide",
+        "description": "С какого конца потока берутся колонки поля вида."
       },
       "ConnectionBody": {
         "properties": {
@@ -2936,57 +2989,6 @@
           "connection_id"
         ],
         "title": "ConnectionBody"
-      },
-      "Dataset": {
-        "properties": {
-          "id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Id"
-          },
-          "layer_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Layer Id"
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Name"
-          },
-          "source": {
-            "type": "string",
-            "title": "Source",
-            "default": ""
-          },
-          "description": {
-            "type": "string",
-            "title": "Description",
-            "default": ""
-          },
-          "tags": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Tags",
-            "default": []
-          },
-          "owner": {
-            "type": "string",
-            "title": "Owner",
-            "default": ""
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "id",
-          "layer_id",
-          "name"
-        ],
-        "title": "Dataset",
-        "description": "Набор данных внутри слоя."
       },
       "Deleted": {
         "properties": {
@@ -3038,6 +3040,16 @@
           },
           "status": {
             "$ref": "#/components/schemas/DraftStatus"
+          },
+          "pins": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "propertyNames": {
+              "format": "uuid"
+            },
+            "type": "object",
+            "title": "Pins"
           },
           "created_by": {
             "type": "string",
@@ -3140,13 +3152,12 @@
         "type": "string",
         "enum": [
           "layer",
-          "dataset",
-          "column",
+          "node",
           "load_kind",
           "flow"
         ],
         "title": "EntityKind",
-        "description": "Вид сущности каталога; знает поле снимка и вид произвольной сущности."
+        "description": "Виды сущностей снимка; значение — имя таблицы хранения."
       },
       "EntityRef": {
         "properties": {
@@ -3166,7 +3177,7 @@
           "id"
         ],
         "title": "EntityRef",
-        "description": "Ссылка на сущность каталога: вид и id."
+        "description": "Ссылка на сущность снимка: вид и id."
       },
       "FieldChange": {
         "properties": {
@@ -3207,25 +3218,25 @@
         "title": "FieldChange",
         "description": "Поле, значение которого изменилось; значения отданы строкой для показа."
       },
-      "Flow": {
+      "Flow-Input": {
         "properties": {
           "id": {
             "type": "string",
             "format": "uuid",
             "title": "Id"
           },
-          "from_dataset_id": {
+          "from_node_id": {
             "type": "string",
             "format": "uuid",
-            "title": "From Dataset Id"
+            "title": "From Node Id"
           },
-          "to_dataset_id": {
+          "to_node_id": {
             "type": "string",
             "format": "uuid",
-            "title": "To Dataset Id"
+            "title": "To Node Id"
           },
           "load": {
-            "$ref": "#/components/schemas/LoadSpec"
+            "$ref": "#/components/schemas/LoadSpec-Input"
           },
           "description": {
             "type": "string",
@@ -3237,12 +3248,49 @@
         "type": "object",
         "required": [
           "id",
-          "from_dataset_id",
-          "to_dataset_id",
+          "from_node_id",
+          "to_node_id",
           "load"
         ],
         "title": "Flow",
-        "description": "Поток данных между двумя наборами с правилом загрузки."
+        "description": "Поток из узла в узел с правилом загрузки."
+      },
+      "Flow-Output": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "from_node_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "From Node Id"
+          },
+          "to_node_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "To Node Id"
+          },
+          "load": {
+            "$ref": "#/components/schemas/LoadSpec-Output"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "from_node_id",
+          "to_node_id",
+          "load"
+        ],
+        "title": "Flow",
+        "description": "Поток из узла в узел с правилом загрузки."
       },
       "HTTPValidationError": {
         "properties": {
@@ -3268,16 +3316,27 @@
             "type": "string",
             "minLength": 1,
             "title": "Name"
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Position"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
           "id",
-          "name"
+          "name",
+          "position"
         ],
         "title": "Layer",
-        "description": "Слой хранения; только имя, порядок — порядок создания."
+        "description": "Слой хранения: дорожка на диаграмме, порядок слева направо по position."
       },
       "LayoutBody": {
         "properties": {
@@ -3307,6 +3366,10 @@
           "type": {
             "$ref": "#/components/schemas/LoadFieldType"
           },
+          "side": {
+            "$ref": "#/components/schemas/ColumnSide",
+            "default": "any"
+          },
           "required": {
             "type": "boolean",
             "title": "Required"
@@ -3325,7 +3388,7 @@
           "required"
         ],
         "title": "LoadField",
-        "description": "Поле вида загрузки: имя, тип и обязательность."
+        "description": "Поле вида загрузки: имя, тип, сторона потока для колонок, обязательность."
       },
       "LoadFieldType": {
         "type": "string",
@@ -3334,10 +3397,11 @@
           "int",
           "bool",
           "column",
-          "columns"
+          "columns",
+          "routine"
         ],
         "title": "LoadFieldType",
-        "description": "Тип поля вида загрузки; знает форму хранения значения и ссылки на колонки."
+        "description": "Тип поля вида загрузки; знает форму хранения значения."
       },
       "LoadKind-Input": {
         "properties": {
@@ -3372,7 +3436,7 @@
           "fields"
         ],
         "title": "LoadKind",
-        "description": "Вид загрузки, заведённый пользователем: имя и описание полей.\n\nПоток хранит значения по именам полей вида; вид проверяет их состав и\nтипы (violations_of) и приводит ссылки на колонки из JSON к UUID (conform)."
+        "description": "Вид загрузки, заведённый пользователем: имя и описание полей.\n\nПоток хранит значения по именам полей вида; вид проверяет их состав и\nтипы (violations_of) и отдаёт ссылки на колонки по сторонам (column_refs)."
       },
       "LoadKind-Output": {
         "properties": {
@@ -3407,9 +3471,9 @@
           "fields"
         ],
         "title": "LoadKind",
-        "description": "Вид загрузки, заведённый пользователем: имя и описание полей.\n\nПоток хранит значения по именам полей вида; вид проверяет их состав и\nтипы (violations_of) и приводит ссылки на колонки из JSON к UUID (conform)."
+        "description": "Вид загрузки, заведённый пользователем: имя и описание полей.\n\nПоток хранит значения по именам полей вида; вид проверяет их состав и\nтипы (violations_of) и отдаёт ссылки на колонки по сторонам (column_refs)."
       },
-      "LoadSpec": {
+      "LoadSpec-Input": {
         "properties": {
           "kind_id": {
             "type": "string",
@@ -3429,15 +3493,56 @@
                   "type": "boolean"
                 },
                 {
-                  "type": "string",
-                  "format": "uuid"
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "$ref": "#/components/schemas/ObjectRef"
+                }
+              ]
+            },
+            "type": "object",
+            "title": "Values"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind_id",
+          "values"
+        ],
+        "title": "LoadSpec",
+        "description": "Правило загрузки потока: вид и значения по его полям."
+      },
+      "LoadSpec-Output": {
+        "properties": {
+          "kind_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Kind Id"
+          },
+          "values": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "boolean"
                 },
                 {
                   "items": {
-                    "type": "string",
-                    "format": "uuid"
+                    "type": "string"
                   },
                   "type": "array"
+                },
+                {
+                  "$ref": "#/components/schemas/ObjectRef"
                 }
               ]
             },
@@ -3541,12 +3646,96 @@
         ],
         "title": "ManualObjectKind"
       },
-      "NodePosition": {
+      "Node-Input": {
         "properties": {
-          "dataset_id": {
+          "id": {
             "type": "string",
             "format": "uuid",
-            "title": "Dataset Id"
+            "title": "Id"
+          },
+          "layer_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Layer Id"
+          },
+          "ref": {
+            "$ref": "#/components/schemas/ObjectRef"
+          },
+          "alias": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alias"
+          },
+          "note": {
+            "type": "string",
+            "title": "Note",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "layer_id",
+          "ref"
+        ],
+        "title": "Node",
+        "description": "Объект источника, поставленный в слой; колонки читаются из источника."
+      },
+      "Node-Output": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "layer_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Layer Id"
+          },
+          "ref": {
+            "$ref": "#/components/schemas/ObjectRef"
+          },
+          "alias": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alias"
+          },
+          "note": {
+            "type": "string",
+            "title": "Note",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "layer_id",
+          "ref"
+        ],
+        "title": "Node",
+        "description": "Объект источника, поставленный в слой; колонки читаются из источника."
+      },
+      "NodePosition": {
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Node Id"
           },
           "x": {
             "type": "number",
@@ -3560,7 +3749,7 @@
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "dataset_id",
+          "node_id",
           "x",
           "y"
         ],
@@ -3651,7 +3840,7 @@
       },
       "OperationList-Input": {
         "items": {
-          "oneOf": [
+          "anyOf": [
             {
               "$ref": "#/components/schemas/AddLayer"
             },
@@ -3662,22 +3851,16 @@
               "$ref": "#/components/schemas/RemoveLayer"
             },
             {
-              "$ref": "#/components/schemas/AddDataset"
+              "$ref": "#/components/schemas/AddNode-Input"
             },
             {
-              "$ref": "#/components/schemas/SetDataset"
+              "$ref": "#/components/schemas/SetNode-Input"
             },
             {
-              "$ref": "#/components/schemas/RemoveDataset"
+              "$ref": "#/components/schemas/RetargetNode-Input"
             },
             {
-              "$ref": "#/components/schemas/AddColumn"
-            },
-            {
-              "$ref": "#/components/schemas/SetColumn"
-            },
-            {
-              "$ref": "#/components/schemas/RemoveColumn"
+              "$ref": "#/components/schemas/RemoveNode"
             },
             {
               "$ref": "#/components/schemas/AddLoadKind-Input"
@@ -3697,27 +3880,7 @@
             {
               "$ref": "#/components/schemas/RemoveFlow"
             }
-          ],
-          "discriminator": {
-            "propertyName": "op",
-            "mapping": {
-              "add_column": "#/components/schemas/AddColumn",
-              "add_dataset": "#/components/schemas/AddDataset",
-              "add_flow": "#/components/schemas/AddFlow-Input",
-              "add_layer": "#/components/schemas/AddLayer",
-              "add_load_kind": "#/components/schemas/AddLoadKind-Input",
-              "remove_column": "#/components/schemas/RemoveColumn",
-              "remove_dataset": "#/components/schemas/RemoveDataset",
-              "remove_flow": "#/components/schemas/RemoveFlow",
-              "remove_layer": "#/components/schemas/RemoveLayer",
-              "remove_load_kind": "#/components/schemas/RemoveLoadKind",
-              "set_column": "#/components/schemas/SetColumn",
-              "set_dataset": "#/components/schemas/SetDataset",
-              "set_flow": "#/components/schemas/SetFlow-Input",
-              "set_layer": "#/components/schemas/SetLayer",
-              "set_load_kind": "#/components/schemas/SetLoadKind-Input"
-            }
-          }
+          ]
         },
         "type": "array",
         "title": "OperationList",
@@ -3725,7 +3888,7 @@
       },
       "OperationList-Output": {
         "items": {
-          "oneOf": [
+          "anyOf": [
             {
               "$ref": "#/components/schemas/AddLayer"
             },
@@ -3736,22 +3899,16 @@
               "$ref": "#/components/schemas/RemoveLayer"
             },
             {
-              "$ref": "#/components/schemas/AddDataset"
+              "$ref": "#/components/schemas/AddNode-Output"
             },
             {
-              "$ref": "#/components/schemas/SetDataset"
+              "$ref": "#/components/schemas/SetNode-Output"
             },
             {
-              "$ref": "#/components/schemas/RemoveDataset"
+              "$ref": "#/components/schemas/RetargetNode-Output"
             },
             {
-              "$ref": "#/components/schemas/AddColumn"
-            },
-            {
-              "$ref": "#/components/schemas/SetColumn"
-            },
-            {
-              "$ref": "#/components/schemas/RemoveColumn"
+              "$ref": "#/components/schemas/RemoveNode"
             },
             {
               "$ref": "#/components/schemas/AddLoadKind-Output"
@@ -3771,27 +3928,7 @@
             {
               "$ref": "#/components/schemas/RemoveFlow"
             }
-          ],
-          "discriminator": {
-            "propertyName": "op",
-            "mapping": {
-              "add_column": "#/components/schemas/AddColumn",
-              "add_dataset": "#/components/schemas/AddDataset",
-              "add_flow": "#/components/schemas/AddFlow-Output",
-              "add_layer": "#/components/schemas/AddLayer",
-              "add_load_kind": "#/components/schemas/AddLoadKind-Output",
-              "remove_column": "#/components/schemas/RemoveColumn",
-              "remove_dataset": "#/components/schemas/RemoveDataset",
-              "remove_flow": "#/components/schemas/RemoveFlow",
-              "remove_layer": "#/components/schemas/RemoveLayer",
-              "remove_load_kind": "#/components/schemas/RemoveLoadKind",
-              "set_column": "#/components/schemas/SetColumn",
-              "set_dataset": "#/components/schemas/SetDataset",
-              "set_flow": "#/components/schemas/SetFlow-Output",
-              "set_layer": "#/components/schemas/SetLayer",
-              "set_load_kind": "#/components/schemas/SetLoadKind-Output"
-            }
-          }
+          ]
         },
         "type": "array",
         "title": "OperationList",
@@ -5189,6 +5326,28 @@
         ],
         "title": "PgTypeKind"
       },
+      "PinBump": {
+        "properties": {
+          "draft": {
+            "$ref": "#/components/schemas/Draft"
+          },
+          "violations": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Violations"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "draft",
+          "violations"
+        ],
+        "title": "PinBump",
+        "description": "Черновик после поднятия привязок и что в нём перестало сходиться."
+      },
       "RebaseBody": {
         "properties": {
           "drop_conflicts": {
@@ -5254,50 +5413,6 @@
         "title": "RebaseResult",
         "description": "Итог перебазирования: черновик и список конфликтов; пустой список —\nчерновик переведён на текущую версию."
       },
-      "RemoveColumn": {
-        "properties": {
-          "op": {
-            "type": "string",
-            "const": "remove_column",
-            "title": "Op",
-            "default": "remove_column"
-          },
-          "id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Id"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "id"
-        ],
-        "title": "RemoveColumn",
-        "description": "Удаление колонки; отказывает, пока колонка упомянута в значениях потока."
-      },
-      "RemoveDataset": {
-        "properties": {
-          "op": {
-            "type": "string",
-            "const": "remove_dataset",
-            "title": "Op",
-            "default": "remove_dataset"
-          },
-          "id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Id"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "id"
-        ],
-        "title": "RemoveDataset",
-        "description": "Удаление набора с его колонками; отказывает, пока на набор ссылается поток."
-      },
       "RemoveFlow": {
         "properties": {
           "op": {
@@ -5339,7 +5454,7 @@
           "id"
         ],
         "title": "RemoveLayer",
-        "description": "Удаление слоя; отказывает, пока в слое есть наборы."
+        "description": "Удаление слоя; отказывает, пока в слое есть узлы."
       },
       "RemoveLoadKind": {
         "properties": {
@@ -5361,7 +5476,29 @@
           "id"
         ],
         "title": "RemoveLoadKind",
-        "description": "Удаление вида загрузки; отказывает, пока есть потоки этого вида."
+        "description": "Удаление вида; отказывает, пока есть потоки этого вида."
+      },
+      "RemoveNode": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "remove_node",
+            "title": "Op",
+            "default": "remove_node"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "title": "RemoveNode",
+        "description": "Удаление узла; отказывает, пока на узел ссылается поток."
       },
       "RemoveObject": {
         "properties": {
@@ -5387,43 +5524,57 @@
         ],
         "title": "RemoveObject"
       },
-      "SetColumn": {
+      "RetargetNode-Input": {
         "properties": {
           "op": {
             "type": "string",
-            "const": "set_column",
+            "const": "retarget_node",
             "title": "Op",
-            "default": "set_column"
+            "default": "retarget_node"
           },
-          "column": {
-            "$ref": "#/components/schemas/Column"
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "ref": {
+            "$ref": "#/components/schemas/ObjectRef"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "column"
+          "id",
+          "ref"
         ],
-        "title": "SetColumn"
+        "title": "RetargetNode",
+        "description": "Узел указывает на другой объект: например, с ручного источника на\nреальный. Потоки узла остаются."
       },
-      "SetDataset": {
+      "RetargetNode-Output": {
         "properties": {
           "op": {
             "type": "string",
-            "const": "set_dataset",
+            "const": "retarget_node",
             "title": "Op",
-            "default": "set_dataset"
+            "default": "retarget_node"
           },
-          "dataset": {
-            "$ref": "#/components/schemas/Dataset"
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "ref": {
+            "$ref": "#/components/schemas/ObjectRef"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "dataset"
+          "id",
+          "ref"
         ],
-        "title": "SetDataset"
+        "title": "RetargetNode",
+        "description": "Узел указывает на другой объект: например, с ручного источника на\nреальный. Потоки узла остаются."
       },
       "SetFlow-Input": {
         "properties": {
@@ -5434,7 +5585,7 @@
             "default": "set_flow"
           },
           "flow": {
-            "$ref": "#/components/schemas/Flow"
+            "$ref": "#/components/schemas/Flow-Input"
           }
         },
         "additionalProperties": false,
@@ -5453,7 +5604,7 @@
             "default": "set_flow"
           },
           "flow": {
-            "$ref": "#/components/schemas/Flow"
+            "$ref": "#/components/schemas/Flow-Output"
           }
         },
         "additionalProperties": false,
@@ -5519,6 +5670,46 @@
           "load_kind"
         ],
         "title": "SetLoadKind"
+      },
+      "SetNode-Input": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "set_node",
+            "title": "Op",
+            "default": "set_node"
+          },
+          "node": {
+            "$ref": "#/components/schemas/Node-Input"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "node"
+        ],
+        "title": "SetNode",
+        "description": "Замена узла целиком: слой, псевдоним, заметка; адрес меняет RetargetNode."
+      },
+      "SetNode-Output": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "set_node",
+            "title": "Op",
+            "default": "set_node"
+          },
+          "node": {
+            "$ref": "#/components/schemas/Node-Output"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "node"
+        ],
+        "title": "SetNode",
+        "description": "Замена узла целиком: слой, псевдоним, заметка; адрес меняет RetargetNode."
       },
       "SetObject": {
         "properties": {
@@ -5934,6 +6125,77 @@
         "title": "SourceVersion",
         "description": "Снятая или опубликованная версия источника без самого снимка."
       },
+      "Stale": {
+        "properties": {
+          "target": {
+            "$ref": "#/components/schemas/EntityRef"
+          },
+          "source_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Source Id"
+          },
+          "pinned_version": {
+            "type": "integer",
+            "title": "Pinned Version"
+          },
+          "since_version": {
+            "type": "integer",
+            "title": "Since Version"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/StaleReason"
+          },
+          "detail": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Detail",
+            "default": {}
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "target",
+          "source_id",
+          "pinned_version",
+          "since_version",
+          "reason"
+        ],
+        "title": "Stale"
+      },
+      "StaleReason": {
+        "type": "string",
+        "enum": [
+          "object_removed",
+          "object_changed",
+          "column_removed",
+          "column_changed",
+          "routine_removed",
+          "routine_changed"
+        ],
+        "title": "StaleReason"
+      },
+      "Staleness": {
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/Stale"
+            },
+            "type": "array",
+            "title": "Entries"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "entries"
+        ],
+        "title": "Staleness",
+        "description": "Список устареваний процесса; пустой — всё сходится."
+      },
       "TreeKind": {
         "type": "string",
         "enum": [
@@ -6062,6 +6324,16 @@
           "author": {
             "$ref": "#/components/schemas/DraftAuthor"
           },
+          "pins": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "propertyNames": {
+              "format": "uuid"
+            },
+            "type": "object",
+            "title": "Pins"
+          },
           "published_at": {
             "type": "string",
             "format": "date-time",
@@ -6096,13 +6368,13 @@
             "format": "uuid",
             "title": "Owner Id"
           },
-          "dataset_ids": {
+          "node_ids": {
             "items": {
               "type": "string",
               "format": "uuid"
             },
             "type": "array",
-            "title": "Dataset Ids"
+            "title": "Node Ids"
           },
           "layer_ids": {
             "items": {
@@ -6124,7 +6396,7 @@
           "id",
           "name",
           "owner_id",
-          "dataset_ids",
+          "node_ids",
           "layer_ids",
           "created_at"
         ],
@@ -6186,13 +6458,13 @@
             "minLength": 1,
             "title": "Name"
           },
-          "dataset_ids": {
+          "node_ids": {
             "items": {
               "type": "string",
               "format": "uuid"
             },
             "type": "array",
-            "title": "Dataset Ids",
+            "title": "Node Ids",
             "default": []
           },
           "layer_ids": {

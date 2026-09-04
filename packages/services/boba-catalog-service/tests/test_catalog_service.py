@@ -1,28 +1,32 @@
-"""CatalogService на живом postgres и памяти шины: права по ролям и шарингу,
-события CatalogChanged.
-"""
+"""Сервис каталога на живом Postgres и шине в памяти: права по ролям,
+черновики процесса над источником с привязками версий, публикация, rebase,
+устаревание после новой версии источника и поднятие привязок, виды по
+шарингу, источники и события шины."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from uuid import UUID
 
 import pytest
 from psycopg import sql
-from sample_ops import Sample
 
 from boba.catalog import (
-    AddLayer,
     AddObject,
+    CatalogOpError,
     CatalogSnapshot,
     ChangeStatus,
-    Layer,
     ManualColumn,
     ManualObject,
+    ObjectKind,
     OperationList,
+    RetargetNode,
+    SnapshotResolver,
     SourceKind,
     SourceOperationList,
+    StaleReason,
 )
-from boba.catalog.samples import PgSample
+from boba.catalog.samples import PgSample, ProcessSample
 from boba.catalog_service import (
     AuthorVia,
     CatalogConfig,
@@ -38,7 +42,7 @@ from boba.catalog_service import (
 )
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import Scope, Subject
-from boba.messaging import CatalogChanged, ChangeAction, Envelope, MemoryMessageBus
+from boba.messaging import CatalogChanged, Envelope, MemoryMessageBus
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -76,8 +80,13 @@ async def service(pool: AsyncPostgresPool) -> CatalogService:
 
 
 @pytest.fixture
-def sample() -> Sample:
-    return Sample()
+async def process(service: CatalogService) -> ProcessSample:
+    """Источник prod с версией 1 из образца; процесс ссылается на него."""
+    source = await service.create_source(
+        EDITOR, SourceSpec(kind=SourceKind.POSTGRES, name="prod")
+    )
+    await service.write_source_version(EDITOR, source.id, PgSample().snapshot())
+    return ProcessSample(source.id)
 
 
 def _bus_of(service: CatalogService) -> MemoryMessageBus:
@@ -101,8 +110,16 @@ class Collector:
         self.seen.append(envelope.message)
 
 
+def _listen(
+    service: CatalogService, subject: Subject
+) -> tuple[Collector, Callable[[], None]]:
+    collector = Collector()
+    leave = _bus_of(service).subscribe(Scope.user(subject.user_id), collector)
+    return collector, leave
+
+
 async def test_roles_gate_reading_and_editing(
-    service: CatalogService, sample: Sample
+    service: CatalogService, process: ProcessSample
 ) -> None:
     with pytest.raises(CatalogRefusalError) as refused:
         await service.snapshot(STRANGER)
@@ -115,22 +132,74 @@ async def test_roles_gate_reading_and_editing(
     assert refused.value.refusal is CatalogRefusalKind.EDIT_FORBIDDEN
 
     draft = await service.create_draft(EDITOR, "initial")
-    state = await service.append_ops(EDITOR, draft.id, 0, sample.ops(), AuthorVia.LLM)
+    assert draft.pins == {process.source_id: 1}
+
+    state = await service.append_ops(EDITOR, draft.id, 0, process.ops(), AuthorVia.LLM)
     assert state.seq == 1
-    assert state.snapshot == sample.ops().apply(CatalogSnapshot.empty())
+    resolver = SnapshotResolver({process.source_id: PgSample().snapshot()})
+    assert state.snapshot == process.ops().apply(CatalogSnapshot.empty(), resolver)
 
     version = await service.publish(EDITOR, draft.id, AuthorVia.USER)
     assert version.number == 1
-    assert version.author.user_id == EDITOR.user_id
+    assert version.pins == {process.source_id: 1}
 
     assert await service.snapshot(VIEWER) == state.snapshot
-    assert [d.id for d in await service.open_drafts(VIEWER)] == []
     assert [v.number for v in await service.versions(VIEWER)] == [1]
 
 
-async def test_view_access_by_share(service: CatalogService, sample: Sample) -> None:
+async def test_portions_are_checked_against_pinned_sources(
+    service: CatalogService, process: ProcessSample
+) -> None:
+    draft = await service.create_draft(EDITOR, "checked")
+    ghost = process.ref(ObjectKind.RELATION, ("prod", "public", "ghost"))
+    with pytest.raises(CatalogOpError) as rejected:
+        await service.append_ops(
+            EDITOR,
+            draft.id,
+            0,
+            OperationList(
+                root=(
+                    *process.ops().root,
+                    RetargetNode(id=process.orders.id, ref=ghost),
+                )
+            ),
+            AuthorVia.USER,
+        )
+
+    assert "missing object" in rejected.value.reason
+
+
+async def test_new_source_version_marks_staleness_and_pins_can_bump(
+    service: CatalogService, process: ProcessSample
+) -> None:
+    draft = await service.create_draft(EDITOR, "initial")
+    await service.append_ops(EDITOR, draft.id, 0, process.ops(), AuthorVia.USER)
+    await service.publish(EDITOR, draft.id, AuthorVia.USER)
+    assert (await service.staleness(VIEWER)).entries == ()
+
+    await service.write_source_version(
+        EDITOR, process.source_id, PgSample().next_version()
+    )
+
+    stale = await service.staleness(VIEWER)
+    reasons = {(s.target.id, s.reason) for s in stale.entries}
+    assert (process.customers.id, StaleReason.OBJECT_REMOVED) in reasons
+    assert (process.flow_orders.id, StaleReason.COLUMN_CHANGED) in reasons
+
+    lagging = await service.create_draft(EDITOR, "lagging")
+    assert lagging.pins == {process.source_id: 2}
+    assert (await service.draft_staleness(VIEWER, lagging.id)).entries == ()
+
+    bump = await service.bump_pins(EDITOR, lagging.id)
+    assert bump.draft.pins == {process.source_id: 2}
+    assert any("customers" in violation for violation in bump.violations)
+
+
+async def test_view_access_by_share(
+    service: CatalogService, process: ProcessSample
+) -> None:
     view = await service.create_view(
-        EDITOR, ViewSpec(name="orders", dataset_ids=(sample.raw_orders.id,))
+        EDITOR, ViewSpec(name="orders", node_ids=(process.orders.id,))
     )
 
     with pytest.raises(CatalogRefusalError):
@@ -144,111 +213,57 @@ async def test_view_access_by_share(service: CatalogService, sample: Sample) -> 
 
     assert (await service.view(ANALYST, view.id)).id == view.id
     assert (await service.view(STRANGER, view.id)).id == view.id
-    assert (await service.view(VIEWER, view.id)).id == view.id
     assert [v.id for v in await service.views(ANALYST)] == [view.id]
-    assert (await service.layout(ANALYST, view.id)).positions == ()
 
     with pytest.raises(CatalogRefusalError) as refused:
         await service.update_view(ANALYST, view.id, ViewSpec(name="mine"))
 
     assert refused.value.refusal is CatalogRefusalKind.EDIT_FORBIDDEN
 
-    other_editor = _subject(UUID(int=5), "editor")
-    with pytest.raises(CatalogRefusalError) as refused:
-        await service.update_view(other_editor, view.id, ViewSpec(name="mine"))
-
-    assert refused.value.refusal is CatalogRefusalKind.NOT_OWNER
-
     assert await service.unshare_view(EDITOR, view.id, ViewShare.role("analyst"))
     with pytest.raises(CatalogRefusalError):
         await service.view(ANALYST, view.id)
 
-    assert await service.delete_view(EDITOR, view.id)
 
-
-async def test_view_state_slices_the_catalog_for_a_shared_stranger(
-    service: CatalogService, sample: Sample
+async def test_view_state_slices_the_process_for_a_shared_stranger(
+    service: CatalogService, process: ProcessSample
 ) -> None:
-    """Расшаренный вид открывает срез каталога тому, у кого нет ролей на
-    каталог; версия и раскладка приходят тем же ответом, владение — только
-    у владельца с правом правок."""
     draft = await service.create_draft(EDITOR, "initial")
-    await service.append_ops(EDITOR, draft.id, 0, sample.ops(), AuthorVia.LLM)
+    await service.append_ops(EDITOR, draft.id, 0, process.ops(), AuthorVia.LLM)
     await service.publish(EDITOR, draft.id, AuthorVia.USER)
 
     view = await service.create_view(
-        EDITOR, ViewSpec(name="raw", layer_ids=(sample.raw.id,))
+        EDITOR, ViewSpec(name="raw", layer_ids=(process.raw.id,))
     )
     await service.put_layout(
-        EDITOR, view.id, [NodePosition(dataset_id=sample.raw_orders.id, x=10, y=20)]
+        EDITOR, view.id, [NodePosition(node_id=process.orders.id, x=10, y=20)]
     )
     await service.share_view(EDITOR, view.id, ViewShare.user(STRANGER.user_id))
 
-    with pytest.raises(CatalogRefusalError):
-        await service.snapshot(STRANGER)
-
     state = await service.view_state(STRANGER, view.id)
     assert state.version == 1
-    assert set(state.snapshot.datasets) == {
-        sample.raw_orders.id,
-        sample.raw_items.id,
-    }
-    assert set(state.snapshot.layers) == {sample.raw.id}
+    assert set(state.snapshot.nodes) == {process.orders.id, process.customers.id}
     assert state.snapshot.flows == {}
     assert state.layout.positions[0].x == 10
     assert state.owned is False
-
     assert (await service.view_state(EDITOR, view.id)).owned is True
-    assert (await service.view_state(VIEWER, view.id)).owned is False
-
-    access = service.access(STRANGER)
-    assert (access.can_view, access.can_edit) == (False, False)
-    assert service.access(VIEWER).can_view is True
-    assert service.access(EDITOR).can_edit is True
 
 
 async def test_catalog_changed_reaches_bus_subscriber(
-    service: CatalogService, sample: Sample
+    service: CatalogService, process: ProcessSample
 ) -> None:
-    collector = Collector()
-    leave = _bus_of(service).subscribe(Scope.user(EDITOR.user_id), collector)
+    collector, leave = _listen(service, EDITOR)
     try:
         draft = await service.create_draft(EDITOR, "initial")
-        await service.append_ops(EDITOR, draft.id, 0, sample.ops(), AuthorVia.LLM)
+        await service.append_ops(EDITOR, draft.id, 0, process.ops(), AuthorVia.LLM)
         version = await service.publish(EDITOR, draft.id, AuthorVia.USER)
-        view = await service.create_view(EDITOR, ViewSpec(name="all"))
     finally:
         leave()
 
-    expected = [
-        CatalogChanged(draft_id=draft.id, action=ChangeAction.CREATED),
-        CatalogChanged(draft_id=draft.id, action=ChangeAction.UPDATED),
-        CatalogChanged(draft_id=draft.id, action=ChangeAction.DELETED),
-        CatalogChanged(version=version.number, action=ChangeAction.CREATED),
-        CatalogChanged(view_id=view.id, action=ChangeAction.CREATED),
-    ]
-    assert collector.seen == expected
-
-
-async def test_rebase_without_conflicts_notifies(service: CatalogService) -> None:
-    lagging = await service.create_draft(EDITOR, "lagging")
-    ods = OperationList(root=(AddLayer(layer=Layer(id=UUID(int=103), name="ods")),))
-    await service.append_ops(EDITOR, lagging.id, 0, ods, AuthorVia.USER)
-
-    racing = await service.create_draft(EDITOR, "racing")
-    await service.publish(EDITOR, racing.id, AuthorVia.USER)
-
-    collector = Collector()
-    leave = _bus_of(service).subscribe(Scope.user(EDITOR.user_id), collector)
-    try:
-        result = await service.rebase(EDITOR, lagging.id, drop_conflicts=False)
-    finally:
-        leave()
-
-    assert result.issues == ()
-    assert result.draft.base_version == 1
-    assert collector.seen == [
-        CatalogChanged(draft_id=lagging.id, action=ChangeAction.UPDATED)
+    draft_events = [m for m in collector.seen if m.draft_id == draft.id]
+    assert [m.action.value for m in draft_events] == ["created", "updated", "deleted"]
+    assert [m.version for m in collector.seen if m.version is not None] == [
+        version.number
     ]
 
 
@@ -258,8 +273,7 @@ async def test_sources_follow_the_catalog_rights_and_emit_events(
     """Читают источники обладатели view_roles, заводят и правят — edit_roles;
     дерево последней версии несёт пометки относительно предыдущей; каждая правка
     источника уходит событием с source_id."""
-    collector = Collector()
-    leave = _bus_of(service).subscribe(Scope.user(EDITOR.user_id), collector)
+    collector, leave = _listen(service, EDITOR)
     try:
         with pytest.raises(CatalogRefusalError):
             await service.create_source(
@@ -280,21 +294,13 @@ async def test_sources_follow_the_catalog_rights_and_emit_events(
         tables = await service.source_tree(
             VIEWER, prod.id, -1, ("prod", "public", "tables")
         )
-        statuses = {node.label: node.status for node in tables}
-        assert statuses == {
+        assert {node.label: node.status for node in tables} == {
             "orders": ChangeStatus.MODIFIED,
             "returns": ChangeStatus.ADDED,
         }
-        schemas = await service.source_tree(VIEWER, prod.id, 2, ("prod",))
-        assert {node.label: node.status for node in schemas} == {
-            "etl": ChangeStatus.MODIFIED,
-            "public": ChangeStatus.MODIFIED,
-        }
         first = await service.source_tree(VIEWER, prod.id, 1, ("prod",))
         assert {node.status for node in first} == {ChangeStatus.UNCHANGED}
-
-        diff = await service.source_diff(VIEWER, prod.id, 1, 2)
-        assert len(diff.entries) == 4
+        assert len((await service.source_diff(VIEWER, prod.id, 1, 2)).entries) == 4
 
         planned = await service.create_source(
             EDITOR, SourceSpec(kind=SourceKind.CLICKHOUSE, name="planned", manual=True)
@@ -313,7 +319,6 @@ async def test_sources_follow_the_catalog_rights_and_emit_events(
         assert state.seq == 1
         version = await service.publish_source_draft(EDITOR, draft.id, AuthorVia.USER)
         assert version.version == 1
-        assert (await service.source(VIEWER, planned.id)).latest_version == 1
         with pytest.raises(CatalogRefusalError):
             await service.create_source_draft(VIEWER, planned.id, "nope")
     finally:

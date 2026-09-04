@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from uuid import UUID
 
 from boba.catalog.clickhouse_snapshot import (
@@ -15,6 +16,19 @@ from boba.catalog.clickhouse_snapshot import (
     ChTable,
     ChTableKind,
 )
+from boba.catalog.model import (
+    CatalogSnapshot,
+    ColumnSide,
+    Flow,
+    Layer,
+    LoadField,
+    LoadFieldType,
+    LoadKind,
+    LoadSpec,
+    Node,
+    ObjectResolver,
+)
+from boba.catalog.ops import AddFlow, AddLayer, AddLoadKind, AddNode, OperationList
 from boba.catalog.postgres_snapshot import (
     PgColumn,
     PgConstraint,
@@ -32,8 +46,9 @@ from boba.catalog.postgres_snapshot import (
     PgType,
     PgTypeKind,
 )
+from boba.catalog.sources import ObjectKind, ObjectRef
 
-__all__ = ["ChSample", "PgSample", "SampleIds"]
+__all__ = ["ChSample", "PgSample", "ProcessSample", "SampleIds", "SampleResolver"]
 
 
 class SampleIds:
@@ -361,3 +376,139 @@ class ChSample:
             dictionaries=(self.users_dict,),
             dictionary_attributes=(self.users_name,),
         )
+
+
+class ProcessSample:
+    """Процесс над образцом Postgres: слои raw и dm, узлы orders, customers,
+    v_orders и процедура load_orders, виды full и hashkey, поток orders →
+    v_orders по hashkey с колонкой id и реализацией процедурой."""
+
+    def __init__(self, source_id: UUID = SampleIds.POSTGRES) -> None:
+        self.source_id = source_id
+        self.raw = Layer(id=UUID(int=0x7101), name="raw", position=0)
+        self.dm = Layer(id=UUID(int=0x7102), name="dm", position=1)
+
+        self.orders = Node(
+            id=UUID(int=0x7201),
+            layer_id=self.raw.id,
+            ref=self.ref(ObjectKind.RELATION, ("prod", "public", "orders")),
+        )
+        self.customers = Node(
+            id=UUID(int=0x7202),
+            layer_id=self.raw.id,
+            ref=self.ref(ObjectKind.RELATION, ("prod", "public", "customers")),
+            alias="clients",
+        )
+        self.v_orders = Node(
+            id=UUID(int=0x7203),
+            layer_id=self.dm.id,
+            ref=self.ref(ObjectKind.RELATION, ("prod", "public", "v_orders")),
+        )
+        self.load_orders = Node(
+            id=UUID(int=0x7204),
+            layer_id=self.dm.id,
+            ref=self.ref(ObjectKind.ROUTINE, ("prod", "etl", "load_orders", "date")),
+        )
+
+        self.full = LoadKind(id=UUID(int=0x7301), name="full", fields=())
+        self.hashkey = LoadKind(
+            id=UUID(int=0x7302),
+            name="hashkey",
+            fields=(
+                LoadField(
+                    name="hash_columns",
+                    type=LoadFieldType.COLUMNS,
+                    side=ColumnSide.SOURCE,
+                    required=True,
+                ),
+                LoadField(
+                    name="implemented_by", type=LoadFieldType.ROUTINE, required=False
+                ),
+                LoadField(name="batch", type=LoadFieldType.INT, required=False),
+            ),
+        )
+
+        self.flow_orders = Flow(
+            id=UUID(int=0x7401),
+            from_node_id=self.orders.id,
+            to_node_id=self.v_orders.id,
+            load=LoadSpec(
+                kind_id=self.hashkey.id,
+                values={
+                    "hash_columns": ("id", "amount"),
+                    "implemented_by": self.load_orders.ref,
+                    "batch": 1000,
+                },
+            ),
+        )
+        self.flow_customers = Flow(
+            id=UUID(int=0x7402),
+            from_node_id=self.customers.id,
+            to_node_id=self.v_orders.id,
+            load=LoadSpec(kind_id=self.full.id, values={}),
+        )
+
+    def ref(self, kind: ObjectKind, path: tuple[str, ...]) -> ObjectRef:
+        return ObjectRef(source_id=self.source_id, kind=kind, path=path)
+
+    def snapshot(self) -> CatalogSnapshot:
+        return CatalogSnapshot(
+            layers={self.raw.id: self.raw, self.dm.id: self.dm},
+            nodes={
+                self.orders.id: self.orders,
+                self.customers.id: self.customers,
+                self.v_orders.id: self.v_orders,
+                self.load_orders.id: self.load_orders,
+            },
+            load_kinds={self.full.id: self.full, self.hashkey.id: self.hashkey},
+            flows={
+                self.flow_orders.id: self.flow_orders,
+                self.flow_customers.id: self.flow_customers,
+            },
+        )
+
+    def ops(self) -> OperationList:
+        """Тот же процесс как список операций от пустого снимка."""
+        return OperationList(
+            root=(
+                AddLayer(layer=self.raw),
+                AddLayer(layer=self.dm),
+                AddNode(node=self.orders),
+                AddNode(node=self.customers),
+                AddNode(node=self.v_orders),
+                AddNode(node=self.load_orders),
+                AddLoadKind(load_kind=self.full),
+                AddLoadKind(load_kind=self.hashkey),
+                AddFlow(flow=self.flow_orders),
+                AddFlow(flow=self.flow_customers),
+            )
+        )
+
+
+class SampleResolver(ObjectResolver):
+    """Резолвер по снимку Postgres образца: объекты и колонки как в нём."""
+
+    def __init__(self, snapshot: PgSnapshot) -> None:
+        self._snapshot = snapshot
+
+    def exists(self, ref: ObjectRef) -> bool:
+        if ref.kind is ObjectKind.RELATION:
+            return self._snapshot.relation(ref.path) is not None
+
+        if ref.kind is ObjectKind.ROUTINE:
+            return self._snapshot.routine(ref.path) is not None
+
+        return False
+
+    def columns_of(self, ref: ObjectRef) -> Sequence[str] | None:
+        if ref.kind is not ObjectKind.RELATION:
+            return None
+
+        if self._snapshot.relation(ref.path) is None:
+            return None
+
+        names: list[str] = []
+        for column in self._snapshot.columns_of(ref.path):
+            names.append(column.name)
+
+        return names
