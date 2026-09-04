@@ -29,7 +29,7 @@ export default defineConfig(({ command, mode }) => ({
         manualChunks: {
           react: ["react", "react-dom", "react-router-dom"],
           flow: ["@xyflow/react"],
-          elk: ["elkjs"],
+          elk: ["elkjs/lib/elk.bundled.js"],
         },
       },
     },

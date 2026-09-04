@@ -18,3 +18,6 @@ build/chainlit/src/wheels
 packages/agents/boba-studio/assets/workflow
 packages/agents/boba-chainlit/assets/public/page.js
 packages/agents/boba-chainlit/assets/public/vendor
+packages/agents/boba-chainlit/web/catalog/node_modules
+packages/agents/boba-chainlit/web/catalog/.vite
+packages/agents/boba-chainlit/assets/catalog

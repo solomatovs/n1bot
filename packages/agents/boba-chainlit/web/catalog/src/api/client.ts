@@ -34,7 +34,7 @@ export class ApiError extends Error {
     }
 
     if (typeof detail === "object" && detail !== null && "message" in detail) {
-      const message = (detail as { message: unknown }).message;
+      const message: unknown = detail.message;
       if (typeof message === "string") {
         return new ApiError(status, message, payload);
       }
@@ -46,14 +46,16 @@ export class ApiError extends Error {
 
 function detailOf(payload: unknown): unknown {
   if (typeof payload === "object" && payload !== null && "detail" in payload) {
-    return (payload as { detail: unknown }).detail;
+    return payload.detail;
   }
 
   return payload;
 }
 
 type Method = "get" | "post" | "put" | "delete";
-type Path = keyof paths;
+
+/** Пути API из OpenAPI: страница зовёт только их, параметры подставляются в шаблон. */
+export type ApiPath = keyof paths;
 
 /** Метка своего запроса — как OwnRequest на сервере. */
 export const OWN_REQUEST = { header: "x-boba-request", value: "1" } as const;
@@ -96,20 +98,15 @@ export class CatalogApi {
     return this.call("get", `/api/catalog/views/${viewId}/layout`, undefined, ViewLayoutSchema);
   }
 
-  private async call<T>(method: Method, path: Path | string, body: unknown, schema: z.ZodType<T>): Promise<T> {
+  private async call<T>(method: Method, path: string, body: unknown, schema: z.ZodType<T>): Promise<T> {
     const headers: Record<string, string> = { [OWN_REQUEST.header]: OWN_REQUEST.value };
-    let payload: string | undefined;
+    const init: RequestInit = { method: method.toUpperCase(), headers, credentials: "same-origin" };
     if (body !== undefined) {
       headers["content-type"] = "application/json";
-      payload = JSON.stringify(body);
+      init.body = JSON.stringify(body);
     }
 
-    const response = await fetch(this.urls.api(path.replace(/^\/api\/catalog/, "")), {
-      method: method.toUpperCase(),
-      headers,
-      body: payload,
-      credentials: "same-origin",
-    });
+    const response = await fetch(this.urls.api(path.replace(/^\/api\/catalog/, "")), init);
 
     if (response.status === 401) {
       this.unauthorized?.();
