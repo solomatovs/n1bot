@@ -19,6 +19,7 @@ from boba.catalog_service import (
     CatalogService,
     CatalogStore,
     ShareTargetKind,
+    SourceStore,
 )
 from boba.chainlit.catalog.api import CatalogApi, CatalogUrl, SignedIn
 from boba.chat.profiles import ChatProfiles
@@ -86,7 +87,9 @@ async def stand(pool: AsyncPostgresPool, app_config: AppConfig) -> Stand:
 
     store = CatalogStore(_config(), pool)
     await store.setup()
-    service = CatalogService(store, _config(), MemoryMessageBus("test:0"))
+    sources = SourceStore(_config(), pool)
+    await sources.setup()
+    service = CatalogService(store, sources, _config(), MemoryMessageBus("test:0"))
     return Stand(service, ChatProfiles(app_config.profiles))
 
 

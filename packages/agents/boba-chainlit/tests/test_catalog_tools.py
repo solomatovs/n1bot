@@ -15,6 +15,7 @@ from boba.catalog_service import (
     CatalogConfig,
     CatalogService,
     CatalogStore,
+    SourceStore,
     ViewSpec,
 )
 from boba.chainlit.catalog.tools import CatalogTools
@@ -54,7 +55,9 @@ async def service(pool: AsyncPostgresPool) -> CatalogService:
 
     store = CatalogStore(_config(), pool)
     await store.setup()
-    return CatalogService(store, _config(), MemoryMessageBus("test:0"))
+    sources = SourceStore(_config(), pool)
+    await sources.setup()
+    return CatalogService(store, sources, _config(), MemoryMessageBus("test:0"))
 
 
 @pytest.fixture

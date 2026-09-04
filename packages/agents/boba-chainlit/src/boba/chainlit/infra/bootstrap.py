@@ -372,6 +372,7 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.eager(runtime.connection_store)
     container.eager(runtime.workflow_store)
     container.eager(providers.catalog_store)
+    container.eager(providers.catalog_sources)
     container.eager(runtime.workflow_recovery)
     container.eager(runtime.live_locks)
     container.eager(runtime.lock_reaper)

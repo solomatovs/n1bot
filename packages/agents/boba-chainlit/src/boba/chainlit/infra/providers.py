@@ -18,7 +18,12 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph.state import CompiledStateGraph
 
 from boba.auth import JwtTokens
-from boba.catalog_service import CatalogConfig, CatalogService, CatalogStore
+from boba.catalog_service import (
+    CatalogConfig,
+    CatalogService,
+    CatalogStore,
+    SourceStore,
+)
 from boba.chainlit.agent.flow import (
     AgentGraphBuilder,
     GraphSpec,
@@ -115,16 +120,33 @@ async def catalog_store(
     return store
 
 
+async def catalog_sources(
+    cfg: Annotated[CatalogConfig, Depends(catalog_config)],
+) -> SourceStore | None:
+    """Хранилище источников метаданных в той же схеме; None — секция выключена."""
+    if not cfg.enable:
+        return None
+
+    sources = SourceStore(cfg)
+    await sources.setup()
+
+    return sources
+
+
 def catalog_service(
     store: Annotated[CatalogStore | None, Depends(catalog_store)],
+    sources: Annotated[SourceStore | None, Depends(catalog_sources)],
     cfg: Annotated[CatalogConfig, Depends(catalog_config)],
     bus: Annotated[MessageBus, Depends(runtime.message_bus)],
 ) -> CatalogService | None:
-    """Сервис каталога над хранилищем и шиной процесса."""
+    """Сервис каталога над хранилищами и шиной процесса."""
     if store is None:
         return None
 
-    return CatalogService(store, cfg, bus)
+    if sources is None:
+        return None
+
+    return CatalogService(store, sources, cfg, bus)
 
 
 def chainlit_url_prefix() -> str:
