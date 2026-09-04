@@ -4,22 +4,22 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-sandbox"
-version = "0.0.15.dev6"
+version = "0.0.15.dev7"
 description = "Boba sandbox: реализация ToolLauncher на bubblewrap — профили, cgroup-лимиты, запуск процессов, ext4-образ пользователя через fuse2fs."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-toolkit==0.0.15.dev6",
-    "boba-cancellation==0.0.15.dev6",
+    "boba-toolkit==0.0.15.dev7",
+    "boba-cancellation==0.0.15.dev7",
     "pydantic>=2.10,<2.11",
 ]
 
 [project.optional-dependencies]
 payload = []
 dev = [
-    "boba-runtime==0.0.15.dev6",
-    "boba-config==0.0.15.dev6",
-    "boba-stand==0.0.15.dev6",
-    "boba-tool-shell==0.0.15.dev6",
+    "boba-runtime==0.0.15.dev7",
+    "boba-config==0.0.15.dev7",
+    "boba-stand==0.0.15.dev7",
+    "boba-tool-shell==0.0.15.dev7",
     "omegaconf>=2.3,<3",
     "pytest>=8",
 ]
