@@ -10,6 +10,8 @@ type Props = {
   draft: Draft;
   /** Текущая опубликованная версия; черновик над меньшей — устарел. */
   currentVersion: number;
+  /** Сколько узлов и потоков разошлось с последними версиями источников. */
+  staleCount: number;
   onChanged: () => void;
   /** Черновик отменён: страница уходит с него. */
   onDiscarded: () => void;
@@ -19,7 +21,7 @@ type Conflict = { current: number; issues: RebaseIssue[] | null };
 
 /** Публикация, отмена и перебазирование черновика с двумя путями при конфликте:
  * обновить черновик из новой версии или вычеркнуть конфликтные операции. */
-export function DraftActions({ api, draft, currentVersion, onChanged, onDiscarded }: Props): ReactElement {
+export function DraftActions({ api, draft, currentVersion, staleCount, onChanged, onDiscarded }: Props): ReactElement {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const [conflict, setConflict] = useState<Conflict | null>(null);
@@ -68,6 +70,18 @@ export function DraftActions({ api, draft, currentVersion, onChanged, onDiscarde
     });
   };
 
+  const bumpPins = (): void => {
+    void run(async () => {
+      const bump = await api.bumpPins(draft.id);
+      if (bump.violations.length > 0) {
+        toast(`pins raised; ${bump.violations.length} operation(s) no longer hold: ${bump.violations.join("; ")}`, "error");
+      } else {
+        toast("pins raised to the latest source versions", "success");
+      }
+      onChanged();
+    });
+  };
+
   const discard = (): void => {
     void run(async () => {
       await api.discardDraft(draft.id);
@@ -90,6 +104,11 @@ export function DraftActions({ api, draft, currentVersion, onChanged, onDiscarde
           data-testid="rebase-button"
         >
           update to v{currentVersion}
+        </Button>
+      )}
+      {staleCount > 0 && (
+        <Button size="tiny" tone="signal" disabled={busy} onClick={bumpPins} data-testid="bump-pins-button">
+          raise pins · {staleCount} stale
         </Button>
       )}
       <Button size="tiny" tone="primary" disabled={busy} onClick={publish} data-testid="publish-button">

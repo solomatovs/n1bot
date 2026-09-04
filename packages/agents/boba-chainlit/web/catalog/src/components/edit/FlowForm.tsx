@@ -1,34 +1,34 @@
 import { useMemo, useState, type FormEvent, type ReactElement } from "react";
 
-import type { Catalog, Flow, LoadField, LoadValue } from "../../model/catalog";
+import { renderRef, type Catalog, type Flow, type LoadField, type LoadValue, type NodeColumn, type ObjectRef } from "../../model/catalog";
 import { Button, Field, Input, Select, TextArea } from "../../ui";
 
 type Props = {
   catalog: Catalog;
   flow: Flow;
-  /** Поток из панели набора: приёмник выбирается здесь; с холста он уже известен. */
+  /** Поток из панели узла: приёмник выбирается здесь; с холста он уже известен. */
   pickTarget?: boolean;
   onSave: (flow: Flow) => void;
   onCancel: () => void;
   onDelete?: (() => void) | undefined;
 };
 
-/** Правило загрузки потока: вид из каталога, поля по описанию вида (текст, число,
- * флаг, колонка, колонки обоих концов), описание. Форма строится по fields вида. */
+/** Правило загрузки потока: вид из процесса, поля по описанию вида — текст,
+ * число, флаг, колонки того конца, что задан стороной поля, рутина из
+ * узлов-рутин процесса; описание. Форма строится по fields вида. */
 export function FlowForm({ catalog, flow, pickTarget = false, onSave, onCancel, onDelete }: Props): ReactElement {
   const [kindId, setKindId] = useState(flow.load.kind_id);
   const [values, setValues] = useState<Record<string, LoadValue>>({ ...flow.load.values });
   const [description, setDescription] = useState(flow.description);
-  const [targetId, setTargetId] = useState(flow.to_dataset_id);
+  const [targetId, setTargetId] = useState(flow.to_node_id);
 
   const kind = catalog.loadKind(kindId);
-  const source = catalog.dataset(flow.from_dataset_id);
-  const target = catalog.dataset(targetId);
-  const columns = useMemo(
-    () => [...catalog.columnsOf(flow.from_dataset_id), ...catalog.columnsOf(targetId)],
-    [catalog, flow.from_dataset_id, targetId],
-  );
-  const targets = catalog.datasets.filter((dataset) => dataset.id !== flow.from_dataset_id);
+  const source = catalog.label(flow.from_node_id);
+  const target = targetId === "" ? "…" : catalog.label(targetId);
+  const sourceColumns = useMemo(() => catalog.columnsOf(flow.from_node_id), [catalog, flow.from_node_id]);
+  const targetColumns = useMemo(() => catalog.columnsOf(targetId), [catalog, targetId]);
+  const targets = catalog.nodes.filter((node) => node.id !== flow.from_node_id);
+  const routines = catalog.routineNodes();
 
   const set = (field: string, value: LoadValue | undefined): void => {
     setValues((current) => {
@@ -47,18 +47,30 @@ export function FlowForm({ catalog, flow, pickTarget = false, onSave, onCancel, 
 
   const submit = (event: FormEvent): void => {
     event.preventDefault();
-    onSave({ ...flow, to_dataset_id: targetId, load: { kind_id: kindId, values }, description: description.trim() });
+    onSave({ ...flow, to_node_id: targetId, load: { kind_id: kindId, values }, description: description.trim() });
   };
 
   const missing = (kind?.fields ?? []).filter((field) => field.required && values[field.name] === undefined);
 
+  const columnsFor = (field: LoadField): NodeColumn[] => {
+    if (field.side === "source") {
+      return sourceColumns;
+    }
+
+    if (field.side === "target") {
+      return targetColumns;
+    }
+
+    return [...sourceColumns, ...targetColumns];
+  };
+
   return (
     <form className="form" onSubmit={submit} data-testid="flow-form">
       <p className="form__note mono">
-        {source?.name ?? flow.from_dataset_id} → {target?.name ?? "…"}
+        {source} → {target}
       </p>
       {pickTarget && (
-        <Field label="to dataset" required>
+        <Field label="to node" required>
           <Select
             value={targetId}
             aria-label="flow target"
@@ -68,9 +80,9 @@ export function FlowForm({ catalog, flow, pickTarget = false, onSave, onCancel, 
             }}
           >
             <option value="">— choose —</option>
-            {targets.map((dataset) => (
-              <option key={dataset.id} value={dataset.id}>
-                {dataset.name}
+            {targets.map((node) => (
+              <option key={node.id} value={node.id}>
+                {catalog.layer(node.layer_id)?.name ?? "?"} / {catalog.label(node.id)}
               </option>
             ))}
           </Select>
@@ -95,7 +107,13 @@ export function FlowForm({ catalog, flow, pickTarget = false, onSave, onCancel, 
       </Field>
       {kind?.fields.map((field) => (
         <Field key={field.name} label={field.name} required={field.required} hint={field.description || undefined}>
-          <LoadValueInput field={field} value={values[field.name]} columns={columns} onChange={set} />
+          <LoadValueInput
+            field={field}
+            value={values[field.name]}
+            columns={columnsFor(field)}
+            routines={routines.map((node) => ({ ref: node.ref, label: catalog.label(node.id) }))}
+            onChange={set}
+          />
         </Field>
       ))}
       <Field label="description">
@@ -128,17 +146,18 @@ export function FlowForm({ catalog, flow, pickTarget = false, onSave, onCancel, 
   );
 }
 
-type ColumnOption = { id: string; name: string; dataset_id: string };
+type RoutineOption = { ref: ObjectRef; label: string };
 
 type InputProps = {
   field: LoadField;
   value: LoadValue | undefined;
-  columns: ColumnOption[];
+  columns: NodeColumn[];
+  routines: RoutineOption[];
   onChange: (field: string, value: LoadValue | undefined) => void;
 };
 
 /** Ввод значения поля вида по его типу; пустое значение снимает поле. */
-function LoadValueInput({ field, value, columns, onChange }: InputProps): ReactElement {
+function LoadValueInput({ field, value, columns, routines, onChange }: InputProps): ReactElement {
   const label = `load field ${field.name}`;
 
   if (field.type === "bool") {
@@ -169,17 +188,18 @@ function LoadValueInput({ field, value, columns, onChange }: InputProps): ReactE
   }
 
   if (field.type === "column") {
+    const chosen = typeof value === "string" ? value : "";
     return (
       <Select
         aria-label={label}
-        value={typeof value === "string" ? value : ""}
+        value={chosen}
         onChange={(event) => {
           onChange(field.name, event.target.value === "" ? undefined : event.target.value);
         }}
       >
         <option value="">—</option>
         {columns.map((column) => (
-          <option key={column.id} value={column.id}>
+          <option key={column.name} value={column.name}>
             {column.name}
           </option>
         ))}
@@ -200,8 +220,29 @@ function LoadValueInput({ field, value, columns, onChange }: InputProps): ReactE
         }}
       >
         {columns.map((column) => (
-          <option key={column.id} value={column.id}>
+          <option key={column.name} value={column.name}>
             {column.name}
+          </option>
+        ))}
+      </Select>
+    );
+  }
+
+  if (field.type === "routine") {
+    const chosen = typeof value === "object" && !Array.isArray(value) ? renderRef(value) : "";
+    return (
+      <Select
+        aria-label={label}
+        value={chosen}
+        onChange={(event) => {
+          const picked = routines.find((routine) => renderRef(routine.ref) === event.target.value);
+          onChange(field.name, picked?.ref);
+        }}
+      >
+        <option value="">—</option>
+        {routines.map((routine) => (
+          <option key={renderRef(routine.ref)} value={renderRef(routine.ref)}>
+            {routine.label} · {renderRef(routine.ref)}
           </option>
         ))}
       </Select>

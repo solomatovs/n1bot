@@ -31,12 +31,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from boba.catalog import (
     CatalogDiff,
     CatalogSnapshot,
+    NodeColumn,
     ObjectRef,
     OperationList,
     SourceDiff,
     SourceKind,
     SourceOperationList,
     SourceSnapshot,
+    Staleness,
 )
 from boba.identity.errors import RefusalError
 
@@ -57,6 +59,7 @@ __all__ = [
     "DraftStatus",
     "NodePosition",
     "PinBump",
+    "ProcessContext",
     "RebaseIssue",
     "RebaseResult",
     "ShareMode",
@@ -79,6 +82,7 @@ __all__ = [
     "VersionOrigin",
     "View",
     "ViewLayout",
+    "ViewNodeNotFoundError",
     "ViewNotFoundError",
     "ViewShare",
     "ViewSpec",
@@ -167,6 +171,15 @@ class SourceObjectNotFoundError(CatalogServiceError):
     def __init__(self, ref: ObjectRef) -> None:
         super().__init__(f"catalog: no {ref.kind.value} at {ref.render()}")
         self.ref = ref
+
+
+class ViewNodeNotFoundError(CatalogServiceError):
+    """Узла нет в срезе вида: он вне фильтра или удалён из процесса."""
+
+    def __init__(self, view_id: UUID, node_id: UUID) -> None:
+        super().__init__(f"catalog: view {view_id} has no node {node_id}")
+        self.view_id = view_id
+        self.node_id = node_id
 
 
 class SourceNotManualError(CatalogServiceError):
@@ -262,6 +275,18 @@ class DraftState(BaseModel):
     snapshot: CatalogSnapshot
     diff: CatalogDiff
     seq: int = Field(ge=0)
+
+
+class ProcessContext(BaseModel):
+    """Что процессу нужно от источников для показа: привязки версий, колонки
+    каждого узла из привязанной версии и устаревание относительно последних
+    версий. Считается для опубликованной версии, черновика или среза вида."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    pins: Mapping[UUID, int]
+    columns: Mapping[UUID, tuple[NodeColumn, ...]]
+    stale: Staleness
 
 
 class PinBump(BaseModel):

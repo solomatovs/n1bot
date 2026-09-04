@@ -17,11 +17,12 @@ class FakeDraftApi {
         id: "d",
         name: "d",
         base_version: 0,
+        pins: {},
         status: "open",
         created_by: "u",
         created_at: "2026-01-01T00:00:00Z",
       },
-      snapshot: { layers: {}, datasets: {}, columns: {}, load_kinds: {}, flows: {} },
+      snapshot: { layers: {}, nodes: {}, load_kinds: {}, flows: {} },
       diff: { entries: [] },
       seq: this.seq,
     };
@@ -51,7 +52,7 @@ class FakeDraftApi {
   /** Чужая порция мимо редактора: страница о ней ещё не знает. */
   someoneElse(): void {
     this.seq += 1;
-    this.portions.push([{ op: "add_layer", layer: { id: "x", name: "x" } }]);
+    this.portions.push([{ op: "add_layer", layer: { id: "x", name: "x", position: 0, description: "" } }]);
   }
 }
 
@@ -69,7 +70,7 @@ describe("DraftEditor", () => {
     const { editor, seen } = editorOf(fake);
     fake.someoneElse();
 
-    const outcome = await editor.apply([{ op: "add_layer", layer: { id: "a", name: "a" } }]);
+    const outcome = await editor.apply([{ op: "add_layer", layer: { id: "a", name: "a", position: 0, description: "" } }]);
 
     expect(outcome.kind).toBe("applied");
     expect(fake.conflicts).toBe(1);
@@ -83,7 +84,7 @@ describe("DraftEditor", () => {
     const { editor } = editorOf(fake);
 
     const rejected = await editor.apply([{ op: "remove_layer", id: "nope" }]);
-    const applied = await editor.apply([{ op: "add_layer", layer: { id: "a", name: "a" } }]);
+    const applied = await editor.apply([{ op: "add_layer", layer: { id: "a", name: "a", position: 0, description: "" } }]);
 
     expect(rejected).toEqual({ kind: "rejected", reason: "layer not found" });
     expect(applied.kind).toBe("applied");
@@ -94,8 +95,8 @@ describe("DraftEditor", () => {
     const fake = new FakeDraftApi();
     const { editor } = editorOf(fake);
 
-    const first = editor.apply([{ op: "add_layer", layer: { id: "a", name: "a" } }]);
-    const second = editor.apply([{ op: "add_layer", layer: { id: "b", name: "b" } }]);
+    const first = editor.apply([{ op: "add_layer", layer: { id: "a", name: "a", position: 0, description: "" } }]);
+    const second = editor.apply([{ op: "add_layer", layer: { id: "b", name: "b", position: 0, description: "" } }]);
     await Promise.all([first, second]);
 
     expect(fake.conflicts).toBe(0);

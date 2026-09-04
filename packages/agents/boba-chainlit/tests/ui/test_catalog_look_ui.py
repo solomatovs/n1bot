@@ -1,6 +1,7 @@
-"""Внешний вид страницы каталога: дорожки слоёв слева направо, карточки наборов,
-рёбра потоков, список, тулбар, панель деталей, режимы показа, diff черновика,
-узкий экран. Каталог сеется через JSON API живого стенда.
+"""Внешний вид страницы процесса: дорожки слоёв слева направо, карточки узлов
+с колонками из источника, рёбра потоков, список, тулбар, панель деталей,
+режимы показа, diff черновика, узкий экран, вход без списков. Процесс сеется
+через JSON API живого стенда над собственным источником.
 
 Ожидания цветов — из tokens.css сборки страницы (Tokens); геометрия — из
 bounding box узлов и дорожек.
@@ -14,11 +15,18 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from itertools import pairwise
 from typing import Any, ClassVar
-from uuid import UUID
 
 import httpx
 import pytest
-from catalog_ui import api_client, ok
+from catalog_ui import (
+    Api,
+    FlowSpec,
+    Objects,
+    ProcessSeed,
+    ProcessSpec,
+    Selector,
+    api_client,
+)
 from playwright.sync_api import Browser, Page, ViewportSize, expect
 
 from boba.stand.ui.look import Css, Tokens, no_horizontal_scroll
@@ -33,200 +41,115 @@ TOKENS_CSS = (
     REPO_ROOT / "packages/agents/boba-chainlit/web/catalog/src/styles/tokens.css"
 )
 
-READY = '[data-testid="canvas"][data-ready="true"]'
-NODE = '[data-testid="dataset-node"]'
-LANE = '[data-testid="layer-lane"]'
-EDGE_LABEL = '[data-testid="flow-edge-label"]'
+READY = Selector.READY.value
+NODE = Selector.NODE.value
+LANE = Selector.LANE.value
+EDGE_LABEL = Selector.EDGE_LABEL.value
 
 
-class Probe:
-    """Каталог стенда: три слоя, пять наборов, два вида загрузки, три потока."""
+class Look:
+    """Процесс стенда: три слоя, пять таблиц, два вида загрузки, три потока;
+    шестая таблица returns_raw есть в источнике, но в процесс её кладёт
+    только черновик."""
 
+    SOURCE: ClassVar[str] = "look_prod"
     LAYERS: ClassVar[tuple[str, ...]] = ("look_raw", "look_stg", "look_dm")
-    DATASETS: ClassVar[dict[str, str]] = {
+    TABLES: ClassVar[dict[str, str]] = {
         "orders_raw": "look_raw",
         "customers_raw": "look_raw",
         "orders_stg": "look_stg",
         "customers_stg": "look_stg",
         "sales_dm": "look_dm",
     }
-    FLOWS: ClassVar[tuple[tuple[str, str, str], ...]] = (
-        ("orders_raw", "orders_stg", "hashkey"),
-        ("customers_raw", "customers_stg", "full"),
-        ("orders_stg", "sales_dm", "full"),
+    FLOWS: ClassVar[tuple[FlowSpec, ...]] = (
+        FlowSpec("orders_raw", "orders_stg", "hashkey", {"hash_columns": ["id"]}),
+        FlowSpec("customers_raw", "customers_stg", "full"),
+        FlowSpec("orders_stg", "sales_dm", "full"),
     )
     KEY_COLUMNS: ClassVar[int] = 1
-    ALL_COLUMNS: ClassVar[int] = 3
-    DRAFT_DATASET: ClassVar[str] = "returns_raw"
+    ALL_COLUMNS: ClassVar[int] = len(Objects.COLUMNS)
+    DRAFT_TABLE: ClassVar[str] = "returns_raw"
 
-    def __init__(self) -> None:
-        self.ids: dict[str, str] = {}
+    @classmethod
+    def spec(cls) -> ProcessSpec:
+        return ProcessSpec(
+            source_name=cls.SOURCE,
+            layers=cls.LAYERS,
+            tables={**cls.TABLES, cls.DRAFT_TABLE: cls.LAYERS[0]},
+            kinds=(
+                {"name": "full", "fields": []},
+                {
+                    "name": "hashkey",
+                    "fields": [
+                        {
+                            "name": "hash_columns",
+                            "type": "columns",
+                            "side": "source",
+                            "required": True,
+                            "description": "",
+                        }
+                    ],
+                },
+            ),
+            flows=cls.FLOWS,
+            id_base=0xA000,
+        )
 
-    def id_of(self, name: str) -> str:
-        if name not in self.ids:
-            self.ids[name] = str(UUID(int=len(self.ids) + 0xA000))
 
-        return self.ids[name]
+class LookSeed(ProcessSeed):
+    """Сид look-модуля: returns_raw есть в источнике, но не в процессе."""
 
     def operations(self) -> list[dict[str, Any]]:
         ops: list[dict[str, Any]] = []
-        for layer in self.LAYERS:
-            ops.append(
-                {"op": "add_layer", "layer": {"id": self.id_of(layer), "name": layer}}
-            )
+        for op in super().operations():
+            if op["op"] == "add_node" and op["node"]["id"] == self.id_of(
+                Look.DRAFT_TABLE
+            ):
+                continue
 
-        for dataset, layer in self.DATASETS.items():
-            ops.append(
-                {
-                    "op": "add_dataset",
-                    "dataset": {
-                        "id": self.id_of(dataset),
-                        "layer_id": self.id_of(layer),
-                        "name": dataset,
-                    },
-                }
-            )
-            for position, column in enumerate(("id", "name", "updated_at")):
-                ops.append(
-                    {
-                        "op": "add_column",
-                        "column": {
-                            "id": self.id_of(f"{dataset}.{column}"),
-                            "dataset_id": self.id_of(dataset),
-                            "name": column,
-                            "type": "text",
-                            "nullable": position > 0,
-                            "is_key": position == 0,
-                            "position": position,
-                        },
-                    }
-                )
-
-        ops.append(
-            {
-                "op": "add_load_kind",
-                "load_kind": {"id": self.id_of("full"), "name": "full", "fields": []},
-            }
-        )
-        ops.append(
-            {
-                "op": "add_load_kind",
-                "load_kind": {
-                    "id": self.id_of("hashkey"),
-                    "name": "hashkey",
-                    "fields": [
-                        {"name": "hash_columns", "type": "columns", "required": True}
-                    ],
-                },
-            }
-        )
-
-        for source, target, kind in self.FLOWS:
-            values: dict[str, Any] = {}
-            if kind == "hashkey":
-                values = {"hash_columns": [self.id_of(f"{source}.id")]}
-
-            ops.append(
-                {
-                    "op": "add_flow",
-                    "flow": {
-                        "id": self.id_of(f"{source}->{target}"),
-                        "from_dataset_id": self.id_of(source),
-                        "to_dataset_id": self.id_of(target),
-                        "load": {"kind_id": self.id_of(kind), "values": values},
-                    },
-                }
-            )
-
-        return ops
-
-    def cleanup_operations(self) -> list[dict[str, Any]]:
-        """Снос всего посеянного в обратном порядке зависимостей: потоки,
-        наборы (колонки уходят с ними), слои, виды загрузки."""
-        ops: list[dict[str, Any]] = []
-        for source, target, _kind in self.FLOWS:
-            ops.append({"op": "remove_flow", "id": self.id_of(f"{source}->{target}")})
-
-        for dataset in self.DATASETS:
-            ops.append({"op": "remove_dataset", "id": self.id_of(dataset)})
-
-        for layer in self.LAYERS:
-            ops.append({"op": "remove_layer", "id": self.id_of(layer)})
-
-        for kind in ("full", "hashkey"):
-            ops.append({"op": "remove_load_kind", "id": self.id_of(kind)})
+            ops.append(op)
 
         return ops
 
     def draft_operations(self) -> list[dict[str, Any]]:
-        return [
-            {
-                "op": "add_dataset",
-                "dataset": {
-                    "id": self.id_of(self.DRAFT_DATASET),
-                    "layer_id": self.id_of("look_raw"),
-                    "name": self.DRAFT_DATASET,
-                },
-            }
-        ]
+        return [self.node_op(Look.DRAFT_TABLE, Look.LAYERS[0])]
 
 
 @dataclass(frozen=True)
 class Seeded:
-    """Что посеяно: вид на весь каталог и черновик с добавленным набором."""
+    """Что посеяно: вид на весь процесс и черновик с добавленным узлом."""
 
-    probe: Probe
+    seed: LookSeed
     view_id: str
     draft_id: str
+
+    def node(self, name: str) -> str:
+        return self.seed.node(name)
 
 
 @pytest.fixture(scope="module")
 def seeded(stand: StandProcess) -> Iterator[Seeded]:
-    """Каталог, вид и черновик через API: публикуется ровно один раз на модуль,
-    на выходе черновик отменяется, вид удаляется, посеянное снимается публикацией."""
-    probe = Probe()
+    """Источник, процесс, вид и черновик через API: публикуется ровно один раз
+    на модуль, на выходе черновик отменяется, вид удаляется, посеянное
+    снимается публикацией и источник удаляется."""
     with api_client(stand, "admin") as admin:
-        draft = ok(admin.post("/api/catalog/drafts", json={"name": "look seed"}))
-        ok(
-            admin.post(
-                f"/api/catalog/drafts/{draft['id']}/ops",
-                json={"expected_seq": 0, "operations": probe.operations()},
-            )
-        )
-        ok(admin.post(f"/api/catalog/drafts/{draft['id']}/publish"))
+        api = Api(admin)
+        seed = LookSeed(api, Look.spec())
+        seed.publish("look seed")
+        view_id = api.create_view("look view", [], [])
+        edits = api.new_draft("look edits")
+        api.append(edits, seed.draft_operations())
 
-        view = ok(
-            admin.post(
-                "/api/catalog/views",
-                json={"name": "look view", "dataset_ids": [], "layer_ids": []},
-            )
-        )
-
-        edits = ok(admin.post("/api/catalog/drafts", json={"name": "look edits"}))
-        ok(
-            admin.post(
-                f"/api/catalog/drafts/{edits['id']}/ops",
-                json={"expected_seq": 0, "operations": probe.draft_operations()},
-            )
-        )
-
-    seeded = Seeded(probe=probe, view_id=str(view["id"]), draft_id=str(edits["id"]))
+    seeded = Seeded(seed=seed, view_id=view_id, draft_id=edits)
     try:
         yield seeded
     finally:
         with api_client(stand, "admin") as admin:
-            admin.delete(f"/api/catalog/drafts/{seeded.draft_id}")
-            admin.delete(f"/api/catalog/views/{seeded.view_id}")
-            cleanup = ok(
-                admin.post("/api/catalog/drafts", json={"name": "look cleanup"})
-            )
-            ok(
-                admin.post(
-                    f"/api/catalog/drafts/{cleanup['id']}/ops",
-                    json={"expected_seq": 0, "operations": probe.cleanup_operations()},
-                )
-            )
-            ok(admin.post(f"/api/catalog/drafts/{cleanup['id']}/publish"))
+            api = Api(admin)
+            seed.api = api
+            api.discard(seeded.draft_id)
+            api.delete_view(seeded.view_id)
+            seed.cleanup()
 
 
 @pytest.fixture(scope="module")
@@ -288,9 +211,9 @@ class TestViewPage:
         _open_view(page, stand, seeded)
 
         expect(page.get_by_test_id("page-title")).to_have_text("look view")
-        expect(page.locator(NODE)).to_have_count(len(Probe.DATASETS))
-        expect(page.locator(LANE)).to_have_count(len(Probe.LAYERS))
-        expect(page.locator(EDGE_LABEL)).to_have_count(len(Probe.FLOWS))
+        expect(page.locator(NODE)).to_have_count(len(Look.TABLES))
+        expect(page.locator(LANE)).to_have_count(len(Look.LAYERS))
+        expect(page.locator(EDGE_LABEL)).to_have_count(len(Look.FLOWS))
 
         labels = sorted(page.locator(EDGE_LABEL).all_inner_texts())
         assert labels == ["full", "full", "hashkey"]
@@ -302,7 +225,7 @@ class TestViewPage:
         _open_view(page, stand, seeded)
 
         lefts: list[float] = []
-        for layer in Probe.LAYERS:
+        for layer in Look.LAYERS:
             lane = page.locator(f'{LANE}[data-layer="{layer}"]')
             expect(lane).to_have_count(1)
             lefts.append(Css.box(lane).x)
@@ -311,16 +234,16 @@ class TestViewPage:
 
         boxes = [
             Css.box(page.locator(f'{LANE}[data-layer="{layer}"]'))
-            for layer in Probe.LAYERS
+            for layer in Look.LAYERS
         ]
         for previous, current in pairwise(boxes):
             assert previous.right <= current.x + 1, "lanes overlap"
 
-        for dataset, layer in Probe.DATASETS.items():
-            node = page.locator(f'{NODE}[data-dataset="{dataset}"]')
+        for table, layer in Look.TABLES.items():
+            node = page.locator(seeded.node(table))
             lane = page.locator(f'{LANE}[data-layer="{layer}"]')
             assert Css.box(lane).contains(Css.box(node), slack=2), (
-                f"{dataset} is outside its lane {layer}"
+                f"{table} is outside its lane {layer}"
             )
 
     def test_nodes_are_laid_out_by_measured_size_without_overlap(
@@ -329,13 +252,13 @@ class TestViewPage:
         """Раскладка идёт по замеру DOM: карточки не пересекаются в любом режиме,
         а карточка со всеми колонками выше карточки с одними ключами."""
         _open_view(page, stand, seeded)
-        node = page.locator(f'{NODE}[data-dataset="orders_raw"]')
+        node = page.locator(seeded.node("orders_raw"))
         keys_only = Css.box(node).height
 
         for mode in ("all fields", "names"):
             _switch_mode(page, mode)
             boxes = [
-                Css.box(page.locator(NODE).nth(i)) for i in range(len(Probe.DATASETS))
+                Css.box(page.locator(NODE).nth(i)) for i in range(len(Look.TABLES))
             ]
             for index, first in enumerate(boxes):
                 for second in boxes[index + 1 :]:
@@ -357,12 +280,12 @@ class TestViewPage:
         self, page: Page, stand: StandProcess, seeded: Seeded
     ) -> None:
         _open_view(page, stand, seeded)
-        node = page.locator(f'{NODE}[data-dataset="orders_raw"]')
+        node = page.locator(seeded.node("orders_raw"))
 
-        expect(node.locator(".ds-node__column")).to_have_count(Probe.KEY_COLUMNS)
+        expect(node.locator(".ds-node__column")).to_have_count(Look.KEY_COLUMNS)
 
         _switch_mode(page, "all fields")
-        expect(node.locator(".ds-node__column")).to_have_count(Probe.ALL_COLUMNS)
+        expect(node.locator(".ds-node__column")).to_have_count(Look.ALL_COLUMNS)
         assert "mode=ALL_FIELDS" in page.url
 
         _switch_mode(page, "names")
@@ -374,33 +297,34 @@ class TestViewPage:
     ) -> None:
         _open_view(page, stand, seeded)
 
-        page.locator(f'{NODE}[data-dataset="orders_stg"]').click()
+        page.locator(seeded.node("orders_stg")).click()
 
         panel = page.get_by_test_id("detail-panel")
-        expect(panel).to_have_attribute("data-dataset", "orders_stg")
+        expect(panel).to_have_attribute("data-node", seeded.seed.address("orders_stg"))
         expect(panel.get_by_test_id("detail-columns").locator("tr")).to_have_count(
-            Probe.ALL_COLUMNS
+            Look.ALL_COLUMNS
         )
+        expect(panel.get_by_test_id("node-card")).to_be_visible(timeout=15_000)
         expect(
             panel.get_by_test_id("detail-incoming").locator(".detail__flow")
         ).to_have_count(1)
         expect(
             panel.get_by_test_id("detail-outgoing").locator(".detail__flow")
         ).to_have_count(1)
-        assert f"active={seeded.probe.id_of('orders_stg')}" in page.url
+        assert f"active={seeded.seed.id_of('orders_stg')}" in page.url
 
-        active = page.locator(f'{NODE}[data-dataset="orders_stg"]')
+        active = page.locator(seeded.node("orders_stg"))
         expect(active).to_have_attribute("data-active", "true")
         # рамка меняется с переходом: ждём конечное значение, а не кадр анимации
         expect(active).to_have_css("border-color", tokens.rgb("signal"))
 
-        expect(page.locator(f'{NODE}[data-dataset="orders_raw"]')).to_have_attribute(
+        expect(page.locator(seeded.node("orders_raw"))).to_have_attribute(
             "data-highlighted", "true"
         )
-        expect(page.locator(f'{NODE}[data-dataset="sales_dm"]')).to_have_attribute(
+        expect(page.locator(seeded.node("sales_dm"))).to_have_attribute(
             "data-highlighted", "true"
         )
-        expect(page.locator(f'{NODE}[data-dataset="customers_raw"]')).to_have_attribute(
+        expect(page.locator(seeded.node("customers_raw"))).to_have_attribute(
             "data-highlighted", "false"
         )
 
@@ -414,31 +338,39 @@ class TestViewPage:
         _open_view(page, stand, seeded)
         pane = page.get_by_test_id("left-pane")
 
-        expect(pane.locator(".pane__group")).to_have_count(len(Probe.LAYERS))
-        expect(pane.get_by_test_id("pane-item")).to_have_count(len(Probe.DATASETS))
+        expect(pane.locator(".pane__group")).to_have_count(len(Look.LAYERS))
+        expect(pane.get_by_test_id("pane-item")).to_have_count(len(Look.TABLES))
 
         pane.get_by_role("button", name="hide customers_raw").click()
-        expect(page.locator(f'{NODE}[data-dataset="customers_raw"]')).to_have_count(0)
-        expect(page.locator(EDGE_LABEL)).to_have_count(len(Probe.FLOWS) - 1)
-        assert f"hidden={seeded.probe.id_of('customers_raw')}" in page.url
+        expect(page.locator(seeded.node("customers_raw"))).to_have_count(0)
+        expect(page.locator(EDGE_LABEL)).to_have_count(len(Look.FLOWS) - 1)
+        assert f"hidden={seeded.seed.id_of('customers_raw')}" in page.url
 
         pane.get_by_role("button", name="show customers_raw").click()
-        expect(page.locator(f'{NODE}[data-dataset="customers_raw"]')).to_have_count(1)
+        expect(page.locator(seeded.node("customers_raw"))).to_have_count(1)
 
-        pane.get_by_label("find a dataset").fill("sales")
+        pane.get_by_label("find a node").fill("sales")
         expect(pane.get_by_test_id("pane-item")).to_have_count(1)
+
+        pane.get_by_role("tab", name="sources").click()
+        expect(pane).to_have_attribute("data-tab", "sources")
+        branch = pane.locator(
+            f'[data-testid="source-branch"][data-source="{Look.SOURCE}"]'
+        )
+        expect(branch).to_be_visible()
+        assert "pane=sources" in page.url
 
     def test_url_state_is_restored(
         self, page: Page, stand: StandProcess, seeded: Seeded
     ) -> None:
-        active = seeded.probe.id_of("sales_dm")
+        active = seeded.seed.id_of("sales_dm")
         _open_view(page, stand, seeded, f"?active={active}&mode=TABLE_NAME")
 
         expect(page.get_by_test_id("detail-panel")).to_have_attribute(
-            "data-dataset", "sales_dm"
+            "data-node", seeded.seed.address("sales_dm")
         )
         expect(
-            page.locator(f'{NODE}[data-dataset="sales_dm"] .ds-node__column')
+            page.locator(f"{seeded.node('sales_dm')} .ds-node__column")
         ).to_have_count(0)
 
     def test_narrow_screen_keeps_the_scene_without_horizontal_scroll(
@@ -456,7 +388,7 @@ class TestViewPage:
             assert no_horizontal_scroll(narrow)
             expect(narrow.get_by_test_id("left-pane")).to_have_count(0)
 
-            narrow.locator(f'{NODE}[data-dataset="orders_raw"]').click()
+            narrow.locator(seeded.node("orders_raw")).click()
             expect(narrow.get_by_test_id("detail-panel")).to_be_visible()
             assert no_horizontal_scroll(narrow)
         finally:
@@ -464,15 +396,15 @@ class TestViewPage:
 
 
 class TestDraftPage:
-    def test_draft_shows_added_dataset_with_diff(
+    def test_draft_shows_added_node_with_diff(
         self, page: Page, stand: StandProcess, seeded: Seeded, tokens: Tokens
     ) -> None:
         _open_draft(page, stand, seeded)
 
         expect(page.get_by_test_id("page-title")).to_have_text("look edits")
-        expect(page.locator(NODE)).to_have_count(len(Probe.DATASETS) + 1)
+        expect(page.locator(NODE)).to_have_count(len(Look.TABLES) + 1)
 
-        added = page.locator(f'{NODE}[data-dataset="{Probe.DRAFT_DATASET}"]')
+        added = page.locator(seeded.node(Look.DRAFT_TABLE))
         expect(added).to_have_attribute("data-status", "added")
         expect(added).to_have_css("border-color", tokens.rgb("done"))
         expect(added.locator(".ds-node__status")).to_have_text("added")
@@ -482,17 +414,28 @@ class TestDraftPage:
         assert "diff=0" in page.url
 
 
-class TestIndexPage:
-    def test_index_lists_views_and_drafts(
+class TestPublishedPage:
+    def test_entry_shows_the_process_with_menus(
         self, page: Page, stand: StandProcess, seeded: Seeded
     ) -> None:
+        """Вход — сам процесс: узлы на холсте, диаграммы и черновики в диалогах
+        шапки, ссылка из диаграмм открывает вид."""
         page.goto(f"{stand.config.base_url}/catalog/")
-        index = page.get_by_test_id("index-page")
+        page.wait_for_selector(READY, timeout=30_000)
+        catalog = page.get_by_test_id("catalog-page")
+        expect(catalog).to_have_attribute("data-source", "published")
+        expect(page.locator(seeded.node("orders_raw"))).to_be_visible()
 
-        expect(index.get_by_role("link", name="look view")).to_be_visible()
-        expect(index.get_by_role("link", name="look edits")).to_be_visible()
+        page.get_by_test_id("edit-button").click()
+        drafts = page.locator('[data-dialog="drafts"]')
+        expect(drafts.get_by_role("link", name="look edits")).to_be_visible()
+        drafts.get_by_role("button", name="close dialog").click()
+        expect(drafts).to_have_count(0)
 
-        index.get_by_role("link", name="look view").click()
+        page.get_by_test_id("diagrams-button").click()
+        diagrams = page.locator('[data-dialog="diagrams"]')
+        expect(diagrams.get_by_role("link", name="look view")).to_be_visible()
+        diagrams.get_by_role("link", name="look view").click()
         page.wait_for_selector(READY, timeout=30_000)
         assert re.search(rf"/catalog/views/{seeded.view_id}$", page.url.split("?")[0])
 

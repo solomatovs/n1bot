@@ -98,9 +98,15 @@ class TestSourcesList:
         expect(page.get_by_test_id("new-source")).to_be_visible()
 
         page.goto(f"{stand.config.base_url}/catalog/")
-        page.get_by_test_id("index-sources").get_by_role(
-            "link", name="metadata sources"
-        ).click()
+        expect(page.get_by_test_id("catalog-page")).to_be_visible(timeout=30_000)
+        pane = page.get_by_test_id("left-pane")
+        pane.get_by_role("tab", name="sources").click()
+        expect(
+            pane.locator(
+                f'[data-testid="source-branch"][data-source="{SourceSeed.PROD}"]'
+            )
+        ).to_contain_text("v2")
+        pane.get_by_test_id("sources-link").click()
         expect(page.get_by_test_id("sources-page")).to_be_visible()
 
     def test_new_source_form_creates_and_opens_the_source(

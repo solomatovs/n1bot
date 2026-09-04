@@ -1,4 +1,4 @@
-import type { Dataset, Flow, Layer } from "./catalog";
+import type { Flow, Layer, ObjectRef, ProcessNode } from "./catalog";
 import type { CatalogOp } from "./ops";
 
 /** Действия правки, которые страница отдаёт панелям на странице черновика;
@@ -8,8 +8,11 @@ export type EditActions = {
   addLayer: () => void;
   renameLayer: (layer: Layer) => void;
   removeLayer: (layer: Layer) => void;
-  addDataset: (layerId: string) => void;
-  removeDataset: (dataset: Dataset) => void;
-  newFlow: (from: Dataset) => void;
+  /** Объект источника становится узлом слоя. */
+  addNode: (layerId: string, ref: ObjectRef) => void;
+  removeNode: (node: ProcessNode) => void;
+  /** Узел переводится на другой объект; потоки остаются. */
+  retargetNode: (node: ProcessNode, ref: ObjectRef) => void;
+  newFlow: (from: ProcessNode) => void;
   editFlow: (flow: Flow) => void;
 };

@@ -199,9 +199,53 @@ async def test_draft_cycle_over_http(stand: Stand, process: ProcessSample) -> No
 
         versions = await client.get(stand.url(CatalogUrl.VERSIONS))
         assert [v["number"] for v in versions.json()] == [1]
+        assert versions.json()[0]["pins"] == {str(process.source_id): 1}
 
         missing = await client.get(stand.url(CatalogUrl.DRAFT, draft_id=UUID(int=404)))
         assert missing.status_code == 404
+
+
+async def test_context_staleness_and_pins_over_http(
+    stand: Stand, process: ProcessSample
+) -> None:
+    """Контекст черновика несёт привязки, колонки узлов и пустое устаревание;
+    поднятие привязок без новых версий ничего не ломает; после публикации
+    контекст и устаревание есть у опубликованного процесса."""
+    async with stand.client(_user(EDITOR_ID, "wrt")) as client:
+        created = await client.post(stand.url(CatalogUrl.DRAFTS), json={"name": "ctx"})
+        draft_id = created.json()["id"]
+        await client.post(
+            stand.url(CatalogUrl.DRAFT_OPS, draft_id=draft_id),
+            json=_ops_body(0, process.ops()),
+        )
+
+        context = await client.get(
+            stand.url(CatalogUrl.DRAFT_CONTEXT, draft_id=draft_id)
+        )
+        assert context.status_code == 200
+        assert context.json()["pins"] == {str(process.source_id): 1}
+        columns = context.json()["columns"][str(process.orders.id)]
+        assert [c["name"] for c in columns] == ["id", "amount", "created_at"]
+        assert context.json()["stale"]["entries"] == []
+
+        staleness = await client.get(
+            stand.url(CatalogUrl.DRAFT_STALENESS, draft_id=draft_id)
+        )
+        assert staleness.status_code == 200
+        assert staleness.json()["entries"] == []
+
+        bumped = await client.post(stand.url(CatalogUrl.DRAFT_PINS, draft_id=draft_id))
+        assert bumped.status_code == 200
+        assert bumped.json()["violations"] == []
+
+        await client.post(stand.url(CatalogUrl.DRAFT_PUBLISH, draft_id=draft_id))
+
+        published_context = await client.get(stand.url(CatalogUrl.CONTEXT))
+        assert published_context.status_code == 200
+        assert str(process.orders.id) in published_context.json()["columns"]
+        assert (await client.get(stand.url(CatalogUrl.STALENESS))).json() == {
+            "entries": []
+        }
 
 
 async def test_stale_draft_conflicts_and_rebases(
@@ -245,6 +289,49 @@ async def test_stale_draft_conflicts_and_rebases(
         )
         assert discarded.status_code == 200
         assert discarded.json()["status"] == "discarded"
+
+
+async def test_view_object_card_for_a_shared_stranger(
+    stand: Stand, process: ProcessSample
+) -> None:
+    """Карточка объекта узла из среза вида отдаётся без прав на каталог; узел
+    вне среза — 404."""
+    async with stand.client(_user(EDITOR_ID, "wrt")) as client:
+        draft = await client.post(stand.url(CatalogUrl.DRAFTS), json={"name": "vo"})
+        draft_id = draft.json()["id"]
+        await client.post(
+            stand.url(CatalogUrl.DRAFT_OPS, draft_id=draft_id),
+            json=_ops_body(0, process.ops()),
+        )
+        await client.post(stand.url(CatalogUrl.DRAFT_PUBLISH, draft_id=draft_id))
+        created = await client.post(
+            stand.url(CatalogUrl.VIEWS),
+            json={
+                "name": "orders",
+                "node_ids": [str(process.orders.id)],
+                "layer_ids": [],
+            },
+        )
+        view_id = created.json()["id"]
+        await client.post(
+            stand.url(CatalogUrl.VIEW_SHARES, view_id=view_id),
+            json={"kind": "user", "target": str(STRANGER_ID)},
+        )
+
+    async with stand.client(_user(STRANGER_ID)) as client:
+        card = await client.get(
+            stand.url(
+                CatalogUrl.VIEW_OBJECT, view_id=view_id, node_id=process.orders.id
+            )
+        )
+        assert card.status_code == 200
+        assert card.json()["card"] == "pg_relation"
+        outside = await client.get(
+            stand.url(
+                CatalogUrl.VIEW_OBJECT, view_id=view_id, node_id=process.customers.id
+            )
+        )
+        assert outside.status_code == 404
 
 
 async def test_views_layout_and_shares_over_http(
@@ -307,6 +394,11 @@ async def test_views_layout_and_shares_over_http(
         assert list(state.json()["snapshot"]["nodes"]) == [str(process.orders.id)]
         assert state.json()["layout"]["positions"][0]["x"] == 1.5
         assert (await client.get(stand.url(CatalogUrl.SNAPSHOT))).status_code == 403
+
+        context = await client.get(stand.url(CatalogUrl.VIEW_CONTEXT, view_id=view_id))
+        assert context.status_code == 200
+        assert list(context.json()["columns"]) == [str(process.orders.id)]
+        assert (await client.get(stand.url(CatalogUrl.CONTEXT))).status_code == 403
 
         listed = await client.get(stand.url(CatalogUrl.VIEWS))
         assert [v["id"] for v in listed.json()] == [view_id]

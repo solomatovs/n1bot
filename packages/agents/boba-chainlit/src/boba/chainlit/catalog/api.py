@@ -56,6 +56,7 @@ from boba.catalog_service import (
     DraftState,
     NodePosition,
     PinBump,
+    ProcessContext,
     RebaseResult,
     ShareTargetKind,
     Source,
@@ -72,6 +73,7 @@ from boba.catalog_service import (
     Version,
     View,
     ViewLayout,
+    ViewNodeNotFoundError,
     ViewNotFoundError,
     ViewShare,
     ViewSpec,
@@ -136,6 +138,10 @@ class CatalogUrl(StrEnum):
     DRAFT_STALENESS = "/drafts/{draft_id}/staleness"
     DRAFT_PINS = "/drafts/{draft_id}/pins"
     STALENESS = "/staleness"
+    CONTEXT = "/context"
+    DRAFT_CONTEXT = "/drafts/{draft_id}/context"
+    VIEW_CONTEXT = "/views/{view_id}/context"
+    VIEW_OBJECT = "/views/{view_id}/nodes/{node_id}/object"
     VIEWS = "/views"
     VIEW = "/views/{view_id}"
     VIEW_STATE = "/views/{view_id}/state"
@@ -296,6 +302,10 @@ class CatalogApi:
             (CatalogUrl.DRAFT_STALENESS, self.draft_staleness, "GET"),
             (CatalogUrl.DRAFT_PINS, self.bump_pins, "POST"),
             (CatalogUrl.STALENESS, self.staleness, "GET"),
+            (CatalogUrl.CONTEXT, self.context, "GET"),
+            (CatalogUrl.DRAFT_CONTEXT, self.draft_context, "GET"),
+            (CatalogUrl.VIEW_CONTEXT, self.view_context, "GET"),
+            (CatalogUrl.VIEW_OBJECT, self.view_object, "GET"),
             (CatalogUrl.VIEWS, self.list_views, "GET"),
             (CatalogUrl.VIEWS, self.create_view, "POST"),
             (CatalogUrl.VIEW, self.get_view, "GET"),
@@ -428,6 +438,36 @@ class CatalogApi:
         service = await self._resolved()
 
         return await self._guarded(service.draft_staleness(subject, draft_id))
+
+    async def context(self, current_user: CurrentUser) -> ProcessContext:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(service.context(subject))
+
+    async def draft_context(
+        self, draft_id: UUID, current_user: CurrentUser
+    ) -> ProcessContext:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(service.draft_context(subject, draft_id))
+
+    async def view_context(
+        self, view_id: UUID, current_user: CurrentUser
+    ) -> ProcessContext:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(service.view_context(subject, view_id))
+
+    async def view_object(
+        self, view_id: UUID, node_id: UUID, current_user: CurrentUser
+    ) -> ObjectCard:
+        subject = self._subject(current_user)
+        service = await self._resolved()
+
+        return await self._guarded(service.view_object(subject, view_id, node_id))
 
     async def bump_pins(self, draft_id: UUID, current_user: CurrentUser) -> PinBump:
         subject = self._subject(current_user)
@@ -758,6 +798,7 @@ class CatalogApi:
             SourceVersionNotFoundError,
             SourceObjectNotFoundError,
             SourceDraftNotFoundError,
+            ViewNodeNotFoundError,
         ) as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except SourceNotManualError as exc:

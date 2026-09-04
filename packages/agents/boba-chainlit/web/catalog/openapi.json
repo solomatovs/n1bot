@@ -476,6 +476,186 @@
         }
       }
     },
+    "/api/catalog/context": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Context",
+        "operationId": "context_api_catalog_context_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessContext"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/drafts/{draft_id}/context": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Draft Context",
+        "operationId": "draft_context_api_catalog_drafts__draft_id__context_get",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessContext"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/views/{view_id}/context": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "View Context",
+        "operationId": "view_context_api_catalog_views__view_id__context_get",
+        "parameters": [
+          {
+            "name": "view_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "View Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessContext"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/views/{view_id}/nodes/{node_id}/object": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "View Object",
+        "operationId": "view_object_api_catalog_views__view_id__nodes__node_id__object_get",
+        "parameters": [
+          {
+            "name": "view_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "View Id"
+            }
+          },
+          {
+            "name": "node_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Node Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/PgRelationCard"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PgRoutineCard"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PgSequenceCard"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PgTypeCard"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChTableCard"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChDictionaryCard"
+                    }
+                  ],
+                  "title": "Response View Object Api Catalog Views  View Id  Nodes  Node Id  Object Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/catalog/views": {
       "get": {
         "tags": [
@@ -3730,6 +3910,36 @@
         "title": "Node",
         "description": "Объект источника, поставленный в слой; колонки читаются из источника."
       },
+      "NodeColumn": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "nullable": {
+            "type": "boolean",
+            "title": "Nullable"
+          },
+          "key": {
+            "type": "boolean",
+            "title": "Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "type",
+          "nullable",
+          "key"
+        ],
+        "title": "NodeColumn",
+        "description": "Колонка объекта глазами процесса: имя, тип, nullable и вхождение в\nпервичный ключ. Общая форма для Postgres и ClickHouse, чтобы карточка\nузла рисовалась одинаково."
+      },
       "NodePosition": {
         "properties": {
           "node_id": {
@@ -5347,6 +5557,45 @@
         ],
         "title": "PinBump",
         "description": "Черновик после поднятия привязок и что в нём перестало сходиться."
+      },
+      "ProcessContext": {
+        "properties": {
+          "pins": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "propertyNames": {
+              "format": "uuid"
+            },
+            "type": "object",
+            "title": "Pins"
+          },
+          "columns": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/NodeColumn"
+              },
+              "type": "array"
+            },
+            "propertyNames": {
+              "format": "uuid"
+            },
+            "type": "object",
+            "title": "Columns"
+          },
+          "stale": {
+            "$ref": "#/components/schemas/Staleness"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "pins",
+          "columns",
+          "stale"
+        ],
+        "title": "ProcessContext",
+        "description": "Что процессу нужно от источников для показа: привязки версий, колонки\nкаждого узла из привязанной версии и устаревание относительно последних\nверсий. Считается для опубликованной версии, черновика или среза вида."
       },
       "RebaseBody": {
         "properties": {

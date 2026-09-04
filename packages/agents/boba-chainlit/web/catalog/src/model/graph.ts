@@ -1,8 +1,8 @@
 import type { Edge, Node } from "@xyflow/react";
 
-import type { Catalog, ChangeStatus, Column, Dataset, Flow, Layer } from "./catalog";
+import type { Catalog, ChangeStatus, Flow, Layer, NodeColumn, ProcessNode, Stale } from "./catalog";
 
-/** Сколько колонок показывает карточка набора: все, только ключи, ничего. */
+/** Сколько колонок показывает карточка узла: все, только ключи, ничего. */
 export type ShowMode = "ALL_FIELDS" | "KEY_ONLY" | "TABLE_NAME";
 
 export const SHOW_MODES: ShowMode[] = ["ALL_FIELDS", "KEY_ONLY", "TABLE_NAME"];
@@ -11,13 +11,15 @@ export function isShowMode(value: string): value is ShowMode {
   return (SHOW_MODES as string[]).includes(value);
 }
 
-export type DatasetNodeData = {
-  dataset: Dataset;
+export type ProcessNodeData = {
+  node: ProcessNode;
+  label: string;
   layer: Layer | undefined;
-  columns: Column[];
+  columns: NodeColumn[];
   showMode: ShowMode;
   status: ChangeStatus;
   showDiff: boolean;
+  stale: Stale[];
   isActive: boolean;
   isHighlighted: boolean;
 };
@@ -34,13 +36,14 @@ export type FlowEdgeData = {
   loadKind: string;
   status: ChangeStatus;
   showDiff: boolean;
+  stale: Stale[];
   isHighlighted: boolean;
 };
 
-export type DatasetNode = Node<DatasetNodeData, "dataset">;
+export type ProcessFlowNode = Node<ProcessNodeData, "process">;
 export type LayerNode = Node<LayerNodeData, "layer">;
 export type FlowEdge = Edge<FlowEdgeData, "flow">;
-export type CatalogNode = DatasetNode | LayerNode;
+export type CatalogNode = ProcessFlowNode | LayerNode;
 
 /** Слои, которые режут порядок отрисовки: дорожки под карточками, рёбра над. */
 export const Z_INDEX = {
@@ -64,13 +67,13 @@ export function measuredOf(node: Node): Measured | undefined {
   return { width, height };
 }
 
-export function visibleColumns(columns: Column[], showMode: ShowMode): Column[] {
+export function visibleColumns(columns: NodeColumn[], showMode: ShowMode): NodeColumn[] {
   if (showMode === "ALL_FIELDS") {
     return columns;
   }
 
   if (showMode === "KEY_ONLY") {
-    return columns.filter((column) => column.is_key);
+    return columns.filter((column) => column.key);
   }
 
   return [];
@@ -82,48 +85,54 @@ export function laneId(layerId: string): string {
   return `${LANE_PREFIX}${layerId}`;
 }
 
+export function layerOfLane(id: string): string | undefined {
+  return id.startsWith(LANE_PREFIX) ? id.slice(LANE_PREFIX.length) : undefined;
+}
+
 export type GraphOptions = {
   showMode: ShowMode;
   showDiff: boolean;
-  /** Наборы вида; пусто — весь каталог. */
-  datasetIds: ReadonlySet<string>;
+  /** Узлы вида; пусто — весь процесс. */
+  nodeIds: ReadonlySet<string>;
   /** Слои вида; пусто — все. */
   layerIds: ReadonlySet<string>;
   hidden: ReadonlySet<string>;
 };
 
-/** Наборы, попавшие в вид: фильтр по слоям и по списку наборов; удалённые в
+/** Узлы, попавшие в вид: фильтр по слоям и по списку узлов; удалённые в
  * черновике остаются, их показывает diff. */
-export function datasetsInView(catalog: Catalog, options: GraphOptions): Dataset[] {
-  return catalog.datasets.filter((dataset) => {
-    if (options.layerIds.size > 0 && !options.layerIds.has(dataset.layer_id)) {
+export function nodesInView(catalog: Catalog, options: GraphOptions): ProcessNode[] {
+  return catalog.nodes.filter((node) => {
+    if (options.layerIds.size > 0 && !options.layerIds.has(node.layer_id)) {
       return false;
     }
 
-    return options.datasetIds.size === 0 || options.datasetIds.has(dataset.id);
+    return options.nodeIds.size === 0 || options.nodeIds.has(node.id);
   });
 }
 
-/** Узлы наборов и рёбра потоков из снимка; позиции нулевые — их ставит раскладка. */
-export function buildGraph(catalog: Catalog, options: GraphOptions): { nodes: DatasetNode[]; edges: FlowEdge[] } {
-  const datasets = datasetsInView(catalog, options);
-  const included = new Set(datasets.map((dataset) => dataset.id));
+/** Узлы процесса и рёбра потоков из снимка; позиции нулевые — их ставит раскладка. */
+export function buildGraph(catalog: Catalog, options: GraphOptions): { nodes: ProcessFlowNode[]; edges: FlowEdge[] } {
+  const members = nodesInView(catalog, options);
+  const included = new Set(members.map((node) => node.id));
 
-  const nodes: DatasetNode[] = datasets.map((dataset) => {
-    const columns = visibleColumns(catalog.columnsOf(dataset.id), options.showMode);
+  const nodes: ProcessFlowNode[] = members.map((node) => {
+    const columns = visibleColumns(catalog.columnsOf(node.id), options.showMode);
     return {
-      id: dataset.id,
-      type: "dataset",
+      id: node.id,
+      type: "process",
       position: { x: 0, y: 0 },
-      hidden: options.hidden.has(dataset.id),
+      hidden: options.hidden.has(node.id),
       zIndex: Z_INDEX.node,
       data: {
-        dataset,
-        layer: catalog.layer(dataset.layer_id),
+        node,
+        label: catalog.label(node.id),
+        layer: catalog.layer(node.layer_id),
         columns,
         showMode: options.showMode,
-        status: catalog.statusOf("dataset", dataset.id),
+        status: catalog.statusOf("node", node.id),
         showDiff: options.showDiff,
+        stale: catalog.staleOf("node", node.id),
         isActive: false,
         isHighlighted: false,
       },
@@ -132,22 +141,23 @@ export function buildGraph(catalog: Catalog, options: GraphOptions): { nodes: Da
 
   const edges: FlowEdge[] = [];
   for (const flow of catalog.flows) {
-    if (!included.has(flow.from_dataset_id) || !included.has(flow.to_dataset_id)) {
+    if (!included.has(flow.from_node_id) || !included.has(flow.to_node_id)) {
       continue;
     }
 
     edges.push({
       id: flow.id,
       type: "flow",
-      source: flow.from_dataset_id,
-      target: flow.to_dataset_id,
-      hidden: options.hidden.has(flow.from_dataset_id) || options.hidden.has(flow.to_dataset_id),
+      source: flow.from_node_id,
+      target: flow.to_node_id,
+      hidden: options.hidden.has(flow.from_node_id) || options.hidden.has(flow.to_node_id),
       zIndex: Z_INDEX.edge,
       data: {
         flow,
         loadKind: catalog.loadKindName(flow),
         status: catalog.statusOf("flow", flow.id),
         showDiff: options.showDiff,
+        stale: catalog.staleOf("flow", flow.id),
         isHighlighted: false,
       },
     });
@@ -158,13 +168,19 @@ export function buildGraph(catalog: Catalog, options: GraphOptions): { nodes: Da
 
 const LANE_PADDING = 24;
 const LANE_TITLE = 32;
+const EMPTY_LANE = { width: 220, height: 96 };
+const EMPTY_LANE_GAP = 40;
 
-/** Дорожки слоёв под разложенными узлами: рамка по крайним карточкам слоя. */
-export function laneNodes(catalog: Catalog, nodes: DatasetNode[], showDiff: boolean): LayerNode[] {
+/** Дорожки слоёв под разложенными узлами: рамка по крайним карточкам слоя.
+ * Пустой слой на черновике получает пустую дорожку справа от занятых, чтобы в
+ * неё можно было бросить объект. */
+export function laneNodes(catalog: Catalog, nodes: ProcessFlowNode[], showDiff: boolean, withEmpty: boolean): LayerNode[] {
   const lanes: LayerNode[] = [];
+  let rightEdge = 0;
+  let topEdge = 0;
   for (const layer of catalog.layers) {
     const members = nodes.filter(
-      (node) => !node.hidden && node.data.dataset.layer_id === layer.id && measuredOf(node) !== undefined,
+      (node) => !node.hidden && node.data.node.layer_id === layer.id && measuredOf(node) !== undefined,
     );
     if (members.length === 0) {
       continue;
@@ -187,24 +203,56 @@ export function laneNodes(catalog: Catalog, nodes: DatasetNode[], showDiff: bool
       bottom = Math.max(bottom, node.position.y + height);
     }
 
-    lanes.push({
-      id: laneId(layer.id),
-      type: "layer",
-      position: { x: left - LANE_PADDING, y: top - LANE_PADDING - LANE_TITLE },
-      width: right - left + LANE_PADDING * 2,
-      height: bottom - top + LANE_PADDING * 2 + LANE_TITLE,
-      zIndex: Z_INDEX.lane,
-      draggable: false,
-      selectable: false,
-      connectable: false,
-      data: {
-        layer,
-        status: catalog.statusOf("layer", layer.id),
-        showDiff,
-        count: members.length,
-      },
-    });
+    const x = left - LANE_PADDING;
+    const y = top - LANE_PADDING - LANE_TITLE;
+    const width = right - left + LANE_PADDING * 2;
+    rightEdge = Math.max(rightEdge, x + width);
+    topEdge = Math.min(topEdge, y);
+    lanes.push(lane(layer, catalog, showDiff, members.length, x, y, width, bottom - top + LANE_PADDING * 2 + LANE_TITLE));
+  }
+
+  if (!withEmpty) {
+    return lanes;
+  }
+
+  let x = rightEdge + EMPTY_LANE_GAP;
+  for (const layer of catalog.layers) {
+    if (lanes.some((item) => item.data.layer.id === layer.id)) {
+      continue;
+    }
+
+    lanes.push(lane(layer, catalog, showDiff, 0, x, topEdge, EMPTY_LANE.width, EMPTY_LANE.height));
+    x += EMPTY_LANE.width + EMPTY_LANE_GAP;
   }
 
   return lanes;
+}
+
+function lane(
+  layer: Layer,
+  catalog: Catalog,
+  showDiff: boolean,
+  count: number,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+): LayerNode {
+  return {
+    id: laneId(layer.id),
+    type: "layer",
+    position: { x, y },
+    width,
+    height,
+    zIndex: Z_INDEX.lane,
+    draggable: false,
+    selectable: false,
+    connectable: false,
+    data: {
+      layer,
+      status: catalog.statusOf("layer", layer.id),
+      showDiff,
+      count,
+    },
+  };
 }

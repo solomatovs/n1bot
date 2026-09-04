@@ -14,6 +14,8 @@ import {
   CatalogChangedSchema,
   DraftSchema,
   DraftStateSchema,
+  PinBumpSchema,
+  ProcessContextSchema,
   RebaseResultSchema,
   ShareSchema,
   SnapshotSchema,
@@ -37,6 +39,8 @@ import {
   type Draft,
   type DraftState,
   type NodePosition,
+  type PinBump,
+  type ProcessContext,
   type RebaseResult,
   type Share,
   type Snapshot,
@@ -202,6 +206,30 @@ export class CatalogApi {
   rebase(draftId: string, dropConflicts: boolean): Promise<RebaseResult> {
     const body = { drop_conflicts: dropConflicts };
     return this.call("post", `/api/catalog/drafts/${draftId}/rebase`, body, RebaseResultSchema);
+  }
+
+  /** Привязки черновика поднимаются до последних версий источников. */
+  bumpPins(draftId: string): Promise<PinBump> {
+    return this.call("post", `/api/catalog/drafts/${draftId}/pins`, undefined, PinBumpSchema);
+  }
+
+  // --- контекст процесса: колонки узлов и устаревание по привязкам ---
+
+  context(): Promise<ProcessContext> {
+    return this.call("get", "/api/catalog/context", undefined, ProcessContextSchema);
+  }
+
+  draftContext(draftId: string): Promise<ProcessContext> {
+    return this.call("get", `/api/catalog/drafts/${draftId}/context`, undefined, ProcessContextSchema);
+  }
+
+  viewContext(viewId: string): Promise<ProcessContext> {
+    return this.call("get", `/api/catalog/views/${viewId}/context`, undefined, ProcessContextSchema);
+  }
+
+  /** Карточка объекта узла из среза вида: доступна тем, кому вид расшарен. */
+  viewObject(viewId: string, nodeId: string): Promise<ObjectCard> {
+    return this.call("get", `/api/catalog/views/${viewId}/nodes/${nodeId}/object`, undefined, ObjectCardSchema);
   }
 
   // --- источники ---

@@ -41,3 +41,39 @@ export const RefParam = {
     return { source_id: "", kind: kind.data, path };
   },
 };
+
+/** Тип данных перетаскивания объекта из дерева источника на холст: в нём
+ * лежит адрес в форме ObjectParam. */
+export const OBJECT_DRAG_TYPE = "application/x-boba-object";
+
+/** Полный адрес объекта в строке запроса страницы процесса: источник, kind и
+ * ступени пути одним JSON-массивом. */
+export const ObjectParam = {
+  render(ref: ObjectRef): string {
+    return JSON.stringify([ref.source_id, ref.kind, ...ref.path]);
+  },
+
+  parse(raw: string | null): ObjectRef | undefined {
+    if (raw === null || raw === "") {
+      return undefined;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return undefined;
+    }
+
+    if (!Array.isArray(parsed) || parsed.length < 3 || typeof parsed[0] !== "string") {
+      return undefined;
+    }
+
+    const partial = RefParam.parse(JSON.stringify(parsed.slice(1)));
+    if (partial === undefined) {
+      return undefined;
+    }
+
+    return { ...partial, source_id: parsed[0] };
+  },
+};

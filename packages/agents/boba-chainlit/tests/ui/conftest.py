@@ -12,7 +12,7 @@ import pytest
 
 pytest.importorskip("playwright.sync_api", reason="ui-тестам нужен playwright")
 
-from catalog_ui import Api, Cleanup, Ed, Seed, SourceSeed, api_client
+from catalog_ui import Api, Ed, Seed, SourceSeed, api_client
 from chat_ui import (
     BOOT_TIMEOUT_SEC,
     ChatOpener,
@@ -194,10 +194,11 @@ def catalog_api(stand: StandProcess) -> Iterator[Api]:
 
 @pytest.fixture(scope="module")
 def catalog_seed(catalog_api: Api) -> Iterator[Seed]:
-    """Каталог модуля с префиксом ed_: публикуется на входе, на выходе снимаются
-    его виды и публикуется удаление, чтобы соседние модули видели прежний каталог."""
-    seed = Seed()
-    catalog_api.publish_ops("module seed", seed.operations())
+    """Процесс модуля над источником ed_prod: публикуется на входе, на выходе
+    снимаются его виды, публикуется удаление и удаляется источник, чтобы
+    соседние модули видели прежний каталог."""
+    seed = Seed(catalog_api)
+    seed.publish("module seed")
     try:
         yield seed
     finally:
@@ -205,9 +206,7 @@ def catalog_seed(catalog_api: Api) -> Iterator[Seed]:
             if str(view["name"]).startswith(Ed.PREFIX):
                 catalog_api.delete_view(str(view["id"]))
 
-        cleanup = Cleanup(catalog_api.snapshot()).operations()
-        if cleanup:
-            catalog_api.publish_ops("module cleanup", cleanup)
+        seed.cleanup()
 
 
 @pytest.fixture(scope="module")

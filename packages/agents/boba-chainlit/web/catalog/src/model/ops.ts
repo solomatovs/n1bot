@@ -1,17 +1,16 @@
-import type { Column, Dataset, Flow, Layer, LoadKind } from "./catalog";
+import type { Flow, Layer, LoadKind, ObjectRef, ProcessNode } from "./catalog";
 
-/** Операции над снимком, как их принимает POST drafts/{id}/ops: add/set несут
- * сущность целиком, remove — только id. Зеркало boba.catalog.ops. */
+/** Операции над снимком процесса, как их принимает POST drafts/{id}/ops: add/set
+ * несут сущность целиком, remove — только id, retarget — id и новый адрес.
+ * Зеркало boba.catalog.ops. */
 export type CatalogOp =
   | { op: "add_layer"; layer: Layer }
   | { op: "set_layer"; layer: Layer }
   | { op: "remove_layer"; id: string }
-  | { op: "add_dataset"; dataset: Dataset }
-  | { op: "set_dataset"; dataset: Dataset }
-  | { op: "remove_dataset"; id: string }
-  | { op: "add_column"; column: Column }
-  | { op: "set_column"; column: Column }
-  | { op: "remove_column"; id: string }
+  | { op: "add_node"; node: ProcessNode }
+  | { op: "set_node"; node: ProcessNode }
+  | { op: "retarget_node"; id: string; ref: ObjectRef }
+  | { op: "remove_node"; id: string }
   | { op: "add_load_kind"; load_kind: LoadKind }
   | { op: "set_load_kind"; load_kind: LoadKind }
   | { op: "remove_load_kind"; id: string }
@@ -23,31 +22,31 @@ export function newId(): string {
   return crypto.randomUUID();
 }
 
-/** Пустой набор в слое: имя задаёт пользователь, остальное пусто. */
-export function blankDataset(layerId: string, name: string): Dataset {
-  return { id: newId(), layer_id: layerId, name, source: "", description: "", tags: [], owner: "" };
+/** Новый слой за последним по позиции. */
+export function blankLayer(name: string, position: number): Layer {
+  return { id: newId(), name, position, description: "" };
 }
 
-/** Пустая колонка набора на следующей позиции. */
-export function blankColumn(datasetId: string, position: number): Column {
-  return {
-    id: newId(),
-    dataset_id: datasetId,
-    name: "",
-    type: "text",
-    nullable: true,
-    is_key: false,
-    position,
-    description: "",
-  };
+/** Узел из объекта источника в слое: без alias и заметки. */
+export function blankNode(layerId: string, ref: ObjectRef): ProcessNode {
+  return { id: newId(), layer_id: layerId, ref, alias: null, note: "" };
 }
 
-/** Удаление набора: сначала его потоки, иначе сервер откажет. */
-export function removeDatasetWithFlows(datasetId: string, flows: Flow[]): CatalogOp[] {
+/** Поток между узлами без вида: вид и значения задаёт форма. */
+export function blankFlow(from: string, to: string): Flow {
+  return { id: newId(), from_node_id: from, to_node_id: to, load: { kind_id: "", values: {} }, description: "" };
+}
+
+export function blankLoadKind(name: string): LoadKind {
+  return { id: newId(), name, description: "", fields: [] };
+}
+
+/** Удаление узла: сначала его потоки, иначе сервер откажет. */
+export function removeNodeWithFlows(nodeId: string, flows: Flow[]): CatalogOp[] {
   const ops: CatalogOp[] = [];
   for (const flow of flows) {
     ops.push({ op: "remove_flow", id: flow.id });
   }
-  ops.push({ op: "remove_dataset", id: datasetId });
+  ops.push({ op: "remove_node", id: nodeId });
   return ops;
 }

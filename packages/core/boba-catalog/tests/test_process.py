@@ -24,10 +24,12 @@ from boba.catalog import (
     ObjectKind,
     OperationList,
     PinnedSnapshot,
+    RemoveFlow,
     RemoveLayer,
     RemoveNode,
     RetargetNode,
     SetNode,
+    SnapshotResolver,
     Staleness,
     StaleReason,
 )
@@ -195,6 +197,34 @@ class TestOperations:
             CatalogSnapshot.empty(), AcceptAll()
         )
         assert ghost.id in built.nodes
+
+    def test_stale_process_is_fixed_one_operation_at_a_time(
+        self, process: ProcessSample, snapshot: CatalogSnapshot
+    ) -> None:
+        """Источник ушёл вперёд и customers пропала: уже существующее
+        расхождение не мешает снять поток и узел, а новое — отвергается."""
+        resolver = SnapshotResolver({process.source_id: PgSample().next_version()})
+        assert any(
+            "customers" in violation
+            for violation in snapshot.source_violations(resolver)
+        )
+
+        fixed = OperationList(
+            root=(
+                RemoveFlow(id=process.flow_customers.id),
+                RemoveNode(id=process.customers.id),
+            )
+        ).apply(snapshot, resolver)
+        assert process.customers.id not in fixed.nodes
+
+        ghost = process.ref(ObjectKind.RELATION, ("prod", "public", "ghost"))
+        with pytest.raises(CatalogOpError) as error:
+            OperationList(root=(RetargetNode(id=process.orders.id, ref=ghost),)).apply(
+                snapshot, resolver
+            )
+
+        assert "ghost" in error.value.reason
+        assert "customers" not in error.value.reason
 
     def test_operations_parse_from_json(self, process: ProcessSample) -> None:
         layer_id = "00000000-0000-0000-0000-000000007101"

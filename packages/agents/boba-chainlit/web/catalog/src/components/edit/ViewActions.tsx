@@ -141,12 +141,12 @@ type FormProps = {
 
 type Choices = { status: "loading" } | { status: "failed"; message: string } | { status: "ready"; catalog: Catalog };
 
-/** Имя и фильтр вида: слои и наборы галочками по полному каталогу, который
+/** Имя и фильтр вида: слои и узлы галочками по полному каталогу, который
  * владелец вправе читать. Пустой фильтр — весь каталог. */
 function ViewForm({ api, view, busy, onSave, onClose }: FormProps): ReactElement {
   const [name, setName] = useState(view.name);
   const [layers, setLayers] = useState<Set<string>>(new Set(view.layer_ids));
-  const [datasets, setDatasets] = useState<Set<string>>(new Set(view.dataset_ids));
+  const [nodes, setNodes] = useState<Set<string>>(new Set(view.node_ids));
   const [choices, setChoices] = useState<Choices>({ status: "loading" });
 
   useEffect(() => {
@@ -171,7 +171,7 @@ function ViewForm({ api, view, busy, onSave, onClose }: FormProps): ReactElement
 
   const submit = (event: FormEvent): void => {
     event.preventDefault();
-    onSave({ name: name.trim(), layer_ids: [...layers], dataset_ids: [...datasets] });
+    onSave({ name: name.trim(), layer_ids: [...layers], node_ids: [...nodes] });
   };
 
   return (
@@ -201,15 +201,15 @@ function ViewForm({ api, view, busy, onSave, onClose }: FormProps): ReactElement
               onChange={setLayers}
             />
             <ChoiceList
-              mark="view-datasets"
-              label="datasets"
-              hint="single datasets on top of the layers"
-              items={choices.catalog.datasets.map((dataset) => ({
-                id: dataset.id,
-                label: `${choices.catalog.layer(dataset.layer_id)?.name ?? "?"} / ${dataset.name}`,
+              mark="view-nodes"
+              label="nodes"
+              hint="single nodes on top of the layers"
+              items={choices.catalog.nodes.map((node) => ({
+                id: node.id,
+                label: `${choices.catalog.layer(node.layer_id)?.name ?? "?"} / ${choices.catalog.label(node.id)}`,
               }))}
-              chosen={datasets}
-              onChange={setDatasets}
+              chosen={nodes}
+              onChange={setNodes}
             />
           </>
         )}

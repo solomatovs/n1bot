@@ -1,56 +1,124 @@
 import { Eye, EyeOff, Pencil, Plus, Trash2 } from "lucide-react";
 import { useMemo, useState, type ReactElement } from "react";
 
-import type { Catalog, Dataset } from "../model/catalog";
+import type { CatalogApi } from "../api/client";
+import type { Catalog, ObjectRef, ProcessNode } from "../model/catalog";
 import type { EditActions } from "../model/editing";
-import { Button, Eyebrow, IconButton, Input } from "../ui";
+import type { PaneTab } from "../model/urlState";
+import { Button, Eyebrow, IconButton, Input, Segmented } from "../ui";
+import { SourcesPane } from "./SourcesPane";
 
 type Props = {
+  api: CatalogApi;
   catalog: Catalog;
-  datasets: Dataset[];
+  nodes: ProcessNode[];
+  tab: PaneTab;
+  onTab: (tab: PaneTab) => void;
   activeId: string | undefined;
+  selectedObject: ObjectRef | undefined;
   hidden: ReadonlySet<string>;
   showDiff: boolean;
   editing: EditActions | undefined;
-  onActivate: (datasetId: string) => void;
-  onToggleHidden: (datasetId: string) => void;
+  onActivate: (nodeId: string) => void;
+  onSelectObject: (ref: ObjectRef) => void;
+  onToggleHidden: (nodeId: string) => void;
 };
 
-/** Список наборов по слоям: поиск по имени, выбор, глаз скрывает набор на холсте.
- * Перенос LeftPane и useTableVisibility из liam erd-core. */
+const TABS: { value: PaneTab; label: string }[] = [
+  { value: "process", label: "process" },
+  { value: "sources", label: "sources" },
+];
+
+/** Левая панель: вкладка процесса — узлы по слоям с поиском, выбором и глазом,
+ * который прячет узел на холсте; вкладка источников — деревья источников, из
+ * которых на черновике берутся узлы. */
 export function LeftPane({
+  api,
   catalog,
-  datasets,
+  nodes,
+  tab,
+  onTab,
   activeId,
+  selectedObject,
   hidden,
   showDiff,
   editing,
   onActivate,
+  onSelectObject,
   onToggleHidden,
 }: Props): ReactElement {
+  return (
+    <div className="pane" data-testid="left-pane" data-tab={tab}>
+      <div className="pane__tabs">
+        <Segmented options={TABS} value={tab} onChange={onTab} label="left pane tab" />
+      </div>
+      {tab === "process" ? (
+        <ProcessList
+          catalog={catalog}
+          nodes={nodes}
+          activeId={activeId}
+          hidden={hidden}
+          showDiff={showDiff}
+          editing={editing}
+          onActivate={onActivate}
+          onToggleHidden={onToggleHidden}
+        />
+      ) : (
+        <SourcesPane
+          api={api}
+          pins={catalog.context.pins}
+          selected={selectedObject}
+          onSelect={onSelectObject}
+          draggable={editing !== undefined}
+        />
+      )}
+    </div>
+  );
+}
+
+type ListProps = {
+  catalog: Catalog;
+  nodes: ProcessNode[];
+  activeId: string | undefined;
+  hidden: ReadonlySet<string>;
+  showDiff: boolean;
+  editing: EditActions | undefined;
+  onActivate: (nodeId: string) => void;
+  onToggleHidden: (nodeId: string) => void;
+};
+
+function ProcessList({ catalog, nodes, activeId, hidden, showDiff, editing, onActivate, onToggleHidden }: ListProps): ReactElement {
   const [query, setQuery] = useState("");
 
-  // в черновике пустые слои видны: в них добавляют наборы
+  // в черновике пустые слои видны: в них кладут узлы
   const groups = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return catalog.layers
       .map((layer) => ({
         layer,
-        datasets: datasets.filter(
-          (dataset) => dataset.layer_id === layer.id && (needle === "" || dataset.name.toLowerCase().includes(needle)),
-        ),
+        nodes: nodes.filter((node) => {
+          if (node.layer_id !== layer.id) {
+            return false;
+          }
+
+          if (needle === "") {
+            return true;
+          }
+
+          return catalog.label(node.id).toLowerCase().includes(needle) || node.ref.path.join("/").toLowerCase().includes(needle);
+        }),
       }))
-      .filter((group) => group.datasets.length > 0 || (editing !== undefined && needle === ""));
-  }, [catalog, datasets, query, editing]);
+      .filter((group) => group.nodes.length > 0 || (editing !== undefined && needle === ""));
+  }, [catalog, nodes, query, editing]);
 
   return (
-    <div className="pane" data-testid="left-pane">
+    <>
       <div className="pane__search">
         <Input
           type="search"
           mono
-          placeholder="find a dataset"
-          aria-label="find a dataset"
+          placeholder="find a node"
+          aria-label="find a node"
           value={query}
           onChange={(event) => {
             setQuery(event.target.value);
@@ -66,15 +134,6 @@ export function LeftPane({
                 <span className="pane__group-actions">
                   <IconButton
                     className="pane__eye"
-                    aria-label={`add dataset to ${group.layer.name}`}
-                    onClick={() => {
-                      editing.addDataset(group.layer.id);
-                    }}
-                  >
-                    <Plus size={14} />
-                  </IconButton>
-                  <IconButton
-                    className="pane__eye"
                     aria-label={`rename layer ${group.layer.name}`}
                     onClick={() => {
                       editing.renameLayer(group.layer);
@@ -82,7 +141,7 @@ export function LeftPane({
                   >
                     <Pencil size={12} />
                   </IconButton>
-                  {group.datasets.length === 0 && (
+                  {group.nodes.length === 0 && (
                     <IconButton
                       className="pane__eye"
                       aria-label={`remove layer ${group.layer.name}`}
@@ -97,35 +156,38 @@ export function LeftPane({
               )}
             </div>
             <ul className="pane__list">
-              {group.datasets.map((dataset) => {
-                const status = showDiff ? catalog.statusOf("dataset", dataset.id) : "unchanged";
+              {group.nodes.map((node) => {
+                const status = showDiff ? catalog.statusOf("node", node.id) : "unchanged";
+                const label = catalog.label(node.id);
                 return (
                   <li
-                    key={dataset.id}
+                    key={node.id}
                     className="pane__item"
-                    data-active={dataset.id === activeId}
-                    data-hidden={hidden.has(dataset.id)}
+                    data-active={node.id === activeId}
+                    data-hidden={hidden.has(node.id)}
                     data-status={status}
+                    data-stale={catalog.staleOf("node", node.id).length > 0}
+                    data-node={node.ref.path.join("/")}
                     data-testid="pane-item"
                   >
                     <button
                       type="button"
                       className="pane__name"
                       onClick={() => {
-                        onActivate(dataset.id);
+                        onActivate(node.id);
                       }}
                     >
-                      {dataset.name}
+                      {label}
                     </button>
                     <IconButton
                       className="pane__eye"
-                      aria-label={hidden.has(dataset.id) ? `show ${dataset.name}` : `hide ${dataset.name}`}
-                      aria-pressed={hidden.has(dataset.id)}
+                      aria-label={hidden.has(node.id) ? `show ${label}` : `hide ${label}`}
+                      aria-pressed={hidden.has(node.id)}
                       onClick={() => {
-                        onToggleHidden(dataset.id);
+                        onToggleHidden(node.id);
                       }}
                     >
-                      {hidden.has(dataset.id) ? <EyeOff size={14} /> : <Eye size={14} />}
+                      {hidden.has(node.id) ? <EyeOff size={14} /> : <Eye size={14} />}
                     </IconButton>
                   </li>
                 );
@@ -142,6 +204,6 @@ export function LeftPane({
           </div>
         )}
       </div>
-    </div>
+    </>
   );
 }
