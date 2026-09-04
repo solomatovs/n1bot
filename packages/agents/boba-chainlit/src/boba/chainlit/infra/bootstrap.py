@@ -34,6 +34,7 @@ from boba.runtime import providers as runtime
 from boba.runtime.config import AppName, RawConfig
 from boba.runtime.di import Container
 from boba.runtime.http import DomainErrorMiddleware
+from boba.runtime.spa import SpaPaths
 from boba.sandbox.zygote import ZygoteRegistry
 
 
@@ -240,7 +241,7 @@ def _use_catalog(c: AppConfig) -> None:
     from boba.chainlit.catalog.api import CatalogApi, CatalogUrl  # noqa: PLC0415
     from boba.chat.profiles import ChatProfiles  # noqa: PLC0415
     from boba.runtime.config import DevPage  # noqa: PLC0415
-    from boba.runtime.spa import BuiltSpa, DevSpa, SpaMount  # noqa: PLC0415
+    from boba.runtime.spa import BuiltSpa, DevSpa  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
     if not c.catalog.enable:
@@ -253,16 +254,18 @@ def _use_catalog(c: AppConfig) -> None:
     chainlit_app.include_router(router)
 
     prefix = c.chainlit.url_prefix
-    mount = SpaMount.nested(prefix, CatalogPage.SEGMENT)
     stamp = {
         "prefix": prefix,
         "apiPrefix": f"{prefix}{CatalogUrl.PREFIX.value}",
         "socketPath": f"{prefix}{CatalogPage.SOCKET}",
     }
+    # маршруты вешаются на приложение chainlit, уже смонтированное под префиксом,
+    # поэтому пути относительные, а базы модулей несут префикс целиком
+    paths = CatalogPage.paths(prefix)
     if isinstance(c.catalog.page, DevPage):
-        DevSpa(c.catalog.page.url, mount, stamp).mount(chainlit_app)
+        DevSpa(paths, c.catalog.page.url, "", stamp).mount(chainlit_app)
     else:
-        BuiltSpa(c.catalog.dist, mount, stamp).mount(chainlit_app)
+        BuiltSpa(paths, c.catalog.dist, "", stamp).mount(chainlit_app)
 
     _prepend_routes(chainlit_app, before)
 
@@ -272,6 +275,17 @@ class CatalogPage:
 
     SEGMENT: ClassVar[str] = "catalog"
     SOCKET: ClassVar[str] = "/ws/socket.io"
+
+    @classmethod
+    def paths(cls, prefix: str) -> SpaPaths:
+        return SpaPaths(
+            name=cls.SEGMENT,
+            page=f"/{cls.SEGMENT}/{{path:path}}",
+            assets=f"/{cls.SEGMENT}/assets",
+            dev=f"/{cls.SEGMENT}-dev/{{path:path}}",
+            built_base=f"{prefix}/{cls.SEGMENT}/",
+            dev_base=f"{prefix}/{cls.SEGMENT}-dev/",
+        )
 
 
 def _prepend_routes(chainlit_app: FastAPI, before: int) -> None:

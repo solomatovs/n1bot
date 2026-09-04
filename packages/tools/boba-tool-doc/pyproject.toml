@@ -25,6 +25,7 @@ payload = [
 ]
 dev = [
     "boba-config==0.0.15.dev6",
+    "boba-stand==0.0.15.dev6",
     "pytest>=8",
 ]
 
