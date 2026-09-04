@@ -140,6 +140,24 @@ class Probe:
 
         return ops
 
+    def cleanup_operations(self) -> list[dict[str, Any]]:
+        """Снос всего посеянного в обратном порядке зависимостей: потоки,
+        наборы (колонки уходят с ними), слои, виды загрузки."""
+        ops: list[dict[str, Any]] = []
+        for source, target, _kind in self.FLOWS:
+            ops.append({"op": "remove_flow", "id": self.id_of(f"{source}->{target}")})
+
+        for dataset in self.DATASETS:
+            ops.append({"op": "remove_dataset", "id": self.id_of(dataset)})
+
+        for layer in self.LAYERS:
+            ops.append({"op": "remove_layer", "id": self.id_of(layer)})
+
+        for kind in ("full", "hashkey"):
+            ops.append({"op": "remove_load_kind", "id": self.id_of(kind)})
+
+        return ops
+
     def draft_operations(self) -> list[dict[str, Any]]:
         return [
             {
@@ -163,8 +181,9 @@ class Seeded:
 
 
 @pytest.fixture(scope="module")
-def seeded(stand: StandProcess) -> Seeded:
-    """Каталог, вид и черновик через API: публикуется ровно один раз на модуль."""
+def seeded(stand: StandProcess) -> Iterator[Seeded]:
+    """Каталог, вид и черновик через API: публикуется ровно один раз на модуль,
+    на выходе черновик отменяется, вид удаляется, посеянное снимается публикацией."""
     probe = Probe()
     with api_client(stand, "admin") as admin:
         draft = ok(admin.post("/api/catalog/drafts", json={"name": "look seed"}))
@@ -191,7 +210,23 @@ def seeded(stand: StandProcess) -> Seeded:
             )
         )
 
-    return Seeded(probe=probe, view_id=str(view["id"]), draft_id=str(edits["id"]))
+    seeded = Seeded(probe=probe, view_id=str(view["id"]), draft_id=str(edits["id"]))
+    try:
+        yield seeded
+    finally:
+        with api_client(stand, "admin") as admin:
+            admin.delete(f"/api/catalog/drafts/{seeded.draft_id}")
+            admin.delete(f"/api/catalog/views/{seeded.view_id}")
+            cleanup = ok(
+                admin.post("/api/catalog/drafts", json={"name": "look cleanup"})
+            )
+            ok(
+                admin.post(
+                    f"/api/catalog/drafts/{cleanup['id']}/ops",
+                    json={"expected_seq": 0, "operations": probe.cleanup_operations()},
+                )
+            )
+            ok(admin.post(f"/api/catalog/drafts/{cleanup['id']}/publish"))
 
 
 @pytest.fixture(scope="module")
