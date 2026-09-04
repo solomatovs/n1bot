@@ -14,6 +14,7 @@ from pydantic import (
 
 from boba.access import RoleConfig
 from boba.auth.config import AuthConfig
+from boba.catalog_service import CatalogConfig
 from boba.chainlit.domain.config import LocalStorageConfig
 from boba.chat.profiles import (
     ChatProfileConfig,
@@ -238,4 +239,9 @@ class AppConfig(RuntimeConfig):
     storage: Annotated[
         LocalStorageConfig,
         Field(description="Файловое хранилище вложений."),
+    ]
+
+    catalog: Annotated[
+        CatalogConfig,
+        Field(description="Секция [catalog]: таблицы каталога данных и роли доступа."),
     ]

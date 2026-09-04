@@ -1,0 +1,2292 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "boba catalog api",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/catalog/snapshot": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Snapshot",
+        "operationId": "snapshot_api_catalog_snapshot_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogSnapshot"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/versions": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Versions",
+        "operationId": "versions_api_catalog_versions_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Version"
+                  },
+                  "type": "array",
+                  "title": "Response Versions Api Catalog Versions Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/drafts": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "List Drafts",
+        "operationId": "list_drafts_api_catalog_drafts_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Draft"
+                  },
+                  "type": "array",
+                  "title": "Response List Drafts Api Catalog Drafts Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Create Draft",
+        "operationId": "create_draft_api_catalog_drafts_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DraftBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Draft"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/drafts/{draft_id}": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Draft State",
+        "operationId": "draft_state_api_catalog_drafts__draft_id__get",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftState"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Discard Draft",
+        "operationId": "discard_draft_api_catalog_drafts__draft_id__delete",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Draft"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/drafts/{draft_id}/ops": {
+      "post": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Append Ops",
+        "operationId": "append_ops_api_catalog_drafts__draft_id__ops_post",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpsBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftState"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/drafts/{draft_id}/publish": {
+      "post": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Publish",
+        "operationId": "publish_api_catalog_drafts__draft_id__publish_post",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Version"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/drafts/{draft_id}/rebase": {
+      "post": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Rebase",
+        "operationId": "rebase_api_catalog_drafts__draft_id__rebase_post",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RebaseBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RebaseResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/views": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "List Views",
+        "operationId": "list_views_api_catalog_views_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/View"
+                  },
+                  "type": "array",
+                  "title": "Response List Views Api Catalog Views Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Create View",
+        "operationId": "create_view_api_catalog_views_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ViewSpec"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/View"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/views/{view_id}": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Get View",
+        "operationId": "get_view_api_catalog_views__view_id__get",
+        "parameters": [
+          {
+            "name": "view_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "View Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/View"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Update View",
+        "operationId": "update_view_api_catalog_views__view_id__put",
+        "parameters": [
+          {
+            "name": "view_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "View Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ViewSpec"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/View"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Delete View",
+        "operationId": "delete_view_api_catalog_views__view_id__delete",
+        "parameters": [
+          {
+            "name": "view_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "View Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Deleted"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/views/{view_id}/layout": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Layout",
+        "operationId": "layout_api_catalog_views__view_id__layout_get",
+        "parameters": [
+          {
+            "name": "view_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "View Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewLayout"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Put Layout",
+        "operationId": "put_layout_api_catalog_views__view_id__layout_put",
+        "parameters": [
+          {
+            "name": "view_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "View Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LayoutBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViewLayout"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/views/{view_id}/shares": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Shares",
+        "operationId": "shares_api_catalog_views__view_id__shares_get",
+        "parameters": [
+          {
+            "name": "view_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "View Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ViewShare"
+                  },
+                  "title": "Response Shares Api Catalog Views  View Id  Shares Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Share",
+        "operationId": "share_api_catalog_views__view_id__shares_post",
+        "parameters": [
+          {
+            "name": "view_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "View Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ViewShare"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/views/{view_id}/shares/{kind}/{target}": {
+      "delete": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Unshare",
+        "operationId": "unshare_api_catalog_views__view_id__shares__kind___target__delete",
+        "parameters": [
+          {
+            "name": "view_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "View Id"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ShareTargetKind"
+            }
+          },
+          {
+            "name": "target",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Target"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Deleted"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AddColumn": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "add_column",
+            "title": "Op",
+            "default": "add_column"
+          },
+          "column": {
+            "$ref": "#/components/schemas/Column"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "column"
+        ],
+        "title": "AddColumn"
+      },
+      "AddDataset": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "add_dataset",
+            "title": "Op",
+            "default": "add_dataset"
+          },
+          "dataset": {
+            "$ref": "#/components/schemas/Dataset"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "dataset"
+        ],
+        "title": "AddDataset"
+      },
+      "AddFlow-Input": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "add_flow",
+            "title": "Op",
+            "default": "add_flow"
+          },
+          "flow": {
+            "$ref": "#/components/schemas/Flow"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "flow"
+        ],
+        "title": "AddFlow"
+      },
+      "AddFlow-Output": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "add_flow",
+            "title": "Op",
+            "default": "add_flow"
+          },
+          "flow": {
+            "$ref": "#/components/schemas/Flow"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "flow"
+        ],
+        "title": "AddFlow"
+      },
+      "AddLayer": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "add_layer",
+            "title": "Op",
+            "default": "add_layer"
+          },
+          "layer": {
+            "$ref": "#/components/schemas/Layer"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "layer"
+        ],
+        "title": "AddLayer"
+      },
+      "AddLoadKind-Input": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "add_load_kind",
+            "title": "Op",
+            "default": "add_load_kind"
+          },
+          "load_kind": {
+            "$ref": "#/components/schemas/LoadKind-Input"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "load_kind"
+        ],
+        "title": "AddLoadKind"
+      },
+      "AddLoadKind-Output": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "add_load_kind",
+            "title": "Op",
+            "default": "add_load_kind"
+          },
+          "load_kind": {
+            "$ref": "#/components/schemas/LoadKind-Output"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "load_kind"
+        ],
+        "title": "AddLoadKind"
+      },
+      "AuthorVia": {
+        "type": "string",
+        "enum": [
+          "user",
+          "llm"
+        ],
+        "title": "AuthorVia",
+        "description": "Кем внесена порция: человеком со страницы или моделью из чата."
+      },
+      "CatalogDiff": {
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/DiffEntry"
+            },
+            "type": "array",
+            "title": "Entries"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "entries"
+        ],
+        "title": "CatalogDiff",
+        "description": "Изменения между двумя снимками; только затронутые сущности."
+      },
+      "CatalogSnapshot": {
+        "properties": {
+          "layers": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Layer"
+            },
+            "propertyNames": {
+              "format": "uuid"
+            },
+            "type": "object",
+            "title": "Layers"
+          },
+          "datasets": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Dataset"
+            },
+            "propertyNames": {
+              "format": "uuid"
+            },
+            "type": "object",
+            "title": "Datasets"
+          },
+          "columns": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Column"
+            },
+            "propertyNames": {
+              "format": "uuid"
+            },
+            "type": "object",
+            "title": "Columns"
+          },
+          "load_kinds": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/LoadKind-Output"
+            },
+            "propertyNames": {
+              "format": "uuid"
+            },
+            "type": "object",
+            "title": "Load Kinds"
+          },
+          "flows": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Flow"
+            },
+            "propertyNames": {
+              "format": "uuid"
+            },
+            "type": "object",
+            "title": "Flows"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "layers",
+          "datasets",
+          "columns",
+          "load_kinds",
+          "flows"
+        ],
+        "title": "CatalogSnapshot",
+        "description": "Полное состояние каталога одной версии.\n\nТаблицы сущностей по id. Методы added/replaced/removed возвращают новый\nснимок, не меняя текущий; check() проверяет инварианты целиком."
+      },
+      "ChangeStatus": {
+        "type": "string",
+        "enum": [
+          "added",
+          "removed",
+          "modified",
+          "unchanged"
+        ],
+        "title": "ChangeStatus"
+      },
+      "Column": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "dataset_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Dataset Id"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "nullable": {
+            "type": "boolean",
+            "title": "Nullable"
+          },
+          "is_key": {
+            "type": "boolean",
+            "title": "Is Key"
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Position"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "dataset_id",
+          "name",
+          "type",
+          "nullable",
+          "is_key",
+          "position"
+        ],
+        "title": "Column",
+        "description": "Колонка набора; position задаёт порядок в карточке."
+      },
+      "Dataset": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "layer_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Layer Id"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "default": ""
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tags",
+            "default": []
+          },
+          "owner": {
+            "type": "string",
+            "title": "Owner",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "layer_id",
+          "name"
+        ],
+        "title": "Dataset",
+        "description": "Набор данных внутри слоя."
+      },
+      "Deleted": {
+        "properties": {
+          "deleted": {
+            "type": "boolean",
+            "title": "Deleted"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "deleted"
+        ],
+        "title": "Deleted"
+      },
+      "DiffEntry": {
+        "properties": {
+          "ref": {
+            "$ref": "#/components/schemas/EntityRef"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ChangeStatus"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ref",
+          "status"
+        ],
+        "title": "DiffEntry"
+      },
+      "Draft": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "base_version": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Base Version"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DraftStatus"
+          },
+          "created_by": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "base_version",
+          "status",
+          "created_by",
+          "created_at"
+        ],
+        "title": "Draft",
+        "description": "Ветка правок над версией base_version."
+      },
+      "DraftAuthor": {
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "User Id"
+          },
+          "via": {
+            "$ref": "#/components/schemas/AuthorVia"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "user_id",
+          "via"
+        ],
+        "title": "DraftAuthor",
+        "description": "От чьего имени и кем внесена порция или опубликована версия."
+      },
+      "DraftBody": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "DraftBody",
+        "description": "Новый черновик над текущей версией."
+      },
+      "DraftState": {
+        "properties": {
+          "draft": {
+            "$ref": "#/components/schemas/Draft"
+          },
+          "snapshot": {
+            "$ref": "#/components/schemas/CatalogSnapshot"
+          },
+          "diff": {
+            "$ref": "#/components/schemas/CatalogDiff"
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Seq"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "draft",
+          "snapshot",
+          "diff",
+          "seq"
+        ],
+        "title": "DraftState",
+        "description": "Черновик, свёрнутый в снимок, и его diff относительно базовой версии."
+      },
+      "DraftStatus": {
+        "type": "string",
+        "enum": [
+          "open",
+          "published",
+          "discarded"
+        ],
+        "title": "DraftStatus"
+      },
+      "EntityKind": {
+        "type": "string",
+        "enum": [
+          "layer",
+          "dataset",
+          "column",
+          "load_kind",
+          "flow"
+        ],
+        "title": "EntityKind",
+        "description": "Вид сущности каталога; знает поле снимка и вид произвольной сущности."
+      },
+      "EntityRef": {
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/EntityKind"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "id"
+        ],
+        "title": "EntityRef",
+        "description": "Ссылка на сущность каталога: вид и id."
+      },
+      "Flow": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "from_dataset_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "From Dataset Id"
+          },
+          "to_dataset_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "To Dataset Id"
+          },
+          "load": {
+            "$ref": "#/components/schemas/LoadSpec"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "from_dataset_id",
+          "to_dataset_id",
+          "load"
+        ],
+        "title": "Flow",
+        "description": "Поток данных между двумя наборами с правилом загрузки."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "Layer": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "Layer",
+        "description": "Слой хранения; только имя, порядок — порядок создания."
+      },
+      "LayoutBody": {
+        "properties": {
+          "positions": {
+            "items": {
+              "$ref": "#/components/schemas/NodePosition"
+            },
+            "type": "array",
+            "title": "Positions"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "positions"
+        ],
+        "title": "LayoutBody",
+        "description": "Полная раскладка вида."
+      },
+      "LoadField": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "type": {
+            "$ref": "#/components/schemas/LoadFieldType"
+          },
+          "required": {
+            "type": "boolean",
+            "title": "Required"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "type",
+          "required"
+        ],
+        "title": "LoadField",
+        "description": "Поле вида загрузки: имя, тип и обязательность."
+      },
+      "LoadFieldType": {
+        "type": "string",
+        "enum": [
+          "text",
+          "int",
+          "bool",
+          "column",
+          "columns"
+        ],
+        "title": "LoadFieldType",
+        "description": "Тип поля вида загрузки; знает форму хранения значения и ссылки на колонки."
+      },
+      "LoadKind-Input": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/LoadField"
+            },
+            "type": "array",
+            "title": "Fields"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "fields"
+        ],
+        "title": "LoadKind",
+        "description": "Вид загрузки, заведённый пользователем: имя и описание полей.\n\nПоток хранит значения по именам полей вида; вид проверяет их состав и\nтипы (violations_of) и приводит ссылки на колонки из JSON к UUID (conform)."
+      },
+      "LoadKind-Output": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/LoadField"
+            },
+            "type": "array",
+            "title": "Fields"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "fields"
+        ],
+        "title": "LoadKind",
+        "description": "Вид загрузки, заведённый пользователем: имя и описание полей.\n\nПоток хранит значения по именам полей вида; вид проверяет их состав и\nтипы (violations_of) и приводит ссылки на колонки из JSON к UUID (conform)."
+      },
+      "LoadSpec": {
+        "properties": {
+          "kind_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Kind Id"
+          },
+          "values": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "items": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "type": "array"
+                }
+              ]
+            },
+            "type": "object",
+            "title": "Values"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind_id",
+          "values"
+        ],
+        "title": "LoadSpec",
+        "description": "Правило загрузки потока: вид и значения по его полям."
+      },
+      "NodePosition": {
+        "properties": {
+          "dataset_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Dataset Id"
+          },
+          "x": {
+            "type": "number",
+            "title": "X"
+          },
+          "y": {
+            "type": "number",
+            "title": "Y"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "dataset_id",
+          "x",
+          "y"
+        ],
+        "title": "NodePosition",
+        "description": "Положение узла набора на диаграмме вида."
+      },
+      "OperationList-Input": {
+        "items": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/AddLayer"
+            },
+            {
+              "$ref": "#/components/schemas/SetLayer"
+            },
+            {
+              "$ref": "#/components/schemas/RemoveLayer"
+            },
+            {
+              "$ref": "#/components/schemas/AddDataset"
+            },
+            {
+              "$ref": "#/components/schemas/SetDataset"
+            },
+            {
+              "$ref": "#/components/schemas/RemoveDataset"
+            },
+            {
+              "$ref": "#/components/schemas/AddColumn"
+            },
+            {
+              "$ref": "#/components/schemas/SetColumn"
+            },
+            {
+              "$ref": "#/components/schemas/RemoveColumn"
+            },
+            {
+              "$ref": "#/components/schemas/AddLoadKind-Input"
+            },
+            {
+              "$ref": "#/components/schemas/SetLoadKind-Input"
+            },
+            {
+              "$ref": "#/components/schemas/RemoveLoadKind"
+            },
+            {
+              "$ref": "#/components/schemas/AddFlow-Input"
+            },
+            {
+              "$ref": "#/components/schemas/SetFlow-Input"
+            },
+            {
+              "$ref": "#/components/schemas/RemoveFlow"
+            }
+          ],
+          "discriminator": {
+            "propertyName": "op",
+            "mapping": {
+              "add_column": "#/components/schemas/AddColumn",
+              "add_dataset": "#/components/schemas/AddDataset",
+              "add_flow": "#/components/schemas/AddFlow-Input",
+              "add_layer": "#/components/schemas/AddLayer",
+              "add_load_kind": "#/components/schemas/AddLoadKind-Input",
+              "remove_column": "#/components/schemas/RemoveColumn",
+              "remove_dataset": "#/components/schemas/RemoveDataset",
+              "remove_flow": "#/components/schemas/RemoveFlow",
+              "remove_layer": "#/components/schemas/RemoveLayer",
+              "remove_load_kind": "#/components/schemas/RemoveLoadKind",
+              "set_column": "#/components/schemas/SetColumn",
+              "set_dataset": "#/components/schemas/SetDataset",
+              "set_flow": "#/components/schemas/SetFlow-Input",
+              "set_layer": "#/components/schemas/SetLayer",
+              "set_load_kind": "#/components/schemas/SetLoadKind-Input"
+            }
+          }
+        },
+        "type": "array",
+        "title": "OperationList",
+        "description": "Список операций: разбор JSON на границе и применение к снимку.\n\nРазбор — model_validate / model_validate_json, обратно — model_dump_json.\nПустой список применяется и возвращает тот же снимок."
+      },
+      "OperationList-Output": {
+        "items": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/AddLayer"
+            },
+            {
+              "$ref": "#/components/schemas/SetLayer"
+            },
+            {
+              "$ref": "#/components/schemas/RemoveLayer"
+            },
+            {
+              "$ref": "#/components/schemas/AddDataset"
+            },
+            {
+              "$ref": "#/components/schemas/SetDataset"
+            },
+            {
+              "$ref": "#/components/schemas/RemoveDataset"
+            },
+            {
+              "$ref": "#/components/schemas/AddColumn"
+            },
+            {
+              "$ref": "#/components/schemas/SetColumn"
+            },
+            {
+              "$ref": "#/components/schemas/RemoveColumn"
+            },
+            {
+              "$ref": "#/components/schemas/AddLoadKind-Output"
+            },
+            {
+              "$ref": "#/components/schemas/SetLoadKind-Output"
+            },
+            {
+              "$ref": "#/components/schemas/RemoveLoadKind"
+            },
+            {
+              "$ref": "#/components/schemas/AddFlow-Output"
+            },
+            {
+              "$ref": "#/components/schemas/SetFlow-Output"
+            },
+            {
+              "$ref": "#/components/schemas/RemoveFlow"
+            }
+          ],
+          "discriminator": {
+            "propertyName": "op",
+            "mapping": {
+              "add_column": "#/components/schemas/AddColumn",
+              "add_dataset": "#/components/schemas/AddDataset",
+              "add_flow": "#/components/schemas/AddFlow-Output",
+              "add_layer": "#/components/schemas/AddLayer",
+              "add_load_kind": "#/components/schemas/AddLoadKind-Output",
+              "remove_column": "#/components/schemas/RemoveColumn",
+              "remove_dataset": "#/components/schemas/RemoveDataset",
+              "remove_flow": "#/components/schemas/RemoveFlow",
+              "remove_layer": "#/components/schemas/RemoveLayer",
+              "remove_load_kind": "#/components/schemas/RemoveLoadKind",
+              "set_column": "#/components/schemas/SetColumn",
+              "set_dataset": "#/components/schemas/SetDataset",
+              "set_flow": "#/components/schemas/SetFlow-Output",
+              "set_layer": "#/components/schemas/SetLayer",
+              "set_load_kind": "#/components/schemas/SetLoadKind-Output"
+            }
+          }
+        },
+        "type": "array",
+        "title": "OperationList",
+        "description": "Список операций: разбор JSON на границе и применение к снимку.\n\nРазбор — model_validate / model_validate_json, обратно — model_dump_json.\nПустой список применяется и возвращает тот же снимок."
+      },
+      "OpsBody": {
+        "properties": {
+          "expected_seq": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Expected Seq"
+          },
+          "operations": {
+            "$ref": "#/components/schemas/OperationList-Input"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_seq",
+          "operations"
+        ],
+        "title": "OpsBody",
+        "description": "Порция операций с номером, на который она рассчитана."
+      },
+      "RebaseBody": {
+        "properties": {
+          "drop_conflicts": {
+            "type": "boolean",
+            "title": "Drop Conflicts"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "drop_conflicts"
+        ],
+        "title": "RebaseBody",
+        "description": "Перебазирование: с drop_conflicts конфликтные операции вычёркиваются."
+      },
+      "RebaseIssue": {
+        "properties": {
+          "seq": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Seq"
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Index"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "seq",
+          "index",
+          "reason"
+        ],
+        "title": "RebaseIssue",
+        "description": "Операция черновика, не применимая к текущей версии."
+      },
+      "RebaseResult": {
+        "properties": {
+          "draft": {
+            "$ref": "#/components/schemas/Draft"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/RebaseIssue"
+            },
+            "type": "array",
+            "title": "Issues"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "draft",
+          "issues"
+        ],
+        "title": "RebaseResult",
+        "description": "Итог перебазирования: черновик и список конфликтов; пустой список —\nчерновик переведён на текущую версию."
+      },
+      "RemoveColumn": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "remove_column",
+            "title": "Op",
+            "default": "remove_column"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "title": "RemoveColumn",
+        "description": "Удаление колонки; отказывает, пока колонка упомянута в значениях потока."
+      },
+      "RemoveDataset": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "remove_dataset",
+            "title": "Op",
+            "default": "remove_dataset"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "title": "RemoveDataset",
+        "description": "Удаление набора с его колонками; отказывает, пока на набор ссылается поток."
+      },
+      "RemoveFlow": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "remove_flow",
+            "title": "Op",
+            "default": "remove_flow"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "title": "RemoveFlow"
+      },
+      "RemoveLayer": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "remove_layer",
+            "title": "Op",
+            "default": "remove_layer"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "title": "RemoveLayer",
+        "description": "Удаление слоя; отказывает, пока в слое есть наборы."
+      },
+      "RemoveLoadKind": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "remove_load_kind",
+            "title": "Op",
+            "default": "remove_load_kind"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "title": "RemoveLoadKind",
+        "description": "Удаление вида загрузки; отказывает, пока есть потоки этого вида."
+      },
+      "SetColumn": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "set_column",
+            "title": "Op",
+            "default": "set_column"
+          },
+          "column": {
+            "$ref": "#/components/schemas/Column"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "column"
+        ],
+        "title": "SetColumn"
+      },
+      "SetDataset": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "set_dataset",
+            "title": "Op",
+            "default": "set_dataset"
+          },
+          "dataset": {
+            "$ref": "#/components/schemas/Dataset"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "dataset"
+        ],
+        "title": "SetDataset"
+      },
+      "SetFlow-Input": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "set_flow",
+            "title": "Op",
+            "default": "set_flow"
+          },
+          "flow": {
+            "$ref": "#/components/schemas/Flow"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "flow"
+        ],
+        "title": "SetFlow"
+      },
+      "SetFlow-Output": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "set_flow",
+            "title": "Op",
+            "default": "set_flow"
+          },
+          "flow": {
+            "$ref": "#/components/schemas/Flow"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "flow"
+        ],
+        "title": "SetFlow"
+      },
+      "SetLayer": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "set_layer",
+            "title": "Op",
+            "default": "set_layer"
+          },
+          "layer": {
+            "$ref": "#/components/schemas/Layer"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "layer"
+        ],
+        "title": "SetLayer"
+      },
+      "SetLoadKind-Input": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "set_load_kind",
+            "title": "Op",
+            "default": "set_load_kind"
+          },
+          "load_kind": {
+            "$ref": "#/components/schemas/LoadKind-Input"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "load_kind"
+        ],
+        "title": "SetLoadKind"
+      },
+      "SetLoadKind-Output": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "set_load_kind",
+            "title": "Op",
+            "default": "set_load_kind"
+          },
+          "load_kind": {
+            "$ref": "#/components/schemas/LoadKind-Output"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "load_kind"
+        ],
+        "title": "SetLoadKind"
+      },
+      "ShareMode": {
+        "type": "string",
+        "enum": [
+          "view"
+        ],
+        "title": "ShareMode"
+      },
+      "ShareTargetKind": {
+        "type": "string",
+        "enum": [
+          "role",
+          "user"
+        ],
+        "title": "ShareTargetKind"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "Version": {
+        "properties": {
+          "number": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Number"
+          },
+          "operations": {
+            "$ref": "#/components/schemas/OperationList-Output"
+          },
+          "author": {
+            "$ref": "#/components/schemas/DraftAuthor"
+          },
+          "published_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Published At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "number",
+          "operations",
+          "author",
+          "published_at"
+        ],
+        "title": "Version",
+        "description": "Опубликованная версия: номер и свёрнутые операции черновика."
+      },
+      "View": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "owner_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Owner Id"
+          },
+          "dataset_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "title": "Dataset Ids"
+          },
+          "layer_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "title": "Layer Ids"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "owner_id",
+          "dataset_ids",
+          "layer_ids",
+          "created_at"
+        ],
+        "title": "View",
+        "description": "Сохранённая диаграмма над каталогом."
+      },
+      "ViewLayout": {
+        "properties": {
+          "view_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "View Id"
+          },
+          "positions": {
+            "items": {
+              "$ref": "#/components/schemas/NodePosition"
+            },
+            "type": "array",
+            "title": "Positions"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "view_id",
+          "positions"
+        ],
+        "title": "ViewLayout",
+        "description": "Сохранённые позиции узлов вида; узлы без позиции раскладывает страница."
+      },
+      "ViewShare": {
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/ShareTargetKind"
+          },
+          "target": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Target"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/ShareMode",
+            "default": "view"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "target"
+        ],
+        "title": "ViewShare",
+        "description": "Кому открыт просмотр вида: роль по имени или пользователь по id."
+      },
+      "ViewSpec": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "dataset_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "title": "Dataset Ids",
+            "default": []
+          },
+          "layer_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "title": "Layer Ids",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "ViewSpec",
+        "description": "Имя вида и фильтр наборов и слоёв; пустой фильтр — весь каталог."
+      }
+    }
+  }
+}

@@ -18,6 +18,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph.state import CompiledStateGraph
 
 from boba.auth import JwtTokens
+from boba.catalog_service import CatalogConfig, CatalogService, CatalogStore
 from boba.chainlit.agent.flow import (
     AgentGraphBuilder,
     GraphSpec,
@@ -65,7 +66,7 @@ from boba.llm.http import LlmHttp
 from boba.llm.local import OnnxChatRuntime
 from boba.messaging import MessageBus
 from boba.runtime import providers as runtime
-from boba.runtime.di import Depends
+from boba.runtime.di import Container, Depends
 from boba.runtime.elements import ChatTables
 from boba.runtime.users import UsersTable
 from boba.toolrun.registry import ToolRegistry
@@ -93,6 +94,52 @@ def get_local_storage_config(
     app_config: Annotated[AppConfig, Depends(get_app_config)],
 ) -> LocalStorageConfig:
     return app_config.storage
+
+
+def catalog_config(
+    app_config: Annotated[AppConfig, Depends(get_app_config)],
+) -> CatalogConfig:
+    return app_config.catalog
+
+
+async def catalog_store(
+    cfg: Annotated[CatalogConfig, Depends(catalog_config)],
+) -> CatalogStore | None:
+    """Хранилище каталога с таблицами на старте; None — секция [catalog] выключена."""
+    if not cfg.enable:
+        return None
+
+    store = CatalogStore(cfg)
+    await store.setup()
+
+    return store
+
+
+def catalog_service(
+    store: Annotated[CatalogStore | None, Depends(catalog_store)],
+    cfg: Annotated[CatalogConfig, Depends(catalog_config)],
+    bus: Annotated[MessageBus, Depends(runtime.message_bus)],
+) -> CatalogService | None:
+    """Сервис каталога над хранилищем и шиной процесса."""
+    if store is None:
+        return None
+
+    return CatalogService(store, cfg, bus)
+
+
+async def catalog_service_ref() -> CatalogService:
+    """Сервис каталога из корневого контейнера; зовётся на каждый запрос."""
+    root = Container.root
+    if root is None:
+        msg = "DI container is not initialised"
+        raise RuntimeError(msg)
+
+    service = await root.resolve(Depends(catalog_service))
+    if service is None:
+        msg = "[catalog] is disabled: the data catalog is unavailable"
+        raise RuntimeError(msg)
+
+    return service
 
 
 def storage_provider(

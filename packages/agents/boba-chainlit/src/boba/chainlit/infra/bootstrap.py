@@ -54,6 +54,8 @@ def run_app(config_path: Path):
 
     _use_stream_journal(c)
 
+    _use_catalog(c)
+
     _use_canvas_viewers()
 
     _use_domain_error(app)
@@ -229,6 +231,28 @@ def _use_stream_journal(c: AppConfig) -> None:
     chainlit_app.router.routes.insert(0, chainlit_app.router.routes.pop())
 
 
+def _use_catalog(c: AppConfig) -> None:
+    """JSON API каталога под {prefix}/api/catalog; сервис поднимает провайдер."""
+    from fastapi import APIRouter  # noqa: PLC0415
+
+    from boba.chainlit.catalog.api import CatalogApi, CatalogUrl  # noqa: PLC0415
+    from boba.chat.profiles import ChatProfiles  # noqa: PLC0415
+    from chainlit.server import app as chainlit_app  # noqa: PLC0415
+
+    if not c.catalog.enable:
+        return
+
+    router = APIRouter(prefix=CatalogUrl.PREFIX.value)
+    CatalogApi(providers.catalog_service_ref, ChatProfiles(c.profiles)).mount(router)
+
+    # catch-all маршрут chainlit стоит раньше: новые маршруты переезжают в начало
+    before = len(chainlit_app.router.routes)
+    chainlit_app.include_router(router)
+    added = chainlit_app.router.routes[before:]
+    del chainlit_app.router.routes[before:]
+    chainlit_app.router.routes[0:0] = added
+
+
 def _use_canvas_viewers() -> None:
     """
     Вьюверы канваса — на старте: панель открывается кликом до первого хода
@@ -303,6 +327,7 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.eager(runtime.kb_schema)
     container.eager(runtime.connection_store)
     container.eager(runtime.workflow_store)
+    container.eager(providers.catalog_store)
     container.eager(runtime.workflow_recovery)
     container.eager(runtime.live_locks)
     container.eager(runtime.lock_reaper)
