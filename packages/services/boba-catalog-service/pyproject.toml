@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-catalog-service"
-version = "0.0.15.dev6"
+version = "0.0.15.dev7"
 description = "Boba catalog service: хранилище каталога данных на postgres, черновики с порциями операций, публикация версий, виды и шаринг, события шины."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-catalog==0.0.15.dev6",
-    "boba-db-postgres==0.0.15.dev6",
-    "boba-identity==0.0.15.dev6",
-    "boba-messaging==0.0.15.dev6",
+    "boba-catalog==0.0.15.dev7",
+    "boba-db-postgres==0.0.15.dev7",
+    "boba-identity==0.0.15.dev7",
+    "boba-messaging==0.0.15.dev7",
     "pydantic>=2.10,<3",
     "psycopg[binary,pool]>=3.2,<4",
 ]

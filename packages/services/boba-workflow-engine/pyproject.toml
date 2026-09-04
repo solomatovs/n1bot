@@ -4,17 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-workflow-engine"
-version = "0.0.15.dev6"
+version = "0.0.15.dev7"
 description = "Boba workflow engine: хранилище workflow и запусков на postgres, каталог инструментов, исполнение графа стадий, инструменты workflow для чата."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-toolkit==0.0.15.dev6",
-    "boba-identity==0.0.15.dev6",
-    "boba-messaging==0.0.15.dev6",
-    "boba-cancellation==0.0.15.dev6",
-    "boba-workflow==0.0.15.dev6",
-    "boba-toolrun==0.0.15.dev6",
-    "boba-db-postgres==0.0.15.dev6",
+    "boba-toolkit==0.0.15.dev7",
+    "boba-identity==0.0.15.dev7",
+    "boba-messaging==0.0.15.dev7",
+    "boba-cancellation==0.0.15.dev7",
+    "boba-workflow==0.0.15.dev7",
+    "boba-toolrun==0.0.15.dev7",
+    "boba-db-postgres==0.0.15.dev7",
     "pydantic>=2.10,<3",
     "langchain-core>=1.4,<1.5",
     "psycopg[binary,pool]>=3.2,<4",
@@ -22,9 +22,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "boba-access==0.0.15.dev6",
-    "boba-runtime==0.0.15.dev6",
-    "boba-stand==0.0.15.dev6",
+    "boba-access==0.0.15.dev7",
+    "boba-runtime==0.0.15.dev7",
+    "boba-stand==0.0.15.dev7",
     "pytest>=8",
 ]
 
