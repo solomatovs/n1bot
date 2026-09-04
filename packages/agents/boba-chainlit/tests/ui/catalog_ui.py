@@ -64,10 +64,15 @@ class Ed(StrEnum):
     FULL = "ed_full"
     HASH = "ed_hash"
     HASH_FIELD = "hash_columns"
+    TYPED = "ed_typed"
+    TYPED_INT = "batch"
+    TYPED_BOOL = "full_refresh"
+    TYPED_TEXT = "note"
+    TYPED_COLUMN = "key_column"
 
 
 class Seed:
-    """Каталог модуля: два слоя, три набора, два вида загрузки, один поток."""
+    """Каталог модуля: два слоя, три набора, три вида загрузки, один поток."""
 
     ID_BASE: ClassVar[int] = 0xE000
     DATASETS: ClassVar[dict[str, str]] = {
@@ -134,6 +139,21 @@ class Seed:
                     "name": Ed.HASH,
                     "fields": [
                         {"name": Ed.HASH_FIELD, "type": "columns", "required": True}
+                    ],
+                },
+            }
+        )
+        ops.append(
+            {
+                "op": "add_load_kind",
+                "load_kind": {
+                    "id": self.id_of(Ed.TYPED),
+                    "name": Ed.TYPED,
+                    "fields": [
+                        {"name": Ed.TYPED_INT, "type": "int", "required": True},
+                        {"name": Ed.TYPED_BOOL, "type": "bool", "required": False},
+                        {"name": Ed.TYPED_TEXT, "type": "text", "required": False},
+                        {"name": Ed.TYPED_COLUMN, "type": "column", "required": False},
                     ],
                 },
             }
@@ -231,6 +251,13 @@ class Api:
             names.add(str(dataset["name"]))
 
         return names
+
+    def create_view(
+        self, name: str, layer_ids: list[str], dataset_ids: list[str]
+    ) -> str:
+        body = {"name": name, "layer_ids": layer_ids, "dataset_ids": dataset_ids}
+        view = ok(self.admin.post("/api/catalog/views", json=body))
+        return str(view["id"])
 
     def views(self) -> list[dict[str, Any]]:
         response = self.admin.get("/api/catalog/views")

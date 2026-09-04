@@ -15,7 +15,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-from catalog_ui import Api, Cleanup, Ed, Seed, Selector, api_client
+from catalog_ui import Api, Ed, Seed, Selector
 from playwright.sync_api import Browser, FloatRect, Locator, Page, ViewportSize, expect
 
 from boba.stand.ui.look import Css
@@ -28,32 +28,15 @@ EDITABLE = f'{Selector.PAGE}[data-editable="true"]'
 LIVE_TIMEOUT_MS = 15_000
 
 
-@pytest.fixture(scope="module")
-def api(stand: StandProcess) -> Iterator[Api]:
-    with api_client(stand, "admin") as admin:
-        yield Api(admin)
-
-
-@pytest.fixture(scope="module")
-def seeded(api: Api) -> Iterator[Seed]:
-    """Каталог модуля публикуется на входе и удаляется публикацией на выходе."""
-    seed = Seed()
-    api.publish_ops("edit seed", seed.operations())
-    try:
-        yield seed
-    finally:
-        cleanup = Cleanup(api.snapshot()).operations()
-        if cleanup:
-            api.publish_ops("edit cleanup", cleanup)
-
-
 @pytest.fixture
-def draft_id(api: Api, seeded: Seed, request: pytest.FixtureRequest) -> Iterator[str]:
-    created = api.new_draft(f"edit {request.node.name}")
+def draft_id(
+    catalog_api: Api, catalog_seed: Seed, request: pytest.FixtureRequest
+) -> Iterator[str]:
+    created = catalog_api.new_draft(f"edit {request.node.name}")
     try:
         yield created
     finally:
-        api.discard(created)
+        catalog_api.discard(created)
 
 
 @pytest.fixture
@@ -113,7 +96,7 @@ def _snapshot_names(state: dict[str, Any], table: str) -> set[str]:
 
 class TestPrompts:
     def test_add_layer_then_dataset_into_it(
-        self, page: Page, stand: StandProcess, api: Api, draft_id: str
+        self, page: Page, stand: StandProcess, catalog_api: Api, draft_id: str
     ) -> None:
         _open_draft(page, stand, draft_id)
 
@@ -131,13 +114,13 @@ class TestPrompts:
             "data-dataset", "ed_events"
         )
 
-        state = api.state(draft_id)
+        state = catalog_api.state(draft_id)
         assert state["seq"] == 2, state["seq"]
         assert "ed_new" in _snapshot_names(state, "layers")
         assert "ed_events" in _snapshot_names(state, "datasets")
 
     def test_rename_and_remove_empty_layer(
-        self, page: Page, stand: StandProcess, api: Api, draft_id: str
+        self, page: Page, stand: StandProcess, catalog_api: Api, draft_id: str
     ) -> None:
         _open_draft(page, stand, draft_id)
 
@@ -150,7 +133,7 @@ class TestPrompts:
         page.get_by_role("button", name="remove layer ed_tmp2").click()
         expect(page.locator('.pane__group[data-layer="ed_tmp2"]')).to_have_count(0)
 
-        names = _snapshot_names(api.state(draft_id), "layers")
+        names = _snapshot_names(catalog_api.state(draft_id), "layers")
         assert "ed_tmp" not in names
         assert "ed_tmp2" not in names
 
@@ -175,7 +158,7 @@ class TestLanes:
 
 class TestDatasetPanel:
     def test_dataset_form_changes_name_and_owner(
-        self, page: Page, stand: StandProcess, api: Api, draft_id: str
+        self, page: Page, stand: StandProcess, catalog_api: Api, draft_id: str
     ) -> None:
         _open_draft(page, stand, draft_id)
         _node(page, Ed.ORDERS).click()
@@ -192,10 +175,17 @@ class TestDatasetPanel:
         expect(panel).to_have_attribute("data-dataset", "ed_orders_v2")
         expect(panel.locator(".detail__facts")).to_contain_text("dwh team")
 
-        assert "ed_orders_v2" in _snapshot_names(api.state(draft_id), "datasets")
+        assert "ed_orders_v2" in _snapshot_names(
+            catalog_api.state(draft_id), "datasets"
+        )
 
     def test_columns_editor_adds_and_removes_columns(
-        self, page: Page, stand: StandProcess, api: Api, seeded: Seed, draft_id: str
+        self,
+        page: Page,
+        stand: StandProcess,
+        catalog_api: Api,
+        catalog_seed: Seed,
+        draft_id: str,
     ) -> None:
         _open_draft(page, stand, draft_id)
         _node(page, Ed.RETURNS).click()
@@ -220,16 +210,16 @@ class TestDatasetPanel:
             len(Seed.COLUMNS)
         )
 
-        columns = api.state(draft_id)["snapshot"]["columns"]
+        columns = catalog_api.state(draft_id)["snapshot"]["columns"]
         mine = [
             column
             for column in columns.values()
-            if column["dataset_id"] == seeded.id_of(Ed.RETURNS)
+            if column["dataset_id"] == catalog_seed.id_of(Ed.RETURNS)
         ]
         assert sorted(column["name"] for column in mine) == ["amount", "id"]
 
     def test_remove_dataset_takes_its_flows_along(
-        self, page: Page, stand: StandProcess, api: Api, draft_id: str
+        self, page: Page, stand: StandProcess, catalog_api: Api, draft_id: str
     ) -> None:
         _open_draft(page, stand, draft_id)
         expect(page.locator(Selector.EDGE_LABEL)).to_have_count(1)
@@ -243,14 +233,19 @@ class TestDatasetPanel:
         expect(page.locator(Selector.EDGE_LABEL)).to_have_count(0)
         expect(page.get_by_test_id("detail-panel")).to_have_count(0)
 
-        state = api.state(draft_id)
+        state = catalog_api.state(draft_id)
         assert Ed.SALES not in _snapshot_names(state, "datasets")
         assert state["snapshot"]["flows"] == {}
 
 
 class TestFlows:
     def test_flow_from_panel_then_removed_from_its_form(
-        self, page: Page, stand: StandProcess, api: Api, seeded: Seed, draft_id: str
+        self,
+        page: Page,
+        stand: StandProcess,
+        catalog_api: Api,
+        catalog_seed: Seed,
+        draft_id: str,
     ) -> None:
         _open_draft(page, stand, draft_id)
         _node(page, Ed.ORDERS).click()
@@ -263,7 +258,7 @@ class TestFlows:
         form.get_by_label("flow target").select_option(label=Ed.RETURNS)
         form.get_by_label("load kind").select_option(label=Ed.HASH)
         form.get_by_label(f"load field {Ed.HASH_FIELD}").select_option(
-            value=seeded.id_of(f"{Ed.ORDERS}.id")
+            value=catalog_seed.id_of(f"{Ed.ORDERS}.id")
         )
         form.get_by_role("button", name="save flow").click()
 
@@ -273,14 +268,14 @@ class TestFlows:
             page.locator(Selector.EDGE_LABEL).filter(has_text=Ed.HASH)
         ).to_have_count(1)
 
-        flows = api.state(draft_id)["snapshot"]["flows"]
+        flows = catalog_api.state(draft_id)["snapshot"]["flows"]
         assert len(flows) == 2
-        hash_kind = seeded.id_of(Ed.HASH)
+        hash_kind = catalog_seed.id_of(Ed.HASH)
         hashed = [
             flow for flow in flows.values() if flow["load"]["kind_id"] == hash_kind
         ]
         assert hashed[0]["load"]["values"] == {
-            Ed.HASH_FIELD: [seeded.id_of(f"{Ed.ORDERS}.id")]
+            Ed.HASH_FIELD: [catalog_seed.id_of(f"{Ed.ORDERS}.id")]
         }
 
         page.get_by_test_id("detail-outgoing").get_by_role(
@@ -290,10 +285,10 @@ class TestFlows:
             "button", name="remove flow"
         ).click()
         expect(page.locator(Selector.EDGE_LABEL)).to_have_count(1)
-        assert len(api.state(draft_id)["snapshot"]["flows"]) == 1
+        assert len(catalog_api.state(draft_id)["snapshot"]["flows"]) == 1
 
     def test_connecting_nodes_on_the_canvas_opens_the_flow_form(
-        self, page: Page, stand: StandProcess, api: Api, draft_id: str
+        self, page: Page, stand: StandProcess, catalog_api: Api, draft_id: str
     ) -> None:
         _open_draft(page, stand, draft_id)
         source = _node(page, Ed.ORDERS).locator(".react-flow__handle.source")
@@ -316,10 +311,10 @@ class TestFlows:
         form.get_by_role("button", name="save flow").click()
 
         expect(page.locator(Selector.EDGE_LABEL)).to_have_count(2)
-        assert len(api.state(draft_id)["snapshot"]["flows"]) == 2
+        assert len(catalog_api.state(draft_id)["snapshot"]["flows"]) == 2
 
     def test_clicking_an_edge_edits_its_flow(
-        self, page: Page, stand: StandProcess, api: Api, draft_id: str
+        self, page: Page, stand: StandProcess, catalog_api: Api, draft_id: str
     ) -> None:
         _open_draft(page, stand, draft_id)
         page.locator(Selector.EDGE_LABEL).first.click()
@@ -331,26 +326,31 @@ class TestFlows:
         expect(form).to_have_count(0)
         _landed(page, 1)
 
-        flows = list(api.state(draft_id)["snapshot"]["flows"].values())
+        flows = list(catalog_api.state(draft_id)["snapshot"]["flows"].values())
         assert flows[0]["description"] == "nightly full copy"
 
 
 class TestLive:
     def test_foreign_portion_shows_up_and_own_edit_lands_on_top(
-        self, page: Page, stand: StandProcess, api: Api, seeded: Seed, draft_id: str
+        self,
+        page: Page,
+        stand: StandProcess,
+        catalog_api: Api,
+        catalog_seed: Seed,
+        draft_id: str,
     ) -> None:
         """Порция, добавленная мимо страницы, появляется без перезагрузки; своя
         правка после неё ложится поверх, а не затирает."""
         _open_draft(page, stand, draft_id)
 
-        api.append(
+        catalog_api.append(
             draft_id,
             [
                 {
                     "op": "add_dataset",
                     "dataset": {
                         "id": str(UUID(int=0xE0F0)),
-                        "layer_id": seeded.id_of(Ed.DST),
+                        "layer_id": catalog_seed.id_of(Ed.DST),
                         "name": "ed_live",
                     },
                 }
@@ -367,13 +367,18 @@ class TestLive:
         form.get_by_role("button", name="save").click()
         expect(_node(page, "ed_sales_v2")).to_be_visible()
 
-        state = api.state(draft_id)
+        state = catalog_api.state(draft_id)
         assert state["seq"] == 2
         names = _snapshot_names(state, "datasets")
         assert {"ed_live", "ed_sales_v2"} <= names
 
     def test_publish_conflict_offers_rebase_then_publishes(
-        self, page: Page, stand: StandProcess, api: Api, seeded: Seed, draft_id: str
+        self,
+        page: Page,
+        stand: StandProcess,
+        catalog_api: Api,
+        catalog_seed: Seed,
+        draft_id: str,
     ) -> None:
         """Пока черновик открыт, публикуется другой: страница показывает кнопку
         обновления, публикация упирается в конфликт, перебазирование снимает его."""
@@ -384,7 +389,7 @@ class TestLive:
         _prompt_name(page, "dataset-name", "ed_mine")
         expect(page.get_by_test_id("rebase-button")).to_have_count(0)
 
-        version = api.publish_ops(
+        version = catalog_api.publish_ops(
             "edit other",
             [
                 {
@@ -412,6 +417,6 @@ class TestLive:
             "data-editable", "false"
         )
 
-        published = api.dataset_names()
+        published = catalog_api.dataset_names()
         assert "ed_mine" in published
-        assert api.state(draft_id)["draft"]["status"] == "published"
+        assert catalog_api.state(draft_id)["draft"]["status"] == "published"

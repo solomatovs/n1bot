@@ -12,7 +12,7 @@ import re
 from collections.abc import Callable, Iterator
 
 import pytest
-from catalog_ui import Api, Cleanup, Ed, Seed, Selector, api_client
+from catalog_ui import Api, Ed, Seed, Selector
 from chat_ui import login_cookies
 from playwright.sync_api import (
     Browser,
@@ -30,28 +30,6 @@ pytestmark = pytest.mark.ui
 WIDE: ViewportSize = {"width": 1400, "height": 900}
 LIVE_TIMEOUT_MS = 15_000
 TRANSLATE = re.compile(r"translate\(\s*(-?[\d.]+)px,\s*(-?[\d.]+)px\)")
-
-
-@pytest.fixture(scope="module")
-def api(stand: StandProcess) -> Iterator[Api]:
-    with api_client(stand, "admin") as admin:
-        yield Api(admin)
-
-
-@pytest.fixture(scope="module")
-def seeded(api: Api) -> Iterator[Seed]:
-    seed = Seed()
-    api.publish_ops("views seed", seed.operations())
-    try:
-        yield seed
-    finally:
-        for view in api.views():
-            if str(view["name"]).startswith(Ed.PREFIX):
-                api.delete_view(str(view["id"]))
-
-        cleanup = Cleanup(api.snapshot()).operations()
-        if cleanup:
-            api.publish_ops("views cleanup", cleanup)
 
 
 class Browsers:
@@ -154,7 +132,7 @@ def _translate_of(page: Page, dataset_id: str) -> tuple[float, float]:
 
 class TestIndex:
     def test_forms_follow_the_rights(
-        self, browsers: Browsers, stand: StandProcess, seeded: Seed
+        self, browsers: Browsers, stand: StandProcess, catalog_seed: Seed
     ) -> None:
         admin = browsers.page("admin")
         _open_index(admin, stand)
@@ -181,7 +159,11 @@ class TestIndex:
 
 class TestViewFilter:
     def test_layers_then_datasets_narrow_the_diagram(
-        self, browsers: Browsers, stand: StandProcess, api: Api, seeded: Seed
+        self,
+        browsers: Browsers,
+        stand: StandProcess,
+        catalog_api: Api,
+        catalog_seed: Seed,
     ) -> None:
         page = browsers.page("admin")
         view_id = _create_view(page, stand, "ed_filter")
@@ -213,21 +195,25 @@ class TestViewFilter:
         expect(page.locator(Selector.LANE)).to_have_count(1)
         expect(page.locator(Selector.EDGE_LABEL)).to_have_count(0)
 
-        stored = next(view for view in api.views() if view["id"] == view_id)
+        stored = next(view for view in catalog_api.views() if view["id"] == view_id)
         assert stored["layer_ids"] == []
-        assert stored["dataset_ids"] == [seeded.id_of(Ed.RETURNS)]
+        assert stored["dataset_ids"] == [catalog_seed.id_of(Ed.RETURNS)]
 
 
 class TestLayout:
     def test_dragging_a_node_saves_the_layout_and_survives_reload(
-        self, browsers: Browsers, stand: StandProcess, api: Api, seeded: Seed
+        self,
+        browsers: Browsers,
+        stand: StandProcess,
+        catalog_api: Api,
+        catalog_seed: Seed,
     ) -> None:
         page = browsers.page("admin")
         view_id = _create_view(page, stand, "ed_layout")
         _restrict_to_layers(page, [Ed.SRC, Ed.DST])
         expect(page.locator(Selector.NODE)).to_have_count(len(Seed.DATASETS))
 
-        orders_id = seeded.id_of(Ed.ORDERS)
+        orders_id = catalog_seed.id_of(Ed.ORDERS)
         before = _translate_of(page, orders_id)
         node = _node(page, Ed.ORDERS)
         box = node.bounding_box()
@@ -244,8 +230,8 @@ class TestLayout:
         moved = _translate_of(page, orders_id)
         assert moved != before, "the node did not move"
 
-        saved = api.layout(view_id)
-        assert set(saved) == {seeded.id_of(name) for name in Seed.DATASETS}
+        saved = catalog_api.layout(view_id)
+        assert set(saved) == {catalog_seed.id_of(name) for name in Seed.DATASETS}
         assert saved[orders_id] == pytest.approx(moved, abs=1.0)
 
         page.reload()
@@ -266,7 +252,11 @@ class TestLayout:
 
 class TestSharing:
     def test_shared_role_opens_a_read_only_slice(
-        self, browsers: Browsers, stand: StandProcess, api: Api, seeded: Seed
+        self,
+        browsers: Browsers,
+        stand: StandProcess,
+        catalog_api: Api,
+        catalog_seed: Seed,
     ) -> None:
         admin = browsers.page("admin")
         view_id = _create_view(admin, stand, "ed_shared")
@@ -306,12 +296,12 @@ class TestSharing:
         )
         expect(guest.get_by_role("button", name="edit dataset")).to_have_count(0)
 
-        hidden_draft = api.new_draft("ed_hidden")
+        hidden_draft = catalog_api.new_draft("ed_hidden")
         try:
             guest.goto(f"{stand.config.base_url}/catalog/drafts/{hidden_draft}")
             expect(guest.get_by_text("the catalog is not available")).to_be_visible()
         finally:
-            api.discard(hidden_draft)
+            catalog_api.discard(hidden_draft)
 
         admin.get_by_role("button", name="share view").click()
         dialog.get_by_role("button", name="revoke role GST").click()
@@ -329,7 +319,11 @@ def _open_view_denied(page: Page, stand: StandProcess, view_id: str) -> None:
 
 class TestDelete:
     def test_delete_returns_to_the_index_without_the_view(
-        self, browsers: Browsers, stand: StandProcess, api: Api, seeded: Seed
+        self,
+        browsers: Browsers,
+        stand: StandProcess,
+        catalog_api: Api,
+        catalog_seed: Seed,
     ) -> None:
         page = browsers.page("admin")
         view_id = _create_view(page, stand, "ed_doomed")
@@ -341,4 +335,4 @@ class TestDelete:
 
         expect(page.get_by_test_id("index-page")).to_be_visible()
         expect(page.locator('li[data-view="ed_doomed"]')).to_have_count(0)
-        assert view_id not in {str(view["id"]) for view in api.views()}
+        assert view_id not in {str(view["id"]) for view in catalog_api.views()}
