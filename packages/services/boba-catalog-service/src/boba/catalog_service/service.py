@@ -20,8 +20,13 @@ from typing import ClassVar
 from uuid import UUID
 
 from boba.catalog import (
+    CatalogError,
     CatalogSnapshot,
     ChangeStatus,
+    ObjectCard,
+    ObjectCards,
+    ObjectKind,
+    ObjectRef,
     OperationList,
     SourceDiff,
     SourceOperationList,
@@ -45,6 +50,7 @@ from boba.catalog_service.records import (
     SourceConnection,
     SourceDraft,
     SourceDraftState,
+    SourceObjectNotFoundError,
     SourceSpec,
     SourceVersion,
     Version,
@@ -474,6 +480,24 @@ class CatalogService:
         diff = await self._sources.diff_of(source_id, resolved - 1, resolved)
         return list(self._marked(nodes, diff))
 
+    async def source_object(
+        self, subject: Subject, ref: ObjectRef, version: int
+    ) -> ObjectCard:
+        """Карточка объекта по адресу в версии источника (отрицательная — последняя).
+
+        Ошибки:
+        SourceObjectNotFoundError — по адресу нет объекта.
+        """
+        self._require_view(subject)
+
+        source = await self._sources.get_source(ref.source_id)
+        resolved = self._resolve_version(source, version)
+        snapshot = await self._sources.snapshot_of(ref.source_id, resolved)
+        try:
+            return ObjectCards.of(snapshot, ref)
+        except CatalogError as exc:
+            raise SourceObjectNotFoundError(ref) from exc
+
     async def source_diff(
         self, subject: Subject, source_id: UUID, old: int, new: int
     ) -> SourceDiff:
@@ -518,6 +542,31 @@ class CatalogService:
         self._require_view(subject)
 
         return await self._sources.draft_state(draft_id)
+
+    async def source_draft_tree(
+        self, subject: Subject, draft_id: UUID, path: Sequence[str]
+    ) -> Sequence[TreeNode]:
+        """Дерево свёрнутого снимка черновика с пометками относительно его базы."""
+        self._require_view(subject)
+
+        state = await self._sources.draft_state(draft_id)
+        nodes = state.snapshot.children(state.draft.source_id, path)
+        return list(self._marked(nodes, state.diff))
+
+    async def source_draft_object(
+        self, subject: Subject, draft_id: UUID, kind: ObjectKind, path: Sequence[str]
+    ) -> ObjectCard:
+        """Ошибки:
+        SourceObjectNotFoundError — по адресу нет объекта.
+        """
+        self._require_view(subject)
+
+        state = await self._sources.draft_state(draft_id)
+        ref = ObjectRef(source_id=state.draft.source_id, kind=kind, path=tuple(path))
+        try:
+            return ObjectCards.of(state.snapshot, ref)
+        except CatalogError as exc:
+            raise SourceObjectNotFoundError(ref) from exc
 
     async def append_source_ops(
         self,

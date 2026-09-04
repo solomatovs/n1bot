@@ -14,6 +14,7 @@ from uuid import UUID
 
 import httpx
 
+from boba.catalog.samples import ChSample, PgSample
 from boba.stand.ui.stand import StandProcess
 
 
@@ -280,3 +281,71 @@ class Api:
         response = self.admin.delete(f"/api/catalog/views/{view_id}")
         if response.status_code not in (200, 404):
             raise RuntimeError(f"delete view failed: {response.status_code}")
+
+    # --- источники ---
+
+    def create_source(
+        self, kind: str, name: str, *, manual: bool = False, description: str = ""
+    ) -> str:
+        body = {
+            "kind": kind,
+            "name": name,
+            "manual": manual,
+            "description": description,
+        }
+        return str(ok(self.admin.post("/api/catalog/sources", json=body))["id"])
+
+    def write_source_version(self, source_id: str, snapshot: dict[str, Any]) -> int:
+        version = ok(
+            self.admin.post(
+                f"/api/catalog/sources/{source_id}/versions",
+                json={"snapshot": snapshot},
+            )
+        )
+        return int(version["version"])
+
+    def sources(self) -> list[dict[str, Any]]:
+        return list(ok_list(self.admin.get("/api/catalog/sources")))
+
+    def delete_source(self, source_id: str) -> None:
+        response = self.admin.delete(f"/api/catalog/sources/{source_id}")
+        if response.status_code not in (200, 404):
+            raise RuntimeError(f"delete source failed: {response.status_code}")
+
+    def source_draft_state(self, draft_id: str) -> dict[str, Any]:
+        return ok(self.admin.get(f"/api/catalog/source-drafts/{draft_id}"))
+
+
+def ok_list(response: httpx.Response) -> list[dict[str, Any]]:
+    if response.status_code != 200:
+        request = f"{response.request.method} {response.request.url}"
+        raise RuntimeError(f"{request}: {response.status_code} {response.text[:300]}")
+
+    return list(response.json())
+
+
+class SourceSeed:
+    """Три источника из образцов домена: prod (postgres, v1 и v2), dwh
+    (clickhouse, v1), planned (postgres, ручной, без версий)."""
+
+    PROD: ClassVar[str] = "src_prod"
+    DWH: ClassVar[str] = "src_dwh"
+    PLANNED: ClassVar[str] = "src_planned"
+
+    def __init__(self, api: Api) -> None:
+        self.api = api
+        pg = PgSample()
+        ch = ChSample()
+        self.prod = api.create_source(
+            "postgres", self.PROD, description="Prod database"
+        )
+        api.write_source_version(self.prod, pg.snapshot().model_dump(mode="json"))
+        api.write_source_version(self.prod, pg.next_version().model_dump(mode="json"))
+        self.dwh = api.create_source("clickhouse", self.DWH)
+        api.write_source_version(self.dwh, ch.snapshot().model_dump(mode="json"))
+        self.planned = api.create_source("postgres", self.PLANNED, manual=True)
+
+    def cleanup(self) -> None:
+        for source in self.api.sources():
+            if str(source["name"]).startswith("src_"):
+                self.api.delete_source(str(source["id"]))

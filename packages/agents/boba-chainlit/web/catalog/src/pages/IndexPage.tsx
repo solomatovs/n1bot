@@ -77,6 +77,12 @@ export function IndexPage(): ReactElement {
 
   return (
     <div className="index" data-testid="index-page" data-can-edit={access.can_edit}>
+      <section className="index__section" data-testid="index-sources">
+        <Eyebrow as="h4">sources</Eyebrow>
+        <Link to="/sources" className="index__link">
+          metadata sources
+        </Link>
+      </section>
       <section className="index__section" data-testid="index-views">
         <Eyebrow as="h4">views</Eyebrow>
         {access.can_edit && <NewNameForm mark="new-view" placeholder="new view name" label="view" onSubmit={createView} />}

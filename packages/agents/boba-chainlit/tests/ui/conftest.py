@@ -12,7 +12,7 @@ import pytest
 
 pytest.importorskip("playwright.sync_api", reason="ui-тестам нужен playwright")
 
-from catalog_ui import Api, Cleanup, Ed, Seed, api_client
+from catalog_ui import Api, Cleanup, Ed, Seed, SourceSeed, api_client
 from chat_ui import (
     BOOT_TIMEOUT_SEC,
     ChatOpener,
@@ -208,3 +208,14 @@ def catalog_seed(catalog_api: Api) -> Iterator[Seed]:
         cleanup = Cleanup(catalog_api.snapshot()).operations()
         if cleanup:
             catalog_api.publish_ops("module cleanup", cleanup)
+
+
+@pytest.fixture(scope="module")
+def source_seed(catalog_api: Api) -> Iterator[SourceSeed]:
+    """Источники модуля: postgres с двумя версиями из образца, clickhouse с
+    одной, ручной postgres без версий; на выходе удаляются."""
+    seed = SourceSeed(catalog_api)
+    try:
+        yield seed
+    finally:
+        seed.cleanup()

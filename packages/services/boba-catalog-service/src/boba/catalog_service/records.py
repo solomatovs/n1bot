@@ -12,6 +12,7 @@ DraftStaleError — base_version черновика отстал от опубл
     current_version — актуальная.
 ViewNotFoundError — вида с таким id нет.
 SourceNotFoundError — источника с таким id нет.
+SourceObjectNotFoundError — по адресу в версии источника нет объекта.
 SourceVersionNotFoundError — у источника нет версии с таким номером.
 SourceDraftNotFoundError — черновика ручного источника с таким id нет.
 SourceNotManualError — источник синхронизируемый, правки операциями закрыты.
@@ -29,6 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from boba.catalog import (
     CatalogDiff,
     CatalogSnapshot,
+    ObjectRef,
     OperationList,
     SourceDiff,
     SourceKind,
@@ -65,6 +67,7 @@ __all__ = [
     "SourceDraftState",
     "SourceNotFoundError",
     "SourceNotManualError",
+    "SourceObjectNotFoundError",
     "SourceSpec",
     "SourceVersion",
     "SourceVersionNotFoundError",
@@ -156,6 +159,12 @@ class SourceDraftNotFoundError(CatalogServiceError):
     def __init__(self, draft_id: UUID) -> None:
         super().__init__(f"catalog: source draft {draft_id} not found")
         self.draft_id = draft_id
+
+
+class SourceObjectNotFoundError(CatalogServiceError):
+    def __init__(self, ref: ObjectRef) -> None:
+        super().__init__(f"catalog: no {ref.kind.value} at {ref.render()}")
+        self.ref = ref
 
 
 class SourceNotManualError(CatalogServiceError):

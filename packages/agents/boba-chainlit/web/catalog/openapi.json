@@ -880,6 +880,1099 @@
           }
         }
       }
+    },
+    "/api/catalog/sources": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "List Sources",
+        "operationId": "list_sources_api_catalog_sources_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Source"
+                  },
+                  "type": "array",
+                  "title": "Response List Sources Api Catalog Sources Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Create Source",
+        "operationId": "create_source_api_catalog_sources_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SourceSpec"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Source"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/sources/{source_id}": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Get Source",
+        "operationId": "get_source_api_catalog_sources__source_id__get",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Source Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Source"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Update Source",
+        "operationId": "update_source_api_catalog_sources__source_id__put",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Source Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SourceSpec"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Source"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Delete Source",
+        "operationId": "delete_source_api_catalog_sources__source_id__delete",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Source Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Deleted"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/sources/{source_id}/connections": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Source Connections",
+        "operationId": "source_connections_api_catalog_sources__source_id__connections_get",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Source Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SourceConnection"
+                  },
+                  "title": "Response Source Connections Api Catalog Sources  Source Id  Connections Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Bind Connection",
+        "operationId": "bind_connection_api_catalog_sources__source_id__connections_post",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Source Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConnectionBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceConnection"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/sources/{source_id}/connections/{connection_id}": {
+      "delete": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Unbind Connection",
+        "operationId": "unbind_connection_api_catalog_sources__source_id__connections__connection_id__delete",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Source Id"
+            }
+          },
+          {
+            "name": "connection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Connection Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Deleted"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/sources/{source_id}/versions": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Source Versions",
+        "operationId": "source_versions_api_catalog_sources__source_id__versions_get",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Source Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SourceVersion"
+                  },
+                  "title": "Response Source Versions Api Catalog Sources  Source Id  Versions Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Write Source Version",
+        "operationId": "write_source_version_api_catalog_sources__source_id__versions_post",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Source Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SnapshotBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceVersion"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/sources/{source_id}/tree": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Source Tree",
+        "operationId": "source_tree_api_catalog_sources__source_id__tree_get",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Source Id"
+            }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": -1,
+              "title": "Version"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TreeNode"
+                  },
+                  "title": "Response Source Tree Api Catalog Sources  Source Id  Tree Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/sources/{source_id}/object": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Source Object",
+        "operationId": "source_object_api_catalog_sources__source_id__object_get",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Source Id"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ObjectKind"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "Path"
+            }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": -1,
+              "title": "Version"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/PgRelationCard"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PgRoutineCard"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PgSequenceCard"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PgTypeCard"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChTableCard"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChDictionaryCard"
+                    }
+                  ],
+                  "title": "Response Source Object Api Catalog Sources  Source Id  Object Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/sources/{source_id}/diff": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Source Diff",
+        "operationId": "source_diff_api_catalog_sources__source_id__diff_get",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Source Id"
+            }
+          },
+          {
+            "name": "old",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Old"
+            }
+          },
+          {
+            "name": "new",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "New"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceDiff"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/sources/{source_id}/drafts": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Source Drafts",
+        "operationId": "source_drafts_api_catalog_sources__source_id__drafts_get",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Source Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SourceDraft"
+                  },
+                  "title": "Response Source Drafts Api Catalog Sources  Source Id  Drafts Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Create Source Draft",
+        "operationId": "create_source_draft_api_catalog_sources__source_id__drafts_post",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Source Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DraftBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceDraft"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/source-drafts/{draft_id}": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Source Draft State",
+        "operationId": "source_draft_state_api_catalog_source_drafts__draft_id__get",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceDraftState"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Discard Source Draft",
+        "operationId": "discard_source_draft_api_catalog_source_drafts__draft_id__delete",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceDraft"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/source-drafts/{draft_id}/ops": {
+      "post": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Append Source Ops",
+        "operationId": "append_source_ops_api_catalog_source_drafts__draft_id__ops_post",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SourceOpsBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceDraftState"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/source-drafts/{draft_id}/tree": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Source Draft Tree",
+        "operationId": "source_draft_tree_api_catalog_source_drafts__draft_id__tree_get",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Draft Id"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TreeNode"
+                  },
+                  "title": "Response Source Draft Tree Api Catalog Source Drafts  Draft Id  Tree Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/source-drafts/{draft_id}/object": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Source Draft Object",
+        "operationId": "source_draft_object_api_catalog_source_drafts__draft_id__object_get",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Draft Id"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ObjectKind"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/PgRelationCard"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PgRoutineCard"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PgSequenceCard"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PgTypeCard"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChTableCard"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChDictionaryCard"
+                    }
+                  ],
+                  "title": "Response Source Draft Object Api Catalog Source Drafts  Draft Id  Object Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/source-drafts/{draft_id}/publish": {
+      "post": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Publish Source Draft",
+        "operationId": "publish_source_draft_api_catalog_source_drafts__draft_id__publish_post",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceVersion"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1017,6 +2110,25 @@
         ],
         "title": "AddLoadKind"
       },
+      "AddObject": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "add_object",
+            "title": "Op",
+            "default": "add_object"
+          },
+          "object": {
+            "$ref": "#/components/schemas/ManualObject"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "object"
+        ],
+        "title": "AddObject"
+      },
       "AuthorVia": {
         "type": "string",
         "enum": [
@@ -1140,6 +2252,612 @@
         "title": "CatalogSnapshot",
         "description": "Полное состояние каталога одной версии.\n\nТаблицы сущностей по id. Методы added/replaced/removed возвращают новый\nснимок, не меняя текущий; check() проверяет инварианты целиком."
       },
+      "ChColumn": {
+        "properties": {
+          "database": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Database"
+          },
+          "table": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Table"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Position"
+          },
+          "type": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Type"
+          },
+          "default_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Kind"
+          },
+          "default_expression": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Expression"
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          },
+          "codec": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Codec"
+          },
+          "ttl": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttl"
+          },
+          "in_partition_key": {
+            "type": "boolean",
+            "title": "In Partition Key",
+            "default": false
+          },
+          "in_sorting_key": {
+            "type": "boolean",
+            "title": "In Sorting Key",
+            "default": false
+          },
+          "in_primary_key": {
+            "type": "boolean",
+            "title": "In Primary Key",
+            "default": false
+          },
+          "in_sampling_key": {
+            "type": "boolean",
+            "title": "In Sampling Key",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "database",
+          "table",
+          "name",
+          "position",
+          "type"
+        ],
+        "title": "ChColumn"
+      },
+      "ChDatabase": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "engine": {
+            "type": "string",
+            "title": "Engine",
+            "default": ""
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "ChDatabase"
+      },
+      "ChDictionary": {
+        "properties": {
+          "database": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Database"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": ""
+          },
+          "layout": {
+            "type": "string",
+            "title": "Layout",
+            "default": ""
+          },
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "default": ""
+          },
+          "key_columns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Key Columns",
+            "default": []
+          },
+          "lifetime_min": {
+            "type": "integer",
+            "title": "Lifetime Min",
+            "default": 0
+          },
+          "lifetime_max": {
+            "type": "integer",
+            "title": "Lifetime Max",
+            "default": 0
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          },
+          "create_query": {
+            "type": "string",
+            "title": "Create Query",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "database",
+          "name"
+        ],
+        "title": "ChDictionary"
+      },
+      "ChDictionaryAttribute": {
+        "properties": {
+          "database": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Database"
+          },
+          "dictionary": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Dictionary"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Position"
+          },
+          "type": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Type"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "database",
+          "dictionary",
+          "name",
+          "position",
+          "type"
+        ],
+        "title": "ChDictionaryAttribute"
+      },
+      "ChDictionaryCard": {
+        "properties": {
+          "card": {
+            "type": "string",
+            "const": "ch_dictionary",
+            "title": "Card",
+            "default": "ch_dictionary"
+          },
+          "ref": {
+            "$ref": "#/components/schemas/ObjectRef"
+          },
+          "dictionary": {
+            "$ref": "#/components/schemas/ChDictionary"
+          },
+          "attributes": {
+            "items": {
+              "$ref": "#/components/schemas/ChDictionaryAttribute"
+            },
+            "type": "array",
+            "title": "Attributes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ref",
+          "dictionary",
+          "attributes"
+        ],
+        "title": "ChDictionaryCard"
+      },
+      "ChSnapshot-Input": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "clickhouse",
+            "title": "Kind",
+            "default": "clickhouse"
+          },
+          "databases": {
+            "items": {
+              "$ref": "#/components/schemas/ChDatabase"
+            },
+            "type": "array",
+            "title": "Databases",
+            "default": []
+          },
+          "tables": {
+            "items": {
+              "$ref": "#/components/schemas/ChTable"
+            },
+            "type": "array",
+            "title": "Tables",
+            "default": []
+          },
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/ChColumn"
+            },
+            "type": "array",
+            "title": "Columns",
+            "default": []
+          },
+          "dictionaries": {
+            "items": {
+              "$ref": "#/components/schemas/ChDictionary"
+            },
+            "type": "array",
+            "title": "Dictionaries",
+            "default": []
+          },
+          "dictionary_attributes": {
+            "items": {
+              "$ref": "#/components/schemas/ChDictionaryAttribute"
+            },
+            "type": "array",
+            "title": "Dictionary Attributes",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ChSnapshot",
+        "description": "Снимок ClickHouse одной версии: плоские таблицы записей. Дерево:\nбаза → группа → объект."
+      },
+      "ChSnapshot-Output": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "clickhouse",
+            "title": "Kind",
+            "default": "clickhouse"
+          },
+          "databases": {
+            "items": {
+              "$ref": "#/components/schemas/ChDatabase"
+            },
+            "type": "array",
+            "title": "Databases",
+            "default": []
+          },
+          "tables": {
+            "items": {
+              "$ref": "#/components/schemas/ChTable"
+            },
+            "type": "array",
+            "title": "Tables",
+            "default": []
+          },
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/ChColumn"
+            },
+            "type": "array",
+            "title": "Columns",
+            "default": []
+          },
+          "dictionaries": {
+            "items": {
+              "$ref": "#/components/schemas/ChDictionary"
+            },
+            "type": "array",
+            "title": "Dictionaries",
+            "default": []
+          },
+          "dictionary_attributes": {
+            "items": {
+              "$ref": "#/components/schemas/ChDictionaryAttribute"
+            },
+            "type": "array",
+            "title": "Dictionary Attributes",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ChSnapshot",
+        "description": "Снимок ClickHouse одной версии: плоские таблицы записей. Дерево:\nбаза → группа → объект."
+      },
+      "ChTable": {
+        "properties": {
+          "database": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Database"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ChTableKind"
+          },
+          "engine": {
+            "type": "string",
+            "title": "Engine",
+            "default": ""
+          },
+          "engine_full": {
+            "type": "string",
+            "title": "Engine Full",
+            "default": ""
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          },
+          "partition_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Partition Key"
+          },
+          "sorting_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sorting Key"
+          },
+          "primary_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Key"
+          },
+          "sampling_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sampling Key"
+          },
+          "ttl": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttl"
+          },
+          "settings": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Settings"
+          },
+          "definition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Definition"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target"
+          },
+          "dependencies": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Dependencies",
+            "default": []
+          },
+          "total_rows": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Rows"
+          },
+          "total_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Bytes"
+          },
+          "metadata_modified_at": {
+            "type": "string",
+            "title": "Metadata Modified At",
+            "default": ""
+          },
+          "create_query": {
+            "type": "string",
+            "title": "Create Query",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "database",
+          "name",
+          "kind"
+        ],
+        "title": "ChTable",
+        "description": "Таблица, представление или материализованное представление."
+      },
+      "ChTableCard": {
+        "properties": {
+          "card": {
+            "type": "string",
+            "const": "ch_table",
+            "title": "Card",
+            "default": "ch_table"
+          },
+          "ref": {
+            "$ref": "#/components/schemas/ObjectRef"
+          },
+          "table": {
+            "$ref": "#/components/schemas/ChTable"
+          },
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/ChColumn"
+            },
+            "type": "array",
+            "title": "Columns"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ref",
+          "table",
+          "columns"
+        ],
+        "title": "ChTableCard"
+      },
+      "ChTableKind": {
+        "type": "string",
+        "enum": [
+          "table",
+          "view",
+          "materialized",
+          "live",
+          "dictionary_table"
+        ],
+        "title": "ChTableKind"
+      },
       "ChangeStatus": {
         "type": "string",
         "enum": [
@@ -1203,6 +2921,21 @@
         ],
         "title": "Column",
         "description": "Колонка набора; position задаёт порядок в карточке."
+      },
+      "ConnectionBody": {
+        "properties": {
+          "connection_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Connection Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "connection_id"
+        ],
+        "title": "ConnectionBody"
       },
       "Dataset": {
         "properties": {
@@ -1434,6 +3167,45 @@
         ],
         "title": "EntityRef",
         "description": "Ссылка на сущность каталога: вид и id."
+      },
+      "FieldChange": {
+        "properties": {
+          "field": {
+            "type": "string",
+            "title": "Field"
+          },
+          "was": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Was"
+          },
+          "now": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Now"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "field",
+          "was",
+          "now"
+        ],
+        "title": "FieldChange",
+        "description": "Поле, значение которого изменилось; значения отданы строкой для показа."
       },
       "Flow": {
         "properties": {
@@ -1682,6 +3454,93 @@
         "title": "LoadSpec",
         "description": "Правило загрузки потока: вид и значения по его полям."
       },
+      "ManualColumn": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "type": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Type"
+          },
+          "nullable": {
+            "type": "boolean",
+            "title": "Nullable",
+            "default": true
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "type"
+        ],
+        "title": "ManualColumn"
+      },
+      "ManualObject": {
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/ManualObjectKind",
+            "default": "table"
+          },
+          "path": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 2,
+            "title": "Path"
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          },
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/ManualColumn"
+            },
+            "type": "array",
+            "title": "Columns",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "title": "ManualObject",
+        "description": "Объект ручного источника: путь как у реального (Postgres: база, схема,\nимя; ClickHouse: база, имя), вид, комментарий, колонки по порядку."
+      },
+      "ManualObjectKind": {
+        "type": "string",
+        "enum": [
+          "table",
+          "view"
+        ],
+        "title": "ManualObjectKind"
+      },
       "NodePosition": {
         "properties": {
           "dataset_id": {
@@ -1707,6 +3566,88 @@
         ],
         "title": "NodePosition",
         "description": "Положение узла набора на диаграмме вида."
+      },
+      "ObjectChange": {
+        "properties": {
+          "ref": {
+            "$ref": "#/components/schemas/ObjectRef"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ChangeStatus"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/FieldChange"
+            },
+            "type": "array",
+            "title": "Fields",
+            "default": []
+          },
+          "parts": {
+            "items": {
+              "$ref": "#/components/schemas/PartChange"
+            },
+            "type": "array",
+            "title": "Parts",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ref",
+          "label",
+          "status"
+        ],
+        "title": "ObjectChange"
+      },
+      "ObjectKind": {
+        "type": "string",
+        "enum": [
+          "database",
+          "schema",
+          "relation",
+          "routine",
+          "sequence",
+          "type",
+          "table",
+          "dictionary"
+        ],
+        "title": "ObjectKind",
+        "description": "Что адресуется в снимке. Postgres: relation, routine, sequence, type;\nClickHouse: table, dictionary; database и schema — уровни выше объектов."
+      },
+      "ObjectRef": {
+        "properties": {
+          "source_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Source Id"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ObjectKind"
+          },
+          "path": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Path"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "source_id",
+          "kind",
+          "path"
+        ],
+        "title": "ObjectRef",
+        "description": "Адрес объекта источника, стабильный между версиями: вид объекта и\nродной путь. Postgres: (database, schema, name), рутина — плюс сигнатура;\nClickHouse: (database, name)."
       },
       "OperationList-Input": {
         "items": {
@@ -1875,6 +3816,1378 @@
         ],
         "title": "OpsBody",
         "description": "Порция операций с номером, на который она рассчитана."
+      },
+      "PartChange": {
+        "properties": {
+          "part": {
+            "$ref": "#/components/schemas/PartKind"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ChangeStatus"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/FieldChange"
+            },
+            "type": "array",
+            "title": "Fields",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "part",
+          "name",
+          "status"
+        ],
+        "title": "PartChange"
+      },
+      "PartKind": {
+        "type": "string",
+        "enum": [
+          "column",
+          "constraint",
+          "index",
+          "argument",
+          "attribute"
+        ],
+        "title": "PartKind",
+        "description": "Что за часть объекта изменилась."
+      },
+      "PgColumn": {
+        "properties": {
+          "database": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Database"
+          },
+          "schema_name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Schema Name"
+          },
+          "relation": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Relation"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "ordinal": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Ordinal"
+          },
+          "type": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Type"
+          },
+          "nullable": {
+            "type": "boolean",
+            "title": "Nullable",
+            "default": true
+          },
+          "default": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default"
+          },
+          "identity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Identity"
+          },
+          "generated": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated"
+          },
+          "collation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collation"
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "database",
+          "schema_name",
+          "relation",
+          "name",
+          "ordinal",
+          "type"
+        ],
+        "title": "PgColumn"
+      },
+      "PgConstraint": {
+        "properties": {
+          "database": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Database"
+          },
+          "schema_name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Schema Name"
+          },
+          "relation": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Relation"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PgConstraintKind"
+          },
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Columns",
+            "default": []
+          },
+          "ref_schema": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref Schema"
+          },
+          "ref_relation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref Relation"
+          },
+          "ref_columns": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref Columns"
+          },
+          "on_update": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "On Update"
+          },
+          "on_delete": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "On Delete"
+          },
+          "deferrable": {
+            "type": "boolean",
+            "title": "Deferrable",
+            "default": false
+          },
+          "initially_deferred": {
+            "type": "boolean",
+            "title": "Initially Deferred",
+            "default": false
+          },
+          "definition": {
+            "type": "string",
+            "title": "Definition",
+            "default": ""
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "database",
+          "schema_name",
+          "relation",
+          "name",
+          "kind"
+        ],
+        "title": "PgConstraint"
+      },
+      "PgConstraintKind": {
+        "type": "string",
+        "enum": [
+          "primary",
+          "unique",
+          "foreign",
+          "check",
+          "exclusion"
+        ],
+        "title": "PgConstraintKind"
+      },
+      "PgDatabase": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "owner": {
+            "type": "string",
+            "title": "Owner",
+            "default": ""
+          },
+          "encoding": {
+            "type": "string",
+            "title": "Encoding",
+            "default": ""
+          },
+          "collate": {
+            "type": "string",
+            "title": "Collate",
+            "default": ""
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "PgDatabase"
+      },
+      "PgIndex": {
+        "properties": {
+          "database": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Database"
+          },
+          "schema_name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Schema Name"
+          },
+          "relation": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Relation"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "method": {
+            "type": "string",
+            "title": "Method",
+            "default": "btree"
+          },
+          "unique": {
+            "type": "boolean",
+            "title": "Unique",
+            "default": false
+          },
+          "primary": {
+            "type": "boolean",
+            "title": "Primary",
+            "default": false
+          },
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Columns",
+            "default": []
+          },
+          "predicate": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Predicate"
+          },
+          "definition": {
+            "type": "string",
+            "title": "Definition",
+            "default": ""
+          },
+          "total_bytes": {
+            "type": "integer",
+            "title": "Total Bytes",
+            "default": 0
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "database",
+          "schema_name",
+          "relation",
+          "name"
+        ],
+        "title": "PgIndex"
+      },
+      "PgRelation": {
+        "properties": {
+          "database": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Database"
+          },
+          "schema_name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Schema Name"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PgRelationKind"
+          },
+          "owner": {
+            "type": "string",
+            "title": "Owner",
+            "default": ""
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          },
+          "tablespace": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tablespace"
+          },
+          "persistence": {
+            "type": "string",
+            "title": "Persistence",
+            "default": "permanent"
+          },
+          "row_estimate": {
+            "type": "integer",
+            "title": "Row Estimate",
+            "default": 0
+          },
+          "total_bytes": {
+            "type": "integer",
+            "title": "Total Bytes",
+            "default": 0
+          },
+          "partition_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Partition Key"
+          },
+          "partition_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Partition Of"
+          },
+          "partition_bound": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Partition Bound"
+          },
+          "definition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Definition"
+          },
+          "check_option": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Check Option"
+          },
+          "populated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Populated"
+          },
+          "foreign_server": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Foreign Server"
+          },
+          "options": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Options"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "database",
+          "schema_name",
+          "name",
+          "kind"
+        ],
+        "title": "PgRelation",
+        "description": "Таблица, секционированная таблица, секция, представление,\nматериализованное представление или foreign-таблица."
+      },
+      "PgRelationCard": {
+        "properties": {
+          "card": {
+            "type": "string",
+            "const": "pg_relation",
+            "title": "Card",
+            "default": "pg_relation"
+          },
+          "ref": {
+            "$ref": "#/components/schemas/ObjectRef"
+          },
+          "relation": {
+            "$ref": "#/components/schemas/PgRelation"
+          },
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/PgColumn"
+            },
+            "type": "array",
+            "title": "Columns"
+          },
+          "constraints": {
+            "items": {
+              "$ref": "#/components/schemas/PgConstraint"
+            },
+            "type": "array",
+            "title": "Constraints"
+          },
+          "indexes": {
+            "items": {
+              "$ref": "#/components/schemas/PgIndex"
+            },
+            "type": "array",
+            "title": "Indexes"
+          },
+          "partitions": {
+            "items": {
+              "$ref": "#/components/schemas/PgRelation"
+            },
+            "type": "array",
+            "title": "Partitions"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ref",
+          "relation",
+          "columns",
+          "constraints",
+          "indexes",
+          "partitions"
+        ],
+        "title": "PgRelationCard"
+      },
+      "PgRelationKind": {
+        "type": "string",
+        "enum": [
+          "table",
+          "partitioned",
+          "partition",
+          "view",
+          "materialized",
+          "foreign"
+        ],
+        "title": "PgRelationKind"
+      },
+      "PgRoutine": {
+        "properties": {
+          "database": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Database"
+          },
+          "schema_name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Schema Name"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "signature": {
+            "type": "string",
+            "title": "Signature",
+            "default": ""
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PgRoutineKind"
+          },
+          "owner": {
+            "type": "string",
+            "title": "Owner",
+            "default": ""
+          },
+          "language": {
+            "type": "string",
+            "title": "Language",
+            "default": ""
+          },
+          "arguments": {
+            "type": "string",
+            "title": "Arguments",
+            "default": ""
+          },
+          "returns": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Returns"
+          },
+          "returns_set": {
+            "type": "boolean",
+            "title": "Returns Set",
+            "default": false
+          },
+          "volatility": {
+            "type": "string",
+            "title": "Volatility",
+            "default": "volatile"
+          },
+          "strict": {
+            "type": "boolean",
+            "title": "Strict",
+            "default": false
+          },
+          "security_definer": {
+            "type": "boolean",
+            "title": "Security Definer",
+            "default": false
+          },
+          "parallel": {
+            "type": "string",
+            "title": "Parallel",
+            "default": "unsafe"
+          },
+          "cost": {
+            "type": "number",
+            "title": "Cost",
+            "default": 100.0
+          },
+          "rows": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rows"
+          },
+          "body": {
+            "type": "string",
+            "title": "Body",
+            "default": ""
+          },
+          "definition": {
+            "type": "string",
+            "title": "Definition",
+            "default": ""
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "database",
+          "schema_name",
+          "name",
+          "kind"
+        ],
+        "title": "PgRoutine",
+        "description": "Функция, процедура, агрегат или оконная функция; перегрузки различаются\nсигнатурой, она входит в ключ и в адрес."
+      },
+      "PgRoutineArg": {
+        "properties": {
+          "database": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Database"
+          },
+          "schema_name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Schema Name"
+          },
+          "routine": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Routine"
+          },
+          "signature": {
+            "type": "string",
+            "title": "Signature",
+            "default": ""
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Position"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "type": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Type"
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode",
+            "default": "in"
+          },
+          "default": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "database",
+          "schema_name",
+          "routine",
+          "position",
+          "type"
+        ],
+        "title": "PgRoutineArg"
+      },
+      "PgRoutineCard": {
+        "properties": {
+          "card": {
+            "type": "string",
+            "const": "pg_routine",
+            "title": "Card",
+            "default": "pg_routine"
+          },
+          "ref": {
+            "$ref": "#/components/schemas/ObjectRef"
+          },
+          "routine": {
+            "$ref": "#/components/schemas/PgRoutine"
+          },
+          "arguments": {
+            "items": {
+              "$ref": "#/components/schemas/PgRoutineArg"
+            },
+            "type": "array",
+            "title": "Arguments"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ref",
+          "routine",
+          "arguments"
+        ],
+        "title": "PgRoutineCard"
+      },
+      "PgRoutineKind": {
+        "type": "string",
+        "enum": [
+          "function",
+          "procedure",
+          "aggregate",
+          "window"
+        ],
+        "title": "PgRoutineKind"
+      },
+      "PgSchema": {
+        "properties": {
+          "database": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Database"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "owner": {
+            "type": "string",
+            "title": "Owner",
+            "default": ""
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "database",
+          "name"
+        ],
+        "title": "PgSchema"
+      },
+      "PgSequence": {
+        "properties": {
+          "database": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Database"
+          },
+          "schema_name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Schema Name"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type",
+            "default": "bigint"
+          },
+          "start": {
+            "type": "integer",
+            "title": "Start",
+            "default": 1
+          },
+          "minimum": {
+            "type": "integer",
+            "title": "Minimum",
+            "default": 1
+          },
+          "maximum": {
+            "type": "integer",
+            "title": "Maximum",
+            "default": 9223372036854775807
+          },
+          "increment": {
+            "type": "integer",
+            "title": "Increment",
+            "default": 1
+          },
+          "cycle": {
+            "type": "boolean",
+            "title": "Cycle",
+            "default": false
+          },
+          "cache": {
+            "type": "integer",
+            "title": "Cache",
+            "default": 1
+          },
+          "last_value": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Value"
+          },
+          "owned_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owned By"
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "database",
+          "schema_name",
+          "name"
+        ],
+        "title": "PgSequence"
+      },
+      "PgSequenceCard": {
+        "properties": {
+          "card": {
+            "type": "string",
+            "const": "pg_sequence",
+            "title": "Card",
+            "default": "pg_sequence"
+          },
+          "ref": {
+            "$ref": "#/components/schemas/ObjectRef"
+          },
+          "sequence": {
+            "$ref": "#/components/schemas/PgSequence"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ref",
+          "sequence"
+        ],
+        "title": "PgSequenceCard"
+      },
+      "PgSnapshot-Input": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "postgres",
+            "title": "Kind",
+            "default": "postgres"
+          },
+          "databases": {
+            "items": {
+              "$ref": "#/components/schemas/PgDatabase"
+            },
+            "type": "array",
+            "title": "Databases",
+            "default": []
+          },
+          "schemas": {
+            "items": {
+              "$ref": "#/components/schemas/PgSchema"
+            },
+            "type": "array",
+            "title": "Schemas",
+            "default": []
+          },
+          "relations": {
+            "items": {
+              "$ref": "#/components/schemas/PgRelation"
+            },
+            "type": "array",
+            "title": "Relations",
+            "default": []
+          },
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/PgColumn"
+            },
+            "type": "array",
+            "title": "Columns",
+            "default": []
+          },
+          "constraints": {
+            "items": {
+              "$ref": "#/components/schemas/PgConstraint"
+            },
+            "type": "array",
+            "title": "Constraints",
+            "default": []
+          },
+          "indexes": {
+            "items": {
+              "$ref": "#/components/schemas/PgIndex"
+            },
+            "type": "array",
+            "title": "Indexes",
+            "default": []
+          },
+          "routines": {
+            "items": {
+              "$ref": "#/components/schemas/PgRoutine"
+            },
+            "type": "array",
+            "title": "Routines",
+            "default": []
+          },
+          "routine_args": {
+            "items": {
+              "$ref": "#/components/schemas/PgRoutineArg"
+            },
+            "type": "array",
+            "title": "Routine Args",
+            "default": []
+          },
+          "sequences": {
+            "items": {
+              "$ref": "#/components/schemas/PgSequence"
+            },
+            "type": "array",
+            "title": "Sequences",
+            "default": []
+          },
+          "types": {
+            "items": {
+              "$ref": "#/components/schemas/PgType"
+            },
+            "type": "array",
+            "title": "Types",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "PgSnapshot",
+        "description": "Снимок Postgres одной версии: плоские таблицы записей.\n\nПроверяет инварианты целиком (check), находит объект по адресу,\nраскрывается в дерево любой глубины: база → схема → группа → объект,\nу секционированной таблицы дети — её секции."
+      },
+      "PgSnapshot-Output": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "postgres",
+            "title": "Kind",
+            "default": "postgres"
+          },
+          "databases": {
+            "items": {
+              "$ref": "#/components/schemas/PgDatabase"
+            },
+            "type": "array",
+            "title": "Databases",
+            "default": []
+          },
+          "schemas": {
+            "items": {
+              "$ref": "#/components/schemas/PgSchema"
+            },
+            "type": "array",
+            "title": "Schemas",
+            "default": []
+          },
+          "relations": {
+            "items": {
+              "$ref": "#/components/schemas/PgRelation"
+            },
+            "type": "array",
+            "title": "Relations",
+            "default": []
+          },
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/PgColumn"
+            },
+            "type": "array",
+            "title": "Columns",
+            "default": []
+          },
+          "constraints": {
+            "items": {
+              "$ref": "#/components/schemas/PgConstraint"
+            },
+            "type": "array",
+            "title": "Constraints",
+            "default": []
+          },
+          "indexes": {
+            "items": {
+              "$ref": "#/components/schemas/PgIndex"
+            },
+            "type": "array",
+            "title": "Indexes",
+            "default": []
+          },
+          "routines": {
+            "items": {
+              "$ref": "#/components/schemas/PgRoutine"
+            },
+            "type": "array",
+            "title": "Routines",
+            "default": []
+          },
+          "routine_args": {
+            "items": {
+              "$ref": "#/components/schemas/PgRoutineArg"
+            },
+            "type": "array",
+            "title": "Routine Args",
+            "default": []
+          },
+          "sequences": {
+            "items": {
+              "$ref": "#/components/schemas/PgSequence"
+            },
+            "type": "array",
+            "title": "Sequences",
+            "default": []
+          },
+          "types": {
+            "items": {
+              "$ref": "#/components/schemas/PgType"
+            },
+            "type": "array",
+            "title": "Types",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "PgSnapshot",
+        "description": "Снимок Postgres одной версии: плоские таблицы записей.\n\nПроверяет инварианты целиком (check), находит объект по адресу,\nраскрывается в дерево любой глубины: база → схема → группа → объект,\nу секционированной таблицы дети — её секции."
+      },
+      "PgType": {
+        "properties": {
+          "database": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Database"
+          },
+          "schema_name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Schema Name"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PgTypeKind"
+          },
+          "owner": {
+            "type": "string",
+            "title": "Owner",
+            "default": ""
+          },
+          "labels": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Labels"
+          },
+          "base_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Type"
+          },
+          "constraint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Constraint"
+          },
+          "attributes": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PgTypeAttribute"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attributes"
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "database",
+          "schema_name",
+          "name",
+          "kind"
+        ],
+        "title": "PgType"
+      },
+      "PgTypeAttribute": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "type": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Type"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "type"
+        ],
+        "title": "PgTypeAttribute"
+      },
+      "PgTypeCard": {
+        "properties": {
+          "card": {
+            "type": "string",
+            "const": "pg_type",
+            "title": "Card",
+            "default": "pg_type"
+          },
+          "ref": {
+            "$ref": "#/components/schemas/ObjectRef"
+          },
+          "type": {
+            "$ref": "#/components/schemas/PgType"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ref",
+          "type"
+        ],
+        "title": "PgTypeCard"
+      },
+      "PgTypeKind": {
+        "type": "string",
+        "enum": [
+          "enum",
+          "domain",
+          "composite",
+          "range"
+        ],
+        "title": "PgTypeKind"
       },
       "RebaseBody": {
         "properties": {
@@ -2050,6 +5363,30 @@
         "title": "RemoveLoadKind",
         "description": "Удаление вида загрузки; отказывает, пока есть потоки этого вида."
       },
+      "RemoveObject": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "remove_object",
+            "title": "Op",
+            "default": "remove_object"
+          },
+          "path": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 2,
+            "title": "Path"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "title": "RemoveObject"
+      },
       "SetColumn": {
         "properties": {
           "op": {
@@ -2183,6 +5520,25 @@
         ],
         "title": "SetLoadKind"
       },
+      "SetObject": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "set_object",
+            "title": "Op",
+            "default": "set_object"
+          },
+          "object": {
+            "$ref": "#/components/schemas/ManualObject"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "object"
+        ],
+        "title": "SetObject"
+      },
       "ShareMode": {
         "type": "string",
         "enum": [
@@ -2197,6 +5553,461 @@
           "user"
         ],
         "title": "ShareTargetKind"
+      },
+      "SnapshotBody": {
+        "properties": {
+          "snapshot": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PgSnapshot-Input"
+              },
+              {
+                "$ref": "#/components/schemas/ChSnapshot-Input"
+              }
+            ],
+            "title": "Snapshot",
+            "discriminator": {
+              "propertyName": "kind",
+              "mapping": {
+                "clickhouse": "#/components/schemas/ChSnapshot-Input",
+                "postgres": "#/components/schemas/PgSnapshot-Input"
+              }
+            }
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "snapshot"
+        ],
+        "title": "SnapshotBody",
+        "description": "Снимок целиком: путь стенда и переноса из staging."
+      },
+      "Source": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SourceKind"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "manual": {
+            "type": "boolean",
+            "title": "Manual"
+          },
+          "created_by": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "latest_version": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Latest Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "name",
+          "manual",
+          "created_by",
+          "created_at",
+          "latest_version"
+        ],
+        "title": "Source",
+        "description": "Источник метаданных: форма снимка, имя, ручной или синхронизируемый."
+      },
+      "SourceConnection": {
+        "properties": {
+          "source_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Source Id"
+          },
+          "connection_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Connection Id"
+          },
+          "bound_by": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Bound By"
+          },
+          "bound_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Bound At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "source_id",
+          "connection_id",
+          "bound_by",
+          "bound_at"
+        ],
+        "title": "SourceConnection",
+        "description": "Подключение брокера, привязанное к источнику."
+      },
+      "SourceDiff": {
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/ObjectChange"
+            },
+            "type": "array",
+            "title": "Entries"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "entries"
+        ],
+        "title": "SourceDiff",
+        "description": "Список изменений между двумя версиями одного источника.\n\nСчитается по адресам: объект ищется в обеих версиях по ключу, поля\nсравниваются по значению. Базы и схемы тоже входят в список, чтобы дерево\nмогло пометить контейнеры."
+      },
+      "SourceDraft": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "source_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Source Id"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "base_version": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Base Version"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DraftStatus"
+          },
+          "created_by": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "source_id",
+          "name",
+          "base_version",
+          "status",
+          "created_by",
+          "created_at"
+        ],
+        "title": "SourceDraft",
+        "description": "Черновик правок ручного источника над его версией base_version."
+      },
+      "SourceDraftState": {
+        "properties": {
+          "draft": {
+            "$ref": "#/components/schemas/SourceDraft"
+          },
+          "snapshot": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PgSnapshot-Output"
+              },
+              {
+                "$ref": "#/components/schemas/ChSnapshot-Output"
+              }
+            ],
+            "title": "Snapshot",
+            "discriminator": {
+              "propertyName": "kind",
+              "mapping": {
+                "clickhouse": "#/components/schemas/ChSnapshot-Output",
+                "postgres": "#/components/schemas/PgSnapshot-Output"
+              }
+            }
+          },
+          "diff": {
+            "$ref": "#/components/schemas/SourceDiff"
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Seq"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "draft",
+          "snapshot",
+          "diff",
+          "seq"
+        ],
+        "title": "SourceDraftState",
+        "description": "Черновик ручного источника, свёрнутый в снимок, и его diff относительно\nбазовой версии источника."
+      },
+      "SourceKind": {
+        "type": "string",
+        "enum": [
+          "postgres",
+          "clickhouse"
+        ],
+        "title": "SourceKind",
+        "description": "Форма снимка: системные каталоги какого сервера описывают источник."
+      },
+      "SourceOperationList": {
+        "items": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/AddObject"
+            },
+            {
+              "$ref": "#/components/schemas/SetObject"
+            },
+            {
+              "$ref": "#/components/schemas/RemoveObject"
+            }
+          ]
+        },
+        "type": "array",
+        "title": "SourceOperationList",
+        "description": "Список операций ручного источника: разбор JSON на границе и применение\nк снимку с проверкой инвариантов после каждой операции."
+      },
+      "SourceOpsBody": {
+        "properties": {
+          "expected_seq": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Expected Seq"
+          },
+          "operations": {
+            "$ref": "#/components/schemas/SourceOperationList"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_seq",
+          "operations"
+        ],
+        "title": "SourceOpsBody",
+        "description": "Порция операций ручного источника с номером, на который она рассчитана."
+      },
+      "SourceSpec": {
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/SourceKind"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "manual": {
+            "type": "boolean",
+            "title": "Manual",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "name"
+        ],
+        "title": "SourceSpec",
+        "description": "Что задаёт пользователь, заводя источник."
+      },
+      "SourceVersion": {
+        "properties": {
+          "source_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Source Id"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Version"
+          },
+          "taken_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Taken At"
+          },
+          "taken_by": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Taken By"
+          },
+          "connection_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Id"
+          },
+          "sync_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sync Id"
+          },
+          "objects_total": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Objects Total"
+          },
+          "server_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Server Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "source_id",
+          "version",
+          "taken_at",
+          "taken_by",
+          "objects_total"
+        ],
+        "title": "SourceVersion",
+        "description": "Снятая или опубликованная версия источника без самого снимка."
+      },
+      "TreeKind": {
+        "type": "string",
+        "enum": [
+          "database",
+          "schema",
+          "group",
+          "object"
+        ],
+        "title": "TreeKind",
+        "description": "Что за узел в дереве источника."
+      },
+      "TreeNode": {
+        "properties": {
+          "path": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Path"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/TreeKind"
+          },
+          "children_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Children Count"
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail",
+            "default": ""
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ObjectRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/ChangeStatus",
+            "default": "unchanged"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "path",
+          "label",
+          "kind",
+          "children_count"
+        ],
+        "title": "TreeNode",
+        "description": "Узел дерева источника любой глубины. path — путь узла в дереве (не\nадрес объекта: у групп своя ступень), ref — адрес, если узел — объект."
       },
       "ValidationError": {
         "properties": {
