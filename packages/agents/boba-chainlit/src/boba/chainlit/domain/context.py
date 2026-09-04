@@ -38,15 +38,17 @@ class ChatCallContext(CallContext):
         """Контекст чата; вызов вне чата — RefusalError(CHAT_ONLY)."""
         context = cls.current()
         if not isinstance(context, ChatCallContext):
-            raise RefusalError(
-                ContextKind.CHAT_ONLY, "this tool works only inside a chat turn"
-            )
+            got = type(context).__name__
+            msg = f"this tool works only inside a chat turn, called from {got}"
+            raise RefusalError(ContextKind.CHAT_ONLY, msg)
 
         return context
 
     def tool_call_id(self) -> str:
         """id вызова модели: к нему привязываются элементы, созданные инструментом."""
         if not isinstance(self.initiator, LlmInitiator):
-            raise RefusalError(ContextKind.NO_TOOL_CALL, "tool call without id")
+            got = type(self.initiator).__name__
+            msg = f"tool call id is known only for an llm initiator, got {got}"
+            raise RefusalError(ContextKind.NO_TOOL_CALL, msg)
 
         return self.initiator.tool_call_id

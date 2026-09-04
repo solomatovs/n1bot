@@ -205,10 +205,16 @@ class CallInput:
             return
 
         if self._broken:
-            msg = "call input is broken: the tool stopped reading it"
+            msg = (
+                f"call input fd {self._fd} is broken: the tool stopped reading "
+                "it (the pipe closed on write), later sends are rejected"
+            )
             raise LauncherError(msg)
 
-        msg = "call input is already closed"
+        msg = (
+            f"call input fd {self._fd} is already closed by finish/abandon, "
+            "further sends are rejected"
+        )
         raise LauncherError(msg)
 
     def _write_parts(self, first: bytes, second: Chunk) -> None:
@@ -298,7 +304,11 @@ class RawStdinInput(FrameInput):
     """
 
     def send(self, frame: ToolFrame) -> None:
-        msg = "call stdin is a raw byte channel: frames are not accepted"
+        msg = (
+            f"call stdin fd {self._fd} is a raw byte channel (RawInbound): "
+            f"a frame with {len(frame.body)} body bytes is not accepted, "
+            "use send_bytes"
+        )
         raise LauncherError(msg)
 
 
@@ -523,7 +533,10 @@ class OpenRun(Generic[RunEnd]):
 
         end = self._end
         if end is None:
-            msg = f"{self._tool}: call pump left no result"
+            msg = (
+                f"{self._tool}: call pump thread finished without a failure "
+                "and without a run result"
+            )
             raise LauncherError(msg)
 
         return end
@@ -588,7 +601,10 @@ class PumpedCall(OpenRun[RunEnd], ToolCall):
 
     def frames(self) -> Iterator[ToolFrame]:
         if self._frames_taken:
-            msg = f"{self._tool}: call frames already have a reader"
+            msg = (
+                f"{self._tool}: call frames already have a reader, "
+                "frames() may be taken once per call"
+            )
             raise LauncherError(msg)
 
         self._frames_taken = True

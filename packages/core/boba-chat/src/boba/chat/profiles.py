@@ -90,7 +90,6 @@ class LlmSettings(BaseModel):
         return dict(self.sampling)
 
 
-
 class AgentSettings(LlmSettings):
     """Настройки хода агента: параметры LLM плюс окно истории."""
 
@@ -223,7 +222,10 @@ class ChatProfileConfig(AgentSettings, ProfileGrant):
             unknown.append(name)
 
         if unknown:
-            msg = f"profile: unknown settings {unknown}"
+            msg = (
+                f"chat profile: unknown settings {unknown}, "
+                f"expected names from {sorted(known)} or '*'"
+            )
             raise ValueError(msg)
 
         return self
@@ -246,7 +248,10 @@ class ChatProfileConfig(AgentSettings, ProfileGrant):
             missing.append(name)
 
         if missing:
-            msg = f"profile: flow tools {missing} are not in profile tools"
+            msg = (
+                f"chat profile: flow tools {missing} are not in the profile "
+                f"tools {list(self.tools)}"
+            )
             raise ValueError(msg)
 
         return self
@@ -290,14 +295,14 @@ class ChatProfiles:
 
     def __init__(self, profiles: Mapping[str, ChatProfileConfig]) -> None:
         if not profiles:
-            msg = "profiles: at least one chat profile is required"
+            msg = "section [profiles]: at least one chat profile is required, got none"
             raise ValueError(msg)
 
         defaults = [name for name, p in profiles.items() if p.default]
         if len(defaults) != 1:
             msg = (
-                "profiles: exactly one profile must set default = true, "
-                f"got {defaults or 'none'}"
+                "section [profiles]: exactly one profile must set default = true, "
+                f"got {len(defaults)} of {list(profiles)}: {defaults}"
             )
             raise ValueError(msg)
 
@@ -332,19 +337,19 @@ class ChatProfiles:
         user_roles: frozenset[str],
     ) -> SelectedProfile:
         visible = self.visible_for(user_roles)
+        roles = sorted(user_roles)
 
         if not visible:
-            raise RefusalError(
-                ProfileRefusal.NO_PROFILE_ACCESS,
-                "no chat profile is available for your roles",
-            )
+            msg = f"no chat profile is available for your roles {roles}"
+            raise RefusalError(ProfileRefusal.NO_PROFILE_ACCESS, msg)
 
         if name is not None:
             if name not in visible:
-                raise RefusalError(
-                    ProfileRefusal.PROFILE_NOT_ALLOWED,
-                    f"chat profile {name!r} is not available for your roles",
+                msg = (
+                    f"chat profile {name!r} is not available for your roles "
+                    f"{roles}, available: {sorted(visible)}"
                 )
+                raise RefusalError(ProfileRefusal.PROFILE_NOT_ALLOWED, msg)
 
             return SelectedProfile(name=name, config=visible[name])
 
@@ -352,10 +357,8 @@ class ChatProfiles:
             only_name = next(iter(visible))
             return SelectedProfile(name=only_name, config=visible[only_name])
 
-        raise RefusalError(
-            ProfileRefusal.PROFILE_NOT_SELECTED,
-            "select a chat profile to start the chat",
-        )
+        msg = f"select a chat profile to start the chat, available: {sorted(visible)}"
+        raise RefusalError(ProfileRefusal.PROFILE_NOT_SELECTED, msg)
 
     def resolve_or_default(
         self,
@@ -368,10 +371,9 @@ class ChatProfiles:
 
         visible = self.visible_for(user_roles)
         if not visible:
-            raise RefusalError(
-                ProfileRefusal.NO_PROFILE_ACCESS,
-                "no chat profile is available for your roles",
-            )
+            roles = sorted(user_roles)
+            msg = f"no chat profile is available for your roles {roles}"
+            raise RefusalError(ProfileRefusal.NO_PROFILE_ACCESS, msg)
 
         for profile_name, profile in visible.items():
             if profile.default:

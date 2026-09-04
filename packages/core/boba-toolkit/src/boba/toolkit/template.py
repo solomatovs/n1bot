@@ -52,7 +52,11 @@ class FieldTemplate(BaseModel):
         """Все поля шаблона — из известного набора."""
         unknown = sorted(set(self.fields()) - set(known))
         if unknown:
-            msg = f"unknown variables {unknown} in template {self.text!r}"
+            allowed = sorted(known)
+            msg = (
+                f"template {self.text!r} uses unknown variables {unknown}, "
+                f"allowed: {allowed}"
+            )
             raise TemplateError(msg)
 
         return self
@@ -60,7 +64,8 @@ class FieldTemplate(BaseModel):
     def having(self, field: str) -> Self:
         """Поле присутствует в шаблоне."""
         if field not in self.fields():
-            msg = f"template {self.text!r} has no {{{field}}}"
+            present = list(self.fields())
+            msg = f"template {self.text!r} has no {{{field}}} field, it has {present}"
             raise TemplateError(msg)
 
         return self
@@ -84,7 +89,10 @@ class FieldTemplate(BaseModel):
 
         fits = text.startswith(head) and text.endswith(tail)
         if not fits:
-            msg = f"text {text!r} does not match template {self.text!r}"
+            msg = (
+                f"text {text!r} does not match template {self.text!r}: "
+                f"expected it to start with {head!r} and end with {tail!r}"
+            )
             raise TemplateError(msg)
 
         value = text[len(head) : len(text) - len(tail)]
@@ -123,7 +131,11 @@ class FieldTemplate(BaseModel):
             seen = True
 
         if not seen:
-            msg = f"template {self.text!r} has no {{{field}}}"
+            present = list(self.fields())
+            msg = (
+                f"template {self.text!r} has no {{{field}}} field to extract, "
+                f"it has {present}"
+            )
             raise TemplateError(msg)
 
         return "".join(head), "".join(tail)
@@ -133,7 +145,7 @@ class FieldTemplate(BaseModel):
         try:
             parsed = list(string.Formatter().parse(self.text))
         except ValueError as exc:
-            msg = f"bad template {self.text!r}: {exc}"
+            msg = f"bad template {self.text!r}: str.format syntax error: {exc}"
             raise TemplateError(msg) from exc
 
         pieces: list[tuple[str, str | None]] = []
@@ -144,7 +156,11 @@ class FieldTemplate(BaseModel):
 
             plain = name.isidentifier() and not spec and not conversion
             if not plain:
-                msg = f"template {self.text!r}: only plain {{name}} fields are allowed"
+                msg = (
+                    f"template {self.text!r}: only plain {{name}} fields are "
+                    f"allowed, got field {name!r} with spec {spec!r} and "
+                    f"conversion {conversion!r}"
+                )
                 raise TemplateError(msg)
 
             pieces.append((literal, name))

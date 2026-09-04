@@ -260,6 +260,24 @@ class _Checker:
     def _issue(self, code: IssueCode, where: str, message: str) -> None:
         self._issues.append(SpecIssue(code=code, where=where, message=message))
 
+    @staticmethod
+    def _arg_names(facts: ToolFacts) -> list[str]:
+        names: list[str] = []
+        for arg in facts.args:
+            names.append(arg.name)
+
+        return names
+
+    def _port_names(self, task: str, facts: ToolFacts) -> list[str]:
+        if facts.task_ports:
+            return sorted(self._spec.tasks[task].ports)
+
+        names: list[str] = []
+        for port in facts.ports:
+            names.append(port.name)
+
+        return names
+
     def _facts(self, task: str) -> ToolFacts | None:
         """Факты инструмента задачи; None — задача или инструмент уже отмечены."""
         spec = self._spec.tasks.get(task)
@@ -275,12 +293,18 @@ class _Checker:
     def _task(self, name: str, task: TaskSpec) -> None:
         facts = self._catalog.get(task.tool)
         if facts is None:
-            self._issue(IssueCode.UNKNOWN_TOOL, name, f"unknown tool: {task.tool}")
+            self._issue(
+                IssueCode.UNKNOWN_TOOL,
+                name,
+                f"tool {task.tool!r} is not in the tool catalog of the subject",
+            )
             return
 
         if facts.availability is ToolAvailability.DENIED:
             self._issue(
-                IssueCode.TOOL_DENIED, name, f"tool is not allowed: {task.tool}"
+                IssueCode.TOOL_DENIED,
+                name,
+                f"tool {task.tool!r} is denied to the subject by its roles",
             )
             return
 
@@ -288,7 +312,7 @@ class _Checker:
             self._issue(
                 IssueCode.TOOL_CHAT_ONLY,
                 name,
-                f"tool works only in the chat: {task.tool}",
+                f"tool {task.tool!r} is chat_only and cannot run in a workflow",
             )
             return
 
@@ -296,20 +320,32 @@ class _Checker:
             if facts.arg(arg) is not None:
                 continue
 
-            self._issue(IssueCode.UNKNOWN_ARG, name, f"unknown argument: {arg}")
+            known = ", ".join(self._arg_names(facts))
+            self._issue(
+                IssueCode.UNKNOWN_ARG,
+                name,
+                f"argument {arg!r} is unknown to tool {task.tool!r}; "
+                f"its arguments: [{known}]",
+            )
 
         if task.ports and not facts.task_ports:
+            declared = sorted(task.ports)
             self._issue(
                 IssueCode.PORTS_NOT_ALLOWED,
                 name,
-                f"ports of {task.tool} come from its signature, not from the task",
+                f"task.ports {declared} are not allowed: ports of "
+                f"{task.tool!r} come from its signature, not from the task",
             )
 
     def _edges(self) -> None:
         seen: list[Edge] = []
         for edge in self._spec.edges:
             if edge in seen:
-                self._issue(IssueCode.DUPLICATE_EDGE, edge.render(), "edge repeats")
+                self._issue(
+                    IssueCode.DUPLICATE_EDGE,
+                    edge.render(),
+                    "edge is listed more than once in edges",
+                )
                 continue
 
             seen.append(edge)
@@ -318,7 +354,12 @@ class _Checker:
     def _edge(self, edge: Edge) -> None:
         where = edge.render()
         if edge.src.task == edge.dst.task:
-            self._issue(IssueCode.SELF_EDGE, where, "task cannot feed itself")
+            self._issue(
+                IssueCode.SELF_EDGE,
+                where,
+                f"task {edge.src.task!r} cannot feed itself: an edge needs "
+                "two different tasks",
+            )
             return
 
         known = self._known_task(edge.src.task, where)
@@ -340,7 +381,12 @@ class _Checker:
         if task in self._spec.tasks:
             return True
 
-        self._issue(IssueCode.UNKNOWN_TASK, where, f"unknown task: {task}")
+        known = ", ".join(sorted(self._spec.tasks))
+        self._issue(
+            IssueCode.UNKNOWN_TASK,
+            where,
+            f"task {task!r} is not declared in tasks: [{known}]",
+        )
         return False
 
     def _port(self, ref: PortRef, expected: PortDirection, where: str) -> None:
@@ -350,8 +396,12 @@ class _Checker:
 
         if ref.kind is PortKind.ARG:
             if facts.arg(ref.name) is None:
+                known = ", ".join(self._arg_names(facts))
                 self._issue(
-                    IssueCode.UNKNOWN_ARG, where, f"unknown argument: {ref.render()}"
+                    IssueCode.UNKNOWN_ARG,
+                    where,
+                    f"argument {ref.render()} is unknown to tool {facts.name!r}; "
+                    f"its arguments: [{known}]",
                 )
             return
 
@@ -360,7 +410,13 @@ class _Checker:
 
         direction = self._fd_direction(ref, facts)
         if direction is None:
-            self._issue(IssueCode.UNKNOWN_PORT, where, f"unknown port: {ref.render()}")
+            known = ", ".join(self._port_names(ref.task, facts))
+            self._issue(
+                IssueCode.UNKNOWN_PORT,
+                where,
+                f"port {ref.render()} is not declared for task {ref.task!r}; "
+                f"its ports: [{known}]",
+            )
             return
 
         if direction is expected:
@@ -369,7 +425,8 @@ class _Checker:
         self._issue(
             IssueCode.PORT_DIRECTION,
             where,
-            f"port {ref.render()} is {direction}, edge needs {expected}",
+            f"port {ref.render()} is a {direction} port, this edge side "
+            f"needs a {expected} port",
         )
 
     def _fd_direction(self, ref: PortRef, facts: ToolFacts) -> PortDirection | None:
@@ -390,10 +447,13 @@ class _Checker:
         task = self._spec.tasks[dst.task]
         if dst.name not in task.args:
             if sources:
+                bound = sorted(sources)
                 self._issue(
                     IssueCode.ARG_BOUND_TWICE,
                     where,
-                    f"argument bound twice: {dst.render()}",
+                    f"argument {dst.render()} is already bound by an edge "
+                    f"from {bound}; an unset argument takes one "
+                    "edge, use a template to combine several",
                 )
                 return
 
@@ -408,8 +468,9 @@ class _Checker:
             self._issue(
                 IssueCode.ARG_BOUND_AND_SET,
                 where,
-                f"argument is set but does not mention {{{{ {edge.src.task} }}}}: "
-                f"{dst.render()}",
+                f"argument {dst.render()} is set in the task but its template "
+                f"does not mention {{{{ {edge.src.task} }}}}, so the edge value "
+                "has nowhere to go",
             )
             return
 
@@ -446,7 +507,8 @@ class _Checker:
             self._issue(
                 IssueCode.TEMPLATE_UNBOUND,
                 dst.render(),
-                f"template mentions tasks without an edge: {', '.join(unbound)}",
+                f"template mentions tasks {unbound} but no value edge "
+                "binds them to this argument",
             )
 
     def _ports_connected(self) -> None:
@@ -484,7 +546,12 @@ class _Checker:
                 if arg in bound:
                     continue
 
-                self._issue(IssueCode.MISSING_ARG, name, f"required argument: {arg}")
+                self._issue(
+                    IssueCode.MISSING_ARG,
+                    name,
+                    f"required argument: {arg} of tool {facts.name!r} is "
+                    "neither set in args nor bound by an edge",
+                )
 
     def _stages(self) -> tuple[Stage, ...]:
         components = _Components(list(self._spec.tasks))
@@ -526,7 +593,12 @@ class _Checker:
         try:
             order = list(sorter.static_order())
         except CycleError as exc:
-            self._issue(IssueCode.CYCLE, "", f"stages form a cycle: {exc.args[1]}")
+            self._issue(
+                IssueCode.CYCLE,
+                "",
+                f"stages form a cycle through {exc.args[1]}; stage order "
+                "must be acyclic",
+            )
             return ()
 
         by_id: dict[str, Stage] = {}
@@ -563,7 +635,9 @@ class _Checker:
                 self._issue(
                     IssueCode.STAGE_DEADLOCK,
                     edge.render(),
-                    "stream-joined tasks run together, one cannot wait for another",
+                    f"tasks {edge.src.task!r} and {edge.dst.task!r} are joined "
+                    "by a stream and run together, so one cannot wait for "
+                    "the other",
                 )
                 continue
 
@@ -583,7 +657,11 @@ class _Checker:
         try:
             sorter.prepare()
         except CycleError as exc:
-            self._issue(IssueCode.CYCLE, "", f"tasks form a cycle: {exc.args[1]}")
+            self._issue(
+                IssueCode.CYCLE,
+                "",
+                f"tasks form a cycle through {exc.args[1]}; edges must be acyclic",
+            )
 
 
 class ArgBinding(BaseModel):
@@ -653,7 +731,8 @@ class WorkflowGraph(BaseModel):
             if task in stage.tasks:
                 return stage
 
-        raise KeyError(task)
+        msg = f"task {task!r} belongs to no stage of workflow {self.spec.name!r}"
+        raise KeyError(msg)
 
 
 class TaskStatus(StrEnum):
@@ -806,7 +885,11 @@ class WorkflowPlan:
     def started(self, task: str, call_id: str, at: datetime) -> None:
         state = self._state(task)
         if state.status is not TaskStatus.PENDING:
-            raise WorkflowPlanError(f"task {task} started twice: {state.status}")
+            msg = (
+                f"task {task!r} reported started while {state.status}, "
+                f"expected {TaskStatus.PENDING}"
+            )
+            raise WorkflowPlanError(msg)
 
         self._tasks[task] = state.model_copy(
             update={"status": TaskStatus.RUNNING, "call_id": call_id, "started_at": at}
@@ -822,10 +905,18 @@ class WorkflowPlan:
     ) -> None:
         state = self._state(task)
         if state.status is not TaskStatus.RUNNING:
-            raise WorkflowPlanError(f"task {task} finished while {state.status}")
+            msg = (
+                f"task {task!r} reported finished while {state.status}, "
+                f"expected {TaskStatus.RUNNING}"
+            )
+            raise WorkflowPlanError(msg)
 
         if not status.reportable:
-            raise WorkflowPlanError(f"task {task}: {status} is not a reported outcome")
+            msg = (
+                f"task {task!r} finished with status {status}, which is not "
+                "a reportable outcome"
+            )
+            raise WorkflowPlanError(msg)
 
         self._tasks[task] = state.model_copy(
             update={
@@ -864,7 +955,9 @@ class WorkflowPlan:
     def _state(self, task: str) -> TaskState:
         state = self._tasks.get(task)
         if state is None:
-            raise WorkflowPlanError(f"unknown task: {task}")
+            known = ", ".join(sorted(self._tasks))
+            msg = f"task {task!r} is not in the plan; plan tasks: [{known}]"
+            raise WorkflowPlanError(msg)
 
         return state
 

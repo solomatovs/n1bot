@@ -66,7 +66,7 @@ class TrustedBinaries(BaseModel):
     def resolve_any(self, *binaries: SandboxBinary) -> str:
         """Первый найденный из перечисленных, в порядке приоритета."""
         if not binaries:
-            msg = "trusted binaries: no binary requested"
+            msg = "trusted binaries: resolve_any called with no binary requested"
             raise UntrustedBinaryError(msg)
 
         for binary in binaries:
@@ -139,12 +139,13 @@ class TrustedBinaries(BaseModel):
         if cls._is_sticky_dir(info.st_mode):
             return
 
+        mode = stat_module.filemode(info.st_mode)
         if info.st_mode & stat_module.S_IWOTH:
-            msg = f"trusted binaries: {path} is world-writable"
+            msg = f"trusted binaries: {path} is world-writable (mode {mode})"
             raise UntrustedBinaryError(msg)
 
         if info.st_mode & stat_module.S_IWGRP:
-            msg = f"trusted binaries: {path} is group-writable"
+            msg = f"trusted binaries: {path} is group-writable (mode {mode})"
             raise UntrustedBinaryError(msg)
 
     @staticmethod

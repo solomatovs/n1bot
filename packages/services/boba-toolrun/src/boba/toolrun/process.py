@@ -162,8 +162,18 @@ class _CallPipes:
 
     def take_injected(self) -> int:
         """Отдать канал конфига писателю: закрытия каналов его не трогают."""
-        if not self._module or self._injected_taken:
-            msg = "injected channel is already taken or absent"
+        if not self._module:
+            msg = (
+                "process call pipes: the injected channel was asked for a "
+                "non-module call that has no such channel"
+            )
+            raise LauncherError(msg)
+
+        if self._injected_taken:
+            msg = (
+                "process call pipes: the injected channel was already taken "
+                "by a writer, a second take is refused"
+            )
             raise LauncherError(msg)
 
         self._injected_taken = True
@@ -172,8 +182,18 @@ class _CallPipes:
     def take_frames(self) -> int:
         """Отдать канал кадров перекачке: насос его не читает, закрытия
         каналов его не трогают; владеет дескриптором перекачка."""
-        if not self._module or self._frames_taken:
-            msg = "frames channel is already taken or absent"
+        if not self._module:
+            msg = (
+                "process call pipes: the frames channel was asked for a "
+                "non-module call that has no such channel"
+            )
+            raise LauncherError(msg)
+
+        if self._frames_taken:
+            msg = (
+                "process call pipes: the frames channel was already taken "
+                "by a reader, a second take is refused"
+            )
             raise LauncherError(msg)
 
         self._frames_taken = True
@@ -438,11 +458,17 @@ class ProcessToolCaller(ToolLauncher):
         """Команда модуля интерпретатором приложения вместо python3 из PATH."""
         argv = command.argv
         if len(argv) <= self.ARGV_HEAD:
-            msg = f"{self._tool}: not a tool module command: {argv[:3]}"
+            msg = (
+                f"{self._tool}: not a tool module command, expected "
+                f"python -m <module> <tool> ..., got {argv[:3]}"
+            )
             raise ProcessCallError(msg)
 
         if argv[1] != "-m":
-            msg = f"{self._tool}: not a tool module command: {argv[:3]}"
+            msg = (
+                f"{self._tool}: not a tool module command, expected "
+                f"python -m <module> <tool> ..., got {argv[:3]}"
+            )
             raise ProcessCallError(msg)
 
         # интерпретатор приложения вместо python3 из PATH образа песочницы
@@ -490,7 +516,7 @@ class ProcessToolCaller(ToolLauncher):
             os.close(stdin_r)
             os.close(stdin_w)
 
-            msg = f"{self._tool}: cannot spawn {argv[0]}: {exc}"
+            msg = f"{self._tool}: spawn of {argv[0]} in {workdir} failed: {exc}"
             raise ProcessCallError(msg) from exc
 
         spawn_ms = int((time.monotonic() - started) * 1000)
@@ -515,9 +541,7 @@ class ProcessToolCaller(ToolLauncher):
         cancellation: RunCancellation,
     ) -> _ProcRun:
         """Прогнать каналы тела до его выхода; зовут call_text и поток насоса."""
-        pump = _ProcessPump(
-            self.POLL_SEC, self._cfg.timeout_sec, live.proc, self._kill
-        )
+        pump = _ProcessPump(self.POLL_SEC, self._cfg.timeout_sec, live.proc, self._kill)
         self._register_reads(pump, live, sinks)
 
         try:

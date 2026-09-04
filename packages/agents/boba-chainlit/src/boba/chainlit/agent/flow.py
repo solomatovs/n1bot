@@ -329,12 +329,18 @@ class LlmRephraser(Rephraser):
         try:
             raw = await self._generator.generate(query, self.SCHEMA)
         except GenerationError as exc:
-            logger.warning("rephraser failed, searching as is: %s", exc)
+            logger.warning(
+                "rephraser failed for query %r, searching as is: %s", query[:200], exc
+            )
             return [query]
 
         rephrased = RephrasingsParser.parse(raw)
         if not rephrased:
-            logger.warning("rephraser returned nothing usable: %r", raw[:200])
+            logger.warning(
+                "rephraser returned nothing usable for query %r: %r",
+                query[:200],
+                raw[:200],
+            )
             return [query]
 
         return rephrased
@@ -382,7 +388,8 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
         except PrefetchError:
             raise
         except Exception as exc:
-            raise PrefetchError(f"prefetch failed: {exc}") from exc
+            msg = f"prefetch for query {query[:200]!r} failed: {exc}"
+            raise PrefetchError(msg) from exc
         finally:
             await self._stage.end(rephrased, elapsed.ms())
 
@@ -466,7 +473,9 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
 
         if not isinstance(output, ToolMessage):
             got = type(output).__name__
-            raise PrefetchError(f"prefetch tool returned {got} instead of ToolMessage")
+            name = call["name"]
+            msg = f"prefetch tool {name!r} returned {got} instead of ToolMessage"
+            raise PrefetchError(msg)
 
         if output.status == "error":
             logger.warning("prefetch %s failed: %s", output.name, output.content)

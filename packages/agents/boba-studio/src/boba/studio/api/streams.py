@@ -108,7 +108,12 @@ class StreamApi:
         # служебные каналы вызова наружу не отдаются: только то, что видит панель
         log_channel = JournalChannels.parse_visible(query.channel)
         if log_channel is None:
-            raise HTTPException(status_code=404, detail="stream not found")
+            visible = [channel.value for channel in JournalChannels.VISIBLE]
+            msg = (
+                f"stream of call {call_id} in run {run_id}: channel "
+                f"{query.channel!r} is not exposed, visible are {visible}"
+            )
+            raise HTTPException(status_code=404, detail=msg)
 
         if query.before is None:
             found = ToolStreams.recorded_slice(
@@ -120,7 +125,12 @@ class StreamApi:
             )
 
         if found is None:
-            raise HTTPException(status_code=404, detail="stream not found")
+            window = f"offset={query.offset} before={query.before}"
+            msg = (
+                f"stream {log_channel.value} of call {call_id} in run {run_id}: "
+                f"no recorded window at {window} for user {subject.user_key}"
+            )
+            raise HTTPException(status_code=404, detail=msg)
 
         return found
 

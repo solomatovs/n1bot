@@ -73,29 +73,28 @@ class KerberosErrorToDomain:
     "Классификация ошибок kerberos-слоя в доменную ошибку."
 
     @staticmethod
-    def map(e: KerberosError) -> BaseError:
+    def map(e: KerberosError, action: str) -> BaseError:
         # нужен повторный логин — не наша вина
         if isinstance(e, CredentialsExpiredError):
-            return ExternalServiceError(
-                "kerberos", "Kerberos credentials expired, please re-login"
-            )
+            message = f"{action}: Kerberos credentials expired, please re-login: {e}"
+            return ExternalServiceError("kerberos", message)
 
         # делегирование запрещено политикой (msDS-AllowedToDelegateTo) — конфиг AD
         if isinstance(e, DelegationNotPermittedError):
             return InternalServiceError(
-                internal_detail=f"kerberos delegation not permitted: {e}",
+                internal_detail=f"{action}: kerberos delegation not permitted: {e}",
                 user_detail=None,
             )
 
         # keytab/SPN сервиса непригодны — наша сторона
         if isinstance(e, KeytabError):
             return InternalServiceError(
-                internal_detail=f"kerberos keytab problem: {e}",
+                internal_detail=f"{action}: kerberos keytab or SPN unusable: {e}",
                 user_detail=None,
             )
 
         return InternalServiceError(
-            internal_detail=f"kerberos error: {e}",
+            internal_detail=f"{action}: kerberos error: {e}",
             user_detail=None,
         )
 
@@ -120,24 +119,32 @@ class KerberosRolesInLdapProvider:
             filter=self.UPN_FILTER.format(principal=principal),
         )
 
+        server = self._config.server
         try:
             return await self._directory.find(binding, search)
         except LDAPUserNotFoundError as e:
-            raise AuthenticationError("User is not registered") from e
+            message = (
+                f"User {principal!r} is not registered: no entry matching "
+                f"{search.filter} under {search.base_dn} on {server}"
+            )
+            raise AuthenticationError(message) from e
         except LDAPServerUnavailableError as e:
-            raise ExternalServiceError(
-                "ldap",
-                "LDAP service is unavailable, please try again later",
-            ) from e
+            message = (
+                f"LDAP server {server} is unavailable, please try again later: {e}"
+            )
+            raise ExternalServiceError("ldap", message) from e
         except LDAPInvalidCredentialsError as e:
-            raise InternalServiceError(
-                internal_detail=f"ldap service bind rejected: {e}",
-                user_detail=None,
-            ) from e
+            detail = (
+                f"sso roles of {principal!r}: service bind as "
+                f"{self._config.bind_dn} on {server} rejected: {e}"
+            )
+            raise InternalServiceError(internal_detail=detail, user_detail=None) from e
         except LDAPError as e:
-            raise InternalServiceError(
-                internal_detail=f"ldap error: {e}", user_detail=None
-            ) from e
+            detail = (
+                f"sso roles of {principal!r}: search {search.filter} under "
+                f"{search.base_dn} on {server} failed: {e}"
+            )
+            raise InternalServiceError(internal_detail=detail, user_detail=None) from e
 
 
 class SsoSignIn(SsoAdmission):
@@ -147,7 +154,10 @@ class SsoSignIn(SsoAdmission):
         self, config: KerberosAuthConfig, secret: str, directory: UserDirectory
     ) -> None:
         if not secret:
-            msg = "sso secret is empty: it seals the sign-in ticket"
+            msg = (
+                "sso sign-in: [session].auth_secret is required to seal the "
+                "sign-in ticket, got an empty string"
+            )
             raise ValueError(msg)
 
         self._config = config
@@ -319,7 +329,11 @@ class SpnegoGate(SpnegoExchange):
             return SsoRefused(reason=reason)
 
         if session is None:
-            return SsoRefused(reason="request carries no signed sign-in")
+            reason = (
+                f"kerberos refresh from [{request.client}]: request carries no "
+                "delegated sign-in ticket"
+            )
+            return SsoRefused(reason=reason)
 
         return None
 
@@ -327,7 +341,11 @@ class SpnegoGate(SpnegoExchange):
         self, identity: SpnegoIdentity, session: DelegatedTicket | None, client: str
     ) -> SsoRefused | SsoSigned:
         if session is None:
-            return SsoRefused(reason="request carries no signed sign-in")
+            reason = (
+                f"kerberos refresh from [{client}]: request carries no "
+                "delegated sign-in ticket"
+            )
+            return SsoRefused(reason=reason)
 
         if identity.principal != session.principal:
             reason = (
@@ -338,12 +356,16 @@ class SpnegoGate(SpnegoExchange):
 
         try:
             await self._sign_in.roles_of(self._sign_in.facts_of(identity))
-        except AuthorizationError:
-            return SsoRefused(reason=f"{identity.principal} is no longer admitted")
+        except AuthorizationError as exc:
+            reason = f"{identity.principal} is no longer admitted: {exc}"
+            return SsoRefused(reason=reason)
 
         sealed = self._sign_in.sealed_of(identity)
         if not sealed:
-            reason = f"no delegated credentials for {session.principal}"
+            reason = (
+                f"kerberos refresh of {session.principal}: the SPNEGO token "
+                "carries no delegated credentials"
+            )
             return SsoRefused(reason=reason)
 
         signed = await self._sign_in.signed_in(identity, sealed)
@@ -362,9 +384,13 @@ class SpnegoGate(SpnegoExchange):
             raise
         except KerberosError as e:
             self._logger.exception(
-                "kerberos: spnego %s failed (keytab/SPN) [client=%s]", stage, client
+                "kerberos: spnego %s of the token from [client=%s] failed: %s",
+                stage,
+                client,
+                e,
             )
-            raise KerberosErrorToDomain.map(e) from e
+            action = f"spnego {stage} of the token from [{client}]"
+            raise KerberosErrorToDomain.map(e, action) from e
 
         self._logger.info(
             "kerberos authenticated [principal=%s] [client=%s]",

@@ -28,9 +28,11 @@ async def show_error(
     message.parent_id = None
     try:
         await message.send()
-    except Exception:
+    except Exception as exc:
         # сбой доставки не должен подменять собой исходную ошибку у вызвавшего
-        logger.exception("failed to show the error in chat")
+        logger.exception(
+            "failed to show the error %r in chat: %s", LogLine.safe(content), exc
+        )
 
 
 def chainlit_error_ctx_handler(fn: Callable) -> Callable:

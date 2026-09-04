@@ -99,11 +99,14 @@ class ConstrainedDelegation(BaseModel):
     def _check_service_ccache(cls, value: str) -> str:
         kind, sep, residual = value.partition(":")
         if not sep or not residual:
-            msg = f"service_ccache {value!r}: expected FILE:<path>"
+            msg = f"service_ccache: expected FILE:<path>, got {value!r}"
             raise ValueError(msg)
 
         if kind.upper() != CcacheKind.FILE:
-            msg = f"service_ccache {value!r}: {CcacheKind.FILE} expected"
+            msg = (
+                f"service_ccache: expected the {CcacheKind.FILE} ccache kind, "
+                f"got {kind!r} in {value!r}"
+            )
             raise ValueError(msg)
 
         return value

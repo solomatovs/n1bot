@@ -66,7 +66,10 @@ class KerberosConnection(psycopg.AsyncConnection[Any]):
     @classmethod
     async def connect(cls, conninfo: str = "", **kwargs: Any) -> KerberosConnection:
         if cls.credentials is None:
-            msg = "KerberosConnection is not bound to credentials (use bound_to)"
+            msg = (
+                f"{cls.__name__}.connect called without kerberos credentials: "
+                "bind the class with bound_to(credentials) first"
+            )
             raise PostgresPoolClosedError(msg)
 
         async with cls.credentials.applied_async():
@@ -154,9 +157,9 @@ class AsyncPostgresPool:
             self._loop_reported = True
             logger.error(
                 "AsyncPostgresPool loop mismatch db=%s op=%s opened_loop=%#x "
-                "current_loop=%#x — пул открыт в другом event loop; ищите второй "
-                "loop (asyncio.run в потоке, свой loop у фоновой задачи, "
-                "пересоздание loop'а сервером)",
+                "current_loop=%#x: the pool was opened in another event loop; "
+                "look for a second loop (asyncio.run in a thread, a background "
+                "task with its own loop, the server recreating its loop)",
                 self._cfg.dbname,
                 op,
                 self._loop_id,
@@ -254,7 +257,8 @@ class AsyncPostgresPool:
     async def connection(self) -> AsyncGenerator[psycopg.AsyncConnection[Any], None]:
         """Взять AsyncConnection из пула."""
         if self._closed:
-            raise PostgresPoolClosedError("PostgresPool is closed")
+            msg = f"pool for {self._cfg.dbname} is closed, no connection to give"
+            raise PostgresPoolClosedError(msg)
 
         self._check_loop("connection")
 

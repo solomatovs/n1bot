@@ -131,6 +131,10 @@ class SessionKeeper:
             await asyncio.sleep(self._period_sec)
             try:
                 await self.sweep()
-            except Exception:
+            except Exception as exc:
                 # сторож переживает сбой одного обхода: следующий через период
-                logger.exception("session keeper sweep failed")
+                logger.exception(
+                    "session keeper sweep failed, next try in %ds: %s",
+                    self._period_sec,
+                    exc,
+                )

@@ -95,7 +95,10 @@ class JournalFile(StrEnum):
         cls, thread_id: str, call_id: str, tool: str, channel: JournalChannel
     ) -> str:
         if "." in call_id or "." in tool:
-            msg = f"log name segments must not contain dots: {call_id!r}, {tool!r}"
+            msg = (
+                f"journal log name for call {call_id!r} and tool {tool!r}: "
+                "segments must not contain dots"
+            )
             raise ValueError(msg)
 
         return f"{thread_id}/{call_id}.{tool}.{channel.value}{cls.LOG}"
@@ -160,7 +163,10 @@ class PathSegment:
     @classmethod
     def checked(cls, value: str) -> str:
         if not cls.SAFE.fullmatch(value):
-            msg = f"unsafe path segment: {value!r}"
+            msg = (
+                f"unsafe journal path segment {value!r}: "
+                f"expected to match {cls.SAFE.pattern}"
+            )
             raise ValueError(msg)
 
         return value
@@ -190,7 +196,7 @@ class StreamKey(BaseModel):
     @classmethod
     def _no_dots(cls, value: str) -> str:
         if "." in value:
-            msg = f"call_id must not contain dots: {value!r}"
+            msg = f"stream key call_id {value!r} must not contain dots"
             raise ValueError(msg)
 
         return value

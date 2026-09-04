@@ -107,7 +107,10 @@ class KerberosCredentialSource(CredentialSource):
         if isinstance(section, KerberosPasswordAuth):
             return PasswordCredentials.of(section)
 
-        msg = f"{type(section).__name__}: not a source of a call ticket"
+        msg = (
+            f"kerberos call ticket: section {type(section).__name__} cannot be "
+            "a credential source, expected delegated, keytab or password auth"
+        )
         raise KerberosError(msg)
 
     async def _delegated(self, credential: Credential) -> KerberosCredentials:
@@ -175,7 +178,7 @@ class KerberosCredentialSource(CredentialSource):
         except TicketSealError as exc:
             msg = (
                 f"the delegated Kerberos ticket in the session of {sso.principal} "
-                "does not open (the application secret changed?): sign in again; "
-                f"{cls.RETRY_HINT}"
+                f"does not open: {exc} (the application secret changed?): "
+                f"sign in again; {cls.RETRY_HINT}"
             )
             raise RefusalError(ConnectionRefusal.NO_DELEGATION, msg) from exc

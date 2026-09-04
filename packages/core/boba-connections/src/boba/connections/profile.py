@@ -117,7 +117,10 @@ class GrantTarget(BaseModel):
     @classmethod
     def _target_only(cls, value: GrantKind) -> GrantKind:
         if value is GrantKind.CONNECTIONS:
-            msg = "grant target must be a user or a role, not a connection"
+            msg = (
+                f"grant target kind: expected {GrantKind.USERS.value!r} or "
+                f"{GrantKind.ROLES.value!r}, got {value.value!r}"
+            )
             raise ValueError(msg)
 
         return value

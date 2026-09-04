@@ -127,7 +127,10 @@ class ThreadsTable(PgTable, ChatThreads):
                 await cur.execute(query, {"id": thread_id})
                 row = await cur.fetchone()
         except Exception as exc:
-            raise DataUnavailableError("get_thread", str(exc)) from exc
+            detail = (
+                f"reading thread {thread_id} in {self._schema}.threads failed: {exc}"
+            )
+            raise DataUnavailableError("get_thread", detail) from exc
 
         if row is None:
             return None
@@ -196,10 +199,18 @@ class ThreadsTable(PgTable, ChatThreads):
                 await cur.execute(query, params)
                 row = await cur.fetchone()
         except Exception as exc:
-            raise DataUnavailableError("update_thread", str(exc)) from exc
+            detail = (
+                f"upsert of thread {change.id} into {self._schema}.threads "
+                f"failed: {exc}"
+            )
+            raise DataUnavailableError("update_thread", detail) from exc
 
         if row is None:
-            raise DataUnavailableError("update_thread", "upsert returned no row")
+            detail = (
+                f"upsert of thread {change.id} into {self._schema}.threads "
+                "returned no row"
+            )
+            raise DataUnavailableError("update_thread", detail)
 
         name = row[1]
         if name is None:
@@ -224,7 +235,10 @@ class ThreadsTable(PgTable, ChatThreads):
                 await cur.execute(query, {"id": thread_id})
                 row = await cur.fetchone()
         except Exception as exc:
-            raise DataUnavailableError("delete_thread", str(exc)) from exc
+            detail = (
+                f"deleting thread {thread_id} in {self._schema}.threads failed: {exc}"
+            )
+            raise DataUnavailableError("delete_thread", detail) from exc
 
         if row is None:
             return None
@@ -260,7 +274,11 @@ class ThreadsTable(PgTable, ChatThreads):
                 await cur.execute(query, {"user_id": user_id, "limit": limit})
                 rows = await cur.fetchall()
         except Exception as exc:
-            raise DataUnavailableError("list_threads", str(exc)) from exc
+            detail = (
+                f"listing up to {limit} threads of user {user_id} in "
+                f"{self._schema}.threads failed: {exc}"
+            )
+            raise DataUnavailableError("list_threads", detail) from exc
 
         return [self._stored(row) for row in rows]
 
@@ -294,18 +312,24 @@ class ThreadsTable(PgTable, ChatThreads):
                 await cur.execute(query, {"id": UUID(thread_id)})
                 row = await cur.fetchone()
         except ValueError as exc:
-            raise DataRejectedError("get_thread_author", str(exc)) from exc
+            detail = f"thread id must be a uuid, got {thread_id!r}: {exc}"
+            raise DataRejectedError("get_thread_author", detail) from exc
         except Exception as exc:
-            raise DataUnavailableError("get_thread_author", str(exc)) from exc
+            detail = (
+                f"reading the author of thread {thread_id} in "
+                f"{self._schema}.threads failed: {exc}"
+            )
+            raise DataUnavailableError("get_thread_author", detail) from exc
 
         if row is None:
-            raise DataRejectedError(
-                "get_thread_author", f"thread {thread_id} not found"
-            )
+            detail = f"thread {thread_id} not found in {self._schema}.threads"
+            raise DataRejectedError("get_thread_author", detail)
 
         if row[0] is None:
-            raise DataRejectedError(
-                "get_thread_author", f"thread {thread_id} has no author"
+            detail = (
+                f"thread {thread_id} in {self._schema}.threads has no users row "
+                "joined by user_id"
             )
+            raise DataRejectedError("get_thread_author", detail)
 
         return row[0]

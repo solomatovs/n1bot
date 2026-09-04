@@ -18,10 +18,14 @@ __all__ = ["MANIFEST"]
 
 async def _probe(profile: ConnectionProfileBase) -> str:
     if not isinstance(profile, HttpConnection):
-        raise ConnectionTypeError(f"web probe got a {profile.kind!r} profile")
+        msg = f"web probe expects an HttpConnection profile, got kind {profile.kind!r}"
+        raise ConnectionTypeError(msg)
 
     if not profile.base_url:
-        msg = "base_url is required to check a web connection"
+        msg = (
+            "web probe needs base_url to know which server to check, "
+            f"got {profile.base_url!r}"
+        )
         raise ConnectionTypeError(msg)
 
     async with (

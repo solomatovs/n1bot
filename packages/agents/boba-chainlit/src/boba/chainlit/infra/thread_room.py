@@ -78,12 +78,13 @@ class ThreadEmitter(ChainlitEmitter):
                 # одна битая сессия не должна ронять весь ход
                 try:
                     await cast("Awaitable[None]", session.emit(event, data))
-                except Exception:
+                except Exception as exc:
                     logger.warning(
-                        "emit %s failed for session %s of thread %s",
+                        "emit %s failed for session %s of thread %s: %s",
                         event,
                         session.id,
                         self._thread_id,
+                        exc,
                         exc_info=True,
                     )
 
@@ -141,10 +142,14 @@ class ThreadRoom:
         """Возвращает сокетную сессию текущего вызова; без неё рассылать события некуда,
         и это внутренняя ошибка.
         """
-        session = current_session().websocket
+        current = current_session()
+        session = current.websocket
         if session is None:
             raise InternalServiceError(
-                internal_detail="thread room needs a websocket session",
+                internal_detail=(
+                    f"thread room needs a websocket session, chainlit session "
+                    f"{current.id!r} has none"
+                ),
                 user_detail=None,
             )
 
@@ -214,13 +219,21 @@ class ChatRoomSurface(RenderSurface):
         layer = get_data_layer()
         if layer is None:
             raise InternalServiceError(
-                internal_detail="thread refresh needs a data layer", user_detail=None
+                internal_detail=(
+                    f"refresh of thread {self._thread_id}: get_data_layer() "
+                    "returned None, the data layer is not configured"
+                ),
+                user_detail=None,
             )
 
         thread = await layer.get_thread(self._thread_id)
         if thread is None:
             raise InternalServiceError(
-                internal_detail=f"thread {self._thread_id} is gone", user_detail=None
+                internal_detail=(
+                    f"refresh of thread {self._thread_id}: the data layer has no "
+                    "such thread"
+                ),
+                user_detail=None,
             )
 
         return thread
@@ -239,7 +252,10 @@ class ChatRoomSurface(RenderSurface):
         root = Container.root
         if root is None:
             raise InternalServiceError(
-                internal_detail="DI container is not initialised",
+                internal_detail=(
+                    f"renderer of thread {thread_id}: Container.root is not "
+                    "initialised, bootstrap has not run"
+                ),
                 user_detail=None,
             )
 
@@ -280,7 +296,11 @@ class UserRoom:
         root = Container.root
         if root is None:
             raise InternalServiceError(
-                internal_detail="DI container is not initialised", user_detail=None
+                internal_detail=(
+                    f"join of user {user_id}: Container.root is not initialised, "
+                    "bootstrap has not run"
+                ),
+                user_detail=None,
             )
 
         bus = root.resolved(runtime.message_bus)
@@ -345,11 +365,12 @@ class UserRoom:
             try:
                 await cast("Awaitable[None]", socket.emit(cls.EVENT, payload))
                 sent += 1
-            except Exception:
+            except Exception as exc:
                 logger.warning(
-                    "thread list refresh failed for session %s of user %s",
+                    "thread list refresh failed for session %s of user %s: %s",
                     socket.id,
                     user_id,
+                    exc,
                     exc_info=True,
                 )
 
@@ -369,11 +390,12 @@ class UserRoom:
             # одна битая вкладка не должна оставить без сигнала остальные
             try:
                 await session.emit(ChatRoomSurface.EVENT, payload)
-            except Exception:
+            except Exception as exc:
                 logger.warning(
-                    "sign-in refresh signal failed for session %s of user %s",
+                    "sign-in refresh signal failed for session %s of user %s: %s",
                     session.id,
                     user_id,
+                    exc,
                     exc_info=True,
                 )
 
@@ -400,11 +422,12 @@ class UserRoom:
             # одна битая вкладка не должна оставить без настроек остальные
             try:
                 await refresher(socket, message.profile)
-            except Exception:
+            except Exception as exc:
                 logger.warning(
-                    "settings refresh failed for session %s of user %s",
+                    "settings refresh failed for session %s of user %s: %s",
                     socket.id,
                     user_id,
+                    exc,
                     exc_info=True,
                 )
 
@@ -447,10 +470,14 @@ class ChatNotices:
 
     @staticmethod
     async def error(text: str) -> None:
-        thread_id = current_session().thread_id
+        current = current_session()
+        thread_id = current.thread_id
         if thread_id is None:
             raise InternalServiceError(
-                internal_detail="notice outside a chainlit thread",
+                internal_detail=(
+                    f"notice {text[:200]!r}: chainlit session {current.id!r} "
+                    "has no thread_id"
+                ),
                 user_detail=None,
             )
 
@@ -458,7 +485,10 @@ class ChatNotices:
         root = Container.root
         if root is None:
             raise InternalServiceError(
-                internal_detail="DI container is not initialised",
+                internal_detail=(
+                    f"notice for thread {thread_id}: Container.root is not "
+                    "initialised, bootstrap has not run"
+                ),
                 user_detail=None,
             )
 

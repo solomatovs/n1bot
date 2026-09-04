@@ -49,6 +49,7 @@ from boba.chainlit.domain.keys import AppPrefix
 from boba.chainlit.infra.session import ChainlitSession, session_source_ref
 from boba.identity.errors import AuthenticationError
 from boba.toolkit.channels import JournalChannels, ToolChannel
+from boba.toolkit.failure import ValidationText
 from boba.workspace.launcher import ReadWindow
 from chainlit.auth import get_current_user
 from chainlit.data.base import BaseDataLayer
@@ -103,7 +104,11 @@ class MultipartFile:
             await self._pump()
 
         if not self._found:
-            raise HTTPException(status_code=400, detail="No file part in the request")
+            msg = (
+                "the multipart body has no file part: expected a part with a "
+                "filename in content-disposition, none of the parts carries one"
+            )
+            raise HTTPException(status_code=400, detail=msg)
 
     async def chunks(self) -> AsyncIterator[bytes]:
         """Данные файловой части в порядке поступления."""
@@ -156,9 +161,11 @@ class MultipartFile:
         kind, options = parse_options_header(content_type)
         boundary = options.get(b"boundary")
         if kind != b"multipart/form-data" or not boundary:
-            raise HTTPException(
-                status_code=400, detail="Expected a multipart/form-data body"
+            msg = (
+                "expected a multipart/form-data body with a boundary, "
+                f"got content-type {content_type[:200]!r}"
             )
+            raise HTTPException(status_code=400, detail=msg)
         return boundary
 
     def _callbacks(self) -> Any:
@@ -322,7 +329,8 @@ class StreamedFile:
                 object_key, mime, range_header, content_disposition
             )
         except StorageNotFoundError as e:
-            raise HTTPException(status_code=404, detail="File not found") from e
+            msg = f"file not found in the storage: {object_key}: {e}"
+            raise HTTPException(status_code=404, detail=msg) from e
 
     async def _respond(
         self,
@@ -361,9 +369,11 @@ class StreamedFile:
             headers: dict[str, str] = {
                 FileHeader.CONTENT_RANGE: f"bytes */{opened.stat.size}",
             }
-            raise HTTPException(
-                status_code=416, detail="Range out of bounds", headers=headers
+            msg = (
+                f"range starts at {window.offset}, beyond the size "
+                f"{opened.stat.size} of {object_key}"
             )
+            raise HTTPException(status_code=416, detail=msg, headers=headers)
 
         return self._partial(object_key, opened, window, mime, content_disposition)
 
@@ -575,8 +585,9 @@ class UploadRoute:
                 written = await self._store(key, part)
             except StorageFullError as e:
                 logger.warning("upload: %s rejected, %s", key.render(), e)
+                msg = f"upload of {key.name!r} rejected: {e}"
                 raise HTTPException(
-                    status_code=self._policy.no_space_status, detail=str(e)
+                    status_code=self._policy.no_space_status, detail=msg
                 ) from e
         except HTTPException:
             # клиент ещё шлёт файл: без этого соединение оборвётся и он повторит запрос
@@ -609,7 +620,8 @@ class UploadRoute:
 
         record = session.files.get(file_id)
         if not record or SessionFiles.OBJECT_KEY not in record:
-            raise HTTPException(status_code=404, detail="File not found")
+            msg = f"file {file_id} is not registered in session {session_id}"
+            raise HTTPException(status_code=404, detail=msg)
 
         name = str(record[FileField.NAME])
         logger.info(
@@ -678,7 +690,11 @@ class UploadRoute:
 
         spec = session.file_spec(ask_parent_id)
         if not spec and ask_parent_id:
-            raise HTTPException(status_code=404, detail="Parent message not found")
+            msg = (
+                f"parent message {ask_parent_id} has no file spec in session "
+                f"{session.id}"
+            )
+            raise HTTPException(status_code=404, detail=msg)
 
         # размер части заранее неизвестен: его верхняя оценка — длина всего тела
         declared = int(request.headers.get("content-length") or 0)
@@ -691,7 +707,8 @@ class UploadRoute:
         try:
             validate_file_upload(probe, spec=spec)
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
+            msg = f"file {part.filename!r} ({part.content_type}) rejected: {e}"
+            raise HTTPException(status_code=400, detail=msg) from e
 
     def _register(
         self,
@@ -715,13 +732,18 @@ class UploadRoute:
     def _session(session_id: str, current_user: Any) -> ChainlitSession:
         session = session_source_ref().by_id(session_id)
         if not session.present:
-            raise HTTPException(status_code=404, detail="Session not found")
+            msg = f"chainlit session {session_id} is not found"
+            raise HTTPException(status_code=404, detail=msg)
 
         if not current_user:
             return session
 
         if session.identifier != current_user.identifier:
-            raise AuthenticationError("This session belongs to another user")
+            msg = (
+                f"session {session_id} belongs to another user: "
+                f"{session.identifier!r}, not {current_user.identifier!r}"
+            )
+            raise AuthenticationError(msg)
 
         return session
 
@@ -734,7 +756,8 @@ class UploadRoute:
         """
         user_id = session.user_id
         if not user_id:
-            raise HTTPException(status_code=401, detail="Session has no persisted user")
+            msg = f"session {session.id} has no persisted user (users row)"
+            raise HTTPException(status_code=401, detail=msg)
 
         return str(user_id)
 
@@ -763,11 +786,14 @@ class AttachmentServing:
         current_user: Annotated[User | PersistedUser | None, Depends(get_current_user)],
     ) -> Response:
         if not isinstance(current_user, PersistedUser):
-            raise HTTPException(status_code=401, detail="Unauthorized")
+            got = type(current_user).__name__
+            msg = f"sign-in required: expected a persisted user, got {got}"
+            raise HTTPException(status_code=401, detail=msg)
 
         element = await self._layer().get_element(str(thread_id), str(element_id))
         if element is None:
-            raise HTTPException(status_code=404, detail="File not found")
+            msg = f"element {element_id} is not found in thread {thread_id}"
+            raise HTTPException(status_code=404, detail=msg)
 
         # путь от текущего пользователя: чужие образы недостижимы
         key = ObjectKey.build(
@@ -812,7 +838,9 @@ class CanvasServing:
         current_user: Annotated[User | PersistedUser | None, Depends(get_current_user)],
     ) -> Response:
         if not isinstance(current_user, PersistedUser):
-            raise HTTPException(status_code=401, detail="Unauthorized")
+            got = type(current_user).__name__
+            msg = f"sign-in required: expected a persisted user, got {got}"
+            raise HTTPException(status_code=401, detail=msg)
 
         try:
             key = ObjectKey(
@@ -822,7 +850,11 @@ class CanvasServing:
                 dir=dir,
             )
         except ValidationError as e:
-            raise HTTPException(status_code=404, detail="File not found") from e
+            msg = (
+                f"file not found: thread {thread_id!r}, dir {dir.value}, "
+                f"name {name!r}: {ValidationText.of(e)}"
+            )
+            raise HTTPException(status_code=404, detail=msg) from e
 
         mime = mimetypes.guess_type(key.name)[0]
         if not mime:
@@ -860,35 +892,52 @@ class StreamServing:
         channel: str = ToolChannel.STDOUT.value,
     ) -> Response:
         if not isinstance(current_user, PersistedUser):
-            raise HTTPException(status_code=401, detail="Unauthorized")
+            got = type(current_user).__name__
+            msg = f"sign-in required: expected a persisted user, got {got}"
+            raise HTTPException(status_code=401, detail=msg)
 
         journal = StreamJournalHub.get()
         if journal is None:
-            raise HTTPException(status_code=404, detail="Stream not found")
+            msg = (
+                f"stream {call_id}/{channel} of thread {thread_id} is not found: "
+                "the stream journal is disabled in the app config"
+            )
+            raise HTTPException(status_code=404, detail=msg)
 
         # служебные каналы вызова наружу не отдаются: скачать можно то же,
         # что показывает панель
         log_channel = JournalChannels.parse_visible(channel)
         if log_channel is None:
-            raise HTTPException(status_code=404, detail="Stream not found")
+            visible = ", ".join(str(item) for item in JournalChannels.VISIBLE)
+            msg = (
+                f"stream channel {channel!r} of call {call_id} is not "
+                f"downloadable, visible channels: {visible}"
+            )
+            raise HTTPException(status_code=404, detail=msg)
 
         try:
             key = StreamKey(
                 user_id=str(current_user.id), thread_id=thread_id, call_id=call_id
             )
         except ValueError as e:
-            raise HTTPException(status_code=404, detail="Stream not found") from e
+            msg = (
+                f"stream {call_id}/{channel} of thread {thread_id!r} is not found: {e}"
+            )
+            raise HTTPException(status_code=404, detail=msg) from e
 
         try:
             root = journal.vault_root(key.user_id)
         except StreamJournalError as e:
-            raise HTTPException(
-                status_code=503, detail="Stream vault unavailable"
-            ) from e
+            msg = f"stream vault of user {key.user_id} is unavailable: {e}"
+            raise HTTPException(status_code=503, detail=msg) from e
 
         rel_log = journal.log_rel_path(key, log_channel)
         if rel_log is None:
-            raise HTTPException(status_code=404, detail="Stream not found")
+            msg = (
+                f"stream {call_id}/{log_channel} of thread {thread_id} has no "
+                "journal file"
+            )
+            raise HTTPException(status_code=404, detail=msg)
 
         disposition = f'attachment; filename="{key.call_id}.{log_channel}.log"'
         return await self._files_for(root).respond(

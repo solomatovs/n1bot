@@ -98,7 +98,11 @@ class GuardedStream(AsyncBinaryStream):
             raise self._failed(exc) from exc
 
     def _failed(self, exc: httpx.HTTPError) -> TransportError:
-        return TransportError(f"body read failed: {self._source_id}: {exc}")
+        msg = (
+            f"reading the response body of confluence page {self._source_id}: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return TransportError(msg)
 
 
 class ConfluenceHttpTransport(Transport[ConfluenceRequest]):
@@ -133,7 +137,8 @@ class ConfluenceHttpTransport(Transport[ConfluenceRequest]):
                     metadata=self._enrich(request.metadata, resp),
                 )
         except httpx.HTTPError as exc:
-            raise TransportError(f"fetch failed: {source_id}: {exc}") from exc
+            msg = f"GET confluence page {source_id}: {type(exc).__name__}: {exc}"
+            raise TransportError(msg) from exc
 
     @staticmethod
     def _enrich(base: Metadata, resp: HttpResponse) -> Metadata:
@@ -272,7 +277,7 @@ class ConfluenceContentTransport(Transport[ConfluenceRequest]):
 
                 progress.attachment_failed()
                 logger.warning(
-                    "attachment failed, skipped: id=%s title=%r: %s",
+                    "fetching attachment id=%s title=%r failed, skipped: %s",
                     att.id,
                     att.title,
                     exc,

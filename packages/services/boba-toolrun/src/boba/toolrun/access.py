@@ -43,13 +43,24 @@ class ToolAccessGuard:
             if self._access.allowed(name, roles, profile):
                 return
 
+            shown_roles = ", ".join(sorted(roles))
+            if not shown_roles:
+                shown_roles = "none"
+
+            shown_profile = profile
+            if not shown_profile:
+                shown_profile = "none"
+
             logger.warning(
-                "access denied to tool %r (user roles: %s, profile: %s)",
+                "access denied to tool %r: roles [%s] and profile %s grant no access",
                 name,
-                sorted(roles) or "none",
-                profile or "none",
+                shown_roles,
+                shown_profile,
             )
-            msg = f"tool {name!r} is not available for your role and profile"
+            msg = (
+                f"tool {name!r} is not available for your roles [{shown_roles}] "
+                f"and profile {shown_profile}"
+            )
             raise ToolAccessDeniedError(msg)
 
     @classmethod

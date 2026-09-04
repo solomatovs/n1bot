@@ -81,22 +81,33 @@ class StandRefs:
 
     @staticmethod
     async def _no_registry() -> ToolRegistry:
-        msg = "tool registry is not part of this stand"
+        msg = (
+            f"resolving the tool registry: it is not part of the {StandRefs.NAME} stand"
+        )
         raise RuntimeError(msg)
 
     @staticmethod
     async def _no_service() -> WorkflowService:
-        msg = "workflow service is not part of this stand"
+        msg = (
+            f"resolving the workflow service: it is not part of the "
+            f"{StandRefs.NAME} stand"
+        )
         raise RuntimeError(msg)
 
     @staticmethod
     def _no_store() -> ConnectionStore:
-        msg = "connection store is not part of this stand"
+        msg = (
+            f"resolving the connection store: it is not part of the "
+            f"{StandRefs.NAME} stand"
+        )
         raise RuntimeError(msg)
 
     @staticmethod
     def _disabled_store() -> ConnectionStore:
-        msg = "[connections] is disabled: user connections are unavailable"
+        msg = (
+            "resolving the connection store: [connections] is disabled in the "
+            "config, user connections are unavailable"
+        )
         raise RuntimeError(msg)
 
     @staticmethod

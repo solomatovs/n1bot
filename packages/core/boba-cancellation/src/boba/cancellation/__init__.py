@@ -72,12 +72,17 @@ class RunCancellation:
         for abort in aborts:
             try:
                 abort()
-            except Exception:
-                logger.exception("operation interrupter failed")
+            except Exception as exc:
+                logger.exception(
+                    "cancel(%s): operation interrupter %r failed: %s",
+                    reason,
+                    abort,
+                    exc,
+                )
 
     def raise_if_cancelled(self) -> None:
         if self._event.is_set():
-            raise ToolStopped
+            raise ToolStopped(f"the run was stopped: {self._reason}")
 
     def wait(self, timeout: float) -> bool:
         "ждёт отмены не дольше timeout; True — запуск остановлен"

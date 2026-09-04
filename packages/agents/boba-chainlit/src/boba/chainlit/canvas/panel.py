@@ -104,9 +104,12 @@ class StorageStatSource(WatchSource):
             stat = await self._storage.stat(self._object_key)
         except StorageNotFoundError:
             return None
-        except StorageError:
+        except StorageError as exc:
             logger.warning(
-                "canvas watch probe failed: %s", self._object_key, exc_info=True
+                "canvas watch probe: stat of %s failed: %s",
+                self._object_key,
+                exc,
+                exc_info=True,
             )
             return None
 
@@ -159,7 +162,10 @@ class PanelStorage:
     def client() -> StorageClient:
         layer = get_data_layer()
         if not isinstance(layer, AttachmentDataLayer):
-            msg = f"data layer does not address attachments: {type(layer)}"
+            msg = (
+                "canvas panel storage expects an AttachmentDataLayer data layer, "
+                f"got {type(layer).__name__}"
+            )
             raise RuntimeError(msg)
 
         return layer.storage
@@ -547,8 +553,14 @@ class StreamActions:
             key = StreamKey(
                 user_id=user_id, thread_id=thread_id, call_id=request.call_id
             )
-        except ValidationError:
-            logger.warning("stream watch refused: %s", request.call_id, exc_info=True)
+        except ValidationError as exc:
+            logger.warning(
+                "stream watch refused for call %s of thread %s: %s",
+                request.call_id,
+                thread_id,
+                exc,
+                exc_info=True,
+            )
             return
 
         live = ToolStreams.get(thread_id, request.call_id)
@@ -611,8 +623,8 @@ class StreamActions:
     ) -> dict[str, Any]:
         try:
             key = ObjectKey.from_workspace(user_id, thread_id, request.path)
-        except ValueError:
-            logger.warning("stream window: bad path %s", request.path)
+        except ValueError as exc:
+            logger.warning("stream window: bad path %s: %s", request.path, exc)
             return {}
 
         windows = StorageWindows(PanelStorage.client(), key.render())
@@ -625,8 +637,10 @@ class StreamActions:
                 if offset is None:
                     offset = 0
                 piece = await windows.slice_at(offset)
-        except (StorageError, StorageNotFoundError):
-            logger.warning("stream window read failed: %s", request.path, exc_info=True)
+        except (StorageError, StorageNotFoundError) as exc:
+            logger.warning(
+                "stream window: reading %s failed: %s", request.path, exc, exc_info=True
+            )
             return {}
 
         content = CanvasContent(

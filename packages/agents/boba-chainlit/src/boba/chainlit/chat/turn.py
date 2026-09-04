@@ -172,7 +172,8 @@ class TurnState(TurnArtifacts):
     def begin(self) -> None:
         """Отмечает запуск хода; второй запуск того же хода — ошибка программиста."""
         if self._began:
-            raise TurnStateError("turn already ran")
+            msg = "turn state: begin() called on a turn that already ran"
+            raise TurnStateError(msg)
 
         self._began = True
 
@@ -316,7 +317,11 @@ class TurnReporter:
         if not leftovers:
             return
 
-        logger.warning("turn finished ok with %d unclosed tool calls", len(leftovers))
+        logger.warning(
+            "turn finished ok with %d unclosed tool calls: %s",
+            len(leftovers),
+            ", ".join(leftovers),
+        )
 
         for call_id in leftovers:
             await self._feed.tool_stopped(call_id, StepText.FINISHED.value)
@@ -442,11 +447,19 @@ class ChatTurn(RunPort):
         """Возвращает адрес элемента вызова инструмента: он крепится к шагу ответа."""
         for_id = ChatView.derive_id(self._thread_id, self._key, StepRole.ANSWER)
         if not for_id:
-            raise RefusalError(RunRefusal.NO_TURN, "the turn has no answer step")
+            msg = (
+                f"turn {self._key!r} of thread {self._thread_id} has no answer "
+                "step to attach the element to"
+            )
+            raise RefusalError(RunRefusal.NO_TURN, msg)
 
         element_id = ChatView.derive_id(self._thread_id, tool_call_id, StepRole.ELEMENT)
         if not element_id:
-            raise RefusalError(RunRefusal.NO_TOOL_CALL, "tool call without id")
+            msg = (
+                f"element of thread {self._thread_id} needs a tool call id, "
+                f"got {tool_call_id!r}"
+            )
+            raise RefusalError(RunRefusal.NO_TOOL_CALL, msg)
 
         return ElementTarget(for_id=for_id, element_id=element_id)
 

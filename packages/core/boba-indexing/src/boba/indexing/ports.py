@@ -220,7 +220,10 @@ class DispatchReader(Reader[T]):
         on_unknown: Literal["error", "skip"] = "error",
     ) -> None:
         if not routes:
-            msg = "DispatchReader: routes must be non-empty"
+            msg = (
+                f"DispatchReader {reader_id!s}: routes must map at least one "
+                f"{by.name!r} value to a sub-reader, got an empty mapping"
+            )
             raise ValueError(msg)
         self._by = by
         self._routes = dict(routes)

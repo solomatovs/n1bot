@@ -69,13 +69,19 @@ def get_raw_config() -> DictConfig:
 
 def get_runtime_config() -> RuntimeConfig:
     """Кладёт процесс после RuntimeConfig.load."""
-    msg = "runtime config is provided by the process, not produced"
+    msg = (
+        "DI provider get_runtime_config resolved before the process supplied "
+        "RuntimeConfig via Container.provide"
+    )
     raise RuntimeError(msg)
 
 
 def app_name() -> AppName:
     """Какое приложение поднимает процесс; кладёт процесс через provide."""
-    msg = "application name is provided by the process, not produced"
+    msg = (
+        "DI provider app_name resolved before the process supplied AppName "
+        "via Container.provide"
+    )
     raise RuntimeError(msg)
 
 
@@ -135,7 +141,10 @@ async def payload_store(
 
 def plugin_table() -> PluginTable:
     """Таблица плагинов процесса; кладёт процесс."""
-    msg = "plugin table is provided by the process, not produced"
+    msg = (
+        "DI provider plugin_table resolved before the process supplied "
+        "PluginTable via Container.provide"
+    )
     raise RuntimeError(msg)
 
 
@@ -151,7 +160,10 @@ def user_directory() -> UserDirectory:
 
 def live_sessions() -> LiveSessions:
     """Живые сессии инстанса; заглушку заменяет процесс через provide."""
-    msg = "live sessions provider is not set by the process"
+    msg = (
+        "DI provider live_sessions resolved before the process supplied "
+        "LiveSessions via Container.provide"
+    )
     raise RuntimeError(msg)
 
 
@@ -163,7 +175,10 @@ def grant_check() -> GrantCheck:
 def _root() -> Container:
     root = Container.root
     if root is None:
-        msg = "DI container is not initialised"
+        msg = (
+            "DI root container is not initialised: Container.set_root must run "
+            "before providers are resolved outside a request"
+        )
         raise RuntimeError(msg)
 
     return root
@@ -204,7 +219,10 @@ def connection_store_ref() -> ConnectionStore:
     """Хранилище соединений для обвязок инструментов; зовётся на каждый вызов."""
     store = _root().resolved(connection_store)
     if store is None:
-        msg = "[connections] is disabled: user connections are unavailable"
+        msg = (
+            "connection store requested but [connections] is disabled in the "
+            "config: user connections are unavailable"
+        )
         raise RuntimeError(msg)
 
     return store
@@ -250,7 +268,10 @@ async def workflow_service_ref() -> WorkflowService:
     """Сервис workflow из корневого контейнера; зовётся на каждый вызов."""
     service = await _root().resolve(Depends(workflow_service))
     if service is None:
-        msg = "[workflow] is disabled: workflows are unavailable"
+        msg = (
+            "workflow service requested but [workflow] is disabled in the "
+            "config: workflows are unavailable"
+        )
         raise RuntimeError(msg)
 
     return service
@@ -496,15 +517,24 @@ async def lock_reaper(
         return
 
     if not isinstance(locks, PgLiveLocks):
-        msg = "lock reaper requires postgres live locks"
+        msg = (
+            "lock reaper with [messaging] provider = postgres requires "
+            f"PgLiveLocks, got {type(locks).__name__}"
+        )
         raise RuntimeError(msg)
 
     if not isinstance(bus, PgMessageBus):
-        msg = "lock reaper requires the postgres message bus"
+        msg = (
+            "lock reaper with [messaging] provider = postgres requires "
+            f"PgMessageBus, got {type(bus).__name__}"
+        )
         raise RuntimeError(msg)
 
     if not isinstance(payloads, PgPayloadStore):
-        msg = "lock reaper requires the postgres payload store"
+        msg = (
+            "lock reaper with [messaging] provider = postgres requires "
+            f"PgPayloadStore, got {type(payloads).__name__}"
+        )
         raise RuntimeError(msg)
 
     handlers = ReaperHandlers(config, locks, service, bus, payloads)

@@ -36,7 +36,10 @@ class PlainTextReader(Reader[str]):
 
     def __init__(self, *, doc_type: str, encodings: Sequence[str]) -> None:
         if not encodings:
-            msg = "PlainTextReader: encodings must be non-empty"
+            msg = (
+                f"PlainTextReader(doc_type={doc_type!r}): encodings must be "
+                f"a non-empty sequence, got {encodings!r}"
+            )
             raise ValueError(msg)
         self._doc_type = doc_type
         self._encodings = tuple(encodings)
@@ -64,7 +67,10 @@ class PlainTextReader(Reader[str]):
         raise IncompatibleContentError(
             reader_id=self.READER_ID,
             canonical_id=value.source_id,
-            reason=f"cannot decode with any of: {tried}",
+            reason=(
+                f"cannot decode {len(raw)} bytes of {value.source_id} "
+                f"with any of: {tried}"
+            ),
         )
 
 

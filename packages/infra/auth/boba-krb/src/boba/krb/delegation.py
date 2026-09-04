@@ -84,13 +84,22 @@ class SpnegoAcceptor:
     def _accepted(self, token: bytes) -> SpnegoIdentity:
         ctx = self._context()
 
+        service = self._config.service_name
         try:
             ctx.step(token)
         except GSSError as exc:
-            raise InvalidTokenError(f"spnego step failed: {exc}") from exc
+            msg = (
+                f"spnego accept for {service} rejected a {len(token)}-byte "
+                f"client token: {exc}"
+            )
+            raise InvalidTokenError(msg) from exc
 
         if not ctx.complete:
-            msg = "spnego context incomplete (multi-leg not supported)"
+            msg = (
+                f"spnego accept for {service} expected a complete context after "
+                f"one {len(token)}-byte token, got continue-needed "
+                "(multi-leg not supported)"
+            )
             raise InvalidTokenError(msg)
 
         principal = str(ctx.initiator_name)
@@ -113,8 +122,8 @@ class SpnegoAcceptor:
             return SecurityContext(creds=self._credentials(), usage="accept")
         except GSSError as exc:
             msg = (
-                f"spnego accept creds {self._config.service_name} "
-                f"from {self._config.keytab}"
+                f"acquiring spnego accept credentials for "
+                f"{self._config.service_name} from keytab {self._config.keytab}"
             )
             raise KeytabError(f"{msg}: {exc}") from exc
 
@@ -203,7 +212,7 @@ class TicketCapture:
                 overwrite=True,
             )
         except GSSError as exc:
-            msg = f"failed to store delegated ccache {ccache}"
+            msg = f"storing delegated credentials of {principal} into {ccache}"
             raise GssErrors.of(exc, msg) from exc
 
         refusal = self.mismatch(ccache, principal, self.mode)

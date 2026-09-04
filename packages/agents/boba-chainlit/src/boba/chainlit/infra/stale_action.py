@@ -75,14 +75,13 @@ class StaleActionMiddleware:
         if session_source_ref().by_id(envelope.session_id).present:
             return await self._app(scope, self._replay(body), send)
 
-        self._logger.info(
-            "action %s dropped: session %s is gone",
-            envelope.action.name or "?",
-            envelope.session_id,
-        )
-        response = JSONResponse(
-            content={"detail": "session is gone"}, status_code=self.STATUS
-        )
+        action_name = envelope.action.name
+        if not action_name:
+            action_name = "?"
+
+        detail = f"action {action_name} dropped: session {envelope.session_id} is gone"
+        self._logger.info("%s", detail)
+        response = JSONResponse(content={"detail": detail}, status_code=self.STATUS)
         return await response(scope, self._replay(body), send)
 
     @staticmethod

@@ -780,9 +780,7 @@ class TestShell:
 class TestStreamingCall:
     """Потоковый вызов в песочнице: кадры внутрь и наружу, конверт в конце."""
 
-    def test_frames_answer_frames_and_envelope_closes_call(
-        self, zygote: Any
-    ) -> None:
+    def test_frames_answer_frames_and_envelope_closes_call(self, zygote: Any) -> None:
         caller = zygote(_profile())
 
         with caller.open(_stream_command("re:")) as call:
@@ -915,9 +913,7 @@ class TestCallResilience:
             with pytest.raises(ToolStopped):
                 call.result()
 
-    def test_open_on_cancelled_run_raises_and_leaks_nothing(
-        self, zygote: Any
-    ) -> None:
+    def test_open_on_cancelled_run_raises_and_leaks_nothing(self, zygote: Any) -> None:
         """Уже отменённый ход: open падает сразу, проводка прибрана."""
         caller = zygote(_profile())
 

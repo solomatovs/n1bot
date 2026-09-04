@@ -162,9 +162,7 @@ class TestStreamingCall:
 
     def _command(self, prefix: str) -> ToolCommand:
         config = json.dumps({"cfg": CFG.revealed()}).encode("utf-8")
-        return ToolCommand(
-            argv=(*self.STREAM_ARGV, "--prefix", prefix), config=config
-        )
+        return ToolCommand(argv=(*self.STREAM_ARGV, "--prefix", prefix), config=config)
 
     def test_frames_answer_frames_and_envelope_closes_call(
         self, tmp_path: Path

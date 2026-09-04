@@ -179,7 +179,11 @@ async def _catalog_page(
                 names: Sequence[str] = cast("Any", blocks.source).column_names
                 await _collect_page(blocks, names, page)
         except DriverError as exc:
-            msg = f"query failed: {type(exc).__name__}: {exc}"
+            target = f"{connection.host}:{connection.port}/{connection.database}"
+            msg = (
+                f"catalog query on clickhouse {target} failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
             raise ClickHouseError(msg) from exc
 
     return pack_result(page.table())
@@ -206,7 +210,12 @@ async def _query_rows(
                 names: Sequence[str] = cast("Any", blocks.source).column_names
                 await _collect_blocks(blocks, names, budget)
         except DriverError as exc:
-            msg = f"query failed: {type(exc).__name__}: {exc}"
+            target = f"{connection.host}:{connection.port}/{connection.database}"
+            head = query.text[:200]
+            msg = (
+                f"query on clickhouse {target} failed: {type(exc).__name__}: "
+                f"{exc}; query: {head!r}"
+            )
             raise ClickHouseError(msg) from exc
 
     return pack_result(budget.table())

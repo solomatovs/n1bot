@@ -149,21 +149,33 @@ def warmup(fn: WarmupBody) -> WarmupBody:
 def _warmup_config_model(fn: WarmupBody) -> type[BaseModel]:
     """Модель конфига прогрева из аннотации единственного параметра."""
     if not inspect.iscoroutinefunction(fn):
-        msg = f"warmup {fn.__name__!r} must be a coroutine function"
+        msg = (
+            f"warmup {fn.__name__!r} must be a coroutine function "
+            "(async def), got a plain callable"
+        )
         raise ToolFacadeError(msg)
 
     parameters = list(inspect.signature(fn).parameters)
     if len(parameters) != 1:
-        msg = f"warmup {fn.__name__!r} must take exactly one config parameter"
+        msg = (
+            f"warmup {fn.__name__!r} must take exactly one config parameter, "
+            f"got {len(parameters)}: {parameters}"
+        )
         raise ToolFacadeError(msg)
 
     annotation = get_type_hints(fn).get(parameters[0])
     if not isinstance(annotation, type):
-        msg = f"warmup {fn.__name__!r}: config parameter has no model annotation"
+        msg = (
+            f"warmup {fn.__name__!r}: config parameter {parameters[0]!r} "
+            f"must be annotated with a pydantic model class, got {annotation!r}"
+        )
         raise ToolFacadeError(msg)
 
     if not issubclass(annotation, BaseModel):
-        msg = f"warmup {fn.__name__!r}: config parameter is not a pydantic model"
+        msg = (
+            f"warmup {fn.__name__!r}: config parameter {parameters[0]!r} "
+            f"must be a pydantic model, got {annotation.__name__}"
+        )
         raise ToolFacadeError(msg)
 
     return annotation
@@ -206,12 +218,18 @@ def _schema_of(fn: Callable[..., Any]) -> type[BaseModel]:
     fields: dict[str, Any] = {}
     for name, parameter in signature.parameters.items():
         if parameter.kind in banned:
-            msg = f"tool {fn.__name__!r}: *args/**kwargs are not allowed"
+            msg = (
+                f"tool {fn.__name__!r}: parameter {name!r} is {parameter.kind.name}"
+                ", *args/**kwargs are not allowed in a tool signature"
+            )
             raise ToolFacadeError(msg)
 
         annotation = hints.get(name)
         if annotation is None:
-            msg = f"tool {fn.__name__!r}: parameter {name!r} has no annotation"
+            msg = (
+                f"tool {fn.__name__!r}: parameter {name!r} has no type "
+                "annotation, the argument schema needs one"
+            )
             raise ToolFacadeError(msg)
 
         default = parameter.default

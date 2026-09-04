@@ -88,14 +88,15 @@ class ServiceTicketIssuer:
             context = SecurityContext(name=target, creds=creds, usage="initiate")
             context.step()
         except GSSError as exc:
-            raise GssErrors.of(exc, f"ticket to {principal}") from exc
+            msg = f"fetching service ticket to {principal} into ccache {ccache!r}"
+            raise GssErrors.of(exc, msg) from exc
 
     @classmethod
     def principal_of(cls, service: str) -> str:
         """service@host -> service/host@REALM; realm — из krb5.conf."""
         name, sep, host = service.partition("@")
         if not sep or not host:
-            msg = f"service {service!r} is not service@host"
+            msg = f"service {service!r} is not of the form service@host"
             raise KerberosError(msg)
 
         try:
@@ -103,7 +104,10 @@ class ServiceTicketIssuer:
             parsed = krb5.parse_name_flags(context, f"{name}/{host}".encode())
             return krb5.unparse_name_flags(context, parsed).decode()
         except krb5.Krb5Error as exc:
-            msg = f"service {service!r}: principal name is not resolvable"
+            msg = (
+                f"service {service!r}: krb5 cannot parse principal name "
+                f"{name}/{host} with the realm from krb5.conf"
+            )
             raise KerberosError(f"{msg}: {exc}") from exc
 
     def _export(self, ccache: str, principal: str, service: str) -> bytes:
@@ -119,7 +123,10 @@ class ServiceTicketIssuer:
 
         client = krb5.unparse_name_flags(context, found.client).decode()
         if client != principal:
-            msg = f"ticket client {client!r} is not the source principal {principal!r}"
+            msg = (
+                f"ticket to {service} in ccache {ccache!r} is issued to {client!r}, "
+                f"expected the source principal {principal!r}"
+            )
             raise KerberosError(msg)
 
         remaining = found.times.endtime - int(time.time())
@@ -138,7 +145,7 @@ class ServiceTicketIssuer:
                 krb5.cc_initialize(context, target, found.client)
                 krb5.cc_store_cred(context, target, found)
             except krb5.Krb5Error as exc:
-                msg = f"ccache with ticket to {service} was not written"
+                msg = f"writing ticket {principal} -> {service} into {path} failed"
                 raise KerberosError(f"{msg}: {exc}") from exc
 
             with open(path, "rb") as handle:
@@ -154,11 +161,11 @@ class ServiceTicketIssuer:
         try:
             candidates = list(cls._matching(context, cache, service))
         except krb5.Krb5Error as exc:
-            msg = f"ccache {cache.name!r} is not readable"
+            msg = f"listing tickets to {service} in ccache {cache.name!r} failed"
             raise KerberosError(f"{msg}: {exc}") from exc
 
         if not candidates:
-            msg = f"ccache holds no ticket to {service} after initiate"
+            msg = f"ccache {cache.name!r} holds no ticket to {service} after initiate"
             raise KerberosError(msg)
 
         return max(candidates, key=cls._endtime)
@@ -184,11 +191,11 @@ class ServiceTicketIssuer:
         """service@host -> 'service/host@': начало имени сервера в ccache."""
         name, sep, host = service.partition("@")
         if not sep:
-            msg = f"service {service!r} is not service@host"
+            msg = f"service {service!r} is not of the form service@host: no '@'"
             raise KerberosError(msg)
 
         if not host:
-            msg = f"service {service!r} has no host"
+            msg = f"service {service!r} is not of the form service@host: empty host"
             raise KerberosError(msg)
 
         return f"{name}/{host}@"

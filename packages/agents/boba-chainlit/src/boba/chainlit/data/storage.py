@@ -238,7 +238,11 @@ class LocalStorageClient(StorageClient):
         path = (base_dir / object_key).resolve()
 
         if not path.is_relative_to(base_dir):
-            raise StorageError(f"storage: object_key outside files_dir: {object_key!r}")
+            msg = (
+                f"storage: object_key {object_key!r} resolves to {path}, "
+                f"outside files_dir {base_dir}"
+            )
+            raise StorageError(msg)
 
         return path
 
@@ -274,7 +278,8 @@ class LocalStorageClient(StorageClient):
         result = await aiofiles.os.stat(path)
 
         if not stat_module.S_ISREG(result.st_mode):
-            raise StorageError(f"storage: not a regular file: {path.name}")
+            msg = f"storage: {path} is not a regular file, mode {result.st_mode:o}"
+            raise StorageError(msg)
 
         return FileStat(size=result.st_size, revision=result.st_mtime_ns)
 
@@ -338,7 +343,7 @@ class ImageStorageClient(StorageClient):
         rc, _, err = await self._op(
             image, [LauncherMode.WRITE.value, rel], source=source
         )
-        self._check(rc, err)
+        self._check(rc, err, f"write of {object_key}")
         return self._uploaded(object_key)
 
     async def _stat(self, object_key: str) -> FileStat:
@@ -348,7 +353,7 @@ class ImageStorageClient(StorageClient):
         if rc == LauncherExit.NOT_FOUND:
             raise StorageNotFoundError(f"storage: no such object: {object_key}")
 
-        self._check(rc, err)
+        self._check(rc, err, f"stat of {object_key}")
 
         head = ReadHeader.parse(self._header_line(out))
         return FileStat(size=head.size, revision=head.revision)
@@ -365,7 +370,8 @@ class ImageStorageClient(StorageClient):
         if stdout is None or stderr is None:
             proc.kill()
             await proc.wait()
-            raise StorageError("storage: launcher process has no pipes")
+            msg = f"storage: launcher process for read of {object_key} has no pipes"
+            raise StorageError(msg)
 
         reader = LauncherRead(proc, stdout, asyncio.create_task(stderr.read()))
         try:
@@ -396,8 +402,14 @@ class ImageStorageClient(StorageClient):
         if rc == LauncherExit.NOT_FOUND:
             raise StorageNotFoundError(f"storage: no such object: {object_key}")
 
-        self._check(rc, self._drain_launcher_log(await reader.stderr))
-        raise StorageError(f"storage: launcher sent no read header: {object_key}")
+        self._check(
+            rc, self._drain_launcher_log(await reader.stderr), f"read of {object_key}"
+        )
+        msg = (
+            f"storage: launcher exited with code {rc} without a read header "
+            f"for {object_key}"
+        )
+        raise StorageError(msg)
 
     async def _body_chunks(
         self, reader: LauncherRead, object_key: str
@@ -422,7 +434,11 @@ class ImageStorageClient(StorageClient):
                 yield chunk
 
             rc = await reader.proc.wait()
-            self._check(rc, self._drain_launcher_log(await reader.stderr))
+            self._check(
+                rc,
+                self._drain_launcher_log(await reader.stderr),
+                f"read of {object_key}",
+            )
         finally:
             await reader.release()
 
@@ -437,7 +453,7 @@ class ImageStorageClient(StorageClient):
         if rc == LauncherExit.NOT_FOUND:
             return False
 
-        self._check(rc, err)
+        self._check(rc, err, f"delete of {object_key}")
 
         return True
 
@@ -450,7 +466,7 @@ class ImageStorageClient(StorageClient):
         if rc == LauncherExit.NOT_FOUND:
             return ()
 
-        self._check(rc, err)
+        self._check(rc, err, f"list of {prefix}")
 
         names: list[str] = []
         for line in out.decode("utf-8").splitlines():
@@ -465,7 +481,10 @@ class ImageStorageClient(StorageClient):
         """Запись workspace конфига; её отсутствие отсекает валидация секции."""
         workspace = self._config.workspace
         if workspace is None:
-            msg = "storage: kind=image without the workspace record"
+            msg = (
+                "storage: section [storage] has kind=image but no workspace "
+                "record, the image storage cannot locate user images"
+            )
             raise StorageError(msg)
 
         return workspace
@@ -525,8 +544,8 @@ class ImageStorageClient(StorageClient):
                 proc.kill()
             await proc.wait()
             msg = (
-                f"storage: image operation {op[0]!r} stalled "
-                f"for {self._config.op_timeout_sec}s"
+                f"storage: image operation {op[0]!r} in {image} stalled "
+                f"for {self._config.op_timeout_sec}s without progress"
             )
             raise StorageError(msg) from None
         err = self._drain_launcher_log(err)
@@ -614,19 +633,26 @@ class ImageStorageClient(StorageClient):
         return "\n".join(kept).encode("utf-8")
 
     @classmethod
-    def _check(cls, rc: int, err: bytes) -> None:
+    def _check(cls, rc: int, err: bytes, action: str) -> None:
+        """action — что делалось и над чем (например "write of <key>")."""
         if rc == 0:
             return
+
         detail = err.decode("utf-8", errors="replace").strip()
         reason = cls._reason(detail)
+
         if rc == LauncherExit.NO_SPACE:
-            msg = f"storage: {reason or 'no space left in the workspace image'}"
+            if not reason:
+                reason = "no space left in the workspace image"
+            msg = f"storage: {action} failed: {reason}"
             raise StorageFullError(msg)
+
         if rc == LauncherExit.MOUNT_ERROR and LauncherMarker.ERROR.value in detail:
-            msg = f"storage: image not mounted: {reason}"
+            msg = f"storage: {action} failed, image not mounted: {reason}"
             raise StorageError(msg)
+
         # reason вместо detail: в stderr попадает и болтовня fuse2fs
-        msg = f"storage: image operation exited with code {rc}: {reason}"
+        msg = f"storage: {action} failed, launcher exited with code {rc}: {reason}"
         raise StorageError(msg)
 
     @staticmethod

@@ -304,6 +304,7 @@ def data_boundary(
         except DataLayerError:
             raise
         except Exception as exc:
-            raise DataBrokenError(fn.__qualname__, str(exc)) from exc
+            detail = f"unexpected {type(exc).__name__}: {exc}"
+            raise DataBrokenError(fn.__qualname__, detail) from exc
 
     return wrapper

@@ -105,13 +105,16 @@ class ConnectionsConfig(BaseModel):
         try:
             decoded = base64.b64decode(raw, validate=True)
         except (binascii.Error, ValueError) as e:
-            msg = "connections.encryption_key: base64 expected"
+            msg = (
+                f"[connections].encryption_key: expected {cls.KEY_BYTES} bytes "
+                f"in base64, got a value that does not decode: {e}"
+            )
             raise ValueError(msg) from e
 
         if len(decoded) != cls.KEY_BYTES:
             msg = (
-                f"connections.encryption_key: {cls.KEY_BYTES}-byte key required, "
-                f"got {len(decoded)}"
+                f"[connections].encryption_key: expected {cls.KEY_BYTES} bytes "
+                f"in base64, got {len(decoded)} bytes"
             )
             raise ValueError(msg)
 
@@ -120,14 +123,20 @@ class ConnectionsConfig(BaseModel):
     def key_bytes(self) -> bytes:
         raw = self.encryption_key.get_secret_value()
         if not raw:
-            msg = "connections.encryption_key is not set"
+            msg = (
+                "[connections].encryption_key is not set: expected "
+                f"{self.KEY_BYTES} bytes in base64 to encrypt stored profiles"
+            )
             raise ValueError(msg)
 
         return base64.b64decode(raw, validate=True)
 
     def require_conn(self) -> PostgresConfig:
         if self.connection is None:
-            msg = 'connections.connection is not set: connection = "${postgres}"'
+            msg = (
+                "[connections].connection is not set: expected a postgres "
+                'reference such as connection = "${postgres}"'
+            )
             raise ValueError(msg)
 
         return self.connection
@@ -188,7 +197,7 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
         try:
             yield
         except (psycopg.Error, PostgresError) as exc:
-            msg = f"connections: {action} failed"
+            msg = f"connections: {action} in schema {self._cfg.db_schema} failed: {exc}"
             raise ConnectionStoreError(msg) from exc
 
     async def setup(self) -> None:
@@ -307,7 +316,10 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
             row = await cur.fetchone()
 
         if row is None:
-            msg = f"connections: row {name!r} was not saved"
+            msg = (
+                f"connections: insert of row {name!r} into "
+                f"{self._cfg.db_schema}.connections returned no id"
+            )
             raise ConnectionStoreError(msg)
 
         return UUID(str(row[0]))
@@ -353,7 +365,10 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
             await cur.execute(insert_row, {"name": name, "data": Jsonb(payload)})
             row = await cur.fetchone()
             if row is None:
-                msg = f"connections: row {name!r} was not saved"
+                msg = (
+                    f"connections: insert of row {name!r} into "
+                    f"{self._cfg.db_schema}.connections returned no id"
+                )
                 raise ConnectionStoreError(msg)
 
             connection_id = UUID(str(row[0]))
@@ -438,7 +453,10 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
             row = await cur.fetchone()
 
         if row is None:
-            msg = f"connections: connection #{connection_id} not found"
+            msg = (
+                f"connections: connection #{connection_id} not found in "
+                f"{self._cfg.db_schema}.connections"
+            )
             raise ConnectionNotFoundError(msg)
 
         return self._stored(row)
@@ -462,7 +480,10 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
             row = await cur.fetchone()
 
         if row is None:
-            msg = f"connections: connection #{connection_id} not found"
+            msg = (
+                f"connections: connection #{connection_id} not found in "
+                f"{self._cfg.db_schema}.connections"
+            )
             raise ConnectionNotFoundError(msg)
 
         return str(row[0])
@@ -569,8 +590,9 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
 
         if row is None:
             msg = (
-                f"grants: link connections#{connection_id} -> "
-                f"{target.kind.value}#{target.id} was not saved"
+                f"grants: insert of link connections#{connection_id} -> "
+                f"{target.kind.value}#{target.id} into "
+                f"{self._cfg.db_schema}.grants returned no id"
             )
             raise ConnectionStoreError(msg)
 

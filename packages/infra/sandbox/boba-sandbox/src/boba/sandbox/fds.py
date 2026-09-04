@@ -27,7 +27,7 @@ class FdReader:
 
     def __init__(self, fd: int, chunk: int = CHUNK) -> None:
         if chunk <= 0:
-            msg = f"chunk must be positive, got {chunk}"
+            msg = f"pipe reader of fd {fd}: chunk must be positive, got {chunk}"
             raise ValueError(msg)
 
         self._raw = io.FileIO(fd, "r", closefd=False)

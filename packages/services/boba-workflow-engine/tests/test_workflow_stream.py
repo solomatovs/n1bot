@@ -91,9 +91,7 @@ def _registry(workdir: Path) -> ToolRegistry:
 
 
 @pytest.fixture
-async def service(
-    pool: AsyncPostgresPool, tmp_path: Path
-) -> WorkflowService:
+async def service(pool: AsyncPostgresPool, tmp_path: Path) -> WorkflowService:
     async with pool.connection() as conn:
         await conn.execute(
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
@@ -119,9 +117,7 @@ async def service(
 def _context(monkeypatch: pytest.MonkeyPatch) -> CallContext:
     from boba.stand.context import install_context
 
-    context = make_context(
-        "wf-stream", user_id=OWNER, login="tester", roles=[ROLE]
-    )
+    context = make_context("wf-stream", user_id=OWNER, login="tester", roles=[ROLE])
     install_context(monkeypatch, context)
     return context
 

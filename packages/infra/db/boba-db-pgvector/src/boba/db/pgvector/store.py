@@ -563,7 +563,8 @@ class PostgresChunkStore(ChunkStore[str]):
                 + cls._EQUAL_OPS[op]
                 + sql.SQL(" %s)")
             )
-        msg = f"_cmp_sql: unknown op {op!r}"
+        known = sorted([*cls._NUMERIC_OPS, *cls._EQUAL_OPS])
+        msg = f"postgres filter: unknown comparison op {op!r}, expected one of {known}"
         raise ValueError(msg)
 
     @classmethod

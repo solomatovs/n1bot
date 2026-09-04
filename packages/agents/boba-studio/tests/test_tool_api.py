@@ -239,7 +239,8 @@ class TestRoute:
         if malformed.status_code != 422:
             raise AssertionError(malformed.text)
         if len(probe.seen) != 1:
-            raise AssertionError("exactly one call reached the tool")
+            msg = f"probe tool: expected exactly one call, saw {probe.seen}"
+            raise AssertionError(msg)
 
 
 class TestAuthenticator:
@@ -282,7 +283,11 @@ class TestAuthenticator:
         user = await authenticator.user_of_token(token)
 
         if user is None:
-            raise AssertionError("persisted user expected")
+            msg = (
+                f"user_of_token for {tester.identifier!r}: expected the "
+                f"persisted user, got None"
+            )
+            raise AssertionError(msg)
         if user.id != tester.id:
             raise AssertionError((user.id, tester.id))
         if user.roles != frozenset(StandProfiles.roles(studio_config)):

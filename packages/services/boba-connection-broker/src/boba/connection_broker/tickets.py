@@ -79,4 +79,9 @@ class ServiceTickets(AsyncInjected):
         for profile in ProfileSections.profiles(self._base):
             section = ProfileSections.section_of(profile)
             if isinstance(section, DelegatedAuth):
-                raise ToolConfigError(self.NO_DELEGATION)
+                msg = (
+                    f"injected config {self._param!r}: profile "
+                    f"{type(profile).__name__} carries a delegated kerberos "
+                    f"section; {self.NO_DELEGATION}"
+                )
+                raise ToolConfigError(msg)

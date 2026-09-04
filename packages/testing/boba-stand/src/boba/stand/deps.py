@@ -99,7 +99,11 @@ class Requirement(BaseModel):
     def parse(cls, spec: str) -> Requirement:
         found = cls.NAME.match(spec)
         if found is None:
-            raise DepsAuditError(f"unparsable requirement: {spec!r}")
+            msg = (
+                f"requirement {spec!r} does not match a PEP 508 name: "
+                f"{cls.NAME.pattern}"
+            )
+            raise DepsAuditError(msg)
 
         extras: set[str] = set()
         with_extras = cls.EXTRAS.match(spec)
@@ -135,7 +139,8 @@ class PackageProject(BaseModel):
             with pyproject.open("rb") as handle:
                 project = tomllib.load(handle)["project"]
         except (OSError, tomllib.TOMLDecodeError, KeyError) as exc:
-            raise DepsAuditError(f"unreadable pyproject: {pyproject}") from exc
+            msg = f"reading [project] of {pyproject}: {type(exc).__name__}: {exc}"
+            raise DepsAuditError(msg) from exc
 
         dependencies: list[Requirement] = []
         for spec in project.get("dependencies", []):
@@ -266,7 +271,11 @@ class ModuleOwners:
 
             previous = self._local.get(key)
             if previous is not None and previous != owner:
-                raise DepsAuditError(f"{key} owned by both {previous} and {owner}")
+                msg = (
+                    f"indexing {child}: module {key} is owned by both "
+                    f"{previous} and {owner}"
+                )
+                raise DepsAuditError(msg)
 
             self._local[key] = owner
 
@@ -309,7 +318,9 @@ class ModuleOwners:
                 return owner
             parts.pop()
 
-        raise DepsAuditError(f"no repository package owns {module}")
+        known = len(self._local)
+        msg = f"module {module}: none of the {known} indexed repository modules owns it"
+        raise DepsAuditError(msg)
 
     def _third_owner(self, module: str) -> str:
         parts = module.split(".")
@@ -319,7 +330,8 @@ class ModuleOwners:
                 return owner
             parts.pop()
 
-        raise DepsAuditError(f"no installed distribution owns {module}")
+        msg = f"module {module}: no installed distribution owns it"
+        raise DepsAuditError(msg)
 
     def brought_by_extras(self, requirement: Requirement) -> set[str]:
         """Дистрибутивы extras-части зависимости: psycopg[pool] → psycopg-pool."""
@@ -374,7 +386,8 @@ class ImportScan:
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         except (OSError, SyntaxError) as exc:
-            raise DepsAuditError(f"unreadable module: {path}") from exc
+            msg = f"parsing module {path}: {type(exc).__name__}: {exc}"
+            raise DepsAuditError(msg) from exc
 
         modules: set[str] = set()
         for node in ast.walk(tree):
@@ -424,7 +437,8 @@ class DepsAudit:
 
     def __init__(self, packages_root: Path) -> None:
         if not packages_root.is_dir():
-            raise DepsAuditError(f"packages root not found: {packages_root}")
+            msg = f"deps audit: packages root {packages_root} is not a directory"
+            raise DepsAuditError(msg)
 
         self._root = packages_root
         self._projects = self._load_projects()

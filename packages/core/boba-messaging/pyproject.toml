@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-messaging"
-version = "0.0.15.dev7"
+version = "0.0.15.dev8"
 description = "Boba messaging: модели сообщений шины, конверт, порт MessageBus и реализация в памяти — без I/O."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-identity==0.0.15.dev7",
+    "boba-identity==0.0.15.dev8",
     "pydantic>=2.10,<3",
 ]
 

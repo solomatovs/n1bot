@@ -131,7 +131,7 @@ class StorageGuard:
             return
 
         if isinstance(exc, FileNotFoundError):
-            msg = f"storage: {self._op} target not found: {self._key}"
+            msg = f"storage: {self._op} target not found: {self._key}: {exc}"
             raise StorageNotFoundError(msg) from exc
 
         if isinstance(exc, OSError):
@@ -205,7 +205,11 @@ class LauncherRead:
             await asyncio.wait_for(self._drain(), self.DRAIN_TIMEOUT_SEC)
         except TimeoutError:
             # процесс уже получил SIGKILL, значит лок на образе отпущен
-            logger.warning("storage: read pipes stayed open after kill")
+            logger.warning(
+                "storage: read process pid %s: pipes stayed open %.0fs after kill",
+                self.proc.pid,
+                self.DRAIN_TIMEOUT_SEC,
+            )
 
     async def _drain(self) -> None:
         while True:

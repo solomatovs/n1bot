@@ -39,6 +39,10 @@ class SpnegoHeaders(dict[str, str]):
         super().__init__()
         self._service_name = service_name
 
+    @property
+    def service_name(self) -> str:
+        return self._service_name
+
     def copy(self) -> dict[str, str]:
         headers = dict(self)
         headers[self.HEADER] = self._negotiate()
@@ -48,7 +52,11 @@ class SpnegoHeaders(dict[str, str]):
         try:
             return SpnegoNegotiate.header(self._service_name)
         except KerberosError as exc:
-            raise ClickHouseError(str(exc)) from exc
+            msg = (
+                f"building Negotiate header for clickhouse service "
+                f"{self._service_name} failed: {exc}"
+            )
+            raise ClickHouseError(msg) from exc
 
 
 class PayloadClickHouse:
@@ -74,7 +82,11 @@ class PayloadClickHouse:
             ):
                 yield client
         except KerberosError as e:
-            msg = f"kerberos failed: {type(e).__name__}: {e}"
+            msg = (
+                f"clickhouse {connection.host}:{connection.port}: kerberos "
+                f"credentials of {credentials.principal} for service "
+                f"{headers.service_name} failed: {type(e).__name__}: {e}"
+            )
             raise ClickHouseError(msg) from e
 
     @staticmethod
@@ -85,7 +97,7 @@ class PayloadClickHouse:
     ) -> AsyncGenerator[AsyncClient, None]:
         client = PayloadClickHouse._build(connection, headers)
         try:
-            await PayloadClickHouse._initialize(client)
+            await PayloadClickHouse._initialize(client, connection)
             yield client
         finally:
             await client.close()
@@ -111,9 +123,13 @@ class PayloadClickHouse:
         return client
 
     @staticmethod
-    async def _initialize(client: AsyncClient) -> None:
+    async def _initialize(client: AsyncClient, connection: ClickHouseConfig) -> None:
         try:
             await client._initialize()
         except (DriverError, OSError) as e:
-            msg = f"connect failed: {type(e).__name__}: {e}"
+            msg = (
+                f"connecting to clickhouse {connection.interface}://"
+                f"{connection.host}:{connection.port} as {connection.trace()} "
+                f"failed: {type(e).__name__}: {e}"
+            )
             raise ClickHouseError(msg) from e

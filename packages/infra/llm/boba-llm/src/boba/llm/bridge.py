@@ -79,19 +79,28 @@ class ChatProviderFactory:
         match cfg:
             case LocalChatConfig():
                 if runtime is None:
-                    msg = f"local chat backend needs a runtime: {cfg.model_dir}"
+                    msg = (
+                        f"local chat backend for {cfg.model_dir} needs an "
+                        "OnnxChatRuntime, got None"
+                    )
                     raise ValueError(msg)
 
                 return LocalChatProvider(runtime)
             case OpenAiChatConfig():
                 if client is None:
-                    msg = "openai chat backend needs an httpx client"
+                    msg = (
+                        f"openai chat backend for {cfg.base_url} needs an "
+                        "httpx client, got None"
+                    )
                     raise ValueError(msg)
 
                 return OpenAiChatProvider(cfg, client, model)
             case OllamaChatConfig():
                 if client is None:
-                    msg = "ollama chat backend needs an httpx client"
+                    msg = (
+                        f"ollama chat backend for {cfg.base_url} needs an "
+                        "httpx client, got None"
+                    )
                     raise ValueError(msg)
 
                 return OllamaChatProvider(cfg, client, model)

@@ -121,9 +121,7 @@ class ConnectionView(BaseModel):
 
     @classmethod
     def unavailable(cls, row: MissingTypeConnection, mine: bool) -> ConnectionView:
-        return cls(
-            id=row.id, name=row.name, kind=row.kind, mine=mine, available=False
-        )
+        return cls(id=row.id, name=row.name, kind=row.kind, mine=mine, available=False)
 
 
 class ProbeBody(BaseModel):
@@ -194,7 +192,8 @@ class ConnectionsApi:
         """
         kind = raw.get("kind")
         if not isinstance(kind, str):
-            raise HTTPException(status_code=422, detail="profile has no kind")
+            msg = f"connection profile expects a string 'kind', got {kind!r}"
+            raise HTTPException(status_code=422, detail=msg)
 
         try:
             manifest = self._types.manifest_of(kind)

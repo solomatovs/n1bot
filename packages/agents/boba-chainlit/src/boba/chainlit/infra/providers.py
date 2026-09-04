@@ -79,7 +79,10 @@ from boba.toolrun.registry import ToolRegistry
 
 def get_app_config() -> AppConfig:
     """Конфиг chainlit-процесса; значение кладёт bootstrap после AppConfig.load."""
-    msg = "app config is provided by bootstrap, not produced"
+    msg = (
+        "get_app_config: the app config is set by bootstrap as a container "
+        "override, the provider itself produces nothing"
+    )
     raise RuntimeError(msg)
 
 
@@ -339,7 +342,8 @@ async def langchain_checkpoint_saver(
         except PostgresError as e:
             raise InternalServiceError(
                 internal_detail=(
-                    f"Failed to get postgres connection for checkpointer: {e!s}"
+                    f"checkpointer: ensuring postgres schema {cp.db_schema!r} "
+                    f"failed: {e}"
                 ),
                 user_detail="Failed to connect to the internal postgres",
             ) from e
@@ -469,7 +473,11 @@ def _flow_tools(names: Sequence[str], tools: Sequence[BaseTool]) -> list[BaseToo
     for name in names:
         found = by_name.get(name)
         if found is None:
-            msg = f"flow tool {name!r} is not available to the session"
+            available = ", ".join(sorted(by_name))
+            msg = (
+                f"flow tool {name!r} is not available to the session; "
+                f"available tools: {available}"
+            )
             raise RuntimeError(msg)
 
         selected.append(found)

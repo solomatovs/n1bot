@@ -121,7 +121,11 @@ class Inbound(Generic[HeadT]):
         try:
             return self._heads.validate_json(header)
         except ValidationError as exc:
-            msg = f"inbound frame does not match the declared port: {exc}"
+            shown = header[:200]
+            msg = (
+                f"inbound frame header {shown!r} does not match the declared "
+                f"port head models: {exc}"
+            )
             raise FrameProtocolError(msg) from exc
 
     @classmethod
@@ -234,7 +238,10 @@ class StreamPorts:
         if origin is Outbound:
             return PortDirection.OUTBOUND
 
-        msg = f"not a port annotation: {annotation!r}"
+        msg = (
+            f"expected a port annotation Inbound[...] or Outbound[...], "
+            f"got {annotation!r}"
+        )
         raise PortDeclarationError(msg)
 
     @classmethod
@@ -282,7 +289,10 @@ class StreamPorts:
         """Модели заголовков порта: одиночная либо члены союза."""
         arguments = get_args(annotation)
         if len(arguments) != 1:
-            msg = f"port must declare a head model: {annotation!r}"
+            msg = (
+                f"port {annotation!r} must declare exactly one head model "
+                f"type argument, got {len(arguments)}"
+            )
             raise PortDeclarationError(msg)
 
         head = arguments[0]
@@ -294,11 +304,17 @@ class StreamPorts:
         members: list[type[BaseModel]] = []
         for candidate in candidates:
             if not isinstance(candidate, type):
-                msg = f"port head is not a model: {candidate!r}"
+                msg = (
+                    f"port {annotation!r}: head must be a pydantic model class, "
+                    f"got {candidate!r}"
+                )
                 raise PortDeclarationError(msg)
 
             if not issubclass(candidate, BaseModel):
-                msg = f"port head is not a pydantic model: {candidate!r}"
+                msg = (
+                    f"port {annotation!r}: head must subclass pydantic BaseModel, "
+                    f"got {candidate.__name__}"
+                )
                 raise PortDeclarationError(msg)
 
             members.append(candidate)
@@ -310,13 +326,18 @@ class StreamPorts:
         """Kind модели заголовка: Literal-строка поля kind."""
         field = member.model_fields.get(cls.KIND_FIELD)
         if field is None:
-            msg = f"head model {member.__name__} has no {cls.KIND_FIELD!r} field"
+            listed = ", ".join(member.model_fields)
+            msg = (
+                f"head model {member.__name__} has no {cls.KIND_FIELD!r} field "
+                f"(fields: {listed}); a port head needs kind: Literal['...']"
+            )
             raise PortDeclarationError(msg)
 
         if get_origin(field.annotation) is not Literal:
             msg = (
                 f"head model {member.__name__} must declare "
-                f"{cls.KIND_FIELD}: Literal[...] for the port"
+                f"{cls.KIND_FIELD}: Literal[...] for the port, "
+                f"got {field.annotation!r}"
             )
             raise PortDeclarationError(msg)
 
@@ -391,7 +412,10 @@ class StreamSpec(BaseModel):
         seen: set[PortDirection] = set()
         for port in self.ports:
             if port.direction in seen:
-                msg = f"duplicate {port.direction} port: {port.name!r}"
+                msg = (
+                    f"duplicate {port.direction} port {port.name!r}: a tool "
+                    "declares at most one port per direction"
+                )
                 raise ValueError(msg)
 
             seen.add(port.direction)

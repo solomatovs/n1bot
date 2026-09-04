@@ -145,10 +145,15 @@ class SignInApi:
     @staticmethod
     def _own(request: Request) -> None:
         """Вход и выход меняют сессию: чужая форма без своей метки не пройдёт."""
-        if SsoRequests.of(request).own_request:
+        sso = SsoRequests.of(request)
+        if sso.own_request:
             return
 
-        raise AuthorizationError("request without its own mark is refused")
+        msg = (
+            f"{request.method} {request.url.path} from {sso.client}: "
+            f"expected the own-request mark header, got none"
+        )
+        raise AuthorizationError(msg)
 
     def _next_of(self, raw: str | None) -> str:
         """Куда вернуть после входа: только внутрь страницы, иначе её начало."""

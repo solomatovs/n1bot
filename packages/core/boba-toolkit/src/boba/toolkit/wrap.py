@@ -104,8 +104,9 @@ class ToolProcessWrap:
             try:
                 command = ToolArgv.render(address, schema, kwargs)
             except ArgumentTooLargeError as exc:
+                msg = f"tool {address.name!r}: {exc}"
                 raise PayloadFailureError(
-                    str(WrapErrorKind.ARGUMENT_TOO_LARGE), str(exc)
+                    str(WrapErrorKind.ARGUMENT_TOO_LARGE), msg
                 ) from exc
 
             slot = PipelineSlot.get()

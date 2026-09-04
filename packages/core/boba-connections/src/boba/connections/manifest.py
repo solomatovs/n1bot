@@ -11,7 +11,7 @@ UnknownConnectionKind — в реестре нет типа с таким kind (
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from importlib.metadata import entry_points
 from typing import Any, ClassVar, Literal, Protocol
@@ -42,9 +42,14 @@ class UnknownConnectionKindError(ConnectionTypesError):
     смотря что было на руках у вызывающего.
     """
 
-    def __init__(self, kind: str) -> None:
-        super().__init__(f"connection type {kind!r} is not installed")
+    def __init__(self, kind: str, installed: Sequence[str]) -> None:
+        msg = (
+            f"connection type {kind!r} is not installed, "
+            f"installed types: {list(installed)}"
+        )
+        super().__init__(msg)
         self.kind = kind
+        self.installed = tuple(installed)
 
 
 class ProbeHook(Protocol):
@@ -80,13 +85,18 @@ class ConnectionTypes:
         for entry in entry_points(group=cls.GROUP):
             manifest = entry.load()
             if not isinstance(manifest, ConnectionTypeManifest):
-                msg = f"entry point {entry.name!r}: not a ConnectionTypeManifest"
+                msg = (
+                    f"entry point {entry.name!r} of group {cls.GROUP!r} "
+                    f"({entry.value}): expected a ConnectionTypeManifest, "
+                    f"got {type(manifest).__name__}"
+                )
                 raise ConnectionTypesError(msg)
 
             if manifest.kind != entry.name:
                 msg = (
-                    f"entry point {entry.name!r} declares kind "
-                    f"{manifest.kind!r}: names must match"
+                    f"entry point {entry.name!r} of group {cls.GROUP!r} "
+                    f"({entry.value}) declares kind {manifest.kind!r}: "
+                    "the entry point name must equal the kind"
                 )
                 raise ConnectionTypesError(msg)
 
@@ -107,12 +117,12 @@ class ConnectionTypes:
             if manifest.profile is profile:
                 return kind
 
-        raise UnknownConnectionKindError(profile.__name__)
+        raise UnknownConnectionKindError(profile.__name__, self.kinds())
 
     def manifest_of(self, kind: str) -> ConnectionTypeManifest:
         found = self._table.get(kind)
         if found is None:
-            raise UnknownConnectionKindError(kind)
+            raise UnknownConnectionKindError(kind, self.kinds())
 
         return found
 
@@ -120,7 +130,10 @@ class ConnectionTypes:
         """Профиль из jsonb строки: модель выбирается по полю kind."""
         kind = raw.get("kind")
         if not isinstance(kind, str):
-            msg = f"connection profile has no kind: {sorted(raw)}"
+            msg = (
+                "connection profile: expected a string field kind, "
+                f"got kind={kind!r} among keys {sorted(raw)}"
+            )
             raise ConnectionTypesError(msg)
 
         manifest = self.manifest_of(kind)

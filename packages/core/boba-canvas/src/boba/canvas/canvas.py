@@ -509,8 +509,13 @@ class CanvasWatch:
                 await self._pause(waker)
         except asyncio.CancelledError:
             raise
-        except Exception:
-            logger.warning("canvas watch stopped: %s", self._path, exc_info=True)
+        except Exception as exc:
+            logger.warning(
+                "canvas watch of %s stopped by an unexpected error: %s",
+                self._path,
+                exc,
+                exc_info=True,
+            )
         finally:
             if waker is not None:
                 self._source.detach_waker(waker)
@@ -574,7 +579,11 @@ class StreamPath(BaseModel):
     @classmethod
     def _readable(cls, value: JournalChannel) -> JournalChannel:
         if not JournalChannels.visible(value):
-            msg = f"channel is not readable: {value.value}"
+            readable = [channel.value for channel in JournalChannels.VISIBLE]
+            msg = (
+                f"stream path: channel {value.value!r} is not readable, "
+                f"expected one of {readable}"
+            )
             raise ValueError(msg)
 
         return value
@@ -617,7 +626,11 @@ class StreamShowRequest(BaseModel):
     @classmethod
     def _readable(cls, value: JournalChannel) -> JournalChannel:
         if not JournalChannels.visible(value):
-            msg = f"channel is not readable: {value.value}"
+            readable = [channel.value for channel in JournalChannels.VISIBLE]
+            msg = (
+                f"canvas_stream: channel {value.value!r} is not readable, "
+                f"expected one of {readable}"
+            )
             raise ValueError(msg)
 
         return value
@@ -635,7 +648,11 @@ class StreamWindowRequest(BaseModel):
     @model_validator(mode="after")
     def _one_bound(self) -> Self:
         if (self.offset is None) == (self.before is None):
-            msg = "canvas_stream_window: exactly one of offset and before"
+            msg = (
+                f"canvas_stream_window for {self.path!r}: expected exactly one "
+                f"of offset and before, got offset={self.offset!r}, "
+                f"before={self.before!r}"
+            )
             raise ValueError(msg)
 
         return self

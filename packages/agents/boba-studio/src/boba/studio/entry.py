@@ -83,19 +83,22 @@ class StudioHost:
         container = app.state.container
         table = container.resolved(providers.users_table)
         if not isinstance(table, UsersTable):
-            msg = f"users table provider returned {type(table).__name__}"
+            got = type(table).__name__
+            msg = f"users table provider: expected UsersTable, got {got}"
             raise RuntimeError(msg)
 
         await table.setup()
 
         auth = container.resolved(providers.auth_service)
         if not isinstance(auth, AuthService):
-            msg = f"auth service provider returned {type(auth).__name__}"
+            got = type(auth).__name__
+            msg = f"auth service provider: expected AuthService, got {got}"
             raise RuntimeError(msg)
 
         sessions = app.state.sessions
         if not isinstance(sessions, StudioSessions):
-            msg = f"app state carries {type(sessions).__name__} instead of sessions"
+            got = type(sessions).__name__
+            msg = f"app.state.sessions: expected StudioSessions, got {got}"
             raise RuntimeError(msg)
 
         access = ApiAccess(
@@ -155,7 +158,8 @@ class StudioHost:
         container = app.state.container
         config = app.state.config
         if not isinstance(config, StudioRuntimeConfig):
-            msg = f"app state carries {type(config).__name__} instead of the config"
+            got = type(config).__name__
+            msg = f"app.state.config: expected StudioRuntimeConfig, got {got}"
             raise RuntimeError(msg)
 
         await container.start()

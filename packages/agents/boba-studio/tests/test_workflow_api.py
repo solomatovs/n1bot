@@ -114,18 +114,21 @@ def _profile_of(studio_config: StudioRuntimeConfig) -> str:
 
 
 async def _finished(client: AsyncClient, run_id: str, profile: str) -> dict[str, Any]:
+    status = ""
     for _ in range(200):
         reply = await client.get(
             f"/v1/workflow-runs/{run_id}", params={"profile": profile}
         )
         assert reply.status_code == 200, reply.text
         run = reply.json()
-        if run["status"] in ("done", "failed", "stopped"):
+        status = run["status"]
+        if status in ("done", "failed", "stopped"):
             return run
 
         await asyncio.sleep(0.02)
 
-    raise AssertionError("the run never finished")
+    msg = f"run {run_id} under profile {profile!r}: still {status!r} after 200 polls"
+    raise AssertionError(msg)
 
 
 async def test_catalog_lists_tools(

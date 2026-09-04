@@ -134,7 +134,7 @@ class OllamaAssembly:
     def take(self, chunk: OllamaWireChunk) -> ChatDelta | None:
         """Учитывает чанк; наружу — прирост текста или рассуждений."""
         if chunk.error:
-            msg = f"chat endpoint reported: {chunk.error}"
+            msg = f"ollama chat: server reported an error in the reply: {chunk.error}"
             raise ChatProviderError(msg)
 
         if chunk.done:
@@ -180,13 +180,16 @@ class OllamaAssembly:
 
         if self._done_reason == OllamaDoneReason.LENGTH:
             msg = (
-                "chat reply hit the token ceiling: done_reason=length, "
+                "ollama chat: reply hit the token ceiling: done_reason=length, "
                 f"{self._output_tokens} eval tokens spent; "
                 "raise the num_predict sampling option"
             )
             raise ChatProviderError(msg)
 
-        msg = f"chat generation ended abnormally: done_reason={self._done_reason}"
+        msg = (
+            "ollama chat: generation ended abnormally, expected done_reason=stop, "
+            f"got done_reason={self._done_reason}"
+        )
         raise ChatProviderError(msg)
 
     @staticmethod
@@ -214,7 +217,10 @@ class NdjsonWireStream(WireStream[OllamaWireChunk]):
         try:
             return OllamaWireChunk.model_validate_json(body)
         except ValidationError as exc:
-            msg = f"chat endpoint sent malformed chunk: {body[:300]!r}"
+            msg = (
+                f"ollama chat: stream line is not an OllamaWireChunk: "
+                f"{body[:300]!r}: {exc}"
+            )
             raise ChatProviderError(msg) from exc
 
     def finish(self) -> OllamaWireChunk | None:
@@ -274,7 +280,10 @@ class OllamaChatProvider(ChatProvider):
         try:
             return OllamaWireChunk.model_validate_json(body)
         except ValidationError as exc:
-            msg = f"chat endpoint returned malformed body: {body[:300]!r}"
+            msg = (
+                f"ollama chat: response body is not an OllamaWireChunk: "
+                f"{body[:300]!r}: {exc}"
+            )
             raise ChatProviderError(msg) from exc
 
     def _payload(self, request: ChatRequest) -> dict[str, Any]:
@@ -309,7 +318,10 @@ class OllamaChatProvider(ChatProvider):
         options: dict[str, Any] = {}
         if raw is not None:
             if not isinstance(raw, Mapping):
-                msg = f"sampling options must be a table, got: {type(raw).__name__}"
+                msg = (
+                    "ollama chat: sampling.options must be a table, "
+                    f"got {type(raw).__name__}: {raw!r:.200}"
+                )
                 raise ChatProviderError(msg)
 
             options = dict(raw)

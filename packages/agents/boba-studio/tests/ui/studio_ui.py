@@ -28,9 +28,11 @@ def login_cookies(stand: StandProcess, login: str = "") -> list[SetCookieParam]:
         timeout=30.0,
     )
     if response.status_code >= 300:
-        raise RuntimeError(
-            f"login failed: {response.status_code} {response.text[:200]}"
+        msg = (
+            f"POST {response.url} as {credential.login!r}: expected 2xx, "
+            f"got {response.status_code}: {response.text[:200]}"
         )
+        raise RuntimeError(msg)
 
     cookies: list[SetCookieParam] = []
     for name, value in response.cookies.items():
@@ -39,7 +41,11 @@ def login_cookies(stand: StandProcess, login: str = "") -> list[SetCookieParam]:
         )
 
     if not cookies:
-        raise RuntimeError("login returned no cookies")
+        msg = (
+            f"POST {response.url} as {credential.login!r}: expected a session "
+            f"cookie in the {response.status_code} reply, got none"
+        )
+        raise RuntimeError(msg)
 
     return cookies
 

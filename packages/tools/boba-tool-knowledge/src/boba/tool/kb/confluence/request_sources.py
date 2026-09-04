@@ -403,7 +403,11 @@ class ConfluenceMultiSpaceRequestSource(RequestSource[ConfluenceRequest]):
         progress: IngestProgress,
     ) -> None:
         if not space_keys:
-            raise ValueError("space_keys is empty")
+            msg = (
+                "confluence multi-space source expects at least one space key, "
+                "got an empty space_keys"
+            )
+            raise ValueError(msg)
 
         self._inner: list[ConfluenceSpaceRequestSource] = []
         for key in space_keys:

@@ -169,15 +169,18 @@ class WorkflowNamespace(socketio.AsyncNamespace):
     async def on_connect(self, sid: str, environ: dict[str, Any], auth: Any) -> None:
         signed = await self._authenticate(environ)
         if signed is None:
-            logger.warning("workflow socket refused: sid=%s no sign-in", sid)
-            raise ConnectionRefusedError("no sign-in")
+            msg = f"workflow socket connect for sid={sid}: no valid sign-in token"
+            logger.warning(msg)
+            raise ConnectionRefusedError(msg)
 
         user = signed.user
         try:
             identity = ApiAuth.resolve(user, None, self._profiles)
         except BaseError as exc:
-            logger.warning("workflow socket refused: sid=%s %s", sid, exc)
-            raise ConnectionRefusedError(str(exc)) from exc
+            who = f"sid={sid} user {user.identifier!r}"
+            msg = f"workflow socket connect for {who}: resolving profile failed: {exc}"
+            logger.warning(msg)
+            raise ConnectionRefusedError(msg) from exc
 
         self._subjects[sid] = identity.subject
         self._sessions.attach(
@@ -321,7 +324,11 @@ class WorkflowNamespace(socketio.AsyncNamespace):
             try:
                 snapshot = await service.snapshot_of(run_id)
             except Exception as exc:
-                logger.exception("run %s: snapshot is not available", run_id)
+                logger.exception(
+                    "run %s: reading its snapshot for the socket room failed: %s",
+                    run_id,
+                    exc,
+                )
                 await self.emit(
                     WorkflowSocketEvent.REFUSED.value,
                     {"reason": f"run state is not available: {exc}"},
