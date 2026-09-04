@@ -92,7 +92,6 @@ class EnvOverride(StrEnum):
     CGROUP_BASE = "cgroup_base"
     APP_ROOT = "app_root"
     WORKFLOW_PAGE = "workflow_page"
-    CATALOG_PAGE = "catalog_page"
     MESSAGING = "messaging_provider"
     TOOL_LAUNCHER = "tool_launcher"
 

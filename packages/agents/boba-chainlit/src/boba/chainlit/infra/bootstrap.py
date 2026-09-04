@@ -240,8 +240,7 @@ def _use_catalog(c: AppConfig) -> None:
 
     from boba.chainlit.catalog.api import CatalogApi, CatalogUrl  # noqa: PLC0415
     from boba.chat.profiles import ChatProfiles  # noqa: PLC0415
-    from boba.runtime.config import DevPage  # noqa: PLC0415
-    from boba.runtime.spa import BuiltSpa, DevSpa  # noqa: PLC0415
+    from boba.runtime.spa import BuiltSpa  # noqa: PLC0415
     from chainlit.server import app as chainlit_app  # noqa: PLC0415
 
     if not c.catalog.enable:
@@ -262,16 +261,15 @@ def _use_catalog(c: AppConfig) -> None:
     # маршруты вешаются на приложение chainlit, уже смонтированное под префиксом,
     # поэтому пути относительные, а базы модулей несут префикс целиком
     paths = CatalogPage.paths(prefix)
-    if isinstance(c.catalog.page, DevPage):
-        DevSpa(paths, c.catalog.page.url, "", stamp).mount(chainlit_app)
-    else:
-        BuiltSpa(paths, c.catalog.dist, "", stamp).mount(chainlit_app)
+    BuiltSpa(paths, c.catalog.dist, "", stamp).mount(chainlit_app)
 
     _prepend_routes(chainlit_app, before)
 
 
 class CatalogPage:
-    """Где страница каталога живёт под префиксом chainlit."""
+    """Где страница каталога живёт под префиксом chainlit. Страница всегда
+    раздаётся из сборки; поля dev у SpaPaths — контракт общего модуля, здесь
+    они не используются."""
 
     SEGMENT: ClassVar[str] = "catalog"
     SOCKET: ClassVar[str] = "/ws/socket.io"
