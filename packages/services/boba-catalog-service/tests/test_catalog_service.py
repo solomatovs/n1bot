@@ -20,6 +20,8 @@ from boba.catalog import (
     ManualObject,
     ObjectKind,
     OperationList,
+    RemoveFlow,
+    RemoveNode,
     RetargetNode,
     SnapshotResolver,
     SourceKind,
@@ -186,6 +188,19 @@ async def test_new_source_version_marks_staleness_and_pins_can_bump(
     assert (process.customers.id, StaleReason.OBJECT_REMOVED) in reasons
     assert (process.flow_orders.id, StaleReason.COLUMN_CHANGED) in reasons
 
+    context = await service.context(VIEWER)
+    assert context.pins == {process.source_id: 1}
+    assert [c.name for c in context.columns[process.orders.id]] == [
+        "id",
+        "amount",
+        "created_at",
+    ]
+    assert [c.key for c in context.columns[process.orders.id]] == [True, False, True]
+    assert context.columns[process.load_orders.id] == ()
+    assert {s.reason for s in context.stale.entries} == {
+        s.reason for s in stale.entries
+    }
+
     lagging = await service.create_draft(EDITOR, "lagging")
     assert lagging.pins == {process.source_id: 2}
     assert (await service.draft_staleness(VIEWER, lagging.id)).entries == ()
@@ -193,6 +208,37 @@ async def test_new_source_version_marks_staleness_and_pins_can_bump(
     bump = await service.bump_pins(EDITOR, lagging.id)
     assert bump.draft.pins == {process.source_id: 2}
     assert any("customers" in violation for violation in bump.violations)
+
+
+async def test_deleted_source_in_pins_does_not_break_the_context(
+    service: CatalogService, process: ProcessSample
+) -> None:
+    """Источник удалён после публикации: привязка на него пропускается,
+    контекст и устаревание считаются по оставшимся источникам."""
+    draft = await service.create_draft(EDITOR, "initial")
+    await service.append_ops(EDITOR, draft.id, 0, process.ops(), AuthorVia.USER)
+    await service.publish(EDITOR, draft.id, AuthorVia.USER)
+
+    cleanup = await service.create_draft(EDITOR, "cleanup")
+    ops = OperationList(
+        root=(
+            RemoveFlow(id=process.flow_orders.id),
+            RemoveFlow(id=process.flow_customers.id),
+            RemoveNode(id=process.orders.id),
+            RemoveNode(id=process.customers.id),
+            RemoveNode(id=process.v_orders.id),
+            RemoveNode(id=process.load_orders.id),
+        )
+    )
+    await service.append_ops(EDITOR, cleanup.id, 0, ops, AuthorVia.USER)
+    await service.publish(EDITOR, cleanup.id, AuthorVia.USER)
+    await service.delete_source(EDITOR, process.source_id)
+
+    context = await service.context(VIEWER)
+    assert context.pins == {process.source_id: 1}
+    assert context.columns == {}
+    assert context.stale.entries == ()
+    assert (await service.create_draft(EDITOR, "after")).pins == {}
 
 
 async def test_view_access_by_share(
@@ -239,6 +285,10 @@ async def test_view_state_slices_the_process_for_a_shared_stranger(
         EDITOR, view.id, [NodePosition(node_id=process.orders.id, x=10, y=20)]
     )
     await service.share_view(EDITOR, view.id, ViewShare.user(STRANGER.user_id))
+
+    context = await service.view_context(STRANGER, view.id)
+    assert set(context.columns) == {process.orders.id, process.customers.id}
+    assert context.stale.entries == ()
 
     state = await service.view_state(STRANGER, view.id)
     assert state.version == 1

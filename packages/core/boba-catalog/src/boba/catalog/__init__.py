@@ -71,7 +71,7 @@ from boba.catalog.postgres_snapshot import (
     PgType,
     PgTypeKind,
 )
-from boba.catalog.resolver import SnapshotResolver
+from boba.catalog.resolver import NodeColumn, SnapshotResolver
 from boba.catalog.source_cards import (
     CardKind,
     ChDictionaryCard,
@@ -160,6 +160,7 @@ __all__ = [
     "ManualObjectKind",
     "ManualObjects",
     "Node",
+    "NodeColumn",
     "ObjectCard",
     "ObjectCards",
     "ObjectChange",

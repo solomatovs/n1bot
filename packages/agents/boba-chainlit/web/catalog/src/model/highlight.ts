@@ -1,17 +1,17 @@
-import { Z_INDEX, type DatasetNode, type FlowEdge } from "./graph";
+import { Z_INDEX, type FlowEdge, type ProcessFlowNode } from "./graph";
 
 export type HighlightTrigger = {
   activeId: string | undefined;
   hoverId: string | undefined;
 };
 
-/** Подсветка цепочки: активный набор, его соседи по потокам и рёбра к ним;
+/** Подсветка цепочки: активный узел, его соседи по потокам и рёбра к ним;
  * hover подсвечивает так же, но без пометки активного. Перенос из liam erd-core. */
 export function highlight(
-  nodes: DatasetNode[],
+  nodes: ProcessFlowNode[],
   edges: FlowEdge[],
   trigger: HighlightTrigger,
-): { nodes: DatasetNode[]; edges: FlowEdge[] } {
+): { nodes: ProcessFlowNode[]; edges: FlowEdge[] } {
   const related = new Map<string, Set<string>>();
   for (const edge of edges) {
     if (!related.has(edge.source)) {

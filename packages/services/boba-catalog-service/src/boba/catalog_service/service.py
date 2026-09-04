@@ -23,6 +23,7 @@ from boba.catalog import (
     CatalogError,
     CatalogSnapshot,
     ChangeStatus,
+    NodeColumn,
     ObjectCard,
     ObjectCards,
     ObjectKind,
@@ -48,12 +49,14 @@ from boba.catalog_service.records import (
     DraftStatus,
     NodePosition,
     PinBump,
+    ProcessContext,
     RebaseResult,
     ShareTargetKind,
     Source,
     SourceConnection,
     SourceDraft,
     SourceDraftState,
+    SourceNotFoundError,
     SourceObjectNotFoundError,
     SourceSpec,
     SourceVersion,
@@ -61,6 +64,7 @@ from boba.catalog_service.records import (
     VersionOrigin,
     View,
     ViewLayout,
+    ViewNodeNotFoundError,
     ViewShare,
     ViewSpec,
     ViewState,
@@ -249,6 +253,33 @@ class CatalogService:
         state = await self._store.draft_state(draft_id)
         return await self._staleness_of(state.snapshot, state.draft.pins)
 
+    async def context(self, subject: Subject) -> ProcessContext:
+        """Контекст опубликованного процесса по привязкам последней версии."""
+        self._require_view(subject)
+
+        snapshot = await self._store.snapshot()
+        pins = await self.published_pins(subject)
+        return await self._context_of(snapshot, pins)
+
+    async def draft_context(self, subject: Subject, draft_id: UUID) -> ProcessContext:
+        self._require_view(subject)
+
+        state = await self._store.draft_state(draft_id)
+        return await self._context_of(state.snapshot, state.draft.pins)
+
+    async def view_context(self, subject: Subject, view_id: UUID) -> ProcessContext:
+        """Контекст среза вида: доступен тем же, кому доступен вид."""
+        view = await self._accessible_view(subject, view_id)
+
+        snapshot = await self._store.snapshot()
+        versions = await self._store.versions()
+        pins: Mapping[UUID, int] = {}
+        if versions:
+            pins = versions[-1].pins
+
+        restricted = snapshot.restricted(view.node_ids, view.layer_ids)
+        return await self._context_of(restricted, pins)
+
     async def bump_pins(self, subject: Subject, draft_id: UUID) -> PinBump:
         """Привязки черновика поднимаются до последних версий источников; что
         после этого перестало сходиться, перечисляется, но не чинится."""
@@ -276,11 +307,30 @@ class CatalogService:
         return pins
 
     async def _resolver_of(self, pins: Mapping[UUID, int]) -> SnapshotResolver:
+        """Снимки привязанных версий; привязка к удалённому источнику
+        пропускается — его объекты резолвер считает существующими."""
         snapshots: dict[UUID, SourceSnapshot] = {}
         for source_id, version in pins.items():
-            snapshots[source_id] = await self._sources.snapshot_of(source_id, version)
+            try:
+                snapshots[source_id] = await self._sources.snapshot_of(
+                    source_id, version
+                )
+            except SourceNotFoundError:
+                continue
 
         return SnapshotResolver(snapshots)
+
+    async def _context_of(
+        self, snapshot: CatalogSnapshot, pins: Mapping[UUID, int]
+    ) -> ProcessContext:
+        resolver = await self._resolver_of(pins)
+
+        columns: dict[UUID, tuple[NodeColumn, ...]] = {}
+        for node in snapshot.nodes.values():
+            columns[node.id] = resolver.node_columns(node.ref)
+
+        stale = await self._staleness_of(snapshot, pins)
+        return ProcessContext(pins=pins, columns=columns, stale=stale)
 
     async def _staleness_of(
         self, snapshot: CatalogSnapshot, pins: Mapping[UUID, int]
@@ -292,7 +342,11 @@ class CatalogService:
             if pinned_version is None:
                 continue
 
-            source = await self._sources.get_source(source_id)
+            try:
+                source = await self._sources.get_source(source_id)
+            except SourceNotFoundError:
+                continue
+
             if source.latest_version == pinned_version:
                 continue
 
@@ -604,6 +658,36 @@ class CatalogService:
             return ObjectCards.of(snapshot, ref)
         except CatalogError as exc:
             raise SourceObjectNotFoundError(ref) from exc
+
+    async def view_object(
+        self, subject: Subject, view_id: UUID, node_id: UUID
+    ) -> ObjectCard:
+        """Карточка объекта узла из среза вида по привязке опубликованной
+        версии: доступна тем же, кому доступен вид, прав на каталог не нужно.
+
+        Ошибки:
+        ViewNodeNotFoundError — узла нет в срезе вида.
+        SourceObjectNotFoundError — объекта нет в привязанной версии.
+        """
+        view = await self._accessible_view(subject, view_id)
+
+        snapshot = await self._store.snapshot()
+        restricted = snapshot.restricted(view.node_ids, view.layer_ids)
+        node = restricted.nodes.get(node_id)
+        if node is None:
+            raise ViewNodeNotFoundError(view_id, node_id)
+
+        source = await self._sources.get_source(node.ref.source_id)
+        version = source.latest_version
+        versions = await self._store.versions()
+        if versions:
+            version = versions[-1].pins.get(node.ref.source_id, source.latest_version)
+
+        pinned = await self._sources.snapshot_of(node.ref.source_id, version)
+        try:
+            return ObjectCards.of(pinned, node.ref)
+        except CatalogError as exc:
+            raise SourceObjectNotFoundError(node.ref) from exc
 
     async def source_diff(
         self, subject: Subject, source_id: UUID, old: int, new: int

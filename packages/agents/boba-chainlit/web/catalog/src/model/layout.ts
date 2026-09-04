@@ -1,7 +1,7 @@
 import ELK, { type ElkExtendedEdge, type ElkNode, type LayoutOptions } from "elkjs/lib/elk.bundled.js";
 
 import type { NodePosition } from "./catalog";
-import { measuredOf, type DatasetNode, type FlowEdge } from "./graph";
+import { measuredOf, type FlowEdge, type ProcessFlowNode } from "./graph";
 
 /** Раскладка ELK слева направо: партиция узла — номер слоя, поэтому источники
  * всегда левее приёмников; перенос из liam erd-core с партициями вместо групп. */
@@ -22,17 +22,17 @@ const LAYOUT_OPTIONS: LayoutOptions = {
 const elk = new ELK();
 
 export type LayoutInput = {
-  nodes: DatasetNode[];
+  nodes: ProcessFlowNode[];
   edges: FlowEdge[];
-  partitionOf: (node: DatasetNode) => number;
+  partitionOf: (node: ProcessFlowNode) => number;
   /** Сохранённые позиции вида: узел с позицией раскладка не двигает. */
   saved: NodePosition[];
 };
 
 /** Узлы с позициями: сохранённые как есть, остальные от ELK по размерам, которые
  * замерил React Flow. Скрытые и ещё не замеренные узлы в раскладке не участвуют. */
-export async function computeLayout(input: LayoutInput): Promise<DatasetNode[]> {
-  const savedById = new Map(input.saved.map((position) => [position.dataset_id, position]));
+export async function computeLayout(input: LayoutInput): Promise<ProcessFlowNode[]> {
+  const savedById = new Map(input.saved.map((position) => [position.node_id, position]));
   const visible = input.nodes.filter((node) => !node.hidden && measuredOf(node) !== undefined);
   const visibleIds = new Set(visible.map((node) => node.id));
   const rest = input.nodes.filter((node) => !visibleIds.has(node.id));

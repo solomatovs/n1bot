@@ -1,39 +1,66 @@
 import { z } from "zod";
 
-/** Снимок каталога и записи сервиса, как их отдаёт JSON API; разбор на границе
- * делает zod, соответствие OpenAPI проверяет api/contract.ts на компиляции. */
+/** Снимок процесса, записи сервиса и снимки источников, как их отдаёт JSON API;
+ * разбор на границе делает zod, соответствие OpenAPI проверяет api/contract.ts
+ * на компиляции. */
+
+// --- источники метаданных: адреса объектов ---
+
+export const SourceKindSchema = z.enum(["postgres", "clickhouse"]);
+export const ObjectKindSchema = z.enum([
+  "database",
+  "schema",
+  "relation",
+  "routine",
+  "sequence",
+  "type",
+  "table",
+  "dictionary",
+]);
+
+export const ObjectRefSchema = z.object({
+  source_id: z.string(),
+  kind: ObjectKindSchema,
+  path: z.array(z.string()),
+});
+
+export type SourceKind = z.infer<typeof SourceKindSchema>;
+export type ObjectKind = z.infer<typeof ObjectKindSchema>;
+export type ObjectRef = z.infer<typeof ObjectRefSchema>;
+
+/** Адрес объекта строкой: путь через «/», как его печатает сервер в подписях. */
+export function renderRef(ref: ObjectRef): string {
+  return ref.path.join("/");
+}
+
+export function sameRef(a: ObjectRef, b: ObjectRef): boolean {
+  return a.source_id === b.source_id && a.kind === b.kind && renderRef(a) === renderRef(b);
+}
+
+// --- процесс: слои, узлы, виды загрузки, потоки ---
 
 export const LayerSchema = z.object({
   id: z.string(),
   name: z.string(),
-});
-
-export const DatasetSchema = z.object({
-  id: z.string(),
-  layer_id: z.string(),
-  name: z.string(),
-  source: z.string(),
-  description: z.string(),
-  tags: z.array(z.string()),
-  owner: z.string(),
-});
-
-export const ColumnSchema = z.object({
-  id: z.string(),
-  dataset_id: z.string(),
-  name: z.string(),
-  type: z.string(),
-  nullable: z.boolean(),
-  is_key: z.boolean(),
   position: z.number(),
   description: z.string(),
 });
 
-export const LoadFieldTypeSchema = z.enum(["text", "int", "bool", "column", "columns"]);
+export const NodeSchema = z.object({
+  id: z.string(),
+  layer_id: z.string(),
+  ref: ObjectRefSchema,
+  alias: z.string().nullable(),
+  note: z.string(),
+});
+
+export const LoadFieldTypeSchema = z.enum(["text", "int", "bool", "column", "columns", "routine"]);
+export const ColumnSideSchema = z.enum(["source", "target", "any"]);
 
 export const LoadFieldSchema = z.object({
   name: z.string(),
   type: LoadFieldTypeSchema,
+  side: ColumnSideSchema,
   required: z.boolean(),
   description: z.string(),
 });
@@ -45,7 +72,7 @@ export const LoadKindSchema = z.object({
   fields: z.array(LoadFieldSchema),
 });
 
-export const LoadValueSchema = z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]);
+export const LoadValueSchema = z.union([z.string(), z.number(), z.boolean(), z.array(z.string()), ObjectRefSchema]);
 
 export const LoadSpecSchema = z.object({
   kind_id: z.string(),
@@ -54,34 +81,38 @@ export const LoadSpecSchema = z.object({
 
 export const FlowSchema = z.object({
   id: z.string(),
-  from_dataset_id: z.string(),
-  to_dataset_id: z.string(),
+  from_node_id: z.string(),
+  to_node_id: z.string(),
   load: LoadSpecSchema,
   description: z.string(),
 });
 
 export const SnapshotSchema = z.object({
   layers: z.record(LayerSchema),
-  datasets: z.record(DatasetSchema),
-  columns: z.record(ColumnSchema),
+  nodes: z.record(NodeSchema),
   load_kinds: z.record(LoadKindSchema),
   flows: z.record(FlowSchema),
 });
 
-export const EntityKindSchema = z.enum(["layer", "dataset", "column", "load_kind", "flow"]);
+export const EntityKindSchema = z.enum(["layer", "node", "load_kind", "flow"]);
 export const ChangeStatusSchema = z.enum(["added", "removed", "modified", "unchanged"]);
 
+export const EntityRefSchema = z.object({ kind: EntityKindSchema, id: z.string() });
+
 export const DiffEntrySchema = z.object({
-  ref: z.object({ kind: EntityKindSchema, id: z.string() }),
+  ref: EntityRefSchema,
   status: ChangeStatusSchema,
 });
 
 export const DiffSchema = z.object({ entries: z.array(DiffEntrySchema) });
 
+const PinsSchema = z.record(z.number());
+
 export const DraftSchema = z.object({
   id: z.string(),
   name: z.string(),
   base_version: z.number(),
+  pins: PinsSchema,
   status: z.enum(["open", "published", "discarded"]),
   created_by: z.string(),
   created_at: z.string(),
@@ -98,13 +129,13 @@ export const ViewSchema = z.object({
   id: z.string(),
   name: z.string(),
   owner_id: z.string(),
-  dataset_ids: z.array(z.string()),
+  node_ids: z.array(z.string()),
   layer_ids: z.array(z.string()),
   created_at: z.string(),
 });
 
 export const NodePositionSchema = z.object({
-  dataset_id: z.string(),
+  node_id: z.string(),
   x: z.number(),
   y: z.number(),
 });
@@ -137,6 +168,7 @@ export const ShareSchema = z.object({
 
 export const VersionSchema = z.object({
   number: z.number(),
+  pins: PinsSchema,
   author: z.object({ user_id: z.string(), via: z.enum(["user", "llm"]) }),
   published_at: z.string(),
 });
@@ -146,6 +178,44 @@ export const RebaseIssueSchema = z.object({ seq: z.number(), index: z.number(), 
 export const RebaseResultSchema = z.object({
   draft: DraftSchema,
   issues: z.array(RebaseIssueSchema),
+});
+
+export const StaleReasonSchema = z.enum([
+  "object_removed",
+  "object_changed",
+  "column_removed",
+  "column_changed",
+  "routine_removed",
+  "routine_changed",
+]);
+
+export const StaleSchema = z.object({
+  target: EntityRefSchema,
+  source_id: z.string(),
+  pinned_version: z.number(),
+  since_version: z.number(),
+  reason: StaleReasonSchema,
+  detail: z.record(z.string()),
+});
+
+export const StalenessSchema = z.object({ entries: z.array(StaleSchema) });
+
+export const NodeColumnSchema = z.object({
+  name: z.string(),
+  type: z.string(),
+  nullable: z.boolean(),
+  key: z.boolean(),
+});
+
+export const ProcessContextSchema = z.object({
+  pins: PinsSchema,
+  columns: z.record(z.array(NodeColumnSchema)),
+  stale: StalenessSchema,
+});
+
+export const PinBumpSchema = z.object({
+  draft: DraftSchema,
+  violations: z.array(z.string()),
 });
 
 export const CatalogChangedSchema = z.object({
@@ -158,14 +228,16 @@ export const CatalogChangedSchema = z.object({
 });
 
 export type Layer = z.infer<typeof LayerSchema>;
-export type Dataset = z.infer<typeof DatasetSchema>;
-export type Column = z.infer<typeof ColumnSchema>;
+export type ProcessNode = z.infer<typeof NodeSchema>;
+export type LoadFieldType = z.infer<typeof LoadFieldTypeSchema>;
+export type ColumnSide = z.infer<typeof ColumnSideSchema>;
 export type LoadField = z.infer<typeof LoadFieldSchema>;
 export type LoadKind = z.infer<typeof LoadKindSchema>;
 export type LoadValue = z.infer<typeof LoadValueSchema>;
 export type Flow = z.infer<typeof FlowSchema>;
 export type Snapshot = z.infer<typeof SnapshotSchema>;
 export type EntityKind = z.infer<typeof EntityKindSchema>;
+export type EntityRef = z.infer<typeof EntityRefSchema>;
 export type ChangeStatus = z.infer<typeof ChangeStatusSchema>;
 export type Diff = z.infer<typeof DiffSchema>;
 export type Draft = z.infer<typeof DraftSchema>;
@@ -176,46 +248,86 @@ export type ViewLayout = z.infer<typeof ViewLayoutSchema>;
 export type ViewState = z.infer<typeof ViewStateSchema>;
 export type Access = z.infer<typeof AccessSchema>;
 export type Share = z.infer<typeof ShareSchema>;
-/** Фильтр вида: пустые списки — весь каталог. */
-export type ViewSpec = { name: string; dataset_ids: string[]; layer_ids: string[] };
+/** Фильтр вида: пустые списки — весь процесс. */
+export type ViewSpec = { name: string; node_ids: string[]; layer_ids: string[] };
 export type Version = z.infer<typeof VersionSchema>;
 export type RebaseIssue = z.infer<typeof RebaseIssueSchema>;
 export type RebaseResult = z.infer<typeof RebaseResultSchema>;
+export type Stale = z.infer<typeof StaleSchema>;
+export type StaleReason = z.infer<typeof StaleReasonSchema>;
+export type Staleness = z.infer<typeof StalenessSchema>;
+export type NodeColumn = z.infer<typeof NodeColumnSchema>;
+export type ProcessContext = z.infer<typeof ProcessContextSchema>;
+export type PinBump = z.infer<typeof PinBumpSchema>;
 export type CatalogChanged = z.infer<typeof CatalogChangedSchema>;
 
 export const EMPTY_DIFF: Diff = { entries: [] };
+export const EMPTY_CONTEXT: ProcessContext = { pins: {}, columns: {}, stale: { entries: [] } };
 
-/** Потоки набора: входящие и исходящие. */
-export type DatasetFlows = {
+/** Потоки узла: входящие и исходящие. */
+export type NodeFlows = {
   incoming: Flow[];
   outgoing: Flow[];
 };
 
-/** Значение поля загрузки, готовое к показу: ссылки на колонки — именами. */
+/** Значение поля загрузки, готовое к показу: список колонок через запятую,
+ * рутина — адресом. */
 export type LoadValueView = {
   field: string;
   text: string;
 };
 
-/** Снимок с индексами: слои по порядку, колонки набора, потоки набора, статусы diff. */
+/** Подпись узла: alias, если задан, иначе последняя ступень адреса. */
+export function nodeLabel(node: ProcessNode): string {
+  if (node.alias !== null && node.alias !== "") {
+    return node.alias;
+  }
+
+  return node.ref.path.at(-1) ?? renderRef(node.ref);
+}
+
+/** Текст значения поля вида по его форме; тип поля — только для подписи. */
+export function loadValueText(value: LoadValue): string {
+  if (Array.isArray(value)) {
+    return value.join(", ");
+  }
+
+  if (typeof value === "object") {
+    return renderRef(value);
+  }
+
+  return String(value);
+}
+
+/** Снимок процесса с индексами и контекстом источников: слои по порядку, узлы
+ * слоя, потоки узла, колонки из привязанной версии, статусы diff и устаревание. */
 export class Catalog {
   private readonly statuses = new Map<string, ChangeStatus>();
+  private readonly stales = new Map<string, Stale[]>();
 
   constructor(
     readonly snapshot: Snapshot,
     readonly diff: Diff = EMPTY_DIFF,
+    readonly context: ProcessContext = EMPTY_CONTEXT,
   ) {
     for (const entry of diff.entries) {
       this.statuses.set(`${entry.ref.kind}:${entry.ref.id}`, entry.status);
     }
+
+    for (const stale of context.stale.entries) {
+      const key = `${stale.target.kind}:${stale.target.id}`;
+      const list = this.stales.get(key) ?? [];
+      list.push(stale);
+      this.stales.set(key, list);
+    }
   }
 
   get layers(): Layer[] {
-    return Object.values(this.snapshot.layers);
+    return Object.values(this.snapshot.layers).sort((a, b) => a.position - b.position);
   }
 
-  get datasets(): Dataset[] {
-    return Object.values(this.snapshot.datasets);
+  get nodes(): ProcessNode[] {
+    return Object.values(this.snapshot.nodes);
   }
 
   get flows(): Flow[] {
@@ -226,46 +338,61 @@ export class Catalog {
     return Object.values(this.snapshot.load_kinds);
   }
 
+  /** Сколько узлов и потоков устарело относительно последних версий источников. */
+  get staleCount(): number {
+    return this.stales.size;
+  }
+
   layer(id: string): Layer | undefined {
     return this.snapshot.layers[id];
   }
 
-  dataset(id: string): Dataset | undefined {
-    return this.snapshot.datasets[id];
-  }
-
-  column(id: string): Column | undefined {
-    return this.snapshot.columns[id];
+  node(id: string): ProcessNode | undefined {
+    return this.snapshot.nodes[id];
   }
 
   loadKind(id: string): LoadKind | undefined {
     return this.snapshot.load_kinds[id];
   }
 
-  /** Номер слоя в порядке создания: партиция раскладки. */
+  /** Узел по адресу объекта: один объект стоит не больше чем в одном слое. */
+  nodeOf(ref: ObjectRef): ProcessNode | undefined {
+    return this.nodes.find((node) => sameRef(node.ref, ref));
+  }
+
+  /** Номер слоя по позиции: партиция раскладки. */
   layerIndex(layerId: string): number {
     const index = this.layers.findIndex((layer) => layer.id === layerId);
     return index < 0 ? 0 : index;
   }
 
-  datasetsOf(layerId: string): Dataset[] {
-    return this.datasets.filter((dataset) => dataset.layer_id === layerId);
+  /** Следующая позиция для нового слоя: за последним. */
+  nextLayerPosition(): number {
+    const last = this.layers.at(-1);
+    return last === undefined ? 0 : last.position + 1;
   }
 
-  columnsOf(datasetId: string): Column[] {
-    return Object.values(this.snapshot.columns)
-      .filter((column) => column.dataset_id === datasetId)
-      .sort((a, b) => a.position - b.position);
+  nodesOf(layerId: string): ProcessNode[] {
+    return this.nodes.filter((node) => node.layer_id === layerId);
   }
 
-  flowsOf(datasetId: string): DatasetFlows {
+  /** Узлы-рутины: кандидаты в реализацию загрузки. */
+  routineNodes(): ProcessNode[] {
+    return this.nodes.filter((node) => node.ref.kind === "routine");
+  }
+
+  columnsOf(nodeId: string): NodeColumn[] {
+    return this.context.columns[nodeId] ?? [];
+  }
+
+  flowsOf(nodeId: string): NodeFlows {
     const incoming: Flow[] = [];
     const outgoing: Flow[] = [];
     for (const flow of this.flows) {
-      if (flow.to_dataset_id === datasetId) {
+      if (flow.to_node_id === nodeId) {
         incoming.push(flow);
       }
-      if (flow.from_dataset_id === datasetId) {
+      if (flow.from_node_id === nodeId) {
         outgoing.push(flow);
       }
     }
@@ -273,23 +400,23 @@ export class Catalog {
     return { incoming, outgoing };
   }
 
-  /** Соседи по потокам: наборы на другом конце. */
-  neighbours(datasetId: string): Dataset[] {
+  /** Соседи по потокам: узлы на другом конце. */
+  neighbours(nodeId: string): ProcessNode[] {
     const ids = new Set<string>();
     for (const flow of this.flows) {
-      if (flow.from_dataset_id === datasetId) {
-        ids.add(flow.to_dataset_id);
+      if (flow.from_node_id === nodeId) {
+        ids.add(flow.to_node_id);
       }
-      if (flow.to_dataset_id === datasetId) {
-        ids.add(flow.from_dataset_id);
+      if (flow.to_node_id === nodeId) {
+        ids.add(flow.from_node_id);
       }
     }
 
-    const found: Dataset[] = [];
+    const found: ProcessNode[] = [];
     for (const id of ids) {
-      const dataset = this.dataset(id);
-      if (dataset !== undefined) {
-        found.push(dataset);
+      const node = this.node(id);
+      if (node !== undefined) {
+        found.push(node);
       }
     }
 
@@ -300,55 +427,39 @@ export class Catalog {
     return this.statuses.get(`${kind}:${id}`) ?? "unchanged";
   }
 
+  staleOf(kind: EntityKind, id: string): Stale[] {
+    return this.stales.get(`${kind}:${id}`) ?? [];
+  }
+
+  /** Подпись узла по id; неизвестный узел — его id. */
+  label(nodeId: string): string {
+    const node = this.node(nodeId);
+    return node === undefined ? nodeId : nodeLabel(node);
+  }
+
   /** Имя вида загрузки потока; неизвестный вид — его id. */
   loadKindName(flow: Flow): string {
     return this.loadKind(flow.load.kind_id)?.name ?? flow.load.kind_id;
   }
 
-  /** Значения правила загрузки для показа: колонки по именам, списки через запятую. */
+  /** Значения правила загрузки для показа в порядке полей вида. */
   loadValues(flow: Flow): LoadValueView[] {
     const kind = this.loadKind(flow.load.kind_id);
+    const order = kind?.fields.map((field) => field.name) ?? [];
+    const names = Object.keys(flow.load.values).sort((a, b) => order.indexOf(a) - order.indexOf(b));
     const views: LoadValueView[] = [];
-    for (const [field, value] of Object.entries(flow.load.values)) {
-      const type = kind?.fields.find((item) => item.name === field)?.type;
-      views.push({ field, text: this.loadValueText(value, type) });
+    for (const field of names) {
+      const value = flow.load.values[field];
+      if (value !== undefined) {
+        views.push({ field, text: loadValueText(value) });
+      }
     }
 
     return views;
   }
-
-  private loadValueText(value: LoadValue, type: LoadField["type"] | undefined): string {
-    if (Array.isArray(value)) {
-      return value.map((id) => this.column(id)?.name ?? id).join(", ");
-    }
-
-    if (type === "column" && typeof value === "string") {
-      return this.column(value)?.name ?? value;
-    }
-
-    return String(value);
-  }
 }
 
-// --- источники метаданных ---
-
-export const SourceKindSchema = z.enum(["postgres", "clickhouse"]);
-export const ObjectKindSchema = z.enum([
-  "database",
-  "schema",
-  "relation",
-  "routine",
-  "sequence",
-  "type",
-  "table",
-  "dictionary",
-]);
-
-export const ObjectRefSchema = z.object({
-  source_id: z.string(),
-  kind: ObjectKindSchema,
-  path: z.array(z.string()),
-});
+// --- источники метаданных: записи, дерево, карточки, diff ---
 
 export const SourceSchema = z.object({
   id: z.string(),
@@ -642,9 +753,6 @@ export const SourceDraftStateSchema = z.object({
   seq: z.number(),
 });
 
-export type SourceKind = z.infer<typeof SourceKindSchema>;
-export type ObjectKind = z.infer<typeof ObjectKindSchema>;
-export type ObjectRef = z.infer<typeof ObjectRefSchema>;
 export type Source = z.infer<typeof SourceSchema>;
 export type SourceVersion = z.infer<typeof SourceVersionSchema>;
 export type SourceConnection = z.infer<typeof SourceConnectionSchema>;

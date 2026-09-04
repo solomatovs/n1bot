@@ -1,6 +1,6 @@
-"""Виды каталога на странице: создание из индекса, фильтр по слоям и наборам,
-сохранение раскладки перетаскиванием, шаринг роли и просмотр расшаренного вида
-учёткой без прав на каталог, удаление вида.
+"""Диаграммы процесса: создание из меню «diagrams», фильтр по слоям и узлам,
+сохранение раскладки перетаскиванием, шаринг роли и просмотр расшаренной
+диаграммы учёткой без прав на каталог, удаление диаграммы.
 
 Учётки стенда: admin (ADM) правит каталог и владеет видами, dev (DEV) читает
 каталог, guest (GST) видит только то, что ему расшарили.
@@ -62,9 +62,19 @@ def browsers(browser: Browser, stand: StandProcess) -> Iterator[Browsers]:
         opened.close()
 
 
-def _open_index(page: Page, stand: StandProcess) -> None:
+def _open_entry(page: Page, stand: StandProcess) -> None:
+    """Вход — опубликованный процесс; без права читать его — только шаринг."""
     page.goto(f"{stand.config.base_url}/catalog/")
-    expect(page.get_by_test_id("index-page")).to_be_visible()
+    expect(
+        page.get_by_test_id("catalog-page").or_(page.get_by_test_id("shared-only"))
+    ).to_be_visible()
+
+
+def _open_diagrams(page: Page) -> Locator:
+    page.get_by_test_id("diagrams-button").click()
+    dialog = page.locator('[data-dialog="diagrams"]')
+    expect(dialog.get_by_test_id("diagrams-list")).to_be_visible()
+    return dialog
 
 
 def _open_view(page: Page, stand: StandProcess, view_id: str) -> None:
@@ -73,11 +83,12 @@ def _open_view(page: Page, stand: StandProcess, view_id: str) -> None:
 
 
 def _create_view(page: Page, stand: StandProcess, name: str) -> str:
-    """Вид из формы индекса; адрес страницы отдаёт его id."""
-    _open_index(page, stand)
-    form = page.get_by_test_id("new-view")
+    """Диаграмма из меню страницы; адрес страницы отдаёт её id."""
+    _open_entry(page, stand)
+    dialog = _open_diagrams(page)
+    form = dialog.get_by_test_id("new-view")
     form.get_by_role("textbox").fill(name)
-    form.get_by_role("button", name="view").click()
+    form.get_by_role("button", name="save slice").click()
     page.wait_for_url(re.compile(r"/catalog/views/[0-9a-f-]{36}$"), timeout=30_000)
     page.wait_for_selector(Selector.READY, timeout=30_000)
 
@@ -115,50 +126,57 @@ def _restrict_to_layers(page: Page, layers: list[str]) -> None:
     _save_view_form(page)
 
 
-def _node(page: Page, name: str) -> Locator:
-    return page.locator(f'{Selector.NODE}[data-dataset="{name}"]')
-
-
-def _translate_of(page: Page, dataset_id: str) -> tuple[float, float]:
+def _translate_of(page: Page, node_id: str) -> tuple[float, float]:
     """Позиция узла в координатах холста из transform обёртки React Flow."""
-    wrapper = page.locator(f'.react-flow__node[data-id="{dataset_id}"]')
+    wrapper = page.locator(f'.react-flow__node[data-id="{node_id}"]')
     style = wrapper.get_attribute("style") or ""
     found = TRANSLATE.search(style)
     if found is None:
-        raise AssertionError(f"node {dataset_id} has no translate: {style!r}")
+        raise AssertionError(f"node {node_id} has no translate: {style!r}")
 
     return float(found.group(1)), float(found.group(2))
 
 
-class TestIndex:
-    def test_forms_follow_the_rights(
+def _member_count(seed: Seed) -> int:
+    return len(seed.tables) + len(seed.routines)
+
+
+class TestEntry:
+    def test_menus_follow_the_rights(
         self, browsers: Browsers, stand: StandProcess, catalog_seed: Seed
     ) -> None:
+        """admin: формы новой диаграммы и черновика; dev: только списки;
+        guest: без процесса, только расшаренные диаграммы."""
         admin = browsers.page("admin")
-        _open_index(admin, stand)
-        expect(admin.get_by_test_id("index-page")).to_have_attribute(
-            "data-can-edit", "true"
-        )
-        expect(admin.get_by_test_id("new-view")).to_be_visible()
-        expect(admin.get_by_test_id("new-draft")).to_be_visible()
+        _open_entry(admin, stand)
+        dialog = _open_diagrams(admin)
+        expect(dialog.get_by_test_id("new-view")).to_be_visible()
+        admin.get_by_role("button", name="close dialog").click()
+        admin.get_by_test_id("edit-button").click()
+        drafts = admin.locator('[data-dialog="drafts"]')
+        expect(drafts.get_by_test_id("new-draft")).to_be_visible()
 
         dev = browsers.page("dev")
-        _open_index(dev, stand)
-        expect(dev.get_by_test_id("index-page")).to_have_attribute(
-            "data-can-edit", "false"
-        )
-        expect(dev.get_by_test_id("new-view")).to_have_count(0)
-        expect(dev.get_by_test_id("index-drafts")).to_be_visible()
+        _open_entry(dev, stand)
+        dialog = _open_diagrams(dev)
+        expect(dialog.get_by_test_id("new-view")).to_have_count(0)
+        dev.get_by_role("button", name="close dialog").click()
+        dev.get_by_test_id("edit-button").click()
+        drafts = dev.locator('[data-dialog="drafts"]')
+        expect(drafts.get_by_test_id("drafts-list")).to_be_visible()
+        expect(drafts.get_by_test_id("new-draft")).to_have_count(0)
 
         guest = browsers.page("guest")
-        _open_index(guest, stand)
-        expect(guest.get_by_test_id("new-view")).to_have_count(0)
-        expect(guest.get_by_test_id("index-drafts")).to_have_count(0)
-        expect(guest.get_by_test_id("index-views")).to_contain_text("no views yet")
+        _open_entry(guest, stand)
+        expect(guest.get_by_test_id("shared-only")).to_be_visible()
+        expect(guest.get_by_test_id("shared-views")).to_contain_text(
+            "nothing is shared with you yet"
+        )
+        expect(guest.locator(Selector.NODE)).to_have_count(0)
 
 
 class TestViewFilter:
-    def test_layers_then_datasets_narrow_the_diagram(
+    def test_layers_then_nodes_narrow_the_diagram(
         self,
         browsers: Browsers,
         stand: StandProcess,
@@ -172,10 +190,10 @@ class TestViewFilter:
             "data-owned", "true"
         )
         all_nodes = page.locator(Selector.NODE).count()
-        assert all_nodes >= len(Seed.DATASETS)
+        assert all_nodes >= _member_count(catalog_seed)
 
         _restrict_to_layers(page, [Ed.SRC, Ed.DST])
-        expect(page.locator(Selector.NODE)).to_have_count(len(Seed.DATASETS))
+        expect(page.locator(Selector.NODE)).to_have_count(_member_count(catalog_seed))
         expect(page.locator(Selector.LANE)).to_have_count(2)
         expect(page.locator(Selector.EDGE_LABEL)).to_have_count(1)
 
@@ -184,20 +202,20 @@ class TestViewFilter:
         layers = form.get_by_test_id("view-layers")
         layers.get_by_label(Ed.SRC, exact=True).uncheck()
         layers.get_by_label(Ed.DST, exact=True).uncheck()
-        datasets = form.get_by_test_id("view-datasets")
-        datasets.get_by_label(f"{Ed.DST} / {Ed.RETURNS}", exact=True).check()
+        nodes = form.get_by_test_id("view-nodes")
+        nodes.get_by_label(f"{Ed.DST} / {Ed.RETURNS}", exact=True).check()
         form.get_by_label("view name").fill("ed_returns_only")
         _save_view_form(page)
 
         expect(page.get_by_test_id("page-title")).to_have_text("ed_returns_only")
         expect(page.locator(Selector.NODE)).to_have_count(1)
-        expect(_node(page, Ed.RETURNS)).to_be_visible()
+        expect(page.locator(catalog_seed.node(Ed.RETURNS))).to_be_visible()
         expect(page.locator(Selector.LANE)).to_have_count(1)
         expect(page.locator(Selector.EDGE_LABEL)).to_have_count(0)
 
         stored = next(view for view in catalog_api.views() if view["id"] == view_id)
         assert stored["layer_ids"] == []
-        assert stored["dataset_ids"] == [catalog_seed.id_of(Ed.RETURNS)]
+        assert stored["node_ids"] == [catalog_seed.id_of(Ed.RETURNS)]
 
 
 class TestLayout:
@@ -211,11 +229,11 @@ class TestLayout:
         page = browsers.page("admin")
         view_id = _create_view(page, stand, "ed_layout")
         _restrict_to_layers(page, [Ed.SRC, Ed.DST])
-        expect(page.locator(Selector.NODE)).to_have_count(len(Seed.DATASETS))
+        expect(page.locator(Selector.NODE)).to_have_count(_member_count(catalog_seed))
 
         orders_id = catalog_seed.id_of(Ed.ORDERS)
         before = _translate_of(page, orders_id)
-        node = _node(page, Ed.ORDERS)
+        node = page.locator(catalog_seed.node(Ed.ORDERS))
         box = node.bounding_box()
         assert box is not None
 
@@ -231,7 +249,8 @@ class TestLayout:
         assert moved != before, "the node did not move"
 
         saved = catalog_api.layout(view_id)
-        assert set(saved) == {catalog_seed.id_of(name) for name in Seed.DATASETS}
+        members = {**catalog_seed.tables, **catalog_seed.routines}
+        assert set(saved) == {catalog_seed.id_of(name) for name in members}
         assert saved[orders_id] == pytest.approx(moved, abs=1.0)
 
         page.reload()
@@ -275,13 +294,13 @@ class TestSharing:
         expect(dialog.locator('[data-share="role:GST"]')).to_be_visible()
         admin.get_by_role("button", name="close dialog").click()
 
-        _open_index(guest, stand)
-        item = guest.locator('[data-testid="index-views"] li[data-view="ed_shared"]')
+        _open_entry(guest, stand)
+        item = guest.locator('[data-testid="shared-views"] li[data-view="ed_shared"]')
         expect(item).to_contain_text("shared with you")
         item.get_by_role("link").click()
         guest.wait_for_selector(Selector.READY, timeout=30_000)
 
-        expect(guest.locator(Selector.NODE)).to_have_count(len(Seed.DATASETS))
+        expect(guest.locator(Selector.NODE)).to_have_count(_member_count(catalog_seed))
         expect(guest.get_by_test_id("catalog-page")).to_have_attribute(
             "data-owned", "false"
         )
@@ -290,11 +309,14 @@ class TestSharing:
         )
         expect(guest.get_by_role("button", name="edit view")).to_have_count(0)
         expect(guest.get_by_role("button", name="layer", exact=True)).to_have_count(0)
-        _node(guest, Ed.ORDERS).click()
+        guest.locator(catalog_seed.node(Ed.ORDERS)).click()
         expect(guest.get_by_test_id("detail-panel")).to_have_attribute(
-            "data-dataset", Ed.ORDERS
+            "data-node", catalog_seed.address(Ed.ORDERS)
         )
-        expect(guest.get_by_role("button", name="edit dataset")).to_have_count(0)
+        expect(guest.get_by_role("button", name="edit node")).to_have_count(0)
+        expect(
+            guest.get_by_test_id("detail-panel").get_by_test_id("node-card")
+        ).to_be_visible(timeout=15_000)
 
         hidden_draft = catalog_api.new_draft("ed_hidden")
         try:
@@ -318,7 +340,7 @@ def _open_view_denied(page: Page, stand: StandProcess, view_id: str) -> None:
 
 
 class TestDelete:
-    def test_delete_returns_to_the_index_without_the_view(
+    def test_delete_returns_to_the_entry_without_the_view(
         self,
         browsers: Browsers,
         stand: StandProcess,
@@ -333,6 +355,9 @@ class TestDelete:
         expect(dialog).to_contain_text("ed_doomed")
         dialog.get_by_role("button", name="delete the view").click()
 
-        expect(page.get_by_test_id("index-page")).to_be_visible()
-        expect(page.locator('li[data-view="ed_doomed"]')).to_have_count(0)
+        expect(page.get_by_test_id("catalog-page")).to_have_attribute(
+            "data-source", "published"
+        )
+        dialog = _open_diagrams(page)
+        expect(dialog.locator('li[data-view="ed_doomed"]')).to_have_count(0)
         assert view_id not in {str(view["id"]) for view in catalog_api.views()}

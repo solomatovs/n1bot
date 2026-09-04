@@ -1,19 +1,32 @@
 """Резолвер объектов по снимкам источников: реализация ObjectResolver над
 привязанными версиями. Сервис собирает его из SourceStore, домен проверяет
-им ссылки узлов и колонки в значениях потоков."""
+им ссылки узлов и колонки в значениях потоков; страница получает через него
+колонки узлов с типом и признаком ключа."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from uuid import UUID
 
+from boba.catalog.base import CatalogModel
 from boba.catalog.clickhouse_snapshot import ChSnapshot
 from boba.catalog.model import ObjectResolver
-from boba.catalog.postgres_snapshot import PgSnapshot
+from boba.catalog.postgres_snapshot import PgConstraintKind, PgSnapshot
 from boba.catalog.source_diff import SourceSnapshot
 from boba.catalog.sources import ObjectKind, ObjectRef
 
-__all__ = ["SnapshotResolver"]
+__all__ = ["NodeColumn", "SnapshotResolver"]
+
+
+class NodeColumn(CatalogModel):
+    """Колонка объекта глазами процесса: имя, тип, nullable и вхождение в
+    первичный ключ. Общая форма для Postgres и ClickHouse, чтобы карточка
+    узла рисовалась одинаково."""
+
+    name: str
+    type: str
+    nullable: bool
+    key: bool
 
 
 class SnapshotResolver(ObjectResolver):
@@ -55,6 +68,51 @@ class SnapshotResolver(ObjectResolver):
             return names
 
         return self._ch_columns(snapshot, ref)
+
+    def node_columns(self, ref: ObjectRef) -> tuple[NodeColumn, ...]:
+        """Колонки объекта для карточки узла; у объектов без колонок и у
+        неизвестного источника пусто."""
+        snapshot = self._snapshots.get(ref.source_id)
+        if snapshot is None:
+            return ()
+
+        if isinstance(snapshot, PgSnapshot):
+            return tuple(self._pg_node_columns(snapshot, ref))
+
+        return tuple(self._ch_node_columns(snapshot, ref))
+
+    @staticmethod
+    def _pg_node_columns(snapshot: PgSnapshot, ref: ObjectRef) -> Iterator[NodeColumn]:
+        if ref.kind is not ObjectKind.RELATION:
+            return
+
+        keys: set[str] = set()
+        for constraint in snapshot.constraints_of(ref.path):
+            if constraint.kind is not PgConstraintKind.PRIMARY:
+                continue
+
+            keys.update(constraint.columns)
+
+        for column in snapshot.columns_of(ref.path):
+            yield NodeColumn(
+                name=column.name,
+                type=column.type,
+                nullable=column.nullable,
+                key=column.name in keys,
+            )
+
+    @staticmethod
+    def _ch_node_columns(snapshot: ChSnapshot, ref: ObjectRef) -> Iterator[NodeColumn]:
+        if ref.kind is not ObjectKind.TABLE:
+            return
+
+        for column in snapshot.columns_of(ref.path):
+            yield NodeColumn(
+                name=column.name,
+                type=column.type,
+                nullable=column.type.startswith("Nullable("),
+                key=column.in_primary_key,
+            )
 
     @staticmethod
     def _pg_exists(snapshot: PgSnapshot, ref: ObjectRef) -> bool:

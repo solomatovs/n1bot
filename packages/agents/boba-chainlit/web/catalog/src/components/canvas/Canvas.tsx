@@ -9,26 +9,29 @@ import {
   type NodeChange,
   type NodeTypes,
 } from "@xyflow/react";
-import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useState, type DragEvent, type ReactElement } from "react";
 
 import "@xyflow/react/dist/style.css";
 
-import type { Catalog, NodePosition } from "../../model/catalog";
+import type { Catalog, NodePosition, ObjectRef } from "../../model/catalog";
 import {
   buildGraph,
   laneNodes,
+  layerOfLane,
   measuredOf,
-  type DatasetNode as DatasetFlowNode,
   type FlowEdge as FlowEdgeType,
   type GraphOptions,
+  type LayerNode,
+  type ProcessFlowNode,
 } from "../../model/graph";
 import { highlight } from "../../model/highlight";
 import { computeLayout } from "../../model/layout";
-import { DatasetNode } from "./DatasetNode";
+import { OBJECT_DRAG_TYPE, ObjectParam } from "../../model/refParam";
 import { ArrowMarkers, FlowEdge } from "./FlowEdge";
 import { LayerLane } from "./LayerLane";
+import { ProcessNode } from "./ProcessNode";
 
-const NODE_TYPES: NodeTypes = { dataset: DatasetNode, layer: LayerLane };
+const NODE_TYPES: NodeTypes = { process: ProcessNode, layer: LayerLane };
 const EDGE_TYPES: EdgeTypes = { flow: FlowEdge };
 
 type Props = {
@@ -36,25 +39,28 @@ type Props = {
   options: GraphOptions;
   saved: NodePosition[];
   activeId: string | undefined;
-  onActivate: (datasetId: string | undefined) => void;
+  onActivate: (nodeId: string | undefined) => void;
   /** Счётчик «прибрать»: каждое изменение заново раскладывает узлы ELK. */
   tidyCount: number;
   /** Правки черновика: соединение handle'ов заводит поток, клик по ребру открывает его. */
   onConnect: ((from: string, to: string) => void) | undefined;
   onFlowClick: ((flowId: string) => void) | undefined;
+  /** Правки черновика: объект из дерева, брошенный на дорожку слоя, становится
+   * узлом этого слоя; мимо дорожек — слой спросит страница. */
+  onDrop: ((ref: ObjectRef, layerId: string | undefined) => void) | undefined;
   /** Владелец вида: узлы перетаскиваются, после перетаскивания или «прибрать»
    * наверх уходят позиции всех разложенных узлов для сохранения раскладки. */
   onMoved: ((positions: NodePosition[]) => void) | undefined;
 };
 
-function positionsOf(nodes: DatasetFlowNode[]): NodePosition[] {
+function positionsOf(nodes: ProcessFlowNode[]): NodePosition[] {
   const positions: NodePosition[] = [];
   for (const node of nodes) {
     if (node.hidden === true) {
       continue;
     }
 
-    positions.push({ dataset_id: node.id, x: node.position.x, y: node.position.y });
+    positions.push({ node_id: node.id, x: node.position.x, y: node.position.y });
   }
 
   return positions;
@@ -63,10 +69,11 @@ function positionsOf(nodes: DatasetFlowNode[]): NodePosition[] {
 /** Ключ раскладки: что меняет размеры или состав узлов, то и перекладывает граф. */
 function layoutKey(catalog: Catalog, options: GraphOptions, tidyCount: number): string {
   return [
-    catalog.datasets.length,
+    catalog.nodes.length,
     catalog.flows.length,
+    catalog.layers.length,
     options.showMode,
-    [...options.datasetIds].sort().join(","),
+    [...options.nodeIds].sort().join(","),
     [...options.layerIds].sort().join(","),
     [...options.hidden].sort().join(","),
     tidyCount,
@@ -74,7 +81,7 @@ function layoutKey(catalog: Catalog, options: GraphOptions, tidyCount: number): 
 }
 
 /** Подпись замеров видимых узлов: меняется, когда React Flow отдал новый размер. */
-function sizesOf(nodes: DatasetFlowNode[]): string {
+function sizesOf(nodes: ProcessFlowNode[]): string {
   return nodes
     .filter((node) => !node.hidden)
     .map((node) => {
@@ -96,12 +103,13 @@ export function Canvas({
   tidyCount,
   onConnect,
   onFlowClick,
+  onDrop,
   onMoved,
 }: Props): ReactElement {
-  const { fitView } = useReactFlow();
+  const { fitView, screenToFlowPosition } = useReactFlow();
   const initialized = useNodesInitialized();
   const [hoverId, setHoverId] = useState<string | undefined>(undefined);
-  const [nodes, setNodes] = useState<DatasetFlowNode[]>([]);
+  const [nodes, setNodes] = useState<ProcessFlowNode[]>([]);
   const [edges, setEdges] = useState<FlowEdgeType[]>([]);
   const [laid, setLaid] = useState<string | null>(null);
   const [layouts, setLayouts] = useState(0);
@@ -129,7 +137,7 @@ export function Canvas({
     void computeLayout({
       nodes,
       edges,
-      partitionOf: (node) => catalog.layerIndex(node.data.dataset.layer_id),
+      partitionOf: (node) => catalog.layerIndex(node.data.node.layer_id),
       saved: positions,
     }).then((positioned) => {
       if (cancelled) {
@@ -152,7 +160,7 @@ export function Canvas({
     };
   }, [initialized, laid, signature, nodes, edges, saved, tidyCount, catalog, fitView, onMoved]);
 
-  const onNodesChange = useCallback((changes: NodeChange<DatasetFlowNode>[]) => {
+  const onNodesChange = useCallback((changes: NodeChange<ProcessFlowNode>[]) => {
     setNodes((current) => applyNodeChanges(changes, current));
   }, []);
 
@@ -160,14 +168,36 @@ export function Canvas({
 
   const flow = useMemo(() => {
     const lit = highlight(nodes, edges, { activeId, hoverId });
-    const lanes = ready ? laneNodes(catalog, lit.nodes, options.showDiff) : [];
-    return { nodes: [...lanes, ...lit.nodes] as Node[], edges: lit.edges };
-  }, [nodes, edges, activeId, hoverId, catalog, options.showDiff, ready]);
+    const lanes = ready ? laneNodes(catalog, lit.nodes, options.showDiff, onDrop !== undefined) : [];
+    return { lanes, nodes: [...lanes, ...lit.nodes] as Node[], edges: lit.edges };
+  }, [nodes, edges, activeId, hoverId, catalog, options.showDiff, ready, onDrop]);
+
+  const dropObject = (event: DragEvent<HTMLDivElement>): void => {
+    if (onDrop === undefined) {
+      return;
+    }
+
+    const ref = ObjectParam.parse(event.dataTransfer.getData(OBJECT_DRAG_TYPE));
+    if (ref === undefined) {
+      return;
+    }
+
+    event.preventDefault();
+    const point = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+    onDrop(ref, laneAt(flow.lanes, point.x, point.y));
+  };
 
   return (
     <div className="canvas" data-testid="canvas" data-ready={ready} data-layouts={layouts}>
       <ArrowMarkers />
       <ReactFlow
+        onDragOver={(event) => {
+          if (onDrop !== undefined && event.dataTransfer.types.includes(OBJECT_DRAG_TYPE)) {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "copy";
+          }
+        }}
+        onDrop={dropObject}
         nodes={flow.nodes}
         edges={flow.edges}
         onNodesChange={onNodesChange as (changes: NodeChange[]) => void}
@@ -190,12 +220,12 @@ export function Canvas({
           onFlowClick?.(edge.id);
         }}
         onNodeClick={(_event, node) => {
-          if (node.type === "dataset") {
+          if (node.type === "process") {
             onActivate(node.id);
           }
         }}
         onNodeMouseEnter={(_event, node) => {
-          if (node.type === "dataset") {
+          if (node.type === "process") {
             setHoverId(node.id);
           }
         }}
@@ -211,4 +241,18 @@ export function Canvas({
       </ReactFlow>
     </div>
   );
+}
+
+/** Слой дорожки, в которую попала точка холста; мимо дорожек — undefined. */
+function laneAt(lanes: LayerNode[], x: number, y: number): string | undefined {
+  for (const lane of lanes) {
+    const width = lane.width ?? 0;
+    const height = lane.height ?? 0;
+    const inside = x >= lane.position.x && x <= lane.position.x + width && y >= lane.position.y && y <= lane.position.y + height;
+    if (inside) {
+      return layerOfLane(lane.id);
+    }
+  }
+
+  return undefined;
 }

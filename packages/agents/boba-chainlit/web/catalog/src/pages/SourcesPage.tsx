@@ -1,6 +1,6 @@
 import { Plus } from "lucide-react";
 import { useEffect, useState, type FormEvent, type ReactElement } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import { ApiError, type CatalogApi } from "../api/client";
 import { useServices } from "../app";
@@ -103,7 +103,8 @@ function NewSourceForm({ onCreate, onError }: FormProps): ReactElement {
   const [kind, setKind] = useState<SourceKind>("postgres");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [manual, setManual] = useState(false);
+  const [params] = useSearchParams();
+  const [manual, setManual] = useState(params.get("manual") === "1");
   const trimmed = name.trim();
 
   const submit = (event: FormEvent): void => {

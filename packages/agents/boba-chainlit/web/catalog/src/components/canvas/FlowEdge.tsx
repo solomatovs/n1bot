@@ -53,6 +53,7 @@ export function FlowEdge({
           className="flow-edge__label"
           data-status={status}
           data-highlighted={data.isHighlighted}
+          data-stale={data.stale.length > 0}
           data-testid="flow-edge-label"
           style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
         >

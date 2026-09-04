@@ -1,9 +1,10 @@
-"""Каждая кнопка и виджет страницы каталога по DOM: тулбар холста, шапка,
-поиск и подсветка, все пути закрытия диалогов, галочки редактора колонок,
-полная форма набора, типизированные поля потока, тосты, перебазирование с
-конфликтными операциями, навигация индекса, аноним, узкий экран.
+"""Каждая кнопка и виджет страницы процесса по DOM: тулбар холста, шапка,
+поиск и подсветка, вкладка источников, все пути закрытия диалогов, форма
+узла, типизированные поля потока с колонками стороны и рутиной, виды загрузки
+из шапки, тосты, перебазирование с конфликтными операциями, вход в правки,
+аноним, узкий экран.
 
-Сценарии, которые меняют опубликованный каталог (снос набора для конфликта),
+Сценарии, которые меняют опубликованный каталог (снос узла для конфликта),
 стоят в конце модуля: остальные тесты рассчитывают на полный сид.
 """
 
@@ -15,7 +16,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-from catalog_ui import Api, Ed, Seed, Selector
+from catalog_ui import Api, Ed, Objects, Seed, Selector
 from chat_ui import login_cookies
 from playwright.sync_api import (
     Browser,
@@ -96,10 +97,6 @@ def _open(page: Page, stand: StandProcess, path: str) -> None:
     page.wait_for_selector(Selector.NODE, timeout=30_000)
 
 
-def _node(page: Page, name: str) -> Locator:
-    return page.locator(f'{Selector.NODE}[data-dataset="{name}"]')
-
-
 def _dialog(page: Page, mark: str) -> Locator:
     return page.locator(f'[data-dialog="{mark}"]')
 
@@ -113,12 +110,16 @@ def _scale(page: Page) -> float:
     return float(found.group(1))
 
 
-def _translate(page: Page, dataset_id: str) -> tuple[float, float]:
-    wrapper = page.locator(f'.react-flow__node[data-id="{dataset_id}"]')
+def _members(seed: Seed) -> int:
+    return len(seed.tables) + len(seed.routines)
+
+
+def _translate(page: Page, node_id: str) -> tuple[float, float]:
+    wrapper = page.locator(f'.react-flow__node[data-id="{node_id}"]')
     style = wrapper.get_attribute("style") or ""
     found = TRANSLATE.search(style)
     if found is None:
-        raise AssertionError(f"node {dataset_id} has no translate: {style!r}")
+        raise AssertionError(f"node {node_id} has no translate: {style!r}")
 
     return float(found.group(1)), float(found.group(2))
 
@@ -166,6 +167,14 @@ def _toast(page: Page, tone: str) -> Locator:
     return page.locator(f'.toast[data-tone="{tone}"]')
 
 
+def _snapshot_names(state: dict[str, Any], table: str) -> set[str]:
+    names: set[str] = set()
+    for entity in state["snapshot"][table].values():
+        names.add(str(entity["name"]))
+
+    return names
+
+
 class TestToolbar:
     def test_zoom_buttons_and_fit_view_change_the_viewport_scale(
         self, tabs: Tabs, stand: StandProcess, view_id: str
@@ -202,7 +211,7 @@ class TestToolbar:
         orders_id = catalog_seed.id_of(Ed.ORDERS)
         computed = _translate(page, orders_id)
 
-        _drag(page, _node(page, Ed.ORDERS), 140, 120)
+        _drag(page, page.locator(catalog_seed.node(Ed.ORDERS)), 140, 120)
         catalog_page = page.get_by_test_id("catalog-page")
         expect(catalog_page).to_have_attribute(
             "data-layout-saves", "1", timeout=LIVE_TIMEOUT_MS
@@ -224,7 +233,7 @@ class TestToolbar:
         )
 
     def test_show_mode_tabs_are_exclusive_and_change_the_cards(
-        self, tabs: Tabs, stand: StandProcess, view_id: str
+        self, tabs: Tabs, stand: StandProcess, catalog_seed: Seed, view_id: str
     ) -> None:
         page = tabs.page("admin")
         _open(page, stand, f"views/{view_id}")
@@ -243,61 +252,65 @@ class TestToolbar:
         expect(tablist.get_by_role("tab", name="keys")).to_have_attribute(
             "aria-selected", "false"
         )
-        expect(_node(page, Ed.ORDERS).locator(".ds-node__column")).to_have_count(0)
+        expect(
+            page.locator(catalog_seed.node(Ed.ORDERS)).locator(".ds-node__column")
+        ).to_have_count(0)
         assert "mode=TABLE_NAME" in page.url
 
 
 class TestTopbar:
-    def test_pane_toggle_hides_and_shows_the_dataset_list(
+    def test_pane_toggle_hides_and_shows_the_left_pane(
         self, tabs: Tabs, stand: StandProcess, view_id: str
     ) -> None:
         page = tabs.page("admin")
         _open(page, stand, f"views/{view_id}")
-        toggle = page.get_by_role("button", name="hide the dataset list")
+        toggle = page.get_by_role("button", name="hide the left pane")
         expect(toggle).to_have_attribute("aria-pressed", "true")
         expect(page.get_by_test_id("left-pane")).to_have_count(1)
         scene_before = Css.box(page.locator(".page__scene"))
 
         toggle.click()
-        shown = page.get_by_role("button", name="show the dataset list")
+        shown = page.get_by_role("button", name="show the left pane")
         expect(shown).to_have_attribute("aria-pressed", "false")
         expect(page.get_by_test_id("left-pane")).to_have_count(0)
         assert Css.box(page.locator(".page__scene")).width > scene_before.width
 
         shown.click()
         expect(page.get_by_test_id("left-pane")).to_have_count(1)
-        expect(
-            page.get_by_role("button", name="hide the dataset list")
-        ).to_have_attribute("aria-pressed", "true")
+        expect(page.get_by_role("button", name="hide the left pane")).to_have_attribute(
+            "aria-pressed", "true"
+        )
 
-    def test_home_link_returns_to_the_index(
+    def test_home_link_returns_to_the_published_process(
         self, tabs: Tabs, stand: StandProcess, view_id: str
     ) -> None:
         page = tabs.page("admin")
         _open(page, stand, f"views/{view_id}")
         page.get_by_role("link", name="catalog").click()
-        expect(page.get_by_test_id("index-page")).to_be_visible()
+        expect(page.get_by_test_id("catalog-page")).to_have_attribute(
+            "data-source", "published"
+        )
         assert page.url.rstrip("/").endswith("/catalog")
 
     def test_counts_in_the_topbar_follow_the_diagram(
-        self, tabs: Tabs, stand: StandProcess, view_id: str
+        self, tabs: Tabs, stand: StandProcess, catalog_seed: Seed, view_id: str
     ) -> None:
         page = tabs.page("admin")
         _open(page, stand, f"views/{view_id}")
         hint = page.locator(".topbar__hint")
-        expect(hint).to_have_text(f"{len(Seed.DATASETS)} datasets · 1 flows")
+        expect(hint).to_have_text(f"{_members(catalog_seed)} nodes · 1 flows")
         expect(page.get_by_test_id("page-title")).to_have_text(re.compile(r"^ed_w_"))
         expect(page.locator(".topbar .chip").first).to_have_text(re.compile(r"^v\d+$"))
 
 
 class TestPaneAndHighlight:
     def test_search_narrows_the_list_and_reports_no_matches(
-        self, tabs: Tabs, stand: StandProcess, view_id: str
+        self, tabs: Tabs, stand: StandProcess, catalog_seed: Seed, view_id: str
     ) -> None:
         page = tabs.page("admin")
         _open(page, stand, f"views/{view_id}")
         pane = page.get_by_test_id("left-pane")
-        search = pane.get_by_role("searchbox", name="find a dataset")
+        search = pane.get_by_role("searchbox", name="find a node")
 
         search.fill("ed_ord")
         expect(pane.get_by_test_id("pane-item")).to_have_count(1)
@@ -308,37 +321,95 @@ class TestPaneAndHighlight:
         expect(pane.locator(".pane__empty")).to_have_text("nothing matches")
 
         search.fill("")
-        expect(pane.get_by_test_id("pane-item")).to_have_count(len(Seed.DATASETS))
+        expect(pane.get_by_test_id("pane-item")).to_have_count(_members(catalog_seed))
+
+    def test_sources_tab_expands_the_tree_and_opens_the_object(
+        self, tabs: Tabs, stand: StandProcess, catalog_seed: Seed, view_id: str
+    ) -> None:
+        """Вкладка источников: раскрытие и сворачивание источника, объект в
+        дереве открывает панель объекта, у объекта в процессе — кнопка узла,
+        ссылка на страницу источников."""
+        page = tabs.page("admin")
+        _open(page, stand, f"views/{view_id}")
+        pane = page.get_by_test_id("left-pane")
+        pane.get_by_role("tab", name="sources").click()
+        branch = pane.locator(
+            f'[data-testid="source-branch"][data-source="{catalog_seed.source_name}"]'
+        )
+        expect(branch).to_contain_text("v1")
+
+        branch.get_by_role(
+            "button", name=f"expand source {catalog_seed.source_name}"
+        ).click()
+        expect(branch).to_have_attribute("data-open", "true")
+        for path, label in (
+            ("prod", "prod"),
+            ("prod/public", "public"),
+            ("prod/public/tables", "tables"),
+        ):
+            item = branch.locator(f'[data-testid="tree-node"][data-path="{path}"]')
+            item.get_by_role("button", name=f"expand {label}").click()
+
+        pane.locator(catalog_seed.tree_object(Ed.ORDERS)).locator(
+            ".tree__label"
+        ).click()
+        panel = page.get_by_test_id("object-panel")
+        expect(panel).to_have_attribute("data-object", catalog_seed.address(Ed.ORDERS))
+        expect(panel).to_have_attribute("data-in-process", "true")
+        expect(panel.get_by_test_id("object-card-section")).to_be_visible(
+            timeout=15_000
+        )
+        expect(panel.get_by_role("button", name="add to layer")).to_have_count(0)
+
+        panel.get_by_role("button", name="open node").click()
+        expect(page.get_by_test_id("detail-panel")).to_have_attribute(
+            "data-node", catalog_seed.address(Ed.ORDERS)
+        )
+        expect(page.get_by_test_id("object-panel")).to_have_count(0)
+
+        branch.get_by_role(
+            "button", name=f"collapse source {catalog_seed.source_name}"
+        ).click()
+        expect(branch).to_have_attribute("data-open", "false")
+        expect(branch.locator('[data-testid="tree-node"]')).to_have_count(0)
+
+        pane.get_by_test_id("sources-link").click()
+        expect(page.get_by_test_id("sources-page")).to_be_visible()
 
     def test_hovering_a_node_highlights_its_neighbours_only(
-        self, tabs: Tabs, stand: StandProcess, view_id: str
+        self, tabs: Tabs, stand: StandProcess, catalog_seed: Seed, view_id: str
     ) -> None:
         page = tabs.page("admin")
         _open(page, stand, f"views/{view_id}")
+        sales = page.locator(catalog_seed.node(Ed.SALES))
 
-        _node(page, Ed.ORDERS).hover()
-        expect(_node(page, Ed.SALES)).to_have_attribute("data-highlighted", "true")
-        expect(_node(page, Ed.RETURNS)).to_have_attribute("data-highlighted", "false")
+        page.locator(catalog_seed.node(Ed.ORDERS)).hover()
+        expect(sales).to_have_attribute("data-highlighted", "true")
+        expect(page.locator(catalog_seed.node(Ed.RETURNS))).to_have_attribute(
+            "data-highlighted", "false"
+        )
         expect(page.locator(Selector.EDGE_LABEL).first).to_have_attribute(
             "data-highlighted", "true"
         )
 
         page.mouse.move(5, 5)
-        expect(_node(page, Ed.SALES)).to_have_attribute("data-highlighted", "false")
+        expect(sales).to_have_attribute("data-highlighted", "false")
 
     def test_flow_target_button_in_the_panel_activates_the_neighbour(
-        self, tabs: Tabs, stand: StandProcess, view_id: str
+        self, tabs: Tabs, stand: StandProcess, catalog_seed: Seed, view_id: str
     ) -> None:
         page = tabs.page("admin")
         _open(page, stand, f"views/{view_id}")
-        _node(page, Ed.ORDERS).click()
+        page.locator(catalog_seed.node(Ed.ORDERS)).click()
         panel = page.get_by_test_id("detail-panel")
         panel.get_by_test_id("detail-outgoing").get_by_role(
             "button", name=Ed.SALES
         ).click()
 
-        expect(panel).to_have_attribute("data-dataset", Ed.SALES)
-        expect(_node(page, Ed.SALES)).to_have_attribute("data-active", "true")
+        expect(panel).to_have_attribute("data-node", catalog_seed.address(Ed.SALES))
+        expect(page.locator(catalog_seed.node(Ed.SALES))).to_have_attribute(
+            "data-active", "true"
+        )
         expect(panel.get_by_test_id("detail-incoming")).to_contain_text(Ed.ORDERS)
         expect(
             panel.get_by_test_id("detail-outgoing").locator(".detail__empty")
@@ -374,29 +445,33 @@ class TestDialogClosing:
         expect(page.locator('.pane__group[data-layer="ed_nope"]')).to_have_count(0)
         assert catalog_api.state(draft_id)["seq"] == 0
 
-    def test_dataset_columns_and_flow_forms_cancel_without_changes(
-        self, tabs: Tabs, stand: StandProcess, catalog_api: Api, draft_id: str
+    def test_node_and_flow_forms_cancel_without_changes(
+        self,
+        tabs: Tabs,
+        stand: StandProcess,
+        catalog_api: Api,
+        catalog_seed: Seed,
+        draft_id: str,
     ) -> None:
         page = tabs.page("admin")
         _open(page, stand, f"drafts/{draft_id}")
-        _node(page, Ed.ORDERS).click()
+        page.locator(catalog_seed.node(Ed.ORDERS)).click()
         panel = page.get_by_test_id("detail-panel")
 
-        panel.get_by_role("button", name="edit dataset").click()
-        form = page.get_by_test_id("dataset-form")
-        form.get_by_label("dataset name").fill("ed_changed")
+        panel.get_by_role("button", name="edit node").click()
+        form = page.get_by_test_id("node-form")
+        form.get_by_label("node alias").fill("ed_changed")
         form.get_by_role("button", name="cancel").click()
         expect(form).to_have_count(0)
-        expect(panel.locator(".detail__name")).to_have_text(Ed.ORDERS)
+        expect(panel.locator(".detail__name").first).to_have_text(Ed.ORDERS)
 
-        panel.get_by_role("button", name="edit columns").click()
-        editor = page.get_by_test_id("columns-editor")
-        editor.get_by_role("button", name="remove column name").click()
-        editor.get_by_role("button", name="cancel").click()
-        expect(editor).to_have_count(0)
+        panel.get_by_role("button", name="retarget node").click()
+        expect(panel.locator('[data-notice="retarget-hint"]')).to_be_visible()
+        panel.get_by_role("button", name="stop retargeting").click()
+        expect(panel.locator('[data-notice="retarget-hint"]')).to_have_count(0)
         expect(
             panel.get_by_test_id("detail-columns").locator("tbody tr")
-        ).to_have_count(len(Seed.COLUMNS))
+        ).to_have_count(len(Objects.COLUMNS))
 
         # у активного набора ребро подсвечено и его широкая зона клика лежит над
         # ярлыком: клик мышью в центр ярлыка попадает в ребро, как у пользователя
@@ -451,7 +526,12 @@ class TestDialogClosing:
             [
                 {
                     "op": "add_layer",
-                    "layer": {"id": str(UUID(int=0xE0F2)), "name": "ed_w_other"},
+                    "layer": {
+                        "id": str(UUID(int=0xE0F2)),
+                        "name": "ed_w_other",
+                        "position": 8,
+                        "description": "",
+                    },
                 }
             ],
         )
@@ -486,16 +566,19 @@ class TestDiscard:
 
         page.get_by_test_id("discard-button").click()
         dialog.get_by_role("button", name="discard the draft").click()
-        expect(page.get_by_test_id("index-page")).to_be_visible()
-        expect(_toast(page, "success")).to_contain_text("draft discarded")
-        expect(page.get_by_test_id("index-drafts")).not_to_contain_text(
-            "widgets test_discard"
+        expect(page.get_by_test_id("catalog-page")).to_have_attribute(
+            "data-source", "published"
         )
+        expect(_toast(page, "success")).to_contain_text("draft discarded")
+        page.get_by_test_id("edit-button").click()
+        expect(
+            _dialog(page, "drafts").get_by_test_id("drafts-list")
+        ).not_to_contain_text("widgets test_discard")
         assert catalog_api.state(draft_id)["draft"]["status"] == "discarded"
 
 
-class TestColumnsEditor:
-    def test_key_and_nullable_toggles_change_the_column(
+class TestLoadKinds:
+    def test_load_kinds_dialog_lists_creates_edits_and_removes(
         self,
         tabs: Tabs,
         stand: StandProcess,
@@ -503,77 +586,93 @@ class TestColumnsEditor:
         catalog_seed: Seed,
         draft_id: str,
     ) -> None:
+        """Диалог видов загрузки: список сида с полями и счётчиком потоков,
+        новый вид с двумя полями, правка имени, удаление вида без потоков;
+        вид с потоком удалить нельзя."""
         page = tabs.page("admin")
         _open(page, stand, f"drafts/{draft_id}")
-        _node(page, Ed.SALES).click()
-        panel = page.get_by_test_id("detail-panel")
-        panel.get_by_role("button", name="edit columns").click()
-
-        editor = page.get_by_test_id("columns-editor")
-        editor.get_by_label("key name").check()
-        editor.get_by_label("nullable name").uncheck()
-        editor.get_by_role("button", name="save columns").click()
-        _landed(page, 1)
-
-        row = (
-            panel.get_by_test_id("detail-columns")
-            .locator("tbody tr")
-            .filter(has_text="name")
+        page.get_by_test_id("load-kinds-button").click()
+        dialog = _dialog(page, "load-kinds")
+        listing = dialog.get_by_test_id("load-kinds-list")
+        expect(listing.locator(f'li[data-kind="{Ed.FULL}"]')).to_contain_text(
+            "1 flow(s)"
         )
-        expect(row.locator(".detail__icon svg")).to_have_count(1)
-        expect(row.locator(".detail__col-null")).to_have_text("not null")
-        expect(row).to_have_attribute("data-status", "modified")
+        expect(
+            listing.locator(f'li[data-kind="{Ed.FULL}"]').get_by_role(
+                "button", name=f"remove load kind {Ed.FULL}"
+            )
+        ).to_have_count(0)
+        expect(listing.locator(f'li[data-kind="{Ed.TYPED}"] li')).to_have_count(5)
+        expect(
+            listing.locator(
+                f'li[data-kind="{Ed.TYPED}"] li[data-field="{Ed.TYPED_COLUMN}"]'
+            )
+        ).to_have_text(f"{Ed.TYPED_COLUMN} · column · target")
 
-        column = catalog_api.state(draft_id)["snapshot"]["columns"][
-            catalog_seed.id_of(f"{Ed.SALES}.name")
-        ]
-        assert (column["is_key"], column["nullable"]) == (True, False)
-
-
-class TestDatasetForm:
-    def test_every_field_lands_in_the_panel_and_the_layer_moves_the_node(
-        self,
-        tabs: Tabs,
-        stand: StandProcess,
-        catalog_api: Api,
-        catalog_seed: Seed,
-        draft_id: str,
-    ) -> None:
-        page = tabs.page("admin")
-        _open(page, stand, f"drafts/{draft_id}")
-        _node(page, Ed.RETURNS).click()
-        panel = page.get_by_test_id("detail-panel")
-        panel.get_by_role("button", name="edit dataset").click()
-
-        form = page.get_by_test_id("dataset-form")
-        form.get_by_label("dataset layer").select_option(label=Ed.SRC)
-        form.get_by_label("dataset source").fill("s3://bucket/returns")
-        form.get_by_label("dataset owner").fill("dwh")
-        form.get_by_label("dataset tags").fill("daily, pii")
-        form.get_by_label("dataset description").fill("Returned orders.")
-
-        def save() -> None:
-            form.get_by_role("button", name="save").click()
-
-        _relayout(page, save)
+        dialog.get_by_role("button", name="load kind", exact=True).click()
+        form = page.get_by_test_id("load-kind-form")
+        expect(form.get_by_role("button", name="save load kind")).to_be_disabled()
+        form.get_by_label("load kind name").fill("ed_period")
+        form.get_by_role("button", name="field", exact=True).click()
+        form.get_by_role("button", name="field", exact=True).click()
+        fields = form.get_by_test_id("load-kind-fields")
+        expect(fields.locator("li")).to_have_count(2)
+        fields.get_by_label("field 0 name").fill("period_column")
+        fields.get_by_label("field 0 type").select_option("column")
+        fields.get_by_label("field 0 side").select_option("source")
+        fields.get_by_label("field 0 required").check()
+        fields.get_by_label("field 1 name").fill("period_column")
+        expect(form.get_by_role("button", name="save load kind")).to_be_disabled()
+        fields.get_by_label("field 1 name").fill("days")
+        fields.get_by_label("field 1 type").select_option("int")
+        expect(fields.get_by_label("field 1 side")).to_be_disabled()
+        fields.get_by_role("button", name="remove field 1").click()
+        expect(fields.locator("li")).to_have_count(1)
+        form.get_by_role("button", name="save load kind").click()
         _landed(page, 1)
+        expect(listing.locator('li[data-kind="ed_period"] li')).to_have_text(
+            "period_column · column · source · required"
+        )
 
-        facts = panel.locator(".detail__facts")
-        expect(facts).to_contain_text("s3://bucket/returns")
-        expect(facts).to_contain_text("dwh")
-        expect(facts.locator(".chip")).to_have_count(2)
-        expect(facts.locator(".chip").nth(0)).to_have_text("daily")
-        expect(panel.locator(".detail__description")).to_have_text("Returned orders.")
-        expect(panel.locator(".detail__title .eyebrow")).to_have_text(Ed.SRC)
+        listing.locator('li[data-kind="ed_period"]').get_by_role(
+            "button", name="edit load kind ed_period"
+        ).click()
+        form = page.get_by_test_id("load-kind-form")
+        form.get_by_label("load kind name").fill("ed_period2")
+        form.get_by_role("button", name="save load kind").click()
+        _landed(page, 2)
+        expect(listing.locator('li[data-kind="ed_period2"]')).to_be_visible()
 
-        lane = Css.box(page.locator(f'{Selector.LANE}[data-layer="{Ed.SRC}"]'))
-        assert lane.contains(Css.box(_node(page, Ed.RETURNS)), slack=2)
+        listing.locator('li[data-kind="ed_period2"]').get_by_role(
+            "button", name="remove load kind ed_period2"
+        ).click()
+        _landed(page, 3)
+        expect(listing.locator('li[data-kind="ed_period2"]')).to_have_count(0)
+        page.get_by_role("button", name="close dialog").click()
+        expect(dialog).to_have_count(0)
 
-        stored = catalog_api.state(draft_id)["snapshot"]["datasets"][
-            catalog_seed.id_of(Ed.RETURNS)
-        ]
-        assert stored["layer_id"] == catalog_seed.id_of(Ed.SRC)
-        assert stored["tags"] == ["daily", "pii"]
+        kinds = _snapshot_names(catalog_api.state(draft_id), "load_kinds")
+        assert "ed_period" not in kinds
+        assert "ed_period2" not in kinds
+
+    def test_load_kinds_are_read_only_on_the_published_page(
+        self, tabs: Tabs, stand: StandProcess, catalog_seed: Seed
+    ) -> None:
+        page = tabs.page("dev")
+        _open(page, stand, "")
+        page.get_by_test_id("load-kinds-button").click()
+        dialog = _dialog(page, "load-kinds")
+        expect(
+            dialog.get_by_test_id("load-kinds-list").locator("li[data-kind]")
+        ).to_have_count(len(catalog_seed.kinds))
+        expect(
+            dialog.get_by_role("button", name="load kind", exact=True)
+        ).to_have_count(0)
+        expect(
+            dialog.get_by_role("button", name=re.compile("^edit load kind"))
+        ).to_have_count(0)
+        page.keyboard.press("Escape")
+        expect(dialog).to_have_count(0)
 
 
 class TestFlowForm:
@@ -585,9 +684,11 @@ class TestFlowForm:
         catalog_seed: Seed,
         draft_id: str,
     ) -> None:
+        """Поля вида по типам: число, флаг, текст, колонка приёмника по имени,
+        рутина из узлов-рутин процесса; значения показаны в панели потока."""
         page = tabs.page("admin")
         _open(page, stand, f"drafts/{draft_id}")
-        _node(page, Ed.ORDERS).click()
+        page.locator(catalog_seed.node(Ed.ORDERS)).click()
         page.get_by_test_id("detail-outgoing").get_by_role(
             "button", name="flow", exact=True
         ).click()
@@ -595,7 +696,9 @@ class TestFlowForm:
         form = page.get_by_test_id("flow-form")
         save = form.get_by_role("button", name="save flow")
         expect(save).to_be_disabled()
-        form.get_by_label("flow target").select_option(label=Ed.RETURNS)
+        form.get_by_label("flow target").select_option(
+            value=catalog_seed.id_of(Ed.RETURNS)
+        )
         form.get_by_label("load kind").select_option(label=Ed.TYPED)
         expect(save).to_be_disabled()
 
@@ -603,9 +706,12 @@ class TestFlowForm:
         expect(save).to_be_enabled()
         form.get_by_label(f"load field {Ed.TYPED_BOOL}").check()
         form.get_by_label(f"load field {Ed.TYPED_TEXT}").fill("nightly")
-        form.get_by_label(f"load field {Ed.TYPED_COLUMN}").select_option(
-            value=catalog_seed.id_of(f"{Ed.ORDERS}.id")
-        )
+        column = form.get_by_label(f"load field {Ed.TYPED_COLUMN}")
+        expect(column.locator("option")).to_have_count(len(Objects.COLUMNS) + 1)
+        column.select_option(value="name")
+        routine = form.get_by_label(f"load field {Ed.TYPED_ROUTINE}")
+        expect(routine.locator("option")).to_have_count(2)
+        routine.select_option(index=1)
         save.click()
         _landed(page, 1)
 
@@ -615,12 +721,13 @@ class TestFlowForm:
             .filter(has_text=Ed.RETURNS)
         )
         values = flow.locator(".detail__value")
-        expect(values).to_have_count(4)
+        expect(values).to_have_count(5)
         shown = {
             Ed.TYPED_INT: "7",
             Ed.TYPED_BOOL: "true",
             Ed.TYPED_TEXT: "nightly",
-            Ed.TYPED_COLUMN: "id",
+            Ed.TYPED_COLUMN: "name",
+            Ed.TYPED_ROUTINE: catalog_seed.address(Ed.LOADER),
         }
         for field, text in shown.items():
             value = values.filter(has=page.locator("dt", has_text=field))
@@ -636,7 +743,8 @@ class TestFlowForm:
             Ed.TYPED_INT: 7,
             Ed.TYPED_BOOL: True,
             Ed.TYPED_TEXT: "nightly",
-            Ed.TYPED_COLUMN: catalog_seed.id_of(f"{Ed.ORDERS}.id"),
+            Ed.TYPED_COLUMN: "name",
+            Ed.TYPED_ROUTINE: catalog_seed.ref(Ed.LOADER),
         }
 
 
@@ -661,26 +769,27 @@ class TestToasts:
         expect(page.locator('.pane__group[data-layer="ed_src"]')).to_have_count(1)
 
 
-class TestIndexNavigation:
+class TestEntryNavigation:
     def test_new_draft_form_opens_the_draft_page(
         self, tabs: Tabs, stand: StandProcess, catalog_api: Api, catalog_seed: Seed
     ) -> None:
         page = tabs.page("admin")
-        page.goto(f"{stand.config.base_url}/catalog/")
-        form = page.get_by_test_id("new-draft")
+        _open(page, stand, "")
+        page.get_by_test_id("edit-button").click()
+        form = _dialog(page, "drafts").get_by_test_id("new-draft")
         expect(form.get_by_role("button", name="draft")).to_be_disabled()
-        form.get_by_role("textbox").fill("ed_from_index")
+        form.get_by_role("textbox").fill("ed_from_entry")
         form.get_by_role("button", name="draft").click()
         page.wait_for_url(re.compile(r"/catalog/drafts/[0-9a-f-]{36}$"), timeout=30_000)
         page.wait_for_selector(Selector.READY, timeout=30_000)
 
-        expect(page.get_by_test_id("page-title")).to_have_text("ed_from_index")
+        expect(page.get_by_test_id("page-title")).to_have_text("ed_from_entry")
         expect(page.get_by_test_id("catalog-page")).to_have_attribute(
             "data-editable", "true"
         )
         catalog_api.discard(page.url.rsplit("/", 1)[1])
 
-    def test_links_open_the_view_and_the_draft(
+    def test_menus_open_the_view_and_the_draft(
         self,
         tabs: Tabs,
         stand: StandProcess,
@@ -689,22 +798,25 @@ class TestIndexNavigation:
         draft_id: str,
     ) -> None:
         page = tabs.page("admin")
-        page.goto(f"{stand.config.base_url}/catalog/")
-        views = page.get_by_test_id("index-views")
-        drafts = page.get_by_test_id("index-drafts")
+        _open(page, stand, "")
         view_name = next(v["name"] for v in catalog_api.views() if v["id"] == view_id)
         draft_name = catalog_api.state(draft_id)["draft"]["name"]
 
-        views.get_by_role("link", name=view_name).click()
+        page.get_by_test_id("diagrams-button").click()
+        _dialog(page, "diagrams").get_by_role("link", name=view_name).click()
         page.wait_for_selector(Selector.READY, timeout=30_000)
         expect(page.get_by_test_id("catalog-page")).to_have_attribute(
             "data-source", "view"
         )
         expect(page.get_by_test_id("page-title")).to_have_text(view_name)
 
-        page.go_back()
+        page.get_by_role("link", name="catalog").click()
+        page.wait_for_selector(Selector.READY, timeout=30_000)
+        expect(page.get_by_test_id("edit-button")).to_contain_text("edit · ")
+        page.get_by_test_id("edit-button").click()
+        drafts = _dialog(page, "drafts").get_by_test_id("drafts-list")
         expect(drafts.locator("li").filter(has_text=draft_name)).to_contain_text(
-            "over v"
+            "yours"
         )
         drafts.get_by_role("link", name=draft_name).click()
         page.wait_for_selector(Selector.READY, timeout=30_000)
@@ -724,22 +836,22 @@ class TestAnonymousAndNarrow:
         expect(page.locator(Selector.NODE)).to_have_count(0)
 
     def test_narrow_screen_keeps_dialogs_and_editing_within_the_viewport(
-        self, tabs: Tabs, stand: StandProcess, draft_id: str
+        self, tabs: Tabs, stand: StandProcess, catalog_seed: Seed, draft_id: str
     ) -> None:
         page = tabs.page("admin", NARROW)
         _open(page, stand, f"drafts/{draft_id}")
         expect(page.get_by_test_id("left-pane")).to_have_count(0)
         assert no_horizontal_scroll(page)
 
-        _node(page, Ed.ORDERS).click()
+        page.locator(catalog_seed.node(Ed.ORDERS)).click()
         panel = page.get_by_test_id("detail-panel")
-        expect(panel.get_by_role("button", name="edit dataset")).to_be_visible()
-        panel.get_by_role("button", name="edit dataset").click()
-        expect(page.get_by_test_id("dataset-form")).to_be_visible()
+        expect(panel.get_by_role("button", name="edit node")).to_be_visible()
+        panel.get_by_role("button", name="edit node").click()
+        expect(page.get_by_test_id("node-form")).to_be_visible()
         assert no_horizontal_scroll(page)
-        page.get_by_test_id("dataset-form").get_by_role("button", name="cancel").click()
+        page.get_by_test_id("node-form").get_by_role("button", name="cancel").click()
 
-        page.get_by_role("button", name="show the dataset list").click()
+        page.get_by_role("button", name="show the left pane").click()
         page.get_by_role("button", name="layer", exact=True).click()
         dialog = _dialog(page, "layer-name")
         expect(dialog).to_be_visible()
@@ -748,7 +860,7 @@ class TestAnonymousAndNarrow:
 
 
 class TestZRebaseWithIssues:
-    """Последним: снос набора из опубликованного каталога."""
+    """Последним: снос узла из опубликованного каталога."""
 
     def test_conflicting_operation_is_listed_and_dropped_on_request(
         self,
@@ -760,17 +872,15 @@ class TestZRebaseWithIssues:
     ) -> None:
         page = tabs.page("admin")
         _open(page, stand, f"drafts/{draft_id}")
-        _node(page, Ed.RETURNS).click()
+        page.locator(catalog_seed.node(Ed.RETURNS)).click()
         panel = page.get_by_test_id("detail-panel")
-        panel.get_by_role("button", name="edit dataset").click()
-        page.get_by_test_id("dataset-form").get_by_label("dataset name").fill(
-            "ed_returns_x"
-        )
-        page.get_by_test_id("dataset-form").get_by_role("button", name="save").click()
+        panel.get_by_role("button", name="edit node").click()
+        page.get_by_test_id("node-form").get_by_label("node alias").fill("ed_returns_x")
+        page.get_by_test_id("node-form").get_by_role("button", name="save node").click()
         _landed(page, 1)
 
         removal: list[dict[str, Any]] = [
-            {"op": "remove_dataset", "id": catalog_seed.id_of(Ed.RETURNS)}
+            {"op": "remove_node", "id": catalog_seed.id_of(Ed.RETURNS)}
         ]
         version = catalog_api.publish_ops("widgets removal", removal)
         expect(page.get_by_test_id("rebase-button")).to_have_text(
@@ -790,10 +900,9 @@ class TestZRebaseWithIssues:
         conflict.get_by_role("button", name="drop the conflicts and update").click()
         expect(conflict).to_have_count(0)
         expect(_toast(page, "success")).to_contain_text("1 operation(s) dropped")
-        expect(_node(page, "ed_returns_x")).to_have_count(0)
-        expect(_node(page, Ed.RETURNS)).to_have_count(0)
+        expect(page.locator(catalog_seed.node(Ed.RETURNS))).to_have_count(0)
         expect(page.get_by_test_id("rebase-button")).to_have_count(0)
 
         state = catalog_api.state(draft_id)
         assert state["draft"]["base_version"] == version
-        assert catalog_seed.id_of(Ed.RETURNS) not in state["snapshot"]["datasets"]
+        assert catalog_seed.id_of(Ed.RETURNS) not in state["snapshot"]["nodes"]

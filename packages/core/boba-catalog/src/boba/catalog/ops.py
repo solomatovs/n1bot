@@ -293,16 +293,27 @@ class OperationList(RootModel[tuple[CatalogOp, ...]]):
     ) -> CatalogSnapshot:
         """Новый снимок после всех операций; входной не меняется.
 
+        Ссылки на источники проверяются по разнице: операция отвергается,
+        только если добавляет новое расхождение с источниками; уже устаревший
+        процесс можно чинить по одной операции.
+
         Ошибки:
         CatalogOpError — первая не применимая операция, дальше не идём.
         """
         current = snapshot
+        known = set(current.source_violations(resolver))
         for index, op in enumerate(self.root):
             try:
                 current = op.apply_to(current)
                 current.check()
-                current.check_against(resolver)
             except CatalogInvariantError as exc:
                 raise CatalogOpError(index, op, str(exc)) from exc
+
+            violations = set(current.source_violations(resolver))
+            introduced = sorted(violations - known)
+            if introduced:
+                raise CatalogOpError(index, op, "; ".join(introduced))
+
+            known = violations
 
         return current
