@@ -1,0 +1,31 @@
+.field__hint {
+  font-family: var(--font-sans);
+  font-size: var(--fs-micro);
+  color: var(--faint);
+}
+
+.field__bound {
+  font-family: var(--font-mono);
+  font-size: var(--fs-data);
+  color: var(--edge-value);
+}
+
+.field__label {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--muted);
+}
+
+.field__required {
+  color: var(--error);
+}
+
+.field--invalid .input {
+  border-color: var(--error);
+}
+
+.field__issue {
+  color: var(--error);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+}

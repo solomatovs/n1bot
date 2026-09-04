@@ -24,7 +24,8 @@ from typing import Any, ClassVar
 
 import httpx
 import pytest
-from chat_ui import ChatOpener
+from chat_ui import ChatOpener, login_cookies
+from playwright.sync_api import Browser, expect
 
 from boba.canvas.diagram import DiagramPrompt
 from boba.chainlit.rendering.tool import ToolCallMarkdown, ToolResultMarkdown
@@ -1510,8 +1511,11 @@ class ProbeCatalog:
 
     LAYER_ID: ClassVar[str] = "00000000-0000-0000-0000-00000000c001"
     DATASET_ID: ClassVar[str] = "00000000-0000-0000-0000-00000000c002"
+    LIVE_DATASET_ID: ClassVar[str] = "00000000-0000-0000-0000-00000000c003"
     LAYER: ClassVar[str] = "ui-raw"
     DATASET: ClassVar[str] = "ui_orders"
+    LIVE_DATASET: ClassVar[str] = "ui_customers"
+    PAGE_READY: ClassVar[str] = '[data-testid="canvas"][data-ready="true"]'
     DRAFT: ClassVar[str] = "ui draft"
     UUID: ClassVar[str] = (
         r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
@@ -1537,6 +1541,25 @@ class ProbeCatalog:
             },
         ]
         return json.dumps(ops, ensure_ascii=False)
+
+    @classmethod
+    def live_operations(cls) -> str:
+        """Ещё один набор в тот же слой: его ждёт открытая страница черновика."""
+        ops = [
+            {
+                "op": "add_dataset",
+                "dataset": {
+                    "id": cls.LIVE_DATASET_ID,
+                    "layer_id": cls.LAYER_ID,
+                    "name": cls.LIVE_DATASET,
+                },
+            },
+        ]
+        return json.dumps(ops, ensure_ascii=False)
+
+    @classmethod
+    def node(cls, name: str) -> str:
+        return f'[data-testid="dataset-node"][data-dataset="{name}"]'
 
 
 @dataclass(frozen=True)
@@ -1597,6 +1620,51 @@ class TestCatalogTools:
         after = stand_db.catalog_portions(catalog_draft.draft_id)
         if after != before + 1:
             raise AssertionError(f"portion is not stored: was {before}, now {after}")
+
+    def test_propose_shows_up_on_the_open_page(
+        self,
+        canvas_feed: ToolFeed,
+        catalog_draft: CatalogDraftProbe,
+        sandbox_stand: StandProcess,
+        browser: Browser,
+    ) -> None:
+        """Страница черновика открыта в другой вкладке: порция модели появляется
+        на холсте без перезагрузки."""
+        context = browser.new_context(viewport=ChatOpener.VIEWPORT)
+        context.add_cookies(login_cookies(sandbox_stand))
+        page = context.new_page()
+        try:
+            page.goto(
+                f"{sandbox_stand.config.base_url}/catalog/drafts/"
+                f"{catalog_draft.draft_id}"
+            )
+            page.wait_for_selector(ProbeCatalog.PAGE_READY, timeout=30_000)
+            expect(
+                page.locator(ProbeCatalog.node(ProbeCatalog.DATASET))
+            ).to_be_visible()
+            expect(
+                page.locator(ProbeCatalog.node(ProbeCatalog.LIVE_DATASET))
+            ).to_have_count(0)
+
+            call = ToolCall(
+                tool="catalog_propose",
+                arguments={
+                    "draft_id": catalog_draft.draft_id,
+                    "operations": ProbeCatalog.live_operations(),
+                },
+                view=ScriptCall(arg="operations", lang="json"),
+            )
+            expected = ToolExpect(
+                patterns=[f"^added dataset '{ProbeCatalog.LIVE_DATASET}'$"],
+                dom=[f"added dataset '{ProbeCatalog.LIVE_DATASET}'"],
+            )
+            canvas_feed.call(call, expected)
+
+            live = page.locator(ProbeCatalog.node(ProbeCatalog.LIVE_DATASET))
+            expect(live).to_be_visible(timeout=15_000)
+            expect(live).to_have_attribute("data-status", "added")
+        finally:
+            context.close()
 
     def test_diff_repeats_the_changes(
         self, canvas_feed: ToolFeed, catalog_draft: CatalogDraftProbe

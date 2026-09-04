@@ -5,7 +5,7 @@ import { CatalogApi } from "./api/client";
 import { PageUrls, pageConfig } from "./config";
 import { CatalogPage, type PageSource } from "./pages/CatalogPage";
 import { IndexPage } from "./pages/IndexPage";
-import { EmptyState } from "./ui";
+import { EmptyState, ToastProvider } from "./ui";
 
 /** Общие для страниц службы: адреса и API-клиент. */
 export type Services = {
@@ -55,14 +55,16 @@ export function App(): ReactElement {
 
   return (
     <ServicesContext.Provider value={services}>
-      <BrowserRouter basename={services.urls.routerBase}>
-        <Routes>
-          <Route index element={<IndexPage />} />
-          <Route path="/views/:viewId" element={<ViewRoute />} />
-          <Route path="/drafts/:draftId" element={<DraftRoute />} />
-          <Route path="*" element={<EmptyState fill title="no such page" />} />
-        </Routes>
-      </BrowserRouter>
+      <ToastProvider>
+        <BrowserRouter basename={services.urls.routerBase}>
+          <Routes>
+            <Route index element={<IndexPage />} />
+            <Route path="/views/:viewId" element={<ViewRoute />} />
+            <Route path="/drafts/:draftId" element={<DraftRoute />} />
+            <Route path="*" element={<EmptyState fill title="no such page" />} />
+          </Routes>
+        </BrowserRouter>
+      </ToastProvider>
     </ServicesContext.Provider>
   );
 }

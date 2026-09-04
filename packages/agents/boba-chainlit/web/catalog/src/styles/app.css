@@ -47,8 +47,8 @@ button {
 /* --- каркас --- */
 
 .page {
-  display: grid;
-  grid-template-rows: var(--h-topbar) 1fr;
+  display: flex;
+  flex-direction: column;
   height: 100vh;
   width: 100vw;
   overflow: hidden;
@@ -58,11 +58,17 @@ button {
   display: flex;
   align-items: center;
   gap: var(--s3);
+  height: var(--h-topbar);
+  flex: none;
   padding: 0 var(--s4);
   background: var(--surface);
   border-bottom: 1px solid var(--hairline);
   min-width: 0;
   overflow: hidden;
+}
+
+.page > .alert {
+  margin: var(--s2) var(--s4) 0;
 }
 
 .topbar__home {
@@ -92,6 +98,7 @@ button {
 .page__body {
   display: grid;
   grid-template-columns: 1fr;
+  flex: 1;
   min-height: 0;
   min-width: 0;
   position: relative;
@@ -702,4 +709,125 @@ button {
 .index__link {
   font-family: var(--font-mono);
   font-size: var(--fs-ui);
+}
+
+/* --- правки: диалоги и формы --- */
+
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+}
+
+.dialog {
+  width: min(92vw, 520px);
+  max-height: 90vh;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--r-node);
+  box-shadow: var(--shadow-pop);
+}
+
+.dialog__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.dialog__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-title);
+  font-weight: 600;
+}
+
+.dialog__body {
+  padding: var(--s4);
+  display: grid;
+  gap: var(--s3);
+}
+
+.form {
+  display: grid;
+  gap: var(--s3);
+}
+
+.form .input {
+  width: 100%;
+}
+
+.form__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+
+.form__spacer {
+  flex: 1;
+}
+
+.form__note {
+  margin: 0;
+  color: var(--muted);
+}
+
+.conflicts__list {
+  margin: var(--s2) 0 0;
+  padding-left: var(--s4);
+  display: grid;
+  gap: 4px;
+  font-size: var(--fs-micro);
+}
+
+.pane__group-head,
+.detail__section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+}
+
+.pane__group-actions {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.pane__footer {
+  padding: var(--s3);
+}
+
+.columns-editor .input {
+  width: 100%;
+  padding: 3px 6px;
+}
+
+.columns-editor th {
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--faint);
+  padding: 2px 4px;
+}
+
+.detail__flow-edit.icon-btn {
+  width: 24px;
+  height: 24px;
+}
+
+.index__new {
+  display: flex;
+  gap: var(--s2);
+  margin: var(--s2) 0;
+}
+
+.index__new .input {
+  flex: 1;
 }

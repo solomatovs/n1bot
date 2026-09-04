@@ -2,19 +2,24 @@ import { z } from "zod";
 
 import type { PageUrls } from "../config";
 import {
+  CatalogChangedSchema,
   DraftSchema,
   DraftStateSchema,
+  RebaseResultSchema,
   SnapshotSchema,
   VersionSchema,
   ViewLayoutSchema,
   ViewSchema,
+  type CatalogChanged,
   type Draft,
   type DraftState,
+  type RebaseResult,
   type Snapshot,
   type Version,
   type View,
   type ViewLayout,
 } from "../model/catalog";
+import type { CatalogOp } from "../model/ops";
 import type { paths } from "./schema";
 
 /** Отказ API: статус и текст detail; тело 409/422 сохраняется целиком. */
@@ -96,6 +101,44 @@ export class CatalogApi {
 
   layout(viewId: string): Promise<ViewLayout> {
     return this.call("get", `/api/catalog/views/${viewId}/layout`, undefined, ViewLayoutSchema);
+  }
+
+  createDraft(name: string): Promise<Draft> {
+    return this.call("post", "/api/catalog/drafts", { name }, DraftSchema);
+  }
+
+  discardDraft(draftId: string): Promise<Draft> {
+    return this.call("delete", `/api/catalog/drafts/${draftId}`, undefined, DraftSchema);
+  }
+
+  /** Порция операций; 409 с current_seq в payload — черновик ушёл вперёд. */
+  appendOps(draftId: string, expectedSeq: number, operations: CatalogOp[]): Promise<DraftState> {
+    const body = { expected_seq: expectedSeq, operations };
+    return this.call("post", `/api/catalog/drafts/${draftId}/ops`, body, DraftStateSchema);
+  }
+
+  publish(draftId: string): Promise<Version> {
+    return this.call("post", `/api/catalog/drafts/${draftId}/publish`, undefined, VersionSchema);
+  }
+
+  rebase(draftId: string, dropConflicts: boolean): Promise<RebaseResult> {
+    const body = { drop_conflicts: dropConflicts };
+    return this.call("post", `/api/catalog/drafts/${draftId}/rebase`, body, RebaseResultSchema);
+  }
+
+  /** Поток CatalogChanged пользователя: server-sent events с cookie входа. */
+  events(onMessage: (message: CatalogChanged) => void): () => void {
+    const source = new EventSource(this.urls.api("/events"), { withCredentials: true });
+    source.onmessage = (event: MessageEvent<string>) => {
+      const parsed = CatalogChangedSchema.safeParse(JSON.parse(event.data));
+      if (parsed.success) {
+        onMessage(parsed.data);
+      }
+    };
+
+    return () => {
+      source.close();
+    };
   }
 
   private async call<T>(method: Method, path: string, body: unknown, schema: z.ZodType<T>): Promise<T> {

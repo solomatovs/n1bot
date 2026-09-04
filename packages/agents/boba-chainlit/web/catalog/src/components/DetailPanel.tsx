@@ -1,24 +1,51 @@
-import { ArrowLeft, ArrowRight, KeyRound, X } from "lucide-react";
-import type { ReactElement } from "react";
+import { ArrowLeft, ArrowRight, KeyRound, Pencil, Plus, Trash2, X } from "lucide-react";
+import { useState, type ReactElement } from "react";
 
 import type { Catalog, Dataset, Flow } from "../model/catalog";
-import { Chip, Eyebrow, IconButton } from "../ui";
+import type { EditActions } from "../model/editing";
+import { Button, Chip, Eyebrow, IconButton } from "../ui";
+import { ColumnsEditor } from "./edit/ColumnsEditor";
+import { DatasetForm } from "./edit/DatasetForm";
 
 type Props = {
   catalog: Catalog;
   dataset: Dataset;
   showDiff: boolean;
+  /** Действия черновика; без них панель только показывает. */
+  editing: EditActions | undefined;
   onActivate: (datasetId: string) => void;
   onClose: () => void;
 };
 
+type Mode = "view" | "dataset" | "columns";
+
 /** Панель набора: паспорт, колонки, потоки в обе стороны с правилом загрузки.
  * Перенос TableDetail и RelatedTables из liam erd-core под каталог. */
-export function DetailPanel({ catalog, dataset, showDiff, onActivate, onClose }: Props): ReactElement {
+export function DetailPanel({ catalog, dataset, showDiff, editing, onActivate, onClose }: Props): ReactElement {
+  const [mode, setMode] = useState<Mode>("view");
   const columns = catalog.columnsOf(dataset.id);
   const flows = catalog.flowsOf(dataset.id);
   const status = catalog.statusOf("dataset", dataset.id);
   const layer = catalog.layer(dataset.layer_id);
+  const referenced = referencedColumns(catalog, [...flows.incoming, ...flows.outgoing]);
+
+  if (editing !== undefined && mode === "dataset") {
+    return (
+      <div className="detail" data-testid="detail-panel" data-dataset={dataset.name} data-mode={mode}>
+        <DatasetForm
+          dataset={dataset}
+          layers={catalog.layers}
+          onSave={(saved) => {
+            editing.apply([{ op: "set_dataset", dataset: saved }]);
+            setMode("view");
+          }}
+          onCancel={() => {
+            setMode("view");
+          }}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="detail" data-testid="detail-panel" data-dataset={dataset.name}>
@@ -28,6 +55,26 @@ export function DetailPanel({ catalog, dataset, showDiff, onActivate, onClose }:
           <h2 className="detail__name">{dataset.name}</h2>
         </div>
         {showDiff && status !== "unchanged" && <Chip tone="draft">{status}</Chip>}
+        {editing !== undefined && (
+          <IconButton
+            aria-label="edit dataset"
+            onClick={() => {
+              setMode("dataset");
+            }}
+          >
+            <Pencil size={16} />
+          </IconButton>
+        )}
+        {editing !== undefined && (
+          <IconButton
+            aria-label="remove dataset"
+            onClick={() => {
+              editing.removeDataset(dataset);
+            }}
+          >
+            <Trash2 size={16} />
+          </IconButton>
+        )}
         <IconButton aria-label="close details" onClick={onClose}>
           <X size={16} />
         </IconButton>
@@ -48,7 +95,37 @@ export function DetailPanel({ catalog, dataset, showDiff, onActivate, onClose }:
       </section>
 
       <section className="detail__section" data-testid="detail-columns">
-        <Eyebrow as="h4">columns · {columns.length}</Eyebrow>
+        <div className="detail__section-head">
+          <Eyebrow as="h4">columns · {columns.length}</Eyebrow>
+          {editing !== undefined && mode !== "columns" && (
+            <Button
+              size="tiny"
+              icon={Pencil}
+              onClick={() => {
+                setMode("columns");
+              }}
+            >
+              edit columns
+            </Button>
+          )}
+        </div>
+        {editing !== undefined && mode === "columns" && (
+          <ColumnsEditor
+            datasetId={dataset.id}
+            columns={columns}
+            referenced={referenced}
+            onSave={(ops) => {
+              if (ops.length > 0) {
+                editing.apply(ops);
+              }
+              setMode("view");
+            }}
+            onCancel={() => {
+              setMode("view");
+            }}
+          />
+        )}
+        {mode !== "columns" && (
         <table className="detail__table">
           <tbody>
             {columns.map((column) => (
@@ -65,6 +142,7 @@ export function DetailPanel({ catalog, dataset, showDiff, onActivate, onClose }:
             ))}
           </tbody>
         </table>
+        )}
       </section>
 
       <FlowList
@@ -74,6 +152,7 @@ export function DetailPanel({ catalog, dataset, showDiff, onActivate, onClose }:
         catalog={catalog}
         other={(flow) => flow.from_dataset_id}
         showDiff={showDiff}
+        editing={editing}
         onActivate={onActivate}
       />
       <FlowList
@@ -83,10 +162,30 @@ export function DetailPanel({ catalog, dataset, showDiff, onActivate, onClose }:
         catalog={catalog}
         other={(flow) => flow.to_dataset_id}
         showDiff={showDiff}
+        editing={editing}
         onActivate={onActivate}
+        onAdd={() => {
+          editing?.newFlow(dataset);
+        }}
       />
     </div>
   );
+}
+
+/** Колонки, на которые ссылаются значения загрузки потоков набора. */
+function referencedColumns(catalog: Catalog, flows: Flow[]): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const flow of flows) {
+    for (const value of Object.values(flow.load.values)) {
+      if (Array.isArray(value)) {
+        value.forEach((id) => ids.add(id));
+      } else if (typeof value === "string" && catalog.column(value) !== undefined) {
+        ids.add(value);
+      }
+    }
+  }
+
+  return ids;
 }
 
 type FlowListProps = {
@@ -96,15 +195,24 @@ type FlowListProps = {
   catalog: Catalog;
   other: (flow: Flow) => string;
   showDiff: boolean;
+  editing: EditActions | undefined;
   onActivate: (datasetId: string) => void;
+  onAdd?: (() => void) | undefined;
 };
 
-function FlowList({ title, icon, flows, catalog, other, showDiff, onActivate }: FlowListProps): ReactElement {
+function FlowList({ title, icon, flows, catalog, other, showDiff, editing, onActivate, onAdd }: FlowListProps): ReactElement {
   return (
     <section className="detail__section" data-testid={`detail-${title}`}>
-      <Eyebrow as="h4">
-        {title} · {flows.length}
-      </Eyebrow>
+      <div className="detail__section-head">
+        <Eyebrow as="h4">
+          {title} · {flows.length}
+        </Eyebrow>
+        {editing !== undefined && onAdd !== undefined && (
+          <Button size="tiny" icon={Plus} onClick={onAdd}>
+            flow
+          </Button>
+        )}
+      </div>
       {flows.length === 0 && <p className="detail__empty">none</p>}
       <ul className="detail__flows">
         {flows.map((flow) => {
@@ -124,6 +232,17 @@ function FlowList({ title, icon, flows, catalog, other, showDiff, onActivate }: 
                 <span>{neighbour?.name ?? otherId}</span>
               </button>
               <Chip>{catalog.loadKindName(flow)}</Chip>
+              {editing !== undefined && (
+                <IconButton
+                  className="detail__flow-edit"
+                  aria-label={`edit flow to ${neighbour?.name ?? otherId}`}
+                  onClick={() => {
+                    editing.editFlow(flow);
+                  }}
+                >
+                  <Pencil size={12} />
+                </IconButton>
+              )}
               <dl className="detail__values">
                 {catalog.loadValues(flow).map((value) => (
                   <div key={value.field} className="detail__value">

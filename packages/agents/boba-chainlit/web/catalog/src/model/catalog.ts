@@ -120,6 +120,21 @@ export const VersionSchema = z.object({
   published_at: z.string(),
 });
 
+export const RebaseIssueSchema = z.object({ seq: z.number(), index: z.number(), reason: z.string() });
+
+export const RebaseResultSchema = z.object({
+  draft: DraftSchema,
+  issues: z.array(RebaseIssueSchema),
+});
+
+export const CatalogChangedSchema = z.object({
+  kind: z.literal("catalog_changed"),
+  draft_id: z.string().nullable(),
+  version: z.number().nullable(),
+  view_id: z.string().nullable(),
+  action: z.enum(["created", "updated", "deleted"]),
+});
+
 export type Layer = z.infer<typeof LayerSchema>;
 export type Dataset = z.infer<typeof DatasetSchema>;
 export type Column = z.infer<typeof ColumnSchema>;
@@ -137,6 +152,9 @@ export type View = z.infer<typeof ViewSchema>;
 export type NodePosition = z.infer<typeof NodePositionSchema>;
 export type ViewLayout = z.infer<typeof ViewLayoutSchema>;
 export type Version = z.infer<typeof VersionSchema>;
+export type RebaseIssue = z.infer<typeof RebaseIssueSchema>;
+export type RebaseResult = z.infer<typeof RebaseResultSchema>;
+export type CatalogChanged = z.infer<typeof CatalogChangedSchema>;
 
 export const EMPTY_DIFF: Diff = { entries: [] };
 
