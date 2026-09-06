@@ -27,7 +27,18 @@ export function EmptyState({ title, fill = false, sub = false, mark, children }:
   return (
     <div className={classes.join(" ")} data-testid={mark}>
       {title !== undefined && <span className="empty__title">{title}</span>}
-      {children !== undefined && <span>{children}</span>}
+      {children !== undefined && <div className="empty__body">{children}</div>}
     </div>
+  );
+}
+
+type StepsProps = { children: ReactNode; mark?: string };
+
+/** Нумерованный список шагов для пустого состояния: что сделать, чтобы оно наполнилось. */
+export function Steps({ children, mark }: StepsProps): ReactElement {
+  return (
+    <ol className="steps" data-testid={mark}>
+      {children}
+    </ol>
   );
 }

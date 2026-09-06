@@ -12,6 +12,7 @@ import { DiagramsDialog } from "../components/edit/DiagramsDialog";
 import { DraftActions } from "../components/edit/DraftActions";
 import { DraftsDialog } from "../components/edit/DraftsDialog";
 import { FlowForm } from "../components/edit/FlowForm";
+import { defaultLayerChoice, LayerPicker, layerChoiceReady, type LayerChoice } from "../components/edit/LayerPicker";
 import { LoadKindsDialog } from "../components/edit/LoadKindsDialog";
 import { NamePrompt } from "../components/edit/NamePrompt";
 import { ViewActions } from "../components/edit/ViewActions";
@@ -56,7 +57,7 @@ import {
   PageNotices,
   Pane,
   Scene,
-  Select,
+  Steps,
   Toolbar,
   Topbar,
   TopbarGroup,
@@ -328,9 +329,20 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
         removeLayer: (layer) => {
           apply([{ op: "remove_layer", id: layer.id }]);
         },
-        addNode: (layerId, ref) => {
+        addNode: (choice, ref) => {
+          const ops: CatalogOp[] = [];
+          let layerId = "";
+          if (choice.kind === "existing") {
+            layerId = choice.id;
+          } else {
+            const layer = blankLayer(choice.name.trim(), catalog.nextLayerPosition());
+            ops.push({ op: "add_layer", layer });
+            layerId = layer.id;
+          }
+
           const node = blankNode(layerId, ref);
-          apply([{ op: "add_node", node }]);
+          ops.push({ op: "add_node", node });
+          apply(ops);
           update({ active: node.id, object: undefined });
         },
         removeNode: (node: ProcessNode) => {
@@ -520,7 +532,11 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
           <Scene>
             {empty && (
               <EmptyState fill title="the process is empty">
-                <p>Pull the structure of your databases in as metadata sources, then put their objects into layers.</p>
+                <Steps mark="empty-steps">
+                  <li>Add a connection and mark it as a source, then sync it: the catalog learns the tables.</li>
+                  <li>{editable ? "Open the sources tab, pick a table and add it to a layer." : "Press edit to open a draft."}</li>
+                  <li>Drag from one table to another to describe how data flows between them, then publish.</li>
+                </Steps>
                 <Toolbar mark="empty-actions">
                   <Button
                     tone="primary"
@@ -530,7 +546,17 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
                   >
                     add a source
                   </Button>
-                  {editable && <Button onClick={editing?.addLayer}>add a layer</Button>}
+                  {editable && (
+                    <Button
+                      onClick={() => {
+                        setPaneOpen(true);
+                        update({ pane: "sources" });
+                      }}
+                      data-testid="pick-a-table"
+                    >
+                      pick a table
+                    </Button>
+                  )}
                 </Toolbar>
               </EmptyState>
             )}
@@ -594,7 +620,7 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
                             return;
                           }
 
-                          editing.addNode(layerId, ref);
+                          editing.addNode({ kind: "existing", id: layerId }, ref);
                         }
                       : undefined
                   }
@@ -681,8 +707,8 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
           <DropPrompt
             catalog={catalog}
             object={dialog.ref}
-            onSubmit={(layerId) => {
-              editing?.addNode(layerId, dialog.ref);
+            onSubmit={(choice) => {
+              editing?.addNode(choice, dialog.ref);
               setDialog(null);
             }}
             onClose={() => {
@@ -702,8 +728,9 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
               catalog={catalog}
               flow={dialog.flow}
               pickTarget={dialog.pickTarget}
-              onSave={(flow) => {
-                apply([dialog.fresh ? { op: "add_flow", flow } : { op: "set_flow", flow }]);
+              onSave={(flow, before) => {
+                const op: CatalogOp = dialog.fresh ? { op: "add_flow", flow } : { op: "set_flow", flow };
+                apply([...before, op]);
                 setDialog(null);
               }}
               onCancel={() => {
@@ -788,37 +815,24 @@ function SharedOnly({ access, views }: { access: Access; views: View[] }): React
 type DropProps = {
   catalog: Catalog;
   object: ObjectRef;
-  onSubmit: (layerId: string) => void;
+  onSubmit: (choice: LayerChoice) => void;
   onClose: () => void;
 };
 
-/** Объект брошен мимо дорожек: слой выбирается здесь. */
+/** Объект брошен мимо дорожек: слой выбирается здесь, новый — по имени. */
 function DropPrompt({ catalog, object, onSubmit, onClose }: DropProps): ReactElement {
-  const [layerId, setLayerId] = useState(catalog.layers[0]?.id ?? "");
+  const [choice, setChoice] = useState<LayerChoice>(() => defaultLayerChoice(catalog.layers));
 
   return (
     <Dialog title="which layer?" mark="drop-layer" onClose={onClose}>
       <Note mono>{object.path.join("/")}</Note>
-      <Select
-        fill
-        aria-label="layer for the dropped object"
-        value={layerId}
-        onChange={(event) => {
-          setLayerId(event.target.value);
-        }}
-      >
-        {catalog.layers.map((layer) => (
-          <option key={layer.id} value={layer.id}>
-            {layer.name}
-          </option>
-        ))}
-      </Select>
+      <LayerPicker fill layers={catalog.layers} choice={choice} onChange={setChoice} label="layer for the dropped object" />
       <Toolbar>
         <Button
           tone="primary"
-          disabled={layerId === ""}
+          disabled={!layerChoiceReady(choice)}
           onClick={() => {
-            onSubmit(layerId);
+            onSubmit(choice);
           }}
         >
           add node

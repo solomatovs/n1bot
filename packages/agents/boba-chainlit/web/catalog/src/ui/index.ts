@@ -7,7 +7,7 @@ export { Chip, type ChipTone } from "./Chip";
 export { Code } from "./Code";
 export { Cell, DataTable, TableRow, type CellMod } from "./DataTable";
 export { Dialog } from "./Dialog";
-export { EmptyState } from "./EmptyState";
+export { EmptyState, Steps } from "./EmptyState";
 export { Eyebrow } from "./Eyebrow";
 export { Facts, type Fact } from "./Facts";
 export { Field } from "./Field";
