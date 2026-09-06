@@ -1,3 +1,4 @@
+import type { LayerChoice } from "../components/edit/LayerPicker";
 import type { Flow, Layer, ObjectRef, ProcessNode } from "./catalog";
 import type { CatalogOp } from "./ops";
 
@@ -8,8 +9,8 @@ export type EditActions = {
   addLayer: () => void;
   renameLayer: (layer: Layer) => void;
   removeLayer: (layer: Layer) => void;
-  /** Объект источника становится узлом слоя. */
-  addNode: (layerId: string, ref: ObjectRef) => void;
+  /** Объект источника становится узлом слоя; новый слой заводится той же пачкой. */
+  addNode: (layer: LayerChoice, ref: ObjectRef) => void;
   removeNode: (node: ProcessNode) => void;
   /** Узел переводится на другой объект; потоки остаются. */
   retargetNode: (node: ProcessNode, ref: ObjectRef) => void;

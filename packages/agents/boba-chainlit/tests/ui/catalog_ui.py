@@ -15,6 +15,7 @@ from typing import Any, ClassVar
 from uuid import UUID
 
 import httpx
+from playwright.sync_api import FloatRect, Locator, Page
 
 from boba.db.clickhouse.snapshot_sample import ChSample
 from boba.db.postgres.snapshot_sample import PgSample
@@ -47,6 +48,20 @@ def api_client(stand: StandProcess, login: str) -> httpx.Client:
     return httpx.Client(
         base_url=stand.config.base_url, cookies=response.cookies, timeout=30.0
     )
+
+
+def settled_box(page: Page, target: Locator) -> FloatRect:
+    """Рамка элемента холста после того, как раскладка перестала двигаться:
+    клик или перетаскивание по ещё едущему ребру или ручке промахивается."""
+    previous = target.bounding_box()
+    for _ in range(50):
+        page.wait_for_timeout(100)
+        current = target.bounding_box()
+        if current is not None and current == previous:
+            return current
+        previous = current
+
+    raise AssertionError("canvas layout did not settle in 5 s")
 
 
 def ok(response: httpx.Response) -> dict[str, Any]:

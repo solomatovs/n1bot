@@ -4,20 +4,8 @@ import { useEffect, useState, type ReactElement } from "react";
 import { ApiError, type CatalogApi } from "../api/client";
 import { renderRef, type Catalog, type ObjectCard, type ObjectRef, type ProcessNode } from "../model/catalog";
 import type { EditActions } from "../model/editing";
-import {
-  Alert,
-  Button,
-  Chip,
-  EmptyState,
-  Facts,
-  IconButton,
-  Note,
-  Panel,
-  PanelHead,
-  Section,
-  Select,
-  Toolbar,
-} from "../ui";
+import { Button, Chip, EmptyState, Facts, IconButton, Note, Panel, PanelHead, Section, Toolbar } from "../ui";
+import { defaultLayerChoice, LayerPicker, layerChoiceReady, type LayerChoice } from "./edit/LayerPicker";
 import { ObjectCardPanel } from "./sources/ObjectCardPanel";
 
 type Props = {
@@ -38,7 +26,7 @@ type CardState = { status: "loading" } | { status: "failed"; message: string } |
 export function ObjectPanel({ api, catalog, object, editing, retargetFor, onOpenNode, onClose }: Props): ReactElement {
   const ref = object;
   const [state, setState] = useState<CardState>({ status: "loading" });
-  const [layerId, setLayerId] = useState(catalog.layers[0]?.id ?? "");
+  const [choice, setChoice] = useState<LayerChoice>(() => defaultLayerChoice(catalog.layers));
   const version = catalog.context.pins[ref.source_id] ?? -1;
   const address = renderRef(ref);
   const existing = catalog.nodeOf(ref);
@@ -66,8 +54,6 @@ export function ObjectPanel({ api, catalog, object, editing, retargetFor, onOpen
       cancelled = true;
     };
   }, [api, ref, version]);
-
-  const chosenLayer = layerId === "" ? catalog.layers[0]?.id : layerId;
 
   return (
     <div data-testid="object-panel" data-object={address} data-in-process={existing !== undefined}>
@@ -131,37 +117,18 @@ export function ObjectPanel({ api, catalog, object, editing, retargetFor, onOpen
           )}
           {editing !== undefined && existing === undefined && retargetFor === undefined && (
             <Toolbar mark="object-add">
-              <Select
-                aria-label="layer for the new node"
-                value={chosenLayer ?? ""}
-                onChange={(event) => {
-                  setLayerId(event.target.value);
-                }}
-              >
-                {catalog.layers.map((layer) => (
-                  <option key={layer.id} value={layer.id}>
-                    {layer.name}
-                  </option>
-                ))}
-              </Select>
+              <LayerPicker layers={catalog.layers} choice={choice} onChange={setChoice} label="layer for the new node" />
               <Button
                 tone="primary"
                 icon={Plus}
-                disabled={chosenLayer === undefined}
+                disabled={!layerChoiceReady(choice)}
                 onClick={() => {
-                  if (chosenLayer !== undefined) {
-                    editing.addNode(chosenLayer, ref);
-                  }
+                  editing.addNode(choice, ref);
                 }}
               >
                 add to layer
               </Button>
             </Toolbar>
-          )}
-          {editing !== undefined && catalog.layers.length === 0 && (
-            <Alert tone="info" mark="no-layers">
-              Add a layer first: nodes live in layers.
-            </Alert>
           )}
         </Section>
 

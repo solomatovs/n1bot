@@ -16,7 +16,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-from catalog_ui import Api, Ed, Objects, Seed, Selector
+from catalog_ui import Api, Ed, Objects, Seed, Selector, settled_box
 from chat_ui import login_cookies
 from playwright.sync_api import (
     Browser,
@@ -475,8 +475,7 @@ class TestDialogClosing:
 
         # у активного набора ребро подсвечено и его широкая зона клика лежит над
         # ярлыком: клик мышью в центр ярлыка попадает в ребро, как у пользователя
-        label = page.locator(Selector.EDGE_LABEL).first.bounding_box()
-        assert label is not None
+        label = settled_box(page, page.locator(Selector.EDGE_LABEL).first)
         page.mouse.click(
             label["x"] + label["width"] / 2, label["y"] + label["height"] / 2
         )

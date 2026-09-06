@@ -14,12 +14,19 @@ from typing import Any, ClassVar, Final
 
 import httpx
 import pytest
-from catalog_ui import api_client, ok, ok_list
+from catalog_ui import Api, api_client, ok, ok_list, settled_box
 from chat_ui import login_cookies
-from playwright.sync_api import Browser, BrowserContext, Page, ViewportSize, expect
+from playwright.sync_api import (
+    Browser,
+    BrowserContext,
+    Locator,
+    Page,
+    ViewportSize,
+    expect,
+)
 
 from boba.stand.ui.database import StandDatabase
-from boba.stand.ui.look import Tokens, no_horizontal_scroll
+from boba.stand.ui.look import Css, Tokens, no_horizontal_scroll
 from boba.stand.ui.stand import (
     REPO_ROOT,
     StandApp,
@@ -53,6 +60,23 @@ class Probe:
     CREATE: Final = "create table public.sync_probe (id integer primary key, name text)"
     ALTER: Final = "alter table public.sync_probe add column probe_note text"
     DROP: Final = "drop table if exists public.sync_probe"
+
+
+class ProbeSql:
+    """Две таблицы сквозного сценария: сырые заказы и их витрина."""
+
+    RAW: Final = "e2e_orders_raw"
+    STG: Final = "e2e_orders_stg"
+    CREATE_RAW: Final = (
+        "create table public.e2e_orders_raw (id bigint primary key, amount numeric)"
+    )
+    CREATE_STG: Final = (
+        "create table public.e2e_orders_stg (id bigint primary key, amount numeric)"
+    )
+    LAYER: Final = "src_sync_staging"
+    KIND: Final = "src_sync_full"
+    DROP_RAW: Final = "drop table if exists public.e2e_orders_raw"
+    DROP_STG: Final = "drop table if exists public.e2e_orders_stg"
 
 
 @pytest.fixture(scope="module")
@@ -90,9 +114,12 @@ class SyncApi:
     подключения стенда `<имя>_conn`; связка source_id и connection_id
     возвращается парой."""
 
+    PREFIX: ClassVar[str] = "src_sync"
+
     def __init__(self, client: httpx.Client, stand_db: StandDatabase) -> None:
         self.client = client
         self.stand_db = stand_db
+        self.drafts = Api(client, stand_db)
 
     def connection_id(self, kind: str, name: str) -> str:
         entries = ok_list(
@@ -170,11 +197,51 @@ class SyncApi:
         ok(self.client.delete(f"/api/catalog/sources/{source_id}"))
 
     def cleanup(self) -> None:
+        """Снос своего: узлы источников стенда с их потоками, слои и виды с
+        префиксом стенда из опубликованного каталога, затем сами источники."""
+        source_ids: set[str] = set()
         for source in ok_list(self.client.get("/api/catalog/sources")):
-            if str(source["name"]).startswith("src_sync"):
-                self.delete_source(str(source["id"]))
+            if str(source["name"]).startswith(self.PREFIX):
+                source_ids.add(str(source["id"]))
 
-        self.stand_db.remove_connections("src_sync")
+        ops = self._cleanup_operations(self.drafts.snapshot(), source_ids)
+        if ops:
+            self.drafts.publish_ops(f"{self.PREFIX} cleanup", ops)
+
+        for source_id in source_ids:
+            self.delete_source(source_id)
+
+        self.stand_db.remove_connections(self.PREFIX)
+
+    def _cleanup_operations(
+        self, snapshot: dict[str, Any], source_ids: set[str]
+    ) -> list[dict[str, Any]]:
+        node_ids: set[str] = set()
+        for node in snapshot["nodes"].values():
+            if str(node["ref"]["source_id"]) in source_ids:
+                node_ids.add(str(node["id"]))
+
+        ops: list[dict[str, Any]] = []
+        for flow in snapshot["flows"].values():
+            touches = flow["from_node_id"] in node_ids
+            if flow["to_node_id"] in node_ids:
+                touches = True
+
+            if touches:
+                ops.append({"op": "remove_flow", "id": flow["id"]})
+
+        for node_id in node_ids:
+            ops.append({"op": "remove_node", "id": node_id})
+
+        for layer in snapshot["layers"].values():
+            if str(layer["name"]).startswith(self.PREFIX):
+                ops.append({"op": "remove_layer", "id": layer["id"]})
+
+        for kind in snapshot["load_kinds"].values():
+            if str(kind["name"]).startswith(self.PREFIX):
+                ops.append({"op": "remove_load_kind", "id": kind["id"]})
+
+        return ops
 
 
 @pytest.fixture(scope="module")
@@ -508,3 +575,173 @@ class TestSyncLook:
         assert box["x"] >= 0
         assert box["x"] + box["width"] <= NARROW["width"]
         assert no_horizontal_scroll(page)
+
+
+class FlowBuilder:
+    """Действия пользователя на странице процесса стенда: открыть черновик,
+    дойти до таблиц источника, поставить их в слой, соединить потоком."""
+
+    def __init__(self, page: Page, stand: StandProcess, database: str, tokens: Tokens):
+        self.page = page
+        self.stand = stand
+        self.database = database
+        self.tokens = tokens
+
+    def open_new_draft(self, name: str) -> None:
+        page = self.page
+        page.goto(f"{self.stand.config.base_url}/catalog/")
+        expect(page.get_by_test_id("catalog-page")).to_be_visible(timeout=30_000)
+        if self.process_is_empty():
+            expect(page.get_by_test_id("empty-steps")).to_contain_text("Press edit")
+
+        page.get_by_test_id("edit-button").click()
+        drafts = page.locator('[data-dialog="drafts"]').get_by_test_id("new-draft")
+        drafts.get_by_label("new draft name").fill(name)
+        drafts.get_by_role("button", name="draft").click()
+        page.wait_for_url(re.compile(r"/catalog/drafts/[0-9a-f-]{36}"), timeout=30_000)
+        expect(page.get_by_test_id("catalog-page")).to_have_attribute(
+            "data-editable", "true"
+        )
+
+    def process_is_empty(self) -> bool:
+        """Каталог стенда делят другие сюиты: пустой холст не гарантирован."""
+        canvas = self.page.get_by_test_id("canvas")
+        canvas.or_(self.page.get_by_test_id("empty-steps")).first.wait_for()
+
+        return self.page.get_by_test_id("empty-steps").count() == 1
+
+    def open_tables(self, source: str) -> Locator:
+        """На пустом холсте во вкладку источников ведёт кнопка подсказки,
+        иначе вкладка панели; дерево раскрывается до таблиц."""
+        page = self.page
+        pane = page.get_by_test_id("left-pane")
+        if self.process_is_empty():
+            steps = page.get_by_test_id("empty-steps")
+            expect(steps).to_contain_text("Open the sources")
+            page.get_by_test_id("pick-a-table").click()
+        else:
+            pane.get_by_role("tab", name="sources").click()
+
+        expect(pane).to_have_attribute("data-tab", "sources")
+        branch = pane.locator(f'[data-testid="source-branch"][data-source="{source}"]')
+        branch.get_by_role("button", name=re.compile("^expand source")).click()
+        db = self.database
+        for path in (db, f"{db}/public", f"{db}/public/tables"):
+            item = branch.locator(f'[data-testid="tree-node"][data-path="{path}"]')
+            expect(item).to_be_visible(timeout=15_000)
+            row = item.locator(".tree__row").first
+            row.get_by_role("button", name="expand").click()
+
+        return branch
+
+    def add_table(self, branch: Locator, table: str, new_layer: str | None) -> None:
+        page = self.page
+        path = f"{self.database}/public/tables/{table}"
+        branch.locator(f'[data-testid="tree-node"][data-path="{path}"]').locator(
+            ".tree__label"
+        ).click()
+        ref = f"{self.database}/public/{table}"
+        panel = page.get_by_test_id("object-panel")
+        expect(panel).to_have_attribute("data-object", ref)
+        add = panel.get_by_role("button", name="add to layer")
+        picker = panel.get_by_label("layer for the new node")
+        if new_layer is not None:
+            picker.select_option(label="new layer…")
+            expect(add).to_be_disabled()
+            name = panel.get_by_label("new layer name")
+            name.fill(new_layer)
+            # выбор слоя, имя нового и кнопка стоят в одном ряду высоты контрола
+            ctl = self.tokens.px("h-ctl")
+            assert Css.box(picker).height == ctl
+            assert Css.box(name).height == ctl
+            assert Css.box(add).height == ctl
+            assert Css.box(picker).y == Css.box(name).y == Css.box(add).y
+        else:
+            expect(picker).to_have_value(re.compile(r"^[0-9a-f-]{36}$"))
+
+        add.click()
+        expect(
+            page.locator(f'[data-testid="catalog-node"][data-node="{ref}"]')
+        ).to_be_visible(timeout=15_000)
+
+    def connect(self, source: str, target: str) -> None:
+        page = self.page
+        source_handle = page.locator(
+            f'[data-testid="catalog-node"][data-node="{self.database}/public/{source}"]'
+        ).locator(".react-flow__handle.source")
+        target_handle = page.locator(
+            f'[data-testid="catalog-node"][data-node="{self.database}/public/{target}"]'
+        ).locator(".react-flow__handle.target")
+        start = settled_box(page, source_handle)
+        end = settled_box(page, target_handle)
+        page.mouse.move(
+            start["x"] + start["width"] / 2, start["y"] + start["height"] / 2
+        )
+        page.mouse.down()
+        page.mouse.move(
+            end["x"] + end["width"] / 2, end["y"] + end["height"] / 2, steps=12
+        )
+        page.mouse.up()
+
+
+@pytest.fixture
+def flow_user(
+    tabs: Tabs, sync_stand: StandProcess, stand_database: str, tokens: Tokens
+) -> FlowBuilder:
+    return FlowBuilder(tabs.page("admin"), sync_stand, stand_database, tokens)
+
+
+class TestEndToEnd:
+    """Путь пользователя целиком: подключение → источник → синхронизация →
+    черновик процесса → слой → две настоящие таблицы на холсте → поток между
+    ними → публикация. Именно ради этого каталог и существует."""
+
+    def test_flow_between_two_real_tables(
+        self,
+        flow_user: FlowBuilder,
+        sync_api: SyncApi,
+        stand_db: StandDatabase,
+        stand_database: str,
+    ) -> None:
+        stand_db.ddl(ProbeSql.DROP_STG)
+        stand_db.ddl(ProbeSql.DROP_RAW)
+        stand_db.ddl(ProbeSql.CREATE_RAW)
+        stand_db.ddl(ProbeSql.CREATE_STG)
+        source_id, connection_id = sync_api.create_source(f"{Probe.SOURCE}_e2e")
+        sync_api.synced(source_id, connection_id, ["public"])
+
+        user = flow_user
+        page = user.page
+        user.open_new_draft("e2e flow")
+        branch = user.open_tables(f"{Probe.SOURCE}_e2e")
+
+        # первый узел заводит слой прямо из панели объекта, второй попадает в него же
+        user.add_table(branch, ProbeSql.RAW, ProbeSql.LAYER)
+        user.add_table(branch, ProbeSql.STG, None)
+        expect(page.get_by_test_id("empty-steps")).to_have_count(0)
+        expect(page.get_by_test_id("canvas")).to_be_visible()
+
+        user.connect(ProbeSql.RAW, ProbeSql.STG)
+
+        # видов загрузки в свежем каталоге нет: форма предлагает завести первый
+        form = page.get_by_test_id("flow-form")
+        expect(form).to_be_visible()
+        save = form.get_by_role("button", name="save flow")
+        expect(save).to_be_disabled()
+        form.get_by_label("new load kind name").fill(ProbeSql.KIND)
+        save.click()
+        edges = page.locator('[data-testid="flow-edge-label"]')
+        expect(edges.filter(has_text=ProbeSql.KIND)).to_have_count(1)
+
+        page.get_by_test_id("publish-button").click()
+        expect(page.locator('[data-notice="draft-closed"]')).to_be_visible()
+
+        # опубликованный процесс: те же две таблицы и поток между ними
+        page.goto(f"{user.stand.config.base_url}/catalog/")
+        for table in (ProbeSql.RAW, ProbeSql.STG):
+            ref = f"{stand_database}/public/{table}"
+            expect(
+                page.locator(f'[data-testid="catalog-node"][data-node="{ref}"]')
+            ).to_be_visible(timeout=15_000)
+
+        expect(edges.filter(has_text=ProbeSql.KIND)).to_have_count(1)

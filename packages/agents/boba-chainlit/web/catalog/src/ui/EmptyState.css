@@ -31,3 +31,24 @@
   align-items: flex-start;
   text-align: left;
 }
+
+.empty__body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s2);
+  max-width: var(--w-dialog);
+}
+
+.steps {
+  margin: 0;
+  padding-left: var(--s5);
+  text-align: left;
+  font-family: var(--font-sans);
+  font-size: var(--fs-data);
+  line-height: 1.5;
+}
+
+.steps li + li {
+  margin-top: var(--s1);
+}

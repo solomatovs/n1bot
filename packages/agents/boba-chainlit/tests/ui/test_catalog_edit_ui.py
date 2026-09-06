@@ -263,6 +263,77 @@ class TestDragAndDrop:
             catalog_api.state(draft_id)
         )
 
+    def test_dropped_object_can_open_a_new_layer(
+        self,
+        page: Page,
+        stand: StandProcess,
+        catalog_api: Api,
+        catalog_seed: Seed,
+        draft_id: str,
+    ) -> None:
+        """Пункт «new layer…» в диалоге броска: слой и узел уходят одной пачкой."""
+        _open_draft(page, stand, draft_id)
+        pane = _open_source_tree(page, catalog_seed)
+        source = pane.locator(catalog_seed.tree_object(Ed.EVENTS)).locator(
+            ".tree__label"
+        )
+        canvas = page.get_by_test_id("canvas")
+
+        _drag(page, source, canvas, (30, 30))
+
+        prompt = _dialog(page, "drop-layer")
+        picker = prompt.get_by_label("layer for the dropped object")
+        expect(picker.locator("option")).to_have_count(len(catalog_seed.layers) + 1)
+        picker.select_option(label="new layer…")
+        add = prompt.get_by_role("button", name="add node")
+        expect(add).to_be_disabled()
+        prompt.get_by_label("new layer name").fill("ed_fresh")
+        add.click()
+        expect(prompt).to_have_count(0)
+
+        added = page.locator(catalog_seed.node(Ed.EVENTS))
+        expect(added).to_be_visible(timeout=LIVE_TIMEOUT_MS)
+        expect(added.locator(".proc-node__layer")).to_have_text("ed_fresh")
+        layers = catalog_api.state(draft_id)["snapshot"]["layers"].values()
+        assert "ed_fresh" in [layer["name"] for layer in layers]
+
+    def test_flow_form_offers_a_new_load_kind_next_to_existing_ones(
+        self,
+        page: Page,
+        stand: StandProcess,
+        catalog_api: Api,
+        catalog_seed: Seed,
+        draft_id: str,
+    ) -> None:
+        """Вид загрузки заводится прямо из формы потока и попадает в процесс."""
+        _open_draft(page, stand, draft_id)
+        page.locator(catalog_seed.node(Ed.ORDERS)).click()
+        page.get_by_test_id("detail-panel").get_by_role(
+            "button", name="flow", exact=True
+        ).click()
+
+        form = page.get_by_test_id("flow-form")
+        form.get_by_label("flow target").select_option(
+            value=catalog_seed.id_of(Ed.RETURNS)
+        )
+        form.get_by_label("load kind").select_option(label="new load kind…")
+        save = form.get_by_role("button", name="save flow")
+        expect(save).to_be_disabled()
+        form.get_by_label("new load kind name").fill("ed_snapshot")
+        save.click()
+        expect(form).to_have_count(0)
+        expect(
+            page.locator(Selector.EDGE_LABEL).filter(has_text="ed_snapshot")
+        ).to_have_count(1, timeout=LIVE_TIMEOUT_MS)
+
+        snapshot = catalog_api.state(draft_id)["snapshot"]
+        kinds = {kind["name"]: kind["id"] for kind in snapshot["load_kinds"].values()}
+        assert "ed_snapshot" in kinds
+        assert any(
+            flow["load"]["kind_id"] == kinds["ed_snapshot"]
+            for flow in snapshot["flows"].values()
+        )
+
 
 class TestLanes:
     def test_isolated_node_stays_in_its_layer_lane(
