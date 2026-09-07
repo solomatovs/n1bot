@@ -25,6 +25,7 @@ class StepField:
     ID: Final = "id"
     PARENT_ID: Final = "parentId"
     NAME: Final = "name"
+    TYPE: Final = "type"
     OUTPUT: Final = "output"
     IS_ERROR: Final = "isError"
     FEEDBACK: Final = "feedback"
