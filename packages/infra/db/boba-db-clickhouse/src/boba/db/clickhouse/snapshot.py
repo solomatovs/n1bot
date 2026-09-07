@@ -24,6 +24,7 @@ from boba.catalog.sources import (
     ObjectKind,
     ObjectRef,
     PartKind,
+    PartScope,
     SnapshotPart,
     SourceObject,
     SourceRecord,
@@ -31,6 +32,7 @@ from boba.catalog.sources import (
     SubPart,
     TreeKind,
     TreeNode,
+    TreeScope,
 )
 
 __all__ = [
@@ -86,6 +88,13 @@ class ChGroup(StrEnum):
             return cls.MATERIALIZED
 
         return cls.TABLES
+
+    def part(self) -> str:
+        """Часть снимка, в которой лежат объекты группы."""
+        if self is ChGroup.DICTIONARIES:
+            return ChPart.DICTIONARIES
+
+        return ChPart.TABLES
 
 
 class ChDatabase(SourceRecord):
@@ -361,6 +370,30 @@ class ChSnapshot(SourceSnapshot):
 
             yield attribute
 
+    @classmethod
+    def tree_scope(cls, path: Sequence[str]) -> TreeScope:
+        """Записи для детей пути: базы; таблицы и словари базы (по ним —
+        какие группы есть); объекты группы."""
+        steps = tuple(path)
+        depth = len(steps)
+        if depth == ChDepth.DATABASES:
+            return TreeScope(parts=(PartScope(part=ChPart.DATABASES),))
+
+        in_database = (("database", steps[0]),)
+        if depth == ChDepth.GROUPS:
+            return TreeScope(
+                parts=(
+                    PartScope(part=ChPart.TABLES, where=in_database),
+                    PartScope(part=ChPart.DICTIONARIES, where=in_database),
+                )
+            )
+
+        if depth == ChDepth.OBJECTS:
+            group = ChGroup(steps[1])
+            return TreeScope(parts=(PartScope(part=group.part(), where=in_database),))
+
+        return TreeScope()
+
     def children(self, connection_id: UUID, path: Sequence[str]) -> Sequence[TreeNode]:
         """Дети узла дерева по глубине пути: базы, группы, объекты."""
         steps = tuple(path)
@@ -378,44 +411,39 @@ class ChSnapshot(SourceSnapshot):
 
     def _database_nodes(self) -> Iterator[TreeNode]:
         for database in sorted(self.databases, key=attrgetter("name")):
-            groups = list(self._group_nodes(database.key))
             yield TreeNode(
                 path=database.key,
                 label=database.name,
                 kind=TreeKind.DATABASE,
-                children_count=len(groups),
+                expandable=True,
                 detail=database.engine,
                 comment=database.comment,
             )
 
-    def _group_counts(self, steps: tuple[str, ...]) -> dict[ChGroup, int]:
-        counts: dict[ChGroup, int] = {}
+    def _groups_in(self, steps: tuple[str, ...]) -> set[ChGroup]:
+        """Группы, в которых у базы есть объекты."""
+        groups: set[ChGroup] = set()
         for table in self.tables:
-            if table.parent != steps:
-                continue
-
-            group = ChGroup.of_table(table.kind)
-            counts[group] = counts.get(group, 0) + 1
+            if table.parent == steps:
+                groups.add(ChGroup.of_table(table.kind))
 
         for dictionary in self.dictionaries:
-            if dictionary.parent != steps:
-                continue
+            if dictionary.parent == steps:
+                groups.add(ChGroup.DICTIONARIES)
 
-            counts[ChGroup.DICTIONARIES] = counts.get(ChGroup.DICTIONARIES, 0) + 1
-
-        return counts
+        return groups
 
     def _group_nodes(self, steps: tuple[str, ...]) -> Iterator[TreeNode]:
-        counts = self._group_counts(steps)
+        present = self._groups_in(steps)
         for group in ChGroup:
-            if group not in counts:
+            if group not in present:
                 continue
 
             yield TreeNode(
                 path=(*steps, group.value),
                 label=group.value,
                 kind=TreeKind.GROUP,
-                children_count=counts[group],
+                expandable=True,
             )
 
     def _object_nodes(
@@ -437,7 +465,7 @@ class ChSnapshot(SourceSnapshot):
                 path=(*steps, table.name),
                 label=table.name,
                 kind=TreeKind.OBJECT,
-                children_count=0,
+                expandable=False,
                 detail=table.engine,
                 comment=table.comment,
                 ref=ObjectRef(
@@ -457,7 +485,7 @@ class ChSnapshot(SourceSnapshot):
                 path=(*steps, dictionary.name),
                 label=dictionary.name,
                 kind=TreeKind.OBJECT,
-                children_count=0,
+                expandable=False,
                 detail=dictionary.layout,
                 comment=dictionary.comment,
                 ref=ObjectRef(

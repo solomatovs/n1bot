@@ -25,14 +25,12 @@ SyncNotFoundError, SyncRunningError, SyncClosedError, SyncSetupError — как 
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
-from typing import ClassVar
+from collections.abc import Mapping, Sequence
 from uuid import UUID
 
 from boba.catalog import (
     CatalogError,
     CatalogSnapshot,
-    ChangeStatus,
     NodeColumn,
     ObjectCard,
     ObjectRef,
@@ -90,8 +88,6 @@ __all__ = ["CatalogService"]
 class CatalogService:
     """Сценарии каталога от имени субъекта поверх ProcessStore,
     ConnectionStore и шины."""
-
-    FIRST_COMPARABLE_VERSION: ClassVar[int] = 2
 
     def __init__(
         self,
@@ -551,18 +547,15 @@ class CatalogService:
         version: int,
         path: Sequence[str],
     ) -> Sequence[TreeNode]:
-        """Дети узла дерева снимка с пометками относительно предыдущей версии;
-        у первой версии сравнивать не с чем, пометок нет."""
+        """Дети узла дерева снимка версии: из хранилища читаются только записи
+        области этого пути, снимок целиком не поднимается."""
         self._require_view(subject)
 
         resolved = await self._resolve_version(connection_id, version)
-        snapshot = await self._connections.snapshot_of(connection_id, resolved)
-        nodes = snapshot.children(connection_id, path)
-        if resolved < self.FIRST_COMPARABLE_VERSION:
-            return nodes
-
-        diff = await self._connections.diff_of(connection_id, resolved - 1, resolved)
-        return list(self._marked(nodes, diff))
+        synced = await self._connections.synced(connection_id)
+        scope = self._connections.kinds.snapshot_class(synced.kind).tree_scope(path)
+        snapshot = await self._connections.tree_snapshot(connection_id, resolved, scope)
+        return snapshot.children(connection_id, path)
 
     async def connection_object(
         self, subject: Subject, ref: ObjectRef, version: int
@@ -791,21 +784,6 @@ class CatalogService:
             f"({process.id}); only the owner can delete or share it"
         )
         raise CatalogRefusalError(CatalogRefusalKind.NOT_OWNER, msg)
-
-    @staticmethod
-    def _marked(nodes: Sequence[TreeNode], diff: SourceDiff) -> Iterator[TreeNode]:
-        touched = diff.touched_prefixes()
-        for node in nodes:
-            if node.ref is not None:
-                status = diff.status_of(node.ref)
-                yield node.model_copy(update={"status": status})
-                continue
-
-            if node.path in touched:
-                yield node.model_copy(update={"status": ChangeStatus.MODIFIED})
-                continue
-
-            yield node
 
     # --- события ---
 

@@ -810,13 +810,15 @@ class TestFlows:
         expect(save).to_be_disabled()
         form.get_by_role("button", name="remove pair 1").click()
         expect(form.get_by_test_id("flow-repeated")).to_have_count(0)
+        form.get_by_label("flow description").fill("  orders to returns  ")
         save.click()
 
         expect(form).to_have_count(0)
+        # ярлык линии — описание из формы без крайних пробелов
         expect(page.locator(Selector.EDGE_LABEL)).to_have_count(2)
         expect(
-            page.locator(Selector.EDGE_LABEL).filter(has_text="1 col")
-        ).to_have_count(1)
+            page.locator(Selector.EDGE_LABEL).filter(has_text="orders to returns")
+        ).to_have_text("orders to returns")
 
         flows = catalog_api.state(draft_id)["snapshot"]["flows"]
         assert len(flows) == 2
@@ -871,10 +873,9 @@ class TestFlows:
         expect(form.locator("tbody tr")).to_have_count(3)
         form.get_by_role("button", name="save flow").click()
 
-        expect(page.locator(Selector.EDGE_LABEL)).to_have_count(2)
-        expect(
-            page.locator(Selector.EDGE_LABEL).filter(has_text="3 cols")
-        ).to_have_count(1)
+        # в режиме имён поток — одна линия на карточки; без описания без ярлыка
+        expect(page.locator(".react-flow__edge")).to_have_count(2)
+        expect(page.locator(Selector.EDGE_LABEL)).to_have_count(1)
         flows = catalog_api.state(draft_id)["snapshot"]["flows"]
         assert len(flows) == 2
         returns = catalog_seed.id_of(Ed.RETURNS)
@@ -919,7 +920,8 @@ class TestColumnLines:
         _open_draft(page, stand, draft_id, "?mode=ALL_FIELDS")
         # посеянный поток orders → sales с парами id→id и name→name: две линии
         expect(page.locator(".react-flow__edge")).to_have_count(2)
-        expect(page.locator(Selector.EDGE_LABEL)).to_have_text("2 cols")
+        # ярлык — описание потока на первой линии, число пар в нём не пишется
+        expect(page.locator(Selector.EDGE_LABEL)).to_have_text("orders to sales")
 
         # посеянная пара ещё раз — отказ тостом, порций нет
         _connect(
@@ -940,7 +942,7 @@ class TestColumnLines:
         expect(page.get_by_test_id("flow-form")).to_have_count(0)
         _landed(page, 1)
         expect(page.locator(".react-flow__edge")).to_have_count(3)
-        expect(page.locator(Selector.EDGE_LABEL)).to_have_text("3 cols")
+        expect(page.locator(Selector.EDGE_LABEL)).to_have_count(1)
 
         flow = next(iter(catalog_api.state(draft_id)["snapshot"]["flows"].values()))
         assert {(c["from_column"], c["to_column"]) for c in flow["columns"]} == {
@@ -956,7 +958,7 @@ class TestColumnLines:
             _column_handle(page, catalog_seed, Ed.SALES, "id", "target"),
         )
         _landed(page, 2)
-        expect(page.locator(Selector.EDGE_LABEL)).to_have_text("4 cols")
+        expect(page.locator(".react-flow__edge")).to_have_count(4)
 
         # та же пара ещё раз — отказ тостом, порций не прибавилось
         _connect(
@@ -984,10 +986,9 @@ class TestColumnLines:
             _column_handle(page, catalog_seed, Ed.RETURNS, "id", "target"),
         )
         _landed(page, 1)
-        expect(page.locator(Selector.EDGE_LABEL)).to_have_count(2)
-        expect(
-            page.locator(Selector.EDGE_LABEL).filter(has_text="1 col")
-        ).to_have_count(1)
+        # поток заведён линией без описания: линия есть, ярлыка нет
+        expect(page.locator(".react-flow__edge")).to_have_count(3)
+        expect(page.locator(Selector.EDGE_LABEL)).to_have_count(1)
 
         flows = catalog_api.state(draft_id)["snapshot"]["flows"].values()
         returns = catalog_seed.id_of(Ed.RETURNS)

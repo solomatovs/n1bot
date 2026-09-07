@@ -204,27 +204,29 @@ class TestPostgresTree:
             "data-version", "2"
         )
 
+        # дерево показывает объекты версии без пометок и счётчиков: каждый
+        # уровень читается отдельным запросом по раскрытию
         prod = _node(page, "prod")
         expect(prod).to_have_attribute("data-kind", "database")
-        expect(prod).to_have_attribute("data-status", "modified")
+        expect(prod).not_to_have_attribute("data-status", re.compile(".+"))
         _expand(page, "prod", "prod")
 
-        expect(_node(page, "prod/etl")).to_have_attribute("data-status", "modified")
-        expect(_node(page, "prod/public")).to_have_attribute("data-status", "modified")
+        expect(_node(page, "prod/etl")).to_be_visible()
+        expect(_node(page, "prod/public")).to_be_visible()
         _expand(page, "prod/public", "public")
 
         groups = page.locator(f'{NODE}[data-kind="group"]')
         expect(groups).to_have_count(4)
-        expect(_node(page, "prod/public/tables")).to_contain_text("2")
+        expect(_node(page, "prod/public/tables")).to_have_text("tables")
         _expand(page, "prod/public/tables", "tables")
 
-        expect(_node(page, "prod/public/tables/orders")).to_have_attribute(
-            "data-status", "modified"
-        )
-        expect(_node(page, "prod/public/tables/returns")).to_have_attribute(
-            "data-status", "added"
-        )
+        # во второй версии customers ушла, returns появилась
+        expect(_node(page, "prod/public/tables/customers")).to_have_count(0)
+        expect(_node(page, "prod/public/tables/returns")).to_be_visible()
         expect(_node(page, "prod/public/tables/orders")).to_contain_text("partitioned")
+        # секций у returns нет — и шеврона нет
+        returns = _node(page, "prod/public/tables/returns")
+        expect(returns.get_by_role("button", name="expand returns")).to_have_count(0)
         _expand(page, "prod/public/tables/orders", "orders")
         expect(_node(page, "prod/public/tables/orders/orders_2026")).to_be_visible()
         expect(_node(page, "prod/public/tables/orders/orders_2026")).to_contain_text(
@@ -236,6 +238,39 @@ class TestPostgresTree:
         expect(_node(page, "prod/etl/functions/hash_key(text)")).to_be_visible()
         expect(_node(page, "prod/etl/functions/hash_key(text, text)")).to_be_visible()
         assert no_horizontal_scroll(page)
+
+    def test_pane_branch_shows_the_chosen_version(
+        self, tabs: Tabs, stand: StandProcess, connection_seed: ConnectionSeed
+    ) -> None:
+        """Во вкладке подключений у раскрытого подключения выбирается версия
+        снимка: на входе по умолчанию последняя, дерево показывает объекты
+        именно выбранной версии."""
+        page = tabs.page("admin")
+        page.goto(f"{stand.config.base_url}/catalog/?pane=connections")
+        branch = page.locator(
+            f'[data-testid="connection-branch"][data-connection="{ConnectionSeed.PROD}"]'
+        )
+        expect(branch.get_by_test_id("branch-version")).to_have_text("v2 · latest")
+        branch.get_by_role(
+            "button", name=f"expand connection {ConnectionSeed.PROD}"
+        ).click()
+        expect(branch).to_have_attribute("data-version", "2")
+
+        picker = branch.get_by_label(f"snapshot version of {ConnectionSeed.PROD}")
+        expect(picker).to_have_value("2")
+        _expand(page, "prod", "prod")
+        _expand(page, "prod/public", "public")
+        _expand(page, "prod/public/tables", "tables")
+        expect(_node(page, "prod/public/tables/returns")).to_be_visible()
+        expect(_node(page, "prod/public/tables/customers")).to_have_count(0)
+
+        picker.select_option("1")
+        expect(branch).to_have_attribute("data-version", "1")
+        _expand(page, "prod", "prod")
+        _expand(page, "prod/public", "public")
+        _expand(page, "prod/public/tables", "tables")
+        expect(_node(page, "prod/public/tables/customers")).to_be_visible()
+        expect(_node(page, "prod/public/tables/returns")).to_have_count(0)
 
     def test_relation_card_shows_native_fields(
         self, tabs: Tabs, stand: StandProcess, connection_seed: ConnectionSeed
@@ -317,7 +352,6 @@ class TestPostgresTree:
         expect(card.get_by_test_id("card-body")).to_contain_text(
             "INSERT INTO public.orders"
         )
-        expect(page.locator(f'{NODE}[data-status="modified"]')).to_have_count(0)
         expect(page.get_by_role("button", name=re.compile("diff with"))).to_have_count(
             0
         )

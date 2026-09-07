@@ -683,15 +683,16 @@ async def test_connection_snapshots_over_http(stand: Stand) -> None:
         )
         assert roots.status_code == 200
         assert [node["label"] for node in roots.json()] == ["prod"]
-        assert roots.json()[0]["status"] == "modified"
+        assert roots.json()[0]["expandable"] is True
 
         tables = await client.get(
             stand.url(CatalogUrl.CONNECTION_TREE, connection_id=CONNECTION_ID),
             params=[("path", "prod"), ("path", "public"), ("path", "tables")],
         )
         by_label = {node["label"]: node for node in tables.json()}
-        assert by_label["orders"]["status"] == "modified"
-        assert by_label["returns"]["status"] == "added"
+        assert sorted(by_label) == ["orders", "returns"]
+        assert by_label["orders"]["expandable"] is True
+        assert by_label["returns"]["expandable"] is False
         assert by_label["orders"]["ref"]["path"] == ["prod", "public", "orders"]
         assert by_label["orders"]["ref"]["connection_id"] == str(CONNECTION_ID)
 

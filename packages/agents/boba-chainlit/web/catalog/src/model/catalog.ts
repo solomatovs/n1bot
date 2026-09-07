@@ -246,12 +246,22 @@ export function nodeLabel(node: ProcessNode): string {
 }
 
 /** Подпись ребра: сколько колонок переходит; без пар — стрелка. */
+/** Ярлык линии потока — его описание; без описания ярлыка нет. */
 export function flowLabel(flow: Flow): string {
+  return flow.description.trim();
+}
+
+/** Число пар колонок потока для панели узла; у потока без пар пусто. */
+export function pairsLabel(flow: Flow): string {
   if (flow.columns.length === 0) {
-    return "→";
+    return "";
   }
 
-  return `${flow.columns.length} col${flow.columns.length === 1 ? "" : "s"}`;
+  if (flow.columns.length === 1) {
+    return "1 pair";
+  }
+
+  return `${flow.columns.length} pairs`;
 }
 
 /** Снимок процесса с индексами и контекстом снимков: слои по порядку, узлы
@@ -443,11 +453,10 @@ export const TreeNodeSchema = z.object({
   path: z.array(z.string()),
   label: z.string(),
   kind: z.enum(["database", "schema", "group", "object"]),
-  children_count: z.number(),
+  expandable: z.boolean(),
   detail: z.string(),
   comment: z.string().nullable(),
   ref: ObjectRefSchema.nullable(),
-  status: ChangeStatusSchema,
 });
 
 const nullableText = z.string().nullable();

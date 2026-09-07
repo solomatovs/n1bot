@@ -38,6 +38,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ValidationError
 
 from boba.catalog import (
+    PartScope,
     SnapshotPart,
     SourceDiff,
     SourceKinds,
@@ -45,6 +46,7 @@ from boba.catalog import (
     SourceSnapshot,
     SyncBatch,
     SyncPlan,
+    TreeScope,
 )
 from boba.catalog_service.config import CatalogConfig
 from boba.catalog_service.records import (
@@ -597,6 +599,29 @@ class ConnectionStore(PostgresTable):
             await self._version(cur, connection_id, version)
             return await self._read_snapshot(cur, connection_id, synced.kind, version)
 
+    async def tree_snapshot(
+        self, connection_id: UUID, version: int, scope: TreeScope
+    ) -> SourceSnapshot:
+        """Частичный снимок версии: только записи областей scope — дерево
+        отдаёт детей одного пути, не читая снимок целиком. Версия 0 — пустой
+        снимок вида.
+
+        Ошибки:
+        ConnectionNotSyncedError — версий нет, вид неизвестен.
+        ConnectionVersionNotFoundError — такой версии нет.
+        """
+        async with self._transaction(
+            f"tree rows of snapshot {version} of connection {connection_id}"
+        ) as cur:
+            synced = await self._synced(cur, connection_id)
+            if version == 0:
+                return self._empty(synced.kind)
+
+            await self._version(cur, connection_id, version)
+            return await self._read_scoped(
+                cur, connection_id, synced.kind, version, scope
+            )
+
     async def latest_snapshot(self, connection_id: UUID) -> SourceSnapshot:
         async with self._transaction(
             f"latest snapshot of connection {connection_id}"
@@ -1123,6 +1148,72 @@ class ConnectionStore(PostgresTable):
                 f"snapshot: {exc}"
             )
             raise CatalogStoreError(msg) from exc
+
+    async def _read_scoped(
+        self,
+        cur: Cursor,
+        connection_id: UUID,
+        kind: str,
+        version: int,
+        scope: TreeScope,
+    ) -> SourceSnapshot:
+        """Снимок из записей областей: по запросу на область, части вне
+        областей пусты; повторы одной записи из разных областей схлопываются."""
+        fields: dict[str, tuple[SourceRecord, ...]] = {}
+        for spec in self._tables.of_kind(kind):
+            fields[spec.part.name] = ()
+            seen: set[tuple[str, ...]] = set()
+            records: list[SourceRecord] = []
+            for part_scope in scope.parts:
+                if part_scope.part != spec.part.name:
+                    continue
+
+                params = self._scope_params(connection_id, version, part_scope)
+
+                await cur.execute(self._select_where(spec, part_scope), params)
+                rows = await cur.fetchall()
+                for row in rows:
+                    record = self._record_of(spec, row)
+                    if record.key in seen:
+                        continue
+
+                    seen.add(record.key)
+                    records.append(record)
+
+            fields[spec.part.name] = tuple(records)
+
+        try:
+            return self._kinds.snapshot_class(kind).model_validate(fields)
+        except ValidationError as exc:
+            msg = (
+                f"catalog connections: tree rows of connection {connection_id} "
+                f"version {version} in {self._schema} do not form a valid {kind} "
+                f"snapshot: {exc}"
+            )
+            raise CatalogStoreError(msg) from exc
+
+    @staticmethod
+    def _scope_params(
+        connection_id: UUID, version: int, part_scope: PartScope
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"connection_id": connection_id, "version": version}
+        for index, (_field, value) in enumerate(part_scope.where):
+            params[f"w{index}"] = value
+
+        return params
+
+    def _select_where(self, spec: SnapshotTable, part_scope: PartScope) -> sql.Composed:
+        """Выборка части с равенствами области: колонки по полям записи,
+        значения плейсхолдерами w0, w1… по порядку области."""
+        query = self._select(spec)
+        for index, (field, _value) in enumerate(part_scope.where):
+            query = sql.SQL("{} and {} = {}").format(
+                query,
+                sql.Identifier(spec.column_of(field)),
+                sql.Placeholder(f"w{index}"),
+            )
+
+        return query
 
     def _select(self, spec: SnapshotTable) -> sql.Composed:
         """Колонки части по её спецификации за одну версию подключения."""

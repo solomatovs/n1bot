@@ -54,6 +54,7 @@ from boba.catalog.sources import (
     ObjectKind,
     ObjectRef,
     PartKind,
+    PartScope,
     Records,
     SnapshotPart,
     SourceKinds,
@@ -64,6 +65,7 @@ from boba.catalog.sources import (
     SubPart,
     TreeKind,
     TreeNode,
+    TreeScope,
 )
 from boba.catalog.staleness import PinnedSnapshot, Stale, Staleness, StaleReason
 from boba.catalog.sync import (
@@ -118,6 +120,7 @@ __all__ = [
     "OperationList",
     "PartChange",
     "PartKind",
+    "PartScope",
     "PinnedSnapshot",
     "Position",
     "Records",
@@ -153,4 +156,5 @@ __all__ = [
     "SyncPlan",
     "TreeKind",
     "TreeNode",
+    "TreeScope",
 ]

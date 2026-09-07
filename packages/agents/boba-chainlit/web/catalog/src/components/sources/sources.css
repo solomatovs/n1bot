@@ -65,27 +65,12 @@
   white-space: nowrap;
 }
 
-.tree__count,
 .tree__detail {
   color: var(--faint);
   font-size: var(--fs-micro);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.tree[data-status="added"] .tree__label,
-.tree__item[data-status="added"] > .tree__row .tree__name {
-  color: var(--status-added);
-}
-
-.tree__item[data-status="removed"] > .tree__row .tree__name {
-  color: var(--status-removed);
-  text-decoration: line-through;
-}
-
-.tree__item[data-status="modified"] > .tree__row .tree__name {
-  color: var(--status-modified);
 }
 
 /* --- diff версий --- */

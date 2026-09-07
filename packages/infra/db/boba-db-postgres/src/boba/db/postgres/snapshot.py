@@ -28,6 +28,7 @@ from boba.catalog.sources import (
     ObjectKind,
     ObjectRef,
     PartKind,
+    PartScope,
     Records,
     SnapshotPart,
     SourceObject,
@@ -36,6 +37,7 @@ from boba.catalog.sources import (
     SubPart,
     TreeKind,
     TreeNode,
+    TreeScope,
 )
 
 __all__ = [
@@ -137,6 +139,19 @@ class PgGroup(StrEnum):
             return cls.PROCEDURES
 
         return cls.FUNCTIONS
+
+    def part(self) -> str:
+        """Часть снимка, в которой лежат объекты группы."""
+        if self in (PgGroup.FUNCTIONS, PgGroup.PROCEDURES):
+            return PgPart.ROUTINES
+
+        if self is PgGroup.SEQUENCES:
+            return PgPart.SEQUENCES
+
+        if self is PgGroup.TYPES:
+            return PgPart.TYPES
+
+        return PgPart.RELATIONS
 
 
 class PgDatabase(SourceRecord):
@@ -499,6 +514,13 @@ class PgSnapshot(SourceSnapshot):
 
     TABLE_PREFIX: ClassVar[str] = "pg"
     SYNC_TOOL: ClassVar[str] = "pg_schema_snapshot"
+    OBJECT_PARTS: ClassVar[tuple[str, ...]] = (
+        PgPart.RELATIONS,
+        PgPart.ROUTINES,
+        PgPart.SEQUENCES,
+        PgPart.TYPES,
+    )
+    """Части с объектами под схемой: по ним дерево узнаёт группы схемы."""
     PARTS: ClassVar[tuple[SnapshotPart, ...]] = (
         SnapshotPart(name=PgPart.DATABASES, model=PgDatabase, label="database"),
         SnapshotPart(
@@ -685,6 +707,46 @@ class PgSnapshot(SourceSnapshot):
 
             yield relation
 
+    @classmethod
+    def tree_scope(cls, path: Sequence[str]) -> TreeScope:
+        """Записи для детей пути: базы; схемы базы; объекты схемы (по ним —
+        какие группы есть); объекты группы; секции таблицы — по родителю и по
+        partition_of в той же базе."""
+        steps = tuple(path)
+        depth = len(steps)
+        if depth == PgDepth.DATABASES:
+            return TreeScope(parts=(PartScope(part=PgPart.DATABASES),))
+
+        if depth == PgDepth.SCHEMAS:
+            where = (("database", steps[0]),)
+            return TreeScope(parts=(PartScope(part=PgPart.SCHEMAS, where=where),))
+
+        in_schema = (("database", steps[0]), ("schema_name", steps[1]))
+        if depth == PgDepth.GROUPS:
+            parts: list[PartScope] = []
+            for part in cls.OBJECT_PARTS:
+                parts.append(PartScope(part=part, where=in_schema))
+
+            return TreeScope(parts=tuple(parts))
+
+        if depth == PgDepth.OBJECTS:
+            group = PgGroup(steps[2])
+            return TreeScope(parts=(PartScope(part=group.part(), where=in_schema),))
+
+        partitions_level = depth == PgDepth.PARTITIONS
+        under_tables = partitions_level and steps[2] == PgGroup.TABLES.value
+        if not under_tables:
+            return TreeScope()
+
+        parent = (*in_schema, ("name", steps[3]))
+        of_parent = (("database", steps[0]), ("partition_of", f"{steps[1]}.{steps[3]}"))
+        return TreeScope(
+            parts=(
+                PartScope(part=PgPart.RELATIONS, where=parent),
+                PartScope(part=PgPart.RELATIONS, where=of_parent),
+            )
+        )
+
     def children(self, connection_id: UUID, path: Sequence[str]) -> Sequence[TreeNode]:
         """Дети узла дерева по глубине пути: базы, схемы, группы, объекты,
         секции таблицы."""
@@ -711,12 +773,11 @@ class PgSnapshot(SourceSnapshot):
 
     def _database_nodes(self) -> Iterator[TreeNode]:
         for database in sorted(self.databases, key=attrgetter("name")):
-            count = len(list(self._schemas_in(database.name)))
             yield TreeNode(
                 path=(database.name,),
                 label=database.name,
                 kind=TreeKind.DATABASE,
-                children_count=count,
+                expandable=True,
                 comment=database.comment,
             )
 
@@ -729,17 +790,17 @@ class PgSnapshot(SourceSnapshot):
 
     def _schema_nodes(self, database: str) -> Iterator[TreeNode]:
         for schema in self._schemas_in(database):
-            groups = list(self._group_nodes((database, schema.name)))
             yield TreeNode(
                 path=(database, schema.name),
                 label=schema.name,
                 kind=TreeKind.SCHEMA,
-                children_count=len(groups),
+                expandable=True,
                 comment=schema.comment,
             )
 
-    def _group_counts(self, steps: tuple[str, ...]) -> dict[PgGroup, int]:
-        counts: dict[PgGroup, int] = {}
+    def _groups_in(self, steps: tuple[str, ...]) -> set[PgGroup]:
+        """Группы, в которых у схемы есть объекты."""
+        groups: set[PgGroup] = set()
         for relation in self.relations:
             if relation.parent != steps:
                 continue
@@ -747,41 +808,33 @@ class PgSnapshot(SourceSnapshot):
             if relation.kind is PgRelationKind.PARTITION:
                 continue
 
-            group = PgGroup.of_relation(relation.kind)
-            counts[group] = counts.get(group, 0) + 1
+            groups.add(PgGroup.of_relation(relation.kind))
 
         for routine in self.routines:
-            if routine.parent != steps:
-                continue
-
-            group = PgGroup.of_routine(routine.kind)
-            counts[group] = counts.get(group, 0) + 1
+            if routine.parent == steps:
+                groups.add(PgGroup.of_routine(routine.kind))
 
         for sequence in self.sequences:
-            if sequence.parent != steps:
-                continue
-
-            counts[PgGroup.SEQUENCES] = counts.get(PgGroup.SEQUENCES, 0) + 1
+            if sequence.parent == steps:
+                groups.add(PgGroup.SEQUENCES)
 
         for typ in self.types:
-            if typ.parent != steps:
-                continue
+            if typ.parent == steps:
+                groups.add(PgGroup.TYPES)
 
-            counts[PgGroup.TYPES] = counts.get(PgGroup.TYPES, 0) + 1
-
-        return counts
+        return groups
 
     def _group_nodes(self, steps: tuple[str, ...]) -> Iterator[TreeNode]:
-        counts = self._group_counts(steps)
+        present = self._groups_in(steps)
         for group in PgGroup:
-            if group not in counts:
+            if group not in present:
                 continue
 
             yield TreeNode(
                 path=(*steps, group.value),
                 label=group.value,
                 kind=TreeKind.GROUP,
-                children_count=counts[group],
+                expandable=True,
             )
 
     def _object_nodes(
@@ -806,15 +859,11 @@ class PgSnapshot(SourceSnapshot):
             if PgGroup.of_relation(relation.kind).value != group:
                 continue
 
-            partitions = 0
-            if relation.kind is PgRelationKind.PARTITIONED:
-                partitions = len(list(self.partitions_of(relation.key)))
-
             yield TreeNode(
                 path=(*steps, relation.name),
                 label=relation.name,
                 kind=TreeKind.OBJECT,
-                children_count=partitions,
+                expandable=relation.kind is PgRelationKind.PARTITIONED,
                 detail=relation.kind.value,
                 comment=relation.comment,
                 ref=ObjectRef(
@@ -835,7 +884,7 @@ class PgSnapshot(SourceSnapshot):
                 path=(*steps, partition.name),
                 label=partition.name,
                 kind=TreeKind.OBJECT,
-                children_count=0,
+                expandable=False,
                 detail=partition.partition_bound or PgRelationKind.PARTITION.value,
                 comment=partition.comment,
                 ref=ObjectRef(
@@ -860,7 +909,7 @@ class PgSnapshot(SourceSnapshot):
                 path=(*steps, routine.label),
                 label=routine.label,
                 kind=TreeKind.OBJECT,
-                children_count=0,
+                expandable=False,
                 detail=routine.returns or routine.kind.value,
                 comment=routine.comment,
                 ref=ObjectRef(
@@ -883,7 +932,7 @@ class PgSnapshot(SourceSnapshot):
                     path=(*steps, sequence.name),
                     label=sequence.name,
                     kind=TreeKind.OBJECT,
-                    children_count=0,
+                    expandable=False,
                     detail=sequence.type,
                     comment=sequence.comment,
                     ref=ObjectRef(
@@ -902,7 +951,7 @@ class PgSnapshot(SourceSnapshot):
                 path=(*steps, typ.name),
                 label=typ.name,
                 kind=TreeKind.OBJECT,
-                children_count=0,
+                expandable=False,
                 detail=typ.kind.value,
                 comment=typ.comment,
                 ref=ObjectRef(
