@@ -1,5 +1,5 @@
 import { ReactFlowProvider } from "@xyflow/react";
-import { Layers, PanelLeft, Pencil, Workflow } from "lucide-react";
+import { Link2, PanelLeft, Pencil, Settings2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
@@ -7,36 +7,32 @@ import { ApiError, type CatalogApi } from "../api/client";
 import { useServices } from "../app";
 import { Canvas } from "../components/canvas/Canvas";
 import { CanvasToolbar } from "../components/CanvasToolbar";
+import { ConnectionDialog } from "../components/connections/ConnectionDialog";
 import { DetailPanel } from "../components/DetailPanel";
-import { DiagramsDialog } from "../components/edit/DiagramsDialog";
 import { DraftActions } from "../components/edit/DraftActions";
-import { DraftsDialog } from "../components/edit/DraftsDialog";
 import { FlowForm } from "../components/edit/FlowForm";
-import { defaultLayerChoice, LayerPicker, layerChoiceReady, type LayerChoice } from "../components/edit/LayerPicker";
-import { LoadKindsDialog } from "../components/edit/LoadKindsDialog";
 import { NamePrompt } from "../components/edit/NamePrompt";
-import { ViewActions } from "../components/edit/ViewActions";
+import { NewProcessDialog } from "../components/edit/NewProcessDialog";
+import { ProcessDialog } from "../components/edit/ProcessDialog";
+import { ShareDialog } from "../components/edit/ShareDialog";
 import { LeftPane } from "../components/LeftPane";
 import { ObjectPanel } from "../components/ObjectPanel";
-import { LayoutSaver } from "../model/layoutSaver";
 import {
   Catalog,
   type Access,
   type Draft,
   type DraftState,
   type Flow,
-  type Layer,
-  type NodePosition,
-  type ObjectRef,
+  type Group,
+  type Process,
   type ProcessContext,
   type ProcessNode,
-  type View,
-  type ViewState,
 } from "../model/catalog";
-import { DraftEditor } from "../model/editor";
+import { DraftEditor, type ApplyOutcome } from "../model/editor";
 import type { EditActions } from "../model/editing";
-import { nodesInView, type GraphOptions, type ShowMode } from "../model/graph";
-import { blankFlow, blankLayer, blankNode, removeNodeWithFlows, type CatalogOp } from "../model/ops";
+import type { GraphOptions, ShowMode } from "../model/graph";
+import { blankFlow, blankNode, groupNodes, removeGroupWithNodes, removeNodeWithFlows, type CatalogOp } from "../model/ops";
+import { SchemaDoc, parseSchema } from "../model/schema";
 import { readUrlState, writeUrlState, type UrlState } from "../model/urlState";
 import {
   Alert,
@@ -46,21 +42,12 @@ import {
   Dialog,
   EmptyState,
   IconButton,
-  Index,
-  List,
-  ListAside,
-  ListName,
-  ListRow,
-  Note,
   Page,
   PageBody,
   PageNotices,
   Pane,
   Scene,
-  Steps,
-  Toolbar,
   Topbar,
-  TopbarGroup,
   TopbarHint,
   TopbarLink,
   TopbarSpacer,
@@ -68,46 +55,47 @@ import {
   useToast,
 } from "../ui";
 
-/** Что показывает страница: опубликованный процесс, его срез через диаграмму
- * либо черновик. */
-export type PageSource = { kind: "published" } | { kind: "view"; viewId: string } | { kind: "draft"; draftId: string };
+/** Что показывает страница: опубликованный процесс, его черновик либо
+ * опубликованный процесс по ссылке для гостя. */
+export type PageSource =
+  | { kind: "published"; processId: string }
+  | { kind: "draft"; draftId: string }
+  | { kind: "shared"; token: string };
+
+/** Гость по ссылке: входа нет, прав нет, черновиков и подключений не видно. */
+const GUEST: Access = { user_id: "", login: "", can_view: false, can_edit: false };
 
 type Loaded = {
   access: Access;
+  process: Process;
   catalog: Catalog;
-  title: string;
-  version: string;
   currentVersion: number;
   draft: Draft | undefined;
-  /** Открытые черновики: вход в правки с опубликованной страницы. */
+  /** Свои открытые черновики всех процессов: строки плоского списка панели. */
   drafts: Draft[];
-  view: View | undefined;
-  saved: NodePosition[];
+  /** Все процессы каталога для панели; гостю по ссылке не видны. */
+  processes: Process[];
   /** Номер последней порции черновика; у остальных 0. Виден тестам как data-seq. */
   seq: number;
-  /** Вид принадлежит пользователю с правом правок: фильтр, шаринг, раскладка. */
-  owned: boolean;
 };
 
-type LoadState =
-  | { status: "loading" }
-  | { status: "failed"; message: string }
-  | { status: "denied"; access: Access; views: View[] }
-  | { status: "ready"; loaded: Loaded };
+type LoadState = { status: "loading" } | { status: "failed"; message: string } | { status: "ready"; loaded: Loaded };
 
-/** Диалоги: имя слоя, слой для брошенного объекта, форма потока, виды загрузки,
- * диаграммы, вход в правки. */
+/** Диалоги: имя нового черновика, имя группы (новой из выбранных узлов или
+ * существующей), форма потока, свойства процесса, ссылки на просмотр, новое
+ * подключение. */
 type DialogState =
-  | { kind: "layer"; layer: Layer | undefined }
-  | { kind: "drop"; ref: ObjectRef }
+  | { kind: "draft-name" }
+  | { kind: "new-process" }
+  | { kind: "group"; group: Group | undefined; nodes: ProcessNode[] }
   | { kind: "flow"; flow: Flow; fresh: boolean; pickTarget: boolean }
-  | { kind: "load-kinds" }
-  | { kind: "diagrams" }
-  | { kind: "drafts" };
+  | { kind: "process" }
+  | { kind: "share" }
+  | { kind: "connection"; doc: SchemaDoc };
 
-/** Страница процесса: слои и узлы над объектами источников, состояние в
+/** Страница процесса: слои и узлы над объектами подключений, состояние в
  * адресе, три панели; на черновике — правки операциями, публикация и живое
- * обновление по событиям; на диаграмме — срез и сохранённая раскладка. */
+ * обновление по событиям; по ссылке — только чтение. */
 export function ProcessPage({ source }: { source: PageSource }): ReactElement {
   const { api } = useServices();
   const toast = useToast();
@@ -117,28 +105,11 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
   const [tidyCount, setTidyCount] = useState(0);
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [retargeting, setRetargeting] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
   const editor = useRef<DraftEditor | null>(null);
   const navigate = useNavigate();
-  const [layoutSaves, setLayoutSaves] = useState(0);
-  const saver = useMemo(
-    () =>
-      new LayoutSaver(api, {
-        onSaved: () => {
-          setLayoutSaves((count) => count + 1);
-        },
-        onFailed: (message) => {
-          toast(message, "error");
-        },
-      }),
-    [api, toast],
-  );
-  useEffect(
-    () => () => {
-      saver.dispose();
-    },
-    [saver],
-  );
   const url = useMemo(() => readUrlState(params), [params]);
+  const guest = source.kind === "shared";
 
   const update = useCallback(
     (patch: Partial<UrlState>) => {
@@ -149,14 +120,11 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
 
   // контекст черновика перечитывается после каждой порции: колонки новых узлов
   const takeDraft = useCallback(
-    (draftState: DraftState, base: Omit<Loaded, "catalog" | "title" | "version" | "draft" | "seq">) => {
+    (draftState: DraftState, base: Base) => {
       api
         .draftContext(draftState.draft.id)
         .then((context) => {
-          setState({
-            status: "ready",
-            loaded: loadedOfDraft(draftState, context, base),
-          });
+          setState({ status: "ready", loaded: loadedOfDraft(draftState, context, base) });
         })
         .catch((error: unknown) => {
           setState({ status: "failed", message: describe(error) });
@@ -167,12 +135,16 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
 
   // одинаковый ответ (своё же событие по SSE после правки) не перекладывает граф
   const lastLoaded = useRef("");
+  // загрузка по событию шины, начатая до перехода на другой процесс, не
+  // дописывает прежний процесс поверх нового
+  const shownSource = useRef(source);
+  shownSource.current = source;
 
   const reload = useCallback(() => {
     let cancelled = false;
     load(api, source)
       .then((result) => {
-        if (cancelled) {
+        if (cancelled || shownSource.current !== source) {
           return;
         }
 
@@ -183,42 +155,21 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
         lastLoaded.current = key;
 
         if (result.kind === "draft") {
-          const base = {
+          const base: Base = {
             access: result.access,
+            process: result.process,
             currentVersion: result.currentVersion,
-            drafts: [],
-            view: undefined,
-            saved: [],
-            owned: false,
+            drafts: result.drafts,
+            processes: result.processes,
           };
           editor.current = new DraftEditor(api, result.state.draft.id, result.state, (next) => {
             takeDraft(next, base);
           });
-          setState({
-            status: "ready",
-            loaded: loadedOfDraft(result.state, result.context, base),
-          });
+          setState({ status: "ready", loaded: loadedOfDraft(result.state, result.context, base) });
           return;
         }
 
         editor.current = null;
-        if (result.kind === "denied") {
-          setState({
-            status: "denied",
-            access: result.access,
-            views: result.views,
-          });
-          return;
-        }
-
-        if (result.kind === "view") {
-          setState({
-            status: "ready",
-            loaded: loadedOfView(result.access, result.state, result.context),
-          });
-          return;
-        }
-
         setState({ status: "ready", loaded: loadedOfPublished(result) });
       })
       .catch((error: unknown) => {
@@ -237,9 +188,13 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
     return reload();
   }, [reload]);
 
-  // живое обновление: чужие порции в этот черновик, новая версия, правка вида,
-  // новая версия источника (колонки и устаревание)
+  // живое обновление: чужие порции в этот черновик, новая версия процесса,
+  // новая версия снимка (колонки и устаревание), черновики процесса
   useEffect(() => {
+    if (guest) {
+      return undefined;
+    }
+
     return api.events((message) => {
       if (source.kind === "draft" && message.draft_id === source.draftId) {
         void editor.current?.refresh().catch((error: unknown) => {
@@ -248,71 +203,101 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
         return;
       }
 
-      if (message.version !== null || message.source_id !== null) {
-        lastLoaded.current = "";
-        reload();
-        return;
-      }
-
-      if (source.kind === "published" && message.draft_id !== null) {
-        lastLoaded.current = "";
-        reload();
-        return;
-      }
-
-      if (source.kind === "view" && message.view_id === source.viewId) {
-        reload();
-      }
+      lastLoaded.current = "";
+      reload();
     });
-  }, [api, source, reload, toast]);
+  }, [api, source, guest, reload, toast]);
+
+  // первая правка опубликованного процесса сама заводит черновик: пока он
+  // заводится, следующие порции ждут его и ложатся в него же
+  const starting = useRef<Promise<DraftEditor> | null>(null);
+
+  const startDraft = useCallback(
+    (processId: string, name: string): Promise<DraftEditor> => {
+      starting.current ??= api
+        .createDraft(processId, name)
+        .then((draft) => api.draft(draft.id))
+        .then((state) => {
+          const created = new DraftEditor(api, state.draft.id, state, () => undefined);
+          editor.current = created;
+          return created;
+        });
+
+      return starting.current;
+    },
+    [api],
+  );
 
   const apply = useCallback(
     (ops: CatalogOp[]) => {
+      const report = (outcome: ApplyOutcome): void => {
+        if (outcome.kind === "rejected") {
+          toast(outcome.reason, "error");
+        }
+      };
+
       const current = editor.current;
-      if (current === null) {
+      if (current !== null) {
+        current.apply(ops).then(report).catch((error: unknown) => {
+          toast(describe(error), "error");
+        });
         return;
       }
 
-      current
-        .apply(ops)
+      if (state.status !== "ready" || source.kind !== "published" || !state.loaded.access.can_edit) {
+        return;
+      }
+
+      const { process, drafts } = state.loaded;
+      const mine = drafts.filter((item) => item.process_id === process.id).length;
+      startDraft(process.id, `draft ${mine + 1}`)
+        .then((created) => created.apply(ops))
         .then((outcome) => {
-          if (outcome.kind === "rejected") {
-            toast(outcome.reason, "error");
+          report(outcome);
+          const created = editor.current;
+          if (created !== null) {
+            void navigate(`/drafts/${created.draftId}`);
           }
         })
         .catch((error: unknown) => {
           toast(describe(error), "error");
         });
     },
-    [toast],
+    [toast, state, source, startDraft, navigate],
   );
 
+  // опции холста — одним объектом на состояние адреса: новый объект каждый
+  // рендер заставлял бы холст заново строить граф
+  const hasDraft = state.status === "ready" && state.loaded.draft !== undefined;
+  const hiddenKey = [...url.hidden].sort().join(",");
+  const options = useMemo<GraphOptions>(
+    () => ({
+      showMode: url.showMode,
+      showDiff: hasDraft && url.showDiff,
+      hidden: new Set(hiddenKey.split(",").filter((id) => id !== "")),
+    }),
+    [url.showMode, url.showDiff, hiddenKey, hasDraft],
+  );
+  const selectNodes = useCallback((ids: string[]) => {
+    setSelected((current) => (current.length === ids.length && current.every((id, at) => id === ids[at]) ? current : ids));
+  }, []);
+
   if (state.status === "loading") {
-    return <EmptyState fill title="loading the catalog" />;
+    return <EmptyState fill title="loading the process" />;
   }
 
   if (state.status === "failed") {
     return (
-      <EmptyState fill title="the catalog is not available">
+      <EmptyState fill title="the process is not available">
         {state.message}
       </EmptyState>
     );
   }
 
-  if (state.status === "denied") {
-    return <SharedOnly access={state.access} views={state.views} />;
-  }
-
-  const { access, catalog, draft, drafts, view, saved, currentVersion, seq, owned } = state.loaded;
-  const editable = draft?.status === "open";
-  const options: GraphOptions = {
-    showMode: url.showMode,
-    showDiff: draft !== undefined && url.showDiff,
-    nodeIds: new Set(view?.node_ids ?? []),
-    layerIds: new Set(view?.layer_ids ?? []),
-    hidden: url.hidden,
-  };
-  const nodes = nodesInView(catalog, options);
+  const { access, process, catalog, draft, drafts, processes, currentVersion, seq } = state.loaded;
+  // черновик правится; опубликованный процесс тоже, первая правка заводит черновик
+  const editable = draft?.status === "open" || (source.kind === "published" && access.can_edit);
+  const owned = access.can_edit && process.owner_id === access.user_id;
   const active = url.active === undefined ? undefined : catalog.node(url.active);
   const selectedObject = active === undefined ? url.object : undefined;
   const retargetFor = retargeting === null ? undefined : catalog.node(retargeting);
@@ -320,30 +305,28 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
   const editing: EditActions | undefined = editable
     ? {
         apply,
-        addLayer: () => {
-          setDialog({ kind: "layer", layer: undefined });
+        groupNodes: (nodes) => {
+          setDialog({ kind: "group", group: undefined, nodes });
         },
-        renameLayer: (layer) => {
-          setDialog({ kind: "layer", layer });
+        renameGroup: (group) => {
+          setDialog({ kind: "group", group, nodes: [] });
         },
-        removeLayer: (layer) => {
-          apply([{ op: "remove_layer", id: layer.id }]);
+        removeGroup: (group) => {
+          apply(removeGroupWithNodes(group.id, catalog.nodesOf(group.id)));
         },
-        addNode: (choice, ref) => {
+        addNode: (ref, position, groupId) => {
+          // брошенная таблица встаёт молча: панель узла не открывается, чтобы
+          // не сжимать сцену, пока пользователь накидывает таблицы
+          const node = { ...blankNode(ref, position), group_id: groupId };
+          apply([{ op: "add_node", node }]);
+          update({ object: undefined });
+        },
+        moveNodes: (moves) => {
           const ops: CatalogOp[] = [];
-          let layerId = "";
-          if (choice.kind === "existing") {
-            layerId = choice.id;
-          } else {
-            const layer = blankLayer(choice.name.trim(), catalog.nextLayerPosition());
-            ops.push({ op: "add_layer", layer });
-            layerId = layer.id;
+          for (const move of moves) {
+            ops.push({ op: "set_node", node: { ...move.node, position: move.position, group_id: move.groupId } });
           }
-
-          const node = blankNode(layerId, ref);
-          ops.push({ op: "add_node", node });
           apply(ops);
-          update({ active: node.id, object: undefined });
         },
         removeNode: (node: ProcessNode) => {
           const flows = catalog.flowsOf(node.id);
@@ -356,45 +339,172 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
           update({ active: node.id, object: undefined });
         },
         newFlow: (from: ProcessNode) => {
-          setDialog({
-            kind: "flow",
-            flow: blankFlow(from.id, ""),
-            fresh: true,
-            pickTarget: true,
-          });
+          setDialog({ kind: "flow", flow: blankFlow(from.id, ""), fresh: true, pickTarget: true });
         },
         editFlow: (flow: Flow) => {
           setDialog({ kind: "flow", flow, fresh: false, pickTarget: false });
         },
+        connect: (connection) => {
+          const existing = catalog.flowBetween(connection.from, connection.to);
+          if (connection.fromColumn === undefined || connection.toColumn === undefined) {
+            const flow = existing ?? blankFlow(connection.from, connection.to);
+            setDialog({ kind: "flow", flow, fresh: existing === undefined, pickTarget: false });
+            return;
+          }
+
+          const pair = { from_column: connection.fromColumn, to_column: connection.toColumn };
+          if (existing === undefined) {
+            apply([{ op: "add_flow", flow: { ...blankFlow(connection.from, connection.to), columns: [pair] } }]);
+            return;
+          }
+
+          const repeated = existing.columns.some(
+            (link) => link.from_column === pair.from_column && link.to_column === pair.to_column,
+          );
+          if (repeated) {
+            toast(`${pair.from_column} → ${pair.to_column} is already in the flow`, "error");
+            return;
+          }
+
+          apply([{ op: "set_flow", flow: { ...existing, columns: [...existing.columns, pair] } }]);
+        },
+        removeLinks: (removed) => {
+          const ops: CatalogOp[] = [];
+          const byFlow = new Map<string, Set<string>>();
+          for (const item of removed) {
+            const keys = byFlow.get(item.flowId) ?? new Set<string>();
+            if (item.pair === undefined) {
+              keys.add("*");
+            } else {
+              keys.add(`${item.pair.from_column}->${item.pair.to_column}`);
+            }
+            byFlow.set(item.flowId, keys);
+          }
+
+          for (const [flowId, keys] of byFlow) {
+            const flow = catalog.flows.find((item) => item.id === flowId);
+            if (flow === undefined) {
+              continue;
+            }
+
+            const kept = flow.columns.filter((link) => !keys.has(`${link.from_column}->${link.to_column}`));
+            if (keys.has("*") || kept.length === 0) {
+              ops.push({ op: "remove_flow", id: flow.id });
+            } else {
+              ops.push({ op: "set_flow", flow: { ...flow, columns: kept } });
+            }
+          }
+
+          if (ops.length > 0) {
+            apply(ops);
+          }
+        },
       }
     : undefined;
 
-  const openDrafts = (): void => {
-    setDialog({ kind: "drafts" });
-  };
+  const renameDraft = (name: string): void => {
+    if (draft === undefined) {
+      return;
+    }
 
-  const createDraft = (name: string): void => {
     api
-      .createDraft(name)
-      .then((created) => {
-        void navigate(`/drafts/${created.id}`);
+      .renameDraft(draft.id, name)
+      .then(() => {
+        setDialog(null);
+        lastLoaded.current = "";
+        reload();
       })
       .catch((error: unknown) => {
         toast(describe(error), "error");
       });
   };
 
-  const empty = catalog.layers.length === 0 && catalog.nodes.length === 0;
+  const openConnectionDialog = (): void => {
+    api
+      .connectionSchema()
+      .then((schema) => {
+        setDialog({ kind: "connection", doc: new SchemaDoc(parseSchema(schema)) });
+      })
+      .catch((error: unknown) => {
+        toast(describe(error), "error");
+      });
+  };
+
+  const actions = guest ? null : (
+    <>
+      {draft?.status === "open" && (
+        <>
+          <DraftActions
+            api={api}
+            draft={draft}
+            currentVersion={currentVersion}
+            staleCount={catalog.staleCount}
+            onChanged={() => {
+              lastLoaded.current = "";
+              reload();
+            }}
+            onPublished={(version) => {
+              void navigate(`/processes/${version.process_id}`);
+            }}
+            onDiscarded={() => {
+              if (process.id === "") {
+                void navigate("/");
+                return;
+              }
+
+              void navigate(`/processes/${process.id}`);
+            }}
+          />
+          <IconButton
+            size="sm"
+            ghost
+            aria-label="rename draft"
+            onClick={() => {
+              setDialog({ kind: "draft-name" });
+            }}
+          >
+            <Pencil size={14} />
+          </IconButton>
+        </>
+      )}
+      {source.kind === "published" && owned && (
+        <Button
+          size="sm"
+          tone="ghost"
+          icon={Link2}
+          onClick={() => {
+            setDialog({ kind: "share" });
+          }}
+          data-testid="share-button"
+        >
+          share
+        </Button>
+      )}
+      {source.kind === "published" && access.can_edit && (
+        <IconButton
+          size="sm"
+          ghost
+          aria-label="process settings"
+          onClick={() => {
+            setDialog({ kind: "process" });
+          }}
+        >
+          <Settings2 size={14} />
+        </IconButton>
+      )}
+    </>
+  );
+
 
   return (
     <ReactFlowProvider>
       <Page
         mark="catalog-page"
         data-source={source.kind}
+        data-process={process.name}
         data-editable={editable}
         data-owned={owned}
         data-seq={seq}
-        data-layout-saves={layoutSaves}
         data-stale={catalog.staleCount}
       >
         <Topbar>
@@ -407,9 +517,11 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
           >
             <PanelLeft size={14} />
           </IconButton>
-          <TopbarLink to="/">catalog</TopbarLink>
-          <TopbarTitle>{state.loaded.title}</TopbarTitle>
-          <Chip tone="muted">{state.loaded.version}</Chip>
+          {!guest && <TopbarLink to="/">processes</TopbarLink>}
+          <TopbarTitle>{process.name}</TopbarTitle>
+          <Chip tone="muted" mark="version-chip">
+            v{currentVersion}
+          </Chip>
           {catalog.staleCount > 0 && (
             <Chip tone="warn" mark="stale-chip">
               {catalog.staleCount} stale
@@ -427,71 +539,26 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
               diff
             </Button>
           )}
-          {source.kind === "published" && access.can_view && (
-            <Button size="sm" tone="primary" icon={Pencil} onClick={openDrafts} data-testid="edit-button">
-              edit{drafts.length > 0 ? ` · ${drafts.length}` : ""}
-            </Button>
-          )}
-          {draft?.status === "open" && (
-            <DraftActions
-              api={api}
-              draft={draft}
-              currentVersion={currentVersion}
-              staleCount={catalog.staleCount}
-              onChanged={() => {
-                lastLoaded.current = "";
-                reload();
-              }}
-              onDiscarded={() => {
-                void navigate("/");
-              }}
-            />
-          )}
-          {view !== undefined && owned && (
-            <ViewActions
-              api={api}
-              view={view}
-              onChanged={reload}
-              onDeleted={() => {
-                void navigate("/");
-              }}
-            />
-          )}
-          <TopbarGroup>
-            <Button
-              size="sm"
-              tone="ghost"
-              icon={Layers}
-              collapsible
-              data-testid="load-kinds-button"
-              onClick={() => {
-                setDialog({ kind: "load-kinds" });
-              }}
-            >
-              load kinds
-            </Button>
-            <Button
-              size="sm"
-              tone="ghost"
-              icon={Workflow}
-              collapsible
-              data-testid="diagrams-button"
-              onClick={() => {
-                setDialog({ kind: "diagrams" });
-              }}
-            >
-              diagrams
-            </Button>
-          </TopbarGroup>
           <TopbarSpacer />
           <TopbarHint>
-            {nodes.length} nodes · {catalog.flows.length} flows
+            {catalog.nodes.length} nodes · {catalog.flows.length} flows
           </TopbarHint>
         </Topbar>
         <PageNotices>
+          {draft?.status === "open" && (
+            <Alert tone="draft" mark="draft-bar">
+              <span data-testid="draft-name">draft “{draft.name}”</span> · seq {seq} · over v{draft.base_version} ·
+              publish it to make the changes part of the process
+            </Alert>
+          )}
           {draft !== undefined && draft.status !== "open" && (
             <Alert tone="info" mark="draft-closed">
               This draft is {draft.status}; it is read-only now.
+            </Alert>
+          )}
+          {guest && (
+            <Alert tone="info" mark="shared-bar">
+              Shared view of the published process; read-only.
             </Alert>
           )}
         </PageNotices>
@@ -500,68 +567,52 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
             <Pane>
               <LeftPane
                 api={api}
-                catalog={catalog}
-                nodes={nodes}
+                guest={guest}
                 tab={url.pane}
                 onTab={(tab) => {
                   update({ pane: tab });
                 }}
-                activeId={url.active}
-                selectedObject={selectedObject}
-                hidden={url.hidden}
-                showDiff={options.showDiff}
-                editing={editing}
-                onActivate={(id) => {
-                  update({ active: id, object: undefined });
+                actions={actions}
+                processes={processes}
+                drafts={drafts}
+                currentDraftId={draft?.id}
+                onNewProcess={
+                  access.can_edit
+                    ? () => {
+                        setDialog({ kind: "new-process" });
+                      }
+                    : undefined
+                }
+                open={{
+                  processId: process.id,
+                  catalog,
+                  activeId: url.active,
+                  hidden: url.hidden,
+                  showDiff: options.showDiff,
+                  editing,
+                  onActivate: (id) => {
+                    update({ active: id, object: undefined });
+                  },
+                  onToggleHidden: (id) => {
+                    const hidden = new Set(url.hidden);
+                    if (hidden.has(id)) {
+                      hidden.delete(id);
+                    } else {
+                      hidden.add(id);
+                    }
+                    update({ hidden });
+                  },
                 }}
+                onAddConnection={access.can_edit ? openConnectionDialog : undefined}
+                selectedObject={selectedObject}
                 onSelectObject={(ref) => {
                   update({ active: undefined, object: ref });
-                }}
-                onToggleHidden={(id) => {
-                  const hidden = new Set(url.hidden);
-                  if (hidden.has(id)) {
-                    hidden.delete(id);
-                  } else {
-                    hidden.add(id);
-                  }
-                  update({ hidden });
                 }}
               />
             </Pane>
           )}
           <Scene>
-            {empty && (
-              <EmptyState fill title="the process is empty">
-                <Steps mark="empty-steps">
-                  <li>Add a connection and mark it as a source, then sync it: the catalog learns the tables.</li>
-                  <li>{editable ? "Open the sources tab, pick a table and add it to a layer." : "Press edit to open a draft."}</li>
-                  <li>Drag from one table to another to describe how data flows between them, then publish.</li>
-                </Steps>
-                <Toolbar mark="empty-actions">
-                  <Button
-                    tone="primary"
-                    onClick={() => {
-                      void navigate("/sources");
-                    }}
-                  >
-                    add a source
-                  </Button>
-                  {editable && (
-                    <Button
-                      onClick={() => {
-                        setPaneOpen(true);
-                        update({ pane: "sources" });
-                      }}
-                      data-testid="pick-a-table"
-                    >
-                      pick a table
-                    </Button>
-                  )}
-                </Toolbar>
-              </EmptyState>
-            )}
-            {!empty && (
-              <>
+            <>
                 <CanvasToolbar
                   showMode={url.showMode}
                   onShowMode={(mode: ShowMode) => {
@@ -570,70 +621,39 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
                   onTidy={() => {
                     setTidyCount((count) => count + 1);
                   }}
+                  selectedCount={selected.length}
+                  onGroup={
+                    editing === undefined
+                      ? undefined
+                      : () => {
+                          const chosen = selected.map((id) => catalog.node(id)).filter((node) => node !== undefined);
+                          editing.groupNodes(chosen);
+                        }
+                  }
                 />
                 <Canvas
                   catalog={catalog}
                   options={options}
-                  saved={saved}
                   activeId={url.active}
                   tidyCount={tidyCount}
+                  persistTidy={draft?.status === "open"}
                   onActivate={(id) => {
                     update({ active: id, object: undefined });
                   }}
-                  onConnect={
-                    editable
-                      ? (from, to) => {
-                          setDialog({
-                            kind: "flow",
-                            flow: blankFlow(from, to),
-                            fresh: true,
-                            pickTarget: false,
-                          });
-                        }
-                      : undefined
-                  }
-                  onFlowClick={
+                  onFlowOpen={
                     editable
                       ? (flowId) => {
                           const flow = catalog.flows.find((item) => item.id === flowId);
                           if (flow !== undefined) {
-                            setDialog({
-                              kind: "flow",
-                              flow,
-                              fresh: false,
-                              pickTarget: false,
-                            });
+                            setDialog({ kind: "flow", flow, fresh: false, pickTarget: false });
                           }
                         }
                       : undefined
                   }
-                  onDrop={
-                    editing !== undefined
-                      ? (ref, layerId) => {
-                          if (catalog.nodeOf(ref) !== undefined) {
-                            toast(`${ref.path.join("/")} is already in the process`, "error");
-                            return;
-                          }
-
-                          if (layerId === undefined) {
-                            setDialog({ kind: "drop", ref });
-                            return;
-                          }
-
-                          editing.addNode({ kind: "existing", id: layerId }, ref);
-                        }
-                      : undefined
-                  }
-                  onMoved={
-                    view !== undefined && owned
-                      ? (positions) => {
-                          saver.schedule(view.id, positions);
-                        }
-                      : undefined
-                  }
+                  editing={editing}
+                  onSelectionChange={selectNodes}
                 />
               </>
-            )}
           </Scene>
           {active !== undefined && (
             <Detail>
@@ -642,17 +662,24 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
                 api={api}
                 catalog={catalog}
                 node={active}
-                cardSource={source.kind === "view" ? { kind: "view", viewId: source.viewId } : { kind: "pinned" }}
+                cardSource={source.kind === "shared" ? { kind: "shared", token: source.token } : { kind: "pinned" }}
                 showDiff={options.showDiff}
                 editing={editing}
                 retargeting={retargeting === active.id}
                 onRetargetToggle={() => {
                   setRetargeting((current) => (current === active.id ? null : active.id));
-                  update({ pane: "sources" });
+                  update({ pane: "connections" });
                 }}
                 onActivate={(id) => {
                   update({ active: id, object: undefined });
                 }}
+                onOpenObject={
+                  guest
+                    ? undefined
+                    : (ref) => {
+                        update({ active: undefined, object: ref });
+                      }
+                }
                 onClose={() => {
                   update({ active: undefined });
                 }}
@@ -662,7 +689,7 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
           {active === undefined && selectedObject !== undefined && (
             <Detail>
               <ObjectPanel
-                key={`${selectedObject.source_id}:${selectedObject.kind}:${selectedObject.path.join("/")}`}
+                key={`${selectedObject.connection_id}:${selectedObject.kind}:${selectedObject.path.join("/")}`}
                 api={api}
                 catalog={catalog}
                 object={selectedObject}
@@ -671,6 +698,9 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
                 onOpenNode={(id) => {
                   update({ active: id, object: undefined });
                 }}
+                onOpenObject={(ref) => {
+                  update({ active: undefined, object: ref });
+                }}
                 onClose={() => {
                   update({ object: undefined });
                 }}
@@ -678,37 +708,43 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
             </Detail>
           )}
         </PageBody>
-        {dialog?.kind === "layer" && (
-          <NamePrompt
-            title={dialog.layer === undefined ? "new layer" : "rename layer"}
-            mark="layer-name"
-            label="layer name"
-            initial={dialog.layer?.name ?? ""}
-            onSubmit={(name) => {
-              const layer = dialog.layer;
-              if (layer === undefined) {
-                apply([
-                  {
-                    op: "add_layer",
-                    layer: blankLayer(name, catalog.nextLayerPosition()),
-                  },
-                ]);
-              } else {
-                apply([{ op: "set_layer", layer: { ...layer, name } }]);
-              }
+        {dialog?.kind === "new-process" && (
+          <NewProcessDialog
+            api={api}
+            onCreated={(created) => {
               setDialog(null);
+              void navigate(`/drafts/${created.id}`);
             }}
             onClose={() => {
               setDialog(null);
             }}
           />
         )}
-        {dialog?.kind === "drop" && (
-          <DropPrompt
-            catalog={catalog}
-            object={dialog.ref}
-            onSubmit={(choice) => {
-              editing?.addNode(choice, dialog.ref);
+        {dialog?.kind === "draft-name" && (
+          <NamePrompt
+            title="rename draft"
+            mark="draft-name"
+            label="draft name"
+            initial={draft?.name ?? ""}
+            onSubmit={renameDraft}
+            onClose={() => {
+              setDialog(null);
+            }}
+          />
+        )}
+        {dialog?.kind === "group" && (
+          <NamePrompt
+            title={dialog.group === undefined ? `group · ${dialog.nodes.length} node${dialog.nodes.length === 1 ? "" : "s"}` : "rename group"}
+            mark="group-name"
+            label="group name"
+            initial={dialog.group?.name ?? ""}
+            onSubmit={(name) => {
+              const group = dialog.group;
+              if (group === undefined) {
+                apply(groupNodes(name, dialog.nodes));
+              } else {
+                apply([{ op: "set_group", group: { ...group, name } }]);
+              }
               setDialog(null);
             }}
             onClose={() => {
@@ -728,9 +764,9 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
               catalog={catalog}
               flow={dialog.flow}
               pickTarget={dialog.pickTarget}
-              onSave={(flow, before) => {
+              onSave={(flow) => {
                 const op: CatalogOp = dialog.fresh ? { op: "add_flow", flow } : { op: "set_flow", flow };
-                apply([...before, op]);
+                apply([op]);
                 setDialog(null);
               }}
               onCancel={() => {
@@ -747,37 +783,43 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
             />
           </Dialog>
         )}
-        {dialog?.kind === "load-kinds" && (
-          <LoadKindsDialog
-            catalog={catalog}
-            editing={editing}
-            onClose={() => {
-              setDialog(null);
-            }}
-          />
-        )}
-        {dialog?.kind === "diagrams" && (
-          <DiagramsDialog
+        {dialog?.kind === "process" && (
+          <ProcessDialog
             api={api}
-            access={access}
-            slice={{
-              node_ids: view?.node_ids ?? [],
-              layer_ids: view?.layer_ids ?? [],
-            }}
-            onCreated={(created) => {
+            process={process}
+            owned={owned}
+            onSaved={() => {
               setDialog(null);
-              void navigate(`/views/${created.id}`);
+              lastLoaded.current = "";
+              reload();
+            }}
+            onDeleted={() => {
+              void navigate("/");
             }}
             onClose={() => {
               setDialog(null);
             }}
           />
         )}
-        {dialog?.kind === "drafts" && (
-          <DraftsDialog
-            access={access}
-            drafts={drafts}
-            onCreate={createDraft}
+        {dialog?.kind === "share" && (
+          <ShareDialog
+            api={api}
+            process={process}
+            onClose={() => {
+              setDialog(null);
+            }}
+          />
+        )}
+        {dialog?.kind === "connection" && (
+          <ConnectionDialog
+            api={api}
+            doc={dialog.doc}
+            row={null}
+            onSaved={(saved) => {
+              setDialog(null);
+              toast(`connection ${saved.name} saved; sync it to see its tables`, "success");
+              void navigate(`/connections/${saved.id}`);
+            }}
             onClose={() => {
               setDialog(null);
             }}
@@ -788,63 +830,6 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
   );
 }
 
-/** Вход без права читать процесс: только диаграммы, которыми поделились. */
-function SharedOnly({ access, views }: { access: Access; views: View[] }): ReactElement {
-  return (
-    <Index mark="shared-only" data-login={access.login}>
-      <EmptyState title="no role to read the catalog">
-        <p>Diagrams shared with you open here; ask an editor for a share or a catalog role.</p>
-      </EmptyState>
-      <section data-testid="shared-views">
-        {views.length === 0 && <Note mark="shared-empty">nothing is shared with you yet</Note>}
-        <List kind="spaced">
-          {views.map((item) => (
-            <ListRow key={item.id} data-view={item.name}>
-              <ListName to={`/views/${item.id}`}>{item.name}</ListName>
-              <ListAside>
-                <Chip tone="muted">shared with you</Chip>
-              </ListAside>
-            </ListRow>
-          ))}
-        </List>
-      </section>
-    </Index>
-  );
-}
-
-type DropProps = {
-  catalog: Catalog;
-  object: ObjectRef;
-  onSubmit: (choice: LayerChoice) => void;
-  onClose: () => void;
-};
-
-/** Объект брошен мимо дорожек: слой выбирается здесь, новый — по имени. */
-function DropPrompt({ catalog, object, onSubmit, onClose }: DropProps): ReactElement {
-  const [choice, setChoice] = useState<LayerChoice>(() => defaultLayerChoice(catalog.layers));
-
-  return (
-    <Dialog title="which layer?" mark="drop-layer" onClose={onClose}>
-      <Note mono>{object.path.join("/")}</Note>
-      <LayerPicker fill layers={catalog.layers} choice={choice} onChange={setChoice} label="layer for the dropped object" />
-      <Toolbar>
-        <Button
-          tone="primary"
-          disabled={!layerChoiceReady(choice)}
-          onClick={() => {
-            onSubmit(choice);
-          }}
-        >
-          add node
-        </Button>
-        <Button tone="ghost" onClick={onClose}>
-          cancel
-        </Button>
-      </Toolbar>
-    </Dialog>
-  );
-}
-
 /** Узкий экран: панели становятся ящиками поверх сцены, список по умолчанию закрыт. */
 const NARROW_MAX_WIDTH = 900;
 
@@ -852,103 +837,107 @@ function narrowScreen(): boolean {
   return window.matchMedia(`(max-width: ${NARROW_MAX_WIDTH}px)`).matches;
 }
 
-type Base = Omit<Loaded, "catalog" | "title" | "version" | "draft" | "seq">;
+type Base = Omit<Loaded, "catalog" | "draft" | "seq">;
 
 function loadedOfDraft(state: DraftState, context: ProcessContext, base: Base): Loaded {
   return {
     ...base,
     catalog: new Catalog(state.snapshot, state.diff, context),
-    title: state.draft.name,
-    version: `draft · seq ${state.seq} · over v${state.draft.base_version}`,
     draft: state.draft,
     seq: state.seq,
   };
 }
 
 type LoadResult =
-  | { kind: "denied"; access: Access; views: View[] }
   | {
       kind: "draft";
       access: Access;
+      process: Process;
       state: DraftState;
       context: ProcessContext;
       currentVersion: number;
+      drafts: Draft[];
+      processes: Process[];
     }
-  | { kind: "view"; access: Access; state: ViewState; context: ProcessContext }
   | {
       kind: "published";
       access: Access;
+      process: Process;
       snapshot: DraftState["snapshot"];
       context: ProcessContext;
-      version: number;
       drafts: Draft[];
+      processes: Process[];
     };
 
 async function load(api: CatalogApi, source: PageSource): Promise<LoadResult> {
+  if (source.kind === "shared") {
+    const shared = await api.shared(source.token);
+    return {
+      kind: "published",
+      access: GUEST,
+      process: shared.process,
+      snapshot: shared.snapshot,
+      context: shared.context,
+      drafts: [],
+      processes: [],
+    };
+  }
+
   const access = await api.access();
+  const processes = await api.processes();
   if (source.kind === "draft") {
-    const versions = await api.versions();
-    const currentVersion = versions.at(-1)?.number ?? 0;
     const state = await api.draft(source.draftId);
+    const process = await processOfDraft(api, state.draft);
     const context = await api.draftContext(source.draftId);
-    return { kind: "draft", access, state, context, currentVersion };
+    const drafts = await api.myDrafts();
+    return {
+      kind: "draft",
+      access,
+      process,
+      state,
+      context,
+      currentVersion: process.latest_version,
+      drafts,
+      processes,
+    };
   }
 
-  if (source.kind === "view") {
-    // вид приходит одним ответом со срезом каталога: прав на весь каталог не нужно
-    const state = await api.viewState(source.viewId);
-    const context = await api.viewContext(source.viewId);
-    return { kind: "view", access, state, context };
-  }
-
-  if (!access.can_view) {
-    const views = await api.views();
-    return { kind: "denied", access, views };
-  }
-
-  const versions = await api.versions();
-  const snapshot = await api.snapshot();
-  const context = await api.context();
-  const drafts = await api.drafts();
-  return {
-    kind: "published",
-    access,
-    snapshot,
-    context,
-    version: versions.at(-1)?.number ?? 0,
-    drafts,
-  };
+  const process = await api.process(source.processId);
+  const snapshot = await api.snapshot(source.processId);
+  const context = await api.context(source.processId);
+  const drafts = await api.myDrafts();
+  return { kind: "published", access, process, snapshot, context, drafts, processes };
 }
 
-function loadedOfView(access: Access, state: ViewState, context: ProcessContext): Loaded {
+/** Процесс черновика; у черновика нового процесса его ещё нет — процесс
+ * рисуется по черновику: имя, автор, нулевая версия. */
+async function processOfDraft(api: CatalogApi, draft: Draft): Promise<Process> {
+  if (draft.process_id !== null) {
+    return api.process(draft.process_id);
+  }
+
   return {
-    access,
-    catalog: new Catalog(state.snapshot, undefined, context),
-    title: state.view.name,
-    version: `v${state.version}`,
-    currentVersion: state.version,
-    draft: undefined,
-    drafts: [],
-    view: state.view,
-    saved: state.layout.positions,
-    seq: 0,
-    owned: state.owned,
+    id: "",
+    name: draft.name,
+    description: "",
+    owner_id: draft.created_by,
+    created_at: draft.created_at,
+    latest_version: 0,
+    nodes: 0,
+    open_drafts: 1,
   };
 }
 
 function loadedOfPublished(result: Extract<LoadResult, { kind: "published" }>): Loaded {
   return {
     access: result.access,
+    process: result.process,
     catalog: new Catalog(result.snapshot, undefined, result.context),
-    title: "process",
-    version: `v${result.version}`,
-    currentVersion: result.version,
+    currentVersion: result.process.latest_version,
     draft: undefined,
     drafts: result.drafts,
-    view: undefined,
-    saved: [],
+    processes: result.processes,
     seq: 0,
-    owned: false,
   };
 }
 

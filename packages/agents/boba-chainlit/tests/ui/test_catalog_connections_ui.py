@@ -1,7 +1,7 @@
-"""Страницы источников по DOM: подключения и источники (форма подключения по
-схеме api, пометка источником, отвязка, удаление), дерево любой глубины с
-пометками изменений, родные карточки Postgres и ClickHouse, выбор версии и
-diff; права читателя."""
+"""Страницы подключений по DOM: список с версией снимка и кнопками check,
+sync, edit, delete (форма подключения по схеме api), страница подключения с
+деревом любой глубины и пометками изменений, родными карточками Postgres и
+ClickHouse, выбором версии, diff и «forget versions»; права читателя."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import re
 from collections.abc import Iterator
 
 import pytest
-from catalog_ui import Api, SourceSeed
+from catalog_ui import Api, ConnectionSeed
 from chat_ui import login_cookies
 from playwright.sync_api import (
     Browser,
@@ -20,6 +20,7 @@ from playwright.sync_api import (
     expect,
 )
 
+from boba.db.postgres.snapshot_sample import PgSample
 from boba.stand.ui.look import no_horizontal_scroll
 from boba.stand.ui.stand import StandProcess
 
@@ -57,11 +58,11 @@ def tabs(browser: Browser, stand: StandProcess) -> Iterator[Tabs]:
         opened.close()
 
 
-def _open_source(
-    page: Page, stand: StandProcess, source_id: str, query: str = ""
+def _open_connection(
+    page: Page, stand: StandProcess, connection_id: str, query: str = ""
 ) -> None:
-    page.goto(f"{stand.config.base_url}/catalog/sources/{source_id}{query}")
-    expect(page.get_by_test_id("source-page")).to_be_visible()
+    page.goto(f"{stand.config.base_url}/catalog/connections/{connection_id}{query}")
+    expect(page.get_by_test_id("connection-page")).to_be_visible()
 
 
 def _node(page: Page, path: str) -> Locator:
@@ -73,51 +74,48 @@ def _expand(page: Page, path: str, label: str) -> None:
     expect(_node(page, path)).to_have_attribute("data-open", "true")
 
 
-class TestSourcesList:
-    def test_list_shows_kind_description_and_version(
-        self, tabs: Tabs, stand: StandProcess, source_seed: SourceSeed
+class TestConnectionsList:
+    def test_list_shows_kind_and_snapshot_version(
+        self, tabs: Tabs, stand: StandProcess, connection_seed: ConnectionSeed
     ) -> None:
         page = tabs.page("admin")
-        page.goto(f"{stand.config.base_url}/catalog/sources")
-        listing = page.get_by_test_id("sources-list")
-        expect(listing.locator(f'li[data-source="{SourceSeed.PROD}"]')).to_contain_text(
-            "postgres"
-        )
-        expect(listing.locator(f'li[data-source="{SourceSeed.PROD}"]')).to_contain_text(
-            "v2"
-        )
-        expect(listing.locator(f'li[data-source="{SourceSeed.PROD}"]')).to_contain_text(
-            "Prod database"
-        )
-        expect(
-            listing.locator(f'li[data-source="{SourceSeed.EMPTY}"]')
-        ).to_contain_text("no versions")
-        connections = page.get_by_test_id("connections-list")
-        expect(
-            connections.locator(
-                f'li[data-connection="{Api.connection_name(SourceSeed.PROD)}"]'
-            ).get_by_test_id("connection-source")
-        ).to_have_text(SourceSeed.PROD)
+        page.goto(f"{stand.config.base_url}/catalog/connections")
+        listing = page.get_by_test_id("connections-list")
+        prod = listing.locator(f'li[data-connection="{ConnectionSeed.PROD}"]')
+        expect(prod).to_contain_text("postgres")
+        expect(prod.get_by_test_id("connection-version")).to_have_text("v2")
+        expect(prod).to_have_attribute("data-synced", "true")
+        empty = listing.locator(f'li[data-connection="{ConnectionSeed.EMPTY}"]')
+        expect(empty.get_by_test_id("connection-version")).to_have_text("not synced")
+        expect(empty).to_have_attribute("data-synced", "false")
+        # кнопки строки общего подключения: check и sync; edit и delete — у
+        # владельца, а про источники ничего нет
+        for action in ("check", "sync"):
+            expect(
+                prod.get_by_role("button", name=f"{action} {ConnectionSeed.PROD}")
+            ).to_be_visible()
 
-        page.goto(f"{stand.config.base_url}/catalog/")
-        expect(page.get_by_test_id("catalog-page")).to_be_visible(timeout=30_000)
-        pane = page.get_by_test_id("left-pane")
-        pane.get_by_role("tab", name="sources").click()
-        expect(
-            pane.locator(
-                f'[data-testid="source-branch"][data-source="{SourceSeed.PROD}"]'
-            )
-        ).to_contain_text("v2")
-        pane.get_by_test_id("sources-link").click()
-        expect(page.get_by_test_id("sources-page")).to_be_visible()
+        expect(prod).to_contain_text("shared")
+        expect(page.get_by_role("button", name=re.compile("^assign "))).to_have_count(0)
+        expect(page.get_by_test_id("sources-list")).to_have_count(0)
+
+        prod.get_by_role("link", name=ConnectionSeed.PROD).click()
+        expect(page.get_by_test_id("connection-page")).to_have_attribute(
+            "data-connection", ConnectionSeed.PROD
+        )
 
     def test_connection_dialog_creates_checks_and_deletes(
-        self, tabs: Tabs, stand: StandProcess, catalog_api: Api, source_seed: SourceSeed
+        self,
+        tabs: Tabs,
+        stand: StandProcess,
+        catalog_api: Api,
+        connection_seed: ConnectionSeed,
     ) -> None:
         """Подключение заводится формой по схеме api: вид, поля профиля,
-        проверка; строка появляется в списке без источника и удаляется."""
+        проверка; строка появляется в списке и удаляется. У вида без снимка
+        нет кнопки sync и чипа версии."""
         page = tabs.page("admin")
-        page.goto(f"{stand.config.base_url}/catalog/sources")
+        page.goto(f"{stand.config.base_url}/catalog/connections")
         page.get_by_test_id("add-connection").click()
         form = page.get_by_test_id("connection-form")
         expect(form.get_by_test_id("save-connection")).to_be_disabled()
@@ -133,10 +131,9 @@ class TestSourcesList:
             '[data-testid="connections-list"] li[data-connection="src_page_web"]'
         )
         expect(row).to_be_visible()
-        expect(row.get_by_test_id("connection-source")).to_have_text("no source")
         expect(row).to_contain_text("web")
-        # у вида без снимка нет кнопки «в источник»
-        expect(row.get_by_role("button", name=re.compile("^assign"))).to_have_count(0)
+        expect(row.get_by_test_id("connection-version")).to_have_count(0)
+        expect(row.get_by_role("button", name="sync src_page_web")).to_have_count(0)
         names = {str(c["name"]) for c in catalog_api.connections()}
         assert "src_page_web" in names
 
@@ -146,68 +143,64 @@ class TestSourcesList:
         ).click()
         expect(row).to_have_count(0)
 
-    def test_assign_puts_a_connection_into_an_existing_source(
-        self, tabs: Tabs, stand: StandProcess, catalog_api: Api, source_seed: SourceSeed
+    def test_forget_versions_clears_the_snapshot_of_a_connection(
+        self,
+        tabs: Tabs,
+        stand: StandProcess,
+        catalog_api: Api,
+        connection_seed: ConnectionSeed,
     ) -> None:
-        """Второе подключение того же вида помечается существующим источником
-        через диалог, отвязывается кнопкой; привязанное подключение удалить
-        нельзя."""
-        replica = "src_prod_replica"
-        catalog_api.stand_db.add_connection(replica, "postgres")
-        try:
-            page = tabs.page("admin")
-            page.goto(f"{stand.config.base_url}/catalog/sources")
-            row = page.locator(
-                f'[data-testid="connections-list"] li[data-connection="{replica}"]'
-            )
-            expect(row.get_by_test_id("connection-source")).to_have_text("no source")
-            row.get_by_role("button", name=f"assign {replica} to a source").click()
-            dialog = page.locator('[data-dialog="assign-source"]')
-            dialog.get_by_label("assign to source").select_option(label=SourceSeed.PROD)
-            dialog.get_by_test_id("assign-submit").click()
-            expect(dialog).to_have_count(0)
-            expect(row.get_by_test_id("connection-source")).to_have_text(
-                SourceSeed.PROD
-            )
-            prod = page.locator(
-                f'[data-testid="sources-list"] li[data-source="{SourceSeed.PROD}"]'
-            )
-            expect(prod).to_contain_text("2 connections")
+        """Версия снимка у пустого подключения: в списке чип версии, на его
+        странице «forget versions» убирает версии, список снова «not synced»."""
+        snapshot = PgSample().snapshot().model_dump(mode="json")
+        catalog_api.write_connection_version(connection_seed.empty, snapshot)
+        page = tabs.page("admin")
+        page.goto(f"{stand.config.base_url}/catalog/connections")
+        listing = page.get_by_test_id("connections-list")
+        row = listing.locator(f'li[data-connection="{ConnectionSeed.EMPTY}"]')
+        expect(row.get_by_test_id("connection-version")).to_have_text("v1")
 
-            # общее подключение (по роли) удалить нельзя: кнопки нет
-            expect(row.get_by_role("button", name=f"delete {replica}")).to_have_count(0)
+        _open_connection(page, stand, connection_seed.empty)
+        expect(page.locator(".topbar__hint")).to_have_text("1 version(s)")
+        page.get_by_test_id("forget-versions").click()
+        page.locator('[data-dialog="forget-versions"]').get_by_test_id(
+            "forget-versions-confirm"
+        ).click()
+        expect(page.locator(".topbar__hint")).to_have_text("not synced yet")
+        expect(page.get_by_test_id("forget-versions")).to_have_count(0)
+        assert all(
+            s["connection_id"] != connection_seed.empty for s in catalog_api.synced()
+        )
 
-            row.get_by_role("button", name=f"unassign {replica}").click()
-            expect(row.get_by_test_id("connection-source")).to_have_text("no source")
-            expect(prod).to_contain_text("1 connection")
-        finally:
-            catalog_api.stand_db.remove_connections(replica)
+        page.goto(f"{stand.config.base_url}/catalog/connections")
+        expect(row.get_by_test_id("connection-version")).to_have_text("not synced")
 
-    def test_reader_sees_the_lists_without_assignment(
-        self, tabs: Tabs, stand: StandProcess, catalog_api: Api, source_seed: SourceSeed
+    def test_reader_sees_the_list_without_sync_and_edit(
+        self,
+        tabs: Tabs,
+        stand: StandProcess,
+        catalog_api: Api,
+        connection_seed: ConnectionSeed,
     ) -> None:
         page = tabs.page("dev")
-        page.goto(f"{stand.config.base_url}/catalog/sources")
-        expect(page.get_by_test_id("sources-page")).to_have_attribute(
+        page.goto(f"{stand.config.base_url}/catalog/connections")
+        expect(page.get_by_test_id("connections-page")).to_have_attribute(
             "data-can-edit", "false"
         )
         expect(page.get_by_test_id("add-connection")).to_be_visible()
-        expect(page.get_by_role("button", name=re.compile("^assign "))).to_have_count(0)
-        expect(page.get_by_role("button", name=re.compile("^unassign "))).to_have_count(
-            0
-        )
-        expect(page.get_by_test_id("sources-list").locator("li")).to_have_count(
-            len(catalog_api.sources())
-        )
+        expect(page.get_by_role("button", name=re.compile("^sync "))).to_have_count(0)
+        expect(
+            page.get_by_role("button", name=f"check {ConnectionSeed.PROD}")
+        ).to_be_visible()
 
 
 class TestPostgresTree:
     def test_tree_expands_level_by_level_down_to_partitions(
-        self, tabs: Tabs, stand: StandProcess, source_seed: SourceSeed
+        self, tabs: Tabs, stand: StandProcess, connection_seed: ConnectionSeed
     ) -> None:
         page = tabs.page("admin")
-        _open_source(page, stand, source_seed.prod)
-        expect(page.get_by_test_id("source-page")).to_have_attribute(
+        _open_connection(page, stand, connection_seed.prod)
+        expect(page.get_by_test_id("connection-page")).to_have_attribute(
             "data-version", "2"
         )
 
@@ -245,10 +238,10 @@ class TestPostgresTree:
         assert no_horizontal_scroll(page)
 
     def test_relation_card_shows_native_fields(
-        self, tabs: Tabs, stand: StandProcess, source_seed: SourceSeed
+        self, tabs: Tabs, stand: StandProcess, connection_seed: ConnectionSeed
     ) -> None:
         page = tabs.page("admin")
-        _open_source(page, stand, source_seed.prod)
+        _open_connection(page, stand, connection_seed.prod)
         _expand(page, "prod", "prod")
         _expand(page, "prod/public", "public")
         _expand(page, "prod/public/tables", "tables")
@@ -278,11 +271,17 @@ class TestPostgresTree:
             rows.filter(has_text="id").first.locator("td.table__icon svg")
         ).to_have_count(1)
 
-        expect(card.get_by_test_id("card-constraints")).to_contain_text(
-            "PRIMARY KEY (id, created_at)"
+        primary = card.get_by_test_id("card-constraints").locator(
+            'tr[data-kind="primary"]'
         )
-        expect(card.get_by_test_id("card-indexes")).to_contain_text(
-            "orders_created_idx"
+        expect(primary).to_contain_text("primary")
+        expect(primary.locator('[data-col="detail"]')).to_have_text("(id, created_at)")
+        created_idx = card.get_by_test_id("card-indexes").locator(
+            'tr[data-index="orders_created_idx"]'
+        )
+        expect(created_idx).to_contain_text("btree")
+        expect(created_idx.locator('[data-col="detail"]')).to_contain_text(
+            "(created_at)"
         )
         expect(card.get_by_test_id("card-partitions")).to_contain_text("orders_2026")
         expect(_node(page, "prod/public/tables/orders")).to_have_attribute(
@@ -291,10 +290,10 @@ class TestPostgresTree:
         assert "ref=" in page.url
 
     def test_routine_card_and_version_switch(
-        self, tabs: Tabs, stand: StandProcess, source_seed: SourceSeed
+        self, tabs: Tabs, stand: StandProcess, connection_seed: ConnectionSeed
     ) -> None:
         page = tabs.page("admin")
-        _open_source(page, stand, source_seed.prod)
+        _open_connection(page, stand, connection_seed.prod)
         _expand(page, "prod", "prod")
         _expand(page, "prod/etl", "etl")
         _expand(page, "prod/etl/procedures", "procedures")
@@ -311,8 +310,8 @@ class TestPostgresTree:
         )
         expect(card.get_by_test_id("card-body")).to_contain_text("load_orders_v2")
 
-        page.get_by_label("source version").select_option("1")
-        expect(page.get_by_test_id("source-page")).to_have_attribute(
+        page.get_by_label("snapshot version").select_option("1")
+        expect(page.get_by_test_id("connection-page")).to_have_attribute(
             "data-version", "1"
         )
         expect(card.get_by_test_id("card-body")).to_contain_text(
@@ -324,10 +323,10 @@ class TestPostgresTree:
         )
 
     def test_diff_panel_lists_changes_of_the_version(
-        self, tabs: Tabs, stand: StandProcess, source_seed: SourceSeed
+        self, tabs: Tabs, stand: StandProcess, connection_seed: ConnectionSeed
     ) -> None:
         page = tabs.page("admin")
-        _open_source(page, stand, source_seed.prod)
+        _open_connection(page, stand, connection_seed.prod)
         page.get_by_role("button", name="diff with v1").click()
 
         diff = page.get_by_test_id("source-diff")
@@ -359,14 +358,15 @@ class TestPostgresTree:
 
 class TestClickHouseTree:
     def test_table_and_dictionary_cards(
-        self, tabs: Tabs, stand: StandProcess, source_seed: SourceSeed
+        self, tabs: Tabs, stand: StandProcess, connection_seed: ConnectionSeed
     ) -> None:
         page = tabs.page("dev")
-        _open_source(page, stand, source_seed.dwh)
-        expect(page.get_by_test_id("source-page")).to_have_attribute(
+        _open_connection(page, stand, connection_seed.dwh)
+        expect(page.get_by_test_id("connection-page")).to_have_attribute(
             "data-can-edit", "false"
         )
-        expect(page.get_by_role("button", name="delete source")).to_have_count(0)
+        expect(page.get_by_test_id("forget-versions")).to_have_count(0)
+        expect(page.get_by_test_id("connection-sync")).to_have_count(0)
         _expand(page, "dwh", "dwh")
         expect(page.locator(f'{NODE}[data-kind="group"]')).to_have_count(4)
         _expand(page, "dwh/tables", "tables")

@@ -1,7 +1,8 @@
 """Внешний вид страницы процесса: дорожки слоёв слева направо, карточки узлов
-с колонками из источника, рёбра потоков, список, тулбар, панель деталей,
-режимы показа, diff черновика, узкий экран, вход без списков. Процесс сеется
-через JSON API живого стенда над собственным источником.
+с колонками из снимка, рёбра потоков с числом колонок, список, тулбар, панель
+деталей, режимы показа, diff черновика, полоса черновика, узкий экран, вход
+списком процессов. Процесс сеется через JSON API живого стенда над
+собственным подключением.
 
 Ожидания цветов — из tokens.css сборки страницы (Tokens); геометрия — из
 bounding box узлов и дорожек.
@@ -44,17 +45,18 @@ TOKENS_CSS = (
 
 READY = Selector.READY.value
 NODE = Selector.NODE.value
-LANE = Selector.LANE.value
+FRAME = Selector.FRAME.value
 EDGE_LABEL = Selector.EDGE_LABEL.value
 
 
 class Look:
-    """Процесс стенда: три слоя, пять таблиц, два вида загрузки, три потока;
-    шестая таблица returns_raw есть в источнике, но в процесс её кладёт
-    только черновик."""
+    """Процесс стенда: три группы, пять таблиц с позициями сеткой, три потока;
+    шестая таблица returns_raw есть в снимке, но в процесс её кладёт только
+    черновик — без позиции, её раскладывает холст."""
 
-    SOURCE: ClassVar[str] = "look_prod"
-    LAYERS: ClassVar[tuple[str, ...]] = ("look_raw", "look_stg", "look_dm")
+    PROCESS: ClassVar[str] = "look_process"
+    CONNECTION: ClassVar[str] = "look_prod"
+    GROUPS: ClassVar[tuple[str, ...]] = ("look_raw", "look_stg", "look_dm")
     TABLES: ClassVar[dict[str, str]] = {
         "orders_raw": "look_raw",
         "customers_raw": "look_raw",
@@ -63,9 +65,9 @@ class Look:
         "sales_dm": "look_dm",
     }
     FLOWS: ClassVar[tuple[FlowSpec, ...]] = (
-        FlowSpec("orders_raw", "orders_stg", "hashkey", {"hash_columns": ["id"]}),
-        FlowSpec("customers_raw", "customers_stg", "full"),
-        FlowSpec("orders_stg", "sales_dm", "full"),
+        FlowSpec("orders_raw", "orders_stg", (("id", "id"), ("name", "name"))),
+        FlowSpec("customers_raw", "customers_stg", (("id", "id"),)),
+        FlowSpec("orders_stg", "sales_dm"),
     )
     KEY_COLUMNS: ClassVar[int] = 1
     ALL_COLUMNS: ClassVar[int] = len(Objects.COLUMNS)
@@ -74,31 +76,17 @@ class Look:
     @classmethod
     def spec(cls) -> ProcessSpec:
         return ProcessSpec(
-            source_name=cls.SOURCE,
-            layers=cls.LAYERS,
-            tables={**cls.TABLES, cls.DRAFT_TABLE: cls.LAYERS[0]},
-            kinds=(
-                {"name": "full", "fields": []},
-                {
-                    "name": "hashkey",
-                    "fields": [
-                        {
-                            "name": "hash_columns",
-                            "type": "columns",
-                            "side": "source",
-                            "required": True,
-                            "description": "",
-                        }
-                    ],
-                },
-            ),
+            process_name=cls.PROCESS,
+            connection_name=cls.CONNECTION,
+            groups=cls.GROUPS,
+            tables={**cls.TABLES, cls.DRAFT_TABLE: cls.GROUPS[0]},
             flows=cls.FLOWS,
             id_base=0xA000,
         )
 
 
 class LookSeed(ProcessSeed):
-    """Сид look-модуля: returns_raw есть в источнике, но не в процессе."""
+    """Сид look-модуля: returns_raw есть в снимке, но не в процессе."""
 
     def operations(self) -> list[dict[str, Any]]:
         ops: list[dict[str, Any]] = []
@@ -113,35 +101,39 @@ class LookSeed(ProcessSeed):
         return ops
 
     def draft_operations(self) -> list[dict[str, Any]]:
-        return [self.node_op(Look.DRAFT_TABLE, Look.LAYERS[0])]
+        """Узел черновика без позиции: его место считает холст."""
+        op = self.node_op(Look.DRAFT_TABLE, Look.GROUPS[0])
+        op["node"]["position"] = None
+        return [op]
 
 
 @dataclass(frozen=True)
 class Seeded:
-    """Что посеяно: вид на весь процесс и черновик с добавленным узлом."""
+    """Что посеяно: опубликованный процесс и черновик с добавленным узлом."""
 
     seed: LookSeed
-    view_id: str
     draft_id: str
 
     def node(self, name: str) -> str:
         return self.seed.node(name)
 
+    @property
+    def process_id(self) -> str:
+        return self.seed.process_id
+
 
 @pytest.fixture(scope="module")
 def seeded(stand: StandProcess, stand_db: StandDatabase) -> Iterator[Seeded]:
-    """Источник, процесс, вид и черновик через API: публикуется ровно один раз
-    на модуль, на выходе черновик отменяется, вид удаляется, посеянное
-    снимается публикацией и источник удаляется."""
+    """Подключение, процесс и черновик через API: публикуется ровно один раз
+    на модуль, на выходе черновик отменяется, процесс и подключение удаляются."""
     with api_client(stand, "admin") as admin:
         api = Api(admin, stand_db)
         seed = LookSeed(api, Look.spec())
         seed.publish("look seed")
-        view_id = api.create_view("look view", [], [])
-        edits = api.new_draft("look edits")
+        edits = api.new_draft(seed.process_id, "look edits")
         api.append(edits, seed.draft_operations())
 
-    seeded = Seeded(seed=seed, view_id=view_id, draft_id=edits)
+    seeded = Seeded(seed=seed, draft_id=edits)
     try:
         yield seeded
     finally:
@@ -149,7 +141,6 @@ def seeded(stand: StandProcess, stand_db: StandDatabase) -> Iterator[Seeded]:
             api = Api(admin, stand_db)
             seed.api = api
             api.discard(seeded.draft_id)
-            api.delete_view(seeded.view_id)
             seed.cleanup()
 
 
@@ -192,7 +183,7 @@ def _switch_mode(page: Page, mode: str) -> None:
 def _open_view(
     page: Page, stand: StandProcess, seeded: Seeded, query: str = ""
 ) -> None:
-    page.goto(f"{stand.config.base_url}/catalog/views/{seeded.view_id}{query}")
+    page.goto(f"{stand.config.base_url}/catalog/processes/{seeded.process_id}{query}")
     page.wait_for_selector(READY, timeout=30_000)
     page.wait_for_selector(NODE, timeout=30_000)
 
@@ -205,47 +196,55 @@ def _open_draft(
     page.wait_for_selector(NODE, timeout=30_000)
 
 
-class TestViewPage:
-    def test_nodes_edges_and_lanes_are_rendered(
+class TestProcessPage:
+    def test_nodes_edges_and_frames_are_rendered(
         self, page: Page, stand: StandProcess, seeded: Seeded
     ) -> None:
         _open_view(page, stand, seeded)
 
-        expect(page.get_by_test_id("page-title")).to_have_text("look view")
+        expect(page.get_by_test_id("page-title")).to_have_text(Look.PROCESS)
         expect(page.locator(NODE)).to_have_count(len(Look.TABLES))
-        expect(page.locator(LANE)).to_have_count(len(Look.LAYERS))
+        expect(page.locator(FRAME)).to_have_count(len(Look.GROUPS))
         expect(page.locator(EDGE_LABEL)).to_have_count(len(Look.FLOWS))
 
+        # ярлык ребра — число пар колонок; поток без пар — стрелка
         labels = sorted(page.locator(EDGE_LABEL).all_inner_texts())
-        assert labels == ["full", "full", "hashkey"]
+        assert labels == ["1 col", "2 cols", "→"]
 
-    def test_lanes_follow_layer_order_left_to_right(
+    def test_cards_stand_where_the_process_puts_them(
         self, page: Page, stand: StandProcess, seeded: Seeded
     ) -> None:
-        """Партиции ELK: слой-источник левее приёмника, дорожки не пересекаются."""
+        """Позиции из процесса: карточки стоят сеткой сеятеля — колонки групп
+        слева направо, рамки групп обнимают свои карточки и не пересекаются."""
         _open_view(page, stand, seeded)
 
         lefts: list[float] = []
-        for layer in Look.LAYERS:
-            lane = page.locator(f'{LANE}[data-layer="{layer}"]')
-            expect(lane).to_have_count(1)
-            lefts.append(Css.box(lane).x)
+        for group in Look.GROUPS:
+            frame = page.locator(f'{FRAME}[data-group="{group}"]')
+            expect(frame).to_have_count(1)
+            lefts.append(Css.box(frame).x)
 
-        assert lefts == sorted(lefts), f"lanes are not ordered by layer: {lefts}"
+        assert lefts == sorted(lefts), f"frames are not in seed order: {lefts}"
 
         boxes = [
-            Css.box(page.locator(f'{LANE}[data-layer="{layer}"]'))
-            for layer in Look.LAYERS
+            Css.box(page.locator(f'{FRAME}[data-group="{group}"]'))
+            for group in Look.GROUPS
         ]
         for previous, current in pairwise(boxes):
-            assert previous.right <= current.x + 1, "lanes overlap"
+            assert previous.right <= current.x + 1, "frames overlap"
 
-        for table, layer in Look.TABLES.items():
+        for table, group in Look.TABLES.items():
             node = page.locator(seeded.node(table))
-            lane = page.locator(f'{LANE}[data-layer="{layer}"]')
-            assert Css.box(lane).contains(Css.box(node), slack=2), (
-                f"{table} is outside its lane {layer}"
+            frame = page.locator(f'{FRAME}[data-group="{group}"]')
+            assert Css.box(frame).contains(Css.box(node), slack=2), (
+                f"{table} is outside its frame {group}"
             )
+
+        # ряд группы: orders_raw над customers_raw, с зазором сетки
+        orders = Css.box(page.locator(seeded.node("orders_raw")))
+        customers = Css.box(page.locator(seeded.node("customers_raw")))
+        assert abs(orders.x - customers.x) < 2
+        assert orders.bottom < customers.y
 
     def test_nodes_are_laid_out_by_measured_size_without_overlap(
         self, page: Page, stand: StandProcess, seeded: Seeded
@@ -283,7 +282,8 @@ class TestViewPage:
         _open_view(page, stand, seeded)
         node = page.locator(seeded.node("orders_raw"))
 
-        expect(node.locator(".proc-node__column")).to_have_count(Look.KEY_COLUMNS)
+        # режим ключей: ключ id и колонка name, по которой идёт линия потока
+        expect(node.locator(".proc-node__column")).to_have_count(Look.KEY_COLUMNS + 1)
 
         _switch_mode(page, "all fields")
         expect(node.locator(".proc-node__column")).to_have_count(Look.ALL_COLUMNS)
@@ -333,13 +333,59 @@ class TestViewPage:
         expect(page.get_by_test_id("detail-panel")).to_have_count(0)
         assert "active=" not in page.url
 
+    def test_lines_run_between_columns_and_light_up_with_the_card(
+        self, page: Page, stand: StandProcess, seeded: Seeded, tokens: Tokens
+    ) -> None:
+        """Поток — линия на каждую пару колонок от ручки к ручке; у выбранной
+        карточки линии и колонки-участники подсвечены цветом сигнала, типы
+        колонок видны, ручки колонок появляются при наведении."""
+        _open_view(page, stand, seeded, "?mode=ALL_FIELDS")
+        pairs = sum(len(flow.columns) for flow in Look.FLOWS)
+        without_pairs = sum(1 for flow in Look.FLOWS if not flow.columns)
+        expect(page.locator(".react-flow__edge")).to_have_count(pairs + without_pairs)
+
+        orders = page.locator(seeded.node("orders_raw"))
+        stg = page.locator(seeded.node("orders_stg"))
+        # линия id → id идёт от строки id одной карточки к строке id другой
+        source_row = Css.box(orders.locator('[data-column="id"]'))
+        target_row = Css.box(stg.locator('[data-column="id"]'))
+        line = Css.box(
+            page.locator(f'.react-flow__edge[data-id="{seeded.seed.flow_id(0)}#0"]')
+        )
+        assert abs(line.x - source_row.right) < 8, (line, source_row)
+        assert abs(line.right - target_row.x) < 12, (line, target_row)
+
+        column_type = orders.locator('[data-column="id"] .proc-node__column-type')
+        expect(column_type).to_have_css("opacity", "0")
+
+        orders.locator(".proc-node__header").click()
+        expect(column_type).to_have_css("opacity", "1")
+        lit = orders.locator('[data-column="id"]')
+        expect(lit).to_have_attribute("data-lit", "true")
+        expect(page.locator(".flow-edge--lit")).to_have_count(2)
+        expect(page.locator(".flow-edge--lit").first).to_have_css(
+            "stroke", tokens.rgb("signal")
+        )
+        expect(page.locator(".flow-edge__particle")).to_have_count(6)
+        handle = lit.locator(".react-flow__handle.source")
+        expect(handle).to_have_css("background-color", tokens.rgb("signal"))
+
+        unlit = orders.locator('[data-column="updated_at"]')
+        expect(unlit).to_have_attribute("data-lit", "false")
+        page.mouse.move(5, 5)
+        expect(unlit.locator(".react-flow__handle.source")).to_have_css("opacity", "0")
+        unlit.hover()
+        expect(unlit.locator(".react-flow__handle.source")).to_have_css("opacity", "1")
+
     def test_left_pane_lists_groups_and_hides_datasets(
         self, page: Page, stand: StandProcess, seeded: Seeded
     ) -> None:
         _open_view(page, stand, seeded)
         pane = page.get_by_test_id("left-pane")
 
-        expect(pane.locator(".pane__group")).to_have_count(len(Look.LAYERS))
+        expect(pane.get_by_test_id("nodes-group")).to_contain_text(
+            f"nodes · {len(Look.TABLES)}"
+        )
         expect(pane.get_by_test_id("pane-item")).to_have_count(len(Look.TABLES))
 
         pane.get_by_role("button", name="hide customers_raw").click()
@@ -353,13 +399,13 @@ class TestViewPage:
         pane.get_by_label("find a node").fill("sales")
         expect(pane.get_by_test_id("pane-item")).to_have_count(1)
 
-        pane.get_by_role("tab", name="sources").click()
-        expect(pane).to_have_attribute("data-tab", "sources")
+        pane.get_by_role("tab", name="connections").click()
+        expect(pane).to_have_attribute("data-tab", "connections")
         branch = pane.locator(
-            f'[data-testid="source-branch"][data-source="{Look.SOURCE}"]'
+            f'[data-testid="connection-branch"][data-connection="{Look.CONNECTION}"]'
         )
         expect(branch).to_be_visible()
-        assert "pane=sources" in page.url
+        assert "pane=connections" in page.url
 
     def test_url_state_is_restored(
         self, page: Page, stand: StandProcess, seeded: Seeded
@@ -411,14 +457,19 @@ class TestGrid:
         small = tokens.px("h-ctl-sm")
 
         topbar = page.locator(".topbar")
+        actions = page.get_by_test_id("process-actions")
         heights = {
             "icon-button": Css.box(topbar.locator(".icon-btn").first).height,
-            "button-sm": Css.box(topbar.get_by_test_id("publish-button")).height,
+            "button-sm": Css.box(actions.get_by_test_id("publish-button")).height,
             "chip": Css.box(topbar.locator(".chip").first).height,
         }
         assert heights["icon-button"] == ctl, heights
         assert heights["button-sm"] == small, heights
         assert heights["chip"] == tokens.px("h-chip"), heights
+        # полоса действий закреплена над списком и не уезжает с ним
+        assert Css.box(actions).y < Css.box(page.get_by_test_id("processes-group")).y
+        bar = page.locator('[data-notice="draft-bar"]')
+        expect(bar).to_have_css("border-left-color", tokens.rgb("signal"))
 
         toolbar = page.get_by_test_id("canvas-toolbar")
         zoom = Css.box(toolbar.locator(".icon-btn").first)
@@ -475,10 +526,8 @@ class TestGrid:
         narrow = context.new_page()
         try:
             _open_view(narrow, stand, seeded)
-            kinds = narrow.get_by_test_id("load-kinds-button")
-            expect(kinds.locator(".btn__label")).to_be_hidden()
-            expect(kinds).to_have_attribute("title", "load kinds")
-            kinds.click()
+            narrow.get_by_role("button", name="show the left pane").click()
+            narrow.get_by_test_id("share-button").click()
             dialog = narrow.get_by_role("dialog")
             expect(dialog).to_be_visible()
             box = Css.box(dialog)
@@ -495,7 +544,8 @@ class TestDraftPage:
     ) -> None:
         _open_draft(page, stand, seeded)
 
-        expect(page.get_by_test_id("page-title")).to_have_text("look edits")
+        expect(page.get_by_test_id("page-title")).to_have_text(Look.PROCESS)
+        expect(page.get_by_test_id("draft-name")).to_have_text("draft “look edits”")
         expect(page.locator(NODE)).to_have_count(len(Look.TABLES) + 1)
 
         added = page.locator(seeded.node(Look.DRAFT_TABLE))
@@ -508,30 +558,62 @@ class TestDraftPage:
         assert "diff=0" in page.url
 
 
-class TestPublishedPage:
-    def test_entry_shows_the_process_with_menus(
+class TestEntryPage:
+    def test_entry_lists_the_processes_and_opens_one(
         self, page: Page, stand: StandProcess, seeded: Seeded
     ) -> None:
-        """Вход — сам процесс: узлы на холсте, диаграммы и черновики в диалогах
-        шапки, ссылка из диаграмм открывает вид."""
+        """Вход — список процессов с версией, числом узлов и черновиков; клик
+        открывает процесс, черновик стоит во вкладке process."""
         page.goto(f"{stand.config.base_url}/catalog/")
+        listed = page.get_by_test_id("processes-list")
+        row = listed.locator(f'li[data-process="{Look.PROCESS}"]')
+        expect(row).to_contain_text("v1")
+        expect(row).to_contain_text(f"{len(Look.TABLES)} nodes")
+        # свой черновик — строкой под процессом с чипом draft
+        expect(listed.locator('li[data-draft="look edits"]')).to_contain_text("draft")
+
+        row.get_by_role("link", name=Look.PROCESS).click()
         page.wait_for_selector(READY, timeout=30_000)
         catalog = page.get_by_test_id("catalog-page")
         expect(catalog).to_have_attribute("data-source", "published")
         expect(page.locator(seeded.node("orders_raw"))).to_be_visible()
+        expect(
+            page.get_by_test_id("processes-list").get_by_role("link", name="look edits")
+        ).to_be_visible()
+        assert re.search(
+            rf"/catalog/processes/{seeded.process_id}$", page.url.split("?")[0]
+        )
 
-        page.get_by_test_id("edit-button").click()
-        drafts = page.locator('[data-dialog="drafts"]')
-        expect(drafts.get_by_role("link", name="look edits")).to_be_visible()
-        drafts.get_by_role("button", name="close dialog").click()
-        expect(drafts).to_have_count(0)
+    def test_entry_is_the_process_page_without_a_process(
+        self, page: Page, stand: StandProcess, seeded: Seeded, tokens: Tokens
+    ) -> None:
+        """Вход — та же страница, что у процесса: топбар, левая панель с
+        полосой «process» и списком процессов, сцена с шагами; вкладка
+        connections показывает подключения, открытого процесса в панели нет."""
+        page.goto(f"{stand.config.base_url}/catalog/")
+        catalog = page.get_by_test_id("catalog-page")
+        expect(catalog).to_have_attribute("data-source", "home")
+        expect(page.get_by_test_id("page-title")).to_have_text("processes")
+        expect(page.locator(".topbar__hint")).to_contain_text("process")
 
-        page.get_by_test_id("diagrams-button").click()
-        diagrams = page.locator('[data-dialog="diagrams"]')
-        expect(diagrams.get_by_role("link", name="look view")).to_be_visible()
-        diagrams.get_by_role("link", name="look view").click()
-        page.wait_for_selector(READY, timeout=30_000)
-        assert re.search(rf"/catalog/views/{seeded.view_id}$", page.url.split("?")[0])
+        pane = page.get_by_test_id("left-pane")
+        expect(pane).to_have_attribute("data-tab", "process")
+        actions = page.get_by_test_id("process-actions")
+        expect(actions.get_by_test_id("new-process")).to_have_text("process")
+        expect(page.get_by_test_id("processes-group")).to_contain_text("processes ·")
+        expect(page.get_by_test_id("drafts-group")).to_have_count(0)
+        expect(page.get_by_test_id("nodes-group")).to_have_count(0)
+
+        scene = page.locator(".page__scene")
+        # на входе одна строка подсказки, без шагов и кнопок
+        expect(scene.get_by_test_id("home-hint")).to_be_visible()
+        expect(scene.get_by_role("button")).to_have_count(0)
+        expect(scene.locator(".empty__title")).to_have_css("color", tokens.rgb("ink"))
+
+        page.get_by_role("tab", name="connections").click()
+        expect(pane).to_have_attribute("data-tab", "connections")
+        expect(page.get_by_test_id("connections-actions")).to_be_visible()
+        no_horizontal_scroll(page)
 
 
 def test_page_is_served_with_stamp(
@@ -539,7 +621,7 @@ def test_page_is_served_with_stamp(
 ) -> None:
     """Сервер вписывает base href и конфиг страницы; без входа страница отдаётся."""
     response = httpx.get(
-        f"{stand.config.base_url}/catalog/views/anything", timeout=30.0
+        f"{stand.config.base_url}/catalog/processes/anything", timeout=30.0
     )
 
     assert response.status_code == 200

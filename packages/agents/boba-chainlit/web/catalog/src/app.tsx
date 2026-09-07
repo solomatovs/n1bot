@@ -3,9 +3,10 @@ import { BrowserRouter, Route, Routes, useParams } from "react-router-dom";
 
 import { CatalogApi } from "./api/client";
 import { PageUrls, pageConfig } from "./config";
+import { ConnectionPage } from "./pages/ConnectionPage";
+import { ConnectionsPage } from "./pages/ConnectionsPage";
+import { HomePage } from "./pages/HomePage";
 import { ProcessPage, type PageSource } from "./pages/ProcessPage";
-import { SourcePage } from "./pages/SourcePage";
-import { SourcesPage } from "./pages/SourcesPage";
 import { EmptyState, ToastProvider } from "./ui";
 
 /** Общие для страниц службы: адреса и API-клиент. */
@@ -25,17 +26,18 @@ export function useServices(): Services {
   return services;
 }
 
-function ViewRoute(): ReactElement {
-  const { viewId } = useParams();
-  const source = useMemo<PageSource | null>(() => (viewId === undefined ? null : { kind: "view", viewId }), [viewId]);
+function ProcessRoute(): ReactElement {
+  const { processId } = useParams();
+  const source = useMemo<PageSource | null>(
+    () => (processId === undefined ? null : { kind: "published", processId }),
+    [processId],
+  );
   if (source === null) {
-    return <EmptyState fill title="view id is missing" />;
+    return <EmptyState fill title="process id is missing" />;
   }
 
   return <ProcessPage source={source} />;
 }
-
-const PUBLISHED: PageSource = { kind: "published" };
 
 function DraftRoute(): ReactElement {
   const { draftId } = useParams();
@@ -45,6 +47,16 @@ function DraftRoute(): ReactElement {
   );
   if (source === null) {
     return <EmptyState fill title="draft id is missing" />;
+  }
+
+  return <ProcessPage source={source} />;
+}
+
+function SharedRoute(): ReactElement {
+  const { token } = useParams();
+  const source = useMemo<PageSource | null>(() => (token === undefined ? null : { kind: "shared", token }), [token]);
+  if (source === null) {
+    return <EmptyState fill title="share token is missing" />;
   }
 
   return <ProcessPage source={source} />;
@@ -61,11 +73,12 @@ export function App(): ReactElement {
       <ToastProvider>
         <BrowserRouter basename={services.urls.routerBase}>
           <Routes>
-            <Route index element={<ProcessPage source={PUBLISHED} />} />
-            <Route path="/views/:viewId" element={<ViewRoute />} />
+            <Route index element={<HomePage />} />
+            <Route path="/processes/:processId" element={<ProcessRoute />} />
             <Route path="/drafts/:draftId" element={<DraftRoute />} />
-            <Route path="/sources" element={<SourcesPage />} />
-            <Route path="/sources/:sourceId" element={<SourcePage />} />
+            <Route path="/shared/:token" element={<SharedRoute />} />
+            <Route path="/connections" element={<ConnectionsPage />} />
+            <Route path="/connections/:connectionId" element={<ConnectionPage />} />
             <Route path="*" element={<EmptyState fill title="no such page" />} />
           </Routes>
         </BrowserRouter>

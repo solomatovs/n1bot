@@ -105,7 +105,7 @@ class TestPostgresTree:
         assert orders.detail == "partitioned"
         assert orders.children_count == 1
         assert orders.ref == ObjectRef(
-            source_id=SOURCE_ID,
+            connection_id=SOURCE_ID,
             kind=ObjectKind.RELATION,
             path=("prod", "public", "orders"),
         )
@@ -182,7 +182,7 @@ class TestClickHouseTree:
         assert tables[0].label == "events"
         assert tables[0].detail == "MergeTree"
         assert tables[0].ref == ObjectRef(
-            source_id=CH_SOURCE_ID, kind=ObjectKind.TABLE, path=("dwh", "events")
+            connection_id=CH_SOURCE_ID, kind=ObjectKind.TABLE, path=("dwh", "events")
         )
 
         dictionaries = snapshot.children(CH_SOURCE_ID, ("dwh", "dictionaries"))
@@ -220,7 +220,7 @@ class TestDiff:
         assert [f.field for f in procedure.fields] == ["body"]
 
         unchanged = ObjectRef(
-            source_id=SOURCE_ID,
+            connection_id=SOURCE_ID,
             kind=ObjectKind.RELATION,
             path=("prod", "public", "v_orders"),
         )

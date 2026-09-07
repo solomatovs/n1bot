@@ -1,9 +1,10 @@
 """Общее для браузерных тестов страницы каталога: селекторы холста, вход в
-JSON API стенда от имени учётки, сеятель процесса над собственным источником
-и его снос.
+JSON API стенда от имени учётки, сеятель процесса над собственным
+подключением и его снос.
 
-Опубликованный каталог стенда один на все модули, поэтому модуль, который
-публикует своё, обязан на выходе опубликовать удаление (ProcessSeed.cleanup).
+Каталог стенда один на все модули, поэтому модуль на выходе удаляет свой
+процесс, забывает версии своего подключения и снимает само подключение
+(ProcessSeed.cleanup).
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ class Selector(StrEnum):
 
     READY = '[data-testid="canvas"][data-ready="true"]'
     NODE = '[data-testid="catalog-node"]'
-    LANE = '[data-testid="layer-lane"]'
+    FRAME = '[data-testid="group-frame"]'
     EDGE_LABEL = '[data-testid="flow-edge-label"]'
     PAGE = '[data-testid="catalog-page"]'
 
@@ -76,7 +77,8 @@ class Ed(StrEnum):
     """Имена посеянных сущностей модуля правок: всё с префиксом ed_."""
 
     PREFIX = "ed_"
-    SOURCE = "ed_prod"
+    PROCESS = "ed_process"
+    CONNECTION = "ed_prod"
     SRC = "ed_src"
     DST = "ed_dst"
     ORDERS = "ed_orders"
@@ -85,15 +87,6 @@ class Ed(StrEnum):
     EVENTS = "ed_events"
     ARCHIVE = "ed_archive"
     LOADER = "ed_loader"
-    FULL = "ed_full"
-    HASH = "ed_hash"
-    HASH_FIELD = "hash_columns"
-    TYPED = "ed_typed"
-    TYPED_INT = "batch"
-    TYPED_BOOL = "full_refresh"
-    TYPED_TEXT = "note"
-    TYPED_COLUMN = "key_column"
-    TYPED_ROUTINE = "implemented_by"
 
 
 class Objects:
@@ -121,6 +114,9 @@ class Objects:
         relations: list[dict[str, Any]] = []
         columns: list[dict[str, Any]] = []
         constraints: list[dict[str, Any]] = []
+        indexes: list[dict[str, Any]] = []
+        # каждая таблица кроме первой ссылается внешним ключом на первую
+        parent = tables[0]
         for table in tables:
             relations.append(
                 {
@@ -155,6 +151,36 @@ class Objects:
                     "definition": "PRIMARY KEY (id)",
                 }
             )
+            indexes.append(
+                {
+                    "database": cls.DATABASE,
+                    "schema_name": cls.SCHEMA,
+                    "relation": table,
+                    "name": f"{table}_name_idx",
+                    "method": "btree",
+                    "columns": ["name"],
+                    "definition": f"CREATE INDEX {table}_name_idx ON {table} (name)",
+                }
+            )
+            if table == parent:
+                continue
+
+            constraints.append(
+                {
+                    "database": cls.DATABASE,
+                    "schema_name": cls.SCHEMA,
+                    "relation": table,
+                    "name": f"{table}_{parent}_fk",
+                    "kind": "foreign",
+                    "columns": ["id"],
+                    "ref_schema": cls.SCHEMA,
+                    "ref_relation": parent,
+                    "ref_columns": ["id"],
+                    "on_update": "NO ACTION",
+                    "on_delete": "CASCADE",
+                    "definition": f"FOREIGN KEY (id) REFERENCES {parent}(id)",
+                }
+            )
 
         procedures: list[dict[str, Any]] = []
         for routine in routines:
@@ -181,57 +207,60 @@ class Objects:
             "relations": relations,
             "columns": columns,
             "constraints": constraints,
+            "indexes": indexes,
             "routines": procedures,
         }
 
 
 @dataclass(frozen=True)
 class FlowSpec:
-    """Поток сида: узлы по именам, вид загрузки, значения полей."""
+    """Поток сида: узлы по именам и пары колонок «источник → приёмник»."""
 
     source: str
     target: str
-    kind: str
-    values: dict[str, Any] = field(default_factory=dict)
+    columns: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
 class ProcessSpec:
-    """Что сеет ProcessSeed: имя источника, слои по порядку, таблицы и
-    процедуры по слоям, запасные таблицы источника вне процесса, виды
-    загрузки, потоки."""
+    """Что сеет ProcessSeed: имя процесса и подключения, группы, таблицы и
+    процедуры по группам (пустая строка — вне групп), запасные таблицы
+    подключения вне процесса, потоки. Позиции карточек — сеткой: колонка по
+    группе, строка по порядку в ней."""
 
-    source_name: str
-    layers: tuple[str, ...]
+    process_name: str
+    connection_name: str
+    groups: tuple[str, ...]
     tables: Mapping[str, str]
     routines: Mapping[str, str] = field(default_factory=dict)
     spare_tables: tuple[str, ...] = ()
-    kinds: tuple[dict[str, Any], ...] = ()
     flows: tuple[FlowSpec, ...] = ()
     id_base: int = 0xE000
 
 
 class ProcessSeed:
-    """Процесс модуля над собственным источником: источник с таблицами и
-    процедурами, слои, узлы по одному на объект, виды загрузки, потоки.
-    Публикуется одной версией; cleanup публикует удаление всего своего и
-    удаляет источник, чтобы соседние модули видели прежний каталог."""
+    """Процесс модуля над собственным подключением: подключение стенда с
+    версией снимка из таблиц и процедур, свой процесс с группами, узлами по
+    одному на объект с позициями и потоками. Публикуется одной версией; cleanup удаляет
+    процесс, забывает версии и снимает подключение, чтобы соседние модули
+    видели прежний каталог."""
 
     def __init__(self, api: Api, spec: ProcessSpec) -> None:
         self.api = api
         self.spec = spec
-        self.source_name = spec.source_name
-        self.layers = spec.layers
+        self.process_name = spec.process_name
+        self.connection_name = spec.connection_name
+        self.groups = spec.groups
         self.tables = dict(spec.tables)
         self.routines = dict(spec.routines)
-        self.kinds = list(spec.kinds)
         self.flows = list(spec.flows)
         self.id_base = spec.id_base
         self.ids: dict[str, str] = {}
-        self.source_id = api.create_source("postgres", spec.source_name)
+        self.connection_id = api.add_connection(spec.connection_name, "postgres")
         tables = [*self.tables, *spec.spare_tables]
         snapshot = Objects.snapshot(tables, list(self.routines))
-        api.write_source_version(self.source_id, snapshot)
+        api.write_connection_version(self.connection_id, snapshot)
+        self.process_id = api.create_process(spec.process_name)
 
     def id_of(self, name: str) -> str:
         if name not in self.ids:
@@ -242,10 +271,14 @@ class ProcessSeed:
     def ref(self, name: str) -> dict[str, Any]:
         if name in self.routines:
             path = Objects.routine_path(name)
-            return {"source_id": self.source_id, "kind": "routine", "path": path}
+            return {
+                "connection_id": self.connection_id,
+                "kind": "routine",
+                "path": path,
+            }
 
         path = Objects.table_path(name)
-        return {"source_id": self.source_id, "kind": "relation", "path": path}
+        return {"connection_id": self.connection_id, "kind": "relation", "path": path}
 
     def address(self, name: str) -> str:
         return "/".join(self.ref(name)["path"])
@@ -255,25 +288,60 @@ class ProcessSeed:
         return f'{Selector.NODE}[data-node="{self.address(name)}"]'
 
     def tree_object(self, name: str) -> str:
-        """Селектор таблицы в дереве источника: под группой tables схемы."""
+        """Селектор таблицы в дереве подключения: под группой tables схемы."""
         path = f"{Objects.DATABASE}/{Objects.SCHEMA}/tables/{name}"
         return f'[data-testid="tree-node"][data-path="{path}"]'
 
     def next_version(self, tables: Sequence[str]) -> int:
-        """Новая версия источника с другим набором таблиц: процесс над прежней
+        """Новая версия снимка с другим набором таблиц: процесс над прежней
         версией устаревает."""
         snapshot = Objects.snapshot(tables, list(self.routines))
-        return self.api.write_source_version(self.source_id, snapshot)
+        return self.api.write_connection_version(self.connection_id, snapshot)
+
+    COLUMN_STEP: ClassVar[int] = 420
+    ROW_STEP: ClassVar[int] = 240
+
+    def position_of(self, name: str) -> dict[str, float]:
+        """Место карточки: колонка по группе (вне групп — последняя), строка по
+        порядку объекта среди объектов той же группы."""
+        members = {**self.tables, **self.routines}
+        # запасная таблица не в процессе: колонка вне групп, первая строка
+        group = members.get(name, "")
+        column = len(self.groups)
+        if group in self.groups:
+            column = self.groups.index(group)
+
+        row = 0
+        for other, other_group in members.items():
+            if other == name:
+                break
+
+            if other_group == group:
+                row += 1
+
+        return {"x": float(column * self.COLUMN_STEP), "y": float(row * self.ROW_STEP)}
+
+    def flow_id(self, flow: FlowSpec | int) -> str:
+        """Id посеянного потока: по спецификации либо по её номеру."""
+        if isinstance(flow, int):
+            flow = self.flows[flow]
+
+        return self.id_of(f"{flow.source}->{flow.target}")
 
     def node_op(
-        self, name: str, layer: str, alias: str | None = None
+        self, name: str, group: str, alias: str | None = None
     ) -> dict[str, Any]:
+        group_id = None
+        if group != "":
+            group_id = self.id_of(group)
+
         return {
             "op": "add_node",
             "node": {
                 "id": self.id_of(name),
-                "layer_id": self.id_of(layer),
                 "ref": self.ref(name),
+                "position": self.position_of(name),
+                "group_id": group_id,
                 "alias": alias,
                 "note": "",
             },
@@ -281,50 +349,30 @@ class ProcessSeed:
 
     def operations(self) -> list[dict[str, Any]]:
         ops: list[dict[str, Any]] = []
-        for position, layer in enumerate(self.layers):
+        for group in self.groups:
             ops.append(
-                {
-                    "op": "add_layer",
-                    "layer": {
-                        "id": self.id_of(layer),
-                        "name": layer,
-                        "position": position,
-                        "description": "",
-                    },
-                }
+                {"op": "add_group", "group": {"id": self.id_of(group), "name": group}}
             )
 
-        for name, layer in self.tables.items():
-            ops.append(self.node_op(name, layer))
+        for name, group in self.tables.items():
+            ops.append(self.node_op(name, group))
 
-        for name, layer in self.routines.items():
-            ops.append(self.node_op(name, layer))
-
-        for kind in self.kinds:
-            ops.append(
-                {
-                    "op": "add_load_kind",
-                    "load_kind": {
-                        "id": self.id_of(kind["name"]),
-                        "name": kind["name"],
-                        "description": "",
-                        "fields": kind.get("fields", []),
-                    },
-                }
-            )
+        for name, group in self.routines.items():
+            ops.append(self.node_op(name, group))
 
         for flow in self.flows:
+            links: list[dict[str, str]] = []
+            for from_column, to_column in flow.columns:
+                links.append({"from_column": from_column, "to_column": to_column})
+
             ops.append(
                 {
                     "op": "add_flow",
                     "flow": {
-                        "id": self.id_of(f"{flow.source}->{flow.target}"),
+                        "id": self.flow_id(flow),
                         "from_node_id": self.id_of(flow.source),
                         "to_node_id": self.id_of(flow.target),
-                        "load": {
-                            "kind_id": self.id_of(flow.kind),
-                            "values": flow.values,
-                        },
+                        "columns": links,
                         "description": "",
                     },
                 }
@@ -333,50 +381,18 @@ class ProcessSeed:
         return ops
 
     def publish(self, name: str) -> int:
-        return self.api.publish_ops(name, self.operations())
-
-    def cleanup_operations(self, snapshot: dict[str, Any]) -> list[dict[str, Any]]:
-        """Снос всего своего из опубликованного снимка: потоки узлов этого
-        источника, сами узлы, слои и виды с именами сида."""
-        node_ids = {
-            str(node["id"])
-            for node in snapshot["nodes"].values()
-            if node["ref"]["source_id"] == self.source_id
-        }
-        ops: list[dict[str, Any]] = []
-        for flow in snapshot["flows"].values():
-            touches = flow["from_node_id"] in node_ids
-            if flow["to_node_id"] in node_ids:
-                touches = True
-
-            if touches:
-                ops.append({"op": "remove_flow", "id": flow["id"]})
-
-        for node_id in node_ids:
-            ops.append({"op": "remove_node", "id": node_id})
-
-        for layer in snapshot["layers"].values():
-            if layer["name"] in self.layers:
-                ops.append({"op": "remove_layer", "id": layer["id"]})
-
-        kind_names = {kind["name"] for kind in self.kinds}
-        for kind in snapshot["load_kinds"].values():
-            if kind["name"] in kind_names:
-                ops.append({"op": "remove_load_kind", "id": kind["id"]})
-
-        return ops
+        return self.api.publish_ops(self.process_id, name, self.operations())
 
     def cleanup(self) -> None:
-        ops = self.cleanup_operations(self.api.snapshot())
-        if ops:
-            self.api.publish_ops(f"{self.source_name} cleanup", ops)
-
-        self.api.delete_source(self.source_id)
+        """Процесс со всем содержимым, версии подключения, само подключение."""
+        self.api.delete_process(self.process_id)
+        self.api.forget_versions(self.connection_id)
+        self.api.stand_db.remove_connections(self.connection_name)
 
 
 class Seed(ProcessSeed):
-    """Процесс модуля правок: два слоя, три таблицы и процедура, три вида
-    загрузки, один поток."""
+    """Процесс модуля правок: две группы, три таблицы и процедура вне групп,
+    один поток с двумя парами колонок."""
 
     def __init__(self, api: Api) -> None:
         super().__init__(api, self.spec_of())
@@ -384,70 +400,76 @@ class Seed(ProcessSeed):
     @staticmethod
     def spec_of() -> ProcessSpec:
         return ProcessSpec(
-            source_name=Ed.SOURCE,
-            layers=(Ed.SRC, Ed.DST),
+            process_name=Ed.PROCESS,
+            connection_name=Ed.CONNECTION,
+            groups=(Ed.SRC, Ed.DST),
             tables={Ed.ORDERS: Ed.SRC, Ed.SALES: Ed.DST, Ed.RETURNS: Ed.DST},
-            routines={Ed.LOADER: Ed.DST},
+            routines={Ed.LOADER: ""},
             spare_tables=(Ed.EVENTS, Ed.ARCHIVE),
-            kinds=(
-                {"name": Ed.FULL, "fields": []},
-                {
-                    "name": Ed.HASH,
-                    "fields": [
-                        {
-                            "name": Ed.HASH_FIELD,
-                            "type": "columns",
-                            "side": "source",
-                            "required": True,
-                            "description": "",
-                        }
-                    ],
-                },
-                {
-                    "name": Ed.TYPED,
-                    "fields": [
-                        _field(Ed.TYPED_INT, "int", required=True),
-                        _field(Ed.TYPED_BOOL, "bool"),
-                        _field(Ed.TYPED_TEXT, "text"),
-                        _field(Ed.TYPED_COLUMN, "column", side="target"),
-                        _field(Ed.TYPED_ROUTINE, "routine"),
-                    ],
-                },
-            ),
-            flows=(FlowSpec(Ed.ORDERS, Ed.SALES, Ed.FULL),),
+            flows=(FlowSpec(Ed.ORDERS, Ed.SALES, (("id", "id"), ("name", "name"))),),
         )
 
 
-def _field(
-    name: str, kind: str, *, required: bool = False, side: str = "any"
-) -> dict[str, Any]:
-    return {
-        "name": name,
-        "type": kind,
-        "side": side,
-        "required": required,
-        "description": "",
-    }
-
-
 class Api:
-    """Ходы в JSON API стенда от имени администратора. Источник заводится от
-    подключения, поэтому на каждый источник сеятель добавляет в базу стенда
-    подключение `<имя источника>_conn` того же вида."""
-
-    CONNECTION_SUFFIX: ClassVar[str] = "_conn"
+    """Ходы в JSON API стенда от имени администратора: процессы с черновиками,
+    подключения стенда со снимками, ссылки на просмотр."""
 
     def __init__(self, admin: httpx.Client, stand_db: StandDatabase) -> None:
         self.admin = admin
         self.stand_db = stand_db
 
-    @classmethod
-    def connection_name(cls, source_name: str) -> str:
-        return f"{source_name}{cls.CONNECTION_SUFFIX}"
+    # --- процессы ---
 
-    def new_draft(self, name: str) -> str:
-        draft = ok(self.admin.post("/api/catalog/drafts", json={"name": name}))
+    def create_process(self, name: str, description: str = "") -> str:
+        body = {"name": name, "description": description}
+        return str(ok(self.admin.post("/api/catalog/processes", json=body))["id"])
+
+    def processes(self) -> list[dict[str, Any]]:
+        return list(ok_list(self.admin.get("/api/catalog/processes")))
+
+    def process_id_of(self, name: str) -> str:
+        for process in self.processes():
+            if process["name"] == name:
+                return str(process["id"])
+
+        raise AssertionError(f"process {name!r} is not in the catalog")
+
+    def delete_process(self, process_id: str) -> None:
+        response = self.admin.delete(f"/api/catalog/processes/{process_id}")
+        if response.status_code not in (200, 404):
+            msg = (
+                f"DELETE /api/catalog/processes/{process_id}: expected 200 or 404, "
+                f"got {response.status_code} {response.text[:200]}"
+            )
+            raise RuntimeError(msg)
+
+    def snapshot(self, process_id: str) -> dict[str, Any]:
+        return ok(self.admin.get(f"/api/catalog/processes/{process_id}/snapshot"))
+
+    def node_addresses(self, process_id: str) -> set[str]:
+        addresses: set[str] = set()
+        for node in self.snapshot(process_id)["nodes"].values():
+            addresses.add("/".join(node["ref"]["path"]))
+
+        return addresses
+
+    def share(self, process_id: str) -> str:
+        share = ok(self.admin.post(f"/api/catalog/processes/{process_id}/shares"))
+        return str(share["token"])
+
+    # --- черновики ---
+
+    def new_draft(self, process_id: str | None, name: str) -> str:
+        """Черновик процесса; None — черновик нового процесса."""
+        draft = ok(
+            self.admin.post(
+                "/api/catalog/drafts", json={"process_id": process_id, "name": name}
+            )
+        )
         return str(draft["id"])
+
+    def my_drafts(self) -> list[dict[str, Any]]:
+        return list(ok_list(self.admin.get("/api/catalog/drafts")))
 
     def state(self, draft_id: str) -> dict[str, Any]:
         return ok(self.admin.get(f"/api/catalog/drafts/{draft_id}"))
@@ -474,92 +496,53 @@ class Api:
             )
             raise RuntimeError(msg)
 
-    def snapshot(self) -> dict[str, Any]:
-        return ok(self.admin.get("/api/catalog/snapshot"))
-
-    def publish_ops(self, name: str, ops: list[dict[str, Any]]) -> int:
-        draft_id = self.new_draft(name)
+    def publish_ops(self, process_id: str, name: str, ops: list[dict[str, Any]]) -> int:
+        draft_id = self.new_draft(process_id, name)
         self.append(draft_id, ops)
         return self.publish(draft_id)
 
-    def node_addresses(self) -> set[str]:
-        addresses: set[str] = set()
-        for node in self.snapshot()["nodes"].values():
-            addresses.add("/".join(node["ref"]["path"]))
+    # --- подключения ---
 
-        return addresses
-
-    def create_view(self, name: str, layer_ids: list[str], node_ids: list[str]) -> str:
-        body = {"name": name, "layer_ids": layer_ids, "node_ids": node_ids}
-        view = ok(self.admin.post("/api/catalog/views", json=body))
-        return str(view["id"])
-
-    def views(self) -> list[dict[str, Any]]:
-        response = self.admin.get("/api/catalog/views")
-        if response.status_code != 200:
-            raise RuntimeError(f"views: {response.status_code} {response.text[:200]}")
-
-        return list(response.json())
-
-    def layout(self, view_id: str) -> dict[str, tuple[float, float]]:
-        """Сохранённые позиции узлов вида по id узла."""
-        layout = ok(self.admin.get(f"/api/catalog/views/{view_id}/layout"))
-        positions: dict[str, tuple[float, float]] = {}
-        for position in layout["positions"]:
-            node_id = str(position["node_id"])
-            positions[node_id] = (float(position["x"]), float(position["y"]))
-
-        return positions
-
-    def delete_view(self, view_id: str) -> None:
-        response = self.admin.delete(f"/api/catalog/views/{view_id}")
-        if response.status_code not in (200, 404):
-            msg = (
-                f"DELETE /api/catalog/views/{view_id}: expected 200 or 404, "
-                f"got {response.status_code} {response.text[:200]}"
-            )
-            raise RuntimeError(msg)
-
-    # --- источники ---
-
-    def create_source(self, kind: str, name: str, *, description: str = "") -> str:
-        connection_id = self.stand_db.add_connection(self.connection_name(name), kind)
-        body = {
-            "name": name,
-            "description": description,
-            "connection_id": str(connection_id),
-        }
-        return str(ok(self.admin.post("/api/catalog/sources", json=body))["id"])
+    def add_connection(self, name: str, kind: str) -> str:
+        """Подключение стенда в базе брокера, видимое админу."""
+        return str(self.stand_db.add_connection(name, kind))
 
     def connections(self) -> list[dict[str, Any]]:
         return list(ok_list(self.admin.get("/api/catalog/connections")))
 
-    def write_source_version(self, source_id: str, snapshot: dict[str, Any]) -> int:
+    def connection_id_of(self, name: str) -> str:
+        for connection in self.connections():
+            if connection["name"] == name:
+                return str(connection["id"])
+
+        raise AssertionError(f"connection {name!r} is not visible")
+
+    def synced(self) -> list[dict[str, Any]]:
+        return list(ok_list(self.admin.get("/api/catalog/synced")))
+
+    def write_connection_version(
+        self, connection_id: str, snapshot: dict[str, Any]
+    ) -> int:
         version = ok(
             self.admin.post(
-                f"/api/catalog/sources/{source_id}/versions",
+                f"/api/catalog/connections/{connection_id}/versions",
                 json={"snapshot": snapshot},
             )
         )
         return int(version["version"])
 
-    def sources(self) -> list[dict[str, Any]]:
-        return list(ok_list(self.admin.get("/api/catalog/sources")))
-
-    def delete_source(self, source_id: str) -> None:
-        """Источник и его подключение стенда; исчезнувший источник не ошибка."""
-        found = self.admin.get(f"/api/catalog/sources/{source_id}")
-        response = self.admin.delete(f"/api/catalog/sources/{source_id}")
+    def forget_versions(self, connection_id: str) -> None:
+        """Версии снимка подключения; отсутствие версий не ошибка."""
+        response = self.admin.delete(
+            f"/api/catalog/connections/{connection_id}/versions"
+        )
         if response.status_code not in (200, 404):
             msg = (
-                f"DELETE /api/catalog/sources/{source_id}: expected 200 or 404, "
-                f"got {response.status_code} {response.text[:200]}"
+                f"DELETE /api/catalog/connections/{connection_id}/versions: "
+                f"expected 200 or 404, got {response.status_code} "
+                f"{response.text[:200]}"
             )
             raise RuntimeError(msg)
-
-        if found.status_code == 200:
-            name = str(found.json()["name"])
-            self.stand_db.remove_connections(self.connection_name(name))
 
 
 def ok_list(response: httpx.Response) -> list[dict[str, Any]]:
@@ -570,30 +553,31 @@ def ok_list(response: httpx.Response) -> list[dict[str, Any]]:
     return list(response.json())
 
 
-class SourceSeed:
-    """Три источника из образцов домена: prod (postgres, v1 и v2), dwh
-    (clickhouse, v1), empty (postgres, без версий)."""
+class ConnectionSeed:
+    """Три подключения стенда из образцов домена: prod (postgres, снимки v1
+    и v2), dwh (clickhouse, v1), empty (postgres, без версий)."""
 
     PROD: ClassVar[str] = "src_prod"
     DWH: ClassVar[str] = "src_dwh"
     EMPTY: ClassVar[str] = "src_empty"
+    PREFIX: ClassVar[str] = "src_"
 
     def __init__(self, api: Api) -> None:
         self.api = api
         pg = PgSample()
         ch = ChSample()
-        self.prod = api.create_source(
-            "postgres", self.PROD, description="Prod database"
+        self.prod = api.add_connection(self.PROD, "postgres")
+        api.write_connection_version(self.prod, pg.snapshot().model_dump(mode="json"))
+        api.write_connection_version(
+            self.prod, pg.next_version().model_dump(mode="json")
         )
-        api.write_source_version(self.prod, pg.snapshot().model_dump(mode="json"))
-        api.write_source_version(self.prod, pg.next_version().model_dump(mode="json"))
-        self.dwh = api.create_source("clickhouse", self.DWH)
-        api.write_source_version(self.dwh, ch.snapshot().model_dump(mode="json"))
-        self.empty = api.create_source("postgres", self.EMPTY)
+        self.dwh = api.add_connection(self.DWH, "clickhouse")
+        api.write_connection_version(self.dwh, ch.snapshot().model_dump(mode="json"))
+        self.empty = api.add_connection(self.EMPTY, "postgres")
 
     def cleanup(self) -> None:
-        for source in self.api.sources():
-            if str(source["name"]).startswith("src_"):
-                self.api.delete_source(str(source["id"]))
+        for synced in self.api.synced():
+            if str(synced["name"]).startswith(self.PREFIX):
+                self.api.forget_versions(str(synced["connection_id"]))
 
-        self.api.stand_db.remove_connections("src_")
+        self.api.stand_db.remove_connections(self.PREFIX)

@@ -80,7 +80,7 @@ class SourceDiff(CatalogModel):
 
     @classmethod
     def between(
-        cls, source_id: UUID, old: SourceSnapshot, new: SourceSnapshot
+        cls, connection_id: UUID, old: SourceSnapshot, new: SourceSnapshot
     ) -> SourceDiff:
         """Ошибки:
         CatalogError — снимки разных видов.
@@ -88,14 +88,14 @@ class SourceDiff(CatalogModel):
         if old.kind != new.kind:
             msg = (
                 f"cannot diff {old.kind} against {new.kind}: "
-                f"both snapshots of source {source_id} must be of one kind"
+                f"both snapshots of connection {connection_id} must be of one kind"
             )
             raise CatalogError(msg)
 
         tables = list(cls._tables(old, new))
         entries: list[ObjectChange] = []
         for table in tables:
-            entries.extend(cls._table_changes(source_id, table))
+            entries.extend(cls._table_changes(connection_id, table))
 
         return cls(entries=tuple(entries))
 
@@ -146,12 +146,12 @@ class SourceDiff(CatalogModel):
 
     @classmethod
     def _table_changes(
-        cls, source_id: UUID, table: RecordTable
+        cls, connection_id: UUID, table: RecordTable
     ) -> Iterator[ObjectChange]:
         old = cls._by_key(table.old)
         new = cls._by_key(table.new)
         for key in sorted(old.keys() | new.keys()):
-            ref = ObjectRef(source_id=source_id, kind=table.kind, path=key)
+            ref = ObjectRef(connection_id=connection_id, kind=table.kind, path=key)
             before = old.get(key)
             after = new.get(key)
             if before is None and after is not None:

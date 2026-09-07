@@ -82,7 +82,7 @@
 .proc-node__header {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
-  grid-template-areas: "layer kind status" "name kind status";
+  grid-template-areas: "group kind status" "name kind status";
   column-gap: var(--s2);
   align-content: center;
   height: calc(var(--h-row) * 2);
@@ -90,8 +90,8 @@
   border-bottom: 1px solid var(--hairline);
 }
 
-.proc-node__layer {
-  grid-area: layer;
+.proc-node__group {
+  grid-area: group;
   font-size: var(--fs-micro);
   line-height: 1.2;
   color: var(--faint);
@@ -154,12 +154,18 @@
 }
 
 .proc-node__column {
+  position: relative;
   display: grid;
   grid-template-columns: var(--icon-lg) minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--s1);
   height: var(--h-row);
   padding: 0 var(--s3);
+}
+
+/* колонка, по которой идёт подсвеченная линия */
+.proc-node__column[data-lit="true"] {
+  background: color-mix(in srgb, var(--signal) 14%, transparent);
 }
 
 .proc-node__column-icon {
@@ -177,9 +183,18 @@
   color: var(--muted);
 }
 
+/* типы колонок видны у выбранной и подсвеченных карточек, как в liam */
 .proc-node__column-type {
   color: var(--faint);
   font-size: var(--fs-micro);
+  opacity: 0;
+  transition: opacity var(--t-std) var(--ease-move);
+}
+
+.proc-node[data-highlighted="true"] .proc-node__column-type,
+.proc-node[data-active="true"] .proc-node__column-type,
+.proc-node:hover .proc-node__column-type {
+  opacity: 1;
 }
 
 .proc-node__handle.react-flow__handle {
@@ -189,15 +204,78 @@
   background: var(--hairline-strong);
 }
 
+/* ручки колонок: у края карточки на высоте строки; видимая точка маленькая,
+   зона захвата широкая (::after), чтобы линию не приходилось целить */
+.proc-node__handle--column.react-flow__handle {
+  top: 50%;
+  opacity: 0;
+  transition:
+    opacity var(--t-std) var(--ease-move),
+    transform var(--t-std) var(--ease-move),
+    background-color var(--t-std) var(--ease-move);
+}
+
+.proc-node__handle--column.react-flow__handle::after {
+  content: "";
+  position: absolute;
+  inset: -12px;
+}
+
+/* ручка, от которой тянут и к которой притянулась линия: крупнее и цветом сигнала */
+.proc-node__handle.react-flow__handle.connectingto,
+.proc-node__handle.react-flow__handle.connectingfrom {
+  opacity: 1;
+  background: var(--signal);
+}
+
+.proc-node__handle.react-flow__handle-left.connectingto,
+.proc-node__handle.react-flow__handle-left.connectingfrom {
+  transform: translate(-50%, -50%) scale(2);
+}
+
+.proc-node__handle.react-flow__handle-right.connectingto,
+.proc-node__handle.react-flow__handle-right.connectingfrom {
+  transform: translate(50%, -50%) scale(2);
+}
+
+.proc-node__handle--column.react-flow__handle-left {
+  left: -3px;
+}
+
+.proc-node__handle--column.react-flow__handle-right {
+  right: -3px;
+}
+
+.proc-node__handle--column.react-flow__handle.connectingfrom,
+.proc-node__handle--column.react-flow__handle.connectingto,
+.proc-node__column:hover .proc-node__handle--column.react-flow__handle,
+.proc-node__column[data-lit="true"] .proc-node__handle--column.react-flow__handle {
+  opacity: 1;
+}
+
+.proc-node__column[data-lit="true"] .proc-node__handle--column.react-flow__handle {
+  background: var(--signal);
+}
+
 /* --- ребро потока --- */
 
 .flow-edge.react-flow__edge-path {
   stroke: var(--muted);
   stroke-width: 1.5;
+  transition: stroke var(--t-std) var(--ease-move);
 }
 
-.react-flow__edge:hover .flow-edge.react-flow__edge-path {
+.react-flow__edge:hover .flow-edge.react-flow__edge-path,
+.react-flow__edge.selected .flow-edge.react-flow__edge-path {
   stroke: var(--ink);
+}
+
+.flow-edge--lit.react-flow__edge-path {
+  stroke: var(--signal);
+}
+
+.flow-edge__label[data-selected="true"] {
+  border-color: var(--ink);
 }
 
 .flow-edge__particle {
@@ -245,9 +323,9 @@
   border-color: var(--status-modified);
 }
 
-/* --- дорожка слоя --- */
+/* --- рамка группы --- */
 
-.layer-lane {
+.group-frame {
   width: 100%;
   height: 100%;
   border: 1px dashed var(--hairline-strong);
@@ -256,17 +334,17 @@
   pointer-events: none;
 }
 
-.layer-lane[data-status="added"] {
+.group-frame[data-status="added"] {
   border-color: var(--status-added);
 }
 
-.layer-lane[data-status="removed"] {
+.group-frame[data-status="removed"] {
   border-color: var(--status-removed);
 }
 
-.layer-lane__title {
+.group-frame__title {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: var(--s2);
   height: var(--h-ctl);
   padding: 0 var(--s3);
@@ -274,9 +352,10 @@
   font-family: var(--font-display);
   font-weight: 600;
   color: var(--muted);
+  pointer-events: auto;
 }
 
-.layer-lane__count {
+.group-frame__count {
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
   color: var(--faint);

@@ -2,7 +2,16 @@ import { ArrowLeft, ArrowRight, Crosshair, KeyRound, Pencil, Plus, Trash2, Trian
 import { useEffect, useState, type FormEvent, type ReactElement } from "react";
 
 import { ApiError, type CatalogApi } from "../api/client";
-import { renderRef, type Catalog, type Flow, type ObjectCard, type ProcessNode, type Stale } from "../model/catalog";
+import {
+  flowLabel,
+  renderRef,
+  type Catalog,
+  type Flow,
+  type ObjectCard,
+  type ObjectRef,
+  type ProcessNode,
+  type Stale,
+} from "../model/catalog";
 import type { EditActions } from "../model/editing";
 import {
   Alert,
@@ -32,9 +41,9 @@ import {
 } from "../ui";
 import { ObjectCardPanel } from "./sources/ObjectCardPanel";
 
-/** Откуда брать карточку объекта: по адресу и привязке либо через вид,
- * которому не нужны права на каталог. */
-export type CardSource = { kind: "pinned" } | { kind: "view"; viewId: string };
+/** Откуда брать карточку объекта: по адресу и привязке либо по ссылке на
+ * просмотр, которой не нужны права на каталог. */
+export type CardSource = { kind: "pinned" } | { kind: "shared"; token: string };
 
 type Props = {
   api: CatalogApi;
@@ -48,6 +57,9 @@ type Props = {
   retargeting: boolean;
   onRetargetToggle: () => void;
   onActivate: (nodeId: string) => void;
+  /** Объект снимка в панели объекта: таблица за внешним ключом; гостю по
+   * ссылке недоступно. */
+  onOpenObject: ((ref: ObjectRef) => void) | undefined;
   onClose: () => void;
 };
 
@@ -55,8 +67,8 @@ type Mode = "view" | "node";
 type CardState = { status: "loading" } | { status: "failed"; message: string } | { status: "card"; card: ObjectCard };
 
 /** Панель узла: слой, подпись и адрес, колонки из привязанной версии, причины
- * устаревания, потоки в обе стороны с правилом загрузки и родная карточка
- * объекта из источника. */
+ * устаревания, потоки в обе стороны с парами колонок и родная карточка
+ * объекта из снимка подключения. */
 export function DetailPanel({
   api,
   catalog,
@@ -67,6 +79,7 @@ export function DetailPanel({
   retargeting,
   onRetargetToggle,
   onActivate,
+  onOpenObject,
   onClose,
 }: Props): ReactElement {
   const [mode, setMode] = useState<Mode>("view");
@@ -74,7 +87,7 @@ export function DetailPanel({
   const flows = catalog.flowsOf(node.id);
   const status = catalog.statusOf("node", node.id);
   const stale = catalog.staleOf("node", node.id);
-  const layer = catalog.layer(node.layer_id);
+  const group = catalog.group(node.group_id);
   const label = catalog.label(node.id);
   const address = renderRef(node.ref);
 
@@ -102,7 +115,7 @@ export function DetailPanel({
     <div data-testid="detail-panel" data-node={address} data-stale={stale.length > 0}>
       <Panel>
         <PanelHead
-          eyebrow={layer?.name ?? "—"}
+          eyebrow={group?.name ?? "—"}
           name={label}
           description={node.note !== "" ? node.note : undefined}
           actions={
@@ -166,13 +179,13 @@ export function DetailPanel({
               {
                 key: "pinned",
                 label: "pinned",
-                value: pinnedText(catalog.context.pins[node.ref.source_id]),
+                value: pinnedText(catalog.context.pins[node.ref.connection_id]),
               },
             ]}
           />
           {retargeting && (
             <Alert tone="info" mark="retarget-hint">
-              Pick an object in the sources tree: the node will point at it, its flows stay.
+              Pick an object in the connections tree: the node will point at it, its flows stay.
             </Alert>
           )}
         </Section>
@@ -223,7 +236,7 @@ export function DetailPanel({
           }}
         />
 
-        <SourceCard api={api} catalog={catalog} node={node} cardSource={cardSource} />
+        <SourceCard api={api} catalog={catalog} node={node} cardSource={cardSource} onOpenObject={onOpenObject} />
       </Panel>
     </div>
   );
@@ -233,7 +246,7 @@ function pinnedText(version: number | undefined): string {
   return version === undefined ? "latest" : `v${version}`;
 }
 
-/** Причины устаревания узла или потока: что изменилось в источнике после
+/** Причины устаревания узла или потока: что изменилось в снимке после
  * привязанной версии. */
 export function StaleList({ entries }: { entries: Stale[] }): ReactElement {
   return (
@@ -271,22 +284,23 @@ type CardProps = {
   catalog: Catalog;
   node: ProcessNode;
   cardSource: CardSource;
+  onOpenObject: ((ref: ObjectRef) => void) | undefined;
 };
 
-/** Родная карточка объекта из привязанной версии источника, ниже фактов узла. */
-function SourceCard({ api, catalog, node, cardSource }: CardProps): ReactElement {
+/** Родная карточка объекта из привязанной версии снимка, ниже фактов узла. */
+function SourceCard({ api, catalog, node, cardSource, onOpenObject }: CardProps): ReactElement {
   const [state, setState] = useState<CardState>({ status: "loading" });
   const ref = node.ref;
-  const version = catalog.context.pins[ref.source_id] ?? -1;
-  const viewId = cardSource.kind === "view" ? cardSource.viewId : undefined;
+  const version = catalog.context.pins[ref.connection_id] ?? -1;
+  const token = cardSource.kind === "shared" ? cardSource.token : undefined;
 
   useEffect(() => {
     let cancelled = false;
     setState({ status: "loading" });
     const loading =
-      viewId === undefined
-        ? api.sourceObject(ref.source_id, version, ref.kind, ref.path)
-        : api.viewObject(viewId, node.id);
+      token === undefined
+        ? api.connectionObject(ref.connection_id, version, ref.kind, ref.path)
+        : api.sharedObject(token, node.id);
     loading
       .then((card) => {
         if (!cancelled) {
@@ -305,12 +319,12 @@ function SourceCard({ api, catalog, node, cardSource }: CardProps): ReactElement
     return () => {
       cancelled = true;
     };
-  }, [api, ref, version, viewId, node.id]);
+  }, [api, ref, version, token, node.id]);
 
   if (state.status === "loading") {
     return (
       <Section>
-        <Note mark="detail-empty">loading the source object…</Note>
+        <Note mark="detail-empty">loading the object…</Note>
       </Section>
     );
   }
@@ -326,8 +340,8 @@ function SourceCard({ api, catalog, node, cardSource }: CardProps): ReactElement
   }
 
   return (
-    <Section title="in the source" mark="node-card">
-      <ObjectCardPanel card={state.card} flat />
+    <Section title="in the database" mark="node-card">
+      <ObjectCardPanel card={state.card} flat onOpenObject={onOpenObject} />
     </Section>
   );
 }
@@ -339,9 +353,9 @@ type FormProps = {
   onCancel: () => void;
 };
 
-/** Правка узла: слой, alias и заметка; адрес меняет перенацеливание. */
+/** Правка узла: группа, alias и заметка; адрес меняет перенацеливание. */
 function NodeForm({ catalog, node, onSave, onCancel }: FormProps): ReactElement {
-  const [layerId, setLayerId] = useState(node.layer_id);
+  const [groupId, setGroupId] = useState(node.group_id ?? "");
   const [alias, setAlias] = useState(node.alias ?? "");
   const [note, setNote] = useState(node.note);
 
@@ -350,7 +364,7 @@ function NodeForm({ catalog, node, onSave, onCancel }: FormProps): ReactElement 
     const trimmed = alias.trim();
     onSave({
       ...node,
-      layer_id: layerId,
+      group_id: groupId === "" ? null : groupId,
       alias: trimmed === "" ? null : trimmed,
       note: note.trim(),
     });
@@ -359,18 +373,19 @@ function NodeForm({ catalog, node, onSave, onCancel }: FormProps): ReactElement 
   return (
     <Form onSubmit={submit} mark="node-form">
       <Note mono>{renderRef(node.ref)}</Note>
-      <Field label="layer" required>
+      <Field label="group">
         <Select
           fill
-          value={layerId}
-          aria-label="node layer"
+          value={groupId}
+          aria-label="node group"
           onChange={(event) => {
-            setLayerId(event.target.value);
+            setGroupId(event.target.value);
           }}
         >
-          {catalog.layers.map((layer) => (
-            <option key={layer.id} value={layer.id}>
-              {layer.name}
+          <option value="">— none —</option>
+          {catalog.groups.map((group) => (
+            <option key={group.id} value={group.id}>
+              {group.name}
             </option>
           ))}
         </Select>
@@ -453,7 +468,6 @@ function FlowList({
             const neighbour = catalog.label(otherId);
             const status = showDiff ? catalog.statusOf("flow", flow.id) : "unchanged";
             const stale = catalog.staleOf("flow", flow.id);
-            const values = catalog.loadValues(flow);
             return (
               <ListRow key={flow.id} status={status} stale={stale.length > 0} mark="detail-flow" data-flow={flow.id}>
                 <Row>
@@ -465,7 +479,7 @@ function FlowList({
                     {icon} {neighbour}
                   </ListName>
                   <ListAside>
-                    <Chip>{catalog.loadKindName(flow)}</Chip>
+                    <Chip>{flowLabel(flow)}</Chip>
                     {stale.length > 0 && (
                       <Chip tone="warn">
                         <TriangleAlert size={10} /> stale
@@ -485,13 +499,13 @@ function FlowList({
                     )}
                   </ListAside>
                 </Row>
-                {values.length > 0 && (
+                {flow.columns.length > 0 && (
                   <Facts
                     micro
-                    facts={values.map((value) => ({
-                      key: value.field,
-                      label: value.field,
-                      value: value.text,
+                    facts={flow.columns.map((link) => ({
+                      key: `${link.from_column}->${link.to_column}`,
+                      label: link.from_column,
+                      value: `→ ${link.to_column}`,
                     }))}
                   />
                 )}

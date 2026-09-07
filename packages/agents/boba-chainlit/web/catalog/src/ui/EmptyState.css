@@ -23,6 +23,15 @@
   grid-row: 1 / -1;
 }
 
+/* поверх холста: мышь проходит сквозь подсказку к холсту */
+.empty--overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  height: auto;
+  pointer-events: none;
+}
+
 .empty--sub {
   height: auto;
   min-height: 0;

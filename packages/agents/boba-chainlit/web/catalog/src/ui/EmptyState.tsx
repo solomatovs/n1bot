@@ -8,6 +8,9 @@ type Props = {
   fill?: boolean;
   /** Заглушка под-списка: отступ под родительскую строку. */
   sub?: boolean;
+  /** Подсказка поверх живой сцены: лежит над холстом и не перехватывает
+   * мышь, чтобы на холст можно было бросать и тащить. */
+  overlay?: boolean;
   /** Метка для тестов: data-testid. */
   mark?: string;
   children?: ReactNode;
@@ -15,13 +18,16 @@ type Props = {
 
 /** Пустое состояние: заглушка списка, под-списка или целой сцены.
  * Единственное место, где существует класс `empty`. */
-export function EmptyState({ title, fill = false, sub = false, mark, children }: Props): ReactElement {
+export function EmptyState({ title, fill = false, sub = false, overlay = false, mark, children }: Props): ReactElement {
   const classes = ["empty"];
   if (sub) {
     classes.push("empty--sub");
   }
   if (fill) {
     classes.push("empty--fill");
+  }
+  if (overlay) {
+    classes.push("empty--overlay");
   }
 
   return (

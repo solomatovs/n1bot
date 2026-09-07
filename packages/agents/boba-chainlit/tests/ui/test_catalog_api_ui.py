@@ -13,7 +13,8 @@ from boba.stand.ui.stand import StandProcess
 
 pytestmark = pytest.mark.ui
 
-SNAPSHOT = "/api/catalog/snapshot"
+PROCESSES = "/api/catalog/processes"
+DRAFTS = "/api/catalog/drafts"
 DRAFTS = "/api/catalog/drafts"
 
 
@@ -35,34 +36,47 @@ def _client(stand: StandProcess, login: str) -> httpx.Client:
 
 
 def test_anonymous_request_gets_json_401(stand: StandProcess) -> None:
-    response = httpx.get(f"{stand.config.base_url}{SNAPSHOT}", timeout=30.0)
+    response = httpx.get(f"{stand.config.base_url}{PROCESSES}", timeout=30.0)
 
     assert response.status_code == 401
     assert response.headers["content-type"].startswith("application/json")
 
 
 def test_stand_roles_reach_the_catalog(stand: StandProcess) -> None:
-    with _client(stand, "dev") as dev:
-        snapshot = dev.get(SNAPSHOT)
-        assert snapshot.status_code == 200
-        assert "layers" in snapshot.json()
-
-        refused = dev.post(DRAFTS, json={"name": "dev draft"})
-        assert refused.status_code == 403
-        assert "no role to edit" in refused.json()["detail"]
-
     with _client(stand, "admin") as admin:
-        created = admin.post(DRAFTS, json={"name": "admin draft"})
-        assert created.status_code == 200
-        draft_id = created.json()["id"]
+        created = admin.post(PROCESSES, json={"name": "api_ui_process"})
+        assert created.status_code == 200, created.text
+        process_id = created.json()["id"]
 
-        state = admin.get(f"{DRAFTS}/{draft_id}")
-        assert state.status_code == 200
-        assert state.json()["seq"] == 0
+    try:
+        with _client(stand, "dev") as dev:
+            snapshot = dev.get(f"{PROCESSES}/{process_id}/snapshot")
+            assert snapshot.status_code == 200
+            assert "groups" in snapshot.json()
 
-        discarded = admin.delete(f"{DRAFTS}/{draft_id}")
-        assert discarded.status_code == 200
-        assert discarded.json()["status"] == "discarded"
+            refused = dev.post(
+                DRAFTS, json={"process_id": process_id, "name": "dev draft"}
+            )
+            assert refused.status_code == 403
+            assert "no role to edit" in refused.json()["detail"]
+
+        with _client(stand, "admin") as admin:
+            draft = admin.post(
+                DRAFTS, json={"process_id": process_id, "name": "admin draft"}
+            )
+            assert draft.status_code == 200
+            draft_id = draft.json()["id"]
+
+            state = admin.get(f"{DRAFTS}/{draft_id}")
+            assert state.status_code == 200
+            assert state.json()["seq"] == 0
+
+            discarded = admin.delete(f"{DRAFTS}/{draft_id}")
+            assert discarded.status_code == 200
+            assert discarded.json()["status"] == "discarded"
+    finally:
+        with _client(stand, "admin") as admin:
+            admin.delete(f"{PROCESSES}/{process_id}")
 
 
 def test_events_stream_delivers_catalog_changes(stand: StandProcess) -> None:
@@ -76,7 +90,7 @@ def test_events_stream_delivers_catalog_changes(stand: StandProcess) -> None:
         lines = events.iter_lines()
         assert next(lines) == ": ping"
 
-        created = admin.post(DRAFTS, json={"name": "events draft"})
+        created = admin.post(PROCESSES, json={"name": "api_ui_events"})
         assert created.status_code == 200
 
         payload = ""
@@ -87,5 +101,6 @@ def test_events_stream_delivers_catalog_changes(stand: StandProcess) -> None:
 
         event = json.loads(payload)
         assert event["kind"] == "catalog_changed"
-        assert event["draft_id"] == created.json()["id"]
+        assert event["process_id"] == created.json()["id"]
         assert event["action"] == "created"
+        admin.delete(f"{PROCESSES}/{created.json()['id']}")

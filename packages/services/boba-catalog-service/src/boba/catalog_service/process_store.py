@@ -1,25 +1,29 @@
-"""Таблицы каталога в Postgres: опубликованные сущности, версии, черновики с
-порциями операций, виды с раскладкой и шарингом.
+"""Таблицы процессов в Postgres: процессы, их опубликованные сущности,
+версии, черновики с порциями операций, ссылки на просмотр.
 
-Опубликованное состояние лежит реляционно и читается в CatalogSnapshot;
-черновик не материализуется — его снимок сворачивается из порций поверх
-снимка базовой версии, который восстанавливается из истории versions.
-Публикация применяет свёрнутые операции к таблицам одной транзакцией.
+Опубликованное состояние каждого процесса лежит реляционно и читается в
+CatalogSnapshot; черновик не материализуется — его снимок сворачивается из
+порций поверх снимка базовой версии, который восстанавливается из истории
+версий процесса. Публикация применяет свёрнутые операции к таблицам одной
+транзакцией.
 
 Ошибки:
 CatalogStoreError — Postgres недоступен, ответ битый, строки таблиц или
     история версий не складываются в согласованный снимок.
+ProcessNotFoundError — процесса с таким id нет.
+ProcessNameTakenError — процесс с таким именем уже есть.
 DraftNotFoundError — черновика с таким id нет.
 DraftClosedError — черновик уже опубликован или отброшен.
 DraftConflictError — expected_seq не равен последнему seq черновика.
 DraftStaleError — base_version черновика отстал от опубликованной версии.
-ViewNotFoundError — вида с таким id нет.
+ShareNotFoundError — ссылки с таким token нет или она отозвана.
 CatalogOpError — новая порция не применима к снимку черновика.
 """
 
 from __future__ import annotations
 
 import logging
+import secrets
 from collections.abc import AsyncGenerator, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from enum import StrEnum
@@ -28,6 +32,7 @@ from uuid import UUID, uuid4
 
 import psycopg
 from psycopg import sql
+from psycopg.errors import UniqueViolation
 from psycopg.rows import DictRow, dict_row
 from psycopg.types.json import Jsonb
 from pydantic import ValidationError
@@ -41,16 +46,16 @@ from boba.catalog import (
     CatalogOpError,
     CatalogSnapshot,
     ChangeStatus,
+    ColumnLink,
     EntityKind,
     Flow,
-    Layer,
-    LoadKind,
-    LoadSpec,
+    Group,
     Node,
     ObjectKind,
     ObjectRef,
     ObjectResolver,
     OperationList,
+    Position,
 )
 from boba.catalog_service.config import CatalogConfig
 from boba.catalog_service.records import (
@@ -64,117 +69,97 @@ from boba.catalog_service.records import (
     DraftStaleError,
     DraftState,
     DraftStatus,
-    NodePosition,
+    NodeUsage,
+    Process,
+    ProcessNameTakenError,
+    ProcessNotFoundError,
+    ProcessSpec,
     RebaseIssue,
     RebaseResult,
-    ShareTargetKind,
+    Share,
+    ShareNotFoundError,
     Version,
-    View,
-    ViewLayout,
-    ViewNotFoundError,
-    ViewShare,
-    ViewSpec,
 )
 from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresTable, SqlNames
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "CatalogStore",
     "CatalogTable",
+    "ProcessStore",
 ]
 
 Cursor = psycopg.AsyncCursor[DictRow]
 
 
-class LegacyTable(StrEnum):
-    """Таблицы первой очереди, которые миграция оставляет на месте."""
-
-    DATASETS = "datasets"
-    COLUMNS = "columns"
-
-
-class LegacyColumn(StrEnum):
-    """Колонки первой очереди, которые миграция переименовывает в узловые."""
-
-    FROM_DATASET_ID = "from_dataset_id"
-    TO_DATASET_ID = "to_dataset_id"
-    DATASET_IDS = "dataset_ids"
-    DATASET_ID = "dataset_id"
-
-
-class LayoutConstraint(StrEnum):
-    """Ограничения, которые миграция проверяет по имени и заводит по одному."""
-
-    LAYERS_POSITION = "layers_position_key"
-    FLOWS_FROM_DATASET = "flows_from_dataset_id_fkey"
-    FLOWS_TO_DATASET = "flows_to_dataset_id_fkey"
-    FLOWS_FROM_NODE = "flows_from_node_id_fkey"
-    FLOWS_TO_NODE = "flows_to_node_id_fkey"
-
-
 class CatalogTable(StrEnum):
-    """Таблицы схемы каталога."""
+    """Таблицы процессов в схеме каталога."""
 
-    LAYERS = "layers"
+    PROCESSES = "processes"
+    GROUPS = "groups"
     NODES = "nodes"
-    LOAD_KINDS = "load_kinds"
     FLOWS = "flows"
-    VERSIONS = "versions"
+    VERSIONS = "process_versions"
     DRAFTS = "drafts"
     DRAFT_OPS = "draft_ops"
-    VIEWS = "views"
-    VIEW_LAYOUT = "view_layout"
-    VIEW_SHARES = "view_shares"
+    SHARES = "shares"
 
     @classmethod
     def of_entity(cls, kind: EntityKind) -> CatalogTable:
-        if kind is EntityKind.LAYER:
-            return cls.LAYERS
+        if kind is EntityKind.GROUP:
+            return cls.GROUPS
 
         if kind is EntityKind.NODE:
             return cls.NODES
 
-        if kind is EntityKind.LOAD_KIND:
-            return cls.LOAD_KINDS
-
         return cls.FLOWS
 
 
-class LayersColumn(StrEnum):
+class ProcessesColumn(StrEnum):
     ID = "id"
     NAME = "name"
-    POSITION = "position"
     DESCRIPTION = "description"
+    OWNER_ID = "owner_id"
+    CREATED_AT = "created_at"
+
+
+class EntityColumn(StrEnum):
+    """Служебные колонки таблиц сущностей."""
+
+    ID = "id"
+    PROCESS_ID = "process_id"
+
+
+class GroupsColumn(StrEnum):
+    ID = "id"
+    PROCESS_ID = "process_id"
+    NAME = "name"
 
 
 class NodesColumn(StrEnum):
     ID = "id"
-    LAYER_ID = "layer_id"
-    SOURCE_ID = "source_id"
+    PROCESS_ID = "process_id"
+    GROUP_ID = "group_id"
+    X = "x"
+    Y = "y"
+    CONNECTION_ID = "connection_id"
     OBJECT_KIND = "object_kind"
     PATH = "path"
     ALIAS = "alias"
     NOTE = "note"
 
 
-class LoadKindsColumn(StrEnum):
-    ID = "id"
-    NAME = "name"
-    DESCRIPTION = "description"
-    FIELDS = "fields"
-
-
 class FlowsColumn(StrEnum):
     ID = "id"
+    PROCESS_ID = "process_id"
     FROM_NODE_ID = "from_node_id"
     TO_NODE_ID = "to_node_id"
-    LOAD_KIND_ID = "load_kind_id"
-    LOAD_VALUES = "load_values"
+    COLUMNS = "columns"
     DESCRIPTION = "description"
 
 
 class VersionsColumn(StrEnum):
+    PROCESS_ID = "process_id"
     NUMBER = "number"
     OPERATIONS = "operations"
     AUTHOR = "author"
@@ -184,6 +169,7 @@ class VersionsColumn(StrEnum):
 
 class DraftsColumn(StrEnum):
     ID = "id"
+    PROCESS_ID = "process_id"
     NAME = "name"
     BASE_VERSION = "base_version"
     STATUS = "status"
@@ -200,35 +186,19 @@ class DraftOpsColumn(StrEnum):
     CREATED_AT = "created_at"
 
 
-class ViewsColumn(StrEnum):
-    ID = "id"
-    NAME = "name"
-    OWNER_ID = "owner_id"
-    NODE_IDS = "node_ids"
-    LAYER_IDS = "layer_ids"
+class SharesColumn(StrEnum):
+    TOKEN = "token"  # noqa: S105 — имя колонки, не секрет
+    PROCESS_ID = "process_id"
+    CREATED_BY = "created_by"
     CREATED_AT = "created_at"
-
-
-class ViewLayoutColumn(StrEnum):
-    VIEW_ID = "view_id"
-    NODE_ID = "node_id"
-    X = "x"
-    Y = "y"
-
-
-class ViewSharesColumn(StrEnum):
-    VIEW_ID = "view_id"
-    TARGET_KIND = "target_kind"
-    TARGET = "target"
-    MODE = "mode"
+    REVOKED_AT = "revoked_at"
 
 
 class EntityRows:
     """Соответствие сущностей домена строкам таблиц: колонки, разбор, сборка."""
 
     UPSERT_ORDER: ClassVar[tuple[EntityKind, ...]] = (
-        EntityKind.LAYER,
-        EntityKind.LOAD_KIND,
+        EntityKind.GROUP,
         EntityKind.NODE,
         EntityKind.FLOW,
     )
@@ -236,85 +206,90 @@ class EntityRows:
     @classmethod
     def columns_of(cls, kind: EntityKind) -> tuple[StrEnum, ...]:
         """Колонки, которые пишет публикация."""
-        if kind is EntityKind.LAYER:
-            return tuple(LayersColumn)
+        if kind is EntityKind.GROUP:
+            return tuple(GroupsColumn)
 
         if kind is EntityKind.NODE:
             return tuple(NodesColumn)
 
-        if kind is EntityKind.LOAD_KIND:
-            return tuple(LoadKindsColumn)
-
         return tuple(FlowsColumn)
 
     @staticmethod
-    def row_of(entity: CatalogEntity) -> dict[str, Any]:
+    def row_of(process_id: UUID, entity: CatalogEntity) -> dict[str, Any]:
         """Параметры insert по сущности; jsonb и массивы в форме psycopg."""
-        if isinstance(entity, Layer):
-            return entity.model_dump()
+        if isinstance(entity, Group):
+            row = entity.model_dump()
+            row[EntityColumn.PROCESS_ID.value] = process_id
+            return row
 
         if isinstance(entity, Node):
+            x = None
+            y = None
+            if entity.position is not None:
+                x = entity.position.x
+                y = entity.position.y
+
             return {
                 "id": entity.id,
-                "layer_id": entity.layer_id,
-                "source_id": entity.ref.source_id,
+                "process_id": process_id,
+                "group_id": entity.group_id,
+                "x": x,
+                "y": y,
+                "connection_id": entity.ref.connection_id,
                 "object_kind": entity.ref.kind.value,
                 "path": list(entity.ref.path),
                 "alias": entity.alias,
                 "note": entity.note,
             }
 
-        if isinstance(entity, LoadKind):
-            fields = entity.model_dump(mode="json")["fields"]
-            return {
-                "id": entity.id,
-                "name": entity.name,
-                "description": entity.description,
-                "fields": Jsonb(fields),
-            }
-
-        values = entity.load.model_dump(mode="json")["values"]
+        columns = entity.model_dump(mode="json")["columns"]
         return {
             "id": entity.id,
+            "process_id": process_id,
             "from_node_id": entity.from_node_id,
             "to_node_id": entity.to_node_id,
-            "load_kind_id": entity.load.kind_id,
-            "load_values": Jsonb(values),
+            "columns": Jsonb(columns),
             "description": entity.description,
         }
 
     @staticmethod
     def node_of(row: DictRow) -> Node:
         ref = ObjectRef(
-            source_id=row["source_id"],
+            connection_id=row["connection_id"],
             kind=ObjectKind(row["object_kind"]),
             path=tuple(row["path"]),
         )
+        position = None
+        if row["x"] is not None and row["y"] is not None:
+            position = Position(x=row["x"], y=row["y"])
+
         return Node(
             id=row["id"],
-            layer_id=row["layer_id"],
             ref=ref,
+            position=position,
+            group_id=row["group_id"],
             alias=row["alias"],
             note=row["note"],
         )
 
     @staticmethod
     def flow_of(row: DictRow) -> Flow:
-        """Поток из строки flows; значения в форме JSON разбирает модель."""
-        load = LoadSpec.model_validate(
-            {"kind_id": row["load_kind_id"], "values": row["load_values"]}
-        )
+        """Поток из строки flows; пары колонок в форме JSON разбирает модель."""
+        links: list[ColumnLink] = []
+        for payload in row["columns"]:
+            links.append(ColumnLink.model_validate(payload))
+
         return Flow(
             id=row["id"],
             from_node_id=row["from_node_id"],
             to_node_id=row["to_node_id"],
-            load=load,
+            columns=tuple(links),
             description=row["description"],
         )
 
 
-class CatalogStore(PostgresTable):
-    """Хранилище каталога: снимок, версии, черновики, виды.
+class ProcessStore(PostgresTable):
+    """Хранилище процессов: процессы, снимки, версии, черновики, ссылки.
 
     Создаётся провайдером рантайма по секции [catalog] и живёт под
     CatalogService, который проверяет права и шлёт события; сам store прав не
@@ -322,6 +297,17 @@ class CatalogStore(PostgresTable):
     """
 
     PUBLISH_LOCK: ClassVar[str] = "catalog.publish"
+    TOKEN_BYTES: ClassVar[int] = 18
+    LAYOUT: ClassVar[Mapping[CatalogTable, type[StrEnum]]] = {
+        CatalogTable.PROCESSES: ProcessesColumn,
+        CatalogTable.GROUPS: GroupsColumn,
+        CatalogTable.NODES: NodesColumn,
+        CatalogTable.FLOWS: FlowsColumn,
+        CatalogTable.VERSIONS: VersionsColumn,
+        CatalogTable.DRAFTS: DraftsColumn,
+        CatalogTable.DRAFT_OPS: DraftOpsColumn,
+        CatalogTable.SHARES: SharesColumn,
+    }
 
     def __init__(
         self, cfg: CatalogConfig, pool: AsyncPostgresPool | None = None
@@ -335,24 +321,22 @@ class CatalogStore(PostgresTable):
 
     def _sql(self, text: LiteralString) -> sql.Composed:
         """SQL с именами таблиц по значению enum и колонок с префиксом таблицы:
-        l_ layers, n_ nodes, k_ load_kinds, f_ flows, v_ versions, dr_ drafts,
-        op_ draft_ops, vw_ views, lay_ view_layout, sh_ view_shares.
+        p_ processes, g_ groups, n_ nodes, f_ flows, v_ process_versions,
+        dr_ drafts, op_ draft_ops, sh_ shares.
         """
         names: dict[str, sql.Composable] = {}
         for table in CatalogTable:
             names[table.value] = self._table(table)
 
         prefixed: dict[str, type[StrEnum]] = {
-            "l": LayersColumn,
+            "p": ProcessesColumn,
+            "g": GroupsColumn,
             "n": NodesColumn,
-            "k": LoadKindsColumn,
             "f": FlowsColumn,
             "v": VersionsColumn,
             "dr": DraftsColumn,
             "op": DraftOpsColumn,
-            "vw": ViewsColumn,
-            "lay": ViewLayoutColumn,
-            "sh": ViewSharesColumn,
+            "sh": SharesColumn,
         }
         for prefix, columns in prefixed.items():
             for column in columns:
@@ -382,250 +366,66 @@ class CatalogStore(PostgresTable):
             yield cur
 
     async def setup(self) -> None:
-        """Схема и таблицы; повтор безвреден. После create-if-not-exists идут
-        идемпотентные миграции раскладки первой очереди: недостающие колонки
-        добавляются, колонки наборов переименовываются в узловые, а таблица с
-        данными, которые перенести нельзя, останавливает старт понятной ошибкой."""
+        """Схема и таблицы; повтор безвреден. Таблица другого выпуска, которую
+        DDL оставил как есть, — отказ с расхождением колонок."""
         async with self._guarded("setup"):
             await self._apply_ddl(self._ddl())
-            await self._apply_ddl(self._migrations())
+            await self._check_layouts(self._layouts())
 
-        logger.info("catalog ready: %s", self._cfg.db_schema)
+        logger.info("catalog processes ready: %s", self._cfg.db_schema)
 
-    def _migrations(self) -> tuple[sql.Composed, ...]:
-        """Перевод таблиц первой очереди (наборы и колонки) в раскладку процесса
-        над источниками. Каждый шаг проверяет, что менять, и ничего не удаляет:
-        строки, которые нельзя перевести, останавливают миграцию с текстом,
-        что и где лежит."""
-        schema = sql.Literal(self._cfg.db_schema)
-        return (
-            self._sql(
-                """
-                alter table {layers}
-                    add column if not exists {l_position} integer,
-                    add column if not exists {l_description} text not null default ''
-                """
-            ),
-            self._sql(
-                """
-                update {layers} as target
-                set {l_position} = numbered.rn - 1
-                from (
-                    select {l_id} as id, row_number() over (order by {l_name}) as rn
-                    from {layers}
-                ) as numbered
-                where target.{l_id} = numbered.id and target.{l_position} is null
-                """
-            ),
-            self._sql("alter table {layers} alter column {l_position} set not null"),
-            self._constraint_ddl(
-                CatalogTable.LAYERS,
-                LayoutConstraint.LAYERS_POSITION,
-                "unique ({l_position}) deferrable initially deferred",
-            ),
-            self._sql(
-                """
-                alter table {load_kinds}
-                    add column if not exists {k_fields} jsonb not null
-                        default '[]'::jsonb
-                """
-            ),
-            self._sql(
-                """
-                alter table {versions}
-                    add column if not exists {v_pins} jsonb not null
-                        default '{{}}'::jsonb
-                """
-            ),
-            self._sql(
-                """
-                alter table {drafts}
-                    add column if not exists {dr_pins} jsonb not null
-                        default '{{}}'::jsonb
-                """
-            ),
-            self._sql(
-                """
-                alter table {flows}
-                    add column if not exists {f_load_values} jsonb not null
-                        default '{{}}'::jsonb
-                """
-            ),
-            self._rename_ddl(
-                CatalogTable.FLOWS,
-                LegacyColumn.FROM_DATASET_ID,
-                FlowsColumn.FROM_NODE_ID,
-                "flows reference datasets, nodes over sources cannot be derived "
-                "from them",
-            ),
-            self._rename_ddl(
-                CatalogTable.FLOWS,
-                LegacyColumn.TO_DATASET_ID,
-                FlowsColumn.TO_NODE_ID,
-                "flows reference datasets, nodes over sources cannot be derived "
-                "from them",
-            ),
-            sql.SQL(
-                """
-                alter table {flows}
-                    drop constraint if exists {from_dataset},
-                    drop constraint if exists {to_dataset}
-                """
-            ).format(
-                flows=self._table(CatalogTable.FLOWS),
-                from_dataset=sql.Identifier(LayoutConstraint.FLOWS_FROM_DATASET.value),
-                to_dataset=sql.Identifier(LayoutConstraint.FLOWS_TO_DATASET.value),
-            ),
-            self._constraint_ddl(
-                CatalogTable.FLOWS,
-                LayoutConstraint.FLOWS_FROM_NODE,
-                "foreign key ({f_from_node_id}) references {nodes} ({n_id}) "
-                "deferrable initially deferred",
-            ),
-            self._constraint_ddl(
-                CatalogTable.FLOWS,
-                LayoutConstraint.FLOWS_TO_NODE,
-                "foreign key ({f_to_node_id}) references {nodes} ({n_id}) "
-                "deferrable initially deferred",
-            ),
-            self._rename_ddl(
-                CatalogTable.VIEWS,
-                LegacyColumn.DATASET_IDS,
-                ViewsColumn.NODE_IDS,
-                "views filter by dataset ids that have no node counterparts",
-            ),
-            self._rename_ddl(
-                CatalogTable.VIEW_LAYOUT,
-                LegacyColumn.DATASET_ID,
-                ViewLayoutColumn.NODE_ID,
-                "layout positions belong to datasets that have no node counterparts",
-            ),
-            sql.SQL(
-                """
-                do $$
-                begin
-                    if exists (
-                        select 1 from information_schema.tables
-                        where table_schema = {schema} and table_name = {legacy}
-                    ) then
-                        raise notice
-                            'catalog migration: legacy table %.% is left in place, '
-                            'the process keeps nodes over sources instead; '
-                            'drop it by hand once it is no longer needed',
-                            {schema}, {legacy};
-                    end if;
-                end $$
-                """
-            ).format(schema=schema, legacy=sql.Literal(LegacyTable.DATASETS.value)),
-        )
+    def _layouts(self) -> dict[str, list[str]]:
+        layouts: dict[str, list[str]] = {}
+        for table, columns in self.LAYOUT.items():
+            names: list[str] = []
+            for column in columns:
+                names.append(column.value)
 
-    def _constraint_ddl(
-        self, table: CatalogTable, name: LayoutConstraint, definition: LiteralString
-    ) -> sql.Composed:
-        """Ограничение заводится, только если его ещё нет: postgres не знает
-        add constraint if not exists."""
-        body = self._sql(definition)
-        return sql.SQL(
-            """
-            do $$
-            begin
-                if not exists (
-                    select 1 from pg_constraint
-                    where conrelid = {regclass}::regclass and conname = {name}
-                ) then
-                    alter table {table} add constraint {ident} {body};
-                end if;
-            end $$
-            """
-        ).format(
-            regclass=sql.Literal(f"{self._cfg.db_schema}.{table.value}"),
-            name=sql.Literal(name.value),
-            table=self._table(table),
-            ident=sql.Identifier(name.value),
-            body=body,
-        )
+            layouts[table.value] = names
 
-    def _rename_ddl(
-        self,
-        table: CatalogTable,
-        legacy: LegacyColumn,
-        current: StrEnum,
-        reason: LiteralString,
-    ) -> sql.Composed:
-        """Колонка первой очереди переименовывается в узловую, только пока
-        таблица пуста: строки со ссылками на наборы перенести нельзя, и старт
-        останавливается с текстом, где они лежат и почему."""
-        return sql.SQL(
-            """
-            do $$
-            declare
-                stale_rows bigint;
-            begin
-                if exists (
-                    select 1 from information_schema.columns
-                    where table_schema = {schema}
-                      and table_name = {table_name}
-                      and column_name = {legacy_name}
-                ) then
-                    select count(*) into stale_rows from {table};
-                    if stale_rows > 0 then
-                        raise exception
-                            'catalog migration: %.% has % row(s) with the legacy '
-                            'column %: {reason}; move or delete these rows by '
-                            'hand before starting',
-                            {schema}, {table_name}, stale_rows, {legacy_name};
-                    end if;
-                    alter table {table} rename column {legacy} to {current};
-                end if;
-            end $$
-            """
-        ).format(
-            schema=sql.Literal(self._cfg.db_schema),
-            table_name=sql.Literal(table.value),
-            legacy_name=sql.Literal(legacy.value),
-            table=self._table(table),
-            legacy=sql.Identifier(legacy.value),
-            current=SqlNames.ident(current),
-            reason=sql.SQL(reason),
-        )
+        return layouts
 
     def _ddl(self) -> tuple[sql.Composed, ...]:
         return (
             self._sql(
                 """
-                create table if not exists {layers} (
-                    {l_id}          uuid primary key,
-                    {l_name}        text not null,
-                    {l_position}    integer not null,
-                    {l_description} text not null default '',
-                    unique ({l_name}) deferrable initially deferred,
-                    unique ({l_position}) deferrable initially deferred
+                create table if not exists {processes} (
+                    {p_id}          uuid primary key,
+                    {p_name}        text not null unique,
+                    {p_description} text not null default '',
+                    {p_owner_id}    uuid not null,
+                    {p_created_at}  timestamptz not null default now()
                 )
                 """
             ),
             self._sql(
                 """
-                create table if not exists {load_kinds} (
-                    {k_id}          uuid primary key,
-                    {k_name}        text not null,
-                    {k_description} text not null default '',
-                    {k_fields}      jsonb not null default '[]'::jsonb,
-                    unique ({k_name}) deferrable initially deferred
+                create table if not exists {groups} (
+                    {g_id}          uuid primary key,
+                    {g_process_id}  uuid not null references {processes} ({p_id})
+                                    on delete cascade,
+                    {g_name}        text not null,
+                    unique ({g_process_id}, {g_name}) deferrable initially deferred
                 )
                 """
             ),
             self._sql(
                 """
                 create table if not exists {nodes} (
-                    {n_id}          uuid primary key,
-                    {n_layer_id}    uuid not null references {layers} ({l_id})
-                                    deferrable initially deferred,
-                    {n_source_id}   uuid not null,
-                    {n_object_kind} text not null,
-                    {n_path}        text[] not null,
-                    {n_alias}       text null,
-                    {n_note}        text not null default '',
-                    unique ({n_source_id}, {n_object_kind}, {n_path})
+                    {n_id}            uuid primary key,
+                    {n_process_id}    uuid not null references {processes} ({p_id})
+                                      on delete cascade,
+                    {n_group_id}      uuid null references {groups} ({g_id})
+                                      deferrable initially deferred,
+                    {n_x}             double precision null,
+                    {n_y}             double precision null,
+                    {n_connection_id} uuid not null,
+                    {n_object_kind}   text not null,
+                    {n_path}          text[] not null,
+                    {n_alias}         text null,
+                    {n_note}          text not null default '',
+                    unique ({n_process_id}, {n_connection_id}, {n_object_kind},
+                            {n_path})
                         deferrable initially deferred
                 )
                 """
@@ -634,25 +434,28 @@ class CatalogStore(PostgresTable):
                 """
                 create table if not exists {flows} (
                     {f_id}           uuid primary key,
+                    {f_process_id}   uuid not null references {processes} ({p_id})
+                                     on delete cascade,
                     {f_from_node_id} uuid not null references {nodes} ({n_id})
                                      deferrable initially deferred,
                     {f_to_node_id}   uuid not null references {nodes} ({n_id})
                                      deferrable initially deferred,
-                    {f_load_kind_id} uuid not null references {load_kinds} ({k_id})
-                                     deferrable initially deferred,
-                    {f_load_values}  jsonb not null default '{{}}'::jsonb,
+                    {f_columns}      jsonb not null default '[]'::jsonb,
                     {f_description}  text not null default ''
                 )
                 """
             ),
             self._sql(
                 """
-                create table if not exists {versions} (
-                    {v_number}       integer primary key,
+                create table if not exists {process_versions} (
+                    {v_process_id}   uuid not null references {processes} ({p_id})
+                                     on delete cascade,
+                    {v_number}       integer not null,
                     {v_operations}   jsonb not null,
                     {v_author}       jsonb not null,
                     {v_pins}         jsonb not null default '{{}}'::jsonb,
-                    {v_published_at} timestamptz not null default now()
+                    {v_published_at} timestamptz not null default now(),
+                    primary key ({v_process_id}, {v_number})
                 )
                 """
             ),
@@ -660,6 +463,8 @@ class CatalogStore(PostgresTable):
                 """
                 create table if not exists {drafts} (
                     {dr_id}           uuid primary key,
+                    {dr_process_id}   uuid null references {processes} ({p_id})
+                                      on delete cascade,
                     {dr_name}         text not null,
                     {dr_base_version} integer not null,
                     {dr_status}       text not null,
@@ -684,69 +489,167 @@ class CatalogStore(PostgresTable):
             ),
             self._sql(
                 """
-                create table if not exists {views} (
-                    {vw_id}         uuid primary key,
-                    {vw_name}       text not null,
-                    {vw_owner_id}   uuid not null,
-                    {vw_node_ids}   uuid[] not null default '{{}}',
-                    {vw_layer_ids}  uuid[] not null default '{{}}',
-                    {vw_created_at} timestamptz not null default now()
-                )
-                """
-            ),
-            self._sql(
-                """
-                create table if not exists {view_layout} (
-                    {lay_view_id} uuid not null references {views} ({vw_id})
-                                  on delete cascade,
-                    {lay_node_id} uuid not null,
-                    {lay_x}       double precision not null,
-                    {lay_y}       double precision not null,
-                    primary key ({lay_view_id}, {lay_node_id})
-                )
-                """
-            ),
-            self._sql(
-                """
-                create table if not exists {view_shares} (
-                    {sh_view_id}     uuid not null references {views} ({vw_id})
-                                     on delete cascade,
-                    {sh_target_kind} text not null,
-                    {sh_target}      text not null,
-                    {sh_mode}        text not null,
-                    primary key ({sh_view_id}, {sh_target_kind}, {sh_target})
+                create table if not exists {shares} (
+                    {sh_token}      text primary key,
+                    {sh_process_id} uuid not null references {processes} ({p_id})
+                                    on delete cascade,
+                    {sh_created_by} uuid not null,
+                    {sh_created_at} timestamptz not null default now(),
+                    {sh_revoked_at} timestamptz null
                 )
                 """
             ),
         )
 
-    async def snapshot(self) -> CatalogSnapshot:
-        """Опубликованный снимок из таблиц, проверенный check()."""
-        async with self._transaction("snapshot") as cur:
-            return await self._read_snapshot(cur)
+    # --- процессы ---
 
-    async def current_version(self) -> int:
-        async with self._transaction("current version") as cur:
-            return await self._current_version(cur)
+    async def create_process(self, spec: ProcessSpec, owner_id: UUID) -> Process:
+        """Новый процесс без версий.
 
-    async def versions(self) -> Sequence[Version]:
+        Ошибки:
+        ProcessNameTakenError — имя занято.
+        """
+        process_id = uuid4()
+        async with self._transaction(f"create process {spec.name!r}") as cur:
+            try:
+                await cur.execute(
+                    self._sql(
+                        """
+                        insert into {processes}
+                            ({p_id}, {p_name}, {p_description}, {p_owner_id})
+                        values
+                            (%(id)s, %(name)s, %(description)s, %(owner_id)s)
+                        """
+                    ),
+                    {
+                        "id": process_id,
+                        "name": spec.name,
+                        "description": spec.description,
+                        "owner_id": owner_id,
+                    },
+                )
+            except UniqueViolation as exc:
+                raise ProcessNameTakenError(spec.name) from exc
+
+            return await self._process(cur, process_id)
+
+    async def get_process(self, process_id: UUID) -> Process:
+        async with self._transaction(f"get process {process_id}") as cur:
+            return await self._process(cur, process_id)
+
+    async def list_processes(self) -> Sequence[Process]:
+        async with self._transaction("list processes") as cur:
+            await cur.execute(self._process_select(" order by p.{p_name}, p.{p_id}"))
+            rows = await cur.fetchall()
+
+        processes: list[Process] = []
+        for row in rows:
+            processes.append(self._process_of(row))
+
+        return processes
+
+    async def update_process(self, process_id: UUID, spec: ProcessSpec) -> Process:
+        """Имя и описание процесса.
+
+        Ошибки:
+        ProcessNameTakenError — имя занято другим процессом.
+        """
+        async with self._transaction(f"update process {process_id}") as cur:
+            await self._process(cur, process_id)
+            try:
+                await cur.execute(
+                    self._sql(
+                        """
+                        update {processes}
+                        set {p_name} = %(name)s, {p_description} = %(description)s
+                        where {p_id} = %(id)s
+                        """
+                    ),
+                    {
+                        "id": process_id,
+                        "name": spec.name,
+                        "description": spec.description,
+                    },
+                )
+            except UniqueViolation as exc:
+                raise ProcessNameTakenError(spec.name) from exc
+
+            return await self._process(cur, process_id)
+
+    async def delete_process(self, process_id: UUID) -> bool:
+        """Процесс со всем содержимым; False — процесса не было."""
+        async with self._transaction(f"delete process {process_id}") as cur:
+            await cur.execute(
+                self._sql("delete from {processes} where {p_id} = %(id)s"),
+                {"id": process_id},
+            )
+            return cur.rowcount > 0
+
+    async def usage_of_connection(self, connection_id: UUID) -> Sequence[NodeUsage]:
+        """Опубликованные узлы над объектами подключения по процессам."""
         query = self._sql(
             """
             select
+                p.{p_id} as process_id,
+                p.{p_name} as process_name,
+                count(*) as nodes
+            from
+                {nodes} n
+                join {processes} p on p.{p_id} = n.{n_process_id}
+            where
+                n.{n_connection_id} = %(connection_id)s
+            group by
+                p.{p_id}, p.{p_name}
+            order by
+                p.{p_name}
+            """
+        )
+
+        async with self._transaction(f"usage of connection {connection_id}") as cur:
+            await cur.execute(query, {"connection_id": connection_id})
+            rows = await cur.fetchall()
+
+        usage: list[NodeUsage] = []
+        for row in rows:
+            usage.append(NodeUsage.model_validate(dict(row)))
+
+        return usage
+
+    # --- снимок и версии ---
+
+    async def snapshot(self, process_id: UUID) -> CatalogSnapshot:
+        """Опубликованный снимок процесса из таблиц, проверенный check()."""
+        async with self._transaction(f"snapshot of process {process_id}") as cur:
+            await self._process(cur, process_id)
+            return await self._read_snapshot(cur, process_id)
+
+    async def current_version(self, process_id: UUID) -> int:
+        async with self._transaction(f"current version of {process_id}") as cur:
+            await self._process(cur, process_id)
+            return await self._current_version(cur, process_id)
+
+    async def versions(self, process_id: UUID) -> Sequence[Version]:
+        query = self._sql(
+            """
+            select
+                {v_process_id},
                 {v_number},
                 {v_operations},
                 {v_author},
                 {v_pins},
                 {v_published_at}
             from
-                {versions}
+                {process_versions}
+            where
+                {v_process_id} = %(process_id)s
             order by
                 {v_number}
             """
         )
 
-        async with self._transaction("versions") as cur:
-            await cur.execute(query)
+        async with self._transaction(f"versions of process {process_id}") as cur:
+            await self._process(cur, process_id)
+            await cur.execute(query, {"process_id": process_id})
             rows = await cur.fetchall()
 
         versions: list[Version] = []
@@ -755,19 +658,30 @@ class CatalogStore(PostgresTable):
 
         return versions
 
-    async def snapshot_at(self, version: int) -> CatalogSnapshot:
+    async def snapshot_at(self, process_id: UUID, version: int) -> CatalogSnapshot:
         """Снимок версии: текущая из таблиц, прошлая — свёрткой истории."""
-        async with self._transaction(f"snapshot at version {version}") as cur:
-            return await self._snapshot_at(cur, version)
+        action = f"snapshot of process {process_id} at version {version}"
+        async with self._transaction(action) as cur:
+            await self._process(cur, process_id)
+            return await self._snapshot_at(cur, process_id, version)
+
+    # --- черновики ---
 
     async def create_draft(
-        self, name: str, created_by: UUID, pins: Mapping[UUID, int]
+        self,
+        process_id: UUID | None,
+        name: str,
+        created_by: UUID,
+        pins: Mapping[UUID, int],
     ) -> Draft:
-        """Черновик над текущей опубликованной версией."""
+        """Черновик над текущей опубликованной версией процесса; без процесса —
+        черновик нового процесса над пустым снимком, имя станет именем процесса
+        при публикации."""
         query = self._sql(
             """
             insert into {drafts} (
                 {dr_id},
+                {dr_process_id},
                 {dr_name},
                 {dr_base_version},
                 {dr_status},
@@ -776,6 +690,7 @@ class CatalogStore(PostgresTable):
             )
             values (
                 %(id)s,
+                %(process_id)s,
                 %(name)s,
                 %(base_version)s,
                 %(status)s,
@@ -784,6 +699,7 @@ class CatalogStore(PostgresTable):
             )
             returning
                 {dr_id},
+                {dr_process_id},
                 {dr_name},
                 {dr_base_version},
                 {dr_status},
@@ -794,9 +710,14 @@ class CatalogStore(PostgresTable):
         )
 
         async with self._transaction(f"create draft {name!r}") as cur:
-            current = await self._current_version(cur)
+            current = 0
+            if process_id is not None:
+                await self._process(cur, process_id)
+                current = await self._current_version(cur, process_id)
+
             params = {
                 "id": uuid4(),
+                "process_id": process_id,
                 "name": name,
                 "base_version": current,
                 "status": DraftStatus.OPEN.value,
@@ -819,11 +740,49 @@ class CatalogStore(PostgresTable):
         async with self._transaction(f"get draft {draft_id}") as cur:
             return await self._draft(cur, draft_id, lock=False)
 
-    async def list_drafts(self, status: DraftStatus) -> Sequence[Draft]:
+    async def list_drafts(
+        self, process_id: UUID, status: DraftStatus
+    ) -> Sequence[Draft]:
         query = self._sql(
             """
             select
                 {dr_id},
+                {dr_process_id},
+                {dr_name},
+                {dr_base_version},
+                {dr_status},
+                {dr_pins},
+                {dr_created_by},
+                {dr_created_at}
+            from
+                {drafts}
+            where 1=1
+                and {dr_process_id} = %(process_id)s
+                and {dr_status} = %(status)s
+            order by
+                {dr_created_at},
+                {dr_id}
+            """
+        )
+
+        async with self._transaction(f"list {status.value} drafts") as cur:
+            await self._process(cur, process_id)
+            await cur.execute(query, {"process_id": process_id, "status": status.value})
+            rows = await cur.fetchall()
+
+        drafts: list[Draft] = []
+        for row in rows:
+            drafts.append(self._draft_of(row))
+
+        return drafts
+
+    async def open_drafts(self) -> Sequence[Draft]:
+        """Открытые черновики всех процессов: для проверки, где стоит подключение."""
+        query = self._sql(
+            """
+            select
+                {dr_id},
+                {dr_process_id},
                 {dr_name},
                 {dr_base_version},
                 {dr_status},
@@ -840,8 +799,8 @@ class CatalogStore(PostgresTable):
             """
         )
 
-        async with self._transaction(f"list {status.value} drafts") as cur:
-            await cur.execute(query, {"status": status.value})
+        async with self._transaction("list open drafts") as cur:
+            await cur.execute(query, {"status": DraftStatus.OPEN.value})
             rows = await cur.fetchall()
 
         drafts: list[Draft] = []
@@ -849,6 +808,76 @@ class CatalogStore(PostgresTable):
             drafts.append(self._draft_of(row))
 
         return drafts
+
+    async def drafts_of_author(self, created_by: UUID) -> Sequence[Draft]:
+        """Открытые черновики автора по всем процессам и без процесса: для
+        плоского списка панели."""
+        query = self._sql(
+            """
+            select
+                {dr_id},
+                {dr_process_id},
+                {dr_name},
+                {dr_base_version},
+                {dr_status},
+                {dr_pins},
+                {dr_created_by},
+                {dr_created_at}
+            from
+                {drafts}
+            where 1=1
+                and {dr_status} = %(status)s
+                and {dr_created_by} = %(created_by)s
+            order by
+                {dr_created_at},
+                {dr_id}
+            """
+        )
+
+        async with self._transaction(f"list drafts of {created_by}") as cur:
+            params = {"status": DraftStatus.OPEN.value, "created_by": created_by}
+            await cur.execute(query, params)
+            rows = await cur.fetchall()
+
+        drafts: list[Draft] = []
+        for row in rows:
+            drafts.append(self._draft_of(row))
+
+        return drafts
+
+    async def rename_draft(self, draft_id: UUID, name: str) -> Draft:
+        """Новое имя открытого черновика."""
+        query = self._sql(
+            """
+            update {drafts}
+            set {dr_name} = %(name)s
+            where {dr_id} = %(draft_id)s
+            returning
+                {dr_id},
+                {dr_process_id},
+                {dr_name},
+                {dr_base_version},
+                {dr_status},
+                {dr_pins},
+                {dr_created_by},
+                {dr_created_at}
+            """
+        )
+
+        async with self._transaction(f"rename draft {draft_id}") as cur:
+            draft = await self._draft(cur, draft_id, lock=True)
+            self._require_open(draft)
+            await cur.execute(query, {"draft_id": draft_id, "name": name})
+            row = await cur.fetchone()
+
+        if row is None:
+            msg = (
+                f"catalog: update of {self._schema}.drafts returned no row for "
+                f"draft {draft_id} while renaming it to {name!r}"
+            )
+            raise CatalogStoreError(msg)
+
+        return self._draft_of(row)
 
     async def discard_draft(self, draft_id: UUID) -> Draft:
         """Черновик отброшен; порции остаются в истории."""
@@ -868,7 +897,7 @@ class CatalogStore(PostgresTable):
         """Снимок черновика поверх базовой версии и diff к ней."""
         async with self._transaction(f"state of draft {draft_id}") as cur:
             draft = await self._draft(cur, draft_id, lock=False)
-            base = await self._snapshot_at(cur, draft.base_version)
+            base = await self._base_of(cur, draft)
             ops = await self._ops_of(cur, draft_id)
 
         folded = self._fold(draft, base, ops)
@@ -922,7 +951,7 @@ class CatalogStore(PostgresTable):
             if expected_seq != current_seq:
                 raise DraftConflictError(draft_id, expected_seq, current_seq)
 
-            base = await self._snapshot_at(cur, draft.base_version)
+            base = await self._base_of(cur, draft)
             stored = await self._ops_of(cur, draft_id)
             state = self._fold(draft, base, stored)
             ops.apply(state, resolver)
@@ -953,20 +982,25 @@ class CatalogStore(PostgresTable):
         )
 
     async def publish(self, draft_id: UUID, author: DraftAuthor) -> Version:
-        """Свёрнутые операции черновика в таблицы и новая версия одной транзакцией.
+        """Свёрнутые операции черновика в таблицы и новая версия процесса
+        одной транзакцией; у черновика без процесса сначала создаётся процесс
+        с именем черновика, автор черновика — его владелец.
 
         Ошибки:
         DraftStaleError — базовая версия черновика отстала, нужен rebase.
+        ProcessNameTakenError — имя черновика нового процесса уже занято.
         """
         insert_version = self._sql(
             """
-            insert into {versions} (
+            insert into {process_versions} (
+                {v_process_id},
                 {v_number},
                 {v_operations},
                 {v_author},
                 {v_pins}
             )
             values (
+                %(process_id)s,
                 %(number)s,
                 %(operations)s,
                 %(author)s,
@@ -978,26 +1012,30 @@ class CatalogStore(PostgresTable):
         )
 
         async with self._transaction(f"publish draft {draft_id}") as cur:
-            await cur.execute(
-                "select pg_advisory_xact_lock(hashtext(%(key)s))",
-                {"key": f"{self._schema}.{self.PUBLISH_LOCK}"},
-            )
-
             draft = await self._draft(cur, draft_id, lock=True)
             self._require_open(draft)
+            process_id = draft.process_id
+            if process_id is None:
+                process_id = await self._attach_process(cur, draft)
 
-            current = await self._current_version(cur)
+            await cur.execute(
+                "select pg_advisory_xact_lock(hashtext(%(key)s))",
+                {"key": f"{self._schema}.{self.PUBLISH_LOCK}.{process_id}"},
+            )
+
+            current = await self._current_version(cur, process_id)
             if draft.base_version != current:
                 raise DraftStaleError(draft_id, draft.base_version, current)
 
-            base = await self._read_snapshot(cur)
+            base = await self._read_snapshot(cur, process_id)
             stored = await self._ops_of(cur, draft_id)
             target = self._fold(draft, base, stored)
-            await self._write_changes(cur, base, target)
+            await self._write_changes(cur, process_id, base, target)
 
             operations = self._concatenated(stored)
             number = current + 1
             params = {
+                "process_id": process_id,
                 "number": number,
                 "operations": Jsonb(operations.model_dump(mode="json")),
                 "author": Jsonb(author.model_dump(mode="json")),
@@ -1007,14 +1045,15 @@ class CatalogStore(PostgresTable):
             row = await cur.fetchone()
             if row is None:
                 msg = (
-                    f"catalog: insert into {self._schema}.versions returned no "
-                    f"row for version {number} of draft {draft_id}"
+                    f"catalog: insert into {self._schema}.process_versions returned "
+                    f"no row for version {number} of draft {draft_id}"
                 )
                 raise CatalogStoreError(msg)
 
             await self._set_status(cur, draft_id, DraftStatus.PUBLISHED)
 
         return Version(
+            process_id=process_id,
             number=number,
             operations=operations,
             author=author,
@@ -1023,7 +1062,7 @@ class CatalogStore(PostgresTable):
         )
 
     async def set_pins(self, draft_id: UUID, pins: Mapping[UUID, int]) -> Draft:
-        """Привязки черновика к версиям источников: после поднятия до новых."""
+        """Привязки черновика к версиям снимков: после поднятия до новых."""
         async with self._transaction(f"set pins of draft {draft_id}") as cur:
             draft = await self._draft(cur, draft_id, lock=True)
             self._require_open(draft)
@@ -1042,7 +1081,7 @@ class CatalogStore(PostgresTable):
     async def rebase(
         self, draft_id: UUID, *, drop_conflicts: bool, resolver: ObjectResolver
     ) -> RebaseResult:
-        """Перевод черновика на текущую версию.
+        """Перевод черновика на текущую версию процесса.
 
         Операции применяются к текущему снимку по одной с проверкой по
         резолверу; не применимые собираются в issues. Без drop_conflicts
@@ -1071,6 +1110,7 @@ class CatalogStore(PostgresTable):
                 {dr_id} = %(draft_id)s
             returning
                 {dr_id},
+                {dr_process_id},
                 {dr_name},
                 {dr_base_version},
                 {dr_status},
@@ -1084,11 +1124,15 @@ class CatalogStore(PostgresTable):
             draft = await self._draft(cur, draft_id, lock=True)
             self._require_open(draft)
 
-            current = await self._current_version(cur)
+            # черновик нового процесса всегда над пустым снимком
+            if draft.process_id is None:
+                return RebaseResult(draft=draft, issues=())
+
+            current = await self._current_version(cur, draft.process_id)
             if draft.base_version == current:
                 return RebaseResult(draft=draft, issues=())
 
-            base = await self._read_snapshot(cur)
+            base = await self._read_snapshot(cur, draft.process_id)
             stored = await self._ops_of(cur, draft_id)
 
             issues: list[RebaseIssue] = []
@@ -1137,381 +1181,250 @@ class CatalogStore(PostgresTable):
 
         return RebaseResult(draft=self._draft_of(row), issues=tuple(issues))
 
-    async def create_view(self, owner_id: UUID, spec: ViewSpec) -> View:
+    # --- ссылки на просмотр ---
+
+    async def create_share(self, process_id: UUID, created_by: UUID) -> Share:
         query = self._sql(
             """
-            insert into {views} (
-                {vw_id},
-                {vw_name},
-                {vw_owner_id},
-                {vw_node_ids},
-                {vw_layer_ids}
-            )
-            values (
-                %(id)s,
-                %(name)s,
-                %(owner_id)s,
-                %(node_ids)s,
-                %(layer_ids)s
-            )
+            insert into {shares} ({sh_token}, {sh_process_id}, {sh_created_by})
+            values (%(token)s, %(process_id)s, %(created_by)s)
             returning
-                {vw_id},
-                {vw_name},
-                {vw_owner_id},
-                {vw_node_ids},
-                {vw_layer_ids},
-                {vw_created_at}
+                {sh_token},
+                {sh_process_id},
+                {sh_created_by},
+                {sh_created_at},
+                {sh_revoked_at}
             """
         )
         params = {
-            "id": uuid4(),
-            "name": spec.name,
-            "owner_id": owner_id,
-            "node_ids": list(spec.node_ids),
-            "layer_ids": list(spec.layer_ids),
+            "token": secrets.token_urlsafe(self.TOKEN_BYTES),
+            "process_id": process_id,
+            "created_by": created_by,
         }
 
-        async with self._transaction(f"create view {spec.name!r}") as cur:
+        async with self._transaction(f"share process {process_id}") as cur:
+            await self._process(cur, process_id)
             await cur.execute(query, params)
             row = await cur.fetchone()
 
         if row is None:
             msg = (
-                f"catalog: insert into {self._schema}.views returned no row "
-                f"for view {spec.name!r}"
+                f"catalog: insert into {self._schema}.shares returned no row "
+                f"for process {process_id}"
             )
             raise CatalogStoreError(msg)
 
-        return self._view_of(row)
+        return self._share_of(row)
 
-    async def get_view(self, view_id: UUID) -> View:
-        async with self._transaction(f"get view {view_id}") as cur:
-            return await self._view(cur, view_id)
-
-    async def update_view(self, view_id: UUID, spec: ViewSpec) -> View:
-        query = self._sql(
-            """
-            update
-                {views}
-            set
-                {vw_name} = %(name)s,
-                {vw_node_ids} = %(node_ids)s,
-                {vw_layer_ids} = %(layer_ids)s
-            where
-                {vw_id} = %(id)s
-            returning
-                {vw_id},
-                {vw_name},
-                {vw_owner_id},
-                {vw_node_ids},
-                {vw_layer_ids},
-                {vw_created_at}
-            """
-        )
-        params = {
-            "id": view_id,
-            "name": spec.name,
-            "node_ids": list(spec.node_ids),
-            "layer_ids": list(spec.layer_ids),
-        }
-
-        async with self._transaction(f"update view {view_id}") as cur:
-            await cur.execute(query, params)
-            row = await cur.fetchone()
-
-        if row is None:
-            raise ViewNotFoundError(view_id)
-
-        return self._view_of(row)
-
-    async def delete_view(self, view_id: UUID) -> bool:
-        """Удаляет вид вместе с раскладкой и шарингом; False — вида не было."""
-        query = self._sql(
-            """
-            delete from
-                {views}
-            where
-                {vw_id} = %(id)s
-            """
-        )
-
-        async with self._transaction(f"delete view {view_id}") as cur:
-            await cur.execute(query, {"id": view_id})
-            return cur.rowcount > 0
-
-    async def views_for(
-        self, user_id: UUID, roles: Sequence[str], *, everything: bool
-    ) -> Sequence[View]:
-        """Виды субъекта: все при праве на каталог, иначе свои и расшаренные."""
-        access_filter = ""
-        if not everything:
-            access_filter = """
-                and (
-                    v.{vw_owner_id} = %(user_id)s
-                    or v.{vw_id} in (
-                        select
-                            s.{sh_view_id}
-                        from
-                            {view_shares} s
-                        where 1=1
-                            and (
-                                (s.{sh_target_kind} = %(user_kind)s
-                                    and s.{sh_target} = %(user_target)s)
-                                or (s.{sh_target_kind} = %(role_kind)s
-                                    and s.{sh_target} = any(%(roles)s))
-                            )
-                    )
-                )
-            """
-
+    async def shares_of(self, process_id: UUID) -> Sequence[Share]:
+        """Действующие ссылки процесса."""
         query = self._sql(
             """
             select
-                v.{vw_id},
-                v.{vw_name},
-                v.{vw_owner_id},
-                v.{vw_node_ids},
-                v.{vw_layer_ids},
-                v.{vw_created_at}
+                {sh_token},
+                {sh_process_id},
+                {sh_created_by},
+                {sh_created_at},
+                {sh_revoked_at}
             from
-                {views} v
+                {shares}
             where 1=1
-                ACCESS_FILTER
+                and {sh_process_id} = %(process_id)s
+                and {sh_revoked_at} is null
             order by
-                v.{vw_name},
-                v.{vw_id}
-            """.replace("ACCESS_FILTER", access_filter)
+                {sh_created_at}
+            """
         )
-        params = {
-            "user_id": user_id,
-            "user_kind": ShareTargetKind.USER.value,
-            "user_target": str(user_id),
-            "role_kind": ShareTargetKind.ROLE.value,
-            "roles": sorted(roles),
-        }
 
-        async with self._transaction(f"views for user {user_id}") as cur:
-            await cur.execute(query, params)
+        async with self._transaction(f"shares of process {process_id}") as cur:
+            await self._process(cur, process_id)
+            await cur.execute(query, {"process_id": process_id})
             rows = await cur.fetchall()
 
-        views: list[View] = []
+        shares: list[Share] = []
         for row in rows:
-            views.append(self._view_of(row))
-
-        return views
-
-    async def layout_of(self, view_id: UUID) -> ViewLayout:
-        query = self._sql(
-            """
-            select
-                {lay_node_id},
-                {lay_x},
-                {lay_y}
-            from
-                {view_layout}
-            where
-                {lay_view_id} = %(view_id)s
-            order by
-                {lay_node_id}
-            """
-        )
-
-        async with self._transaction(f"layout of view {view_id}") as cur:
-            await self._view(cur, view_id)
-            await cur.execute(query, {"view_id": view_id})
-            rows = await cur.fetchall()
-
-        positions: list[NodePosition] = []
-        for row in rows:
-            positions.append(
-                NodePosition(node_id=row["node_id"], x=row["x"], y=row["y"])
-            )
-
-        return ViewLayout(view_id=view_id, positions=tuple(positions))
-
-    async def put_layout(
-        self, view_id: UUID, positions: Sequence[NodePosition]
-    ) -> ViewLayout:
-        """Полная замена раскладки вида."""
-        clear = self._sql(
-            """
-            delete from
-                {view_layout}
-            where
-                {lay_view_id} = %(view_id)s
-            """
-        )
-        insert = self._sql(
-            """
-            insert into {view_layout} (
-                {lay_view_id},
-                {lay_node_id},
-                {lay_x},
-                {lay_y}
-            )
-            values (
-                %(view_id)s,
-                %(node_id)s,
-                %(x)s,
-                %(y)s
-            )
-            """
-        )
-
-        rows: list[dict[str, Any]] = []
-        for position in positions:
-            rows.append(
-                {
-                    "view_id": view_id,
-                    "node_id": position.node_id,
-                    "x": position.x,
-                    "y": position.y,
-                }
-            )
-
-        async with self._transaction(f"put layout of view {view_id}") as cur:
-            await self._view(cur, view_id)
-            await cur.execute(clear, {"view_id": view_id})
-            if rows:
-                await cur.executemany(insert, rows)
-
-        return ViewLayout(view_id=view_id, positions=tuple(positions))
-
-    async def shares_of(self, view_id: UUID) -> Sequence[ViewShare]:
-        query = self._sql(
-            """
-            select
-                {sh_target_kind},
-                {sh_target},
-                {sh_mode}
-            from
-                {view_shares}
-            where
-                {sh_view_id} = %(view_id)s
-            order by
-                {sh_target_kind},
-                {sh_target}
-            """
-        )
-
-        async with self._transaction(f"shares of view {view_id}") as cur:
-            await self._view(cur, view_id)
-            await cur.execute(query, {"view_id": view_id})
-            rows = await cur.fetchall()
-
-        shares: list[ViewShare] = []
-        for row in rows:
-            shares.append(
-                ViewShare(
-                    kind=ShareTargetKind(row["target_kind"]),
-                    target=row["target"],
-                    mode=row["mode"],
-                )
-            )
+            shares.append(self._share_of(row))
 
         return shares
 
-    async def share_view(self, view_id: UUID, share: ViewShare) -> None:
+    async def get_share(self, token: str) -> Share:
+        """Действующая ссылка по token.
+
+        Ошибки:
+        ShareNotFoundError — ссылки нет или она отозвана.
+        """
         query = self._sql(
             """
-            insert into {view_shares} (
-                {sh_view_id},
-                {sh_target_kind},
-                {sh_target},
-                {sh_mode}
-            )
-            values (
-                %(view_id)s,
-                %(target_kind)s,
-                %(target)s,
-                %(mode)s
-            )
-            on conflict ({sh_view_id}, {sh_target_kind}, {sh_target})
-                do update set {sh_mode} = excluded.{sh_mode}
-            """
-        )
-        params = {
-            "view_id": view_id,
-            "target_kind": share.kind.value,
-            "target": share.target,
-            "mode": share.mode.value,
-        }
-
-        async with self._transaction(f"share view {view_id}") as cur:
-            await self._view(cur, view_id)
-            await cur.execute(query, params)
-
-    async def unshare_view(self, view_id: UUID, share: ViewShare) -> bool:
-        query = self._sql(
-            """
-            delete from
-                {view_shares}
+            select
+                {sh_token},
+                {sh_process_id},
+                {sh_created_by},
+                {sh_created_at},
+                {sh_revoked_at}
+            from
+                {shares}
             where 1=1
-                and {sh_view_id} = %(view_id)s
-                and {sh_target_kind} = %(target_kind)s
-                and {sh_target} = %(target)s
+                and {sh_token} = %(token)s
+                and {sh_revoked_at} is null
             """
         )
-        params = {
-            "view_id": view_id,
-            "target_kind": share.kind.value,
-            "target": share.target,
-        }
 
-        async with self._transaction(f"unshare view {view_id}") as cur:
-            await self._view(cur, view_id)
-            await cur.execute(query, params)
-            return cur.rowcount > 0
+        async with self._transaction("get share") as cur:
+            await cur.execute(query, {"token": token})
+            row = await cur.fetchone()
 
-    async def _read_snapshot(self, cur: Cursor) -> CatalogSnapshot:
+        if row is None:
+            raise ShareNotFoundError(token)
+
+        return self._share_of(row)
+
+    async def revoke_share(self, token: str) -> Share:
+        """Ссылка отозвана: гость больше не пройдёт.
+
+        Ошибки:
+        ShareNotFoundError — ссылки нет или она уже отозвана.
+        """
+        query = self._sql(
+            """
+            update
+                {shares}
+            set
+                {sh_revoked_at} = now()
+            where 1=1
+                and {sh_token} = %(token)s
+                and {sh_revoked_at} is null
+            returning
+                {sh_token},
+                {sh_process_id},
+                {sh_created_by},
+                {sh_created_at},
+                {sh_revoked_at}
+            """
+        )
+
+        async with self._transaction("revoke share") as cur:
+            await cur.execute(query, {"token": token})
+            row = await cur.fetchone()
+
+        if row is None:
+            raise ShareNotFoundError(token)
+
+        return self._share_of(row)
+
+    # --- внутреннее: процессы ---
+
+    PROCESS_SELECT: ClassVar[LiteralString] = """
+        with
+            latest as (
+                select
+                    v.{v_process_id} as process_id,
+                    max(v.{v_number}) as latest_version
+                from
+                    {process_versions} v
+                group by
+                    v.{v_process_id}
+            ),
+            node_counts as (
+                select
+                    n.{n_process_id} as process_id,
+                    count(*) as nodes
+                from
+                    {nodes} n
+                group by
+                    n.{n_process_id}
+            ),
+            draft_counts as (
+                select
+                    d.{dr_process_id} as process_id,
+                    count(*) as open_drafts
+                from
+                    {drafts} d
+                where
+                    d.{dr_status} = 'open'
+                group by
+                    d.{dr_process_id}
+            )
+        select
+            p.{p_id},
+            p.{p_name},
+            p.{p_description},
+            p.{p_owner_id},
+            p.{p_created_at},
+            coalesce(l.latest_version, 0) as latest_version,
+            coalesce(nc.nodes, 0) as nodes,
+            coalesce(dc.open_drafts, 0) as open_drafts
+        from
+            {processes} p
+            left join latest l on l.process_id = p.{p_id}
+            left join node_counts nc on nc.process_id = p.{p_id}
+            left join draft_counts dc on dc.process_id = p.{p_id}
+        """
+
+    def _process_select(self, tail: LiteralString) -> sql.Composed:
+        return sql.Composed([self._sql(self.PROCESS_SELECT), self._sql(tail)])
+
+    async def _process(self, cur: Cursor, process_id: UUID) -> Process:
+        await cur.execute(
+            self._process_select(" where p.{p_id} = %(id)s"), {"id": process_id}
+        )
+        row = await cur.fetchone()
+        if row is None:
+            raise ProcessNotFoundError(process_id)
+
+        return self._process_of(row)
+
+    def _process_of(self, row: DictRow) -> Process:
+        try:
+            return Process.model_validate(dict(row))
+        except ValidationError as exc:
+            msg = (
+                f"catalog: row of {self._schema}.processes with id {row.get('id')} "
+                f"is not a valid process: {exc}"
+            )
+            raise CatalogStoreError(msg) from exc
+
+    # --- внутреннее: снимок ---
+
+    async def _read_snapshot(self, cur: Cursor, process_id: UUID) -> CatalogSnapshot:
         """Снимок из таблиц процесса, проверенный check()."""
-        layers = await self._rows(
+        groups = await self._rows(
             cur,
             """
             select
-                {l_id},
-                {l_name},
-                {l_position},
-                {l_description}
+                {g_id},
+                {g_name}
             from
-                {layers}
+                {groups}
+            where
+                {g_process_id} = %(process_id)s
             order by
-                {l_position},
-                {l_id}
+                {g_name},
+                {g_id}
             """,
+            process_id,
         )
         nodes = await self._rows(
             cur,
             """
             select
                 {n_id},
-                {n_layer_id},
-                {n_source_id},
+                {n_group_id},
+                {n_x},
+                {n_y},
+                {n_connection_id},
                 {n_object_kind},
                 {n_path},
                 {n_alias},
                 {n_note}
             from
                 {nodes}
+            where
+                {n_process_id} = %(process_id)s
             order by
                 {n_path},
                 {n_id}
             """,
-        )
-        kinds = await self._rows(
-            cur,
-            """
-            select
-                {k_id},
-                {k_name},
-                {k_description},
-                {k_fields}
-            from
-                {load_kinds}
-            order by
-                {k_name},
-                {k_id}
-            """,
+            process_id,
         )
         flows = await self._rows(
             cur,
@@ -1520,49 +1433,48 @@ class CatalogStore(PostgresTable):
                 {f_id},
                 {f_from_node_id},
                 {f_to_node_id},
-                {f_load_kind_id},
-                {f_load_values},
+                {f_columns},
                 {f_description}
             from
                 {flows}
+            where
+                {f_process_id} = %(process_id)s
             order by
                 {f_id}
             """,
+            process_id,
         )
 
         try:
-            return self._assemble(layers, nodes, kinds, flows)
+            return self._assemble(groups, nodes, flows)
         except ValidationError as exc:
             msg = (
-                f"catalog: a row of the entity tables in {self._schema} "
-                f"is not a valid entity: {exc}"
+                f"catalog: a row of the entity tables of process {process_id} in "
+                f"{self._schema} is not a valid entity: {exc}"
             )
             raise CatalogStoreError(msg) from exc
         except CatalogInvariantError as exc:
-            msg = f"catalog: entity tables in {self._schema} are inconsistent: {exc}"
+            msg = (
+                f"catalog: entity tables of process {process_id} in "
+                f"{self._schema} are inconsistent: {exc}"
+            )
             raise CatalogStoreError(msg) from exc
 
     @staticmethod
     def _assemble(
-        layers: Sequence[DictRow],
+        groups: Sequence[DictRow],
         nodes: Sequence[DictRow],
-        kinds: Sequence[DictRow],
         flows: Sequence[DictRow],
     ) -> CatalogSnapshot:
-        layer_table: dict[UUID, Layer] = {}
-        for row in layers:
-            layer = Layer.model_validate(row)
-            layer_table[layer.id] = layer
+        group_table: dict[UUID, Group] = {}
+        for row in groups:
+            group = Group.model_validate(row)
+            group_table[group.id] = group
 
         node_table: dict[UUID, Node] = {}
         for row in nodes:
             node = EntityRows.node_of(row)
             node_table[node.id] = node
-
-        kind_table: dict[UUID, LoadKind] = {}
-        for row in kinds:
-            kind = LoadKind.model_validate(row)
-            kind_table[kind.id] = kind
 
         flow_table: dict[UUID, Flow] = {}
         for row in flows:
@@ -1570,67 +1482,117 @@ class CatalogStore(PostgresTable):
             flow_table[flow.id] = flow
 
         snapshot = CatalogSnapshot(
-            layers=layer_table,
-            nodes=node_table,
-            load_kinds=kind_table,
-            flows=flow_table,
+            groups=group_table, nodes=node_table, flows=flow_table
         )
         snapshot.check()
         return snapshot
 
-    async def _rows(self, cur: Cursor, text: LiteralString) -> Sequence[DictRow]:
-        await cur.execute(self._sql(text))
+    async def _base_of(self, cur: Cursor, draft: Draft) -> CatalogSnapshot:
+        """Базовый снимок черновика: версия процесса либо пустой у черновика
+        нового процесса."""
+        if draft.process_id is None:
+            return CatalogSnapshot.empty()
+
+        return await self._snapshot_at(cur, draft.process_id, draft.base_version)
+
+    async def _attach_process(self, cur: Cursor, draft: Draft) -> UUID:
+        """Процесс для черновика нового процесса: имя черновика, владелец —
+        автор черновика; черновик привязывается к нему.
+
+        Ошибки:
+        ProcessNameTakenError — имя занято.
+        """
+        process_id = uuid4()
+        try:
+            await cur.execute(
+                self._sql(
+                    """
+                    insert into {processes}
+                        ({p_id}, {p_name}, {p_description}, {p_owner_id})
+                    values
+                        (%(id)s, %(name)s, '', %(owner_id)s)
+                    """
+                ),
+                {"id": process_id, "name": draft.name, "owner_id": draft.created_by},
+            )
+        except UniqueViolation as exc:
+            raise ProcessNameTakenError(draft.name) from exc
+
+        await cur.execute(
+            self._sql(
+                """
+                update {drafts}
+                set {dr_process_id} = %(process_id)s
+                where {dr_id} = %(draft_id)s
+                """
+            ),
+            {"process_id": process_id, "draft_id": draft.id},
+        )
+
+        return process_id
+
+    async def _rows(
+        self, cur: Cursor, text: LiteralString, process_id: UUID
+    ) -> Sequence[DictRow]:
+        await cur.execute(self._sql(text), {"process_id": process_id})
         return await cur.fetchall()
 
-    async def _current_version(self, cur: Cursor) -> int:
+    async def _current_version(self, cur: Cursor, process_id: UUID) -> int:
         query = self._sql(
             """
             select
                 coalesce(max({v_number}), 0) as number
             from
-                {versions}
+                {process_versions}
+            where
+                {v_process_id} = %(process_id)s
             """
         )
-        await cur.execute(query)
+        await cur.execute(query, {"process_id": process_id})
         row = await cur.fetchone()
         if row is None:
             msg = (
-                f"catalog: reading the latest number from {self._schema}.versions "
+                f"catalog: reading the latest number from "
+                f"{self._schema}.process_versions for process {process_id} "
                 "returned no row, expected one aggregate row"
             )
             raise CatalogStoreError(msg)
 
         return int(row["number"])
 
-    async def _snapshot_at(self, cur: Cursor, version: int) -> CatalogSnapshot:
-        current = await self._current_version(cur)
+    async def _snapshot_at(
+        self, cur: Cursor, process_id: UUID, version: int
+    ) -> CatalogSnapshot:
+        current = await self._current_version(cur, process_id)
         if version == current:
-            return await self._read_snapshot(cur)
+            return await self._read_snapshot(cur, process_id)
 
         if version > current:
             msg = (
-                f"catalog: version {version} is not published yet, "
-                f"the latest in {self._schema}.versions is {current}"
+                f"catalog: version {version} of process {process_id} is not "
+                f"published yet, the latest is {current}"
             )
             raise CatalogStoreError(msg)
 
         query = self._sql(
             """
             select
+                {v_process_id},
                 {v_number},
                 {v_operations},
                 {v_author},
                 {v_pins},
                 {v_published_at}
             from
-                {versions}
-            where
-                {v_number} <= %(version)s
+                {process_versions}
+            where 1=1
+                and {v_process_id} = %(process_id)s
+                and {v_number} <= %(version)s
             order by
                 {v_number}
             """
         )
-        await cur.execute(query, {"version": version})
+        await cur.execute(query, {"process_id": process_id, "version": version})
         rows = await cur.fetchall()
 
         snapshot = CatalogSnapshot.empty()
@@ -1640,13 +1602,15 @@ class CatalogStore(PostgresTable):
                 snapshot = stored.operations.apply(snapshot, AcceptAll())
             except CatalogOpError as exc:
                 msg = (
-                    f"catalog: operations of version {stored.number} from "
-                    f"{self._schema}.versions do not apply on top of the "
-                    f"previous versions: {exc}"
+                    f"catalog: operations of version {stored.number} of process "
+                    f"{process_id} do not apply on top of the previous "
+                    f"versions: {exc}"
                 )
                 raise CatalogStoreError(msg) from exc
 
         return snapshot
+
+    # --- внутреннее: черновики ---
 
     async def _draft(self, cur: Cursor, draft_id: UUID, *, lock: bool) -> Draft:
         locking = ""
@@ -1657,6 +1621,7 @@ class CatalogStore(PostgresTable):
             """
             select
                 {dr_id},
+                {dr_process_id},
                 {dr_name},
                 {dr_base_version},
                 {dr_status},
@@ -1697,9 +1662,11 @@ class CatalogStore(PostgresTable):
                 {dr_id} = %(id)s
             returning
                 {dr_id},
+                {dr_process_id},
                 {dr_name},
                 {dr_base_version},
                 {dr_status},
+                {dr_pins},
                 {dr_created_by},
                 {dr_created_at}
             """
@@ -1787,8 +1754,8 @@ class CatalogStore(PostgresTable):
     @staticmethod
     def _pins_json(pins: Mapping[UUID, int]) -> dict[str, int]:
         rendered: dict[str, int] = {}
-        for source_id, version in pins.items():
-            rendered[str(source_id)] = version
+        for connection_id, version in pins.items():
+            rendered[str(connection_id)] = version
 
         return rendered
 
@@ -1801,17 +1768,20 @@ class CatalogStore(PostgresTable):
         return OperationList(root=tuple(combined))
 
     async def _write_changes(
-        self, cur: Cursor, base: CatalogSnapshot, target: CatalogSnapshot
+        self,
+        cur: Cursor,
+        process_id: UUID,
+        base: CatalogSnapshot,
+        target: CatalogSnapshot,
     ) -> None:
         """Таблицы сущностей по diff: upsert добавленных и изменённых, удаление
-        пропавших в порядке зависимостей.
-        """
+        пропавших в порядке зависимостей."""
         diff = CatalogDiff.between(base, target)
 
         for kind in EntityRows.UPSERT_ORDER:
             rows: list[dict[str, Any]] = []
             for entity in self._changed(diff, target, kind):
-                rows.append(EntityRows.row_of(entity))
+                rows.append(EntityRows.row_of(process_id, entity))
 
             if not rows:
                 continue
@@ -1858,7 +1828,7 @@ class CatalogStore(PostgresTable):
             ident = SqlNames.ident(column)
             idents.append(ident)
             placeholders.append(sql.Placeholder(column.value))
-            if column.value == "id":
+            if column.value == EntityColumn.ID.value:
                 continue
 
             updates.append(sql.SQL("{} = excluded.{}").format(ident, ident))
@@ -1873,7 +1843,7 @@ class CatalogStore(PostgresTable):
             table=self._table(CatalogTable.of_entity(kind)),
             columns=sql.SQL(", ").join(idents),
             values=sql.SQL(", ").join(placeholders),
-            key=sql.Identifier("id"),
+            key=sql.Identifier(EntityColumn.ID.value),
             updates=sql.SQL(", ").join(updates),
         )
 
@@ -1884,31 +1854,8 @@ class CatalogStore(PostgresTable):
             """
         ).format(
             table=self._table(CatalogTable.of_entity(kind)),
-            key=sql.Identifier("id"),
+            key=sql.Identifier(EntityColumn.ID.value),
         )
-
-    async def _view(self, cur: Cursor, view_id: UUID) -> View:
-        query = self._sql(
-            """
-            select
-                {vw_id},
-                {vw_name},
-                {vw_owner_id},
-                {vw_node_ids},
-                {vw_layer_ids},
-                {vw_created_at}
-            from
-                {views}
-            where
-                {vw_id} = %(id)s
-            """
-        )
-        await cur.execute(query, {"id": view_id})
-        row = await cur.fetchone()
-        if row is None:
-            raise ViewNotFoundError(view_id)
-
-        return self._view_of(row)
 
     def _draft_of(self, row: DictRow) -> Draft:
         try:
@@ -1925,17 +1872,17 @@ class CatalogStore(PostgresTable):
             return Version.model_validate(row)
         except ValidationError as exc:
             msg = (
-                f"catalog: row of {self._schema}.versions with number "
+                f"catalog: row of {self._schema}.process_versions with number "
                 f"{row.get('number')} is not a valid version: {exc}"
             )
             raise CatalogStoreError(msg) from exc
 
-    def _view_of(self, row: DictRow) -> View:
+    def _share_of(self, row: DictRow) -> Share:
         try:
-            return View.model_validate(row)
+            return Share.model_validate(row)
         except ValidationError as exc:
             msg = (
-                f"catalog: row of {self._schema}.views with id {row.get('id')} "
-                f"is not a valid view: {exc}"
+                f"catalog: row of {self._schema}.shares with token "
+                f"{row.get('token')} is not a valid share: {exc}"
             )
             raise CatalogStoreError(msg) from exc

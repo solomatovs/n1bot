@@ -1,14 +1,17 @@
 import { useReactFlow } from "@xyflow/react";
-import { LayoutGrid, Maximize2, ZoomIn, ZoomOut } from "lucide-react";
+import { BoxSelect, LayoutGrid, Maximize2, ZoomIn, ZoomOut } from "lucide-react";
 import type { ReactElement } from "react";
 
 import type { ShowMode } from "../model/graph";
-import { IconButton, Segmented, Toolbar } from "../ui";
+import { Button, IconButton, Segmented, Toolbar } from "../ui";
 
 type Props = {
   showMode: ShowMode;
   onShowMode: (mode: ShowMode) => void;
   onTidy: () => void;
+  /** Сколько карточек выбрано; на черновике из них собирается группа. */
+  selectedCount: number;
+  onGroup: (() => void) | undefined;
 };
 
 const MODE_OPTIONS: { value: ShowMode; label: string }[] = [
@@ -17,9 +20,10 @@ const MODE_OPTIONS: { value: ShowMode; label: string }[] = [
   { value: "TABLE_NAME", label: "names" },
 ];
 
-/** Панель холста: масштаб, вписать, прибрать, режим карточек. Перенос Toolbar
- * из liam erd-core на виджеты страницы. */
-export function CanvasToolbar({ showMode, onShowMode, onTidy }: Props): ReactElement {
+/** Панель холста: масштаб, вписать, прибрать, режим карточек; на черновике —
+ * «group» из выбранных карточек. Перенос Toolbar из liam erd-core на виджеты
+ * страницы. */
+export function CanvasToolbar({ showMode, onShowMode, onTidy, selectedCount, onGroup }: Props): ReactElement {
   const { zoomIn, zoomOut, fitView } = useReactFlow();
 
   return (
@@ -52,6 +56,11 @@ export function CanvasToolbar({ showMode, onShowMode, onTidy }: Props): ReactEle
         <LayoutGrid size={14} />
       </IconButton>
       <Segmented options={MODE_OPTIONS} value={showMode} onChange={onShowMode} label="show mode" />
+      {onGroup !== undefined && (
+        <Button size="sm" icon={BoxSelect} disabled={selectedCount === 0} onClick={onGroup} data-testid="group-button">
+          group{selectedCount > 0 ? ` · ${selectedCount}` : ""}
+        </Button>
+      )}
     </Toolbar>
   );
 }

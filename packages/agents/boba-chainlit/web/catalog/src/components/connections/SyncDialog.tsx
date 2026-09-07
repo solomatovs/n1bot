@@ -1,15 +1,12 @@
 import { RefreshCw } from "lucide-react";
 import { useState, type FormEvent, type ReactElement } from "react";
 
-import type { ConnectionView, SourceConnection, SyncScope } from "../../model/catalog";
-import { Alert, Button, Dialog, Field, Form, Input, Row, Select, Toolbar } from "../../ui";
-import { connectionLabel } from "./ConnectionsDialog";
+import type { SyncScope } from "../../model/catalog";
+import { Button, Dialog, Field, Form, Input, Row, Toolbar } from "../../ui";
 
 type Props = {
-  sourceName: string;
-  bound: SourceConnection[];
-  directory: ConnectionView[];
-  onStart: (connectionId: string, scope: SyncScope) => void;
+  connectionName: string;
+  onStart: (scope: SyncScope) => void;
   onClose: () => void;
 };
 
@@ -30,21 +27,18 @@ export function parseSchemas(raw: string): string[] {
     .filter((piece) => piece !== "");
 }
 
-/** Диалог синхронизации: привязанное подключение, схемы, размер порции и
- * пауза между заходами инструмента в каталог базы. */
-export function SyncDialog({ sourceName, bound, directory, onStart, onClose }: Props): ReactElement {
-  const usable = bound.filter((item) => directory.some((entry) => entry.id === item.connection_id));
-  const [connection, setConnection] = useState<string>("");
+/** Диалог синхронизации подключения: схемы, размер порции и пауза между
+ * заходами инструмента в каталог базы. */
+export function SyncDialog({ connectionName, onStart, onClose }: Props): ReactElement {
   const [schemas, setSchemas] = useState("");
   const [batchSize, setBatchSize] = useState(String(SCOPE_LIMITS.batchDefault));
   const [pauseMs, setPauseMs] = useState("0");
-  const chosen = connection !== "" ? connection : (usable[0]?.connection_id ?? "");
 
   const batch = Number(batchSize);
   const pause = Number(pauseMs);
   const batchOk = Number.isInteger(batch) && batch >= SCOPE_LIMITS.batchMin && batch <= SCOPE_LIMITS.batchMax;
   const pauseOk = Number.isInteger(pause) && pause >= SCOPE_LIMITS.pauseMin && pause <= SCOPE_LIMITS.pauseMax;
-  const ready = chosen !== "" && batchOk && pauseOk;
+  const ready = batchOk && pauseOk;
 
   const submit = (event: FormEvent): void => {
     event.preventDefault();
@@ -52,7 +46,7 @@ export function SyncDialog({ sourceName, bound, directory, onStart, onClose }: P
       return;
     }
 
-    onStart(chosen, {
+    onStart({
       schemas: parseSchemas(schemas),
       batch_size: batch,
       pause_ms: pause,
@@ -60,30 +54,8 @@ export function SyncDialog({ sourceName, bound, directory, onStart, onClose }: P
   };
 
   return (
-    <Dialog title={`sync ${sourceName}`} mark="source-sync" onClose={onClose}>
+    <Dialog title={`sync ${connectionName}`} mark="connection-sync" onClose={onClose}>
       <Form onSubmit={submit}>
-        {usable.length === 0 && (
-          <Alert tone="info" mark="sync-no-connection">
-            bind a connection you have access to before syncing
-          </Alert>
-        )}
-        <Field label="connection" required>
-          <Select
-            fill
-            aria-label="sync connection"
-            value={chosen}
-            disabled={usable.length === 0}
-            onChange={(event) => {
-              setConnection(event.target.value);
-            }}
-          >
-            {usable.map((item) => (
-              <option key={item.connection_id} value={item.connection_id}>
-                {connectionLabel(item.connection_id, directory)}
-              </option>
-            ))}
-          </Select>
-        </Field>
         <Field label="schemas" hint="comma-separated; empty takes every non-system schema">
           <Input
             mono

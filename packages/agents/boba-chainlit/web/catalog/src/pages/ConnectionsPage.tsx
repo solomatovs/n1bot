@@ -1,12 +1,12 @@
-import { Link2, Pencil, PlugZap, Plus, Trash2, Unlink } from "lucide-react";
+import { Pencil, PlugZap, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState, type ReactElement } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { ApiError, type CatalogApi } from "../api/client";
 import { useServices } from "../app";
-import { AssignDialog } from "../components/connections/AssignDialog";
 import { ConnectionDialog } from "../components/connections/ConnectionDialog";
-import type { Access, ConnectionView, Source } from "../model/catalog";
+import { SyncDialog } from "../components/connections/SyncDialog";
+import { connectionRows, type Access, type ConnectionRow, type ConnectionView, type SyncedConnection } from "../model/catalog";
 import { SchemaDoc, parseSchema } from "../model/schema";
 import {
   Alert,
@@ -29,19 +29,19 @@ import {
   useToast,
 } from "../ui";
 
-type Lists = { access: Access; sources: Source[]; connections: ConnectionView[]; doc: SchemaDoc; kinds: string[] };
+type Lists = { access: Access; rows: ConnectionRow[]; foreign: SyncedConnection[]; doc: SchemaDoc };
 type LoadState = { status: "loading" } | { status: "failed"; message: string } | { status: "ready"; lists: Lists };
 type DialogState =
   | { kind: "none" }
   | { kind: "connection"; row: ConnectionView | null }
-  | { kind: "assign"; row: ConnectionView }
+  | { kind: "sync"; row: ConnectionView }
   | { kind: "delete"; row: ConnectionView };
 type Probe = { id: string; text: string; ok: boolean };
 
-/** Подключения и источники: подключение заводится со всеми полями по схеме
- * api, затем помечается источником — именем и описанием; источник группирует
- * подключения одного вида. */
-export function SourcesPage(): ReactElement {
+/** Подключения: заводятся со всеми полями по схеме api, проверяются,
+ * синхронизируются в каталог, правятся и удаляются; каталог показывает у
+ * каждого последнюю версию снимка. */
+export function ConnectionsPage(): ReactElement {
   const { api } = useServices();
   const toast = useToast();
   const navigate = useNavigate();
@@ -72,7 +72,7 @@ export function SourcesPage(): ReactElement {
 
   useEffect(() => {
     return api.events((message) => {
-      if (message.source_id !== null) {
+      if (message.connection_id !== null) {
         reload();
       }
     });
@@ -84,15 +84,13 @@ export function SourcesPage(): ReactElement {
 
   if (state.status === "failed") {
     return (
-      <EmptyState fill title="sources are not available">
+      <EmptyState fill title="connections are not available">
         {state.message}
       </EmptyState>
     );
   }
 
-  const { access, sources, connections, doc, kinds } = state.lists;
-  const sourceOf = (connection: ConnectionView): Source | undefined =>
-    sources.find((source) => source.connection_ids.includes(connection.id));
+  const { access, rows, foreign, doc } = state.lists;
 
   const run = (action: Promise<unknown>, done: string): void => {
     action
@@ -119,14 +117,14 @@ export function SourcesPage(): ReactElement {
   };
 
   return (
-    <Index mark="sources-page" data-can-edit={access.can_edit}>
+    <Index mark="connections-page" data-can-edit={access.can_edit}>
       <IndexHead>
         <TopbarLink to="/">catalog</TopbarLink>
-        <Eyebrow as="h4">sources</Eyebrow>
+        <Eyebrow as="h4">connections</Eyebrow>
       </IndexHead>
 
       <Section
-        title={`connections · ${connections.length}`}
+        title={`connections · ${rows.length}`}
         actions={
           <Button
             size="sm"
@@ -141,59 +139,47 @@ export function SourcesPage(): ReactElement {
           </Button>
         }
       >
-        <Note>
-          Add a connection with its credentials, then mark it with a source: a name for the place the data lives.
-        </Note>
+        <Note>Add a connection, then sync it: the catalog learns its tables and they can go into a process.</Note>
         <List kind="spaced" mark="connections-list" empty="no connections yet">
-          {connections.map((row) => (
-            <ConnectionRow
-              key={row.id}
+          {rows.map((row) => (
+            <ConnectionListRow
+              key={row.view.id}
               row={row}
-              source={sourceOf(row)}
-              syncable={kinds.includes(row.kind)}
               canEdit={access.can_edit}
-              probe={probe?.id === row.id ? probe : null}
+              probe={probe?.id === row.view.id ? probe : null}
               onOpen={() => {
-                setDialog({ kind: "connection", row });
+                setDialog({ kind: "connection", row: row.view });
               }}
               onCheck={() => {
-                check(row);
+                check(row.view);
               }}
-              onAssign={() => {
-                setDialog({ kind: "assign", row });
-              }}
-              onUnassign={(source) => {
-                run(api.unbindConnection(source.id, row.id), "connection unassigned");
+              onSync={() => {
+                setDialog({ kind: "sync", row: row.view });
               }}
               onDelete={() => {
-                setDialog({ kind: "delete", row });
+                setDialog({ kind: "delete", row: row.view });
               }}
             />
           ))}
         </List>
       </Section>
 
-      <Section title={`sources · ${sources.length}`}>
-        <List kind="spaced" mark="sources-list" empty="no sources yet: assign a connection to create one">
-          {sources.map((source) => (
-            <ListRow key={source.id} data-source={source.name}>
-              <ListName to={`/sources/${source.id}`}>{source.name}</ListName>
-              <ListAside>
-                <Chip tone="muted">{source.kind}</Chip>
-                <Chip tone="muted">
-                  {source.connection_ids.length} connection{source.connection_ids.length === 1 ? "" : "s"}
-                </Chip>
-                <Chip tone="muted">{source.latest_version === 0 ? "no versions" : `v${source.latest_version}`}</Chip>
-                {source.description !== "" && (
-                  <Note micro tone="faint">
-                    {source.description}
-                  </Note>
-                )}
-              </ListAside>
-            </ListRow>
-          ))}
-        </List>
-      </Section>
+      {foreign.length > 0 && (
+        <Section title={`synced by others · ${foreign.length}`}>
+          <Note>Connections you cannot see, whose snapshots are in the catalog.</Note>
+          <List kind="spaced" mark="foreign-list">
+            {foreign.map((item) => (
+              <ListRow key={item.connection_id} data-connection={item.name}>
+                <ListName to={`/connections/${item.connection_id}`}>{item.name}</ListName>
+                <ListAside>
+                  <Chip tone="muted">{item.kind}</Chip>
+                  <Chip tone="muted">v{item.latest_version}</Chip>
+                </ListAside>
+              </ListRow>
+            ))}
+          </List>
+        </Section>
+      )}
 
       {dialog.kind === "connection" && (
         <ConnectionDialog
@@ -210,20 +196,17 @@ export function SourcesPage(): ReactElement {
           }}
         />
       )}
-      {dialog.kind === "assign" && (
-        <AssignDialog
-          connection={dialog.row}
-          sources={sources.filter((source) => source.kind === dialog.row.kind)}
-          onAssign={(sourceId) => {
-            run(api.bindConnection(sourceId, dialog.row.id), "connection assigned");
-          }}
-          onCreate={(spec) => {
+      {dialog.kind === "sync" && (
+        <SyncDialog
+          connectionName={dialog.row.name}
+          onStart={(scope) => {
+            const id = dialog.row.id;
             api
-              .createSource({ ...spec, connection_id: dialog.row.id })
-              .then((source) => {
+              .startSync(id, scope)
+              .then(() => {
                 setDialog({ kind: "none" });
-                toast("source created", "success");
-                void navigate(`/sources/${source.id}`);
+                toast("sync started", "success");
+                void navigate(`/connections/${id}`);
               })
               .catch((error: unknown) => {
                 toast(describe(error), "error");
@@ -243,8 +226,8 @@ export function SourcesPage(): ReactElement {
           }}
         >
           <Alert tone="info">
-            The connection “{dialog.row.name}” will be deleted. A connection bound to a source is refused until
-            unassigned.
+            The connection “{dialog.row.name}” will be deleted. A connection with catalog versions or with nodes in a
+            process is refused with the reason.
           </Alert>
           <Toolbar>
             <Button
@@ -272,47 +255,35 @@ export function SourcesPage(): ReactElement {
 }
 
 type RowProps = {
-  row: ConnectionView;
-  source: Source | undefined;
-  /** У вида подключения есть снимок: его можно ставить в источник. */
-  syncable: boolean;
+  row: ConnectionRow;
   canEdit: boolean;
   probe: Probe | null;
   onOpen: () => void;
   onCheck: () => void;
-  onAssign: () => void;
-  onUnassign: (source: Source) => void;
+  onSync: () => void;
   onDelete: () => void;
 };
 
-/** Строка подключения: вид, владение, источник, итог проверки и действия. */
-function ConnectionRow({
-  row,
-  source,
-  syncable,
-  canEdit,
-  probe,
-  onOpen,
-  onCheck,
-  onAssign,
-  onUnassign,
-  onDelete,
-}: RowProps): ReactElement {
+/** Строка подключения: вид, владение, версия снимка, итог проверки и
+ * действия: check, sync, edit, delete. */
+function ConnectionListRow({ row, canEdit, probe, onOpen, onCheck, onSync, onDelete }: RowProps): ReactElement {
+  const { view, synced, syncable } = row;
   return (
-    <ListRow data-connection={row.name} data-source={source?.name}>
-      <ListName title={row.available ? undefined : "the connection type is not installed"} onClick={onOpen}>
-        {row.name}
+    <ListRow data-connection={view.name} data-synced={synced !== undefined}>
+      <ListName to={`/connections/${view.id}`} title={view.available ? undefined : "the connection type is not installed"}>
+        {view.name}
       </ListName>
       <ListAside>
-        <Chip tone="muted">{row.kind}</Chip>
-        {!row.mine && <Chip tone="muted">shared</Chip>}
-        {source !== undefined ? (
-          <Chip tone="draft" mark="connection-source">
-            {source.name}
+        <Chip tone="muted">{view.kind}</Chip>
+        {!view.mine && <Chip tone="muted">shared</Chip>}
+        {synced !== undefined && (
+          <Chip tone="draft" mark="connection-version">
+            v{synced.latest_version}
           </Chip>
-        ) : (
-          <Chip tone="muted" mark="connection-source">
-            no source
+        )}
+        {synced === undefined && syncable && (
+          <Chip tone="muted" mark="connection-version">
+            not synced
           </Chip>
         )}
         {probe !== null && (
@@ -320,33 +291,21 @@ function ConnectionRow({
             {probe.ok ? "connected" : "failed"}
           </Chip>
         )}
-        <IconButton size="sm" ghost aria-label={`check ${row.name}`} onClick={onCheck}>
+        <IconButton size="sm" ghost aria-label={`check ${view.name}`} title="check" onClick={onCheck}>
           <PlugZap size={14} />
         </IconButton>
-        {canEdit && source === undefined && syncable && (
-          <IconButton size="sm" ghost aria-label={`assign ${row.name} to a source`} onClick={onAssign}>
-            <Link2 size={14} />
+        {canEdit && syncable && (
+          <IconButton size="sm" ghost aria-label={`sync ${view.name}`} title="sync" onClick={onSync}>
+            <RefreshCw size={14} />
           </IconButton>
         )}
-        {canEdit && source !== undefined && (
-          <IconButton
-            size="sm"
-            ghost
-            aria-label={`unassign ${row.name}`}
-            onClick={() => {
-              onUnassign(source);
-            }}
-          >
-            <Unlink size={14} />
-          </IconButton>
-        )}
-        {row.mine && (
-          <IconButton size="sm" ghost aria-label={`edit ${row.name}`} onClick={onOpen}>
+        {view.mine && (
+          <IconButton size="sm" ghost aria-label={`edit ${view.name}`} title="edit" onClick={onOpen}>
             <Pencil size={14} />
           </IconButton>
         )}
-        {row.mine && (
-          <IconButton size="sm" ghost aria-label={`delete ${row.name}`} onClick={onDelete}>
+        {view.mine && (
+          <IconButton size="sm" ghost aria-label={`delete ${view.name}`} title="delete" onClick={onDelete}>
             <Trash2 size={14} />
           </IconButton>
         )}
@@ -357,11 +316,12 @@ function ConnectionRow({
 
 async function load(api: CatalogApi): Promise<Lists> {
   const access = await api.access();
-  const sources = await api.sources();
-  const connections = await api.connections();
+  const views = await api.connections();
   const kinds = await api.sourceKinds();
+  const synced = await api.synced();
   const doc = new SchemaDoc(parseSchema(await api.connectionSchema()));
-  return { access, sources, connections, doc, kinds };
+  const { rows, foreign } = connectionRows(views, kinds, synced);
+  return { access, rows, foreign, doc };
 }
 
 function describe(error: unknown): string {

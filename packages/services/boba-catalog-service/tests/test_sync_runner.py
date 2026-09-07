@@ -1,4 +1,4 @@
-"""Синхронизация источника на живом Postgres: фейковый инструмент снятия в
+"""Синхронизация подключения на живом Postgres: фейковый инструмент снятия в
 субпроцессе шлёт кадры образца PgSample тем же каналом, что и настоящий
 pg_schema_snapshot; хост складывает порции в staging и переносит версию
 одной транзакцией. Проверяются полный проход, diff между двумя проходами,
@@ -21,15 +21,13 @@ from boba.catalog_service import (
     CatalogConfig,
     CatalogRefusalError,
     CatalogService,
-    CatalogStore,
     ConnectionInfo,
-    SourceCreate,
-    SourceStore,
+    ConnectionStore,
+    ProcessSpec,
+    ProcessStore,
     StagingTable,
     SyncCaller,
     SyncClosedError,
-    SyncConnectionNotBoundError,
-    SyncRequest,
     SyncRunningError,
     SyncScope,
     SyncSetupError,
@@ -91,36 +89,27 @@ async def service(pool: AsyncPostgresPool, tmp_path: Path) -> CatalogService:
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
         )
 
-    store = CatalogStore(_config(), pool)
-    await store.setup()
+    processes = ProcessStore(_config(), pool)
+    await processes.setup()
 
     kinds = SourceKinds.of(FakeKindSnapshot, ChSnapshot)
-    sources = SourceStore(_config(), kinds, pool)
-    await sources.setup()
+    connections = ConnectionStore(_config(), kinds, pool)
+    await connections.setup()
 
     ports = FakeSyncPorts(
         tmp_path, ROLE, TEST_PROFILE, (CONNECTION, CH_CONNECTION), (EDITOR.user_id,)
     )
-    return CatalogService(store, sources, _config(), MemoryMessageBus("test:0"), ports)
-
-
-@pytest.fixture
-async def source_id(service: CatalogService) -> UUID:
-    """Источник prod с привязанным подключением, без версий."""
-    source = await service.create_source(
-        EDITOR, SourceCreate(name="prod", connection_id=CONNECTION_ID)
+    return CatalogService(
+        processes, connections, _config(), MemoryMessageBus("test:0"), ports
     )
-    return source.id
 
 
-def _request(scenario: FakeSyncScenario, **scope: int) -> SyncRequest:
+def _scope(scenario: FakeSyncScenario, **scope: int) -> SyncScope:
     schemas: tuple[str, ...] = ()
     if scenario is not FakeSyncScenario.SAMPLE:
         schemas = (scenario.value,)
 
-    return SyncRequest(
-        connection_id=CONNECTION_ID, scope=SyncScope(schemas=schemas, **scope)
-    )
+    return SyncScope(schemas=schemas, **scope)
 
 
 class Collector:
@@ -160,14 +149,16 @@ async def _staging_tables(pool: AsyncPostgresPool) -> list[str]:
 
 
 async def test_full_sync_writes_a_version_from_batches(
-    service: CatalogService, source_id: UUID, pool: AsyncPostgresPool
+    service: CatalogService, pool: AsyncPostgresPool
 ) -> None:
     collector = _listen(service, EDITOR)
 
     started = await service.start_sync(
-        _caller(EDITOR), source_id, _request(FakeSyncScenario.SAMPLE, batch_size=2)
+        _caller(EDITOR), CONNECTION_ID, _scope(FakeSyncScenario.SAMPLE, batch_size=2)
     )
     assert started.status is SyncStatus.RUNNING
+    assert started.connection_name == CONNECTION_NAME
+    assert started.kind == "postgres"
     assert started.scope.batch_size == 2
 
     done = await service.syncs.wait(started.id)
@@ -177,20 +168,25 @@ async def test_full_sync_writes_a_version_from_batches(
     assert done.objects_done == done.objects_total
     assert done.finished_at is not None
 
-    version = await service.source_versions(EDITOR, source_id)
+    version = await service.connection_versions(EDITOR, CONNECTION_ID)
     assert [item.version for item in version] == [1]
     assert version[0].sync_id == started.id
-    assert version[0].connection_id == CONNECTION_ID
+    assert version[0].connection_name == CONNECTION_NAME
     assert version[0].server_version == "fake 17.0"
 
-    snapshot = await service.source_snapshot(EDITOR, source_id, 1)
+    snapshot = await service.connection_snapshot(EDITOR, CONNECTION_ID, 1)
     assert snapshot.objects_count() == PgSample().snapshot().objects_count()
-    assert SourceDiff.between(source_id, snapshot, PgSample().snapshot()).entries == ()
+    diff = SourceDiff.between(CONNECTION_ID, snapshot, PgSample().snapshot())
+    assert diff.entries == ()
 
     assert await _staging_tables(pool) == []
 
-    listed = await service.source_syncs(VIEWER, source_id)
+    listed = await service.connection_syncs(VIEWER, CONNECTION_ID)
     assert [item.id for item in listed] == [started.id]
+    synced = await service.synced_connections(VIEWER)
+    assert [(item.name, item.latest_version) for item in synced] == [
+        (CONNECTION_NAME, 1)
+    ]
 
     sync_events: list[ChangeAction] = []
     for message in collector.seen:
@@ -199,35 +195,36 @@ async def test_full_sync_writes_a_version_from_batches(
 
     assert sync_events[0] is ChangeAction.CREATED
     assert sync_events.count(ChangeAction.UPDATED) >= 3
-    source_events: list[ChangeAction] = []
+    connection_events: list[ChangeAction] = []
     for message in collector.seen:
-        if message.source_id == source_id:
-            source_events.append(message.action)
+        if message.connection_id == CONNECTION_ID:
+            connection_events.append(message.action)
 
-    assert source_events[-1] is ChangeAction.UPDATED
+    assert connection_events[-1] is ChangeAction.UPDATED
 
 
 async def test_second_sync_yields_a_diff_and_stale_pins(
-    service: CatalogService, source_id: UUID
+    service: CatalogService,
 ) -> None:
     first = await service.start_sync(
-        _caller(EDITOR), source_id, _request(FakeSyncScenario.SAMPLE)
+        _caller(EDITOR), CONNECTION_ID, _scope(FakeSyncScenario.SAMPLE)
     )
     assert (await service.syncs.wait(first.id)).status is SyncStatus.DONE
 
-    draft = await service.create_draft(EDITOR, "process")
-    process = ProcessSample(source_id)
+    created = await service.create_process(EDITOR, ProcessSpec(name="orders"))
+    draft = await service.create_draft(EDITOR, created.id, "process")
+    process = ProcessSample(CONNECTION_ID)
     await service.append_ops(EDITOR, draft.id, 0, process.ops(), AuthorVia.USER)
     await service.publish(EDITOR, draft.id, AuthorVia.USER)
 
     second = await service.start_sync(
-        _caller(EDITOR), source_id, _request(FakeSyncScenario.NEXT, batch_size=3)
+        _caller(EDITOR), CONNECTION_ID, _scope(FakeSyncScenario.NEXT, batch_size=3)
     )
     finished = await service.syncs.wait(second.id)
     assert finished.status is SyncStatus.DONE, finished.error
     assert finished.version == 2
 
-    diff = await service.source_diff(EDITOR, source_id, 1, 2)
+    diff = await service.connection_diff(EDITOR, CONNECTION_ID, 1, 2)
     removed: list[str] = []
     for entry in diff.entries:
         if entry.status is ChangeStatus.REMOVED:
@@ -235,22 +232,22 @@ async def test_second_sync_yields_a_diff_and_stale_pins(
 
     assert "customers" in removed
 
-    staleness = await service.staleness(EDITOR)
+    staleness = await service.staleness(EDITOR, created.id)
     reasons: set[StaleReason] = set()
     for item in staleness.entries:
-        if item.source_id == source_id:
+        if item.connection_id == CONNECTION_ID:
             reasons.add(item.reason)
 
     assert StaleReason.OBJECT_REMOVED in reasons
 
 
 async def test_cancel_stops_the_tool_and_drops_staging(
-    service: CatalogService, source_id: UUID, pool: AsyncPostgresPool
+    service: CatalogService, pool: AsyncPostgresPool
 ) -> None:
     started = await service.start_sync(
         _caller(EDITOR),
-        source_id,
-        _request(FakeSyncScenario.SLOW, batch_size=1, pause_ms=400),
+        CONNECTION_ID,
+        _scope(FakeSyncScenario.SLOW, batch_size=1, pause_ms=400),
     )
 
     async def staged() -> bool:
@@ -269,29 +266,29 @@ async def test_cancel_stops_the_tool_and_drops_staging(
     assert cancelled.status is SyncStatus.CANCELLED
     assert cancelled.error == "cancelled by the user"
     assert await _staging_tables(pool) == []
-    assert await service.source_versions(EDITOR, source_id) == []
+    assert await service.connection_versions(EDITOR, CONNECTION_ID) == []
 
     with pytest.raises(SyncClosedError):
         await service.cancel_sync(EDITOR, started.id)
 
     again = await service.start_sync(
-        _caller(EDITOR), source_id, _request(FakeSyncScenario.SAMPLE)
+        _caller(EDITOR), CONNECTION_ID, _scope(FakeSyncScenario.SAMPLE)
     )
     assert (await service.syncs.wait(again.id)).status is SyncStatus.DONE
 
 
-async def test_only_one_sync_per_source_runs_at_a_time(
-    service: CatalogService, source_id: UUID
+async def test_only_one_sync_per_connection_runs_at_a_time(
+    service: CatalogService,
 ) -> None:
     started = await service.start_sync(
         _caller(EDITOR),
-        source_id,
-        _request(FakeSyncScenario.SLOW, batch_size=1, pause_ms=200),
+        CONNECTION_ID,
+        _scope(FakeSyncScenario.SLOW, batch_size=1, pause_ms=200),
     )
 
     with pytest.raises(SyncRunningError):
         await service.start_sync(
-            _caller(EDITOR), source_id, _request(FakeSyncScenario.SAMPLE)
+            _caller(EDITOR), CONNECTION_ID, _scope(FakeSyncScenario.SAMPLE)
         )
 
     await service.cancel_sync(EDITOR, started.id)
@@ -302,53 +299,37 @@ async def test_only_one_sync_per_source_runs_at_a_time(
     [
         (FakeSyncScenario.CRASH, "crashed on purpose"),
         (FakeSyncScenario.BROKEN_DONE, "sync done declares 0 records of part"),
-        (FakeSyncScenario.WRONG_KIND, "the tool reports 'clickhouse' source"),
+        (FakeSyncScenario.WRONG_KIND, "the tool reports a 'clickhouse' snapshot"),
     ],
 )
 async def test_failures_close_the_sync_with_the_reason(
     service: CatalogService,
-    source_id: UUID,
     pool: AsyncPostgresPool,
     scenario: FakeSyncScenario,
     expected: str,
 ) -> None:
-    started = await service.start_sync(_caller(EDITOR), source_id, _request(scenario))
+    started = await service.start_sync(_caller(EDITOR), CONNECTION_ID, _scope(scenario))
     failed = await service.syncs.wait(started.id)
 
     assert failed.status is SyncStatus.FAILED
     assert failed.error is not None
     assert expected in failed.error
     assert await _staging_tables(pool) == []
-    assert await service.source_versions(EDITOR, source_id) == []
+    assert await service.connection_versions(EDITOR, CONNECTION_ID) == []
 
 
-async def test_setup_refusals(service: CatalogService, source_id: UUID) -> None:
+async def test_setup_refusals(service: CatalogService) -> None:
     with pytest.raises(CatalogRefusalError):
         await service.start_sync(
-            _caller(VIEWER), source_id, _request(FakeSyncScenario.SAMPLE)
+            _caller(VIEWER), CONNECTION_ID, _scope(FakeSyncScenario.SAMPLE)
         )
 
-    with pytest.raises(SyncConnectionNotBoundError):
-        await service.start_sync(
-            _caller(EDITOR),
-            source_id,
-            SyncRequest(connection_id=uuid4(), scope=SyncScope()),
-        )
+    with pytest.raises(SyncSetupError, match="not visible"):
+        await service.start_sync(_caller(EDITOR), uuid4(), SyncScope())
 
-    no_tool = await service.create_source(
-        EDITOR, SourceCreate(name="events", connection_id=CH_CONNECTION.id)
-    )
     with pytest.raises(SyncSetupError, match="declare no sync tool"):
-        await service.start_sync(
-            _caller(EDITOR),
-            no_tool.id,
-            SyncRequest(connection_id=CH_CONNECTION.id, scope=SyncScope()),
-        )
+        await service.start_sync(_caller(EDITOR), CH_CONNECTION.id, SyncScope())
 
     stranger = _subject(UUID(int=9), ROLE)
     with pytest.raises(SyncSetupError, match="not visible"):
-        await service.start_sync(
-            _caller(stranger),
-            source_id,
-            SyncRequest(connection_id=CONNECTION_ID, scope=SyncScope()),
-        )
+        await service.start_sync(_caller(stranger), CONNECTION_ID, SyncScope())

@@ -43,14 +43,16 @@ type RowProps = Omit<LiHTMLAttributes<HTMLLIElement>, "className"> & {
   status?: string | undefined;
   hidden?: boolean | undefined;
   stale?: boolean | undefined;
+  /** Строка под родительской: со сдвигом и отбивкой слева. */
+  nested?: boolean | undefined;
   mark?: string | undefined;
   children: ReactNode;
 };
 
-export function ListRow({ active, status, hidden, stale, mark, children, ...rest }: RowProps): ReactElement {
+export function ListRow({ active, status, hidden, stale, nested, mark, children, ...rest }: RowProps): ReactElement {
   return (
     <li
-      className="list__row"
+      className={nested === true ? "list__row list__row--nested" : "list__row"}
       data-active={active}
       data-status={status}
       data-hidden={hidden}

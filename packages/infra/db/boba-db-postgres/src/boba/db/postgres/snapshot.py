@@ -685,7 +685,7 @@ class PgSnapshot(SourceSnapshot):
 
             yield relation
 
-    def children(self, source_id: UUID, path: Sequence[str]) -> Sequence[TreeNode]:
+    def children(self, connection_id: UUID, path: Sequence[str]) -> Sequence[TreeNode]:
         """Дети узла дерева по глубине пути: базы, схемы, группы, объекты,
         секции таблицы."""
         steps = tuple(path)
@@ -700,14 +700,14 @@ class PgSnapshot(SourceSnapshot):
             return list(self._group_nodes(steps))
 
         if depth == PgDepth.OBJECTS:
-            return list(self._object_nodes(source_id, steps))
+            return list(self._object_nodes(connection_id, steps))
 
         partitions_level = depth == PgDepth.PARTITIONS
         under_tables = partitions_level and steps[2] == PgGroup.TABLES.value
         if not under_tables:
             return []
 
-        return list(self._partition_nodes(source_id, steps))
+        return list(self._partition_nodes(connection_id, steps))
 
     def _database_nodes(self) -> Iterator[TreeNode]:
         for database in sorted(self.databases, key=attrgetter("name")):
@@ -785,15 +785,15 @@ class PgSnapshot(SourceSnapshot):
             )
 
     def _object_nodes(
-        self, source_id: UUID, steps: tuple[str, ...]
+        self, connection_id: UUID, steps: tuple[str, ...]
     ) -> Iterator[TreeNode]:
         database, schema, group = steps
         if group in (PgGroup.SEQUENCES.value, PgGroup.TYPES.value):
-            yield from self._plain_object_nodes(source_id, steps)
+            yield from self._plain_object_nodes(connection_id, steps)
             return
 
         if group in (PgGroup.FUNCTIONS.value, PgGroup.PROCEDURES.value):
-            yield from self._routine_nodes(source_id, steps)
+            yield from self._routine_nodes(connection_id, steps)
             return
 
         for relation in sorted(self.relations, key=attrgetter("name")):
@@ -818,12 +818,14 @@ class PgSnapshot(SourceSnapshot):
                 detail=relation.kind.value,
                 comment=relation.comment,
                 ref=ObjectRef(
-                    source_id=source_id, kind=ObjectKind.RELATION, path=relation.key
+                    connection_id=connection_id,
+                    kind=ObjectKind.RELATION,
+                    path=relation.key,
                 ),
             )
 
     def _partition_nodes(
-        self, source_id: UUID, steps: tuple[str, ...]
+        self, connection_id: UUID, steps: tuple[str, ...]
     ) -> Iterator[TreeNode]:
         database, schema, _group, name = steps
         for partition in sorted(
@@ -837,12 +839,14 @@ class PgSnapshot(SourceSnapshot):
                 detail=partition.partition_bound or PgRelationKind.PARTITION.value,
                 comment=partition.comment,
                 ref=ObjectRef(
-                    source_id=source_id, kind=ObjectKind.RELATION, path=partition.key
+                    connection_id=connection_id,
+                    kind=ObjectKind.RELATION,
+                    path=partition.key,
                 ),
             )
 
     def _routine_nodes(
-        self, source_id: UUID, steps: tuple[str, ...]
+        self, connection_id: UUID, steps: tuple[str, ...]
     ) -> Iterator[TreeNode]:
         database, schema, group = steps
         for routine in sorted(self.routines, key=attrgetter("name", "signature")):
@@ -860,12 +864,14 @@ class PgSnapshot(SourceSnapshot):
                 detail=routine.returns or routine.kind.value,
                 comment=routine.comment,
                 ref=ObjectRef(
-                    source_id=source_id, kind=ObjectKind.ROUTINE, path=routine.key
+                    connection_id=connection_id,
+                    kind=ObjectKind.ROUTINE,
+                    path=routine.key,
                 ),
             )
 
     def _plain_object_nodes(
-        self, source_id: UUID, steps: tuple[str, ...]
+        self, connection_id: UUID, steps: tuple[str, ...]
     ) -> Iterator[TreeNode]:
         database, schema, group = steps
         if group == PgGroup.SEQUENCES.value:
@@ -881,7 +887,9 @@ class PgSnapshot(SourceSnapshot):
                     detail=sequence.type,
                     comment=sequence.comment,
                     ref=ObjectRef(
-                        source_id=source_id, kind=ObjectKind.SEQUENCE, path=sequence.key
+                        connection_id=connection_id,
+                        kind=ObjectKind.SEQUENCE,
+                        path=sequence.key,
                     ),
                 )
             return
@@ -897,5 +905,7 @@ class PgSnapshot(SourceSnapshot):
                 children_count=0,
                 detail=typ.kind.value,
                 comment=typ.comment,
-                ref=ObjectRef(source_id=source_id, kind=ObjectKind.TYPE, path=typ.key),
+                ref=ObjectRef(
+                    connection_id=connection_id, kind=ObjectKind.TYPE, path=typ.key
+                ),
             )

@@ -361,7 +361,7 @@ class ChSnapshot(SourceSnapshot):
 
             yield attribute
 
-    def children(self, source_id: UUID, path: Sequence[str]) -> Sequence[TreeNode]:
+    def children(self, connection_id: UUID, path: Sequence[str]) -> Sequence[TreeNode]:
         """Дети узла дерева по глубине пути: базы, группы, объекты."""
         steps = tuple(path)
         depth = len(steps)
@@ -372,7 +372,7 @@ class ChSnapshot(SourceSnapshot):
             return list(self._group_nodes(steps))
 
         if depth == ChDepth.OBJECTS:
-            return list(self._object_nodes(source_id, steps))
+            return list(self._object_nodes(connection_id, steps))
 
         return []
 
@@ -419,11 +419,11 @@ class ChSnapshot(SourceSnapshot):
             )
 
     def _object_nodes(
-        self, source_id: UUID, steps: tuple[str, ...]
+        self, connection_id: UUID, steps: tuple[str, ...]
     ) -> Iterator[TreeNode]:
         database, group = steps
         if group == ChGroup.DICTIONARIES.value:
-            yield from self._dictionary_nodes(source_id, steps)
+            yield from self._dictionary_nodes(connection_id, steps)
             return
 
         for table in sorted(self.tables, key=attrgetter("name")):
@@ -441,12 +441,12 @@ class ChSnapshot(SourceSnapshot):
                 detail=table.engine,
                 comment=table.comment,
                 ref=ObjectRef(
-                    source_id=source_id, kind=ObjectKind.TABLE, path=table.key
+                    connection_id=connection_id, kind=ObjectKind.TABLE, path=table.key
                 ),
             )
 
     def _dictionary_nodes(
-        self, source_id: UUID, steps: tuple[str, ...]
+        self, connection_id: UUID, steps: tuple[str, ...]
     ) -> Iterator[TreeNode]:
         database, _group = steps
         for dictionary in sorted(self.dictionaries, key=attrgetter("name")):
@@ -461,7 +461,7 @@ class ChSnapshot(SourceSnapshot):
                 detail=dictionary.layout,
                 comment=dictionary.comment,
                 ref=ObjectRef(
-                    source_id=source_id,
+                    connection_id=connection_id,
                     kind=ObjectKind.DICTIONARY,
                     path=dictionary.key,
                 ),

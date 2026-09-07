@@ -1,79 +1,201 @@
-import { Eye, EyeOff, Pencil, Plus, Trash2 } from "lucide-react";
-import { useMemo, useState, type ReactElement } from "react";
+import { Eye, EyeOff, Plus } from "lucide-react";
+import { Fragment, useMemo, useState, type ReactElement, type ReactNode } from "react";
 
 import type { CatalogApi } from "../api/client";
-import type { Catalog, ObjectRef, ProcessNode } from "../model/catalog";
+import type { Catalog, Draft, ObjectRef, Process, ProcessNode } from "../model/catalog";
 import type { EditActions } from "../model/editing";
 import type { PaneTab } from "../model/urlState";
-import { Button, IconButton, List, ListAside, ListName, ListRow, Note, Search, Segmented, Toolbar } from "../ui";
+import { Chip, IconButton, List, ListAside, ListName, ListRow, Note, Search, Segmented } from "../ui";
 import "./pane.css";
-import { SourcesPane } from "./SourcesPane";
+import { ConnectionsPane } from "./ConnectionsPane";
 
-type Props = {
-  api: CatalogApi;
+/** Открытый процесс в панели: черновики и узлы по слоям. Без него панель
+ * показывает только список процессов. */
+export type OpenProcess = {
+  processId: string;
   catalog: Catalog;
-  nodes: ProcessNode[];
-  tab: PaneTab;
-  onTab: (tab: PaneTab) => void;
   activeId: string | undefined;
-  selectedObject: ObjectRef | undefined;
   hidden: ReadonlySet<string>;
   showDiff: boolean;
   editing: EditActions | undefined;
   onActivate: (nodeId: string) => void;
-  onSelectObject: (ref: ObjectRef) => void;
   onToggleHidden: (nodeId: string) => void;
+};
+
+type Props = {
+  api: CatalogApi;
+  /** Гость по ссылке: только слои, без процессов, черновиков и подключений. */
+  guest: boolean;
+  tab: PaneTab;
+  onTab: (tab: PaneTab) => void;
+  /** Закреплённая полоса действий раздела: без процесса — новый процесс, на
+   * опубликованном — правки и ссылка, на черновике — публикация, отмена,
+   * обновление. */
+  actions: ReactNode;
+  /** Все процессы каталога и свои открытые черновики одним плоским списком;
+   * открытый процесс или черновик подсвечен. */
+  processes: Process[];
+  drafts: Draft[];
+  currentDraftId: string | undefined;
+  /** Открыть форму нового процесса; без права на правки — нет. */
+  onNewProcess: (() => void) | undefined;
+  /** Открытый процесс; на входе в каталог его нет. */
+  open: OpenProcess | undefined;
+  onAddConnection: (() => void) | undefined;
+  selectedObject: ObjectRef | undefined;
+  onSelectObject: (ref: ObjectRef) => void;
 };
 
 const TABS: { value: PaneTab; label: string }[] = [
   { value: "process", label: "process" },
-  { value: "sources", label: "sources" },
+  { value: "connections", label: "connections" },
 ];
 
-/** Левая панель: вкладка процесса — узлы по слоям с поиском, выбором и глазом,
- * который прячет узел на холсте; вкладка источников — деревья источников, из
- * которых на черновике берутся узлы. */
+/** Левая панель. Вкладка процесса — закреплённая полоса действий, плоский
+ * список процессов со своими черновиками под каждым и узлы открытого
+ * процесса с поиском и глазом, который прячет узел на холсте; вкладка
+ * подключений — полоса «add connection» и деревья снимков, из которых
+ * берутся узлы. Гостю по ссылке — только узлы. */
 export function LeftPane({
   api,
-  catalog,
-  nodes,
+  guest,
   tab,
   onTab,
-  activeId,
+  actions,
+  processes,
+  drafts,
+  currentDraftId,
+  onNewProcess,
+  open,
+  onAddConnection,
   selectedObject,
-  hidden,
-  showDiff,
-  editing,
-  onActivate,
   onSelectObject,
-  onToggleHidden,
 }: Props): ReactElement {
+  const shown = guest ? "process" : tab;
+
   return (
-    <div className="pane" data-testid="left-pane" data-tab={tab}>
-      <div className="pane__bar">
-        <Segmented options={TABS} value={tab} onChange={onTab} label="left pane tab" fill />
-      </div>
-      {tab === "process" ? (
-        <ProcessList
-          catalog={catalog}
-          nodes={nodes}
-          activeId={activeId}
-          hidden={hidden}
-          showDiff={showDiff}
-          editing={editing}
-          onActivate={onActivate}
-          onToggleHidden={onToggleHidden}
-        />
+    <div className="pane" data-testid="left-pane" data-tab={shown}>
+      {!guest && (
+        <div className="pane__bar">
+          <Segmented options={TABS} value={tab} onChange={onTab} label="left pane tab" fill />
+        </div>
+      )}
+      {shown === "process" ? (
+        <>
+          {!guest && (
+            <div className="pane__bar pane__actions" data-testid="process-actions">
+              {actions}
+            </div>
+          )}
+          <div className="pane__scroll">
+            {!guest && (
+              <ProcessesGroup
+                processes={processes}
+                drafts={drafts}
+                currentProcessId={currentDraftId === undefined ? open?.processId : undefined}
+                currentDraftId={currentDraftId}
+                onNew={onNewProcess}
+              />
+            )}
+            {open !== undefined && (
+              <ProcessList
+                catalog={open.catalog}
+                nodes={open.catalog.nodes}
+                activeId={open.activeId}
+                hidden={open.hidden}
+                showDiff={open.showDiff}
+                onActivate={open.onActivate}
+                onToggleHidden={open.onToggleHidden}
+              />
+            )}
+          </div>
+        </>
       ) : (
-        <SourcesPane
+        <ConnectionsPane
           api={api}
-          pins={catalog.context.pins}
+          pins={open?.catalog.context.pins ?? {}}
           selected={selectedObject}
           onSelect={onSelectObject}
-          draggable={editing !== undefined}
+          draggable={open?.editing !== undefined}
+          onAdd={onAddConnection}
         />
       )}
     </div>
+  );
+}
+
+type ProcessesProps = {
+  processes: Process[];
+  drafts: Draft[];
+  currentProcessId: string | undefined;
+  currentDraftId: string | undefined;
+  onNew: (() => void) | undefined;
+};
+
+/** Плоский список: опубликованный процесс строкой (имя, версия, узлы), под
+ * ним свои черновики этого процесса с чипом draft, в конце черновики новых
+ * процессов; открытая строка подсвечена, плюс в заголовке заводит черновик
+ * нового процесса. Чужих черновиков в списке нет. */
+function ProcessesGroup({ processes, drafts, currentProcessId, currentDraftId, onNew }: ProcessesProps): ReactElement {
+  const fresh = drafts.filter((draft) => draft.process_id === null);
+
+  return (
+    <PaneGroup
+      title={`processes · ${processes.length}`}
+      mark="processes-group"
+      actions={
+        onNew !== undefined && (
+          <IconButton size="sm" ghost aria-label="new process" onClick={onNew}>
+            <Plus size={12} />
+          </IconButton>
+        )
+      }
+    >
+      <List mark="processes-list" empty={fresh.length === 0 ? "no processes yet" : undefined}>
+        {processes.map((process) => (
+          <Fragment key={process.id}>
+            <ListRow active={process.id === currentProcessId} data-process={process.name} mark="process-item">
+              <ListName to={`/processes/${process.id}`} title={process.description === "" ? undefined : process.description}>
+                {process.name}
+              </ListName>
+              <ListAside>
+                <Chip tone="muted">{process.latest_version === 0 ? "no versions" : `v${process.latest_version}`}</Chip>
+                <Chip tone="muted">
+                  {process.nodes} node{process.nodes === 1 ? "" : "s"}
+                </Chip>
+              </ListAside>
+            </ListRow>
+            {drafts
+              .filter((draft) => draft.process_id === process.id)
+              .map((draft) => (
+                <DraftRow key={draft.id} draft={draft} active={draft.id === currentDraftId} />
+              ))}
+          </Fragment>
+        ))}
+        {fresh.map((draft) => (
+          <DraftRow key={draft.id} draft={draft} active={draft.id === currentDraftId} fresh />
+        ))}
+      </List>
+    </PaneGroup>
+  );
+}
+
+type DraftRowProps = {
+  draft: Draft;
+  active: boolean;
+  /** Черновик нового процесса: без родителя, имя станет именем процесса. */
+  fresh?: boolean;
+};
+
+function DraftRow({ draft, active, fresh = false }: DraftRowProps): ReactElement {
+  return (
+    <ListRow active={active} nested={!fresh} data-draft={draft.name} mark="draft-item">
+      <ListName to={`/drafts/${draft.id}`}>{draft.name}</ListName>
+      <ListAside>
+        {fresh && <Chip tone="muted">new process</Chip>}
+        <Chip tone="draft">draft</Chip>
+      </ListAside>
+    </ListRow>
   );
 }
 
@@ -83,141 +205,81 @@ type ListProps = {
   activeId: string | undefined;
   hidden: ReadonlySet<string>;
   showDiff: boolean;
-  editing: EditActions | undefined;
   onActivate: (nodeId: string) => void;
   onToggleHidden: (nodeId: string) => void;
 };
 
-function ProcessList({
-  catalog,
-  nodes,
-  activeId,
-  hidden,
-  showDiff,
-  editing,
-  onActivate,
-  onToggleHidden,
-}: ListProps): ReactElement {
+/** Узлы открытого процесса одним списком с поиском: имя, группа чипом, глаз,
+ * который прячет карточку на холсте. */
+function ProcessList({ catalog, nodes, activeId, hidden, showDiff, onActivate, onToggleHidden }: ListProps): ReactElement {
   const [query, setQuery] = useState("");
 
-  // в черновике пустые слои видны: в них кладут узлы
-  const groups = useMemo(() => {
+  const shown = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    return catalog.layers
-      .map((layer) => ({
-        layer,
-        nodes: nodes.filter((node) => {
-          if (node.layer_id !== layer.id) {
-            return false;
-          }
+    return nodes.filter((node) => {
+      if (needle === "") {
+        return true;
+      }
 
-          if (needle === "") {
-            return true;
-          }
-
-          return (
-            catalog.label(node.id).toLowerCase().includes(needle) ||
-            node.ref.path.join("/").toLowerCase().includes(needle)
-          );
-        }),
-      }))
-      .filter((group) => group.nodes.length > 0 || (editing !== undefined && needle === ""));
-  }, [catalog, nodes, query, editing]);
+      return (
+        catalog.label(node.id).toLowerCase().includes(needle) || node.ref.path.join("/").toLowerCase().includes(needle)
+      );
+    });
+  }, [catalog, nodes, query]);
 
   return (
-    <>
-      <div className="pane__bar">
-        <Search value={query} onChange={setQuery} label="find a node" placeholder="find a node" />
-      </div>
-      <div className="pane__scroll">
-        {groups.map((group) => (
-          <PaneGroup
-            key={group.layer.id}
-            title={group.layer.name}
-            data={{ "data-layer": group.layer.name }}
-            actions={
-              editing !== undefined && (
-                <>
+    <PaneGroup title={`nodes · ${nodes.length}`} mark="nodes-group">
+      <>
+        <div className="pane__search">
+          <Search value={query} onChange={setQuery} label="find a node" placeholder="find a node" />
+        </div>
+        <List>
+          {shown.map((node) => {
+            const status = showDiff ? catalog.statusOf("node", node.id) : "unchanged";
+            const label = catalog.label(node.id);
+            const group = catalog.group(node.group_id);
+            return (
+              <ListRow
+                key={node.id}
+                active={node.id === activeId}
+                hidden={hidden.has(node.id)}
+                status={status}
+                stale={catalog.staleOf("node", node.id).length > 0}
+                data-node={node.ref.path.join("/")}
+                mark="pane-item"
+              >
+                <ListName
+                  onClick={() => {
+                    onActivate(node.id);
+                  }}
+                >
+                  {label}
+                </ListName>
+                <ListAside>
+                  {group !== undefined && <Chip tone="muted">{group.name}</Chip>}
                   <IconButton
                     size="sm"
                     ghost
-                    aria-label={`rename layer ${group.layer.name}`}
+                    aria-label={hidden.has(node.id) ? `show ${label}` : `hide ${label}`}
+                    aria-pressed={hidden.has(node.id)}
                     onClick={() => {
-                      editing.renameLayer(group.layer);
+                      onToggleHidden(node.id);
                     }}
                   >
-                    <Pencil size={12} />
+                    {hidden.has(node.id) ? <EyeOff size={14} /> : <Eye size={14} />}
                   </IconButton>
-                  {group.nodes.length === 0 && (
-                    <IconButton
-                      size="sm"
-                      ghost
-                      aria-label={`remove layer ${group.layer.name}`}
-                      onClick={() => {
-                        editing.removeLayer(group.layer);
-                      }}
-                    >
-                      <Trash2 size={12} />
-                    </IconButton>
-                  )}
-                </>
-              )
-            }
-          >
-            <List>
-              {group.nodes.map((node) => {
-                const status = showDiff ? catalog.statusOf("node", node.id) : "unchanged";
-                const label = catalog.label(node.id);
-                return (
-                  <ListRow
-                    key={node.id}
-                    active={node.id === activeId}
-                    hidden={hidden.has(node.id)}
-                    status={status}
-                    stale={catalog.staleOf("node", node.id).length > 0}
-                    data-node={node.ref.path.join("/")}
-                    mark="pane-item"
-                  >
-                    <ListName
-                      onClick={() => {
-                        onActivate(node.id);
-                      }}
-                    >
-                      {label}
-                    </ListName>
-                    <ListAside>
-                      <IconButton
-                        size="sm"
-                        ghost
-                        aria-label={hidden.has(node.id) ? `show ${label}` : `hide ${label}`}
-                        aria-pressed={hidden.has(node.id)}
-                        onClick={() => {
-                          onToggleHidden(node.id);
-                        }}
-                      >
-                        {hidden.has(node.id) ? <EyeOff size={14} /> : <Eye size={14} />}
-                      </IconButton>
-                    </ListAside>
-                  </ListRow>
-                );
-              })}
-            </List>
-          </PaneGroup>
-        ))}
-        {groups.length === 0 && (
+                </ListAside>
+              </ListRow>
+            );
+          })}
+        </List>
+        {shown.length === 0 && (
           <Note pad mark="pane-empty">
-            nothing matches
+            {nodes.length === 0 ? "no nodes yet" : "nothing matches"}
           </Note>
         )}
-        {editing !== undefined && (
-          <Toolbar pad>
-            <Button size="sm" icon={Plus} onClick={editing.addLayer}>
-              layer
-            </Button>
-          </Toolbar>
-        )}
-      </div>
-    </>
+      </>
+    </PaneGroup>
   );
 }
 
@@ -225,6 +287,8 @@ type GroupProps = {
   title: ReactElement | string;
   /** Заголовок — имя (моно, без капители), не подпись группы. */
   name?: boolean;
+  /** Вложенная группа: слой внутри секции слоёв, без своего отступа. */
+  nested?: boolean;
   actions?: ReactElement | false | undefined;
   lead?: ReactElement | undefined;
   data?: Record<string, string | boolean | undefined>;
@@ -234,11 +298,25 @@ type GroupProps = {
 
 /** Группа панели: заголовок капителью (или именем) с действиями и список
  * под ним. Единственное место, где существуют классы `pane*`. */
-export function PaneGroup({ title, name = false, actions, lead, data, mark, children }: GroupProps): ReactElement {
+export function PaneGroup({
+  title,
+  name = false,
+  nested = false,
+  actions,
+  lead,
+  data,
+  mark,
+  children,
+}: GroupProps): ReactElement {
+  const classes = ["pane__group"];
+  if (nested) {
+    classes.push("pane__group--nested");
+  }
+
   const titleClass = name ? "pane__group-title pane__group-title--name" : "pane__group-title";
 
   return (
-    <section className="pane__group" data-testid={mark} {...data}>
+    <section className={classes.join(" ")} data-testid={mark} {...data}>
       <div className="pane__group-head">
         {lead}
         <span className={titleClass}>{title}</span>

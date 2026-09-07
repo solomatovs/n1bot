@@ -87,11 +87,11 @@ class PartKind(StrEnum):
 
 
 class ObjectRef(CatalogModel):
-    """Адрес объекта источника, стабильный между версиями: вид объекта и
-    родной путь. Postgres: (database, schema, name), рутина — плюс сигнатура;
-    ClickHouse: (database, name)."""
+    """Адрес объекта подключения, стабильный между версиями снимка: вид
+    объекта и родной путь. Postgres: (database, schema, name), рутина — плюс
+    сигнатура; ClickHouse: (database, name)."""
 
-    source_id: UUID
+    connection_id: UUID
     kind: ObjectKind
     path: tuple[str, ...] = Field(min_length=1)
 
@@ -540,7 +540,7 @@ class SourceSnapshot(CatalogModel):
         return names
 
     @abstractmethod
-    def children(self, source_id: UUID, path: Sequence[str]) -> Sequence[TreeNode]:
+    def children(self, connection_id: UUID, path: Sequence[str]) -> Sequence[TreeNode]:
         """Дети узла дерева по пути; корень — пустой путь."""
 
     @abstractmethod

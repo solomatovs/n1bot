@@ -1,7 +1,7 @@
-"""Синхронизация источника инструментом снятия: запуск инструмента вида
+"""Синхронизация подключения инструментом снятия: запуск инструмента вида
 (SourceSnapshot.SYNC_TOOL) от имени субъекта вне чата, приём кадров плана,
 порций и итога через FrameTap, staging порций в хранилище и перенос
-собранного снимка в версию источника одной транзакцией.
+собранного снимка в версию подключения одной транзакцией.
 
 Запуск живёт задачей цикла событий инстанса: SyncRunner держит задачи и
 отмены по id синхронизации, cancel() снимает инструмент через RunCancellation
@@ -14,11 +14,10 @@
 
 Ошибки:
 CatalogStoreError — Postgres недоступен или ответ битый.
-SourceNotFoundError — источника с таким id нет.
 SyncNotFoundError — синхронизации с таким id нет.
-SyncRunningError — у источника уже идёт синхронизация.
+SyncRunningError — у подключения уже идёт синхронизация.
 SyncClosedError — синхронизация уже завершена, отменять нечего.
-SyncConnectionNotBoundError — подключение не привязано к источнику.
+SnapshotKindMismatchError — прежние версии подключения другого вида.
 SyncSetupError — синхронизацию не запустить: у вида нет инструмента снятия,
     инструмент недоступен субъекту, подключение субъекту не видно.
 """
@@ -46,15 +45,15 @@ from boba.catalog import (
     SyncFrameReceiver,
     SyncPlan,
 )
+from boba.catalog_service.connection_store import ConnectionStore
 from boba.catalog_service.records import (
     CatalogServiceError,
     Sync,
     SyncClosedError,
-    SyncConnectionNotBoundError,
     SyncRequest,
+    SyncScope,
     SyncStatus,
 )
-from boba.catalog_service.source_store import SourceStore
 from boba.identity.context import CallContext, Credential, Initiator, Scope, Subject
 from boba.identity.run import RunRegistry
 from boba.messaging import ChangeAction
@@ -113,8 +112,8 @@ class SyncTools(Protocol):
 
 
 class ConnectionInfo(BaseModel):
-    """Подключение глазами субъекта: имя для инструмента снятия и вид для
-    привязки к источнику."""
+    """Подключение глазами субъекта: имя для инструмента снятия и вид, по
+    которому выбирается снимок."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -124,7 +123,7 @@ class ConnectionInfo(BaseModel):
 
 
 class ConnectionDirectory(Protocol):
-    """Справочник подключений глазами субъекта.
+    """Справочник подключений глазами субъекта: по id и по имени.
 
     Ошибки:
     SyncSetupError — подключение субъекту не видно или справочник недоступен.
@@ -134,6 +133,9 @@ class ConnectionDirectory(Protocol):
     async def info_of(
         self, subject: Subject, connection_id: UUID
     ) -> ConnectionInfo: ...
+
+    @abstractmethod
+    async def named(self, subject: Subject, name: str) -> ConnectionInfo: ...
 
 
 class SyncPorts:
@@ -155,15 +157,13 @@ class SyncToolArg:
 
 
 class SyncJob(BaseModel):
-    """Одна запущенная синхронизация: запись, вид источника, инструмент и
-    имя подключения для него, контекст вызова с отменой."""
+    """Одна запущенная синхронизация: запись (с именем и видом подключения),
+    инструмент снятия и контекст вызова с отменой."""
 
     model_config = ConfigDict(frozen=True, extra="forbid", arbitrary_types_allowed=True)
 
     sync: Sync
-    source_kind: str
     tool_name: str
-    connection_name: str
     context: CallContext
 
     @property
@@ -177,7 +177,7 @@ class SyncJob(BaseModel):
     def call_args(self) -> dict[str, Any]:
         scope = self.sync.scope
         return {
-            SyncToolArg.CONNECTION: self.connection_name,
+            SyncToolArg.CONNECTION: self.sync.connection_name,
             SyncToolArg.SCHEMAS: scope.schemas_arg(),
             SyncToolArg.BATCH_SIZE: scope.batch_size,
             SyncToolArg.PAUSE_MS: scope.pause_ms,
@@ -210,7 +210,7 @@ class FrameConsumer(SyncFrameReceiver[Awaitable[None]]):
 
     def __init__(
         self,
-        store: SourceStore,
+        store: ConnectionStore,
         job: SyncJob,
         queue: asyncio.Queue[ToolFrame | None],
         progress: Progress,
@@ -272,10 +272,10 @@ class FrameConsumer(SyncFrameReceiver[Awaitable[None]]):
             msg = f"sync {self._sync.id}: a second sync.plan frame arrived"
             raise SyncFrameError(msg)
 
-        if plan.source_kind != self._job.source_kind:
+        if plan.source_kind != self._sync.kind:
             msg = (
-                f"sync {self._sync.id}: the tool reports {plan.source_kind!r} "
-                f"source, the synced source is {self._job.source_kind!r}"
+                f"sync {self._sync.id}: the tool reports a {plan.source_kind!r} "
+                f"snapshot, the connection is {self._sync.kind!r}"
             )
             raise SyncFrameError(msg)
 
@@ -300,7 +300,7 @@ class SyncRunner:
     """Запуски синхронизаций инстанса: старт задачей, отмена, ожидание."""
 
     def __init__(
-        self, store: SourceStore, ports: SyncPorts, observer: SyncObserver
+        self, store: ConnectionStore, ports: SyncPorts, observer: SyncObserver
     ) -> None:
         self._store = store
         self._tools = ports.tools
@@ -309,22 +309,27 @@ class SyncRunner:
         self._tasks: dict[UUID, asyncio.Task[None]] = {}
         self._cancellations: dict[UUID, RunCancellation] = {}
 
+    @property
+    def directory(self) -> ConnectionDirectory:
+        return self._names
+
     async def start(
-        self, caller: SyncCaller, source_id: UUID, request: SyncRequest
+        self, caller: SyncCaller, connection_id: UUID, scope: SyncScope
     ) -> Sync:
         """Запись синхронизации и задача инструмента; возвращает сразу.
 
         Ошибки:
-        SyncSetupError — инструмента или подключения у субъекта нет.
-        SyncRunningError — у источника уже идёт синхронизация.
-        SyncConnectionNotBoundError — подключение не привязано к источнику.
+        SyncSetupError — инструмента или подключения у субъекта нет, у вида
+            подключения нет снимка.
+        SyncRunningError — у подключения уже идёт синхронизация.
+        SnapshotKindMismatchError — прежние версии другого вида.
         """
-        source = await self._store.get_source(source_id)
-        snapshot_class = self._store.kinds.snapshot_class(source.kind)
+        connection = await self._names.info_of(caller.subject, connection_id)
         try:
+            snapshot_class = self._store.kinds.snapshot_class(connection.kind)
             tool_name = snapshot_class.sync_tool()
         except CatalogError as exc:
-            msg = f"sync of source {source.name!r} cannot start: {exc}"
+            msg = f"sync of connection {connection.name!r} cannot start: {exc}"
             raise SyncSetupError(msg) from exc
 
         invoker = await self._tools.invoker(caller.subject)
@@ -332,26 +337,23 @@ class SyncRunner:
             invoker.tool(tool_name)
         except ToolUnavailableError as exc:
             msg = (
-                f"sync of source {source.name!r} cannot start for user "
+                f"sync of connection {connection.name!r} cannot start for user "
                 f"{caller.subject.login!r}: {exc}"
             )
             raise SyncSetupError(msg) from exc
 
-        if not await self._store.is_bound(source_id, request.connection_id):
-            raise SyncConnectionNotBoundError(source_id, request.connection_id)
-
-        connection = await self._names.info_of(caller.subject, request.connection_id)
-        connection_name = connection.name
-        sync_id = uuid4()
-        sync = await self._store.start_sync(
-            sync_id, source_id, request, caller.subject.user_id
+        request = SyncRequest(
+            connection_id=connection.id,
+            connection_name=connection.name,
+            kind=connection.kind,
+            scope=scope,
         )
+        sync_id = uuid4()
+        sync = await self._store.start_sync(sync_id, request, caller.subject.user_id)
         cancellation = RunCancellation()
         job = SyncJob(
             sync=sync,
-            source_kind=source.kind,
             tool_name=tool_name,
-            connection_name=connection_name,
             context=caller.context(sync_id, cancellation),
         )
         drive = SyncDrive(self._store, job, invoker)
@@ -412,7 +414,9 @@ class SyncDrive:
     """Один прогон инструмента снятия: вызов под контекстом и приёмником
     кадров, приём кадров, итог в запись синхронизации."""
 
-    def __init__(self, store: SourceStore, job: SyncJob, invoker: ToolInvoker) -> None:
+    def __init__(
+        self, store: ConnectionStore, job: SyncJob, invoker: ToolInvoker
+    ) -> None:
         self._store = store
         self._job = job
         self._invoker = invoker

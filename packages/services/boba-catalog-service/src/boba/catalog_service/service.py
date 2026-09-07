@@ -1,20 +1,26 @@
-"""Сервис каталога: права субъекта, сценарии над хранилищем, события шины.
+"""Сервис каталога: права субъекта, сценарии над хранилищами, события шины.
 
 Единственная точка входа для JSON API и инструментов LLM: оба зовут одни и
-те же методы с Subject. Чтение каталога открыто ролям view_roles и
-edit_roles, вид дополнительно открыт его владельцу и тем, кому он расшарен;
-правки, черновики и публикация — только edit_roles. После каждой правки в
-область пользователя уходит CatalogChanged.
+те же методы с Subject. Чтение процессов и снимков подключений открыто ролям
+view_roles и edit_roles; правки, черновики, публикация, синхронизация —
+только edit_roles; ссылка на просмотр, удаление процесса — его владельцу.
+Гость по ссылке читает опубликованный процесс без прав. После каждой правки
+в область пользователя уходит CatalogChanged.
 
 Ошибки:
 CatalogRefusalError — у субъекта нет прав на действие.
-CatalogStoreError, DraftNotFoundError, DraftClosedError, DraftConflictError,
-    DraftStaleError, ViewNotFoundError — как у CatalogStore.
+CatalogStoreError, ProcessNotFoundError, ProcessNameTakenError,
+    DraftNotFoundError, DraftClosedError, DraftConflictError, DraftStaleError,
+    ShareNotFoundError — как у ProcessStore.
+SharedNodeNotFoundError — по ссылке запрошен узел, которого нет в процессе.
 CatalogOpError — порция операций не применима к снимку черновика.
+ConnectionNotSyncedError, ConnectionVersionNotFoundError,
+    SnapshotKindMismatchError — как у ConnectionStore.
+ConnectionInUseError — подключение стоит в узлах, версии забыть нельзя.
+ObjectNotFoundError — по адресу нет объекта в версии снимка.
 UnknownSourceKindError — у вида подключения нет снимка в реестре.
-SourceKindMismatchError, ConnectionAlreadyBoundError — как у SourceStore.
-SyncNotFoundError, SyncRunningError, SyncClosedError,
-    SyncConnectionNotBoundError, SyncSetupError — как у SyncRunner.
+SyncNotFoundError, SyncRunningError, SyncClosedError, SyncSetupError — как у
+    SyncRunner.
 """
 
 from __future__ import annotations
@@ -39,43 +45,40 @@ from boba.catalog import (
     TreeNode,
 )
 from boba.catalog_service.config import CatalogConfig
+from boba.catalog_service.connection_store import ConnectionStore
+from boba.catalog_service.process_store import ProcessStore
 from boba.catalog_service.records import (
     AuthorVia,
     CatalogAccess,
     CatalogRefusalError,
     CatalogRefusalKind,
-    ConnectionAlreadyBoundError,
+    ConnectionHasVersionsError,
+    ConnectionInUseError,
+    ConnectionNotSyncedError,
+    ConnectionVersion,
     Draft,
     DraftAuthor,
     DraftState,
     DraftStatus,
-    NodePosition,
+    NodeUsage,
+    ObjectNotFoundError,
     PinBump,
+    Process,
     ProcessContext,
+    ProcessSpec,
     RebaseResult,
-    ShareTargetKind,
-    Source,
-    SourceConnection,
-    SourceCreate,
-    SourceNotFoundError,
-    SourceObjectNotFoundError,
-    SourceSpec,
-    SourceVersion,
+    Share,
+    SharedNodeNotFoundError,
+    SharedProcess,
+    SnapshotKindMismatchError,
     Sync,
-    SyncRequest,
+    SyncedConnection,
+    SyncScope,
     SyncStatus,
     UnknownSourceKindError,
     Version,
     VersionOrigin,
-    View,
-    ViewLayout,
-    ViewNodeNotFoundError,
-    ViewShare,
-    ViewSpec,
-    ViewState,
 )
-from boba.catalog_service.source_store import SourceStore
-from boba.catalog_service.store import CatalogStore
 from boba.catalog_service.sync_runner import SyncCaller, SyncPorts, SyncRunner
 from boba.identity.context import Scope, Subject
 from boba.identity.locks import LockToken
@@ -85,37 +88,37 @@ __all__ = ["CatalogService"]
 
 
 class CatalogService:
-    """Сценарии каталога от имени субъекта поверх CatalogStore, SourceStore и
-    шины."""
+    """Сценарии каталога от имени субъекта поверх ProcessStore,
+    ConnectionStore и шины."""
 
     FIRST_COMPARABLE_VERSION: ClassVar[int] = 2
 
     def __init__(
         self,
-        store: CatalogStore,
-        sources: SourceStore,
+        processes: ProcessStore,
+        connections: ConnectionStore,
         cfg: CatalogConfig,
         bus: MessageBus,
         ports: SyncPorts,
     ) -> None:
-        self._store = store
-        self._sources = sources
+        self._processes = processes
+        self._connections = connections
         self._cfg = cfg
         self._bus = bus
-        self._connections = ports.connections
-        self._syncs = SyncRunner(sources, ports, self._sync_changed)
+        self._directory = ports.connections
+        self._syncs = SyncRunner(connections, ports, self._sync_changed)
 
     @property
     def syncs(self) -> SyncRunner:
         return self._syncs
 
     @property
-    def store(self) -> CatalogStore:
-        return self._store
+    def processes(self) -> ProcessStore:
+        return self._processes
 
     @property
-    def sources(self) -> SourceStore:
-        return self._sources
+    def connections(self) -> ConnectionStore:
+        return self._connections
 
     @property
     def bus(self) -> MessageBus:
@@ -131,38 +134,116 @@ class CatalogService:
     def can_edit(self, subject: Subject) -> bool:
         return bool(subject.roles.intersection(self._cfg.edit_roles))
 
-    async def snapshot(self, subject: Subject) -> CatalogSnapshot:
+    def access(self, subject: Subject) -> CatalogAccess:
+        return CatalogAccess(
+            user_id=subject.user_id,
+            login=subject.login,
+            can_view=self.can_view(subject),
+            can_edit=self.can_edit(subject),
+        )
+
+    # --- процессы ---
+
+    async def list_processes(self, subject: Subject) -> Sequence[Process]:
         self._require_view(subject)
 
-        return await self._store.snapshot()
+        return await self._processes.list_processes()
 
-    async def versions(self, subject: Subject) -> Sequence[Version]:
+    async def process(self, subject: Subject, process_id: UUID) -> Process:
         self._require_view(subject)
 
-        return await self._store.versions()
+        return await self._processes.get_process(process_id)
 
-    async def create_draft(self, subject: Subject, name: str) -> Draft:
-        """Черновик над текущей версией, привязанный к последним версиям всех
-        источников на момент создания."""
+    async def create_process(self, subject: Subject, spec: ProcessSpec) -> Process:
+        self._require_edit(subject)
+
+        process = await self._processes.create_process(spec, subject.user_id)
+        await self._process_changed(subject, process.id, ChangeAction.CREATED)
+
+        return process
+
+    async def update_process(
+        self, subject: Subject, process_id: UUID, spec: ProcessSpec
+    ) -> Process:
+        self._require_edit(subject)
+
+        process = await self._processes.update_process(process_id, spec)
+        await self._process_changed(subject, process_id, ChangeAction.UPDATED)
+
+        return process
+
+    async def delete_process(self, subject: Subject, process_id: UUID) -> bool:
+        """Процесс со всеми версиями, черновиками и ссылками; только владелец."""
+        await self._owned_process(subject, process_id)
+
+        deleted = await self._processes.delete_process(process_id)
+        if not deleted:
+            return False
+
+        await self._process_changed(subject, process_id, ChangeAction.DELETED)
+
+        return True
+
+    async def snapshot(self, subject: Subject, process_id: UUID) -> CatalogSnapshot:
+        self._require_view(subject)
+
+        return await self._processes.snapshot(process_id)
+
+    async def versions(self, subject: Subject, process_id: UUID) -> Sequence[Version]:
+        self._require_view(subject)
+
+        return await self._processes.versions(process_id)
+
+    # --- черновики ---
+
+    async def create_draft(
+        self, subject: Subject, process_id: UUID | None, name: str
+    ) -> Draft:
+        """Черновик над текущей версией процесса, привязанный к последним
+        версиям всех снимков на момент создания; без процесса — черновик
+        нового процесса."""
         self._require_edit(subject)
 
         pins = await self._latest_pins()
-        draft = await self._store.create_draft(name, subject.user_id, pins)
+        draft = await self._processes.create_draft(
+            process_id, name, subject.user_id, pins
+        )
         await self._changed(
             subject, CatalogChanged(draft_id=draft.id, action=ChangeAction.CREATED)
         )
 
         return draft
 
-    async def open_drafts(self, subject: Subject) -> Sequence[Draft]:
+    async def open_drafts(self, subject: Subject, process_id: UUID) -> Sequence[Draft]:
         self._require_view(subject)
 
-        return await self._store.list_drafts(DraftStatus.OPEN)
+        return await self._processes.list_drafts(process_id, DraftStatus.OPEN)
+
+    async def my_drafts(self, subject: Subject) -> Sequence[Draft]:
+        """Открытые черновики автора по всем процессам: плоский список панели."""
+        self._require_view(subject)
+
+        return await self._processes.drafts_of_author(subject.user_id)
+
+    async def rename_draft(self, subject: Subject, draft_id: UUID, name: str) -> Draft:
+        self._require_edit(subject)
+
+        draft = await self._processes.rename_draft(draft_id, name)
+        await self._changed(
+            subject, CatalogChanged(draft_id=draft_id, action=ChangeAction.UPDATED)
+        )
+
+        return draft
+
+    async def draft(self, subject: Subject, draft_id: UUID) -> Draft:
+        self._require_view(subject)
+
+        return await self._processes.get_draft(draft_id)
 
     async def draft_state(self, subject: Subject, draft_id: UUID) -> DraftState:
         self._require_view(subject)
 
-        return await self._store.draft_state(draft_id)
+        return await self._processes.draft_state(draft_id)
 
     async def append_ops(
         self,
@@ -176,14 +257,14 @@ class CatalogService:
         self._require_edit(subject)
 
         author = DraftAuthor(user_id=subject.user_id, via=via)
-        draft = await self._store.get_draft(draft_id)
+        draft = await self._processes.get_draft(draft_id)
         resolver = await self._resolver_of(draft.pins)
-        await self._store.append_ops(draft_id, expected_seq, author, ops, resolver)
+        await self._processes.append_ops(draft_id, expected_seq, author, ops, resolver)
         await self._changed(
             subject, CatalogChanged(draft_id=draft_id, action=ChangeAction.UPDATED)
         )
 
-        return await self._store.draft_state(draft_id)
+        return await self._processes.draft_state(draft_id)
 
     async def publish(
         self, subject: Subject, draft_id: UUID, via: AuthorVia
@@ -191,12 +272,17 @@ class CatalogService:
         self._require_edit(subject)
 
         author = DraftAuthor(user_id=subject.user_id, via=via)
-        version = await self._store.publish(draft_id, author)
+        version = await self._processes.publish(draft_id, author)
         await self._changed(
             subject, CatalogChanged(draft_id=draft_id, action=ChangeAction.DELETED)
         )
         await self._changed(
-            subject, CatalogChanged(version=version.number, action=ChangeAction.CREATED)
+            subject,
+            CatalogChanged(
+                process_id=version.process_id,
+                version=version.number,
+                action=ChangeAction.CREATED,
+            ),
         )
 
         return version
@@ -206,9 +292,9 @@ class CatalogService:
     ) -> RebaseResult:
         self._require_edit(subject)
 
-        draft = await self._store.get_draft(draft_id)
+        draft = await self._processes.get_draft(draft_id)
         resolver = await self._resolver_of(draft.pins)
-        result = await self._store.rebase(
+        result = await self._processes.rebase(
             draft_id, drop_conflicts=drop_conflicts, resolver=resolver
         )
         if result.issues and not drop_conflicts:
@@ -223,84 +309,21 @@ class CatalogService:
     async def discard_draft(self, subject: Subject, draft_id: UUID) -> Draft:
         self._require_edit(subject)
 
-        draft = await self._store.discard_draft(draft_id)
+        draft = await self._processes.discard_draft(draft_id)
         await self._changed(
             subject, CatalogChanged(draft_id=draft_id, action=ChangeAction.DELETED)
         )
 
         return draft
 
-    async def published_pins(self, subject: Subject) -> Mapping[UUID, int]:
-        """Привязки последней версии процесса; без версий — пусто."""
-        self._require_view(subject)
-
-        versions = await self._store.versions()
-        if not versions:
-            return {}
-
-        return versions[-1].pins
-
-    async def resolver_of(
-        self, subject: Subject, pins: Mapping[UUID, int]
-    ) -> SnapshotResolver:
-        """Резолвер объектов по привязанным версиям источников."""
-        self._require_view(subject)
-
-        return await self._resolver_of(pins)
-
-    async def staleness(self, subject: Subject) -> Staleness:
-        """Устаревание опубликованного процесса относительно последних версий
-        источников, по привязкам последней версии процесса."""
-        self._require_view(subject)
-
-        versions = await self._store.versions()
-        if not versions:
-            return Staleness(entries=())
-
-        snapshot = await self._store.snapshot()
-        return await self._staleness_of(snapshot, versions[-1].pins)
-
-    async def draft_staleness(self, subject: Subject, draft_id: UUID) -> Staleness:
-        self._require_view(subject)
-
-        state = await self._store.draft_state(draft_id)
-        return await self._staleness_of(state.snapshot, state.draft.pins)
-
-    async def context(self, subject: Subject) -> ProcessContext:
-        """Контекст опубликованного процесса по привязкам последней версии."""
-        self._require_view(subject)
-
-        snapshot = await self._store.snapshot()
-        pins = await self.published_pins(subject)
-        return await self._context_of(snapshot, pins)
-
-    async def draft_context(self, subject: Subject, draft_id: UUID) -> ProcessContext:
-        self._require_view(subject)
-
-        state = await self._store.draft_state(draft_id)
-        return await self._context_of(state.snapshot, state.draft.pins)
-
-    async def view_context(self, subject: Subject, view_id: UUID) -> ProcessContext:
-        """Контекст среза вида: доступен тем же, кому доступен вид."""
-        view = await self._accessible_view(subject, view_id)
-
-        snapshot = await self._store.snapshot()
-        versions = await self._store.versions()
-        pins: Mapping[UUID, int] = {}
-        if versions:
-            pins = versions[-1].pins
-
-        restricted = snapshot.restricted(view.node_ids, view.layer_ids)
-        return await self._context_of(restricted, pins)
-
     async def bump_pins(self, subject: Subject, draft_id: UUID) -> PinBump:
-        """Привязки черновика поднимаются до последних версий источников; что
+        """Привязки черновика поднимаются до последних версий снимков; что
         после этого перестало сходиться, перечисляется, но не чинится."""
         self._require_edit(subject)
 
         pins = await self._latest_pins()
-        draft = await self._store.set_pins(draft_id, pins)
-        state = await self._store.draft_state(draft_id)
+        draft = await self._processes.set_pins(draft_id, pins)
+        state = await self._processes.draft_state(draft_id)
         resolver = await self._resolver_of(pins)
         violations = tuple(state.snapshot.source_violations(resolver))
         await self._changed(
@@ -309,26 +332,80 @@ class CatalogService:
 
         return PinBump(draft=draft, violations=violations)
 
+    # --- контекст и устаревание ---
+
+    async def published_pins(
+        self, subject: Subject, process_id: UUID
+    ) -> Mapping[UUID, int]:
+        """Привязки последней версии процесса; без версий — пусто."""
+        self._require_view(subject)
+
+        return await self._published_pins(process_id)
+
+    async def resolver_of(
+        self, subject: Subject, pins: Mapping[UUID, int]
+    ) -> SnapshotResolver:
+        """Резолвер объектов по привязанным версиям снимков."""
+        self._require_view(subject)
+
+        return await self._resolver_of(pins)
+
+    async def staleness(self, subject: Subject, process_id: UUID) -> Staleness:
+        """Устаревание опубликованного процесса относительно последних версий
+        снимков, по привязкам последней версии процесса."""
+        self._require_view(subject)
+
+        snapshot = await self._processes.snapshot(process_id)
+        pins = await self._published_pins(process_id)
+        return await self._staleness_of(snapshot, pins)
+
+    async def draft_staleness(self, subject: Subject, draft_id: UUID) -> Staleness:
+        self._require_view(subject)
+
+        state = await self._processes.draft_state(draft_id)
+        return await self._staleness_of(state.snapshot, state.draft.pins)
+
+    async def context(self, subject: Subject, process_id: UUID) -> ProcessContext:
+        """Контекст опубликованного процесса по привязкам последней версии."""
+        self._require_view(subject)
+
+        return await self._published_context(process_id)
+
+    async def draft_context(self, subject: Subject, draft_id: UUID) -> ProcessContext:
+        self._require_view(subject)
+
+        state = await self._processes.draft_state(draft_id)
+        return await self._context_of(state.snapshot, state.draft.pins)
+
+    async def _published_pins(self, process_id: UUID) -> Mapping[UUID, int]:
+        versions = await self._processes.versions(process_id)
+        if not versions:
+            return {}
+
+        return versions[-1].pins
+
+    async def _published_context(self, process_id: UUID) -> ProcessContext:
+        snapshot = await self._processes.snapshot(process_id)
+        pins = await self._published_pins(process_id)
+        return await self._context_of(snapshot, pins)
+
     async def _latest_pins(self) -> dict[UUID, int]:
         pins: dict[UUID, int] = {}
-        for source in await self._sources.list_sources():
-            if source.latest_version == 0:
-                continue
-
-            pins[source.id] = source.latest_version
+        for synced in await self._connections.synced_connections():
+            pins[synced.connection_id] = synced.latest_version
 
         return pins
 
     async def _resolver_of(self, pins: Mapping[UUID, int]) -> SnapshotResolver:
-        """Снимки привязанных версий; привязка к удалённому источнику
-        пропускается — его объекты резолвер считает существующими."""
+        """Снимки привязанных версий; привязка к подключению, версии которого
+        забыты, пропускается — его объекты резолвер считает существующими."""
         snapshots: dict[UUID, SourceSnapshot] = {}
-        for source_id, version in pins.items():
+        for connection_id, version in pins.items():
             try:
-                snapshots[source_id] = await self._sources.snapshot_of(
-                    source_id, version
+                snapshots[connection_id] = await self._connections.snapshot_of(
+                    connection_id, version
                 )
-            except SourceNotFoundError:
+            except ConnectionNotSyncedError:
                 continue
 
         return SnapshotResolver(snapshots)
@@ -350,152 +427,334 @@ class CatalogService:
     ) -> Staleness:
         pinned: dict[UUID, PinnedSnapshot] = {}
         latest: dict[UUID, PinnedSnapshot] = {}
-        for source_id in snapshot.sources():
-            pinned_version = pins.get(source_id)
+        for connection_id in snapshot.connections():
+            pinned_version = pins.get(connection_id)
             if pinned_version is None:
                 continue
 
-            try:
-                source = await self._sources.get_source(source_id)
-            except SourceNotFoundError:
+            synced = await self._connections.synced_or_none(connection_id)
+            if synced is None:
                 continue
 
-            if source.latest_version == pinned_version:
+            if synced.latest_version == pinned_version:
                 continue
 
-            pinned[source_id] = PinnedSnapshot(
+            pinned[connection_id] = PinnedSnapshot(
                 version=pinned_version,
-                snapshot=await self._sources.snapshot_of(source_id, pinned_version),
+                snapshot=await self._connections.snapshot_of(
+                    connection_id, pinned_version
+                ),
             )
-            latest[source_id] = PinnedSnapshot(
-                version=source.latest_version,
-                snapshot=await self._sources.latest_snapshot(source_id),
+            latest[connection_id] = PinnedSnapshot(
+                version=synced.latest_version,
+                snapshot=await self._connections.latest_snapshot(connection_id),
             )
 
         return Staleness.compute(snapshot, pinned, latest)
 
-    async def views(self, subject: Subject) -> Sequence[View]:
-        """Виды субъекта: все при праве на каталог, иначе свои и расшаренные."""
-        everything = self.can_view(subject)
-        roles = sorted(subject.roles)
+    # --- ссылки на просмотр ---
 
-        return await self._store.views_for(
-            subject.user_id, roles, everything=everything
-        )
+    async def share_process(self, subject: Subject, process_id: UUID) -> Share:
+        """Новая ссылка на просмотр; только владелец процесса."""
+        await self._owned_process(subject, process_id)
 
-    async def view(self, subject: Subject, view_id: UUID) -> View:
-        return await self._accessible_view(subject, view_id)
+        share = await self._processes.create_share(process_id, subject.user_id)
+        await self._process_changed(subject, process_id, ChangeAction.UPDATED)
 
-    async def view_state(self, subject: Subject, view_id: UUID) -> ViewState:
-        """Страница вида для владельца, читателя каталога и того, кому вид
-        расшарен: снимок обрезан по фильтру вида, права на каталог не нужны."""
-        view = await self._accessible_view(subject, view_id)
+        return share
 
-        snapshot = await self._store.snapshot()
-        version = await self._store.current_version()
-        layout = await self._store.layout_of(view_id)
+    async def shares(self, subject: Subject, process_id: UUID) -> Sequence[Share]:
+        await self._owned_process(subject, process_id)
 
-        owned = False
-        if view.owner_id == subject.user_id:
-            owned = self.can_edit(subject)
+        return await self._processes.shares_of(process_id)
 
-        return ViewState(
-            view=view,
-            version=version,
-            snapshot=snapshot.restricted(view.node_ids, view.layer_ids),
-            layout=layout,
-            owned=owned,
-        )
+    async def revoke_share(self, subject: Subject, token: str) -> Share:
+        share = await self._processes.get_share(token)
+        await self._owned_process(subject, share.process_id)
 
-    def access(self, subject: Subject) -> CatalogAccess:
-        return CatalogAccess(
-            user_id=subject.user_id,
-            login=subject.login,
-            can_view=self.can_view(subject),
-            can_edit=self.can_edit(subject),
-        )
+        revoked = await self._processes.revoke_share(token)
+        await self._process_changed(subject, share.process_id, ChangeAction.UPDATED)
 
-    async def create_view(self, subject: Subject, spec: ViewSpec) -> View:
+        return revoked
+
+    async def shared_process(self, token: str) -> SharedProcess:
+        """Опубликованный процесс по действующей ссылке: прав не нужно.
+
+        Ошибки:
+        ShareNotFoundError — ссылки нет или она отозвана.
+        """
+        share = await self._processes.get_share(token)
+        process = await self._processes.get_process(share.process_id)
+        snapshot = await self._processes.snapshot(share.process_id)
+        context = await self._published_context(share.process_id)
+        return SharedProcess(process=process, snapshot=snapshot, context=context)
+
+    async def shared_object(self, token: str, node_id: UUID) -> ObjectCard:
+        """Карточка объекта узла по ссылке, из версии, привязанной публикацией.
+
+        Ошибки:
+        ShareNotFoundError — ссылки нет или она отозвана.
+        SharedNodeNotFoundError — узла нет в опубликованном процессе.
+        ObjectNotFoundError — объекта нет в привязанной версии.
+        """
+        share = await self._processes.get_share(token)
+        snapshot = await self._processes.snapshot(share.process_id)
+        node = snapshot.nodes.get(node_id)
+        if node is None:
+            raise SharedNodeNotFoundError(token, node_id)
+
+        pins = await self._published_pins(share.process_id)
+        version = pins.get(node.ref.connection_id, -1)
+        return await self._card(node.ref, version)
+
+    # --- подключения глазами каталога ---
+
+    async def synced_connections(self, subject: Subject) -> Sequence[SyncedConnection]:
+        """Подключения с версиями снимка по последней версии каждого."""
+        self._require_view(subject)
+
+        return await self._connections.synced_connections()
+
+    async def synced_connection(
+        self, subject: Subject, connection_id: UUID
+    ) -> SyncedConnection:
+        self._require_view(subject)
+
+        return await self._connections.synced(connection_id)
+
+    def source_kinds(self) -> tuple[str, ...]:
+        """Виды подключений, у которых установлен снимок: kind типов соединений."""
+        return self._connections.kinds.kinds()
+
+    async def connection_versions(
+        self, subject: Subject, connection_id: UUID
+    ) -> Sequence[ConnectionVersion]:
+        self._require_view(subject)
+
+        return await self._connections.versions_of(connection_id)
+
+    async def connection_snapshot(
+        self, subject: Subject, connection_id: UUID, version: int
+    ) -> SourceSnapshot:
+        """Снимок версии; version 0 — пустой снимок, отрицательная — последняя."""
+        self._require_view(subject)
+
+        if version < 0:
+            return await self._connections.latest_snapshot(connection_id)
+
+        return await self._connections.snapshot_of(connection_id, version)
+
+    async def connection_tree(
+        self,
+        subject: Subject,
+        connection_id: UUID,
+        version: int,
+        path: Sequence[str],
+    ) -> Sequence[TreeNode]:
+        """Дети узла дерева снимка с пометками относительно предыдущей версии;
+        у первой версии сравнивать не с чем, пометок нет."""
+        self._require_view(subject)
+
+        resolved = await self._resolve_version(connection_id, version)
+        snapshot = await self._connections.snapshot_of(connection_id, resolved)
+        nodes = snapshot.children(connection_id, path)
+        if resolved < self.FIRST_COMPARABLE_VERSION:
+            return nodes
+
+        diff = await self._connections.diff_of(connection_id, resolved - 1, resolved)
+        return list(self._marked(nodes, diff))
+
+    async def connection_object(
+        self, subject: Subject, ref: ObjectRef, version: int
+    ) -> ObjectCard:
+        """Карточка объекта по адресу в версии снимка (отрицательная — последняя).
+
+        Ошибки:
+        ObjectNotFoundError — по адресу нет объекта.
+        """
+        self._require_view(subject)
+
+        return await self._card(ref, version)
+
+    async def connection_diff(
+        self, subject: Subject, connection_id: UUID, old: int, new: int
+    ) -> SourceDiff:
+        self._require_view(subject)
+
+        return await self._connections.diff_of(connection_id, old, new)
+
+    async def write_connection_version(
+        self, subject: Subject, connection_id: UUID, snapshot: SourceSnapshot
+    ) -> ConnectionVersion:
+        """Версия целиком от имени субъекта: путь стенда. Имя подключения —
+        из справочника глазами субъекта.
+
+        Ошибки:
+        SyncSetupError — подключение субъекту не видно.
+        UnknownSourceKindError — у вида подключения нет снимка.
+        SnapshotKindMismatchError — снимок не того вида, что подключение.
+        """
         self._require_edit(subject)
 
-        view = await self._store.create_view(subject.user_id, spec)
-        await self._changed(
-            subject, CatalogChanged(view_id=view.id, action=ChangeAction.CREATED)
+        connection = await self._directory.info_of(subject, connection_id)
+        self._require_kind(connection.kind)
+        if snapshot.kind != connection.kind:
+            raise SnapshotKindMismatchError(
+                connection_id, connection.kind, snapshot.kind
+            )
+
+        origin = VersionOrigin(
+            taken_by=subject.user_id, connection_name=connection.name
+        )
+        version = await self._connections.write_version(connection_id, snapshot, origin)
+        await self._connection_changed(subject, connection_id, ChangeAction.UPDATED)
+
+        return version
+
+    async def forget_versions(self, subject: Subject, connection_id: UUID) -> int:
+        """Все версии снимка подключения; отказ, пока подключение стоит в узлах.
+
+        Ошибки:
+        ConnectionInUseError — узлы процессов или открытых черновиков.
+        SyncRunningError — синхронизация ещё пишет.
+        """
+        self._require_edit(subject)
+
+        usage = await self._usage_of(connection_id)
+        if usage:
+            name = await self._stored_name(connection_id)
+            raise ConnectionInUseError(connection_id, name, usage)
+
+        forgotten = await self._connections.forget_versions(connection_id)
+        if forgotten == 0:
+            return 0
+
+        await self._connection_changed(subject, connection_id, ChangeAction.DELETED)
+
+        return forgotten
+
+    async def holding_reason(self, connection_id: UUID) -> str:
+        """Почему подключение нельзя удалить: узлы процессов или версии
+        снимка; пусто — каталог его не держит. Для DeleteGuard брокера."""
+        usage = await self._usage_of(connection_id)
+        if usage:
+            name = await self._stored_name(connection_id)
+            return str(ConnectionInUseError(connection_id, name, usage))
+
+        synced = await self._connections.synced_or_none(connection_id)
+        if synced is None:
+            return ""
+
+        return str(
+            ConnectionHasVersionsError(
+                connection_id, synced.name, synced.latest_version
+            )
         )
 
-        return view
+    async def _usage_of(self, connection_id: UUID) -> Sequence[NodeUsage]:
+        """Узлы над подключением: опубликованные и в открытых черновиках."""
+        usage = list(await self._processes.usage_of_connection(connection_id))
+        for draft in await self._processes.open_drafts():
+            state = await self._processes.draft_state(draft.id)
+            count = 0
+            for node in state.snapshot.nodes.values():
+                if node.ref.connection_id != connection_id:
+                    continue
 
-    async def update_view(
-        self, subject: Subject, view_id: UUID, spec: ViewSpec
-    ) -> View:
-        await self._owned_view(subject, view_id)
+                count += 1
 
-        view = await self._store.update_view(view_id, spec)
-        await self._changed(
-            subject, CatalogChanged(view_id=view_id, action=ChangeAction.UPDATED)
-        )
+            if count == 0:
+                continue
 
-        return view
+            process_name = draft.name
+            if draft.process_id is not None:
+                process = await self._processes.get_process(draft.process_id)
+                process_name = process.name
 
-    async def delete_view(self, subject: Subject, view_id: UUID) -> bool:
-        await self._owned_view(subject, view_id)
+            usage.append(
+                NodeUsage(
+                    process_id=draft.process_id,
+                    process_name=process_name,
+                    draft=draft.name,
+                    nodes=count,
+                )
+            )
 
-        deleted = await self._store.delete_view(view_id)
-        if not deleted:
-            return False
+        return usage
 
-        await self._changed(
-            subject, CatalogChanged(view_id=view_id, action=ChangeAction.DELETED)
-        )
+    async def _stored_name(self, connection_id: UUID) -> str:
+        synced = await self._connections.synced_or_none(connection_id)
+        if synced is None:
+            return str(connection_id)
 
-        return True
+        return synced.name
 
-    async def layout(self, subject: Subject, view_id: UUID) -> ViewLayout:
-        await self._accessible_view(subject, view_id)
+    def _require_kind(self, kind: str) -> None:
+        """Ошибки:
+        UnknownSourceKindError — снимка этого вида нет в реестре.
+        """
+        if not self._connections.kinds.known(kind):
+            raise UnknownSourceKindError(kind, self._connections.kinds.kinds())
 
-        return await self._store.layout_of(view_id)
+    async def _card(self, ref: ObjectRef, version: int) -> ObjectCard:
+        resolved = await self._resolve_version(ref.connection_id, version)
+        snapshot = await self._connections.snapshot_of(ref.connection_id, resolved)
+        try:
+            return snapshot.card(ref)
+        except CatalogError as exc:
+            where = f"connection {ref.connection_id} version {resolved}"
+            raise ObjectNotFoundError(ref, where, str(exc)) from exc
 
-    async def put_layout(
-        self, subject: Subject, view_id: UUID, positions: Sequence[NodePosition]
-    ) -> ViewLayout:
-        await self._owned_view(subject, view_id)
+    async def _resolve_version(self, connection_id: UUID, version: int) -> int:
+        if version >= 0:
+            return version
 
-        layout = await self._store.put_layout(view_id, positions)
-        await self._changed(
-            subject, CatalogChanged(view_id=view_id, action=ChangeAction.UPDATED)
-        )
+        synced = await self._connections.synced(connection_id)
+        return synced.latest_version
 
-        return layout
+    # --- синхронизации ---
 
-    async def shares(self, subject: Subject, view_id: UUID) -> Sequence[ViewShare]:
-        await self._owned_view(subject, view_id)
+    async def start_sync(
+        self, caller: SyncCaller, connection_id: UUID, scope: SyncScope
+    ) -> Sync:
+        """Синхронизация подключения инструментом вида от имени субъекта:
+        нужны edit_roles, видимое подключение и доступ к инструменту."""
+        self._require_edit(caller.subject)
 
-        return await self._store.shares_of(view_id)
+        return await self._syncs.start(caller, connection_id, scope)
 
-    async def share_view(
-        self, subject: Subject, view_id: UUID, share: ViewShare
+    async def cancel_sync(self, subject: Subject, sync_id: UUID) -> Sync:
+        self._require_edit(subject)
+
+        return await self._syncs.cancel(subject, sync_id)
+
+    async def sync(self, subject: Subject, sync_id: UUID) -> Sync:
+        self._require_view(subject)
+
+        return await self._connections.get_sync(sync_id)
+
+    async def connection_syncs(
+        self, subject: Subject, connection_id: UUID
+    ) -> Sequence[Sync]:
+        self._require_view(subject)
+
+        return await self._connections.syncs_of(connection_id)
+
+    async def _sync_changed(
+        self, subject: Subject, sync: Sync, action: ChangeAction
     ) -> None:
-        await self._owned_view(subject, view_id)
+        await self._changed(subject, CatalogChanged(sync_id=sync.id, action=action))
+        if action is ChangeAction.CREATED:
+            return
 
-        await self._store.share_view(view_id, share)
-        await self._changed(
-            subject, CatalogChanged(view_id=view_id, action=ChangeAction.UPDATED)
+        if sync.status is SyncStatus.RUNNING:
+            return
+
+        await self._connection_changed(
+            subject, sync.connection_id, ChangeAction.UPDATED
         )
 
-    async def unshare_view(
-        self, subject: Subject, view_id: UUID, share: ViewShare
-    ) -> bool:
-        await self._owned_view(subject, view_id)
-
-        removed = await self._store.unshare_view(view_id, share)
-        if not removed:
-            return False
-
-        await self._changed(
-            subject, CatalogChanged(view_id=view_id, action=ChangeAction.UPDATED)
-        )
-
-        return True
+    # --- права ---
 
     def _require_view(self, subject: Subject) -> None:
         if self.can_view(subject):
@@ -519,309 +778,19 @@ class CatalogService:
         )
         raise CatalogRefusalError(CatalogRefusalKind.EDIT_FORBIDDEN, msg)
 
-    async def _accessible_view(self, subject: Subject, view_id: UUID) -> View:
-        """Вид открыт при праве на каталог, владельцу и по шарингу."""
-        view = await self._store.get_view(view_id)
-        if self.can_view(subject):
-            return view
-
-        if view.owner_id == subject.user_id:
-            return view
-
-        shares = await self._store.shares_of(view_id)
-        for share in shares:
-            if self._share_covers(share, subject):
-                return view
-
-        msg = (
-            f"user {subject.login!r} has no access to view {view.name!r} "
-            f"({view.id}): not its owner, not in its shares, no catalog role"
-        )
-        raise CatalogRefusalError(CatalogRefusalKind.VIEW_FORBIDDEN, msg)
-
-    async def _owned_view(self, subject: Subject, view_id: UUID) -> View:
-        """Править вид может его владелец с правом на правки каталога."""
+    async def _owned_process(self, subject: Subject, process_id: UUID) -> Process:
+        """Удалять и шарить процесс может его владелец с правом на правки."""
         self._require_edit(subject)
 
-        view = await self._store.get_view(view_id)
-        if view.owner_id == subject.user_id:
-            return view
+        process = await self._processes.get_process(process_id)
+        if process.owner_id == subject.user_id:
+            return process
 
         msg = (
-            f"user {subject.login!r} does not own view {view.name!r} ({view.id}); "
-            "only the owner can change or share it"
+            f"user {subject.login!r} does not own process {process.name!r} "
+            f"({process.id}); only the owner can delete or share it"
         )
         raise CatalogRefusalError(CatalogRefusalKind.NOT_OWNER, msg)
-
-    @staticmethod
-    def _share_covers(share: ViewShare, subject: Subject) -> bool:
-        if share.kind is ShareTargetKind.USER:
-            return share.target == str(subject.user_id)
-
-        return share.target in subject.roles
-
-    # --- источники ---
-
-    async def list_sources(self, subject: Subject) -> Sequence[Source]:
-        self._require_view(subject)
-
-        return await self._sources.list_sources()
-
-    async def source(self, subject: Subject, source_id: UUID) -> Source:
-        self._require_view(subject)
-
-        return await self._sources.get_source(source_id)
-
-    def source_kinds(self) -> tuple[str, ...]:
-        """Виды источников, у которых установлен снимок: kind типов соединений."""
-        return self._sources.kinds.kinds()
-
-    def _require_kind(self, kind: str) -> None:
-        """Ошибки:
-        UnknownSourceKindError — снимка этого вида нет в реестре.
-        """
-        if not self._sources.kinds.known(kind):
-            raise UnknownSourceKindError(kind, self._sources.kinds.kinds())
-
-    async def create_source(self, subject: Subject, spec: SourceCreate) -> Source:
-        """Источник от подключения: вид берётся у подключения, оно сразу
-        привязывается к новому источнику.
-
-        Ошибки:
-        SyncSetupError — подключение субъекту не видно.
-        UnknownSourceKindError — у вида подключения нет снимка.
-        ConnectionAlreadyBoundError — подключение уже стоит в другом источнике.
-        """
-        self._require_edit(subject)
-        connection = await self._connections.info_of(subject, spec.connection_id)
-        self._require_kind(connection.kind)
-
-        holder = await self._sources.holder_of(connection.id)
-        if holder is not None:
-            raise ConnectionAlreadyBoundError(connection.id, holder.id)
-
-        source = await self._sources.create_source(
-            SourceSpec(name=spec.name, description=spec.description),
-            connection.kind,
-            subject.user_id,
-        )
-        await self._sources.bind_connection(
-            source.id, connection.id, connection.kind, subject.user_id
-        )
-        await self._source_changed(subject, source.id, ChangeAction.CREATED)
-
-        return source
-
-    async def update_source(
-        self, subject: Subject, source_id: UUID, spec: SourceSpec
-    ) -> Source:
-        self._require_edit(subject)
-
-        source = await self._sources.update_source(source_id, spec)
-        await self._source_changed(subject, source_id, ChangeAction.UPDATED)
-
-        return source
-
-    async def delete_source(self, subject: Subject, source_id: UUID) -> bool:
-        self._require_edit(subject)
-
-        deleted = await self._sources.delete_source(source_id)
-        if not deleted:
-            return False
-
-        await self._source_changed(subject, source_id, ChangeAction.DELETED)
-
-        return True
-
-    async def source_connections(
-        self, subject: Subject, source_id: UUID
-    ) -> Sequence[SourceConnection]:
-        self._require_view(subject)
-
-        return await self._sources.connections_of(source_id)
-
-    async def bind_connection(
-        self, subject: Subject, source_id: UUID, connection_id: UUID
-    ) -> SourceConnection:
-        """Ошибки:
-        SyncSetupError — подключение субъекту не видно.
-        SourceKindMismatchError — вид подключения не совпадает с видом источника.
-        ConnectionAlreadyBoundError — подключение уже стоит в другом источнике.
-        """
-        self._require_edit(subject)
-        connection = await self._connections.info_of(subject, connection_id)
-
-        bound = await self._sources.bind_connection(
-            source_id, connection.id, connection.kind, subject.user_id
-        )
-        await self._source_changed(subject, source_id, ChangeAction.UPDATED)
-
-        return bound
-
-    async def unbind_connection(
-        self, subject: Subject, source_id: UUID, connection_id: UUID
-    ) -> bool:
-        self._require_edit(subject)
-
-        removed = await self._sources.unbind_connection(source_id, connection_id)
-        if not removed:
-            return False
-
-        await self._source_changed(subject, source_id, ChangeAction.UPDATED)
-
-        return True
-
-    async def source_versions(
-        self, subject: Subject, source_id: UUID
-    ) -> Sequence[SourceVersion]:
-        self._require_view(subject)
-
-        return await self._sources.versions_of(source_id)
-
-    async def source_snapshot(
-        self, subject: Subject, source_id: UUID, version: int
-    ) -> SourceSnapshot:
-        """Снимок версии; version 0 — пустой снимок, отрицательная — последняя."""
-        self._require_view(subject)
-
-        if version < 0:
-            return await self._sources.latest_snapshot(source_id)
-
-        return await self._sources.snapshot_of(source_id, version)
-
-    async def source_tree(
-        self, subject: Subject, source_id: UUID, version: int, path: Sequence[str]
-    ) -> Sequence[TreeNode]:
-        """Дети узла дерева источника с пометками относительно предыдущей версии;
-        у первой версии сравнивать не с чем, пометок нет."""
-        self._require_view(subject)
-
-        source = await self._sources.get_source(source_id)
-        resolved = self._resolve_version(source, version)
-        snapshot = await self._sources.snapshot_of(source_id, resolved)
-        nodes = snapshot.children(source_id, path)
-        if resolved < self.FIRST_COMPARABLE_VERSION:
-            return nodes
-
-        diff = await self._sources.diff_of(source_id, resolved - 1, resolved)
-        return list(self._marked(nodes, diff))
-
-    async def source_object(
-        self, subject: Subject, ref: ObjectRef, version: int
-    ) -> ObjectCard:
-        """Карточка объекта по адресу в версии источника (отрицательная — последняя).
-
-        Ошибки:
-        SourceObjectNotFoundError — по адресу нет объекта.
-        """
-        self._require_view(subject)
-
-        source = await self._sources.get_source(ref.source_id)
-        resolved = self._resolve_version(source, version)
-        snapshot = await self._sources.snapshot_of(ref.source_id, resolved)
-        try:
-            return snapshot.card(ref)
-        except CatalogError as exc:
-            where = f"source {source.name!r} version {resolved}"
-            raise SourceObjectNotFoundError(ref, where, str(exc)) from exc
-
-    async def view_object(
-        self, subject: Subject, view_id: UUID, node_id: UUID
-    ) -> ObjectCard:
-        """Карточка объекта узла из среза вида по привязке опубликованной
-        версии: доступна тем же, кому доступен вид, прав на каталог не нужно.
-
-        Ошибки:
-        ViewNodeNotFoundError — узла нет в срезе вида.
-        SourceObjectNotFoundError — объекта нет в привязанной версии.
-        """
-        view = await self._accessible_view(subject, view_id)
-
-        snapshot = await self._store.snapshot()
-        restricted = snapshot.restricted(view.node_ids, view.layer_ids)
-        node = restricted.nodes.get(node_id)
-        if node is None:
-            raise ViewNodeNotFoundError(view_id, node_id)
-
-        source = await self._sources.get_source(node.ref.source_id)
-        version = source.latest_version
-        versions = await self._store.versions()
-        if versions:
-            version = versions[-1].pins.get(node.ref.source_id, source.latest_version)
-
-        pinned = await self._sources.snapshot_of(node.ref.source_id, version)
-        try:
-            return pinned.card(node.ref)
-        except CatalogError as exc:
-            where = (
-                f"source {source.name!r} version {version} pinned by view "
-                f"{view.name!r} for node {node_id}"
-            )
-            raise SourceObjectNotFoundError(node.ref, where, str(exc)) from exc
-
-    async def source_diff(
-        self, subject: Subject, source_id: UUID, old: int, new: int
-    ) -> SourceDiff:
-        self._require_view(subject)
-
-        return await self._sources.diff_of(source_id, old, new)
-
-    async def write_source_version(
-        self, subject: Subject, source_id: UUID, snapshot: SourceSnapshot
-    ) -> SourceVersion:
-        """Версия целиком от имени субъекта: путь стенда и переноса из staging."""
-        self._require_edit(subject)
-
-        origin = VersionOrigin(taken_by=subject.user_id)
-        version = await self._sources.write_version(source_id, snapshot, origin)
-        await self._source_changed(subject, source_id, ChangeAction.UPDATED)
-
-        return version
-
-    # --- синхронизации ---
-
-    async def start_sync(
-        self, caller: SyncCaller, source_id: UUID, request: SyncRequest
-    ) -> Sync:
-        """Синхронизация источника инструментом вида от имени субъекта:
-        нужны edit_roles, привязанное подключение и доступ к инструменту."""
-        self._require_edit(caller.subject)
-
-        return await self._syncs.start(caller, source_id, request)
-
-    async def cancel_sync(self, subject: Subject, sync_id: UUID) -> Sync:
-        self._require_edit(subject)
-
-        return await self._syncs.cancel(subject, sync_id)
-
-    async def sync(self, subject: Subject, sync_id: UUID) -> Sync:
-        self._require_view(subject)
-
-        return await self._sources.get_sync(sync_id)
-
-    async def source_syncs(self, subject: Subject, source_id: UUID) -> Sequence[Sync]:
-        self._require_view(subject)
-
-        return await self._sources.syncs_of(source_id)
-
-    async def _sync_changed(
-        self, subject: Subject, sync: Sync, action: ChangeAction
-    ) -> None:
-        await self._changed(subject, CatalogChanged(sync_id=sync.id, action=action))
-        if action is ChangeAction.CREATED:
-            return
-
-        if sync.status is SyncStatus.RUNNING:
-            return
-
-        await self._source_changed(subject, sync.source_id, ChangeAction.UPDATED)
-
-    @staticmethod
-    def _resolve_version(source: Source, version: int) -> int:
-        if version < 0:
-            return source.latest_version
-
-        return version
 
     @staticmethod
     def _marked(nodes: Sequence[TreeNode], diff: SourceDiff) -> Iterator[TreeNode]:
@@ -838,10 +807,21 @@ class CatalogService:
 
             yield node
 
-    async def _source_changed(
-        self, subject: Subject, source_id: UUID, action: ChangeAction
+    # --- события ---
+
+    async def _process_changed(
+        self, subject: Subject, process_id: UUID, action: ChangeAction
     ) -> None:
-        await self._changed(subject, CatalogChanged(source_id=source_id, action=action))
+        await self._changed(
+            subject, CatalogChanged(process_id=process_id, action=action)
+        )
+
+    async def _connection_changed(
+        self, subject: Subject, connection_id: UUID, action: ChangeAction
+    ) -> None:
+        await self._changed(
+            subject, CatalogChanged(connection_id=connection_id, action=action)
+        )
 
     async def _changed(self, subject: Subject, message: CatalogChanged) -> None:
         await self._bus.publish(Scope.user(subject.user_id), message, LockToken.local())

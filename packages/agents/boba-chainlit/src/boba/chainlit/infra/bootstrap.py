@@ -247,7 +247,7 @@ def _use_catalog(c: AppConfig) -> None:
 
     from boba.chainlit.catalog.api import CatalogApi, CatalogUrl  # noqa: PLC0415
     from boba.chainlit.catalog.subjects import ChainlitSubjects  # noqa: PLC0415
-    from boba.chainlit.catalog.sync_ports import BoundConnectionGuard  # noqa: PLC0415
+    from boba.chainlit.catalog.sync_ports import CatalogHoldGuard  # noqa: PLC0415
     from boba.chat.profiles import ChatProfiles  # noqa: PLC0415
     from boba.connection_broker.api import ConnectionsApi  # noqa: PLC0415
     from boba.connection_broker.service import UserConnectionsService  # noqa: PLC0415
@@ -264,7 +264,7 @@ def _use_catalog(c: AppConfig) -> None:
     CatalogApi(providers.catalog_service_ref, subjects).mount(router)
     # общий API соединений: подключения заводятся прямо в каталоге; привязанное
     # к источнику подключение удалить нельзя
-    guards = (BoundConnectionGuard(providers.catalog_service_ref),)
+    guards = (CatalogHoldGuard(providers.catalog_service_ref),)
     ConnectionsApi(
         UserConnectionsService(runtime.connection_store_ref, guards),
         subjects.of_request,
@@ -402,8 +402,8 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.eager(runtime.kb_schema)
     container.eager(runtime.connection_store)
     container.eager(runtime.workflow_store)
-    container.eager(providers.catalog_store)
-    container.eager(providers.catalog_sources)
+    container.eager(providers.catalog_processes)
+    container.eager(providers.catalog_connections)
     container.eager(runtime.workflow_recovery)
     container.eager(runtime.live_locks)
     container.eager(runtime.lock_reaper)
