@@ -30,7 +30,11 @@ from boba.chainlit.infra.providers import (
     langchain_agent,
     session_profile,
 )
-from boba.chainlit.infra.session import ChainlitSession, current_session
+from boba.chainlit.infra.session import (
+    ChainlitSession,
+    SessionContainers,
+    current_session,
+)
 from boba.chainlit.infra.thread_room import (
     ChatRoomSurface,
     ThreadLive,
@@ -236,13 +240,7 @@ def _refresh_session_user_meta(profile: str, overrides: UserLlmOverrides) -> Non
 
 async def _reset_session_container() -> None:
     """Закрывает DI-контейнер сессии: следующий ход соберёт агента заново."""
-    session = current_session()
-
-    container = session.value(Container.SESSION_KEY)
-    if isinstance(container, Container):
-        await container.aclose()
-
-    session.remember(Container.SESSION_KEY, None)
+    await SessionContainers.close(current_session().id)
 
 
 class SettingsRefresh:

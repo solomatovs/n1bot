@@ -54,6 +54,7 @@ from boba.messaging.bus import (
     LiveChannel,
     LiveCommandsColumn,
     LiveEventsColumn,
+    LiveSequence,
     LiveTable,
     StateListener,
 )
@@ -395,6 +396,13 @@ class PgMessageBus(MessageBus):
     def _table(self, table: LiveTable) -> sql.Identifier:
         return SqlNames.table(self._schema, table)
 
+    def _sequence(self, sequence: LiveSequence) -> sql.Identifier:
+        return SqlNames.table(self._schema, sequence)
+
+    def _sequence_name(self, sequence: LiveSequence) -> sql.Literal:
+        """Имя последовательности литералом regclass для nextval/setval."""
+        return sql.Literal(self._sequence(sequence).as_string())
+
     async def setup(self) -> None:
         """Создаёт схему и таблицы шины (live_instances, live_events, live_commands);
         live_locks и live_payloads создают их владельцы после шины.
@@ -421,6 +429,11 @@ class PgMessageBus(MessageBus):
 
     def _ddl(self) -> tuple[sql.Composed, ...]:
         """DDL-шаги setup; порядок захвата таблиц — events раньше commands.
+
+        Номер события берётся из общей последовательности: seq области не должен
+        начинаться заново после уборки её строк, иначе подписчики с запомненным
+        последним номером перестают видеть новые события. Последовательность
+        уже созданной таблицы догоняет max(seq) один раз, пока не тронута.
 
         Тот же порядок держат purge и purge_idle работающих узлов: alter берёт
         AccessExclusive, и обратный порядок даёт дедлок между стартующим узлом
@@ -455,6 +468,23 @@ class PgMessageBus(MessageBus):
                 """
             ).format(events=self._table(LiveTable.EVENTS)),
             ScopeKindCheck.of(self._schema, LiveTable.EVENTS),
+            sql.SQL(
+                """
+                create sequence if not exists {events_seq} as bigint
+                """
+            ).format(events_seq=self._sequence(LiveSequence.EVENTS)),
+            sql.SQL(
+                """
+                select setval({events_seq_name}, m.next, false)
+                from (select coalesce(max({seq}), 0) + 1 as next from {events}) m
+                where not (select is_called from {events_seq})
+                """
+            ).format(
+                events_seq_name=self._sequence_name(LiveSequence.EVENTS),
+                events_seq=self._sequence(LiveSequence.EVENTS),
+                events=self._table(LiveTable.EVENTS),
+                seq=SqlNames.ident(LiveEventsColumn.SEQ),
+            ),
             sql.SQL(
                 """
                 create unlogged table if not exists {commands} (
@@ -532,21 +562,19 @@ class PgMessageBus(MessageBus):
                         """
                         insert into {events}
                             ({scope_kind}, {scope_id}, {seq}, {kind}, {origin}, {body})
-                        select
+                        values (
                             %(scope_kind)s,
                             %(scope_id)s,
-                            coalesce(max({seq}), 0) + 1,
+                            nextval({events_seq}),
                             %(kind)s,
                             %(origin)s,
                             %(body)s
-                        from {events}
-                        where 1=1
-                            and {scope_kind} = %(scope_kind)s
-                            and {scope_id} = %(scope_id)s
+                        )
                         returning {seq}
                         """
                     ).format(
                         events=self._table(LiveTable.EVENTS),
+                        events_seq=self._sequence_name(LiveSequence.EVENTS),
                         scope_kind=SqlNames.ident(LiveEventsColumn.SCOPE_KIND),
                         scope_id=SqlNames.ident(LiveEventsColumn.SCOPE_ID),
                         seq=SqlNames.ident(LiveEventsColumn.SEQ),

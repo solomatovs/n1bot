@@ -19,6 +19,7 @@ from chainlit.server import sio
 from chainlit.session import WebsocketSession
 from chainlit_stand import FakeTurn, make_context
 
+from boba.chainlit.infra.session import SessionContainers
 from boba.chainlit.infra.socket_events import SocketEvent, SocketEvents
 from boba.identity.run import RunRegistry
 
@@ -207,3 +208,45 @@ class TestConnectionJournal:
 
         if "turn_alive=True" not in written:
             raise AssertionError(f"живой ход не отмечен в журнале: {written}")
+
+
+class TestSessionEnd:
+    """Контейнер сессии живёт до удаления сессии chainlit, а не до обрыва сокета."""
+
+    async def test_disconnect_keeps_the_session_container(
+        self, session: EmittedEvents
+    ) -> None:
+        """Ping-timeout фоновой вкладки: сессия восстановится, контейнер тот же."""
+        del session
+        container = SessionContainers.of(SESSION_ID)
+        disconnect = await _handler(SocketEvent.DISCONNECT)
+
+        await disconnect(SOCKET_ID, "ping timeout")
+
+        if SessionContainers.of(SESSION_ID) is not container:
+            raise AssertionError("обрыв сокета закрыл контейнер сессии")
+
+    async def test_delete_closes_the_session_container(
+        self, session: EmittedEvents, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Удаление сессии закрывает контейнер: следующая сессия соберёт свой."""
+        del session
+        container = SessionContainers.of(SESSION_ID)
+        live = WebsocketSession.get_by_id(SESSION_ID)
+        if live is None:
+            raise AssertionError("сессия теста не в реестре chainlit")
+
+        journal = caplog.at_level(
+            logging.INFO, logger="boba.chainlit.infra.socket_events"
+        )
+        with journal:
+            await live.delete()
+
+        if SessionContainers.of(SESSION_ID) is container:
+            raise AssertionError("удаление сессии не закрыло контейнер")
+
+        written = "\n".join(record.getMessage() for record in caplog.records)
+        if "session end" not in written:
+            raise AssertionError(f"конец сессии не попал в журнал: {written}")
+
+        await SessionContainers.close(SESSION_ID)

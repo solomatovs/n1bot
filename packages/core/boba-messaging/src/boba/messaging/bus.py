@@ -38,6 +38,7 @@ __all__ = [
     "LiveEventsColumn",
     "LiveInstancesColumn",
     "LivePayloadsColumn",
+    "LiveSequence",
     "LiveTable",
     "LockLostError",
     "LockToken",
@@ -136,6 +137,14 @@ class LiveTable(StrEnum):
     COMMANDS = "live_commands"
     LOCKS = "live_locks"
     PAYLOADS = "live_payloads"
+
+
+class LiveSequence(StrEnum):
+    """Последовательности шины: номер события общий на таблицу, чтобы seq области
+    рос и после уборки её строк.
+    """
+
+    EVENTS = "live_events_seq"
 
 
 class LiveChannel(StrEnum):

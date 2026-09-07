@@ -26,7 +26,11 @@ from boba.chainlit.infra.config import (
     ChainlitExtendConfig,
 )
 from boba.chainlit.infra.log_context import RequestUserMiddleware, UserLogContext
-from boba.chainlit.infra.session import ChainlitSessions, current_session
+from boba.chainlit.infra.session import (
+    ChainlitSessions,
+    SessionContainers,
+    current_session,
+)
 from boba.chainlit.infra.socket_events import SocketEvents
 from boba.chainlit.infra.stale_action import StaleActionMiddleware
 from boba.identity.run import RunRegistry
@@ -119,6 +123,7 @@ async def _run_container(app: FastAPI) -> AsyncGenerator[None, None]:
         RunRegistry.stop_all(StopReason.SHUTDOWN)
         ZygoteRegistry.stop_all()
         Container.set_session_hook(None)
+        await SessionContainers.close_all()
         Container.set_root(None)
         await container.aclose()
 
@@ -411,49 +416,13 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     # локальные модели грузятся на старте: первая сессия не ждёт веса
     container.eager(providers.local_chat_runtimes)
     Container.set_root(container)
-    Container.set_session_hook(_get_or_create_session_container)
-    _close_container_if_session_end()
+    Container.set_session_hook(_session_container)
     return container
 
 
-def _get_or_create_session_container():
+def _session_container() -> Container | None:
     session = current_session()
     if not session.present:
         return None
 
-    container = session.value(Container.SESSION_KEY)
-    if container is None:
-        container = Container(level="session", parent=Container.root)
-        session.remember(Container.SESSION_KEY, container)
-
-    if not isinstance(container, Container):
-        msg = (
-            f"chainlit user session key {Container.SESSION_KEY!r} expects a DI "
-            f"Container, got {type(container).__name__}"
-        )
-        raise ValueError(msg)
-
-    return container
-
-
-def _close_container_if_session_end() -> None:
-    from chainlit.config import config as cl_config  # noqa: PLC0415
-
-    prev = cl_config.code.on_chat_end
-
-    async def on_chat_end():
-        from boba.chainlit.infra.thread_room import ThreadRoom  # noqa: PLC0415
-        from boba.chainlit.rendering.renderer import ChatRenderers  # noqa: PLC0415
-
-        try:
-            if prev:
-                await prev()
-        finally:
-            session = current_session()
-            if container := session.value(Container.SESSION_KEY):
-                await container.aclose()
-
-            if thread_id := session.thread_id:
-                ChatRenderers.release(thread_id, bool(ThreadRoom.sessions(thread_id)))
-
-    cl_config.code.on_chat_end = on_chat_end
+    return SessionContainers.of(session.id)

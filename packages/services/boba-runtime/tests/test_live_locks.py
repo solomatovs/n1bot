@@ -150,7 +150,7 @@ async def test_publish_is_fenced_by_the_lock_token(stands: tuple[Stand, Stand]) 
     lock = await first.locks.acquire(
         scope, LockMode.EXCLUSIVE, LockPurpose.RUN, UUID(int=1)
     )
-    assert await first.bus.publish(scope, changed, lock.token) == 1
+    assert await first.bus.publish(scope, changed, lock.token) >= 1
 
     await first.locks.release(lock.token)
     with pytest.raises(LockLostError):
