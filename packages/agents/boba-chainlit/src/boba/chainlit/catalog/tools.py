@@ -158,7 +158,8 @@ class CatalogPrompt(StrEnum):
     OPERATIONS = (
         'JSON array of operations. Each item has "op" and a body: add_node/'
         "set_node {node: {id, ref: {connection_id, kind, path[]}, position: "
-        "{x, y} or null, group_id: uuid or null, alias, note}}, retarget_node "
+        "{x, y} or null, width: card width in px or null, group_id: uuid or "
+        "null, alias, note}}, retarget_node "
         "{id, ref}, remove_node {id}; add_group/set_group {group: {id, name}}, "
         "remove_group {id}; "
         "add_flow/set_flow {flow: {id, from_node_id, to_node_id, columns: "
@@ -169,8 +170,9 @@ class CatalogPrompt(StrEnum):
         "flow says which columns of the source node go into which columns of "
         "the target node, by their names from catalog_read; several source "
         "columns may go into one target column and vice versa. Nodes are free "
-        "on the canvas: position is optional (the page lays out nodes without "
-        "one) and a group is an optional named frame around nodes. Removing a "
+        "on the canvas: position and width are optional (the page lays out "
+        "nodes without a position and draws cards of the default width) and a "
+        "group is an optional named frame around nodes. Removing a "
         "node is refused while flows use it, removing a group while nodes are "
         "in it: remove or move them earlier in the same list."
     )
@@ -206,6 +208,7 @@ class NodeView(BaseModel):
 
     id: UUID
     position: PositionView | None
+    width: float | None
     group: str | None
     group_id: UUID | None
     label: str
@@ -359,6 +362,7 @@ class CatalogView(BaseModel):
         return NodeView(
             id=node.id,
             position=position,
+            width=node.width,
             group=group_name,
             group_id=node.group_id,
             label=node.label,

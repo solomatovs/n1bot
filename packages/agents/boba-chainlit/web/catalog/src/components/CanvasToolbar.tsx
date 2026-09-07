@@ -9,8 +9,7 @@ type Props = {
   showMode: ShowMode;
   onShowMode: (mode: ShowMode) => void;
   onTidy: () => void;
-  /** Сколько карточек выбрано; на черновике из них собирается группа. */
-  selectedCount: number;
+  /** Новая пустая группа на холсте; без правок кнопки нет. */
   onGroup: (() => void) | undefined;
 };
 
@@ -21,9 +20,9 @@ const MODE_OPTIONS: { value: ShowMode; label: string }[] = [
 ];
 
 /** Панель холста: масштаб, вписать, прибрать, режим карточек; на черновике —
- * «group» из выбранных карточек. Перенос Toolbar из liam erd-core на виджеты
- * страницы. */
-export function CanvasToolbar({ showMode, onShowMode, onTidy, selectedCount, onGroup }: Props): ReactElement {
+ * «group», которая ставит на холст пустую группу. Перенос Toolbar из liam
+ * erd-core на виджеты страницы. */
+export function CanvasToolbar({ showMode, onShowMode, onTidy, onGroup }: Props): ReactElement {
   const { zoomIn, zoomOut, fitView } = useReactFlow();
 
   return (
@@ -57,8 +56,8 @@ export function CanvasToolbar({ showMode, onShowMode, onTidy, selectedCount, onG
       </IconButton>
       <Segmented options={MODE_OPTIONS} value={showMode} onChange={onShowMode} label="show mode" />
       {onGroup !== undefined && (
-        <Button size="sm" icon={BoxSelect} disabled={selectedCount === 0} onClick={onGroup} data-testid="group-button">
-          group{selectedCount > 0 ? ` · ${selectedCount}` : ""}
+        <Button size="sm" icon={BoxSelect} onClick={onGroup} data-testid="group-button">
+          group
         </Button>
       )}
     </Toolbar>

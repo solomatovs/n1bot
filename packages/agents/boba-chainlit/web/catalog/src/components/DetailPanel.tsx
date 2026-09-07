@@ -13,6 +13,7 @@ import {
   type Stale,
 } from "../model/catalog";
 import type { EditActions } from "../model/editing";
+import { ObjectParam } from "../model/refParam";
 import {
   Alert,
   Button,
@@ -287,20 +288,30 @@ type CardProps = {
   onOpenObject: ((ref: ObjectRef) => void) | undefined;
 };
 
-/** Родная карточка объекта из привязанной версии снимка, ниже фактов узла. */
+/** Родная карточка объекта из привязанной версии снимка, ниже фактов узла.
+ * Карточка перечитывается только по смене адреса, версии или узла: узел
+ * приходит новым объектом на каждую порцию черновика (сдвиг карточки на
+ * холсте), и перечитывать по нему нельзя. */
 function SourceCard({ api, catalog, node, cardSource, onOpenObject }: CardProps): ReactElement {
   const [state, setState] = useState<CardState>({ status: "loading" });
-  const ref = node.ref;
-  const version = catalog.context.pins[ref.connection_id] ?? -1;
+  const address = ObjectParam.render(node.ref);
+  const version = catalog.context.pins[node.ref.connection_id] ?? -1;
   const token = cardSource.kind === "shared" ? cardSource.token : undefined;
+  const nodeId = node.id;
 
   useEffect(() => {
+    const ref = ObjectParam.parse(address);
+    if (ref === undefined) {
+      setState({ status: "failed", message: `node address is not readable: ${address}` });
+      return undefined;
+    }
+
     let cancelled = false;
     setState({ status: "loading" });
     const loading =
       token === undefined
         ? api.connectionObject(ref.connection_id, version, ref.kind, ref.path)
-        : api.sharedObject(token, node.id);
+        : api.sharedObject(token, nodeId);
     loading
       .then((card) => {
         if (!cancelled) {
@@ -319,7 +330,7 @@ function SourceCard({ api, catalog, node, cardSource, onOpenObject }: CardProps)
     return () => {
       cancelled = true;
     };
-  }, [api, ref, version, token, node.id]);
+  }, [api, address, version, token, nodeId]);
 
   if (state.status === "loading") {
     return (

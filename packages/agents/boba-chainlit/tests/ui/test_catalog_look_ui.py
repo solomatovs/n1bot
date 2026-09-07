@@ -407,6 +407,11 @@ class TestProcessPage:
         expect(branch).to_be_visible()
         assert "pane=connections" in page.url
 
+        # вкладки равноправны: у процесса тоже явный адрес
+        pane.get_by_role("tab", name="process").click()
+        expect(pane).to_have_attribute("data-tab", "process")
+        assert "pane=process" in page.url
+
     def test_url_state_is_restored(
         self, page: Page, stand: StandProcess, seeded: Seeded
     ) -> None:
@@ -419,6 +424,51 @@ class TestProcessPage:
         expect(
             page.locator(f"{seeded.node('sales_dm')} .proc-node__column")
         ).to_have_count(0)
+
+    def test_detail_panel_is_resized_by_its_grip_and_the_width_is_kept(
+        self, page: Page, stand: StandProcess, seeded: Seeded, tokens: Tokens
+    ) -> None:
+        """За левый край панели деталей тянут: колонка меняет ширину в
+        пределах токенов, ширина переживает перезагрузку страницы и другой
+        процесс, полоса захвата стоит на всю высоту панели."""
+        _open_view(page, stand, seeded)
+        page.locator(seeded.node("orders_stg")).click()
+        detail = page.locator(".page__detail")
+        expect(page.get_by_test_id("detail-panel")).to_be_visible()
+        before = Css.box(detail)
+        grip = page.get_by_test_id("detail-grip")
+        grip_box = Css.box(grip)
+        assert abs(grip_box.height - before.height) <= 1
+        assert abs(grip_box.x - before.x) <= tokens.px("s1") + 1
+        expect(grip).to_have_css("cursor", "col-resize")
+
+        page.mouse.move(grip_box.x + grip_box.width / 2, grip_box.y + 200)
+        page.mouse.down()
+        page.mouse.move(grip_box.x - 150, grip_box.y + 200, steps=10)
+        page.mouse.up()
+
+        # левый край панели встаёт под указатель
+        after = Css.box(detail)
+        assert abs(after.x - (grip_box.x - 150)) <= 2, (grip_box, after)
+        assert after.width > before.width + 100
+        assert Css.box(page.locator(".page__scene")).width < WIDE["width"] - after.width
+        body = page.locator(".page__body")
+        expect(body).to_have_attribute("data-detail-width", str(round(after.width)))
+        no_horizontal_scroll(page)
+
+        page.reload()
+        page.wait_for_selector(READY, timeout=30_000)
+        expect(page.get_by_test_id("detail-panel")).to_be_visible()
+        kept = Css.box(detail)
+        assert abs(kept.width - after.width) <= 2, (after, kept)
+
+        # уже панели минимума не бывает
+        grip_box = Css.box(grip)
+        page.mouse.move(grip_box.x + grip_box.width / 2, grip_box.y + 200)
+        page.mouse.down()
+        page.mouse.move(grip_box.x + 900, grip_box.y + 200, steps=10)
+        page.mouse.up()
+        assert Css.box(detail).width == tokens.px("w-detail-min")
 
     def test_narrow_screen_keeps_the_scene_without_horizontal_scroll(
         self,
@@ -673,9 +723,13 @@ class TestEntryPage:
 
         pane = page.get_by_test_id("left-pane")
         expect(pane).to_have_attribute("data-tab", "process")
-        actions = page.get_by_test_id("process-actions")
-        expect(actions.get_by_test_id("new-process")).to_have_text("process")
-        expect(page.get_by_test_id("processes-group")).to_contain_text("processes ·")
+        # полосы действий на входе нет: новый процесс — плюс у списка
+        expect(page.get_by_test_id("process-actions")).to_have_count(0)
+        processes = page.get_by_test_id("processes-group")
+        expect(processes).to_contain_text("processes ·")
+        plus = processes.get_by_test_id("new-process")
+        expect(plus).to_have_accessible_name("new process")
+        assert Css.box(plus).height == tokens.px("h-ctl-sm")
         expect(page.get_by_test_id("drafts-group")).to_have_count(0)
         expect(page.get_by_test_id("nodes-group")).to_have_count(0)
 
@@ -688,6 +742,11 @@ class TestEntryPage:
         page.get_by_role("tab", name="connections").click()
         expect(pane).to_have_attribute("data-tab", "connections")
         expect(page.get_by_test_id("connections-actions")).to_be_visible()
+        connections = page.get_by_test_id("connections-group")
+        expect(connections).to_contain_text("connections ·")
+        expect(connections.get_by_test_id("add-connection")).to_have_accessible_name(
+            "new connection"
+        )
         no_horizontal_scroll(page)
 
 

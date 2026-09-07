@@ -73,11 +73,8 @@ export function writeUrlState(state: UrlState, params: URLSearchParams): URLSear
     next.set(KEY.showDiff, "0");
   }
 
-  if (state.pane === "process") {
-    next.delete(KEY.pane);
-  } else {
-    next.set(KEY.pane, state.pane);
-  }
+  // вкладка всегда в адресе: у обеих вкладок явная ссылка
+  next.set(KEY.pane, state.pane);
 
   return next;
 }

@@ -12,7 +12,6 @@ import { DetailPanel } from "../components/DetailPanel";
 import { DraftActions } from "../components/edit/DraftActions";
 import { FlowForm } from "../components/edit/FlowForm";
 import { NamePrompt } from "../components/edit/NamePrompt";
-import { NewProcessDialog } from "../components/edit/NewProcessDialog";
 import { ProcessDialog } from "../components/edit/ProcessDialog";
 import { ShareDialog } from "../components/edit/ShareDialog";
 import { LeftPane } from "../components/LeftPane";
@@ -31,7 +30,7 @@ import {
 import { DraftEditor, type ApplyOutcome } from "../model/editor";
 import type { EditActions } from "../model/editing";
 import type { GraphOptions, ShowMode } from "../model/graph";
-import { blankFlow, blankNode, groupNodes, removeGroupWithNodes, removeNodeWithFlows, type CatalogOp } from "../model/ops";
+import { blankFlow, blankGroup, blankNode, removeGroupWithNodes, removeNodeWithFlows, type CatalogOp } from "../model/ops";
 import { SchemaDoc, parseSchema } from "../model/schema";
 import { readUrlState, writeUrlState, type UrlState } from "../model/urlState";
 import {
@@ -81,13 +80,12 @@ type Loaded = {
 
 type LoadState = { status: "loading" } | { status: "failed"; message: string } | { status: "ready"; loaded: Loaded };
 
-/** Диалоги: имя нового черновика, имя группы (новой из выбранных узлов или
- * существующей), форма потока, свойства процесса, ссылки на просмотр, новое
- * подключение. */
+/** Диалоги: имя черновика, имя группы (новой пустой или существующей),
+ * форма потока, свойства процесса, ссылки на просмотр, новое подключение;
+ * новый процесс заводится только на входе в каталог. */
 type DialogState =
   | { kind: "draft-name" }
-  | { kind: "new-process" }
-  | { kind: "group"; group: Group | undefined; nodes: ProcessNode[] }
+  | { kind: "group"; group: Group | undefined }
   | { kind: "flow"; flow: Flow; fresh: boolean; pickTarget: boolean }
   | { kind: "process" }
   | { kind: "share" }
@@ -105,7 +103,6 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
   const [tidyCount, setTidyCount] = useState(0);
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [retargeting, setRetargeting] = useState<string | null>(null);
-  const [selected, setSelected] = useState<string[]>([]);
   const editor = useRef<DraftEditor | null>(null);
   const navigate = useNavigate();
   const url = useMemo(() => readUrlState(params), [params]);
@@ -252,17 +249,18 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
       const mine = drafts.filter((item) => item.process_id === process.id).length;
       // id черновика — из созданного редактора: событие шины о новом черновике
       // может перечитать опубликованный процесс и сбросить editor.current раньше
+      // адрес страницы (вкладка панели, режим, скрытые) едет в черновик как есть
       startDraft(process.id, `draft ${mine + 1}`)
         .then((created) => created.apply(ops).then((outcome) => ({ created, outcome })))
         .then(({ created, outcome }) => {
           report(outcome);
-          void navigate(`/drafts/${created.draftId}`);
+          void navigate({ pathname: `/drafts/${created.draftId}`, search: params.toString() });
         })
         .catch((error: unknown) => {
           toast(describe(error), "error");
         });
     },
-    [toast, state, source, startDraft, navigate],
+    [toast, state, source, startDraft, navigate, params],
   );
 
   // опции холста — одним объектом на состояние адреса: новый объект каждый
@@ -277,10 +275,6 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
     }),
     [url.showMode, url.showDiff, hiddenKey, hasDraft],
   );
-  const selectNodes = useCallback((ids: string[]) => {
-    setSelected((current) => (current.length === ids.length && current.every((id, at) => id === ids[at]) ? current : ids));
-  }, []);
-
   if (state.status === "loading") {
     return <EmptyState fill title="loading the process" />;
   }
@@ -304,11 +298,11 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
   const editing: EditActions | undefined = editable
     ? {
         apply,
-        groupNodes: (nodes) => {
-          setDialog({ kind: "group", group: undefined, nodes });
+        newGroup: () => {
+          setDialog({ kind: "group", group: undefined });
         },
         renameGroup: (group) => {
-          setDialog({ kind: "group", group, nodes: [] });
+          setDialog({ kind: "group", group });
         },
         removeGroup: (group) => {
           apply(removeGroupWithNodes(group.id, catalog.nodesOf(group.id)));
@@ -326,6 +320,9 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
             ops.push({ op: "set_node", node: { ...move.node, position: move.position, group_id: move.groupId } });
           }
           apply(ops);
+        },
+        resizeNode: (resize) => {
+          apply([{ op: "set_node", node: { ...resize.node, position: resize.position, width: resize.width } }]);
         },
         removeNode: (node: ProcessNode) => {
           const flows = catalog.flowsOf(node.id);
@@ -575,13 +572,7 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
                 processes={processes}
                 drafts={drafts}
                 currentDraftId={draft?.id}
-                onNewProcess={
-                  access.can_edit
-                    ? () => {
-                        setDialog({ kind: "new-process" });
-                      }
-                    : undefined
-                }
+                onNewProcess={undefined}
                 open={{
                   processId: process.id,
                   catalog,
@@ -620,15 +611,7 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
                   onTidy={() => {
                     setTidyCount((count) => count + 1);
                   }}
-                  selectedCount={selected.length}
-                  onGroup={
-                    editing === undefined
-                      ? undefined
-                      : () => {
-                          const chosen = selected.map((id) => catalog.node(id)).filter((node) => node !== undefined);
-                          editing.groupNodes(chosen);
-                        }
-                  }
+                  onGroup={editing?.newGroup}
                 />
                 <Canvas
                   catalog={catalog}
@@ -650,7 +633,6 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
                       : undefined
                   }
                   editing={editing}
-                  onSelectionChange={selectNodes}
                 />
               </>
           </Scene>
@@ -707,18 +689,6 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
             </Detail>
           )}
         </PageBody>
-        {dialog?.kind === "new-process" && (
-          <NewProcessDialog
-            api={api}
-            onCreated={(created) => {
-              setDialog(null);
-              void navigate(`/drafts/${created.id}`);
-            }}
-            onClose={() => {
-              setDialog(null);
-            }}
-          />
-        )}
         {dialog?.kind === "draft-name" && (
           <NamePrompt
             title="rename draft"
@@ -733,14 +703,14 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
         )}
         {dialog?.kind === "group" && (
           <NamePrompt
-            title={dialog.group === undefined ? `group · ${dialog.nodes.length} node${dialog.nodes.length === 1 ? "" : "s"}` : "rename group"}
+            title={dialog.group === undefined ? "new group" : "rename group"}
             mark="group-name"
             label="group name"
             initial={dialog.group?.name ?? ""}
             onSubmit={(name) => {
               const group = dialog.group;
               if (group === undefined) {
-                apply(groupNodes(name, dialog.nodes));
+                apply([{ op: "add_group", group: blankGroup(name) }]);
               } else {
                 apply([{ op: "set_group", group: { ...group, name } }]);
               }

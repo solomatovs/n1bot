@@ -28,16 +28,17 @@ type Props = {
   guest: boolean;
   tab: PaneTab;
   onTab: (tab: PaneTab) => void;
-  /** Закреплённая полоса действий раздела: без процесса — новый процесс, на
-   * опубликованном — правки и ссылка, на черновике — публикация, отмена,
-   * обновление. */
+  /** Закреплённая полоса действий открытого процесса: на опубликованном —
+   * ссылка и настройки, на черновике — публикация, отмена, обновление; на
+   * входе в каталог полосы нет. */
   actions: ReactNode;
   /** Все процессы каталога и свои открытые черновики одним плоским списком;
    * открытый процесс или черновик подсвечен. */
   processes: Process[];
   drafts: Draft[];
   currentDraftId: string | undefined;
-  /** Открыть форму нового процесса; без права на правки — нет. */
+  /** Плюс у списка процессов: только на входе в каталог, где панель про
+   * список, и только с правом на правки; у открытого процесса панель про него. */
   onNewProcess: (() => void) | undefined;
   /** Открытый процесс; на входе в каталог его нет. */
   open: OpenProcess | undefined;
@@ -82,7 +83,7 @@ export function LeftPane({
       )}
       {shown === "process" ? (
         <>
-          {!guest && (
+          {!guest && actions !== null && (
             <div className="pane__bar pane__actions" data-testid="process-actions">
               {actions}
             </div>
@@ -145,7 +146,7 @@ function ProcessesGroup({ processes, drafts, currentProcessId, currentDraftId, o
       mark="processes-group"
       actions={
         onNew !== undefined && (
-          <IconButton size="sm" ghost aria-label="new process" onClick={onNew}>
+          <IconButton size="sm" ghost aria-label="new process" onClick={onNew} data-testid="new-process">
             <Plus size={12} />
           </IconButton>
         )
