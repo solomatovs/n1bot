@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-catalog"
-version = "0.0.17.dev1"
+version = "0.0.17.dev2"
 description = "Boba catalog: домен каталога данных — слои, наборы, колонки, виды загрузки, потоки; снимок, операции, diff. Без I/O."
 requires-python = ">=3.11,<4"
 dependencies = [
@@ -13,8 +13,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "boba-db-clickhouse==0.0.17.dev1",
-    "boba-db-postgres==0.0.17.dev1",
+    "boba-db-clickhouse==0.0.17.dev2",
+    "boba-db-postgres==0.0.17.dev2",
     "pytest>=8",
 ]
 

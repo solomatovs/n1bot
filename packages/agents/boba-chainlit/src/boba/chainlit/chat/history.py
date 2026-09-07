@@ -9,8 +9,9 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Protocol, cast
 
 from langchain_core.messages import (
@@ -21,7 +22,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.runnables import RunnableConfig
-from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.base import BaseCheckpointSaver, PendingWrite
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.graph.state import CompiledStateGraph
 
@@ -47,6 +48,7 @@ from chainlit.step import StepDict
 __all__ = [
     "CheckpointMessages",
     "ConversationTranscript",
+    "GraphChannel",
     "GraphTurnHistory",
     "PendingCall",
     "RewindPlan",
@@ -148,8 +150,16 @@ class TranscriptFeed:
         return sink.steps
 
 
+class GraphChannel(StrEnum):
+    """Каналы состояния графа хода, которые читает история."""
+
+    MESSAGES = "messages"
+
+
 class CheckpointMessages(ThreadMessages):
-    """Читает сообщения треда из langgraph-checkpointer'а."""
+    """Читает сообщения треда из langgraph-checkpointer'а: канал последнего
+    checkpoint'а плюс ответы задач, доработавших раньше соседей по пачке.
+    """
 
     def __init__(self, saver: BaseCheckpointSaver) -> None:
         self._saver = saver
@@ -161,8 +171,56 @@ class CheckpointMessages(ThreadMessages):
             return []
 
         values = snapshot.checkpoint.get("channel_values") or {}
-        messages = values.get("messages") or []
-        return [m for m in messages if isinstance(m, BaseMessage)]
+        stored = values.get(GraphChannel.MESSAGES.value) or []
+        messages = [m for m in stored if isinstance(m, BaseMessage)]
+
+        pending = snapshot.pending_writes
+        if pending is None:
+            return messages
+
+        messages.extend(self._pending(pending, messages))
+        return messages
+
+    @classmethod
+    def _pending(
+        cls, writes: Iterable[PendingWrite], known: Sequence[BaseMessage]
+    ) -> Iterator[BaseMessage]:
+        """Сообщения из pending writes последнего checkpoint'а: вызовы одной пачки
+        идут отдельными задачами, и ответ завершившейся задачи до конца узла лежит
+        только здесь.
+        """
+        seen: set[str] = set()
+        for message in known:
+            if message.id:
+                seen.add(message.id)
+
+        for _task_id, channel, value in writes:
+            if channel != GraphChannel.MESSAGES.value:
+                continue
+
+            for message in cls._written(value):
+                if message.id and message.id in seen:
+                    continue
+
+                yield message
+
+    @staticmethod
+    def _written(value: object) -> Iterator[BaseMessage]:
+        """Сообщения одной записи: узел отдаёт список или одно сообщение; команды
+        удаления к ленте не относятся.
+        """
+        items: Sequence[object] = [value]
+        if isinstance(value, list):
+            items = value
+
+        for item in items:
+            if not isinstance(item, BaseMessage):
+                continue
+
+            if isinstance(item, RemoveMessage):
+                continue
+
+            yield item
 
 
 class ConversationTranscript:
