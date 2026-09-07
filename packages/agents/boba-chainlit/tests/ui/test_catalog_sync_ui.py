@@ -318,13 +318,14 @@ class TestSyncApi:
         assert third["version"] == 3
 
         assert sync_api.diff(connection_id, 2, 3) == []
+        # дерево третьей версии — те же схемы, что во второй
         roots = sync_api.tree(connection_id, 3, [])
-        assert [node["status"] for node in roots] == ["unchanged"]
-        statuses = {
-            str(node["label"]): str(node["status"])
+        assert [node["label"] for node in roots] == [stand_database]
+        third_schemas = [
+            str(node["label"])
             for node in sync_api.tree(connection_id, 3, [stand_database])
-        }
-        assert set(statuses.values()) == {"unchanged"}, statuses
+        ]
+        assert third_schemas == schemas
 
     def test_reader_cannot_sync(
         self, sync_stand: StandProcess, sync_api: SyncApi
@@ -622,13 +623,15 @@ class TestEndToEnd:
         # панель узла после броска не открывается: сцена не сжимается
         expect(page.get_by_test_id("detail-panel")).to_have_count(0)
 
-        # линии между колонками: id → id заводит поток, amount → amount добавляет пару
-        edges = page.locator('[data-testid="flow-edge-label"]')
+        # линии между колонками: id → id заводит поток, amount → amount добавляет
+        # пару; описания у потока нет — нет и ярлыка, считаем линии
+        edges = page.locator(".react-flow__edge")
         user.connect(ProbeSql.RAW, ProbeSql.STG, "id")
-        expect(edges.filter(has_text="1 col")).to_have_count(1)
+        expect(edges).to_have_count(1)
         page.get_by_role("tab", name="all fields").click()
         user.connect(ProbeSql.RAW, ProbeSql.STG, "amount")
-        expect(edges.filter(has_text="2 cols")).to_have_count(1)
+        expect(edges).to_have_count(2)
+        expect(page.locator('[data-testid="flow-edge-label"]')).to_have_count(0)
         expect(page.get_by_test_id("flow-form")).to_have_count(0)
 
         page.get_by_test_id("left-pane").get_by_role("tab", name="process").click()
@@ -650,4 +653,4 @@ class TestEndToEnd:
                 page.locator(f'[data-testid="catalog-node"][data-node="{ref}"]')
             ).to_be_visible(timeout=15_000)
 
-        expect(edges.filter(has_text="2 cols")).to_have_count(1)
+        expect(edges).to_have_count(2)

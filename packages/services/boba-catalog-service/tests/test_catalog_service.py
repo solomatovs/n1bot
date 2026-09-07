@@ -15,7 +15,6 @@ from psycopg import sql
 from boba.catalog import (
     CatalogOpError,
     CatalogSnapshot,
-    ChangeStatus,
     ObjectKind,
     OperationList,
     RemoveFlow,
@@ -438,17 +437,20 @@ async def test_connection_snapshots_follow_the_catalog_rights_and_emit_events(
         with pytest.raises(CatalogRefusalError):
             await service.synced_connections(STRANGER)
 
+        # дерево — объекты выбранной версии без пометок: во второй версии
+        # customers ушла, returns появилась; читаются только записи пути
         tables = await service.connection_tree(
             VIEWER, PG_CONNECTION.id, -1, ("prod", "public", "tables")
         )
-        assert {node.label: node.status for node in tables} == {
-            "orders": ChangeStatus.MODIFIED,
-            "returns": ChangeStatus.ADDED,
-        }
+        assert sorted(node.label for node in tables) == ["orders", "returns"]
+        first_tables = await service.connection_tree(
+            VIEWER, PG_CONNECTION.id, 1, ("prod", "public", "tables")
+        )
+        assert sorted(node.label for node in first_tables) == ["customers", "orders"]
         first_tree = await service.connection_tree(
             VIEWER, PG_CONNECTION.id, 1, ("prod",)
         )
-        assert {node.status for node in first_tree} == {ChangeStatus.UNCHANGED}
+        assert all(node.expandable for node in first_tree)
         diff = await service.connection_diff(VIEWER, PG_CONNECTION.id, 1, 2)
         assert len(diff.entries) == 4
     finally:

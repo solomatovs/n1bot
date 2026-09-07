@@ -3,14 +3,16 @@ import { useCallback, useEffect, useState, type ReactElement } from "react";
 import { Link } from "react-router-dom";
 
 import { ApiError, type CatalogApi } from "../api/client";
-import type { ObjectRef, SyncedConnection, TreeNode } from "../model/catalog";
-import { Button, Chip, IconButton, Note } from "../ui";
+import type { ConnectionVersion, ObjectRef, SyncedConnection, TreeNode } from "../model/catalog";
+import { Button, Chip, IconButton, Note, Select, useToast } from "../ui";
 import { PaneGroup } from "./LeftPane";
 import { SourceTree } from "./sources/SourceTree";
 
 type Props = {
   api: CatalogApi;
-  /** Версии снимков, к которым привязан процесс; без привязки — последняя. */
+  /** Версии снимков, к которым привязан процесс: с них дерево начинается;
+   * без привязки — последняя. Показ другой версии — только просмотр,
+   * процесс работает над привязанной. */
   pins: Record<string, number>;
   selected: ObjectRef | undefined;
   onSelect: (ref: ObjectRef) => void;
@@ -114,7 +116,7 @@ export function ConnectionsPane({ api, pins, selected, onSelect, draggable, onAd
                   key={connection.connection_id}
                   api={api}
                   connection={connection}
-                  version={pins[connection.connection_id] ?? -1}
+                  pinned={pins[connection.connection_id] ?? -1}
                   selected={selected}
                   onSelect={onSelect}
                   draggable={draggable}
@@ -130,18 +132,62 @@ export function ConnectionsPane({ api, pins, selected, onSelect, draggable, onAd
 type BranchProps = {
   api: CatalogApi;
   connection: SyncedConnection;
-  version: number;
+  /** Привязанная версия; отрицательная — последняя. */
+  pinned: number;
   selected: ObjectRef | undefined;
   onSelect: (ref: ObjectRef) => void;
   draggable: boolean;
 };
 
-function ConnectionBranch({ api, connection, version, selected, onSelect, draggable }: BranchProps): ReactElement {
+type VersionsState = { status: "loading" } | { status: "ready"; versions: ConnectionVersion[] };
+
+/** Подключение в панели: раскрывается в дерево выбранной версии снимка.
+ * Версия по умолчанию — привязанная у процесса (у входа — последняя), список
+ * версий подгружается при раскрытии; выбор другой версии — просмотр её
+ * объектов, привязку процесса он не меняет. */
+function ConnectionBranch({ api, connection, pinned, selected, onSelect, draggable }: BranchProps): ReactElement {
   const [open, setOpen] = useState(false);
+  const [chosen, setChosen] = useState<number | undefined>(undefined);
+  const [versions, setVersions] = useState<VersionsState>({ status: "loading" });
+  const toast = useToast();
   const id = connection.connection_id;
+  let version = connection.latest_version;
+  if (pinned >= 0) {
+    version = pinned;
+  }
+  if (chosen !== undefined) {
+    version = chosen;
+  }
+
   const load = useCallback((path: string[]) => api.connectionTree(id, version, path), [api, id, version]);
-  const pinned = version < 0 ? `v${connection.latest_version}` : `v${version}`;
   const own = selected?.connection_id === id ? selected : undefined;
+
+  useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    api
+      .connectionVersions(id)
+      .then((loaded) => {
+        if (!cancelled) {
+          setVersions({ status: "ready", versions: loaded });
+        }
+      })
+      .catch((error: unknown) => {
+        if (cancelled) {
+          return;
+        }
+
+        setVersions({ status: "ready", versions: [] });
+        toast(describe(error), "error");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [api, id, open, connection.latest_version, toast]);
 
   const select = (node: TreeNode): void => {
     if (node.ref !== null) {
@@ -149,13 +195,58 @@ function ConnectionBranch({ api, connection, version, selected, onSelect, dragga
     }
   };
 
+  let versionMark = "";
+  if (version === pinned) {
+    versionMark = " · pinned";
+  }
+  if (version === connection.latest_version) {
+    versionMark = " · latest";
+  }
+
+  const options: ReactElement[] = [];
+  if (versions.status === "ready") {
+    for (const item of versions.versions) {
+      let mark = "";
+      if (item.version === pinned) {
+        mark = " · pinned";
+      }
+      options.push(
+        <option key={item.version} value={String(item.version)}>
+          v{item.version}
+          {mark}
+        </option>,
+      );
+    }
+  }
+
+  let versionControl = (
+    <Chip tone="muted" mark="branch-version">
+      v{version}
+      {versionMark}
+    </Chip>
+  );
+  if (open && options.length > 0) {
+    versionControl = (
+      <Select
+        narrow
+        aria-label={`snapshot version of ${connection.name}`}
+        value={String(version)}
+        onChange={(event) => {
+          setChosen(Number(event.target.value));
+        }}
+      >
+        {options}
+      </Select>
+    );
+  }
+
   return (
     <PaneGroup
       title={connection.name}
       name
       nested
       mark="connection-branch"
-      data={{ "data-connection": connection.name, "data-open": open }}
+      data={{ "data-connection": connection.name, "data-open": open, "data-version": String(version) }}
       lead={
         <IconButton
           size="sm"
@@ -171,7 +262,7 @@ function ConnectionBranch({ api, connection, version, selected, onSelect, dragga
       actions={
         <>
           <Chip tone="muted">{connection.kind}</Chip>
-          <Chip tone="muted">{pinned}</Chip>
+          {versionControl}
         </>
       }
     >
@@ -180,4 +271,12 @@ function ConnectionBranch({ api, connection, version, selected, onSelect, dragga
       )}
     </PaneGroup>
   );
+}
+
+function describe(error: unknown): string {
+  if (error instanceof ApiError) {
+    return error.detail;
+  }
+
+  return String(error);
 }

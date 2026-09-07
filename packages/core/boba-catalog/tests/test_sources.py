@@ -84,26 +84,29 @@ class TestPostgresTree:
         databases = snapshot.children(SOURCE_ID, ())
         assert [node.label for node in databases] == ["prod"]
         assert databases[0].kind is TreeKind.DATABASE
-        assert databases[0].children_count == 2
+        assert databases[0].expandable
 
         schemas = snapshot.children(SOURCE_ID, ("prod",))
         assert [node.label for node in schemas] == ["etl", "public"]
         assert schemas[0].comment == "Загрузка"
+        assert all(node.expandable for node in schemas)
 
         groups = snapshot.children(SOURCE_ID, ("prod", "public"))
-        assert [(node.label, node.children_count) for node in groups] == [
-            ("tables", 2),
-            ("views", 1),
-            ("sequences", 1),
-            ("types", 1),
+        assert [node.label for node in groups] == [
+            "tables",
+            "views",
+            "sequences",
+            "types",
         ]
+        assert all(node.expandable for node in groups)
 
         tables = snapshot.children(SOURCE_ID, ("prod", "public", "tables"))
         assert [node.label for node in tables] == ["customers", "orders"]
+        assert not tables[0].expandable
         orders = tables[1]
         assert orders.kind is TreeKind.OBJECT
         assert orders.detail == "partitioned"
-        assert orders.children_count == 1
+        assert orders.expandable
         assert orders.ref == ObjectRef(
             connection_id=SOURCE_ID,
             kind=ObjectKind.RELATION,
@@ -114,6 +117,7 @@ class TestPostgresTree:
             SOURCE_ID, ("prod", "public", "tables", "orders")
         )
         assert [node.label for node in partitions] == ["orders_2026"]
+        assert not partitions[0].expandable
         assert partitions[0].detail.startswith("FOR VALUES")
         assert partitions[0].ref is not None
         assert partitions[0].ref.path == ("prod", "public", "orders_2026")
@@ -129,10 +133,7 @@ class TestPostgresTree:
         snapshot = pg.snapshot()
 
         groups = snapshot.children(SOURCE_ID, ("prod", "etl"))
-        assert [(node.label, node.children_count) for node in groups] == [
-            ("functions", 2),
-            ("procedures", 1),
-        ]
+        assert [node.label for node in groups] == ["functions", "procedures"]
 
         functions = snapshot.children(SOURCE_ID, ("prod", "etl", "functions"))
         assert [node.label for node in functions] == [
@@ -166,20 +167,21 @@ class TestClickHouseTree:
         snapshot = ch.snapshot()
 
         databases = snapshot.children(CH_SOURCE_ID, ())
-        assert [
-            (node.label, node.detail, node.children_count) for node in databases
-        ] == [("dwh", "Atomic", 4)]
+        assert [(node.label, node.detail, node.expandable) for node in databases] == [
+            ("dwh", "Atomic", True)
+        ]
 
         groups = snapshot.children(CH_SOURCE_ID, ("dwh",))
-        assert [(node.label, node.children_count) for node in groups] == [
-            ("tables", 1),
-            ("views", 1),
-            ("materialized", 1),
-            ("dictionaries", 1),
+        assert [node.label for node in groups] == [
+            "tables",
+            "views",
+            "materialized",
+            "dictionaries",
         ]
 
         tables = snapshot.children(CH_SOURCE_ID, ("dwh", "tables"))
         assert tables[0].label == "events"
+        assert not tables[0].expandable
         assert tables[0].detail == "MergeTree"
         assert tables[0].ref == ObjectRef(
             connection_id=CH_SOURCE_ID, kind=ObjectKind.TABLE, path=("dwh", "events")
@@ -194,6 +196,90 @@ class TestClickHouseTree:
         assert [column.name for column in columns] == ["ts", "user_id", "payload"]
         attributes = list(snapshot.attributes_of(("dwh", "users")))
         assert [attribute.name for attribute in attributes] == ["name"]
+
+
+class TestTreeScope:
+    """Область записей пути: суженный по ней снимок отдаёт тех же детей, что
+    полный, а лишних частей в нём нет — так хранилище читает только нужное."""
+
+    PG_PATHS: tuple[tuple[str, ...], ...] = (
+        (),
+        ("prod",),
+        ("prod", "public"),
+        ("prod", "etl"),
+        ("prod", "public", "tables"),
+        ("prod", "public", "views"),
+        ("prod", "etl", "functions"),
+        ("prod", "etl", "procedures"),
+        ("prod", "public", "sequences"),
+        ("prod", "public", "types"),
+        ("prod", "public", "tables", "orders"),
+        ("prod", "public", "tables", "customers"),
+        ("prod", "public", "tables", "orders", "x"),
+    )
+    CH_PATHS: tuple[tuple[str, ...], ...] = (
+        (),
+        ("dwh",),
+        ("dwh", "tables"),
+        ("dwh", "dictionaries"),
+        ("dwh", "tables", "events"),
+    )
+
+    def test_narrowed_postgres_snapshot_gives_the_same_children(
+        self, pg: PgSample
+    ) -> None:
+        snapshot = pg.snapshot()
+        for path in self.PG_PATHS:
+            scope = type(snapshot).tree_scope(path)
+            narrowed = snapshot.narrowed(scope)
+            assert narrowed.children(SOURCE_ID, path) == snapshot.children(
+                SOURCE_ID, path
+            ), path
+
+    def test_narrowed_clickhouse_snapshot_gives_the_same_children(
+        self, ch: ChSample
+    ) -> None:
+        snapshot = ch.snapshot()
+        for path in self.CH_PATHS:
+            scope = type(snapshot).tree_scope(path)
+            narrowed = snapshot.narrowed(scope)
+            assert narrowed.children(CH_SOURCE_ID, path) == snapshot.children(
+                CH_SOURCE_ID, path
+            ), path
+
+    def test_scope_reads_only_the_path_neighbourhood(self, pg: PgSample) -> None:
+        snapshot = pg.snapshot()
+
+        root = snapshot.narrowed(type(snapshot).tree_scope(()))
+        assert root.databases == snapshot.databases
+        assert root.schemas == ()
+        assert root.relations == ()
+        assert root.columns == ()
+
+        schema = snapshot.narrowed(type(snapshot).tree_scope(("prod", "public")))
+        assert schema.databases == ()
+        assert schema.columns == ()
+        assert {relation.schema_name for relation in schema.relations} == {"public"}
+        assert schema.routines == ()
+
+        tables = snapshot.narrowed(
+            type(snapshot).tree_scope(("prod", "public", "tables"))
+        )
+        assert tables.sequences == ()
+        assert tables.types == ()
+        assert {relation.schema_name for relation in tables.relations} == {"public"}
+
+        partitions = snapshot.narrowed(
+            type(snapshot).tree_scope(("prod", "public", "tables", "orders"))
+        )
+        assert {relation.name for relation in partitions.relations} == {
+            "orders",
+            "orders_2026",
+        }
+
+        assert (
+            type(snapshot).tree_scope(("prod", "public", "views", "v", "x")).parts == ()
+        )
 
 
 class TestDiff:

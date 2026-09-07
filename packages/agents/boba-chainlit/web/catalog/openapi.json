@@ -4035,10 +4035,9 @@
           "kind": {
             "$ref": "#/components/schemas/TreeKind"
           },
-          "children_count": {
-            "type": "integer",
-            "minimum": 0.0,
-            "title": "Children Count"
+          "expandable": {
+            "type": "boolean",
+            "title": "Expandable"
           },
           "detail": {
             "type": "string",
@@ -4065,10 +4064,6 @@
                 "type": "null"
               }
             ]
-          },
-          "status": {
-            "$ref": "#/components/schemas/ChangeStatus",
-            "default": "unchanged"
           }
         },
         "additionalProperties": false,
@@ -4077,10 +4072,10 @@
           "path",
           "label",
           "kind",
-          "children_count"
+          "expandable"
         ],
         "title": "TreeNode",
-        "description": "Узел дерева источника любой глубины. path — путь узла в дереве (не\nадрес объекта: у групп своя ступень), ref — адрес, если узел — объект."
+        "description": "Узел дерева источника любой глубины. path — путь узла в дереве (не\nадрес объекта: у групп своя ступень), ref — адрес, если узел — объект;\nexpandable — под узлом бывают дети, их запрашивают отдельно."
       },
       "ValidationError": {
         "properties": {

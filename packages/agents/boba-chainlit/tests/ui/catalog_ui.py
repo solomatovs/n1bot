@@ -214,11 +214,13 @@ class Objects:
 
 @dataclass(frozen=True)
 class FlowSpec:
-    """Поток сида: узлы по именам и пары колонок «источник → приёмник»."""
+    """Поток сида: узлы по именам, пары колонок «источник → приёмник» и
+    описание — оно же ярлык линии на холсте (без описания ярлыка нет)."""
 
     source: str
     target: str
     columns: tuple[tuple[str, str], ...] = ()
+    description: str = ""
 
 
 @dataclass(frozen=True)
@@ -373,7 +375,7 @@ class ProcessSeed:
                         "from_node_id": self.id_of(flow.source),
                         "to_node_id": self.id_of(flow.target),
                         "columns": links,
-                        "description": "",
+                        "description": flow.description,
                     },
                 }
             )
@@ -406,7 +408,14 @@ class Seed(ProcessSeed):
             tables={Ed.ORDERS: Ed.SRC, Ed.SALES: Ed.DST, Ed.RETURNS: Ed.DST},
             routines={Ed.LOADER: ""},
             spare_tables=(Ed.EVENTS, Ed.ARCHIVE),
-            flows=(FlowSpec(Ed.ORDERS, Ed.SALES, (("id", "id"), ("name", "name"))),),
+            flows=(
+                FlowSpec(
+                    Ed.ORDERS,
+                    Ed.SALES,
+                    (("id", "id"), ("name", "name")),
+                    "orders to sales",
+                ),
+            ),
         )
 
 

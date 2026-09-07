@@ -4,6 +4,7 @@ import { useEffect, useState, type FormEvent, type ReactElement } from "react";
 import { ApiError, type CatalogApi } from "../api/client";
 import {
   flowLabel,
+  pairsLabel,
   renderRef,
   type Catalog,
   type Flow,
@@ -479,6 +480,8 @@ function FlowList({
             const neighbour = catalog.label(otherId);
             const status = showDiff ? catalog.statusOf("flow", flow.id) : "unchanged";
             const stale = catalog.staleOf("flow", flow.id);
+            const description = flowLabel(flow);
+            const pairs = pairsLabel(flow);
             return (
               <ListRow key={flow.id} status={status} stale={stale.length > 0} mark="detail-flow" data-flow={flow.id}>
                 <Row>
@@ -490,7 +493,8 @@ function FlowList({
                     {icon} {neighbour}
                   </ListName>
                   <ListAside>
-                    <Chip>{flowLabel(flow)}</Chip>
+                    {description !== "" && <Chip tone="muted">{description}</Chip>}
+                    {pairs !== "" && <Chip>{pairs}</Chip>}
                     {stale.length > 0 && (
                       <Chip tone="warn">
                         <TriangleAlert size={10} /> stale

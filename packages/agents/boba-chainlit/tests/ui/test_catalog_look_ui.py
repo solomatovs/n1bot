@@ -65,8 +65,10 @@ class Look:
         "sales_dm": "look_dm",
     }
     FLOWS: ClassVar[tuple[FlowSpec, ...]] = (
-        FlowSpec("orders_raw", "orders_stg", (("id", "id"), ("name", "name"))),
-        FlowSpec("customers_raw", "customers_stg", (("id", "id"),)),
+        FlowSpec(
+            "orders_raw", "orders_stg", (("id", "id"), ("name", "name")), "orders"
+        ),
+        FlowSpec("customers_raw", "customers_stg", (("id", "id"),), "customers"),
         FlowSpec("orders_stg", "sales_dm"),
     )
     KEY_COLUMNS: ClassVar[int] = 1
@@ -205,11 +207,11 @@ class TestProcessPage:
         expect(page.get_by_test_id("page-title")).to_have_text(Look.PROCESS)
         expect(page.locator(NODE)).to_have_count(len(Look.TABLES))
         expect(page.locator(FRAME)).to_have_count(len(Look.GROUPS))
-        expect(page.locator(EDGE_LABEL)).to_have_count(len(Look.FLOWS))
-
-        # ярлык ребра — число пар колонок; поток без пар — стрелка
+        # ярлык ребра — описание потока; поток без описания идёт без ярлыка
+        described = [flow for flow in Look.FLOWS if flow.description != ""]
+        expect(page.locator(EDGE_LABEL)).to_have_count(len(described))
         labels = sorted(page.locator(EDGE_LABEL).all_inner_texts())
-        assert labels == ["1 col", "2 cols", "→"]
+        assert labels == sorted(flow.description for flow in described)
 
     def test_cards_stand_where_the_process_puts_them(
         self, page: Page, stand: StandProcess, seeded: Seeded
@@ -390,7 +392,7 @@ class TestProcessPage:
 
         pane.get_by_role("button", name="hide customers_raw").click()
         expect(page.locator(seeded.node("customers_raw"))).to_have_count(0)
-        expect(page.locator(EDGE_LABEL)).to_have_count(len(Look.FLOWS) - 1)
+        expect(page.locator(EDGE_LABEL)).to_have_count(1)
         assert f"hidden={seeded.seed.id_of('customers_raw')}" in page.url
 
         pane.get_by_role("button", name="show customers_raw").click()

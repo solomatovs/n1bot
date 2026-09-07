@@ -33,12 +33,7 @@ from uuid import UUID
 
 from pydantic import ConfigDict, Field, ValidationError
 
-from boba.catalog.base import (
-    CatalogError,
-    CatalogInvariantError,
-    CatalogModel,
-    ChangeStatus,
-)
+from boba.catalog.base import CatalogError, CatalogInvariantError, CatalogModel
 
 __all__ = [
     "Keyed",
@@ -48,6 +43,7 @@ __all__ = [
     "ObjectKind",
     "ObjectRef",
     "PartKind",
+    "PartScope",
     "Records",
     "SnapshotPart",
     "SourceKinds",
@@ -58,6 +54,7 @@ __all__ = [
     "SubPart",
     "TreeKind",
     "TreeNode",
+    "TreeScope",
 ]
 
 
@@ -189,16 +186,61 @@ class TreeKind(StrEnum):
 
 class TreeNode(CatalogModel):
     """Узел дерева источника любой глубины. path — путь узла в дереве (не
-    адрес объекта: у групп своя ступень), ref — адрес, если узел — объект."""
+    адрес объекта: у групп своя ступень), ref — адрес, если узел — объект;
+    expandable — под узлом бывают дети, их запрашивают отдельно."""
 
     path: tuple[str, ...] = Field(min_length=1)
     label: str
     kind: TreeKind
-    children_count: int = Field(ge=0)
+    expandable: bool
     detail: str = ""
     comment: str | None = None
     ref: ObjectRef | None = None
-    status: ChangeStatus = ChangeStatus.UNCHANGED
+
+
+class PartScope(CatalogModel):
+    """Записи одной части, нужные дереву: часть и равенства по полям записи
+    (значения строками, как в ключе). Хранилище переводит равенства в where,
+    снимок в памяти — в фильтр записей."""
+
+    part: str
+    where: tuple[tuple[str, str], ...] = ()
+
+    def matches(self, record: SourceRecord) -> bool:
+        return all(self._equals(record, field, value) for field, value in self.where)
+
+    @staticmethod
+    def _equals(record: SourceRecord, field: str, value: str) -> bool:
+        return str(getattr(record, field)) == value
+
+
+class TreeScope(CatalogModel):
+    """Что нужно прочитать из снимка, чтобы отдать детей одного пути дерева:
+    несколько областей частей; записи одной части из разных областей
+    складываются."""
+
+    parts: tuple[PartScope, ...] = ()
+
+    def part_names(self) -> tuple[str, ...]:
+        names: list[str] = []
+        for scope in self.parts:
+            if scope.part in names:
+                continue
+
+            names.append(scope.part)
+
+        return tuple(names)
+
+    def keeps(self, part: str, record: SourceRecord) -> bool:
+        """Запись части попадает хотя бы в одну область."""
+        for scope in self.parts:
+            if scope.part != part:
+                continue
+
+            if scope.matches(record):
+                return True
+
+        return False
 
 
 class SnapshotPart(CatalogModel):
@@ -438,6 +480,21 @@ class SourceSnapshot(CatalogModel):
         self.part(part)
         return self.model_copy(update={part: tuple(records)})
 
+    def narrowed(self, scope: TreeScope) -> Self:
+        """Частичный снимок: только записи областей scope, остальные части
+        пусты. Такой снимок не проходит check() (родителей нет), но отдаёт
+        детей пути, для которого область запрошена."""
+        update: dict[str, tuple[SourceRecord, ...]] = {}
+        for part in self.parts():
+            kept: list[SourceRecord] = []
+            for record in self.records_of(part.name):
+                if scope.keeps(part.name, record):
+                    kept.append(record)
+
+            update[part.name] = tuple(kept)
+
+        return self.model_copy(update=update)
+
     def check(self) -> None:
         """Ключи уникальны в каждой части, у каждой записи есть родитель в
         части-родителе.
@@ -539,9 +596,17 @@ class SourceSnapshot(CatalogModel):
 
         return names
 
+    @classmethod
+    @abstractmethod
+    def tree_scope(cls, path: Sequence[str]) -> TreeScope:
+        """Какие записи нужны, чтобы отдать детей этого пути: хранилище
+        читает только их, children() на суженном снимке даёт тот же ответ,
+        что на полном."""
+
     @abstractmethod
     def children(self, connection_id: UUID, path: Sequence[str]) -> Sequence[TreeNode]:
-        """Дети узла дерева по пути; корень — пустой путь."""
+        """Дети узла дерева по пути; корень — пустой путь. Считает только по
+        записям области tree_scope(path), счётчиков детей не ведёт."""
 
     @abstractmethod
     def node_columns(self, ref: ObjectRef) -> tuple[NodeColumn, ...]:
