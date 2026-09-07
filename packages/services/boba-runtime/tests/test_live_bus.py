@@ -127,7 +127,8 @@ async def test_messages_cross_instances_in_seq_order(
 
     seqs = [await first.publish(scope, _token(str(i)), token) for i in range(30)]
 
-    assert seqs == list(range(1, 31))
+    assert seqs == sorted(seqs)
+    assert len(set(seqs)) == 30
     await local.wait(30)
     await remote.wait(30)
     assert local.tokens() == [str(i) for i in range(30)]
@@ -149,24 +150,55 @@ async def test_identical_messages_are_delivered_both_times(
     await first.publish(scope, _token("same"), token)
 
     await remote.wait(2)
-    assert [e.seq for e in remote.envelopes] == [1, 2]
+    assert remote.envelopes[0].seq < remote.envelopes[1].seq
 
 
 async def test_replay_and_purge(buses: tuple[PgMessageBus, PgMessageBus]) -> None:
     first, second = buses
     scope = Scope.workflow(uuid4())
     token = LockToken.local()
-    for text in ("a", "b", "c"):
-        await first.publish(scope, _token(text), token)
+    seqs = [await first.publish(scope, _token(text), token) for text in ("a", "b", "c")]
 
-    tail = await second.replay(scope, after_seq=1)
+    tail = await second.replay(scope, after_seq=seqs[0])
 
-    assert [e.seq for e in tail] == [2, 3]
+    assert [e.seq for e in tail] == seqs[1:]
     assert tail[0].origin == "node1-studio"
 
     assert await second.purge(scope) == 3
     assert await first.replay(scope, after_seq=0) == []
-    assert await first.publish(scope, _token("d"), token) == 1
+    assert await first.publish(scope, _token("d"), token) > seqs[-1]
+
+
+async def test_subscribers_survive_the_idle_purge(
+    buses: tuple[PgMessageBus, PgMessageBus],
+) -> None:
+    """Уборка простоявшей области не сбрасывает нумерацию: подписчики с запомненным
+    последним номером видят следующий ход.
+    """
+    first, second = buses
+    scope = Scope.chat(str(uuid4()))
+    local = Inbox()
+    remote = Inbox()
+    first.subscribe(scope, local.take)
+    second.subscribe(scope, remote.take)
+    token = LockToken.local()
+
+    for i in range(3):
+        await first.publish(scope, _token(f"turn1-{i}"), token)
+
+    await local.wait(3)
+    await remote.wait(3)
+
+    assert await first.purge_idle(0) >= 3
+    assert await first.replay(scope, after_seq=0) == []
+
+    seq = await first.publish(scope, _token("turn2-0"), token)
+
+    assert seq > local.envelopes[-1].seq
+    await local.wait(4)
+    await remote.wait(4)
+    assert local.tokens()[-1] == "turn2-0"
+    assert remote.tokens()[-1] == "turn2-0"
 
 
 async def test_oversized_message_is_rejected(
@@ -262,7 +294,7 @@ async def test_failing_subscriber_stops_the_listener_and_the_bus_refuses(
             assert asyncio.get_running_loop().time() < deadline
             await asyncio.sleep(0.02)
 
-        assert seen == [1]
+        assert len(seen) == 1
 
         with pytest.raises(MessageBusError, match="unusable"):
             await bus.publish(scope, _token("b"), LockToken.local())

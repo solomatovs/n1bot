@@ -21,3 +21,4 @@ packages/agents/boba-chainlit/assets/public/vendor
 packages/agents/boba-chainlit/web/catalog/node_modules
 packages/agents/boba-chainlit/web/catalog/.vite
 packages/agents/boba-chainlit/assets/catalog
+packages/agents/boba-chainlit/assets/ui

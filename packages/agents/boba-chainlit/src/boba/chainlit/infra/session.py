@@ -39,6 +39,7 @@ from boba.identity.token import (
     TokenRejectedError,
     TokenRejection,
 )
+from boba.runtime.di import Container
 from boba.runtime.refresh import LiveSessions, LiveToken
 from chainlit.config import config as chainlit_config
 from chainlit.context import ChainlitContextException
@@ -47,6 +48,7 @@ from chainlit.session import WebsocketSession, ws_sessions_id
 __all__ = [
     "ChainlitSession",
     "ChainlitSessions",
+    "SessionContainers",
     "current_session",
     "session_source_ref",
 ]
@@ -205,20 +207,6 @@ class ChainlitSession(Session):
                 "reload the page to sign in again"
             )
             raise AuthenticationError(msg) from exc
-
-    def value(self, key: str, default: Any = None) -> Any:
-        """Значение, положенное на сессию приложением (DI-контейнер и т.п.)."""
-        if not self.present:
-            return default
-
-        return cl.user_session.get(key, default)
-
-    def remember(self, key: str, value: Any) -> None:
-        """Кладёт значение на сессию; вне сессии класть некуда."""
-        if not self.present:
-            return
-
-        cl.user_session.set(key, value)
 
     async def emit(self, event: str, payload: Mapping[str, Any]) -> bool:
         """Шлёт событие в сокет сессии; False — слушать некому."""
@@ -425,6 +413,55 @@ class ChainlitSessions(SessionSource, LiveSessions):
             found.append(ChainlitSession(session, self._tokens))
 
         return found
+
+
+class SessionContainers:
+    """Реестр DI-контейнеров уровня session по id сессии chainlit.
+
+    Контейнер создаётся при первом разрешении зависимости сессии и живёт до
+    удаления сессии chainlit, а не до обрыва сокета: вкладка после реконнекта
+    получает те же зависимости. Хук Container зовёт of() из bootstrap,
+    SocketEvents закрывает контейнер при удалении сессии, а смена настроек
+    закрывает его, чтобы следующий ход собрал агента заново.
+    """
+
+    _BY_ID: ClassVar[dict[str, Container]] = {}
+
+    @classmethod
+    def of(cls, session_id: str) -> Container:
+        """Контейнер сессии, создаваемый при первом обращении."""
+        container = cls._BY_ID.get(session_id)
+        if container is not None:
+            return container
+
+        root = Container.root
+        if root is None:
+            raise InternalServiceError(
+                internal_detail=(
+                    f"session container of {session_id!r}: Container.root is not "
+                    "initialised, bootstrap has not run"
+                ),
+                user_detail=None,
+            )
+
+        container = Container(level="session", parent=root)
+        cls._BY_ID[session_id] = container
+        return container
+
+    @classmethod
+    async def close(cls, session_id: str) -> None:
+        """Закрывает и забывает контейнер сессии; без контейнера ничего не делает."""
+        container = cls._BY_ID.pop(session_id, None)
+        if container is None:
+            return
+
+        await container.aclose()
+
+    @classmethod
+    async def close_all(cls) -> None:
+        """Закрывает контейнеры всех сессий на остановке приложения."""
+        for session_id in list(cls._BY_ID):
+            await cls.close(session_id)
 
 
 def session_source_ref() -> ChainlitSessions:

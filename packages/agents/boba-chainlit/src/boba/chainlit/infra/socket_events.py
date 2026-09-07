@@ -1,9 +1,15 @@
-"""Обёртки socket.io-хендлеров chainlit: журнал связи, loading и кнопка Stop.
+"""Обёртки socket.io-хендлеров chainlit: журнал связи, loading, кнопка Stop и
+конец сессии.
 
 chainlit на каждый connection_successful шлёт task_end, а «тихий» реконнект того
 же сокета не идёт через on_chat_resume — индикатор хода гаснет, пока ход жив.
 Обёртка возвращает task_start треду с живым ходом; connect, disconnect с причиной
 engine.io и восстановление сессии пишутся в журнал.
+
+Конец сессии — удаление WebsocketSession, а не обрыв сокета: on_chat_end chainlit
+зовёт на каждый disconnect, включая ping-timeout фоновой вкладки, и сессия после
+него восстанавливается. Обёртка delete закрывает DI-контейнер сессии и снимает
+рендерер треда, если вкладок у треда не осталось.
 
 Хендлер stop заменяется целиком: оригинал первым делом шлёт в ленту своё
 «Task manually stopped.», а об остановке отчитывается сам ход — вторая
@@ -21,12 +27,18 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar, cast
 
-from boba.chainlit.infra.session import ChainlitSession, session_source_ref
-from boba.chainlit.infra.thread_room import ChatRoomSurface, ThreadLive
+from boba.chainlit.infra.session import (
+    ChainlitSession,
+    SessionContainers,
+    session_source_ref,
+)
+from boba.chainlit.infra.thread_room import ChatRoomSurface, ThreadLive, ThreadRoom
+from boba.chainlit.rendering.renderer import ChatRenderers
 from boba.identity.errors import InternalServiceError
 from boba.identity.run import RunRegistry
 from chainlit.config import config as chainlit_config
 from chainlit.context import init_ws_context
+from chainlit.session import WebsocketSession
 
 __all__ = ["SocketEvents"]
 
@@ -155,6 +167,7 @@ class SocketEvents:
         sio.on(SocketEvent.DISCONNECT.value, disconnect, namespace=cls.NAMESPACE)
         sio.on(SocketEvent.CONNECTED.value, connected, namespace=cls.NAMESPACE)
         sio.on(SocketEvent.STOP.value, cls._stop, namespace=cls.NAMESPACE)
+        cls._wrap_delete()
 
         cls._installed = True
 
@@ -190,6 +203,34 @@ class SocketEvents:
 
         if socket.current_task:
             socket.current_task.cancel()
+
+    @classmethod
+    def _wrap_delete(cls) -> None:
+        """Ставит обёртку конца сессии поверх WebsocketSession.delete."""
+        origin_delete = WebsocketSession.delete
+
+        async def delete(self: WebsocketSession) -> None:
+            await cls._session_ending(self)
+            await origin_delete(self)
+
+        WebsocketSession.delete = delete
+
+    @classmethod
+    async def _session_ending(cls, session: WebsocketSession) -> None:
+        """Сессия удаляется: контейнер закрывается, рендерер треда снимается, если
+        у треда не осталось подключённых вкладок и живого хода.
+        """
+        facts = SocketFacts.of_session(session_source_ref().of(session))
+        logger.info("session end: %s", facts.line())
+
+        await SessionContainers.close(session.id)
+
+        if not facts.thread_id:
+            return
+
+        ChatRenderers.release(
+            facts.thread_id, bool(ThreadRoom.sessions(facts.thread_id))
+        )
 
     @classmethod
     async def _restore_loading(cls, sid: str) -> None:

@@ -106,7 +106,7 @@ NODE_IMAGE      ?= dmp/nodejs:20
 # скрипт страницы: в образ его собирает стадия web-build, в dev-дерево — цель web
 PAGE_JS         := $(ASSETS_DIR)/public/page.js
 PAGE_SRCS       := $(shell find $(WEB_PROJECT) -name node_modules -prune -o -name .vite -prune -o -name .eslintcache -prune -o -name "*.tsbuildinfo" -prune -o -type f -print)
-# страница каталога (web/catalog, vite): в образ её собирает стадия catalog-build, в dev-дерево — цель web-catalog
+# страница каталога (web/catalog, vite): в образ её собирает стадия catalog-build, в dev-дерево — цель web
 CATALOG_PROJECT := $(WEB_DIR)/web/catalog
 CATALOG_DIST    := $(ASSETS_DIR)/catalog
 CATALOG_SRCS    := $(shell find $(CATALOG_PROJECT) -name node_modules -prune -o -name .vite -prune -o -name .eslintcache -prune -o -name "*.tsbuildinfo" -prune -o -name schema.d.ts -prune -o -type f -print)
@@ -127,7 +127,7 @@ CHAINLIT_VERSION := $(shell cat $(UI_DIR)/UPSTREAM)
 CHAINLIT_SRC_URL ?= https://codeload.github.com/Chainlit/chainlit/tar.gz/refs/tags/$(CHAINLIT_VERSION)
 CHAINLIT_TARBALL := $(DEPS_DIR)/chainlit-$(CHAINLIT_VERSION).tar.gz
 CHAINLIT_STORE  := $(DEPS_DIR)/chainlit-ui-store-$(CHAINLIT_VERSION).tar.gz
-UI_DIST         := $(SRC_DIR)/compose/$(APP)/app_root/ui
+UI_DIST         := $(ASSETS_DIR)/ui
 
 INPUTS          := $(BWRAP_TARBALL) $(LIBFUSE_TARBALL) $(E2FSPROGS_TARBALL) $(UV_BIN) \
                    $(TESS_FILES) $(FASTEMBED_STAMPS) $(ONNX_DIRS) $(WEB_FILES) \
@@ -244,16 +244,15 @@ help:
 	echo "  make sandbox   образы песочницы (offline): third/bin, workspace.ext4, rootfs.ext4"
 	echo "  make build     образ $(IMAGE) (offline)"
 	echo "  make test      проверка релиза внутри образа"
-	echo "  make dev       рантайм в $(SRC_DIR)/compose/chainlit из src/ — для отладки и docker compose"
+	echo "  make dev       рантайм в $(SRC_DIR)/compose/chainlit из src/ — для отладки и docker compose; зовёт web"
 	echo "  make release   дерево установки из образа RELEASE_IMAGE -> $(OUT),"
 	echo "                 ставится в INSTALL_DIR=$(INSTALL_DIR), данные — в DATA_DIR=$(DATA_DIR)"
 	echo "  make clean     удалить release и src/, кроме моделей"
-	echo "  make all       fetch + sandbox + plugin-rootfs-all + build"
-	echo "  make web       скрипт страницы для dev-дерева: npm ci/check/build в $(NODE_IMAGE) -> assets/public/page.js"
-	echo "  make web-catalog страница каталога для dev-дерева: npm ci/generate/check/build в $(NODE_IMAGE) -> assets/catalog"
-	echo "                 (в образ его собирает стадия web-build, отдельно звать не нужно)"
-	echo "  make chainlit-ui  фронт chainlit $(CHAINLIT_VERSION) с overlay web/chainlit-ui (offline) -> $(UI_DIST);"
-	echo "                 dev зовёт сам, в образ его собирает стадия chainlit-ui-build"
+	echo "  make all       всё: fetch + sandbox + plugin-rootfs-all + web + build + dev"
+	echo "  make web       весь фронт для dev-дерева node'ом образа: page.js, страница каталога (assets/catalog),"
+	echo "                 фронт chainlit $(CHAINLIT_VERSION) с overlay web/chainlit-ui (assets/ui); dev и all зовут сам,"
+	echo "                 в образ то же собирают стадии web-build, catalog-build, chainlit-ui-build"
+	echo "  make catalog-openapi  схема JSON API каталога из кода (venv хоста) -> web/catalog/openapi.json; после правок API"
 	echo ""
 	echo "  Версия одна на все пакеты: version — показать, version-set VER=X.Y.Z — проставить"
 	echo ""
@@ -473,7 +472,7 @@ release:
 # src/, без образа; docker-compose*.yml лежат в нём же и трекаются git'ом
 .PHONY: dev
 dev: OUT = $(SRC_DIR)/compose/$(APP)
-dev: $(PAGE_JS)
+dev: web
 	@$(check-inputs)
 	$(check-sandbox)
 	echo "== рантайм $(APP) в $(OUT) =="
@@ -495,12 +494,8 @@ dev: $(PAGE_JS)
 	cp -a "$(ASSETS_DIR)/.chainlit/config.toml" "$(ASSETS_DIR)/.chainlit/translations" "$(OUT)/app_root/.chainlit/"
 	cp -a "$(ASSETS_DIR)/chainlit.md" "$(OUT)/app_root/"
 	cp -a "$(ASSETS_DIR)/public/." "$(OUT)/app_root/public/"
-	if [ ! -f "$(CATALOG_DIST)/index.html" ]; then
-	    echo "нет $(CATALOG_DIST) — запусти: make web-catalog" >&2
-	    exit 1
-	fi
 	cp -a "$(CATALOG_DIST)" "$(OUT)/app_root/public/catalog"
-	$(MAKE) -f $(MAKEFILE) chainlit-ui
+	cp -a "$(UI_DIST)" "$(OUT)/app_root/ui"
 	export BOBA_BASE="$(DEST_DIR)" BOBA_VERSION="$(VERSION)" BOBA_DATA="$(DEST_DIR)/data"
 	envsubst '$${BOBA_BASE} $${BOBA_VERSION} $${BOBA_DATA}' < "$(CONF_DIR)/boba.env" > "$(OUT)/conf/boba.env"
 	chmod go-w "$(OUT)"
@@ -521,12 +516,20 @@ sec:
 # модели не трогаем: качаются долго
 clean:
 	rm -rf $(RELEASE_DIR) $(DEPS_DIR)/uv $(DEPS_DIR)/tessdata $(WEBASSETS_DIR) $(SANDBOX_DIR) \
-	       $(DEPS_DIR)/*.tar.xz $(DEPS_DIR)/*.env $(PAGE_JS) $(ASSETS_VENDOR) $(CATALOG_DIST)
+	       $(DEPS_DIR)/*.tar.xz $(DEPS_DIR)/*.env $(PAGE_JS) $(ASSETS_VENDOR) $(CATALOG_DIST) $(UI_DIST)
 
-all: fetch sandbox plugin-rootfs-all build
+# всё целиком: сеть, песочница, фронт, образ и compose-дерево. Compose монтирует
+# app_root поверх образа, поэтому фронт нужен и в дереве, а не только в образе
+all: fetch sandbox plugin-rootfs-all web build dev
 
-# скрипт страницы для dev-дерева: пересобирается, когда web/page новее сборки;
-# node'ом образа, на хосте node не нужен. В образ страницу собирает стадия web-build
+# --- фронт для dev-дерева: одна цель web, в образ то же собирают стадии Dockerfile ---
+
+# весь фронт: скрипт страницы, страница каталога, фронт chainlit с overlay
+.PHONY: web
+web: $(PAGE_JS) $(CATALOG_DIST)/index.html chainlit-ui
+
+# скрипт страницы: пересобирается, когда web/page новее сборки; node'ом образа,
+# на хосте node не нужен
 $(PAGE_JS): $(PAGE_SRCS)
 	@echo "== page script: $(NODE_IMAGE) =="
 	docker run --rm --entrypoint /bin/sh -u "$$(id -u):$$(id -g)" -e HOME=/tmp \
@@ -534,11 +537,7 @@ $(PAGE_JS): $(PAGE_SRCS)
 	    -c 'npm ci --no-audit --no-fund && npm run check && npm run build'
 	ls -la "$@"
 
-.PHONY: web
-web: $(PAGE_JS)
-
-# страница каталога для dev-дерева: схема API из кода, npm ci/generate/check/build
-# node'ом образа; в образ страницу собирает стадия catalog-build
+# страница каталога: типы из web/catalog/openapi.json, npm ci/generate/check/build
 $(CATALOG_DIST)/index.html: $(CATALOG_SRCS)
 	@echo "== catalog page: $(NODE_IMAGE) =="
 	docker run --rm --entrypoint /bin/sh -u "$$(id -u):$$(id -g)" -e HOME=/tmp \
@@ -546,23 +545,14 @@ $(CATALOG_DIST)/index.html: $(CATALOG_SRCS)
 	    -c 'npm ci --no-audit --no-fund && npm run generate && npm run check && npm run build'
 	du -sh "$(CATALOG_DIST)"
 
-.PHONY: web-catalog web-catalog-dev catalog-openapi
-web-catalog: $(CATALOG_DIST)/index.html
-
-# страница каталога в dev-дерево: сборка при изменении исходников и копия
-# dist в app_root, откуда её раздаёт приложение из launch.json
-CATALOG_DEV_DIST := $(SRC_DIR)/compose/$(APP)/app_root/public/catalog
-web-catalog-dev: $(CATALOG_DIST)/index.html
-	rm -rf "$(CATALOG_DEV_DIST)"
-	cp -a "$(CATALOG_DIST)" "$(CATALOG_DEV_DIST)"
-	@echo "$(CATALOG_DEV_DIST) обновлён"
-
-# схема JSON API каталога для генерации типов страницы: из кода, venv хоста
+# схема JSON API каталога для генерации типов страницы: из кода, venv хоста;
+# зовётся после правок API, результат трекается git'ом
+.PHONY: catalog-openapi
 catalog-openapi:
 	cd "$(SRC_DIR)" && .venv/bin/python -m boba.chainlit.catalog.schema > "$(CATALOG_OPENAPI)"
 	@echo "$(CATALOG_OPENAPI) обновлён"
 
-# фронт chainlit для dev-дерева: тот же скрипт, что у стадии chainlit-ui-build
+# фронт chainlit с overlay в assets/ui: тот же скрипт, что у стадии chainlit-ui-build
 .PHONY: chainlit-ui
 chainlit-ui:
 	@$(check-inputs)
