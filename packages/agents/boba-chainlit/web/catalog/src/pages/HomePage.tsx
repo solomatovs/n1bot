@@ -1,4 +1,4 @@
-import { PanelLeft, Plus } from "lucide-react";
+import { PanelLeft } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
@@ -12,7 +12,6 @@ import { Catalog, type Access, type Draft, type Process } from "../model/catalog
 import { SchemaDoc, parseSchema } from "../model/schema";
 import { readUrlState, writeUrlState, type UrlState } from "../model/urlState";
 import {
-  Button,
   Detail,
   EmptyState,
   IconButton,
@@ -111,12 +110,6 @@ export function HomePage(): ReactElement {
       }
     : undefined;
 
-  const actions = newProcess === undefined ? null : (
-    <Button size="sm" tone="primary" icon={Plus} onClick={newProcess} data-testid="new-process">
-      process
-    </Button>
-  );
-
   return (
     <Page mark="catalog-page" data-source="home" data-can-edit={access.can_edit}>
       <Topbar>
@@ -145,7 +138,7 @@ export function HomePage(): ReactElement {
               onTab={(tab) => {
                 update({ pane: tab });
               }}
-              actions={actions}
+              actions={null}
               processes={processes}
               drafts={drafts}
               currentDraftId={undefined}
@@ -160,7 +153,7 @@ export function HomePage(): ReactElement {
           </Pane>
         )}
         <Scene>
-          <EmptyState fill title="pick a process on the left or press “process” to start one" mark="home-hint" />
+          <EmptyState fill title="pick a process on the left or press “+” to start one" mark="home-hint" />
         </Scene>
         {url.object !== undefined && (
           <Detail>

@@ -23,7 +23,11 @@
   padding: 0;
 }
 
+/* колонка деталей: по умолчанию из токена, средний экран жмёт к минимуму;
+   выбранная пользователем ширина ставится inline и перекрывает оба */
 .page__body {
+  --w-detail-col: var(--w-detail);
+  --w-detail-user-max: 70vw;
   grid-row: 3;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -37,11 +41,11 @@
 }
 
 .page__body[data-pane="true"][data-detail="true"] {
-  grid-template-columns: var(--w-pane) minmax(0, 1fr) var(--w-detail);
+  grid-template-columns: var(--w-pane) minmax(0, 1fr) var(--w-detail-col);
 }
 
 .page__body[data-pane="false"][data-detail="true"] {
-  grid-template-columns: minmax(0, 1fr) var(--w-detail);
+  grid-template-columns: minmax(0, 1fr) var(--w-detail-col);
 }
 
 .page__pane,
@@ -56,9 +60,35 @@
   border-right: 1px solid var(--hairline);
 }
 
+/* панель деталей не скроллится сама: скролл у её тела, чтобы полоса
+   захвата у левого края стояла на всю высоту */
 .page__detail {
+  position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
   border-left: 1px solid var(--hairline);
+}
+
+.page__detail-body {
+  min-height: 0;
+  min-width: 0;
   overflow-y: auto;
+}
+
+/* полоса у левого края панели деталей: за неё панель тянут */
+.page__detail-grip {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--s2);
+  margin-left: calc(-1 * var(--s1));
+  cursor: col-resize;
+  z-index: 2;
+  touch-action: none;
+}
+
+.page__detail-grip:hover,
+.page__detail-grip:active {
+  background: color-mix(in srgb, var(--signal) 40%, transparent);
 }
 
 .page__scene {
@@ -80,12 +110,16 @@
     grid-template-columns: var(--w-pane-min) minmax(0, 1fr);
   }
 
+  .page__body {
+    --w-detail-col: var(--w-detail-min);
+  }
+
   .page__body[data-pane="true"][data-detail="true"] {
-    grid-template-columns: var(--w-pane-min) minmax(0, 1fr) var(--w-detail-min);
+    grid-template-columns: var(--w-pane-min) minmax(0, 1fr) var(--w-detail-col);
   }
 
   .page__body[data-pane="false"][data-detail="true"] {
-    grid-template-columns: minmax(0, 1fr) var(--w-detail-min);
+    grid-template-columns: minmax(0, 1fr) var(--w-detail-col);
   }
 }
 

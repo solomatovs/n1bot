@@ -1,17 +1,21 @@
-import { Handle, Position, type NodeProps } from "@xyflow/react";
+import { Handle, NodeResizeControl, Position, ResizeControlVariant, type NodeProps } from "@xyflow/react";
 import { KeyRound, TriangleAlert } from "lucide-react";
 import type { ReactElement } from "react";
 
 import { renderRef } from "../../model/catalog";
-import { NODE_HANDLE, type ProcessFlowNode } from "../../model/graph";
+import { NODE_HANDLE, NODE_WIDTH, type ProcessFlowNode } from "../../model/graph";
+
+const RESIZE_EDGES = ["left", "right"] as const;
 
 /** Карточка узла: группа и подпись в шапке, родной вид объекта, колонки по
  * режиму показа из привязанной версии с ручками слева (приёмник) и справа
  * (источник) у каждой, статус diff рамкой, пометка устаревания; колонки, по
  * которым идут подсвеченные линии, подложены. Ручки карточки целиком держат
  * потоки без пар и принимают линии только в режиме имён, когда колонок на
- * карточке нет. Селектор data-node — адрес объекта. */
-export function ProcessNode({ data }: NodeProps<ProcessFlowNode>): ReactElement {
+ * карточке нет. На черновике карточка тянется за левый и правый край по
+ * ширине; высота идёт от колонок, чтобы ручки колонок стояли на своих
+ * строках. Селектор data-node — адрес объекта. */
+export function ProcessNode({ id, data }: NodeProps<ProcessFlowNode>): ReactElement {
   const status = data.showDiff ? data.status : "unchanged";
   const stale = data.stale.length > 0;
   // при видимых колонках линии соединяют колонки: ручки карточки целиком
@@ -29,7 +33,25 @@ export function ProcessNode({ data }: NodeProps<ProcessFlowNode>): ReactElement 
       data-node={renderRef(data.node.ref)}
       data-label={data.label}
       data-kind={data.node.ref.kind}
+      data-resizable={data.onResize !== undefined}
     >
+      {data.onResize !== undefined &&
+        RESIZE_EDGES.map((edge) => (
+          <NodeResizeControl
+            key={edge}
+            nodeId={id}
+            position={edge}
+            variant={ResizeControlVariant.Line}
+            className="proc-node__resize"
+            minWidth={NODE_WIDTH.min}
+            maxWidth={NODE_WIDTH.max}
+            onResizeEnd={(_event, params) => {
+              data.onResize?.({ x: params.x, y: params.y }, params.width);
+            }}
+          >
+            <span className="proc-node__resize-grip" data-testid={`resize-${edge}`} />
+          </NodeResizeControl>
+        ))}
       <Handle
         type="target"
         id={NODE_HANDLE}

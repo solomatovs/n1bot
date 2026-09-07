@@ -19,14 +19,17 @@ import pytest
 from catalog_ui import Api, Ed, Seed, Selector, settled_box
 from playwright.sync_api import Browser, FloatRect, Locator, Page, ViewportSize, expect
 
-from boba.stand.ui.look import Box, Css
-from boba.stand.ui.stand import StandProcess
+from boba.stand.ui.look import Box, Css, Tokens
+from boba.stand.ui.stand import REPO_ROOT, StandProcess
 
 pytestmark = pytest.mark.ui
 
 WIDE: ViewportSize = {"width": 1400, "height": 900}
 EDITABLE = f'{Selector.PAGE}[data-editable="true"]'
 LIVE_TIMEOUT_MS = 15_000
+TOKENS_CSS = (
+    REPO_ROOT / "packages/agents/boba-chainlit/web/catalog/src/styles/tokens.css"
+)
 
 
 @pytest.fixture
@@ -233,7 +236,7 @@ def _drag_card(page: Page, card: Locator, to: tuple[float, float]) -> None:
 
 
 class TestGroups:
-    def test_node_from_object_panel_then_grouped_with_a_neighbour(
+    def test_group_is_added_empty_even_with_a_card_selected(
         self,
         page: Page,
         stand: StandProcess,
@@ -242,8 +245,8 @@ class TestGroups:
         draft_id: str,
     ) -> None:
         """Объект из дерева подключения тащится на холст мимо рамок и встаёт
-        узлом без группы; выбранные карточки становятся группой через подсказку
-        имени, рамка обнимает обе. Кнопок добавления нет: только перетаскивание."""
+        узлом без группы; «group» ставит на холст пустую рамку, не трогая
+        карточки — даже выбранную."""
         _open_draft(page, stand, draft_id)
 
         panel = _pick_object(page, catalog_seed, Ed.EVENTS)
@@ -264,29 +267,101 @@ class TestGroups:
         expect(page.get_by_test_id("detail-panel")).to_have_count(0)
         _landed(page, 1)
 
-        group = page.get_by_test_id("group-button")
-        expect(group).to_be_disabled()
         added.click()
-        page.locator(catalog_seed.node(Ed.LOADER)).click(modifiers=["Control"])
-        expect(group).to_have_text("group · 2")
+        group = page.get_by_test_id("group-button")
+        expect(group).to_have_text("group")
+        expect(group).to_be_enabled()
         group.click()
         _prompt_name(page, "group-name", "ed_new")
+        _landed(page, 2)
 
         frame = _frame(page, "ed_new")
         expect(frame).to_be_visible()
-        expect(frame.locator(".group-frame__count")).to_have_text("2")
-        # рамка перерисовывается вслед за порцией: ждём устоявшуюся
-        frame_box = settled_box(page, frame)
-        assert _contains(frame_box, Css.box(added))
-        assert _contains(frame_box, Css.box(page.locator(catalog_seed.node(Ed.LOADER))))
-        expect(added.locator(".proc-node__group")).to_have_text("ed_new")
-
+        expect(frame.locator(".group-frame__count")).to_have_text("0")
+        expect(added.locator(".proc-node__group")).to_have_text("—")
         state = catalog_api.state(draft_id)
-        assert state["seq"] == 2, state["seq"]
         assert "ed_new" in _snapshot_names(state, "groups")
         assert catalog_seed.address(Ed.EVENTS) in _node_addresses(state)
+        stored = _stored_node(catalog_api, draft_id, catalog_seed, Ed.EVENTS)
+        assert stored["group_id"] is None
+
+    def test_card_dragged_into_a_frame_joins_the_group_with_a_highlight(
+        self,
+        page: Page,
+        stand: StandProcess,
+        catalog_api: Api,
+        catalog_seed: Seed,
+        draft_id: str,
+    ) -> None:
+        """Карточка входит в группу, когда её отпускают над рамкой; пока
+        тащат, рамка и карточка подсвечены цветом done."""
+        tokens = Tokens.load(TOKENS_CSS)
+        _open_draft(page, stand, draft_id)
+        page.get_by_test_id("group-button").click()
+        _prompt_name(page, "group-name", "ed_new")
+        _landed(page, 1)
+        frame = _frame(page, "ed_new")
+        canvas = page.get_by_test_id("canvas")
+        loader = page.locator(catalog_seed.node(Ed.LOADER))
+
+        target = settled_box(page, frame)
+        header = loader.locator(".proc-node__header").bounding_box()
+        assert header is not None
+        page.mouse.move(*_centre(header))
+        page.mouse.down()
+        page.mouse.move(target["x"] + 60, target["y"] + 60, steps=12)
+        expect(frame).to_have_attribute("data-drop", "true")
+        expect(canvas).to_have_attribute("data-drop", "true")
+        expect(frame).to_have_css("border-color", tokens.rgb("done"))
+        expect(loader).to_have_css("border-color", tokens.rgb("done"))
+        page.mouse.up()
+
+        _landed(page, 2)
+        expect(frame).to_have_attribute("data-drop", "false")
+        expect(canvas).to_have_attribute("data-drop", "false")
+        expect(frame.locator(".group-frame__count")).to_have_text("1")
+        expect(loader.locator(".proc-node__group")).to_have_text("ed_new")
+        assert _contains(settled_box(page, frame), Css.box(loader))
         stored = _stored_node(catalog_api, draft_id, catalog_seed, Ed.LOADER)
         assert stored["group_id"] is not None
+
+    def test_empty_frame_is_dragged_and_takes_a_dropped_object(
+        self,
+        page: Page,
+        stand: StandProcess,
+        catalog_api: Api,
+        catalog_seed: Seed,
+        draft_id: str,
+    ) -> None:
+        """Пустая рамка — отдельный предмет на холсте: её можно оттащить, и
+        объект из дерева, брошенный в неё на новом месте, входит в группу."""
+        _open_draft(page, stand, draft_id)
+        page.get_by_test_id("group-button").click()
+        _prompt_name(page, "group-name", "ed_empty")
+        _landed(page, 1)
+
+        frame = _frame(page, "ed_empty")
+        before = settled_box(page, frame)
+        title = frame.locator(".group-frame__title").bounding_box()
+        assert title is not None
+        page.mouse.move(*_centre(title))
+        page.mouse.down()
+        page.mouse.move(title["x"] + 40, title["y"] + 160, steps=12)
+        page.mouse.up()
+        after = settled_box(page, frame)
+        assert after["y"] > before["y"] + 100, (before, after)
+        # сдвиг рамки — вид страницы, не порция черновика
+        assert catalog_api.state(draft_id)["seq"] == 1
+
+        pane = _open_source_tree(page, catalog_seed)
+        source = pane.locator(catalog_seed.tree_object(Ed.EVENTS)).locator(
+            ".tree__label"
+        )
+        _drag(page, source, frame, (30, 50))
+        added = page.locator(catalog_seed.node(Ed.EVENTS))
+        expect(added).to_be_visible(timeout=LIVE_TIMEOUT_MS)
+        expect(added.locator(".proc-node__group")).to_have_text("ed_empty")
+        expect(frame.locator(".group-frame__count")).to_have_text("1")
 
     def test_rename_group_and_remove_it_keeping_the_nodes(
         self,
@@ -411,6 +486,43 @@ class TestDragAndDrop:
         moved = _stored_node(catalog_api, draft_id, catalog_seed, Ed.RETURNS)
         assert moved["group_id"] == catalog_seed.id_of(Ed.DST)
 
+    def test_dragging_a_card_out_of_its_frame_keeps_the_group(
+        self,
+        page: Page,
+        stand: StandProcess,
+        catalog_api: Api,
+        catalog_seed: Seed,
+        draft_id: str,
+    ) -> None:
+        """Карточка, вытащенная из рамки на пустое место, группу не теряет:
+        рамка растягивается за ней; снять группу можно только формой узла."""
+        _open_draft(page, stand, draft_id)
+        returns = page.locator(catalog_seed.node(Ed.RETURNS))
+        canvas = Css.box(page.get_by_test_id("canvas"))
+        frame = _frame(page, Ed.DST)
+        settled_box(page, frame)
+
+        _drag_card(
+            page, returns, (canvas.x + canvas.width - 80, canvas.y + canvas.height - 80)
+        )
+
+        _landed(page, 1)
+        expect(returns.locator(".proc-node__group")).to_have_text(Ed.DST)
+        after = _stored_node(catalog_api, draft_id, catalog_seed, Ed.RETURNS)
+        assert after["group_id"] == catalog_seed.id_of(Ed.DST)
+        assert _contains(settled_box(page, frame), Css.box(returns))
+
+        returns.click()
+        panel = page.get_by_test_id("detail-panel")
+        panel.get_by_role("button", name="edit node").click()
+        form = panel.get_by_test_id("node-form")
+        form.get_by_label("node group").select_option("")
+        form.get_by_role("button", name="save node").click()
+        _landed(page, 2)
+        expect(returns.locator(".proc-node__group")).to_have_text("—")
+        freed = _stored_node(catalog_api, draft_id, catalog_seed, Ed.RETURNS)
+        assert freed["group_id"] is None
+
 
 class TestFrames:
     def test_frames_wrap_their_nodes_and_loose_nodes_stay_outside(
@@ -530,6 +642,135 @@ class TestNodePanel:
         state = catalog_api.state(draft_id)
         assert catalog_seed.address(Ed.SALES) not in _node_addresses(state)
         assert state["snapshot"]["flows"] == {}
+
+    def test_card_is_resized_by_its_edges_and_the_width_is_kept(
+        self,
+        page: Page,
+        stand: StandProcess,
+        catalog_api: Api,
+        catalog_seed: Seed,
+        draft_id: str,
+    ) -> None:
+        """Карточка тянется за правый и левый край у шапки (вдоль колонок край
+        держат их ручки): ширина уходит в черновик (за левый край — вместе с
+        позицией) и переживает перезагрузку; ручки колонок следуют за новой
+        шириной, уже минимума не бывает."""
+        _open_draft(page, stand, draft_id)
+        returns = page.locator(catalog_seed.node(Ed.RETURNS))
+        expect(returns).to_have_attribute("data-resizable", "true")
+        before = settled_box(page, returns)
+        stored = _stored_node(catalog_api, draft_id, catalog_seed, Ed.RETURNS)
+        assert stored["width"] is None
+
+        right = returns.get_by_test_id("resize-right").bounding_box()
+        assert right is not None
+        page.mouse.move(right["x"] + right["width"] / 2, right["y"] + 16)
+        page.mouse.down()
+        page.mouse.move(right["x"] + 120, right["y"] + 16, steps=10)
+        page.mouse.up()
+
+        _landed(page, 1)
+        wider = settled_box(page, returns)
+        assert wider["width"] > before["width"] + 100, (before, wider)
+        assert abs(wider["x"] - before["x"]) <= 2
+        stored = _stored_node(catalog_api, draft_id, catalog_seed, Ed.RETURNS)
+        assert stored["width"] is not None
+        assert stored["width"] > 240
+        # ручка колонки id стоит у нового правого края
+        handle = returns.locator('[data-column="id"] .react-flow__handle.source')
+        assert abs(Css.box(handle).x - wider["x"] - wider["width"]) <= 8
+
+        page.reload()
+        page.wait_for_selector(Selector.READY, timeout=30_000)
+        kept = settled_box(page, returns)
+        assert abs(kept["width"] - wider["width"]) <= 2, (wider, kept)
+
+        left = returns.get_by_test_id("resize-left").bounding_box()
+        assert left is not None
+        page.mouse.move(left["x"] + left["width"] / 2, left["y"] + 16)
+        page.mouse.down()
+        page.mouse.move(left["x"] + 600, left["y"] + 16, steps=10)
+        page.mouse.up()
+
+        _landed(page, 2)
+        narrow = settled_box(page, returns)
+        assert narrow["width"] < kept["width"], (kept, narrow)
+        assert narrow["x"] > kept["x"]
+        stored = _stored_node(catalog_api, draft_id, catalog_seed, Ed.RETURNS)
+        assert stored["width"] == 160
+        assert stored["position"]["x"] > 0
+
+    def test_moving_a_card_does_not_reload_its_panel(
+        self,
+        page: Page,
+        stand: StandProcess,
+        catalog_seed: Seed,
+        draft_id: str,
+    ) -> None:
+        """Сдвиг открытой карточки не перечитывает карточку объекта в панели:
+        запрос к объекту уходит один раз, секция «in the database» остаётся
+        на месте, а не мигает загрузкой."""
+        _open_draft(page, stand, draft_id)
+        returns = page.locator(catalog_seed.node(Ed.RETURNS))
+        returns.click()
+        panel = page.get_by_test_id("detail-panel")
+        expect(panel.get_by_test_id("node-card")).to_be_visible(timeout=LIVE_TIMEOUT_MS)
+
+        requests: list[str] = []
+        page.on("request", lambda request: requests.append(request.url))
+        canvas = Css.box(page.get_by_test_id("canvas"))
+        _drag_card(page, returns, (canvas.x + canvas.width - 120, canvas.y + 120))
+        _landed(page, 1)
+        _drag_card(page, returns, (canvas.x + canvas.width - 160, canvas.y + 220))
+        _landed(page, 2)
+
+        expect(panel.get_by_test_id("node-card")).to_be_visible()
+        expect(panel).to_have_attribute("data-node", catalog_seed.address(Ed.RETURNS))
+        objects = [url for url in requests if "/object" in url]
+        assert objects == [], objects
+
+    def test_drop_from_the_connections_tab_keeps_the_tab_after_the_draft_starts(
+        self,
+        page: Page,
+        stand: StandProcess,
+        catalog_api: Api,
+        catalog_seed: Seed,
+    ) -> None:
+        """Объект из дерева брошен на холст опубликованного процесса: первая
+        правка заводит черновик и уводит на него, но вкладка подключений и
+        остальной адрес остаются — дальше можно тащить следующие таблицы."""
+        before = {draft["id"] for draft in catalog_api.my_drafts()}
+        page.goto(
+            f"{stand.config.base_url}/catalog/processes/{catalog_seed.process_id}"
+            "?pane=connections&mode=ALL_FIELDS"
+        )
+        page.wait_for_selector(Selector.READY, timeout=30_000)
+        page.wait_for_selector(EDITABLE, timeout=30_000)
+        pane = _open_source_tree(page, catalog_seed)
+        source = pane.locator(catalog_seed.tree_object(Ed.EVENTS)).locator(
+            ".tree__label"
+        )
+        canvas = page.get_by_test_id("canvas")
+        box = Css.box(canvas)
+
+        _drag(page, source, canvas, (box.width - 60, box.height - 60))
+
+        page.wait_for_url(
+            re.compile(r"/catalog/drafts/[0-9a-f-]{36}\?"), timeout=30_000
+        )
+        created = {draft["id"] for draft in catalog_api.my_drafts()} - before
+        try:
+            assert "pane=connections" in page.url
+            assert "mode=ALL_FIELDS" in page.url
+            expect(page.get_by_test_id("left-pane")).to_have_attribute(
+                "data-tab", "connections"
+            )
+            expect(page.locator(catalog_seed.node(Ed.EVENTS))).to_be_visible(
+                timeout=LIVE_TIMEOUT_MS
+            )
+        finally:
+            for draft_id in created:
+                catalog_api.discard(draft_id)
 
 
 class TestFlows:
@@ -814,7 +1055,7 @@ class TestColumnLines:
             "data-lit", "false"
         )
 
-    def test_selected_line_is_removed_by_cross_and_by_delete_key(
+    def test_selected_line_is_coloured_and_removed_by_delete_key(
         self,
         page: Page,
         stand: StandProcess,
@@ -822,11 +1063,26 @@ class TestColumnLines:
         catalog_seed: Seed,
         draft_id: str,
     ) -> None:
+        """Клик по линии выбирает её: линия и стрелка цвета ember, крестика
+        нет; Delete снимает выбранную пару, последняя пара уносит поток."""
+        tokens = Tokens.load(TOKENS_CSS)
         _open_draft(page, stand, draft_id)
         flow_id = next(iter(catalog_api.state(draft_id)["snapshot"]["flows"]))
 
         _click_line(page, f"{flow_id}#1")
-        page.get_by_role("button", name="remove pair name → name").click()
+        selected = page.locator(f'.react-flow__edge[data-id="{flow_id}#1"]')
+        expect(selected.locator(".react-flow__edge-path")).to_have_css(
+            "stroke", tokens.rgb("ember")
+        )
+        expect(
+            page.get_by_role("button", name=re.compile("^remove pair"))
+        ).to_have_count(0)
+        other = page.locator(f'.react-flow__edge[data-id="{flow_id}#0"]')
+        expect(other.locator(".react-flow__edge-path")).to_have_css(
+            "stroke", tokens.rgb("muted")
+        )
+
+        page.keyboard.press("Delete")
         _landed(page, 1)
         expect(page.locator(".react-flow__edge")).to_have_count(1)
         stored = catalog_api.state(draft_id)["snapshot"]["flows"][flow_id]
@@ -838,6 +1094,49 @@ class TestColumnLines:
         _landed(page, 2)
         expect(page.locator(".react-flow__edge")).to_have_count(0)
         assert catalog_api.state(draft_id)["snapshot"]["flows"] == {}
+
+    def test_line_is_dragged_aside_without_selecting_it(
+        self,
+        page: Page,
+        stand: StandProcess,
+        catalog_api: Api,
+        catalog_seed: Seed,
+        draft_id: str,
+    ) -> None:
+        """Линию можно оттащить за середину: её путь и ярлык уезжают за
+        мышью, линия не выбирается, в черновик ничего не пишется."""
+        _open_draft(page, stand, draft_id)
+        flow_id = next(iter(catalog_api.state(draft_id)["snapshot"]["flows"]))
+        edge = page.locator(f'.react-flow__edge[data-id="{flow_id}#0"]')
+        grip = edge.locator('[data-testid="flow-edge-grip"]')
+        label = page.locator(Selector.EDGE_LABEL)
+        expect(grip).to_have_attribute("data-bent", "false")
+        before = settled_box(page, label)
+        path_before = edge.locator(".react-flow__edge-path").get_attribute("d")
+
+        start = grip.bounding_box()
+        assert start is not None
+        page.mouse.move(*_centre(start))
+        page.mouse.down()
+        page.mouse.move(
+            start["x"] + start["width"] / 2,
+            start["y"] + start["height"] / 2 + 120,
+            steps=10,
+        )
+        page.mouse.up()
+
+        expect(grip).to_have_attribute("data-bent", "true")
+        after = Css.box(label)
+        assert after.y > before["y"] + 80, (before, after)
+        assert edge.locator(".react-flow__edge-path").get_attribute("d") != path_before
+        expect(edge).not_to_have_class(re.compile(r"\bselected\b"))
+        assert catalog_api.state(draft_id)["seq"] == 0
+
+        # клик без сдвига по-прежнему выбирает линию: ярлык стоит на ней
+        anchor = label.bounding_box()
+        assert anchor is not None
+        page.mouse.click(*_centre(anchor))
+        expect(edge).to_have_class(re.compile(r"\bselected\b"))
 
 
 class TestLive:

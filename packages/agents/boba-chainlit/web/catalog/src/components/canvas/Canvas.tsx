@@ -25,10 +25,12 @@ import {
   freePosition,
   groupAt,
   groupFrames,
+  groupOfFrame,
   measuredOf,
   unplaced,
   type FlowEdge as FlowEdgeType,
   type FrameActions,
+  type FrameLayout,
   type GraphOptions,
   type ProcessFlowNode,
 } from "../../model/graph";
@@ -58,14 +60,12 @@ type Props = {
    * «прибрать» меняет только вид и черновика не заводит. */
   tidyCount: number;
   persistTidy: boolean;
-  /** Правки черновика: карточки двигаются и тащатся в рамки, объекты из
-   * дерева падают на холст, линия от колонки к колонке добавляет пару,
-   * выбранная линия снимается Delete или крестиком, двойной клик по линии
-   * открывает форму потока. Без правок холст только читается. */
+  /** Правки черновика: карточки двигаются, тянутся за края и тащатся в
+   * рамки, объекты из дерева падают на холст, линия от колонки к колонке добавляет пару,
+   * выбранная линия снимается Delete, двойной клик по линии открывает
+   * форму потока. Без правок холст только читается. */
   editing: EditActions | undefined;
   onFlowOpen: ((flowId: string) => void) | undefined;
-  /** Выбранные карточки: из них страница собирает группу. */
-  onSelectionChange: (nodeIds: string[]) => void;
 };
 
 /** Ключ раскладки: что меняет размеры или состав узлов, то и перекладывает граф. */
@@ -81,7 +81,10 @@ function layoutKey(catalog: Catalog, options: GraphOptions): string {
 
 /** Холст процесса. Карточки стоят по позициям процесса; узлы без позиции
  * раскладывает ELK по замерам React Flow и холст запоминает их места до
- * первого сдвига. Рамки групп и подсветка считаются от разложенных узлов. */
+ * первого сдвига. Рамки групп и подсветка считаются от разложенных узлов.
+ * Карточка входит в группу, когда её отпускают над чужой рамкой; вытащенная
+ * из рамки группу не теряет — снять её можно только в панели карточки.
+ * Сдвиги линий и места пустых рамок живут только на странице. */
 export function Canvas({
   catalog,
   options,
@@ -91,7 +94,6 @@ export function Canvas({
   persistTidy,
   editing,
   onFlowOpen,
-  onSelectionChange,
 }: Props): ReactElement {
   const { fitView, screenToFlowPosition } = useReactFlow();
   const initialized = useNodesInitialized();
@@ -100,18 +102,18 @@ export function Canvas({
   const [edges, setEdges] = useState<FlowEdgeType[]>([]);
   const [laid, setLaid] = useState<string | null>(null);
   const [layouts, setLayouts] = useState(0);
+  const [bends, setBends] = useState<ReadonlyMap<string, Position>>(new Map());
+  const [emptyPositions, setEmptyPositions] = useState<ReadonlyMap<string, Position>>(new Map());
+  const [dropTarget, setDropTarget] = useState<string | undefined>(undefined);
   const autoPositions = useRef(new Map<string, Position>());
   const tidied = useRef(tidyCount);
   const key = layoutKey(catalog, options);
   const signature = `${key}#${tidyCount}`;
-  // объект правок страница собирает на каждый рендер: граф зависит от факта
-  // правок, а не от объекта, иначе перестройка теряла бы выделение
-  const removable = editing !== undefined;
 
   // проход 1: новый состав, позиции или режим — узлы по позициям; замеры
   // прежних карточек переносятся, чтобы рёбра не пропадали до нового замера
   useEffect(() => {
-    const built = buildGraph(catalog, options, autoPositions.current, removable);
+    const built = buildGraph(catalog, options, autoPositions.current);
     setNodes((current) => {
       const measured = new Map(current.map((node) => [node.id, node.measured]));
       return built.nodes.map((node) => {
@@ -121,7 +123,7 @@ export function Canvas({
     });
     setEdges(built.edges);
     setLaid(null);
-  }, [catalog, options, key, removable]);
+  }, [catalog, options, key]);
 
   // проход 2: узлы замерены — раскладка тех, у кого нет места, или всех по «tidy»;
   // пустой холст замерять нечего, он готов сразу (useNodesInitialized без узлов — false)
@@ -214,8 +216,29 @@ export function Canvas({
     };
   }, [initialized, laid, signature, nodes, edges, catalog, tidyCount, persistTidy, editing, fitView, layouts]);
 
+  // рамки не в состоянии узлов: сдвиг пустой рамки запоминается отдельно
   const onNodesChange = useCallback((changes: NodeChange<ProcessFlowNode>[]) => {
+    const moved = new Map<string, Position>();
+    for (const change of changes) {
+      if (change.type !== "position" || change.position === undefined) {
+        continue;
+      }
+
+      const groupId = groupOfFrame(change.id);
+      if (groupId !== undefined) {
+        moved.set(groupId, change.position);
+      }
+    }
+
+    if (moved.size > 0) {
+      setEmptyPositions((current) => new Map([...current, ...moved]));
+    }
+
     setNodes((current) => applyNodeChanges(changes, current));
+  }, []);
+
+  const onBend = useCallback((edgeId: string, bend: Position) => {
+    setBends((current) => new Map([...current, [edgeId, bend]]));
   }, []);
 
   // выбор линий живёт в состоянии рёбер; снятие линий уходит в черновик
@@ -253,13 +276,46 @@ export function Canvas({
     return { onRename: editing.renameGroup, onRemove: editing.removeGroup };
   }, [editing]);
 
+  const frameLayout = useMemo<FrameLayout>(() => ({ emptyPositions, dropTarget }), [emptyPositions, dropTarget]);
+
   const flow = useMemo(() => {
     const lit = highlight(nodes, edges, { activeId, hoverId });
-    const frames = ready ? groupFrames(catalog, lit.nodes, options.showDiff, frameActions) : [];
-    return { frames, nodes: [...frames, ...lit.nodes] as Node[], edges: lit.edges };
-  }, [nodes, edges, activeId, hoverId, catalog, options.showDiff, ready, frameActions]);
+    const frames = ready ? groupFrames(catalog, lit.nodes, options.showDiff, frameActions, frameLayout) : [];
+    const bent = lit.edges.map((edge) => {
+      if (edge.data === undefined) {
+        return edge;
+      }
+
+      return { ...edge, data: { ...edge.data, bend: bends.get(edge.id), onBend } };
+    });
+    const resizable = lit.nodes.map((node) => {
+      if (editing === undefined) {
+        return node;
+      }
+
+      const onResize = (position: Position, width: number): void => {
+        editing.resizeNode({ node: node.data.node, position, width });
+      };
+      return { ...node, data: { ...node.data, onResize } };
+    });
+    return { frames, nodes: [...frames, ...resizable] as Node[], edges: bent };
+  }, [
+    nodes,
+    edges,
+    activeId,
+    hoverId,
+    catalog,
+    options.showDiff,
+    ready,
+    frameActions,
+    frameLayout,
+    bends,
+    onBend,
+    editing,
+  ]);
 
   const dropObject = (event: DragEvent<HTMLDivElement>): void => {
+    setDropTarget(undefined);
     if (editing === undefined) {
       return;
     }
@@ -274,12 +330,34 @@ export function Canvas({
     editing.addNode(ref, point, groupAt(flow.frames, point.x, point.y));
   };
 
+  /** Чужая рамка под центром перетаскиваемой карточки: рамки считаются без
+   * самих перетаскиваемых карточек, иначе своя рамка тянулась бы за ними. */
+  const frameUnder = (item: Node, dragged: Node[]): string | null => {
+    const current = nodes.find((node) => node.id === item.id);
+    if (current === undefined) {
+      return null;
+    }
+
+    const draggedIds = new Set(dragged.map((node) => node.id));
+    const frames = groupFrames(catalog, nodes, false, frameActions, frameLayout, draggedIds);
+    const center = centerOf({ ...current, position: item.position });
+    return groupAt(frames, center.x, center.y, current.data.node.group_id);
+  };
+
+  const dragMove = (item: Node, dragged: Node[]): void => {
+    if (editing === undefined || item.type !== "process") {
+      return;
+    }
+
+    setDropTarget(frameUnder(item, dragged) ?? undefined);
+  };
+
   const dragStop = (dragged: Node[]): void => {
+    setDropTarget(undefined);
     if (editing === undefined) {
       return;
     }
 
-    const draggedIds = new Set(dragged.map((node) => node.id));
     const moves: NodeMove[] = [];
     for (const item of dragged) {
       const current = nodes.find((node) => node.id === item.id);
@@ -287,12 +365,9 @@ export function Canvas({
         continue;
       }
 
-      const moved = { ...current, position: item.position };
-      const others = nodes.filter((node) => !draggedIds.has(node.id));
-      const frames = groupFrames(catalog, others, false, undefined);
-      const center = centerOf(moved);
+      const groupId = frameUnder(item, dragged) ?? current.data.node.group_id;
       autoPositions.current.delete(item.id);
-      moves.push({ node: current.data.node, position: item.position, groupId: groupAt(frames, center.x, center.y) });
+      moves.push({ node: current.data.node, position: item.position, groupId });
     }
 
     if (moves.length > 0) {
@@ -301,15 +376,28 @@ export function Canvas({
   };
 
   return (
-    <div className="canvas" data-testid="canvas" data-ready={ready} data-layouts={layouts}>
+    <div
+      className="canvas"
+      data-testid="canvas"
+      data-ready={ready}
+      data-layouts={layouts}
+      data-drop={dropTarget !== undefined}
+    >
       {/* data-layouts — сколько раз холст становился готовым: тесты ждут следующую готовность */}
       <ArrowMarkers />
       <ReactFlow
         onDragOver={(event) => {
-          if (editing !== undefined && event.dataTransfer.types.includes(OBJECT_DRAG_TYPE)) {
-            event.preventDefault();
-            event.dataTransfer.dropEffect = "copy";
+          if (editing === undefined || !event.dataTransfer.types.includes(OBJECT_DRAG_TYPE)) {
+            return;
           }
+
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "copy";
+          const point = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+          setDropTarget(groupAt(flow.frames, point.x, point.y) ?? undefined);
+        }}
+        onDragLeave={() => {
+          setDropTarget(undefined);
         }}
         onDrop={dropObject}
         nodes={flow.nodes}
@@ -328,11 +416,11 @@ export function Canvas({
         selectionKeyCode="Shift"
         multiSelectionKeyCode={["Meta", "Control"]}
         minZoom={0.1}
+        onNodeDrag={(_event, node, dragged) => {
+          dragMove(node, dragged);
+        }}
         onNodeDragStop={(_event, _node, dragged) => {
           dragStop(dragged);
-        }}
-        onSelectionChange={({ nodes: chosen }) => {
-          onSelectionChange(chosen.filter((node) => node.type === "process").map((node) => node.id));
         }}
         onConnect={(connection) => {
           if (editing === undefined || connection.source === connection.target) {

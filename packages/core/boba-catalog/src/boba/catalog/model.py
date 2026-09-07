@@ -87,11 +87,13 @@ class Position(CatalogModel):
 
 class Node(CatalogModel):
     """Объект подключения на холсте; колонки читаются из снимка. Без позиции
-    узел раскладывает автолэйаут, группа не обязательна."""
+    узел раскладывает автолэйаут, без ширины карточка стандартной ширины,
+    группа не обязательна."""
 
     id: UUID
     ref: ObjectRef
     position: Position | None = None
+    width: float | None = Field(default=None, gt=0)
     group_id: UUID | None = None
     alias: str | None = None
     note: str = ""

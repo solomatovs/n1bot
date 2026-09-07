@@ -34,10 +34,15 @@
   fill: var(--signal);
 }
 
+.flow-markers__arrow--selected {
+  fill: var(--ember);
+}
+
 /* --- узел процесса --- */
 
+/* ширина — у обёртки React Flow (узел несёт её явно), карточка заполняет обёртку */
 .proc-node {
-  width: var(--node-w);
+  width: 100%;
   border: 1px solid var(--hairline-strong);
   border-radius: var(--r-node);
   background: var(--raised);
@@ -77,6 +82,28 @@
 .proc-node[data-stale="true"] {
   border-style: dashed;
   border-color: var(--status-modified);
+}
+
+/* края карточки на черновике: линия React Flow тонкая, полоса захвата шире;
+   тянут за край у шапки — вдоль колонок край держат их ручки */
+.proc-node__resize.react-flow__resize-control.line {
+  border: 0;
+  width: var(--s2);
+  transform: translate(-50%, 0);
+  z-index: 1;
+}
+
+.proc-node__resize-grip {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--r-pill);
+  background: transparent;
+  transition: background-color var(--t-std) var(--ease-move);
+}
+
+.proc-node__resize:hover .proc-node__resize-grip,
+.proc-node__resize:active .proc-node__resize-grip {
+  background: color-mix(in srgb, var(--signal) 50%, transparent);
 }
 
 .proc-node__header {
@@ -197,11 +224,13 @@
   opacity: 1;
 }
 
+/* ручки выше полосы растягивания на том же краю: линия от ручки важнее */
 .proc-node__handle.react-flow__handle {
   width: 6px;
   height: 6px;
   border: 0;
   background: var(--hairline-strong);
+  z-index: 3;
 }
 
 /* ручки колонок: у края карточки на высоте строки; видимая точка маленькая,
@@ -265,8 +294,7 @@
   transition: stroke var(--t-std) var(--ease-move);
 }
 
-.react-flow__edge:hover .flow-edge.react-flow__edge-path,
-.react-flow__edge.selected .flow-edge.react-flow__edge-path {
+.react-flow__edge:hover .flow-edge.react-flow__edge-path {
   stroke: var(--ink);
 }
 
@@ -274,8 +302,28 @@
   stroke: var(--signal);
 }
 
+/* выбранная линия: её снимет Delete */
+.react-flow__edge.selected .flow-edge.react-flow__edge-path,
+.react-flow__edge.selected .flow-edge--lit.react-flow__edge-path {
+  stroke: var(--ember);
+  stroke-width: 2;
+}
+
+/* невидимая полоса вдоль линии: за неё линию оттаскивают; без stroke, как
+   interaction-путь React Flow (visibleStroke ловит указатель и так), иначе
+   браузер раздувает рамку ребра на ширину полосы */
+.flow-edge__grip {
+  stroke: none;
+  cursor: grab;
+}
+
+.flow-edge__grip:active {
+  cursor: grabbing;
+}
+
 .flow-edge__label[data-selected="true"] {
-  border-color: var(--ink);
+  color: var(--ember);
+  border-color: var(--ember);
 }
 
 .flow-edge__particle {
@@ -284,6 +332,7 @@
 
 .flow-edge__label {
   position: absolute;
+  cursor: grab;
   display: inline-flex;
   align-items: center;
   height: var(--h-chip);
@@ -340,6 +389,26 @@
 
 .group-frame[data-status="removed"] {
   border-color: var(--status-removed);
+}
+
+/* над рамкой тащат карточку: отпущенная войдёт в группу */
+.group-frame[data-drop="true"] {
+  border-style: solid;
+  border-color: var(--done);
+  background: color-mix(in srgb, var(--done) 12%, transparent);
+}
+
+.canvas[data-drop="true"] .react-flow__node.dragging .proc-node {
+  border-color: var(--done);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--done) 35%, transparent),
+    var(--shadow-1);
+}
+
+/* пустую рамку таскают за неё саму */
+.react-flow__node.draggable .group-frame {
+  pointer-events: auto;
+  cursor: grab;
 }
 
 .group-frame__title {

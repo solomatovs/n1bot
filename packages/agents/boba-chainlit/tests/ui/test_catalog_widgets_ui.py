@@ -327,16 +327,22 @@ class TestPaneAndHighlight:
     def test_connections_tab_expands_the_tree_and_opens_the_object(
         self, tabs: Tabs, stand: StandProcess, catalog_seed: Seed, process_path: str
     ) -> None:
-        """Вкладка подключений: закреплённая полоса действий сверху, раскрытие
-        и сворачивание подключения, объект в дереве открывает панель объекта,
-        у объекта в процессе — кнопка узла, ссылка на страницу подключений."""
+        """Вкладка подключений: закреплённая полоса со ссылкой на страницу
+        подключений сверху, список с плюсом в заголовке, раскрытие и
+        сворачивание подключения, объект в дереве открывает панель объекта,
+        у объекта в процессе — кнопка узла."""
         page = tabs.page("admin")
         _open(page, stand, process_path)
         pane = page.get_by_test_id("left-pane")
         pane.get_by_role("tab", name="connections").click()
         actions = pane.get_by_test_id("connections-actions")
-        expect(actions.get_by_test_id("add-connection")).to_be_visible()
+        expect(actions.get_by_test_id("add-connection")).to_have_count(0)
         expect(actions.get_by_test_id("connections-link")).to_be_visible()
+        group = pane.get_by_test_id("connections-group")
+        expect(group).to_contain_text("connections ·")
+        expect(group.get_by_test_id("add-connection")).to_have_accessible_name(
+            "new connection"
+        )
         branch = pane.locator(
             f'[data-testid="connection-branch"][data-connection="{catalog_seed.connection_name}"]'
         )
@@ -432,7 +438,6 @@ class TestDialogClosing:
     ) -> None:
         page = tabs.page("admin")
         _open(page, stand, f"drafts/{draft_id}")
-        page.locator(catalog_seed.node(Ed.LOADER)).click()
         open_prompt = page.get_by_test_id("group-button")
         prompt = _dialog(page, "group-name")
 
@@ -825,22 +830,23 @@ class TestTableCard:
 
 
 class TestHomeButtons:
-    """Кнопки входа: «process» в полосе и на сцене открывают форму нового
-    процесса, «connections» ведёт к подключениям, плюс в панели процесса
-    заводит новый процесс не уходя со страницы."""
+    """Кнопки входа: плюс у списка процессов открывает форму нового процесса
+    (полосы действий на входе нет), «all connections» ведёт к подключениям."""
 
     def test_new_process_buttons_open_the_form(
         self, tabs: Tabs, stand: StandProcess
     ) -> None:
         page = tabs.page("admin")
         page.goto(f"{stand.config.base_url}/catalog/")
-        page.get_by_test_id("process-actions").get_by_test_id("new-process").click()
+        expect(page.get_by_test_id("process-actions")).to_have_count(0)
+        plus = page.get_by_test_id("processes-group").get_by_test_id("new-process")
+        plus.click()
         form = page.get_by_test_id("new-process-form")
         expect(form.get_by_role("button", name="create")).to_be_disabled()
         form.get_by_role("button", name="cancel").click()
         expect(form).to_have_count(0)
 
-        page.get_by_test_id("process-actions").get_by_test_id("new-process").click()
+        plus.click()
         expect(page.get_by_test_id("new-process-form")).to_be_visible()
         page.keyboard.press("Escape")
         expect(page.get_by_test_id("new-process-form")).to_have_count(0)
@@ -887,11 +893,17 @@ class TestHomeButtons:
     def test_plus_in_the_processes_group_starts_a_draft_of_a_new_process(
         self, tabs: Tabs, stand: StandProcess, catalog_api: Api, process_path: str
     ) -> None:
-        """Плюс в секции процессов заводит черновик нового процесса: страница
-        уходит на пустой черновик с именем будущего процесса, в списке он
-        стоит строкой «new process»; процесса в каталоге ещё нет."""
+        """Плюс в секции процессов есть только на входе, где панель про список;
+        у открытого процесса панель про него, и плюса нет. Плюс заводит
+        черновик нового процесса: страница уходит на пустой черновик с именем
+        будущего процесса, в списке он стоит строкой «new process»; процесса
+        в каталоге ещё нет."""
         page = tabs.page("admin")
         _open(page, stand, process_path)
+        expect(page.get_by_test_id("processes-group")).to_be_visible()
+        expect(page.get_by_test_id("new-process")).to_have_count(0)
+
+        page.goto(f"{stand.config.base_url}/catalog/")
         page.get_by_test_id("processes-group").get_by_role(
             "button", name="new process"
         ).click()

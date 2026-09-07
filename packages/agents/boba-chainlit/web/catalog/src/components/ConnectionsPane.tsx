@@ -16,7 +16,8 @@ type Props = {
   onSelect: (ref: ObjectRef) => void;
   /** На черновике объекты тащатся на холст. */
   draggable: boolean;
-  /** Открыть форму нового подключения; без права на правки — нет. */
+  /** Плюс у списка подключений: форма нового подключения; без права на
+   * правки — нет. */
   onAdd: (() => void) | undefined;
 };
 
@@ -25,10 +26,10 @@ type Loaded =
   | { status: "failed"; message: string }
   | { status: "ready"; connections: SyncedConnection[] };
 
-/** Подключения со снимком в левой панели: закреплённая полоса действий
- * раздела сверху, ниже каждое подключение раскрывается в дерево той версии,
- * к которой привязан процесс; объект выбирается в панель деталей и на
- * черновике тащится в слой. */
+/** Подключения со снимком в левой панели: закреплённая полоса со ссылкой на
+ * страницу подключений сверху, ниже список с плюсом в заголовке, где каждое
+ * подключение раскрывается в дерево той версии, к которой привязан процесс;
+ * объект выбирается в панель деталей и на черновике тащится на холст. */
 export function ConnectionsPane({ api, pins, selected, onSelect, draggable, onAdd }: Props): ReactElement {
   const [state, setState] = useState<Loaded>({ status: "loading" });
 
@@ -65,14 +66,14 @@ export function ConnectionsPane({ api, pins, selected, onSelect, draggable, onAd
     });
   }, [api, reload]);
 
+  let title = "connections";
+  if (state.status === "ready") {
+    title = `connections · ${state.connections.length}`;
+  }
+
   return (
     <>
       <div className="pane__bar pane__actions" data-testid="connections-actions">
-        {onAdd !== undefined && (
-          <Button size="sm" tone="primary" icon={Plus} onClick={onAdd} data-testid="add-connection">
-            connection
-          </Button>
-        )}
         <Link to="/connections" data-testid="connections-link">
           <Button size="sm" tone="ghost">
             all connections
@@ -80,33 +81,47 @@ export function ConnectionsPane({ api, pins, selected, onSelect, draggable, onAd
         </Link>
       </div>
       <div className="pane__scroll" data-testid="connections-pane">
-        {state.status === "loading" && (
-          <Note pad mark="pane-empty">
-            loading connections…
-          </Note>
-        )}
-        {state.status === "failed" && (
-          <Note pad tone="error" mark="pane-empty">
-            {state.message}
-          </Note>
-        )}
-        {state.status === "ready" && state.connections.length === 0 && (
-          <Note pad mark="pane-empty">
-            no synced connections yet: add one and sync it
-          </Note>
-        )}
-        {state.status === "ready" &&
-          state.connections.map((connection) => (
-            <ConnectionBranch
-              key={connection.connection_id}
-              api={api}
-              connection={connection}
-              version={pins[connection.connection_id] ?? -1}
-              selected={selected}
-              onSelect={onSelect}
-              draggable={draggable}
-            />
-          ))}
+        <PaneGroup
+          title={title}
+          mark="connections-group"
+          actions={
+            onAdd !== undefined && (
+              <IconButton size="sm" ghost aria-label="new connection" onClick={onAdd} data-testid="add-connection">
+                <Plus size={12} />
+              </IconButton>
+            )
+          }
+        >
+          <>
+            {state.status === "loading" && (
+              <Note pad mark="pane-empty">
+                loading connections…
+              </Note>
+            )}
+            {state.status === "failed" && (
+              <Note pad tone="error" mark="pane-empty">
+                {state.message}
+              </Note>
+            )}
+            {state.status === "ready" && state.connections.length === 0 && (
+              <Note pad mark="pane-empty">
+                no synced connections yet: add one and sync it
+              </Note>
+            )}
+            {state.status === "ready" &&
+              state.connections.map((connection) => (
+                <ConnectionBranch
+                  key={connection.connection_id}
+                  api={api}
+                  connection={connection}
+                  version={pins[connection.connection_id] ?? -1}
+                  selected={selected}
+                  onSelect={onSelect}
+                  draggable={draggable}
+                />
+              ))}
+          </>
+        </PaneGroup>
       </div>
     </>
   );
@@ -138,6 +153,7 @@ function ConnectionBranch({ api, connection, version, selected, onSelect, dragga
     <PaneGroup
       title={connection.name}
       name
+      nested
       mark="connection-branch"
       data={{ "data-connection": connection.name, "data-open": open }}
       lead={

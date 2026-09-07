@@ -53,6 +53,7 @@ export const NodeSchema = z.object({
   id: z.string(),
   ref: ObjectRefSchema,
   position: PositionSchema.nullable(),
+  width: z.number().nullable(),
   group_id: z.string().nullable(),
   alias: z.string().nullable(),
   note: z.string(),

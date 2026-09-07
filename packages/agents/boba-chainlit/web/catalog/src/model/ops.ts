@@ -25,19 +25,9 @@ export function blankGroup(name: string): Group {
 }
 
 /** Узел из объекта подключения на холсте: без alias, заметки и группы;
- * без позиции его разложит страница. */
+ * без позиции его разложит страница, ширина карточки стандартная. */
 export function blankNode(ref: ObjectRef, position: Position | null): ProcessNode {
-  return { id: newId(), ref, position, group_id: null, alias: null, note: "" };
-}
-
-/** Группа из выбранных узлов одной пачкой: сама группа и членство узлов. */
-export function groupNodes(name: string, nodes: ProcessNode[]): CatalogOp[] {
-  const group = blankGroup(name);
-  const ops: CatalogOp[] = [{ op: "add_group", group }];
-  for (const node of nodes) {
-    ops.push({ op: "set_node", node: { ...node, group_id: group.id } });
-  }
-  return ops;
+  return { id: newId(), ref, position, width: null, group_id: null, alias: null, note: "" };
 }
 
 /** Удаление группы: сначала её узлы выводятся из неё, иначе сервер откажет. */

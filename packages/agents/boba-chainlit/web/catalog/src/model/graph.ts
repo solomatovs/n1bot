@@ -35,6 +35,8 @@ export type ProcessNodeData = {
   isHighlighted: boolean;
   /** Колонки, по которым идут подсвеченные линии. */
   litColumns: ReadonlySet<string>;
+  /** На черновике карточку тянут за левый и правый край. */
+  onResize: ((position: Position, width: number) => void) | undefined;
 };
 
 export type GroupNodeData = {
@@ -42,6 +44,8 @@ export type GroupNodeData = {
   status: ChangeStatus;
   showDiff: boolean;
   count: number;
+  /** Над рамкой тащат карточку: отпущенная войдёт в группу. */
+  dropTarget: boolean;
   /** На черновике рамка несёт карандаш и корзину. */
   onRename: (() => void) | undefined;
   onRemove: (() => void) | undefined;
@@ -57,8 +61,10 @@ export type FlowEdgeData = {
   showDiff: boolean;
   stale: Stale[];
   isHighlighted: boolean;
-  /** На черновике линию можно снять крестиком. */
-  removable: boolean;
+  /** Сдвиг середины линии от прямой между ручками: линию оттащили, чтобы
+   * открыть то, что под ней. Живёт на странице, в процесс не пишется. */
+  bend: Position | undefined;
+  onBend: ((edgeId: string, bend: Position) => void) | undefined;
 };
 
 export type ProcessFlowNode = Node<ProcessNodeData, "process">;
@@ -107,6 +113,11 @@ export function visibleColumns(columns: NodeColumn[], showMode: ShowMode, involv
 /** Ручка карточки целиком: линии потоков без пар и линии в режиме имён. */
 export const NODE_HANDLE = "__node";
 
+/** Ширина карточки без своей: та же, что --node-w в tokens.css; пределы
+ * растягивания. Ширина стоит на узле React Flow явно, чтобы карточка
+ * заполняла обёртку и тянулась вместе с ней. */
+export const NODE_WIDTH = { default: 240, min: 160, max: 720 } as const;
+
 /** Id линии пары: поток и номер пары в нём. */
 export function pairEdgeId(flowId: string, index: number): string {
   return `${flowId}#${index}`;
@@ -154,7 +165,6 @@ export function buildGraph(
   catalog: Catalog,
   options: GraphOptions,
   autoPositions: ReadonlyMap<string, Position>,
-  removable: boolean,
 ): { nodes: ProcessFlowNode[]; edges: FlowEdge[] } {
   const members = catalog.nodes;
   const included = new Set(members.map((node) => node.id));
@@ -166,6 +176,7 @@ export function buildGraph(
       id: node.id,
       type: "process",
       position: node.position ?? autoPositions.get(node.id) ?? { x: 0, y: 0 },
+      width: node.width ?? NODE_WIDTH.default,
       hidden: options.hidden.has(node.id),
       zIndex: Z_INDEX.node,
       data: {
@@ -180,6 +191,7 @@ export function buildGraph(
         isActive: false,
         isHighlighted: false,
         litColumns: new Set<string>(),
+        onResize: undefined,
       },
     };
   });
@@ -204,7 +216,8 @@ export function buildGraph(
       showDiff: options.showDiff,
       stale: catalog.staleOf("flow", flow.id),
       isHighlighted: false,
-      removable,
+      bend: undefined,
+      onBend: undefined,
     };
 
     if (!byColumns || flow.columns.length === 0) {
@@ -247,16 +260,25 @@ export type FrameActions = {
   onRemove: (group: Group) => void;
 };
 
+/** Как рисовать рамки: пустые группы стоят там, куда их оттащили (иначе
+ * справа от занятых), рамка группы dropTarget подсвечена под карточкой. */
+export type FrameLayout = {
+  emptyPositions: ReadonlyMap<string, Position>;
+  dropTarget: string | undefined;
+};
+
 /** Рамки групп под карточками: по крайним карточкам группы с отступом.
- * Пустая группа на черновике получает рамку справа от занятых, чтобы в неё
- * можно было бросить карточку или снять её корзиной. Узел из except в расчёт
- * не входит: так рамка не тянется за перетаскиваемой карточкой. */
+ * Пустая группа на черновике получает рамку справа от занятых (или там, куда
+ * её оттащили), чтобы в неё можно было бросить карточку или снять её
+ * корзиной; пустую рамку можно таскать. Узлы из except в расчёт не входят:
+ * так рамка не тянется за перетаскиваемой карточкой. */
 export function groupFrames(
   catalog: Catalog,
   nodes: ProcessFlowNode[],
   showDiff: boolean,
   actions: FrameActions | undefined,
-  except?: string,
+  layout: FrameLayout,
+  except: ReadonlySet<string> = new Set(),
 ): GroupNode[] {
   const frames: GroupNode[] = [];
   let rightEdge = 0;
@@ -264,7 +286,7 @@ export function groupFrames(
   for (const group of catalog.groups) {
     const members = nodes.filter(
       (node) =>
-        !node.hidden && node.id !== except && node.data.node.group_id === group.id && measuredOf(node) !== undefined,
+        !node.hidden && !except.has(node.id) && node.data.node.group_id === group.id && measuredOf(node) !== undefined,
     );
     if (members.length === 0) {
       continue;
@@ -292,9 +314,8 @@ export function groupFrames(
     const width = right - left + FRAME_PADDING * 2;
     rightEdge = Math.max(rightEdge, x + width);
     topEdge = Math.min(topEdge, y);
-    frames.push(
-      frame(group, catalog, showDiff, actions, members.length, x, y, width, bottom - top + FRAME_PADDING * 2 + FRAME_TITLE),
-    );
+    const height = bottom - top + FRAME_PADDING * 2 + FRAME_TITLE;
+    frames.push(frame(group, catalog, showDiff, actions, layout, members.length, { x, y }, width, height));
   }
 
   if (actions === undefined) {
@@ -307,7 +328,8 @@ export function groupFrames(
       continue;
     }
 
-    frames.push(frame(group, catalog, showDiff, actions, 0, x, topEdge, EMPTY_FRAME.width, EMPTY_FRAME.height));
+    const position = layout.emptyPositions.get(group.id) ?? { x, y: topEdge };
+    frames.push(frame(group, catalog, showDiff, actions, layout, 0, position, EMPTY_FRAME.width, EMPTY_FRAME.height));
     x += EMPTY_FRAME.width + EMPTY_FRAME_GAP;
   }
 
@@ -319,20 +341,20 @@ function frame(
   catalog: Catalog,
   showDiff: boolean,
   actions: FrameActions | undefined,
+  layout: FrameLayout,
   count: number,
-  x: number,
-  y: number,
+  position: Position,
   width: number,
   height: number,
 ): GroupNode {
   return {
     id: frameId(group.id),
     type: "group",
-    position: { x, y },
+    position,
     width,
     height,
     zIndex: Z_INDEX.frame,
-    draggable: false,
+    draggable: count === 0 && actions !== undefined,
     selectable: false,
     connectable: false,
     data: {
@@ -340,6 +362,7 @@ function frame(
       status: catalog.statusOf("group", group.id),
       showDiff,
       count,
+      dropTarget: layout.dropTarget === group.id,
       onRename:
         actions === undefined
           ? undefined
@@ -356,9 +379,14 @@ function frame(
   };
 }
 
-/** Группа, в рамку которой попала точка холста; мимо рамок — null. */
-export function groupAt(frames: GroupNode[], x: number, y: number): string | null {
+/** Группа, в рамку которой попала точка холста; мимо рамок — null. Рамка
+ * группы except не считается: своя рамка обнимает карточку всегда. */
+export function groupAt(frames: GroupNode[], x: number, y: number, except: string | null = null): string | null {
   for (const item of frames) {
+    if (item.data.group.id === except) {
+      continue;
+    }
+
     const width = item.width ?? 0;
     const height = item.height ?? 0;
     const inside =

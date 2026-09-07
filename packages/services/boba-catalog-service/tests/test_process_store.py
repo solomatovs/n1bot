@@ -232,7 +232,7 @@ async def test_second_version_rewrites_tables_by_diff(
     renamed = sample.customers.model_copy(update={"alias": "buyers", "note": "vip"})
     ods = Group(id=UUID(int=0x7103), name="ods")
     moved = sample.orders.model_copy(
-        update={"position": Position(x=15.5, y=-3), "group_id": None}
+        update={"position": Position(x=15.5, y=-3), "width": 320.0, "group_id": None}
     )
     ops = OperationList(
         root=(
@@ -255,6 +255,7 @@ async def test_second_version_rewrites_tables_by_diff(
     assert await store.snapshot_at(process_id, 2) == expected
     stored = (await store.snapshot(process_id)).nodes[sample.orders.id]
     assert stored.position == Position(x=15.5, y=-3)
+    assert stored.width == 320.0
     assert stored.group_id is None
 
 

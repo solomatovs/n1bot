@@ -3,6 +3,10 @@ import type { CatalogOp } from "./ops";
 
 export type NodeMove = { node: ProcessNode; position: Position; groupId: string | null };
 
+/** Карточка растянута за край: новая ширина и позиция (тянули за левый
+ * край — сдвинулась и она). */
+export type NodeResize = { node: ProcessNode; position: Position; width: number };
+
 /** Соединение ручек на холсте: карточки и, если тянули от колонки к колонке, пара. */
 export type Connection = { from: string; to: string; fromColumn: string | undefined; toColumn: string | undefined };
 
@@ -13,8 +17,9 @@ export type LinkRemoval = { flowId: string; pair: ColumnLink | undefined };
  * черновика; страница открывает диалоги и шлёт операции, панели только зовут. */
 export type EditActions = {
   apply: (ops: CatalogOp[]) => void;
-  /** Группа из узлов: имя спросит страница. */
-  groupNodes: (nodes: ProcessNode[]) => void;
+  /** Пустая группа на холсте: имя спросит страница; карточки в неё
+   * перетаскиваются, снять карточку с группы можно только в её панели. */
+  newGroup: () => void;
   renameGroup: (group: Group) => void;
   /** Группа снимается, узлы остаются на холсте без группы. */
   removeGroup: (group: Group) => void;
@@ -24,6 +29,8 @@ export type EditActions = {
   /** Узлы передвинуты одной пачкой; попавший в чужую рамку меняет группу,
    * вытащенный из своей — теряет её. */
   moveNodes: (moves: NodeMove[]) => void;
+  /** Карточка растянута за край; ширина — часть процесса, как позиция. */
+  resizeNode: (resize: NodeResize) => void;
   removeNode: (node: ProcessNode) => void;
   /** Узел переводится на другой объект; потоки остаются. */
   retargetNode: (node: ProcessNode, ref: ObjectRef) => void;

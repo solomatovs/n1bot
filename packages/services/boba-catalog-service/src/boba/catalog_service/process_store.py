@@ -142,6 +142,7 @@ class NodesColumn(StrEnum):
     GROUP_ID = "group_id"
     X = "x"
     Y = "y"
+    WIDTH = "width"
     CONNECTION_ID = "connection_id"
     OBJECT_KIND = "object_kind"
     PATH = "path"
@@ -235,6 +236,7 @@ class EntityRows:
                 "group_id": entity.group_id,
                 "x": x,
                 "y": y,
+                "width": entity.width,
                 "connection_id": entity.ref.connection_id,
                 "object_kind": entity.ref.kind.value,
                 "path": list(entity.ref.path),
@@ -267,6 +269,7 @@ class EntityRows:
             id=row["id"],
             ref=ref,
             position=position,
+            width=row["width"],
             group_id=row["group_id"],
             alias=row["alias"],
             note=row["note"],
@@ -419,6 +422,7 @@ class ProcessStore(PostgresTable):
                                       deferrable initially deferred,
                     {n_x}             double precision null,
                     {n_y}             double precision null,
+                    {n_width}         double precision null,
                     {n_connection_id} uuid not null,
                     {n_object_kind}   text not null,
                     {n_path}          text[] not null,
@@ -497,6 +501,18 @@ class ProcessStore(PostgresTable):
                     {sh_created_at} timestamptz not null default now(),
                     {sh_revoked_at} timestamptz null
                 )
+                """
+            ),
+            *self._migrations(),
+        )
+
+    def _migrations(self) -> tuple[sql.Composed, ...]:
+        """Перевод таблиц прежних выпусков на месте: ширина карточки у узла."""
+        return (
+            self._sql(
+                """
+                alter table {nodes}
+                    add column if not exists {n_width} double precision null
                 """
             ),
         )
@@ -1411,6 +1427,7 @@ class ProcessStore(PostgresTable):
                 {n_group_id},
                 {n_x},
                 {n_y},
+                {n_width},
                 {n_connection_id},
                 {n_object_kind},
                 {n_path},
