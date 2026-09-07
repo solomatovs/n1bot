@@ -15,6 +15,7 @@ class FakeDraftApi {
     return {
       draft: {
         id: "d",
+        process_id: "p",
         name: "d",
         base_version: 0,
         pins: {},
@@ -22,7 +23,7 @@ class FakeDraftApi {
         created_by: "u",
         created_at: "2026-01-01T00:00:00Z",
       },
-      snapshot: { layers: {}, nodes: {}, load_kinds: {}, flows: {} },
+      snapshot: { groups: {}, nodes: {}, flows: {} },
       diff: { entries: [] },
       seq: this.seq,
     };
@@ -40,8 +41,8 @@ class FakeDraftApi {
       );
     }
 
-    if (ops.some((op) => op.op === "remove_layer")) {
-      return Promise.reject(new ApiError(422, "layer not found", { detail: { message: "layer not found" } }));
+    if (ops.some((op) => op.op === "remove_group")) {
+      return Promise.reject(new ApiError(422, "group not found", { detail: { message: "group not found" } }));
     }
 
     this.seq += 1;
@@ -52,7 +53,7 @@ class FakeDraftApi {
   /** Чужая порция мимо редактора: страница о ней ещё не знает. */
   someoneElse(): void {
     this.seq += 1;
-    this.portions.push([{ op: "add_layer", layer: { id: "x", name: "x", position: 0, description: "" } }]);
+    this.portions.push([{ op: "add_group", group: { id: "x", name: "x" } }]);
   }
 }
 
@@ -71,13 +72,13 @@ describe("DraftEditor", () => {
     fake.someoneElse();
 
     const outcome = await editor.apply([
-      { op: "add_layer", layer: { id: "a", name: "a", position: 0, description: "" } },
+      { op: "add_group", group: { id: "a", name: "a" } },
     ]);
 
     expect(outcome.kind).toBe("applied");
     expect(fake.conflicts).toBe(1);
     expect(fake.portions).toHaveLength(2);
-    expect(fake.portions[1]?.[0]?.op).toBe("add_layer");
+    expect(fake.portions[1]?.[0]?.op).toBe("add_group");
     expect(seen.at(-1)).toBe(2);
   });
 
@@ -85,12 +86,12 @@ describe("DraftEditor", () => {
     const fake = new FakeDraftApi();
     const { editor } = editorOf(fake);
 
-    const rejected = await editor.apply([{ op: "remove_layer", id: "nope" }]);
+    const rejected = await editor.apply([{ op: "remove_group", id: "nope" }]);
     const applied = await editor.apply([
-      { op: "add_layer", layer: { id: "a", name: "a", position: 0, description: "" } },
+      { op: "add_group", group: { id: "a", name: "a" } },
     ]);
 
-    expect(rejected).toEqual({ kind: "rejected", reason: "layer not found" });
+    expect(rejected).toEqual({ kind: "rejected", reason: "group not found" });
     expect(applied.kind).toBe("applied");
     expect(fake.seq).toBe(1);
   });
@@ -99,8 +100,8 @@ describe("DraftEditor", () => {
     const fake = new FakeDraftApi();
     const { editor } = editorOf(fake);
 
-    const first = editor.apply([{ op: "add_layer", layer: { id: "a", name: "a", position: 0, description: "" } }]);
-    const second = editor.apply([{ op: "add_layer", layer: { id: "b", name: "b", position: 0, description: "" } }]);
+    const first = editor.apply([{ op: "add_group", group: { id: "a", name: "a" } }]);
+    const second = editor.apply([{ op: "add_group", group: { id: "b", name: "b" } }]);
     await Promise.all([first, second]);
 
     expect(fake.conflicts).toBe(0);

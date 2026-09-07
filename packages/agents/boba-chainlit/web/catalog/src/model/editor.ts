@@ -16,7 +16,7 @@ export class DraftEditor {
 
   constructor(
     private readonly api: CatalogApi,
-    private readonly draftId: string,
+    readonly draftId: string,
     private state: DraftState,
     private readonly onState: (state: DraftState) => void,
   ) {}

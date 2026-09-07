@@ -1,24 +1,21 @@
-import { GitCompare, Link2, RefreshCw, Trash2, XCircle } from "lucide-react";
+import { Eraser, GitCompare, RefreshCw, XCircle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 
 import { ApiError, type CatalogApi } from "../api/client";
 import { useServices } from "../app";
-import { ConnectionsDialog, connectionLabel } from "../components/sources/ConnectionsDialog";
+import { SyncDialog } from "../components/connections/SyncDialog";
 import { DiffPanel } from "../components/sources/DiffPanel";
 import { ObjectCardPanel } from "../components/sources/ObjectCardPanel";
 import { SourceTree } from "../components/sources/SourceTree";
-import { SyncDialog } from "../components/sources/SyncDialog";
 import type {
   Access,
+  ConnectionVersion,
   ConnectionView,
   ObjectCard,
-  ObjectRef,
-  Source,
-  SourceConnection,
   SourceDiff,
-  SourceVersion,
   Sync,
+  SyncedConnection,
   TreeNode,
 } from "../model/catalog";
 import { RefParam } from "../model/refParam";
@@ -28,7 +25,6 @@ import {
   Chip,
   Dialog,
   EmptyState,
-  IconButton,
   Page,
   PageBody,
   PageNotices,
@@ -45,14 +41,14 @@ import {
   useToast,
 } from "../ui";
 
-type Directory = { entries: ConnectionView[]; error: string | null };
 type Loaded = {
   access: Access;
-  source: Source;
-  versions: SourceVersion[];
-  connections: SourceConnection[];
-  directory: Directory;
+  /** Строка брокера; null — подключение не видно (чужое личное), есть только снимок. */
+  view: ConnectionView | null;
+  synced: SyncedConnection | null;
+  versions: ConnectionVersion[];
   syncs: Sync[];
+  syncable: boolean;
 };
 type LoadState = { status: "loading" } | { status: "failed"; message: string } | { status: "ready"; loaded: Loaded };
 type Panel =
@@ -61,26 +57,26 @@ type Panel =
   | { status: "failed"; message: string }
   | { status: "card"; card: ObjectCard };
 
-/** Страница источника: дерево версии слева, родная карточка объекта справа,
- * выбор версии и разница с предыдущей, у ручного источника — черновики. */
-export function SourcePage(): ReactElement {
-  const { sourceId } = useParams();
-  if (sourceId === undefined) {
-    return <EmptyState fill title="source id is missing" />;
+/** Страница подключения глазами каталога: дерево версии снимка слева,
+ * родная карточка объекта справа, выбор версии и разница с предыдущей,
+ * синхронизация с ходом, история синхронизаций, «forget versions». */
+export function ConnectionPage(): ReactElement {
+  const { connectionId } = useParams();
+  if (connectionId === undefined) {
+    return <EmptyState fill title="connection id is missing" />;
   }
 
-  return <SourceView sourceId={sourceId} />;
+  return <ConnectionView connectionId={connectionId} />;
 }
 
-function SourceView({ sourceId }: { sourceId: string }): ReactElement {
+function ConnectionView({ connectionId }: { connectionId: string }): ReactElement {
   const { api } = useServices();
   const toast = useToast();
-  const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const [panel, setPanel] = useState<Panel>({ status: "empty" });
   const [diff, setDiff] = useState<SourceDiff | null>(null);
-  const [dialog, setDialog] = useState<"none" | "delete" | "connections" | "sync">("none");
+  const [dialog, setDialog] = useState<"none" | "sync" | "forget">("none");
   const [reloads, setReloads] = useState(0);
   const [latestSync, setLatestSync] = useState<Sync | null>(null);
 
@@ -90,7 +86,7 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
 
   const reload = useCallback(() => {
     let cancelled = false;
-    load(api, sourceId)
+    load(api, connectionId)
       .then((loaded) => {
         if (!cancelled) {
           setState({ status: "ready", loaded });
@@ -107,13 +103,13 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
     return () => {
       cancelled = true;
     };
-  }, [api, sourceId]);
+  }, [api, connectionId]);
 
   useEffect(() => reload(), [reload]);
 
   useEffect(() => {
     return api.events((message) => {
-      if (message.source_id === sourceId) {
+      if (message.connection_id === connectionId) {
         reload();
         return;
       }
@@ -123,7 +119,7 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
         api
           .sync(syncId)
           .then((sync) => {
-            if (sync.source_id === sourceId) {
+            if (sync.connection_id === connectionId) {
               setLatestSync(sync);
             }
           })
@@ -132,14 +128,18 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
           });
       }
     });
-  }, [api, sourceId, reload, toast]);
+  }, [api, connectionId, reload, toast]);
 
-  const version = state.status === "ready" ? resolveVersion(state.loaded.source, requestedVersion) : requestedVersion;
+  const latest = state.status === "ready" ? (state.loaded.synced?.latest_version ?? 0) : 0;
+  const version = resolveVersion(latest, requestedVersion);
 
-  const loadTree = useCallback((path: string[]) => api.sourceTree(sourceId, version, path), [api, sourceId, version]);
+  const loadTree = useCallback(
+    (path: string[]) => api.connectionTree(connectionId, version, path),
+    [api, connectionId, version],
+  );
 
   useEffect(() => {
-    if (selected === undefined) {
+    if (selected === undefined || version === 0) {
       setPanel({ status: "empty" });
       return;
     }
@@ -147,7 +147,7 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
     let cancelled = false;
     setPanel({ status: "loading" });
     api
-      .sourceObject(sourceId, version, selected.kind, selected.path)
+      .connectionObject(connectionId, version, selected.kind, selected.path)
       .then((card) => {
         if (!cancelled) {
           setPanel({ status: "card", card });
@@ -162,7 +162,7 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
     return () => {
       cancelled = true;
     };
-  }, [api, sourceId, version, selected, reloads]);
+  }, [api, connectionId, version, selected, reloads]);
 
   useEffect(() => {
     if (!showDiff || version < 2) {
@@ -172,7 +172,7 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
 
     let cancelled = false;
     api
-      .sourceDiff(sourceId, version - 1, version)
+      .connectionDiff(connectionId, version - 1, version)
       .then((loaded) => {
         if (!cancelled) {
           setDiff(loaded);
@@ -187,22 +187,24 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
     return () => {
       cancelled = true;
     };
-  }, [api, sourceId, version, showDiff, toast, reloads]);
+  }, [api, connectionId, version, showDiff, toast, reloads]);
 
   if (state.status === "loading") {
-    return <EmptyState fill title="loading the source" />;
+    return <EmptyState fill title="loading the connection" />;
   }
 
   if (state.status === "failed") {
     return (
-      <EmptyState fill title="the source is not available">
+      <EmptyState fill title="the connection is not available">
         {state.message}
       </EmptyState>
     );
   }
 
-  const { access, source, versions, connections, directory } = state.loaded;
-  const canSync = access.can_edit;
+  const { access, view, synced, versions, syncable } = state.loaded;
+  const name = view?.name ?? synced?.name ?? connectionId;
+  const kind = view?.kind ?? synced?.kind ?? "?";
+  const canSync = access.can_edit && view !== null && syncable;
   const setParam = (patch: Record<string, string | undefined>): void => {
     setParams(
       (current) => {
@@ -229,14 +231,15 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
   };
 
   return (
-    <Page mark="source-page" data-source={source.name} data-version={version} data-can-edit={access.can_edit}>
+    <Page mark="connection-page" data-connection={name} data-version={version} data-can-edit={access.can_edit}>
       <Topbar>
         <TopbarLink to="/">catalog</TopbarLink>
-        <TopbarLink to="/sources">sources</TopbarLink>
-        <TopbarTitle>{source.name}</TopbarTitle>
-        <Chip tone="muted">{source.kind}</Chip>
+        <TopbarLink to="/connections">connections</TopbarLink>
+        <TopbarTitle>{name}</TopbarTitle>
+        <Chip tone="muted">{kind}</Chip>
+        {view === null && <Chip tone="muted">not yours</Chip>}
         <Select
-          aria-label="source version"
+          aria-label="snapshot version"
           value={String(version)}
           onChange={(event) => {
             setParam({ v: event.target.value, mode: undefined });
@@ -264,19 +267,6 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
           </Button>
         )}
         <TopbarGroup>
-          <Button
-            size="sm"
-            tone="ghost"
-            icon={Link2}
-            collapsible
-            title="connections"
-            onClick={() => {
-              setDialog("connections");
-            }}
-            data-testid="source-connections"
-          >
-            connections · {connections.length}
-          </Button>
           {canSync && (
             <Button
               size="sm"
@@ -286,30 +276,33 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
               onClick={() => {
                 setDialog("sync");
               }}
-              data-testid="source-sync"
+              data-testid="connection-sync"
             >
               sync
             </Button>
           )}
-          {access.can_edit && (
-            <IconButton
-              aria-label="delete source"
+          {access.can_edit && versions.length > 0 && (
+            <Button
+              size="sm"
+              tone="ghost"
+              icon={Eraser}
+              collapsible
               onClick={() => {
-                setDialog("delete");
+                setDialog("forget");
               }}
+              data-testid="forget-versions"
             >
-              <Trash2 size={14} />
-            </IconButton>
+              forget versions
+            </Button>
           )}
         </TopbarGroup>
         <TopbarSpacer />
-        <TopbarHint>{source.description}</TopbarHint>
+        <TopbarHint>{versions.length === 0 ? "not synced yet" : `${versions.length} version(s)`}</TopbarHint>
       </Topbar>
       <PageNotices>
         {latestSync !== null && (
           <SyncBar
             sync={latestSync}
-            label={connectionLabel(latestSync.connection_id, directory.entries)}
             canCancel={access.can_edit}
             onCancel={() => {
               api
@@ -328,7 +321,9 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
       <PageBody pane={true} detail={false}>
         <Pane>
           {versions.length === 0 ? (
-            <EmptyState title="no versions yet">bind a connection and run a synchronisation</EmptyState>
+            <EmptyState title="no versions yet">
+              {canSync ? "run a synchronisation to load the structure" : "nothing has been synced from it"}
+            </EmptyState>
           ) : (
             <SourceTree load={loadTree} reloadKey={`${version}:${reloads}`} selected={selected} onSelect={select} />
           )}
@@ -341,48 +336,12 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
           )}
         </Scene>
       </PageBody>
-      {dialog === "connections" && (
-        <ConnectionsDialog
-          sourceName={source.name}
-          bound={connections}
-          directory={directory.entries}
-          directoryError={directory.error}
-          canEdit={access.can_edit}
-          onBind={(connectionId) => {
-            api
-              .bindConnection(source.id, connectionId)
-              .then(() => {
-                toast("connection bound", "success");
-                reload();
-              })
-              .catch((error: unknown) => {
-                toast(describe(error), "error");
-              });
-          }}
-          onUnbind={(connectionId) => {
-            api
-              .unbindConnection(source.id, connectionId)
-              .then(() => {
-                toast("connection unbound", "success");
-                reload();
-              })
-              .catch((error: unknown) => {
-                toast(describe(error), "error");
-              });
-          }}
-          onClose={() => {
-            setDialog("none");
-          }}
-        />
-      )}
       {dialog === "sync" && (
         <SyncDialog
-          sourceName={source.name}
-          bound={connections}
-          directory={directory.entries}
-          onStart={(connectionId, scope) => {
+          connectionName={name}
+          onStart={(scope) => {
             api
-              .startSync(source.id, connectionId, scope)
+              .startSync(connectionId, scope)
               .then((sync) => {
                 setDialog("none");
                 setLatestSync(sync);
@@ -397,31 +356,36 @@ function SourceView({ sourceId }: { sourceId: string }): ReactElement {
           }}
         />
       )}
-      {dialog === "delete" && (
+      {dialog === "forget" && (
         <Dialog
-          title="delete the source"
-          mark="source-delete"
+          title="forget the catalog versions"
+          mark="forget-versions"
           onClose={() => {
             setDialog("none");
           }}
         >
-          <Alert tone="info">The source “{source.name}” with all its versions will be deleted.</Alert>
+          <Alert tone="info">
+            All {versions.length} snapshot version(s) of “{name}” will be removed from the catalog. The connection
+            itself stays. Refused while nodes of a process point at its objects.
+          </Alert>
           <Toolbar>
             <Button
               tone="danger"
               onClick={() => {
                 api
-                  .deleteSource(source.id)
-                  .then(() => {
-                    toast("source deleted", "success");
-                    void navigate("/sources");
+                  .forgetVersions(connectionId)
+                  .then((count) => {
+                    setDialog("none");
+                    toast(`${count} version(s) forgotten`, "success");
+                    reload();
                   })
                   .catch((error: unknown) => {
                     toast(describe(error), "error");
                   });
               }}
+              data-testid="forget-versions-confirm"
             >
-              delete the source
+              forget the versions
             </Button>
             <Button
               tone="ghost"
@@ -458,9 +422,9 @@ export function ObjectPanel({ panel }: { panel: Panel }): ReactElement {
   return <ObjectCardPanel card={panel.card} />;
 }
 
-function resolveVersion(source: Source, requested: number): number {
-  if (requested < 0 || requested > source.latest_version) {
-    return source.latest_version;
+function resolveVersion(latest: number, requested: number): number {
+  if (requested < 0 || requested > latest) {
+    return latest;
   }
 
   return requested;
@@ -468,20 +432,19 @@ function resolveVersion(source: Source, requested: number): number {
 
 type SyncBarProps = {
   sync: Sync;
-  label: string;
   canCancel: boolean;
   onCancel: () => void;
 };
 
 /** Полоса последней синхронизации: ход с прогрессом и отменой либо итог. */
-function SyncBar({ sync, label, canCancel, onCancel }: SyncBarProps): ReactElement {
+function SyncBar({ sync, canCancel, onCancel }: SyncBarProps): ReactElement {
   const started = sync.started_at.slice(0, 16).replace("T", " ");
   if (sync.status === "running") {
     const total = sync.objects_total === null ? "?" : String(sync.objects_total);
     return (
       <Alert tone="info" mark="sync-status">
         <span data-testid="sync-progress" data-status={sync.status}>
-          syncing via {label}: {sync.objects_done} / {total} objects
+          syncing {sync.connection_name}: {sync.objects_done} / {total} objects
         </span>{" "}
         {canCancel && (
           <Button size="sm" tone="ghost" icon={XCircle} onClick={onCancel} data-testid="cancel-sync">
@@ -496,7 +459,7 @@ function SyncBar({ sync, label, canCancel, onCancel }: SyncBarProps): ReactEleme
     return (
       <Alert tone="ok" mark="sync-status">
         <span data-testid="sync-progress" data-status={sync.status}>
-          synced v{sync.version} via {label} at {started}: {sync.objects_done} objects
+          synced v{sync.version} at {started}: {sync.objects_done} objects
         </span>
       </Alert>
     );
@@ -511,25 +474,21 @@ function SyncBar({ sync, label, canCancel, onCancel }: SyncBarProps): ReactEleme
   );
 }
 
-async function load(api: CatalogApi, sourceId: string): Promise<Loaded> {
+async function load(api: CatalogApi, connectionId: string): Promise<Loaded> {
   const access = await api.access();
-  const source = await api.source(sourceId);
-  const versions = await api.sourceVersions(sourceId);
-  const connections = await api.sourceConnections(sourceId);
-  const syncs = await api.sourceSyncs(sourceId);
-  const directory = await loadDirectory(api, source.kind);
-
-  return { access, source, versions, connections, directory, syncs };
-}
-
-/** Справочник подключений вида; отказ брокера не роняет страницу, а
- * показывается в диалогах. */
-async function loadDirectory(api: CatalogApi, kind: string): Promise<Directory> {
-  try {
-    return { entries: await api.connections(kind), error: null };
-  } catch (error: unknown) {
-    return { entries: [], error: describe(error) };
+  const kinds = await api.sourceKinds();
+  const views = await api.connections();
+  const view = views.find((item) => item.id === connectionId) ?? null;
+  const synced = (await api.synced()).find((item) => item.connection_id === connectionId) ?? null;
+  if (view === null && synced === null) {
+    throw new Error(`connection ${connectionId} is neither visible to you nor synced into the catalog`);
   }
+
+  const versions = synced === null ? [] : await api.connectionVersions(connectionId);
+  const syncs = await api.connectionSyncs(connectionId);
+  const syncable = view !== null && kinds.includes(view.kind);
+
+  return { access, view, synced, versions, syncs, syncable };
 }
 
 export function describe(error: unknown): string {
@@ -543,5 +502,3 @@ export function describe(error: unknown): string {
 
   return String(error);
 }
-
-export type { ObjectRef };

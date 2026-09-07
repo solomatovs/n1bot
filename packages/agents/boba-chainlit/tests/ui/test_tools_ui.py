@@ -1509,14 +1509,15 @@ class TestChTools:
 
 
 class ProbeCatalog:
-    """Каталог стенда: слой и узлы над источником prod, которые модель
-    предлагает в черновик."""
+    """Каталог стенда: процесс, слой и узлы над подключением prod, которые
+    модель предлагает в черновик."""
 
-    LAYER_ID: ClassVar[str] = "00000000-0000-0000-0000-00000000c001"
+    GROUP_ID: ClassVar[str] = "00000000-0000-0000-0000-00000000c001"
     NODE_ID: ClassVar[str] = "00000000-0000-0000-0000-00000000c002"
     LIVE_NODE_ID: ClassVar[str] = "00000000-0000-0000-0000-00000000c003"
-    LAYER: ClassVar[str] = "ui-raw"
-    SOURCE: ClassVar[str] = "src_ui_prod"
+    GROUP: ClassVar[str] = "ui-raw"
+    PROCESS: ClassVar[str] = "src_ui_process"
+    CONNECTION: ClassVar[str] = "src_ui_prod"
     NODE: ClassVar[str] = "prod/public/orders"
     LIVE_NODE: ClassVar[str] = "prod/public/customers"
     PAGE_READY: ClassVar[str] = '[data-testid="canvas"][data-ready="true"]'
@@ -1526,25 +1527,26 @@ class ProbeCatalog:
     )
 
     @classmethod
-    def repeated_layer(cls) -> str:
-        """Тот же слой ещё раз: id занят, порция отвергается на операции #0."""
-        ops = [cls._layer()]
+    def repeated_group(cls) -> str:
+        """Та же группа ещё раз: id занят, порция отвергается на операции #0."""
+        ops = [cls._group()]
         return json.dumps(ops, ensure_ascii=False)
 
     @classmethod
-    def _layer(cls) -> dict[str, Any]:
-        layer = {"id": cls.LAYER_ID, "name": cls.LAYER, "position": 0}
-        return {"op": "add_layer", "layer": layer}
+    def _group(cls) -> dict[str, Any]:
+        group = {"id": cls.GROUP_ID, "name": cls.GROUP}
+        return {"op": "add_group", "group": group}
 
     @classmethod
-    def _node(cls, node_id: str, source_id: str, address: str) -> dict[str, Any]:
+    def _node(cls, node_id: str, connection_id: str, address: str) -> dict[str, Any]:
         return {
             "op": "add_node",
             "node": {
                 "id": node_id,
-                "layer_id": cls.LAYER_ID,
+                "group_id": cls.GROUP_ID,
+                "position": {"x": 0, "y": 0},
                 "ref": {
-                    "source_id": source_id,
+                    "connection_id": connection_id,
                     "kind": "relation",
                     "path": address.split("/"),
                 },
@@ -1552,17 +1554,17 @@ class ProbeCatalog:
         }
 
     @classmethod
-    def operations(cls, source_id: str) -> str:
+    def operations(cls, connection_id: str) -> str:
         ops = [
-            cls._layer(),
-            cls._node(cls.NODE_ID, source_id, cls.NODE),
+            cls._group(),
+            cls._node(cls.NODE_ID, connection_id, cls.NODE),
         ]
         return json.dumps(ops, ensure_ascii=False)
 
     @classmethod
-    def live_operations(cls, source_id: str) -> str:
+    def live_operations(cls, connection_id: str) -> str:
         """Ещё один узел в тот же слой: его ждёт открытая страница черновика."""
-        ops = [cls._node(cls.LIVE_NODE_ID, source_id, cls.LIVE_NODE)]
+        ops = [cls._node(cls.LIVE_NODE_ID, connection_id, cls.LIVE_NODE)]
         return json.dumps(ops, ensure_ascii=False)
 
     @classmethod
@@ -1570,20 +1572,25 @@ class ProbeCatalog:
         return f'[data-testid="catalog-node"][data-node="{address}"]'
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="class")
 def catalog_source(
     sandbox_stand: StandProcess, stand_db: StandDatabase
 ) -> Iterator[str]:
-    """Источник prod с версией 1 из образца домена; на выходе удаляется."""
+    """Подключение prod с версией снимка из образца домена и процесс для
+    черновиков модели; на выходе процесс удаляется, версии забываются,
+    подключение снимается."""
     with api_client(sandbox_stand, "admin") as admin:
         api = Api(admin, stand_db)
-        source_id = api.create_source("postgres", ProbeCatalog.SOURCE)
+        connection_id = api.add_connection(ProbeCatalog.CONNECTION, "postgres")
         snapshot = PgSample().snapshot().model_dump(mode="json")
-        api.write_source_version(source_id, snapshot)
+        api.write_connection_version(connection_id, snapshot)
+        process_id = api.create_process(ProbeCatalog.PROCESS)
         try:
-            yield source_id
+            yield connection_id
         finally:
-            api.delete_source(source_id)
+            api.delete_process(process_id)
+            api.forget_versions(connection_id)
+            stand_db.remove_connections(ProbeCatalog.CONNECTION)
 
 
 @dataclass(frozen=True)
@@ -1593,12 +1600,15 @@ class CatalogDraftProbe:
     draft_id: str
 
 
-@pytest.fixture(scope="module")
-def catalog_draft(canvas_feed: ToolFeed) -> CatalogDraftProbe:
-    call = ToolCall(tool="catalog_draft", arguments={"name": ProbeCatalog.DRAFT})
+@pytest.fixture(scope="class")
+def catalog_draft(canvas_feed: ToolFeed, catalog_source: str) -> CatalogDraftProbe:
+    call = ToolCall(
+        tool="catalog_draft",
+        arguments={"process": ProbeCatalog.PROCESS, "name": ProbeCatalog.DRAFT},
+    )
     pattern = (
         f"^draft created: ({ProbeCatalog.UUID}) "
-        f"\\('{ProbeCatalog.DRAFT}'\\) over version \\d+;"
+        f"\\('{ProbeCatalog.DRAFT}'\\) over version \\d+ of process"
     )
     step = canvas_feed.call(
         call, ToolExpect(patterns=[pattern], dom=["draft created:"])
@@ -1635,7 +1645,7 @@ class TestCatalogTools:
             patterns=[
                 rf"^draft '{ProbeCatalog.DRAFT}' \({catalog_draft.draft_id}\) "
                 r"at seq 1 ",
-                f"^added layer '{ProbeCatalog.LAYER}'$",
+                f"^added group '{ProbeCatalog.GROUP}'$",
                 f"^added node '{ProbeCatalog.NODE}'$",
             ],
             dom=[f"added node '{ProbeCatalog.NODE}'"],
@@ -1698,10 +1708,10 @@ class TestCatalogTools:
         )
         expect = ToolExpect(
             patterns=[
-                f"^added layer '{ProbeCatalog.LAYER}'$",
+                f"^added group '{ProbeCatalog.GROUP}'$",
                 f"^added node '{ProbeCatalog.NODE}'$",
             ],
-            dom=[f"added layer '{ProbeCatalog.LAYER}'"],
+            dom=[f"added group '{ProbeCatalog.GROUP}'"],
         )
         canvas_feed.call(call, expect)
 
@@ -1713,28 +1723,33 @@ class TestCatalogTools:
             tool="catalog_propose",
             arguments={
                 "draft_id": catalog_draft.draft_id,
-                "operations": ProbeCatalog.repeated_layer(),
+                "operations": ProbeCatalog.repeated_group(),
             },
             view=ScriptCall(arg="operations", lang="json"),
         )
         expect = ToolExpect(
             mark=StepMark.FAILED,
             patterns=[
-                r"operation #0 \(add_layer\) was rejected: "
-                r"layer 'ui-raw' already exists",
+                r"operation #0 \(add_group\) was rejected: "
+                r"group 'ui-raw' already exists",
             ],
             dom=["already exists"],
             log_errors=True,
         )
         canvas_feed.call(call, expect)
 
-    def test_read_lists_the_published_catalog(self, canvas_feed: ToolFeed) -> None:
-        """Черновик не опубликован: в снимке его наборов нет, ключи снимка на месте."""
-        call = ToolCall(tool="catalog_read", arguments={"nodes": ""})
+    def test_read_lists_the_published_process(
+        self, canvas_feed: ToolFeed, catalog_source: str
+    ) -> None:
+        """Черновик не опубликован: в снимке его узлов нет, ключи снимка на месте."""
+        call = ToolCall(
+            tool="catalog_read",
+            arguments={"process": ProbeCatalog.PROCESS, "nodes": ""},
+        )
         expect = ToolExpect(
             patterns=[
+                rf'^\s*"process": "{ProbeCatalog.PROCESS}",$',
                 r'^\s*"version": \d+,$',
-                r'^\s*"load_kinds": \[',
                 r'^\s*"nodes": \[',
             ],
             dom=['"version"'],
@@ -1765,6 +1780,29 @@ class TestCatalogTools:
                 f"element {CATALOG_LINK_ELEMENT} is not stored: "
                 f"was {before}, now {after}"
             )
+
+    def test_sync_writes_the_next_version(
+        self, canvas_feed: ToolFeed, catalog_source: str
+    ) -> None:
+        """Синхронизация по имени подключения снимает схему public базы
+        стенда и кладёт версию 2 поверх записанного образца."""
+        call = ToolCall(
+            tool="catalog_sync",
+            arguments={
+                "connection": ProbeCatalog.CONNECTION,
+                "schemas": ProbeSql.SCHEMA.value,
+            },
+        )
+        expect = ToolExpect(
+            patterns=[
+                r'^\s*"status": "done",$',
+                r'^\s*"version": 2$',
+                rf'^\s*"connection_name": "{ProbeCatalog.CONNECTION}",$',
+                rf'^\s*"connection_id": "{catalog_source}",$',
+            ],
+            dom=['"status": "done"', ProbeCatalog.CONNECTION],
+        )
+        canvas_feed.call(call, expect)
 
 
 class TestCanvasTools:

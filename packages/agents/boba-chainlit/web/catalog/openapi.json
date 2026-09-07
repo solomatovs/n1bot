@@ -26,13 +26,244 @@
         }
       }
     },
-    "/api/catalog/snapshot": {
+    "/api/catalog/events": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Events",
+        "description": "Поток CatalogChanged пользователя; право — как на чтение каталога.",
+        "operationId": "events_api_catalog_events_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/processes": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "List Processes",
+        "operationId": "list_processes_api_catalog_processes_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Process"
+                  },
+                  "type": "array",
+                  "title": "Response List Processes Api Catalog Processes Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Create Process",
+        "operationId": "create_process_api_catalog_processes_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProcessSpec"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Process"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/processes/{process_id}": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Get Process",
+        "operationId": "get_process_api_catalog_processes__process_id__get",
+        "parameters": [
+          {
+            "name": "process_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Process Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Process"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Update Process",
+        "operationId": "update_process_api_catalog_processes__process_id__put",
+        "parameters": [
+          {
+            "name": "process_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Process Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProcessSpec"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Process"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Delete Process",
+        "operationId": "delete_process_api_catalog_processes__process_id__delete",
+        "parameters": [
+          {
+            "name": "process_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Process Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Deleted"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/processes/{process_id}/snapshot": {
       "get": {
         "tags": [
           "catalog"
         ],
         "summary": "Snapshot",
-        "operationId": "snapshot_api_catalog_snapshot_get",
+        "operationId": "snapshot_api_catalog_processes__process_id__snapshot_get",
+        "parameters": [
+          {
+            "name": "process_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Process Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -43,28 +274,146 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
           }
         }
       }
     },
-    "/api/catalog/versions": {
+    "/api/catalog/processes/{process_id}/versions": {
       "get": {
         "tags": [
           "catalog"
         ],
         "summary": "Versions",
-        "operationId": "versions_api_catalog_versions_get",
+        "operationId": "versions_api_catalog_processes__process_id__versions_get",
+        "parameters": [
+          {
+            "name": "process_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Process Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
+                  "type": "array",
                   "items": {
                     "$ref": "#/components/schemas/Version"
                   },
-                  "type": "array",
-                  "title": "Response Versions Api Catalog Versions Get"
+                  "title": "Response Versions Api Catalog Processes  Process Id  Versions Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/processes/{process_id}/context": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Context",
+        "operationId": "context_api_catalog_processes__process_id__context_get",
+        "parameters": [
+          {
+            "name": "process_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Process Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessContext"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/processes/{process_id}/staleness": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Staleness",
+        "operationId": "staleness_api_catalog_processes__process_id__staleness_get",
+        "parameters": [
+          {
+            "name": "process_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Process Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Staleness"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -77,8 +426,9 @@
         "tags": [
           "catalog"
         ],
-        "summary": "List Drafts",
-        "operationId": "list_drafts_api_catalog_drafts_get",
+        "summary": "My Drafts",
+        "description": "Открытые черновики пользователя по всем процессам.",
+        "operationId": "my_drafts_api_catalog_drafts_get",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -89,7 +439,7 @@
                     "$ref": "#/components/schemas/Draft"
                   },
                   "type": "array",
-                  "title": "Response List Drafts Api Catalog Drafts Get"
+                  "title": "Response My Drafts Api Catalog Drafts Get"
                 }
               }
             }
@@ -136,6 +486,231 @@
         }
       }
     },
+    "/api/catalog/processes/{process_id}/shares": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Shares",
+        "operationId": "shares_api_catalog_processes__process_id__shares_get",
+        "parameters": [
+          {
+            "name": "process_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Process Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Share"
+                  },
+                  "title": "Response Shares Api Catalog Processes  Process Id  Shares Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Share",
+        "operationId": "share_api_catalog_processes__process_id__shares_post",
+        "parameters": [
+          {
+            "name": "process_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Process Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Share"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/shares/{token}": {
+      "delete": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Revoke Share",
+        "operationId": "revoke_share_api_catalog_shares__token__delete",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Share"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/shared/{token}": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Shared",
+        "description": "Опубликованный процесс по ссылке: без входа и прав на каталог.",
+        "operationId": "shared_api_catalog_shared__token__get",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedProcess"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/catalog/shared/{token}/nodes/{node_id}/object": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Shared Object",
+        "operationId": "shared_object_api_catalog_shared__token__nodes__node_id__object_get",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Token"
+            }
+          },
+          {
+            "name": "node_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Node Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ObjectCard"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/catalog/drafts/{draft_id}": {
       "get": {
         "tags": [
@@ -162,6 +737,57 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DraftState"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Rename Draft",
+        "operationId": "rename_draft_api_catalog_drafts__draft_id__put",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DraftNameBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Draft"
                 }
               }
             }
@@ -455,48 +1081,6 @@
         }
       }
     },
-    "/api/catalog/staleness": {
-      "get": {
-        "tags": [
-          "catalog"
-        ],
-        "summary": "Staleness",
-        "operationId": "staleness_api_catalog_staleness_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Staleness"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/catalog/context": {
-      "get": {
-        "tags": [
-          "catalog"
-        ],
-        "summary": "Context",
-        "operationId": "context_api_catalog_context_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProcessContext"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/catalog/drafts/{draft_id}/context": {
       "get": {
         "tags": [
@@ -540,621 +1124,13 @@
         }
       }
     },
-    "/api/catalog/views/{view_id}/context": {
-      "get": {
-        "tags": [
-          "catalog"
-        ],
-        "summary": "View Context",
-        "operationId": "view_context_api_catalog_views__view_id__context_get",
-        "parameters": [
-          {
-            "name": "view_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "View Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProcessContext"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/catalog/views/{view_id}/nodes/{node_id}/object": {
-      "get": {
-        "tags": [
-          "catalog"
-        ],
-        "summary": "View Object",
-        "operationId": "view_object_api_catalog_views__view_id__nodes__node_id__object_get",
-        "parameters": [
-          {
-            "name": "view_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "View Id"
-            }
-          },
-          {
-            "name": "node_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Node Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ObjectCard"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/catalog/views": {
-      "get": {
-        "tags": [
-          "catalog"
-        ],
-        "summary": "List Views",
-        "operationId": "list_views_api_catalog_views_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/View"
-                  },
-                  "type": "array",
-                  "title": "Response List Views Api Catalog Views Get"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "tags": [
-          "catalog"
-        ],
-        "summary": "Create View",
-        "operationId": "create_view_api_catalog_views_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ViewSpec"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/View"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/catalog/views/{view_id}": {
-      "get": {
-        "tags": [
-          "catalog"
-        ],
-        "summary": "Get View",
-        "operationId": "get_view_api_catalog_views__view_id__get",
-        "parameters": [
-          {
-            "name": "view_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "View Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/View"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "put": {
-        "tags": [
-          "catalog"
-        ],
-        "summary": "Update View",
-        "operationId": "update_view_api_catalog_views__view_id__put",
-        "parameters": [
-          {
-            "name": "view_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "View Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ViewSpec"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/View"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "tags": [
-          "catalog"
-        ],
-        "summary": "Delete View",
-        "operationId": "delete_view_api_catalog_views__view_id__delete",
-        "parameters": [
-          {
-            "name": "view_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "View Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Deleted"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/catalog/views/{view_id}/state": {
-      "get": {
-        "tags": [
-          "catalog"
-        ],
-        "summary": "View State",
-        "operationId": "view_state_api_catalog_views__view_id__state_get",
-        "parameters": [
-          {
-            "name": "view_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "View Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ViewState"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/catalog/views/{view_id}/layout": {
-      "get": {
-        "tags": [
-          "catalog"
-        ],
-        "summary": "Layout",
-        "operationId": "layout_api_catalog_views__view_id__layout_get",
-        "parameters": [
-          {
-            "name": "view_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "View Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ViewLayout"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "put": {
-        "tags": [
-          "catalog"
-        ],
-        "summary": "Put Layout",
-        "operationId": "put_layout_api_catalog_views__view_id__layout_put",
-        "parameters": [
-          {
-            "name": "view_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "View Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/LayoutBody"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ViewLayout"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/catalog/views/{view_id}/shares": {
-      "get": {
-        "tags": [
-          "catalog"
-        ],
-        "summary": "Shares",
-        "operationId": "shares_api_catalog_views__view_id__shares_get",
-        "parameters": [
-          {
-            "name": "view_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "View Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/ViewShare"
-                  },
-                  "title": "Response Shares Api Catalog Views  View Id  Shares Get"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "tags": [
-          "catalog"
-        ],
-        "summary": "Share",
-        "operationId": "share_api_catalog_views__view_id__shares_post",
-        "parameters": [
-          {
-            "name": "view_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "View Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ViewShare"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/catalog/views/{view_id}/shares/{kind}/{target}": {
-      "delete": {
-        "tags": [
-          "catalog"
-        ],
-        "summary": "Unshare",
-        "operationId": "unshare_api_catalog_views__view_id__shares__kind___target__delete",
-        "parameters": [
-          {
-            "name": "view_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "View Id"
-            }
-          },
-          {
-            "name": "kind",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/ShareTargetKind"
-            }
-          },
-          {
-            "name": "target",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Target"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Deleted"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/catalog/events": {
-      "get": {
-        "tags": [
-          "catalog"
-        ],
-        "summary": "Events",
-        "description": "Поток CatalogChanged пользователя; право — как на чтение каталога.",
-        "operationId": "events_api_catalog_events_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/catalog/source-kinds": {
       "get": {
         "tags": [
           "catalog"
         ],
         "summary": "Source Kinds",
-        "description": "Виды источников с установленным снимком: kind типов соединений.",
+        "description": "Виды подключений с установленным снимком: kind типов соединений.",
         "operationId": "source_kinds_api_catalog_source_kinds_get",
         "responses": {
           "200": {
@@ -1174,13 +1150,14 @@
         }
       }
     },
-    "/api/catalog/sources": {
+    "/api/catalog/synced": {
       "get": {
         "tags": [
           "catalog"
         ],
-        "summary": "List Sources",
-        "operationId": "list_sources_api_catalog_sources_get",
+        "summary": "Synced Connections",
+        "description": "Подключения с версиями снимка: имя и вид на момент последнего снятия.",
+        "operationId": "synced_connections_api_catalog_synced_get",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -1188,50 +1165,10 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/Source"
+                    "$ref": "#/components/schemas/SyncedConnection"
                   },
                   "type": "array",
-                  "title": "Response List Sources Api Catalog Sources Get"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "tags": [
-          "catalog"
-        ],
-        "summary": "Create Source",
-        "description": "Источник от подключения: вид берётся у подключения, оно сразу\nпривязывается.",
-        "operationId": "create_source_api_catalog_sources_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SourceCreate"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Source"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "title": "Response Synced Connections Api Catalog Synced Get"
                 }
               }
             }
@@ -1239,257 +1176,14 @@
         }
       }
     },
-    "/api/catalog/sources/{source_id}": {
+    "/api/catalog/connections/{connection_id}/versions": {
       "get": {
         "tags": [
           "catalog"
         ],
-        "summary": "Get Source",
-        "operationId": "get_source_api_catalog_sources__source_id__get",
+        "summary": "Connection Versions",
+        "operationId": "connection_versions_api_catalog_connections__connection_id__versions_get",
         "parameters": [
-          {
-            "name": "source_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Source Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Source"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "put": {
-        "tags": [
-          "catalog"
-        ],
-        "summary": "Update Source",
-        "operationId": "update_source_api_catalog_sources__source_id__put",
-        "parameters": [
-          {
-            "name": "source_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Source Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SourceSpec"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Source"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "tags": [
-          "catalog"
-        ],
-        "summary": "Delete Source",
-        "operationId": "delete_source_api_catalog_sources__source_id__delete",
-        "parameters": [
-          {
-            "name": "source_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Source Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Deleted"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/catalog/sources/{source_id}/connections": {
-      "get": {
-        "tags": [
-          "catalog"
-        ],
-        "summary": "Source Connections",
-        "operationId": "source_connections_api_catalog_sources__source_id__connections_get",
-        "parameters": [
-          {
-            "name": "source_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Source Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/SourceConnection"
-                  },
-                  "title": "Response Source Connections Api Catalog Sources  Source Id  Connections Get"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "tags": [
-          "catalog"
-        ],
-        "summary": "Bind Connection",
-        "operationId": "bind_connection_api_catalog_sources__source_id__connections_post",
-        "parameters": [
-          {
-            "name": "source_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Source Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/boba__chainlit__catalog__api__ConnectionBody"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SourceConnection"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/catalog/sources/{source_id}/connections/{connection_id}": {
-      "delete": {
-        "tags": [
-          "catalog"
-        ],
-        "summary": "Unbind Connection",
-        "operationId": "unbind_connection_api_catalog_sources__source_id__connections__connection_id__delete",
-        "parameters": [
-          {
-            "name": "source_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Source Id"
-            }
-          },
           {
             "name": "connection_id",
             "in": "path",
@@ -1507,54 +1201,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Deleted"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/catalog/sources/{source_id}/versions": {
-      "get": {
-        "tags": [
-          "catalog"
-        ],
-        "summary": "Source Versions",
-        "operationId": "source_versions_api_catalog_sources__source_id__versions_get",
-        "parameters": [
-          {
-            "name": "source_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Source Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/SourceVersion"
+                    "$ref": "#/components/schemas/ConnectionVersion"
                   },
-                  "title": "Response Source Versions Api Catalog Sources  Source Id  Versions Get"
+                  "title": "Response Connection Versions Api Catalog Connections  Connection Id  Versions Get"
                 }
               }
             }
@@ -1575,17 +1226,17 @@
         "tags": [
           "catalog"
         ],
-        "summary": "Write Source Version",
-        "operationId": "write_source_version_api_catalog_sources__source_id__versions_post",
+        "summary": "Write Connection Version",
+        "operationId": "write_connection_version_api_catalog_connections__connection_id__versions_post",
         "parameters": [
           {
-            "name": "source_id",
+            "name": "connection_id",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string",
               "format": "uuid",
-              "title": "Source Id"
+              "title": "Connection Id"
             }
           }
         ],
@@ -1605,7 +1256,49 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SourceVersion"
+                  "$ref": "#/components/schemas/ConnectionVersion"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Forget Versions",
+        "description": "Все версии снимка подключения; отказ, пока оно стоит в узлах.",
+        "operationId": "forget_versions_api_catalog_connections__connection_id__versions_delete",
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Connection Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Forgotten"
                 }
               }
             }
@@ -1623,22 +1316,22 @@
         }
       }
     },
-    "/api/catalog/sources/{source_id}/tree": {
+    "/api/catalog/connections/{connection_id}/tree": {
       "get": {
         "tags": [
           "catalog"
         ],
-        "summary": "Source Tree",
-        "operationId": "source_tree_api_catalog_sources__source_id__tree_get",
+        "summary": "Connection Tree",
+        "operationId": "connection_tree_api_catalog_connections__connection_id__tree_get",
         "parameters": [
           {
-            "name": "source_id",
+            "name": "connection_id",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string",
               "format": "uuid",
-              "title": "Source Id"
+              "title": "Connection Id"
             }
           },
           {
@@ -1675,7 +1368,7 @@
                   "items": {
                     "$ref": "#/components/schemas/TreeNode"
                   },
-                  "title": "Response Source Tree Api Catalog Sources  Source Id  Tree Get"
+                  "title": "Response Connection Tree Api Catalog Connections  Connection Id  Tree Get"
                 }
               }
             }
@@ -1693,22 +1386,22 @@
         }
       }
     },
-    "/api/catalog/sources/{source_id}/object": {
+    "/api/catalog/connections/{connection_id}/object": {
       "get": {
         "tags": [
           "catalog"
         ],
-        "summary": "Source Object",
-        "operationId": "source_object_api_catalog_sources__source_id__object_get",
+        "summary": "Connection Object",
+        "operationId": "connection_object_api_catalog_connections__connection_id__object_get",
         "parameters": [
           {
-            "name": "source_id",
+            "name": "connection_id",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string",
               "format": "uuid",
-              "title": "Source Id"
+              "title": "Connection Id"
             }
           },
           {
@@ -1766,22 +1459,22 @@
         }
       }
     },
-    "/api/catalog/sources/{source_id}/diff": {
+    "/api/catalog/connections/{connection_id}/diff": {
       "get": {
         "tags": [
           "catalog"
         ],
-        "summary": "Source Diff",
-        "operationId": "source_diff_api_catalog_sources__source_id__diff_get",
+        "summary": "Connection Diff",
+        "operationId": "connection_diff_api_catalog_connections__connection_id__diff_get",
         "parameters": [
           {
-            "name": "source_id",
+            "name": "connection_id",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string",
               "format": "uuid",
-              "title": "Source Id"
+              "title": "Connection Id"
             }
           },
           {
@@ -1827,22 +1520,22 @@
         }
       }
     },
-    "/api/catalog/sources/{source_id}/syncs": {
+    "/api/catalog/connections/{connection_id}/syncs": {
       "get": {
         "tags": [
           "catalog"
         ],
-        "summary": "Source Syncs",
-        "operationId": "source_syncs_api_catalog_sources__source_id__syncs_get",
+        "summary": "Connection Syncs",
+        "operationId": "connection_syncs_api_catalog_connections__connection_id__syncs_get",
         "parameters": [
           {
-            "name": "source_id",
+            "name": "connection_id",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string",
               "format": "uuid",
-              "title": "Source Id"
+              "title": "Connection Id"
             }
           }
         ],
@@ -1856,7 +1549,7 @@
                   "items": {
                     "$ref": "#/components/schemas/Sync"
                   },
-                  "title": "Response Source Syncs Api Catalog Sources  Source Id  Syncs Get"
+                  "title": "Response Connection Syncs Api Catalog Connections  Connection Id  Syncs Get"
                 }
               }
             }
@@ -1878,17 +1571,17 @@
           "catalog"
         ],
         "summary": "Start Sync",
-        "description": "Синхронизация источника инструментом вида от имени пользователя\nвхода: возвращает запись сразу, ход виден по GET и событиям.",
-        "operationId": "start_sync_api_catalog_sources__source_id__syncs_post",
+        "description": "Синхронизация подключения инструментом вида от имени пользователя\nвхода: возвращает запись сразу, ход виден по GET и событиям.",
+        "operationId": "start_sync_api_catalog_connections__connection_id__syncs_post",
         "parameters": [
           {
-            "name": "source_id",
+            "name": "connection_id",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string",
               "format": "uuid",
-              "title": "Source Id"
+              "title": "Connection Id"
             }
           }
         ],
@@ -1897,7 +1590,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/SyncRequest"
+                "$ref": "#/components/schemas/SyncScope"
               }
             }
           }
@@ -2096,7 +1789,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/boba__connection_broker__api__ConnectionBody"
+                "$ref": "#/components/schemas/ConnectionBody"
               }
             }
           }
@@ -2235,7 +1928,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/boba__connection_broker__api__ConnectionBody"
+                "$ref": "#/components/schemas/ConnectionBody"
               }
             }
           }
@@ -2317,7 +2010,7 @@
             "default": "add_flow"
           },
           "flow": {
-            "$ref": "#/components/schemas/Flow-Input"
+            "$ref": "#/components/schemas/Flow"
           }
         },
         "additionalProperties": false,
@@ -2336,7 +2029,7 @@
             "default": "add_flow"
           },
           "flow": {
-            "$ref": "#/components/schemas/Flow-Output"
+            "$ref": "#/components/schemas/Flow"
           }
         },
         "additionalProperties": false,
@@ -2346,62 +2039,24 @@
         ],
         "title": "AddFlow"
       },
-      "AddLayer": {
+      "AddGroup": {
         "properties": {
           "op": {
             "type": "string",
-            "const": "add_layer",
+            "const": "add_group",
             "title": "Op",
-            "default": "add_layer"
+            "default": "add_group"
           },
-          "layer": {
-            "$ref": "#/components/schemas/Layer"
+          "group": {
+            "$ref": "#/components/schemas/Group"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "layer"
+          "group"
         ],
-        "title": "AddLayer"
-      },
-      "AddLoadKind-Input": {
-        "properties": {
-          "op": {
-            "type": "string",
-            "const": "add_load_kind",
-            "title": "Op",
-            "default": "add_load_kind"
-          },
-          "load_kind": {
-            "$ref": "#/components/schemas/LoadKind-Input"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "load_kind"
-        ],
-        "title": "AddLoadKind"
-      },
-      "AddLoadKind-Output": {
-        "properties": {
-          "op": {
-            "type": "string",
-            "const": "add_load_kind",
-            "title": "Op",
-            "default": "add_load_kind"
-          },
-          "load_kind": {
-            "$ref": "#/components/schemas/LoadKind-Output"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "load_kind"
-        ],
-        "title": "AddLoadKind"
+        "title": "AddGroup"
       },
       "AddNode-Input": {
         "properties": {
@@ -2501,15 +2156,15 @@
       },
       "CatalogSnapshot": {
         "properties": {
-          "layers": {
+          "groups": {
             "additionalProperties": {
-              "$ref": "#/components/schemas/Layer"
+              "$ref": "#/components/schemas/Group"
             },
             "propertyNames": {
               "format": "uuid"
             },
             "type": "object",
-            "title": "Layers"
+            "title": "Groups"
           },
           "nodes": {
             "additionalProperties": {
@@ -2521,19 +2176,9 @@
             "type": "object",
             "title": "Nodes"
           },
-          "load_kinds": {
-            "additionalProperties": {
-              "$ref": "#/components/schemas/LoadKind-Output"
-            },
-            "propertyNames": {
-              "format": "uuid"
-            },
-            "type": "object",
-            "title": "Load Kinds"
-          },
           "flows": {
             "additionalProperties": {
-              "$ref": "#/components/schemas/Flow-Output"
+              "$ref": "#/components/schemas/Flow"
             },
             "propertyNames": {
               "format": "uuid"
@@ -2545,13 +2190,12 @@
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "layers",
+          "groups",
           "nodes",
-          "load_kinds",
           "flows"
         ],
         "title": "CatalogSnapshot",
-        "description": "Полное состояние процесса одной версии.\n\nТаблицы сущностей по id. Методы added/replaced/removed возвращают новый\nснимок, не меняя текущий; check() проверяет внутренние инварианты,\ncheck_against() — ссылки на объекты и колонки источников."
+        "description": "Полное состояние процесса одной версии.\n\nТаблицы сущностей по id. Методы added/replaced/removed возвращают новый\nснимок, не меняя текущий; check() проверяет внутренние инварианты,\ncheck_against() — ссылки на объекты и колонки подключений."
       },
       "ChangeStatus": {
         "type": "string",
@@ -2564,15 +2208,49 @@
         "title": "ChangeStatus",
         "description": "Статус сущности или объекта относительно другой версии."
       },
-      "ColumnSide": {
-        "type": "string",
-        "enum": [
-          "source",
-          "target",
-          "any"
+      "ColumnLink": {
+        "properties": {
+          "from_column": {
+            "type": "string",
+            "minLength": 1,
+            "title": "From Column"
+          },
+          "to_column": {
+            "type": "string",
+            "minLength": 1,
+            "title": "To Column"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "from_column",
+          "to_column"
         ],
-        "title": "ColumnSide",
-        "description": "С какого конца потока берутся колонки поля вида."
+        "title": "ColumnLink",
+        "description": "Переход колонки: из колонки узла-источника в колонку узла-приёмника."
+      },
+      "ConnectionBody": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "profile": {
+            "type": "object",
+            "title": "Profile"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "profile"
+        ],
+        "title": "ConnectionBody",
+        "description": "Имя и сырой профиль соединения: модель выбирает реестр типов на границе."
       },
       "ConnectionDeleted": {
         "properties": {
@@ -2608,6 +2286,81 @@
         ],
         "title": "ConnectionProfileBase",
         "description": "Профиль соединения; наследник сужает kind до Literal своего значения."
+      },
+      "ConnectionVersion": {
+        "properties": {
+          "connection_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Connection Id"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Version"
+          },
+          "connection_name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Connection Name"
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Kind"
+          },
+          "taken_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Taken At"
+          },
+          "taken_by": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Taken By"
+          },
+          "sync_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sync Id"
+          },
+          "objects_total": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Objects Total"
+          },
+          "server_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Server Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "connection_id",
+          "version",
+          "connection_name",
+          "kind",
+          "taken_at",
+          "taken_by",
+          "objects_total"
+        ],
+        "title": "ConnectionVersion",
+        "description": "Снятая версия снимка подключения без самого снимка; имя и вид\nподключения — копия на момент снятия."
       },
       "ConnectionView": {
         "properties": {
@@ -2693,6 +2446,18 @@
             "format": "uuid",
             "title": "Id"
           },
+          "process_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Process Id"
+          },
           "name": {
             "type": "string",
             "minLength": 1,
@@ -2731,6 +2496,7 @@
         "type": "object",
         "required": [
           "id",
+          "process_id",
           "name",
           "base_version",
           "status",
@@ -2738,7 +2504,7 @@
           "created_at"
         ],
         "title": "Draft",
-        "description": "Ветка правок над версией base_version."
+        "description": "Ветка правок процесса над версией base_version; без process_id —\nчерновик нового процесса над пустым снимком, имя станет именем процесса\nпри публикации."
       },
       "DraftAuthor": {
         "properties": {
@@ -2762,6 +2528,35 @@
       },
       "DraftBody": {
         "properties": {
+          "process_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Process Id"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "process_id",
+          "name"
+        ],
+        "title": "DraftBody",
+        "description": "Новый черновик над текущей версией процесса; без процесса — черновик\nнового процесса, имя станет именем процесса при публикации."
+      },
+      "DraftNameBody": {
+        "properties": {
           "name": {
             "type": "string",
             "minLength": 1,
@@ -2773,8 +2568,8 @@
         "required": [
           "name"
         ],
-        "title": "DraftBody",
-        "description": "Новый черновик над текущей версией."
+        "title": "DraftNameBody",
+        "description": "Новое имя черновика."
       },
       "DraftState": {
         "properties": {
@@ -2816,9 +2611,8 @@
       "EntityKind": {
         "type": "string",
         "enum": [
-          "layer",
+          "group",
           "node",
-          "load_kind",
           "flow"
         ],
         "title": "EntityKind",
@@ -2883,7 +2677,7 @@
         "title": "FieldChange",
         "description": "Поле, значение которого изменилось; значения отданы строкой для показа."
       },
-      "Flow-Input": {
+      "Flow": {
         "properties": {
           "id": {
             "type": "string",
@@ -2900,8 +2694,13 @@
             "format": "uuid",
             "title": "To Node Id"
           },
-          "load": {
-            "$ref": "#/components/schemas/LoadSpec-Input"
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/ColumnLink"
+            },
+            "type": "array",
+            "title": "Columns",
+            "default": []
           },
           "description": {
             "type": "string",
@@ -2914,48 +2713,48 @@
         "required": [
           "id",
           "from_node_id",
-          "to_node_id",
-          "load"
+          "to_node_id"
         ],
         "title": "Flow",
-        "description": "Поток из узла в узел с правилом загрузки."
+        "description": "Поток из узла в узел: какие колонки источника переходят в какие\nколонки приёмника, и описание словами."
       },
-      "Flow-Output": {
+      "Forgotten": {
+        "properties": {
+          "versions": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Versions"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "versions"
+        ],
+        "title": "Forgotten",
+        "description": "Сколько версий снимка забыто."
+      },
+      "Group": {
         "properties": {
           "id": {
             "type": "string",
             "format": "uuid",
             "title": "Id"
           },
-          "from_node_id": {
+          "name": {
             "type": "string",
-            "format": "uuid",
-            "title": "From Node Id"
-          },
-          "to_node_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "To Node Id"
-          },
-          "load": {
-            "$ref": "#/components/schemas/LoadSpec-Output"
-          },
-          "description": {
-            "type": "string",
-            "title": "Description",
-            "default": ""
+            "minLength": 1,
+            "title": "Name"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
           "id",
-          "from_node_id",
-          "to_node_id",
-          "load"
+          "name"
         ],
-        "title": "Flow",
-        "description": "Поток из узла в узел с правилом загрузки."
+        "title": "Group",
+        "description": "Именованная область холста: рамка вокруг узлов, которые в ней состоят.\nСвоих размеров нет, рамка считается по узлам."
       },
       "HTTPValidationError": {
         "properties": {
@@ -2970,260 +2769,6 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
-      "Layer": {
-        "properties": {
-          "id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Id"
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Name"
-          },
-          "position": {
-            "type": "integer",
-            "minimum": 0.0,
-            "title": "Position"
-          },
-          "description": {
-            "type": "string",
-            "title": "Description",
-            "default": ""
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "id",
-          "name",
-          "position"
-        ],
-        "title": "Layer",
-        "description": "Слой хранения: дорожка на диаграмме, порядок слева направо по position."
-      },
-      "LayoutBody": {
-        "properties": {
-          "positions": {
-            "items": {
-              "$ref": "#/components/schemas/NodePosition"
-            },
-            "type": "array",
-            "title": "Positions"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "positions"
-        ],
-        "title": "LayoutBody",
-        "description": "Полная раскладка вида."
-      },
-      "LoadField": {
-        "properties": {
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Name"
-          },
-          "type": {
-            "$ref": "#/components/schemas/LoadFieldType"
-          },
-          "side": {
-            "$ref": "#/components/schemas/ColumnSide",
-            "default": "any"
-          },
-          "required": {
-            "type": "boolean",
-            "title": "Required"
-          },
-          "description": {
-            "type": "string",
-            "title": "Description",
-            "default": ""
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "name",
-          "type",
-          "required"
-        ],
-        "title": "LoadField",
-        "description": "Поле вида загрузки: имя, тип, сторона потока для колонок, обязательность."
-      },
-      "LoadFieldType": {
-        "type": "string",
-        "enum": [
-          "text",
-          "int",
-          "bool",
-          "column",
-          "columns",
-          "routine"
-        ],
-        "title": "LoadFieldType",
-        "description": "Тип поля вида загрузки; знает форму хранения значения."
-      },
-      "LoadKind-Input": {
-        "properties": {
-          "id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Id"
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Name"
-          },
-          "description": {
-            "type": "string",
-            "title": "Description",
-            "default": ""
-          },
-          "fields": {
-            "items": {
-              "$ref": "#/components/schemas/LoadField"
-            },
-            "type": "array",
-            "title": "Fields"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "id",
-          "name",
-          "fields"
-        ],
-        "title": "LoadKind",
-        "description": "Вид загрузки, заведённый пользователем: имя и описание полей.\n\nПоток хранит значения по именам полей вида; вид проверяет их состав и\nтипы (violations_of) и отдаёт ссылки на колонки по сторонам (column_refs)."
-      },
-      "LoadKind-Output": {
-        "properties": {
-          "id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Id"
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Name"
-          },
-          "description": {
-            "type": "string",
-            "title": "Description",
-            "default": ""
-          },
-          "fields": {
-            "items": {
-              "$ref": "#/components/schemas/LoadField"
-            },
-            "type": "array",
-            "title": "Fields"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "id",
-          "name",
-          "fields"
-        ],
-        "title": "LoadKind",
-        "description": "Вид загрузки, заведённый пользователем: имя и описание полей.\n\nПоток хранит значения по именам полей вида; вид проверяет их состав и\nтипы (violations_of) и отдаёт ссылки на колонки по сторонам (column_refs)."
-      },
-      "LoadSpec-Input": {
-        "properties": {
-          "kind_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Kind Id"
-          },
-          "values": {
-            "additionalProperties": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "boolean"
-                },
-                {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                },
-                {
-                  "$ref": "#/components/schemas/ObjectRef"
-                }
-              ]
-            },
-            "type": "object",
-            "title": "Values"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "kind_id",
-          "values"
-        ],
-        "title": "LoadSpec",
-        "description": "Правило загрузки потока: вид и значения по его полям."
-      },
-      "LoadSpec-Output": {
-        "properties": {
-          "kind_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Kind Id"
-          },
-          "values": {
-            "additionalProperties": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "boolean"
-                },
-                {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                },
-                {
-                  "$ref": "#/components/schemas/ObjectRef"
-                }
-              ]
-            },
-            "type": "object",
-            "title": "Values"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "kind_id",
-          "values"
-        ],
-        "title": "LoadSpec",
-        "description": "Правило загрузки потока: вид и значения по его полям."
-      },
       "Node-Input": {
         "properties": {
           "id": {
@@ -3231,13 +2776,30 @@
             "format": "uuid",
             "title": "Id"
           },
-          "layer_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Layer Id"
-          },
           "ref": {
             "$ref": "#/components/schemas/ObjectRef"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Position"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "group_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group Id"
           },
           "alias": {
             "anyOf": [
@@ -3260,11 +2822,10 @@
         "type": "object",
         "required": [
           "id",
-          "layer_id",
           "ref"
         ],
         "title": "Node",
-        "description": "Объект источника, поставленный в слой; колонки читаются из источника."
+        "description": "Объект подключения на холсте; колонки читаются из снимка. Без позиции\nузел раскладывает автолэйаут, группа не обязательна."
       },
       "Node-Output": {
         "properties": {
@@ -3273,13 +2834,30 @@
             "format": "uuid",
             "title": "Id"
           },
-          "layer_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Layer Id"
-          },
           "ref": {
             "$ref": "#/components/schemas/ObjectRef"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Position"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "group_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group Id"
           },
           "alias": {
             "anyOf": [
@@ -3302,11 +2880,10 @@
         "type": "object",
         "required": [
           "id",
-          "layer_id",
           "ref"
         ],
         "title": "Node",
-        "description": "Объект источника, поставленный в слой; колонки читаются из источника."
+        "description": "Объект подключения на холсте; колонки читаются из снимка. Без позиции\nузел раскладывает автолэйаут, группа не обязательна."
       },
       "NodeColumn": {
         "properties": {
@@ -3337,32 +2914,6 @@
         ],
         "title": "NodeColumn",
         "description": "Колонка объекта глазами процесса: имя, тип, nullable и вхождение в\nпервичный ключ. Общая форма для всех видов источников, чтобы карточка\nузла рисовалась одинаково."
-      },
-      "NodePosition": {
-        "properties": {
-          "node_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Node Id"
-          },
-          "x": {
-            "type": "number",
-            "title": "X"
-          },
-          "y": {
-            "type": "number",
-            "title": "Y"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "node_id",
-          "x",
-          "y"
-        ],
-        "title": "NodePosition",
-        "description": "Положение узла набора на диаграмме вида."
       },
       "ObjectCard": {
         "properties": {
@@ -3433,10 +2984,10 @@
       },
       "ObjectRef": {
         "properties": {
-          "source_id": {
+          "connection_id": {
             "type": "string",
             "format": "uuid",
-            "title": "Source Id"
+            "title": "Connection Id"
           },
           "kind": {
             "$ref": "#/components/schemas/ObjectKind"
@@ -3453,24 +3004,24 @@
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "source_id",
+          "connection_id",
           "kind",
           "path"
         ],
         "title": "ObjectRef",
-        "description": "Адрес объекта источника, стабильный между версиями: вид объекта и\nродной путь. Postgres: (database, schema, name), рутина — плюс сигнатура;\nClickHouse: (database, name)."
+        "description": "Адрес объекта подключения, стабильный между версиями снимка: вид\nобъекта и родной путь. Postgres: (database, schema, name), рутина — плюс\nсигнатура; ClickHouse: (database, name)."
       },
       "OperationList-Input": {
         "items": {
           "anyOf": [
             {
-              "$ref": "#/components/schemas/AddLayer"
+              "$ref": "#/components/schemas/AddGroup"
             },
             {
-              "$ref": "#/components/schemas/SetLayer"
+              "$ref": "#/components/schemas/SetGroup"
             },
             {
-              "$ref": "#/components/schemas/RemoveLayer"
+              "$ref": "#/components/schemas/RemoveGroup"
             },
             {
               "$ref": "#/components/schemas/AddNode-Input"
@@ -3483,15 +3034,6 @@
             },
             {
               "$ref": "#/components/schemas/RemoveNode"
-            },
-            {
-              "$ref": "#/components/schemas/AddLoadKind-Input"
-            },
-            {
-              "$ref": "#/components/schemas/SetLoadKind-Input"
-            },
-            {
-              "$ref": "#/components/schemas/RemoveLoadKind"
             },
             {
               "$ref": "#/components/schemas/AddFlow-Input"
@@ -3512,13 +3054,13 @@
         "items": {
           "anyOf": [
             {
-              "$ref": "#/components/schemas/AddLayer"
+              "$ref": "#/components/schemas/AddGroup"
             },
             {
-              "$ref": "#/components/schemas/SetLayer"
+              "$ref": "#/components/schemas/SetGroup"
             },
             {
-              "$ref": "#/components/schemas/RemoveLayer"
+              "$ref": "#/components/schemas/RemoveGroup"
             },
             {
               "$ref": "#/components/schemas/AddNode-Output"
@@ -3531,15 +3073,6 @@
             },
             {
               "$ref": "#/components/schemas/RemoveNode"
-            },
-            {
-              "$ref": "#/components/schemas/AddLoadKind-Output"
-            },
-            {
-              "$ref": "#/components/schemas/SetLoadKind-Output"
-            },
-            {
-              "$ref": "#/components/schemas/RemoveLoadKind"
             },
             {
               "$ref": "#/components/schemas/AddFlow-Output"
@@ -3640,6 +3173,26 @@
         "title": "PinBump",
         "description": "Черновик после поднятия привязок и что в нём перестало сходиться."
       },
+      "Position": {
+        "properties": {
+          "x": {
+            "type": "number",
+            "title": "X"
+          },
+          "y": {
+            "type": "number",
+            "title": "Y"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "x",
+          "y"
+        ],
+        "title": "Position",
+        "description": "Место карточки узла на холсте."
+      },
       "ProbeBody": {
         "properties": {
           "profile": {
@@ -3680,6 +3233,63 @@
         "title": "ProbeResult",
         "description": "Исход проверки: удалось ли открыть соединение, что ответил сервер, за сколько."
       },
+      "Process": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "owner_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Owner Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "latest_version": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Latest Version"
+          },
+          "nodes": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Nodes"
+          },
+          "open_drafts": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Open Drafts"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "owner_id",
+          "created_at",
+          "latest_version",
+          "nodes",
+          "open_drafts"
+        ],
+        "title": "Process",
+        "description": "Процесс перетекания данных: свой рисунок с узлами, группами и потоками,\nсвоими версиями и черновиками; в списке — с числом узлов и открытых\nчерновиков."
+      },
       "ProcessContext": {
         "properties": {
           "pins": {
@@ -3717,7 +3327,28 @@
           "stale"
         ],
         "title": "ProcessContext",
-        "description": "Что процессу нужно от источников для показа: привязки версий, колонки\nкаждого узла из привязанной версии и устаревание относительно последних\nверсий. Считается для опубликованной версии, черновика или среза вида."
+        "description": "Что процессу нужно от снимков подключений для показа: привязки версий,\nколонки каждого узла из привязанной версии и устаревание относительно\nпоследних версий. Считается для опубликованной версии или черновика."
+      },
+      "ProcessSpec": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "ProcessSpec",
+        "description": "Имя и описание процесса."
       },
       "RebaseBody": {
         "properties": {
@@ -3805,13 +3436,13 @@
         ],
         "title": "RemoveFlow"
       },
-      "RemoveLayer": {
+      "RemoveGroup": {
         "properties": {
           "op": {
             "type": "string",
-            "const": "remove_layer",
+            "const": "remove_group",
             "title": "Op",
-            "default": "remove_layer"
+            "default": "remove_group"
           },
           "id": {
             "type": "string",
@@ -3824,30 +3455,8 @@
         "required": [
           "id"
         ],
-        "title": "RemoveLayer",
-        "description": "Удаление слоя; отказывает, пока в слое есть узлы."
-      },
-      "RemoveLoadKind": {
-        "properties": {
-          "op": {
-            "type": "string",
-            "const": "remove_load_kind",
-            "title": "Op",
-            "default": "remove_load_kind"
-          },
-          "id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Id"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "id"
-        ],
-        "title": "RemoveLoadKind",
-        "description": "Удаление вида; отказывает, пока есть потоки этого вида."
+        "title": "RemoveGroup",
+        "description": "Удаление группы; отказывает, пока в ней состоят узлы, и называет их."
       },
       "RemoveNode": {
         "properties": {
@@ -3895,7 +3504,7 @@
           "ref"
         ],
         "title": "RetargetNode",
-        "description": "Узел указывает на другой объект: например, с ручного источника на\nреальный. Потоки узла остаются."
+        "description": "Узел указывает на другой объект: например, на ту же таблицу другого\nподключения. Потоки узла остаются."
       },
       "RetargetNode-Output": {
         "properties": {
@@ -3921,7 +3530,7 @@
           "ref"
         ],
         "title": "RetargetNode",
-        "description": "Узел указывает на другой объект: например, с ручного источника на\nреальный. Потоки узла остаются."
+        "description": "Узел указывает на другой объект: например, на ту же таблицу другого\nподключения. Потоки узла остаются."
       },
       "SetFlow-Input": {
         "properties": {
@@ -3932,7 +3541,7 @@
             "default": "set_flow"
           },
           "flow": {
-            "$ref": "#/components/schemas/Flow-Input"
+            "$ref": "#/components/schemas/Flow"
           }
         },
         "additionalProperties": false,
@@ -3951,7 +3560,7 @@
             "default": "set_flow"
           },
           "flow": {
-            "$ref": "#/components/schemas/Flow-Output"
+            "$ref": "#/components/schemas/Flow"
           }
         },
         "additionalProperties": false,
@@ -3961,62 +3570,24 @@
         ],
         "title": "SetFlow"
       },
-      "SetLayer": {
+      "SetGroup": {
         "properties": {
           "op": {
             "type": "string",
-            "const": "set_layer",
+            "const": "set_group",
             "title": "Op",
-            "default": "set_layer"
+            "default": "set_group"
           },
-          "layer": {
-            "$ref": "#/components/schemas/Layer"
+          "group": {
+            "$ref": "#/components/schemas/Group"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "layer"
+          "group"
         ],
-        "title": "SetLayer"
-      },
-      "SetLoadKind-Input": {
-        "properties": {
-          "op": {
-            "type": "string",
-            "const": "set_load_kind",
-            "title": "Op",
-            "default": "set_load_kind"
-          },
-          "load_kind": {
-            "$ref": "#/components/schemas/LoadKind-Input"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "load_kind"
-        ],
-        "title": "SetLoadKind"
-      },
-      "SetLoadKind-Output": {
-        "properties": {
-          "op": {
-            "type": "string",
-            "const": "set_load_kind",
-            "title": "Op",
-            "default": "set_load_kind"
-          },
-          "load_kind": {
-            "$ref": "#/components/schemas/LoadKind-Output"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "load_kind"
-        ],
-        "title": "SetLoadKind"
+        "title": "SetGroup"
       },
       "SetNode-Input": {
         "properties": {
@@ -4036,7 +3607,7 @@
           "node"
         ],
         "title": "SetNode",
-        "description": "Замена узла целиком: слой, псевдоним, заметка; адрес меняет RetargetNode."
+        "description": "Замена узла целиком: позиция, группа, псевдоним, заметка; адрес меняет\nRetargetNode."
       },
       "SetNode-Output": {
         "properties": {
@@ -4056,22 +3627,75 @@
           "node"
         ],
         "title": "SetNode",
-        "description": "Замена узла целиком: слой, псевдоним, заметка; адрес меняет RetargetNode."
+        "description": "Замена узла целиком: позиция, группа, псевдоним, заметка; адрес меняет\nRetargetNode."
       },
-      "ShareMode": {
-        "type": "string",
-        "enum": [
-          "view"
+      "Share": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Token"
+          },
+          "process_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Process Id"
+          },
+          "created_by": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "token",
+          "process_id",
+          "created_by",
+          "created_at"
         ],
-        "title": "ShareMode"
+        "title": "Share",
+        "description": "Ссылка на просмотр опубликованного процесса: гость видит его по token\nбез прав на каталог, пока ссылка не отозвана."
       },
-      "ShareTargetKind": {
-        "type": "string",
-        "enum": [
-          "role",
-          "user"
+      "SharedProcess": {
+        "properties": {
+          "process": {
+            "$ref": "#/components/schemas/Process"
+          },
+          "snapshot": {
+            "$ref": "#/components/schemas/CatalogSnapshot"
+          },
+          "context": {
+            "$ref": "#/components/schemas/ProcessContext"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "process",
+          "snapshot",
+          "context"
         ],
-        "title": "ShareTargetKind"
+        "title": "SharedProcess",
+        "description": "Опубликованный процесс по ссылке на просмотр: сам процесс, его снимок и\nконтекст показа; прав на каталог у читателя нет."
       },
       "SnapshotBody": {
         "properties": {
@@ -4086,128 +3710,7 @@
           "snapshot"
         ],
         "title": "SnapshotBody",
-        "description": "Снимок целиком: путь стенда и переноса из staging. Форма снимка зависит\nот вида источника, поэтому тело разбирает реестр видов сервиса."
-      },
-      "Source": {
-        "properties": {
-          "id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Id"
-          },
-          "kind": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Kind"
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Name"
-          },
-          "description": {
-            "type": "string",
-            "title": "Description",
-            "default": ""
-          },
-          "created_by": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Created By"
-          },
-          "created_at": {
-            "type": "string",
-            "format": "date-time",
-            "title": "Created At"
-          },
-          "latest_version": {
-            "type": "integer",
-            "minimum": 0.0,
-            "title": "Latest Version"
-          },
-          "connection_ids": {
-            "items": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "type": "array",
-            "title": "Connection Ids",
-            "default": []
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "id",
-          "kind",
-          "name",
-          "created_by",
-          "created_at",
-          "latest_version"
-        ],
-        "title": "Source",
-        "description": "Источник метаданных: форма снимка (kind подключения), имя, описание и\nномер последней версии."
-      },
-      "SourceConnection": {
-        "properties": {
-          "source_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Source Id"
-          },
-          "connection_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Connection Id"
-          },
-          "bound_by": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Bound By"
-          },
-          "bound_at": {
-            "type": "string",
-            "format": "date-time",
-            "title": "Bound At"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "source_id",
-          "connection_id",
-          "bound_by",
-          "bound_at"
-        ],
-        "title": "SourceConnection",
-        "description": "Подключение брокера, привязанное к источнику."
-      },
-      "SourceCreate": {
-        "properties": {
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Name"
-          },
-          "description": {
-            "type": "string",
-            "title": "Description",
-            "default": ""
-          },
-          "connection_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Connection Id"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "name",
-          "connection_id"
-        ],
-        "title": "SourceCreate",
-        "description": "Новый источник от подключения: вид берётся у подключения."
+        "description": "Снимок целиком: путь стенда. Форма снимка зависит от вида подключения,\nпоэтому тело разбирает реестр видов сервиса."
       },
       "SourceDiff": {
         "properties": {
@@ -4227,111 +3730,15 @@
         "title": "SourceDiff",
         "description": "Список изменений между двумя версиями одного источника.\n\nСчитается по адресам: объект ищется в обеих версиях по ключу, поля\nсравниваются по значению. Базы и схемы тоже входят в список, чтобы дерево\nмогло пометить контейнеры."
       },
-      "SourceSpec": {
-        "properties": {
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Name"
-          },
-          "description": {
-            "type": "string",
-            "title": "Description",
-            "default": ""
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "name"
-        ],
-        "title": "SourceSpec",
-        "description": "Имя и описание источника: то, чем пользователь помечает подключения."
-      },
-      "SourceVersion": {
-        "properties": {
-          "source_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Source Id"
-          },
-          "version": {
-            "type": "integer",
-            "minimum": 1.0,
-            "title": "Version"
-          },
-          "taken_at": {
-            "type": "string",
-            "format": "date-time",
-            "title": "Taken At"
-          },
-          "taken_by": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Taken By"
-          },
-          "connection_id": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "uuid"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Connection Id"
-          },
-          "sync_id": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "uuid"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Sync Id"
-          },
-          "objects_total": {
-            "type": "integer",
-            "minimum": 0.0,
-            "title": "Objects Total"
-          },
-          "server_version": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Server Version"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "source_id",
-          "version",
-          "taken_at",
-          "taken_by",
-          "objects_total"
-        ],
-        "title": "SourceVersion",
-        "description": "Снятая или опубликованная версия источника без самого снимка."
-      },
       "Stale": {
         "properties": {
           "target": {
             "$ref": "#/components/schemas/EntityRef"
           },
-          "source_id": {
+          "connection_id": {
             "type": "string",
             "format": "uuid",
-            "title": "Source Id"
+            "title": "Connection Id"
           },
           "pinned_version": {
             "type": "integer",
@@ -4357,7 +3764,7 @@
         "type": "object",
         "required": [
           "target",
-          "source_id",
+          "connection_id",
           "pinned_version",
           "since_version",
           "reason"
@@ -4370,9 +3777,7 @@
           "object_removed",
           "object_changed",
           "column_removed",
-          "column_changed",
-          "routine_removed",
-          "routine_changed"
+          "column_changed"
         ],
         "title": "StaleReason"
       },
@@ -4401,15 +3806,20 @@
             "format": "uuid",
             "title": "Id"
           },
-          "source_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Source Id"
-          },
           "connection_id": {
             "type": "string",
             "format": "uuid",
             "title": "Connection Id"
+          },
+          "connection_name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Connection Name"
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Kind"
           },
           "started_by": {
             "type": "string",
@@ -4483,33 +3893,15 @@
         "type": "object",
         "required": [
           "id",
-          "source_id",
           "connection_id",
+          "connection_name",
+          "kind",
           "started_by",
           "started_at",
           "status"
         ],
         "title": "Sync",
-        "description": "Синхронизация источника: прогресс и итог."
-      },
-      "SyncRequest": {
-        "properties": {
-          "connection_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Connection Id"
-          },
-          "scope": {
-            "$ref": "#/components/schemas/SyncScope"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "connection_id"
-        ],
-        "title": "SyncRequest",
-        "description": "Запрос синхронизации: привязанное подключение и охват."
+        "description": "Синхронизация подключения: прогресс и итог."
       },
       "SyncScope": {
         "properties": {
@@ -4550,6 +3942,46 @@
           "cancelled"
         ],
         "title": "SyncStatus"
+      },
+      "SyncedConnection": {
+        "properties": {
+          "connection_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Connection Id"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Kind"
+          },
+          "latest_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Latest Version"
+          },
+          "synced_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Synced At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "connection_id",
+          "name",
+          "kind",
+          "latest_version",
+          "synced_at"
+        ],
+        "title": "SyncedConnection",
+        "description": "Подключение глазами каталога: имя и вид из последней версии снимка,\nномер последней версии и когда она снята."
       },
       "TreeKind": {
         "type": "string",
@@ -4668,6 +4100,11 @@
       },
       "Version": {
         "properties": {
+          "process_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Process Id"
+          },
           "number": {
             "type": "integer",
             "minimum": 1.0,
@@ -4698,217 +4135,14 @@
         "additionalProperties": false,
         "type": "object",
         "required": [
+          "process_id",
           "number",
           "operations",
           "author",
           "published_at"
         ],
         "title": "Version",
-        "description": "Опубликованная версия: номер и свёрнутые операции черновика."
-      },
-      "View": {
-        "properties": {
-          "id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Id"
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Name"
-          },
-          "owner_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Owner Id"
-          },
-          "node_ids": {
-            "items": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "type": "array",
-            "title": "Node Ids"
-          },
-          "layer_ids": {
-            "items": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "type": "array",
-            "title": "Layer Ids"
-          },
-          "created_at": {
-            "type": "string",
-            "format": "date-time",
-            "title": "Created At"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "id",
-          "name",
-          "owner_id",
-          "node_ids",
-          "layer_ids",
-          "created_at"
-        ],
-        "title": "View",
-        "description": "Сохранённая диаграмма над каталогом."
-      },
-      "ViewLayout": {
-        "properties": {
-          "view_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "View Id"
-          },
-          "positions": {
-            "items": {
-              "$ref": "#/components/schemas/NodePosition"
-            },
-            "type": "array",
-            "title": "Positions"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "view_id",
-          "positions"
-        ],
-        "title": "ViewLayout",
-        "description": "Сохранённые позиции узлов вида; узлы без позиции раскладывает страница."
-      },
-      "ViewShare": {
-        "properties": {
-          "kind": {
-            "$ref": "#/components/schemas/ShareTargetKind"
-          },
-          "target": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Target"
-          },
-          "mode": {
-            "$ref": "#/components/schemas/ShareMode",
-            "default": "view"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "kind",
-          "target"
-        ],
-        "title": "ViewShare",
-        "description": "Кому открыт просмотр вида: роль по имени или пользователь по id."
-      },
-      "ViewSpec": {
-        "properties": {
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Name"
-          },
-          "node_ids": {
-            "items": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "type": "array",
-            "title": "Node Ids",
-            "default": []
-          },
-          "layer_ids": {
-            "items": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "type": "array",
-            "title": "Layer Ids",
-            "default": []
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "name"
-        ],
-        "title": "ViewSpec",
-        "description": "Имя вида и фильтр наборов и слоёв; пустой фильтр — весь каталог."
-      },
-      "ViewState": {
-        "properties": {
-          "view": {
-            "$ref": "#/components/schemas/View"
-          },
-          "version": {
-            "type": "integer",
-            "minimum": 0.0,
-            "title": "Version"
-          },
-          "snapshot": {
-            "$ref": "#/components/schemas/CatalogSnapshot"
-          },
-          "layout": {
-            "$ref": "#/components/schemas/ViewLayout"
-          },
-          "owned": {
-            "type": "boolean",
-            "title": "Owned"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "view",
-          "version",
-          "snapshot",
-          "layout",
-          "owned"
-        ],
-        "title": "ViewState",
-        "description": "Всё для страницы вида одним ответом: сам вид, номер текущей версии,\nсрез опубликованного каталога по фильтру вида, сохранённая раскладка и\nпризнак, что вид принадлежит субъекту и он вправе его править."
-      },
-      "boba__chainlit__catalog__api__ConnectionBody": {
-        "properties": {
-          "connection_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Connection Id"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "connection_id"
-        ],
-        "title": "ConnectionBody"
-      },
-      "boba__connection_broker__api__ConnectionBody": {
-        "properties": {
-          "name": {
-            "type": "string",
-            "maxLength": 128,
-            "minLength": 1,
-            "title": "Name"
-          },
-          "profile": {
-            "type": "object",
-            "title": "Profile"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "name",
-          "profile"
-        ],
-        "title": "ConnectionBody",
-        "description": "Имя и сырой профиль соединения: модель выбирает реестр типов на границе."
+        "description": "Опубликованная версия процесса: номер и свёрнутые операции черновика."
       }
     }
   }

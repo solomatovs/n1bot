@@ -1,10 +1,10 @@
 import { z } from "zod";
 
-/** Снимок процесса, записи сервиса и снимки источников, как их отдаёт JSON API;
- * разбор на границе делает zod, соответствие OpenAPI проверяет api/contract.ts
- * на компиляции. */
+/** Снимок процесса, записи сервиса и снимки подключений, как их отдаёт JSON
+ * API; разбор на границе делает zod, соответствие OpenAPI проверяет
+ * api/contract.ts на компиляции. */
 
-// --- источники метаданных: адреса объектов ---
+// --- снимки подключений: адреса объектов ---
 
 export const SourceKindSchema = z.string().min(1);
 export const ObjectKindSchema = z.enum([
@@ -19,7 +19,7 @@ export const ObjectKindSchema = z.enum([
 ]);
 
 export const ObjectRefSchema = z.object({
-  source_id: z.string(),
+  connection_id: z.string(),
   kind: ObjectKindSchema,
   path: z.array(z.string()),
 });
@@ -34,67 +34,50 @@ export function renderRef(ref: ObjectRef): string {
 }
 
 export function sameRef(a: ObjectRef, b: ObjectRef): boolean {
-  return a.source_id === b.source_id && a.kind === b.kind && renderRef(a) === renderRef(b);
+  return a.connection_id === b.connection_id && a.kind === b.kind && renderRef(a) === renderRef(b);
 }
 
-// --- процесс: слои, узлы, виды загрузки, потоки ---
+// --- процесс: группы, узлы, потоки ---
 
-export const LayerSchema = z.object({
+export const GroupSchema = z.object({
   id: z.string(),
   name: z.string(),
-  position: z.number(),
-  description: z.string(),
+});
+
+export const PositionSchema = z.object({
+  x: z.number(),
+  y: z.number(),
 });
 
 export const NodeSchema = z.object({
   id: z.string(),
-  layer_id: z.string(),
   ref: ObjectRefSchema,
+  position: PositionSchema.nullable(),
+  group_id: z.string().nullable(),
   alias: z.string().nullable(),
   note: z.string(),
 });
 
-export const LoadFieldTypeSchema = z.enum(["text", "int", "bool", "column", "columns", "routine"]);
-export const ColumnSideSchema = z.enum(["source", "target", "any"]);
-
-export const LoadFieldSchema = z.object({
-  name: z.string(),
-  type: LoadFieldTypeSchema,
-  side: ColumnSideSchema,
-  required: z.boolean(),
-  description: z.string(),
-});
-
-export const LoadKindSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  description: z.string(),
-  fields: z.array(LoadFieldSchema),
-});
-
-export const LoadValueSchema = z.union([z.string(), z.number(), z.boolean(), z.array(z.string()), ObjectRefSchema]);
-
-export const LoadSpecSchema = z.object({
-  kind_id: z.string(),
-  values: z.record(LoadValueSchema),
+export const ColumnLinkSchema = z.object({
+  from_column: z.string(),
+  to_column: z.string(),
 });
 
 export const FlowSchema = z.object({
   id: z.string(),
   from_node_id: z.string(),
   to_node_id: z.string(),
-  load: LoadSpecSchema,
+  columns: z.array(ColumnLinkSchema),
   description: z.string(),
 });
 
 export const SnapshotSchema = z.object({
-  layers: z.record(LayerSchema),
+  groups: z.record(GroupSchema),
   nodes: z.record(NodeSchema),
-  load_kinds: z.record(LoadKindSchema),
   flows: z.record(FlowSchema),
 });
 
-export const EntityKindSchema = z.enum(["layer", "node", "load_kind", "flow"]);
+export const EntityKindSchema = z.enum(["group", "node", "flow"]);
 export const ChangeStatusSchema = z.enum(["added", "removed", "modified", "unchanged"]);
 
 export const EntityRefSchema = z.object({ kind: EntityKindSchema, id: z.string() });
@@ -108,8 +91,20 @@ export const DiffSchema = z.object({ entries: z.array(DiffEntrySchema) });
 
 const PinsSchema = z.record(z.number());
 
+export const ProcessSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string(),
+  owner_id: z.string(),
+  created_at: z.string(),
+  latest_version: z.number(),
+  nodes: z.number(),
+  open_drafts: z.number(),
+});
+
 export const DraftSchema = z.object({
   id: z.string(),
+  process_id: z.string().nullable(),
   name: z.string(),
   base_version: z.number(),
   pins: PinsSchema,
@@ -125,34 +120,6 @@ export const DraftStateSchema = z.object({
   seq: z.number(),
 });
 
-export const ViewSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  owner_id: z.string(),
-  node_ids: z.array(z.string()),
-  layer_ids: z.array(z.string()),
-  created_at: z.string(),
-});
-
-export const NodePositionSchema = z.object({
-  node_id: z.string(),
-  x: z.number(),
-  y: z.number(),
-});
-
-export const ViewLayoutSchema = z.object({
-  view_id: z.string(),
-  positions: z.array(NodePositionSchema),
-});
-
-export const ViewStateSchema = z.object({
-  view: ViewSchema,
-  version: z.number(),
-  snapshot: SnapshotSchema,
-  layout: ViewLayoutSchema,
-  owned: z.boolean(),
-});
-
 export const AccessSchema = z.object({
   user_id: z.string(),
   login: z.string(),
@@ -161,12 +128,15 @@ export const AccessSchema = z.object({
 });
 
 export const ShareSchema = z.object({
-  kind: z.enum(["role", "user"]),
-  target: z.string(),
-  mode: z.literal("view"),
+  token: z.string(),
+  process_id: z.string(),
+  created_by: z.string(),
+  created_at: z.string(),
+  revoked_at: z.string().nullable(),
 });
 
 export const VersionSchema = z.object({
+  process_id: z.string(),
   number: z.number(),
   pins: PinsSchema,
   author: z.object({ user_id: z.string(), via: z.enum(["user", "llm"]) }),
@@ -180,18 +150,11 @@ export const RebaseResultSchema = z.object({
   issues: z.array(RebaseIssueSchema),
 });
 
-export const StaleReasonSchema = z.enum([
-  "object_removed",
-  "object_changed",
-  "column_removed",
-  "column_changed",
-  "routine_removed",
-  "routine_changed",
-]);
+export const StaleReasonSchema = z.enum(["object_removed", "object_changed", "column_removed", "column_changed"]);
 
 export const StaleSchema = z.object({
   target: EntityRefSchema,
-  source_id: z.string(),
+  connection_id: z.string(),
   pinned_version: z.number(),
   since_version: z.number(),
   reason: StaleReasonSchema,
@@ -218,39 +181,40 @@ export const PinBumpSchema = z.object({
   violations: z.array(z.string()),
 });
 
+export const SharedProcessSchema = z.object({
+  process: ProcessSchema,
+  snapshot: SnapshotSchema,
+  context: ProcessContextSchema,
+});
+
 export const CatalogChangedSchema = z.object({
   kind: z.literal("catalog_changed"),
-  draft_id: z.string().nullable(),
-  version: z.number().nullable(),
-  view_id: z.string().nullable(),
-  source_id: z.string().nullable().default(null),
+  process_id: z.string().nullable().default(null),
+  version: z.number().nullable().default(null),
+  draft_id: z.string().nullable().default(null),
+  connection_id: z.string().nullable().default(null),
   sync_id: z.string().nullable().default(null),
   action: z.enum(["created", "updated", "deleted"]),
 });
 
-export type Layer = z.infer<typeof LayerSchema>;
+export type Group = z.infer<typeof GroupSchema>;
+export type Position = z.infer<typeof PositionSchema>;
 export type ProcessNode = z.infer<typeof NodeSchema>;
-export type LoadFieldType = z.infer<typeof LoadFieldTypeSchema>;
-export type ColumnSide = z.infer<typeof ColumnSideSchema>;
-export type LoadField = z.infer<typeof LoadFieldSchema>;
-export type LoadKind = z.infer<typeof LoadKindSchema>;
-export type LoadValue = z.infer<typeof LoadValueSchema>;
+export type ColumnLink = z.infer<typeof ColumnLinkSchema>;
 export type Flow = z.infer<typeof FlowSchema>;
 export type Snapshot = z.infer<typeof SnapshotSchema>;
 export type EntityKind = z.infer<typeof EntityKindSchema>;
 export type EntityRef = z.infer<typeof EntityRefSchema>;
 export type ChangeStatus = z.infer<typeof ChangeStatusSchema>;
 export type Diff = z.infer<typeof DiffSchema>;
+export type Process = z.infer<typeof ProcessSchema>;
+/** Что задаёт пользователь, заводя или правя процесс. */
+export type ProcessSpec = { name: string; description: string };
 export type Draft = z.infer<typeof DraftSchema>;
 export type DraftState = z.infer<typeof DraftStateSchema>;
-export type View = z.infer<typeof ViewSchema>;
-export type NodePosition = z.infer<typeof NodePositionSchema>;
-export type ViewLayout = z.infer<typeof ViewLayoutSchema>;
-export type ViewState = z.infer<typeof ViewStateSchema>;
 export type Access = z.infer<typeof AccessSchema>;
 export type Share = z.infer<typeof ShareSchema>;
-/** Фильтр вида: пустые списки — весь процесс. */
-export type ViewSpec = { name: string; node_ids: string[]; layer_ids: string[] };
+export type SharedProcess = z.infer<typeof SharedProcessSchema>;
 export type Version = z.infer<typeof VersionSchema>;
 export type RebaseIssue = z.infer<typeof RebaseIssueSchema>;
 export type RebaseResult = z.infer<typeof RebaseResultSchema>;
@@ -271,13 +235,6 @@ export type NodeFlows = {
   outgoing: Flow[];
 };
 
-/** Значение поля загрузки, готовое к показу: список колонок через запятую,
- * рутина — адресом. */
-export type LoadValueView = {
-  field: string;
-  text: string;
-};
-
 /** Подпись узла: alias, если задан, иначе последняя ступень адреса. */
 export function nodeLabel(node: ProcessNode): string {
   if (node.alias !== null && node.alias !== "") {
@@ -287,20 +244,16 @@ export function nodeLabel(node: ProcessNode): string {
   return node.ref.path.at(-1) ?? renderRef(node.ref);
 }
 
-/** Текст значения поля вида по его форме; тип поля — только для подписи. */
-export function loadValueText(value: LoadValue): string {
-  if (Array.isArray(value)) {
-    return value.join(", ");
+/** Подпись ребра: сколько колонок переходит; без пар — стрелка. */
+export function flowLabel(flow: Flow): string {
+  if (flow.columns.length === 0) {
+    return "→";
   }
 
-  if (typeof value === "object") {
-    return renderRef(value);
-  }
-
-  return String(value);
+  return `${flow.columns.length} col${flow.columns.length === 1 ? "" : "s"}`;
 }
 
-/** Снимок процесса с индексами и контекстом источников: слои по порядку, узлы
+/** Снимок процесса с индексами и контекстом снимков: слои по порядку, узлы
  * слоя, потоки узла, колонки из привязанной версии, статусы diff и устаревание. */
 export class Catalog {
   private readonly statuses = new Map<string, ChangeStatus>();
@@ -323,8 +276,8 @@ export class Catalog {
     }
   }
 
-  get layers(): Layer[] {
-    return Object.values(this.snapshot.layers).sort((a, b) => a.position - b.position);
+  get groups(): Group[] {
+    return Object.values(this.snapshot.groups).sort((a, b) => a.name.localeCompare(b.name));
   }
 
   get nodes(): ProcessNode[] {
@@ -335,25 +288,21 @@ export class Catalog {
     return Object.values(this.snapshot.flows);
   }
 
-  get loadKinds(): LoadKind[] {
-    return Object.values(this.snapshot.load_kinds);
-  }
-
-  /** Сколько узлов и потоков устарело относительно последних версий источников. */
+  /** Сколько узлов и потоков устарело относительно последних версий снимков. */
   get staleCount(): number {
     return this.stales.size;
   }
 
-  layer(id: string): Layer | undefined {
-    return this.snapshot.layers[id];
+  group(id: string | null): Group | undefined {
+    if (id === null) {
+      return undefined;
+    }
+
+    return this.snapshot.groups[id];
   }
 
   node(id: string): ProcessNode | undefined {
     return this.snapshot.nodes[id];
-  }
-
-  loadKind(id: string): LoadKind | undefined {
-    return this.snapshot.load_kinds[id];
   }
 
   /** Узел по адресу объекта: один объект стоит не больше чем в одном слое. */
@@ -361,25 +310,14 @@ export class Catalog {
     return this.nodes.find((node) => sameRef(node.ref, ref));
   }
 
-  /** Номер слоя по позиции: партиция раскладки. */
-  layerIndex(layerId: string): number {
-    const index = this.layers.findIndex((layer) => layer.id === layerId);
-    return index < 0 ? 0 : index;
+  /** Узлы группы. */
+  nodesOf(groupId: string): ProcessNode[] {
+    return this.nodes.filter((node) => node.group_id === groupId);
   }
 
-  /** Следующая позиция для нового слоя: за последним. */
-  nextLayerPosition(): number {
-    const last = this.layers.at(-1);
-    return last === undefined ? 0 : last.position + 1;
-  }
-
-  nodesOf(layerId: string): ProcessNode[] {
-    return this.nodes.filter((node) => node.layer_id === layerId);
-  }
-
-  /** Узлы-рутины: кандидаты в реализацию загрузки. */
-  routineNodes(): ProcessNode[] {
-    return this.nodes.filter((node) => node.ref.kind === "routine");
+  /** Поток из одной карточки в другую: между парой карточек он один. */
+  flowBetween(from: string, to: string): Flow | undefined {
+    return this.flows.find((flow) => flow.from_node_id === from && flow.to_node_id === to);
   }
 
   columnsOf(nodeId: string): NodeColumn[] {
@@ -437,58 +375,28 @@ export class Catalog {
     const node = this.node(nodeId);
     return node === undefined ? nodeId : nodeLabel(node);
   }
-
-  /** Имя вида загрузки потока; неизвестный вид — его id. */
-  loadKindName(flow: Flow): string {
-    return this.loadKind(flow.load.kind_id)?.name ?? flow.load.kind_id;
-  }
-
-  /** Значения правила загрузки для показа в порядке полей вида. */
-  loadValues(flow: Flow): LoadValueView[] {
-    const kind = this.loadKind(flow.load.kind_id);
-    const order = kind?.fields.map((field) => field.name) ?? [];
-    const names = Object.keys(flow.load.values).sort((a, b) => order.indexOf(a) - order.indexOf(b));
-    const views: LoadValueView[] = [];
-    for (const field of names) {
-      const value = flow.load.values[field];
-      if (value !== undefined) {
-        views.push({ field, text: loadValueText(value) });
-      }
-    }
-
-    return views;
-  }
 }
 
-// --- источники метаданных: записи, дерево, карточки, diff ---
+// --- снимки подключений: записи, дерево, карточки, diff ---
 
-export const SourceSchema = z.object({
-  id: z.string(),
-  kind: SourceKindSchema,
+export const SyncedConnectionSchema = z.object({
+  connection_id: z.string(),
   name: z.string(),
-  description: z.string(),
-  created_by: z.string(),
-  created_at: z.string(),
+  kind: SourceKindSchema,
   latest_version: z.number(),
-  connection_ids: z.array(z.string()),
+  synced_at: z.string(),
 });
 
-export const SourceVersionSchema = z.object({
-  source_id: z.string(),
+export const ConnectionVersionSchema = z.object({
+  connection_id: z.string(),
   version: z.number(),
+  connection_name: z.string(),
+  kind: SourceKindSchema,
   taken_at: z.string(),
   taken_by: z.string(),
-  connection_id: z.string().nullable(),
   sync_id: z.string().nullable(),
   objects_total: z.number(),
   server_version: z.string().nullable(),
-});
-
-export const SourceConnectionSchema = z.object({
-  source_id: z.string(),
-  connection_id: z.string(),
-  bound_by: z.string(),
-  bound_at: z.string(),
 });
 
 export const ConnectionViewSchema = z.object({
@@ -516,8 +424,9 @@ export const SyncScopeSchema = z.object({
 
 export const SyncSchema = z.object({
   id: z.string(),
-  source_id: z.string(),
   connection_id: z.string(),
+  connection_name: z.string(),
+  kind: SourceKindSchema,
   started_by: z.string(),
   started_at: z.string(),
   finished_at: z.string().nullable(),
@@ -775,9 +684,8 @@ export const ObjectChangeSchema = z.object({
 
 export const SourceDiffSchema = z.object({ entries: z.array(ObjectChangeSchema) });
 
-export type Source = z.infer<typeof SourceSchema>;
-export type SourceVersion = z.infer<typeof SourceVersionSchema>;
-export type SourceConnection = z.infer<typeof SourceConnectionSchema>;
+export type SyncedConnection = z.infer<typeof SyncedConnectionSchema>;
+export type ConnectionVersion = z.infer<typeof ConnectionVersionSchema>;
 export type ConnectionView = z.infer<typeof ConnectionViewSchema>;
 export type ProbeResult = z.infer<typeof ProbeResultSchema>;
 /** Имя и сырой профиль подключения по схеме api. */
@@ -795,7 +703,29 @@ export type FieldChange = z.infer<typeof FieldChangeSchema>;
 export type PartChange = z.infer<typeof PartChangeSchema>;
 export type ObjectChange = z.infer<typeof ObjectChangeSchema>;
 export type SourceDiff = z.infer<typeof SourceDiffSchema>;
-/** Что задаёт пользователь, заводя источник. */
-export type SourceSpec = { name: string; description: string };
-/** Новый источник от подключения: вид берётся у подключения. */
-export type SourceCreate = SourceSpec & { connection_id: string };
+
+/** Подключение на странице: строка брокера и что о ней знает каталог. */
+export type ConnectionRow = {
+  view: ConnectionView;
+  /** У вида подключения есть снимок: его можно синхронизировать. */
+  syncable: boolean;
+  synced: SyncedConnection | undefined;
+};
+
+/** Список подключений с пометками каталога; чужие личные подключения с
+ * версиями в брокере не видны, но в каталоге есть: они идут без строки. */
+export function connectionRows(
+  views: ConnectionView[],
+  kinds: string[],
+  synced: SyncedConnection[],
+): { rows: ConnectionRow[]; foreign: SyncedConnection[] } {
+  const byId = new Map(synced.map((item) => [item.connection_id, item]));
+  const rows = views.map((view) => ({
+    view,
+    syncable: kinds.includes(view.kind),
+    synced: byId.get(view.id),
+  }));
+  const seen = new Set(views.map((view) => view.id));
+  const foreign = synced.filter((item) => !seen.has(item.connection_id));
+  return { rows, foreign };
+}

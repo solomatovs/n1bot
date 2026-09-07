@@ -545,27 +545,27 @@ class StudioProfileChanged(Message):
 
 
 class CatalogChanged(Message):
-    """Каталог данных изменился: порция или закрытие черновика draft_id, публикация
-    версии version, правка вида view_id, источник source_id (новая версия,
-    привязка, черновик ручного источника) либо синхронизация sync_id (старт,
-    прогресс, итог). Заполнен ровно один из пяти идентификаторов.
+    """Каталог данных изменился: процесс process_id (создан, переименован,
+    удалён; с version — опубликована версия), черновик draft_id (порция или
+    закрытие), подключение connection_id (новая версия снимка, версии забыты)
+    либо синхронизация sync_id (старт, прогресс, итог). Заполнен ровно один
+    из четырёх идентификаторов; version идёт только с process_id.
     """
 
     kind: Literal[MessageKind.CATALOG_CHANGED] = MessageKind.CATALOG_CHANGED
-    draft_id: UUID | None = None
+    process_id: UUID | None = None
     version: int | None = None
-    view_id: UUID | None = None
-    source_id: UUID | None = None
+    draft_id: UUID | None = None
+    connection_id: UUID | None = None
     sync_id: UUID | None = None
     action: ChangeAction
 
     @model_validator(mode="after")
     def _exactly_one_target(self) -> Self:
         targets = (
+            self.process_id,
             self.draft_id,
-            self.version,
-            self.view_id,
-            self.source_id,
+            self.connection_id,
             self.sync_id,
         )
 
@@ -578,11 +578,17 @@ class CatalogChanged(Message):
 
         if filled != 1:
             msg = (
-                "catalog_changed: exactly one of draft_id, version, view_id,"
-                f" source_id, sync_id expected, got {filled} of them set: "
-                f"draft_id={self.draft_id}, version={self.version}, "
-                f"view_id={self.view_id}, source_id={self.source_id}, "
-                f"sync_id={self.sync_id}"
+                "catalog_changed: exactly one of process_id, draft_id,"
+                f" connection_id, sync_id expected, got {filled} of them set: "
+                f"process_id={self.process_id}, draft_id={self.draft_id}, "
+                f"connection_id={self.connection_id}, sync_id={self.sync_id}"
+            )
+            raise ValueError(msg)
+
+        if self.version is not None and self.process_id is None:
+            msg = (
+                "catalog_changed: version names a published version and goes "
+                f"only with process_id, got version={self.version} without it"
             )
             raise ValueError(msg)
 

@@ -19,7 +19,7 @@ from psycopg import sql
 from pydantic import SecretStr
 
 from boba.catalog import (
-    AddLayer,
+    AddGroup,
     OperationList,
     SourceKinds,
 )
@@ -27,22 +27,22 @@ from boba.catalog.samples import ProcessSample
 from boba.catalog_service import (
     CatalogConfig,
     CatalogService,
-    CatalogStore,
     ConnectionInfo,
-    ShareTargetKind,
-    SourceStore,
+    ConnectionStore,
+    ProcessStore,
     SyncPorts,
 )
 from boba.chainlit.catalog.api import CatalogApi, CatalogUrl
 from boba.chainlit.catalog.subjects import ChainlitSubjects, SignedIn
 from boba.chainlit.catalog.sync_ports import (
-    BoundConnectionGuard,
     BrokerConnectionDirectory,
+    CatalogHoldGuard,
 )
 from boba.chat.profiles import ChatProfiles
 from boba.connection_broker.api import ConnectionsApi, ConnectionUrl
 from boba.connection_broker.service import UserConnectionsService
-from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
+from boba.connection_broker.store import ConnectionsConfig
+from boba.connection_broker.store import ConnectionStore as BrokerStore
 from boba.connection_broker.tickets import CredentialSource
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.profile import GrantTarget, StoredRole
@@ -64,6 +64,7 @@ SCHEMA = "catalog_api_test"
 EDITOR_ID = UUID(int=21)
 VIEWER_ID = UUID(int=22)
 STRANGER_ID = UUID(int=23)
+OTHER_EDITOR_ID = UUID(int=24)
 CONNECTION_ID = UUID(int=77)
 PG_CONNECTION = ConnectionInfo(id=CONNECTION_ID, name="prod-pg", kind="postgres")
 CH_CONNECTION = ConnectionInfo(id=UUID(int=78), name="dwh-ch", kind="clickhouse")
@@ -95,7 +96,7 @@ class Stand:
         self,
         service: CatalogService,
         profiles: ChatProfiles,
-        connections: ConnectionStore | None = None,
+        connections: BrokerStore | None = None,
     ) -> None:
         self.service = service
         self.app = FastAPI()
@@ -111,7 +112,7 @@ class Stand:
         CatalogApi(source, subjects).mount(router)
         if connections is not None:
             store = connections
-            guards = (BoundConnectionGuard(source),)
+            guards = (CatalogHoldGuard(source),)
             ConnectionsApi(
                 UserConnectionsService(lambda: store, guards),
                 subjects.of_request,
@@ -139,20 +140,27 @@ class Stand:
         return CatalogUrl.PREFIX.value + path.value.format(**params)
 
 
-@pytest.fixture
-async def stand(pool: AsyncPostgresPool, app_config: AppConfig) -> Stand:
+async def _stores(
+    pool: AsyncPostgresPool, kinds: SourceKinds
+) -> tuple[ProcessStore, ConnectionStore]:
     async with pool.connection() as conn:
         await conn.execute(
             sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
         )
 
-    store = CatalogStore(_config(), pool)
-    await store.setup()
-    sources = SourceStore(_config(), KINDS, pool)
-    await sources.setup()
+    processes = ProcessStore(_config(), pool)
+    await processes.setup()
+    connections = ConnectionStore(_config(), kinds, pool)
+    await connections.setup()
+    return processes, connections
+
+
+@pytest.fixture
+async def stand(pool: AsyncPostgresPool, app_config: AppConfig) -> Stand:
+    processes, connections = await _stores(pool, KINDS)
     service = CatalogService(
-        store,
-        sources,
+        processes,
+        connections,
         _config(),
         MemoryMessageBus("test:0"),
         StubSyncPorts(STAND_CONNECTIONS),
@@ -171,45 +179,43 @@ async def sync_stand(
     pool: AsyncPostgresPool, app_config: AppConfig, tmp_path: Path
 ) -> Stand:
     """Стенд с фейком снятия: роль wrt и профиль по умолчанию видят инструмент."""
-    async with pool.connection() as conn:
-        await conn.execute(
-            sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
-        )
-
-    store = CatalogStore(_config(), pool)
-    await store.setup()
-    sources = SourceStore(_config(), SourceKinds.of(FakeKindSnapshot, ChSnapshot), pool)
-    await sources.setup()
+    processes, connections = await _stores(
+        pool, SourceKinds.of(FakeKindSnapshot, ChSnapshot)
+    )
     profiles = ChatProfiles(app_config.profiles)
     ports = FakeSyncPorts(
         tmp_path, "wrt", profiles.default_name(), (PG_CONNECTION,), (EDITOR_ID,)
     )
     service = CatalogService(
-        store, sources, _config(), MemoryMessageBus("test:0"), ports
+        processes, connections, _config(), MemoryMessageBus("test:0"), ports
     )
     return Stand(service, profiles)
 
 
 @pytest.fixture
 async def process(stand: Stand) -> ProcessSample:
-    """Источник prod с версией 1 из образца, заведённый через api; процесс
-    ссылается на него."""
+    """Подключение prod-pg с версией 1 из образца, записанной через api;
+    образец процесса ссылается на него."""
     async with stand.client(_user(EDITOR_ID, "wrt")) as client:
-        created = await client.post(
-            stand.url(CatalogUrl.SOURCES),
-            json={"name": "prod", "connection_id": str(PG_CONNECTION.id)},
-        )
-        assert created.status_code == 200
-        source_id = UUID(created.json()["id"])
-
         snapshot = PgSample().snapshot().model_dump(mode="json")
         written = await client.post(
-            stand.url(CatalogUrl.SOURCE_VERSIONS, source_id=source_id),
+            stand.url(CatalogUrl.CONNECTION_VERSIONS, connection_id=CONNECTION_ID),
             json={"snapshot": snapshot},
         )
-        assert written.status_code == 200
+        assert written.status_code == 200, written.text
 
-    return ProcessSample(source_id)
+    return ProcessSample(CONNECTION_ID)
+
+
+@pytest.fixture
+async def process_id(stand: Stand) -> str:
+    async with stand.client(_user(EDITOR_ID, "wrt")) as client:
+        created = await client.post(
+            stand.url(CatalogUrl.PROCESSES), json={"name": "orders"}
+        )
+        assert created.status_code == 200, created.text
+
+    return str(created.json()["id"])
 
 
 def _ops_body(expected_seq: int, ops: OperationList) -> Mapping[str, Any]:
@@ -218,36 +224,93 @@ def _ops_body(expected_seq: int, ops: OperationList) -> Mapping[str, Any]:
 
 async def test_anonymous_gets_401(stand: Stand) -> None:
     async with stand.client(None) as client:
-        response = await client.get(stand.url(CatalogUrl.SNAPSHOT))
+        response = await client.get(stand.url(CatalogUrl.PROCESSES))
 
     assert response.status_code == 401
 
 
 async def test_roles_map_to_403(stand: Stand) -> None:
     async with stand.client(_user(STRANGER_ID)) as client:
-        response = await client.get(stand.url(CatalogUrl.SNAPSHOT))
+        response = await client.get(stand.url(CatalogUrl.PROCESSES))
         assert response.status_code == 403
         assert "no role to read" in response.json()["detail"]
 
     async with stand.client(_user(VIEWER_ID, "read")) as client:
-        snapshot = await client.get(stand.url(CatalogUrl.SNAPSHOT))
-        assert snapshot.status_code == 200
-        assert snapshot.json()["layers"] == {}
+        listed = await client.get(stand.url(CatalogUrl.PROCESSES))
+        assert listed.status_code == 200
+        assert listed.json() == []
 
-        draft = await client.post(stand.url(CatalogUrl.DRAFTS), json={"name": "no"})
-        assert draft.status_code == 403
+        created = await client.post(
+            stand.url(CatalogUrl.PROCESSES), json={"name": "no"}
+        )
+        assert created.status_code == 403
 
 
-async def test_draft_cycle_over_http(stand: Stand, process: ProcessSample) -> None:
+async def test_processes_over_http(stand: Stand) -> None:
+    """Процессы: создание, занятое имя 409, правка, список со счётчиками,
+    удаление владельцем, чужим — 403."""
+    async with stand.client(_user(EDITOR_ID, "wrt")) as client:
+        created = await client.post(
+            stand.url(CatalogUrl.PROCESSES),
+            json={"name": "orders", "description": "sales"},
+        )
+        assert created.status_code == 200, created.text
+        process_id = created.json()["id"]
+        assert created.json()["owner_id"] == str(EDITOR_ID)
+        assert created.json()["latest_version"] == 0
+        assert created.json()["nodes"] == 0
+
+        taken = await client.post(
+            stand.url(CatalogUrl.PROCESSES), json={"name": "orders"}
+        )
+        assert taken.status_code == 409
+        assert "already exists" in taken.json()["detail"]
+
+        renamed = await client.put(
+            stand.url(CatalogUrl.PROCESS, process_id=process_id),
+            json={"name": "orders2", "description": "sales"},
+        )
+        assert renamed.status_code == 200
+        assert renamed.json()["name"] == "orders2"
+
+        fetched = await client.get(stand.url(CatalogUrl.PROCESS, process_id=process_id))
+        assert fetched.json()["name"] == "orders2"
+
+        missing = await client.get(
+            stand.url(CatalogUrl.PROCESS, process_id=UUID(int=404))
+        )
+        assert missing.status_code == 404
+
+    async with stand.client(_user(OTHER_EDITOR_ID, "wrt")) as client:
+        refused = await client.delete(
+            stand.url(CatalogUrl.PROCESS, process_id=process_id)
+        )
+        assert refused.status_code == 403
+        assert "only the owner" in refused.json()["detail"]
+
+    async with stand.client(_user(EDITOR_ID, "wrt")) as client:
+        deleted = await client.delete(
+            stand.url(CatalogUrl.PROCESS, process_id=process_id)
+        )
+        assert deleted.status_code == 200
+        assert deleted.json()["deleted"] is True
+        assert (await client.get(stand.url(CatalogUrl.PROCESSES))).json() == []
+
+
+async def test_draft_cycle_over_http(
+    stand: Stand, process: ProcessSample, process_id: str
+) -> None:
     ops = process.ops()
 
     async with stand.client(_user(EDITOR_ID, "wrt")) as client:
         created = await client.post(
-            stand.url(CatalogUrl.DRAFTS), json={"name": "first"}
+            stand.url(CatalogUrl.DRAFTS),
+            json={"process_id": process_id, "name": "first"},
         )
         assert created.status_code == 200
         draft_id = created.json()["id"]
         assert created.json()["base_version"] == 0
+        assert created.json()["process_id"] == process_id
 
         appended = await client.post(
             stand.url(CatalogUrl.DRAFT_OPS, draft_id=draft_id), json=_ops_body(0, ops)
@@ -257,6 +320,9 @@ async def test_draft_cycle_over_http(stand: Stand, process: ProcessSample) -> No
         assert state["seq"] == 1
         orders = state["snapshot"]["nodes"][str(process.orders.id)]
         assert orders["ref"]["path"] == ["prod", "public", "orders"]
+        assert orders["ref"]["connection_id"] == str(CONNECTION_ID)
+        flow = state["snapshot"]["flows"][str(process.flow_orders.id)]
+        assert flow["columns"][0] == {"from_column": "id", "to_column": "id"}
         assert {entry["status"] for entry in state["diff"]["entries"]} == {"added"}
 
         conflict = await client.post(
@@ -274,43 +340,59 @@ async def test_draft_cycle_over_http(stand: Stand, process: ProcessSample) -> No
 
         malformed = await client.post(
             stand.url(CatalogUrl.DRAFT_OPS, draft_id=draft_id),
-            json={"expected_seq": 1, "operations": [{"op": "rename_layer"}]},
+            json={"expected_seq": 1, "operations": [{"op": "rename_group"}]},
         )
         assert malformed.status_code == 422
 
         listed = await client.get(stand.url(CatalogUrl.DRAFTS))
         assert [d["id"] for d in listed.json()] == [draft_id]
+        processes = await client.get(stand.url(CatalogUrl.PROCESSES))
+        assert processes.json()[0]["open_drafts"] == 1
+
+        renamed = await client.put(
+            stand.url(CatalogUrl.DRAFT, draft_id=draft_id), json={"name": "first!"}
+        )
+        assert renamed.status_code == 200
+        assert renamed.json()["name"] == "first!"
 
         published = await client.post(
             stand.url(CatalogUrl.DRAFT_PUBLISH, draft_id=draft_id)
         )
         assert published.status_code == 200
         assert published.json()["number"] == 1
+        assert published.json()["process_id"] == process_id
 
         closed = await client.post(
             stand.url(CatalogUrl.DRAFT_PUBLISH, draft_id=draft_id)
         )
         assert closed.status_code == 409
 
-        snapshot = await client.get(stand.url(CatalogUrl.SNAPSHOT))
-        assert str(process.raw.id) in snapshot.json()["layers"]
+        snapshot = await client.get(
+            stand.url(CatalogUrl.PROCESS_SNAPSHOT, process_id=process_id)
+        )
+        assert str(process.raw.id) in snapshot.json()["groups"]
 
-        versions = await client.get(stand.url(CatalogUrl.VERSIONS))
+        versions = await client.get(
+            stand.url(CatalogUrl.PROCESS_VERSIONS, process_id=process_id)
+        )
         assert [v["number"] for v in versions.json()] == [1]
-        assert versions.json()[0]["pins"] == {str(process.source_id): 1}
+        assert versions.json()[0]["pins"] == {str(CONNECTION_ID): 1}
 
         missing = await client.get(stand.url(CatalogUrl.DRAFT, draft_id=UUID(int=404)))
         assert missing.status_code == 404
 
 
 async def test_context_staleness_and_pins_over_http(
-    stand: Stand, process: ProcessSample
+    stand: Stand, process: ProcessSample, process_id: str
 ) -> None:
     """Контекст черновика несёт привязки, колонки узлов и пустое устаревание;
     поднятие привязок без новых версий ничего не ломает; после публикации
     контекст и устаревание есть у опубликованного процесса."""
     async with stand.client(_user(EDITOR_ID, "wrt")) as client:
-        created = await client.post(stand.url(CatalogUrl.DRAFTS), json={"name": "ctx"})
+        created = await client.post(
+            stand.url(CatalogUrl.DRAFTS),
+            json={"process_id": process_id, "name": "ctx"},
+        )
         draft_id = created.json()["id"]
         await client.post(
             stand.url(CatalogUrl.DRAFT_OPS, draft_id=draft_id),
@@ -321,7 +403,7 @@ async def test_context_staleness_and_pins_over_http(
             stand.url(CatalogUrl.DRAFT_CONTEXT, draft_id=draft_id)
         )
         assert context.status_code == 200
-        assert context.json()["pins"] == {str(process.source_id): 1}
+        assert context.json()["pins"] == {str(CONNECTION_ID): 1}
         columns = context.json()["columns"][str(process.orders.id)]
         assert [c["name"] for c in columns] == ["id", "amount", "created_at"]
         assert context.json()["stale"]["entries"] == []
@@ -338,76 +420,115 @@ async def test_context_staleness_and_pins_over_http(
 
         await client.post(stand.url(CatalogUrl.DRAFT_PUBLISH, draft_id=draft_id))
 
-        published_context = await client.get(stand.url(CatalogUrl.CONTEXT))
+        published_context = await client.get(
+            stand.url(CatalogUrl.PROCESS_CONTEXT, process_id=process_id)
+        )
         assert published_context.status_code == 200
         assert str(process.orders.id) in published_context.json()["columns"]
-        assert (await client.get(stand.url(CatalogUrl.STALENESS))).json() == {
-            "entries": []
-        }
+        staleness = await client.get(
+            stand.url(CatalogUrl.PROCESS_STALENESS, process_id=process_id)
+        )
+        assert staleness.json() == {"entries": []}
 
 
 async def test_source_kinds_come_from_the_registry(stand: Stand) -> None:
-    """Виды источников — kind типов соединений с установленным снимком;
-    источник неизвестного вида отвергается 422 с перечнем установленных."""
+    """Виды подключений — kind типов соединений с установленным снимком;
+    версия для подключения неизвестного вида отвергается 422 с перечнем
+    установленных, снимок чужого вида — тоже."""
     async with stand.client(_user(EDITOR_ID, "wrt")) as client:
         kinds = await client.get(stand.url(CatalogUrl.SOURCE_KINDS))
         assert kinds.status_code == 200
         assert kinds.json() == ["clickhouse", "postgres"]
 
+        snapshot = PgSample().snapshot().model_dump(mode="json")
         refused = await client.post(
-            stand.url(CatalogUrl.SOURCES),
-            json={"name": "ora", "connection_id": str(ORACLE_CONNECTION.id)},
+            stand.url(
+                CatalogUrl.CONNECTION_VERSIONS, connection_id=ORACLE_CONNECTION.id
+            ),
+            json={"snapshot": snapshot},
         )
         assert refused.status_code == 422
-        assert "source kind 'oracle' has no snapshot installed" in refused.text
+        assert "connection kind 'oracle' has no snapshot installed" in refused.text
 
-        created = await client.post(
-            stand.url(CatalogUrl.SOURCES),
-            json={"name": "p", "connection_id": str(PG_CONNECTION.id)},
-        )
-        assert created.status_code == 200, created.text
-        assert created.json()["kind"] == "postgres"
-        source_id = created.json()["id"]
-
-        taken = await client.post(
-            stand.url(CatalogUrl.SOURCES),
-            json={"name": "p2", "connection_id": str(PG_CONNECTION.id)},
-        )
-        assert taken.status_code == 409
-        assert "already bound" in taken.json()["detail"]
-
-        mismatch = await client.post(
-            stand.url(CatalogUrl.SOURCE_CONNECTIONS, source_id=source_id),
-            json={"connection_id": str(CH_CONNECTION.id)},
-        )
-        assert mismatch.status_code == 409
-        assert "one kind" in mismatch.json()["detail"]
-
-        unseen = await client.post(
-            stand.url(CatalogUrl.SOURCE_CONNECTIONS, source_id=source_id),
-            json={"connection_id": str(uuid4())},
-        )
-        assert unseen.status_code == 422
         rejected = await client.post(
-            stand.url(CatalogUrl.SOURCE_VERSIONS, source_id=source_id),
+            stand.url(CatalogUrl.CONNECTION_VERSIONS, connection_id=CONNECTION_ID),
             json={"snapshot": {"kind": "oracle"}},
         )
         assert rejected.status_code == 422
         assert "source kind 'oracle' has no snapshot class" in rejected.text
 
+        unseen = await client.post(
+            stand.url(CatalogUrl.CONNECTION_VERSIONS, connection_id=uuid4()),
+            json={"snapshot": snapshot},
+        )
+        assert unseen.status_code == 422
+        assert "not visible" in unseen.json()["detail"]
 
-async def test_stale_draft_conflicts_and_rebases(
+        mismatch = await client.post(
+            stand.url(CatalogUrl.CONNECTION_VERSIONS, connection_id=CH_CONNECTION.id),
+            json={"snapshot": snapshot},
+        )
+        assert mismatch.status_code == 409
+        assert "the new snapshot is postgres" in mismatch.json()["detail"]
+
+
+async def test_draft_without_a_process_publishes_a_new_one(
     stand: Stand, process: ProcessSample
 ) -> None:
+    """POST /drafts без process_id — черновик нового процесса: в своих
+    черновиках, чужому не виден, публикация создаёт процесс с его именем."""
     async with stand.client(_user(EDITOR_ID, "wrt")) as client:
+        created = await client.post(
+            stand.url(CatalogUrl.DRAFTS), json={"process_id": None, "name": "refunds"}
+        )
+        assert created.status_code == 200
+        draft = created.json()
+        assert draft["process_id"] is None
+        assert draft["base_version"] == 0
+
+        state = await client.get(stand.url(CatalogUrl.DRAFT, draft_id=draft["id"]))
+        assert state.json()["snapshot"]["nodes"] == {}
+
+        ops = OperationList(root=(AddGroup(group=process.raw),))
+        appended = await client.post(
+            stand.url(CatalogUrl.DRAFT_OPS, draft_id=draft["id"]),
+            json=_ops_body(0, ops),
+        )
+        assert appended.status_code == 200
+
+        published = await client.post(
+            stand.url(CatalogUrl.DRAFT_PUBLISH, draft_id=draft["id"])
+        )
+        assert published.status_code == 200
+        assert published.json()["number"] == 1
+        process_id = published.json()["process_id"]
+
+        got = await client.get(stand.url(CatalogUrl.PROCESS, process_id=process_id))
+        assert got.json()["name"] == "refunds"
+        assert got.json()["latest_version"] == 1
+        assert (await client.get(stand.url(CatalogUrl.DRAFTS))).json() == []
+
+    async with stand.client(_user(OTHER_EDITOR_ID, "wrt")) as other:
+        assert (await other.get(stand.url(CatalogUrl.DRAFTS))).json() == []
+
+
+async def test_stale_draft_conflicts_and_rebases(
+    stand: Stand, process: ProcessSample, process_id: str
+) -> None:
+    async with stand.client(_user(EDITOR_ID, "wrt")) as client:
+        drafts_url = stand.url(CatalogUrl.DRAFTS)
         lagging = (
-            await client.post(stand.url(CatalogUrl.DRAFTS), json={"name": "lag"})
+            await client.post(
+                drafts_url, json={"process_id": process_id, "name": "lag"}
+            )
         ).json()
         racing = (
-            await client.post(stand.url(CatalogUrl.DRAFTS), json={"name": "race"})
+            await client.post(
+                drafts_url, json={"process_id": process_id, "name": "race"}
+            )
         ).json()
 
-        ops = OperationList(root=(AddLayer(layer=process.raw),))
+        ops = OperationList(root=(AddGroup(group=process.raw),))
         await client.post(
             stand.url(CatalogUrl.DRAFT_OPS, draft_id=racing["id"]),
             json=_ops_body(0, ops),
@@ -439,140 +560,72 @@ async def test_stale_draft_conflicts_and_rebases(
         assert discarded.json()["status"] == "discarded"
 
 
-async def test_view_object_card_for_a_shared_stranger(
-    stand: Stand, process: ProcessSample
+async def test_share_link_serves_the_process_to_a_guest(
+    stand: Stand, process: ProcessSample, process_id: str
 ) -> None:
-    """Карточка объекта узла из среза вида отдаётся без прав на каталог; узел
-    вне среза — 404."""
+    """Ссылка на просмотр: владелец выпускает и отзывает, гость без входа
+    читает опубликованный процесс и карточки узлов, после отзыва — 404."""
     async with stand.client(_user(EDITOR_ID, "wrt")) as client:
-        draft = await client.post(stand.url(CatalogUrl.DRAFTS), json={"name": "vo"})
+        draft = await client.post(
+            stand.url(CatalogUrl.DRAFTS),
+            json={"process_id": process_id, "name": "sh"},
+        )
         draft_id = draft.json()["id"]
         await client.post(
             stand.url(CatalogUrl.DRAFT_OPS, draft_id=draft_id),
             json=_ops_body(0, process.ops()),
         )
         await client.post(stand.url(CatalogUrl.DRAFT_PUBLISH, draft_id=draft_id))
-        created = await client.post(
-            stand.url(CatalogUrl.VIEWS),
-            json={
-                "name": "orders",
-                "node_ids": [str(process.orders.id)],
-                "layer_ids": [],
-            },
-        )
-        view_id = created.json()["id"]
-        await client.post(
-            stand.url(CatalogUrl.VIEW_SHARES, view_id=view_id),
-            json={"kind": "user", "target": str(STRANGER_ID)},
-        )
 
-    async with stand.client(_user(STRANGER_ID)) as client:
-        card = await client.get(
-            stand.url(
-                CatalogUrl.VIEW_OBJECT, view_id=view_id, node_id=process.orders.id
-            )
+        shared = await client.post(
+            stand.url(CatalogUrl.PROCESS_SHARES, process_id=process_id)
+        )
+        assert shared.status_code == 200, shared.text
+        token = shared.json()["token"]
+        listed = await client.get(
+            stand.url(CatalogUrl.PROCESS_SHARES, process_id=process_id)
+        )
+        assert [s["token"] for s in listed.json()] == [token]
+
+    async with stand.client(_user(OTHER_EDITOR_ID, "wrt")) as client:
+        refused = await client.post(
+            stand.url(CatalogUrl.PROCESS_SHARES, process_id=process_id)
+        )
+        assert refused.status_code == 403
+
+    async with stand.client(None) as guest:
+        page = await guest.get(stand.url(CatalogUrl.SHARED, token=token))
+        assert page.status_code == 200, page.text
+        assert page.json()["process"]["id"] == process_id
+        assert str(process.orders.id) in page.json()["snapshot"]["nodes"]
+        assert str(process.orders.id) in page.json()["context"]["columns"]
+
+        card = await guest.get(
+            stand.url(CatalogUrl.SHARED_OBJECT, token=token, node_id=process.orders.id)
         )
         assert card.status_code == 200
         assert card.json()["card"] == "pg_relation"
-        outside = await client.get(
-            stand.url(
-                CatalogUrl.VIEW_OBJECT, view_id=view_id, node_id=process.customers.id
-            )
+        assert [c["name"] for c in card.json()["columns"]] == [
+            "id",
+            "amount",
+            "created_at",
+        ]
+
+        outside = await guest.get(
+            stand.url(CatalogUrl.SHARED_OBJECT, token=token, node_id=uuid4())
         )
         assert outside.status_code == 404
 
-
-async def test_views_layout_and_shares_over_http(
-    stand: Stand, process: ProcessSample
-) -> None:
-    ops = process.ops()
+        unknown = await guest.get(stand.url(CatalogUrl.SHARED, token="nope"))
+        assert unknown.status_code == 404
 
     async with stand.client(_user(EDITOR_ID, "wrt")) as client:
-        draft = await client.post(stand.url(CatalogUrl.DRAFTS), json={"name": "base"})
-        draft_id = draft.json()["id"]
-        await client.post(
-            stand.url(CatalogUrl.DRAFT_OPS, draft_id=draft_id), json=_ops_body(0, ops)
-        )
-        published = await client.post(
-            stand.url(CatalogUrl.DRAFT_PUBLISH, draft_id=draft_id)
-        )
-        assert published.status_code == 200
+        revoked = await client.delete(stand.url(CatalogUrl.SHARE, token=token))
+        assert revoked.status_code == 200
+        assert revoked.json()["revoked_at"] is not None
 
-        created = await client.post(
-            stand.url(CatalogUrl.VIEWS),
-            json={
-                "name": "orders",
-                "node_ids": [str(process.orders.id)],
-                "layer_ids": [],
-            },
-        )
-        assert created.status_code == 200
-        view_id = created.json()["id"]
-
-        layout = await client.put(
-            stand.url(CatalogUrl.VIEW_LAYOUT, view_id=view_id),
-            json={"positions": [{"node_id": str(process.orders.id), "x": 1.5, "y": 2}]},
-        )
-        assert layout.status_code == 200
-        assert layout.json()["positions"][0]["x"] == 1.5
-
-        shared = await client.post(
-            stand.url(CatalogUrl.VIEW_SHARES, view_id=view_id),
-            json={"kind": "user", "target": str(STRANGER_ID)},
-        )
-        assert shared.status_code == 204
-
-        shares = await client.get(stand.url(CatalogUrl.VIEW_SHARES, view_id=view_id))
-        assert [s["target"] for s in shares.json()] == [str(STRANGER_ID)]
-
-    async with stand.client(_user(STRANGER_ID)) as client:
-        seen = await client.get(stand.url(CatalogUrl.VIEW, view_id=view_id))
-        assert seen.status_code == 200
-        assert seen.json()["name"] == "orders"
-
-        access = await client.get(stand.url(CatalogUrl.ACCESS))
-        assert access.status_code == 200
-        assert access.json()["can_view"] is False
-        assert access.json()["user_id"] == str(STRANGER_ID)
-
-        state = await client.get(stand.url(CatalogUrl.VIEW_STATE, view_id=view_id))
-        assert state.status_code == 200
-        assert state.json()["owned"] is False
-        assert state.json()["version"] == 1
-        assert list(state.json()["snapshot"]["nodes"]) == [str(process.orders.id)]
-        assert state.json()["layout"]["positions"][0]["x"] == 1.5
-        assert (await client.get(stand.url(CatalogUrl.SNAPSHOT))).status_code == 403
-
-        context = await client.get(stand.url(CatalogUrl.VIEW_CONTEXT, view_id=view_id))
-        assert context.status_code == 200
-        assert list(context.json()["columns"]) == [str(process.orders.id)]
-        assert (await client.get(stand.url(CatalogUrl.CONTEXT))).status_code == 403
-
-        listed = await client.get(stand.url(CatalogUrl.VIEWS))
-        assert [v["id"] for v in listed.json()] == [view_id]
-
-        forbidden = await client.put(
-            stand.url(CatalogUrl.VIEW, view_id=view_id),
-            json={"name": "mine", "node_ids": [], "layer_ids": []},
-        )
-        assert forbidden.status_code == 403
-
-    async with stand.client(_user(EDITOR_ID, "wrt")) as client:
-        unshared = await client.delete(
-            stand.url(
-                CatalogUrl.VIEW_SHARE,
-                view_id=view_id,
-                kind=ShareTargetKind.USER.value,
-                target=str(STRANGER_ID),
-            )
-        )
-        assert unshared.status_code == 200
-        assert unshared.json()["deleted"] is True
-
-        deleted = await client.delete(stand.url(CatalogUrl.VIEW, view_id=view_id))
-        assert deleted.json()["deleted"] is True
-
-        gone = await client.get(stand.url(CatalogUrl.VIEW, view_id=view_id))
+    async with stand.client(None) as guest:
+        gone = await guest.get(stand.url(CatalogUrl.SHARED, token=token))
         assert gone.status_code == 404
 
 
@@ -592,76 +645,59 @@ async def test_disabled_service_gives_503(app_config: AppConfig) -> None:
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://stand"
     ) as client:
-        response = await client.get(Stand.url(CatalogUrl.SNAPSHOT))
+        response = await client.get(Stand.url(CatalogUrl.PROCESSES))
 
     assert response.status_code == 503
 
 
-async def test_sources_over_http(stand: Stand) -> None:
-    """Источник, две версии из образца, дерево с пометками, карточка, diff;
-    читателю всё видно, править нельзя."""
+async def test_connection_snapshots_over_http(stand: Stand) -> None:
+    """Две версии снимка подключения из образца, список синхронизированных,
+    дерево с пометками, карточка, diff, забытые версии; читателю всё видно,
+    писать нельзя."""
     sample = PgSample()
     async with stand.client(_user(EDITOR_ID, "wrt")) as client:
-        created = await client.post(
-            stand.url(CatalogUrl.SOURCES),
-            json={
-                "name": "prod",
-                "description": "Prod",
-                "connection_id": str(PG_CONNECTION.id),
-            },
-        )
-        assert created.status_code == 200
-        source_id = created.json()["id"]
-        assert created.json()["latest_version"] == 0
+        empty = await client.get(stand.url(CatalogUrl.SYNCED))
+        assert empty.json() == []
 
         for snapshot in (sample.snapshot(), sample.next_version()):
             written = await client.post(
-                stand.url(CatalogUrl.SOURCE_VERSIONS, source_id=source_id),
+                stand.url(CatalogUrl.CONNECTION_VERSIONS, connection_id=CONNECTION_ID),
                 json={"snapshot": snapshot.model_dump(mode="json")},
             )
-            assert written.status_code == 200
+            assert written.status_code == 200, written.text
+            assert written.json()["connection_name"] == "prod-pg"
 
         versions = await client.get(
-            stand.url(CatalogUrl.SOURCE_VERSIONS, source_id=source_id)
+            stand.url(CatalogUrl.CONNECTION_VERSIONS, connection_id=CONNECTION_ID)
         )
         assert [v["version"] for v in versions.json()] == [1, 2]
 
-        listed = await client.get(
-            stand.url(CatalogUrl.SOURCE_CONNECTIONS, source_id=source_id)
-        )
-        assert [c["connection_id"] for c in listed.json()] == [str(PG_CONNECTION.id)]
-        unbound = await client.delete(
-            stand.url(
-                CatalogUrl.SOURCE_CONNECTION,
-                source_id=source_id,
-                connection_id=PG_CONNECTION.id,
-            )
-        )
-        assert unbound.status_code == 200
-        rebound = await client.post(
-            stand.url(CatalogUrl.SOURCE_CONNECTIONS, source_id=source_id),
-            json={"connection_id": str(PG_CONNECTION.id)},
-        )
-        assert rebound.status_code == 200
+        synced = await client.get(stand.url(CatalogUrl.SYNCED))
+        assert [(s["name"], s["kind"], s["latest_version"]) for s in synced.json()] == [
+            ("prod-pg", "postgres", 2)
+        ]
 
     async with stand.client(_user(VIEWER_ID, "read")) as client:
-        roots = await client.get(stand.url(CatalogUrl.SOURCE_TREE, source_id=source_id))
+        roots = await client.get(
+            stand.url(CatalogUrl.CONNECTION_TREE, connection_id=CONNECTION_ID)
+        )
         assert roots.status_code == 200
         assert [node["label"] for node in roots.json()] == ["prod"]
         assert roots.json()[0]["status"] == "modified"
 
         tables = await client.get(
-            stand.url(CatalogUrl.SOURCE_TREE, source_id=source_id),
+            stand.url(CatalogUrl.CONNECTION_TREE, connection_id=CONNECTION_ID),
             params=[("path", "prod"), ("path", "public"), ("path", "tables")],
         )
         by_label = {node["label"]: node for node in tables.json()}
         assert by_label["orders"]["status"] == "modified"
         assert by_label["returns"]["status"] == "added"
         assert by_label["orders"]["ref"]["path"] == ["prod", "public", "orders"]
+        assert by_label["orders"]["ref"]["connection_id"] == str(CONNECTION_ID)
 
         orders = [("path", "prod"), ("path", "public"), ("path", "orders")]
         card = await client.get(
-            stand.url(CatalogUrl.SOURCE_OBJECT, source_id=source_id),
+            stand.url(CatalogUrl.CONNECTION_OBJECT, connection_id=CONNECTION_ID),
             params=[("kind", "relation"), *orders],
         )
         assert card.status_code == 200
@@ -671,13 +707,13 @@ async def test_sources_over_http(stand: Stand) -> None:
         assert card.json()["partitions"][0]["name"] == "orders_2026"
 
         old_card = await client.get(
-            stand.url(CatalogUrl.SOURCE_OBJECT, source_id=source_id),
+            stand.url(CatalogUrl.CONNECTION_OBJECT, connection_id=CONNECTION_ID),
             params=[("kind", "relation"), *orders, ("version", "1")],
         )
         assert len(old_card.json()["columns"]) == 3
 
         missing = await client.get(
-            stand.url(CatalogUrl.SOURCE_OBJECT, source_id=source_id),
+            stand.url(CatalogUrl.CONNECTION_OBJECT, connection_id=CONNECTION_ID),
             params=[
                 ("kind", "relation"),
                 ("path", "prod"),
@@ -687,8 +723,14 @@ async def test_sources_over_http(stand: Stand) -> None:
         )
         assert missing.status_code == 404
 
+        never = await client.get(
+            stand.url(CatalogUrl.CONNECTION_TREE, connection_id=CH_CONNECTION.id)
+        )
+        assert never.status_code == 404
+        assert "no snapshot versions" in never.json()["detail"]
+
         diff = await client.get(
-            stand.url(CatalogUrl.SOURCE_DIFF, source_id=source_id),
+            stand.url(CatalogUrl.CONNECTION_DIFF, connection_id=CONNECTION_ID),
             params={"old": 1, "new": 2},
         )
         statuses = {
@@ -696,11 +738,38 @@ async def test_sources_over_http(stand: Stand) -> None:
         }
         assert statuses[("prod", "public", "customers")] == "removed"
 
-        refused = await client.post(
-            stand.url(CatalogUrl.SOURCES),
-            json={"name": "x", "connection_id": str(CH_CONNECTION.id)},
+        refused = await client.delete(
+            stand.url(CatalogUrl.CONNECTION_VERSIONS, connection_id=CONNECTION_ID)
         )
         assert refused.status_code == 403
+
+    async with stand.client(_user(EDITOR_ID, "wrt")) as client:
+        forgotten = await client.delete(
+            stand.url(CatalogUrl.CONNECTION_VERSIONS, connection_id=CONNECTION_ID)
+        )
+        assert forgotten.status_code == 200
+        assert forgotten.json()["versions"] == 2
+        assert (await client.get(stand.url(CatalogUrl.SYNCED))).json() == []
+
+
+async def test_versions_of_a_used_connection_cannot_be_forgotten(
+    stand: Stand, process: ProcessSample, process_id: str
+) -> None:
+    async with stand.client(_user(EDITOR_ID, "wrt")) as client:
+        draft = await client.post(
+            stand.url(CatalogUrl.DRAFTS),
+            json={"process_id": process_id, "name": "wip"},
+        )
+        await client.post(
+            stand.url(CatalogUrl.DRAFT_OPS, draft_id=draft.json()["id"]),
+            json=_ops_body(0, process.ops()),
+        )
+
+        held = await client.delete(
+            stand.url(CatalogUrl.CONNECTION_VERSIONS, connection_id=CONNECTION_ID)
+        )
+        assert held.status_code == 409
+        assert "4 node(s) of draft 'wip' of process 'orders'" in held.json()["detail"]
 
 
 async def test_sync_over_http(sync_stand: Stand) -> None:
@@ -708,30 +777,21 @@ async def test_sync_over_http(sync_stand: Stand) -> None:
     отмена закрытой синхронизации даёт 409, чужое подключение — 422."""
     stand = sync_stand
     async with stand.client(_user(EDITOR_ID, "wrt")) as client:
-        created = await client.post(
-            stand.url(CatalogUrl.SOURCES),
-            json={"name": "prod", "connection_id": str(CONNECTION_ID)},
+        unseen = await client.post(
+            stand.url(CatalogUrl.CONNECTION_SYNCS, connection_id=uuid4()),
+            json={},
         )
-        assert created.status_code == 200, created.text
-        source_id = created.json()["id"]
-
-        unbound = await client.post(
-            stand.url(CatalogUrl.SOURCE_SYNCS, source_id=source_id),
-            json={"connection_id": str(uuid4())},
-        )
-        assert unbound.status_code == 422
-        assert "not bound" in unbound.json()["detail"]
+        assert unseen.status_code == 422
+        assert "not visible" in unseen.json()["detail"]
 
         started = await client.post(
-            stand.url(CatalogUrl.SOURCE_SYNCS, source_id=source_id),
-            json={
-                "connection_id": str(CONNECTION_ID),
-                "scope": {"schemas": [], "batch_size": 3, "pause_ms": 0},
-            },
+            stand.url(CatalogUrl.CONNECTION_SYNCS, connection_id=CONNECTION_ID),
+            json={"schemas": [], "batch_size": 3, "pause_ms": 0},
         )
         assert started.status_code == 200, started.text
         sync_id = started.json()["id"]
         assert started.json()["status"] == "running"
+        assert started.json()["connection_name"] == "prod-pg"
 
         finished = await stand.service.syncs.wait(UUID(sync_id))
         assert finished.status.value == "done", finished.error
@@ -742,12 +802,12 @@ async def test_sync_over_http(sync_stand: Stand) -> None:
         assert fetched.json()["objects_done"] == fetched.json()["objects_total"]
 
         listed = await client.get(
-            stand.url(CatalogUrl.SOURCE_SYNCS, source_id=source_id)
+            stand.url(CatalogUrl.CONNECTION_SYNCS, connection_id=CONNECTION_ID)
         )
         assert [item["id"] for item in listed.json()] == [sync_id]
 
         versions = await client.get(
-            stand.url(CatalogUrl.SOURCE_VERSIONS, source_id=source_id)
+            stand.url(CatalogUrl.CONNECTION_VERSIONS, connection_id=CONNECTION_ID)
         )
         assert [v["version"] for v in versions.json()] == [1]
         assert versions.json()[0]["sync_id"] == sync_id
@@ -760,21 +820,21 @@ async def test_sync_over_http(sync_stand: Stand) -> None:
 
     async with stand.client(_user(STRANGER_ID, "wrt")) as client:
         refused = await client.post(
-            stand.url(CatalogUrl.SOURCE_SYNCS, source_id=source_id),
-            json={"connection_id": str(CONNECTION_ID)},
+            stand.url(CatalogUrl.CONNECTION_SYNCS, connection_id=CONNECTION_ID),
+            json={},
         )
         assert refused.status_code == 422
         assert "not visible" in refused.json()["detail"]
 
     async with stand.client(_user(VIEWER_ID, "read")) as client:
         forbidden = await client.post(
-            stand.url(CatalogUrl.SOURCE_SYNCS, source_id=source_id),
-            json={"connection_id": str(CONNECTION_ID)},
+            stand.url(CatalogUrl.CONNECTION_SYNCS, connection_id=CONNECTION_ID),
+            json={},
         )
         assert forbidden.status_code == 403
 
         visible = await client.get(
-            stand.url(CatalogUrl.SOURCE_SYNCS, source_id=source_id)
+            stand.url(CatalogUrl.CONNECTION_SYNCS, connection_id=CONNECTION_ID)
         )
         assert visible.status_code == 200
 
@@ -788,7 +848,7 @@ def _key() -> SecretStr:
 
 
 @pytest.fixture
-async def connections(pool: AsyncPostgresPool) -> ConnectionStore:
+async def connections(pool: AsyncPostgresPool) -> BrokerStore:
     async with pool.connection() as conn:
         await conn.execute(
             sql.SQL("drop schema if exists {} cascade").format(
@@ -799,7 +859,7 @@ async def connections(pool: AsyncPostgresPool) -> ConnectionStore:
     cfg = ConnectionsConfig(
         enable=True, db_schema=CONNECTIONS_SCHEMA, encryption_key=_key()
     )
-    built = ConnectionStore(cfg, ConnectionTypes.discover(), pool)
+    built = BrokerStore(cfg, ConnectionTypes.discover(), pool)
     await built.setup()
     await built.sync_roles([CONNECTION_ROLE])
     return built
@@ -807,23 +867,15 @@ async def connections(pool: AsyncPostgresPool) -> ConnectionStore:
 
 @pytest.fixture
 async def connections_stand(
-    pool: AsyncPostgresPool, app_config: AppConfig, connections: ConnectionStore
+    pool: AsyncPostgresPool, app_config: AppConfig, connections: BrokerStore
 ) -> Stand:
     """Стенд каталога с общим API соединений под тем же префиксом."""
-    async with pool.connection() as conn:
-        await conn.execute(
-            sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
-        )
-
-    store = CatalogStore(_config(), pool)
-    await store.setup()
-    sources = SourceStore(_config(), KINDS, pool)
-    await sources.setup()
+    processes, snapshots = await _stores(pool, KINDS)
     # каталог видит подключения тем же брокером, что и общий API
     directory = BrokerConnectionDirectory(UserConnectionsService(lambda: connections))
     ports = SyncPorts(NoSyncTools(), directory)
     service = CatalogService(
-        store, sources, _config(), MemoryMessageBus("test:0"), ports
+        processes, snapshots, _config(), MemoryMessageBus("test:0"), ports
     )
     return Stand(service, ChatProfiles(app_config.profiles), connections)
 
@@ -836,7 +888,7 @@ def _web_body(name: str, url: str) -> dict[str, object]:
 
 
 async def test_connections_are_served_under_the_catalog_prefix(
-    connections_stand: Stand, connections: ConnectionStore
+    connections_stand: Stand, connections: BrokerStore
 ) -> None:
     """Общий API соединений под /api/catalog: схема профилей, общие по роли
     строки видны с маскированными секретами, свои создаются, правятся и
@@ -905,11 +957,11 @@ async def test_connections_are_served_under_the_catalog_prefix(
         assert gone.status_code in (404, 405)
 
 
-async def test_bound_connection_cannot_be_deleted(
+async def test_held_connection_cannot_be_deleted(
     connections_stand: Stand, app_config: AppConfig
 ) -> None:
-    """Подключение, из которого заведён источник, удалить нельзя (409), пока
-    его не отвязали; после отвязки — можно."""
+    """Подключение с версиями снимка удалить нельзя (409) с понятной причиной;
+    после «forget versions» — можно. Имя подключения из версии, а не id."""
     stand = connections_stand
     async with stand.client(_user(EDITOR_ID, "wrt")) as client:
         profile = app_config.data_layer.postgres.model_dump(mode="json")
@@ -921,29 +973,25 @@ async def test_bound_connection_cannot_be_deleted(
         connection_id = created.json()["id"]
         assert created.json()["kind"] == "postgres"
 
-        source = await client.post(
-            stand.url(CatalogUrl.SOURCES),
-            json={"name": "prod", "connection_id": connection_id},
+        written = await client.post(
+            stand.url(CatalogUrl.CONNECTION_VERSIONS, connection_id=connection_id),
+            json={"snapshot": PgSample().snapshot().model_dump(mode="json")},
         )
-        assert source.status_code == 200, source.text
-        assert source.json()["kind"] == "postgres"
-        source_id = source.json()["id"]
+        assert written.status_code == 200, written.text
+        assert written.json()["connection_name"] == "mine-pg"
 
         held = await client.delete(
             CatalogUrl.PREFIX.value
             + ConnectionUrl.CONNECTION.value.format(connection_id=connection_id)
         )
         assert held.status_code == 409
-        assert "bound to catalog source 'prod'" in held.json()["detail"]
+        assert "'mine-pg'" in held.json()["detail"]
+        assert "has 1 catalog version(s); forget them first" in held.json()["detail"]
 
-        unbound = await client.delete(
-            stand.url(
-                CatalogUrl.SOURCE_CONNECTION,
-                source_id=source_id,
-                connection_id=connection_id,
-            )
+        forgotten = await client.delete(
+            stand.url(CatalogUrl.CONNECTION_VERSIONS, connection_id=connection_id)
         )
-        assert unbound.status_code == 200
+        assert forgotten.status_code == 200
 
         deleted = await client.delete(
             CatalogUrl.PREFIX.value

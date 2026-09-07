@@ -1,111 +1,97 @@
 import {
   Background,
   ReactFlow,
+  applyEdgeChanges,
   applyNodeChanges,
   useNodesInitialized,
   useReactFlow,
+  type Edge,
+  type EdgeChange,
   type EdgeTypes,
   type Node,
   type NodeChange,
   type NodeTypes,
 } from "@xyflow/react";
-import { useCallback, useEffect, useMemo, useState, type DragEvent, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactElement } from "react";
 
 import "@xyflow/react/dist/style.css";
 
-import type { Catalog, NodePosition, ObjectRef } from "../../model/catalog";
+import type { Catalog, Position } from "../../model/catalog";
+import type { EditActions, LinkRemoval, NodeMove } from "../../model/editing";
 import {
+  NODE_HANDLE,
   buildGraph,
-  laneNodes,
-  layerOfLane,
+  centerOf,
+  freePosition,
+  groupAt,
+  groupFrames,
   measuredOf,
+  unplaced,
   type FlowEdge as FlowEdgeType,
+  type FrameActions,
   type GraphOptions,
-  type LayerNode,
   type ProcessFlowNode,
 } from "../../model/graph";
 import { highlight } from "../../model/highlight";
 import { computeLayout } from "../../model/layout";
 import { OBJECT_DRAG_TYPE, ObjectParam } from "../../model/refParam";
 import { ArrowMarkers, FlowEdge } from "./FlowEdge";
-import { LayerLane } from "./LayerLane";
+import { GroupFrame } from "./GroupFrame";
 import { ProcessNode } from "./ProcessNode";
 import "./canvas.css";
 
-const NODE_TYPES: NodeTypes = { process: ProcessNode, layer: LayerLane };
+const NODE_TYPES: NodeTypes = { process: ProcessNode, group: GroupFrame };
+/** Радиус, в котором линия притягивается к ближайшей ручке: целиться в
+ * шестипиксельную точку не нужно. */
+const CONNECTION_RADIUS = 48;
+/** Зазор между карточками, которые холст ставит столбиком сам. */
+const FREE_ROW_GAP = 40;
 const EDGE_TYPES: EdgeTypes = { flow: FlowEdge };
 
 type Props = {
   catalog: Catalog;
   options: GraphOptions;
-  saved: NodePosition[];
   activeId: string | undefined;
   onActivate: (nodeId: string | undefined) => void;
-  /** Счётчик «прибрать»: каждое изменение заново раскладывает узлы ELK. */
+  /** Счётчик «прибрать»: каждое изменение заново раскладывает все узлы ELK;
+   * на открытом черновике новые позиции уходят в процесс, на опубликованном
+   * «прибрать» меняет только вид и черновика не заводит. */
   tidyCount: number;
-  /** Правки черновика: соединение handle'ов заводит поток, клик по ребру открывает его. */
-  onConnect: ((from: string, to: string) => void) | undefined;
-  onFlowClick: ((flowId: string) => void) | undefined;
-  /** Правки черновика: объект из дерева, брошенный на дорожку слоя, становится
-   * узлом этого слоя; мимо дорожек — слой спросит страница. */
-  onDrop: ((ref: ObjectRef, layerId: string | undefined) => void) | undefined;
-  /** Владелец вида: узлы перетаскиваются, после перетаскивания или «прибрать»
-   * наверх уходят позиции всех разложенных узлов для сохранения раскладки. */
-  onMoved: ((positions: NodePosition[]) => void) | undefined;
+  persistTidy: boolean;
+  /** Правки черновика: карточки двигаются и тащатся в рамки, объекты из
+   * дерева падают на холст, линия от колонки к колонке добавляет пару,
+   * выбранная линия снимается Delete или крестиком, двойной клик по линии
+   * открывает форму потока. Без правок холст только читается. */
+  editing: EditActions | undefined;
+  onFlowOpen: ((flowId: string) => void) | undefined;
+  /** Выбранные карточки: из них страница собирает группу. */
+  onSelectionChange: (nodeIds: string[]) => void;
 };
 
-function positionsOf(nodes: ProcessFlowNode[]): NodePosition[] {
-  const positions: NodePosition[] = [];
-  for (const node of nodes) {
-    if (node.hidden === true) {
-      continue;
-    }
-
-    positions.push({ node_id: node.id, x: node.position.x, y: node.position.y });
-  }
-
-  return positions;
-}
-
 /** Ключ раскладки: что меняет размеры или состав узлов, то и перекладывает граф. */
-function layoutKey(catalog: Catalog, options: GraphOptions, tidyCount: number): string {
+function layoutKey(catalog: Catalog, options: GraphOptions): string {
   return [
-    catalog.nodes.length,
+    catalog.nodes.map((node) => `${node.id}@${node.position?.x ?? "?"},${node.position?.y ?? "?"}`).join(";"),
     catalog.flows.length,
-    catalog.layers.length,
+    catalog.groups.length,
     options.showMode,
-    [...options.nodeIds].sort().join(","),
-    [...options.layerIds].sort().join(","),
     [...options.hidden].sort().join(","),
-    tidyCount,
   ].join("|");
 }
 
-/** Подпись замеров видимых узлов: меняется, когда React Flow отдал новый размер. */
-function sizesOf(nodes: ProcessFlowNode[]): string {
-  return nodes
-    .filter((node) => !node.hidden)
-    .map((node) => {
-      const size = measuredOf(node);
-      return size === undefined ? `${node.id}:?` : `${node.id}:${size.width}x${size.height}`;
-    })
-    .join(",");
-}
-
-/** Холст диаграммы в два прохода, как в liam: узлы рендерятся невидимыми и
- * React Flow их замеряет, затем ELK раскладывает по реальным размерам и холст
- * показывается. Дорожки слоёв и подсветка считаются от разложенных узлов. */
+/** Холст процесса. Карточки стоят по позициям процесса; узлы без позиции
+ * раскладывает ELK по замерам React Flow и холст запоминает их места до
+ * первого сдвига. Рамки групп и подсветка считаются от разложенных узлов. */
 export function Canvas({
   catalog,
   options,
-  saved,
   activeId,
   onActivate,
   tidyCount,
-  onConnect,
-  onFlowClick,
-  onDrop,
-  onMoved,
+  persistTidy,
+  editing,
+  onFlowOpen,
+  onSelectionChange,
 }: Props): ReactElement {
   const { fitView, screenToFlowPosition } = useReactFlow();
   const initialized = useNodesInitialized();
@@ -114,42 +100,109 @@ export function Canvas({
   const [edges, setEdges] = useState<FlowEdgeType[]>([]);
   const [laid, setLaid] = useState<string | null>(null);
   const [layouts, setLayouts] = useState(0);
-  const key = layoutKey(catalog, options, tidyCount);
-  // размеры узлов входят в подпись: React Flow может замерить карточку позже,
-  // чем отдал прежний размер, и тогда граф перекладывается по новому замеру
-  const signature = `${key}#${sizesOf(nodes)}`;
+  const autoPositions = useRef(new Map<string, Position>());
+  const tidied = useRef(tidyCount);
+  const key = layoutKey(catalog, options);
+  const signature = `${key}#${tidyCount}`;
+  // объект правок страница собирает на каждый рендер: граф зависит от факта
+  // правок, а не от объекта, иначе перестройка теряла бы выделение
+  const removable = editing !== undefined;
 
-  // проход 1: новый состав или режим — узлы в нуле, ждём замера
+  // проход 1: новый состав, позиции или режим — узлы по позициям; замеры
+  // прежних карточек переносятся, чтобы рёбра не пропадали до нового замера
   useEffect(() => {
-    const built = buildGraph(catalog, options);
-    setNodes(built.nodes);
+    const built = buildGraph(catalog, options, autoPositions.current, removable);
+    setNodes((current) => {
+      const measured = new Map(current.map((node) => [node.id, node.measured]));
+      return built.nodes.map((node) => {
+        const size = measured.get(node.id);
+        return size === undefined ? node : { ...node, measured: size };
+      });
+    });
     setEdges(built.edges);
     setLaid(null);
-  }, [catalog, options, key]);
+  }, [catalog, options, key, removable]);
 
-  // проход 2: все видимые узлы замерены — раскладка по их размерам
+  // проход 2: узлы замерены — раскладка тех, у кого нет места, или всех по «tidy»;
+  // пустой холст замерять нечего, он готов сразу (useNodesInitialized без узлов — false)
   useEffect(() => {
-    if (!initialized || laid === signature) {
+    if (laid === signature) {
       return;
     }
 
-    let cancelled = false;
-    const positions = tidyCount > 0 ? [] : saved;
-    void computeLayout({
-      nodes,
-      edges,
-      partitionOf: (node) => catalog.layerIndex(node.data.node.layer_id),
-      saved: positions,
-    }).then((positioned) => {
-      if (cancelled) {
-        return;
+    // узлы ещё не построены после смены процесса — ждём; построены, но не
+    // замерены — тоже; пустой процесс замерять нечего
+    if (nodes.length !== catalog.nodes.length) {
+      return;
+    }
+
+    if (!initialized && nodes.length > 0) {
+      return;
+    }
+
+    const tidy = tidied.current !== tidyCount;
+    const pending = unplaced(nodes, autoPositions.current);
+    if (!tidy && pending.length === 0) {
+      // все узлы на местах: холст готов без ELK; счётчик готовностей растёт,
+      // первая готовность вписывает граф в окно
+      setLaid(signature);
+      setLayouts((count) => count + 1);
+      if (layouts === 0) {
+        window.setTimeout(() => {
+          void fitView({ padding: 0.15, maxZoom: 1 });
+        }, 0);
+      }
+      return;
+    }
+
+    // узлы без места рядом со стоящими: столбиком справа от крайней карточки,
+    // чтобы не лечь поверх; ELK только по «tidy» или когда места нет ни у кого
+    const placedAny = nodes.some((node) => !node.hidden && !pending.includes(node));
+    if (!tidy && placedAny) {
+      const moves: NodeMove[] = [];
+      const positioned = nodes.map((node) => node);
+      let anchor = freePosition(nodes.filter((node) => !pending.includes(node)));
+      for (const node of pending) {
+        const at = positioned.findIndex((item) => item.id === node.id);
+        const position = { x: anchor.x, y: anchor.y };
+        autoPositions.current.set(node.id, position);
+        moves.push({ node: node.data.node, position, groupId: node.data.node.group_id });
+        positioned[at] = { ...node, position };
+        const size = measuredOf(node) ?? { width: 0, height: 0 };
+        anchor = { x: anchor.x, y: anchor.y + size.height + FREE_ROW_GAP };
       }
 
       setNodes(positioned);
       setLaid(signature);
       setLayouts((count) => count + 1);
-      if (tidyCount > 0 && onMoved !== undefined) {
-        onMoved(positionsOf(positioned));
+      return;
+    }
+
+    let cancelled = false;
+    void computeLayout({ nodes, edges }).then((placed) => {
+      if (cancelled) {
+        return;
+      }
+
+      tidied.current = tidyCount;
+      const chosen = tidy ? nodes.filter((node) => !node.hidden) : pending;
+      const moves: NodeMove[] = [];
+      const positioned = nodes.map((node) => {
+        const position = placed.get(node.id);
+        if (position === undefined || !chosen.some((item) => item.id === node.id)) {
+          return node;
+        }
+
+        autoPositions.current.set(node.id, position);
+        moves.push({ node: node.data.node, position, groupId: node.data.node.group_id });
+        return { ...node, position };
+      });
+
+      setNodes(positioned);
+      setLaid(signature);
+      setLayouts((count) => count + 1);
+      if (tidy && persistTidy && editing !== undefined) {
+        editing.moveNodes(moves);
       }
       window.setTimeout(() => {
         void fitView({ padding: 0.15, maxZoom: 1 });
@@ -159,22 +212,55 @@ export function Canvas({
     return () => {
       cancelled = true;
     };
-  }, [initialized, laid, signature, nodes, edges, saved, tidyCount, catalog, fitView, onMoved]);
+  }, [initialized, laid, signature, nodes, edges, catalog, tidyCount, persistTidy, editing, fitView, layouts]);
 
   const onNodesChange = useCallback((changes: NodeChange<ProcessFlowNode>[]) => {
     setNodes((current) => applyNodeChanges(changes, current));
   }, []);
 
+  // выбор линий живёт в состоянии рёбер; снятие линий уходит в черновик
+  const onEdgesChange = useCallback((changes: EdgeChange<FlowEdgeType>[]) => {
+    setEdges((current) => applyEdgeChanges(changes, current));
+  }, []);
+
+  const edgesDeleted = (deleted: Edge[]): void => {
+    if (editing === undefined) {
+      return;
+    }
+
+    const removed: LinkRemoval[] = [];
+    for (const item of deleted) {
+      const known = edges.find((edge) => edge.id === item.id);
+      if (known?.data === undefined) {
+        continue;
+      }
+
+      removed.push({ flowId: known.data.flow.id, pair: known.data.pair });
+    }
+
+    if (removed.length > 0) {
+      editing.removeLinks(removed);
+    }
+  };
+
   const ready = laid === signature;
+
+  const frameActions = useMemo<FrameActions | undefined>(() => {
+    if (editing === undefined) {
+      return undefined;
+    }
+
+    return { onRename: editing.renameGroup, onRemove: editing.removeGroup };
+  }, [editing]);
 
   const flow = useMemo(() => {
     const lit = highlight(nodes, edges, { activeId, hoverId });
-    const lanes = ready ? laneNodes(catalog, lit.nodes, options.showDiff, onDrop !== undefined) : [];
-    return { lanes, nodes: [...lanes, ...lit.nodes] as Node[], edges: lit.edges };
-  }, [nodes, edges, activeId, hoverId, catalog, options.showDiff, ready, onDrop]);
+    const frames = ready ? groupFrames(catalog, lit.nodes, options.showDiff, frameActions) : [];
+    return { frames, nodes: [...frames, ...lit.nodes] as Node[], edges: lit.edges };
+  }, [nodes, edges, activeId, hoverId, catalog, options.showDiff, ready, frameActions]);
 
   const dropObject = (event: DragEvent<HTMLDivElement>): void => {
-    if (onDrop === undefined) {
+    if (editing === undefined) {
       return;
     }
 
@@ -185,15 +271,42 @@ export function Canvas({
 
     event.preventDefault();
     const point = screenToFlowPosition({ x: event.clientX, y: event.clientY });
-    onDrop(ref, laneAt(flow.lanes, point.x, point.y));
+    editing.addNode(ref, point, groupAt(flow.frames, point.x, point.y));
+  };
+
+  const dragStop = (dragged: Node[]): void => {
+    if (editing === undefined) {
+      return;
+    }
+
+    const draggedIds = new Set(dragged.map((node) => node.id));
+    const moves: NodeMove[] = [];
+    for (const item of dragged) {
+      const current = nodes.find((node) => node.id === item.id);
+      if (current === undefined) {
+        continue;
+      }
+
+      const moved = { ...current, position: item.position };
+      const others = nodes.filter((node) => !draggedIds.has(node.id));
+      const frames = groupFrames(catalog, others, false, undefined);
+      const center = centerOf(moved);
+      autoPositions.current.delete(item.id);
+      moves.push({ node: current.data.node, position: item.position, groupId: groupAt(frames, center.x, center.y) });
+    }
+
+    if (moves.length > 0) {
+      editing.moveNodes(moves);
+    }
   };
 
   return (
     <div className="canvas" data-testid="canvas" data-ready={ready} data-layouts={layouts}>
+      {/* data-layouts — сколько раз холст становился готовым: тесты ждут следующую готовность */}
       <ArrowMarkers />
       <ReactFlow
         onDragOver={(event) => {
-          if (onDrop !== undefined && event.dataTransfer.types.includes(OBJECT_DRAG_TYPE)) {
+          if (editing !== undefined && event.dataTransfer.types.includes(OBJECT_DRAG_TYPE)) {
             event.preventDefault();
             event.dataTransfer.dropEffect = "copy";
           }
@@ -202,23 +315,42 @@ export function Canvas({
         nodes={flow.nodes}
         edges={flow.edges}
         onNodesChange={onNodesChange as (changes: NodeChange[]) => void}
+        onEdgesChange={onEdgesChange}
+        onEdgesDelete={edgesDeleted}
         nodeTypes={NODE_TYPES}
         edgeTypes={EDGE_TYPES}
-        nodesConnectable={onConnect !== undefined}
-        nodesDraggable={onMoved !== undefined}
-        onNodeDragStop={(_event, moved) => {
-          const current = nodes.map((node) => (node.id === moved.id ? { ...node, position: moved.position } : node));
-          onMoved?.(positionsOf(current));
-        }}
+        nodesConnectable={editing !== undefined}
+        connectionRadius={CONNECTION_RADIUS}
+        nodesDraggable={editing !== undefined}
         elementsSelectable
+        edgesFocusable={editing !== undefined}
+        deleteKeyCode={editing === undefined ? null : ["Backspace", "Delete"]}
+        selectionKeyCode="Shift"
+        multiSelectionKeyCode={["Meta", "Control"]}
         minZoom={0.1}
-        onConnect={(connection) => {
-          if (onConnect !== undefined && connection.source !== connection.target) {
-            onConnect(connection.source, connection.target);
-          }
+        onNodeDragStop={(_event, _node, dragged) => {
+          dragStop(dragged);
         }}
-        onEdgeClick={(_event, edge) => {
-          onFlowClick?.(edge.id);
+        onSelectionChange={({ nodes: chosen }) => {
+          onSelectionChange(chosen.filter((node) => node.type === "process").map((node) => node.id));
+        }}
+        onConnect={(connection) => {
+          if (editing === undefined || connection.source === connection.target) {
+            return;
+          }
+
+          editing.connect({
+            from: connection.source,
+            to: connection.target,
+            fromColumn: columnOfHandle(connection.sourceHandle),
+            toColumn: columnOfHandle(connection.targetHandle),
+          });
+        }}
+        onEdgeDoubleClick={(_event, edge) => {
+          const known = edges.find((item) => item.id === edge.id);
+          if (known?.data !== undefined) {
+            onFlowOpen?.(known.data.flow.id);
+          }
         }}
         onNodeClick={(_event, node) => {
           if (node.type === "process") {
@@ -244,17 +376,11 @@ export function Canvas({
   );
 }
 
-/** Слой дорожки, в которую попала точка холста; мимо дорожек — undefined. */
-function laneAt(lanes: LayerNode[], x: number, y: number): string | undefined {
-  for (const lane of lanes) {
-    const width = lane.width ?? 0;
-    const height = lane.height ?? 0;
-    const inside =
-      x >= lane.position.x && x <= lane.position.x + width && y >= lane.position.y && y <= lane.position.y + height;
-    if (inside) {
-      return layerOfLane(lane.id);
-    }
+/** Колонка по ручке: ручка карточки целиком колонки не называет. */
+function columnOfHandle(handle: string | null | undefined): string | undefined {
+  if (handle === null || handle === undefined || handle === NODE_HANDLE) {
+    return undefined;
   }
 
-  return undefined;
+  return handle;
 }

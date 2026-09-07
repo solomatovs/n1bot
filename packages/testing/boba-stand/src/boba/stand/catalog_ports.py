@@ -142,6 +142,16 @@ class KnownConnectionDirectory(ConnectionDirectory):
         msg = f"connection {connection_id} is not visible to {subject.login!r}"
         raise SyncSetupError(msg)
 
+    async def named(self, subject: Subject, name: str) -> ConnectionInfo:
+        for connection in self._connections.values():
+            if connection.name != name:
+                continue
+
+            return await self.info_of(subject, connection.id)
+
+        msg = f"connection {name!r} is not visible to {subject.login!r}"
+        raise SyncSetupError(msg)
+
 
 class FakeSyncPorts(SyncPorts):
     """Порты стенда синхронизации: фейк снятия и таблица подключений."""

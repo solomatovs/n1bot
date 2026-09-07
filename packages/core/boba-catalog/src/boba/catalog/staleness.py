@@ -1,8 +1,8 @@
-"""Устаревание процесса относительно новых версий источников: узел
+"""Устаревание процесса относительно новых версий снимков подключений: узел
 указывает на удалённый или изменённый объект, поток именует колонку, которой
-больше нет или у которой сменился тип, рутина реализации пропала.
+больше нет или у которой сменился тип.
 
-Считается по diff между привязанной версией источника и последней; ничего
+Считается по diff между привязанной версией подключения и последней; ничего
 не чинит, только называет причину для человека и LLM.
 """
 
@@ -13,7 +13,14 @@ from enum import StrEnum
 from uuid import UUID
 
 from boba.catalog.base import CatalogModel, ChangeStatus
-from boba.catalog.model import CatalogSnapshot, EntityKind, EntityRef, Flow, Node
+from boba.catalog.model import (
+    CatalogSnapshot,
+    EntityKind,
+    EntityRef,
+    Flow,
+    FlowEnd,
+    Node,
+)
 from boba.catalog.source_diff import ObjectChange, PartKind, SourceDiff, SourceSnapshot
 from boba.catalog.sources import ObjectRef
 
@@ -27,12 +34,10 @@ class StaleReason(StrEnum):
     OBJECT_CHANGED = "object_changed"
     COLUMN_REMOVED = "column_removed"
     COLUMN_CHANGED = "column_changed"
-    ROUTINE_REMOVED = "routine_removed"
-    ROUTINE_CHANGED = "routine_changed"
 
 
 class PinnedSnapshot(CatalogModel):
-    """Версия источника со снимком: привязанная или последняя."""
+    """Версия снимка подключения: привязанная или последняя."""
 
     version: int
     snapshot: SourceSnapshot
@@ -40,17 +45,17 @@ class PinnedSnapshot(CatalogModel):
 
 class Stale(CatalogModel):
     target: EntityRef
-    source_id: UUID
+    connection_id: UUID
     pinned_version: int
     since_version: int
     reason: StaleReason
     detail: Mapping[str, str] = {}
 
 
-class SourceGap(CatalogModel):
-    """Разрыв между привязанной и последней версией одного источника."""
+class ConnectionGap(CatalogModel):
+    """Разрыв между привязанной и последней версией одного подключения."""
 
-    source_id: UUID
+    connection_id: UUID
     pinned_version: int
     since_version: int
 
@@ -59,7 +64,7 @@ class SourceGap(CatalogModel):
     ) -> Stale:
         return Stale(
             target=target,
-            source_id=self.source_id,
+            connection_id=self.connection_id,
             pinned_version=self.pinned_version,
             since_version=self.since_version,
             reason=reason,
@@ -80,21 +85,21 @@ class Staleness(CatalogModel):
         latest: Mapping[UUID, PinnedSnapshot],
     ) -> Staleness:
         entries: list[Stale] = []
-        for source_id, current in latest.items():
-            base = pinned.get(source_id)
+        for connection_id, current in latest.items():
+            base = pinned.get(connection_id)
             if base is None:
                 continue
 
             if base.version == current.version:
                 continue
 
-            gap = SourceGap(
-                source_id=source_id,
+            gap = ConnectionGap(
+                connection_id=connection_id,
                 pinned_version=base.version,
                 since_version=current.version,
             )
-            diff = SourceDiff.between(source_id, base.snapshot, current.snapshot)
-            entries.extend(cls._of_source(process, gap, diff))
+            diff = SourceDiff.between(connection_id, base.snapshot, current.snapshot)
+            entries.extend(cls._of_connection(process, gap, diff))
 
         return cls(entries=tuple(entries))
 
@@ -106,12 +111,12 @@ class Staleness(CatalogModel):
             yield entry
 
     @classmethod
-    def _of_source(
-        cls, process: CatalogSnapshot, gap: SourceGap, diff: SourceDiff
+    def _of_connection(
+        cls, process: CatalogSnapshot, gap: ConnectionGap, diff: SourceDiff
     ) -> Iterator[Stale]:
         changes = cls._by_ref(diff)
         for node in process.nodes.values():
-            if node.ref.source_id != gap.source_id:
+            if node.ref.connection_id != gap.connection_id:
                 continue
 
             change = changes.get(cls._key(node.ref))
@@ -137,7 +142,7 @@ class Staleness(CatalogModel):
 
     @staticmethod
     def _node_stale(
-        node: Node, change: ObjectChange, gap: SourceGap
+        node: Node, change: ObjectChange, gap: ConnectionGap
     ) -> Iterator[Stale]:
         target = EntityRef(kind=EntityKind.NODE, id=node.id)
         if change.status is ChangeStatus.REMOVED:
@@ -162,44 +167,34 @@ class Staleness(CatalogModel):
         process: CatalogSnapshot,
         flow: Flow,
         changes: Mapping[ChangeKey, ObjectChange],
-        gap: SourceGap,
+        gap: ConnectionGap,
     ) -> Iterator[Stale]:
-        kind = process.load_kinds.get(flow.load.kind_id)
-        if kind is None:
-            return
-
         target = EntityRef(kind=EntityKind.FLOW, id=flow.id)
-        for field, column in kind.column_refs(flow.load):
-            for node_id in (flow.from_node_id, flow.to_node_id):
-                node = process.nodes.get(node_id)
-                if node is None:
-                    continue
-
-                if node.ref.source_id != gap.source_id:
-                    continue
-
-                change = changes.get(cls._key(node.ref))
-                if change is None:
-                    continue
-
-                yield from cls._column_stale(target, change, gap, field.name, column)
-
-        for field, ref in kind.routine_refs(flow.load):
-            if ref.source_id != gap.source_id:
+        for end in FlowEnd:
+            node = process.nodes.get(flow.node_at(end))
+            if node is None:
                 continue
 
-            change = changes.get(cls._key(ref))
+            if node.ref.connection_id != gap.connection_id:
+                continue
+
+            change = changes.get(cls._key(node.ref))
             if change is None:
                 continue
 
-            yield from cls._routine_stale(target, change, gap, field.name, ref)
+            for column in flow.columns_at(end):
+                yield from cls._column_stale(target, change, gap, end, column)
 
     @staticmethod
     def _column_stale(
-        target: EntityRef, change: ObjectChange, gap: SourceGap, field: str, column: str
+        target: EntityRef,
+        change: ObjectChange,
+        gap: ConnectionGap,
+        end: FlowEnd,
+        column: str,
     ) -> Iterator[Stale]:
         if change.status is ChangeStatus.REMOVED:
-            detail = {"field": field, "column": column, "object": "removed"}
+            detail = {"side": end.value, "column": column, "object": "removed"}
             yield gap.stale(target, StaleReason.COLUMN_REMOVED, detail)
             return
 
@@ -211,37 +206,15 @@ class Staleness(CatalogModel):
                 continue
 
             if part.status is ChangeStatus.REMOVED:
-                detail = {"field": field, "column": column}
+                detail = {"side": end.value, "column": column}
                 yield gap.stale(target, StaleReason.COLUMN_REMOVED, detail)
                 continue
 
             if part.status is not ChangeStatus.MODIFIED:
                 continue
 
-            changed: dict[str, str] = {"field": field, "column": column}
+            changed: dict[str, str] = {"side": end.value, "column": column}
             for item in part.fields:
                 changed[item.field] = f"{item.was} -> {item.now}"
 
             yield gap.stale(target, StaleReason.COLUMN_CHANGED, changed)
-
-    @staticmethod
-    def _routine_stale(
-        target: EntityRef,
-        change: ObjectChange,
-        gap: SourceGap,
-        field: str,
-        ref: ObjectRef,
-    ) -> Iterator[Stale]:
-        if change.status is ChangeStatus.REMOVED:
-            detail = {"field": field, "routine": ref.render()}
-            yield gap.stale(target, StaleReason.ROUTINE_REMOVED, detail)
-            return
-
-        if change.status is not ChangeStatus.MODIFIED:
-            return
-
-        changed: dict[str, str] = {"field": field, "routine": ref.render()}
-        for item in change.fields:
-            changed[item.field] = f"{item.was} -> {item.now}"
-
-        yield gap.stale(target, StaleReason.ROUTINE_CHANGED, changed)

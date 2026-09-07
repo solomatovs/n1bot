@@ -22,8 +22,8 @@ from boba.catalog import SourceKinds
 from boba.catalog_service import (
     CatalogConfig,
     CatalogService,
-    CatalogStore,
-    SourceStore,
+    ConnectionStore,
+    ProcessStore,
     SyncPorts,
 )
 from boba.chainlit.agent.flow import (
@@ -117,44 +117,44 @@ def catalog_config(
     return app_config.catalog
 
 
-async def catalog_store(
+async def catalog_processes(
     cfg: Annotated[CatalogConfig, Depends(catalog_config)],
-) -> CatalogStore | None:
-    """Хранилище каталога с таблицами на старте; None — секция [catalog] выключена."""
+) -> ProcessStore | None:
+    """Хранилище процессов с таблицами на старте; None — секция [catalog] выключена."""
     if not cfg.enable:
         return None
 
-    store = CatalogStore(cfg)
-    await store.setup()
+    processes = ProcessStore(cfg)
+    await processes.setup()
 
-    return store
+    return processes
 
 
-async def catalog_sources(
+async def catalog_connections(
     cfg: Annotated[CatalogConfig, Depends(catalog_config)],
-) -> SourceStore | None:
-    """Хранилище источников метаданных в той же схеме; None — секция выключена."""
+) -> ConnectionStore | None:
+    """Хранилище снимков подключений в той же схеме; None — секция выключена."""
     if not cfg.enable:
         return None
 
-    # снимки видов источников приносят пакеты-владельцы драйверов
-    sources = SourceStore(cfg, SourceKinds.discover())
-    await sources.setup()
+    # снимки видов подключений приносят пакеты-владельцы драйверов
+    connections = ConnectionStore(cfg, SourceKinds.discover())
+    await connections.setup()
 
-    return sources
+    return connections
 
 
 def catalog_service(
-    store: Annotated[CatalogStore | None, Depends(catalog_store)],
-    sources: Annotated[SourceStore | None, Depends(catalog_sources)],
+    processes: Annotated[ProcessStore | None, Depends(catalog_processes)],
+    connections: Annotated[ConnectionStore | None, Depends(catalog_connections)],
     cfg: Annotated[CatalogConfig, Depends(catalog_config)],
     bus: Annotated[MessageBus, Depends(runtime.message_bus)],
 ) -> CatalogService | None:
     """Сервис каталога над хранилищами и шиной процесса."""
-    if store is None:
+    if processes is None:
         return None
 
-    if sources is None:
+    if connections is None:
         return None
 
     tools = RegistrySyncTools(runtime.tool_registry_ref)
@@ -163,7 +163,7 @@ def catalog_service(
     )
     ports = SyncPorts(tools, names)
 
-    return CatalogService(store, sources, cfg, bus, ports)
+    return CatalogService(processes, connections, cfg, bus, ports)
 
 
 def chainlit_url_prefix() -> str:

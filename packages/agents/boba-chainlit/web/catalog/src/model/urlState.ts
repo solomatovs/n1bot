@@ -2,8 +2,8 @@ import type { ObjectRef } from "./catalog";
 import { isShowMode, type ShowMode } from "./graph";
 import { ObjectParam } from "./refParam";
 
-/** Вкладка левой панели: узлы процесса по слоям или деревья источников. */
-export type PaneTab = "process" | "sources";
+/** Вкладка левой панели: процесс (черновики и узлы по слоям) или деревья снимков подключений. */
+export type PaneTab = "process" | "connections";
 
 /** Состояние страницы в адресе: активный узел, выбранный объект источника,
  * режим карточек, скрытые узлы, показ diff, вкладка панели. Ссылку можно
@@ -37,7 +37,7 @@ export function readUrlState(params: URLSearchParams): UrlState {
     showMode: isShowMode(mode) ? mode : "KEY_ONLY",
     hidden,
     showDiff: params.get(KEY.showDiff) !== "0",
-    pane: params.get(KEY.pane) === "sources" ? "sources" : "process",
+    pane: params.get(KEY.pane) === "connections" ? "connections" : "process",
   };
 }
 

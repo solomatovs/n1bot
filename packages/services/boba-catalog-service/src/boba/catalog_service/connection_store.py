@@ -1,25 +1,24 @@
-"""Хранилище источников метаданных в Postgres: источники, привязки
-подключений, версии со снимками в родной структуре (по таблице на род
-записи, полная копия на версию), записи синхронизаций со staging-таблицей
-порций на время синхронизации.
+"""Хранилище снимков подключений в Postgres: версии снимков в родной
+структуре (по таблице на род записи, полная копия на версию) и записи
+синхронизаций со staging-таблицей порций на время синхронизации. Строки
+самих подключений живут у брокера; здесь подключение — только id, а имя и
+вид копируются в версию и синхронизацию на момент снятия.
 
 Таблицы снимков выводятся из объявления частей снимка каждого вида
 (SourceSnapshot.parts): спецификация SnapshotTable строится по модели записи
 и даёт DDL, вставку строк версии и чтение версии обратно в модели домена;
-про конкретные виды источников хранилище ничего не знает. Запись версии —
-одна транзакция: номер версии, шапка, все строки.
+про конкретные виды хранилище ничего не знает. Запись версии — одна
+транзакция: номер версии, шапка, все строки.
 
 Ошибки:
 CatalogStoreError — Postgres недоступен, ответ битый, строки не складываются
     в снимок.
-SourceNotFoundError — источника с таким id нет.
-SourceVersionNotFoundError — у источника нет такой версии.
+ConnectionNotSyncedError — у подключения нет версий снимка.
+ConnectionVersionNotFoundError — у подключения нет такой версии.
+SnapshotKindMismatchError — снимок другого вида, чем прежние версии.
 SyncNotFoundError — синхронизации с таким id нет.
-SyncRunningError — у источника уже идёт синхронизация.
+SyncRunningError — у подключения уже идёт синхронизация.
 SyncClosedError — синхронизация уже завершена.
-SyncConnectionNotBoundError — подключение синхронизации не привязано к источнику.
-SourceKindMismatchError — подключение другого вида, чем источник.
-ConnectionAlreadyBoundError — подключение уже стоит в другом источнике.
 """
 
 from __future__ import annotations
@@ -30,7 +29,7 @@ from contextlib import asynccontextmanager
 from enum import StrEnum
 from types import NoneType, UnionType
 from typing import Any, ClassVar, LiteralString, TypeVar, Union, get_args, get_origin
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import psycopg
 from psycopg import sql
@@ -50,18 +49,14 @@ from boba.catalog import (
 from boba.catalog_service.config import CatalogConfig
 from boba.catalog_service.records import (
     CatalogStoreError,
-    ConnectionAlreadyBoundError,
-    Source,
-    SourceConnection,
-    SourceKindMismatchError,
-    SourceNotFoundError,
-    SourceSpec,
-    SourceVersion,
-    SourceVersionNotFoundError,
+    ConnectionNotSyncedError,
+    ConnectionVersion,
+    ConnectionVersionNotFoundError,
+    SnapshotKindMismatchError,
     StagedBatch,
     Sync,
     SyncClosedError,
-    SyncConnectionNotBoundError,
+    SyncedConnection,
     SyncNotFoundError,
     SyncRequest,
     SyncRunningError,
@@ -72,19 +67,17 @@ from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresTable, Sq
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["SourceStore", "SourceTable", "StagingTable"]
+__all__ = ["ConnectionStore", "ConnectionTable", "StagingTable"]
 
 Cursor = psycopg.AsyncCursor[DictRow]
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
-class SourceTable(StrEnum):
-    """Таблицы источников в схеме каталога."""
+class ConnectionTable(StrEnum):
+    """Таблицы снимков подключений в схеме каталога."""
 
-    SOURCES = "sources"
-    SOURCE_CONNECTIONS = "source_connections"
-    SOURCE_VERSIONS = "source_versions"
-    SYNCS = "syncs"
+    VERSIONS = "connection_versions"
+    SYNCS = "connection_syncs"
 
 
 class SqlType(StrEnum):
@@ -221,8 +214,8 @@ class SnapshotTable:
 
 
 class SnapshotTables:
-    """Таблицы снимков всех видов источников реестра: по части на таблицу,
-    в порядке объявления частей (от родителей к детям)."""
+    """Таблицы снимков всех видов реестра: по части на таблицу, в порядке
+    объявления частей (от родителей к детям)."""
 
     def __init__(self, kinds: SourceKinds) -> None:
         self._kinds = kinds
@@ -241,28 +234,13 @@ class SnapshotTables:
                 yield SnapshotTable.of(snapshot.TABLE_PREFIX, part)
 
 
-class SourcesColumn(StrEnum):
-    ID = "id"
-    KIND = "kind"
-    NAME = "name"
-    DESCRIPTION = "description"
-    CREATED_BY = "created_by"
-    CREATED_AT = "created_at"
-
-
-class SourceConnectionsColumn(StrEnum):
-    SOURCE_ID = "source_id"
+class VersionsColumn(StrEnum):
     CONNECTION_ID = "connection_id"
-    BOUND_BY = "bound_by"
-    BOUND_AT = "bound_at"
-
-
-class SourceVersionsColumn(StrEnum):
-    SOURCE_ID = "source_id"
     VERSION = "version"
+    CONNECTION_NAME = "connection_name"
+    KIND = "kind"
     TAKEN_AT = "taken_at"
     TAKEN_BY = "taken_by"
-    CONNECTION_ID = "connection_id"
     SYNC_ID = "sync_id"
     OBJECTS_TOTAL = "objects_total"
     SERVER_VERSION = "server_version"
@@ -270,8 +248,9 @@ class SourceVersionsColumn(StrEnum):
 
 class SyncsColumn(StrEnum):
     ID = "id"
-    SOURCE_ID = "source_id"
     CONNECTION_ID = "connection_id"
+    CONNECTION_NAME = "connection_name"
+    KIND = "kind"
     STARTED_BY = "started_by"
     STARTED_AT = "started_at"
     FINISHED_AT = "finished_at"
@@ -286,7 +265,7 @@ class SyncsColumn(StrEnum):
 class SnapshotKey(StrEnum):
     """Служебные колонки каждой таблицы снимка."""
 
-    SOURCE_ID = "source_id"
+    CONNECTION_ID = "connection_id"
     VERSION = "version"
 
 
@@ -314,9 +293,12 @@ class StagingTable:
         return table.startswith(cls.PREFIX)
 
 
-class SourceStore(PostgresTable):
-    """Хранилище источников: живёт под CatalogService рядом с CatalogStore в
-    той же схеме; прав не знает."""
+class ConnectionStore(PostgresTable):
+    """Хранилище снимков подключений: живёт под CatalogService рядом с
+    ProcessStore в той же схеме; прав не знает. Подключение блокируется на
+    время записи версии и старта синхронизации advisory-замком по его id."""
+
+    LOCK_PREFIX: ClassVar[str] = "catalog.connection"
 
     def __init__(
         self,
@@ -339,15 +321,13 @@ class SourceStore(PostgresTable):
 
     def _sql(self, text: LiteralString) -> sql.Composed:
         """SQL с именами таблиц по значению enum и колонок с префиксом:
-        s_ sources, sc_ source_connections, sv_ source_versions, sy_ syncs."""
+        cv_ connection_versions, sy_ connection_syncs."""
         names: dict[str, sql.Composable] = {}
-        for table in SourceTable:
+        for table in ConnectionTable:
             names[table.value] = self._table(table)
 
         prefixed: dict[str, type[StrEnum]] = {
-            "s": SourcesColumn,
-            "sc": SourceConnectionsColumn,
-            "sv": SourceVersionsColumn,
+            "cv": VersionsColumn,
             "sy": SyncsColumn,
         }
         for prefix, columns in prefixed.items():
@@ -361,7 +341,9 @@ class SourceStore(PostgresTable):
         try:
             yield
         except (psycopg.Error, PostgresError) as exc:
-            msg = f"catalog sources: {action} in schema {self._schema} failed: {exc}"
+            msg = (
+                f"catalog connections: {action} in schema {self._schema} failed: {exc}"
+            )
             raise CatalogStoreError(msg) from exc
 
     @asynccontextmanager
@@ -376,84 +358,67 @@ class SourceStore(PostgresTable):
             yield cur
 
     async def setup(self) -> None:
-        """Схема и таблицы; повтор безвреден."""
+        """Схема и таблицы; повтор безвреден. Таблица другого выпуска, которую
+        DDL оставил как есть, — отказ с расхождением колонок."""
         async with self._guarded("setup"):
             await self._apply_ddl(self._ddl())
+            await self._check_layouts(self._layouts())
 
-        logger.info("catalog sources ready: %s", self._cfg.db_schema)
+        logger.info("catalog connections ready: %s", self._cfg.db_schema)
+
+    def _layouts(self) -> dict[str, list[str]]:
+        layouts: dict[str, list[str]] = {
+            ConnectionTable.SYNCS.value: list(SyncsColumn),
+            ConnectionTable.VERSIONS.value: list(VersionsColumn),
+        }
+        for spec in self._tables.all():
+            names: list[str] = list(SnapshotKey)
+            for column in spec.columns:
+                names.append(column.column)
+
+            layouts[spec.table] = names
+
+        return layouts
 
     def _ddl(self) -> tuple[sql.Composed, ...]:
         statements: list[sql.Composed] = [
             self._sql(
                 """
-                create table if not exists {sources} (
-                    {s_id}          uuid primary key,
-                    {s_kind}        text not null,
-                    {s_name}        text not null unique,
-                    {s_description} text not null default '',
-                    {s_created_by}  uuid not null,
-                    {s_created_at}  timestamptz not null default now()
+                create table if not exists {connection_syncs} (
+                    {sy_id}              uuid primary key,
+                    {sy_connection_id}   uuid not null,
+                    {sy_connection_name} text not null,
+                    {sy_kind}            text not null,
+                    {sy_started_by}      uuid not null,
+                    {sy_started_at}      timestamptz not null default now(),
+                    {sy_finished_at}     timestamptz null,
+                    {sy_status}          text not null,
+                    {sy_scope}           jsonb not null default '{{}}'::jsonb,
+                    {sy_objects_total}   integer null,
+                    {sy_objects_done}    integer not null default 0,
+                    {sy_error}           text null,
+                    {sy_version}         integer null
                 )
                 """
             ),
             self._sql(
                 """
-                create table if not exists {source_connections} (
-                    {sc_source_id}     uuid not null references {sources} ({s_id})
-                                       on delete cascade,
-                    {sc_connection_id} uuid not null,
-                    {sc_bound_by}      uuid not null,
-                    {sc_bound_at}      timestamptz not null default now(),
-                    primary key ({sc_source_id}, {sc_connection_id})
-                )
-                """
-            ),
-            self._sql(
-                """
-                create table if not exists {syncs} (
-                    {sy_id}            uuid primary key,
-                    {sy_source_id}     uuid not null references {sources} ({s_id})
-                                       on delete cascade,
-                    {sy_connection_id} uuid not null,
-                    {sy_started_by}    uuid not null,
-                    {sy_started_at}    timestamptz not null default now(),
-                    {sy_finished_at}   timestamptz null,
-                    {sy_status}        text not null,
-                    {sy_scope}         jsonb not null default '{{}}'::jsonb,
-                    {sy_objects_total} integer null,
-                    {sy_objects_done}  integer not null default 0,
-                    {sy_error}         text null,
-                    {sy_version}       integer null
-                )
-                """
-            ),
-            self._sql(
-                """
-                create table if not exists {source_versions} (
-                    {sv_source_id}      uuid not null references {sources} ({s_id})
-                                        on delete cascade,
-                    {sv_version}        integer not null,
-                    {sv_taken_at}       timestamptz not null default now(),
-                    {sv_taken_by}       uuid not null,
-                    {sv_connection_id}  uuid null,
-                    {sv_sync_id}        uuid null references {syncs} ({sy_id}),
-                    {sv_objects_total}  integer not null default 0,
-                    {sv_server_version} text null,
-                    primary key ({sv_source_id}, {sv_version})
+                create table if not exists {connection_versions} (
+                    {cv_connection_id}   uuid not null,
+                    {cv_version}         integer not null,
+                    {cv_connection_name} text not null,
+                    {cv_kind}            text not null,
+                    {cv_taken_at}        timestamptz not null default now(),
+                    {cv_taken_by}        uuid not null,
+                    {cv_sync_id}         uuid null
+                                         references {connection_syncs} ({sy_id}),
+                    {cv_objects_total}   integer not null default 0,
+                    {cv_server_version}  text null,
+                    primary key ({cv_connection_id}, {cv_version})
                 )
                 """
             ),
         ]
-        # одно подключение — не больше чем в одном источнике; дубли из старых
-        # развёртываний ломают создание индекса, и ошибка называет таблицу
-        statements.append(
-            self._sql(
-                """
-                create unique index if not exists source_connections_connection_uq
-                on {source_connections} ({sc_connection_id})
-                """
-            )
-        )
         for spec in self._tables.all():
             statements.append(self._snapshot_ddl(spec))
 
@@ -464,10 +429,8 @@ class SourceStore(PostgresTable):
 
     def _snapshot_ddl(self, spec: SnapshotTable) -> sql.Composed:
         definitions: list[sql.Composable] = [
-            sql.SQL("{} uuid not null references {} ({}) on delete cascade").format(
-                sql.Identifier(SnapshotKey.SOURCE_ID.value),
-                self._table(SourceTable.SOURCES),
-                sql.Identifier(SourcesColumn.ID.value),
+            sql.SQL("{} uuid not null").format(
+                sql.Identifier(SnapshotKey.CONNECTION_ID.value)
             ),
             sql.SQL("{} integer not null").format(
                 sql.Identifier(SnapshotKey.VERSION.value)
@@ -481,357 +444,242 @@ class SourceStore(PostgresTable):
             )
 
         key: list[sql.Composable] = [
-            sql.Identifier(SnapshotKey.SOURCE_ID.value),
+            sql.Identifier(SnapshotKey.CONNECTION_ID.value),
             sql.Identifier(SnapshotKey.VERSION.value),
         ]
         for name in spec.key:
             key.append(sql.Identifier(name))
 
         definitions.append(sql.SQL("primary key ({})").format(sql.SQL(", ").join(key)))
+        # строки версии уходят вместе с её шапкой: forget_versions удаляет шапки
+        definitions.append(
+            sql.SQL(
+                "foreign key ({}, {}) references {} ({}, {}) on delete cascade"
+            ).format(
+                sql.Identifier(SnapshotKey.CONNECTION_ID.value),
+                sql.Identifier(SnapshotKey.VERSION.value),
+                self._table(ConnectionTable.VERSIONS),
+                sql.Identifier(VersionsColumn.CONNECTION_ID.value),
+                sql.Identifier(VersionsColumn.VERSION.value),
+            )
+        )
 
         return sql.SQL("create table if not exists {} ({})").format(
             self._snapshot_table(spec), sql.SQL(", ").join(definitions)
         )
 
-    # --- источники ---
+    # --- подключения глазами каталога ---
 
-    async def create_source(
-        self, spec: SourceSpec, kind: str, created_by: UUID
-    ) -> Source:
-        """Источник заданного вида; вид приходит от первого подключения."""
-        source_id = uuid4()
-        async with self._transaction(f"create source {spec.name!r}") as cur:
+    async def synced_connections(self) -> Sequence[SyncedConnection]:
+        """Подключения с версиями снимка по последней версии каждого."""
+        async with self._transaction("list synced connections") as cur:
             await cur.execute(
-                self._sql(
-                    """
-                    insert into {sources}
-                        ({s_id}, {s_kind}, {s_name}, {s_description}, {s_created_by})
-                    values
-                        (%(id)s, %(kind)s, %(name)s, %(description)s, %(created_by)s)
-                    """
-                ),
-                {
-                    "id": source_id,
-                    "kind": kind,
-                    "name": spec.name,
-                    "description": spec.description,
-                    "created_by": created_by,
-                },
-            )
-            return await self._source(cur, source_id)
-
-    async def get_source(self, source_id: UUID) -> Source:
-        async with self._transaction(f"get source {source_id}") as cur:
-            return await self._source(cur, source_id)
-
-    async def list_sources(self) -> Sequence[Source]:
-        async with self._transaction("list sources") as cur:
-            await cur.execute(self._source_select(" order by s.{s_name}"))
-            rows = await cur.fetchall()
-
-        sources: list[Source] = []
-        for row in rows:
-            sources.append(self._source_of(row))
-
-        return sources
-
-    async def update_source(self, source_id: UUID, spec: SourceSpec) -> Source:
-        async with self._transaction(f"update source {source_id}") as cur:
-            await self._source(cur, source_id)
-            await cur.execute(
-                self._sql(
-                    """
-                    update {sources}
-                    set {s_name} = %(name)s,
-                        {s_description} = %(description)s
-                    where {s_id} = %(id)s
-                    """
-                ),
-                {
-                    "id": source_id,
-                    "name": spec.name,
-                    "description": spec.description,
-                },
-            )
-            return await self._source(cur, source_id)
-
-    async def delete_source(self, source_id: UUID) -> bool:
-        async with self._transaction(f"delete source {source_id}") as cur:
-            await cur.execute(
-                self._sql("delete from {sources} where {s_id} = %(id)s"),
-                {"id": source_id},
-            )
-            return cur.rowcount > 0
-
-    # --- подключения ---
-
-    async def bind_connection(
-        self, source_id: UUID, connection_id: UUID, kind: str, bound_by: UUID
-    ) -> SourceConnection:
-        """Привязка подключения вида kind; повтор той же привязки безвреден.
-
-        Ошибки:
-        SourceKindMismatchError — вид подключения не совпадает с видом источника.
-        ConnectionAlreadyBoundError — подключение стоит в другом источнике.
-        """
-        async with self._transaction(
-            f"bind connection {connection_id} to source {source_id}"
-        ) as cur:
-            source = await self._source(cur, source_id, lock=True)
-            if source.kind != kind:
-                raise SourceKindMismatchError(source_id, source.kind, kind)
-
-            holder = await self._holder(cur, connection_id)
-            if holder is not None and holder != source_id:
-                raise ConnectionAlreadyBoundError(connection_id, holder)
-
-            await cur.execute(
-                self._sql(
-                    """
-                    insert into {source_connections}
-                        ({sc_source_id}, {sc_connection_id}, {sc_bound_by})
-                    values (%(source_id)s, %(connection_id)s, %(bound_by)s)
-                    on conflict do nothing
-                    """
-                ),
-                {
-                    "source_id": source_id,
-                    "connection_id": connection_id,
-                    "bound_by": bound_by,
-                },
-            )
-            await cur.execute(
-                self._sql(
-                    """
-                    select {sc_source_id}, {sc_connection_id}, {sc_bound_by},
-                           {sc_bound_at}
-                    from {source_connections}
-                    where {sc_source_id} = %(source_id)s
-                      and {sc_connection_id} = %(connection_id)s
-                    """
-                ),
-                {"source_id": source_id, "connection_id": connection_id},
-            )
-            row = await cur.fetchone()
-
-        if row is None:
-            msg = (
-                f"catalog sources: select from {self._schema}.source_connections "
-                f"returned no row right after binding connection {connection_id} "
-                f"to source {source_id}"
-            )
-            raise CatalogStoreError(msg)
-
-        return self._parse(SourceConnection, dict(row))
-
-    async def unbind_connection(self, source_id: UUID, connection_id: UUID) -> bool:
-        async with self._transaction(
-            f"unbind connection {connection_id} from source {source_id}"
-        ) as cur:
-            await cur.execute(
-                self._sql(
-                    """
-                    delete from {source_connections}
-                    where {sc_source_id} = %(source_id)s
-                      and {sc_connection_id} = %(connection_id)s
-                    """
-                ),
-                {"source_id": source_id, "connection_id": connection_id},
-            )
-            return cur.rowcount > 0
-
-    async def holder_of(self, connection_id: UUID) -> Source | None:
-        """Источник, в котором стоит подключение; None — свободно."""
-        async with self._transaction(f"holder of connection {connection_id}") as cur:
-            source_id = await self._holder(cur, connection_id)
-            if source_id is None:
-                return None
-
-            return await self._source(cur, source_id)
-
-    async def _holder(self, cur: Cursor, connection_id: UUID) -> UUID | None:
-        await cur.execute(
-            self._sql(
-                """
-                select {sc_source_id} from {source_connections}
-                where {sc_connection_id} = %(connection_id)s
-                """
-            ),
-            {"connection_id": connection_id},
-        )
-        row = await cur.fetchone()
-        if row is None:
-            return None
-
-        return row[SourceConnectionsColumn.SOURCE_ID.value]
-
-    async def is_bound(self, source_id: UUID, connection_id: UUID) -> bool:
-        async with self._transaction(
-            f"check binding of connection {connection_id} to source {source_id}"
-        ) as cur:
-            await self._source(cur, source_id)
-            return await self._is_bound(cur, source_id, connection_id)
-
-    async def connections_of(self, source_id: UUID) -> Sequence[SourceConnection]:
-        async with self._transaction(f"connections of source {source_id}") as cur:
-            await cur.execute(
-                self._sql(
-                    """
-                    select {sc_source_id}, {sc_connection_id}, {sc_bound_by},
-                           {sc_bound_at}
-                    from {source_connections}
-                    where {sc_source_id} = %(source_id)s
-                    order by {sc_bound_at}
-                    """
-                ),
-                {"source_id": source_id},
+                self._synced_select(
+                    " order by v.{cv_connection_name}, v.{cv_connection_id}"
+                )
             )
             rows = await cur.fetchall()
 
-        bound: list[SourceConnection] = []
+        synced: list[SyncedConnection] = []
         for row in rows:
-            bound.append(self._parse(SourceConnection, dict(row)))
+            synced.append(self._parse(SyncedConnection, dict(row)))
 
-        return bound
+        return synced
+
+    async def synced(self, connection_id: UUID) -> SyncedConnection:
+        async with self._transaction(f"synced connection {connection_id}") as cur:
+            return await self._synced(cur, connection_id)
+
+    async def synced_or_none(self, connection_id: UUID) -> SyncedConnection | None:
+        async with self._transaction(f"synced connection {connection_id}") as cur:
+            return await self._synced_or_none(cur, connection_id)
 
     # --- версии ---
 
     async def write_version(
-        self, source_id: UUID, snapshot: SourceSnapshot, origin: VersionOrigin
-    ) -> SourceVersion:
-        """Новая версия источника целиком одной транзакцией. Этим же путём
+        self, connection_id: UUID, snapshot: SourceSnapshot, origin: VersionOrigin
+    ) -> ConnectionVersion:
+        """Новая версия подключения целиком одной транзакцией. Этим же путём
         синхронизация переносит staging в хранилище."""
         snapshot.check()
-        async with self._transaction(f"write version of source {source_id}") as cur:
-            source = await self._source(cur, source_id, lock=True)
-            return await self._write_version(cur, source, snapshot, origin)
+        async with self._transaction(
+            f"write version of connection {connection_id}"
+        ) as cur:
+            await self._lock(cur, connection_id)
+            return await self._write_version(cur, connection_id, snapshot, origin)
 
     async def _write_version(
         self,
         cur: Cursor,
-        source: Source,
+        connection_id: UUID,
         snapshot: SourceSnapshot,
         origin: VersionOrigin,
-    ) -> SourceVersion:
-        """Шапка и строки новой версии в открытой транзакции; источник уже
-        под блокировкой."""
-        self._require_kind(source, snapshot)
-        version = source.latest_version + 1
+    ) -> ConnectionVersion:
+        """Шапка и строки новой версии в открытой транзакции; подключение уже
+        под замком.
+
+        Ошибки:
+        SnapshotKindMismatchError — прежние версии другого вида.
+        """
+        current = await self._synced_or_none(cur, connection_id)
+        version = 1
+        if current is not None:
+            if current.kind != snapshot.kind:
+                raise SnapshotKindMismatchError(
+                    connection_id, current.kind, snapshot.kind
+                )
+
+            version = current.latest_version + 1
+
         await cur.execute(
             self._sql(
                 """
-                insert into {source_versions}
-                    ({sv_source_id}, {sv_version}, {sv_taken_by},
-                     {sv_connection_id}, {sv_sync_id}, {sv_objects_total},
-                     {sv_server_version})
+                insert into {connection_versions}
+                    ({cv_connection_id}, {cv_version}, {cv_connection_name}, {cv_kind},
+                     {cv_taken_by}, {cv_sync_id}, {cv_objects_total},
+                     {cv_server_version})
                 values
-                    (%(source_id)s, %(version)s, %(taken_by)s, %(connection_id)s,
-                     %(sync_id)s, %(objects_total)s, %(server_version)s)
+                    (%(connection_id)s, %(version)s, %(connection_name)s, %(kind)s,
+                     %(taken_by)s, %(sync_id)s, %(objects_total)s, %(server_version)s)
                 """
             ),
             {
-                "source_id": source.id,
+                "connection_id": connection_id,
                 "version": version,
+                "connection_name": origin.connection_name,
+                "kind": snapshot.kind,
                 "taken_by": origin.taken_by,
-                "connection_id": origin.connection_id,
                 "sync_id": origin.sync_id,
                 "objects_total": snapshot.objects_count(),
                 "server_version": origin.server_version,
             },
         )
-        await self._insert_snapshot(cur, source.id, version, snapshot)
-        return await self._version(cur, source.id, version)
+        await self._insert_snapshot(cur, connection_id, version, snapshot)
+        return await self._version(cur, connection_id, version)
 
-    async def versions_of(self, source_id: UUID) -> Sequence[SourceVersion]:
-        async with self._transaction(f"versions of source {source_id}") as cur:
-            await self._source(cur, source_id)
+    async def versions_of(self, connection_id: UUID) -> Sequence[ConnectionVersion]:
+        async with self._transaction(f"versions of connection {connection_id}") as cur:
             await cur.execute(
-                self._sql(
-                    """
-                    select {sv_source_id}, {sv_version}, {sv_taken_at}, {sv_taken_by},
-                           {sv_connection_id}, {sv_sync_id}, {sv_objects_total},
-                           {sv_server_version}
-                    from {source_versions}
-                    where {sv_source_id} = %(source_id)s
-                    order by {sv_version}
-                    """
+                self._version_select(
+                    " where {cv_connection_id} = %(connection_id)s"
+                    " order by {cv_version}"
                 ),
-                {"source_id": source_id},
+                {"connection_id": connection_id},
             )
             rows = await cur.fetchall()
 
-        versions: list[SourceVersion] = []
+        versions: list[ConnectionVersion] = []
         for row in rows:
-            versions.append(self._parse(SourceVersion, dict(row)))
+            versions.append(self._parse(ConnectionVersion, dict(row)))
 
         return versions
 
-    async def version_of(self, source_id: UUID, version: int) -> SourceVersion:
-        async with self._transaction(f"version {version} of source {source_id}") as cur:
-            return await self._version(cur, source_id, version)
-
-    async def snapshot_of(self, source_id: UUID, version: int) -> SourceSnapshot:
-        """Снимок версии; версия 0 — пустой снимок вида источника."""
+    async def version_of(self, connection_id: UUID, version: int) -> ConnectionVersion:
         async with self._transaction(
-            f"snapshot {version} of source {source_id}"
+            f"version {version} of connection {connection_id}"
         ) as cur:
-            source = await self._source(cur, source_id)
+            return await self._version(cur, connection_id, version)
+
+    async def snapshot_of(self, connection_id: UUID, version: int) -> SourceSnapshot:
+        """Снимок версии; версия 0 — пустой снимок вида подключения.
+
+        Ошибки:
+        ConnectionNotSyncedError — версий нет, вид неизвестен.
+        ConnectionVersionNotFoundError — такой версии нет.
+        """
+        async with self._transaction(
+            f"snapshot {version} of connection {connection_id}"
+        ) as cur:
+            synced = await self._synced(cur, connection_id)
             if version == 0:
-                return self._empty(source.kind)
+                return self._empty(synced.kind)
 
-            await self._version(cur, source_id, version)
-            return await self._read_snapshot(cur, source, version)
+            await self._version(cur, connection_id, version)
+            return await self._read_snapshot(cur, connection_id, synced.kind, version)
 
-    async def latest_snapshot(self, source_id: UUID) -> SourceSnapshot:
-        async with self._transaction(f"latest snapshot of source {source_id}") as cur:
-            source = await self._source(cur, source_id)
-            if source.latest_version == 0:
-                return self._empty(source.kind)
+    async def latest_snapshot(self, connection_id: UUID) -> SourceSnapshot:
+        async with self._transaction(
+            f"latest snapshot of connection {connection_id}"
+        ) as cur:
+            synced = await self._synced(cur, connection_id)
+            return await self._read_snapshot(
+                cur, connection_id, synced.kind, synced.latest_version
+            )
 
-            return await self._read_snapshot(cur, source, source.latest_version)
+    async def diff_of(self, connection_id: UUID, old: int, new: int) -> SourceDiff:
+        before = await self.snapshot_of(connection_id, old)
+        after = await self.snapshot_of(connection_id, new)
+        return SourceDiff.between(connection_id, before, after)
 
-    async def diff_of(self, source_id: UUID, old: int, new: int) -> SourceDiff:
-        before = await self.snapshot_of(source_id, old)
-        after = await self.snapshot_of(source_id, new)
-        return SourceDiff.between(source_id, before, after)
+    async def forget_versions(self, connection_id: UUID) -> int:
+        """Все версии снимка подключения со строками; сколько версий было.
+        Проверка узлов процессов — на сервисе, здесь только строки.
+
+        Ошибки:
+        SyncRunningError — синхронизация ещё пишет.
+        """
+        async with self._transaction(
+            f"forget versions of connection {connection_id}"
+        ) as cur:
+            await self._lock(cur, connection_id)
+            running = await self._running_sync(cur, connection_id)
+            if running is not None:
+                raise SyncRunningError(connection_id, running.id)
+
+            await cur.execute(
+                self._sql(
+                    """
+                    delete from {connection_versions}
+                    where {cv_connection_id} = %(connection_id)s
+                    """
+                ),
+                {"connection_id": connection_id},
+            )
+            return cur.rowcount
 
     # --- синхронизации ---
 
     async def start_sync(
-        self, sync_id: UUID, source_id: UUID, request: SyncRequest, started_by: UUID
+        self, sync_id: UUID, request: SyncRequest, started_by: UUID
     ) -> Sync:
-        """Запись синхронизации и её staging-таблица; staging прежних,
-        уже закрытых синхронизаций источника убирается здесь же.
+        """Запись синхронизации и её staging-таблица; staging прежних, уже
+        закрытых синхронизаций подключения убирается здесь же.
 
         Ошибки:
-        SyncConnectionNotBoundError — подключение не привязано к источнику.
-        SyncRunningError — у источника уже идёт синхронизация.
+        SnapshotKindMismatchError — прежние версии другого вида.
+        SyncRunningError — у подключения уже идёт синхронизация.
         """
-        async with self._transaction(f"start sync of source {source_id}") as cur:
-            source = await self._source(cur, source_id, lock=True)
-            if not await self._is_bound(cur, source_id, request.connection_id):
-                raise SyncConnectionNotBoundError(source_id, request.connection_id)
+        connection_id = request.connection_id
+        action = f"start sync of connection {connection_id}"
+        async with self._transaction(action) as cur:
+            await self._lock(cur, connection_id)
+            current = await self._synced_or_none(cur, connection_id)
+            if current is not None and current.kind != request.kind:
+                raise SnapshotKindMismatchError(
+                    connection_id, current.kind, request.kind
+                )
 
-            running = await self._running_sync(cur, source_id)
+            running = await self._running_sync(cur, connection_id)
             if running is not None:
-                raise SyncRunningError(source_id, running.id)
+                raise SyncRunningError(connection_id, running.id)
 
-            await self._sweep_staging(cur, source_id)
+            await self._sweep_staging(cur, connection_id)
             await cur.execute(
                 self._sql(
                     """
-                    insert into {syncs}
-                        ({sy_id}, {sy_source_id}, {sy_connection_id}, {sy_started_by},
-                         {sy_status}, {sy_scope})
+                    insert into {connection_syncs}
+                        ({sy_id}, {sy_connection_id}, {sy_connection_name}, {sy_kind},
+                         {sy_started_by}, {sy_status}, {sy_scope})
                     values
-                        (%(id)s, %(source_id)s, %(connection_id)s, %(started_by)s,
-                         %(status)s, %(scope)s)
+                        (%(id)s, %(connection_id)s, %(connection_name)s, %(kind)s,
+                         %(started_by)s, %(status)s, %(scope)s)
                     """
                 ),
                 {
                     "id": sync_id,
-                    "source_id": source.id,
-                    "connection_id": request.connection_id,
+                    "connection_id": connection_id,
+                    "connection_name": request.connection_name,
+                    "kind": request.kind,
                     "started_by": started_by,
                     "status": SyncStatus.RUNNING.value,
                     "scope": Jsonb(request.scope.model_dump(mode="json")),
@@ -865,7 +713,7 @@ class SourceStore(PostgresTable):
             await cur.execute(
                 self._sql(
                     """
-                    update {syncs}
+                    update {connection_syncs}
                     set {sy_objects_total} = %(objects_total)s
                     where {sy_id} = %(id)s
                     """
@@ -902,7 +750,7 @@ class SourceStore(PostgresTable):
             await cur.execute(
                 self._sql(
                     """
-                    update {syncs}
+                    update {connection_syncs}
                     set {sy_objects_done} = {sy_objects_done} + %(objects)s
                     where {sy_id} = %(id)s
                     """
@@ -915,7 +763,6 @@ class SourceStore(PostgresTable):
         """Порции staging по порядку с разобранными записями своей части."""
         async with self._transaction(f"staged batches of sync {sync_id}") as cur:
             sync = await self._sync(cur, sync_id)
-            source = await self._source(cur, sync.source_id)
             await cur.execute(
                 sql.SQL("select {}, {}, {}, {} from {} order by {}").format(
                     sql.Identifier(StagingColumn.SEQ.value),
@@ -928,7 +775,7 @@ class SourceStore(PostgresTable):
             )
             rows = await cur.fetchall()
 
-        snapshot_class = self._kinds.snapshot_class(source.kind)
+        snapshot_class = self._kinds.snapshot_class(sync.kind)
         batches: list[StagedBatch] = []
         for row in rows:
             part = snapshot_class.part(row[StagingColumn.PART.value])
@@ -948,25 +795,27 @@ class SourceStore(PostgresTable):
 
     async def commit_sync(
         self, sync_id: UUID, snapshot: SourceSnapshot, server_version: str
-    ) -> SourceVersion:
-        """Собранный снимок становится версией источника, синхронизация
+    ) -> ConnectionVersion:
+        """Собранный снимок становится версией подключения, синхронизация
         закрывается итогом и staging убирается — одной транзакцией."""
         snapshot.check()
         async with self._transaction(f"commit sync {sync_id}") as cur:
             sync = await self._sync(cur, sync_id, lock=True)
             self._require_running(sync)
-            source = await self._source(cur, sync.source_id, lock=True)
+            await self._lock(cur, sync.connection_id)
             origin = VersionOrigin(
                 taken_by=sync.started_by,
-                connection_id=sync.connection_id,
+                connection_name=sync.connection_name,
                 sync_id=sync.id,
                 server_version=server_version,
             )
-            version = await self._write_version(cur, source, snapshot, origin)
+            version = await self._write_version(
+                cur, sync.connection_id, snapshot, origin
+            )
             await cur.execute(
                 self._sql(
                     """
-                    update {syncs}
+                    update {connection_syncs}
                     set {sy_status} = %(status)s,
                         {sy_finished_at} = now(),
                         {sy_objects_done} = %(objects_done)s,
@@ -996,7 +845,7 @@ class SourceStore(PostgresTable):
             await cur.execute(
                 self._sql(
                     """
-                    update {syncs}
+                    update {connection_syncs}
                     set {sy_status} = %(status)s,
                         {sy_finished_at} = now(),
                         {sy_error} = %(error)s
@@ -1012,14 +861,14 @@ class SourceStore(PostgresTable):
         async with self._transaction(f"get sync {sync_id}") as cur:
             return await self._sync(cur, sync_id)
 
-    async def syncs_of(self, source_id: UUID) -> Sequence[Sync]:
-        """Синхронизации источника, новые первыми."""
-        async with self._transaction(f"syncs of source {source_id}") as cur:
-            await self._source(cur, source_id)
+    async def syncs_of(self, connection_id: UUID) -> Sequence[Sync]:
+        """Синхронизации подключения, новые первыми."""
+        async with self._transaction(f"syncs of connection {connection_id}") as cur:
             tail: LiteralString = (
-                " where {sy_source_id} = %(source_id)s order by {sy_started_at} desc"
+                " where {sy_connection_id} = %(connection_id)s"
+                " order by {sy_started_at} desc"
             )
-            await cur.execute(self._sync_select(tail), {"source_id": source_id})
+            await cur.execute(self._sync_select(tail), {"connection_id": connection_id})
             rows = await cur.fetchall()
 
         return self._syncs_of(rows)
@@ -1038,10 +887,11 @@ class SourceStore(PostgresTable):
     # --- внутреннее: синхронизации ---
 
     SYNC_SELECT: ClassVar[LiteralString] = """
-        select {sy_id}, {sy_source_id}, {sy_connection_id}, {sy_started_by},
-               {sy_started_at}, {sy_finished_at}, {sy_status}, {sy_scope},
-               {sy_objects_total}, {sy_objects_done}, {sy_error}, {sy_version}
-        from {syncs}
+        select {sy_id}, {sy_connection_id}, {sy_connection_name}, {sy_kind},
+               {sy_started_by}, {sy_started_at}, {sy_finished_at}, {sy_status},
+               {sy_scope}, {sy_objects_total}, {sy_objects_done}, {sy_error},
+               {sy_version}
+        from {connection_syncs}
         """
 
     def _sync_select(self, tail: LiteralString) -> sql.Composed:
@@ -1066,12 +916,13 @@ class SourceStore(PostgresTable):
 
         return syncs
 
-    async def _running_sync(self, cur: Cursor, source_id: UUID) -> Sync | None:
+    async def _running_sync(self, cur: Cursor, connection_id: UUID) -> Sync | None:
         await cur.execute(
             self._sync_select(
-                " where {sy_source_id} = %(source_id)s and {sy_status} = %(status)s"
+                " where {sy_connection_id} = %(connection_id)s"
+                " and {sy_status} = %(status)s"
             ),
-            {"source_id": source_id, "status": SyncStatus.RUNNING.value},
+            {"connection_id": connection_id, "status": SyncStatus.RUNNING.value},
         )
         row = await cur.fetchone()
         if row is None:
@@ -1086,22 +937,6 @@ class SourceStore(PostgresTable):
 
         raise SyncClosedError(sync.id, sync.status)
 
-    async def _is_bound(
-        self, cur: Cursor, source_id: UUID, connection_id: UUID
-    ) -> bool:
-        await cur.execute(
-            self._sql(
-                """
-                select 1 from {source_connections}
-                where {sc_source_id} = %(source_id)s
-                  and {sc_connection_id} = %(connection_id)s
-                """
-            ),
-            {"source_id": source_id, "connection_id": connection_id},
-        )
-        row = await cur.fetchone()
-        return row is not None
-
     def _staging_table(self, sync_id: UUID) -> sql.Identifier:
         return sql.Identifier(self._schema, StagingTable.name_of(sync_id))
 
@@ -1110,86 +945,104 @@ class SourceStore(PostgresTable):
             sql.SQL("drop table if exists {}").format(self._staging_table(sync_id))
         )
 
-    async def _sweep_staging(self, cur: Cursor, source_id: UUID) -> None:
-        """Staging закрытых синхронизаций источника: остаётся после падения
+    async def _sweep_staging(self, cur: Cursor, connection_id: UUID) -> None:
+        """Staging закрытых синхронизаций подключения: остаётся после падения
         процесса посреди синхронизации."""
         await cur.execute(
             self._sql(
                 """
-                select {sy_id} from {syncs}
-                where {sy_source_id} = %(source_id)s and {sy_status} <> %(status)s
+                select {sy_id} from {connection_syncs}
+                where {sy_connection_id} = %(connection_id)s
+                  and {sy_status} <> %(status)s
                 """
             ),
-            {"source_id": source_id, "status": SyncStatus.RUNNING.value},
+            {"connection_id": connection_id, "status": SyncStatus.RUNNING.value},
         )
         rows = await cur.fetchall()
         for row in rows:
             await self._drop_staging(cur, row[SyncsColumn.ID.value])
 
-    # --- внутреннее: источники и версии ---
+    # --- внутреннее: подключения и версии ---
 
-    SOURCE_SELECT: ClassVar[LiteralString] = """
-        select s.{s_id}, s.{s_kind}, s.{s_name}, s.{s_description},
-               s.{s_created_by}, s.{s_created_at},
-               coalesce((select max(v.{sv_version}) from {source_versions} v
-                         where v.{sv_source_id} = s.{s_id}), 0) as latest_version,
-               coalesce((select array_agg(c.{sc_connection_id} order by c.{sc_bound_at})
-                         from {source_connections} c
-                         where c.{sc_source_id} = s.{s_id}), '{{}}') as connection_ids
-        from {sources} s
+    async def _lock(self, cur: Cursor, connection_id: UUID) -> None:
+        await cur.execute(
+            "select pg_advisory_xact_lock(hashtext(%(key)s))",
+            {"key": f"{self._schema}.{self.LOCK_PREFIX}.{connection_id}"},
+        )
+
+    SYNCED_SELECT: ClassVar[LiteralString] = """
+        with
+            latest as (
+                select
+                    w.{cv_connection_id} as connection_id,
+                    max(w.{cv_version}) as version
+                from
+                    {connection_versions} w
+                group by
+                    w.{cv_connection_id}
+            )
+        select
+            v.{cv_connection_id} as connection_id,
+            v.{cv_connection_name} as name,
+            v.{cv_kind} as kind,
+            v.{cv_version} as latest_version,
+            v.{cv_taken_at} as synced_at
+        from
+            {connection_versions} v
+            join latest l
+                on l.connection_id = v.{cv_connection_id}
+                and l.version = v.{cv_version}
+        where 1=1
         """
 
-    def _source_select(self, tail: LiteralString) -> sql.Composed:
-        return sql.Composed([self._sql(self.SOURCE_SELECT), self._sql(tail)])
+    def _synced_select(self, tail: LiteralString) -> sql.Composed:
+        return sql.Composed([self._sql(self.SYNCED_SELECT), self._sql(tail)])
 
-    async def _source(
-        self, cur: Cursor, source_id: UUID, *, lock: bool = False
-    ) -> Source:
-        tail: LiteralString = " where s.{s_id} = %(id)s"
-        if lock:
-            tail = " where s.{s_id} = %(id)s for update"
-
-        await cur.execute(self._source_select(tail), {"id": source_id})
+    async def _synced_or_none(
+        self, cur: Cursor, connection_id: UUID
+    ) -> SyncedConnection | None:
+        await cur.execute(
+            self._synced_select(" and v.{cv_connection_id} = %(connection_id)s"),
+            {"connection_id": connection_id},
+        )
         row = await cur.fetchone()
         if row is None:
-            raise SourceNotFoundError(source_id)
+            return None
 
-        return self._source_of(row)
+        return self._parse(SyncedConnection, dict(row))
 
-    def _source_of(self, row: DictRow) -> Source:
-        return self._parse(Source, dict(row))
+    async def _synced(self, cur: Cursor, connection_id: UUID) -> SyncedConnection:
+        synced = await self._synced_or_none(cur, connection_id)
+        if synced is None:
+            raise ConnectionNotSyncedError(connection_id)
+
+        return synced
+
+    VERSION_SELECT: ClassVar[LiteralString] = """
+        select {cv_connection_id}, {cv_version}, {cv_connection_name}, {cv_kind},
+               {cv_taken_at}, {cv_taken_by}, {cv_sync_id}, {cv_objects_total},
+               {cv_server_version}
+        from {connection_versions}
+        """
+
+    def _version_select(self, tail: LiteralString) -> sql.Composed:
+        return sql.Composed([self._sql(self.VERSION_SELECT), self._sql(tail)])
 
     async def _version(
-        self, cur: Cursor, source_id: UUID, version: int
-    ) -> SourceVersion:
+        self, cur: Cursor, connection_id: UUID, version: int
+    ) -> ConnectionVersion:
         await cur.execute(
-            self._sql(
-                """
-                select {sv_source_id}, {sv_version}, {sv_taken_at}, {sv_taken_by},
-                       {sv_connection_id}, {sv_sync_id}, {sv_objects_total},
-                       {sv_server_version}
-                from {source_versions}
-                where {sv_source_id} = %(source_id)s and {sv_version} = %(version)s
-                """
+            self._version_select(
+                " where {cv_connection_id} = %(connection_id)s"
+                " and {cv_version} = %(version)s"
             ),
-            {"source_id": source_id, "version": version},
+            {"connection_id": connection_id, "version": version},
         )
         row = await cur.fetchone()
         if row is None:
-            raise SourceVersionNotFoundError(source_id, version)
+            raise ConnectionVersionNotFoundError(connection_id, version)
 
-        return self._parse(SourceVersion, dict(row))
-
-    @staticmethod
-    def _require_kind(source: Source, snapshot: SourceSnapshot) -> None:
-        if snapshot.kind == source.kind:
-            return
-
-        msg = (
-            f"catalog sources: source {source.id} is {source.kind}, "
-            f"snapshot is {snapshot.kind}"
-        )
-        raise CatalogStoreError(msg)
+        return self._parse(ConnectionVersion, dict(row))
 
     def _empty(self, kind: str) -> SourceSnapshot:
         return self._kinds.empty(kind)
@@ -1197,12 +1050,12 @@ class SourceStore(PostgresTable):
     # --- внутреннее: строки снимка ---
 
     async def _insert_snapshot(
-        self, cur: Cursor, source_id: UUID, version: int, snapshot: SourceSnapshot
+        self, cur: Cursor, connection_id: UUID, version: int, snapshot: SourceSnapshot
     ) -> None:
         for spec in self._tables.of_kind(snapshot.kind):
             rows: list[dict[str, Any]] = []
             for record in snapshot.records_of(spec.part.name):
-                rows.append(self._row_of(spec, source_id, version, record))
+                rows.append(self._row_of(spec, connection_id, version, record))
 
             if not rows:
                 continue
@@ -1211,11 +1064,11 @@ class SourceStore(PostgresTable):
 
     @staticmethod
     def _row_of(
-        spec: SnapshotTable, source_id: UUID, version: int, record: SourceRecord
+        spec: SnapshotTable, connection_id: UUID, version: int, record: SourceRecord
     ) -> dict[str, Any]:
         dumped: dict[str, Any] = record.model_dump(mode="json")
         row: dict[str, Any] = {
-            SnapshotKey.SOURCE_ID.value: source_id,
+            SnapshotKey.CONNECTION_ID.value: connection_id,
             SnapshotKey.VERSION.value: version,
         }
         for column in spec.columns:
@@ -1229,11 +1082,11 @@ class SourceStore(PostgresTable):
 
     def _insert(self, spec: SnapshotTable) -> sql.Composed:
         idents: list[sql.Composable] = [
-            sql.Identifier(SnapshotKey.SOURCE_ID.value),
+            sql.Identifier(SnapshotKey.CONNECTION_ID.value),
             sql.Identifier(SnapshotKey.VERSION.value),
         ]
         placeholders: list[sql.Composable] = [
-            sql.Placeholder(SnapshotKey.SOURCE_ID.value),
+            sql.Placeholder(SnapshotKey.CONNECTION_ID.value),
             sql.Placeholder(SnapshotKey.VERSION.value),
         ]
         for column in spec.columns:
@@ -1247,19 +1100,12 @@ class SourceStore(PostgresTable):
         )
 
     async def _read_snapshot(
-        self, cur: Cursor, source: Source, version: int
+        self, cur: Cursor, connection_id: UUID, kind: str, version: int
     ) -> SourceSnapshot:
         fields: dict[str, tuple[SourceRecord, ...]] = {}
-        for spec in self._tables.of_kind(source.kind):
+        for spec in self._tables.of_kind(kind):
             await cur.execute(
-                sql.SQL(
-                    "select * from {} where {} = %(source_id)s and {} = %(version)s"
-                ).format(
-                    self._snapshot_table(spec),
-                    sql.Identifier(SnapshotKey.SOURCE_ID.value),
-                    sql.Identifier(SnapshotKey.VERSION.value),
-                ),
-                {"source_id": source.id, "version": version},
+                self._select(spec), {"connection_id": connection_id, "version": version}
             )
             rows = await cur.fetchall()
             records: list[SourceRecord] = []
@@ -1269,14 +1115,29 @@ class SourceStore(PostgresTable):
             fields[spec.part.name] = tuple(records)
 
         try:
-            return self._kinds.snapshot_class(source.kind).model_validate(fields)
+            return self._kinds.snapshot_class(kind).model_validate(fields)
         except ValidationError as exc:
             msg = (
-                f"catalog sources: rows of source {source.id} version {version} "
-                f"in {self._schema} do not form a valid {source.kind} "
+                f"catalog connections: rows of connection {connection_id} version "
+                f"{version} in {self._schema} do not form a valid {kind} "
                 f"snapshot: {exc}"
             )
             raise CatalogStoreError(msg) from exc
+
+    def _select(self, spec: SnapshotTable) -> sql.Composed:
+        """Колонки части по её спецификации за одну версию подключения."""
+        idents: list[sql.Composable] = []
+        for column in spec.columns:
+            idents.append(sql.Identifier(column.column))
+
+        return sql.SQL(
+            "select {} from {} where {} = %(connection_id)s and {} = %(version)s"
+        ).format(
+            sql.SQL(", ").join(idents),
+            self._snapshot_table(spec),
+            sql.Identifier(SnapshotKey.CONNECTION_ID.value),
+            sql.Identifier(SnapshotKey.VERSION.value),
+        )
 
     def _record_of(self, spec: SnapshotTable, row: DictRow) -> SourceRecord:
         payload: dict[str, Any] = {}
@@ -1290,7 +1151,7 @@ class SourceStore(PostgresTable):
             return model.model_validate(payload)
         except ValidationError as exc:
             msg = (
-                f"catalog sources: row from {self._schema} does not form "
+                f"catalog connections: row from {self._schema} does not form "
                 f"a valid {model.__name__}: {exc}"
             )
             raise CatalogStoreError(msg) from exc

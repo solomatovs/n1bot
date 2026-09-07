@@ -3,56 +3,49 @@ import { z } from "zod";
 import type { PageUrls } from "../config";
 import {
   AccessSchema,
-  ConnectionViewSchema,
-  ProbeResultSchema,
-  ObjectCardSchema,
-  SourceConnectionSchema,
-  SourceDiffSchema,
-  SourceSchema,
-  SourceVersionSchema,
-  SyncSchema,
-  TreeNodeSchema,
   CatalogChangedSchema,
+  ConnectionVersionSchema,
+  ConnectionViewSchema,
   DraftSchema,
   DraftStateSchema,
+  ObjectCardSchema,
   PinBumpSchema,
+  ProbeResultSchema,
   ProcessContextSchema,
+  ProcessSchema,
   RebaseResultSchema,
   ShareSchema,
+  SharedProcessSchema,
   SnapshotSchema,
+  SourceDiffSchema,
+  SyncSchema,
+  SyncedConnectionSchema,
+  TreeNodeSchema,
   VersionSchema,
-  ViewLayoutSchema,
-  ViewSchema,
-  ViewStateSchema,
   type Access,
   type CatalogChanged,
   type ConnectionBody,
+  type ConnectionVersion,
   type ConnectionView,
-  type ProbeResult,
-  type ObjectCard,
-  type ObjectKind,
-  type Source,
-  type SourceConnection,
-  type SourceDiff,
-  type SourceCreate,
-  type SourceSpec,
-  type SourceVersion,
-  type Sync,
-  type SyncScope,
-  type TreeNode,
   type Draft,
   type DraftState,
-  type NodePosition,
+  type ObjectCard,
+  type ObjectKind,
   type PinBump,
+  type ProbeResult,
+  type Process,
   type ProcessContext,
+  type ProcessSpec,
   type RebaseResult,
   type Share,
+  type SharedProcess,
   type Snapshot,
+  type SourceDiff,
+  type Sync,
+  type SyncScope,
+  type SyncedConnection,
+  type TreeNode,
   type Version,
-  type View,
-  type ViewLayout,
-  type ViewSpec,
-  type ViewState,
 } from "../model/catalog";
 import type { CatalogOp } from "../model/ops";
 import type { paths } from "./schema";
@@ -111,6 +104,7 @@ function detailOf(payload: unknown): unknown {
 type Method = "get" | "post" | "put" | "delete";
 
 const DeletedSchema = z.object({ deleted: z.boolean() });
+const ForgottenSchema = z.object({ versions: z.number() });
 
 /** Строка запроса дерева: path повторяется на каждую ступень. */
 function treeQuery(path: string[], extra: Record<string, string>): string {
@@ -138,75 +132,62 @@ export class CatalogApi {
     this.unauthorized = handler;
   }
 
-  snapshot(): Promise<Snapshot> {
-    return this.call("get", "/api/catalog/snapshot", undefined, SnapshotSchema);
-  }
-
-  versions(): Promise<Version[]> {
-    return this.call("get", "/api/catalog/versions", undefined, z.array(VersionSchema));
-  }
-
-  drafts(): Promise<Draft[]> {
-    return this.call("get", "/api/catalog/drafts", undefined, z.array(DraftSchema));
-  }
-
-  draft(draftId: string): Promise<DraftState> {
-    return this.call("get", `/api/catalog/drafts/${draftId}`, undefined, DraftStateSchema);
-  }
-
-  views(): Promise<View[]> {
-    return this.call("get", "/api/catalog/views", undefined, z.array(ViewSchema));
-  }
-
-  view(viewId: string): Promise<View> {
-    return this.call("get", `/api/catalog/views/${viewId}`, undefined, ViewSchema);
-  }
-
-  layout(viewId: string): Promise<ViewLayout> {
-    return this.call("get", `/api/catalog/views/${viewId}/layout`, undefined, ViewLayoutSchema);
-  }
-
   access(): Promise<Access> {
     return this.call("get", "/api/catalog/access", undefined, AccessSchema);
   }
 
-  /** Страница вида одним ответом: срез снимка доступен и без ролей на каталог. */
-  viewState(viewId: string): Promise<ViewState> {
-    return this.call("get", `/api/catalog/views/${viewId}/state`, undefined, ViewStateSchema);
+  // --- процессы ---
+
+  processes(): Promise<Process[]> {
+    return this.call("get", "/api/catalog/processes", undefined, z.array(ProcessSchema));
   }
 
-  createView(spec: ViewSpec): Promise<View> {
-    return this.call("post", "/api/catalog/views", spec, ViewSchema);
+  process(processId: string): Promise<Process> {
+    return this.call("get", `/api/catalog/processes/${processId}`, undefined, ProcessSchema);
   }
 
-  updateView(viewId: string, spec: ViewSpec): Promise<View> {
-    return this.call("put", `/api/catalog/views/${viewId}`, spec, ViewSchema);
+  createProcess(spec: ProcessSpec): Promise<Process> {
+    return this.call("post", "/api/catalog/processes", spec, ProcessSchema);
   }
 
-  deleteView(viewId: string): Promise<void> {
-    return this.call("delete", `/api/catalog/views/${viewId}`, undefined, DeletedSchema).then(() => undefined);
+  updateProcess(processId: string, spec: ProcessSpec): Promise<Process> {
+    return this.call("put", `/api/catalog/processes/${processId}`, spec, ProcessSchema);
   }
 
-  /** Полная замена раскладки вида. */
-  putLayout(viewId: string, positions: NodePosition[]): Promise<ViewLayout> {
-    return this.call("put", `/api/catalog/views/${viewId}/layout`, { positions }, ViewLayoutSchema);
+  deleteProcess(processId: string): Promise<void> {
+    return this.call("delete", `/api/catalog/processes/${processId}`, undefined, DeletedSchema).then(() => undefined);
   }
 
-  shares(viewId: string): Promise<Share[]> {
-    return this.call("get", `/api/catalog/views/${viewId}/shares`, undefined, z.array(ShareSchema));
+  snapshot(processId: string): Promise<Snapshot> {
+    return this.call("get", `/api/catalog/processes/${processId}/snapshot`, undefined, SnapshotSchema);
   }
 
-  share(viewId: string, share: Share): Promise<void> {
-    return this.call("post", `/api/catalog/views/${viewId}/shares`, share, z.null()).then(() => undefined);
+  versions(processId: string): Promise<Version[]> {
+    return this.call("get", `/api/catalog/processes/${processId}/versions`, undefined, z.array(VersionSchema));
   }
 
-  unshare(viewId: string, share: Share): Promise<void> {
-    const path = `/api/catalog/views/${viewId}/shares/${share.kind}/${encodeURIComponent(share.target)}`;
-    return this.call("delete", path, undefined, DeletedSchema).then(() => undefined);
+  context(processId: string): Promise<ProcessContext> {
+    return this.call("get", `/api/catalog/processes/${processId}/context`, undefined, ProcessContextSchema);
   }
 
-  createDraft(name: string): Promise<Draft> {
-    return this.call("post", "/api/catalog/drafts", { name }, DraftSchema);
+  // --- черновики ---
+
+  /** Свои открытые черновики по всем процессам. */
+  myDrafts(): Promise<Draft[]> {
+    return this.call("get", "/api/catalog/drafts", undefined, z.array(DraftSchema));
+  }
+
+  /** Черновик процесса; без процесса — черновик нового процесса. */
+  createDraft(processId: string | null, name: string): Promise<Draft> {
+    return this.call("post", "/api/catalog/drafts", { process_id: processId, name }, DraftSchema);
+  }
+
+  renameDraft(draftId: string, name: string): Promise<Draft> {
+    return this.call("put", `/api/catalog/drafts/${draftId}`, { name }, DraftSchema);
+  }
+
+  draft(draftId: string): Promise<DraftState> {
+    return this.call("get", `/api/catalog/drafts/${draftId}`, undefined, DraftStateSchema);
   }
 
   discardDraft(draftId: string): Promise<Draft> {
@@ -228,72 +209,45 @@ export class CatalogApi {
     return this.call("post", `/api/catalog/drafts/${draftId}/rebase`, body, RebaseResultSchema);
   }
 
-  /** Привязки черновика поднимаются до последних версий источников. */
+  /** Привязки черновика поднимаются до последних версий снимков. */
   bumpPins(draftId: string): Promise<PinBump> {
     return this.call("post", `/api/catalog/drafts/${draftId}/pins`, undefined, PinBumpSchema);
-  }
-
-  // --- контекст процесса: колонки узлов и устаревание по привязкам ---
-
-  context(): Promise<ProcessContext> {
-    return this.call("get", "/api/catalog/context", undefined, ProcessContextSchema);
   }
 
   draftContext(draftId: string): Promise<ProcessContext> {
     return this.call("get", `/api/catalog/drafts/${draftId}/context`, undefined, ProcessContextSchema);
   }
 
-  viewContext(viewId: string): Promise<ProcessContext> {
-    return this.call("get", `/api/catalog/views/${viewId}/context`, undefined, ProcessContextSchema);
+  // --- ссылки на просмотр ---
+
+  shares(processId: string): Promise<Share[]> {
+    return this.call("get", `/api/catalog/processes/${processId}/shares`, undefined, z.array(ShareSchema));
   }
 
-  /** Карточка объекта узла из среза вида: доступна тем, кому вид расшарен. */
-  viewObject(viewId: string, nodeId: string): Promise<ObjectCard> {
-    return this.call("get", `/api/catalog/views/${viewId}/nodes/${nodeId}/object`, undefined, ObjectCardSchema);
+  share(processId: string): Promise<Share> {
+    return this.call("post", `/api/catalog/processes/${processId}/shares`, undefined, ShareSchema);
   }
 
-  // --- источники ---
+  revokeShare(token: string): Promise<Share> {
+    return this.call("delete", `/api/catalog/shares/${encodeURIComponent(token)}`, undefined, ShareSchema);
+  }
+
+  /** Опубликованный процесс по ссылке: без входа и прав на каталог. */
+  shared(token: string): Promise<SharedProcess> {
+    return this.call("get", `/api/catalog/shared/${encodeURIComponent(token)}`, undefined, SharedProcessSchema);
+  }
+
+  sharedObject(token: string, nodeId: string): Promise<ObjectCard> {
+    const path = `/api/catalog/shared/${encodeURIComponent(token)}/nodes/${nodeId}/object`;
+    return this.call("get", path, undefined, ObjectCardSchema);
+  }
+
+  // --- подключения: общий API брокера под префиксом каталога ---
 
   sourceKinds(): Promise<string[]> {
     return this.call("get", "/api/catalog/source-kinds", undefined, z.array(z.string()));
   }
 
-  sources(): Promise<Source[]> {
-    return this.call("get", "/api/catalog/sources", undefined, z.array(SourceSchema));
-  }
-
-  source(sourceId: string): Promise<Source> {
-    return this.call("get", `/api/catalog/sources/${sourceId}`, undefined, SourceSchema);
-  }
-
-  createSource(spec: SourceCreate): Promise<Source> {
-    return this.call("post", "/api/catalog/sources", spec, SourceSchema);
-  }
-
-  updateSource(sourceId: string, spec: SourceSpec): Promise<Source> {
-    return this.call("put", `/api/catalog/sources/${sourceId}`, spec, SourceSchema);
-  }
-
-  deleteSource(sourceId: string): Promise<void> {
-    return this.call("delete", `/api/catalog/sources/${sourceId}`, undefined, DeletedSchema).then(() => undefined);
-  }
-
-  sourceConnections(sourceId: string): Promise<SourceConnection[]> {
-    const path = `/api/catalog/sources/${sourceId}/connections`;
-    return this.call("get", path, undefined, z.array(SourceConnectionSchema));
-  }
-
-  bindConnection(sourceId: string, connectionId: string): Promise<SourceConnection> {
-    const path = `/api/catalog/sources/${sourceId}/connections`;
-    return this.call("post", path, { connection_id: connectionId }, SourceConnectionSchema);
-  }
-
-  unbindConnection(sourceId: string, connectionId: string): Promise<void> {
-    const path = `/api/catalog/sources/${sourceId}/connections/${connectionId}`;
-    return this.call("delete", path, undefined, DeletedSchema).then(() => undefined);
-  }
-
-  /** Подключения пользователя: общий API брокера под префиксом каталога. */
   connections(kind?: string): Promise<ConnectionView[]> {
     const query = kind === undefined ? "" : `?${new URLSearchParams({ kind }).toString()}`;
     return this.call("get", `/api/catalog/connections${query}`, undefined, z.array(ConnectionViewSchema));
@@ -325,13 +279,48 @@ export class CatalogApi {
     return this.call("post", `/api/catalog/connections/${connectionId}/check`, undefined, ProbeResultSchema);
   }
 
-  sourceSyncs(sourceId: string): Promise<Sync[]> {
-    return this.call("get", `/api/catalog/sources/${sourceId}/syncs`, undefined, z.array(SyncSchema));
+  // --- снимки подключений и синхронизация ---
+
+  /** Подключения с версиями снимка: имя и вид на момент последнего снятия. */
+  synced(): Promise<SyncedConnection[]> {
+    return this.call("get", "/api/catalog/synced", undefined, z.array(SyncedConnectionSchema));
   }
 
-  startSync(sourceId: string, connectionId: string, scope: SyncScope): Promise<Sync> {
-    const body = { connection_id: connectionId, scope };
-    return this.call("post", `/api/catalog/sources/${sourceId}/syncs`, body, SyncSchema);
+  connectionVersions(connectionId: string): Promise<ConnectionVersion[]> {
+    const path = `/api/catalog/connections/${connectionId}/versions`;
+    return this.call("get", path, undefined, z.array(ConnectionVersionSchema));
+  }
+
+  /** Все версии снимка подключения; 409 — оно стоит в узлах процессов. */
+  forgetVersions(connectionId: string): Promise<number> {
+    const path = `/api/catalog/connections/${connectionId}/versions`;
+    return this.call("delete", path, undefined, ForgottenSchema).then((result) => result.versions);
+  }
+
+  /** Дети узла дерева версии; version < 0 — последняя. */
+  connectionTree(connectionId: string, version: number, path: string[]): Promise<TreeNode[]> {
+    const query = treeQuery(path, { version: String(version) });
+    const url = `/api/catalog/connections/${connectionId}/tree?${query}`;
+    return this.call("get", url, undefined, z.array(TreeNodeSchema));
+  }
+
+  connectionObject(connectionId: string, version: number, kind: ObjectKind, path: string[]): Promise<ObjectCard> {
+    const query = treeQuery(path, { version: String(version), kind });
+    return this.call("get", `/api/catalog/connections/${connectionId}/object?${query}`, undefined, ObjectCardSchema);
+  }
+
+  connectionDiff(connectionId: string, oldVersion: number, newVersion: number): Promise<SourceDiff> {
+    const query = new URLSearchParams({ old: String(oldVersion), new: String(newVersion) });
+    const url = `/api/catalog/connections/${connectionId}/diff?${query.toString()}`;
+    return this.call("get", url, undefined, SourceDiffSchema);
+  }
+
+  connectionSyncs(connectionId: string): Promise<Sync[]> {
+    return this.call("get", `/api/catalog/connections/${connectionId}/syncs`, undefined, z.array(SyncSchema));
+  }
+
+  startSync(connectionId: string, scope: SyncScope): Promise<Sync> {
+    return this.call("post", `/api/catalog/connections/${connectionId}/syncs`, scope, SyncSchema);
   }
 
   sync(syncId: string): Promise<Sync> {
@@ -340,27 +329,6 @@ export class CatalogApi {
 
   cancelSync(syncId: string): Promise<Sync> {
     return this.call("delete", `/api/catalog/syncs/${syncId}`, undefined, SyncSchema);
-  }
-
-  sourceVersions(sourceId: string): Promise<SourceVersion[]> {
-    const path = `/api/catalog/sources/${sourceId}/versions`;
-    return this.call("get", path, undefined, z.array(SourceVersionSchema));
-  }
-
-  /** Дети узла дерева версии; version < 0 — последняя. */
-  sourceTree(sourceId: string, version: number, path: string[]): Promise<TreeNode[]> {
-    const query = treeQuery(path, { version: String(version) });
-    return this.call("get", `/api/catalog/sources/${sourceId}/tree?${query}`, undefined, z.array(TreeNodeSchema));
-  }
-
-  sourceObject(sourceId: string, version: number, kind: ObjectKind, path: string[]): Promise<ObjectCard> {
-    const query = treeQuery(path, { version: String(version), kind });
-    return this.call("get", `/api/catalog/sources/${sourceId}/object?${query}`, undefined, ObjectCardSchema);
-  }
-
-  sourceDiff(sourceId: string, oldVersion: number, newVersion: number): Promise<SourceDiff> {
-    const query = new URLSearchParams({ old: String(oldVersion), new: String(newVersion) });
-    return this.call("get", `/api/catalog/sources/${sourceId}/diff?${query.toString()}`, undefined, SourceDiffSchema);
   }
 
   /** Поток CatalogChanged пользователя: server-sent events с cookie входа. */

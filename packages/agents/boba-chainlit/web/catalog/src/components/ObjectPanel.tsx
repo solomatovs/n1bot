@@ -1,11 +1,10 @@
-import { Crosshair, Plus, X } from "lucide-react";
+import { Crosshair, X } from "lucide-react";
 import { useEffect, useState, type ReactElement } from "react";
 
 import { ApiError, type CatalogApi } from "../api/client";
 import { renderRef, type Catalog, type ObjectCard, type ObjectRef, type ProcessNode } from "../model/catalog";
 import type { EditActions } from "../model/editing";
 import { Button, Chip, EmptyState, Facts, IconButton, Note, Panel, PanelHead, Section, Toolbar } from "../ui";
-import { defaultLayerChoice, LayerPicker, layerChoiceReady, type LayerChoice } from "./edit/LayerPicker";
 import { ObjectCardPanel } from "./sources/ObjectCardPanel";
 
 type Props = {
@@ -16,18 +15,28 @@ type Props = {
   /** Узел, который ждёт перенацеливания на этот объект. */
   retargetFor: ProcessNode | undefined;
   onOpenNode: (nodeId: string) => void;
+  /** Другой объект снимка в этой же панели: таблица за внешним ключом. */
+  onOpenObject: (ref: ObjectRef) => void;
   onClose: () => void;
 };
 
 type CardState = { status: "loading" } | { status: "failed"; message: string } | { status: "card"; card: ObjectCard };
 
-/** Панель объекта из дерева источника: родная карточка привязанной версии и
- * действия процесса — поставить в слой, открыть узел, перенацелить узел. */
-export function ObjectPanel({ api, catalog, object, editing, retargetFor, onOpenNode, onClose }: Props): ReactElement {
+/** Панель объекта из дерева подключения: родная карточка привязанной версии
+ * и действия процесса — поставить в слой, открыть узел, перенацелить узел. */
+export function ObjectPanel({
+  api,
+  catalog,
+  object,
+  editing,
+  retargetFor,
+  onOpenNode,
+  onOpenObject,
+  onClose,
+}: Props): ReactElement {
   const ref = object;
   const [state, setState] = useState<CardState>({ status: "loading" });
-  const [choice, setChoice] = useState<LayerChoice>(() => defaultLayerChoice(catalog.layers));
-  const version = catalog.context.pins[ref.source_id] ?? -1;
+  const version = catalog.context.pins[ref.connection_id] ?? -1;
   const address = renderRef(ref);
   const existing = catalog.nodeOf(ref);
 
@@ -35,7 +44,7 @@ export function ObjectPanel({ api, catalog, object, editing, retargetFor, onOpen
     let cancelled = false;
     setState({ status: "loading" });
     api
-      .sourceObject(ref.source_id, version, ref.kind, ref.path)
+      .connectionObject(ref.connection_id, version, ref.kind, ref.path)
       .then((card) => {
         if (!cancelled) {
           setState({ status: "card", card });
@@ -59,7 +68,7 @@ export function ObjectPanel({ api, catalog, object, editing, retargetFor, onOpen
     <div data-testid="object-panel" data-object={address} data-in-process={existing !== undefined}>
       <Panel>
         <PanelHead
-          eyebrow="source object"
+          eyebrow="database object"
           name={ref.path.at(-1) ?? address}
           mono
           actions={
@@ -89,7 +98,7 @@ export function ObjectPanel({ api, catalog, object, editing, retargetFor, onOpen
           />
           {existing !== undefined && (
             <Toolbar>
-              <Chip tone="draft">in layer {catalog.layer(existing.layer_id)?.name ?? "?"}</Chip>
+              <Chip tone="draft">on the canvas{existing.group_id === null ? "" : ` · ${catalog.group(existing.group_id)?.name ?? "?"}`}</Chip>
               <Button
                 size="sm"
                 onClick={() => {
@@ -115,21 +124,6 @@ export function ObjectPanel({ api, catalog, object, editing, retargetFor, onOpen
               </Button>
             </Toolbar>
           )}
-          {editing !== undefined && existing === undefined && retargetFor === undefined && (
-            <Toolbar mark="object-add">
-              <LayerPicker layers={catalog.layers} choice={choice} onChange={setChoice} label="layer for the new node" />
-              <Button
-                tone="primary"
-                icon={Plus}
-                disabled={!layerChoiceReady(choice)}
-                onClick={() => {
-                  editing.addNode(choice, ref);
-                }}
-              >
-                add to layer
-              </Button>
-            </Toolbar>
-          )}
         </Section>
 
         {state.status === "loading" && (
@@ -140,7 +134,7 @@ export function ObjectPanel({ api, catalog, object, editing, retargetFor, onOpen
         {state.status === "failed" && <EmptyState title="the object is not available">{state.message}</EmptyState>}
         {state.status === "card" && (
           <Section mark="object-card-section">
-            <ObjectCardPanel card={state.card} flat />
+            <ObjectCardPanel card={state.card} flat onOpenObject={onOpenObject} />
           </Section>
         )}
       </Panel>

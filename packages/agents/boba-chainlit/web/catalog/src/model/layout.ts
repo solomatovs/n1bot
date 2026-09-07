@@ -1,14 +1,12 @@
 import ELK, { type ElkExtendedEdge, type ElkNode, type LayoutOptions } from "elkjs/lib/elk.bundled.js";
 
-import type { NodePosition } from "./catalog";
 import { measuredOf, type FlowEdge, type ProcessFlowNode } from "./graph";
 
-/** Раскладка ELK слева направо: партиция узла — номер слоя, поэтому источники
- * всегда левее приёмников; перенос из liam erd-core с партициями вместо групп. */
+/** Раскладка ELK слева направо по потокам: источники левее приёмников;
+ * перенос из liam erd-core. */
 const LAYOUT_OPTIONS: LayoutOptions = {
   "elk.algorithm": "layered",
   "elk.direction": "RIGHT",
-  "elk.partitioning.activate": "true",
   "elk.separateConnectedComponents": "false",
   "elk.layered.spacing.baseValue": "40",
   "elk.spacing.componentComponent": "80",
@@ -24,18 +22,13 @@ const elk = new ELK();
 export type LayoutInput = {
   nodes: ProcessFlowNode[];
   edges: FlowEdge[];
-  partitionOf: (node: ProcessFlowNode) => number;
-  /** Сохранённые позиции вида: узел с позицией раскладка не двигает. */
-  saved: NodePosition[];
 };
 
-/** Узлы с позициями: сохранённые как есть, остальные от ELK по размерам, которые
- * замерил React Flow. Скрытые и ещё не замеренные узлы в раскладке не участвуют. */
-export async function computeLayout(input: LayoutInput): Promise<ProcessFlowNode[]> {
-  const savedById = new Map(input.saved.map((position) => [position.node_id, position]));
+/** Позиции от ELK по размерам, которые замерил React Flow, для видимых и
+ * замеренных узлов; кто из них переедет, решает холст. */
+export async function computeLayout(input: LayoutInput): Promise<Map<string, { x: number; y: number }>> {
   const visible = input.nodes.filter((node) => !node.hidden && measuredOf(node) !== undefined);
   const visibleIds = new Set(visible.map((node) => node.id));
-  const rest = input.nodes.filter((node) => !visibleIds.has(node.id));
 
   const children: ElkNode[] = visible.map((node) => {
     const size = measuredOf(node) ?? { width: 0, height: 0 };
@@ -43,10 +36,7 @@ export async function computeLayout(input: LayoutInput): Promise<ProcessFlowNode
       id: node.id,
       width: size.width,
       height: size.height,
-      layoutOptions: {
-        "elk.partitioning.partition": String(input.partitionOf(node)),
-        "elk.alignment": "LEFT",
-      },
+      layoutOptions: { "elk.alignment": "LEFT" },
     };
   });
 
@@ -60,14 +50,5 @@ export async function computeLayout(input: LayoutInput): Promise<ProcessFlowNode
     placed.set(child.id, { x: child.x ?? 0, y: child.y ?? 0 });
   }
 
-  const positioned = visible.map((node) => {
-    const saved = savedById.get(node.id);
-    if (saved !== undefined) {
-      return { ...node, position: { x: saved.x, y: saved.y } };
-    }
-
-    return { ...node, position: placed.get(node.id) ?? node.position };
-  });
-
-  return [...rest, ...positioned];
+  return placed;
 }

@@ -1,16 +1,17 @@
 """Инструменты LLM над каталогом данных: живут на хосте и зовут CatalogService
 от имени субъекта хода чата.
 
-catalog_read отдаёт модели снимок процесса или срез по узлам с колонками из
-источников, соседями по потокам и видами загрузки; catalog_draft создаёт
-черновик или перечисляет открытые; catalog_propose шлёт порцию операций
-JSON-списком; catalog_diff показывает черновик относительно его базовой
-версии; catalog_open оставляет в чате ссылку на страницу черновика или вида;
-catalog_sync снимает структуру источника инструментом его вида и ждёт итога.
+catalog_read перечисляет процессы или отдаёт модели снимок одного процесса
+либо срез по узлам с колонками из снимков подключений и соседями по потокам;
+catalog_draft создаёт черновик процесса или перечисляет открытые;
+catalog_propose шлёт порцию операций JSON-списком; catalog_diff показывает
+черновик относительно его базовой версии; catalog_open оставляет в чате
+ссылку на страницу процесса или черновика; catalog_sync снимает структуру
+подключения инструментом его вида и ждёт итога.
 
-Ошибки: ErrorResult — нет хода чата, нет прав, черновик или вид не найден,
-операции не разбираются или не применимы, хранилище недоступно; остальное
-упаковывает ToolErrorGuard.
+Ошибки: ErrorResult — нет хода чата, нет прав, процесс или черновик не
+найден, операции не разбираются или не применимы, хранилище недоступно;
+остальное упаковывает ToolErrorGuard.
 """
 
 from __future__ import annotations
@@ -39,22 +40,21 @@ from boba.catalog_service import (
     AuthorVia,
     CatalogService,
     CatalogServiceError,
+    ConnectionInfo,
     Draft,
     DraftClosedError,
     DraftConflictError,
     DraftNotFoundError,
     DraftStaleError,
     DraftState,
-    Source,
-    SourceNotFoundError,
+    Process,
+    ProcessNotFoundError,
+    SnapshotKindMismatchError,
     SyncCaller,
-    SyncConnectionNotBoundError,
-    SyncRequest,
     SyncRunningError,
     SyncScope,
     SyncSetupError,
     SyncStatus,
-    ViewNotFoundError,
 )
 from boba.identity.context import CallContext, Subject
 from boba.identity.errors import RefusalError
@@ -105,72 +105,79 @@ class CatalogToolError(StrEnum):
     BAD_ID = "catalog_bad_id"
     STORE = "catalog_store_error"
     SYNC_REFUSED = "catalog_sync_refused"
-    SYNC_AMBIGUOUS = "catalog_sync_ambiguous"
 
 
 class CatalogLinkKind(StrEnum):
     """Что открывает ссылка каталога в чате."""
 
     DRAFT = "draft"
-    VIEW = "view"
+    PROCESS = "process"
 
 
 class CatalogPageUrl(StrEnum):
     """Адреса страницы каталога относительно префикса приложения."""
 
     DRAFT = "/catalog/drafts/{draft_id}"
-    VIEW = "/catalog/views/{view_id}"
+    PROCESS = "/catalog/processes/{process_id}"
 
     @classmethod
     def draft(cls, prefix: str, draft_id: UUID) -> str:
         return prefix + cls.DRAFT.value.format(draft_id=draft_id)
 
     @classmethod
-    def view(cls, prefix: str, view_id: UUID) -> str:
-        return prefix + cls.VIEW.value.format(view_id=view_id)
+    def process(cls, prefix: str, process_id: UUID) -> str:
+        return prefix + cls.PROCESS.value.format(process_id=process_id)
 
 
 class CatalogPrompt(StrEnum):
     """Тексты фасада инструментов для модели."""
 
+    PROCESS = (
+        "Process: its name or id (uuid); empty string lists the processes "
+        "with their ids, versions, node counts and open drafts."
+    )
     NODES = (
         "Comma-separated node labels to focus on (object name or alias); empty "
         "string returns the whole process. With labels the answer holds those "
-        "nodes with their source columns, the flows touching them and the nodes "
-        "on the other end of those flows."
+        "nodes with their columns, the flows touching them and the nodes on the "
+        "other end of those flows."
+    )
+    DRAFT_PROCESS = (
+        "Process the draft belongs to: its name or id (uuid); empty string "
+        "starts a draft of a new process, which gets the draft's name when "
+        "published."
     )
     DRAFT_NAME = (
-        "Name of a new draft to create; empty string lists the open drafts instead. "
-        "A draft is a branch of operations over the published process: propose "
-        "changes into it, then the user publishes it from the page."
+        "Name of a new draft to create; empty string lists the user's open "
+        "drafts instead (of that process, or of every process when the process "
+        "is empty too). A draft is a branch of operations over the published "
+        "process: propose changes into it, then the user publishes it from the "
+        "page."
     )
     DRAFT_ID = "Draft id (uuid) from catalog_draft."
     OPERATIONS = (
-        'JSON array of operations. Each item has "op" and a body: add_layer/'
-        "set_layer {layer: {id, name, position, description}}, remove_layer {id}; "
-        "add_node/set_node {node: {id, layer_id, ref: {source_id, kind, path[]}, "
-        "alias, note}}, retarget_node {id, ref}, remove_node {id}; "
-        "add_load_kind/set_load_kind {load_kind: {id, name, description, fields: "
-        "[{name, type: text|int|bool|column|columns|routine, side: source|target|any, "
-        "required, description}]}}, remove_load_kind {id}; add_flow/set_flow "
-        "{flow: {id, from_node_id, to_node_id, load: {kind_id, values}, "
-        "description}}, remove_flow {id}. Entities carry their own uuid ids: "
-        "generate new uuids for add_*, reuse existing ids for set_* (the whole "
-        "entity is replaced) and remove_*. A node points at an object of a "
-        "metadata source by its address (kind and path as in catalog_sources); "
-        "flow load values follow the fields of the load kind: column fields name "
-        "columns of the flow ends by their names, routine fields carry an object "
-        "address of a function or procedure. Removing a node is refused while "
-        "flows use it: remove the flows earlier in the same list."
+        'JSON array of operations. Each item has "op" and a body: add_node/'
+        "set_node {node: {id, ref: {connection_id, kind, path[]}, position: "
+        "{x, y} or null, group_id: uuid or null, alias, note}}, retarget_node "
+        "{id, ref}, remove_node {id}; add_group/set_group {group: {id, name}}, "
+        "remove_group {id}; "
+        "add_flow/set_flow {flow: {id, from_node_id, to_node_id, columns: "
+        "[{from_column, to_column}], description}}, remove_flow {id}. Entities "
+        "carry their own uuid ids: generate new uuids for add_*, reuse existing "
+        "ids for set_* (the whole entity is replaced) and remove_*. A node points "
+        "at an object of a synced connection by its address (kind and path); a "
+        "flow says which columns of the source node go into which columns of "
+        "the target node, by their names from catalog_read; several source "
+        "columns may go into one target column and vice versa. Nodes are free "
+        "on the canvas: position is optional (the page lays out nodes without "
+        "one) and a group is an optional named frame around nodes. Removing a "
+        "node is refused while flows use it, removing a group while nodes are "
+        "in it: remove or move them earlier in the same list."
     )
-    LINK_KIND = "What to open: 'draft' or 'view'."
-    LINK_ID = "Id (uuid) of the draft or the view."
+    LINK_KIND = "What to open: 'process' or 'draft'."
+    LINK_ID = "Id (uuid) of the process or the draft."
     OPENED_NOTE = "the link stays in the chat and opens the catalog page"
-    SYNC_SOURCE = "Metadata source: its name or id (uuid) from catalog_sources."
-    SYNC_CONNECTION = (
-        "Id (uuid) of a connection bound to the source; empty string picks the "
-        "only bound connection."
-    )
+    SYNC_CONNECTION = "Connection to snapshot: its name or id (uuid)."
     SYNC_SCHEMAS = (
         "Comma-separated schemas to snapshot; empty string takes every "
         "non-system schema of the database."
@@ -178,32 +185,47 @@ class CatalogPrompt(StrEnum):
 
 
 class ColumnView(BaseModel):
-    """Колонка объекта источника глазами модели: имя как в источнике."""
+    """Колонка объекта глазами модели: имя как в базе."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str
 
 
+class PositionView(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    x: float
+    y: float
+
+
 class NodeView(BaseModel):
-    """Узел с именем слоя, адресом объекта и колонками из версии источника."""
+    """Узел с позицией, группой, адресом объекта и колонками из версии снимка."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: UUID
-    layer: str
-    layer_id: UUID
+    position: PositionView | None
+    group: str | None
+    group_id: UUID | None
     label: str
     alias: str | None
     note: str
-    source_id: UUID
+    connection_id: UUID
     object_kind: str
     path: tuple[str, ...]
     columns: tuple[ColumnView, ...]
 
 
+class ColumnLinkView(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    from_column: str
+    to_column: str
+
+
 class FlowView(BaseModel):
-    """Поток с подписями концов и правилом загрузки."""
+    """Поток с подписями концов и парами колонок."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -212,39 +234,28 @@ class FlowView(BaseModel):
     from_node_id: UUID
     to_node: str
     to_node_id: UUID
-    load_kind: str
-    load_kind_id: UUID
-    load_values: Mapping[str, Any]
+    columns: tuple[ColumnLinkView, ...]
     description: str
 
 
-class LoadKindView(BaseModel):
+class GroupView(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: UUID
     name: str
-    description: str
-    fields: tuple[Mapping[str, Any], ...]
-
-
-class LayerView(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    id: UUID
-    name: str
-    position: int
 
 
 class CatalogView(BaseModel):
     """Снимок процесса или его срез в форме, удобной модели: подписи рядом с id,
-    колонки узлов из привязанных версий источников."""
+    колонки узлов из привязанных версий снимков."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    process_id: UUID
+    process: str
     version: int
     pins: Mapping[str, int]
-    layers: tuple[LayerView, ...]
-    load_kinds: tuple[LoadKindView, ...]
+    groups: tuple[GroupView, ...]
     nodes: tuple[NodeView, ...]
     flows: tuple[FlowView, ...]
     unknown_nodes: tuple[str, ...]
@@ -252,8 +263,8 @@ class CatalogView(BaseModel):
     @classmethod
     def of(
         cls,
+        process: Process,
         snapshot: CatalogSnapshot,
-        version: int,
         pins: Mapping[UUID, int],
         resolver: ObjectResolver,
         labels: Sequence[str],
@@ -277,33 +288,20 @@ class CatalogView(BaseModel):
 
             nodes.append(cls._node(snapshot, node, resolver))
 
-        layers: list[LayerView] = []
-        for layer in sorted(snapshot.layers.values(), key=attrgetter("position")):
-            layers.append(
-                LayerView(id=layer.id, name=layer.name, position=layer.position)
-            )
-
-        kinds: list[LoadKindView] = []
-        for kind in snapshot.load_kinds.values():
-            fields = kind.model_dump(mode="json")["fields"]
-            kinds.append(
-                LoadKindView(
-                    id=kind.id,
-                    name=kind.name,
-                    description=kind.description,
-                    fields=tuple(fields),
-                )
-            )
+        groups: list[GroupView] = []
+        for group in sorted(snapshot.groups.values(), key=attrgetter("name")):
+            groups.append(GroupView(id=group.id, name=group.name))
 
         rendered_pins: dict[str, int] = {}
-        for source_id, pinned in pins.items():
-            rendered_pins[str(source_id)] = pinned
+        for connection_id, pinned in pins.items():
+            rendered_pins[str(connection_id)] = pinned
 
         return cls(
-            version=version,
+            process_id=process.id,
+            process=process.name,
+            version=process.latest_version,
             pins=rendered_pins,
-            layers=tuple(layers),
-            load_kinds=tuple(kinds),
+            groups=tuple(groups),
             nodes=tuple(nodes),
             flows=tuple(flows),
             unknown_nodes=tuple(unknown),
@@ -344,7 +342,13 @@ class CatalogView(BaseModel):
     def _node(
         snapshot: CatalogSnapshot, node: Node, resolver: ObjectResolver
     ) -> NodeView:
-        layer_name = snapshot.layers[node.layer_id].name
+        group_name = None
+        if node.group_id is not None:
+            group_name = snapshot.groups[node.group_id].name
+
+        position = None
+        if node.position is not None:
+            position = PositionView(x=node.position.x, y=node.position.y)
 
         columns: list[ColumnView] = []
         names = resolver.columns_of(node.ref)
@@ -354,12 +358,13 @@ class CatalogView(BaseModel):
 
         return NodeView(
             id=node.id,
-            layer=layer_name,
-            layer_id=node.layer_id,
+            position=position,
+            group=group_name,
+            group_id=node.group_id,
             label=node.label,
             alias=node.alias,
             note=node.note,
-            source_id=node.ref.source_id,
+            connection_id=node.ref.connection_id,
             object_kind=node.ref.kind.value,
             path=node.ref.path,
             columns=tuple(columns),
@@ -367,8 +372,11 @@ class CatalogView(BaseModel):
 
     @staticmethod
     def _flow(snapshot: CatalogSnapshot, flow: Flow) -> FlowView:
-        kind = snapshot.load_kinds[flow.load.kind_id]
-        values = flow.load.model_dump(mode="json")["values"]
+        columns: list[ColumnLinkView] = []
+        for link in flow.columns:
+            columns.append(
+                ColumnLinkView(from_column=link.from_column, to_column=link.to_column)
+            )
 
         return FlowView(
             id=flow.id,
@@ -376,9 +384,7 @@ class CatalogView(BaseModel):
             from_node_id=flow.from_node_id,
             to_node=snapshot.nodes[flow.to_node_id].label,
             to_node_id=flow.to_node_id,
-            load_kind=kind.name,
-            load_kind_id=kind.id,
-            load_values=values,
+            columns=tuple(columns),
             description=flow.description,
         )
 
@@ -425,42 +431,60 @@ class CatalogTools:
         self._service = service
         self._prefix = prefix
 
-    async def read(self, nodes: str) -> tuple[str, ToolResult]:
+    async def read(self, process: str, nodes: str) -> tuple[str, ToolResult]:
         try:
             subject = self._subject()
             service = await self._service()
-            snapshot = await service.snapshot(subject)
-            versions = await service.versions(subject)
-            pins = await service.published_pins(subject)
+            if not process.strip():
+                listed = await service.list_processes(subject)
+                return pack_result(self._processes_table(listed))
+
+            found = await self._process_by(service, subject, process)
+            snapshot = await service.snapshot(subject, found.id)
+            pins = await service.published_pins(subject, found.id)
             resolver = await service.resolver_of(subject, pins)
         except (RefusalError, CatalogServiceError) as exc:
             return pack_result(self._error(exc))
 
-        version = 0
-        if versions:
-            version = versions[-1].number
-
         labels = self._names(nodes)
-        view = CatalogView.of(snapshot, version, pins, resolver, labels)
+        view = CatalogView.of(found, snapshot, pins, resolver, labels)
 
         return pack_result(JsonResult(payload=view.model_dump(mode="json")))
 
-    async def draft(self, name: str) -> tuple[str, ToolResult]:
+    async def draft(self, process: str, name: str) -> tuple[str, ToolResult]:
+        """Черновик процесса либо нового процесса (пустой process); пустое
+        имя — свои открытые черновики."""
         try:
             subject = self._subject()
             service = await self._service()
-            if not name.strip():
-                drafts = await service.open_drafts(subject)
-                return pack_result(self._drafts_table(drafts))
+            found = None
+            if process.strip():
+                found = await self._process_by(service, subject, process)
 
-            created = await service.create_draft(subject, name.strip())
+            if not name.strip():
+                drafts = await service.my_drafts(subject)
+                return pack_result(self._drafts_table(drafts, found))
+
+            process_id = None
+            if found is not None:
+                process_id = found.id
+
+            created = await service.create_draft(subject, process_id, name.strip())
         except (RefusalError, CatalogServiceError) as exc:
             return pack_result(self._error(exc))
 
-        text = (
-            f"draft created: {created.id} ({created.name!r}) over version "
-            f"{created.base_version}; propose operations with catalog_propose"
-        )
+        if found is None:
+            text = (
+                f"draft created: {created.id} ({created.name!r}) of a new process "
+                "that gets this name when published; propose operations with "
+                "catalog_propose"
+            )
+        else:
+            text = (
+                f"draft created: {created.id} ({created.name!r}) over version "
+                f"{created.base_version} of process {found.name!r}; propose "
+                "operations with catalog_propose"
+            )
         return pack_result(
             TextResult(text=text, metadata={"draft_id": str(created.id)})
         )
@@ -513,81 +537,62 @@ class CatalogTools:
 
         return content, link
 
-    async def sync(
-        self, source: str, connection: str, schemas: str
-    ) -> tuple[str, ToolResult]:
-        """Синхронизация источника до конца: запись версии или причина отказа."""
+    async def sync(self, connection: str, schemas: str) -> tuple[str, ToolResult]:
+        """Синхронизация подключения до конца: запись версии или причина отказа."""
         try:
             context = CallContext.current()
             service = await self._service()
-            source_row = await self._source_by(service, context.subject, source)
-            connection_id = await self._connection_of(
-                service, context.subject, source_row, connection
-            )
-            request = SyncRequest(
-                connection_id=connection_id,
-                scope=SyncScope(schemas=self._schemas(schemas)),
-            )
+            info = await self._connection_by(service, context.subject, connection)
             caller = SyncCaller(
                 subject=context.subject,
                 initiator=context.initiator,
                 credential=context.credential,
             )
-            started = await service.start_sync(caller, source_row.id, request)
+            scope = SyncScope(schemas=self._schemas(schemas))
+            started = await service.start_sync(caller, info.id, scope)
             finished = await service.syncs.wait(started.id)
         except (RefusalError, CatalogServiceError) as exc:
             return pack_result(self._error(exc))
 
         payload = finished.model_dump(mode="json")
-        payload["source_name"] = source_row.name
         if finished.status is SyncStatus.DONE:
             return pack_result(JsonResult(payload=payload))
 
         message = (
-            f"sync {finished.id} of source {source_row.name!r} ended as "
+            f"sync {finished.id} of connection {info.name!r} ended as "
             f"{finished.status.value}: {finished.error}"
         )
         return pack_result(
             ErrorResult(message=message, error_kind=CatalogToolError.SYNC_REFUSED)
         )
 
-    async def _source_by(
+    async def _process_by(
         self, service: CatalogService, subject: Subject, raw: str
-    ) -> Source:
-        """Источник по id либо по имени.
+    ) -> Process:
+        """Процесс по имени либо по id.
 
         Ошибки:
-        SourceNotFoundError — ни по id, ни по имени.
+        ProcessNotFoundError — ни по имени, ни по id.
         """
-        sources = await service.list_sources(subject)
-        for source in sources:
-            if source.name == raw.strip():
-                return source
+        for process in await service.list_processes(subject):
+            if process.name == raw.strip():
+                return process
 
-        source_id = self._uuid(raw)
-        return await service.source(subject, source_id)
+        return await service.process(subject, self._uuid(raw))
 
-    async def _connection_of(
-        self, service: CatalogService, subject: Subject, source: Source, raw: str
-    ) -> UUID:
-        """Подключение по id либо единственное привязанное.
+    async def _connection_by(
+        self, service: CatalogService, subject: Subject, raw: str
+    ) -> ConnectionInfo:
+        """Подключение по имени либо по id глазами субъекта.
 
         Ошибки:
-        RefusalError — привязок нет или их несколько, а id не задан.
+        SyncSetupError — подключение субъекту не видно.
         """
-        if raw.strip():
-            return self._uuid(raw)
-
-        bound = await service.source_connections(subject, source.id)
-        if len(bound) != 1:
-            ids = [str(item.connection_id) for item in bound]
-            msg = (
-                f"source {source.name!r} has {len(bound)} bound connection(s) "
-                f"{ids}; pass the connection id explicitly"
-            )
-            raise RefusalError(CatalogToolError.SYNC_AMBIGUOUS.value, msg)
-
-        return bound[0].connection_id
+        directory = service.syncs.directory
+        try:
+            return await directory.named(subject, raw.strip())
+        except SyncSetupError:
+            return await directory.info_of(subject, self._uuid(raw))
 
     @staticmethod
     def _schemas(raw: str) -> tuple[str, ...]:
@@ -631,8 +636,8 @@ class CatalogTools:
             state = await service.draft_state(subject, entity_id)
             return state.draft.name, CatalogPageUrl.draft(prefix, entity_id)
 
-        view = await service.view(subject, entity_id)
-        return view.name, CatalogPageUrl.view(prefix, entity_id)
+        process = await service.process(subject, entity_id)
+        return process.name, CatalogPageUrl.process(prefix, entity_id)
 
     @staticmethod
     def _subject() -> Subject:
@@ -652,7 +657,7 @@ class CatalogTools:
         try:
             return CatalogLinkKind(raw.strip().lower())
         except ValueError as exc:
-            msg = f"kind must be 'draft' or 'view', got {raw!r}"
+            msg = f"kind must be 'process' or 'draft', got {raw!r}"
             raise RefusalError(CatalogToolError.BAD_ID.value, msg) from exc
 
     @staticmethod
@@ -677,13 +682,44 @@ class CatalogTools:
         return names
 
     @staticmethod
-    def _drafts_table(drafts: Sequence[Draft]) -> ToolResult:
+    def _processes_table(processes: Sequence[Process]) -> ToolResult:
+        rows: list[dict[str, Any]] = []
+        for process in processes:
+            rows.append(
+                {
+                    "process_id": str(process.id),
+                    "name": process.name,
+                    "description": process.description,
+                    "version": process.latest_version,
+                    "nodes": process.nodes,
+                    "open_drafts": process.open_drafts,
+                }
+            )
+
+        if not rows:
+            return TextResult(
+                text="no processes yet; the user creates one on the catalog page"
+            )
+
+        return TableResult(rows=rows)
+
+    @staticmethod
+    def _drafts_table(drafts: Sequence[Draft], process: Process | None) -> ToolResult:
+        """Свои открытые черновики; с процессом — только его."""
         rows: list[dict[str, Any]] = []
         for draft in drafts:
+            if process is not None and draft.process_id != process.id:
+                continue
+
+            process_id = ""
+            if draft.process_id is not None:
+                process_id = str(draft.process_id)
+
             rows.append(
                 {
                     "draft_id": str(draft.id),
                     "name": draft.name,
+                    "process_id": process_id,
                     "base_version": draft.base_version,
                     "created_at": draft.created_at.isoformat(timespec="seconds"),
                 }
@@ -696,13 +732,12 @@ class CatalogTools:
 
     ERROR_KINDS: ClassVar[tuple[tuple[type[Exception], CatalogToolError], ...]] = (
         (DraftNotFoundError, CatalogToolError.NOT_FOUND),
-        (ViewNotFoundError, CatalogToolError.NOT_FOUND),
+        (ProcessNotFoundError, CatalogToolError.NOT_FOUND),
         (DraftClosedError, CatalogToolError.DRAFT_CLOSED),
         (DraftStaleError, CatalogToolError.DRAFT_STALE),
-        (SourceNotFoundError, CatalogToolError.NOT_FOUND),
         (SyncRunningError, CatalogToolError.SYNC_REFUSED),
         (SyncSetupError, CatalogToolError.SYNC_REFUSED),
-        (SyncConnectionNotBoundError, CatalogToolError.SYNC_REFUSED),
+        (SnapshotKindMismatchError, CatalogToolError.SYNC_REFUSED),
     )
     """Ошибки сервиса, у которых виду отказа хватает текста самой ошибки."""
 
@@ -744,23 +779,25 @@ def build_catalog_tools(
 
     @tool(response_format="content_and_artifact")
     async def catalog_read(
+        process: Annotated[str, Field(description=CatalogPrompt.PROCESS)],
         nodes: Annotated[str, Field(description=CatalogPrompt.NODES)],
     ) -> tuple[str, ToolResult]:
-        """Read the published load process: layers, nodes (objects of metadata
-        sources with their columns), load kinds with their fields and flows
-        between nodes. Call it before proposing changes to learn the existing
-        ids, addresses and load kinds; use catalog_sources for the objects a
-        node could point at."""
-        return await tools.read(nodes)
+        """List the data flow processes (empty process) or read a published
+        process: nodes (objects of synced connections with their columns,
+        canvas positions and optional groups), groups and flows between nodes
+        with their column pairs. Call it before proposing changes to learn the
+        existing ids and addresses."""
+        return await tools.read(process, nodes)
 
     @tool(response_format="content_and_artifact")
     async def catalog_draft(
+        process: Annotated[str, Field(description=CatalogPrompt.DRAFT_PROCESS)],
         name: Annotated[str, Field(description=CatalogPrompt.DRAFT_NAME)],
     ) -> tuple[str, ToolResult]:
-        """Create a catalog draft by name or list the open drafts (empty name).
-        Changes go into a draft first; the user reviews and publishes it on
-        the catalog page."""
-        return await tools.draft(name)
+        """Create a draft of a process (or of a new process when the process is
+        empty) or list the user's open drafts (empty name). Changes go into a
+        draft first; the user reviews and publishes it on the catalog page."""
+        return await tools.draft(process, name)
 
     @tool(response_format="content_and_artifact")
     async def catalog_propose(
@@ -794,23 +831,22 @@ def build_catalog_tools(
             str, Field(min_length=1, description=CatalogPrompt.LINK_ID)
         ],
     ) -> tuple[str, ToolResult]:
-        """Put a link to the catalog page of a draft or a view into the chat so
-        the user can open the diagram."""
+        """Put a link to the catalog page of a process or a draft into the
+        chat so the user can open the diagram."""
         return await tools.open(kind, entity_id)
 
     @tool(response_format="content_and_artifact")
     async def catalog_sync(
-        source: Annotated[
-            str, Field(min_length=1, description=CatalogPrompt.SYNC_SOURCE)
+        connection: Annotated[
+            str, Field(min_length=1, description=CatalogPrompt.SYNC_CONNECTION)
         ],
-        connection: Annotated[str, Field(description=CatalogPrompt.SYNC_CONNECTION)],
         schemas: Annotated[str, Field(description=CatalogPrompt.SYNC_SCHEMAS)],
     ) -> tuple[str, ToolResult]:
-        """Snapshot the structure of a metadata source through one of its
-        bound connections and store it as a new source version. Waits for the
-        sync to finish and returns its record: version number, object counts
-        or the failure reason."""
-        return await tools.sync(source, connection, schemas)
+        """Snapshot the structure of a database behind a connection and store
+        it as a new catalog version of that connection. Waits for the sync to
+        finish and returns its record: version number, object counts or the
+        failure reason."""
+        return await tools.sync(connection, schemas)
 
     return [
         catalog_read,

@@ -1,25 +1,55 @@
-/* левая панель: вкладки, поиск, группы со списками, подвал */
+/* левая панель: вкладки, закреплённые полосы, группы со списками */
 
 .pane {
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   height: 100%;
   min-height: 0;
 }
 
 .pane__bar {
+  flex: none;
   padding: var(--s2) var(--s3);
   border-bottom: 1px solid var(--hairline);
 }
 
+.pane__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s1);
+  min-height: var(--h-ctl-lg);
+}
+
+.pane__actions:empty {
+  display: none;
+}
+
 .pane__scroll {
+  flex: 1 1 auto;
   overflow-y: auto;
   min-height: 0;
   padding-bottom: var(--s2);
 }
 
+.pane__search {
+  padding: var(--s1) 0 var(--s2);
+}
+
 .pane__group {
   padding: var(--s2) var(--s2) var(--s1) var(--s3);
+}
+
+.pane__group + .pane__group {
+  border-top: 1px solid var(--hairline);
+}
+
+.pane__group--nested {
+  padding: 0 0 var(--s1);
+}
+
+.pane__group--nested + .pane__group--nested {
+  border-top: 0;
 }
 
 .pane__group-head {

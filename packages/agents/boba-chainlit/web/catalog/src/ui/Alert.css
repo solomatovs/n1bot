@@ -52,13 +52,23 @@
 }
 
 .alert--ok {
-  border-left-color: var(--signal);
+  border-left-color: var(--ok, var(--signal));
 }
 
 .alert--ok .alert__icon {
-  color: var(--signal);
+  color: var(--ok, var(--signal));
 }
 
 .alert--info {
   border-left-color: var(--muted);
+}
+
+/* режим черновика: полоса цветом сигнала, чтобы правки не спутать с публикацией */
+.alert--draft {
+  border-left-color: var(--signal);
+  background: color-mix(in srgb, var(--signal) 10%, var(--surface));
+}
+
+.alert--draft .alert__icon {
+  color: var(--signal);
 }

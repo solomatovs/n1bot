@@ -32,20 +32,20 @@ export function highlight(
     return related.get(target)?.has(id) ?? false;
   };
 
-  const highlightedNodes = nodes.map((node) => {
-    const isActive = node.id === trigger.activeId;
-    const isHighlighted =
-      isRelated(trigger.activeId, node.id) || node.id === trigger.hoverId || isRelated(trigger.hoverId, node.id);
-
-    return {
-      ...node,
-      zIndex: isActive || isHighlighted ? Z_INDEX.nodeHighlighted : Z_INDEX.node,
-      data: { ...node.data, isActive, isHighlighted },
-    };
-  });
-
   const touches = (target: string | undefined, edge: FlowEdge): boolean =>
     target !== undefined && (edge.source === target || edge.target === target);
+
+  // колонки, по которым идут подсвеченные линии, на каждой стороне
+  const litColumns = new Map<string, Set<string>>();
+  const lit = (nodeId: string, column: string | undefined): void => {
+    if (column === undefined) {
+      return;
+    }
+
+    const set = litColumns.get(nodeId) ?? new Set<string>();
+    set.add(column);
+    litColumns.set(nodeId, set);
+  };
 
   const highlightedEdges = edges.map((edge) => {
     const isHighlighted = touches(trigger.activeId, edge) || touches(trigger.hoverId, edge);
@@ -54,10 +54,27 @@ export function highlight(
       return edge;
     }
 
+    if (isHighlighted) {
+      lit(edge.source, data.pair?.from_column);
+      lit(edge.target, data.pair?.to_column);
+    }
+
     return {
       ...edge,
       zIndex: isHighlighted ? Z_INDEX.edgeHighlighted : Z_INDEX.edge,
       data: { ...data, isHighlighted },
+    };
+  });
+
+  const highlightedNodes = nodes.map((node) => {
+    const isActive = node.id === trigger.activeId;
+    const isHighlighted =
+      isRelated(trigger.activeId, node.id) || node.id === trigger.hoverId || isRelated(trigger.hoverId, node.id);
+
+    return {
+      ...node,
+      zIndex: isActive || isHighlighted ? Z_INDEX.nodeHighlighted : Z_INDEX.node,
+      data: { ...node.data, isActive, isHighlighted, litColumns: litColumns.get(node.id) ?? new Set<string>() },
     };
   });
 

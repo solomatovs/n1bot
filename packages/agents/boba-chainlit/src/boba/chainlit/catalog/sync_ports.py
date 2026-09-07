@@ -1,6 +1,6 @@
 """Порты каталога над рантаймом приложения: инструменты субъекта из реестра
 процесса, подключения из брокера соединений и охранник удаления подключения,
-которое стоит в источнике каталога.
+которое каталог держит версиями снимка или узлами процессов.
 
 Ошибки:
 SyncSetupError — подключение субъекту не видно или брокер соединений
@@ -25,7 +25,7 @@ from boba.identity.errors import RefusalError
 from boba.toolrun.invoke import ToolInvoker
 from boba.toolrun.registry import ToolRegistry
 
-__all__ = ["BoundConnectionGuard", "BrokerConnectionDirectory", "RegistrySyncTools"]
+__all__ = ["BrokerConnectionDirectory", "CatalogHoldGuard", "RegistrySyncTools"]
 
 
 class RegistrySyncTools(SyncTools):
@@ -62,11 +62,32 @@ class BrokerConnectionDirectory(ConnectionDirectory):
 
         return ConnectionInfo(id=row.id, name=row.name, kind=row.kind)
 
+    async def named(self, subject: Subject, name: str) -> ConnectionInfo:
+        try:
+            visible = await self._connections.visible_all(subject)
+        except RuntimeError as exc:
+            msg = (
+                f"sync cannot resolve connection {name!r}: the connection "
+                f"broker is unavailable: {exc}"
+            )
+            raise SyncSetupError(msg) from exc
 
-class BoundConnectionGuard(DeleteGuard):
-    """Реализация DeleteGuard брокера каталогом: привязанное к источнику
-    подключение удалять нельзя, пока его не отвязали. Каталог выключен —
-    держать некому."""
+        for entry in visible.rows:
+            if entry.row.name != name:
+                continue
+
+            return ConnectionInfo(
+                id=entry.row.id, name=entry.row.name, kind=entry.row.kind
+            )
+
+        msg = f"sync cannot use connection {name!r}: not visible to {subject.login!r}"
+        raise SyncSetupError(msg)
+
+
+class CatalogHoldGuard(DeleteGuard):
+    """Реализация DeleteGuard брокера каталогом: подключение с версиями
+    снимка или узлами процессов удалять нельзя, пока их не убрали. Каталог
+    выключен — держать некому."""
 
     def __init__(self, service: Callable[[], Awaitable[CatalogService]]) -> None:
         self._service = service
@@ -77,8 +98,4 @@ class BoundConnectionGuard(DeleteGuard):
         except RuntimeError:
             return ""
 
-        holder = await service.sources.holder_of(connection_id)
-        if holder is None:
-            return ""
-
-        return f"it is bound to catalog source {holder.name!r} ({holder.id})"
+        return await service.holding_reason(connection_id)

@@ -44,6 +44,11 @@
   background: var(--raised);
 }
 
+.list__row--nested {
+  padding-left: var(--s4);
+  border-left-color: var(--hairline-strong);
+}
+
 .list__row[data-active="true"] {
   border-left-color: var(--signal);
   background: var(--raised);

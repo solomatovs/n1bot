@@ -8,7 +8,7 @@ PostgresError — пул, соединение или запрос отказа�
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from enum import StrEnum
 from typing import Any
 
@@ -94,6 +94,45 @@ class PostgresTable:
                 f"{self._schema} failed: {exc}"
             )
             raise PostgresError(msg) from exc
+
+    async def _check_layouts(self, layouts: Mapping[str, Iterable[str]]) -> None:
+        """Колонки таблиц ровно те, что ожидает код: таблица старого выпуска,
+        которую `create table if not exists` оставил как есть, — ошибка с
+        расхождением и советом снести схему, а не тихая работа до первого запроса.
+
+        Ошибки:
+        PostgresError — раскладка таблицы расходится с ожидаемой либо
+            information_schema недоступна.
+        """
+        for table, columns in layouts.items():
+            expected = set(columns)
+            actual = await self._existing_columns(table)
+            missing = sorted(expected - actual)
+            unexpected = sorted(actual - expected)
+            if not missing and not unexpected:
+                continue
+
+            msg = (
+                f"table {self._schema}.{table} has a layout the code does not "
+                f"expect: missing columns {missing}, unexpected columns "
+                f"{unexpected}; the table was created by another release and "
+                f"is not migrated, drop the schema ({self._schema}) and restart"
+            )
+            raise PostgresError(msg)
+
+    async def _existing_columns(self, table: str) -> set[str]:
+        query = sql.SQL(
+            "select column_name from information_schema.columns "
+            "where table_schema = %(schema)s and table_name = %(table)s"
+        )
+        params = {"schema": self._schema, "table": table}
+        rows = await self._fetch(query.format(), params)
+
+        names: set[str] = set()
+        for row in rows:
+            names.add(str(row[0]))
+
+        return names
 
     async def _execute(self, query: sql.Composed, params: Mapping[str, Any]) -> None:
         try:

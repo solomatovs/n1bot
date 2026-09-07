@@ -38,7 +38,7 @@ export const RefParam = {
       path.push(step);
     }
 
-    return { source_id: "", kind: kind.data, path };
+    return { connection_id: "", kind: kind.data, path };
   },
 };
 
@@ -46,11 +46,11 @@ export const RefParam = {
  * лежит адрес в форме ObjectParam. */
 export const OBJECT_DRAG_TYPE = "application/x-boba-object";
 
-/** Полный адрес объекта в строке запроса страницы процесса: источник, kind и
- * ступени пути одним JSON-массивом. */
+/** Полный адрес объекта в строке запроса страницы процесса: подключение,
+ * kind и ступени пути одним JSON-массивом. */
 export const ObjectParam = {
   render(ref: ObjectRef): string {
-    return JSON.stringify([ref.source_id, ref.kind, ...ref.path]);
+    return JSON.stringify([ref.connection_id, ref.kind, ...ref.path]);
   },
 
   parse(raw: string | null): ObjectRef | undefined {
@@ -74,6 +74,6 @@ export const ObjectParam = {
       return undefined;
     }
 
-    return { ...partial, source_id: parsed[0] };
+    return { ...partial, connection_id: parsed[0] };
   },
 };

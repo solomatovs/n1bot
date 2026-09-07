@@ -1,8 +1,8 @@
 import { KeyRound } from "lucide-react";
 import type { ReactElement, ReactNode } from "react";
 
-import type { ObjectCard } from "../../model/catalog";
-import { Cell, Chip, Code, DataTable, Facts, Panel, PanelHead, Section, TableRow, type Fact } from "../../ui";
+import type { ObjectCard, ObjectRef } from "../../model/catalog";
+import { Button, Cell, Chip, Code, DataTable, Facts, Panel, PanelHead, Section, TableRow, Toolbar, type Fact } from "../../ui";
 
 type Props = {
   card: ObjectCard;
@@ -10,15 +10,18 @@ type Props = {
   actions?: ReactNode;
   /** Панель внутри секции другой панели: без своих отступов и ограничения ширины. */
   flat?: boolean;
+  /** Открыть связанный объект снимка (таблицу за внешним ключом) в панели. */
+  onOpenObject?: ((ref: ObjectRef) => void) | undefined;
 };
 
 /** Родная карточка объекта источника: у Postgres и ClickHouse свой набор
- * фактов и таблиц, ничего не приводится к общему виду. */
-export function ObjectCardPanel({ card, actions, flat = false }: Props): ReactElement {
+ * фактов и таблиц, ничего не приводится к общему виду. Одна и та же для
+ * узла на холсте и для объекта дерева подключения. */
+export function ObjectCardPanel({ card, actions, flat = false, onOpenObject }: Props): ReactElement {
   return (
     <div data-testid="object-card" data-card={card.card} data-path={card.ref.path.join("/")}>
       <Panel page={!flat} flat={flat}>
-        {card.card === "pg_relation" && <PgRelationView card={card} actions={actions} />}
+        {card.card === "pg_relation" && <PgRelationView card={card} actions={actions} onOpenObject={onOpenObject} />}
         {card.card === "pg_routine" && <PgRoutineView card={card} actions={actions} />}
         {card.card === "pg_sequence" && <PgSequenceView card={card} actions={actions} />}
         {card.card === "pg_type" && <PgTypeView card={card} actions={actions} />}
@@ -118,8 +121,33 @@ type Viewer<T extends ObjectCard["card"]> = {
   actions: ReactNode;
 };
 
-function PgRelationView({ card, actions }: Viewer<"pg_relation">): ReactElement {
+type RelationViewer = Viewer<"pg_relation"> & { onOpenObject: ((ref: ObjectRef) => void) | undefined };
+
+/** Таблицы, на которые ссылаются внешние ключи: адреса в той же базе. */
+function relatedRefs(card: Extract<ObjectCard, { card: "pg_relation" }>): ObjectRef[] {
+  const seen = new Set<string>();
+  const refs: ObjectRef[] = [];
+  for (const constraint of card.constraints) {
+    if (constraint.kind !== "foreign" || constraint.ref_schema === null || constraint.ref_relation === null) {
+      continue;
+    }
+
+    const path = [card.relation.database, constraint.ref_schema, constraint.ref_relation];
+    const key = path.join("/");
+    if (seen.has(key) || key === card.ref.path.join("/")) {
+      continue;
+    }
+
+    seen.add(key);
+    refs.push({ connection_id: card.ref.connection_id, kind: "relation", path });
+  }
+
+  return refs;
+}
+
+function PgRelationView({ card, actions, onOpenObject }: RelationViewer): ReactElement {
   const relation = card.relation;
+  const related = relatedRefs(card);
   return (
     <>
       <CardHead
@@ -174,12 +202,14 @@ function PgRelationView({ card, actions }: Viewer<"pg_relation">): ReactElement 
       {card.constraints.length > 0 && (
         <Lines title={`constraints · ${card.constraints.length}`} mark="card-constraints">
           {card.constraints.map((constraint) => (
-            <TableRow key={constraint.name}>
+            <TableRow key={constraint.name} data-constraint={constraint.name} data-kind={constraint.kind}>
               <Cell mod="icon">
-                <Chip tone="muted">{constraint.kind}</Chip>
+                <Chip tone={constraint.kind === "primary" ? "draft" : "muted"}>{constraint.kind}</Chip>
               </Cell>
               <Cell data-col="name">{constraint.name}</Cell>
-              <Cell mod="wrap">{constraint.definition}</Cell>
+              <Cell mod="wrap" data-col="detail">
+                <ConstraintDetail constraint={constraint} />
+              </Cell>
             </TableRow>
           ))}
         </Lines>
@@ -187,12 +217,38 @@ function PgRelationView({ card, actions }: Viewer<"pg_relation">): ReactElement 
       {card.indexes.length > 0 && (
         <Lines title={`indexes · ${card.indexes.length}`} mark="card-indexes">
           {card.indexes.map((index) => (
-            <TableRow key={index.name}>
+            <TableRow key={index.name} data-index={index.name}>
+              <Cell mod="icon">
+                <Chip tone="muted">{index.method}</Chip>
+              </Cell>
               <Cell data-col="name">{index.name}</Cell>
-              <Cell mod="wrap">{index.definition}</Cell>
+              <Cell mod="wrap" data-col="detail">
+                {index.primary && <Chip tone="draft">primary</Chip>}
+                {index.unique && !index.primary && <Chip tone="muted">unique</Chip>} ({index.columns.join(", ")})
+                {index.predicate !== null && <span className="dim"> where {index.predicate}</span>}
+              </Cell>
             </TableRow>
           ))}
         </Lines>
+      )}
+      {related.length > 0 && (
+        <Section title={`related · ${related.length}`} mark="card-related">
+          <Toolbar>
+            {related.map((ref) => (
+              <Button
+                key={ref.path.join("/")}
+                size="sm"
+                disabled={onOpenObject === undefined}
+                onClick={() => {
+                  onOpenObject?.(ref);
+                }}
+                data-related={ref.path.join("/")}
+              >
+                {ref.path.slice(1).join(".")}
+              </Button>
+            ))}
+          </Toolbar>
+        </Section>
       )}
       {card.partitions.length > 0 && (
         <Lines title={`partitions · ${card.partitions.length}`} mark="card-partitions">
@@ -207,6 +263,45 @@ function PgRelationView({ card, actions }: Viewer<"pg_relation">): ReactElement 
       {relation.definition !== null && (
         <CodeSection title="definition" text={relation.definition} mark="card-definition" />
       )}
+    </>
+  );
+}
+
+type PgConstraint = Extract<ObjectCard, { card: "pg_relation" }>["constraints"][number];
+
+/** Что держит констрейнт: колонки, у внешнего ключа — цель и правила, у
+ * проверки — выражение. */
+function ConstraintDetail({ constraint }: { constraint: PgConstraint }): ReactElement {
+  if (constraint.kind === "foreign") {
+    const target = `${constraint.ref_schema ?? "?"}.${constraint.ref_relation ?? "?"}`;
+    return (
+      <>
+        ({constraint.columns.join(", ")}) → {target} ({(constraint.ref_columns ?? []).join(", ")})
+        {rule("on delete", constraint.on_delete)}
+        {rule("on update", constraint.on_update)}
+      </>
+    );
+  }
+
+  if (constraint.kind === "primary" || constraint.kind === "unique") {
+    return <>({constraint.columns.join(", ")})</>;
+  }
+
+  return <>{constraint.definition}</>;
+}
+
+/** Правило внешнего ключа чипом; «no action» — умолчание, не показывается. */
+function rule(label: string, action: string | null): ReactNode {
+  if (action === null || action === "" || action.toLowerCase() === "no action") {
+    return null;
+  }
+
+  return (
+    <>
+      {" "}
+      <Chip tone="muted">
+        {label} {action.toLowerCase()}
+      </Chip>
     </>
   );
 }
