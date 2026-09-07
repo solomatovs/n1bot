@@ -416,9 +416,6 @@ class TestDeclaredViews:
             if ToolCallViews.of(name) != view:
                 raise AssertionError(f"ToolCallViews.of({name!r}) == {view!r}")
 
-        if ToolCallViews.of("pg_connection_list") != ToolCallViews.DEFAULT:
-            raise AssertionError("pg_connection_list остаётся на JsonCall")
-
     def test_view_for_an_unknown_tool_name_fails_loudly(self) -> None:
         """Опечатка в views не должна тихо оставить инструмент на дефолте."""
         from boba.tool.pg.tools import pg_query

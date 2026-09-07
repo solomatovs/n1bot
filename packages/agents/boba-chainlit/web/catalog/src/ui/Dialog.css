@@ -8,11 +8,13 @@
   background: color-mix(in srgb, var(--bg) 70%, transparent);
 }
 
+/* окно не выше экрана: процент от auto-ряда грида высоту не ограничивает,
+   поэтому предел считается от высоты окна за вычетом отступов подложки */
 .dialog {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   width: min(100%, var(--w-dialog));
-  max-height: 100%;
+  max-height: calc(100dvh - 2 * var(--s4));
   background: var(--surface);
   border: 1px solid var(--hairline-strong);
   border-radius: var(--r-node);
@@ -50,6 +52,20 @@
   padding: var(--s4);
   overflow-y: auto;
   min-width: 0;
+  min-height: 0;
+}
+
+/* подвал формы или тела — последний ряд действий — прилипает к низу окна:
+   кнопки видны без прокрутки, сколько бы полей ни было выше */
+.dialog__body > .toolbar:last-child,
+.dialog__body > .stack > .toolbar:last-child {
+  position: sticky;
+  bottom: calc(-1 * var(--s4));
+  z-index: 1;
+  margin: 0 calc(-1 * var(--s4)) calc(-1 * var(--s4));
+  padding: var(--s3) var(--s4);
+  background: var(--surface);
+  border-top: 1px solid var(--hairline);
 }
 
 @media (max-width: 640px) {
@@ -57,8 +73,19 @@
     padding: var(--s2);
   }
 
+  .dialog {
+    max-height: calc(100dvh - 2 * var(--s2));
+  }
+
   .dialog__head,
   .dialog__body {
     padding: var(--s3);
+  }
+
+  .dialog__body > .toolbar:last-child,
+  .dialog__body > .stack > .toolbar:last-child {
+    bottom: calc(-1 * var(--s3));
+    margin: 0 calc(-1 * var(--s3)) calc(-1 * var(--s3));
+    padding: var(--s2) var(--s3);
   }
 }

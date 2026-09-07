@@ -1,3 +1,10 @@
+/* обёртка: широкая таблица скроллится внутри неё, не раздвигая родителя */
+.table-scroll {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
 .table {
   width: 100%;
   border-collapse: collapse;

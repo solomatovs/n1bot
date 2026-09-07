@@ -13,7 +13,9 @@ type TableProps = {
 };
 
 /** Таблица данных: строки высотой в ряд, статус строки — `data-status`.
- * Единственное место, где существует класс `table`. */
+ * Таблица шире родителя прокручивается по горизонтали внутри своей обёртки,
+ * а не раздвигает панель или окно. Единственное место, где существует
+ * класс `table`. */
 export function DataTable({ head, editor = false, mark, children }: TableProps): ReactElement {
   const classes = ["table"];
   if (editor) {
@@ -21,18 +23,20 @@ export function DataTable({ head, editor = false, mark, children }: TableProps):
   }
 
   return (
-    <table className={classes.join(" ")} data-testid={mark}>
-      {head !== undefined && (
-        <thead>
-          <tr>
-            {head.map((title, index) => (
-              <th key={index}>{title}</th>
-            ))}
-          </tr>
-        </thead>
-      )}
-      <tbody>{children}</tbody>
-    </table>
+    <div className="table-scroll" data-testid={mark}>
+      <table className={classes.join(" ")}>
+        {head !== undefined && (
+          <thead>
+            <tr>
+              {head.map((title, index) => (
+                <th key={index}>{title}</th>
+              ))}
+            </tr>
+          </thead>
+        )}
+        <tbody>{children}</tbody>
+      </table>
+    </div>
   );
 }
 

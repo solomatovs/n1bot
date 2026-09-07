@@ -1,9 +1,11 @@
 /* каркас страницы: шапка, полоса уведомлений, тело из панелей и сцены */
 
+/* документ не скроллится никогда (body overflow hidden): каждая область
+   страницы скроллится сама — сцена, панели, тело диалога, страница-список */
 .page {
   display: grid;
   grid-template-rows: var(--h-topbar) auto minmax(0, 1fr);
-  height: 100vh;
+  height: 100dvh;
   width: 100vw;
   overflow: hidden;
   background: var(--bg);
@@ -171,9 +173,16 @@
   min-width: 0;
 }
 
-/* индекс: страница-список по центру */
+/* индекс: страница-список по центру; скроллится сама, на всю высоту окна */
 
 .index {
+  height: 100dvh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--bg);
+}
+
+.index__body {
   display: grid;
   gap: var(--s6);
   align-content: start;
@@ -191,7 +200,7 @@
 }
 
 @media (max-width: 640px) {
-  .index {
+  .index__body {
     padding: var(--s3);
   }
 }
