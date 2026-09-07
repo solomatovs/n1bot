@@ -142,10 +142,12 @@ export function Grow({ children }: { children?: ReactNode }): ReactElement {
 type IndexProps = Marked & Omit<HTMLAttributes<HTMLDivElement>, "className" | "children">;
 
 /** Страница-список по центру: источники, расшаренные диаграммы. */
+/** Страница-список: скроллится сама на всю высоту окна, содержимое по центру
+ * шириной страницы. */
 export function Index({ mark, children, ...rest }: IndexProps): ReactElement {
   return (
     <div className="index" data-testid={mark} {...rest}>
-      {children}
+      <div className="index__body">{children}</div>
     </div>
   );
 }

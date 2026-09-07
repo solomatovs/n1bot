@@ -538,6 +538,81 @@ class TestGrid:
             context.close()
 
 
+SHORT: ViewportSize = {"width": 1100, "height": 480}
+
+
+class TestViewportFit:
+    """Ничего не уходит за окно: документ не скроллится, каждая область
+    скроллится сама. Диалог не выше окна, его подвал с кнопками закреплён и
+    виден без прокрутки, тело диалога прокручивается; страница-список
+    прокручивается внутри себя."""
+
+    def test_tall_dialog_fits_a_short_window_and_keeps_its_footer(
+        self,
+        browser: Browser,
+        stand: StandProcess,
+        auth_cookies: list[Any],
+        tokens: Tokens,
+    ) -> None:
+        context = browser.new_context(viewport=SHORT)
+        context.add_cookies(auth_cookies)
+        page = context.new_page()
+        try:
+            page.goto(f"{stand.config.base_url}/catalog/connections")
+            page.get_by_test_id("add-connection").click()
+            form = page.get_by_test_id("connection-form")
+            form.get_by_label("profile.kind").select_option("postgres")
+            dialog = page.get_by_role("dialog")
+            expect(dialog).to_be_visible()
+
+            box = Css.box(dialog)
+            assert box.y >= 0
+            assert box.bottom <= SHORT["height"], box
+            body = dialog.locator(".dialog__body")
+            assert page.evaluate(
+                "el => el.scrollHeight > el.clientHeight", body.element_handle()
+            ), "the long form must scroll inside the dialog body"
+
+            footer = form.get_by_test_id("save-connection")
+            save = Css.box(footer)
+            assert save.bottom <= SHORT["height"], save
+            assert save.y >= box.y
+            expect(footer).to_be_in_viewport()
+            expect(form.get_by_label("connection name")).to_be_in_viewport()
+
+            # подвал закреплён: после прокрутки тела кнопка на том же месте
+            body.evaluate("el => { el.scrollTop = el.scrollHeight; }")
+            assert abs(Css.box(footer).y - save.y) < 1
+            expect(footer.locator("..")).to_have_css(
+                "background-color", tokens.rgb("surface")
+            )
+            assert no_horizontal_scroll(page)
+        finally:
+            context.close()
+
+    def test_index_page_scrolls_inside_itself(
+        self, browser: Browser, stand: StandProcess, auth_cookies: list[Any]
+    ) -> None:
+        context = browser.new_context(viewport={"width": 1100, "height": 200})
+        context.add_cookies(auth_cookies)
+        page = context.new_page()
+        try:
+            page.goto(f"{stand.config.base_url}/catalog/connections")
+            expect(page.get_by_test_id("connections-page")).to_be_visible()
+            index = page.get_by_test_id("connections-page")
+            assert page.evaluate(
+                "el => el.scrollHeight > el.clientHeight && "
+                "getComputedStyle(el).overflowY === 'auto'",
+                index.element_handle(),
+            ), "the list page must own its vertical scroll"
+            assert page.evaluate(
+                "() => document.documentElement.scrollHeight <= window.innerHeight"
+            ), "the document itself must not scroll"
+            assert no_horizontal_scroll(page)
+        finally:
+            context.close()
+
+
 class TestDraftPage:
     def test_draft_shows_added_node_with_diff(
         self, page: Page, stand: StandProcess, seeded: Seeded, tokens: Tokens

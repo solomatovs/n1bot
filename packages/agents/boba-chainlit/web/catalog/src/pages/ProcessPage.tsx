@@ -250,14 +250,13 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
 
       const { process, drafts } = state.loaded;
       const mine = drafts.filter((item) => item.process_id === process.id).length;
+      // id черновика — из созданного редактора: событие шины о новом черновике
+      // может перечитать опубликованный процесс и сбросить editor.current раньше
       startDraft(process.id, `draft ${mine + 1}`)
-        .then((created) => created.apply(ops))
-        .then((outcome) => {
+        .then((created) => created.apply(ops).then((outcome) => ({ created, outcome })))
+        .then(({ created, outcome }) => {
           report(outcome);
-          const created = editor.current;
-          if (created !== null) {
-            void navigate(`/drafts/${created.draftId}`);
-          }
+          void navigate(`/drafts/${created.draftId}`);
         })
         .catch((error: unknown) => {
           toast(describe(error), "error");
