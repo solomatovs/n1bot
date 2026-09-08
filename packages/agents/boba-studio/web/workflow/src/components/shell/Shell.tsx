@@ -1,17 +1,16 @@
 import { type ReactElement, useCallback, useEffect, useMemo, useState } from "react";
 import { Outlet, useParams } from "react-router-dom";
 
-import { useServices } from "../../app";
-import { errorText } from "../Async";
+import { useServices } from "../../services";
+import { ApiError } from "../../api/transport";
 import { ShellDataContext, type ShellData } from "../../hooks/useShellData";
 import type { StoredRun, StoredWorkflow } from "../../model/workflow";
-import { Panel } from "../../ui";
+import { SidePanel, narrowScreen, useNarrowScreen } from "../../ui";
 import { Topbar } from "./Topbar";
 import { WorkflowList } from "./WorkflowList";
 
 const LIST_WIDTH_KEY = "studio.list.width";
 const LIST_COLLAPSED_KEY = "studio.list.collapsed";
-const NARROW_QUERY = "(max-width: 760px)";
 
 function storedCollapsed(): boolean {
   try {
@@ -44,22 +43,10 @@ export function Shell(): ReactElement {
   const [tick, setTick] = useState(0);
   const [listOpen, setListOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(storedCollapsed);
-  const [narrow, setNarrow] = useState(() => window.matchMedia(NARROW_QUERY).matches);
-
-  useEffect(() => {
-    const media = window.matchMedia(NARROW_QUERY);
-    const onChange = (): void => {
-      setNarrow(media.matches);
-    };
-
-    media.addEventListener("change", onChange);
-    return () => {
-      media.removeEventListener("change", onChange);
-    };
-  }, []);
+  const narrow = useNarrowScreen();
 
   const toggleList = useCallback(() => {
-    if (window.matchMedia(NARROW_QUERY).matches) {
+    if (narrowScreen()) {
       setListOpen((current) => !current);
       return;
     }
@@ -87,7 +74,7 @@ export function Shell(): ReactElement {
       },
       (failure: unknown) => {
         if (alive) {
-          setError(errorText(failure));
+          setError(ApiError.describe(failure));
           setLoading(false);
         }
       },
@@ -148,7 +135,7 @@ export function Shell(): ReactElement {
           onToggleList={toggleList}
         />
         <div className="shell__body">
-          <Panel
+          <SidePanel
             aria-label="workflows"
             className="list"
             open={listOpen}
@@ -163,7 +150,7 @@ export function Shell(): ReactElement {
               selectedRun={runId ?? null}
               onPick={closeList}
             />
-          </Panel>
+          </SidePanel>
           <Outlet />
         </div>
       </div>

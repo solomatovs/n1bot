@@ -18,14 +18,6 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph.state import CompiledStateGraph
 
 from boba.auth import JwtTokens
-from boba.catalog import SourceKinds
-from boba.catalog_service import (
-    CatalogConfig,
-    CatalogService,
-    ConnectionStore,
-    ProcessStore,
-    SyncPorts,
-)
 from boba.chainlit.agent.flow import (
     AgentGraphBuilder,
     GraphSpec,
@@ -34,10 +26,6 @@ from boba.chainlit.agent.flow import (
     PlainGraphBuilder,
     PrefetchGraphBuilder,
     Rephraser,
-)
-from boba.chainlit.catalog.sync_ports import (
-    BrokerConnectionDirectory,
-    RegistrySyncTools,
 )
 from boba.chainlit.chat.history import CheckpointMessages, TranscriptFeed
 from boba.chainlit.chat.tracing import TracedStage
@@ -68,7 +56,6 @@ from boba.chat.provider import (
     OllamaChatConfig,
     OpenAiChatConfig,
 )
-from boba.connection_broker.service import UserConnectionsService
 from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresSchema
 from boba.identity.errors import InternalServiceError
 from boba.identity.session import SessionSource
@@ -78,7 +65,7 @@ from boba.llm.http import LlmHttp
 from boba.llm.local import OnnxChatRuntime
 from boba.messaging import MessageBus
 from boba.runtime import providers as runtime
-from boba.runtime.di import Container, Depends
+from boba.runtime.di import Depends
 from boba.runtime.elements import ChatTables
 from boba.runtime.users import UsersTable
 from boba.toolrun.registry import ToolRegistry
@@ -109,100 +96,6 @@ def get_local_storage_config(
     app_config: Annotated[AppConfig, Depends(get_app_config)],
 ) -> LocalStorageConfig:
     return app_config.storage
-
-
-def catalog_config(
-    app_config: Annotated[AppConfig, Depends(get_app_config)],
-) -> CatalogConfig:
-    return app_config.catalog
-
-
-async def catalog_processes(
-    cfg: Annotated[CatalogConfig, Depends(catalog_config)],
-) -> ProcessStore | None:
-    """Хранилище процессов с таблицами на старте; None — секция [catalog] выключена."""
-    if not cfg.enable:
-        return None
-
-    processes = ProcessStore(cfg)
-    await processes.setup()
-
-    return processes
-
-
-async def catalog_connections(
-    cfg: Annotated[CatalogConfig, Depends(catalog_config)],
-) -> ConnectionStore | None:
-    """Хранилище снимков подключений в той же схеме; None — секция выключена."""
-    if not cfg.enable:
-        return None
-
-    # снимки видов подключений приносят пакеты-владельцы драйверов
-    connections = ConnectionStore(cfg, SourceKinds.discover())
-    await connections.setup()
-
-    return connections
-
-
-def catalog_service(
-    processes: Annotated[ProcessStore | None, Depends(catalog_processes)],
-    connections: Annotated[ConnectionStore | None, Depends(catalog_connections)],
-    cfg: Annotated[CatalogConfig, Depends(catalog_config)],
-    bus: Annotated[MessageBus, Depends(runtime.message_bus)],
-) -> CatalogService | None:
-    """Сервис каталога над хранилищами и шиной процесса."""
-    if processes is None:
-        return None
-
-    if connections is None:
-        return None
-
-    tools = RegistrySyncTools(runtime.tool_registry_ref)
-    names = BrokerConnectionDirectory(
-        UserConnectionsService(runtime.connection_store_ref)
-    )
-    ports = SyncPorts(tools, names)
-
-    return CatalogService(processes, connections, cfg, bus, ports)
-
-
-def chainlit_url_prefix() -> str:
-    """Префикс адресов приложения из конфига корневого контейнера; зовётся на вызов."""
-    root = Container.root
-    if root is None:
-        msg = (
-            "chainlit_url_prefix: Container.root is not initialised, "
-            "bootstrap has not run"
-        )
-        raise RuntimeError(msg)
-
-    config = root.resolved(get_app_config)
-    if not isinstance(config, AppConfig):
-        msg = (
-            "chainlit_url_prefix expects AppConfig from the app config provider, "
-            f"got {type(config).__name__}"
-        )
-        raise RuntimeError(msg)
-
-    return config.chainlit.url_prefix
-
-
-async def catalog_service_ref() -> CatalogService:
-    """Сервис каталога из корневого контейнера; зовётся на каждый запрос."""
-    root = Container.root
-    if root is None:
-        msg = (
-            "catalog_service_ref: Container.root is not initialised, "
-            "bootstrap has not run"
-        )
-        raise RuntimeError(msg)
-
-    service = await root.resolve(Depends(catalog_service))
-    if service is None:
-        msg = "[catalog] is disabled: the data catalog is unavailable"
-        raise RuntimeError(msg)
-
-    return service
 
 
 def storage_provider(

@@ -36,6 +36,7 @@ from boba.catalog import (
     StaleReason,
 )
 from boba.catalog.samples import ProcessSample
+from boba.db.postgres.snapshot import PgColumn
 from boba.db.postgres.snapshot_sample import PgSample
 
 
@@ -302,9 +303,12 @@ class TestDiffAndStaleness:
         assert diff.status_of(EntityRef.of(renamed)) is ChangeStatus.MODIFIED
         assert diff.status_of(EntityRef.of(process.orders)) is ChangeStatus.UNCHANGED
 
-    def test_new_snapshot_version_marks_nodes_and_flows(
+    def test_new_snapshot_version_marks_only_what_breaks_the_process(
         self, pg: PgSample, process: ProcessSample, snapshot: CatalogSnapshot
     ) -> None:
+        """Вторая версия: customers удалена — узел устарел; у orders колонка
+        amount расширена (numeric(10,2) → numeric(12,2)), добавлена note, у
+        процедуры новое тело — это процессу не мешает, узлы и потоки чисты."""
         pinned = {
             process.connection_id: PinnedSnapshot(version=1, snapshot=pg.snapshot())
         }
@@ -320,19 +324,54 @@ class TestDiffAndStaleness:
         ]
         assert removed.since_version == 2
         assert removed.pinned_version == 1
+        assert list(stale.of_target(EntityRef.of(process.orders))) == []
+        assert list(stale.of_target(EntityRef.of(process.flow_orders))) == []
+        assert list(stale.of_target(EntityRef.of(process.load_orders))) == []
+        assert list(stale.of_target(EntityRef.of(process.v_orders))) == []
+        assert len(stale.entries) == 1
+        assert Staleness.compute(snapshot, pinned, pinned).entries == ()
+
+    def test_narrowed_type_and_dropped_column_block_the_process(
+        self, pg: PgSample, process: ProcessSample, snapshot: CatalogSnapshot
+    ) -> None:
+        """Третья версия: у orders колонка amount сужена до numeric(8,2), а
+        created_at удалена — узел устарел по обеим колонкам, поток — по паре
+        amount со стороны источника."""
+        narrowed = pg.orders_amount.model_copy(update={"type": "numeric(8,2)"})
+        base = pg.next_version()
+        columns: list[PgColumn] = []
+        for column in base.columns:
+            if column.key == ("prod", "public", "orders", "created_at"):
+                continue
+
+            if column.key == ("prod", "public", "orders", "amount"):
+                columns.append(narrowed)
+                continue
+
+            columns.append(column)
+
+        third = base.model_copy(update={"columns": tuple(columns)})
+        pinned = {process.connection_id: PinnedSnapshot(version=2, snapshot=base)}
+        latest = {process.connection_id: PinnedSnapshot(version=3, snapshot=third)}
+
+        stale = Staleness.compute(snapshot, pinned, latest)
+        by_target = {(s.target.kind, s.target.id, s.reason): s for s in stale.entries}
 
         changed = by_target[
-            (EntityKind.NODE, process.orders.id, StaleReason.OBJECT_CHANGED)
+            (EntityKind.NODE, process.orders.id, StaleReason.COLUMN_CHANGED)
         ]
-        assert changed.detail["column amount"] == "modified"
-        assert changed.detail["column note"] == "added"
-
+        assert changed.detail == {
+            "column": "amount",
+            "type": "numeric(12,2) -> numeric(8,2)",
+        }
+        dropped = by_target[
+            (EntityKind.NODE, process.orders.id, StaleReason.COLUMN_REMOVED)
+        ]
+        assert dropped.detail == {"column": "created_at"}
         column = by_target[
             (EntityKind.FLOW, process.flow_orders.id, StaleReason.COLUMN_CHANGED)
         ]
         assert column.detail["column"] == "amount"
         assert column.detail["side"] == "source"
-        assert column.detail["type"] == "numeric(10,2) -> numeric(12,2)"
-
-        assert list(stale.of_target(EntityRef.of(process.v_orders))) == []
-        assert Staleness.compute(snapshot, pinned, pinned).entries == ()
+        assert column.detail["type"] == "numeric(12,2) -> numeric(8,2)"
+        assert len(stale.entries) == 3

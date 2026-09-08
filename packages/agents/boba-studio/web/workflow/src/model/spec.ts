@@ -265,9 +265,12 @@ export type SpecIssue = {
   message: string;
 };
 
+/** Сервис предваряет перечень замечаний адресатом: `workflow spec rejected for 'login': …`. */
+const REJECTED_PREFIX = /^workflow spec rejected for '[^']*': /;
+
 export function parseIssues(detail: string): SpecIssue[] {
   const issues: SpecIssue[] = [];
-  for (const line of detail.split("; ")) {
+  for (const line of detail.replace(REJECTED_PREFIX, "").split("; ")) {
     const colon = line.indexOf(": ");
     if (colon === -1) {
       issues.push({ code: "", where: "", message: line });

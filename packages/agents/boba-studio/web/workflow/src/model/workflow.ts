@@ -227,7 +227,7 @@ export const RunSnapshotSchema = z.object({
 });
 export type RunSnapshot = z.infer<typeof RunSnapshotSchema>;
 
-export const ToolAvailabilitySchema = z.enum(["available", "denied", "chat_only"]);
+export const ToolAvailabilitySchema = z.enum(["available", "denied", "chat_only", "headless_only"]);
 export type ToolAvailability = z.infer<typeof ToolAvailabilitySchema>;
 
 export const ArgPlacementSchema = z.enum(["body", "header", "hidden"]);
@@ -347,8 +347,23 @@ export const StreamEventSchema = z.object({
 });
 export type StreamEvent = z.infer<typeof StreamEventSchema>;
 
+/** Каталог данных изменился: заполнен ровно один из идентификаторов —
+ * процесс (с version — опубликована версия), черновик, подключение,
+ * синхронизация или upgrade; action — что с ним случилось. */
+export const CatalogChangedSchema = z.object({
+  kind: z.literal("catalog_changed"),
+  process_id: z.string().nullable().default(null),
+  version: z.number().nullable().default(null),
+  draft_id: z.string().nullable().default(null),
+  connection_id: z.string().nullable().default(null),
+  sync_id: z.string().nullable().default(null),
+  upgrade_id: z.string().nullable().default(null),
+  action: z.enum(["created", "updated", "deleted"]),
+});
+export type CatalogChanged = z.infer<typeof CatalogChangedSchema>;
+
 /** Событие ленты пользователя из шины (socket.io `user_event`): те же поля, что у сообщений
- * RunListChanged, WorkflowChanged, ConnectionsChanged на сервере. */
+ * RunListChanged, WorkflowChanged, ConnectionsChanged, CatalogChanged на сервере. */
 export const UserEventSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("run_list_changed"),
@@ -385,5 +400,6 @@ export const UserEventSchema = z.discriminatedUnion("kind", [
     kind: z.literal("signin_refresh_requested"),
     principal: z.string(),
   }),
+  CatalogChangedSchema,
 ]);
 export type UserEvent = z.infer<typeof UserEventSchema>;

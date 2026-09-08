@@ -65,10 +65,3 @@ export function summarize(run: StoredRun, now: number): RunSummary {
 export function phaseColor(index: number): string {
   return `var(--phase-${index % 6})`;
 }
-
-export function stageIndex(run: RunState, task: string): number {
-  return Math.max(
-    0,
-    run.graph.stages.findIndex((stage) => stage.tasks.includes(task)),
-  );
-}

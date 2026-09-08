@@ -3,6 +3,7 @@ import { type ReactElement, useState } from "react";
 import { phaseColor } from "../../model/summary";
 import { formatClock, parseInstant } from "../../model/time";
 import type { RunState } from "../../model/workflow";
+import { ToolbarHint } from "../../ui";
 
 type Props = {
   run: RunState;
@@ -47,7 +48,7 @@ export function Timeline({ run, startedAt, now, onSelect }: Props): ReactElement
     <div className="view view--scroll">
       <div className="tl">
         <div className="tl__axis">
-          <span className="viewbar__hint">times from the run</span>
+          <ToolbarHint>times from the run</ToolbarHint>
           <div className="tl__ticks">
             {Array.from({ length: TICKS }, (_unused, index) => {
               const at = (span * index) / (TICKS - 1);

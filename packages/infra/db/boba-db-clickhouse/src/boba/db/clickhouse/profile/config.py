@@ -98,9 +98,7 @@ class ClickHouseConfig(ConnectionProfileBase):
     REVEAL_SECRETS: ClassVar[str] = SecretRevealing.REVEAL_CONTEXT
 
     # не аргументы конструктора клиента: настройки сессии и креды kerberos
-    NOT_CLIENT_FIELDS: ClassVar[frozenset[str]] = frozenset(
-        {"kind", "settings", "auth", "description"}
-    )
+    NOT_CLIENT_FIELDS: ClassVar[frozenset[str]] = frozenset({"settings", "auth"})
 
     kind: Literal["clickhouse"] = Field(
         default="clickhouse",
@@ -271,6 +269,9 @@ class ClickHouseConfig(ConnectionProfileBase):
 
         for name in ClickHouseConfig.model_fields:
             if name in self.NOT_CLIENT_FIELDS:
+                continue
+
+            if name in self.common_fields():
                 continue
 
             value = getattr(self, name)

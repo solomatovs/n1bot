@@ -1,15 +1,19 @@
-"""Устаревание процесса относительно новых версий снимков подключений: узел
-указывает на удалённый или изменённый объект, поток именует колонку, которой
-больше нет или у которой сменился тип.
+"""Совместимость процесса с новой версией снимка подключения — то, что
+мешает перевести процесс на неё: узел указывает на удалённый объект, у
+объекта пропала колонка или тип колонки перестал принимать прежние значения,
+поток именует колонку пары, которой больше нет или тип которой сужен.
+Добавленные колонки, расширение типов (varchar(30) → varchar(500)) и правки
+самого объекта (тело процедуры, комментарий) процессу не мешают.
 
-Считается по diff между привязанной версией подключения и последней; ничего
-не чинит, только называет причину для человека и LLM.
+Считается по diff между привязанной версией подключения и новой; ничего не
+чинит, только называет причину для человека и LLM. Пусто — переводить можно.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from enum import StrEnum
+from operator import attrgetter
 from uuid import UUID
 
 from boba.catalog.base import CatalogModel, ChangeStatus
@@ -21,23 +25,37 @@ from boba.catalog.model import (
     FlowEnd,
     Node,
 )
-from boba.catalog.source_diff import ObjectChange, PartKind, SourceDiff, SourceSnapshot
+from boba.catalog.source_diff import (
+    ObjectChange,
+    PartChange,
+    PartKind,
+    SourceDiff,
+    SourceSnapshot,
+)
 from boba.catalog.sources import ObjectRef
 
 __all__ = ["PinnedSnapshot", "Stale", "StaleReason", "Staleness"]
 
 ChangeKey = tuple[str, tuple[str, ...]]
+TypeWidens = Callable[[str, str], bool]
 
 
 class StaleReason(StrEnum):
     OBJECT_REMOVED = "object_removed"
-    OBJECT_CHANGED = "object_changed"
     COLUMN_REMOVED = "column_removed"
     COLUMN_CHANGED = "column_changed"
 
 
+class StaleDetail(StrEnum):
+    """Ключи деталей причины."""
+
+    COLUMN = "column"
+    SIDE = "side"
+    TYPE = "type"
+
+
 class PinnedSnapshot(CatalogModel):
-    """Версия снимка подключения: привязанная или последняя."""
+    """Версия снимка подключения: привязанная или новая."""
 
     version: int
     snapshot: SourceSnapshot
@@ -53,7 +71,7 @@ class Stale(CatalogModel):
 
 
 class ConnectionGap(CatalogModel):
-    """Разрыв между привязанной и последней версией одного подключения."""
+    """Разрыв между привязанной и новой версией одного подключения."""
 
     connection_id: UUID
     pinned_version: int
@@ -72,8 +90,27 @@ class ConnectionGap(CatalogModel):
         )
 
 
+class ColumnBreak(CatalogModel):
+    """Колонка объекта, которая мешает переводу: пропала или тип сужен."""
+
+    column: str
+    reason: StaleReason
+    type_change: str = ""
+
+    def detail(self, side: FlowEnd | None = None) -> dict[str, str]:
+        detail: dict[str, str] = {StaleDetail.COLUMN.value: self.column}
+        if side is not None:
+            detail[StaleDetail.SIDE.value] = side.value
+
+        if self.type_change != "":
+            detail[StaleDetail.TYPE.value] = self.type_change
+
+        return detail
+
+
 class Staleness(CatalogModel):
-    """Список устареваний процесса; пустой — всё сходится."""
+    """Список того, что мешает процессу перейти на новые версии; пустой —
+    всё сходится."""
 
     entries: tuple[Stale, ...]
 
@@ -99,7 +136,8 @@ class Staleness(CatalogModel):
                 since_version=current.version,
             )
             diff = SourceDiff.between(connection_id, base.snapshot, current.snapshot)
-            entries.extend(cls._of_connection(process, gap, diff))
+            widens = type(current.snapshot).type_widens
+            entries.extend(cls._of_connection(process, gap, diff, widens))
 
         return cls(entries=tuple(entries))
 
@@ -112,9 +150,14 @@ class Staleness(CatalogModel):
 
     @classmethod
     def _of_connection(
-        cls, process: CatalogSnapshot, gap: ConnectionGap, diff: SourceDiff
+        cls,
+        process: CatalogSnapshot,
+        gap: ConnectionGap,
+        diff: SourceDiff,
+        widens: TypeWidens,
     ) -> Iterator[Stale]:
         changes = cls._by_ref(diff)
+        breaks: dict[UUID, dict[str, ColumnBreak]] = {}
         for node in process.nodes.values():
             if node.ref.connection_id != gap.connection_id:
                 continue
@@ -123,10 +166,17 @@ class Staleness(CatalogModel):
             if change is None:
                 continue
 
-            yield from cls._node_stale(node, change, gap)
+            if change.status is ChangeStatus.REMOVED:
+                target = EntityRef(kind=EntityKind.NODE, id=node.id)
+                yield gap.stale(target, StaleReason.OBJECT_REMOVED, {})
+                continue
+
+            broken = cls._column_breaks(change, widens)
+            breaks[node.id] = broken
+            yield from cls._node_stale(node, broken, gap)
 
         for flow in process.flows.values():
-            yield from cls._flow_stale(process, flow, changes, gap)
+            yield from cls._flow_stale(process, flow, changes, breaks, gap)
 
     @staticmethod
     def _key(ref: ObjectRef) -> ChangeKey:
@@ -140,26 +190,60 @@ class Staleness(CatalogModel):
 
         return by_ref
 
+    @classmethod
+    def _column_breaks(
+        cls, change: ObjectChange, widens: TypeWidens
+    ) -> dict[str, ColumnBreak]:
+        """Колонки объекта, которые мешают переводу, по имени."""
+        broken: dict[str, ColumnBreak] = {}
+        for part in change.parts:
+            if part.part is not PartKind.COLUMN:
+                continue
+
+            item = cls._column_break(part, widens)
+            if item is not None:
+                broken[item.column] = item
+
+        return broken
+
+    @staticmethod
+    def _column_break(part: PartChange, widens: TypeWidens) -> ColumnBreak | None:
+        if part.status is ChangeStatus.REMOVED:
+            return ColumnBreak(column=part.name, reason=StaleReason.COLUMN_REMOVED)
+
+        if part.status is not ChangeStatus.MODIFIED:
+            return None
+
+        for field in part.fields:
+            if field.field != StaleDetail.TYPE.value:
+                continue
+
+            was = ""
+            if field.was is not None:
+                was = field.was
+
+            now = ""
+            if field.now is not None:
+                now = field.now
+
+            if widens(was, now):
+                return None
+
+            return ColumnBreak(
+                column=part.name,
+                reason=StaleReason.COLUMN_CHANGED,
+                type_change=f"{was} -> {now}",
+            )
+
+        return None
+
     @staticmethod
     def _node_stale(
-        node: Node, change: ObjectChange, gap: ConnectionGap
+        node: Node, broken: Mapping[str, ColumnBreak], gap: ConnectionGap
     ) -> Iterator[Stale]:
         target = EntityRef(kind=EntityKind.NODE, id=node.id)
-        if change.status is ChangeStatus.REMOVED:
-            yield gap.stale(target, StaleReason.OBJECT_REMOVED, {})
-            return
-
-        if change.status is not ChangeStatus.MODIFIED:
-            return
-
-        detail: dict[str, str] = {}
-        for field in change.fields:
-            detail[field.field] = f"{field.was} -> {field.now}"
-
-        for part in change.parts:
-            detail[f"{part.part.value} {part.name}"] = part.status.value
-
-        yield gap.stale(target, StaleReason.OBJECT_CHANGED, detail)
+        for item in sorted(broken.values(), key=attrgetter("column")):
+            yield gap.stale(target, item.reason, item.detail())
 
     @classmethod
     def _flow_stale(
@@ -167,6 +251,7 @@ class Staleness(CatalogModel):
         process: CatalogSnapshot,
         flow: Flow,
         changes: Mapping[ChangeKey, ObjectChange],
+        breaks: Mapping[UUID, Mapping[str, ColumnBreak]],
         gap: ConnectionGap,
     ) -> Iterator[Stale]:
         target = EntityRef(kind=EntityKind.FLOW, id=flow.id)
@@ -182,39 +267,19 @@ class Staleness(CatalogModel):
             if change is None:
                 continue
 
+            if change.status is ChangeStatus.REMOVED:
+                for column in flow.columns_at(end):
+                    detail = {
+                        StaleDetail.SIDE.value: end.value,
+                        StaleDetail.COLUMN.value: column,
+                    }
+                    yield gap.stale(target, StaleReason.COLUMN_REMOVED, detail)
+                continue
+
+            broken = breaks.get(node.id, {})
             for column in flow.columns_at(end):
-                yield from cls._column_stale(target, change, gap, end, column)
+                item = broken.get(column)
+                if item is None:
+                    continue
 
-    @staticmethod
-    def _column_stale(
-        target: EntityRef,
-        change: ObjectChange,
-        gap: ConnectionGap,
-        end: FlowEnd,
-        column: str,
-    ) -> Iterator[Stale]:
-        if change.status is ChangeStatus.REMOVED:
-            detail = {"side": end.value, "column": column, "object": "removed"}
-            yield gap.stale(target, StaleReason.COLUMN_REMOVED, detail)
-            return
-
-        for part in change.parts:
-            if part.part is not PartKind.COLUMN:
-                continue
-
-            if part.name != column:
-                continue
-
-            if part.status is ChangeStatus.REMOVED:
-                detail = {"side": end.value, "column": column}
-                yield gap.stale(target, StaleReason.COLUMN_REMOVED, detail)
-                continue
-
-            if part.status is not ChangeStatus.MODIFIED:
-                continue
-
-            changed: dict[str, str] = {"side": end.value, "column": column}
-            for item in part.fields:
-                changed[item.field] = f"{item.was} -> {item.now}"
-
-            yield gap.stale(target, StaleReason.COLUMN_CHANGED, changed)
+                yield gap.stale(target, item.reason, item.detail(end))

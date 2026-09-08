@@ -6,11 +6,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from uuid import UUID
 
 import pytest
-from psycopg import sql
 
 from boba.catalog import (
     CatalogOpError,
@@ -21,46 +19,35 @@ from boba.catalog import (
     RemoveNode,
     RetargetNode,
     SnapshotResolver,
-    SourceKinds,
     StaleReason,
 )
 from boba.catalog.samples import ProcessSample
 from boba.catalog_service import (
     AuthorVia,
-    CatalogConfig,
     CatalogRefusalError,
     CatalogRefusalKind,
     CatalogService,
     ConnectionInfo,
     ConnectionInUseError,
-    ConnectionStore,
     ProcessSpec,
-    ProcessStore,
     SharedNodeNotFoundError,
     ShareNotFoundError,
     SyncSetupError,
+    SyncStatus,
     UnknownSourceKindError,
+    UpgradeReport,
+    UpgradeStatus,
+    UpgradeTarget,
 )
-from boba.db.clickhouse.snapshot import ChSnapshot
 from boba.db.postgres import AsyncPostgresPool
-from boba.db.postgres.snapshot import PgSnapshot
 from boba.db.postgres.snapshot_sample import PgSample
-from boba.identity.context import Scope, Subject
-from boba.messaging import CatalogChanged, Envelope, MemoryMessageBus
+from boba.identity.context import Subject
 from boba.stand.catalog_ports import StubSyncPorts
+from boba.stand.catalog_stand import CatalogStand, ChangeCollector
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
-KINDS = SourceKinds.of(PgSnapshot, ChSnapshot)
-"""Реестр видов теста: оба снимка из пакетов драйверов."""
-
-SCHEMA = "catalog_service_test"
-
-
-def _config() -> CatalogConfig:
-    return CatalogConfig(
-        enable=True, db_schema=SCHEMA, view_roles=("viewer",), edit_roles=("editor",)
-    )
+CONFIG = CatalogStand.config("catalog_service_test", ("viewer",), ("editor",))
 
 
 def _subject(user_id: UUID, *roles: str) -> Subject:
@@ -77,22 +64,8 @@ STRANGER = _subject(UUID(int=4))
 
 @pytest.fixture
 async def service(pool: AsyncPostgresPool) -> CatalogService:
-    async with pool.connection() as conn:
-        await conn.execute(
-            sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
-        )
-
-    processes = ProcessStore(_config(), pool)
-    await processes.setup()
-    connections = ConnectionStore(_config(), KINDS, pool)
-    await connections.setup()
-    return CatalogService(
-        processes,
-        connections,
-        _config(),
-        MemoryMessageBus("test:0"),
-        StubSyncPorts((PG_CONNECTION, WEB_CONNECTION)),
-    )
+    stand = await CatalogStand.build(pool, CONFIG, CatalogStand.kinds())
+    return stand.service(StubSyncPorts((PG_CONNECTION, WEB_CONNECTION)))
 
 
 @pytest.fixture
@@ -109,35 +82,6 @@ async def process(service: CatalogService) -> ProcessSample:
 async def process_id(service: CatalogService) -> UUID:
     created = await service.create_process(EDITOR, ProcessSpec(name="orders"))
     return created.id
-
-
-def _bus_of(service: CatalogService) -> MemoryMessageBus:
-    bus = service.bus
-    if not isinstance(bus, MemoryMessageBus):
-        raise AssertionError("test service must run on the memory bus")
-
-    return bus
-
-
-class Collector:
-    """Подписчик области пользователя: копит сообщения CatalogChanged."""
-
-    def __init__(self) -> None:
-        self.seen: list[CatalogChanged] = []
-
-    async def __call__(self, envelope: Envelope) -> None:
-        if not isinstance(envelope.message, CatalogChanged):
-            return
-
-        self.seen.append(envelope.message)
-
-
-def _listen(
-    service: CatalogService, subject: Subject
-) -> tuple[Collector, Callable[[], None]]:
-    collector = Collector()
-    leave = _bus_of(service).subscribe(Scope.user(subject.user_id), collector)
-    return collector, leave
 
 
 async def _published(
@@ -228,8 +172,8 @@ async def test_new_snapshot_version_marks_staleness_and_pins_can_bump(
 
     stale = await service.staleness(VIEWER, process_id)
     reasons = {(s.target.id, s.reason) for s in stale.entries}
-    assert (process.customers.id, StaleReason.OBJECT_REMOVED) in reasons
-    assert (process.flow_orders.id, StaleReason.COLUMN_CHANGED) in reasons
+    # amount расширена numeric(10,2) → numeric(12,2): потоку не мешает
+    assert reasons == {(process.customers.id, StaleReason.OBJECT_REMOVED)}
 
     context = await service.context(VIEWER, process_id)
     assert context.pins == {PG_CONNECTION.id: 1}
@@ -248,9 +192,179 @@ async def test_new_snapshot_version_marks_staleness_and_pins_can_bump(
     assert lagging.pins == {PG_CONNECTION.id: 2}
     assert (await service.draft_staleness(VIEWER, lagging.id)).entries == ()
 
-    bump = await service.bump_pins(EDITOR, lagging.id)
-    assert bump.draft.pins == {PG_CONNECTION.id: 2}
-    assert any("customers" in violation for violation in bump.violations)
+
+async def _upgrade(
+    service: CatalogService,
+    subject: Subject,
+    target: UpgradeTarget,
+    entity_id: UUID | None,
+) -> UpgradeReport:
+    """Запуск upgrade задачей и его отчёт после завершения."""
+    started = await service.start_upgrade(subject, target, entity_id, AuthorVia.USER)
+    assert started.status is SyncStatus.RUNNING
+    finished = await service.wait_upgrade(started.id)
+    assert finished.status is SyncStatus.DONE, finished
+    assert finished.done == finished.total
+    return await service.upgrade_report(subject, finished.id)
+
+
+async def _blocked_then_fixed(
+    service: CatalogService, process: ProcessSample, process_id: UUID
+) -> None:
+    """Процесс над удалённой таблицей: upgrade blocked с проблемой у узла,
+    читателю запрещён; поток и узел снимаются в черновике, публикация
+    привязывает процесс ко второй версии."""
+    await _published(service, process_id, process)
+    listed = await service.process(VIEWER, process_id)
+    assert listed.pins == {PG_CONNECTION.id: 1}
+    assert listed.connections == (PG_CONNECTION.id,)
+    assert not listed.behind
+
+    sample = PgSample()
+    await service.write_connection_version(
+        EDITOR, PG_CONNECTION.id, sample.next_version()
+    )
+    behind = await service.process(VIEWER, process_id)
+    assert behind.behind
+    assert behind.attention == 0
+
+    collector = ChangeCollector.listen(service, EDITOR)
+    try:
+        report = await _upgrade(service, EDITOR, UpgradeTarget.PROCESS, process_id)
+    finally:
+        collector.leave()
+
+    assert (report.run.total, report.run.moved, report.run.blocked) == (1, 0, 1)
+    assert any(m.upgrade_id == report.run.id for m in collector.seen)
+    blocked = report.upgrades[0]
+    assert blocked.run_id == report.run.id
+    assert blocked.status is UpgradeStatus.BLOCKED
+    assert blocked.pins_before == {PG_CONNECTION.id: 1}
+    assert blocked.pins_after == {PG_CONNECTION.id: 2}
+    assert [(p.target.id, p.reason) for p in blocked.problems] == [
+        (process.customers.id, StaleReason.OBJECT_REMOVED)
+    ]
+    assert blocked.version is None
+    assert (await service.process(VIEWER, process_id)).attention == 1
+    last = await service.last_upgrade(VIEWER, process_id)
+    assert last is not None
+    assert last.id == blocked.id
+    assert (await service.process(VIEWER, process_id)).latest_version == 1
+
+    with pytest.raises(CatalogRefusalError):
+        await service.start_upgrade(
+            VIEWER, UpgradeTarget.PROCESS, process_id, AuthorVia.USER
+        )
+
+    # починка: поток и узел над удалённой таблицей снимаются в черновике
+    fix = await service.create_draft(EDITOR, process_id, "fix")
+    ops = OperationList(
+        root=(
+            RemoveFlow(id=process.flow_customers.id),
+            RemoveNode(id=process.customers.id),
+        )
+    )
+    await service.append_ops(EDITOR, fix.id, 0, ops, AuthorVia.USER)
+    await service.publish(EDITOR, fix.id, AuthorVia.USER)
+    fixed = await service.process(VIEWER, process_id)
+    assert fixed.latest_version == 2
+    assert fixed.pins == {PG_CONNECTION.id: 2}
+    assert not fixed.behind
+    assert fixed.attention == 0
+
+
+async def test_upgrade_moves_a_compatible_process_and_blocks_a_broken_one(
+    service: CatalogService, process: ProcessSample, process_id: UUID
+) -> None:
+    """Upgrade: процесс над удалённой таблицей остаётся на старой привязке с
+    записью blocked; после починки новая версия снимка с расширенной колонкой
+    переводит процесс сам — новая версия процесса без операций и с новыми
+    привязками; upgrade всех переводит только отставшие."""
+    await _blocked_then_fixed(service, process, process_id)
+    sample = PgSample()
+
+    # ничего не отстаёт: upgrade всех никого не трогает
+    nothing = await _upgrade(service, EDITOR, UpgradeTarget.ALL, None)
+    assert (nothing.run.total, nothing.run.moved, nothing.run.blocked) == (0, 0, 0)
+    assert nothing.upgrades == ()
+
+    # третья версия снимка расширяет amount ещё раз: перевод без вмешательства
+    wider = sample.orders_amount.model_copy(update={"type": "numeric(14,2)"})
+    second = sample.next_version()
+    columns = tuple(
+        wider if column.key == sample.orders_amount.key else column
+        for column in second.columns
+    )
+    await service.write_connection_version(
+        EDITOR, PG_CONNECTION.id, second.model_copy(update={"columns": columns})
+    )
+    assert (await service.process(VIEWER, process_id)).behind
+
+    everything = await _upgrade(service, EDITOR, UpgradeTarget.ALL, None)
+    assert (everything.run.moved, everything.run.blocked) == (1, 0)
+    assert everything.run.target is UpgradeTarget.ALL
+    moved = everything.upgrades[0]
+    assert moved.status is UpgradeStatus.MOVED
+    assert moved.version == 3
+    assert moved.pins_after == {PG_CONNECTION.id: 3}
+    upgraded = await service.process(VIEWER, process_id)
+    assert upgraded.latest_version == 3
+    assert not upgraded.behind
+    versions = await service.versions(VIEWER, process_id)
+    assert versions[-1].operations.root == ()
+    assert versions[-1].pins == {PG_CONNECTION.id: 3}
+    assert await service.snapshot(
+        VIEWER, process_id
+    ) == await service.processes.snapshot_at(process_id, 2)
+
+    # процесс без отставания: запуск проходит как moved, записи итога нет
+    same = await _upgrade(service, EDITOR, UpgradeTarget.PROCESS, process_id)
+    assert (same.run.moved, same.run.blocked) == (1, 0)
+    assert same.upgrades == ()
+    assert (await service.last_upgrade(VIEWER, process_id)) == moved
+    runs = await service.upgrade_runs(VIEWER, process_id, None, 10)
+    assert [run.id for run in runs][:2] == [same.run.id, everything.run.id]
+
+
+async def test_upgrade_of_a_draft_moves_its_pins_or_names_the_broken_column(
+    service: CatalogService, process: ProcessSample, process_id: UUID
+) -> None:
+    """Черновик: удалённая в новой версии колонка пары останавливает upgrade
+    с проблемой у узла и у потока, черновик помечен в списке; версия, в которой
+    колонка на месте, переводит привязки черновика."""
+    await _published(service, process_id, process)
+    draft = await service.create_draft(EDITOR, process_id, "wip")
+    assert draft.pins == {PG_CONNECTION.id: 1}
+
+    sample = PgSample()
+    base = sample.snapshot()
+    without_amount = tuple(
+        column for column in base.columns if column.key != sample.orders_amount.key
+    )
+    await service.write_connection_version(
+        EDITOR, PG_CONNECTION.id, base.model_copy(update={"columns": without_amount})
+    )
+
+    blocked = (await _upgrade(service, EDITOR, UpgradeTarget.DRAFT, draft.id)).upgrades[
+        0
+    ]
+    assert blocked.status is UpgradeStatus.BLOCKED
+    assert blocked.draft_id == draft.id
+    assert {(p.target.id, p.reason) for p in blocked.problems} == {
+        (process.orders.id, StaleReason.COLUMN_REMOVED),
+        (process.flow_orders.id, StaleReason.COLUMN_REMOVED),
+    }
+    assert (await service.draft(VIEWER, draft.id)).pins == {PG_CONNECTION.id: 1}
+    mine = await service.my_drafts(EDITOR)
+    assert [(d.id, d.behind, d.attention) for d in mine] == [(draft.id, True, 2)]
+
+    await service.write_connection_version(EDITOR, PG_CONNECTION.id, base)
+    moved = (await _upgrade(service, EDITOR, UpgradeTarget.DRAFT, draft.id)).upgrades[0]
+    assert moved.status is UpgradeStatus.MOVED
+    assert moved.pins_after == {PG_CONNECTION.id: 3}
+    assert (await service.draft(VIEWER, draft.id)).pins == {PG_CONNECTION.id: 3}
+    mine = await service.my_drafts(EDITOR)
+    assert [(d.behind, d.attention) for d in mine] == [(False, 0)]
 
 
 async def test_forgotten_versions_in_pins_do_not_break_the_context(
@@ -327,10 +441,10 @@ async def test_draft_of_a_new_process_lives_with_its_author_until_published(
 
     assert "4 node(s) of draft 'refunds' of process 'refunds'" in str(busy.value)
 
-    collector, stop = _listen(service, EDITOR)
+    collector = ChangeCollector.listen(service, EDITOR)
     renamed = await service.rename_draft(EDITOR, draft.id, "refunds flow")
     assert renamed.name == "refunds flow"
-    stop()
+    collector.leave()
     assert [message.draft_id for message in collector.seen] == [draft.id]
 
     version = await service.publish(EDITOR, draft.id, AuthorVia.USER)
@@ -380,14 +494,14 @@ async def test_share_link_opens_the_published_process_to_a_guest(
 async def test_catalog_changed_reaches_bus_subscriber(
     service: CatalogService, process: ProcessSample
 ) -> None:
-    collector, leave = _listen(service, EDITOR)
+    collector = ChangeCollector.listen(service, EDITOR)
     try:
         created = await service.create_process(EDITOR, ProcessSpec(name="orders"))
         draft = await service.create_draft(EDITOR, created.id, "initial")
         await service.append_ops(EDITOR, draft.id, 0, process.ops(), AuthorVia.LLM)
         version = await service.publish(EDITOR, draft.id, AuthorVia.USER)
     finally:
-        leave()
+        collector.leave()
 
     draft_events = [m for m in collector.seen if m.draft_id == draft.id]
     assert [m.action.value for m in draft_events] == ["created", "updated", "deleted"]
@@ -404,7 +518,7 @@ async def test_connection_snapshots_follow_the_catalog_rights_and_emit_events(
     """Читают снимки обладатели view_roles, пишут — edit_roles; дерево
     последней версии несёт пометки относительно предыдущей; версия уходит
     событием с connection_id; у вида без снимка версии не бывает."""
-    collector, leave = _listen(service, EDITOR)
+    collector = ChangeCollector.listen(service, EDITOR)
     try:
         with pytest.raises(CatalogRefusalError):
             await service.write_connection_version(
@@ -454,7 +568,7 @@ async def test_connection_snapshots_follow_the_catalog_rights_and_emit_events(
         diff = await service.connection_diff(VIEWER, PG_CONNECTION.id, 1, 2)
         assert len(diff.entries) == 4
     finally:
-        leave()
+        collector.leave()
 
     connection_ids: list[UUID] = []
     for message in collector.seen:

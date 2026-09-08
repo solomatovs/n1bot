@@ -7,19 +7,20 @@ from studio_stand import StandProfiles
 
 from boba.config import bind
 from boba.identity.api import AuthenticatedUser
-from boba.runtime.config import RawConfig, StudioRuntimeConfig
+from boba.runtime.config import RawConfig
+from boba.studio.config import StudioAppConfig
 
 REPO = Path(__file__).resolve().parents[4]
 STUDIO_CONFIG = REPO / "compose" / "studio" / "conf" / "config.toml"
 
 
 @pytest.fixture(scope="session")
-def studio_config() -> StudioRuntimeConfig:
+def studio_config() -> StudioAppConfig:
     """Конфиг studio без побочных действий загрузчика."""
     raw = RawConfig.load(STUDIO_CONFIG)
-    return bind(raw, path=StudioRuntimeConfig.SECTION, model=StudioRuntimeConfig)
+    return bind(raw, path=StudioAppConfig.SECTION, model=StudioAppConfig)
 
 
 @pytest.fixture
-def user(studio_config: StudioRuntimeConfig) -> AuthenticatedUser:
+def user(studio_config: StudioAppConfig) -> AuthenticatedUser:
     return StandProfiles.user(studio_config)

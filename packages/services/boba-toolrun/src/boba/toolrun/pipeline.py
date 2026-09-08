@@ -346,7 +346,7 @@ def build_pipeline_tools(
         subject = CallContext.current().subject
         resolved = await registry()
 
-        return ToolInvoker(resolved.for_headless(subject.roles, subject.profile))
+        return ToolInvoker.for_subject(resolved, subject)
 
     @tool(response_format="content_and_artifact")
     async def pipeline_catalog() -> tuple[str, ToolResult]:

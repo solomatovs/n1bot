@@ -1,12 +1,12 @@
 import { Plus } from "lucide-react";
 import { type ReactElement, useCallback, useState, useEffect } from "react";
 
-import { useServices } from "../../app";
+import { useServices } from "../../services";
 import { Async } from "../Async";
 import { useLoadable } from "../../hooks/useLoadable";
 import type { ConnectionView } from "../../model/account";
 import { SchemaDoc, parseSchema } from "../../model/schema";
-import { ConnectionForm } from "./ConnectionForm";
+import { ConnectionForm } from "../connections/ConnectionForm";
 import { EmptyState } from "../../ui";
 
 type Pick = { kind: "none" } | { kind: "new" } | { kind: "row"; id: string };

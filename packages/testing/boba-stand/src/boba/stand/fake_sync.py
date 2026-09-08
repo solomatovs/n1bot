@@ -1,7 +1,9 @@
-"""Фейковый инструмент снятия для стендов синхронизации каталога: шлёт кадры
-плана, порций и итога по образцу PgSample через тот же выходной порт, что и
-pg_schema_snapshot, без базы. Сценарий выбирается аргументом schemas:
-FakeSyncScenario перечисляет, что инструмент делает в каждом.
+"""Фейковый инструмент снятия для стендов синхронизации каталога: кладёт в
+домен каталога снимок образца PgSample тем же SnapshotWriter, что и
+pg_schema_snapshot, без базы-источника. Сценарий выбирается аргументом
+schemas: FakeSyncScenario перечисляет, что инструмент делает в каждом.
+Подключение — только имя, его id стенд выводит из имени (FakeConnection),
+как и справочник подключений стенда.
 
 Запускается субпроцессом ToolMain, как настоящие тела инструментов.
 """
@@ -10,25 +12,25 @@ from __future__ import annotations
 
 import sys
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from enum import StrEnum
-from typing import Annotated, Final
+from typing import Annotated, Any, ClassVar, Final
+from uuid import UUID, uuid5
 
 from pydantic import Field
 
-from boba.catalog import (
-    SourceRecord,
-    SourceSnapshot,
-    SyncDone,
-    SyncEmitter,
-    SyncFrame,
-    SyncPlan,
+from boba.catalog import SourceSnapshot
+from boba.db.postgres import PayloadPostgres
+from boba.db.postgres.catalog import (
+    CatalogStoreConfig,
+    PartTable,
+    SnapshotOutcome,
+    SnapshotTables,
+    SnapshotWriter,
 )
-from boba.db.postgres.snapshot import PgSnapshot
 from boba.db.postgres.snapshot_sample import PgSample
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
-from boba.toolkit.ports import Outbound
 from boba.toolkit.result import TextResult, ToolResult, render_for_llm
 
 
@@ -38,78 +40,95 @@ class FakeSyncScenario(StrEnum):
     SAMPLE = ""
     NEXT = "next"
     SLOW = "slow"
-    BROKEN_DONE = "broken-done"
+    BROKEN_OUTCOME = "broken-outcome"
     CRASH = "crash"
-    WRONG_KIND = "wrong-kind"
 
     @classmethod
     def parse(cls, schemas: str) -> FakeSyncScenario:
         return cls(schemas.strip())
 
 
+class FakeConnection:
+    """Id подключения стенда по имени: фейк и справочник стенда выводят его
+    одинаково, строки соединений у стенда нет."""
+
+    NAMESPACE: ClassVar[UUID] = UUID("6f1b5c2e-0d4a-4b7e-9c3f-1a2b3c4d5e6f")
+    SERVER_VERSION: ClassVar[str] = "fake 17.0"
+    BATCH: ClassVar[int] = 50
+    SLOW_STEP_SEC: ClassVar[float] = 0.5
+
+    @classmethod
+    def id_of(cls, name: str) -> UUID:
+        return uuid5(cls.NAMESPACE, name)
+
+
 class FakeSyncScript:
-    """Разбивка снимка образца на порции для отправителя кадров."""
+    """Разбивка снимка образца на порции строк по раскладке таблиц домена."""
 
     def __init__(self, snapshot: SourceSnapshot, batch_size: int) -> None:
         self._snapshot = snapshot
         self._batch_size = batch_size
+        self._specs = SnapshotTables.of_snapshot(type(snapshot))
 
-    def plan(self, source_kind: str) -> SyncPlan:
-        return SyncPlan(
-            source_kind=source_kind,
-            database="prod",
-            schemas=("public", "etl"),
-            objects_total=self._snapshot.objects_count(),
-            server_version="fake 17.0",
-        )
+    def tables(self) -> list[PartTable]:
+        tables: list[PartTable] = []
+        for spec in self._specs:
+            tables.append(spec.part_table())
 
-    def batches(self) -> Iterator[tuple[str, Sequence[SourceRecord]]]:
-        for part in self._snapshot.parts():
-            records = list(self._snapshot.records_of(part.name))
-            for start in range(0, len(records), self._batch_size):
-                yield part.name, records[start : start + self._batch_size]
+        return tables
+
+    def batches(self) -> Iterator[tuple[str, Sequence[Mapping[str, Any]]]]:
+        for spec in self._specs:
+            rows = list(spec.rows_of(self._snapshot))
+            for start in range(0, len(rows), self._batch_size):
+                yield spec.part.name, rows[start : start + self._batch_size]
 
 
 @tool
 async def fake_pg_snapshot(
     connection: Annotated[str, Field(description="Имя подключения")],
     schemas: Annotated[str, Field(description="Сценарий FakeSyncScenario")],
-    batch_size: Annotated[int, Field(ge=1, description="Записей в порции")],
-    pause_ms: Annotated[int, Field(ge=0, description="Пауза между порциями")],
-    out: Annotated[Outbound[SyncFrame], Injected],
+    catalog: Annotated[CatalogStoreConfig, Injected],
 ) -> tuple[str, ToolResult]:
-    """Кадры синхронизации по образцу PgSample; сценарий выбирает schemas."""
+    """Снимок образца PgSample в домен каталога; сценарий выбирает schemas."""
     scenario = FakeSyncScenario.parse(schemas)
     sample = PgSample()
     snapshot = sample.snapshot()
     if scenario is FakeSyncScenario.NEXT:
         snapshot = sample.next_version()
 
-    source_kind = PgSnapshot.source_kind()
-    if scenario is FakeSyncScenario.WRONG_KIND:
-        source_kind = "clickhouse"
+    script = FakeSyncScript(snapshot, FakeConnection.BATCH)
+    store = await PayloadPostgres.connect_config(catalog.connection)
+    async with store:
+        writer = SnapshotWriter(
+            store, catalog.db_schema, FakeConnection.id_of(connection), script.tables()
+        )
+        await writer.open()
 
-    script = FakeSyncScript(snapshot, batch_size)
-    emitter = SyncEmitter(out, PgSnapshot)
-    emitter.plan(script.plan(source_kind))
+        if scenario is FakeSyncScenario.CRASH:
+            msg = f"fake snapshot of {connection!r} crashed on purpose"
+            raise RuntimeError(msg)
 
-    if scenario is FakeSyncScenario.CRASH:
-        msg = f"fake snapshot of {connection!r} crashed on purpose"
-        raise RuntimeError(msg)
+        batches = 0
+        for part, records in script.batches():
+            if scenario is FakeSyncScenario.SLOW:
+                time.sleep(FakeConnection.SLOW_STEP_SEC)
 
-    for part, records in script.batches():
-        if scenario is FakeSyncScenario.SLOW:
-            time.sleep(pause_ms / 1000)
+            await writer.stage(part, records)
+            batches += 1
 
-        emitter.batch(part, records)
+        version = await writer.commit()
 
-    if scenario is FakeSyncScenario.BROKEN_DONE:
-        out.emit(SyncDone(counts={}, objects_total=999, batches=emitter.batches))
-    else:
-        emitter.done()
+    outcome = SnapshotOutcome(
+        version=version, server_version=FakeConnection.SERVER_VERSION
+    )
+    metadata = outcome.metadata()
+    if scenario is FakeSyncScenario.BROKEN_OUTCOME:
+        metadata = {}
 
     artifact = TextResult(
-        text=f"fake snapshot of {connection!r}: {emitter.batches} batches"
+        text=f"fake snapshot of {connection!r}: version {version}, {batches} batches",
+        metadata=metadata,
     )
     return render_for_llm(artifact), artifact
 

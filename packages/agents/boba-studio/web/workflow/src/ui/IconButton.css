@@ -2,17 +2,42 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  flex: none;
+  width: var(--h-ctl);
+  height: var(--h-ctl);
   padding: 0;
   border: 1px solid var(--hairline);
-  border-radius: var(--r-cell);
+  border-radius: var(--r-ctl);
   background: var(--raised);
   color: var(--muted);
   cursor: pointer;
 }
 
-.icon-btn:hover {
+.icon-btn:hover:not(:disabled) {
   color: var(--ink);
   border-color: var(--hairline-strong);
+}
+
+.icon-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.icon-btn[aria-pressed="true"] {
+  color: var(--signal);
+}
+
+.icon-btn--sm {
+  width: var(--h-ctl-sm);
+  height: var(--h-ctl-sm);
+}
+
+.icon-btn--lg {
+  width: var(--h-ctl-lg);
+  height: var(--h-ctl-lg);
+}
+
+.icon-btn--ghost {
+  border-color: transparent;
+  background: transparent;
 }

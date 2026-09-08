@@ -22,9 +22,6 @@ class SnapshotResolver(ObjectResolver):
     def __init__(self, snapshots: Mapping[UUID, SourceSnapshot]) -> None:
         self._snapshots = dict(snapshots)
 
-    def known(self, connection_id: UUID) -> bool:
-        return connection_id in self._snapshots
-
     def exists(self, ref: ObjectRef) -> bool:
         snapshot = self._snapshots.get(ref.connection_id)
         if snapshot is None:

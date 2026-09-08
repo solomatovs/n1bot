@@ -69,6 +69,24 @@ describe("UserEventSchema", () => {
     }
   });
 
+  it("accepts a catalog change and fills the missing ids with null", () => {
+    const parsed = UserEventSchema.parse({
+      kind: "catalog_changed",
+      process_id: "0f3b2a10-1111-4222-8333-444455556666",
+      version: 3,
+      action: "created",
+    });
+    expect(parsed.kind).toBe("catalog_changed");
+    if (parsed.kind === "catalog_changed") {
+      expect(parsed.process_id).toBe("0f3b2a10-1111-4222-8333-444455556666");
+      expect(parsed.version).toBe(3);
+      expect(parsed.draft_id).toBeNull();
+      expect(parsed.connection_id).toBeNull();
+      expect(parsed.sync_id).toBeNull();
+      expect(parsed.upgrade_id).toBeNull();
+    }
+  });
+
   it("accepts the sign-in refresh request with its principal", () => {
     const parsed = UserEventSchema.parse({
       kind: "signin_refresh_requested",

@@ -3,10 +3,11 @@ import { type FormEvent, type ReactElement, useCallback, useState } from "react"
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { z } from "zod";
 
-import { ApiError } from "../api/client";
-import { useServices } from "../app";
+import { ApiError } from "../api/transport";
+import { useServices } from "../services";
+import { PageUrls } from "../config";
 import { Alert } from "../ui/Alert";
-import { Async, errorText } from "../components/Async";
+import { Async } from "../components/Async";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { useLoadable } from "../hooks/useLoadable";
 import type { SignInProviders } from "../model/account";
@@ -25,11 +26,11 @@ const SSO_ERRORS: Record<string, string> = {
 function nextOf(state: unknown): string {
   const parsed = NextStateSchema.safeParse(state);
   if (!parsed.success) {
-    return "/workflow";
+    return PageUrls.workflow();
   }
 
-  if (parsed.data.next === "" || parsed.data.next.startsWith("/login")) {
-    return "/workflow";
+  if (parsed.data.next === "" || parsed.data.next.startsWith(PageUrls.login())) {
+    return PageUrls.workflow();
   }
 
   return parsed.data.next;
@@ -64,7 +65,7 @@ export function LoginPage(): ReactElement {
             return;
           }
 
-          setNotice(errorText(failure));
+          setNotice(ApiError.describe(failure));
         },
       );
     },
@@ -77,6 +78,7 @@ export function LoginPage(): ReactElement {
         <form className="form login__form" onSubmit={submit} aria-label="sign in">
           <Field label="login">
             <Input
+              mono
               name="username"
               autoComplete="username"
               value={username}
@@ -88,6 +90,7 @@ export function LoginPage(): ReactElement {
           </Field>
           <Field label="password">
             <Input
+              mono
               name="password"
               type="password"
               autoComplete="current-password"

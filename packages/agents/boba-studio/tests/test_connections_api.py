@@ -9,11 +9,10 @@ from collections.abc import AsyncIterator
 from uuid import UUID
 
 import pytest
-from fastapi import FastAPI
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
 from psycopg import sql
 from pydantic import BaseModel, SecretStr
-from studio_stand import StandProfiles
+from studio_stand import ApiStand, StandProfiles
 
 from boba.chat.profiles import ChatProfiles
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
@@ -22,9 +21,7 @@ from boba.connections.profile import GrantTarget, StoredRole
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.signin import SignInMetadata
 from boba.runtime.config import StudioRuntimeConfig
-from boba.stand.auth import NoUsers, StubAuthenticator
 from boba.stand.refs import StandRefs
-from boba.studio.api.app import ApiAccess, ApiApp
 from boba.studio.api.urls import ApiVersion, ConnectionUrl
 from boba.transport.http.profile import HttpConnection
 
@@ -113,22 +110,10 @@ async def client(
     user = StandProfiles.user(studio_config).model_copy(
         update={"sign_in": SignInMetadata(roles=frozenset({ROLE}))}
     )
-    access = ApiAccess(
-        StubAuthenticator(user),
-        StubAuthenticator.COOKIE,
-        NoUsers.source,
+    stand = ApiStand(
+        StandRefs.of(lambda: store, lambda: None), ChatProfiles(studio_config.profiles)
     )
-    app: FastAPI = ApiApp.build(
-        StandRefs.of(lambda: store, lambda: None),
-        access,
-        ChatProfiles(studio_config.profiles),
-        None,
-    )
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://api",
-        cookies=StubAuthenticator.cookies(),
-    ) as built:
+    async with stand.client(user) as built:
         yield built
 
 

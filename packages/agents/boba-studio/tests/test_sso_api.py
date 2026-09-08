@@ -13,7 +13,8 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
+from studio_stand import ApiStand
 
 from boba.auth import AuthService, JwtTokens
 from boba.auth.config import KerberosAuthConfig
@@ -28,11 +29,9 @@ from boba.identity.token import CookieSpec, SessionRenewal
 from boba.krb import KerberosEnv
 from boba.ldap import Ldap3Directory
 from boba.runtime.config import StudioRuntimeConfig
-from boba.stand.auth import NoUsers, StubAuthenticator
 from boba.stand.kerberos import SsoBrowser
 from boba.stand.refs import StandRefs
 from boba.stand.site import Stand as Site
-from boba.studio.api.app import ApiAccess, ApiApp
 from boba.studio.api.signin import PageUrls, SignInWiring
 from boba.studio.api.urls import ApiVersion, SignInUrl
 
@@ -57,11 +56,6 @@ def krb5_env() -> Iterator[None]:
         return
 
     os.environ[KerberosEnv.CONFIG] = saved
-
-
-def _no_store() -> Any:
-    msg = "resolving the connection store: it is not part of the sso api stand"
-    raise RuntimeError(msg)
 
 
 class Users(PersistedUsers, UsersUpsert):
@@ -104,12 +98,8 @@ class Stand:
             sso_url=f"{PREFIX}/api{ApiVersion.V1}{SignInUrl.SSO}",
             page=PageUrls(root=PAGE, login=f"{PAGE}/login", home=f"{PAGE}/observe"),
         )
-        access = ApiAccess(StubAuthenticator(None), COOKIE, NoUsers.source)
-        self.app = ApiApp.build(
-            StandRefs.of(_no_store, lambda: None),
-            access,
-            ChatProfiles(studio_config.profiles),
-            wiring,
+        self.api = ApiStand(
+            StandRefs.none(), ChatProfiles(studio_config.profiles), signin=wiring
         )
 
 
@@ -120,9 +110,7 @@ def stand(raw_config: Any, studio_config: StudioRuntimeConfig) -> Stand:
 
 @pytest.fixture
 async def client(stand: Stand) -> AsyncIterator[AsyncClient]:
-    async with AsyncClient(
-        transport=ASGITransport(app=stand.app), base_url="http://studio"
-    ) as built:
+    async with stand.api.client(None) as built:
         yield built
 
 

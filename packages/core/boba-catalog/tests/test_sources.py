@@ -15,13 +15,15 @@ from boba.catalog import (
     TreeKind,
 )
 from boba.catalog.samples import SampleIds
-from boba.db.clickhouse.snapshot import ChTable
+from boba.db.clickhouse.snapshot import ChSnapshot, ChTable
 from boba.db.clickhouse.snapshot_sample import ChSample
 from boba.db.postgres.snapshot import (
     PgColumn,
     PgIndex,
     PgRelation,
+    PgRoutineArg,
     PgSequence,
+    PgSnapshot,
 )
 from boba.db.postgres.snapshot_sample import PgSample
 
@@ -149,17 +151,26 @@ class TestPostgresTree:
 
     def test_object_lookups(self, pg: PgSample) -> None:
         snapshot = pg.snapshot()
-        columns = list(snapshot.columns_of(("prod", "public", "orders")))
-        assert [column.name for column in columns] == ["id", "amount", "created_at"]
-        assert [
-            c.name for c in snapshot.constraints_of(("prod", "public", "orders"))
-        ] == ["orders_pkey"]
-        assert [i.name for i in snapshot.indexes_of(("prod", "public", "orders"))] == [
-            "orders_created_idx"
-        ]
-        args = list(snapshot.args_of(("prod", "etl", "load_orders", "date")))
+        orders = ObjectRef(
+            connection_id=SOURCE_ID,
+            kind=ObjectKind.RELATION,
+            path=("prod", "public", "orders"),
+        )
+        columns = snapshot.parts_of(orders, PartKind.COLUMN)
+        assert [column.key[-1] for column in columns] == ["id", "amount", "created_at"]
+        constraints = snapshot.parts_of(orders, PartKind.CONSTRAINT)
+        assert [c.key[-1] for c in constraints] == ["orders_pkey"]
+        indexes = snapshot.parts_of(orders, PartKind.INDEX)
+        assert [i.key[-1] for i in indexes] == ["orders_created_idx"]
+        routine = ObjectRef(
+            connection_id=SOURCE_ID,
+            kind=ObjectKind.ROUTINE,
+            path=("prod", "etl", "load_orders", "date"),
+        )
+        args = snapshot.parts_of_type(routine, PartKind.ARGUMENT, PgRoutineArg)
         assert [(arg.name, arg.type) for arg in args] == [("day", "date")]
-        assert snapshot.relation(("prod", "public", "ghost")) is None
+        ghost = orders.model_copy(update={"path": ("prod", "public", "ghost")})
+        assert snapshot.object_at(ghost) is None
 
 
 class TestClickHouseTree:
@@ -192,10 +203,18 @@ class TestClickHouseTree:
         assert dictionaries[0].ref is not None
         assert dictionaries[0].ref.kind is ObjectKind.DICTIONARY
 
-        columns = list(snapshot.columns_of(("dwh", "events")))
-        assert [column.name for column in columns] == ["ts", "user_id", "payload"]
-        attributes = list(snapshot.attributes_of(("dwh", "users")))
-        assert [attribute.name for attribute in attributes] == ["name"]
+        events = ObjectRef(
+            connection_id=CH_SOURCE_ID, kind=ObjectKind.TABLE, path=("dwh", "events")
+        )
+        columns = snapshot.parts_of(events, PartKind.COLUMN)
+        assert [column.key[-1] for column in columns] == ["ts", "user_id", "payload"]
+        users = ObjectRef(
+            connection_id=CH_SOURCE_ID,
+            kind=ObjectKind.DICTIONARY,
+            path=("dwh", "users"),
+        )
+        attributes = snapshot.parts_of(users, PartKind.ATTRIBUTE)
+        assert [attribute.key[-1] for attribute in attributes] == ["name"]
 
 
 class TestTreeScope:
@@ -280,6 +299,77 @@ class TestTreeScope:
         assert (
             type(snapshot).tree_scope(("prod", "public", "views", "v", "x")).parts == ()
         )
+
+
+class TestTypeWidening:
+    """Новый тип принимает всё, что принимал старый: равен или шире; всё
+    остальное — сужение, которое мешает переводу процесса."""
+
+    PG_WIDER: tuple[tuple[str, str], ...] = (
+        ("character varying(30)", "character varying(500)"),
+        ("varchar(30)", "character varying(30)"),
+        ("character varying(30)", "character varying"),
+        ("character varying(30)", "text"),
+        ("character(5)", "character(8)"),
+        ("numeric(10,2)", "numeric(12,2)"),
+        ("numeric(10,2)", "numeric(12,4)"),
+        ("numeric(10,2)", "numeric"),
+        ("smallint", "integer"),
+        ("integer", "bigint"),
+        ("real", "double precision"),
+        ("timestamp(3) without time zone", "timestamp(6) without time zone"),
+        ("timestamp(3) with time zone", "timestamp with time zone"),
+        ("uuid", "uuid"),
+    )
+    PG_NARROWER: tuple[tuple[str, str], ...] = (
+        ("character varying(500)", "character varying(30)"),
+        ("text", "character varying(30)"),
+        ("numeric(12,2)", "numeric(8,2)"),
+        ("numeric(10,2)", "numeric(10,4)"),
+        ("bigint", "integer"),
+        ("integer", "numeric(10,0)"),
+        ("double precision", "real"),
+        ("timestamp(6) without time zone", "timestamp(3) without time zone"),
+        ("timestamp without time zone", "timestamp with time zone"),
+        ("uuid", "text"),
+        ("date", "timestamp without time zone"),
+    )
+    CH_WIDER: tuple[tuple[str, str], ...] = (
+        ("String", "String"),
+        ("FixedString(8)", "FixedString(16)"),
+        ("FixedString(8)", "String"),
+        ("Int8", "Int32"),
+        ("UInt32", "UInt64"),
+        ("UInt32", "Int64"),
+        ("Float32", "Float64"),
+        ("Int32", "Nullable(Int32)"),
+        ("LowCardinality(String)", "String"),
+        ("Decimal(10, 2)", "Decimal(12, 2)"),
+        ("Decimal32(2)", "Decimal64(2)"),
+    )
+    CH_NARROWER: tuple[tuple[str, str], ...] = (
+        ("String", "FixedString(16)"),
+        ("Int64", "Int32"),
+        ("UInt32", "Int32"),
+        ("Nullable(Int32)", "Int32"),
+        ("Float64", "Float32"),
+        ("Decimal(12, 2)", "Decimal(10, 2)"),
+        ("DateTime", "Date"),
+    )
+
+    def test_postgres_types(self) -> None:
+        for old, new in self.PG_WIDER:
+            assert PgSnapshot.type_widens(old, new), (old, new)
+
+        for old, new in self.PG_NARROWER:
+            assert not PgSnapshot.type_widens(old, new), (old, new)
+
+    def test_clickhouse_types(self) -> None:
+        for old, new in self.CH_WIDER:
+            assert ChSnapshot.type_widens(old, new), (old, new)
+
+        for old, new in self.CH_NARROWER:
+            assert not ChSnapshot.type_widens(old, new), (old, new)
 
 
 class TestDiff:

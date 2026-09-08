@@ -1,17 +1,29 @@
 import { Code2, Eraser, Play, Save, ShieldCheck, Trash2 } from "lucide-react";
-import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactElement,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { z } from "zod";
 
-import { ApiError } from "../api/client";
-import { useServices } from "../app";
-import { Async, errorText } from "../components/Async";
+import { ApiError } from "../api/transport";
+import { useServices } from "../services";
+import { PageUrls } from "../config";
+import { Async } from "../components/Async";
 import { ToolMenu } from "../components/build/ToolMenu";
 import { EditorGraph } from "../components/editor/EditorGraph";
 import { TaskForm } from "../components/editor/TaskForm";
 import { useLoadable } from "../hooks/useLoadable";
 import { useShellData } from "../hooks/useShellData";
-import { layoutTasks, type TaskPositions, type TaskSizes } from "../model/layout";
+import {
+  layoutTasks,
+  type TaskPositions,
+  type TaskSizes,
+} from "../model/layout";
 import { editorNodeHeight } from "../components/editor/EditorTaskNode";
 import { EDITOR_NODE_WIDTH, taskData } from "../components/editor/flow";
 import {
@@ -30,8 +42,17 @@ import {
   type SpecIssue,
 } from "../model/spec";
 import type { StoredWorkflow, ToolCatalog } from "../model/workflow";
-import { Button, EmptyState, Toolbar, ToolbarHint, ToolbarLabel, ToolbarSpacer, useToast } from "../ui";
-import { Input, TextArea } from "../ui";
+import {
+  Button,
+  EmptyState,
+  Input,
+  TextArea,
+  Toolbar,
+  ToolbarHint,
+  ToolbarLabel,
+  ToolbarSpacer,
+  useToast,
+} from "../ui";
 
 /** Пауза перед отправкой черновика: серия правок уходит одной записью. */
 const DRAFT_DEBOUNCE_MS = 300;
@@ -78,7 +99,13 @@ export function BuildPage(): ReactElement {
           return <></>;
         }
 
-        return <Builder key={data.stored.id} catalog={data.catalog} stored={data.stored} />;
+        return (
+          <Builder
+            key={data.stored.id}
+            catalog={data.catalog}
+            stored={data.stored}
+          />
+        );
       }}
     />
   );
@@ -99,26 +126,42 @@ function initialWorkflow(stored: StoredWorkflow): EditableWorkflow {
 }
 
 /** Размеры узлов редактора под раскладку: как их нарисует EditorTaskNode. */
-function editorSizes(workflow: EditableWorkflow, catalog: ToolCatalog): TaskSizes {
+function editorSizes(
+  workflow: EditableWorkflow,
+  catalog: ToolCatalog,
+): TaskSizes {
   const sizes: TaskSizes = {};
   for (const task of workflow.tasks) {
     const data = taskData(task, catalog, workflow.edges, null, "");
-    sizes[task.name] = { width: EDITOR_NODE_WIDTH, height: editorNodeHeight(data) };
+    sizes[task.name] = {
+      width: EDITOR_NODE_WIDTH,
+      height: editorNodeHeight(data),
+    };
   }
 
   return sizes;
 }
 
-function autoPositions(workflow: EditableWorkflow, catalog: ToolCatalog): TaskPositions {
+function autoPositions(
+  workflow: EditableWorkflow,
+  catalog: ToolCatalog,
+): TaskPositions {
   return layoutTasks(
     workflow.tasks.map((task) => task.name),
-    workflow.edges.map((edge) => ({ source: edge.src.task, target: edge.dst.task })),
+    workflow.edges.map((edge) => ({
+      source: edge.src.task,
+      target: edge.dst.task,
+    })),
     editorSizes(workflow, catalog),
   );
 }
 
 /** Позиции из раскладки, если в ней есть каждая задача; иначе автораскладка. */
-function positionsOf(layout: unknown, workflow: EditableWorkflow, catalog: ToolCatalog): TaskPositions {
+function positionsOf(
+  layout: unknown,
+  workflow: EditableWorkflow,
+  catalog: ToolCatalog,
+): TaskPositions {
   const saved = LayoutSchema.safeParse(layout);
   const names = workflow.tasks.map((task) => task.name);
   if (saved.success && names.every((name) => name in saved.data.positions)) {
@@ -128,7 +171,11 @@ function positionsOf(layout: unknown, workflow: EditableWorkflow, catalog: ToolC
   return autoPositions(workflow, catalog);
 }
 
-function initialPositions(stored: StoredWorkflow, workflow: EditableWorkflow, catalog: ToolCatalog): TaskPositions {
+function initialPositions(
+  stored: StoredWorkflow,
+  workflow: EditableWorkflow,
+  catalog: ToolCatalog,
+): TaskPositions {
   if (stored.draft_spec !== null) {
     return positionsOf(stored.draft_layout, workflow, catalog);
   }
@@ -156,8 +203,12 @@ function Builder({ catalog, stored }: BuilderProps): ReactElement {
   const shell = useShellData();
   const navigate = useNavigate();
   const toast = useToast();
-  const [workflow, setWorkflow] = useState<EditableWorkflow>(() => initialWorkflow(stored));
-  const [positions, setPositions] = useState<TaskPositions>(() => initialPositions(stored, workflow, catalog));
+  const [workflow, setWorkflow] = useState<EditableWorkflow>(() =>
+    initialWorkflow(stored),
+  );
+  const [positions, setPositions] = useState<TaskPositions>(() =>
+    initialPositions(stored, workflow, catalog),
+  );
   const [hasDraft, setHasDraft] = useState(stored.draft_spec !== null);
   const revision = useRef(stored.draft_revision);
   const remote = useRef(false);
@@ -184,7 +235,12 @@ function Builder({ catalog, stored }: BuilderProps): ReactElement {
 
   /** Ставит редактор в присланное состояние, не отправляя его черновиком обратно. */
   const applyRemote = useCallback(
-    (spec: string, layout: unknown, freshRevision: number, freshDraft: boolean) => {
+    (
+      spec: string,
+      layout: unknown,
+      freshRevision: number,
+      freshDraft: boolean,
+    ) => {
       const parsed = parseSpecText(spec);
       remote.current = true;
       revision.current = freshRevision;
@@ -212,15 +268,22 @@ function Builder({ catalog, stored }: BuilderProps): ReactElement {
         return;
       }
 
-      void api.putWorkflowDraft(stored.id, renderSpecText(workflow), { positions }, socket.id).then(
-        (saved) => {
-          revision.current = Math.max(revision.current, saved.draft_revision);
-          setHasDraft(true);
-        },
-        (error: unknown) => {
-          toast(`draft not shared: ${errorText(error)}`, "error");
-        },
-      );
+      void api
+        .putWorkflowDraft(
+          stored.id,
+          renderSpecText(workflow),
+          { positions },
+          socket.id,
+        )
+        .then(
+          (saved) => {
+            revision.current = Math.max(revision.current, saved.draft_revision);
+            setHasDraft(true);
+          },
+          (error: unknown) => {
+            toast(`draft not shared: ${ApiError.describe(error)}`, "error");
+          },
+        );
     }, DRAFT_DEBOUNCE_MS);
     return () => {
       window.clearTimeout(timer);
@@ -231,7 +294,10 @@ function Builder({ catalog, stored }: BuilderProps): ReactElement {
   useEffect(
     () =>
       socket.onUser((event) => {
-        if (event.kind !== "workflow_draft_changed" || event.workflow_id !== stored.id) {
+        if (
+          event.kind !== "workflow_draft_changed" ||
+          event.workflow_id !== stored.id
+        ) {
           return;
         }
 
@@ -253,7 +319,12 @@ function Builder({ catalog, stored }: BuilderProps): ReactElement {
             return;
           }
 
-          applyRemote(fresh.draft_spec, fresh.draft_layout, fresh.draft_revision, true);
+          applyRemote(
+            fresh.draft_spec,
+            fresh.draft_layout,
+            fresh.draft_revision,
+            true,
+          );
         });
       }),
     [socket, api, stored.id, applyRemote],
@@ -288,7 +359,7 @@ function Builder({ catalog, stored }: BuilderProps): ReactElement {
         return;
       }
 
-      toast(errorText(error), "error");
+      toast(ApiError.describe(error), "error");
     }
   }, [yamlText, toast, catalog]);
 
@@ -301,7 +372,7 @@ function Builder({ catalog, stored }: BuilderProps): ReactElement {
         return;
       }
 
-      toast(errorText(error), "error");
+      toast(ApiError.describe(error), "error");
     },
     [toast],
   );
@@ -337,7 +408,7 @@ function Builder({ catalog, stored }: BuilderProps): ReactElement {
       shell.reload();
       toast("draft cleared", "success");
     } catch (error: unknown) {
-      toast(errorText(error), "error");
+      toast(ApiError.describe(error), "error");
     }
   }, [api, stored.id, socket, applyRemote, shell, toast]);
 
@@ -347,10 +418,10 @@ function Builder({ catalog, stored }: BuilderProps): ReactElement {
       await api.remove(stored.id);
       shell.reload();
       toast(`deleted "${workflow.name}"`, "success");
-      await navigate("/workflow");
+      await navigate(PageUrls.workflow());
     } catch (error: unknown) {
       closed.current = false;
-      toast(errorText(error), "error");
+      toast(ApiError.describe(error), "error");
     }
   }, [api, stored.id, shell, toast, navigate, workflow.name]);
 
@@ -358,7 +429,7 @@ function Builder({ catalog, stored }: BuilderProps): ReactElement {
     try {
       const runId = await api.run(stored.id);
       shell.reload();
-      await navigate(`/runs/${runId}`);
+      await navigate(PageUrls.run(runId));
     } catch (error: unknown) {
       remember(error);
     }
@@ -368,9 +439,21 @@ function Builder({ catalog, stored }: BuilderProps): ReactElement {
     (tool: string) => {
       // обязательные аргументы не предзаполняются: пустое значение прошло бы
       // валидацию, а незаданное сервер подсветит как missing_arg
-      const name = freeTaskName(tool, workflow.tasks.map((task) => task.name));
-      setWorkflow({ ...workflow, tasks: [...workflow.tasks, { name, tool, args: {}, ports: {} }] });
-      setPositions({ ...positions, [name]: { x: 40 + workflow.tasks.length * 30, y: 40 + workflow.tasks.length * 30 } });
+      const name = freeTaskName(
+        tool,
+        workflow.tasks.map((task) => task.name),
+      );
+      setWorkflow({
+        ...workflow,
+        tasks: [...workflow.tasks, { name, tool, args: {}, ports: {} }],
+      });
+      setPositions({
+        ...positions,
+        [name]: {
+          x: 40 + workflow.tasks.length * 30,
+          y: 40 + workflow.tasks.length * 30,
+        },
+      });
       setSelected(name);
     },
     [workflow, positions],
@@ -379,7 +462,9 @@ function Builder({ catalog, stored }: BuilderProps): ReactElement {
   const changeTask = useCallback((changed: EditableTask) => {
     setWorkflow((current) => ({
       ...current,
-      tasks: current.tasks.map((task) => (task.name === changed.name ? changed : task)),
+      tasks: current.tasks.map((task) =>
+        task.name === changed.name ? changed : task,
+      ),
     }));
   }, []);
 
@@ -412,20 +497,25 @@ function Builder({ catalog, stored }: BuilderProps): ReactElement {
   }, []);
 
   const removeEdge = useCallback((id: string) => {
-    setWorkflow((current) => ({ ...current, edges: current.edges.filter((edge) => edgeId(edge) !== id) }));
+    setWorkflow((current) => ({
+      ...current,
+      edges: current.edges.filter((edge) => edgeId(edge) !== id),
+    }));
   }, []);
 
   const move = useCallback((task: string, x: number, y: number) => {
     setPositions((current) => ({ ...current, [task]: { x, y } }));
   }, []);
 
-  const selectedTask = workflow.tasks.find((task) => task.name === selected) ?? null;
+  const selectedTask =
+    workflow.tasks.find((task) => task.name === selected) ?? null;
 
   return (
     <main className="stage stage--build">
-      <Toolbar variant="builder">
+      <Toolbar bar mark="builder">
         <ToolbarLabel>Builder</ToolbarLabel>
         <Input
+          mono
           value={workflow.name}
           onChange={(event) => {
             setWorkflow({ ...workflow, name: event.target.value });
@@ -433,12 +523,17 @@ function Builder({ catalog, stored }: BuilderProps): ReactElement {
           aria-label="workflow name"
         />
         <ToolMenu catalog={catalog} onAdd={addTask} />
-        <Button tone={yamlMode ? "signal" : "default"} icon={Code2} onClick={toggleYaml} aria-pressed={yamlMode}>
+        <Button
+          tone={yamlMode ? "signal" : "default"}
+          icon={Code2}
+          onClick={toggleYaml}
+          aria-pressed={yamlMode}
+        >
           YAML
         </Button>
-        <ToolbarHint variant="builder">edges: drag then → after · result → args · fd → fd</ToolbarHint>
+        <ToolbarHint>edges: drag then → after · result → args · fd → fd</ToolbarHint>
       </Toolbar>
-      <Toolbar variant="builder">
+      <Toolbar bar mark="builder">
         <Button icon={ShieldCheck} onClick={() => void validate()}>
           Validate
         </Button>
@@ -448,17 +543,26 @@ function Builder({ catalog, stored }: BuilderProps): ReactElement {
         <Button tone="primary" icon={Play} onClick={() => void run()}>
           Run
         </Button>
-        <Button icon={Eraser} disabled={!hasDraft} onClick={() => void clearDraft()}>
+        <Button
+          icon={Eraser}
+          disabled={!hasDraft}
+          onClick={() => void clearDraft()}
+        >
           Clear
         </Button>
         <ToolbarSpacer />
-        <Button tone="danger" icon={Trash2} onClick={() => void removeWorkflow()}>
+        <Button
+          tone="danger"
+          icon={Trash2}
+          onClick={() => void removeWorkflow()}
+        >
           Delete
         </Button>
       </Toolbar>
       {yamlMode ? (
         <div className="yaml">
           <TextArea
+            mono
             className="yaml__text"
             value={yamlText}
             onChange={(event) => {
@@ -487,7 +591,10 @@ function Builder({ catalog, stored }: BuilderProps): ReactElement {
             onRemoveEdge={removeEdge}
             onRemoveTask={remove}
             onBadConnection={() => {
-              toast("only result → args.*, task → task and fd → fd edges are allowed", "error");
+              toast(
+                "only result → args.*, task → task and fd → fd edges are allowed",
+                "error",
+              );
             }}
           />
           {selectedTask !== null && (

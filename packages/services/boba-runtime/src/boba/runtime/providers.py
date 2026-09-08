@@ -3,12 +3,13 @@
 Заглушки (get_runtime_config, plugin_table, instance_name) кладёт процесс через provide.
 
 Ошибки:
-RuntimeError — контейнер не поднят, секция выключена или процесс не дал значение.
+RuntimeError — контейнер не поднят или процесс не дал значение.
+ServiceDisabledError — сервис выключаемой секции запрошен при выключенной секции.
 """
 
 import logging
 from collections.abc import AsyncGenerator, Sequence
-from typing import Annotated
+from typing import Annotated, TypeVar
 
 from omegaconf import DictConfig
 
@@ -23,6 +24,7 @@ from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connections.manifest import ConnectionTypes
 from boba.db.pgvector.schema import KbSchema
 from boba.identity.directory import UserDirectory
+from boba.identity.errors import ServiceDisabledError
 from boba.identity.locks import LiveLocks, MemoryLiveLocks, RunLocking, StaleLock
 from boba.identity.sso import RefreshSignal
 from boba.identity.token import CookieSpec
@@ -61,6 +63,9 @@ from boba.workflow_engine.service import WorkflowService
 from boba.workflow_engine.store import WorkflowConfig, WorkflowStore
 
 logger = logging.getLogger(__name__)
+
+
+ValueT = TypeVar("ValueT")
 
 
 def get_raw_config() -> DictConfig:
@@ -173,15 +178,17 @@ def grant_check() -> GrantCheck:
 
 
 def _root() -> Container:
-    root = Container.root
-    if root is None:
-        msg = (
-            "DI root container is not initialised: Container.set_root must run "
-            "before providers are resolved outside a request"
-        )
-        raise RuntimeError(msg)
+    return Container.require_root("runtime providers")
 
-    return root
+
+def required(value: ValueT | None, section: str, what: str) -> ValueT:
+    """Значение провайдера выключаемой секции; None — ServiceDisabledError,
+    которую api отдаёт как 503, а инструмент — текстом отказа."""
+    if value is None:
+        msg = f"{what} requested but [{section}] is disabled in the config"
+        raise ServiceDisabledError(section, msg)
+
+    return value
 
 
 def credential_source(
@@ -218,14 +225,8 @@ def message_bus_ref() -> MessageBus:
 def connection_store_ref() -> ConnectionStore:
     """Хранилище соединений для обвязок инструментов; зовётся на каждый вызов."""
     store = _root().resolved(connection_store)
-    if store is None:
-        msg = (
-            "connection store requested but [connections] is disabled in the "
-            "config: user connections are unavailable"
-        )
-        raise RuntimeError(msg)
 
-    return store
+    return required(store, "connections", "the connection store")
 
 
 def connection_types_ref() -> ConnectionTypes:
@@ -267,14 +268,8 @@ async def tool_registry_ref() -> ToolRegistry:
 async def workflow_service_ref() -> WorkflowService:
     """Сервис workflow из корневого контейнера; зовётся на каждый вызов."""
     service = await _root().resolve(Depends(workflow_service))
-    if service is None:
-        msg = (
-            "workflow service requested but [workflow] is disabled in the "
-            "config: workflows are unavailable"
-        )
-        raise RuntimeError(msg)
 
-    return service
+    return required(service, "workflow", "the workflow service")
 
 
 async def kb_schema(

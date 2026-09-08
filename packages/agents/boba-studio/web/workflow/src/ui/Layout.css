@@ -1,0 +1,201 @@
+/* каркас страницы: шапка, полоса уведомлений, тело из панелей и сцены */
+
+/* документ не скроллится никогда (body overflow hidden): каждая область
+   страницы скроллится сама — сцена, панели, тело диалога, страница-список */
+.page {
+  display: grid;
+  grid-template-rows: var(--h-topbar) auto minmax(0, 1fr);
+  height: 100dvh;
+  width: 100vw;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.page__notices {
+  grid-row: 2;
+  display: grid;
+  gap: var(--s2);
+  padding: var(--s2) var(--s4) 0;
+  min-width: 0;
+}
+
+.page__notices:empty {
+  padding: 0;
+}
+
+/* колонка деталей: по умолчанию из токена, средний экран жмёт к минимуму;
+   выбранная пользователем ширина ставится inline и перекрывает оба */
+.page__body {
+  --w-detail-col: var(--w-detail);
+  --w-detail-user-max: 70vw;
+  grid-row: 3;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+}
+
+.page__body[data-pane="true"] {
+  grid-template-columns: var(--w-pane) minmax(0, 1fr);
+}
+
+.page__body[data-pane="true"][data-detail="true"] {
+  grid-template-columns: var(--w-pane) minmax(0, 1fr) var(--w-detail-col);
+}
+
+.page__body[data-pane="false"][data-detail="true"] {
+  grid-template-columns: minmax(0, 1fr) var(--w-detail-col);
+}
+
+.page__pane,
+.page__detail {
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.page__pane {
+  border-right: 1px solid var(--hairline);
+}
+
+/* панель деталей не скроллится сама: скролл у её тела, чтобы полоса
+   захвата у левого края стояла на всю высоту */
+.page__detail {
+  position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  border-left: 1px solid var(--hairline);
+}
+
+.page__detail-body {
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+/* полоса у левого края панели деталей: за неё панель тянут */
+.page__detail-grip {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--s2);
+  margin-left: calc(-1 * var(--s1));
+  cursor: col-resize;
+  z-index: 2;
+  touch-action: none;
+}
+
+.page__detail-grip:hover,
+.page__detail-grip:active {
+  background: color-mix(in srgb, var(--signal) 40%, transparent);
+}
+
+.page__scene {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+}
+
+.page__scene--panel {
+  grid-template-rows: minmax(0, 1fr);
+  overflow: auto;
+}
+
+/* средний экран: панели у своих минимумов */
+@media (max-width: 1200px) {
+  .page__body[data-pane="true"] {
+    grid-template-columns: var(--w-pane-min) minmax(0, 1fr);
+  }
+
+  .page__body {
+    --w-detail-col: var(--w-detail-min);
+  }
+
+  .page__body[data-pane="true"][data-detail="true"] {
+    grid-template-columns: var(--w-pane-min) minmax(0, 1fr) var(--w-detail-col);
+  }
+
+  .page__body[data-pane="false"][data-detail="true"] {
+    grid-template-columns: minmax(0, 1fr) var(--w-detail-col);
+  }
+}
+
+/* узкий экран: панели становятся ящиками поверх сцены */
+@media (max-width: 900px) {
+  .page__body[data-pane="true"],
+  .page__body[data-pane="true"][data-detail="true"],
+  .page__body[data-pane="false"][data-detail="true"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .page__pane {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: min(85vw, var(--w-pane-max));
+    z-index: 20;
+    box-shadow: var(--shadow-pop);
+  }
+
+  .page__detail {
+    position: absolute;
+    inset: 0 0 0 auto;
+    width: min(92vw, var(--w-detail-max));
+    z-index: 21;
+    box-shadow: var(--shadow-pop);
+  }
+}
+
+/* стопка и ряд: зазоры из шкалы */
+
+.stack {
+  display: grid;
+  gap: var(--s3);
+  min-width: 0;
+  align-content: start;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+}
+
+.row--wrap {
+  flex-wrap: wrap;
+}
+
+/* индекс: страница-список по центру; скроллится сама, на всю высоту окна */
+
+.index {
+  height: 100dvh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--bg);
+}
+
+.index__body {
+  display: grid;
+  gap: var(--s6);
+  align-content: start;
+  width: 100%;
+  max-width: var(--w-page);
+  margin: 0 auto;
+  padding: var(--s6);
+  min-width: 0;
+}
+
+.index__head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s3);
+}
+
+@media (max-width: 640px) {
+  .index__body {
+    padding: var(--s3);
+  }
+}

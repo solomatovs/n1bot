@@ -1,16 +1,13 @@
 """Синхронизация подключения инструментом снятия: запуск инструмента вида
-(SourceSnapshot.SYNC_TOOL) от имени субъекта вне чата, приём кадров плана,
-порций и итога через FrameTap, staging порций в хранилище и перенос
-собранного снимка в версию подключения одной транзакцией.
+(SourceSnapshot.SYNC_TOOL) от имени субъекта вне чата и запись версии по его
+итогу. Строки снимка инструмент кладёт в домен каталога сам; хост по
+SnapshotOutcome из результата записывает шапку версии и закрывает
+синхронизацию.
 
 Запуск живёт задачей цикла событий инстанса: SyncRunner держит задачи и
 отмены по id синхронизации, cancel() снимает инструмент через RunCancellation
-и ждёт закрытия записи. Кадры инструмента приходят в потоке чтения канала
-(QueueSink) и передаются в цикл событий очередью; FrameConsumer принимает
-их как SyncFrameReceiver: план — в запись синхронизации, порции — в staging
-и SnapshotAssembler, итог — в собранный снимок. Инструменты и имена
-подключений приходят портами SyncTools и ConnectionDirectory, которые собирает
-хост приложения.
+и ждёт закрытия записи. Инструменты и имена подключений приходят портами
+SyncTools и ConnectionDirectory, которые собирает хост приложения.
 
 Ошибки:
 CatalogStoreError — Postgres недоступен или ответ битый.
@@ -18,6 +15,7 @@ SyncNotFoundError — синхронизации с таким id нет.
 SyncRunningError — у подключения уже идёт синхронизация.
 SyncClosedError — синхронизация уже завершена, отменять нечего.
 SnapshotKindMismatchError — прежние версии подключения другого вида.
+UnknownSourceKindError — вида подключения нет в реестре снимков.
 SyncSetupError — синхронизацию не запустить: у вида нет инструмента снятия,
     инструмент недоступен субъекту, подключение субъекту не видно.
 """
@@ -27,47 +25,48 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import abstractmethod
-from collections.abc import Awaitable, Callable
-from typing import Any, ClassVar, Protocol
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import Any, ClassVar, Generic, Protocol, TypeVar
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from boba.cancellation import RunCancellation, StopReason, ToolStopped
-from boba.catalog import (
-    CatalogError,
-    SnapshotAssembler,
-    SourceSnapshot,
-    SyncBatch,
-    SyncDone,
-    SyncFrameError,
-    SyncFrameHead,
-    SyncFrameReceiver,
-    SyncPlan,
-)
+from boba.catalog import CatalogError
 from boba.catalog_service.connection_store import ConnectionStore
 from boba.catalog_service.records import (
     CatalogServiceError,
+    ConnectionInfo,
+    SnapshotKindMismatchError,
     Sync,
-    SyncClosedError,
+    SyncOutcomeError,
     SyncRequest,
     SyncScope,
     SyncStatus,
 )
-from boba.identity.context import CallContext, Credential, Initiator, Scope, Subject
+from boba.db.postgres.catalog import CatalogDomainError, SnapshotOutcome
+from boba.identity.api import ApiSubject
+from boba.identity.context import (
+    CallContext,
+    Credential,
+    HumanInitiator,
+    Initiator,
+    Scope,
+    Subject,
+)
 from boba.identity.run import RunRegistry
 from boba.messaging import ChangeAction
 from boba.toolkit.calls import CallIdPrefix
 from boba.toolkit.failure import ToolUnavailableError
-from boba.toolkit.frames import FrameProtocolError, ToolFrame
-from boba.toolkit.launcher import FrameSink, FrameTap
 from boba.toolrun.invoke import InvokeReply, ToolInvoker
+from boba.toolrun.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "ConnectionDirectory",
-    "ConnectionInfo",
+    "JobTasks",
+    "RegistrySyncTools",
     "SyncCaller",
     "SyncObserver",
     "SyncPorts",
@@ -77,7 +76,50 @@ __all__ = [
 ]
 
 SyncObserver = Callable[[Subject, Sync, ChangeAction], Awaitable[None]]
-Progress = Callable[[Sync], Awaitable[None]]
+CancelT = TypeVar("CancelT")
+
+
+class JobTasks(Generic[CancelT]):
+    """Задачи одного инстанса по id: синхронизации и upgrade'ы стартуют
+    задачей цикла событий, отменяются ручкой отмены и ждутся под shield.
+    Завершённая задача забывается сама; задача другого инстанса здесь
+    неизвестна, и вызывающий закрывает её запись в базе сам."""
+
+    def __init__(self, stop: Callable[[CancelT], None]) -> None:
+        self._stop = stop
+        self._tasks: dict[UUID, asyncio.Task[None]] = {}
+        self._cancellations: dict[UUID, CancelT] = {}
+
+    def start(
+        self, job_id: UUID, work: Coroutine[Any, Any, None], cancellation: CancelT
+    ) -> None:
+        task = asyncio.create_task(work)
+        self._tasks[job_id] = task
+        self._cancellations[job_id] = cancellation
+        task.add_done_callback(lambda _: self._forget(job_id))
+
+    async def wait(self, job_id: UUID) -> None:
+        """Дождаться конца задачи; задачи нет в этом инстансе — сразу."""
+        task = self._tasks.get(job_id)
+        if task is None:
+            return
+
+        await asyncio.shield(task)
+
+    async def cancel(self, job_id: UUID) -> bool:
+        """Остановить задачу и дождаться её; False — задачи в этом инстансе нет."""
+        task = self._tasks.get(job_id)
+        if task is None:
+            return False
+
+        self._stop(self._cancellations[job_id])
+        await asyncio.shield(task)
+
+        return True
+
+    def _forget(self, job_id: UUID) -> None:
+        self._tasks.pop(job_id, None)
+        self._cancellations.pop(job_id, None)
 
 
 class SyncSetupError(CatalogServiceError):
@@ -93,6 +135,24 @@ class SyncCaller(BaseModel):
     subject: Subject
     initiator: Initiator
     credential: Credential
+
+    @classmethod
+    def of_context(cls, context: CallContext) -> SyncCaller:
+        """Вызывающий из контекста вызова инструмента."""
+        return cls(
+            subject=context.subject,
+            initiator=context.initiator,
+            credential=context.credential,
+        )
+
+    @classmethod
+    def of_api(cls, identity: ApiSubject) -> SyncCaller:
+        """Вызывающий из входа API: инструмент снятия ходит в базу под его билетом."""
+        return cls(
+            subject=identity.subject,
+            initiator=HumanInitiator(via="api"),
+            credential=identity.credential,
+        )
 
     def context(self, sync_id: UUID, cancellation: RunCancellation) -> CallContext:
         return CallContext(
@@ -111,15 +171,19 @@ class SyncTools(Protocol):
     async def invoker(self, subject: Subject) -> ToolInvoker: ...
 
 
-class ConnectionInfo(BaseModel):
-    """Подключение глазами субъекта: имя для инструмента снятия и вид, по
-    которому выбирается снимок."""
+RegistryRef = Callable[[], Awaitable[ToolRegistry]]
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
 
-    id: UUID
-    name: str = Field(min_length=1)
-    kind: str = Field(min_length=1)
+class RegistrySyncTools(SyncTools):
+    """Реализация SyncTools реестром инструментов процесса: набор вне чата
+    по ролям и профилю субъекта; реестр берётся ссылкой на каждый вызов."""
+
+    def __init__(self, registry: RegistryRef) -> None:
+        self._registry = registry
+
+    async def invoker(self, subject: Subject) -> ToolInvoker:
+        registry = await self._registry()
+        return ToolInvoker.for_subject(registry, subject)
 
 
 class ConnectionDirectory(Protocol):
@@ -152,8 +216,6 @@ class SyncToolArg:
 
     CONNECTION: ClassVar[str] = "connection"
     SCHEMAS: ClassVar[str] = "schemas"
-    BATCH_SIZE: ClassVar[str] = "batch_size"
-    PAUSE_MS: ClassVar[str] = "pause_ms"
 
 
 class SyncJob(BaseModel):
@@ -175,125 +237,10 @@ class SyncJob(BaseModel):
         return self.context.cancellation
 
     def call_args(self) -> dict[str, Any]:
-        scope = self.sync.scope
         return {
             SyncToolArg.CONNECTION: self.sync.connection_name,
-            SyncToolArg.SCHEMAS: scope.schemas_arg(),
-            SyncToolArg.BATCH_SIZE: scope.batch_size,
-            SyncToolArg.PAUSE_MS: scope.pause_ms,
+            SyncToolArg.SCHEMAS: self.sync.scope.schemas_arg(),
         }
-
-
-class QueueSink(FrameSink):
-    """Приёмник кадров из потока чтения канала: кладёт кадры в очередь цикла
-    событий; None закрывает очередь."""
-
-    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
-        self._loop = loop
-        self._queue: asyncio.Queue[ToolFrame | None] = asyncio.Queue()
-
-    @property
-    def queue(self) -> asyncio.Queue[ToolFrame | None]:
-        return self._queue
-
-    def take(self, frame: ToolFrame) -> None:
-        self._loop.call_soon_threadsafe(self._queue.put_nowait, frame)
-
-    def close(self) -> None:
-        self._queue.put_nowait(None)
-
-
-class FrameConsumer(SyncFrameReceiver[Awaitable[None]]):
-    """Приём кадров одной синхронизации в цикле событий: план в запись,
-    порции в staging и накопитель, итог — в снимок. Первая ошибка кадра
-    останавливает инструмент и запоминается; остальные кадры сливаются."""
-
-    def __init__(
-        self,
-        store: ConnectionStore,
-        job: SyncJob,
-        queue: asyncio.Queue[ToolFrame | None],
-        progress: Progress,
-    ) -> None:
-        self._store = store
-        self._job = job
-        self._sync = job.sync
-        self._queue = queue
-        self._progress = progress
-        self._assembler: SnapshotAssembler | None = None
-        self._done: SyncDone | None = None
-        self._error: str = ""
-
-    @property
-    def error(self) -> str:
-        return self._error
-
-    @property
-    def server_version(self) -> str:
-        if self._assembler is None:
-            return ""
-
-        return self._assembler.plan.server_version
-
-    async def run(self) -> None:
-        while True:
-            frame = await self._queue.get()
-            if frame is None:
-                return
-
-            if self._error:
-                continue
-
-            try:
-                head = frame.header_as(SyncFrameHead)
-                await head.route(self, frame.body)
-            except (FrameProtocolError, CatalogError, CatalogServiceError) as exc:
-                self._error = f"sync {self._sync.id}: frame rejected: {exc}"
-                self._job.cancellation.cancel(StopReason.FAILED)
-
-    def snapshot(self) -> SourceSnapshot:
-        """Собранный снимок после итога.
-
-        Ошибки:
-        SyncFrameError — итог не пришёл или порции не сложились.
-        """
-        if self._assembler is None:
-            msg = f"sync {self._sync.id}: the tool finished without a sync.plan frame"
-            raise SyncFrameError(msg)
-
-        if self._done is None:
-            msg = f"sync {self._sync.id}: the tool finished without a sync.done frame"
-            raise SyncFrameError(msg)
-
-        return self._assembler.finish(self._done)
-
-    async def on_plan(self, plan: SyncPlan, body: bytes) -> None:
-        if self._assembler is not None:
-            msg = f"sync {self._sync.id}: a second sync.plan frame arrived"
-            raise SyncFrameError(msg)
-
-        if plan.source_kind != self._sync.kind:
-            msg = (
-                f"sync {self._sync.id}: the tool reports a {plan.source_kind!r} "
-                f"snapshot, the connection is {self._sync.kind!r}"
-            )
-            raise SyncFrameError(msg)
-
-        self._assembler = SnapshotAssembler(plan, self._store.kinds)
-        self._sync = await self._store.plan_sync(self._sync.id, plan)
-        await self._progress(self._sync)
-
-    async def on_batch(self, batch: SyncBatch, body: bytes) -> None:
-        if self._assembler is None:
-            msg = f"sync {self._sync.id}: sync.batch #{batch.seq} came before sync.plan"
-            raise SyncFrameError(msg)
-
-        records = self._assembler.take(batch, body)
-        self._sync = await self._store.stage_batch(self._sync.id, batch, records)
-        await self._progress(self._sync)
-
-    async def on_done(self, done: SyncDone, body: bytes) -> None:
-        self._done = done
 
 
 class SyncRunner:
@@ -306,8 +253,7 @@ class SyncRunner:
         self._tools = ports.tools
         self._names = ports.connections
         self._observer = observer
-        self._tasks: dict[UUID, asyncio.Task[None]] = {}
-        self._cancellations: dict[UUID, RunCancellation] = {}
+        self._jobs: JobTasks[RunCancellation] = JobTasks(self._stop)
 
     @property
     def directory(self) -> ConnectionDirectory:
@@ -320,13 +266,14 @@ class SyncRunner:
 
         Ошибки:
         SyncSetupError — инструмента или подключения у субъекта нет, у вида
-            подключения нет снимка.
+            нет инструмента снятия.
+        UnknownSourceKindError — вида подключения нет в реестре снимков.
         SyncRunningError — у подключения уже идёт синхронизация.
         SnapshotKindMismatchError — прежние версии другого вида.
         """
         connection = await self._names.info_of(caller.subject, connection_id)
+        snapshot_class = self._store.snapshot_class(connection.kind)
         try:
-            snapshot_class = self._store.kinds.snapshot_class(connection.kind)
             tool_name = snapshot_class.sync_tool()
         except CatalogError as exc:
             msg = f"sync of connection {connection.name!r} cannot start: {exc}"
@@ -342,12 +289,7 @@ class SyncRunner:
             )
             raise SyncSetupError(msg) from exc
 
-        request = SyncRequest(
-            connection_id=connection.id,
-            connection_name=connection.name,
-            kind=connection.kind,
-            scope=scope,
-        )
+        request = SyncRequest(connection=connection, scope=scope)
         sync_id = uuid4()
         sync = await self._store.start_sync(sync_id, request, caller.subject.user_id)
         cancellation = RunCancellation()
@@ -357,11 +299,9 @@ class SyncRunner:
             context=caller.context(sync_id, cancellation),
         )
         drive = SyncDrive(self._store, job, invoker)
-        task = asyncio.create_task(self._guarded(drive, caller.subject))
-        self._tasks[sync_id] = task
-        self._cancellations[sync_id] = cancellation
-        task.add_done_callback(lambda _: self._forget(sync_id))
+        self._jobs.start(sync_id, self._guarded(drive, caller.subject), cancellation)
         await self._observer(caller.subject, sync, ChangeAction.CREATED)
+
         return sync
 
     async def cancel(self, subject: Subject, sync_id: UUID) -> Sync:
@@ -370,39 +310,28 @@ class SyncRunner:
         Ошибки:
         SyncClosedError — синхронизация уже завершена.
         """
-        sync = await self._store.get_sync(sync_id)
-        if sync.status is not SyncStatus.RUNNING:
-            raise SyncClosedError(sync_id, sync.status)
-
-        task = self._tasks.get(sync_id)
-        if task is None:
+        stopped = await self._jobs.cancel(sync_id)
+        if not stopped:
             reason = "cancelled: the sync task is not running in this instance"
             closed = await self._store.close_sync(sync_id, SyncStatus.CANCELLED, reason)
             await self._observer(subject, closed, ChangeAction.UPDATED)
             return closed
 
-        self._cancellations[sync_id].cancel(StopReason.USER_STOP)
-        await asyncio.shield(task)
         return await self._store.get_sync(sync_id)
 
     async def wait(self, sync_id: UUID) -> Sync:
         """Дождаться конца задачи синхронизации этого инстанса."""
-        task = self._tasks.get(sync_id)
-        if task is not None:
-            await asyncio.shield(task)
+        await self._jobs.wait(sync_id)
 
         return await self._store.get_sync(sync_id)
 
-    def _forget(self, sync_id: UUID) -> None:
-        self._tasks.pop(sync_id, None)
-        self._cancellations.pop(sync_id, None)
+    @staticmethod
+    def _stop(cancellation: RunCancellation) -> None:
+        cancellation.cancel(StopReason.USER_STOP)
 
     async def _guarded(self, drive: SyncDrive, subject: Subject) -> None:
-        async def progress(sync: Sync) -> None:
-            await self._observer(subject, sync, ChangeAction.UPDATED)
-
         try:
-            closed = await drive.run(progress)
+            closed = await drive.run()
         except Exception:
             logger.exception("sync %s: the drive task crashed", drive.sync_id)
             raise
@@ -411,8 +340,8 @@ class SyncRunner:
 
 
 class SyncDrive:
-    """Один прогон инструмента снятия: вызов под контекстом и приёмником
-    кадров, приём кадров, итог в запись синхронизации."""
+    """Один прогон инструмента снятия: вызов под контекстом с отменой, итог
+    инструмента — в шапку версии и запись синхронизации."""
 
     def __init__(
         self, store: ConnectionStore, job: SyncJob, invoker: ToolInvoker
@@ -425,59 +354,48 @@ class SyncDrive:
     def sync_id(self) -> UUID:
         return self._job.sync_id
 
-    async def run(self, progress: Progress) -> Sync:
-        loop = asyncio.get_running_loop()
-        sink = QueueSink(loop)
-        consumer = FrameConsumer(self._store, self._job, sink.queue, progress)
-        consuming = asyncio.create_task(consumer.run())
-
+    async def run(self) -> Sync:
         reply: InvokeReply | None = None
         failure = ""
         try:
-            reply = await self._invoke(sink)
+            reply = await self._invoke()
         except ToolStopped:
             failure = f"sync {self.sync_id}: {self._job.tool_name} was stopped"
         except Exception as exc:
             failure = f"sync {self.sync_id}: {self._job.tool_name} raised: {exc}"
-        finally:
-            sink.close()
-            await consuming
 
-        return await self._close(reply, failure, consumer)
+        return await self._close(reply, failure)
 
-    async def _invoke(self, sink: QueueSink) -> InvokeReply:
+    async def _invoke(self) -> InvokeReply:
         intent = f"catalog sync {self.sync_id}"
         call = ToolInvoker.call(
             self._job.tool_name, self._job.call_args(), intent, CallIdPrefix.API
         )
-        with RunRegistry.open(self._job.context), FrameTap.applied(sink):
+        with RunRegistry.open(self._job.context):
             return await self._invoker.invoke(call)
 
-    async def _close(
-        self, reply: InvokeReply | None, failure: str, consumer: FrameConsumer
-    ) -> Sync:
+    async def _close(self, reply: InvokeReply | None, failure: str) -> Sync:
         if self._job.cancellation.reason is StopReason.USER_STOP:
             return await self._failed(SyncStatus.CANCELLED, "cancelled by the user")
-
-        if consumer.error:
-            return await self._failed(SyncStatus.FAILED, consumer.error)
 
         if failure:
             return await self._failed(SyncStatus.FAILED, failure)
 
-        if reply is not None and not reply.ok:
+        if reply is None:
+            error = f"sync {self.sync_id}: {self._job.tool_name} returned no reply"
+            return await self._failed(SyncStatus.FAILED, error)
+
+        if not reply.ok:
             error = (
                 f"sync {self.sync_id}: {self._job.tool_name} failed: {reply.error_text}"
             )
             return await self._failed(SyncStatus.FAILED, error)
 
         try:
-            snapshot = consumer.snapshot()
-        except SyncFrameError as exc:
-            return await self._failed(SyncStatus.FAILED, str(exc))
-
-        await self._store.commit_sync(self.sync_id, snapshot, consumer.server_version)
-        return await self._store.get_sync(self.sync_id)
+            outcome = SnapshotOutcome.of_result(reply.result)
+            return await self._store.record_sync(self.sync_id, outcome)
+        except (CatalogDomainError, SyncOutcomeError, SnapshotKindMismatchError) as exc:
+            return await self._failed(SyncStatus.FAILED, f"sync {self.sync_id}: {exc}")
 
     async def _failed(self, status: SyncStatus, error: str) -> Sync:
         return await self._store.close_sync(self.sync_id, status, error)

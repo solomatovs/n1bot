@@ -50,6 +50,18 @@ class Container:
         cls.root = container
 
     @classmethod
+    def require_root(cls, what: str) -> "Container":
+        """Корневой контейнер для обращения вне запроса; не поднят — RuntimeError."""
+        if cls.root is None:
+            msg = (
+                f"{what}: Container.root is not initialised, "
+                "Container.set_root must run first"
+            )
+            raise RuntimeError(msg)
+
+        return cls.root
+
+    @classmethod
     def set_session_hook(cls, hook: "Callable[[], Container | None] | None") -> None:
         if hook is None:
             cls._session_hook[:] = []
@@ -58,17 +70,16 @@ class Container:
 
     @classmethod
     def begin_call(cls) -> "Container":
-        if cls.root is None:
-            msg = (
-                "DI begin_call: the root container is not initialised, "
-                "Container.set_root must run first"
-            )
-            raise RuntimeError(msg)
+        root = cls.require_root("DI begin_call")
 
         session = None
         if cls._session_hook:
             session = cls._session_hook[0]()
-        return cls(level="call", parent=session or cls.root)
+
+        if session is None:
+            return cls(level="call", parent=root)
+
+        return cls(level="call", parent=session)
 
     @staticmethod
     def find_depend(param: inspect.Parameter) -> "Depends | None":
@@ -215,14 +226,9 @@ def di_inject(fn: Callable) -> Callable:
 
     @functools.wraps(fn)
     def sync_shim(*args: Any, **kwargs: Any) -> Any:
-        if Container.root is None:
-            msg = (
-                f"DI inject of {fn.__name__}: the root container is not "
-                "initialised, Container.set_root must run first"
-            )
-            raise RuntimeError(msg)
+        root = Container.require_root(f"DI inject of {fn.__name__}")
         resolved = {
-            name: Container.root.resolved(dep.provider, scope=dep.scope)
+            name: root.resolved(dep.provider, scope=dep.scope)
             for name, dep in deps.items()
         }
         return fn(*args, **kwargs, **resolved)

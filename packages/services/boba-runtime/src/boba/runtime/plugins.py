@@ -25,7 +25,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel, ConfigDict
 
-from boba.access import GrantCheck, ToolAccess
+from boba.access import GrantCheck, ToolAccess, ToolSurfaces
 from boba.chat.profiles import ProfilesSection, RolesSection
 from boba.config import bind
 from boba.connection_broker.catalog import (
@@ -105,6 +105,9 @@ class PluginMeta(BaseModel):
 
     enable: bool = False
     tools: StringList = []
+    headless: StringList = []
+    """Инструменты из tools, которые модели в чате не отдаются: их зовут
+    страница, REST и workflow (снятие снимка каталога и подобные задачи)."""
 
 
 class ToolBridge:
@@ -184,6 +187,7 @@ class ToolLoader:
 
         tools: list[BaseTool] = []
         chat_only: set[str] = set()
+        headless_only: set[str] = set()
         for name, plugin in self._plugins.items():
             section = OmegaConf.select(self._raw, f"tool.{name}")
             if section is None and plugin.discovered:
@@ -199,6 +203,7 @@ class ToolLoader:
 
             built = self._plugin_tools(name, plugin, meta, launchers)
             tools.extend(built)
+            headless_only.update(self._headless_of(name, meta, built))
 
             if plugin.chat_only:
                 for tool in built:
@@ -212,7 +217,7 @@ class ToolLoader:
                     streamable.append(tool.name)
                 ToolStreams.mark_streamable(streamable)
 
-        access = self._access_of(tools, chat_only)
+        access = self._access_of(tools, chat_only, headless_only)
         ToolCallIdField.attach_all(tools)
         ToolIntentField.attach_all(tools)
         ToolRunLogger.guard_all(
@@ -346,15 +351,40 @@ class ToolLoader:
         )
         raise RuntimeError(msg)
 
+    @staticmethod
+    def _headless_of(
+        name: str, meta: PluginMeta, built: Sequence[BaseTool]
+    ) -> set[str]:
+        """Инструменты плагина, помеченные headless: имя вне собранных — отказ."""
+        known: set[str] = set()
+        for tool in built:
+            known.add(tool.name)
+
+        stray = sorted(set(meta.headless) - known)
+        if stray:
+            msg = (
+                f"[tool.{name}] headless names {stray} are not among its enabled "
+                f"tools {sorted(known)}"
+            )
+            raise RuntimeError(msg)
+
+        return set(meta.headless)
+
     def _access_of(
-        self, tools: Sequence[BaseTool], chat_only: Iterable[str]
+        self,
+        tools: Sequence[BaseTool],
+        chat_only: Iterable[str],
+        headless_only: Iterable[str],
     ) -> ToolAccess:
         """Права из [roles.*]/[profiles.*]; опечатка в имени инструмента — отказ."""
         roles = bind(self._raw, "roles", RolesSection).root
         profiles = bind(self._raw, "profiles", ProfilesSection).root
         known = frozenset(tool.name for tool in tools)
 
-        return ToolAccess(known, roles, profiles, chat_only, self._grant_check)
+        surfaces = ToolSurfaces(
+            chat_only=frozenset(chat_only), headless_only=frozenset(headless_only)
+        )
+        return ToolAccess(known, roles, profiles, surfaces, self._grant_check)
 
     def _require_connections(self, name: str) -> None:
         """Инструменты с соединениями пользователя работают только при [connections]."""

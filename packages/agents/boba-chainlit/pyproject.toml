@@ -13,8 +13,6 @@ dependencies = [
     "boba-runtime==0.0.17.dev3",
     "boba-toolrun==0.0.17.dev3",
     "boba-canvas==0.0.17.dev3",
-    "boba-catalog==0.0.17.dev3",
-    "boba-catalog-service==0.0.17.dev3",
     "boba-identity==0.0.17.dev3",
     "boba-chat==0.0.17.dev3",
     "boba-config==0.0.17.dev3",

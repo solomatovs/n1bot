@@ -1,29 +1,29 @@
 """pg_schema_snapshot против живого Postgres: схема со всеми видами объектов
-снимается порциями в кадры, кадры складываются в PgSnapshot, и в нём есть
-всё, что было создано: таблицы с ключами и индексами, секции, view,
-материализованное view, функции и процедуры с аргументами,
-последовательность с владельцем, enum, domain и composite."""
+перетекает COPY-потоком в домен каталога той же тестовой базы, версия
+читается обратно в PgSnapshot, и в нём есть всё, что было создано: таблицы
+с ключами и индексами, секции, view, материализованное view, функции и
+процедуры с аргументами, последовательность с владельцем, enum, domain и
+composite."""
 
 from __future__ import annotations
 
-import os
-import threading
 from typing import Any, ClassVar
+from uuid import UUID
 
 import pytest
 from psycopg import sql
-from pydantic import TypeAdapter
+from psycopg.rows import dict_row
 
-from boba.catalog import (
-    SnapshotAssembler,
-    SourceKinds,
-    SyncBatch,
-    SyncDone,
-    SyncFrame,
-    SyncFrameKind,
-    SyncPlan,
-)
+from boba.catalog import SourceKinds
 from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres.catalog import (
+    CatalogDomain,
+    CatalogStoreConfig,
+    SnapshotOutcome,
+    SnapshotReader,
+    SnapshotTables,
+    StagingTable,
+)
 from boba.db.postgres.profile import PostgresConfig
 from boba.db.postgres.snapshot import (
     PgConstraintKind,
@@ -36,13 +36,14 @@ from boba.runtime.config import RuntimeConfig
 from boba.stand.database import TestDatabase
 from boba.tool.pg.snapshot import pg_schema_snapshot
 from boba.toolkit.entry import ToolMain
-from boba.toolkit.frames import FrameCodec, FrameLimit, ToolFrame, ToolIo
-from boba.toolkit.ports import Outbound
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 SCHEMA = "snap_test"
 ETL = "snap_etl"
+CATALOG = "snap_catalog"
+CONNECTION_ID = UUID(int=0x5AA5)
+KINDS = SourceKinds.of(PgSnapshot)
 
 
 class Fixture:
@@ -140,85 +141,58 @@ class Fixture:
                 await conn.execute(text, prepare=False)
 
 
-class FrameSink:
-    """Читает кадры инструмента из пайпа в своём потоке, пока тело пишет."""
+class Domain:
+    """Схема домена каталога в тестовой базе: таблицы pg_* по раскладке
+    моделей, чтение версии обратно."""
 
-    READ_BYTES: ClassVar[int] = 65536
+    @classmethod
+    async def prepare(cls, pool: AsyncPostgresPool) -> None:
+        async with pool.connection() as conn:
+            await conn.execute(
+                sql.SQL("drop schema if exists {} cascade").format(
+                    sql.Identifier(CATALOG)
+                )
+            )
+            await conn.execute(
+                sql.SQL("create schema {}").format(sql.Identifier(CATALOG))
+            )
+            domain = CatalogDomain(CATALOG, SnapshotTables(KINDS))
+            for statement in domain.ddl():
+                await conn.execute(statement, prepare=False)
 
-    def __init__(self) -> None:
-        self.read_fd, self.write_fd = os.pipe()
-        self.frames: list[ToolFrame] = []
-        self._codec = FrameCodec(FrameLimit.HEADER_BYTES, FrameLimit.BODY_BYTES)
-        self._thread = threading.Thread(target=self._drain, daemon=True)
-        self._thread.start()
+    @classmethod
+    async def read(cls, pool: AsyncPostgresPool, version: int) -> PgSnapshot:
+        reader = SnapshotReader(CATALOG, KINDS)
+        async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            snapshot = await reader.read(cur, CONNECTION_ID, "postgres", version)
 
-    def _drain(self) -> None:
-        while True:
-            chunk = os.read(self.read_fd, self.READ_BYTES)
-            if not chunk:
-                break
+        if not isinstance(snapshot, PgSnapshot):
+            raise AssertionError(
+                f"expected a PgSnapshot, got {type(snapshot).__name__}"
+            )
 
-            self.frames.extend(self._codec.feed(chunk))
+        return snapshot
 
-        self._codec.finish()
-
-    def close(self) -> list[ToolFrame]:
-        os.close(self.write_fd)
-        self._thread.join(timeout=30)
-        os.close(self.read_fd)
-        return self.frames
-
-
-FRAME_ADAPTER: TypeAdapter[SyncFrame] = TypeAdapter(SyncFrame)
-
-
-def _assemble(frames: list[ToolFrame]) -> tuple[SyncPlan, SyncDone, PgSnapshot]:
-    heads = [FRAME_ADAPTER.validate_json(frame.header) for frame in frames]
-    plan = heads[0]
-    if not isinstance(plan, SyncPlan):
-        raise AssertionError(f"the first frame must be the plan, got {plan!r}")
-
-    assembler = SnapshotAssembler(plan, SourceKinds.of(PgSnapshot))
-    done: SyncDone | None = None
-    for head, frame in zip(heads[1:], frames[1:], strict=True):
-        if isinstance(head, SyncBatch):
-            assembler.take(head, frame.body)
-        elif isinstance(head, SyncDone):
-            done = head
-        else:
-            raise AssertionError(f"unexpected frame after the plan: {head!r}")
-
-    if done is None:
-        raise AssertionError("no done frame among the tool frames")
-
-    snapshot = assembler.finish(done)
-    if not isinstance(snapshot, PgSnapshot):
-        raise AssertionError(f"expected a PgSnapshot, got {type(snapshot).__name__}")
-
-    return plan, done, snapshot
+    @classmethod
+    async def staging(cls, pool: AsyncPostgresPool) -> list[str]:
+        async with pool.connection() as conn, conn.cursor() as cur:
+            pattern = StagingTable.pattern_of(CONNECTION_ID)
+            return await StagingTable.names_in(cur, CATALOG, pattern)
 
 
 async def _run_tool(
-    connection: PostgresConfig, schemas: str, batch_size: int
-) -> tuple[list[ToolFrame], dict[str, Any]]:
+    connection: PostgresConfig, schemas: str
+) -> tuple[SnapshotOutcome, dict[str, Any]]:
     body = ToolMain.toolset(pg_schema_snapshot)[0].coroutine
     if body is None:
         raise AssertionError("pg_schema_snapshot has no coroutine body")
 
-    sink = FrameSink()
-    out: Outbound[SyncFrame] = Outbound(ToolIo.on_channels(-1, sink.write_fd))
-    try:
-        _content, artifact = await body(
-            connection=connection,
-            schemas=schemas,
-            batch_size=batch_size,
-            pause_ms=0,
-            out=out,
-        )
-    finally:
-        frames = sink.close()
-
-    return frames, artifact.model_dump(mode="json")
+    _content, artifact = await body(
+        connection=connection.identified(CONNECTION_ID, "snap"),
+        schemas=schemas,
+        catalog=CatalogStoreConfig(connection=connection, db_schema=CATALOG),
+    )
+    return SnapshotOutcome.of_result(artifact), artifact.model_dump(mode="json")
 
 
 @pytest.fixture
@@ -226,46 +200,50 @@ async def connection(
     runtime_config: RuntimeConfig, test_database: str, pool: AsyncPostgresPool
 ) -> PostgresConfig:
     await Fixture.prepare(pool)
+    await Domain.prepare(pool)
     return TestDatabase.config_of(runtime_config.data_layer.postgres, test_database)
 
 
 class Taken:
-    """Один прогон инструмента на модуль: кадры, план, итог и снимок."""
+    """Один прогон инструмента: итог, артефакт и снимок версии из домена."""
 
-    def __init__(self, frames: list[ToolFrame], artifact: dict[str, Any]) -> None:
-        self.frames = frames
+    def __init__(
+        self, outcome: SnapshotOutcome, artifact: dict[str, Any], snapshot: PgSnapshot
+    ) -> None:
+        self.outcome = outcome
         self.artifact = artifact
-        self.plan, self.done, self.snapshot = _assemble(frames)
+        self.snapshot = snapshot
 
 
 @pytest.fixture
-async def taken(connection: PostgresConfig) -> Taken:
-    frames, artifact = await _run_tool(
-        connection, f"{SCHEMA}, {ETL}", Fixture.BATCH_SIZE
-    )
-    return Taken(frames, artifact)
+async def taken(connection: PostgresConfig, pool: AsyncPostgresPool) -> Taken:
+    outcome, artifact = await _run_tool(connection, f"{SCHEMA}, {ETL}")
+    snapshot = await Domain.read(pool, outcome.version)
+    return Taken(outcome, artifact, snapshot)
 
 
-async def test_plan_batches_and_done_agree(
-    taken: Taken, connection: PostgresConfig
+async def test_version_lands_in_the_domain(
+    taken: Taken, connection: PostgresConfig, pool: AsyncPostgresPool
 ) -> None:
-    plan = taken.plan
-    assert plan.kind is SyncFrameKind.PLAN
-    assert plan.schemas == (SCHEMA, ETL)
-    assert plan.server_version != ""
-    assert plan.objects_total == taken.done.objects_total == Fixture.OBJECTS
-    batches = [f for f in taken.frames if f.kind == SyncFrameKind.BATCH.value]
-    assert taken.done.batches == len(batches)
-    assert len(batches) > len(Fixture.RELATIONS) / Fixture.BATCH_SIZE
-    assert taken.artifact["metadata"]["objects"] == str(taken.done.objects_total)
+    assert taken.outcome.version == 1
+    assert taken.outcome.server_version != ""
+    assert taken.artifact["metadata"]["objects"] == str(Fixture.OBJECTS)
+    assert taken.artifact["metadata"]["schemas"] == f"{SCHEMA}, {ETL}"
+    assert await Domain.staging(pool) == []
 
     snapshot = taken.snapshot
+    snapshot.check()
+    assert snapshot.objects_count() == Fixture.OBJECTS
     database = snapshot.databases[0]
-    assert database.name == plan.database == connection.dbname
+    assert database.name == connection.dbname
     assert {schema.name: schema.comment for schema in snapshot.schemas} == {
         SCHEMA: "snapshot fixture",
         ETL: None,
     }
+
+    again, _artifact = await _run_tool(connection, f"{SCHEMA}, {ETL}")
+    assert again.version == 2
+    assert (await Domain.read(pool, 2)).objects_count() == Fixture.OBJECTS
 
 
 async def test_relations_columns_constraints_and_indexes(taken: Taken) -> None:
@@ -365,13 +343,14 @@ async def test_routines_sequences_and_types(taken: Taken) -> None:
 
 
 async def test_all_user_schemas_when_the_list_is_empty(
-    connection: PostgresConfig,
+    connection: PostgresConfig, pool: AsyncPostgresPool
 ) -> None:
-    frames, _artifact = await _run_tool(connection, "", 50)
+    outcome, artifact = await _run_tool(connection, "")
 
-    plan, _done, snapshot = _assemble(frames)
-    assert SCHEMA in plan.schemas
-    assert ETL in plan.schemas
-    assert "pg_catalog" not in plan.schemas
-    assert "information_schema" not in plan.schemas
+    schemas = str(artifact["metadata"]["schemas"]).split(", ")
+    assert SCHEMA in schemas
+    assert ETL in schemas
+    assert "pg_catalog" not in schemas
+    assert "information_schema" not in schemas
+    snapshot = await Domain.read(pool, outcome.version)
     assert {r.name for r in snapshot.relations} >= set(Fixture.RELATIONS)

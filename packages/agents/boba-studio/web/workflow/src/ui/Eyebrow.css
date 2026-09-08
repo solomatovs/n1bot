@@ -1,7 +1,13 @@
 .eyebrow {
+  margin: 0;
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
+  font-weight: 500;
+  line-height: var(--h-ctl-sm);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

@@ -12,6 +12,7 @@ CatalogInvariantError — повторы ключей или запись без
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator, Mapping, Sequence
 from enum import IntEnum, StrEnum
 from operator import attrgetter
@@ -63,7 +64,9 @@ __all__ = [
     "PgSourceKind",
     "PgType",
     "PgTypeCard",
+    "PgTypeFamily",
     "PgTypeKind",
+    "PgTypeName",
 ]
 
 
@@ -216,7 +219,8 @@ class PgRelation(SourceObject):
     def label(self) -> str:
         return self.name
 
-    def card(self, snapshot: SourceSnapshot, ref: ObjectRef) -> ObjectCard:
+    def partitions_in(self, snapshot: SourceSnapshot) -> tuple[PgRelation, ...]:
+        """Секции этой таблицы в снимке по имени, отсортированные."""
         siblings = Records.of_type(snapshot.records_of(PgPart.RELATIONS), PgRelation)
         partitions: list[PgRelation] = []
         for relation in siblings:
@@ -232,6 +236,10 @@ class PgRelation(SourceObject):
             partitions.append(relation)
 
         partitions.sort(key=attrgetter("name"))
+        return tuple(partitions)
+
+    def card(self, snapshot: SourceSnapshot, ref: ObjectRef) -> ObjectCard:
+        partitions = self.partitions_in(snapshot)
         return PgRelationCard(
             ref=ref,
             relation=self,
@@ -497,10 +505,180 @@ class PgTypeCard(ObjectCard):
     type: PgType
 
 
-class PgPathDepth(IntEnum):
-    """Длина пути объекта ручного источника: база, схема, имя."""
+class PgTypeFamily(StrEnum):
+    """Семейства типов Postgres, внутри которых тип бывает шире другого."""
 
-    OBJECT = 3
+    VARCHAR = "varchar"
+    CHAR = "char"
+    TEXT = "text"
+    NUMERIC = "numeric"
+    INTEGER = "integer"
+    FLOAT = "float"
+    TIMESTAMP = "timestamp"
+    TIMESTAMPTZ = "timestamptz"
+    OTHER = "other"
+
+
+class PgTypeName(CatalogModel):
+    """Тип колонки Postgres, как его пишет format_type: семейство, модификаторы
+    (длина, точность и масштаб, точность времени) и ранг внутри семейства.
+    Знает, шире ли один тип другого; незнакомые типы сравниваются как строки."""
+
+    PATTERN: ClassVar[re.Pattern[str]] = re.compile(
+        r"^(?P<name>[a-z ]+?)\s*(?:\((?P<mods>[^)]*)\))?\s*"
+        r"(?P<tail>with time zone|without time zone)?$"
+    )
+    FAMILIES: ClassVar[Mapping[str, PgTypeFamily]] = {
+        "character varying": PgTypeFamily.VARCHAR,
+        "varchar": PgTypeFamily.VARCHAR,
+        "character": PgTypeFamily.CHAR,
+        "char": PgTypeFamily.CHAR,
+        "bpchar": PgTypeFamily.CHAR,
+        "text": PgTypeFamily.TEXT,
+        "numeric": PgTypeFamily.NUMERIC,
+        "decimal": PgTypeFamily.NUMERIC,
+        "smallint": PgTypeFamily.INTEGER,
+        "int2": PgTypeFamily.INTEGER,
+        "integer": PgTypeFamily.INTEGER,
+        "int": PgTypeFamily.INTEGER,
+        "int4": PgTypeFamily.INTEGER,
+        "bigint": PgTypeFamily.INTEGER,
+        "int8": PgTypeFamily.INTEGER,
+        "real": PgTypeFamily.FLOAT,
+        "float4": PgTypeFamily.FLOAT,
+        "double precision": PgTypeFamily.FLOAT,
+        "float8": PgTypeFamily.FLOAT,
+        "timestamp": PgTypeFamily.TIMESTAMP,
+        "timestamp without time zone": PgTypeFamily.TIMESTAMP,
+        "timestamptz": PgTypeFamily.TIMESTAMPTZ,
+        "timestamp with time zone": PgTypeFamily.TIMESTAMPTZ,
+    }
+    RANKS: ClassVar[Mapping[str, int]] = {
+        "smallint": 1,
+        "int2": 1,
+        "integer": 2,
+        "int": 2,
+        "int4": 2,
+        "bigint": 3,
+        "int8": 3,
+        "real": 1,
+        "float4": 1,
+        "double precision": 2,
+        "float8": 2,
+    }
+    UNBOUNDED: ClassVar[int] = 10**9
+    """Длина или точность без ограничения: «шире любого числа»."""
+    TIMESTAMP_PRECISION: ClassVar[int] = 6
+
+    raw: str
+    family: PgTypeFamily
+    rank: int = 0
+    length: int = UNBOUNDED
+    precision: int = UNBOUNDED
+    scale: int = UNBOUNDED
+
+    @classmethod
+    def parse(cls, raw: str) -> PgTypeName:
+        text = raw.strip().lower()
+        match = cls.PATTERN.match(text)
+        if match is None:
+            return cls(raw=text, family=PgTypeFamily.OTHER)
+
+        name = match.group("name").strip()
+        tail = match.group("tail")
+        if tail is not None:
+            name = f"{name} {tail}"
+
+        mods = cls._mods(match.group("mods"))
+        family = cls.FAMILIES.get(name, PgTypeFamily.OTHER)
+        return cls(
+            raw=text,
+            family=family,
+            rank=cls.RANKS.get(name, 0),
+            length=cls._at(mods, 0, cls.UNBOUNDED),
+            precision=cls._precision(family, mods),
+            scale=cls._scale(family, mods),
+        )
+
+    @classmethod
+    def _precision(cls, family: PgTypeFamily, mods: tuple[int, ...]) -> int:
+        if family in (PgTypeFamily.TIMESTAMP, PgTypeFamily.TIMESTAMPTZ):
+            return cls._at(mods, 0, cls.TIMESTAMP_PRECISION)
+
+        return cls._at(mods, 0, cls.UNBOUNDED)
+
+    @classmethod
+    def _scale(cls, family: PgTypeFamily, mods: tuple[int, ...]) -> int:
+        """numeric(p) — масштаб 0; numeric без модификаторов принимает любой."""
+        if family is not PgTypeFamily.NUMERIC:
+            return 0
+
+        if not mods:
+            return cls.UNBOUNDED
+
+        return cls._at(mods, 1, 0)
+
+    @staticmethod
+    def _mods(raw: str | None) -> tuple[int, ...]:
+        if raw is None:
+            return ()
+
+        values: list[int] = []
+        for piece in raw.split(","):
+            stripped = piece.strip()
+            if not stripped.isdigit():
+                return ()
+
+            values.append(int(stripped))
+
+        return tuple(values)
+
+    @staticmethod
+    def _at(mods: tuple[int, ...], index: int, default: int) -> int:
+        if index < len(mods):
+            return mods[index]
+
+        return default
+
+    def accepts(self, old: PgTypeName) -> bool:
+        """Этот тип принимает всё, что принимал old: равен ему или шире."""
+        if self.raw == old.raw:
+            return True
+
+        if old.family is PgTypeFamily.VARCHAR and self.family is PgTypeFamily.TEXT:
+            return True
+
+        if self.family is not old.family:
+            return False
+
+        return self._wider_in_family(old)
+
+    def _wider_in_family(self, old: PgTypeName) -> bool:
+        if self.family in (PgTypeFamily.VARCHAR, PgTypeFamily.CHAR):
+            return self.length >= old.length
+
+        if self.family is PgTypeFamily.NUMERIC:
+            return self._wider_numeric(old)
+
+        if self.family in (PgTypeFamily.INTEGER, PgTypeFamily.FLOAT):
+            return self.rank >= old.rank
+
+        if self.family in (PgTypeFamily.TIMESTAMP, PgTypeFamily.TIMESTAMPTZ):
+            return self.precision >= old.precision
+
+        return False
+
+    def _wider_numeric(self, old: PgTypeName) -> bool:
+        """numeric без модификаторов шире любого; целая часть и масштаб не
+        сужаются."""
+        if self.precision == self.UNBOUNDED:
+            return True
+
+        if old.precision == self.UNBOUNDED:
+            return False
+
+        whole = self.precision - self.scale >= old.precision - old.scale
+        return whole and self.scale >= old.scale
 
 
 class PgSnapshot(SourceSnapshot):
@@ -611,14 +789,14 @@ class PgSnapshot(SourceSnapshot):
             return ()
 
         keys: set[str] = set()
-        for constraint in self.constraints_of(ref.path):
+        for constraint in self.parts_of_type(ref, PartKind.CONSTRAINT, PgConstraint):
             if constraint.kind is not PgConstraintKind.PRIMARY:
                 continue
 
             keys.update(constraint.columns)
 
         columns: list[NodeColumn] = []
-        for column in self.columns_of(ref.path):
+        for column in self.parts_of_type(ref, PartKind.COLUMN, PgColumn):
             columns.append(
                 NodeColumn(
                     name=column.name,
@@ -630,82 +808,9 @@ class PgSnapshot(SourceSnapshot):
 
         return tuple(columns)
 
-    def relation(self, path: Sequence[str]) -> PgRelation | None:
-        for relation in self.relations:
-            if relation.key == tuple(path):
-                return relation
-
-        return None
-
-    def routine(self, path: Sequence[str]) -> PgRoutine | None:
-        for routine in self.routines:
-            if routine.key == tuple(path):
-                return routine
-
-        return None
-
-    def sequence(self, path: Sequence[str]) -> PgSequence | None:
-        for sequence in self.sequences:
-            if sequence.key == tuple(path):
-                return sequence
-
-        return None
-
-    def type(self, path: Sequence[str]) -> PgType | None:
-        for typ in self.types:
-            if typ.key == tuple(path):
-                return typ
-
-        return None
-
-    def columns_of(self, path: Sequence[str]) -> Iterator[PgColumn]:
-        wanted = tuple(path)
-        for column in sorted(self.columns, key=attrgetter("ordinal")):
-            if column.parent != wanted:
-                continue
-
-            yield column
-
-    def constraints_of(self, path: Sequence[str]) -> Iterator[PgConstraint]:
-        wanted = tuple(path)
-        for constraint in self.constraints:
-            if constraint.parent != wanted:
-                continue
-
-            yield constraint
-
-    def indexes_of(self, path: Sequence[str]) -> Iterator[PgIndex]:
-        wanted = tuple(path)
-        for index in self.indexes:
-            if index.parent != wanted:
-                continue
-
-            yield index
-
-    def args_of(self, path: Sequence[str]) -> Iterator[PgRoutineArg]:
-        wanted = tuple(path)
-        for arg in sorted(self.routine_args, key=attrgetter("position")):
-            if arg.parent != wanted:
-                continue
-
-            yield arg
-
-    def partitions_of(self, path: Sequence[str]) -> Iterator[PgRelation]:
-        parent = self.relation(path)
-        if parent is None:
-            return
-
-        for relation in self.relations:
-            if relation.kind is not PgRelationKind.PARTITION:
-                continue
-
-            if relation.database != parent.database:
-                continue
-
-            if relation.partition_of != parent.partition_label:
-                continue
-
-            yield relation
+    @classmethod
+    def type_widens(cls, old: str, new: str) -> bool:
+        return PgTypeName.parse(new).accepts(PgTypeName.parse(old))
 
     @classmethod
     def tree_scope(cls, path: Sequence[str]) -> TreeScope:
@@ -859,40 +964,40 @@ class PgSnapshot(SourceSnapshot):
             if PgGroup.of_relation(relation.kind).value != group:
                 continue
 
-            yield TreeNode(
-                path=(*steps, relation.name),
-                label=relation.name,
-                kind=TreeKind.OBJECT,
-                expandable=relation.kind is PgRelationKind.PARTITIONED,
-                detail=relation.kind.value,
-                comment=relation.comment,
-                ref=ObjectRef(
-                    connection_id=connection_id,
-                    kind=ObjectKind.RELATION,
-                    path=relation.key,
-                ),
+            ref = ObjectRef(
+                connection_id=connection_id, kind=ObjectKind.RELATION, path=relation.key
             )
+            node = TreeNode.object(
+                steps, relation.name, ref, relation.kind.value, relation.comment
+            )
+            expandable = relation.kind is PgRelationKind.PARTITIONED
+            yield node.model_copy(update={"expandable": expandable})
 
     def _partition_nodes(
         self, connection_id: UUID, steps: tuple[str, ...]
     ) -> Iterator[TreeNode]:
         database, schema, _group, name = steps
-        for partition in sorted(
-            self.partitions_of((database, schema, name)), key=attrgetter("name")
-        ):
-            yield TreeNode(
-                path=(*steps, partition.name),
-                label=partition.name,
-                kind=TreeKind.OBJECT,
-                expandable=False,
-                detail=partition.partition_bound or PgRelationKind.PARTITION.value,
-                comment=partition.comment,
-                ref=ObjectRef(
-                    connection_id=connection_id,
-                    kind=ObjectKind.RELATION,
-                    path=partition.key,
-                ),
+        parent = self.object_at(
+            ObjectRef(
+                connection_id=connection_id,
+                kind=ObjectKind.RELATION,
+                path=(database, schema, name),
             )
+        )
+        if not isinstance(parent, PgRelation):
+            return
+
+        for partition in parent.partitions_in(self):
+            detail = partition.partition_bound
+            if not detail:
+                detail = PgRelationKind.PARTITION.value
+
+            ref = ObjectRef(
+                connection_id=connection_id,
+                kind=ObjectKind.RELATION,
+                path=partition.key,
+            )
+            yield TreeNode.object(steps, partition.name, ref, detail, partition.comment)
 
     def _routine_nodes(
         self, connection_id: UUID, steps: tuple[str, ...]
@@ -905,19 +1010,14 @@ class PgSnapshot(SourceSnapshot):
             if PgGroup.of_routine(routine.kind).value != group:
                 continue
 
-            yield TreeNode(
-                path=(*steps, routine.label),
-                label=routine.label,
-                kind=TreeKind.OBJECT,
-                expandable=False,
-                detail=routine.returns or routine.kind.value,
-                comment=routine.comment,
-                ref=ObjectRef(
-                    connection_id=connection_id,
-                    kind=ObjectKind.ROUTINE,
-                    path=routine.key,
-                ),
+            detail = routine.returns
+            if not detail:
+                detail = routine.kind.value
+
+            ref = ObjectRef(
+                connection_id=connection_id, kind=ObjectKind.ROUTINE, path=routine.key
             )
+            yield TreeNode.object(steps, routine.label, ref, detail, routine.comment)
 
     def _plain_object_nodes(
         self, connection_id: UUID, steps: tuple[str, ...]
@@ -928,18 +1028,13 @@ class PgSnapshot(SourceSnapshot):
                 if sequence.key[:2] != (database, schema):
                     continue
 
-                yield TreeNode(
-                    path=(*steps, sequence.name),
-                    label=sequence.name,
-                    kind=TreeKind.OBJECT,
-                    expandable=False,
-                    detail=sequence.type,
-                    comment=sequence.comment,
-                    ref=ObjectRef(
-                        connection_id=connection_id,
-                        kind=ObjectKind.SEQUENCE,
-                        path=sequence.key,
-                    ),
+                ref = ObjectRef(
+                    connection_id=connection_id,
+                    kind=ObjectKind.SEQUENCE,
+                    path=sequence.key,
+                )
+                yield TreeNode.object(
+                    steps, sequence.name, ref, sequence.type, sequence.comment
                 )
             return
 
@@ -947,14 +1042,7 @@ class PgSnapshot(SourceSnapshot):
             if typ.key[:2] != (database, schema):
                 continue
 
-            yield TreeNode(
-                path=(*steps, typ.name),
-                label=typ.name,
-                kind=TreeKind.OBJECT,
-                expandable=False,
-                detail=typ.kind.value,
-                comment=typ.comment,
-                ref=ObjectRef(
-                    connection_id=connection_id, kind=ObjectKind.TYPE, path=typ.key
-                ),
+            ref = ObjectRef(
+                connection_id=connection_id, kind=ObjectKind.TYPE, path=typ.key
             )
+            yield TreeNode.object(steps, typ.name, ref, typ.kind.value, typ.comment)

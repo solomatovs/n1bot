@@ -12,7 +12,6 @@ import pytest
 
 pytest.importorskip("playwright.sync_api", reason="ui-тестам нужен playwright")
 
-from catalog_ui import Api, ConnectionSeed, Seed, api_client
 from chat_ui import (
     BOOT_TIMEOUT_SEC,
     ChatOpener,
@@ -184,36 +183,3 @@ def module_chats(browser: Browser, llm_port: int) -> Iterator[ChatOpener]:
         yield opener
     finally:
         opener.close()
-
-
-@pytest.fixture(scope="module")
-def catalog_api(stand: StandProcess, stand_db: StandDatabase) -> Iterator[Api]:
-    """JSON API каталога от имени admin; один клиент на модуль. Подключения
-    сеятели кладут в базу стенда напрямую."""
-    with api_client(stand, "admin") as admin:
-        yield Api(admin, stand_db)
-
-
-@pytest.fixture(scope="module")
-def catalog_seed(catalog_api: Api) -> Iterator[Seed]:
-    """Процесс модуля ed_process над подключением ed_prod: публикуется на
-    входе, на выходе удаляется вместе с версиями и подключением, чтобы
-    соседние модули видели прежний каталог."""
-    seed = Seed(catalog_api)
-    seed.publish("module seed")
-    try:
-        yield seed
-    finally:
-        seed.cleanup()
-
-
-@pytest.fixture(scope="module")
-def connection_seed(catalog_api: Api) -> Iterator[ConnectionSeed]:
-    """Подключения модуля: postgres с двумя версиями из образца, clickhouse с
-    одной, postgres без версий; на выходе версии забываются, подключения
-    снимаются."""
-    seed = ConnectionSeed(catalog_api)
-    try:
-        yield seed
-    finally:
-        seed.cleanup()

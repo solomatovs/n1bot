@@ -2,9 +2,11 @@ import { Square } from "lucide-react";
 import { type ReactElement, useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
-import { useServices } from "../app";
+import { useServices } from "../services";
+import { PageUrls } from "../config";
 import { Alert } from "../ui/Alert";
-import { errorText, type Loadable } from "../components/Async";
+import { ApiError } from "../api/transport";
+import type { Loadable } from "../components/Async";
 import { RunGraph } from "../components/graph/RunGraph";
 import { Inspector } from "../components/observe/Inspector";
 import { TaskTable } from "../components/observe/TaskTable";
@@ -65,7 +67,7 @@ export function ObservePage(): ReactElement {
       },
       (error: unknown) => {
         if (alive) {
-          setRun({ kind: "error", message: errorText(error) });
+          setRun({ kind: "error", message: ApiError.describe(error) });
         }
       },
     );
@@ -135,9 +137,9 @@ export function ObservePage(): ReactElement {
     try {
       const started = await api.run(run.value.workflow_id);
       shell.reload();
-      await navigate(`/runs/${started}`);
+      await navigate(PageUrls.run(started));
     } catch (error: unknown) {
-      toast(errorText(error), "error");
+      toast(ApiError.describe(error), "error");
     }
   }, [api, run, navigate, shell, toast]);
 
@@ -178,7 +180,7 @@ export function ObservePage(): ReactElement {
   return (
     <main className="stage" data-run-status={loaded.status}>
       <Vitals run={loaded} now={now} />
-      <Toolbar variant="view">
+      <Toolbar bar mark="viewbar">
         <ToolbarHint>{loaded.instance}</ToolbarHint>
         <ToolbarSpacer />
         <Segmented options={VIEWS} value={view} onChange={setView} label="view" />

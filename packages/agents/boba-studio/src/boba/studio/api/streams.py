@@ -8,7 +8,8 @@ GET /workflow-runs/{run_id}/streams/{call_id}?channel=&offset= — окно от
 401 — вход не сохранён слоем данных.
 403 — профиль недоступен ролям пользователя.
 404 — запуск не пользователя, канал не виден или записи нет.
-503 — хранилище workflow недоступно.
+503 — хранилище workflow недоступно; [workflow] выключен — ServiceDisabledError,
+    её переводит DomainErrorMiddleware.
 """
 
 from __future__ import annotations
@@ -140,10 +141,7 @@ class StreamApi:
         """Субъект, которому принадлежит запуск; чужой или неизвестный — 404."""
         identity = ApiAuth.resolve(current_user, profile, self._profiles)
 
-        try:
-            service = await self._service()
-        except RuntimeError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        service = await self._service()
 
         try:
             await service.get_run(identity.subject, run_id)

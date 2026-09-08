@@ -51,7 +51,7 @@ class ConnectionWhitelist(BaseModel):
 
         profiles: dict[str, ConnectionProfileBase] = {}
         for name, row in cls._unique(by_name):
-            profiles[name] = row.profile
+            profiles[name] = row.profile.identified(row.id, row.name)
 
         ambiguous: list[str] = []
         for name, group in by_name.items():

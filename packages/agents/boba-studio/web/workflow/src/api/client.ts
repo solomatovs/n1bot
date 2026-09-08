@@ -1,6 +1,5 @@
 import { z } from "zod";
 
-import type { PageUrls } from "../config";
 import type { StopOutcome } from "../model/workflow";
 import {
   DeletedSchema,
@@ -34,94 +33,24 @@ import {
   type ProfileView,
   type SignInProviders,
 } from "../model/account";
-import type { paths } from "./schema";
-
-/** Ошибка валидации одного поля: путь по телу запроса и причина. */
-export type FieldIssue = {
-  loc: (string | number)[];
-  message: string;
-};
-
-const ValidationErrorSchema = z.array(z.object({ loc: z.array(z.union([z.string(), z.number()])), msg: z.string() }));
-
-/** Отказ API: статус, текст detail и разобранные ошибки полей (422). */
-export class ApiError extends Error {
-  constructor(
-    readonly status: number,
-    readonly detail: string,
-    readonly issues: FieldIssue[],
-  ) {
-    super(`${status}: ${detail}`);
-  }
-
-  static of(status: number, payload: unknown): ApiError {
-    const detail = detailOf(payload);
-    const parsed = ValidationErrorSchema.safeParse(detail);
-    if (parsed.success) {
-      const issues = parsed.data.map((item) => ({ loc: item.loc.filter((part) => part !== "body"), message: item.msg }));
-      return new ApiError(status, issues.map((issue) => `${issue.loc.join(".")}: ${issue.message}`).join("\n"), issues);
-    }
-
-    if (typeof detail === "string") {
-      return new ApiError(status, detail, []);
-    }
-
-    return new ApiError(status, JSON.stringify(detail), []);
-  }
-}
-
-type Method = "get" | "post" | "put" | "delete";
-
-/** Метка своего запроса — как OwnRequest на сервере: без неё вход, выход и повторный
- * обмен отвергаются, кросс-сайтовая форма её поставить не может. */
-export const OWN_REQUEST = { header: "x-boba-request", value: "1" } as const;
+import {
+  ApiError,
+  route,
+  type HttpTransport,
+  type Method,
+  type PathParams,
+  type PathWith,
+  type Query,
+  type Reply,
+} from "./transport";
 
 /** Путь повторного SPNEGO-обмена: роут вне схемы, поэтому не в типах paths. */
 const REFRESH_PATH = "/v1/auth/refresh";
 
-/** Пути схемы, у которых есть операция метода M. */
-type PathWith<M extends Method> = {
-  [P in keyof paths]: paths[P] extends Record<M, unknown> ? P : never;
-}[keyof paths];
-
-type Operation<P extends keyof paths, M extends Method> = paths[P] extends Record<M, infer O> ? O : never;
-
-type JsonOf<O> = O extends { responses: { 200: { content: { "application/json": infer R } } } } ? R : never;
-
-/** Тело успешного ответа операции по схеме. */
-export type Reply<P extends keyof paths, M extends Method> = JsonOf<Operation<P, M>>;
-
-/** Параметры пути из плейсхолдеров `{name}`. */
-type PathParams<P extends string> = P extends `${string}{${infer Name}}${infer Rest}`
-  ? Record<Name, string | number> & PathParams<Rest>
-  : Record<never, never>;
-
-type Query = Record<string, string | number>;
-
-/** Путь схемы с подставленными параметрами. */
-function route<P extends keyof paths>(path: P, params: PathParams<P>): string {
-  let built: string = path;
-  for (const [name, value] of Object.entries(params as Record<string, string | number>)) {
-    built = built.replace(`{${name}}`, encodeURIComponent(String(value)));
-  }
-
-  return built;
-}
-
-/** REST workflow: пути и типы ответов — из OpenAPI, разбор — zod на границе. */
+/** REST workflow и учётной записи: пути и типы ответов — из OpenAPI, разбор —
+ * zod на границе; обмен ведёт общий HttpTransport. */
 export class WorkflowApi {
-  private unauthorized: (() => void) | null = null;
-
-  /** profile — выбранный профиль страницы; пусто — сервер берёт профиль по умолчанию. */
-  constructor(
-    private readonly urls: PageUrls,
-    readonly profile = "",
-  ) {}
-
-  /** Кого звать на 401: страница уводит на вход. */
-  onUnauthorized(handler: (() => void) | null): void {
-    this.unauthorized = handler;
-  }
+  constructor(private readonly transport: HttpTransport) {}
 
   providers(): Promise<SignInProviders> {
     return this.call("get", "/v1/auth/providers", {}, undefined, undefined, SignInProvidersSchema);
@@ -139,18 +68,22 @@ export class WorkflowApi {
    * Каким способом — решает сервер по виду входа; на 401 Negotiate браузер отвечает
    * сам. Отказ значит, что сессию не продлить: страница уходит на вход. */
   async refreshSession(): Promise<boolean> {
-    const response = await fetch(this.urls.api(REFRESH_PATH), {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { [OWN_REQUEST.header]: OWN_REQUEST.value },
-    });
-    if (response.status === 204) {
+    let refused: ApiError;
+    try {
+      await this.transport.call("post", REFRESH_PATH, undefined, z.unknown());
       return true;
+    } catch (error: unknown) {
+      if (!(error instanceof ApiError)) {
+        throw error;
+      }
+
+      refused = error;
     }
 
     await this.logout().catch(() => undefined);
-    if (this.unauthorized !== null) {
-      this.unauthorized();
+    // на 401 транспорт уже увёл на вход
+    if (refused.status !== 401) {
+      this.transport.signOut();
     }
 
     return false;
@@ -319,7 +252,7 @@ export class WorkflowApi {
   }
 
   /** Ответ, чья zod-модель обязана укладываться в тип ответа по схеме. */
-  private async call<M extends Method, P extends PathWith<M>, T extends Reply<P, M>>(
+  private call<M extends Method, P extends PathWith<M>, T extends Reply<P, M>>(
     method: M,
     path: P,
     params: PathParams<P>,
@@ -327,63 +260,17 @@ export class WorkflowApi {
     body: unknown,
     schema: z.ZodType<T>,
   ): Promise<T> {
-    return schema.parse(await this.raw(method, path, params, query, body));
+    return this.transport.call(method, route(path, params, query), body, schema);
   }
 
   /** Сырой JSON ответа: для моделей, которые страница дочитывает сама (итоги инструментов). */
-  private async raw<M extends Method, P extends PathWith<M>>(
+  private raw<M extends Method, P extends PathWith<M>>(
     method: M,
     path: P,
     params: PathParams<P>,
     query: Query | undefined,
     body: unknown,
   ): Promise<unknown> {
-    const headers: Record<string, string> = { [OWN_REQUEST.header]: OWN_REQUEST.value };
-    const init: RequestInit = { method: method.toUpperCase(), credentials: "same-origin", headers };
-    if (body !== undefined) {
-      headers["content-type"] = "application/json";
-      init.body = JSON.stringify(body);
-    }
-
-    let url = this.urls.api(route(path, params));
-    const search = new URLSearchParams();
-    if (query !== undefined) {
-      for (const [name, value] of Object.entries(query)) {
-        search.set(name, String(value));
-      }
-    }
-    // профиль метит каждый запрос: сервер читает его из query, если в теле его нет
-    if (this.profile !== "") {
-      search.set("profile", this.profile);
-    }
-    const encoded = search.toString();
-    if (encoded !== "") {
-      url = `${url}?${encoded}`;
-    }
-
-    const response = await fetch(url, init);
-    if (response.status === 204) {
-      return undefined;
-    }
-
-    const payload: unknown = await response.json();
-    if (!response.ok) {
-      if (response.status === 401 && this.unauthorized !== null) {
-        this.unauthorized();
-      }
-
-      throw ApiError.of(response.status, payload);
-    }
-
-    return payload;
+    return this.transport.call(method, route(path, params, query), body, z.unknown());
   }
-}
-
-/** detail ответа как есть: строка, список ошибок валидации или что-то ещё. */
-function detailOf(payload: unknown): unknown {
-  if (typeof payload === "object" && payload !== null && "detail" in payload) {
-    return payload.detail;
-  }
-
-  return "request failed";
 }

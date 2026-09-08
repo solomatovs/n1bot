@@ -12,6 +12,7 @@ __all__ = [
     "HttpErrorMessage",
     "InternalServiceError",
     "RefusalError",
+    "ServiceDisabledError",
     "UserInputError",
     "ViewErrorMessage",
     "to_domain",
@@ -71,6 +72,26 @@ class ExternalServiceError(BaseError):
             status_code=self.status_code,
             content=self.message,
         )
+
+
+class ServiceDisabledError(BaseError):
+    """Сервис выключен секцией конфига или не входит в процесс: ресурс api
+    отвечает 503, чат и история видят причину как есть."""
+
+    def __init__(self, section: str, message: str):
+        super().__init__(message)
+        self.section = section
+        self.message = message
+        self.status_code = 503
+
+    def view_message(self) -> ViewErrorMessage | None:
+        return ViewErrorMessage(content=self.message)
+
+    def history_message(self) -> str | None:
+        return self.message
+
+    def http_message(self) -> HttpErrorMessage | None:
+        return HttpErrorMessage(status_code=self.status_code, content=self.message)
 
 
 class InternalServiceError(BaseError):

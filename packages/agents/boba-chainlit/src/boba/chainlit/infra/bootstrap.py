@@ -8,7 +8,6 @@ import logging.config
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import ClassVar
 
 import uvicorn
 from engineio.payload import Payload
@@ -38,7 +37,6 @@ from boba.runtime import providers as runtime
 from boba.runtime.config import AppName, RawConfig
 from boba.runtime.di import Container
 from boba.runtime.http import DomainErrorMiddleware
-from boba.runtime.spa import SpaPaths
 from boba.sandbox.zygote import ZygoteRegistry
 
 
@@ -59,8 +57,6 @@ def run_app(config_path: Path):
     app.state.container = container
 
     _use_stream_journal(c)
-
-    _use_catalog(c)
 
     _use_canvas_viewers()
 
@@ -245,82 +241,6 @@ def _use_stream_journal(c: AppConfig) -> None:
     chainlit_app.router.routes.insert(0, chainlit_app.router.routes.pop())
 
 
-def _use_catalog(c: AppConfig) -> None:
-    """JSON API под {prefix}/api/catalog и страница под {prefix}/catalog; сервис
-    поднимает провайдер. Маршруты встают перед catch-all chainlit."""
-    from fastapi import APIRouter  # noqa: PLC0415
-
-    from boba.chainlit.catalog.api import CatalogApi, CatalogUrl  # noqa: PLC0415
-    from boba.chainlit.catalog.subjects import ChainlitSubjects  # noqa: PLC0415
-    from boba.chainlit.catalog.sync_ports import CatalogHoldGuard  # noqa: PLC0415
-    from boba.chat.profiles import ChatProfiles  # noqa: PLC0415
-    from boba.connection_broker.api import ConnectionsApi  # noqa: PLC0415
-    from boba.connection_broker.service import UserConnectionsService  # noqa: PLC0415
-    from boba.runtime.spa import BuiltSpa  # noqa: PLC0415
-    from chainlit.server import app as chainlit_app  # noqa: PLC0415
-
-    if not c.catalog.enable:
-        return
-
-    before = len(chainlit_app.router.routes)
-
-    router = APIRouter(prefix=CatalogUrl.PREFIX.value)
-    subjects = ChainlitSubjects(ChatProfiles(c.profiles))
-    CatalogApi(providers.catalog_service_ref, subjects).mount(router)
-    # общий API соединений: подключения заводятся прямо в каталоге; привязанное
-    # к источнику подключение удалить нельзя
-    guards = (CatalogHoldGuard(providers.catalog_service_ref),)
-    ConnectionsApi(
-        UserConnectionsService(runtime.connection_store_ref, guards),
-        subjects.of_request,
-        runtime.credential_source_ref,
-        runtime.message_bus_ref,
-        runtime.connection_types_ref(),
-    ).mount(router)
-    chainlit_app.include_router(router)
-
-    prefix = c.chainlit.url_prefix
-    stamp = {
-        "prefix": prefix,
-        "apiPrefix": f"{prefix}{CatalogUrl.PREFIX.value}",
-        "socketPath": f"{prefix}{CatalogPage.SOCKET}",
-    }
-    # маршруты вешаются на приложение chainlit, уже смонтированное под префиксом,
-    # поэтому пути относительные, а базы модулей несут префикс целиком
-    paths = CatalogPage.paths(prefix)
-    BuiltSpa(paths, c.catalog.dist, "", stamp).mount(chainlit_app)
-
-    _prepend_routes(chainlit_app, before)
-
-
-class CatalogPage:
-    """Где страница каталога живёт под префиксом chainlit. Страница всегда
-    раздаётся из сборки; поля dev у SpaPaths — контракт общего модуля, здесь
-    они не используются."""
-
-    SEGMENT: ClassVar[str] = "catalog"
-    SOCKET: ClassVar[str] = "/ws/socket.io"
-
-    @classmethod
-    def paths(cls, prefix: str) -> SpaPaths:
-        return SpaPaths(
-            name=cls.SEGMENT,
-            page=f"/{cls.SEGMENT}/{{path:path}}",
-            assets=f"/{cls.SEGMENT}/assets",
-            dev=f"/{cls.SEGMENT}-dev/{{path:path}}",
-            built_base=f"{prefix}/{cls.SEGMENT}/",
-            dev_base=f"{prefix}/{cls.SEGMENT}-dev/",
-        )
-
-
-def _prepend_routes(chainlit_app: FastAPI, before: int) -> None:
-    """Маршруты, добавленные после позиции before, переезжают в начало: catch-all
-    chainlit стоит раньше и иначе перехватил бы их."""
-    added = chainlit_app.router.routes[before:]
-    del chainlit_app.router.routes[before:]
-    chainlit_app.router.routes[0:0] = added
-
-
 def _use_canvas_viewers() -> None:
     """
     Вьюверы канваса — на старте: панель открывается кликом до первого хода
@@ -407,8 +327,6 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.eager(runtime.kb_schema)
     container.eager(runtime.connection_store)
     container.eager(runtime.workflow_store)
-    container.eager(providers.catalog_processes)
-    container.eager(providers.catalog_connections)
     container.eager(runtime.workflow_recovery)
     container.eager(runtime.live_locks)
     container.eager(runtime.lock_reaper)

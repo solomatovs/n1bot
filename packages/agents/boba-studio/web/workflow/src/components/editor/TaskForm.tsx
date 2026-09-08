@@ -2,7 +2,11 @@ import { Trash2, X } from "lucide-react";
 import { type ReactElement, useState } from "react";
 
 import { blockRows, intentOf, withIntent, type ArgRow } from "../../model/args";
-import { isIdent, type EditableEdge, type EditableTask } from "../../model/spec";
+import {
+  isIdent,
+  type EditableEdge,
+  type EditableTask,
+} from "../../model/spec";
 import type { PortDirection, ToolCatalog } from "../../model/workflow";
 import { widgetOf } from "../args/widgets";
 import { Button, Eyebrow, Field, IconButton, Input, Select } from "../../ui";
@@ -19,7 +23,9 @@ type Props = {
 };
 
 function without<T>(record: Record<string, T>, key: string): Record<string, T> {
-  return Object.fromEntries(Object.entries(record).filter(([name]) => name !== key));
+  return Object.fromEntries(
+    Object.entries(record).filter(([name]) => name !== key),
+  );
 }
 
 type FieldProps = {
@@ -47,9 +53,15 @@ function ArgField({ row, known, onValue, onClear }: FieldProps): ReactElement {
       bound={row.bound}
       dataArg={row.name}
     >
-      <Editor name={row.name} view={row.view} value={row.value} required={row.required} onChange={onValue} />
+      <Editor
+        name={row.name}
+        view={row.view}
+        value={row.value}
+        required={row.required}
+        onChange={onValue}
+      />
       {!row.required && row.value !== undefined && (
-        <Button size="tiny" onClick={onClear}>
+        <Button size="sm" onClick={onClear}>
           clear
         </Button>
       )}
@@ -58,7 +70,16 @@ function ArgField({ row, known, onValue, onClear }: FieldProps): ReactElement {
 }
 
 /** Форма задачи: имя, инструмент, intent, аргументы виджетами по каталогу, fd-порты. */
-export function TaskForm({ task, catalog, edges, taken, onChange, onRename, onRemove, onClose }: Props): ReactElement {
+export function TaskForm({
+  task,
+  catalog,
+  edges,
+  taken,
+  onChange,
+  onRename,
+  onRemove,
+  onClose,
+}: Props): ReactElement {
   const facts = catalog[task.tool];
   const [draftName, setDraftName] = useState(task.name);
   const [newArg, setNewArg] = useState("");
@@ -102,6 +123,7 @@ export function TaskForm({ task, catalog, edges, taken, onChange, onRename, onRe
       <div className="inspector__head">
         <Eyebrow>task</Eyebrow>
         <Input
+          mono
           value={draftName}
           onChange={(event) => {
             setDraftName(event.target.value);
@@ -109,7 +131,11 @@ export function TaskForm({ task, catalog, edges, taken, onChange, onRename, onRe
           onBlur={commitName}
           aria-label="task name"
         />
-        <IconButton onClick={onRemove} title="Remove task" aria-label="Remove task">
+        <IconButton
+          onClick={onRemove}
+          title="Remove task"
+          aria-label="Remove task"
+        >
           <Trash2 size={14} />
         </IconButton>
         <IconButton onClick={onClose} aria-label="Close inspector">
@@ -126,7 +152,12 @@ export function TaskForm({ task, catalog, edges, taken, onChange, onRename, onRe
             }}
           >
             {Object.values(catalog)
-              .filter((tool) => tool.availability === "available" || tool.name === task.tool)
+              .filter(
+                (tool) =>
+                  tool.availability === "available" ||
+                  tool.availability === "headless_only" ||
+                  tool.name === task.tool,
+              )
               .map((tool) => (
                 <option key={tool.name} value={tool.name}>
                   {tool.name}
@@ -137,6 +168,7 @@ export function TaskForm({ task, catalog, edges, taken, onChange, onRename, onRe
 
         <Field label="intent">
           <Input
+            mono
             value={intentOf(task)}
             placeholder="what this step does"
             onChange={(event) => {
@@ -171,7 +203,9 @@ export function TaskForm({ task, catalog, edges, taken, onChange, onRename, onRe
             aria-label="new arg"
           />
           <Button
-            disabled={!isIdent(newArg) || known.has(newArg) || newArg in task.args}
+            disabled={
+              !isIdent(newArg) || known.has(newArg) || newArg in task.args
+            }
             onClick={() => {
               setArg(newArg, "");
               setNewArg("");
@@ -188,9 +222,13 @@ export function TaskForm({ task, catalog, edges, taken, onChange, onRename, onRe
               <Field row key={name}>
                 <span className="mono">{name}</span>
                 <Select
+                  mono
                   value={direction}
                   onChange={(event) => {
-                    setPort(name, event.target.value === "read" ? "read" : "write");
+                    setPort(
+                      name,
+                      event.target.value === "read" ? "read" : "write",
+                    );
                   }}
                   aria-label={`port ${name} direction`}
                 >
@@ -198,7 +236,7 @@ export function TaskForm({ task, catalog, edges, taken, onChange, onRename, onRe
                   <option value="write">write</option>
                 </Select>
                 <Button
-                  size="tiny"
+                  size="sm"
                   onClick={() => {
                     dropPort(name);
                   }}

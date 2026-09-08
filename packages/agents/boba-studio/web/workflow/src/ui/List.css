@@ -1,0 +1,130 @@
+.rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0;
+  min-width: 0;
+}
+
+.rows--spaced {
+  gap: var(--s1);
+}
+
+.rows--cards {
+  gap: var(--s2);
+}
+
+.rows__row {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  min-height: var(--h-ctl);
+  min-width: 0;
+  padding: 0 var(--s1) 0 0;
+  border-left: 2px solid transparent;
+  border-radius: 0 var(--r-ctl) var(--r-ctl) 0;
+}
+
+.rows--cards .rows__row {
+  display: grid;
+  gap: var(--s1) var(--s2);
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-cell);
+  background: var(--raised);
+}
+
+.rows__row--nested {
+  padding-left: var(--s4);
+  border-left-color: var(--hairline-strong);
+}
+
+.rows__row[data-active="true"] {
+  border-left-color: var(--signal);
+  background: var(--raised);
+}
+
+.rows__row[data-status="added"] {
+  border-color: var(--status-added);
+}
+
+.rows__row[data-status="modified"] {
+  border-color: var(--status-modified);
+}
+
+.rows__row[data-status="removed"] {
+  border-color: var(--status-removed);
+}
+
+.rows__row[data-status="added"] .rows__name {
+  color: var(--status-added);
+}
+
+.rows__row[data-status="modified"] .rows__name {
+  color: var(--status-modified);
+}
+
+.rows__row[data-status="removed"] .rows__name {
+  color: var(--status-removed);
+}
+
+.rows__row[data-hidden="true"] .rows__name {
+  color: var(--faint);
+  text-decoration: line-through;
+}
+
+.rows__row[data-stale="true"] .rows__name::after {
+  content: " ⚠";
+  color: var(--status-modified);
+}
+
+.rows__name {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  height: var(--h-ctl);
+  line-height: var(--h-ctl);
+  padding: 0 var(--s2);
+  border: 0;
+  border-radius: var(--r-ctl);
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: var(--fs-data);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+button.rows__name,
+a.rows__name {
+  cursor: pointer;
+}
+
+button.rows__name:hover,
+a.rows__name:hover {
+  color: var(--signal);
+}
+
+.rows__name--strong {
+  font-weight: 600;
+}
+
+.rows__aside {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  flex: none;
+}
+
+.rows__empty {
+  display: flex;
+  align-items: center;
+  min-height: var(--h-ctl);
+  padding: 0 var(--s2);
+  color: var(--muted);
+  font-size: var(--fs-data);
+}

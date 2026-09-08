@@ -1,13 +1,14 @@
 import { type ReactElement, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { useServices } from "../../app";
-import { errorText } from "../Async";
+import { useServices } from "../../services";
+import { ApiError } from "../../api/transport";
+import { PageUrls } from "../../config";
 import { runsOfWorkflow } from "../../hooks/useShellData";
 import { renderSpecText } from "../../model/spec";
 import { formatAgo, formatDuration } from "../../model/time";
 import type { Initiator, StoredRun, StoredWorkflow } from "../../model/workflow";
-import { Chip, EmptyState, Eyebrow, ListRow, useToast } from "../../ui";
+import { Chip, EmptyState, Eyebrow, ItemRow, useToast } from "../../ui";
 
 type Props = {
   workflows: StoredWorkflow[];
@@ -122,9 +123,9 @@ export function WorkflowList({
     try {
       const saved = await api.save(spec, { positions: {} });
       onPick();
-      await navigate(`/workflow/${saved.id}`);
+      await navigate(PageUrls.workflow(saved.id));
     } catch (error: unknown) {
-      toast(`workflow not created: ${errorText(error)}`, "error");
+      toast(`workflow not created: ${ApiError.describe(error)}`, "error");
     }
   };
 
@@ -153,8 +154,8 @@ export function WorkflowList({
           const opened = expanded.has(item.id);
           return (
             <div key={item.id}>
-              <ListRow
-                href={`/workflow/${item.id}`}
+              <ItemRow
+                href={PageUrls.workflow(item.id)}
                 selected={item.id === selectedWorkflow}
                 toggle={{
                   expanded: opened,
@@ -200,8 +201,8 @@ function RunItem({
 }): ReactElement {
   const failed = failedCount(run);
   return (
-    <ListRow
-      href={`/runs/${run.id}`}
+    <ItemRow
+      href={PageUrls.run(run.id)}
       sub
       selected={selected}
       status={run.status}

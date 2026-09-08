@@ -1,7 +1,7 @@
 import { type ReactElement, useEffect, useState } from "react";
 
 import type { SocketStatus } from "../../api/socket";
-import { useServices } from "../../app";
+import { useServices } from "../../services";
 
 /** Лампочка связи: состояние socket.io живых снимков; подробность — в подсказке. */
 export function SocketLamp(): ReactElement {

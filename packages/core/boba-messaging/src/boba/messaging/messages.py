@@ -547,9 +547,10 @@ class StudioProfileChanged(Message):
 class CatalogChanged(Message):
     """Каталог данных изменился: процесс process_id (создан, переименован,
     удалён; с version — опубликована версия), черновик draft_id (порция или
-    закрытие), подключение connection_id (новая версия снимка, версии забыты)
-    либо синхронизация sync_id (старт, прогресс, итог). Заполнен ровно один
-    из четырёх идентификаторов; version идёт только с process_id.
+    закрытие), подключение connection_id (новая версия снимка, версии забыты),
+    синхронизация sync_id либо upgrade upgrade_id (старт, ход, итог).
+    Заполнен ровно один из пяти идентификаторов; version идёт только с
+    process_id.
     """
 
     kind: Literal[MessageKind.CATALOG_CHANGED] = MessageKind.CATALOG_CHANGED
@@ -558,6 +559,7 @@ class CatalogChanged(Message):
     draft_id: UUID | None = None
     connection_id: UUID | None = None
     sync_id: UUID | None = None
+    upgrade_id: UUID | None = None
     action: ChangeAction
 
     @model_validator(mode="after")
@@ -567,6 +569,7 @@ class CatalogChanged(Message):
             self.draft_id,
             self.connection_id,
             self.sync_id,
+            self.upgrade_id,
         )
 
         filled = 0
@@ -579,9 +582,10 @@ class CatalogChanged(Message):
         if filled != 1:
             msg = (
                 "catalog_changed: exactly one of process_id, draft_id,"
-                f" connection_id, sync_id expected, got {filled} of them set: "
-                f"process_id={self.process_id}, draft_id={self.draft_id}, "
-                f"connection_id={self.connection_id}, sync_id={self.sync_id}"
+                f" connection_id, sync_id, upgrade_id expected, got {filled} of "
+                f"them set: process_id={self.process_id}, draft_id={self.draft_id}, "
+                f"connection_id={self.connection_id}, sync_id={self.sync_id}, "
+                f"upgrade_id={self.upgrade_id}"
             )
             raise ValueError(msg)
 

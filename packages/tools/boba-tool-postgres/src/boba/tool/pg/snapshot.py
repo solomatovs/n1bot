@@ -1,59 +1,53 @@
-"""Снятие структуры базы Postgres в кадры синхронизации каталога.
+"""Снятие структуры базы Postgres в домен каталога потоком COPY.
 
-Инструмент pg_schema_snapshot читает системные каталоги подключения
-пользователя порциями с паузами и шлёт в выходной порт кадры SyncPlan,
-SyncBatch и SyncDone (boba.catalog.sync); записи — модели PgSnapshot
-каталога. База одна — та, к которой подключение: чужие базы Postgres не
-показывает. Хост складывает порции в staging и по итогу собирает версию
-источника.
+Инструмент pg_schema_snapshot открывает подключение пользователя и
+подключение к базе каталога; для каждой части снимка запрос к системным
+каталогам источника отдаёт строки уже в раскладке таблицы домена, и они
+перетекают COPY (select) TO STDOUT → COPY staging FROM STDIN без разбора в
+модели. Staging подключения заводится заново, по концу обхода становится
+новой версией подключения одной транзакцией (SnapshotWriter). База одна —
+та, к которой подключение. Версия и версия сервера — в metadata итога
+(SnapshotOutcome).
 
 Ошибки:
 PostgresError — до базы не достучаться (сеть, отказ libpq, kerberos).
 psycopg.Error — сервер отклонил каталожный запрос (права на каталог).
+CatalogDomainError — домен каталога недоступен или отказал строкам.
+SnapshotConnectionError — профиль подключения не подписан строкой
+    соединений: под каким id класть снимок, неизвестно.
 """
 
 from __future__ import annotations
 
-import asyncio
 import sys
-from collections.abc import Iterator, Mapping, Sequence
-from enum import IntEnum, StrEnum
+from collections.abc import Sequence
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Final
 
 import psycopg
 from psycopg import sql
-from psycopg.rows import dict_row
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.catalog import SourceRecord, SyncEmitter, SyncFrame, SyncPlan
+from boba.catalog import NameList
 from boba.db.postgres import PayloadPostgres
-from boba.db.postgres.profile import PostgresConfig
-from boba.db.postgres.snapshot import (
-    PgColumn,
-    PgConstraint,
-    PgConstraintKind,
-    PgDatabase,
-    PgIndex,
-    PgPart,
-    PgRelation,
-    PgRelationKind,
-    PgRoutine,
-    PgRoutineArg,
-    PgRoutineKind,
-    PgSchema,
-    PgSequence,
-    PgSnapshot,
-    PgSourceKind,
-    PgType,
-    PgTypeAttribute,
-    PgTypeKind,
+from boba.db.postgres.catalog import (
+    CatalogStoreConfig,
+    PartTable,
+    SnapshotOutcome,
+    SnapshotResultKey,
+    SnapshotWriter,
 )
+from boba.db.postgres.profile import PostgresConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
-from boba.toolkit.ports import Outbound
 from boba.toolkit.result import TextResult, ToolResult, pack_result
 
 PgConnection = Annotated[PostgresConfig, UserConnection]
+
+
+class SnapshotConnectionError(Exception):
+    """Профиль подключения без строки соединений: id для снимка нет."""
 
 
 class SystemSchema(StrEnum):
@@ -67,202 +61,42 @@ class SystemSchema(StrEnum):
     TOAST_TEMP_PREFIX = "pg_toast_temp_"
 
     @classmethod
-    def names(cls) -> tuple[str, ...]:
-        return (cls.PG_CATALOG.value, cls.INFORMATION_SCHEMA.value, cls.PG_TOAST.value)
+    def names(cls) -> list[str]:
+        return [cls.PG_CATALOG.value, cls.INFORMATION_SCHEMA.value, cls.PG_TOAST.value]
 
 
-class Batching(IntEnum):
-    """Пределы порций: размер и пауза задаются вызовом в этих границах."""
+@dataclass(frozen=True)
+class PartQuery:
+    """Часть снимка: таблица домена с колонками и запрос к каталогам
+    источника, отдающий строки ровно в этих колонках."""
 
-    MIN_BATCH = 1
-    MAX_BATCH = 1000
-    MIN_PAUSE_MS = 0
-    MAX_PAUSE_MS = 60_000
-    MS_PER_SECOND = 1000
+    table: PartTable
+    query: sql.SQL
 
-
-class Relkind(StrEnum):
-    """relkind pg_class, которые входят в снимок."""
-
-    TABLE = "r"
-    PARTITIONED = "p"
-    VIEW = "v"
-    MATERIALIZED = "m"
-    FOREIGN = "f"
-
-    @classmethod
-    def values(cls) -> list[str]:
-        return [kind.value for kind in cls]
-
-    def relation_kind(self, *, is_partition: bool) -> PgRelationKind:
-        if self is Relkind.TABLE and is_partition:
-            return PgRelationKind.PARTITION
-
-        return _RELATION_KINDS[self]
-
-
-_RELATION_KINDS: Mapping[Relkind, PgRelationKind] = {
-    Relkind.TABLE: PgRelationKind.TABLE,
-    Relkind.PARTITIONED: PgRelationKind.PARTITIONED,
-    Relkind.VIEW: PgRelationKind.VIEW,
-    Relkind.MATERIALIZED: PgRelationKind.MATERIALIZED,
-    Relkind.FOREIGN: PgRelationKind.FOREIGN,
-}
-
-
-class Persistence(StrEnum):
-    PERMANENT = "p"
-    UNLOGGED = "u"
-    TEMPORARY = "t"
-
-    def label(self) -> str:
-        return self.name.lower()
-
-
-class Contype(StrEnum):
-    PRIMARY = "p"
-    UNIQUE = "u"
-    FOREIGN = "f"
-    CHECK = "c"
-    EXCLUSION = "x"
-
-    def constraint_kind(self) -> PgConstraintKind:
-        return _CONSTRAINT_KINDS[self]
-
-    @classmethod
-    def values(cls) -> list[str]:
-        return [kind.value for kind in cls]
-
-
-_CONSTRAINT_KINDS: Mapping[Contype, PgConstraintKind] = {
-    Contype.PRIMARY: PgConstraintKind.PRIMARY,
-    Contype.UNIQUE: PgConstraintKind.UNIQUE,
-    Contype.FOREIGN: PgConstraintKind.FOREIGN,
-    Contype.CHECK: PgConstraintKind.CHECK,
-    Contype.EXCLUSION: PgConstraintKind.EXCLUSION,
-}
-
-
-class ForeignAction(StrEnum):
-    """confupdtype и confdeltype pg_constraint словами."""
-
-    NO_ACTION = "a"
-    RESTRICT = "r"
-    CASCADE = "c"
-    SET_NULL = "n"
-    SET_DEFAULT = "d"
-
-    def label(self) -> str:
-        return self.name.lower().replace("_", " ")
-
-
-class Prokind(StrEnum):
-    FUNCTION = "f"
-    PROCEDURE = "p"
-    AGGREGATE = "a"
-    WINDOW = "w"
-
-    def routine_kind(self) -> PgRoutineKind:
-        return _ROUTINE_KINDS[self]
-
-
-_ROUTINE_KINDS: Mapping[Prokind, PgRoutineKind] = {
-    Prokind.FUNCTION: PgRoutineKind.FUNCTION,
-    Prokind.PROCEDURE: PgRoutineKind.PROCEDURE,
-    Prokind.AGGREGATE: PgRoutineKind.AGGREGATE,
-    Prokind.WINDOW: PgRoutineKind.WINDOW,
-}
-
-
-class Volatility(StrEnum):
-    IMMUTABLE = "i"
-    STABLE = "s"
-    VOLATILE = "v"
-
-    def label(self) -> str:
-        return self.name.lower()
-
-
-class Parallel(StrEnum):
-    SAFE = "s"
-    RESTRICTED = "r"
-    UNSAFE = "u"
-
-    def label(self) -> str:
-        return self.name.lower()
-
-
-class Argmode(StrEnum):
-    IN = "i"
-    OUT = "o"
-    INOUT = "b"
-    VARIADIC = "v"
-    TABLE = "t"
-
-    def label(self) -> str:
-        return self.name.lower()
-
-
-class Typtype(StrEnum):
-    ENUM = "e"
-    DOMAIN = "d"
-    COMPOSITE = "c"
-    RANGE = "r"
-
-    def type_kind(self) -> PgTypeKind:
-        return _TYPE_KINDS[self]
-
-    @classmethod
-    def values(cls) -> list[str]:
-        return [kind.value for kind in cls]
-
-
-_TYPE_KINDS: Mapping[Typtype, PgTypeKind] = {
-    Typtype.ENUM: PgTypeKind.ENUM,
-    Typtype.DOMAIN: PgTypeKind.DOMAIN,
-    Typtype.COMPOSITE: PgTypeKind.COMPOSITE,
-    Typtype.RANGE: PgTypeKind.RANGE,
-}
-
-
-class Identity(StrEnum):
-    ALWAYS = "a"
-    BY_DEFAULT = "d"
-
-    def label(self) -> str:
-        return self.name.lower().replace("_", " ")
-
-
-class Generated(StrEnum):
-    STORED = "s"
-
-    def label(self) -> str:
-        return self.name.lower()
+    @property
+    def part(self) -> str:
+        return self.table.part
 
 
 class SnapshotSql:
-    """Каталожные запросы снятия: значения параметрами, порции по oid."""
+    """Запросы снятия: по одному на часть, строки в раскладке таблиц домена
+    (pg_databases, pg_schemas, …). Параметр schemas — список схем."""
 
     DATABASE: ClassVar[sql.SQL] = sql.SQL("""
         select
-            d.datname                                       as name,
-            pg_catalog.pg_get_userbyid(d.datdba)            as owner,
-            pg_catalog.pg_encoding_to_char(d.encoding)      as encoding,
-            d.datcollate                                    as collate,
-            pg_catalog.shobj_description(d.oid, 'pg_database') as comment,
-            current_setting('server_version')               as server_version
+            d.datname                                          as name,
+            pg_catalog.pg_get_userbyid(d.datdba)               as owner,
+            pg_catalog.pg_encoding_to_char(d.encoding)         as encoding,
+            d.datcollate                                       as collate,
+            pg_catalog.shobj_description(d.oid, 'pg_database') as comment
         from pg_catalog.pg_database d
         where d.datname = current_database()
     """)
 
-    SCHEMAS: ClassVar[sql.SQL] = sql.SQL("""
+    SERVER: ClassVar[sql.SQL] = sql.SQL("""
         select
-            n.nspname                                        as name,
-            pg_catalog.pg_get_userbyid(n.nspowner)           as owner,
-            pg_catalog.obj_description(n.oid, 'pg_namespace') as comment
-        from pg_catalog.pg_namespace n
-        where n.nspname = any(%(schemas)s)
-        order by n.nspname
+            current_database()                as database,
+            current_setting('server_version') as server_version
     """)
 
     USER_SCHEMAS: ClassVar[sql.SQL] = sql.SQL("""
@@ -279,33 +113,53 @@ class SnapshotSql:
             (select count(*) from pg_catalog.pg_class c
                 join pg_catalog.pg_namespace n on n.oid = c.relnamespace
                 where n.nspname = any(%(schemas)s)
-                  and c.relkind = any(%(relkinds)s))          as relations,
+                  and c.relkind in ('r', 'p', 'v', 'm', 'f'))     as relations,
             (select count(*) from pg_catalog.pg_proc p
                 join pg_catalog.pg_namespace n on n.oid = p.pronamespace
-                where n.nspname = any(%(schemas)s))            as routines,
+                where n.nspname = any(%(schemas)s))               as routines,
             (select count(*) from pg_catalog.pg_class c
                 join pg_catalog.pg_namespace n on n.oid = c.relnamespace
                 where n.nspname = any(%(schemas)s)
-                  and c.relkind = 'S')                         as sequences,
+                  and c.relkind = 'S')                            as sequences,
             (select count(*) from pg_catalog.pg_type t
                 join pg_catalog.pg_namespace n on n.oid = t.typnamespace
                 left join pg_catalog.pg_class c on c.oid = t.typrelid
                 where n.nspname = any(%(schemas)s)
-                  and t.typtype = any(%(typtypes)s)
-                  and (t.typtype <> 'c' or c.relkind = 'c'))   as types
+                  and t.typtype in ('e', 'd', 'c', 'r')
+                  and (t.typtype <> 'c' or c.relkind = 'c'))      as types
+    """)
+
+    SCHEMAS: ClassVar[sql.SQL] = sql.SQL("""
+        select
+            current_database()                                 as database,
+            n.nspname                                          as name,
+            pg_catalog.pg_get_userbyid(n.nspowner)             as owner,
+            pg_catalog.obj_description(n.oid, 'pg_namespace')  as comment
+        from pg_catalog.pg_namespace n
+        where n.nspname = any(%(schemas)s)
     """)
 
     RELATIONS: ClassVar[sql.SQL] = sql.SQL("""
         select
-            c.oid                                              as oid,
-            n.nspname                                          as schema_name,
+            current_database()                                 as database,
+            n.nspname                                          as schema,
             c.relname                                          as name,
-            c.relkind                                          as relkind,
-            c.relispartition                                   as is_partition,
+            case c.relkind
+                when 'r' then
+                    case when c.relispartition then 'partition' else 'table' end
+                when 'p' then 'partitioned'
+                when 'v' then 'view'
+                when 'm' then 'materialized'
+                when 'f' then 'foreign'
+            end                                                as kind,
             pg_catalog.pg_get_userbyid(c.relowner)             as owner,
             pg_catalog.obj_description(c.oid, 'pg_class')      as comment,
             ts.spcname                                         as tablespace,
-            c.relpersistence                                   as persistence,
+            case c.relpersistence
+                when 'p' then 'permanent'
+                when 'u' then 'unlogged'
+                when 't' then 'temporary'
+            end                                                as persistence,
             greatest(c.reltuples, 0)::bigint                   as row_estimate,
             pg_catalog.pg_total_relation_size(c.oid)           as total_bytes,
             case when c.relkind = 'p'
@@ -315,9 +169,10 @@ class SnapshotSql:
             pg_catalog.pg_get_expr(c.relpartbound, c.oid)      as partition_bound,
             case when c.relkind in ('v', 'm')
                  then pg_catalog.pg_get_viewdef(c.oid, true) end as definition,
+            opts.options ->> 'check_option'                    as check_option,
             case when c.relkind = 'm' then c.relispopulated end as populated,
             fs.srvname                                         as foreign_server,
-            c.reloptions                                       as options
+            opts.options                                       as options
         from pg_catalog.pg_class c
             join pg_catalog.pg_namespace n on n.oid = c.relnamespace
             left join pg_catalog.pg_tablespace ts on ts.oid = c.reltablespace
@@ -327,24 +182,32 @@ class SnapshotSql:
             left join pg_catalog.pg_namespace pn on pn.oid = parent.relnamespace
             left join pg_catalog.pg_foreign_table ft on ft.ftrelid = c.oid
             left join pg_catalog.pg_foreign_server fs on fs.oid = ft.ftserver
+            cross join lateral (
+                select coalesce(
+                    (select jsonb_object_agg(
+                        split_part(o, '=', 1), substr(o, strpos(o, '=') + 1))
+                     from unnest(c.reloptions) as o),
+                    '{}'::jsonb) as options
+            ) opts
         where n.nspname = any(%(schemas)s)
-          and c.relkind = any(%(relkinds)s)
-          and c.oid > %(after)s
-        order by c.oid
-        limit %(limit)s
+          and c.relkind in ('r', 'p', 'v', 'm', 'f')
     """)
 
     COLUMNS: ClassVar[sql.SQL] = sql.SQL("""
         select
-            n.nspname                                          as schema_name,
+            current_database()                                 as database,
+            n.nspname                                          as schema,
             c.relname                                          as relation,
             a.attname                                          as name,
             a.attnum                                           as ordinal,
             pg_catalog.format_type(a.atttypid, a.atttypmod)    as type,
             not a.attnotnull                                   as nullable,
             pg_catalog.pg_get_expr(d.adbin, d.adrelid)         as "default",
-            a.attidentity                                      as identity,
-            a.attgenerated                                     as generated,
+            case a.attidentity
+                when 'a' then 'always'
+                when 'd' then 'by default'
+            end                                                as identity,
+            case a.attgenerated when 's' then 'stored' end     as generated,
             case when a.attcollation <> t.typcollation
                  then co.collname end                          as collation,
             pg_catalog.col_description(a.attrelid, a.attnum)   as comment
@@ -355,18 +218,25 @@ class SnapshotSql:
             left join pg_catalog.pg_attrdef d
                 on d.adrelid = a.attrelid and d.adnum = a.attnum
             left join pg_catalog.pg_collation co on co.oid = a.attcollation
-        where a.attrelid = any(%(oids)s)
+        where n.nspname = any(%(schemas)s)
+          and c.relkind in ('r', 'p', 'v', 'm', 'f')
           and a.attnum > 0
           and not a.attisdropped
-        order by a.attrelid, a.attnum
     """)
 
     CONSTRAINTS: ClassVar[sql.SQL] = sql.SQL("""
         select
-            n.nspname                                          as schema_name,
+            current_database()                                 as database,
+            n.nspname                                          as schema,
             c.relname                                          as relation,
             con.conname                                        as name,
-            con.contype                                        as contype,
+            case con.contype
+                when 'p' then 'primary'
+                when 'u' then 'unique'
+                when 'f' then 'foreign'
+                when 'c' then 'check'
+                when 'x' then 'exclusion'
+            end                                                as kind,
             array(
                 select a.attname from pg_catalog.pg_attribute a
                 where a.attrelid = con.conrelid and a.attnum = any(con.conkey)
@@ -379,8 +249,24 @@ class SnapshotSql:
                 where a.attrelid = con.confrelid and a.attnum = any(con.confkey)
                 order by array_position(con.confkey, a.attnum)
             ) end                                              as ref_columns,
-            case when con.contype = 'f' then con.confupdtype end as on_update,
-            case when con.contype = 'f' then con.confdeltype end as on_delete,
+            case when con.contype = 'f' then
+                case con.confupdtype
+                    when 'a' then 'no action'
+                    when 'r' then 'restrict'
+                    when 'c' then 'cascade'
+                    when 'n' then 'set null'
+                    when 'd' then 'set default'
+                end
+            end                                                as on_update,
+            case when con.contype = 'f' then
+                case con.confdeltype
+                    when 'a' then 'no action'
+                    when 'r' then 'restrict'
+                    when 'c' then 'cascade'
+                    when 'n' then 'set null'
+                    when 'd' then 'set default'
+                end
+            end                                                as on_delete,
             con.condeferrable                                  as deferrable,
             con.condeferred                                    as initially_deferred,
             pg_catalog.pg_get_constraintdef(con.oid, true)     as definition,
@@ -390,14 +276,15 @@ class SnapshotSql:
             join pg_catalog.pg_namespace n on n.oid = c.relnamespace
             left join pg_catalog.pg_class rc on rc.oid = con.confrelid
             left join pg_catalog.pg_namespace rn on rn.oid = rc.relnamespace
-        where con.conrelid = any(%(oids)s)
-          and con.contype = any(%(contypes)s)
-        order by con.conrelid, con.conname
+        where n.nspname = any(%(schemas)s)
+          and c.relkind in ('r', 'p', 'v', 'm', 'f')
+          and con.contype in ('p', 'u', 'f', 'c', 'x')
     """)
 
     INDEXES: ClassVar[sql.SQL] = sql.SQL("""
         select
-            n.nspname                                          as schema_name,
+            current_database()                                 as database,
+            n.nspname                                          as schema,
             c.relname                                          as relation,
             ic.relname                                         as name,
             am.amname                                          as method,
@@ -416,49 +303,81 @@ class SnapshotSql:
             join pg_catalog.pg_namespace n on n.oid = c.relnamespace
             join pg_catalog.pg_class ic on ic.oid = i.indexrelid
             join pg_catalog.pg_am am on am.oid = ic.relam
-        where i.indrelid = any(%(oids)s)
-        order by i.indrelid, ic.relname
+        where n.nspname = any(%(schemas)s)
+          and c.relkind in ('r', 'p', 'v', 'm', 'f')
     """)
 
     ROUTINES: ClassVar[sql.SQL] = sql.SQL("""
         select
-            p.oid                                              as oid,
-            n.nspname                                          as schema_name,
+            current_database()                                 as database,
+            n.nspname                                          as schema,
             p.proname                                          as name,
             pg_catalog.oidvectortypes(p.proargtypes)           as signature,
-            p.prokind                                          as prokind,
+            case p.prokind
+                when 'f' then 'function'
+                when 'p' then 'procedure'
+                when 'a' then 'aggregate'
+                when 'w' then 'window'
+            end                                                as kind,
             pg_catalog.pg_get_userbyid(p.proowner)             as owner,
             l.lanname                                          as language,
             pg_catalog.pg_get_function_arguments(p.oid)        as arguments,
             case when p.prokind <> 'p'
                  then pg_catalog.pg_get_function_result(p.oid) end as returns,
             p.proretset                                        as returns_set,
-            p.provolatile                                      as volatility,
+            case p.provolatile
+                when 'i' then 'immutable'
+                when 's' then 'stable'
+                when 'v' then 'volatile'
+            end                                                as volatility,
             p.proisstrict                                      as strict,
             p.prosecdef                                        as security_definer,
-            p.proparallel                                      as parallel,
+            case p.proparallel
+                when 's' then 'safe'
+                when 'r' then 'restricted'
+                when 'u' then 'unsafe'
+            end                                                as parallel,
             p.procost                                          as cost,
             case when p.proretset then p.prorows end           as rows,
             coalesce(p.prosrc, '')                             as body,
             case when p.prokind <> 'a'
-                 then pg_catalog.pg_get_functiondef(p.oid) end as definition,
-            pg_catalog.obj_description(p.oid, 'pg_proc')       as comment,
-            p.proargnames                                      as argnames,
-            p.proargmodes                                      as argmodes,
-            coalesce(p.proallargtypes, p.proargtypes::oid[])   as argtypes
+                 then coalesce(pg_catalog.pg_get_functiondef(p.oid), '')
+                 else '' end                                   as definition,
+            pg_catalog.obj_description(p.oid, 'pg_proc')       as comment
         from pg_catalog.pg_proc p
             join pg_catalog.pg_namespace n on n.oid = p.pronamespace
             join pg_catalog.pg_language l on l.oid = p.prolang
         where n.nspname = any(%(schemas)s)
-          and p.oid > %(after)s
-        order by p.oid
-        limit %(limit)s
+    """)
+
+    ROUTINE_ARGS: ClassVar[sql.SQL] = sql.SQL("""
+        select
+            current_database()                                 as database,
+            n.nspname                                          as schema,
+            p.proname                                          as routine,
+            pg_catalog.oidvectortypes(p.proargtypes)           as signature,
+            u.n - 1                                            as position,
+            nullif(p.proargnames[u.n], '')                     as name,
+            pg_catalog.format_type(u.t, null)                  as type,
+            case coalesce(p.proargmodes[u.n], 'i')
+                when 'i' then 'in'
+                when 'o' then 'out'
+                when 'b' then 'inout'
+                when 'v' then 'variadic'
+                when 't' then 'table'
+            end                                                as mode,
+            null::text                                         as "default"
+        from pg_catalog.pg_proc p
+            join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+            cross join lateral unnest(coalesce(p.proallargtypes, p.proargtypes::oid[]))
+                with ordinality as u(t, n)
+        where n.nspname = any(%(schemas)s)
     """)
 
     SEQUENCES: ClassVar[sql.SQL] = sql.SQL("""
         select
-            c.oid                                              as oid,
-            n.nspname                                          as schema_name,
+            current_database()                                 as database,
+            n.nspname                                          as schema,
             c.relname                                          as name,
             pg_catalog.format_type(s.seqtypid, null)           as type,
             s.seqstart                                         as start,
@@ -485,17 +404,19 @@ class SnapshotSql:
             join pg_catalog.pg_sequence s on s.seqrelid = c.oid
         where n.nspname = any(%(schemas)s)
           and c.relkind = 'S'
-          and c.oid > %(after)s
-        order by c.oid
-        limit %(limit)s
     """)
 
     TYPES: ClassVar[sql.SQL] = sql.SQL("""
         select
-            t.oid                                              as oid,
-            n.nspname                                          as schema_name,
+            current_database()                                 as database,
+            n.nspname                                          as schema,
             t.typname                                          as name,
-            t.typtype                                          as typtype,
+            case t.typtype
+                when 'e' then 'enum'
+                when 'd' then 'domain'
+                when 'c' then 'composite'
+                when 'r' then 'range'
+            end                                                as kind,
             pg_catalog.pg_get_userbyid(t.typowner)             as owner,
             case when t.typtype = 'e' then array(
                 select e.enumlabel from pg_catalog.pg_enum e
@@ -508,35 +429,230 @@ class SnapshotSql:
                 select string_agg(pg_catalog.pg_get_constraintdef(dc.oid, true), ' ')
                 from pg_catalog.pg_constraint dc where dc.contypid = t.oid
             ) end                                              as constraint,
-            case when t.typtype = 'c' then array(
-                select a.attname from pg_catalog.pg_attribute a
-                where a.attrelid = t.typrelid and a.attnum > 0 and not a.attisdropped
-                order by a.attnum
-            ) end                                              as attr_names,
-            case when t.typtype = 'c' then array(
-                select pg_catalog.format_type(a.atttypid, a.atttypmod)
+            case when t.typtype = 'c' then coalesce((
+                select jsonb_agg(
+                    jsonb_build_object(
+                        'name', a.attname,
+                        'type', pg_catalog.format_type(a.atttypid, a.atttypmod))
+                    order by a.attnum)
                 from pg_catalog.pg_attribute a
                 where a.attrelid = t.typrelid and a.attnum > 0 and not a.attisdropped
-                order by a.attnum
-            ) end                                              as attr_types,
+            ), '[]'::jsonb) end                                as attributes,
             pg_catalog.obj_description(t.oid, 'pg_type')       as comment
         from pg_catalog.pg_type t
             join pg_catalog.pg_namespace n on n.oid = t.typnamespace
             left join pg_catalog.pg_class c on c.oid = t.typrelid
         where n.nspname = any(%(schemas)s)
-          and t.typtype = any(%(typtypes)s)
+          and t.typtype in ('e', 'd', 'c', 'r')
           and (t.typtype <> 'c' or c.relkind = 'c')
-          and t.oid > %(after)s
-        order by t.oid
-        limit %(limit)s
     """)
 
-    ARG_TYPE: ClassVar[sql.SQL] = sql.SQL("""
-        select pg_catalog.format_type(t.oid, null) as type
-        from unnest(%(oids)s::oid[]) with ordinality as u(oid, n)
-            join pg_catalog.pg_type t on t.oid = u.oid
-        order by u.n
-    """)
+    PARTS: ClassVar[tuple[PartQuery, ...]] = (
+        PartQuery(
+            table=PartTable(
+                part="databases",
+                table="pg_databases",
+                columns=("name", "owner", "encoding", "collate", "comment"),
+            ),
+            query=DATABASE,
+        ),
+        PartQuery(
+            table=PartTable(
+                part="schemas",
+                table="pg_schemas",
+                columns=("database", "name", "owner", "comment"),
+            ),
+            query=SCHEMAS,
+        ),
+        PartQuery(
+            table=PartTable(
+                part="relations",
+                table="pg_relations",
+                columns=(
+                    "database",
+                    "schema",
+                    "name",
+                    "kind",
+                    "owner",
+                    "comment",
+                    "tablespace",
+                    "persistence",
+                    "row_estimate",
+                    "total_bytes",
+                    "partition_key",
+                    "partition_of",
+                    "partition_bound",
+                    "definition",
+                    "check_option",
+                    "populated",
+                    "foreign_server",
+                    "options",
+                ),
+            ),
+            query=RELATIONS,
+        ),
+        PartQuery(
+            table=PartTable(
+                part="columns",
+                table="pg_columns",
+                columns=(
+                    "database",
+                    "schema",
+                    "relation",
+                    "name",
+                    "ordinal",
+                    "type",
+                    "nullable",
+                    "default",
+                    "identity",
+                    "generated",
+                    "collation",
+                    "comment",
+                ),
+            ),
+            query=COLUMNS,
+        ),
+        PartQuery(
+            table=PartTable(
+                part="constraints",
+                table="pg_constraints",
+                columns=(
+                    "database",
+                    "schema",
+                    "relation",
+                    "name",
+                    "kind",
+                    "columns",
+                    "ref_schema",
+                    "ref_relation",
+                    "ref_columns",
+                    "on_update",
+                    "on_delete",
+                    "deferrable",
+                    "initially_deferred",
+                    "definition",
+                    "comment",
+                ),
+            ),
+            query=CONSTRAINTS,
+        ),
+        PartQuery(
+            table=PartTable(
+                part="indexes",
+                table="pg_indexes",
+                columns=(
+                    "database",
+                    "schema",
+                    "relation",
+                    "name",
+                    "method",
+                    "unique",
+                    "primary",
+                    "columns",
+                    "predicate",
+                    "definition",
+                    "total_bytes",
+                    "comment",
+                ),
+            ),
+            query=INDEXES,
+        ),
+        PartQuery(
+            table=PartTable(
+                part="routines",
+                table="pg_routines",
+                columns=(
+                    "database",
+                    "schema",
+                    "name",
+                    "signature",
+                    "kind",
+                    "owner",
+                    "language",
+                    "arguments",
+                    "returns",
+                    "returns_set",
+                    "volatility",
+                    "strict",
+                    "security_definer",
+                    "parallel",
+                    "cost",
+                    "rows",
+                    "body",
+                    "definition",
+                    "comment",
+                ),
+            ),
+            query=ROUTINES,
+        ),
+        PartQuery(
+            table=PartTable(
+                part="routine_args",
+                table="pg_routine_args",
+                columns=(
+                    "database",
+                    "schema",
+                    "routine",
+                    "signature",
+                    "position",
+                    "name",
+                    "type",
+                    "mode",
+                    "default",
+                ),
+            ),
+            query=ROUTINE_ARGS,
+        ),
+        PartQuery(
+            table=PartTable(
+                part="sequences",
+                table="pg_sequences",
+                columns=(
+                    "database",
+                    "schema",
+                    "name",
+                    "type",
+                    "start",
+                    "minimum",
+                    "maximum",
+                    "increment",
+                    "cycle",
+                    "cache",
+                    "last_value",
+                    "owned_by",
+                    "comment",
+                ),
+            ),
+            query=SEQUENCES,
+        ),
+        PartQuery(
+            table=PartTable(
+                part="types",
+                table="pg_types",
+                columns=(
+                    "database",
+                    "schema",
+                    "name",
+                    "kind",
+                    "owner",
+                    "labels",
+                    "base_type",
+                    "constraint",
+                    "attributes",
+                    "comment",
+                ),
+            ),
+            query=TYPES,
+        ),
+    )
+
+    @classmethod
+    def tables(cls) -> list[PartTable]:
+        tables: list[PartTable] = []
+        for part in cls.PARTS:
+            tables.append(part.table)
+
+        return tables
 
 
 class Scope(BaseModel):
@@ -548,469 +664,75 @@ class Scope(BaseModel):
 
     @classmethod
     def parse(cls, raw: str) -> Scope:
-        names: list[str] = []
-        for piece in raw.split(","):
-            name = piece.strip()
-            if name == "":
-                continue
-
-            names.append(name)
-
-        return cls(schemas=tuple(names))
+        return cls(schemas=NameList.parse(raw))
 
 
-class Pacing(BaseModel):
-    """Размер порции и пауза между порциями из аргументов вызова."""
+class Source(BaseModel):
+    """База источника: имя, версия сервера, схемы охвата и число объектов."""
 
     model_config = ConfigDict(frozen=True)
 
-    batch_size: int = Field(ge=Batching.MIN_BATCH, le=Batching.MAX_BATCH)
-    pause_ms: int = Field(ge=Batching.MIN_PAUSE_MS, le=Batching.MAX_PAUSE_MS)
-
-    @property
-    def pause_seconds(self) -> float:
-        return self.pause_ms / Batching.MS_PER_SECOND
+    database: str
+    server_version: str
+    schemas: tuple[str, ...]
+    objects: int
 
 
-class Counts(BaseModel):
-    """Счётчики плана и итога по частям снимка."""
+class SourceCatalog:
+    """Запросы к источнику, ответ которых нужен самому инструменту: схемы
+    охвата и счётчики для итога."""
 
-    model_config = ConfigDict(frozen=True)
-
-    relations: int
-    routines: int
-    sequences: int
-    types: int
-
-    @property
-    def objects(self) -> int:
-        return self.relations + self.routines + self.sequences + self.types
-
-
-class Reader:
-    """Обход каталогов одного подключения порциями с паузой между ними."""
-
-    def __init__(
-        self,
-        conn: psycopg.AsyncConnection[Any],
-        scope: Scope,
-        emitter: SyncEmitter,
-        pacing: Pacing,
-    ) -> None:
+    def __init__(self, conn: psycopg.AsyncConnection[Any], scope: Scope) -> None:
         self._conn = conn
-        self._database = ""
         self._scope = scope
-        self._emitter = emitter
-        self._batch_size = pacing.batch_size
-        self._pause = pacing.pause_seconds
 
-    async def _rows(
-        self, query: sql.SQL, params: Mapping[str, Any]
-    ) -> list[dict[str, Any]]:
-        async with self._conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(query, params)
-            return await cur.fetchall()
+    async def describe(self) -> Source:
+        server = await self._row(SnapshotSql.SERVER, {})
+        schemas = await self._schemas()
+        counts = await self._row(SnapshotSql.COUNTS, {"schemas": list(schemas)})
+        objects = 0
+        for value in counts:
+            objects += int(value)
 
-    async def _pause_between_batches(self) -> None:
-        if self._pause > 0:
-            await asyncio.sleep(self._pause)
-
-    async def database(self) -> tuple[PgDatabase, str]:
-        """База подключения и версия сервера; имя базы идёт во все записи."""
-        rows = await self._rows(SnapshotSql.DATABASE, {})
-        row = rows[0]
-        self._database = str(row["name"])
-        record = PgDatabase(
-            name=row["name"],
-            owner=row["owner"],
-            encoding=row["encoding"],
-            collate=row["collate"],
-            comment=row["comment"],
+        return Source(
+            database=str(server[0]),
+            server_version=str(server[1]),
+            schemas=schemas,
+            objects=objects,
         )
-        return record, str(row["server_version"])
 
-    async def resolve_schemas(self) -> tuple[str, ...]:
+    async def _schemas(self) -> tuple[str, ...]:
         if self._scope.schemas:
             return self._scope.schemas
 
-        rows = await self._rows(
-            SnapshotSql.USER_SCHEMAS,
-            {
-                "system": list(SystemSchema.names()),
-                "temp": f"{SystemSchema.TEMP_PREFIX.value}%",
-                "toast_temp": f"{SystemSchema.TOAST_TEMP_PREFIX.value}%",
-            },
-        )
+        async with self._conn.cursor() as cur:
+            await cur.execute(
+                SnapshotSql.USER_SCHEMAS,
+                {
+                    "system": SystemSchema.names(),
+                    "temp": f"{SystemSchema.TEMP_PREFIX.value}%",
+                    "toast_temp": f"{SystemSchema.TOAST_TEMP_PREFIX.value}%",
+                },
+            )
+            rows = await cur.fetchall()
+
         names: list[str] = []
         for row in rows:
-            names.append(str(row["nspname"]))
+            names.append(str(row[0]))
 
         return tuple(names)
 
-    async def counts(self, schemas: Sequence[str]) -> Counts:
-        rows = await self._rows(
-            SnapshotSql.COUNTS,
-            {
-                "schemas": list(schemas),
-                "relkinds": Relkind.values(),
-                "typtypes": Typtype.values(),
-            },
-        )
-        row = rows[0]
-        return Counts(
-            relations=int(row["relations"]),
-            routines=int(row["routines"]),
-            sequences=int(row["sequences"]),
-            types=int(row["types"]),
-        )
+    async def _row(self, query: sql.SQL, params: dict[str, Any]) -> Sequence[Any]:
+        async with self._conn.cursor() as cur:
+            await cur.execute(query, params)
+            row = await cur.fetchone()
 
-    async def schemas(self, names: Sequence[str]) -> None:
-        rows = await self._rows(SnapshotSql.SCHEMAS, {"schemas": list(names)})
-        records: list[SourceRecord] = []
-        for row in rows:
-            records.append(
-                PgSchema(
-                    database=self._database,
-                    name=row["name"],
-                    owner=row["owner"],
-                    comment=row["comment"],
-                )
-            )
+        if row is None:
+            text = " ".join(query.as_string(self._conn).split())
+            msg = f"the source catalog query returned no row: {text}"
+            raise psycopg.DataError(msg)
 
-        self._emitter.batch(PgPart.SCHEMAS, records)
-
-    async def relations(self, schemas: Sequence[str]) -> None:
-        """Отношения порциями по oid; за каждой порцией — её колонки,
-        ограничения и индексы, потом пауза."""
-        after = 0
-        while True:
-            rows = await self._rows(
-                SnapshotSql.RELATIONS,
-                {
-                    "schemas": list(schemas),
-                    "relkinds": Relkind.values(),
-                    "after": after,
-                    "limit": self._batch_size,
-                },
-            )
-            if not rows:
-                return
-
-            records = list(self._relation_records(rows))
-            self._emitter.batch(PgPart.RELATIONS, records)
-
-            oids = [int(row["oid"]) for row in rows]
-            await self._columns(oids)
-            await self._constraints(oids)
-            await self._indexes(oids)
-
-            after = oids[-1]
-            await self._pause_between_batches()
-
-    def _relation_records(
-        self, rows: Sequence[Mapping[str, Any]]
-    ) -> Iterator[PgRelation]:
-        for row in rows:
-            relkind = Relkind(str(row["relkind"]))
-            persistence = Persistence(str(row["persistence"]))
-            options: dict[str, str] = {}
-            raw_options = row["options"]
-            if raw_options is not None:
-                for item in raw_options:
-                    key, _, value = str(item).partition("=")
-                    options[key] = value
-
-            yield PgRelation(
-                database=self._database,
-                schema_name=row["schema_name"],
-                name=row["name"],
-                kind=relkind.relation_kind(is_partition=bool(row["is_partition"])),
-                owner=row["owner"],
-                comment=row["comment"],
-                tablespace=row["tablespace"],
-                persistence=persistence.label(),
-                row_estimate=int(row["row_estimate"]),
-                total_bytes=int(row["total_bytes"]),
-                partition_key=row["partition_key"],
-                partition_of=row["partition_of"],
-                partition_bound=row["partition_bound"],
-                definition=row["definition"],
-                check_option=options.get("check_option"),
-                populated=row["populated"],
-                foreign_server=row["foreign_server"],
-                options=options,
-            )
-
-    async def _columns(self, oids: Sequence[int]) -> None:
-        rows = await self._rows(SnapshotSql.COLUMNS, {"oids": list(oids)})
-        records: list[SourceRecord] = []
-        for row in rows:
-            identity = None
-            if row["identity"]:
-                identity = Identity(str(row["identity"])).label()
-
-            generated = None
-            if row["generated"]:
-                generated = Generated(str(row["generated"])).label()
-
-            records.append(
-                PgColumn(
-                    database=self._database,
-                    schema_name=row["schema_name"],
-                    relation=row["relation"],
-                    name=row["name"],
-                    ordinal=int(row["ordinal"]),
-                    type=row["type"],
-                    nullable=bool(row["nullable"]),
-                    default=row["default"],
-                    identity=identity,
-                    generated=generated,
-                    collation=row["collation"],
-                    comment=row["comment"],
-                )
-            )
-
-        self._emitter.batch(PgPart.COLUMNS, records)
-
-    async def _constraints(self, oids: Sequence[int]) -> None:
-        rows = await self._rows(
-            SnapshotSql.CONSTRAINTS, {"oids": list(oids), "contypes": Contype.values()}
-        )
-        records: list[SourceRecord] = []
-        for row in rows:
-            contype = Contype(str(row["contype"]))
-            ref_columns = None
-            if row["ref_columns"] is not None:
-                ref_columns = tuple(str(name) for name in row["ref_columns"])
-
-            on_update = None
-            if row["on_update"]:
-                on_update = ForeignAction(str(row["on_update"])).label()
-
-            on_delete = None
-            if row["on_delete"]:
-                on_delete = ForeignAction(str(row["on_delete"])).label()
-
-            records.append(
-                PgConstraint(
-                    database=self._database,
-                    schema_name=row["schema_name"],
-                    relation=row["relation"],
-                    name=row["name"],
-                    kind=contype.constraint_kind(),
-                    columns=tuple(str(name) for name in row["columns"]),
-                    ref_schema=row["ref_schema"],
-                    ref_relation=row["ref_relation"],
-                    ref_columns=ref_columns,
-                    on_update=on_update,
-                    on_delete=on_delete,
-                    deferrable=bool(row["deferrable"]),
-                    initially_deferred=bool(row["initially_deferred"]),
-                    definition=row["definition"],
-                    comment=row["comment"],
-                )
-            )
-
-        self._emitter.batch(PgPart.CONSTRAINTS, records)
-
-    async def _indexes(self, oids: Sequence[int]) -> None:
-        rows = await self._rows(SnapshotSql.INDEXES, {"oids": list(oids)})
-        records: list[SourceRecord] = []
-        for row in rows:
-            records.append(
-                PgIndex(
-                    database=self._database,
-                    schema_name=row["schema_name"],
-                    relation=row["relation"],
-                    name=row["name"],
-                    method=row["method"],
-                    unique=bool(row["unique"]),
-                    primary=bool(row["primary"]),
-                    columns=tuple(str(name) for name in row["columns"]),
-                    predicate=row["predicate"],
-                    definition=row["definition"],
-                    total_bytes=int(row["total_bytes"]),
-                    comment=row["comment"],
-                )
-            )
-
-        self._emitter.batch(PgPart.INDEXES, records)
-
-    async def routines(self, schemas: Sequence[str]) -> None:
-        after = 0
-        while True:
-            rows = await self._rows(
-                SnapshotSql.ROUTINES,
-                {"schemas": list(schemas), "after": after, "limit": self._batch_size},
-            )
-            if not rows:
-                return
-
-            records: list[SourceRecord] = []
-            args: list[SourceRecord] = []
-            for row in rows:
-                records.append(self._routine_record(row))
-                args.extend(await self._routine_args(row))
-
-            self._emitter.batch(PgPart.ROUTINES, records)
-            self._emitter.batch(PgPart.ROUTINE_ARGS, args)
-
-            after = int(rows[-1]["oid"])
-            await self._pause_between_batches()
-
-    def _routine_record(self, row: Mapping[str, Any]) -> PgRoutine:
-        prokind = Prokind(str(row["prokind"]))
-        rows_estimate = None
-        if row["rows"] is not None:
-            rows_estimate = float(row["rows"])
-
-        definition = row["definition"]
-        if definition is None:
-            definition = ""
-
-        return PgRoutine(
-            database=self._database,
-            schema_name=row["schema_name"],
-            name=row["name"],
-            signature=row["signature"],
-            kind=prokind.routine_kind(),
-            owner=row["owner"],
-            language=row["language"],
-            arguments=row["arguments"],
-            returns=row["returns"],
-            returns_set=bool(row["returns_set"]),
-            volatility=Volatility(str(row["volatility"])).label(),
-            strict=bool(row["strict"]),
-            security_definer=bool(row["security_definer"]),
-            parallel=Parallel(str(row["parallel"])).label(),
-            cost=float(row["cost"]),
-            rows=rows_estimate,
-            body=row["body"],
-            definition=definition,
-            comment=row["comment"],
-        )
-
-    async def _routine_args(self, row: Mapping[str, Any]) -> list[SourceRecord]:
-        """Аргументы рутины по позициям: имена, режимы и типы из pg_proc;
-        значения по умолчанию видны в тексте arguments."""
-        type_oids = list(row["argtypes"])
-        if not type_oids:
-            return []
-
-        typed = await self._rows(SnapshotSql.ARG_TYPE, {"oids": type_oids})
-        names = row["argnames"]
-        modes = row["argmodes"]
-        records: list[SourceRecord] = []
-        for position, type_row in enumerate(typed):
-            name = None
-            if names is not None and position < len(names) and names[position]:
-                name = str(names[position])
-
-            mode = Argmode.IN
-            if modes is not None and position < len(modes):
-                mode = Argmode(str(modes[position]))
-
-            records.append(
-                PgRoutineArg(
-                    database=self._database,
-                    schema_name=row["schema_name"],
-                    routine=row["name"],
-                    signature=row["signature"],
-                    position=position,
-                    name=name,
-                    type=str(type_row["type"]),
-                    mode=mode.label(),
-                )
-            )
-
-        return records
-
-    async def sequences(self, schemas: Sequence[str]) -> None:
-        after = 0
-        while True:
-            rows = await self._rows(
-                SnapshotSql.SEQUENCES,
-                {"schemas": list(schemas), "after": after, "limit": self._batch_size},
-            )
-            if not rows:
-                return
-
-            records: list[SourceRecord] = []
-            for row in rows:
-                last_value = None
-                if row["last_value"] is not None:
-                    last_value = int(row["last_value"])
-
-                records.append(
-                    PgSequence(
-                        database=self._database,
-                        schema_name=row["schema_name"],
-                        name=row["name"],
-                        type=row["type"],
-                        start=int(row["start"]),
-                        minimum=int(row["minimum"]),
-                        maximum=int(row["maximum"]),
-                        increment=int(row["increment"]),
-                        cycle=bool(row["cycle"]),
-                        cache=int(row["cache"]),
-                        last_value=last_value,
-                        owned_by=row["owned_by"],
-                        comment=row["comment"],
-                    )
-                )
-
-            self._emitter.batch(PgPart.SEQUENCES, records)
-            after = int(rows[-1]["oid"])
-            await self._pause_between_batches()
-
-    async def types(self, schemas: Sequence[str]) -> None:
-        after = 0
-        while True:
-            rows = await self._rows(
-                SnapshotSql.TYPES,
-                {
-                    "schemas": list(schemas),
-                    "typtypes": Typtype.values(),
-                    "after": after,
-                    "limit": self._batch_size,
-                },
-            )
-            if not rows:
-                return
-
-            records: list[SourceRecord] = []
-            for row in rows:
-                records.append(self._type_record(row))
-
-            self._emitter.batch(PgPart.TYPES, records)
-            after = int(rows[-1]["oid"])
-            await self._pause_between_batches()
-
-    def _type_record(self, row: Mapping[str, Any]) -> PgType:
-        typtype = Typtype(str(row["typtype"]))
-        labels = None
-        if row["labels"] is not None:
-            labels = tuple(str(label) for label in row["labels"])
-
-        attributes = None
-        if row["attr_names"] is not None:
-            attributes = tuple(
-                PgTypeAttribute(name=str(name), type=str(kind))
-                for name, kind in zip(row["attr_names"], row["attr_types"], strict=True)
-            )
-
-        return PgType(
-            database=self._database,
-            schema_name=row["schema_name"],
-            name=row["name"],
-            kind=typtype.type_kind(),
-            owner=row["owner"],
-            labels=labels,
-            base_type=row["base_type"],
-            constraint=row["constraint"],
-            attributes=attributes,
-            comment=row["comment"],
-        )
+        return row
 
 
 @tool
@@ -1025,68 +747,49 @@ async def pg_schema_snapshot(
             ),
         ),
     ],
-    batch_size: Annotated[
-        int,
-        Field(
-            ge=Batching.MIN_BATCH,
-            le=Batching.MAX_BATCH,
-            description="Сколько объектов читать за один заход в каталог.",
-        ),
-    ],
-    pause_ms: Annotated[
-        int,
-        Field(
-            ge=Batching.MIN_PAUSE_MS,
-            le=Batching.MAX_PAUSE_MS,
-            description="Пауза между заходами в миллисекундах, чтобы не грузить базу.",
-        ),
-    ],
-    out: Annotated[Outbound[SyncFrame], Injected],
+    catalog: Annotated[CatalogStoreConfig, Injected],
 ) -> tuple[str, ToolResult]:
-    """Снимает структуру базы подключения для каталога данных: схемы,
-    таблицы и представления с колонками, ограничениями и индексами,
-    функции и процедуры, последовательности, типы. Кадры уходят в выходной
-    порт порциями; версию источника из них собирает каталог. База — та, к
-    которой подключение."""
-    scope = Scope.parse(schemas)
-    emitter = SyncEmitter(out, PgSnapshot)
-
-    conn = await PayloadPostgres.connect_config(connection)
-    async with conn:
-        pacing = Pacing(batch_size=batch_size, pause_ms=pause_ms)
-        reader = Reader(conn, scope, emitter, pacing)
-        database, server_version = await reader.database()
-        names = await reader.resolve_schemas()
-        counts = await reader.counts(names)
-        emitter.plan(
-            SyncPlan(
-                source_kind=PgSourceKind.POSTGRES.value,
-                database=database.name,
-                schemas=names,
-                objects_total=counts.objects,
-                server_version=server_version,
-            )
+    """Снимает структуру базы подключения в каталог данных: схемы, таблицы
+    и представления с колонками, ограничениями и индексами, функции и
+    процедуры, последовательности, типы. Строки перетекают из каталогов
+    базы в домен каталога потоком и ложатся новой версией подключения.
+    База — та, к которой подключение."""
+    if not connection.source.stored:
+        msg = (
+            "pg_schema_snapshot: the connection profile carries no connection "
+            "row (source id is empty), the snapshot has nowhere to go"
         )
-        emitter.batch(PgPart.DATABASES, [database])
-        await reader.schemas(names)
-        await reader.relations(names)
-        await reader.routines(names)
-        await reader.sequences(names)
-        await reader.types(names)
-        done = emitter.done()
+        raise SnapshotConnectionError(msg)
 
+    scope = Scope.parse(schemas)
+    store = await PayloadPostgres.connect_config(catalog.connection)
+    async with store:
+        writer = SnapshotWriter(
+            store, catalog.db_schema, connection.source.id, SnapshotSql.tables()
+        )
+        await writer.open()
+
+        conn = await PayloadPostgres.connect_config(connection)
+        async with conn:
+            source = await SourceCatalog(conn, scope).describe()
+            params = {"schemas": list(source.schemas)}
+            for part in SnapshotSql.PARTS:
+                await writer.copy_from(conn, part.part, part.query, params)
+
+        version = await writer.commit()
+
+    outcome = SnapshotOutcome(version=version, server_version=source.server_version)
     summary = (
-        f"snapshot of {database.name}: {len(names)} schema(s), "
-        f"{done.objects_total} object(s) in {done.batches} batch(es): "
-        f"{counts.relations} relations, {counts.routines} routines, "
-        f"{counts.sequences} sequences, {counts.types} types"
+        f"snapshot of {source.database} written as version {version} of "
+        f"connection {connection.source.name!r}: {len(source.schemas)} schema(s), "
+        f"{source.objects} object(s)"
     )
     metadata = {
-        "database": database.name,
-        "schemas": ", ".join(names),
-        "objects": str(done.objects_total),
-        "batches": str(done.batches),
+        SnapshotResultKey.DATABASE.value: source.database,
+        SnapshotResultKey.SCHEMAS.value: NameList.render(source.schemas),
+        SnapshotResultKey.OBJECTS.value: str(source.objects),
     }
+    metadata.update(outcome.metadata())
     return pack_result(TextResult(text=summary, metadata=metadata))
 
 

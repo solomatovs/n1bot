@@ -12,7 +12,7 @@ WEB = Path(__file__).resolve().parents[1] / "web" / "workflow" / "src"
 
 
 def test_own_request_mark_matches_the_client() -> None:
-    client = (WEB / "api" / "client.ts").read_text(encoding="utf-8")
+    client = (WEB / "api" / "transport.ts").read_text(encoding="utf-8")
 
     assert f'header: "{OwnRequest.HEADER}"' in client
     assert f'value: "{OwnRequest.VALUE}"' in client

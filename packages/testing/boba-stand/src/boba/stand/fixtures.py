@@ -10,6 +10,7 @@ from omegaconf import DictConfig
 
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres.profile import PostgresConfig
 from boba.runtime.config import ConfigLocator, RawConfig, RuntimeConfig
 from boba.stand.context import call_context_cleared
 from boba.stand.database import TestDatabase
@@ -58,6 +59,12 @@ def kerberos_workspace(
 @pytest.fixture(scope="session")
 async def test_database(runtime_config: RuntimeConfig) -> str:
     return await TestDatabase.ensure(runtime_config.data_layer.postgres)
+
+
+@pytest.fixture
+def test_postgres(runtime_config: RuntimeConfig, test_database: str) -> PostgresConfig:
+    """Профиль тестовой базы: тем, кто подключается сам, а не пулом."""
+    return TestDatabase.config_of(runtime_config.data_layer.postgres, test_database)
 
 
 @pytest.fixture

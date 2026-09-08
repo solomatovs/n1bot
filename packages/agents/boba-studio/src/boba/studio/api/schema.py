@@ -12,6 +12,7 @@ from typing import Any, ClassVar
 
 from boba.auth import AuthService, AuthUsers, JwtTokens
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
+from boba.catalog_service import CatalogService
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.connections.manifest import ConnectionTypes
 from boba.identity.api import (
@@ -25,8 +26,9 @@ from boba.messaging import MemoryMessageBus
 from boba.messaging.bus import ListenerState, StaticBusWatch
 from boba.runtime.refs import RuntimeRefs
 from boba.runtime.users import UsersTable
-from boba.studio.api.app import ApiAccess, ApiApp
+from boba.studio.api.app import ApiAccess, ApiApp, ApiExtras
 from boba.studio.api.signin import PageUrls, SignInWiring
+from boba.studio.catalog.api import CatalogApi
 from boba.toolrun.registry import ToolRegistry
 from boba.workflow_engine.service import WorkflowService
 
@@ -68,9 +70,15 @@ class OpenApiDocument:
     @classmethod
     def render(cls) -> dict[str, Any]:
         access = ApiAccess(NoOne(), cls.COOKIE, cls._no_users)
-        app = ApiApp.build(cls._refs(), access, cls._profiles(), cls._signin())
+        extras = ApiExtras(mounts=(CatalogApi(cls._no_catalog),))
+        app = ApiApp.build(cls._refs(), access, cls._profiles(), cls._signin(), extras)
 
         return app.openapi()
+
+    @staticmethod
+    async def _no_catalog() -> CatalogService:
+        msg = "catalog service requested while rendering the OpenAPI schema"
+        raise RuntimeError(msg)
 
     @classmethod
     def dump(cls) -> str:

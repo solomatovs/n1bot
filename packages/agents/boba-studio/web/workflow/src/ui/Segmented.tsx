@@ -12,19 +12,27 @@ type Props<T extends string> = {
   value: T;
   onChange: (value: T) => void;
   label: string;
+  /** Во всю ширину контейнера: вкладки панели. */
+  fill?: boolean;
 };
 
-/** Сегментированный переключатель в пилюле, как Grid/Table/Timeline у Studio. */
-export function Segmented<T extends string>({ options, value, onChange, label }: Props<T>): ReactElement {
+/** Сегментированный переключатель в пилюле высотой в контрол: режимы
+ * холста, вкладки панели. Единственное место с классом `segmented`. */
+export function Segmented<T extends string>({ options, value, onChange, label, fill = false }: Props<T>): ReactElement {
+  const classes = ["segmented"];
+  if (fill) {
+    classes.push("segmented--fill");
+  }
+
   return (
-    <div className="segmented" role="tablist" aria-label={label}>
+    <div className={classes.join(" ")} role="tablist" aria-label={label}>
       {options.map((option) => (
         <button
           type="button"
           role="tab"
           aria-selected={option.value === value}
           key={option.value}
-          className={`segmented__item${option.value === value ? " segmented__item--on" : ""}`}
+          className="segmented__item"
           onClick={() => {
             onChange(option.value);
           }}

@@ -21,7 +21,16 @@ class CatalogConfig(BaseModel):
     )
     db_schema: str = Field(
         min_length=1,
-        description="Схема postgres, в которой живут таблицы каталога.",
+        description=(
+            "Схема postgres домена каталога: таблицы снимков pg_*, ch_* и связи link."
+        ),
+    )
+    app_schema: str = Field(
+        min_length=1,
+        description=(
+            "Схема postgres приложения каталога: процессы, черновики, "
+            "синхронизации, версии снимков."
+        ),
     )
     view_roles: tuple[str, ...] = Field(
         min_length=1,

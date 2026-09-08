@@ -120,7 +120,7 @@ class PostgresConfig(ConnectionProfileBase):
 
     # не connect-параметры: конструктор пула, строка '-c k=v', способ авторизации
     NOT_CONNECT_FIELDS: ClassVar[frozenset[str]] = frozenset(
-        {"pool", "options", "kind", "auth", "description"}
+        {"pool", "options", "auth"}
     )
 
     kind: Literal["postgres"] = Field(
@@ -329,6 +329,9 @@ class PostgresConfig(ConnectionProfileBase):
 
         for name in PostgresConfig.model_fields:
             if name in self.NOT_CONNECT_FIELDS:
+                continue
+
+            if name in self.common_fields():
                 continue
 
             value = getattr(self, name)

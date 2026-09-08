@@ -43,9 +43,6 @@ class CatalogDiff(CatalogModel):
 
         return ChangeStatus.UNCHANGED
 
-    def is_empty(self) -> bool:
-        return not self.entries
-
     @classmethod
     def _entries(
         cls, base: CatalogSnapshot, other: CatalogSnapshot

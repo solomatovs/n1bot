@@ -2,13 +2,19 @@
 
 Единственная точка входа для JSON API и инструментов LLM: оба зовут одни и
 те же методы с Subject. Чтение процессов и снимков подключений открыто ролям
-view_roles и edit_roles; правки, черновики, публикация, синхронизация —
-только edit_roles; ссылка на просмотр, удаление процесса — его владельцу.
+view_roles и edit_roles; правки, черновики, публикация, синхронизация,
+upgrade — только edit_roles; ссылка на просмотр, удаление процесса — его
+владельцу. Upgrade — отдельная задача, как синхронизация: запуск возвращается
+сразу со статусом running, процессы переводятся по очереди, ход и итог идут
+событиями шины; процесс переводится, если совместим с новыми версиями,
+иначе итог blocked с проблемами.
 Гость по ссылке читает опубликованный процесс без прав. После каждой правки
 в область пользователя уходит CatalogChanged.
 
 Ошибки:
-CatalogRefusalError — у субъекта нет прав на действие.
+CatalogRefusalError — у субъекта нет прав на действие; upgrade процесса
+    без версий или поверх идущего запуска.
+UpgradeNotFoundError, UpgradeClosedError — как у ProcessStore.
 CatalogStoreError, ProcessNotFoundError, ProcessNameTakenError,
     DraftNotFoundError, DraftClosedError, DraftConflictError, DraftStaleError,
     ShareNotFoundError — как у ProcessStore.
@@ -18,6 +24,7 @@ ConnectionNotSyncedError, ConnectionVersionNotFoundError,
     SnapshotKindMismatchError — как у ConnectionStore.
 ConnectionInUseError — подключение стоит в узлах, версии забыть нельзя.
 ObjectNotFoundError — по адресу нет объекта в версии снимка.
+SnapshotRejectedError — сырой снимок не разобран реестром видов.
 UnknownSourceKindError — у вида подключения нет снимка в реестре.
 SyncNotFoundError, SyncRunningError, SyncClosedError, SyncSetupError — как у
     SyncRunner.
@@ -25,8 +32,12 @@ SyncNotFoundError, SyncRunningError, SyncClosedError, SyncSetupError — как 
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from uuid import UUID
+import asyncio
+import logging
+from collections.abc import Iterable, Mapping, Sequence
+from datetime import UTC, datetime
+from typing import Any
+from uuid import UUID, uuid4
 
 from boba.catalog import (
     CatalogError,
@@ -38,6 +49,7 @@ from boba.catalog import (
     PinnedSnapshot,
     SnapshotResolver,
     SourceDiff,
+    SourceKindsError,
     SourceSnapshot,
     Staleness,
     TreeNode,
@@ -50,6 +62,7 @@ from boba.catalog_service.records import (
     CatalogAccess,
     CatalogRefusalError,
     CatalogRefusalKind,
+    CatalogStoreError,
     ConnectionHasVersionsError,
     ConnectionInUseError,
     ConnectionNotSyncedError,
@@ -60,7 +73,6 @@ from boba.catalog_service.records import (
     DraftStatus,
     NodeUsage,
     ObjectNotFoundError,
-    PinBump,
     Process,
     ProcessContext,
     ProcessSpec,
@@ -69,18 +81,31 @@ from boba.catalog_service.records import (
     SharedNodeNotFoundError,
     SharedProcess,
     SnapshotKindMismatchError,
+    SnapshotRejectedError,
     Sync,
     SyncedConnection,
     SyncScope,
     SyncStatus,
-    UnknownSourceKindError,
+    Upgrade,
+    UpgradeReport,
+    UpgradeRun,
+    UpgradeScope,
+    UpgradeStatus,
+    UpgradeTarget,
     Version,
     VersionOrigin,
 )
-from boba.catalog_service.sync_runner import SyncCaller, SyncPorts, SyncRunner
+from boba.catalog_service.sync_runner import (
+    JobTasks,
+    SyncCaller,
+    SyncPorts,
+    SyncRunner,
+)
 from boba.identity.context import Scope, Subject
 from boba.identity.locks import LockToken
 from boba.messaging import CatalogChanged, ChangeAction, MessageBus
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["CatalogService"]
 
@@ -103,6 +128,8 @@ class CatalogService:
         self._bus = bus
         self._directory = ports.connections
         self._syncs = SyncRunner(connections, ports, self._sync_changed)
+        # запуски upgrade этого инстанса: задача и флаг отмены по id запуска
+        self._upgrades: JobTasks[asyncio.Event] = JobTasks(asyncio.Event.set)
 
     @property
     def syncs(self) -> SyncRunner:
@@ -141,14 +168,47 @@ class CatalogService:
     # --- процессы ---
 
     async def list_processes(self, subject: Subject) -> Sequence[Process]:
+        """Процессы с пометкой отставания привязок от последних версий
+        снимков и числом проблем последнего blocked-upgrade."""
         self._require_view(subject)
 
-        return await self._processes.list_processes()
+        latest = await self._latest_pins()
+        processes: list[Process] = []
+        for process in await self._processes.list_processes():
+            processes.append(self._marked_process(process, latest))
+
+        return processes
 
     async def process(self, subject: Subject, process_id: UUID) -> Process:
         self._require_view(subject)
 
-        return await self._processes.get_process(process_id)
+        process = await self._processes.get_process(process_id)
+        return self._marked_process(process, await self._latest_pins())
+
+    @staticmethod
+    def _behind(
+        pins: Mapping[UUID, int],
+        connections: Iterable[UUID],
+        latest: Mapping[UUID, int],
+    ) -> bool:
+        for connection_id in connections:
+            pinned = pins.get(connection_id)
+            newest = latest.get(connection_id)
+            if pinned is None or newest is None:
+                continue
+
+            if pinned < newest:
+                return True
+
+        return False
+
+    def _marked_process(self, process: Process, latest: Mapping[UUID, int]) -> Process:
+        behind = self._behind(process.pins, process.connections, latest)
+        attention = process.attention
+        if not behind:
+            attention = 0
+
+        return process.model_copy(update={"behind": behind, "attention": attention})
 
     async def create_process(self, subject: Subject, spec: ProcessSpec) -> Process:
         self._require_edit(subject)
@@ -204,42 +264,61 @@ class CatalogService:
         draft = await self._processes.create_draft(
             process_id, name, subject.user_id, pins
         )
-        await self._changed(
-            subject, CatalogChanged(draft_id=draft.id, action=ChangeAction.CREATED)
-        )
+        await self._draft_changed(subject, draft.id, ChangeAction.CREATED)
 
         return draft
 
-    async def open_drafts(self, subject: Subject, process_id: UUID) -> Sequence[Draft]:
-        self._require_view(subject)
-
-        return await self._processes.list_drafts(process_id, DraftStatus.OPEN)
-
     async def my_drafts(self, subject: Subject) -> Sequence[Draft]:
-        """Открытые черновики автора по всем процессам: плоский список панели."""
+        """Открытые черновики автора по всем процессам: плоский список панели,
+        с пометкой отставания привязок и проблемами последнего upgrade."""
         self._require_view(subject)
 
-        return await self._processes.drafts_of_author(subject.user_id)
+        drafts = await self._processes.drafts_of_author(subject.user_id)
+        return await self._marked_drafts(drafts)
+
+    async def _marked_drafts(self, drafts: Sequence[Draft]) -> Sequence[Draft]:
+        latest = await self._latest_pins()
+        marked: list[Draft] = []
+        for draft in drafts:
+            marked.append(await self._marked_draft(draft, latest))
+
+        return marked
+
+    async def _marked_draft(self, draft: Draft, latest: Mapping[UUID, int]) -> Draft:
+        if draft.status is not DraftStatus.OPEN:
+            return draft
+
+        state = await self._processes.draft_state(draft.id)
+        behind = self._behind(draft.pins, state.snapshot.connections(), latest)
+        attention = 0
+        if behind:
+            last = await self._processes.last_upgrade_of_draft(draft.id)
+            if last is not None and last.status is UpgradeStatus.BLOCKED:
+                attention = len(last.problems)
+
+        return draft.model_copy(update={"behind": behind, "attention": attention})
 
     async def rename_draft(self, subject: Subject, draft_id: UUID, name: str) -> Draft:
         self._require_edit(subject)
 
         draft = await self._processes.rename_draft(draft_id, name)
-        await self._changed(
-            subject, CatalogChanged(draft_id=draft_id, action=ChangeAction.UPDATED)
-        )
+        await self._draft_changed(subject, draft_id, ChangeAction.UPDATED)
 
         return draft
 
     async def draft(self, subject: Subject, draft_id: UUID) -> Draft:
         self._require_view(subject)
 
-        return await self._processes.get_draft(draft_id)
+        draft = await self._processes.get_draft(draft_id)
+        return await self._marked_draft(draft, await self._latest_pins())
 
     async def draft_state(self, subject: Subject, draft_id: UUID) -> DraftState:
+        """Состояние черновика; сам черновик — с пометкой отставания."""
         self._require_view(subject)
 
-        return await self._processes.draft_state(draft_id)
+        state = await self._processes.draft_state(draft_id)
+        marked = await self._marked_draft(state.draft, await self._latest_pins())
+        return state.model_copy(update={"draft": marked})
 
     async def append_ops(
         self,
@@ -256,9 +335,7 @@ class CatalogService:
         draft = await self._processes.get_draft(draft_id)
         resolver = await self._resolver_of(draft.pins)
         await self._processes.append_ops(draft_id, expected_seq, author, ops, resolver)
-        await self._changed(
-            subject, CatalogChanged(draft_id=draft_id, action=ChangeAction.UPDATED)
-        )
+        await self._draft_changed(subject, draft_id, ChangeAction.UPDATED)
 
         return await self._processes.draft_state(draft_id)
 
@@ -269,9 +346,7 @@ class CatalogService:
 
         author = DraftAuthor(user_id=subject.user_id, via=via)
         version = await self._processes.publish(draft_id, author)
-        await self._changed(
-            subject, CatalogChanged(draft_id=draft_id, action=ChangeAction.DELETED)
-        )
+        await self._draft_changed(subject, draft_id, ChangeAction.DELETED)
         await self._changed(
             subject,
             CatalogChanged(
@@ -296,9 +371,7 @@ class CatalogService:
         if result.issues and not drop_conflicts:
             return result
 
-        await self._changed(
-            subject, CatalogChanged(draft_id=draft_id, action=ChangeAction.UPDATED)
-        )
+        await self._draft_changed(subject, draft_id, ChangeAction.UPDATED)
 
         return result
 
@@ -306,27 +379,330 @@ class CatalogService:
         self._require_edit(subject)
 
         draft = await self._processes.discard_draft(draft_id)
-        await self._changed(
-            subject, CatalogChanged(draft_id=draft_id, action=ChangeAction.DELETED)
-        )
+        await self._draft_changed(subject, draft_id, ChangeAction.DELETED)
 
         return draft
 
-    async def bump_pins(self, subject: Subject, draft_id: UUID) -> PinBump:
-        """Привязки черновика поднимаются до последних версий снимков; что
-        после этого перестало сходиться, перечисляется, но не чинится."""
+    # --- upgrade: перевод на последние версии снимков ---
+
+    async def start_upgrade(
+        self,
+        subject: Subject,
+        target: UpgradeTarget,
+        entity_id: UUID | None,
+        via: AuthorVia,
+    ) -> UpgradeRun:
+        """Запуск upgrade задачей, как синхронизация: запись со статусом
+        running возвращается сразу, процессы переводятся по очереди в задаче
+        цикла событий, ход и итог уходят событиями шины по upgrade_id.
+
+        Ошибки:
+        ProcessNotFoundError, DraftNotFoundError — цели нет.
+        CatalogRefusalError — у процесса нет версий; уже идёт запуск по этой
+            цели или по всем.
+        """
         self._require_edit(subject)
 
-        pins = await self._latest_pins()
-        draft = await self._processes.set_pins(draft_id, pins)
-        state = await self._processes.draft_state(draft_id)
-        resolver = await self._resolver_of(pins)
-        violations = tuple(state.snapshot.source_violations(resolver))
-        await self._changed(
-            subject, CatalogChanged(draft_id=draft_id, action=ChangeAction.UPDATED)
+        targets = await self._upgrade_targets(subject, target, entity_id)
+        await self._require_no_running_upgrade(target, entity_id)
+        run = await self._processes.start_upgrade_run(
+            UpgradeRun(
+                id=uuid4(),
+                target=target,
+                process_id=self._target_process(target, entity_id),
+                draft_id=self._target_draft(target, entity_id),
+                started_by=subject.user_id,
+                started_at=datetime.now(UTC),
+                status=SyncStatus.RUNNING,
+                total=len(targets),
+            )
+        )
+        cancellation = asyncio.Event()
+        work = self._drive_upgrade(subject, run, targets, via, cancellation)
+        self._upgrades.start(run.id, work, cancellation)
+        await self._upgrade_changed(subject, run.id, ChangeAction.CREATED)
+
+        return run
+
+    async def wait_upgrade(self, run_id: UUID) -> UpgradeRun:
+        """Дождаться конца задачи upgrade этого инстанса."""
+        await self._upgrades.wait(run_id)
+
+        return await self._processes.get_upgrade_run(run_id)
+
+    async def cancel_upgrade(self, subject: Subject, run_id: UUID) -> UpgradeRun:
+        """Снять идущий запуск: текущий процесс дорабатывается, следующие не
+        начинаются.
+
+        Ошибки:
+        UpgradeNotFoundError — запуска нет.
+        UpgradeClosedError — запуск уже завершён.
+        """
+        self._require_edit(subject)
+
+        stopped = await self._upgrades.cancel(run_id)
+        if not stopped:
+            reason = "cancelled: the upgrade task is not running in this instance"
+            closed = await self._processes.close_upgrade_run(
+                run_id, SyncStatus.CANCELLED, reason
+            )
+            await self._upgrade_changed(subject, run_id, ChangeAction.UPDATED)
+            return closed
+
+        return await self._processes.get_upgrade_run(run_id)
+
+    async def upgrade_run(self, subject: Subject, run_id: UUID) -> UpgradeRun:
+        self._require_view(subject)
+
+        return await self._processes.get_upgrade_run(run_id)
+
+    async def upgrade_report(self, subject: Subject, run_id: UUID) -> UpgradeReport:
+        """Запуск с результатами по процессам."""
+        self._require_view(subject)
+
+        run = await self._processes.get_upgrade_run(run_id)
+        upgrades = await self._processes.upgrades_of_run(run_id)
+        return UpgradeReport(run=run, upgrades=tuple(upgrades))
+
+    async def upgrade_runs(
+        self,
+        subject: Subject,
+        process_id: UUID | None,
+        draft_id: UUID | None,
+        limit: int,
+    ) -> Sequence[UpgradeRun]:
+        """Последние запуски, касающиеся процесса или черновика (свои и по
+        всем процессам); без фильтра — все последние."""
+        self._require_view(subject)
+
+        return await self._processes.upgrade_runs(process_id, draft_id, limit)
+
+    async def last_upgrade(self, subject: Subject, process_id: UUID) -> Upgrade | None:
+        self._require_view(subject)
+
+        return await self._processes.last_upgrade_of_process(process_id)
+
+    async def last_draft_upgrade(
+        self, subject: Subject, draft_id: UUID
+    ) -> Upgrade | None:
+        self._require_view(subject)
+
+        return await self._processes.last_upgrade_of_draft(draft_id)
+
+    @staticmethod
+    def _target_process(target: UpgradeTarget, entity_id: UUID | None) -> UUID | None:
+        if target is UpgradeTarget.PROCESS:
+            return entity_id
+
+        return None
+
+    @staticmethod
+    def _target_draft(target: UpgradeTarget, entity_id: UUID | None) -> UUID | None:
+        if target is UpgradeTarget.DRAFT:
+            return entity_id
+
+        return None
+
+    async def _upgrade_targets(
+        self, subject: Subject, target: UpgradeTarget, entity_id: UUID | None
+    ) -> tuple[UpgradeScope, ...]:
+        """Что переводить: отставшие цели с их привязками; процесс или
+        черновик без отставания — в списке, итог у него будет moved без версии.
+
+        Ошибки:
+        ProcessNotFoundError, DraftNotFoundError — цели нет.
+        CatalogRefusalError — у процесса нет версий.
+        """
+        latest = await self._latest_pins()
+        if target is UpgradeTarget.ALL:
+            scopes: list[UpgradeScope] = []
+            for process in await self.list_processes(subject):
+                if not process.behind:
+                    continue
+
+                scopes.append(self._process_scope(process, latest))
+
+            return tuple(scopes)
+
+        if entity_id is None:
+            msg = f"upgrade of a {target.value} needs its id"
+            raise CatalogRefusalError(CatalogRefusalKind.NOT_ALLOWED, msg)
+
+        if target is UpgradeTarget.PROCESS:
+            process = await self.process(subject, entity_id)
+            if process.latest_version == 0:
+                msg = (
+                    f"process {process.name!r} ({entity_id}) has no published "
+                    "versions: nothing to upgrade"
+                )
+                raise CatalogRefusalError(CatalogRefusalKind.NOT_ALLOWED, msg)
+
+            return (self._process_scope(process, latest),)
+
+        draft = await self.draft(subject, entity_id)
+        return (
+            UpgradeScope(
+                process_id=draft.process_id,
+                draft_id=draft.id,
+                pins=draft.pins,
+                target=latest,
+            ),
         )
 
-        return PinBump(draft=draft, violations=violations)
+    @staticmethod
+    def _process_scope(process: Process, latest: Mapping[UUID, int]) -> UpgradeScope:
+        return UpgradeScope(
+            process_id=process.id, draft_id=None, pins=process.pins, target=latest
+        )
+
+    async def _require_no_running_upgrade(
+        self, target: UpgradeTarget, entity_id: UUID | None
+    ) -> None:
+        """Ошибки:
+        CatalogRefusalError — по этой цели (или по всем) запуск уже идёт.
+        """
+        process_id = self._target_process(target, entity_id)
+        draft_id = self._target_draft(target, entity_id)
+        for run in await self._processes.upgrade_runs(process_id, draft_id, 5):
+            if run.status is not SyncStatus.RUNNING:
+                continue
+
+            msg = f"upgrade {run.id} ({run.target.value}) is still running"
+            raise CatalogRefusalError(CatalogRefusalKind.NOT_ALLOWED, msg)
+
+    async def _drive_upgrade(
+        self,
+        subject: Subject,
+        run: UpgradeRun,
+        targets: Sequence[UpgradeScope],
+        via: AuthorVia,
+        cancellation: asyncio.Event,
+    ) -> None:
+        """Задача запуска: цели по очереди, ход — событием после каждой;
+        сбой одной цели — её итог blocked с причиной, остальные идут."""
+        author = DraftAuthor(user_id=subject.user_id, via=via)
+        status = SyncStatus.DONE
+        error: str | None = None
+        try:
+            for scope in targets:
+                if cancellation.is_set():
+                    status = SyncStatus.CANCELLED
+                    error = "cancelled by the user"
+                    break
+
+                upgrade = await self._upgrade_scope(subject, run.id, scope, author)
+                await self._processes.advance_upgrade_run(run.id, upgrade)
+                await self._upgrade_changed(subject, run.id, ChangeAction.UPDATED)
+        except Exception as exc:
+            logger.exception("catalog: upgrade run %s crashed", run.id)
+            status = SyncStatus.FAILED
+            error = f"upgrade {run.id} crashed: {exc}"
+
+        await self._processes.close_upgrade_run(run.id, status, error)
+        await self._upgrade_changed(subject, run.id, ChangeAction.UPDATED)
+
+    async def _upgrade_scope(
+        self, subject: Subject, run_id: UUID, scope: UpgradeScope, author: DraftAuthor
+    ) -> Upgrade:
+        """Одна цель запуска; сбой сервиса на ней — итог blocked с причиной."""
+        try:
+            if scope.draft_id is not None:
+                return await self._upgrade_draft(subject, run_id, scope, author)
+
+            return await self._upgrade_process(subject, run_id, scope, author)
+        except CatalogError as exc:
+            logger.warning("catalog: upgrade of %s failed: %s", scope, exc)
+            failed = scope.unchanged(run_id, author, UpgradeStatus.BLOCKED)
+            return await self._processes.record_upgrade(failed)
+
+    async def _upgrade_process(
+        self, subject: Subject, run_id: UUID, scope: UpgradeScope, author: DraftAuthor
+    ) -> Upgrade:
+        """Процесс совместим — новая версия с новыми привязками, иначе запись
+        blocked; без отставания — moved без версии и без записи."""
+        process_id = scope.process_id
+        if process_id is None:
+            msg = "upgrade scope of a process without process_id"
+            raise CatalogStoreError(msg)
+
+        process = await self.process(subject, process_id)
+        if not process.behind:
+            return self._untouched(run_id, scope, author)
+
+        current = self._process_scope(process, scope.target)
+        snapshot = await self._processes.snapshot(process_id)
+        problems = await self._staleness_of(snapshot, process.pins)
+        if problems.entries:
+            upgrade = await self._blocked(run_id, current, problems, author)
+            await self._process_changed(subject, process_id, ChangeAction.UPDATED)
+            return upgrade
+
+        version = await self._processes.publish_pins(process_id, scope.target, author)
+        moved = current.moved(
+            run_id, author, scope.target, version.published_at, version.number
+        )
+        upgrade = await self._processes.record_upgrade(moved)
+        await self._changed(
+            subject,
+            CatalogChanged(
+                process_id=process_id,
+                version=version.number,
+                action=ChangeAction.CREATED,
+            ),
+        )
+
+        return upgrade
+
+    async def _upgrade_draft(
+        self, subject: Subject, run_id: UUID, scope: UpgradeScope, author: DraftAuthor
+    ) -> Upgrade:
+        """Черновик совместим — новые привязки, иначе запись blocked; без
+        отставания — moved без записи."""
+        draft_id = scope.draft_id
+        if draft_id is None:
+            msg = "upgrade scope of a draft without draft_id"
+            raise CatalogStoreError(msg)
+
+        state = await self._processes.draft_state(draft_id)
+        if not self._behind(scope.pins, state.snapshot.connections(), scope.target):
+            return self._untouched(run_id, scope, author)
+
+        problems = await self._staleness_of(state.snapshot, scope.pins)
+        if problems.entries:
+            upgrade = await self._blocked(run_id, scope, problems, author)
+            await self._draft_changed(subject, draft_id, ChangeAction.UPDATED)
+            return upgrade
+
+        moved = await self._processes.set_pins(draft_id, scope.target)
+        outcome = scope.moved(run_id, author, moved.pins, datetime.now(UTC))
+        upgrade = await self._processes.record_upgrade(outcome)
+        await self._draft_changed(subject, draft_id, ChangeAction.UPDATED)
+
+        return upgrade
+
+    @staticmethod
+    def _untouched(run_id: UUID, scope: UpgradeScope, author: DraftAuthor) -> Upgrade:
+        return scope.unchanged(run_id, author, UpgradeStatus.MOVED)
+
+    async def _blocked(
+        self,
+        run_id: UUID,
+        scope: UpgradeScope,
+        problems: Staleness,
+        author: DraftAuthor,
+    ) -> Upgrade:
+        blocked = scope.blocked(run_id, author, problems.entries)
+        return await self._processes.record_upgrade(blocked)
+
+    async def _draft_changed(
+        self, subject: Subject, draft_id: UUID, action: ChangeAction
+    ) -> None:
+        await self._changed(subject, CatalogChanged(draft_id=draft_id, action=action))
+
+    async def _upgrade_changed(
+        self, subject: Subject, run_id: UUID, action: ChangeAction
+    ) -> None:
+        await self._changed(subject, CatalogChanged(upgrade_id=run_id, action=action))
 
     # --- контекст и устаревание ---
 
@@ -576,6 +952,17 @@ class CatalogService:
 
         return await self._connections.diff_of(connection_id, old, new)
 
+    def parse_snapshot(self, raw: Mapping[str, Any]) -> SourceSnapshot:
+        """Снимок из JSON по полю kind: граница api и инструментов.
+
+        Ошибки:
+        SnapshotRejectedError — kind неизвестен или тело не по модели.
+        """
+        try:
+            return self._connections.kinds.parse(raw)
+        except SourceKindsError as exc:
+            raise SnapshotRejectedError(str(exc)) from exc
+
     async def write_connection_version(
         self, subject: Subject, connection_id: UUID, snapshot: SourceSnapshot
     ) -> ConnectionVersion:
@@ -590,7 +977,7 @@ class CatalogService:
         self._require_edit(subject)
 
         connection = await self._directory.info_of(subject, connection_id)
-        self._require_kind(connection.kind)
+        self._connections.snapshot_class(connection.kind)
         if snapshot.kind != connection.kind:
             raise SnapshotKindMismatchError(
                 connection_id, connection.kind, snapshot.kind
@@ -681,13 +1068,6 @@ class CatalogService:
             return str(connection_id)
 
         return synced.name
-
-    def _require_kind(self, kind: str) -> None:
-        """Ошибки:
-        UnknownSourceKindError — снимка этого вида нет в реестре.
-        """
-        if not self._connections.kinds.known(kind):
-            raise UnknownSourceKindError(kind, self._connections.kinds.kinds())
 
     async def _card(self, ref: ObjectRef, version: int) -> ObjectCard:
         resolved = await self._resolve_version(ref.connection_id, version)

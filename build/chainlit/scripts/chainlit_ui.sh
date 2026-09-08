@@ -17,6 +17,16 @@ unpack_sources() {
         "$root/pnpm-workspace.yaml" "$root/.npmrc"
 }
 
+# фронт тянет шрифт и стили формул с CDN: переводим на public/vendor
+patch_index() {
+    sed -i \
+        -e '/rel="preconnect"/d' \
+        -e 's#https://fonts.googleapis.com/css2?family=Inter[^"]*#/public/vendor/inter/inter.css#' \
+        -e 's#https://cdn.jsdelivr.net/npm/katex@[0-9.]*/dist/katex.min.css#/public/vendor/katex/katex.min.css#' \
+        "$1"
+    ! grep -E 'fonts\.(googleapis|gstatic)\.com|cdn\.jsdelivr\.net' "$1"
+}
+
 case "${1:-}" in
 store)
     rm -rf "$WORK"
@@ -38,6 +48,7 @@ build)
     pnpm --filter @chainlit/react-client run type-check
     pnpm --filter @chainlit/app run type-check
     pnpm --filter @chainlit/app run build
+    patch_index frontend/dist/index.html
     mkdir -p "$5"
     find "$5" -mindepth 1 -delete
     cp -a frontend/dist/. "$5/"

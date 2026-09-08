@@ -33,11 +33,19 @@ export type ArgWidget = {
 };
 
 function Line({ value }: RowProps): ReactElement {
-  return <span className="arg-row__value">{clipText(valueText(value), ROW_CLIP)}</span>;
+  return (
+    <span className="arg-row__value">
+      {clipText(valueText(value), ROW_CLIP)}
+    </span>
+  );
 }
 
 function CodeRow({ value }: RowProps): ReactElement {
-  return <span className="arg-row__value arg-row__value--code">{clipText(valueText(value), ROW_CLIP)}</span>;
+  return (
+    <span className="arg-row__value arg-row__value--code">
+      {clipText(valueText(value), ROW_CLIP)}
+    </span>
+  );
 }
 
 function BoolRow({ value }: RowProps): ReactElement {
@@ -60,7 +68,11 @@ function NumberRow({ view, value }: RowProps): ReactElement {
 }
 
 function SecretRow({ value }: RowProps): ReactElement {
-  return <span className="arg-row__value arg-row__value--secret">{value === undefined ? "" : MASK}</span>;
+  return (
+    <span className="arg-row__value arg-row__value--secret">
+      {value === undefined ? "" : MASK}
+    </span>
+  );
 }
 
 function JsonRow({ value }: RowProps): ReactElement {
@@ -79,9 +91,18 @@ function JsonRow({ value }: RowProps): ReactElement {
   );
 }
 
-function TextEditor({ name, view, value, required, onChange }: EditorProps): ReactElement {
+function TextEditor({
+  name,
+  view,
+  value,
+  required,
+  onChange,
+}: EditorProps): ReactElement {
   const multiline = view.kind === "text" && view.multiline;
-  const placeholder = view.kind === "text" && view.placeholder !== "" ? view.placeholder : hint(required);
+  const placeholder =
+    view.kind === "text" && view.placeholder !== ""
+      ? view.placeholder
+      : hint(required);
   if (multiline) {
     return (
       <TextArea
@@ -110,7 +131,13 @@ function TextEditor({ name, view, value, required, onChange }: EditorProps): Rea
   );
 }
 
-function CodeEditor({ name, view, value, required, onChange }: EditorProps): ReactElement {
+function CodeEditor({
+  name,
+  view,
+  value,
+  required,
+  onChange,
+}: EditorProps): ReactElement {
   const lang = view.kind === "code" ? view.lang : "";
   return (
     <TextArea
@@ -129,7 +156,13 @@ function CodeEditor({ name, view, value, required, onChange }: EditorProps): Rea
   );
 }
 
-function ConnectionEditor({ name, view, value, required, onChange }: EditorProps): ReactElement {
+function ConnectionEditor({
+  name,
+  view,
+  value,
+  required,
+  onChange,
+}: EditorProps): ReactElement {
   const family = view.kind === "connection" ? view.family : "";
   return (
     <Input
@@ -144,7 +177,12 @@ function ConnectionEditor({ name, view, value, required, onChange }: EditorProps
   );
 }
 
-function EnumEditor({ name, view, value, onChange }: EditorProps): ReactElement {
+function EnumEditor({
+  name,
+  view,
+  value,
+  onChange,
+}: EditorProps): ReactElement {
   const options = view.kind === "enum" ? view.options : [];
   return (
     <Select
@@ -165,7 +203,13 @@ function EnumEditor({ name, view, value, onChange }: EditorProps): ReactElement 
   );
 }
 
-function NumberEditor({ name, view, value, required, onChange }: EditorProps): ReactElement {
+function NumberEditor({
+  name,
+  view,
+  value,
+  required,
+  onChange,
+}: EditorProps): ReactElement {
   const bounds = view.kind === "number" ? view : null;
   return (
     <Input
@@ -199,7 +243,12 @@ function BoolEditor({ name, value, onChange }: EditorProps): ReactElement {
   );
 }
 
-function SecretEditor({ name, value, required, onChange }: EditorProps): ReactElement {
+function SecretEditor({
+  name,
+  value,
+  required,
+  onChange,
+}: EditorProps): ReactElement {
   return (
     <Input
       mono
@@ -214,7 +263,12 @@ function SecretEditor({ name, value, required, onChange }: EditorProps): ReactEl
   );
 }
 
-function JsonEditor({ name, value, required, onChange }: EditorProps): ReactElement {
+function JsonEditor({
+  name,
+  value,
+  required,
+  onChange,
+}: EditorProps): ReactElement {
   return (
     <TextArea
       mono

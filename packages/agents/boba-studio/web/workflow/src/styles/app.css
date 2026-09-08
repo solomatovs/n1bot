@@ -59,18 +59,6 @@ button {
   min-width: 0;
 }
 
-.topbar {
-  display: flex;
-  align-items: center;
-  gap: var(--s4);
-  padding: 0 var(--s4);
-  background: var(--surface);
-  border-bottom: 1px solid var(--hairline);
-  height: var(--h-topbar);
-  min-width: 0;
-  overflow: hidden;
-}
-
 .topbar__slot {
   display: inline-flex;
   width: 32px;
@@ -99,7 +87,6 @@ button {
 }
 
 
-
 .crumbs {
   display: flex;
   align-items: center;
@@ -122,19 +109,9 @@ button {
   text-overflow: ellipsis;
 }
 
-.topbar__spacer {
-  flex: 1;
-}
-
 .topbar__drawer {
   display: inline-flex;
 }
-
-
-
-
-
-
 
 
 .list {
@@ -224,25 +201,6 @@ button {
 }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 .stage {
   position: relative;
   display: grid;
@@ -255,7 +213,6 @@ button {
 .stage--build {
   grid-template-rows: auto auto 1fr;
 }
-
 
 
 /* --- vitals --- */
@@ -364,26 +321,6 @@ button {
 
 /* --- панель вида --- */
 
-
-
-
-
-
-
-
-
-
-
-
-
-.stage__float {
-  position: absolute;
-  top: calc(var(--h-vitals) + 52px);
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 6;
-}
-
 .view {
   position: relative;
   min-height: 0;
@@ -396,35 +333,6 @@ button {
 }
 
 /* --- таблица --- */
-
-.table {
-  width: 100%;
-  border-collapse: collapse;
-  font-family: var(--font-mono);
-  font-size: var(--fs-data);
-}
-
-.table th,
-.table td {
-  text-align: left;
-  padding: 8px var(--s4);
-  border-bottom: 1px solid var(--hairline);
-  vertical-align: top;
-}
-
-.table th {
-  font-size: 8.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
-  font-weight: 500;
-}
-
-.table tbody tr:hover td {
-  background: var(--raised);
-}
-
-
 
 
 /* --- таймлайн --- */
@@ -604,41 +512,6 @@ button {
   margin: var(--s3) 0 var(--s1);
 }
 
-.inspector__facts {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 4px 12px;
-  margin: 0;
-  font-family: var(--font-mono);
-  font-size: var(--fs-data);
-}
-
-.inspector__facts dt {
-  color: var(--muted);
-}
-
-.inspector__facts dd {
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-.inspector__code {
-  margin: 0;
-  padding: var(--s2);
-  border: 1px solid var(--hairline);
-  border-radius: var(--r-cell);
-  background: var(--bg);
-  font-family: var(--font-mono);
-  font-size: var(--fs-data);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.inspector__code--error {
-  border-color: color-mix(in srgb, var(--error) 45%, var(--hairline));
-  color: var(--error);
-}
-
 /* --- итог задачи: строка на узле и разбор по kind в инспекторе --- */
 
 .task-node__result {
@@ -659,20 +532,16 @@ button {
   gap: var(--s2);
 }
 
-.result-view__head {
-  display: flex;
-  align-items: center;
-  gap: var(--s2);
+.result-view__figure {
   font-family: var(--font-mono);
   font-size: var(--fs-data);
-}
-
-.result-view__figure {
   font-weight: 600;
   color: var(--ink);
 }
 
 .result-view__detail {
+  font-family: var(--font-mono);
+  font-size: var(--fs-data);
   color: var(--muted);
 }
 
@@ -680,14 +549,6 @@ button {
   display: flex;
   flex-direction: column;
   gap: var(--s2);
-}
-
-.result__label {
-  font-family: var(--font-mono);
-  font-size: var(--fs-micro);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
 }
 
 .result__note {
@@ -716,21 +577,6 @@ button {
 .result__fact dd {
   margin: 0;
   color: var(--ink);
-}
-
-.result__scroll {
-  overflow-x: auto;
-  border: 1px solid var(--hairline);
-  border-radius: var(--r-cell);
-}
-
-.table--result {
-  min-width: 100%;
-}
-
-.result__stream {
-  max-height: 40vh;
-  overflow: auto;
 }
 
 .result__item {
@@ -970,46 +816,6 @@ button {
 /* --- билдер --- */
 
 
-
-
-
-
-
-
-
-
-
-
-
-.issues {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: var(--s2) var(--s4);
-  border-bottom: 1px solid var(--hairline);
-  background: var(--bg);
-}
-
-.issues__item {
-  display: inline-flex;
-  gap: 6px;
-  padding: 3px 10px;
-  border-radius: var(--r-pill);
-  border: 1px solid color-mix(in srgb, var(--error) 45%, var(--hairline));
-  background: color-mix(in srgb, var(--error) 10%, transparent);
-  font-family: var(--font-mono);
-  font-size: var(--fs-micro);
-  color: var(--ink);
-}
-
-.issues__code {
-  color: var(--error);
-}
-
-.issues__where {
-  color: var(--muted);
-}
-
 .editor-node {
   width: 100%;
   height: 100%;
@@ -1161,8 +967,6 @@ button {
 }
 
 
-
-
 .form .field {
   display: flex;
   flex-direction: column;
@@ -1170,7 +974,8 @@ button {
   margin-bottom: var(--s2);
 }
 
-.form .field--row {
+.form .field--row,
+.form .field--check {
   flex-direction: row;
   align-items: center;
   gap: var(--s2);
@@ -1180,8 +985,6 @@ button {
 .form .field select {
   width: 100%;
 }
-
-
 
 
 .yaml {
@@ -1201,7 +1004,7 @@ button {
 
 /* --- резиновость --- */
 
-@media (max-width: 760px) {
+@media (max-width: 900px) {
   .shell__body {
     grid-template-columns: 1fr;
   }
@@ -1240,7 +1043,7 @@ button {
   }
 }
 
-@media (min-width: 761px) {
+@media (min-width: 901px) {
   .list--collapsed {
     width: 0;
     min-width: 0;
@@ -1352,58 +1155,13 @@ button {
   background: var(--surface);
 }
 
-.connection-form {
-  max-width: 460px;
-}
-
-.connection-form__actions {
-  display: flex;
-  gap: var(--s2);
-  margin-top: var(--s2);
-}
-
 @media (max-width: 720px) {
   .connections {
     grid-template-columns: 1fr;
   }
 }
 
-.schema-block {
-  margin: 0 0 var(--s2);
-  padding: var(--s2);
-  border: 1px solid var(--hairline);
-  border-radius: var(--r-cell);
-  min-width: 0;
-}
-
-.schema-block__legend {
-  padding: 0 4px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-micro);
-  color: var(--muted);
-}
-
-.schema-block__toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  border: 0;
-  background: none;
-  color: var(--muted);
-  font: inherit;
-  cursor: pointer;
-}
-
 /* единое сообщение: блок, переносит текст, цвет по тону */
-
-
-
-
-
-
-
-
-
 
 
 .output {
@@ -1427,19 +1185,6 @@ button {
   color: var(--muted);
 }
 
-.output__text {
-  margin: 0;
-  padding: var(--s2);
-  border: 1px solid var(--hairline);
-  border-radius: var(--r-cell);
-  background: var(--bg);
-  font-family: var(--font-mono);
-  font-size: var(--fs-data);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  max-height: 320px;
-  overflow: auto;
-}
 
 /* лампочка связи: цвет по состоянию сокета, подробность в title */
 .lamp {
@@ -1458,7 +1203,7 @@ button {
 
 .lamp--connecting {
   background: var(--status-running, var(--signal));
-  animation: lamp-pulse 1s ease-in-out infinite;
+  animation: pulse 1s ease-in-out infinite;
 }
 
 .lamp--disconnected {
@@ -1470,26 +1215,3 @@ button {
   box-shadow: 0 0 6px var(--status-running, var(--signal));
 }
 
-@keyframes lamp-pulse {
-  50% {
-    opacity: 0.35;
-  }
-}
-
-
-
-
-/* чип профиля ужимается раньше, чем топбар начнёт распирать страницу */
-
-
-@media (max-width: 1100px) {
-  .profile-chip__login {
-    display: none;
-  }
-}
-
-@media (max-width: 960px) {
-  .profile-chip {
-    display: none;
-  }
-}

@@ -42,7 +42,7 @@ class Sel:
     LIST_GROUP: ClassVar[str] = ".list__group"
     LIST_NEW: ClassVar[str] = ".list__new"
     ITEM: ClassVar[str] = ".connections__list .item"
-    FORM: ClassVar[str] = 'form[aria-label="connection"]'
+    FORM: ClassVar[str] = '[data-testid="connection-form"]'
     KIND: ClassVar[str] = 'select[aria-label="profile.kind"]'
     AUTH_BLOCK: ClassVar[str] = 'fieldset[data-path="profile.auth"]'
     AUTH_METHOD: ClassVar[str] = 'select[aria-label="profile.auth.method"]'
@@ -230,9 +230,9 @@ class TestAccount:
         expect(page.locator(Sel.KIND)).to_have_value("web")
         expect(page.locator(Sel.KIND)).to_be_disabled()
         expect(page.get_by_label("profile.base_url", exact=True)).to_be_disabled()
-        expect(page.get_by_role("button", name="Save", exact=True)).to_have_count(0)
-        expect(page.get_by_role("button", name="Delete", exact=True)).to_have_count(0)
-        expect(page.get_by_role("button", name="Check", exact=True)).to_be_visible()
+        expect(page.get_by_role("button", name="save", exact=True)).to_have_count(0)
+        expect(page.get_by_role("button", name="delete", exact=True)).to_have_count(0)
+        expect(page.get_by_role("button", name="check", exact=True)).to_be_visible()
 
 
 @pytest.mark.usefixtures("shared_connections")
@@ -294,7 +294,7 @@ class TestSchemaForm:
         page.get_by_label("profile.host", exact=True).fill("db.test")
         page.get_by_label("profile.dbname", exact=True).fill("boba")
         page.locator(Sel.AUTH_METHOD).select_option("trust")
-        page.get_by_role("button", name="Save", exact=True).click()
+        page.get_by_role("button", name="save", exact=True).click()
 
         # user пуст: 422 от сервера подсвечивает именно это поле
         invalid = page.locator(Sel.FIELD_INVALID)
@@ -306,7 +306,7 @@ class TestSchemaForm:
         issue = invalid.locator(Sel.FIELD_ISSUE)
         expect(issue).to_contain_text("at least 1 character")
         assert Css.of(issue, "color") == tokens.rgb("error")
-        expect(page.locator(Sel.ALERT_ERROR)).to_contain_text("Check 1 field(s)")
+        expect(page.locator(Sel.ALERT_ERROR)).to_contain_text("check 1 field(s)")
 
     def test_check_shows_ok_alert(
         self, page: Page, stand: StandProcess, tokens: Tokens
@@ -316,10 +316,10 @@ class TestSchemaForm:
         page.get_by_label("profile.base_url", exact=True).fill(
             f"http://127.0.0.1:{stand.config.llm_port}/health"
         )
-        page.get_by_role("button", name="Check", exact=True).click()
+        page.get_by_role("button", name="check", exact=True).click()
 
         ok = page.locator(Sel.ALERT_OK)
-        expect(ok).to_contain_text("Connected")
+        expect(ok).to_contain_text("connected")
         expect(ok).to_contain_text("HTTP 200")
         expect(ok).to_contain_text("ms")
         expect(ok).to_have_attribute("role", "status")

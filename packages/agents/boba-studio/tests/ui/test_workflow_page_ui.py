@@ -60,7 +60,7 @@ class Selector:
     INSPECTOR: ClassVar[str] = ".inspector"
     ARG_COMMAND: ClassVar[str] = 'textarea[aria-label="arg command"]'
     TABLE: ClassVar[str] = ".table"
-    OUTPUT_TEXT: ClassVar[str] = ".output__text"
+    OUTPUT_TEXT: ClassVar[str] = ".output .code"
     SOCKET_LAMP: ClassVar[str] = ".topbar .lamp"
 
 
