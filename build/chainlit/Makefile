@@ -28,8 +28,9 @@ APP_CGROUP      := boba-sandbox
 SHELL           := /bin/bash
 .SHELLFLAGS     := -eu -o pipefail -c
 
-# версия у всех пакетов одна, лежит в их pyproject.toml (менять: make version-set)
-PYTHON          ?= python3
+# версия у всех пакетов одна, лежит в их pyproject.toml (менять: make version-set);
+# скрипты сборки зовутся python'ом venv репозитория, системный может быть старым
+PYTHON          ?= $(SRC_DIR)/.venv/bin/python
 VERSION         := $(shell $(PYTHON) $(SCRIPTS_DIR)/version.py show $(SRC_DIR)/packages)
 REQUIRES_PY     := $(shell $(PYTHON) $(SCRIPTS_DIR)/version.py requires $(SRC_DIR)/packages)
 BOBA_TAG        ?= $(VERSION)
@@ -106,11 +107,6 @@ NODE_IMAGE      ?= dmp/nodejs:20
 # скрипт страницы: в образ его собирает стадия web-build, в dev-дерево — цель web
 PAGE_JS         := $(ASSETS_DIR)/public/page.js
 PAGE_SRCS       := $(shell find $(WEB_PROJECT) -name node_modules -prune -o -name .vite -prune -o -name .eslintcache -prune -o -name "*.tsbuildinfo" -prune -o -type f -print)
-# страница каталога (web/catalog, vite): в образ её собирает стадия catalog-build, в dev-дерево — цель web
-CATALOG_PROJECT := $(WEB_DIR)/web/catalog
-CATALOG_DIST    := $(ASSETS_DIR)/catalog
-CATALOG_SRCS    := $(shell find $(CATALOG_PROJECT) -name node_modules -prune -o -name .vite -prune -o -name .eslintcache -prune -o -name "*.tsbuildinfo" -prune -o -name schema.d.ts -prune -o -type f -print)
-CATALOG_OPENAPI := $(CATALOG_PROJECT)/openapi.json
 KATEX_VERSION   ?= 0.16.22
 KATEX_URL       ?= https://github.com/KaTeX/KaTeX/releases/download/v$(KATEX_VERSION)/katex.tar.gz
 INTER_VERSION   ?= 5.3.0
@@ -128,6 +124,7 @@ CHAINLIT_SRC_URL ?= https://codeload.github.com/Chainlit/chainlit/tar.gz/refs/ta
 CHAINLIT_TARBALL := $(DEPS_DIR)/chainlit-$(CHAINLIT_VERSION).tar.gz
 CHAINLIT_STORE  := $(DEPS_DIR)/chainlit-ui-store-$(CHAINLIT_VERSION).tar.gz
 UI_DIST         := $(ASSETS_DIR)/ui
+UI_SRCS         := $(shell find $(UI_DIR) -type f) $(SCRIPTS_DIR)/chainlit_ui.sh
 
 INPUTS          := $(BWRAP_TARBALL) $(LIBFUSE_TARBALL) $(E2FSPROGS_TARBALL) $(UV_BIN) \
                    $(TESS_FILES) $(FASTEMBED_STAMPS) $(ONNX_DIRS) $(WEB_FILES) \
@@ -227,6 +224,13 @@ for path in $(SANDBOX_PARTS); do
 done
 endef
 
+# опустошить каталог, не пересоздавая: compose держит его bind-mount'ом по inode,
+# после rm -rf контейнер до перезапуска видел бы пустоту
+define refill
+mkdir -p "$(1)"
+find "$(1)" -mindepth 1 -delete
+endef
+
 define check-plugins
 if [ ! -d "$(SANDBOX_DIR)/plugins" ]; then
     echo "нет $(SANDBOX_DIR)/plugins — запусти: make plugin-rootfs-all" >&2
@@ -249,10 +253,9 @@ help:
 	echo "                 ставится в INSTALL_DIR=$(INSTALL_DIR), данные — в DATA_DIR=$(DATA_DIR)"
 	echo "  make clean     удалить release и src/, кроме моделей"
 	echo "  make all       всё: fetch + sandbox + plugin-rootfs-all + web + build + dev"
-	echo "  make web       весь фронт для dev-дерева node'ом образа: page.js, страница каталога (assets/catalog),"
+	echo "  make web       весь фронт для dev-дерева node'ом образа: page.js,"
 	echo "                 фронт chainlit $(CHAINLIT_VERSION) с overlay web/chainlit-ui (assets/ui); dev и all зовут сам,"
-	echo "                 в образ то же собирают стадии web-build, catalog-build, chainlit-ui-build"
-	echo "  make catalog-openapi  схема JSON API каталога из кода (venv хоста) -> web/catalog/openapi.json; после правок API"
+	echo "                 в образ то же собирают стадии web-build, chainlit-ui-build"
 	echo ""
 	echo "  Версия одна на все пакеты: version — показать, version-set VER=X.Y.Z — проставить"
 	echo ""
@@ -397,7 +400,7 @@ plugin-rootfs: version-check
 # образы всех плагинов с entry points группы boba.tools
 .PHONY: plugin-rootfs-all
 plugin-rootfs-all:
-	@for name in $$(python3 "$(BASE_DIR)/scripts/plugin_rootfs.py" list "$(SRC_DIR)/packages"); do
+	@for name in $$($(PYTHON) "$(BASE_DIR)/scripts/plugin_rootfs.py" list "$(SRC_DIR)/packages"); do
 	    $(MAKE) plugin-rootfs PLUGIN=$$name || exit 1
 	done
 
@@ -429,7 +432,7 @@ test: build
 
 # что обязано лежать в дереве установки
 RELEASE_PARTS_common := sandbox/plugins sandbox/workspace.ext4 third/bin/bwrap third/bin/fuse2fs \
-                        app/bin app_root/public app_root/public/page.js app_root/public/vendor app_root/public/catalog app_root/ui
+                        app/bin app_root/public app_root/public/page.js app_root/public/vendor app_root/ui
 RELEASE_PARTS := $(RELEASE_PARTS_common) models/onnx-genai models/fastembed models/tessdata
 
 # дерево установки из готового образа: пути и шебанги переводятся с DEST_DIR на INSTALL_DIR
@@ -478,23 +481,23 @@ dev: web
 	echo "== рантайм $(APP) в $(OUT) =="
 	mkdir -p "$(OUT)/conf" "$(OUT)/data/workspace" "$(OUT)/data/tool-logs" "$(OUT)/data/dump" "$(OUT)/data/krb"
 	# в dev веса эмбеддера нужны process-режиму отладки; релиз их не таскает
-	rm -rf "$(OUT)/models"
-	mkdir -p "$(OUT)/models"
+	$(call refill,$(OUT)/models)
 	cp -al "$(DEPS_DIR)/onnx-genai" "$(OUT)/models/onnx-genai"
 	cp -al "$(DEPS_DIR)/fastembed" "$(OUT)/models/fastembed"
 	cp -al "$(DEPS_DIR)/tessdata" "$(OUT)/models/tessdata"
 	install -m 0755 "$(CONF_DIR)/cgroup-init.sh" "$(OUT)/cgroup-init.sh"
 	# dev-хост работает process-режимом: образы песочницы живут только в релизе,
 	# но bwrap и fuse2fs нужны хранилищу приложения (workspace.ext4 канваса)
-	rm -rf "$(OUT)/sandbox" "$(OUT)/third" "$(OUT)/app_root"
-	mkdir -p "$(OUT)/third" "$(OUT)/app_root/public"
+	rm -rf "$(OUT)/sandbox"
+	$(call refill,$(OUT)/third)
+	$(call refill,$(OUT)/app_root)
+	mkdir -p "$(OUT)/app_root/public"
 	cp -al "$(SANDBOX_DIR)/third/bin" "$(OUT)/third/bin"
 	chmod -R go-w "$(OUT)/third"
 	mkdir -p "$(OUT)/app_root/.chainlit" "$(OUT)/app_root/.files"
 	cp -a "$(ASSETS_DIR)/.chainlit/config.toml" "$(ASSETS_DIR)/.chainlit/translations" "$(OUT)/app_root/.chainlit/"
 	cp -a "$(ASSETS_DIR)/chainlit.md" "$(OUT)/app_root/"
 	cp -a "$(ASSETS_DIR)/public/." "$(OUT)/app_root/public/"
-	cp -a "$(CATALOG_DIST)" "$(OUT)/app_root/public/catalog"
 	cp -a "$(UI_DIST)" "$(OUT)/app_root/ui"
 	export BOBA_BASE="$(DEST_DIR)" BOBA_VERSION="$(VERSION)" BOBA_DATA="$(DEST_DIR)/data"
 	envsubst '$${BOBA_BASE} $${BOBA_VERSION} $${BOBA_DATA}' < "$(CONF_DIR)/boba.env" > "$(OUT)/conf/boba.env"
@@ -516,7 +519,7 @@ sec:
 # модели не трогаем: качаются долго
 clean:
 	rm -rf $(RELEASE_DIR) $(DEPS_DIR)/uv $(DEPS_DIR)/tessdata $(WEBASSETS_DIR) $(SANDBOX_DIR) \
-	       $(DEPS_DIR)/*.tar.xz $(DEPS_DIR)/*.env $(PAGE_JS) $(ASSETS_VENDOR) $(CATALOG_DIST) $(UI_DIST)
+	       $(DEPS_DIR)/*.tar.xz $(DEPS_DIR)/*.env $(PAGE_JS) $(ASSETS_VENDOR) $(UI_DIST)
 
 # всё целиком: сеть, песочница, фронт, образ и compose-дерево. Compose монтирует
 # app_root поверх образа, поэтому фронт нужен и в дереве, а не только в образе
@@ -526,7 +529,7 @@ all: fetch sandbox plugin-rootfs-all web build dev
 
 # весь фронт: скрипт страницы, страница каталога, фронт chainlit с overlay
 .PHONY: web
-web: $(PAGE_JS) $(CATALOG_DIST)/index.html chainlit-ui
+web: $(PAGE_JS) $(UI_DIST)/index.html
 
 # скрипт страницы: пересобирается, когда web/page новее сборки; node'ом образа,
 # на хосте node не нужен
@@ -537,24 +540,9 @@ $(PAGE_JS): $(PAGE_SRCS)
 	    -c 'npm ci --no-audit --no-fund && npm run check && npm run build'
 	ls -la "$@"
 
-# страница каталога: типы из web/catalog/openapi.json, npm ci/generate/check/build
-$(CATALOG_DIST)/index.html: $(CATALOG_SRCS)
-	@echo "== catalog page: $(NODE_IMAGE) =="
-	docker run --rm --entrypoint /bin/sh -u "$$(id -u):$$(id -g)" -e HOME=/tmp \
-	    -v "$(WEB_DIR):/pkg" -w /pkg/web/catalog $(NODE_IMAGE) \
-	    -c 'npm ci --no-audit --no-fund && npm run generate && npm run check && npm run build'
-	du -sh "$(CATALOG_DIST)"
-
-# схема JSON API каталога для генерации типов страницы: из кода, venv хоста;
-# зовётся после правок API, результат трекается git'ом
-.PHONY: catalog-openapi
-catalog-openapi:
-	cd "$(SRC_DIR)" && .venv/bin/python -m boba.chainlit.catalog.schema > "$(CATALOG_OPENAPI)"
-	@echo "$(CATALOG_OPENAPI) обновлён"
-
-# фронт chainlit с overlay в assets/ui: тот же скрипт, что у стадии chainlit-ui-build
-.PHONY: chainlit-ui
-chainlit-ui:
+# фронт chainlit с overlay в assets/ui: тот же скрипт, что у стадии chainlit-ui-build;
+# пересобирается, когда overlay, UPSTREAM, тарболлы или скрипт новее сборки
+$(UI_DIST)/index.html: $(UI_SRCS) $(CHAINLIT_TARBALL) $(CHAINLIT_STORE)
 	@$(check-inputs)
 	echo "== фронт chainlit $(CHAINLIT_VERSION) + overlay: $(NODE_IMAGE) -> $(UI_DIST) =="
 	mkdir -p "$(UI_DIST)"
@@ -562,4 +550,11 @@ chainlit-ui:
 	    -v "$(DEPS_DIR):/deps:ro" -v "$(SCRIPTS_DIR):/scripts:ro" -v "$(UI_DIR):/ui:ro" \
 	    -v "$(UI_DIST):/out" $(NODE_IMAGE) \
 	    /scripts/chainlit_ui.sh build "/deps/$(notdir $(CHAINLIT_TARBALL))" "/deps/$(notdir $(CHAINLIT_STORE))" /ui/overlay /out
+	touch "$@"
 	ls -la "$(UI_DIST)/assets" | head -5
+
+# принудительная пересборка фронта chainlit
+.PHONY: chainlit-ui
+chainlit-ui:
+	rm -f "$(UI_DIST)/index.html"
+	$(MAKE) -f "$(MAKEFILE)" "$(UI_DIST)/index.html"

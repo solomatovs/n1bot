@@ -3,25 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from typing import Any
 from uuid import uuid4
 
 import pytest
-from fastapi import FastAPI
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
 from psycopg import sql
-from studio_stand import StandProfiles
+from studio_stand import ApiStand, StandProfiles
 
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.api import ApiSubject, AuthenticatedUser
 from boba.identity.locks import MemoryLiveLocks, RunLocking
 from boba.messaging import MemoryMessageBus
 from boba.runtime.config import StudioRuntimeConfig
-from boba.stand.auth import NoUsers, StubAuthenticator
 from boba.stand.refs import StandRefs
 from boba.stand.tools import PROBE_ROLE as ROLE
 from boba.stand.tools import Probe
-from boba.studio.api.app import ApiAccess, ApiApp
 from boba.studio.api.urls import ApiVersion, ToolCallUrl, WorkflowUrl
 from boba.toolrun.registry import ToolRegistry
 from boba.workflow import RunStatus, WorkflowSpec
@@ -67,9 +65,7 @@ def user(studio_config: StudioRuntimeConfig) -> AuthenticatedUser:
 
 
 @pytest.fixture
-def app(
-    store: WorkflowStore, user: AuthenticatedUser, studio_config: StudioRuntimeConfig
-) -> FastAPI:
+def stand(store: WorkflowStore, studio_config: StudioRuntimeConfig) -> ApiStand:
     probe = Probe()
 
     async def registry() -> ToolRegistry:
@@ -86,26 +82,16 @@ def app(
     async def source() -> WorkflowService:
         return service
 
-    access = ApiAccess(
-        StubAuthenticator(user),
-        StubAuthenticator.COOKIE,
-        NoUsers.source,
-    )
-    return ApiApp.build(
-        StandRefs.services(registry, source),
-        access,
-        StandProfiles.profiles(studio_config),
-        None,
+    return ApiStand(
+        StandRefs.services(registry, source), StandProfiles.profiles(studio_config)
     )
 
 
 @pytest.fixture
-async def client(app: FastAPI):
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://api",
-        cookies=StubAuthenticator.cookies(),
-    ) as c:
+async def client(
+    stand: ApiStand, user: AuthenticatedUser
+) -> AsyncIterator[AsyncClient]:
+    async with stand.client(user) as c:
         yield c
 
 

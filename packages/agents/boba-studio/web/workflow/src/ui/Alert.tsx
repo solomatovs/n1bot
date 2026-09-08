@@ -1,9 +1,9 @@
-import { AlertTriangle, CheckCircle2, Info } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Info, PencilLine } from "lucide-react";
 import type { PropsWithChildren, ReactElement } from "react";
 
 import "./Alert.css";
 
-export type Tone = "error" | "info" | "ok";
+export type Tone = "error" | "info" | "ok" | "draft";
 
 type Props = PropsWithChildren<{
   tone: Tone;
@@ -16,6 +16,7 @@ const ICONS: Record<Tone, ReactElement> = {
   error: <AlertTriangle size={14} />,
   info: <Info size={14} />,
   ok: <CheckCircle2 size={14} />,
+  draft: <PencilLine size={14} />,
 };
 
 /** Единое сообщение страницы: блок с иконкой, заголовком и текстом любой длины. */

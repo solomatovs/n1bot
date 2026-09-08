@@ -13,7 +13,7 @@ from enum import StrEnum
 from typing import Any
 
 import psycopg
-from psycopg import sql
+from psycopg import AsyncCursor, sql
 from psycopg.rows import tuple_row
 
 from boba.db.postgres.async_pool import AsyncPostgresPool, PostgresError
@@ -79,12 +79,17 @@ class PostgresTable:
 
         return names
 
-    async def _apply_ddl(self, statements: Sequence[sql.Composed]) -> None:
-        """Схема и DDL одной транзакцией; повтор безвреден."""
+    async def _apply_ddl(
+        self, statements: Sequence[sql.Composed], *schemas: str
+    ) -> None:
+        """Схемы (своя и названные) и DDL одной транзакцией; повтор безвреден."""
         try:
             pool = await self._pool()
             async with pool.connection() as conn:
                 await PostgresSchema.ensure(conn, self._schema)
+                for schema in schemas:
+                    await PostgresSchema.ensure(conn, schema)
+
                 async with conn.transaction():
                     for statement in statements:
                         await conn.execute(statement, prepare=False)
@@ -95,37 +100,90 @@ class PostgresTable:
             )
             raise PostgresError(msg) from exc
 
-    async def _check_layouts(self, layouts: Mapping[str, Iterable[str]]) -> None:
+    async def _check_layouts(
+        self, layouts: Mapping[str, Iterable[str]], schema: str | None = None
+    ) -> None:
         """Колонки таблиц ровно те, что ожидает код: таблица старого выпуска,
         которую `create table if not exists` оставил как есть, — ошибка с
-        расхождением и советом снести схему, а не тихая работа до первого запроса.
+        расхождением и советом снести схему, а не тихая работа до первого
+        запроса. schema — чужая схема таблиц; пусто — своя.
 
         Ошибки:
         PostgresError — раскладка таблицы расходится с ожидаемой либо
             information_schema недоступна.
         """
+        where = self._schema
+        if schema is not None:
+            where = schema
+
         for table, columns in layouts.items():
             expected = set(columns)
-            actual = await self._existing_columns(table)
+            actual = await self._existing_columns(table, where)
             missing = sorted(expected - actual)
             unexpected = sorted(actual - expected)
             if not missing and not unexpected:
                 continue
 
             msg = (
-                f"table {self._schema}.{table} has a layout the code does not "
+                f"table {where}.{table} has a layout the code does not "
                 f"expect: missing columns {missing}, unexpected columns "
                 f"{unexpected}; the table was created by another release and "
-                f"is not migrated, drop the schema ({self._schema}) and restart"
+                f"is not migrated, drop the schema ({where}) and restart"
             )
             raise PostgresError(msg)
 
-    async def _existing_columns(self, table: str) -> set[str]:
+    @staticmethod
+    async def _table_exists(cur: AsyncCursor[Any], schema: str, table: str) -> bool:
+        await cur.execute(
+            "select 1 from information_schema.tables "
+            "where table_schema = %(schema)s and table_name = %(table)s",
+            {"schema": schema, "table": table},
+        )
+        return await cur.fetchone() is not None
+
+    @classmethod
+    async def _move_table(
+        cls, cur: AsyncCursor[Any], source: str, target: str, table: str
+    ) -> None:
+        """Таблица переезжает из схемы source в target (перевод выпусков на
+        месте); пустой дубль в source рядом с уже переехавшей — сносится.
+
+        Ошибки:
+        PostgresError — таблица есть в обеих схемах и в source есть строки.
+        """
+        if not await cls._table_exists(cur, source, table):
+            return
+
+        if await cls._table_exists(cur, target, table):
+            await cur.execute(
+                sql.SQL("select 1 from {} limit 1").format(
+                    sql.Identifier(source, table)
+                )
+            )
+            if await cur.fetchone() is not None:
+                msg = (
+                    f"table {table} exists both in {source} and {target} with rows "
+                    f"in {source}; merge them by hand and restart"
+                )
+                raise PostgresError(msg)
+
+            await cur.execute(
+                sql.SQL("drop table {} cascade").format(sql.Identifier(source, table))
+            )
+            return
+
+        await cur.execute(
+            sql.SQL("alter table {} set schema {}").format(
+                sql.Identifier(source, table), sql.Identifier(target)
+            )
+        )
+
+    async def _existing_columns(self, table: str, schema: str) -> set[str]:
         query = sql.SQL(
             "select column_name from information_schema.columns "
             "where table_schema = %(schema)s and table_name = %(table)s"
         )
-        params = {"schema": self._schema, "table": table}
+        params = {"schema": schema, "table": table}
         rows = await self._fetch(query.format(), params)
 
         names: set[str] = set()

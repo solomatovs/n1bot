@@ -1,16 +1,18 @@
-"""Сборка API-приложения: роутеры v1 (me, profiles, connections, tools, workflows),
-socket.io и вход; процесс монтирует его под MOUNT."""
+"""Сборка API-приложения: роутеры v1 (me, profiles, connections, tools, workflows,
+ресурсы хоста вроде каталога), socket.io и вход; процесс монтирует его под MOUNT."""
 
 from __future__ import annotations
 
+from abc import abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import ClassVar
+from typing import ClassVar, Protocol
 
 from fastapi import APIRouter, FastAPI
 
 from boba.chat.profiles import ChatProfiles
 from boba.connection_broker.api import ConnectionsApi
-from boba.connection_broker.service import UserConnectionsService
+from boba.connection_broker.service import DeleteGuard, UserConnectionsService
 from boba.identity.api import Authenticator
 from boba.runtime.config import StudioPath
 from boba.runtime.http import DomainErrorMiddleware, RequestTokens
@@ -28,7 +30,23 @@ from boba.studio.api.workflow_socket import (
 )
 from boba.studio.api.workflows import WorkflowApi
 
-__all__ = ["ApiAccess", "ApiApp"]
+__all__ = ["ApiAccess", "ApiApp", "ApiExtras", "ApiMount"]
+
+
+class ApiMount(Protocol):
+    """Ресурс хоста, который встаёт под версией api рядом с общими."""
+
+    @abstractmethod
+    def mount(self, app: FastAPI, router: APIRouter) -> None: ...
+
+
+@dataclass(frozen=True)
+class ApiExtras:
+    """Что хост добавляет к общему api: свои ресурсы и охранники удаления
+    соединений (строка, занятая ресурсом хоста, не удаляется)."""
+
+    mounts: Sequence[ApiMount] = ()
+    delete_guards: Sequence[DeleteGuard] = ()
 
 
 @dataclass(frozen=True)
@@ -58,7 +76,11 @@ class ApiApp:
         access: ApiAccess,
         profiles: ChatProfiles,
         signin: SignInWiring | None,
+        extras: ApiExtras | None = None,
     ) -> FastAPI:
+        if extras is None:
+            extras = ApiExtras()
+
         app = FastAPI(
             title=cls.TITLE, openapi_url=cls.OPENAPI, docs_url=cls.DOCS, redoc_url=None
         )
@@ -72,20 +94,23 @@ class ApiApp:
 
         AccountApi(profiles, access.users, refs.message_bus).mount(router)
         ConnectionsApi(
-            UserConnectionsService(refs.connection_store),
+            UserConnectionsService(refs.connection_store, extras.delete_guards),
             ApiAuth.subject_of,
             refs.credentials,
             refs.message_bus,
             refs.connection_types(),
-        ).mount(router)
+        ).mount(app, router)
         ToolCalling(
             refs.tool_registry,
             profiles,
             refs.live_locks,
             refs.heartbeat_sec,
         ).mount(router)
-        WorkflowApi(refs.workflow_service, profiles).mount(router)
+        WorkflowApi(refs.workflow_service, profiles).mount(app, router)
         StreamApi(refs.workflow_service, profiles).mount(router)
+        for mount in extras.mounts:
+            mount.mount(app, router)
+
         app.include_router(router)
 
         auth = ApiAuth.of_app(app)

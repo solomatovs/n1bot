@@ -1,10 +1,10 @@
 import type { ReactElement } from "react";
 
 import { resultSummary } from "../../model/results";
+import type { TaskStatus } from "../../model/status";
 import type { ToolResult } from "../../model/workflow";
 import { JsonView } from "../JsonView";
-import { StatusPill } from "../../ui/StatusPill";
-import { Chip } from "../../ui";
+import { Cell, Chip, Code, DataTable, Eyebrow, TableRow, Toolbar, ToolbarSpacer } from "../../ui";
 
 /** Итог задачи в инспекторе: своя форма на каждый kind ToolResult,
  * неизвестный вид — деревом json. */
@@ -42,26 +42,15 @@ function TableView({ rows, note }: { rows: Record<string, unknown>[]; note: stri
 
   return (
     <div className="result result--table">
-      <div className="result__scroll">
-        <table className="table table--result">
-          <thead>
-            <tr>
-              {columns.map((column) => (
-                <th key={column}>{column}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {shown.map((row, index) => (
-              <tr key={index}>
-                {columns.map((column) => (
-                  <td key={column}>{cellText(row[column])}</td>
-                ))}
-              </tr>
+      <DataTable head={columns} mark="result-table">
+        {shown.map((row, index) => (
+          <TableRow key={index}>
+            {columns.map((column) => (
+              <Cell key={column}>{cellText(row[column])}</Cell>
             ))}
-          </tbody>
-        </table>
-      </div>
+          </TableRow>
+        ))}
+      </DataTable>
       {rows.length > MAX_ROWS && (
         <div className="result__note">
           first {MAX_ROWS} of {rows.length} rows
@@ -92,14 +81,16 @@ function ShellView({ result }: { result: Extract<ToolResult, { kind: "shell" }> 
       <Meta items={[["status", exit], ["duration", `${result.duration_ms} ms`]]} />
       {result.stdout !== "" && (
         <>
-          <div className="result__label">stdout{result.stdout_truncated ? " · truncated" : ""}</div>
-          <pre className="inspector__code result__stream">{result.stdout}</pre>
+          <Eyebrow>stdout{result.stdout_truncated ? " · truncated" : ""}</Eyebrow>
+          <Code inset>{result.stdout}</Code>
         </>
       )}
       {result.stderr !== "" && (
         <>
-          <div className="result__label">stderr{result.stderr_truncated ? " · truncated" : ""}</div>
-          <pre className="inspector__code inspector__code--error result__stream">{result.stderr}</pre>
+          <Eyebrow>stderr{result.stderr_truncated ? " · truncated" : ""}</Eyebrow>
+          <Code inset tone="error">
+            {result.stderr}
+          </Code>
         </>
       )}
       <Note text={result.diagnostic} />
@@ -116,8 +107,8 @@ function ItemView({ result }: Props): ReactElement {
     case "text":
       return (
         <div className="result result--text">
-          {result.language !== "" && <div className="result__label">{result.language}</div>}
-          <pre className="inspector__code">{result.text}</pre>
+          {result.language !== "" && <Eyebrow>{result.language}</Eyebrow>}
+          <Code inset>{result.text}</Code>
           <Note text={result.note} />
         </div>
       );
@@ -134,24 +125,26 @@ function ItemView({ result }: Props): ReactElement {
       );
     case "json":
       return (
-        <div className="result result--json inspector__code">
-          <JsonView value={result.payload} clip={0} />
+        <div className="result result--json">
+          <Code inset>
+            <JsonView value={result.payload} clip={0} />
+          </Code>
         </div>
       );
     case "chart":
       return (
         <div className="result result--chart">
           <Note text={result.title} />
-          <div className="inspector__code">
+          <Code inset>
             <JsonView value={result.spec} clip={0} />
-          </div>
+          </Code>
         </div>
       );
     case "diagram":
       return (
         <div className="result result--diagram">
           <Note text={result.title} />
-          <pre className="inspector__code">{result.spec}</pre>
+          <Code inset>{result.spec}</Code>
           <Meta items={[["path", result.path]]} />
         </div>
       );
@@ -159,9 +152,9 @@ function ItemView({ result }: Props): ReactElement {
       return (
         <div className="result result--element">
           <Meta items={[["element", result.element]]} />
-          <div className="inspector__code">
+          <Code inset>
             <JsonView value={result.props} clip={0} />
-          </div>
+          </Code>
         </div>
       );
     case "multi":
@@ -169,9 +162,9 @@ function ItemView({ result }: Props): ReactElement {
         <div className="result result--multi">
           {result.items.map((item, index) => (
             <div className="result__item" key={index}>
-              <div className="result__label">
+              <Eyebrow>
                 #{index + 1} · {item.kind}
-              </div>
+              </Eyebrow>
               <ItemView result={item} />
             </div>
           ))}
@@ -180,30 +173,42 @@ function ItemView({ result }: Props): ReactElement {
     case "error":
       return (
         <div className="result result--error">
-          <pre className="inspector__code inspector__code--error">{result.message}</pre>
+          <Code inset tone="error">
+            {result.message}
+          </Code>
           <Meta items={[["kind", result.error_kind]]} />
         </div>
       );
     case "opaque":
       return (
-        <div className="result inspector__code">
-          <JsonView value={result.payload} clip={0} />
+        <div className="result">
+          <Code inset>
+            <JsonView value={result.payload} clip={0} />
+          </Code>
         </div>
       );
   }
+}
+
+function statusOf(result: ToolResult): TaskStatus {
+  if (result.ok) {
+    return "done";
+  }
+
+  return "failed";
 }
 
 export function ResultView({ result }: Props): ReactElement {
   const summary = resultSummary(result);
   return (
     <section className="result-view" data-kind={result.kind} aria-label="task result">
-      <div className="result-view__head">
+      <Toolbar>
         <Chip>{summary.kind}</Chip>
         <span className="result-view__figure">{summary.figure}</span>
         <span className="result-view__detail">{summary.detail}</span>
-        <span className="viewbar__spacer" />
-        <StatusPill status={result.ok ? "done" : "failed"} />
-      </div>
+        <ToolbarSpacer />
+        <Chip status={statusOf(result)} />
+      </Toolbar>
       <ItemView result={result} />
     </section>
   );

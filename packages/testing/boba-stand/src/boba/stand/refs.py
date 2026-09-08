@@ -1,8 +1,8 @@
 """Входы приложения для стендов: только те сервисы, что стенду нужны, остальные
-отказывают RuntimeError при первом обращении.
+отказывают ServiceDisabledError при первом обращении — как процесс без секции.
 
 Ошибки:
-RuntimeError — стенд попросили сервис, которого у него нет.
+ServiceDisabledError — стенд попросили сервис, которого у него нет.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.connection_broker.store import ConnectionStore
 from boba.connection_broker.user_connections import StoreRef
 from boba.connections.manifest import ConnectionTypes
+from boba.identity.errors import ServiceDisabledError
 from boba.identity.locks import MemoryLiveLocks
 from boba.krb.seal import SsoTickets
 from boba.messaging import MemoryMessageBus
@@ -84,7 +85,7 @@ class StandRefs:
         msg = (
             f"resolving the tool registry: it is not part of the {StandRefs.NAME} stand"
         )
-        raise RuntimeError(msg)
+        raise ServiceDisabledError("tool", msg)
 
     @staticmethod
     async def _no_service() -> WorkflowService:
@@ -92,7 +93,7 @@ class StandRefs:
             f"resolving the workflow service: it is not part of the "
             f"{StandRefs.NAME} stand"
         )
-        raise RuntimeError(msg)
+        raise ServiceDisabledError("workflow", msg)
 
     @staticmethod
     def _no_store() -> ConnectionStore:
@@ -100,7 +101,7 @@ class StandRefs:
             f"resolving the connection store: it is not part of the "
             f"{StandRefs.NAME} stand"
         )
-        raise RuntimeError(msg)
+        raise ServiceDisabledError("connections", msg)
 
     @staticmethod
     def _disabled_store() -> ConnectionStore:
@@ -108,7 +109,7 @@ class StandRefs:
             "resolving the connection store: [connections] is disabled in the "
             "config, user connections are unavailable"
         )
-        raise RuntimeError(msg)
+        raise ServiceDisabledError("connections", msg)
 
     @staticmethod
     def _no_tickets() -> SsoTickets | None:

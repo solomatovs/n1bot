@@ -48,6 +48,7 @@ from boba.catalog.source_diff import (
 )
 from boba.catalog.sources import (
     Keyed,
+    NameList,
     NodeColumn,
     ObjectCard,
     ObjectFamily,
@@ -68,20 +69,6 @@ from boba.catalog.sources import (
     TreeScope,
 )
 from boba.catalog.staleness import PinnedSnapshot, Stale, Staleness, StaleReason
-from boba.catalog.sync import (
-    FrameOut,
-    SnapshotAssembler,
-    SnapshotBatches,
-    SyncBatch,
-    SyncDone,
-    SyncEmitter,
-    SyncFrame,
-    SyncFrameError,
-    SyncFrameHead,
-    SyncFrameKind,
-    SyncFrameReceiver,
-    SyncPlan,
-)
 
 __all__ = [
     "AcceptAll",
@@ -106,9 +93,9 @@ __all__ = [
     "FieldChange",
     "Flow",
     "FlowEnd",
-    "FrameOut",
     "Group",
     "Keyed",
+    "NameList",
     "Node",
     "NodeColumn",
     "ObjectCard",
@@ -131,8 +118,6 @@ __all__ = [
     "SetFlow",
     "SetGroup",
     "SetNode",
-    "SnapshotAssembler",
-    "SnapshotBatches",
     "SnapshotPart",
     "SnapshotResolver",
     "SourceDiff",
@@ -145,15 +130,6 @@ __all__ = [
     "StaleReason",
     "Staleness",
     "SubPart",
-    "SyncBatch",
-    "SyncDone",
-    "SyncEmitter",
-    "SyncFrame",
-    "SyncFrameError",
-    "SyncFrameHead",
-    "SyncFrameKind",
-    "SyncFrameReceiver",
-    "SyncPlan",
     "TreeKind",
     "TreeNode",
     "TreeScope",

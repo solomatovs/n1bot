@@ -11,6 +11,8 @@ dependencies = [
     "boba-auth==0.0.17.dev3",
     "boba-cancellation==0.0.17.dev3",
     "boba-canvas==0.0.17.dev3",
+    "boba-catalog==0.0.17.dev3",
+    "boba-catalog-service==0.0.17.dev3",
     "boba-connection-broker==0.0.17.dev3",
     "boba-connections==0.0.17.dev3",
     "boba-messaging==0.0.17.dev3",

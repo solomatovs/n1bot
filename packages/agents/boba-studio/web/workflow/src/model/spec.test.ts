@@ -90,7 +90,7 @@ edges:
 describe("issues", () => {
   it("parses server detail and maps issues to tasks", () => {
     const issues = parseIssues(
-      "unknown_arg at first: unknown argument: intent; edge_kind at first.result -> second: no such edge; yaml: broken",
+      "workflow spec rejected for 'admin': unknown_arg at first: unknown argument: intent; edge_kind at first.result -> second: no such edge; yaml: broken",
     );
     expect(issues).toHaveLength(3);
     expect(issues[0]).toEqual({ code: "unknown_arg", where: "first", message: "unknown argument: intent" });

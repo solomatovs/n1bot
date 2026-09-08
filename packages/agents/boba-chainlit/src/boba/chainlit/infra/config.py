@@ -4,7 +4,6 @@
 Ошибки: своих не выпускает; выбор профиля — boba.chat.profiles.
 """
 
-from pathlib import Path
 from typing import Annotated, Any
 
 from pydantic import (
@@ -15,7 +14,6 @@ from pydantic import (
 
 from boba.access import RoleConfig
 from boba.auth.config import AuthConfig
-from boba.catalog_service import CatalogConfig
 from boba.chainlit.domain.config import LocalStorageConfig
 from boba.chat.profiles import (
     ChatProfileConfig,
@@ -174,12 +172,6 @@ class CheckpointerConfig(BaseModel):
     )
 
 
-class ChainlitCatalogConfig(CatalogConfig):
-    """Секция [catalog] chainlit: к хранилищу и ролям добавляется сборка страницы."""
-
-    dist: Path = Field(description="Каталог сборки страницы: index.html и assets/.")
-
-
 class AppConfig(RuntimeConfig):
     """Секции chainlit-процесса поверх общих: server, checkpointer, storage, журнал."""
 
@@ -246,11 +238,4 @@ class AppConfig(RuntimeConfig):
     storage: Annotated[
         LocalStorageConfig,
         Field(description="Файловое хранилище вложений."),
-    ]
-
-    catalog: Annotated[
-        ChainlitCatalogConfig,
-        Field(
-            description="Секция [catalog]: таблицы каталога, роли доступа, страница."
-        ),
     ]

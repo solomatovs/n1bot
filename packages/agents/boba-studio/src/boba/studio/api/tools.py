@@ -162,7 +162,7 @@ class ToolCalling:
     async def _invoker(self, subject: Subject) -> ToolInvoker:
         registry = await self._registry()
 
-        return ToolInvoker(registry.for_headless(subject.roles, subject.profile))
+        return ToolInvoker.for_subject(registry, subject)
 
     @staticmethod
     async def _run(

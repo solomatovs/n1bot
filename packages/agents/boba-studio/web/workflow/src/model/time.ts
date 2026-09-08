@@ -81,3 +81,9 @@ export function formatMs(millis: number): string {
 
   return `${Math.floor(total / 60)}m ${total % 60}s`;
 }
+
+/** Минутная метка ISO-времени как есть, без перевода в локальную зону:
+ * «2026-09-08 07:15» — для полос задач и списков версий. */
+export function formatStamp(iso: string): string {
+  return iso.slice(0, 16).replace("T", " ");
+}

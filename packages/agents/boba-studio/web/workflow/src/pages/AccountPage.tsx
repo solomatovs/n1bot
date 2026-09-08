@@ -2,14 +2,15 @@ import { ArrowLeft, LogOut, Workflow } from "lucide-react";
 import { type ReactElement, useCallback, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { useServices } from "../app";
+import { useServices } from "../services";
+import { PageUrls } from "../config";
 import { Async } from "../components/Async";
 import { ConnectionsTab } from "../components/account/ConnectionsTab";
 import { Segmented } from "../ui/Segmented";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { useLoadable } from "../hooks/useLoadable";
 import type { Me } from "../model/account";
-import { Button, IconLink } from "../ui";
+import { Button, IconLink, Topbar, TopbarSpacer } from "../ui";
 
 type Tab = "connections";
 
@@ -30,10 +31,10 @@ export function AccountPage(): ReactElement {
   const logout = useCallback(() => {
     void api.logout().then(
       () => {
-        void navigate("/login", { replace: true });
+        void navigate(PageUrls.login(), { replace: true });
       },
       () => {
-        void navigate("/login", { replace: true });
+        void navigate(PageUrls.login(), { replace: true });
       },
     );
   }, [api, navigate]);
@@ -52,7 +53,7 @@ export function AccountPage(): ReactElement {
 
   return (
     <div className="account">
-      <header className="topbar">
+      <Topbar>
         {/* слот кнопки панели: держит сетку топбара той же, что на сцене */}
         <span className="topbar__slot" aria-hidden="true" />
         <div className="topbar__brand">
@@ -62,17 +63,17 @@ export function AccountPage(): ReactElement {
         <nav className="crumbs" aria-label="breadcrumbs">
           <span>Account</span>
         </nav>
-        <span className="topbar__spacer" />
+        <TopbarSpacer />
         <Button onClick={logout} aria-label="Sign out">
           <LogOut size={14} />
           Sign out
         </Button>
         <ThemeToggle />
         {/* стрелка назад живёт на месте шестерёнки: UI не прыгает при переходе */}
-        <IconLink to="/workflow" aria-label="Back to studio" title="Back to studio">
+        <IconLink to={PageUrls.workflow()} aria-label="Back to studio" title="Back to studio">
           <ArrowLeft size={16} />
         </IconLink>
-      </header>
+      </Topbar>
       <div className="account__body">
         <Async state={me} render={renderHeader} />
         <Segmented options={TABS} value={tab} onChange={setTab} label="account sections" />

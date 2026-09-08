@@ -141,6 +141,20 @@ class UserConnectionsService:
         )
         raise RefusalError(ConnectionRefusal.NOT_VISIBLE, msg)
 
+    async def visible_named(self, subject: Subject, name: str) -> StoredConnection:
+        """Видимая субъекту строка по имени; иначе NOT_VISIBLE."""
+        store = self._store_ref()
+        rows = (await store.for_subject_all(subject)).rows
+        for row in rows:
+            if row.name == name:
+                return row
+
+        msg = (
+            f"connection {name!r} not found among the connections "
+            f"visible to {subject.login!r}"
+        )
+        raise RefusalError(ConnectionRefusal.NOT_VISIBLE, msg)
+
     async def create(
         self, subject: Subject, name: str, profile: ConnectionProfileBase
     ) -> StoredConnection:

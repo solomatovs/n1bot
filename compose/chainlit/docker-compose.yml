@@ -21,7 +21,6 @@ services:
       - ./conf:/app/boba/conf:ro
       - ./conf/krb/krb5.conf:/etc/krb5.conf:ro
       - ./data:/app/boba/data:rw
-      - ./app_root:/app/boba/app_root:rw
       - ./models:/app/boba/models:ro
       - ../../build/chainlit/src/sandbox:/app/boba/sandbox:ro
       - /sys/fs/cgroup/boba.slice:/cgroup:rw

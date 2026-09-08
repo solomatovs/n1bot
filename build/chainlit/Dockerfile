@@ -313,14 +313,6 @@ WORKDIR /src/web/page
 RUN npm ci --no-audit --no-fund && npm run check && npm run build
 
 
-# страница каталога (web/catalog, vite): типы из openapi.json репозитория, node'ом стадии
-FROM ${NODE_IMAGE} AS catalog-build
-
-COPY packages/agents/boba-chainlit/web/catalog/  /src/web/catalog/
-WORKDIR /src/web/catalog
-RUN npm ci --no-audit --no-fund && npm run generate && npm run check && npm run build
-
-
 # образ чата: ассеты chainlit, vendor-шрифты и стили формул вместо CDN, локальная
 # модель переформулировщика. .files создаётся заранее: chainlit делает mkdir на импорте
 FROM runtime-base AS runtime-chainlit
@@ -334,18 +326,8 @@ COPY packages/agents/boba-chainlit/assets/.chainlit/translations/ ${BOBA_DIR}/ap
 COPY packages/agents/boba-chainlit/assets/chainlit.md             ${BOBA_DIR}/app_root/
 COPY packages/agents/boba-chainlit/assets/public/                 ${BOBA_DIR}/app_root/public/
 COPY --from=web-build /src/assets/public/page.js                  ${BOBA_DIR}/app_root/public/page.js
-COPY --from=catalog-build /src/assets/catalog/                    ${BOBA_DIR}/app_root/public/catalog/
 COPY --from=chainlit-ui-build /out/ui/                             ${BOBA_DIR}/app_root/ui/
 COPY build/chainlit/src/webassets/                                ${BOBA_DIR}/app_root/public/vendor/
-
-# фронт chainlit тянет шрифт и стили формул с CDN: переводим на public/vendor
-RUN index=${BOBA_DIR}/app_root/ui/index.html                                                                 \
-    && sed -i                                                                                                \
-        -e '/rel="preconnect"/d'                                                                             \
-        -e 's#https://fonts.googleapis.com/css2?family=Inter[^"]*#/public/vendor/inter/inter.css#'           \
-        -e 's#https://cdn.jsdelivr.net/npm/katex@[0-9.]*/dist/katex.min.css#/public/vendor/katex/katex.min.css#' \
-        "$index"                                                                                             \
-    && ! grep -E 'fonts\.(googleapis|gstatic)\.com|cdn\.jsdelivr\.net' "$index"
 
 RUN mkdir -p ${BOBA_DIR}/app_root/.files && chown -R ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/app_root
 

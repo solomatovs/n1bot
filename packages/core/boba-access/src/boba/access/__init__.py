@@ -3,7 +3,9 @@
 Инструмент доступен субъекту, когда профиль виден его ролям, профиль
 разрешает инструмент и хотя бы одна роль его разрешает. Инструменты чата
 (chat_only) доступны только внутри хода чата: решение отдаёт CHAT_ONLY,
-а вызывающий сам знает, есть ли у него чат. Deny by default.
+а вызывающий сам знает, есть ли у него чат. Инструменты задач
+(headless_only) модели в чате не отдаются: их зовут страница, REST и
+workflow — решение HEADLESS_ONLY. Deny by default.
 
 Ошибки:
 ToolAccessError — гранты ссылаются на инструменты, которых нет.
@@ -28,6 +30,7 @@ __all__ = [
     "ToolAccessError",
     "ToolAvailability",
     "ToolGrant",
+    "ToolSurfaces",
 ]
 
 
@@ -37,16 +40,28 @@ class ToolAvailability(StrEnum):
     AVAILABLE = "available"
     DENIED = "denied"
     CHAT_ONLY = "chat_only"
+    HEADLESS_ONLY = "headless_only"
 
     @property
     def headless(self) -> bool:
         """Можно звать вне чата: со страницы, по REST, из workflow."""
-        return self is ToolAvailability.AVAILABLE
+        return self in (ToolAvailability.AVAILABLE, ToolAvailability.HEADLESS_ONLY)
 
     @property
     def in_chat(self) -> bool:
         """Можно звать внутри хода чата."""
-        return self is not ToolAvailability.DENIED
+        return self in (ToolAvailability.AVAILABLE, ToolAvailability.CHAT_ONLY)
+
+
+class ToolSurfaces(BaseModel):
+    """Где инструмент доступен помимо общего правила: chat_only — только
+    внутри хода чата, headless_only — только вне чата (страница, REST,
+    workflow). Не названные — везде, где разрешают гранты."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    chat_only: frozenset[str] = frozenset()
+    headless_only: frozenset[str] = frozenset()
 
 
 class ToolGrant(BaseModel):
@@ -136,15 +151,20 @@ class ToolAccess:
         tool_names: Iterable[str],
         roles: Mapping[str, ToolGrant],
         profiles: Mapping[str, ProfileGrant],
-        chat_only: Iterable[str] = (),
+        surfaces: ToolSurfaces | None = None,
         check: GrantCheck = GrantCheck.STRICT,
     ) -> None:
         self._tool_names = frozenset(tool_names)
         self._roles = dict(roles)
         self._profiles = dict(profiles)
-        self._chat_only = frozenset(chat_only)
+        if surfaces is None:
+            surfaces = ToolSurfaces()
+
+        self._chat_only = surfaces.chat_only
+        self._headless_only = surfaces.headless_only
 
         self._check_chat_only()
+        self._check_headless_only()
         if check is GrantCheck.STRICT:
             self._check_grants()
 
@@ -171,6 +191,9 @@ class ToolAccess:
         if tool_name in self._chat_only:
             return ToolAvailability.CHAT_ONLY
 
+        if tool_name in self._headless_only:
+            return ToolAvailability.HEADLESS_ONLY
+
         return ToolAvailability.AVAILABLE
 
     def _granted(self, tool_name: str, roles: frozenset[str], profile: str) -> bool:
@@ -196,8 +219,9 @@ class ToolAccess:
         user_roles: Iterable[str],
         profile: str,
     ) -> bool:
-        """Разрешён хоть где-то: в чате — да, вне чата — см. decide().headless."""
-        return self.decide(tool_name, user_roles, profile).in_chat
+        """Разрешён хоть где-то: в чате или вне его; где именно — decide()."""
+        decision = self.decide(tool_name, user_roles, profile)
+        return decision is not ToolAvailability.DENIED
 
     def _role_covers(self, tool_name: str, user_roles: frozenset[str]) -> bool:
         for role in user_roles:
@@ -237,6 +261,23 @@ class ToolAccess:
             msg = (
                 f"tool access: chat-only tools {stray} are not among "
                 f"the built tools {known}"
+            )
+            raise ToolAccessError(msg)
+
+    def _check_headless_only(self) -> None:
+        stray = sorted(self._headless_only - self._tool_names)
+        if stray:
+            known = sorted(self._tool_names)
+            msg = (
+                f"tool access: headless-only tools {stray} are not among "
+                f"the built tools {known}"
+            )
+            raise ToolAccessError(msg)
+
+        both = sorted(self._headless_only & self._chat_only)
+        if both:
+            msg = (
+                f"tool access: tools {both} are marked both chat-only and headless-only"
             )
             raise ToolAccessError(msg)
 

@@ -1,49 +1,34 @@
-.viewbar {
+.toolbar {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: var(--s3);
-  padding: var(--s2) var(--s4);
+  flex-wrap: wrap;
+  gap: var(--s2);
+  min-width: 0;
+}
+
+.toolbar--bar {
+  flex-wrap: nowrap;
+  padding: var(--s2) var(--s3);
   border-bottom: 1px solid var(--hairline);
   background: var(--bg);
+  overflow-x: auto;
 }
 
-.viewbar__hint {
-  font-family: var(--font-mono);
-  font-size: var(--fs-data);
-  color: var(--muted);
-}
-
-.viewbar__spacer {
+.toolbar__spacer {
   flex: 1;
 }
 
-.builder {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--s2);
-  padding: var(--s2) var(--s4);
-  min-height: var(--h-vitals);
-  background: var(--surface);
-  border-bottom: 1px solid var(--hairline);
-}
-
-.builder__label {
+.toolbar__label {
   font-family: var(--font-display);
   font-weight: 600;
   color: var(--signal);
   margin-right: var(--s2);
 }
 
-.builder > .input {
-  width: clamp(140px, 18vw, 260px);
-}
-
-.builder__hint {
+.toolbar__hint {
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
-  color: var(--faint);
+  color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

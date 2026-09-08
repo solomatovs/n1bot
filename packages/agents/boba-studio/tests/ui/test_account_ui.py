@@ -91,13 +91,13 @@ def test_gear_opens_account_and_own_connection_round_trips(
         f"http://127.0.0.1:{stand.config.llm_port}/health"
     )
     # проверка черновика до сохранения: фейковый LLM стенда отвечает по /health
-    page.get_by_role("button", name="Check", exact=True).click()
+    page.get_by_role("button", name="check", exact=True).click()
     expect(page.locator('[data-notice="probe"]')).to_contain_text("HTTP 200")
     # вложенный блок auth: вариант по method и его поля
     page.get_by_label("profile.auth.method", exact=True).select_option("basic")
     page.get_by_label("profile.auth.user", exact=True).fill("reader")
     page.get_by_label("profile.auth.password", exact=True).fill("secret")
-    page.get_by_role("button", name="Save", exact=True).click()
+    page.get_by_role("button", name="save", exact=True).click()
 
     # после сохранения список перечитывается, форма открывается на новой строке
     own = page.locator(Selector.CONNECTION_ITEM).filter(has_text="ui-own")
@@ -111,13 +111,13 @@ def test_gear_opens_account_and_own_connection_round_trips(
     page.get_by_label("profile.auth.method", exact=True).select_option("trust")
     page.get_by_label("profile.auth.user", exact=True).fill("reader")
     # dbname обязателен валидатором модели, не схемой: сервер отвечает 422 текстом
-    page.get_by_role("button", name="Save", exact=True).click()
-    expect(page.locator('[data-notice="connection"]')).to_contain_text("dbname")
+    page.get_by_role("button", name="save", exact=True).click()
+    expect(page.locator('[data-notice="connection-error"]')).to_contain_text("dbname")
     page.get_by_label("profile.dbname", exact=True).fill("boba")
-    page.get_by_role("button", name="Save", exact=True).click()
+    page.get_by_role("button", name="save", exact=True).click()
     expect(own.locator(".item__meta")).to_have_text("postgres")
 
-    page.get_by_role("button", name="Delete", exact=True).click()
+    page.get_by_role("button", name="delete", exact=True).click()
 
     expect(
         page.locator(Selector.CONNECTION_ITEM).filter(has_text="ui-own")
@@ -136,7 +136,7 @@ def test_missing_type_connection_is_marked_and_deletable(
     page.get_by_label("connection name").fill("ui-broken")
     page.get_by_label("profile.kind", exact=True).select_option("web")
     page.get_by_label("profile.base_url", exact=True).fill("http://broken.test")
-    page.get_by_role("button", name="Save", exact=True).click()
+    page.get_by_role("button", name="save", exact=True).click()
     expect(
         page.locator(Selector.CONNECTION_ITEM).filter(has_text="ui-broken")
     ).to_have_count(1)

@@ -25,6 +25,7 @@ ObjectNotFoundError — по адресу в версии снимка нет о
 SyncNotFoundError — синхронизации с таким id нет.
 SyncRunningError — у подключения уже идёт синхронизация.
 SyncClosedError — синхронизация уже завершена, отменять нечего.
+SnapshotRejectedError — сырой снимок не разобран реестром видов.
 UnknownSourceKindError — у вида подключения нет снимка в реестре.
 CatalogRefusalError — у субъекта нет прав на действие; kind из CatalogRefusalKind.
 """
@@ -32,21 +33,21 @@ CatalogRefusalError — у субъекта нет прав на действи�
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.catalog import (
     CatalogDiff,
     CatalogSnapshot,
+    NameList,
     NodeColumn,
     ObjectRef,
     OperationList,
-    SourceRecord,
+    Stale,
     Staleness,
-    SyncBatch,
 )
 from boba.identity.errors import RefusalError
 
@@ -59,6 +60,7 @@ __all__ = [
     "CatalogStoreError",
     "ConnectionHasVersionsError",
     "ConnectionInUseError",
+    "ConnectionInfo",
     "ConnectionNotSyncedError",
     "ConnectionVersion",
     "ConnectionVersionNotFoundError",
@@ -73,7 +75,6 @@ __all__ = [
     "DraftStatus",
     "NodeUsage",
     "ObjectNotFoundError",
-    "PinBump",
     "Process",
     "ProcessContext",
     "ProcessNameTakenError",
@@ -86,16 +87,24 @@ __all__ = [
     "SharedNodeNotFoundError",
     "SharedProcess",
     "SnapshotKindMismatchError",
-    "StagedBatch",
     "Sync",
     "SyncClosedError",
     "SyncNotFoundError",
+    "SyncOutcomeError",
     "SyncRequest",
     "SyncRunningError",
     "SyncScope",
     "SyncStatus",
     "SyncedConnection",
     "UnknownSourceKindError",
+    "Upgrade",
+    "UpgradeClosedError",
+    "UpgradeNotFoundError",
+    "UpgradeReport",
+    "UpgradeRun",
+    "UpgradeScope",
+    "UpgradeStatus",
+    "UpgradeTarget",
     "Version",
     "VersionOrigin",
 ]
@@ -303,6 +312,28 @@ class SyncClosedError(CatalogServiceError):
         self.status = status
 
 
+class SyncOutcomeError(CatalogServiceError):
+    """Инструмент снятия отчитался версией, которой в домене нет."""
+
+    def __init__(self, sync_id: UUID, reported: int, latest: int) -> None:
+        msg = (
+            f"catalog: sync {sync_id}: the snapshot tool reports version "
+            f"{reported}, the domain holds versions up to {latest}"
+        )
+        super().__init__(msg)
+        self.sync_id = sync_id
+        self.reported = reported
+        self.latest = latest
+
+
+class SnapshotRejectedError(CatalogServiceError):
+    """Сырой снимок не разобран реестром видов: kind неизвестен или тело не
+    по модели снимка."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"catalog: the snapshot body is rejected: {reason}")
+
+
 class UnknownSourceKindError(CatalogServiceError):
     """Вида подключения нет в реестре снимков: пакет-владелец не установлен."""
 
@@ -321,6 +352,7 @@ class CatalogRefusalKind(StrEnum):
     VIEW_FORBIDDEN = "catalog_view_forbidden"
     EDIT_FORBIDDEN = "catalog_edit_forbidden"
     NOT_OWNER = "catalog_not_owner"
+    NOT_ALLOWED = "catalog_not_allowed"
 
 
 class CatalogRefusalError(RefusalError):
@@ -377,6 +409,16 @@ class Process(BaseModel):
     latest_version: int = Field(ge=0)
     nodes: int = Field(ge=0)
     open_drafts: int = Field(ge=0)
+    pins: Mapping[UUID, int] = Field(default_factory=dict)
+    """Привязки последней версии; без версий пусто."""
+    connections: tuple[UUID, ...] = ()
+    """Подключения, на объекты которых смотрят узлы."""
+    behind: bool = False
+    """Привязка ниже последней версии хотя бы одного подключения: есть что
+    поднимать; ставит сервис по последним версиям снимков."""
+    attention: int = Field(default=0, ge=0)
+    """Сколько проблем в последнем upgrade, если он blocked и процесс всё ещё
+    отстаёт: столько раз нужно вмешательство."""
 
     def spec(self) -> ProcessSpec:
         return ProcessSpec(name=self.name, description=self.description)
@@ -410,6 +452,8 @@ class Draft(BaseModel):
     pins: Mapping[UUID, int] = Field(default_factory=dict)
     created_by: UUID
     created_at: datetime
+    behind: bool = False
+    attention: int = Field(default=0, ge=0)
 
 
 class DraftOp(BaseModel):
@@ -447,13 +491,157 @@ class ProcessContext(BaseModel):
     stale: Staleness
 
 
-class PinBump(BaseModel):
-    """Черновик после поднятия привязок и что в нём перестало сходиться."""
+class UpgradeStatus(StrEnum):
+    """Итог upgrade: процесс переведён на новые версии либо остановлен."""
+
+    MOVED = "moved"
+    BLOCKED = "blocked"
+
+
+class SyncStatus(StrEnum):
+    """Состояние задачи: синхронизации или запуска upgrade."""
+
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class UpgradeTarget(StrEnum):
+    """Что переводит запуск upgrade: один процесс, один черновик или все
+    отставшие опубликованные процессы."""
+
+    PROCESS = "process"
+    DRAFT = "draft"
+    ALL = "all"
+
+
+class UpgradeRun(BaseModel):
+    """Запуск upgrade — задача, как синхронизация: цель, ход по процессам и
+    итог; результаты по процессам — записи Upgrade с run_id."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    draft: Draft
-    violations: tuple[str, ...]
+    id: UUID
+    target: UpgradeTarget
+    process_id: UUID | None = None
+    draft_id: UUID | None = None
+    started_by: UUID
+    started_at: datetime
+    finished_at: datetime | None = None
+    status: SyncStatus
+    total: int = Field(ge=0, default=0)
+    done: int = Field(ge=0, default=0)
+    moved: int = Field(ge=0, default=0)
+    blocked: int = Field(ge=0, default=0)
+    error: str | None = None
+
+
+class Upgrade(BaseModel):
+    """Итог перевода процесса (или черновика) на последние версии снимков:
+    привязки до и после, что помешало, номер новой версии процесса."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: UUID
+    run_id: UUID
+    process_id: UUID | None
+    draft_id: UUID | None
+    status: UpgradeStatus
+    pins_before: Mapping[UUID, int]
+    pins_after: Mapping[UUID, int]
+    problems: tuple[Stale, ...] = ()
+    version: int | None = None
+    author: DraftAuthor
+    at: datetime
+
+
+class UpgradeScope(BaseModel):
+    """Что переводится: процесс либо черновик, его привязки и цель."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    process_id: UUID | None
+    draft_id: UUID | None
+    pins: Mapping[UUID, int]
+    target: Mapping[UUID, int]
+
+    def moved(
+        self,
+        run_id: UUID,
+        author: DraftAuthor,
+        pins_after: Mapping[UUID, int],
+        at: datetime,
+        version: int | None = None,
+    ) -> Upgrade:
+        """Цель переведена на pins_after; у процесса — с номером новой версии."""
+        return Upgrade(
+            id=uuid4(),
+            run_id=run_id,
+            process_id=self.process_id,
+            draft_id=self.draft_id,
+            status=UpgradeStatus.MOVED,
+            pins_before=self.pins,
+            pins_after=pins_after,
+            version=version,
+            author=author,
+            at=at,
+        )
+
+    def blocked(
+        self, run_id: UUID, author: DraftAuthor, problems: Sequence[Stale]
+    ) -> Upgrade:
+        """Перевод на цель невозможен: несовместимости по объектам."""
+        return Upgrade(
+            id=uuid4(),
+            run_id=run_id,
+            process_id=self.process_id,
+            draft_id=self.draft_id,
+            status=UpgradeStatus.BLOCKED,
+            pins_before=self.pins,
+            pins_after=self.target,
+            problems=tuple(problems),
+            author=author,
+            at=datetime.now(UTC),
+        )
+
+    def unchanged(
+        self, run_id: UUID, author: DraftAuthor, status: UpgradeStatus
+    ) -> Upgrade:
+        """Привязки остались прежними: отставания нет (moved) или цель
+        сорвалась до перевода (blocked)."""
+        return Upgrade(
+            id=uuid4(),
+            run_id=run_id,
+            process_id=self.process_id,
+            draft_id=self.draft_id,
+            status=status,
+            pins_before=self.pins,
+            pins_after=self.pins,
+            author=author,
+            at=datetime.now(UTC),
+        )
+
+
+class UpgradeReport(BaseModel):
+    """Запуск upgrade с его результатами по процессам: ответ инструмента."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    run: UpgradeRun
+    upgrades: tuple[Upgrade, ...] = ()
+
+
+class UpgradeClosedError(CatalogServiceError):
+    """Запуск upgrade уже завершён: отменять нечего."""
+
+    def __init__(self, run_id: UUID, status: SyncStatus) -> None:
+        super().__init__(f"upgrade {run_id} is already {status.value}")
+
+
+class UpgradeNotFoundError(CatalogServiceError):
+    def __init__(self, run_id: UUID) -> None:
+        super().__init__(f"upgrade {run_id} is unknown")
 
 
 class RebaseIssue(BaseModel):
@@ -523,6 +711,17 @@ class SyncedConnection(BaseModel):
     latest_version: int = Field(ge=1)
     synced_at: datetime
 
+    @classmethod
+    def of(cls, latest: ConnectionVersion) -> SyncedConnection:
+        """Проекция последней версии подключения."""
+        return cls(
+            connection_id=latest.connection_id,
+            name=latest.connection_name,
+            kind=latest.kind,
+            latest_version=latest.version,
+            synced_at=latest.taken_at,
+        )
+
 
 class ConnectionVersion(BaseModel):
     """Снятая версия снимка подключения без самого снимка; имя и вид
@@ -553,26 +752,27 @@ class VersionOrigin(BaseModel):
     server_version: str | None = None
 
 
-class SyncStatus(StrEnum):
-    RUNNING = "running"
-    DONE = "done"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-
-
 class SyncScope(BaseModel):
-    """Что и как снимать: схемы (пусто — все несистемные), размер порции и
-    пауза между заходами инструмента в каталог базы."""
+    """Что снимать: схемы, пусто — все несистемные."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     schemas: tuple[str, ...] = ()
-    batch_size: int = Field(ge=1, le=10_000, default=200)
-    pause_ms: int = Field(ge=0, le=60_000, default=0)
 
     def schemas_arg(self) -> str:
         """Схемы одной строкой, как их принимает инструмент снятия."""
-        return ", ".join(self.schemas)
+        return NameList.render(self.schemas)
+
+
+class ConnectionInfo(BaseModel):
+    """Подключение глазами субъекта: имя для инструмента снятия и вид, по
+    которому выбирается снимок."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: UUID
+    name: str = Field(min_length=1)
+    kind: str = Field(min_length=1)
 
 
 class SyncRequest(BaseModel):
@@ -581,19 +781,8 @@ class SyncRequest(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    connection_id: UUID
-    connection_name: str = Field(min_length=1)
-    kind: str = Field(min_length=1)
+    connection: ConnectionInfo
     scope: SyncScope = Field(default_factory=SyncScope)
-
-
-class StagedBatch(BaseModel):
-    """Порция синхронизации из staging: заголовок и записи её части."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    batch: SyncBatch
-    records: tuple[SerializeAsAny[SourceRecord], ...]
 
 
 class Sync(BaseModel):

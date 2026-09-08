@@ -16,7 +16,7 @@ from langchain_core.tools import tool
 from starlette.requests import Request
 from studio_stand import StandProfiles
 
-from boba.access import ProfileGrant, RoleConfig, ToolAccess
+from boba.access import ProfileGrant, RoleConfig, ToolAccess, ToolSurfaces
 from boba.auth import AuthService, JwtTokens
 from boba.chat.profiles import ChatProfiles
 from boba.db.postgres import AsyncPostgresPool
@@ -89,7 +89,7 @@ def _registry(probe: Probe, studio_config: StudioRuntimeConfig) -> ToolRegistry:
         profiles={
             StandProfiles.profile(studio_config): ProfileGrant(tools=["*"], roles=["*"])
         },
-        chat_only=["canvas_open"],
+        surfaces=ToolSurfaces(chat_only=frozenset({"canvas_open"})),
     )
     return ToolRegistry(tools=tools, access=access)
 

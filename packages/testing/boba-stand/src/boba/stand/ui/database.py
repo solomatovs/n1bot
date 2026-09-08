@@ -8,7 +8,7 @@ StandError — база не подготовлена (нет прав на ра
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Coroutine
+from collections.abc import Coroutine, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from enum import StrEnum
 from typing import Any, ClassVar, LiteralString
@@ -18,6 +18,7 @@ from psycopg import sql
 from psycopg.errors import InsufficientPrivilege
 
 from boba.catalog_service import CatalogConfig, CatalogTable
+from boba.catalog_service import ConnectionTable as SnapshotTable
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connections.manifest import ConnectionTypes
@@ -114,8 +115,10 @@ class StandDatabase:
             for table in workflow_tables:
                 await cur.execute(self._drop(workflow.db_schema, table.value))
 
-        # секция каталога есть только у chainlit: у studio сносить нечего
-        if "catalog" in self._built:
+        # каталог живёт в studio: домен сносится схемой, таблицы приложения —
+        # поимённо, схема приложения общая с users и workflow; у chainlit секция
+        # [catalog] — лишь подключение инструмента снятия к домену
+        if self._app is StandApp.STUDIO:
             catalog = bind(self._built, path="catalog", model=CatalogConfig)
             async with self._pool() as pool, pool.cursor() as cur:
                 await cur.execute(
@@ -123,6 +126,13 @@ class StandDatabase:
                         sql.Identifier(catalog.db_schema)
                     )
                 )
+                for table in CatalogTable:
+                    await cur.execute(self._drop(catalog.app_schema, table.value))
+
+                for snapshot_table in SnapshotTable:
+                    await cur.execute(
+                        self._drop(catalog.app_schema, snapshot_table.value)
+                    )
 
         await self._forget_studio_profiles()
 
@@ -205,7 +215,7 @@ class StandDatabase:
         """Сколько порций операций записано в черновик каталога."""
         catalog = bind(self._built, path="catalog", model=CatalogConfig)
         query = sql.SQL("select count(*) from {} where draft_id = %s").format(
-            SqlNames.table(catalog.db_schema, CatalogTable.DRAFT_OPS)
+            SqlNames.table(catalog.app_schema, CatalogTable.DRAFT_OPS)
         )
         row = run_blocking(self._execute(query, (draft_id,)))
         if row is None:
@@ -264,12 +274,24 @@ class StandDatabase:
         async with self._pool() as pool:
             store = ConnectionStore(connections, ConnectionTypes.discover(), pool)
             connection_id = await store.add(name, profile)
-            roles = StoredRole.by_name(await store.roles())
-            for role_names in StandConfig.STAND_ROLES.values():
-                for role in role_names:
-                    await store.grant(connection_id, GrantTarget.role(roles[role]))
+            await self._grant_stand_roles(store, (connection_id,))
 
         return connection_id
+
+    @staticmethod
+    async def _grant_stand_roles(
+        store: ConnectionStore, connection_ids: Sequence[UUID]
+    ) -> None:
+        """Выдаёт подключения всем ролям стенда."""
+        roles = StoredRole.by_name(await store.roles())
+        targets: list[GrantTarget] = []
+        for role_names in StandConfig.STAND_ROLES.values():
+            for role in role_names:
+                targets.append(GrantTarget.role(roles[role]))
+
+        for connection_id in connection_ids:
+            for target in targets:
+                await store.grant(connection_id, target)
 
     def remove_connections(self, prefix: str) -> None:
         """Подключения стенда по префиксу имени: снос за сеятелями каталога."""
@@ -306,20 +328,12 @@ class StandDatabase:
                         )
                     )
 
-            roles = StoredRole.by_name(await store.roles())
-            targets: list[GrantTarget] = []
-            for role_names in StandConfig.STAND_ROLES.values():
-                for role in role_names:
-                    targets.append(GrantTarget.role(roles[role]))
-
             rows = [
                 await store.add("main", self._postgres),
                 await store.add("main", clickhouse),
                 await store.add("stand", web),
             ]
-            for connection_id in rows:
-                for target in targets:
-                    await store.grant(connection_id, target)
+            await self._grant_stand_roles(store, rows)
 
     async def _execute(
         self, query: sql.Composed, params: tuple[Any, ...] | None

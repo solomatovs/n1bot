@@ -404,7 +404,7 @@ class WorkflowService:
             raise WorkflowError(WorkflowRefusal.BAD_SPEC, msg)
         registry = await self._registry()
         subject = context.subject
-        invoker = ToolInvoker(registry.for_headless(subject.roles, subject.profile))
+        invoker = ToolInvoker.for_subject(registry, subject)
         initial = self.initial_state(graph)
 
         lock = await self._locks.acquire(

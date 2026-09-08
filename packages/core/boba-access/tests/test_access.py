@@ -10,6 +10,7 @@ from boba.access import (
     ToolAccessError,
     ToolAvailability,
     ToolGrant,
+    ToolSurfaces,
 )
 
 
@@ -46,10 +47,12 @@ class TestProfileGrant:
 
 class TestToolAccess:
     ACCESS = ToolAccess(
-        tool_names=["query", "list_targets", "visualize", "canvas_open"],
+        tool_names=["query", "list_targets", "visualize", "canvas_open", "snapshot"],
         roles={
             "ADM": ToolGrant(tools=["*"]),
-            "DEV": ToolGrant(tools=["list_targets", "visualize", "canvas_open"]),
+            "DEV": ToolGrant(
+                tools=["list_targets", "visualize", "canvas_open", "snapshot"]
+            ),
             "EMPTY": ToolGrant(tools=[]),
         },
         profiles={
@@ -57,7 +60,9 @@ class TestToolAccess:
             "search": ProfileGrant(tools=["list_targets"], roles=["*"]),
             "adm-only": ProfileGrant(tools=["*"], roles=["ADM"]),
         },
-        chat_only=["canvas_open"],
+        surfaces=ToolSurfaces(
+            chat_only=frozenset({"canvas_open"}), headless_only=frozenset({"snapshot"})
+        ),
     )
 
     def test_role_and_profile_both_cover(self) -> None:
@@ -104,6 +109,16 @@ class TestToolAccess:
         decision = self.ACCESS.decide("canvas_open", {"EMPTY"}, "general")
         assert decision is ToolAvailability.DENIED
 
+    def test_headless_only_is_allowed_outside_chat_only(self) -> None:
+        decision = self.ACCESS.decide("snapshot", {"DEV"}, "general")
+        assert decision is ToolAvailability.HEADLESS_ONLY
+        assert decision.headless
+        assert not decision.in_chat
+        assert self.ACCESS.allowed("snapshot", {"DEV"}, "general")
+        assert self.ACCESS.decide("snapshot", {"EMPTY"}, "general") is (
+            ToolAvailability.DENIED
+        )
+
 
 class TestGrantChecks:
     def test_role_typo_is_refused(self) -> None:
@@ -116,4 +131,16 @@ class TestGrantChecks:
 
     def test_stray_chat_only_is_refused(self) -> None:
         with pytest.raises(ToolAccessError, match="ghost"):
-            ToolAccess(["query"], {}, {}, chat_only=["ghost"])
+            ToolAccess(["query"], {}, {}, ToolSurfaces(chat_only=frozenset({"ghost"})))
+
+    def test_headless_only_must_be_built_and_not_chat_only(self) -> None:
+        with pytest.raises(ToolAccessError, match="ghost"):
+            ToolAccess(
+                ["query"], {}, {}, ToolSurfaces(headless_only=frozenset({"ghost"}))
+            )
+
+        both = ToolSurfaces(
+            chat_only=frozenset({"query"}), headless_only=frozenset({"query"})
+        )
+        with pytest.raises(ToolAccessError, match="both"):
+            ToolAccess(["query"], {}, {}, both)

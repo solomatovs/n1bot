@@ -469,6 +469,10 @@ class StudioConfig(BaseModel):
     def socket_path(self) -> str:
         return f"{self.api_prefix()}{StudioPath.SOCKET}"
 
+    def page_prefix(self) -> str:
+        """Полный адрес страницы studio: {prefix}/workflow."""
+        return f"{self.url_prefix}{StudioPath.PAGE}"
+
 
 class ProcessLogging:
     """Логирование процесса по умолчанию: приложение в stderr, access-лог в stdout."""

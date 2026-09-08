@@ -6,16 +6,16 @@ from collections.abc import AsyncIterator
 from uuid import UUID
 
 import pytest
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
+from studio_stand import ApiStand
 
 from boba.chat.http import HttpConfig
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.chat.provider import OpenAiChatConfig
 from boba.identity.api import AuthenticatedUser
 from boba.identity.signin import SignInMetadata
-from boba.stand.auth import MemoryUsers, StubAuthenticator
+from boba.stand.auth import MemoryUsers
 from boba.stand.refs import StandRefs
-from boba.studio.api.app import ApiAccess, ApiApp
 from boba.studio.api.urls import AccountUrl, ApiVersion, ConnectionUrl
 
 pytestmark = pytest.mark.anyio
@@ -63,30 +63,20 @@ def _user(roles: list[str]) -> AuthenticatedUser:
     )
 
 
-async def _client(user: AuthenticatedUser | None) -> AsyncClient:
-    access = ApiAccess(
-        StubAuthenticator(user),
-        StubAuthenticator.COOKIE,
-        MemoryUsers(user).source,
-    )
-    app = ApiApp.build(StandRefs.none(), access, _profiles(), None)
-
-    return AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://api",
-        cookies=StubAuthenticator.cookies(),
-    )
+def _client(user: AuthenticatedUser | None) -> AsyncClient:
+    stand = ApiStand(StandRefs.none(), _profiles(), users=MemoryUsers(user).source)
+    return stand.client(user)
 
 
 @pytest.fixture
 async def reader() -> AsyncIterator[AsyncClient]:
-    async with await _client(_user(["DEV"])) as client:
+    async with _client(_user(["DEV"])) as client:
         yield client
 
 
 @pytest.fixture
 async def anonymous() -> AsyncIterator[AsyncClient]:
-    async with await _client(None) as client:
+    async with _client(None) as client:
         yield client
 
 

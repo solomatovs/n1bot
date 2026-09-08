@@ -10,7 +10,12 @@ type Props = {
   onAdd: (tool: string) => void;
 };
 
-const ORDER: ToolAvailability[] = ["available", "chat_only", "denied"];
+const ORDER: ToolAvailability[] = ["available", "headless_only", "chat_only", "denied"];
+
+/** В workflow инструмент зовётся вне чата: годятся available и headless_only. */
+function usable(availability: ToolAvailability): boolean {
+  return availability === "available" || availability === "headless_only";
+}
 
 /** Меню «+ Tool» билдера: инструменты каталога по доступности. */
 export function ToolMenu({ catalog, onAdd }: Props): ReactElement {
@@ -60,7 +65,7 @@ export function ToolMenu({ catalog, onAdd }: Props): ReactElement {
                 {group.map((name) => (
                   <MenuItem
                     key={name}
-                    disabled={availability !== "available"}
+                    disabled={!usable(availability)}
                     onClick={() => {
                       onAdd(name);
                       setOpen(false);

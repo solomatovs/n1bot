@@ -10,17 +10,19 @@
 400 — спека негодна или содержит недоступные инструменты.
 404 — workflow или запуск не пользователя.
 202 — запуск ведёт другой инстанс: команда остановки принята шиной.
-503 — хранилище workflow недоступно.
+503 — хранилище workflow недоступно; [workflow] выключен — ServiceDisabledError,
+    её переводит DomainErrorMiddleware.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import Any, ClassVar, TypeVar
+from typing import Any, ClassVar
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, FastAPI, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.chat.profiles import ChatProfiles
@@ -41,13 +43,11 @@ from boba.workflow_engine.service import (
     WorkflowService,
 )
 
-__all__ = ["WorkflowApi", "WorkflowBody"]
+__all__ = ["Deleted", "WorkflowApi", "WorkflowBody", "WorkflowHttp"]
 
 logger = logging.getLogger(__name__)
 
 ServiceSource = Callable[[], Awaitable[WorkflowService]]
-
-T = TypeVar("T")
 
 
 class WorkflowBody(BaseModel):
@@ -110,7 +110,8 @@ class WorkflowApi:
         self._service = service
         self._profiles = profiles
 
-    def mount(self, router: APIRouter) -> None:
+    def mount(self, app: FastAPI, router: APIRouter) -> None:
+        WorkflowHttp.install(app)
         routes = (
             (WorkflowUrl.VALIDATE, self.validate, "POST"),
             (WorkflowUrl.WORKFLOWS, self.list_workflows, "GET"),
@@ -132,31 +133,26 @@ class WorkflowApi:
         self, body: WorkflowBody, current_user: CurrentUser, profile: str | None = None
     ) -> RunState:
         identity = self._identity(current_user, self._chosen(body.profile, profile))
-        service = await self._resolved()
+        service = await self._service()
 
-        try:
-            graph = await service.validate(identity.subject, body.spec)
-        except WorkflowError as exc:
-            raise self._http(exc) from exc
+        graph = await service.validate(identity.subject, body.spec)
 
         return service.initial_state(graph)
 
     async def list_workflows(
         self, identity: CurrentSubject
     ) -> Sequence[StoredWorkflow]:
-        service = await self._resolved()
+        service = await self._service()
 
-        return await self._guarded(service.list_workflows(identity.subject))
+        return await service.list_workflows(identity.subject)
 
     async def save(
         self, body: WorkflowBody, current_user: CurrentUser, profile: str | None = None
     ) -> StoredWorkflow:
         identity = self._identity(current_user, self._chosen(body.profile, profile))
-        service = await self._resolved()
+        service = await self._service()
 
-        return await self._guarded(
-            service.save(identity.subject, body.spec, body.layout)
-        )
+        return await service.save(identity.subject, body.spec, body.layout)
 
     async def save_into(
         self,
@@ -166,21 +162,21 @@ class WorkflowApi:
         profile: str | None = None,
     ) -> StoredWorkflow:
         identity = self._identity(current_user, self._chosen(body.profile, profile))
-        service = await self._resolved()
+        service = await self._service()
 
-        return await self._guarded(
-            service.save_into(identity.subject, workflow_id, body.spec, body.layout)
+        return await service.save_into(
+            identity.subject, workflow_id, body.spec, body.layout
         )
 
     async def get(self, workflow_id: UUID, identity: CurrentSubject) -> StoredWorkflow:
-        service = await self._resolved()
+        service = await self._service()
 
-        return await self._guarded(service.get(identity.subject, workflow_id))
+        return await service.get(identity.subject, workflow_id)
 
     async def delete(self, workflow_id: UUID, identity: CurrentSubject) -> Deleted:
-        service = await self._resolved()
+        service = await self._service()
 
-        deleted = await self._guarded(service.delete(identity.subject, workflow_id))
+        deleted = await service.delete(identity.subject, workflow_id)
         return Deleted(deleted=deleted)
 
     async def put_draft(
@@ -191,12 +187,10 @@ class WorkflowApi:
         profile: str | None = None,
     ) -> StoredWorkflow:
         identity = self._identity(current_user, self._chosen(body.profile, profile))
-        service = await self._resolved()
+        service = await self._service()
 
-        return await self._guarded(
-            service.put_draft(
-                identity.subject, workflow_id, body.spec, body.layout, body.sid
-            )
+        return await service.put_draft(
+            identity.subject, workflow_id, body.spec, body.layout, body.sid
         )
 
     async def clear_draft(
@@ -205,11 +199,9 @@ class WorkflowApi:
         identity: CurrentSubject,
         sid: str = "",
     ) -> StoredWorkflow:
-        service = await self._resolved()
+        service = await self._service()
 
-        return await self._guarded(
-            service.clear_draft(identity.subject, workflow_id, sid)
-        )
+        return await service.clear_draft(identity.subject, workflow_id, sid)
 
     async def run(
         self,
@@ -219,12 +211,12 @@ class WorkflowApi:
         profile: str | None = None,
     ) -> RunStarted:
         identity = self._identity(current_user, self._chosen(body.profile, profile))
-        service = await self._resolved()
+        service = await self._service()
 
         run_id = service.new_run_id()
         context = identity.context(Scope.workflow(run_id))
-        stored = await self._guarded(service.get(identity.subject, workflow_id))
-        started = await self._guarded(service.start(context, stored, run_id))
+        stored = await service.get(identity.subject, workflow_id)
+        started = await service.start(context, stored, run_id)
 
         service.launch(context, started)
 
@@ -235,14 +227,14 @@ class WorkflowApi:
         identity: CurrentSubject,
         limit: int = 50,
     ) -> Sequence[StoredRun]:
-        service = await self._resolved()
+        service = await self._service()
 
-        return await self._guarded(service.list_runs(identity.subject, limit))
+        return await service.list_runs(identity.subject, limit)
 
     async def get_run(self, run_id: UUID, identity: CurrentSubject) -> StoredRun:
-        service = await self._resolved()
+        service = await self._service()
 
-        return await self._guarded(service.get_run(identity.subject, run_id))
+        return await service.get_run(identity.subject, run_id)
 
     async def stop(
         self,
@@ -253,9 +245,9 @@ class WorkflowApi:
         profile: str | None = None,
     ) -> Stopped:
         identity = self._identity(current_user, self._chosen(body.profile, profile))
-        service = await self._resolved()
+        service = await self._service()
 
-        outcome = await self._guarded(service.stop(identity.subject, run_id))
+        outcome = await service.stop(identity.subject, run_id)
         if outcome is StopOutcome.ACCEPTED:
             response.status_code = 202
 
@@ -274,25 +266,30 @@ class WorkflowApi:
     ) -> ApiSubject:
         return ApiAuth.resolve(current_user, profile, self._profiles)
 
-    async def _resolved(self) -> WorkflowService:
-        try:
-            return await self._service()
-        except RuntimeError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+class WorkflowHttp:
+    """Перевод отказов сервиса workflow в HTTP-ответы обработчиками
+    исключений приложения."""
+
+    @classmethod
+    def install(cls, app: FastAPI) -> None:
+        app.add_exception_handler(WorkflowError, cls.refusal)
+        app.add_exception_handler(WorkflowStoreError, cls.store_failure)
 
     @staticmethod
-    async def _guarded(action: Awaitable[T]) -> T:
-        """Отказы сервиса и хранилища — в HTTP-статусы."""
-        try:
-            return await action
-        except WorkflowError as exc:
-            raise WorkflowApi._http(exc) from exc
-        except WorkflowStoreError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+    async def refusal(request: Request, exc: Exception) -> Response:
+        if not isinstance(exc, WorkflowError):
+            raise exc
 
-    @staticmethod
-    def _http(exc: WorkflowError) -> HTTPException:
         if exc.kind == WorkflowRefusal.NOT_FOUND:
-            return HTTPException(status_code=404, detail=str(exc))
+            return WorkflowHttp._reply(404, str(exc))
 
-        return HTTPException(status_code=400, detail=str(exc))
+        return WorkflowHttp._reply(400, str(exc))
+
+    @staticmethod
+    async def store_failure(request: Request, exc: Exception) -> Response:
+        return WorkflowHttp._reply(503, str(exc))
+
+    @staticmethod
+    def _reply(status: int, detail: str) -> Response:
+        return JSONResponse(status_code=status, content={"detail": detail})

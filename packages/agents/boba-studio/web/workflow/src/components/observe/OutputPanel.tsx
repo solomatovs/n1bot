@@ -1,12 +1,9 @@
 import { type ReactElement, useCallback, useEffect, useRef, useState } from "react";
 
-import { ApiError } from "../../api/client";
-import { useServices } from "../../app";
+import { ApiError } from "../../api/transport";
+import { useServices } from "../../services";
 import type { ChannelView, StreamEvent, StreamSlice } from "../../model/workflow";
-import { Alert } from "../../ui/Alert";
-import { errorText } from "../Async";
-import { Segmented } from "../../ui/Segmented";
-import { Eyebrow } from "../../ui";
+import { Alert, Code, Eyebrow, Segmented } from "../../ui";
 
 type Props = {
   runId: string;
@@ -38,7 +35,7 @@ export function OutputPanel({ runId, callId }: Props): ReactElement | null {
       },
       (failure: unknown) => {
         if (!(failure instanceof ApiError && failure.status === 404)) {
-          setError(errorText(failure));
+          setError(ApiError.describe(failure));
         }
       },
     );
@@ -91,7 +88,7 @@ export function OutputPanel({ runId, callId }: Props): ReactElement | null {
         setTail(slice);
       } while (wanted());
     } catch (failure: unknown) {
-      setError(errorText(failure));
+      setError(ApiError.describe(failure));
     } finally {
       pulling.current = false;
     }
@@ -144,7 +141,7 @@ export function OutputPanel({ runId, callId }: Props): ReactElement | null {
         )}
       </div>
       {error !== "" && <Alert tone="error">{error}</Alert>}
-      <pre className="output__text">{text}</pre>
+      <Code inset>{text}</Code>
     </section>
   );
 }

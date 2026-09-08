@@ -320,8 +320,9 @@ class StandConfig:
 
     @staticmethod
     def _use_catalog_roles(doc: MutableMapping[str, Any]) -> None:
-        """Каталог стенда: DEV читает, ADM правит; без секции ничего не меняется."""
-        if "catalog" not in doc:
+        """Каталог стенда studio: DEV читает, ADM правит; у chainlit секция
+        [catalog] — лишь подключение инструмента снятия, ролей там нет."""
+        if "studio" not in doc:
             return
 
         doc["catalog"]["view_roles"] = ["DEV"]

@@ -125,9 +125,7 @@ class ApiAuth:
     @staticmethod
     async def subject_of(request: Request) -> ApiSubject:
         """Резолвер для общих API (соединения): профиль из ?profile= запроса."""
-        profile = request.query_params.get("profile")
-
-        return await ApiAuth.of_app(request.app).subject_of_request(request, profile)
+        return await ApiAuth.subject(request, request.query_params.get("profile"))
 
 
 CurrentUser = Annotated[AuthenticatedUser, Depends(ApiAuth.current)]

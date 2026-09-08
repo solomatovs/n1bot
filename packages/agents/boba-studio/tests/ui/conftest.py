@@ -12,7 +12,9 @@ import pytest
 
 pytest.importorskip("playwright.sync_api", reason="ui-тестам нужен playwright")
 
-from studio_ui import BOOT_TIMEOUT_SEC
+from catalog_ui import Api, ConnectionSeed, Seed, api_client
+from playwright._impl._api_structures import SetCookieParam
+from studio_ui import BOOT_TIMEOUT_SEC, login_cookies
 
 from boba.stand.ui.database import StandDatabase
 from boba.stand.ui.fake_llm import serve
@@ -112,3 +114,41 @@ def workflow_stand(
         yield process
     finally:
         process.stop()
+
+
+@pytest.fixture(scope="session")
+def auth_cookies(stand: StandProcess) -> list[SetCookieParam]:
+    return login_cookies(stand)
+
+
+@pytest.fixture(scope="module")
+def catalog_api(stand: StandProcess, stand_db: StandDatabase) -> Iterator[Api]:
+    """JSON API каталога от имени admin; один клиент на модуль. Подключения
+    сеятели кладут в базу стенда напрямую."""
+    with api_client(stand, "admin") as admin:
+        yield Api(admin, stand_db)
+
+
+@pytest.fixture(scope="module")
+def catalog_seed(catalog_api: Api) -> Iterator[Seed]:
+    """Процесс модуля ed_process над подключением ed_prod: публикуется на
+    входе, на выходе удаляется вместе с версиями и подключением, чтобы
+    соседние модули видели прежний каталог."""
+    seed = Seed(catalog_api)
+    seed.publish("module seed")
+    try:
+        yield seed
+    finally:
+        seed.cleanup()
+
+
+@pytest.fixture(scope="module")
+def connection_seed(catalog_api: Api) -> Iterator[ConnectionSeed]:
+    """Подключения модуля: postgres с двумя версиями из образца, clickhouse с
+    одной, postgres без версий; на выходе версии забываются, подключения
+    снимаются."""
+    seed = ConnectionSeed(catalog_api)
+    try:
+        yield seed
+    finally:
+        seed.cleanup()

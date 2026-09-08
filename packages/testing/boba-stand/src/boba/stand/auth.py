@@ -20,27 +20,28 @@ __all__ = ["MemoryUsers", "NoThreads", "NoUsers", "StubAuthenticator"]
 
 
 class StubAuthenticator(Authenticator):
-    """Вход стенда: один известный токен -> заданный пользователь."""
+    """Вход стенда: один известный токен -> пользователь user; стенд меняет
+    его между клиентами."""
 
     COOKIE: ClassVar[str] = "access_token"
     TOKEN: ClassVar[str] = "stand-token"  # noqa: S105 — токен стенда, не секрет
 
     def __init__(self, user: AuthenticatedUser | None) -> None:
-        self._user = user
+        self.user = user
 
     async def user_of_token(self, token: str) -> AuthenticatedUser:
         if token != self.TOKEN:
             msg = f"stand authenticator: expected token {self.TOKEN!r}, got {token!r}"
             raise AuthenticationError(msg)
 
-        if self._user is None:
+        if self.user is None:
             msg = (
                 f"stand authenticator: token {token!r} is valid but the stand "
-                f"was built without a signed-in user"
+                f"has no signed-in user"
             )
             raise AuthenticationError(msg)
 
-        return self._user
+        return self.user
 
     @classmethod
     def cookies(cls) -> dict[str, str]:

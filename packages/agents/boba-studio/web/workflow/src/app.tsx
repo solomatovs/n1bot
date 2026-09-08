@@ -1,8 +1,11 @@
-import { createContext, type ReactElement, useContext, useEffect, useMemo, useRef } from "react";
+import { type ReactElement, useCallback, useEffect, useMemo, useRef } from "react";
 import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 
 import { WorkflowApi } from "./api/client";
 import { RunSocket } from "./api/socket";
+import { HttpTransport } from "./api/transport";
+import { catalogRoutes } from "./catalog/services";
+import { ServicesContext, useServices, type Services } from "./services";
 import { Shell } from "./components/shell/Shell";
 import { PageUrls, pageConfig } from "./config";
 import { ToastProvider } from "./ui";
@@ -11,68 +14,60 @@ import { BuildPage } from "./pages/BuildPage";
 import { LoginPage } from "./pages/LoginPage";
 import { ObservePage } from "./pages/ObservePage";
 
-/** Общие для страниц службы: адреса и API-клиент.
- *
- * Профиль studio не выбирает: запросы идут без него, сервер берёт профиль
- * по умолчанию (general). Профили — механика chainlit; их роль здесь со
- * временем займут сами workflow. */
-export type Services = {
-  urls: PageUrls;
-  api: WorkflowApi;
-  socket: RunSocket;
-};
-
-const ServicesContext = createContext<Services | null>(null);
-
-export function useServices(): Services {
-  const services = useContext(ServicesContext);
-  if (services === null) {
-    throw new Error("services are provided by App only");
-  }
-
-  return services;
-}
-
 function LegacyRun(): ReactElement {
   const { runId } = useParams();
-  return <Navigate to={`/runs/${runId ?? ""}`} replace />;
+  return <Navigate to={PageUrls.run(runId ?? "")} replace />;
 }
 
 function LegacyWorkflow(): ReactElement {
   const { workflowId } = useParams();
-  return <Navigate to={`/workflow/${workflowId ?? ""}`} replace />;
+  return <Navigate to={PageUrls.workflow(workflowId ?? "")} replace />;
 }
 
 function LegacyBuild(): ReactElement {
   const { workflowId } = useParams();
   if (workflowId === "new") {
-    return <Navigate to="/workflow" replace />;
+    return <Navigate to={PageUrls.workflow()} replace />;
   }
 
-  return <Navigate to={`/workflow/${workflowId ?? ""}`} replace />;
+  return <Navigate to={PageUrls.workflow(workflowId ?? "")} replace />;
 }
 
-/** 401 от api в любом месте уводит на вход, запоминая, откуда ушли. */
-function SignedInOnly(): ReactElement {
-  const { api } = useServices();
+/** Куда уводить на 401: вход с памятью, откуда ушли. Обработчик один на
+ * всё время жизни страницы: адрес читается в момент отказа, иначе смена
+ * адреса пересобирала бы службы, которые на него подписаны. */
+function useSignIn(): () => void {
   const navigate = useNavigate();
   const location = useLocation();
+  const current = useRef({ navigate, location });
+  current.current = { navigate, location };
+
+  return useCallback(() => {
+    const { navigate: go, location: at } = current.current;
+    void go(PageUrls.login(), { replace: true, state: { next: `${at.pathname}${at.search}` } });
+  }, []);
+}
+
+/** 401 от api в любом месте уводит на вход, запоминая, откуда ушли: один
+ * обработчик на транспорте, общий для всех клиентов. */
+function SignedInOnly(): ReactElement {
+  const { transport } = useServices();
+  const signIn = useSignIn();
 
   useEffect(() => {
-    api.onUnauthorized(() => {
-      void navigate("/login", { replace: true, state: { next: `${location.pathname}${location.search}` } });
-    });
+    transport.onUnauthorized(signIn);
 
     return () => {
-      api.onUnauthorized(null);
+      transport.onUnauthorized(null);
     };
-  }, [api, navigate, location.pathname, location.search]);
+  }, [transport, signIn]);
 
   return <Outlet />;
 }
 
 export function App(): ReactElement {
   const urls = useMemo(() => new PageUrls(pageConfig()), []);
+  const transport = useMemo(() => new HttpTransport(urls), [urls]);
   const socket = useRef<RunSocket | null>(null);
   socket.current ??= new RunSocket(urls);
   const liveSocket = socket.current;
@@ -87,18 +82,18 @@ export function App(): ReactElement {
         }
 
         refreshing.current = true;
-        void new WorkflowApi(urls)
+        void new WorkflowApi(transport)
           .refreshSession()
           .catch(() => false)
           .then(() => {
             refreshing.current = false;
           });
       }),
-    [liveSocket, urls],
+    [liveSocket, transport],
   );
   const services = useMemo<Services>(
-    () => ({ urls, api: new WorkflowApi(urls), socket: liveSocket }),
-    [urls, liveSocket],
+    () => ({ urls, transport, api: new WorkflowApi(transport), socket: liveSocket }),
+    [urls, transport, liveSocket],
   );
 
   return (
@@ -106,23 +101,24 @@ export function App(): ReactElement {
       <BrowserRouter basename={services.urls.routerBase}>
         <ToastProvider>
         <Routes>
-          <Route path="/login" element={<LoginPage />} />
+          <Route path={PageUrls.login()} element={<LoginPage />} />
           <Route element={<SignedInOnly />}>
-            <Route path="/account" element={<AccountPage />} />
+            <Route path={PageUrls.account()} element={<AccountPage />} />
+            {catalogRoutes()}
             <Route element={<Shell />}>
-              <Route path="/workflow" element={<BuildPage />} />
-              <Route path="/workflow/:workflowId" element={<BuildPage />} />
-              <Route path="/runs/:runId" element={<ObservePage />} />
+              <Route path={PageUrls.workflow()} element={<BuildPage />} />
+              <Route path={PageUrls.workflow(":workflowId")} element={<BuildPage />} />
+              <Route path={PageUrls.run(":runId")} element={<ObservePage />} />
             </Route>
           </Route>
           <Route path="/run/:runId" element={<LegacyRun />} />
           <Route path="/observe/:runId" element={<LegacyRun />} />
-          <Route path="/observe" element={<Navigate to="/workflow" replace />} />
+          <Route path="/observe" element={<Navigate to={PageUrls.workflow()} replace />} />
           <Route path="/build/:workflowId" element={<LegacyBuild />} />
-          <Route path="/build" element={<Navigate to="/workflow" replace />} />
+          <Route path="/build" element={<Navigate to={PageUrls.workflow()} replace />} />
           <Route path="/w/:workflowId" element={<LegacyWorkflow />} />
-          <Route path="/new" element={<Navigate to="/workflow" replace />} />
-          <Route path="*" element={<Navigate to="/workflow" replace />} />
+          <Route path="/new" element={<Navigate to={PageUrls.workflow()} replace />} />
+          <Route path="*" element={<Navigate to={PageUrls.workflow()} replace />} />
         </Routes>
         </ToastProvider>
       </BrowserRouter>

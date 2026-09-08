@@ -37,6 +37,7 @@ from boba.catalog.base import CatalogError, CatalogInvariantError, CatalogModel
 
 __all__ = [
     "Keyed",
+    "NameList",
     "NodeColumn",
     "ObjectCard",
     "ObjectFamily",
@@ -175,6 +176,31 @@ class ObjectCard(CatalogModel):
     ref: ObjectRef
 
 
+class NameList:
+    """Список имён одной строкой — аргумент инструментов: схемы снятия,
+    подписи узлов. Единственное место, где строка разбирается и собирается:
+    имена через запятую, пробелы вокруг и пустые куски игнорируются."""
+
+    SEPARATOR: ClassVar[str] = ","
+    RENDERED: ClassVar[str] = ", "
+
+    @classmethod
+    def parse(cls, raw: str) -> tuple[str, ...]:
+        names: list[str] = []
+        for piece in raw.split(cls.SEPARATOR):
+            name = piece.strip()
+            if name == "":
+                continue
+
+            names.append(name)
+
+        return tuple(names)
+
+    @classmethod
+    def render(cls, names: Iterable[str]) -> str:
+        return cls.RENDERED.join(names)
+
+
 class TreeKind(StrEnum):
     """Что за узел в дереве источника."""
 
@@ -196,6 +222,26 @@ class TreeNode(CatalogModel):
     detail: str = ""
     comment: str | None = None
     ref: ObjectRef | None = None
+
+    @classmethod
+    def object(
+        cls,
+        steps: tuple[str, ...],
+        label: str,
+        ref: ObjectRef,
+        detail: str,
+        comment: str | None,
+    ) -> TreeNode:
+        """Лист-объект под ступенями steps; детей у него нет."""
+        return cls(
+            path=(*steps, label),
+            label=label,
+            kind=TreeKind.OBJECT,
+            expandable=False,
+            detail=detail,
+            comment=comment,
+            ref=ref,
+        )
 
 
 class PartScope(CatalogModel):
@@ -220,16 +266,6 @@ class TreeScope(CatalogModel):
     складываются."""
 
     parts: tuple[PartScope, ...] = ()
-
-    def part_names(self) -> tuple[str, ...]:
-        names: list[str] = []
-        for scope in self.parts:
-            if scope.part in names:
-                continue
-
-            names.append(scope.part)
-
-        return tuple(names)
 
     def keeps(self, part: str, record: SourceRecord) -> bool:
         """Запись части попадает хотя бы в одну область."""
@@ -284,8 +320,7 @@ RecordT = TypeVar("RecordT", bound=SourceRecord)
 
 
 class Records:
-    """Выборки из кортежа записей: без записи по ключу, без детей родителя,
-    только записи нужной модели."""
+    """Выборки из кортежа записей: только записи нужной модели."""
 
     @staticmethod
     def of_type(
@@ -295,32 +330,6 @@ class Records:
         for record in records:
             if isinstance(record, model):
                 kept.append(record)
-
-        return tuple(kept)
-
-    @staticmethod
-    def without_key(
-        records: Sequence[RecordT], key: tuple[str, ...]
-    ) -> tuple[RecordT, ...]:
-        kept: list[RecordT] = []
-        for record in records:
-            if record.key == key:
-                continue
-
-            kept.append(record)
-
-        return tuple(kept)
-
-    @staticmethod
-    def without_parent(
-        records: Sequence[RecordT], parent: tuple[str, ...]
-    ) -> tuple[RecordT, ...]:
-        kept: list[RecordT] = []
-        for record in records:
-            if record.parent == parent:
-                continue
-
-            kept.append(record)
 
         return tuple(kept)
 
@@ -391,8 +400,8 @@ class SourceSnapshot(CatalogModel):
     PARTS: ClassVar[tuple[SnapshotPart, ...]] = ()
     FAMILIES: ClassVar[tuple[ObjectFamily, ...]] = ()
     SYNC_TOOL: ClassVar[str] = ""
-    """Имя инструмента, который снимает структуру источника кадрами
-    синхронизации; пусто — у вида нет синхронизации."""
+    """Имя инструмента, который снимает структуру источника в домен
+    каталога; пусто — у вида нет синхронизации."""
 
     kind: str
     """kind типа соединения; подкласс закрепляет его литералом."""
@@ -474,11 +483,6 @@ class SourceSnapshot(CatalogModel):
         """Записи части по имени поля снимка."""
         self.part(part)
         return tuple(getattr(self, part))
-
-    def with_records(self, part: str, records: Iterable[SourceRecord]) -> Self:
-        """Копия снимка с заменённой частью."""
-        self.part(part)
-        return self.model_copy(update={part: tuple(records)})
 
     def narrowed(self, scope: TreeScope) -> Self:
         """Частичный снимок: только записи областей scope, остальные части
@@ -595,6 +599,13 @@ class SourceSnapshot(CatalogModel):
             names.append(column.label)
 
         return names
+
+    @classmethod
+    def type_widens(cls, old: str, new: str) -> bool:
+        """Новый тип колонки принимает всё, что принимал старый: тот же тип
+        либо шире (varchar(30) → varchar(500)). База знает только равенство;
+        вид источника переопределяет своим разбором типов."""
+        return old == new
 
     @classmethod
     @abstractmethod

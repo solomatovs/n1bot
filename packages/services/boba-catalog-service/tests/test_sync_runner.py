@@ -1,9 +1,9 @@
 """Синхронизация подключения на живом Postgres: фейковый инструмент снятия в
-субпроцессе шлёт кадры образца PgSample тем же каналом, что и настоящий
-pg_schema_snapshot; хост складывает порции в staging и переносит версию
-одной транзакцией. Проверяются полный проход, diff между двумя проходами,
-устаревание привязок процесса, отмена посреди порций, отказы инструмента и
-кадров, права и события шины."""
+субпроцессе кладёт образец PgSample в домен каталога тем же SnapshotWriter,
+что и настоящий pg_schema_snapshot; хост по его итогу записывает версию.
+Проверяются полный проход, diff между двумя проходами, устаревание привязок
+процесса, отмена посреди порций, отказы инструмента и его итога, права и
+события шины."""
 
 from __future__ import annotations
 
@@ -12,20 +12,14 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
-from psycopg import sql
 
-from boba.catalog import ChangeStatus, SourceDiff, SourceKinds, StaleReason
+from boba.catalog import ChangeStatus, SourceDiff, StaleReason
 from boba.catalog.samples import ProcessSample
 from boba.catalog_service import (
     AuthorVia,
-    CatalogConfig,
     CatalogRefusalError,
     CatalogService,
-    ConnectionInfo,
-    ConnectionStore,
     ProcessSpec,
-    ProcessStore,
-    StagingTable,
     SyncCaller,
     SyncClosedError,
     SyncRunningError,
@@ -33,31 +27,26 @@ from boba.catalog_service import (
     SyncSetupError,
     SyncStatus,
 )
-from boba.db.clickhouse.snapshot import ChSnapshot
 from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres.catalog import StagingTable
+from boba.db.postgres.profile import PostgresConfig
 from boba.db.postgres.snapshot import PgSnapshot
 from boba.db.postgres.snapshot_sample import PgSample
-from boba.identity.context import HumanInitiator, NoUserCredential, Scope, Subject
-from boba.messaging import CatalogChanged, ChangeAction, Envelope, MemoryMessageBus
-from boba.stand.catalog_ports import FakeSyncPorts
+from boba.identity.context import HumanInitiator, NoUserCredential, Subject
+from boba.messaging import ChangeAction
+from boba.stand.catalog_ports import FakeConnections, FakeSyncPorts
+from boba.stand.catalog_stand import CatalogStand, ChangeCollector
 from boba.stand.context import TEST_PROFILE
 from boba.stand.fake_sync import FakeSyncScenario
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
-KINDS = SourceKinds.of(PgSnapshot, ChSnapshot)
-SCHEMA = "catalog_sync_test"
 ROLE = "editor"
-CONNECTION_ID = UUID(int=77)
+CONFIG = CatalogStand.config("catalog_sync_test", ("viewer",), (ROLE,))
 CONNECTION_NAME = "prod-pg"
-CONNECTION = ConnectionInfo(id=CONNECTION_ID, name=CONNECTION_NAME, kind="postgres")
-CH_CONNECTION = ConnectionInfo(id=UUID(int=78), name="dwh-ch", kind="clickhouse")
-
-
-def _config() -> CatalogConfig:
-    return CatalogConfig(
-        enable=True, db_schema=SCHEMA, view_roles=("viewer",), edit_roles=(ROLE,)
-    )
+CONNECTION = FakeConnections.info(CONNECTION_NAME, "postgres")
+CONNECTION_ID = CONNECTION.id
+CH_CONNECTION = FakeConnections.info("dwh-ch", "clickhouse")
 
 
 def _subject(user_id: UUID, *roles: str) -> Subject:
@@ -76,90 +65,42 @@ def _caller(subject: Subject) -> SyncCaller:
     )
 
 
-class FakeKindSnapshot(PgSnapshot):
-    """Снимок вида postgres, чей инструмент снятия — фейк стенда."""
-
-    SYNC_TOOL = "fake_pg_snapshot"
-
-
 @pytest.fixture
-async def service(pool: AsyncPostgresPool, tmp_path: Path) -> CatalogService:
-    async with pool.connection() as conn:
-        await conn.execute(
-            sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
-        )
-
-    processes = ProcessStore(_config(), pool)
-    await processes.setup()
-
-    kinds = SourceKinds.of(FakeKindSnapshot, ChSnapshot)
-    connections = ConnectionStore(_config(), kinds, pool)
-    await connections.setup()
-
-    ports = FakeSyncPorts(
-        tmp_path, ROLE, TEST_PROFILE, (CONNECTION, CH_CONNECTION), (EDITOR.user_id,)
-    )
-    return CatalogService(
-        processes, connections, _config(), MemoryMessageBus("test:0"), ports
-    )
+async def service(
+    pool: AsyncPostgresPool, tmp_path: Path, test_postgres: PostgresConfig
+) -> CatalogService:
+    stand = await CatalogStand.build(pool, CONFIG, CatalogStand.fake_kinds())
+    site = stand.fake_site(tmp_path, ROLE, TEST_PROFILE, test_postgres)
+    ports = FakeSyncPorts(site, (CONNECTION, CH_CONNECTION), (EDITOR.user_id,))
+    return stand.service(ports)
 
 
-def _scope(scenario: FakeSyncScenario, **scope: int) -> SyncScope:
+def _scope(scenario: FakeSyncScenario) -> SyncScope:
     schemas: tuple[str, ...] = ()
     if scenario is not FakeSyncScenario.SAMPLE:
         schemas = (scenario.value,)
 
-    return SyncScope(schemas=schemas, **scope)
-
-
-class Collector:
-    """Подписчик области пользователя: копит CatalogChanged."""
-
-    def __init__(self) -> None:
-        self.seen: list[CatalogChanged] = []
-
-    async def __call__(self, envelope: Envelope) -> None:
-        if isinstance(envelope.message, CatalogChanged):
-            self.seen.append(envelope.message)
-
-
-def _listen(service: CatalogService, subject: Subject) -> Collector:
-    bus = service.bus
-    assert isinstance(bus, MemoryMessageBus)
-
-    collector = Collector()
-    bus.subscribe(Scope.user(subject.user_id), collector)
-    return collector
+    return SyncScope(schemas=schemas)
 
 
 async def _staging_tables(pool: AsyncPostgresPool) -> list[str]:
-    async with pool.connection() as conn:
-        cur = await conn.execute(
-            "select table_name from information_schema.tables "
-            "where table_schema = %s and table_name like %s escape '\\'",
-            (SCHEMA, StagingTable.PREFIX.replace("_", "\\_") + "%"),
-        )
-        rows = await cur.fetchall()
-
-    names: list[str] = []
-    for row in rows:
-        names.append(str(row[0]))
-
-    return names
+    async with pool.connection() as conn, conn.cursor() as cur:
+        pattern = StagingTable.pattern_of(CONNECTION_ID)
+        return await StagingTable.names_in(cur, CONFIG.db_schema, pattern)
 
 
-async def test_full_sync_writes_a_version_from_batches(
+async def test_full_sync_writes_a_version(
     service: CatalogService, pool: AsyncPostgresPool
 ) -> None:
-    collector = _listen(service, EDITOR)
+    collector = ChangeCollector.listen(service, EDITOR)
 
     started = await service.start_sync(
-        _caller(EDITOR), CONNECTION_ID, _scope(FakeSyncScenario.SAMPLE, batch_size=2)
+        _caller(EDITOR), CONNECTION_ID, _scope(FakeSyncScenario.SAMPLE)
     )
     assert started.status is SyncStatus.RUNNING
     assert started.connection_name == CONNECTION_NAME
     assert started.kind == "postgres"
-    assert started.scope.batch_size == 2
+    assert started.scope.schemas == ()
 
     done = await service.syncs.wait(started.id)
     assert done.status is SyncStatus.DONE, done.error
@@ -194,7 +135,7 @@ async def test_full_sync_writes_a_version_from_batches(
             sync_events.append(message.action)
 
     assert sync_events[0] is ChangeAction.CREATED
-    assert sync_events.count(ChangeAction.UPDATED) >= 3
+    assert sync_events[-1] is ChangeAction.UPDATED
     connection_events: list[ChangeAction] = []
     for message in collector.seen:
         if message.connection_id == CONNECTION_ID:
@@ -218,7 +159,7 @@ async def test_second_sync_yields_a_diff_and_stale_pins(
     await service.publish(EDITOR, draft.id, AuthorVia.USER)
 
     second = await service.start_sync(
-        _caller(EDITOR), CONNECTION_ID, _scope(FakeSyncScenario.NEXT, batch_size=3)
+        _caller(EDITOR), CONNECTION_ID, _scope(FakeSyncScenario.NEXT)
     )
     finished = await service.syncs.wait(second.id)
     assert finished.status is SyncStatus.DONE, finished.error
@@ -241,31 +182,28 @@ async def test_second_sync_yields_a_diff_and_stale_pins(
     assert StaleReason.OBJECT_REMOVED in reasons
 
 
-async def test_cancel_stops_the_tool_and_drops_staging(
+async def test_cancel_stops_the_tool_and_leaves_no_version(
     service: CatalogService, pool: AsyncPostgresPool
 ) -> None:
     started = await service.start_sync(
         _caller(EDITOR),
         CONNECTION_ID,
-        _scope(FakeSyncScenario.SLOW, batch_size=1, pause_ms=400),
+        _scope(FakeSyncScenario.SLOW),
     )
 
-    async def staged() -> bool:
-        current = await service.sync(EDITOR, started.id)
-        return current.objects_done > 0
-
     for _ in range(100):
-        if await staged():
+        if await _staging_tables(pool):
             break
 
         await asyncio.sleep(0.1)
 
-    assert await _staging_tables(pool) == [f"sync_{started.id.hex}"]
+    # staging инструмента — по таблице на часть снимка в схеме домена
+    tables = await _staging_tables(pool)
+    assert len(tables) == len(PgSnapshot.parts())
 
     cancelled = await service.cancel_sync(EDITOR, started.id)
     assert cancelled.status is SyncStatus.CANCELLED
     assert cancelled.error == "cancelled by the user"
-    assert await _staging_tables(pool) == []
     assert await service.connection_versions(EDITOR, CONNECTION_ID) == []
 
     with pytest.raises(SyncClosedError):
@@ -275,6 +213,7 @@ async def test_cancel_stops_the_tool_and_drops_staging(
         _caller(EDITOR), CONNECTION_ID, _scope(FakeSyncScenario.SAMPLE)
     )
     assert (await service.syncs.wait(again.id)).status is SyncStatus.DONE
+    assert await _staging_tables(pool) == []
 
 
 async def test_only_one_sync_per_connection_runs_at_a_time(
@@ -283,7 +222,7 @@ async def test_only_one_sync_per_connection_runs_at_a_time(
     started = await service.start_sync(
         _caller(EDITOR),
         CONNECTION_ID,
-        _scope(FakeSyncScenario.SLOW, batch_size=1, pause_ms=200),
+        _scope(FakeSyncScenario.SLOW),
     )
 
     with pytest.raises(SyncRunningError):
@@ -298,13 +237,11 @@ async def test_only_one_sync_per_connection_runs_at_a_time(
     ("scenario", "expected"),
     [
         (FakeSyncScenario.CRASH, "crashed on purpose"),
-        (FakeSyncScenario.BROKEN_DONE, "sync done declares 0 records of part"),
-        (FakeSyncScenario.WRONG_KIND, "the tool reports a 'clickhouse' snapshot"),
+        (FakeSyncScenario.BROKEN_OUTCOME, "carries no valid version"),
     ],
 )
 async def test_failures_close_the_sync_with_the_reason(
     service: CatalogService,
-    pool: AsyncPostgresPool,
     scenario: FakeSyncScenario,
     expected: str,
 ) -> None:
@@ -314,7 +251,6 @@ async def test_failures_close_the_sync_with_the_reason(
     assert failed.status is SyncStatus.FAILED
     assert failed.error is not None
     assert expected in failed.error
-    assert await _staging_tables(pool) == []
     assert await service.connection_versions(EDITOR, CONNECTION_ID) == []
 
 

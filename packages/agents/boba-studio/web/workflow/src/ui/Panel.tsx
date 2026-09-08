@@ -1,102 +1,104 @@
-import { type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactElement, type ReactNode, useCallback, useState } from "react";
+import type { ReactElement, ReactNode } from "react";
 
+import { Eyebrow } from "./Eyebrow";
 import "./Panel.css";
 
-type Props = {
-  "aria-label": string;
-  className?: string | undefined;
-  /** Узкий экран: панель — ящик поверх сцены, видимость решает open. */
-  open: boolean;
-  /** Широкий экран: свёрнутая панель скрыта, сцена забирает место. */
-  collapsed: boolean;
-  narrow: boolean;
-  /** Ключ localStorage: панель помнит ширину, выбранную ресайзом. */
-  storageKey: string;
-  min?: number;
-  max?: number;
+type PanelProps = {
+  /** Текстовая сцена: ограничить ширину страницей. */
+  page?: boolean;
+  /** Без внутренних отступов: панель внутри секции другой панели. */
+  flat?: boolean;
+  mark?: string | undefined;
   children: ReactNode;
 };
 
-function storedWidth(key: string, min: number, max: number): number | null {
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (raw === null) {
-      return null;
-    }
-
-    const parsed = Number(raw);
-    if (Number.isFinite(parsed)) {
-      return Math.min(Math.max(parsed, min), max);
-    }
-  } catch {
-    // приватное окно: настройка живёт до перезагрузки
+/** Содержимое панели деталей: шапка и секции.
+ * Единственное место, где существуют классы `panel*` и `section*`. */
+export function Panel({ page = false, flat = false, mark, children }: PanelProps): ReactElement {
+  const classes = ["panel"];
+  if (page) {
+    classes.push("panel--page");
   }
-
-  return null;
-}
-
-/** Боковая панель: ресайз за правый край с памятью ширины, сворачивание на
- * широком экране, ящик на узком. Единственное место с классом `list__resize`. */
-export function Panel({
-  className,
-  open,
-  collapsed,
-  narrow,
-  storageKey,
-  min = 200,
-  max = 560,
-  children,
-  ...rest
-}: Props): ReactElement {
-  const [width, setWidth] = useState<number | null>(() => storedWidth(storageKey, min, max));
-
-  const resizeStart = useCallback(
-    (event: ReactPointerEvent<HTMLElement>) => {
-      event.preventDefault();
-      const startX = event.clientX;
-      const panel = (event.target as HTMLElement).closest("aside");
-      const startWidth = panel === null ? min : panel.getBoundingClientRect().width;
-
-      const clamp = (x: number): number => Math.min(Math.max(startWidth + x - startX, min), max);
-      const onMove = (move: PointerEvent): void => {
-        setWidth(clamp(move.clientX));
-      };
-      const onUp = (up: PointerEvent): void => {
-        window.removeEventListener("pointermove", onMove);
-        window.removeEventListener("pointerup", onUp);
-        try {
-          window.localStorage.setItem(storageKey, String(Math.round(clamp(up.clientX))));
-        } catch {
-          // приватное окно: настройка живёт до перезагрузки
-        }
-      };
-
-      window.addEventListener("pointermove", onMove);
-      window.addEventListener("pointerup", onUp);
-    },
-    [storageKey, min, max],
-  );
-
-  const classes = [];
-  if (className !== undefined) {
-    classes.push(className);
-  }
-  if (open) {
-    classes.push("list--open");
-  }
-  if (collapsed) {
-    classes.push("list--collapsed");
-  }
-
-  let style: CSSProperties | undefined;
-  if (!narrow && !collapsed && width !== null) {
-    style = { width: `${width}px` };
+  if (flat) {
+    classes.push("panel--flat");
   }
 
   return (
-    <aside className={classes.join(" ")} style={style} {...rest}>
+    <div className={classes.join(" ")} data-testid={mark}>
       {children}
-      <div className="list__resize" aria-hidden="true" onPointerDown={resizeStart} />
-    </aside>
+    </div>
+  );
+}
+
+type HeadProps = {
+  eyebrow?: ReactNode;
+  name: ReactNode;
+  /** Имя моноширинным: адрес объекта. */
+  mono?: boolean;
+  icon?: ReactNode;
+  actions?: ReactNode;
+  description?: ReactNode;
+  mark?: string | undefined;
+};
+
+/** Шапка панели: надзаголовок, имя, иконка вида, действия справа, описание
+ * под именем во всю ширину. */
+export function PanelHead({ eyebrow, name, mono = false, icon, actions, description, mark }: HeadProps): ReactElement {
+  return (
+    <header className="panel__head" data-testid={mark}>
+      <span className="panel__head-icon">{icon}</span>
+      <span className="panel__head-eyebrow">{eyebrow !== undefined && <Eyebrow>{eyebrow}</Eyebrow>}</span>
+      <h3 className={mono ? "panel__name mono" : "panel__name"} data-testid="panel-name">
+        {name}
+      </h3>
+      {actions !== undefined && <span className="panel__head-actions">{actions}</span>}
+      {description !== undefined && description !== "" && (
+        <p className="panel__description" data-testid="panel-description">
+          {description}
+        </p>
+      )}
+    </header>
+  );
+}
+
+type SectionProps = {
+  title?: ReactNode;
+  actions?: ReactNode;
+  /** Широкое содержимое (таблица) прокручивается внутри секции. */
+  scroll?: boolean;
+  mark?: string | undefined;
+  children?: ReactNode;
+};
+
+/** Секция панели: заголовок капителью с действиями справа и содержимое. */
+export function Section({ title, actions, scroll = false, mark, children }: SectionProps): ReactElement {
+  const classes = ["section"];
+  if (scroll) {
+    classes.push("section--scroll");
+  }
+
+  return (
+    <section className={classes.join(" ")} data-testid={mark}>
+      {(title !== undefined || actions !== undefined) && <SectionHead actions={actions}>{title}</SectionHead>}
+      {children}
+    </section>
+  );
+}
+
+export function SectionHead({ actions, children }: { actions?: ReactNode; children?: ReactNode }): ReactElement {
+  return (
+    <div className="section__head">
+      {children !== undefined && <Eyebrow as="h4">{children}</Eyebrow>}
+      {actions !== undefined && <span className="section__actions">{actions}</span>}
+    </div>
+  );
+}
+
+/** Абзац секции приглушённым: комментарий, описание. */
+export function SectionText({ mark, children }: { mark?: string | undefined; children: ReactNode }): ReactElement {
+  return (
+    <p className="section__text" data-testid={mark}>
+      {children}
+    </p>
   );
 }

@@ -108,7 +108,9 @@ class Sel:
     VITALS_FILL: ClassVar[str] = ".vitals__progress-fill"
     VITALS_DOT: ClassVar[str] = ".vitals__dot"
     VITALS_BADGE: ClassVar[str] = ".vitals__badge"
-    VIEW_TAB_ON: ClassVar[str] = '.viewbar [role="tab"][aria-selected="true"]'
+    VIEW_TAB_ON: ClassVar[str] = (
+        '[data-testid="viewbar"] [role="tab"][aria-selected="true"]'
+    )
     TASK_NODE: ClassVar[str] = ".task-node"
     STAGE_NODE: ClassVar[str] = ".stage-node"
     EDGE_PATH: ClassVar[str] = ".react-flow__edge-path"
@@ -122,9 +124,9 @@ class Sel:
     TL_TICK: ClassVar[str] = ".tl__tick"
     TL_GROUP: ClassVar[str] = ".tl__group"
     TABLE: ClassVar[str] = ".table"
-    PILL: ClassVar[str] = ".pill"
+    PILL: ClassVar[str] = ".chip--status"
     INSPECTOR: ClassVar[str] = ".inspector"
-    INSPECTOR_CODE: ClassVar[str] = ".inspector__code"
+    INSPECTOR_CODE: ClassVar[str] = ".code"
     JSON_KEY: ClassVar[str] = ".json__key"
     JSON_STRING: ClassVar[str] = ".json__string"
     JSON_BRACE: ClassVar[str] = ".json__open"
@@ -134,8 +136,8 @@ class Sel:
     ARG_KEY: ClassVar[str] = ".arg-row__key"
     ARG_VALUE: ClassVar[str] = ".arg-row__value"
     ARG_INTENT: ClassVar[str] = 'input[aria-label="task intent"]'
-    BUILDER: ClassVar[str] = ".builder"
-    BUILDER_LABEL: ClassVar[str] = ".builder__label"
+    BUILDER: ClassVar[str] = '[data-testid="builder"]'
+    BUILDER_LABEL: ClassVar[str] = ".toolbar__label"
     MENU_LIST: ClassVar[str] = ".menu__list"
     MENU_ITEM: ClassVar[str] = ".menu__item"
     EDITOR_NODE: ClassVar[str] = ".editor-node"
@@ -634,16 +636,16 @@ class TestObserve:
         expect(result).to_have_attribute("data-kind", "shell")
         expect(result.locator(".chip").first).to_have_text("shell")
         expect(result.locator(".result-view__figure")).to_have_text("exit 0")
-        expect(result.locator(".result__stream").first).to_contain_text("LOOK_ONE")
+        expect(result.locator(".code").first).to_contain_text("LOOK_ONE")
         assert (
-            Css.of(result.locator(".result__label").first, "text-transform")
+            Css.of(result.locator(".eyebrow").first, "text-transform")
             == "uppercase"
         )
         assert Css.of(result.locator(".result__fact dt").first, "color") == tokens.rgb(
             "muted"
         )
 
-        code = inspector.locator(Sel.INSPECTOR_CODE).first
+        code = inspector.get_by_test_id("task-args")
         assert "geist mono" in Css.of(code, "font-family").lower()
         key = code.locator(Sel.JSON_KEY).first
         expect(key).to_have_text("command")
@@ -867,7 +869,7 @@ class TestLightTheme:
 class TestResponsive:
     """Резиновость: ширины панелей по clamp(), плотность пикселей, масштаб канваса."""
 
-    WIDTHS: ClassVar[tuple[int, ...]] = (1920, 1280, 900)
+    WIDTHS: ClassVar[tuple[int, ...]] = (1920, 1280, 960)
 
     def test_panels_follow_viewport(
         self, browser: Browser, stand: StandProcess, seeded: SeededRun
@@ -959,7 +961,7 @@ class TestOutputPanel:
     """Панель вывода стадии в инспекторе: вкладки каналов, текст из журнала, стили."""
 
     OUTPUT: ClassVar[str] = ".output"
-    OUTPUT_TEXT: ClassVar[str] = ".output__text"
+    OUTPUT_TEXT: ClassVar[str] = ".code"
     OUTPUT_META: ClassVar[str] = ".output__meta"
 
     def test_output_reads_the_journal(

@@ -32,7 +32,6 @@ from boba.catalog import (
 from boba.catalog.samples import ProcessSample
 from boba.catalog_service import (
     AuthorVia,
-    CatalogConfig,
     CatalogStoreError,
     DraftAuthor,
     DraftClosedError,
@@ -47,19 +46,15 @@ from boba.catalog_service import (
 )
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.snapshot_sample import PgSample
+from boba.stand.catalog_stand import CatalogStand
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
-SCHEMA = "catalog_test"
+CONFIG = CatalogStand.config("catalog_test", ("viewer",), ("editor",))
+APP_SCHEMA = CONFIG.app_schema
 EDITOR = UUID(int=7)
 OTHER = UUID(int=8)
 CONNECTION = UUID(int=0x5001)
-
-
-def _config() -> CatalogConfig:
-    return CatalogConfig(
-        enable=True, db_schema=SCHEMA, view_roles=("viewer",), edit_roles=("editor",)
-    )
 
 
 def _author(user_id: UUID) -> DraftAuthor:
@@ -68,15 +63,9 @@ def _author(user_id: UUID) -> DraftAuthor:
 
 @pytest.fixture
 async def store(pool: AsyncPostgresPool) -> ProcessStore:
-    async with pool.connection() as conn:
-        await conn.execute(
-            sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
-        )
-
-    built = ProcessStore(_config(), pool)
-    await built.setup()
-    await built.setup()
-    return built
+    stand = await CatalogStand.build(pool, CONFIG, CatalogStand.kinds())
+    await stand.processes.setup()
+    return stand.processes
 
 
 @pytest.fixture
@@ -527,22 +516,22 @@ async def test_draft_without_a_process_publishes_into_a_new_process(
 async def test_setup_refuses_a_table_of_another_layout(pool: AsyncPostgresPool) -> None:
     """Таблица nodes старого выпуска без process_id: setup не молчит до первого
     запроса, а отказывает с расхождением колонок и советом снести схему."""
+    await CatalogStand.reset(pool, CONFIG)
     async with pool.connection() as conn:
         await conn.execute(
-            sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(SCHEMA))
+            sql.SQL("create schema {}").format(sql.Identifier(APP_SCHEMA))
         )
-        await conn.execute(sql.SQL("create schema {}").format(sql.Identifier(SCHEMA)))
         await conn.execute(
             sql.SQL(
                 "create table {}.nodes (id uuid primary key, source_id uuid not null)"
-            ).format(sql.Identifier(SCHEMA))
+            ).format(sql.Identifier(APP_SCHEMA))
         )
 
     with pytest.raises(CatalogStoreError) as refused:
-        await ProcessStore(_config(), pool).setup()
+        await ProcessStore(CONFIG, pool).setup()
 
     text = str(refused.value)
-    assert f"{SCHEMA}.nodes" in text
+    assert f"{APP_SCHEMA}.nodes" in text
     assert "missing columns ['alias', 'connection_id'" in text
     assert "unexpected columns ['source_id']" in text
     assert "drop the schema" in text

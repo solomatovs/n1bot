@@ -53,7 +53,7 @@ class ObjectChange(CatalogModel):
     parts: tuple[PartChange, ...] = ()
 
 
-class PartTable(CatalogModel):
+class PartRecords(CatalogModel):
     part: PartKind
     old: tuple[SourceRecord, ...]
     new: tuple[SourceRecord, ...]
@@ -65,7 +65,7 @@ class RecordTable(CatalogModel):
     kind: ObjectKind
     old: tuple[SourceRecord, ...]
     new: tuple[SourceRecord, ...]
-    parts: tuple[PartTable, ...] = ()
+    parts: tuple[PartRecords, ...] = ()
 
 
 class SourceDiff(CatalogModel):
@@ -127,10 +127,10 @@ class SourceDiff(CatalogModel):
         """Таблицы сравнения по семействам снимка: объекты семейства и их
         подчасти."""
         for family in new.families():
-            parts: list[PartTable] = []
+            parts: list[PartRecords] = []
             for subpart in family.subparts:
                 parts.append(
-                    PartTable(
+                    PartRecords(
                         part=subpart.kind,
                         old=old.records_of(subpart.part),
                         new=new.records_of(subpart.part),
@@ -184,7 +184,7 @@ class SourceDiff(CatalogModel):
 
     @classmethod
     def _part_changes(
-        cls, parent: tuple[str, ...], parts: Sequence[PartTable]
+        cls, parent: tuple[str, ...], parts: Sequence[PartRecords]
     ) -> Iterator[PartChange]:
         for part in parts:
             old = cls._by_key(cls._children(part.old, parent))

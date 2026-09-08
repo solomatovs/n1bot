@@ -18,13 +18,3 @@ const TERMINAL_RUN: ReadonlySet<RunStatus> = new Set(["done", "failed", "stopped
 export function runFinished(status: RunStatus): boolean {
   return TERMINAL_RUN.has(status);
 }
-
-/** Подпись статуса для людей; ключ — сам статус, чтобы не расходиться с enum. */
-export const STATUS_LABEL: Record<TaskStatus, string> = {
-  pending: "pending",
-  running: "running",
-  done: "done",
-  failed: "failed",
-  skipped: "skipped",
-  stopped: "stopped",
-};

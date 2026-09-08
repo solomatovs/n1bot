@@ -5,9 +5,9 @@ import type { RunState, StoredRun, StoredWorkflow, TaskState, ToolFacts } from "
 /** Сверка zod-моделей страницы с OpenAPI-схемой API на этапе компиляции:
  * разбор на границе остаётся у zod, а расхождение полей ломает сборку.
  * Итоги инструментов исключены: страница добавляет свой kind `opaque`. */
-type Schemas = components["schemas"];
-type Extends<A, B> = [A] extends [B] ? true : false;
-type Assert<T extends true> = T;
+export type Schemas = components["schemas"];
+export type Extends<A, B> = [A] extends [B] ? true : false;
+export type Assert<T extends true> = T;
 
 export type Contract = [
   Assert<Extends<StoredWorkflow, Schemas["StoredWorkflow"]>>,

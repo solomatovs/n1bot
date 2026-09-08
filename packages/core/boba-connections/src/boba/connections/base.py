@@ -10,12 +10,19 @@ ConnectionTypeError — наследник не покрыл обязатель�
 from __future__ import annotations
 
 from typing import Self
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic.json_schema import SkipJsonSchema
 
 from boba.kerberos import KerberosAuthBase, TicketAuth
 
-__all__ = ["ClientIdentity", "ConnectionProfileBase", "ConnectionTypeError"]
+__all__ = [
+    "ClientIdentity",
+    "ConnectionProfileBase",
+    "ConnectionSource",
+    "ConnectionTypeError",
+]
 
 
 class ConnectionTypeError(Exception):
@@ -36,10 +43,31 @@ class ClientIdentity(BaseModel):
     tool: str = Field(min_length=1)
 
 
+class ConnectionSource(BaseModel):
+    """Строка соединений, из которой взят профиль: её id и имя. Хост
+    подписывает ими профиль перед вызовом, чтобы тело инструмента знало, о
+    каком соединении речь (снимок каталога ложится под этим id). Профиль из
+    конфига или формы строки не имеет — нулевой id и пустое имя; в схему
+    форм и в хранилище поле не попадает."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID = UUID(int=0)
+    name: str = ""
+
+    @property
+    def stored(self) -> bool:
+        return self.id.int != 0
+
+
 class ConnectionProfileBase(BaseModel):
     """Профиль соединения; наследник сужает kind до Literal своего значения."""
 
     kind: str = Field(description="Дискриминатор типа: значение задаёт наследник.")
+    source: SkipJsonSchema[ConnectionSource] = Field(
+        default_factory=ConnectionSource,
+        description="Строка соединений, из которой взят профиль; ставит хост.",
+    )
     description: str = Field(
         default="",
         description=(
@@ -76,6 +104,12 @@ class ConnectionProfileBase(BaseModel):
         )
         raise ConnectionTypeError(msg)
 
+    @classmethod
+    def common_fields(cls) -> frozenset[str]:
+        """Поля, общие всем профилям (kind, description, source): драйверу
+        они не параметры соединения."""
+        return frozenset(ConnectionProfileBase.model_fields)
+
     def labeled(self, client: ClientIdentity) -> Self:
         """Профиль, подписанный клиентом вызова.
 
@@ -83,3 +117,9 @@ class ConnectionProfileBase(BaseModel):
         оставляет профиль как есть.
         """
         return self
+
+    def identified(self, connection_id: UUID, name: str) -> Self:
+        """Профиль, подписанный строкой соединений, из которой взят."""
+        return self.model_copy(
+            update={"source": ConnectionSource(id=connection_id, name=name)}
+        )

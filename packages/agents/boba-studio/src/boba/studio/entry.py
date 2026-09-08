@@ -28,14 +28,18 @@ from boba.runtime.config import (
     StudioRuntimeConfig,
 )
 from boba.runtime.di import Container
-from boba.runtime.plugins import CoreTools
 from boba.runtime.spa import BuiltSpa, DevSpa, SpaPaths
 from boba.runtime.users import UsersTable
 from boba.sandbox.zygote import ZygoteRegistry
-from boba.studio.api.app import ApiAccess, ApiApp
+from boba.studio.api.app import ApiAccess, ApiApp, ApiExtras
 from boba.studio.api.signin import PageUrls, SignInWiring
 from boba.studio.api.urls import ApiVersion, SignInUrl
 from boba.studio.api.workflow_socket import StudioSessions
+from boba.studio.catalog import providers as catalog
+from boba.studio.catalog.api import CatalogApi
+from boba.studio.catalog.sync_ports import CatalogHoldGuard
+from boba.studio.config import StudioAppConfig
+from boba.studio.plugins import StudioTools
 
 __all__ = ["StudioEntry", "StudioHost"]
 
@@ -44,10 +48,10 @@ class StudioHost:
     """Сборка процесса: контейнер общих сервисов, api-приложение и страница workflow."""
 
     @classmethod
-    def build(cls, config: StudioRuntimeConfig) -> FastAPI:
+    def build(cls, config: StudioAppConfig) -> FastAPI:
         container = Container(level="app")
         container.provide(providers.get_runtime_config, config)
-        container.provide(providers.plugin_table, CoreTools.table)
+        container.provide(providers.plugin_table, StudioTools.table)
         container.provide(providers.app_name, AppName.STUDIO)
         container.eager(providers.message_bus)
         container.eager(providers.stream_journal)
@@ -64,6 +68,8 @@ class StudioHost:
         container.eager(providers.users_table)
         container.eager(providers.auth_service)
         container.eager(providers.credential_source)
+        container.eager(catalog.catalog_processes)
+        container.eager(catalog.catalog_connections)
         sessions = StudioSessions()
         container.provide(providers.live_sessions, sessions)
         container.eager(providers.session_keeper)
@@ -78,7 +84,7 @@ class StudioHost:
         return root
 
     @classmethod
-    async def _mount_api(cls, app: FastAPI, config: StudioRuntimeConfig) -> None:
+    async def _mount_api(cls, app: FastAPI, config: StudioAppConfig) -> None:
         """Api над сервисами контейнера: после start(), до первого запроса."""
         container = app.state.container
         table = container.resolved(providers.users_table)
@@ -112,14 +118,27 @@ class StudioHost:
             access,
             ChatProfiles(config.profiles),
             cls.signin_of(config, auth),
+            cls.extras_of(config),
         )
         app.mount(config.studio.api_prefix(), api)
+
+    @staticmethod
+    def extras_of(config: StudioAppConfig) -> ApiExtras:
+        """Каталог данных под api: маршруты и охранник удаления подключений,
+        которые каталог держит снимками или узлами процессов."""
+        if not config.catalog.enable:
+            return ApiExtras()
+
+        return ApiExtras(
+            mounts=(CatalogApi(catalog.catalog_service_ref),),
+            delete_guards=(CatalogHoldGuard(catalog.catalog_service_ref),),
+        )
 
     @staticmethod
     def signin_of(config: StudioRuntimeConfig, auth: AuthService) -> SignInWiring:
         """Вход над сервисом входа; SSO на своём URL под api."""
         studio = config.studio
-        page_root = f"{studio.url_prefix}{StudioPath.PAGE}"
+        page_root = studio.page_prefix()
 
         return SignInWiring(
             auth=auth,
@@ -157,9 +176,9 @@ class StudioHost:
     async def _lifespan(cls, app: FastAPI) -> AsyncGenerator[None, None]:
         container = app.state.container
         config = app.state.config
-        if not isinstance(config, StudioRuntimeConfig):
+        if not isinstance(config, StudioAppConfig):
             got = type(config).__name__
-            msg = f"app.state.config: expected StudioRuntimeConfig, got {got}"
+            msg = f"app.state.config: expected StudioAppConfig, got {got}"
             raise RuntimeError(msg)
 
         await container.start()
@@ -179,7 +198,7 @@ class StudioEntry:
 
     @classmethod
     def run(cls) -> None:
-        config = StudioRuntimeConfig.load(cls.config_argument())
+        config = StudioAppConfig.load(cls.config_argument())
         logging.config.dictConfig(config.logger)
 
         app = StudioHost.build(config)

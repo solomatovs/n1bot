@@ -9,7 +9,8 @@ CatalogInvariantError — повторы ключей или запись без
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+import re
+from collections.abc import Iterator, Mapping, Sequence
 from enum import IntEnum, StrEnum
 from operator import attrgetter
 from typing import ClassVar, Literal
@@ -17,6 +18,7 @@ from uuid import UUID
 
 from pydantic import Field
 
+from boba.catalog.base import CatalogModel
 from boba.catalog.sources import (
     NodeColumn,
     ObjectCard,
@@ -49,6 +51,8 @@ __all__ = [
     "ChTable",
     "ChTableCard",
     "ChTableKind",
+    "ChTypeFamily",
+    "ChTypeName",
 ]
 
 
@@ -254,12 +258,6 @@ class ChDictionaryCard(ObjectCard):
     attributes: tuple[ChDictionaryAttribute, ...]
 
 
-class ChPathDepth(IntEnum):
-    """Длина пути объекта ручного источника: база, имя."""
-
-    OBJECT = 2
-
-
 class ChNullable:
     """Nullable-обёртка типов ClickHouse: тип колонки говорит о nullable сам."""
 
@@ -268,6 +266,179 @@ class ChNullable:
     @classmethod
     def wraps(cls, type_name: str) -> bool:
         return type_name.startswith(cls.PREFIX)
+
+
+class ChTypeFamily(StrEnum):
+    """Семейства типов ClickHouse, внутри которых тип бывает шире другого."""
+
+    STRING = "string"
+    FIXED_STRING = "fixed_string"
+    INT = "int"
+    UINT = "uint"
+    FLOAT = "float"
+    DECIMAL = "decimal"
+    OTHER = "other"
+
+
+class ChTypeName(CatalogModel):
+    """Тип колонки ClickHouse: семейство, разрядность, длина, точность и
+    масштаб, признак Nullable; LowCardinality прозрачна. Знает, шире ли один
+    тип другого; незнакомые типы сравниваются как строки."""
+
+    WRAPPERS: ClassVar[tuple[str, ...]] = ("LowCardinality",)
+    NULLABLE: ClassVar[str] = "Nullable"
+    INT_PATTERN: ClassVar[re.Pattern[str]] = re.compile(
+        r"^(U?)Int(8|16|32|64|128|256)$"
+    )
+    FLOAT_PATTERN: ClassVar[re.Pattern[str]] = re.compile(r"^Float(32|64)$")
+    FIXED_PATTERN: ClassVar[re.Pattern[str]] = re.compile(r"^FixedString\((\d+)\)$")
+    DECIMAL_PATTERN: ClassVar[re.Pattern[str]] = re.compile(
+        r"^Decimal(?:(32|64|128|256)\((\d+)\)|\((\d+),\s*(\d+)\))$"
+    )
+    DECIMAL_PRECISION: ClassVar[Mapping[str, int]] = {
+        "32": 9,
+        "64": 18,
+        "128": 38,
+        "256": 76,
+    }
+    UNBOUNDED: ClassVar[int] = 10**9
+
+    raw: str
+    family: ChTypeFamily
+    nullable: bool = False
+    bits: int = 0
+    length: int = UNBOUNDED
+    precision: int = 0
+    scale: int = 0
+
+    @classmethod
+    def parse(cls, raw: str) -> ChTypeName:
+        text = raw.strip()
+        inner, nullable = cls._unwrap(text)
+
+        if inner == "String":
+            return cls(raw=text, family=ChTypeFamily.STRING, nullable=nullable)
+
+        fixed = cls.FIXED_PATTERN.match(inner)
+        if fixed is not None:
+            return cls(
+                raw=text,
+                family=ChTypeFamily.FIXED_STRING,
+                nullable=nullable,
+                length=int(fixed.group(1)),
+            )
+
+        integer = cls.INT_PATTERN.match(inner)
+        if integer is not None:
+            family = ChTypeFamily.INT
+            if integer.group(1) == "U":
+                family = ChTypeFamily.UINT
+
+            return cls(
+                raw=text, family=family, nullable=nullable, bits=int(integer.group(2))
+            )
+
+        floating = cls.FLOAT_PATTERN.match(inner)
+        if floating is not None:
+            return cls(
+                raw=text,
+                family=ChTypeFamily.FLOAT,
+                nullable=nullable,
+                bits=int(floating.group(1)),
+            )
+
+        decimal = cls.DECIMAL_PATTERN.match(inner)
+        if decimal is not None:
+            return cls._decimal(text, nullable, decimal)
+
+        return cls(raw=text, family=ChTypeFamily.OTHER, nullable=nullable)
+
+    @classmethod
+    def _unwrap(cls, text: str) -> tuple[str, bool]:
+        """Тип без обёрток LowCardinality и Nullable; был ли Nullable."""
+        inner = text
+        nullable = False
+        while True:
+            wrapper = cls._wrapper_of(inner)
+            if wrapper is None:
+                return inner, nullable
+
+            inner = inner[len(wrapper) + 1 : -1].strip()
+            if wrapper == cls.NULLABLE:
+                nullable = True
+
+    @classmethod
+    def _wrapper_of(cls, text: str) -> str | None:
+        for wrapper in (*cls.WRAPPERS, cls.NULLABLE):
+            if text.startswith(f"{wrapper}(") and text.endswith(")"):
+                return wrapper
+
+        return None
+
+    @classmethod
+    def _decimal(cls, text: str, nullable: bool, match: re.Match[str]) -> ChTypeName:
+        if match.group(1) is not None:
+            precision = cls.DECIMAL_PRECISION[match.group(1)]
+            scale = int(match.group(2))
+        else:
+            precision = int(match.group(3))
+            scale = int(match.group(4))
+
+        return cls(
+            raw=text,
+            family=ChTypeFamily.DECIMAL,
+            nullable=nullable,
+            precision=precision,
+            scale=scale,
+        )
+
+    def accepts(self, old: ChTypeName) -> bool:
+        """Этот тип принимает всё, что принимал old: равен ему или шире;
+        Nullable не сужается."""
+        if self.raw == old.raw:
+            return True
+
+        if old.nullable and not self.nullable:
+            return False
+
+        if self.family is old.family:
+            return self._wider_in_family(old)
+
+        return self._wider_across(old)
+
+    def _wider_across(self, old: ChTypeName) -> bool:
+        """Расширение в другое семейство: FixedString → String, UInt → Int
+        большей разрядности."""
+        fixed_to_string = (
+            old.family is ChTypeFamily.FIXED_STRING
+            and self.family is ChTypeFamily.STRING
+        )
+        if fixed_to_string:
+            return True
+
+        unsigned_to_signed = (
+            old.family is ChTypeFamily.UINT and self.family is ChTypeFamily.INT
+        )
+        if unsigned_to_signed:
+            return self.bits > old.bits
+
+        return False
+
+    def _wider_in_family(self, old: ChTypeName) -> bool:
+        if self.family is ChTypeFamily.STRING:
+            return True
+
+        if self.family is ChTypeFamily.FIXED_STRING:
+            return self.length >= old.length
+
+        if self.family in (ChTypeFamily.INT, ChTypeFamily.UINT, ChTypeFamily.FLOAT):
+            return self.bits >= old.bits
+
+        if self.family is ChTypeFamily.DECIMAL:
+            whole = self.precision - self.scale >= old.precision - old.scale
+            return whole and self.scale >= old.scale
+
+        return False
 
 
 class ChSnapshot(SourceSnapshot):
@@ -328,7 +499,7 @@ class ChSnapshot(SourceSnapshot):
             return ()
 
         columns: list[NodeColumn] = []
-        for column in self.columns_of(ref.path):
+        for column in self.parts_of_type(ref, PartKind.COLUMN, ChColumn):
             columns.append(
                 NodeColumn(
                     name=column.name,
@@ -340,35 +511,9 @@ class ChSnapshot(SourceSnapshot):
 
         return tuple(columns)
 
-    def table(self, path: Sequence[str]) -> ChTable | None:
-        for table in self.tables:
-            if table.key == tuple(path):
-                return table
-
-        return None
-
-    def dictionary(self, path: Sequence[str]) -> ChDictionary | None:
-        for dictionary in self.dictionaries:
-            if dictionary.key == tuple(path):
-                return dictionary
-
-        return None
-
-    def columns_of(self, path: Sequence[str]) -> Iterator[ChColumn]:
-        wanted = tuple(path)
-        for column in sorted(self.columns, key=attrgetter("position")):
-            if column.parent != wanted:
-                continue
-
-            yield column
-
-    def attributes_of(self, path: Sequence[str]) -> Iterator[ChDictionaryAttribute]:
-        wanted = tuple(path)
-        for attribute in sorted(self.dictionary_attributes, key=attrgetter("position")):
-            if attribute.parent != wanted:
-                continue
-
-            yield attribute
+    @classmethod
+    def type_widens(cls, old: str, new: str) -> bool:
+        return ChTypeName.parse(new).accepts(ChTypeName.parse(old))
 
     @classmethod
     def tree_scope(cls, path: Sequence[str]) -> TreeScope:
@@ -461,17 +606,10 @@ class ChSnapshot(SourceSnapshot):
             if ChGroup.of_table(table.kind).value != group:
                 continue
 
-            yield TreeNode(
-                path=(*steps, table.name),
-                label=table.name,
-                kind=TreeKind.OBJECT,
-                expandable=False,
-                detail=table.engine,
-                comment=table.comment,
-                ref=ObjectRef(
-                    connection_id=connection_id, kind=ObjectKind.TABLE, path=table.key
-                ),
+            ref = ObjectRef(
+                connection_id=connection_id, kind=ObjectKind.TABLE, path=table.key
             )
+            yield TreeNode.object(steps, table.name, ref, table.engine, table.comment)
 
     def _dictionary_nodes(
         self, connection_id: UUID, steps: tuple[str, ...]
@@ -481,16 +619,11 @@ class ChSnapshot(SourceSnapshot):
             if dictionary.database != database:
                 continue
 
-            yield TreeNode(
-                path=(*steps, dictionary.name),
-                label=dictionary.name,
-                kind=TreeKind.OBJECT,
-                expandable=False,
-                detail=dictionary.layout,
-                comment=dictionary.comment,
-                ref=ObjectRef(
-                    connection_id=connection_id,
-                    kind=ObjectKind.DICTIONARY,
-                    path=dictionary.key,
-                ),
+            ref = ObjectRef(
+                connection_id=connection_id,
+                kind=ObjectKind.DICTIONARY,
+                path=dictionary.key,
+            )
+            yield TreeNode.object(
+                steps, dictionary.name, ref, dictionary.layout, dictionary.comment
             )

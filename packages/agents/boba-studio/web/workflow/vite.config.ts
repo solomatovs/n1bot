@@ -12,6 +12,24 @@ function devBase(): string {
   return `${prefix}/workflow-dev/`;
 }
 
+/** Вендоры по чанкам; код каталога отделяется сам по ленивому импорту
+ * секции (catalog/services.tsx), ELK нужен только ему. */
+function chunkOf(id: string): string | undefined {
+  if (id.includes("node_modules/elkjs/")) {
+    return "elk";
+  }
+
+  if (/node_modules\/(react|react-dom|react-router|react-router-dom|scheduler)\//.test(id)) {
+    return "react";
+  }
+
+  if (id.includes("node_modules/@xyflow/") || id.includes("node_modules/@dagrejs/")) {
+    return "flow";
+  }
+
+  return undefined;
+}
+
 export default defineConfig(({ command, mode }) => ({
   plugins: [react()],
   base: command === "serve" && mode !== "test" ? devBase() : "./",
@@ -26,10 +44,7 @@ export default defineConfig(({ command, mode }) => ({
     sourcemap: false,
     rollupOptions: {
       output: {
-        manualChunks: {
-          react: ["react", "react-dom", "react-router-dom"],
-          flow: ["@xyflow/react", "@dagrejs/dagre"],
-        },
+        manualChunks: chunkOf,
       },
     },
   },

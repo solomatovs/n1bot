@@ -16,18 +16,19 @@
 409 — имя занято среди видимых пользователю соединений; соединение держит
     другой компонент (каталог), удалять нельзя.
 422 — в профиле замаскированный секрет из ответа GET вместо настоящего.
-503 — секция [connections] выключена или хранилище недоступно.
+503 — хранилище недоступно; секция [connections] выключена —
+    ServiceDisabledError, её переводит DomainErrorMiddleware.
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
-from contextlib import asynccontextmanager
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from enum import StrEnum
 from typing import Any, ClassVar
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -58,6 +59,7 @@ from boba.messaging import ChangeAction, ConnectionsChanged, MessageBus
 __all__ = [
     "ConnectionBody",
     "ConnectionDeleted",
+    "ConnectionHttp",
     "ConnectionUrl",
     "ConnectionView",
     "ConnectionsApi",
@@ -162,10 +164,12 @@ class ProfileSchema:
         return types.json_schema()
 
 
-class RefusalStatus:
-    """Статус ответа по виду отказа сервиса соединений."""
+class ConnectionHttp:
+    """Перевод отказов сервиса соединений в HTTP-ответы обработчиками
+    исключений приложения; отказ незнакомого вида уходит дальше, к общему
+    переводу доменных ошибок."""
 
-    _STATUS: ClassVar[Mapping[str, int]] = {
+    STATUS: ClassVar[Mapping[str, int]] = {
         ConnectionRefusal.NOT_VISIBLE: 404,
         ConnectionRefusal.NOT_OWNED: 403,
         ConnectionRefusal.NAME_TAKEN: 409,
@@ -173,13 +177,28 @@ class RefusalStatus:
     }
 
     @classmethod
-    def of(cls, exc: RefusalError) -> HTTPException:
-        status = cls._STATUS.get(exc.kind)
-        if status is None:
-            msg = f"unexpected connection refusal {exc.kind!r}: {exc}"
-            raise RuntimeError(msg) from exc
+    def install(cls, app: FastAPI) -> None:
+        app.add_exception_handler(RefusalError, cls.refusal)
+        app.add_exception_handler(ConnectionStoreError, cls.store_failure)
 
-        return HTTPException(status_code=status, detail=str(exc))
+    @classmethod
+    async def refusal(cls, request: Request, exc: Exception) -> Response:
+        if not isinstance(exc, RefusalError):
+            raise exc
+
+        status = cls.STATUS.get(exc.kind)
+        if status is None:
+            raise exc
+
+        return cls._reply(status, str(exc))
+
+    @classmethod
+    async def store_failure(cls, request: Request, exc: Exception) -> Response:
+        return cls._reply(503, str(exc))
+
+    @staticmethod
+    def _reply(status: int, detail: str) -> Response:
+        return JSONResponse(status_code=status, content={"detail": detail})
 
 
 class ConnectionsApi:
@@ -252,7 +271,8 @@ class ConnectionsApi:
             Scope.user(subject.user_id), message, LockToken.local()
         )
 
-    def mount(self, router: APIRouter) -> None:
+    def mount(self, app: FastAPI, router: APIRouter) -> None:
+        ConnectionHttp.install(app)
         routes = (
             (ConnectionUrl.SCHEMA, self.schema, "GET"),
             (ConnectionUrl.CONNECTIONS, self.list_connections, "GET"),
@@ -278,8 +298,7 @@ class ConnectionsApi:
     ) -> Sequence[ConnectionView]:
         identity = await self._subjects(request)
         if kind is not None:
-            async with self._served():
-                visible = await self._service.visible(identity.subject, [kind])
+            visible = await self._service.visible(identity.subject, [kind])
 
             views: list[ConnectionView] = []
             for item in visible:
@@ -287,8 +306,7 @@ class ConnectionsApi:
 
             return views
 
-        async with self._served():
-            found = await self._service.visible_all(identity.subject)
+        found = await self._service.visible_all(identity.subject)
 
         views = []
         for item in found.rows:
@@ -303,9 +321,8 @@ class ConnectionsApi:
     async def create(self, body: ConnectionBody, request: Request) -> ConnectionView:
         identity = await self._subjects(request)
         subject = identity.subject
-        async with self._served():
-            profile = self._parsed(body.profile)
-            row = await self._service.create(subject, body.name, profile)
+        profile = self._parsed(body.profile)
+        row = await self._service.create(subject, body.name, profile)
 
         await self._changed(subject, row.id, row.name, ChangeAction.CREATED)
         return ConnectionView.of(row, mine=True)
@@ -315,10 +332,9 @@ class ConnectionsApi:
     ) -> ConnectionView:
         identity = await self._subjects(request)
         subject = identity.subject
-        async with self._served():
-            row = await self._service.replace(
-                subject, connection_id, body.name, self._parsed(body.profile)
-            )
+        row = await self._service.replace(
+            subject, connection_id, body.name, self._parsed(body.profile)
+        )
 
         await self._changed(subject, row.id, row.name, ChangeAction.UPDATED)
         return ConnectionView.of(row, mine=True)
@@ -326,8 +342,7 @@ class ConnectionsApi:
     async def delete(self, connection_id: UUID, request: Request) -> ConnectionDeleted:
         identity = await self._subjects(request)
         subject = identity.subject
-        async with self._served():
-            outcome = await self._service.delete(subject, connection_id)
+        outcome = await self._service.delete(subject, connection_id)
 
         if outcome.deleted:
             await self._changed(
@@ -345,22 +360,9 @@ class ConnectionsApi:
     async def check_stored(self, connection_id: UUID, request: Request) -> ProbeResult:
         """Пробное соединение по сохранённой строке: видимой пользователю."""
         identity = await self._subjects(request)
-        async with self._served():
-            row = await self._service.visible_row(identity.subject, connection_id)
+        row = await self._service.visible_row(identity.subject, connection_id)
 
         return await self._probed(identity, row.profile)
-
-    @asynccontextmanager
-    async def _served(self) -> AsyncGenerator[None, None]:
-        """Граница HTTP: отказы сервиса — статусы, недоступность — 503."""
-        try:
-            yield
-        except RefusalError as exc:
-            raise RefusalStatus.of(exc) from exc
-        except ConnectionStoreError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     async def _probed(
         self, identity: ApiSubject, profile: ConnectionProfileBase

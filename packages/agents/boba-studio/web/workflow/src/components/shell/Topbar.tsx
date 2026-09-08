@@ -1,10 +1,11 @@
-import { PanelLeft, Settings, Workflow } from "lucide-react";
+import { Database, PanelLeft, Settings, Workflow } from "lucide-react";
 import type { ReactElement } from "react";
 
 import type { StoredRun, StoredWorkflow } from "../../model/workflow";
+import { PageUrls } from "../../config";
 import { ThemeToggle } from "../ThemeToggle";
 import { SocketLamp } from "./SocketLamp";
-import { IconButton, IconLink } from "../../ui";
+import { IconButton, IconLink, Topbar as TopbarFrame, TopbarSpacer } from "../../ui";
 
 type Props = {
   run: StoredRun | null;
@@ -30,7 +31,7 @@ export function Topbar({ run, workflow, listOpen, onToggleList }: Props): ReactE
   }
 
   return (
-    <header className="topbar">
+    <TopbarFrame>
       <IconButton
         className="topbar__drawer"
         aria-label="Toggle list"
@@ -52,12 +53,15 @@ export function Topbar({ run, workflow, listOpen, onToggleList }: Props): ReactE
           </>
         )}
       </nav>
-      <span className="topbar__spacer" />
+      <TopbarSpacer />
       <SocketLamp />
       <ThemeToggle />
-      <IconLink to="/account" aria-label="Account" title="Account">
+      <IconLink to={PageUrls.catalog.home()} aria-label="Catalog" title="Data catalog">
+        <Database size={16} />
+      </IconLink>
+      <IconLink to={PageUrls.account()} aria-label="Account" title="Account">
         <Settings size={16} />
       </IconLink>
-    </header>
+    </TopbarFrame>
   );
 }

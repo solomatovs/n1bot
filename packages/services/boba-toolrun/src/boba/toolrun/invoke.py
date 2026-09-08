@@ -20,6 +20,7 @@ from langchain_core.runnables.config import var_child_runnable_config
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict
 
+from boba.identity.context import Subject
 from boba.toolkit.calls import CallIdPrefix, ToolIntent
 from boba.toolkit.failure import (
     InvokeErrorKind,
@@ -27,6 +28,7 @@ from boba.toolkit.failure import (
     ToolUnavailableError,
 )
 from boba.toolkit.result import ErrorResult, ToolArtifact, ToolResult
+from boba.toolrun.registry import ToolRegistry
 
 __all__ = [
     "InvokeReply",
@@ -80,6 +82,11 @@ class ToolInvoker:
 
     def __init__(self, tools: Mapping[str, BaseTool]) -> None:
         self._tools = dict(tools)
+
+    @classmethod
+    def for_subject(cls, registry: ToolRegistry, subject: Subject) -> ToolInvoker:
+        """Инструменты субъекта вне чата: по его ролям и профилю."""
+        return cls(registry.for_headless(subject.roles, subject.profile))
 
     @property
     def names(self) -> frozenset[str]:
