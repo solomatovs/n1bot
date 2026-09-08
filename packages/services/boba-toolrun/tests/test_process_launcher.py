@@ -11,6 +11,7 @@ from pydantic import SecretStr
 
 from boba.cancellation import ToolStopped
 from boba.stand.fake_toolmod import FakeChunkHead, FakeConfig
+from boba.stand.shell import ShellRun
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.frames import ToolFrame
 from boba.toolkit.launcher import (
@@ -36,7 +37,6 @@ def _launcher(workdir: Path, **overrides: object) -> ProcessToolCaller:
     values: dict[str, object] = {
         "provider": "process",
         "workdir": str(workdir),
-        "shell": "/bin/bash",
         "timeout_sec": 60.0,
         "channel_limit_bytes": 1_000_000,
         "stderr_tail_bytes": 4096,
@@ -118,41 +118,41 @@ class TestCallText:
     def test_streams_and_exit_code(self, tmp_path: Path) -> None:
         launcher = _launcher(tmp_path)
 
-        outcome = launcher.call_text("echo out; echo err >&2; exit 3", "")
+        outcome = ShellRun.call_text(launcher, "echo out; echo err >&2; exit 3")
 
-        assert outcome.result.stdout == "out\n"
-        assert "err" in outcome.result.stderr
-        assert outcome.result.exit_code == 3
-        assert not outcome.succeeded
+        assert outcome.stdout == "out\n"
+        assert "err" in outcome.stderr
+        assert outcome.exit_code == 3
+        assert not outcome.ok
 
-    def test_stdin_reaches_the_command(self, tmp_path: Path) -> None:
+    def test_stdin_is_closed(self, tmp_path: Path) -> None:
         launcher = _launcher(tmp_path)
 
-        outcome = launcher.call_text("cat", "ping")
+        outcome = ShellRun.call_text(launcher, "cat; echo ping")
 
-        assert outcome.result.stdout == "ping"
-        assert outcome.succeeded
+        assert outcome.stdout == "ping\n"
+        assert outcome.ok
 
     def test_command_runs_in_workdir(self, tmp_path: Path) -> None:
         launcher = _launcher(tmp_path)
 
-        outcome = launcher.call_text("pwd", "")
+        outcome = ShellRun.call_text(launcher, "pwd")
 
-        assert outcome.result.stdout.strip() == str(tmp_path)
+        assert outcome.stdout.strip() == str(tmp_path)
 
-    def test_timeout_kills_the_command(self, tmp_path: Path) -> None:
+    def test_launcher_timeout_kills_the_call(self, tmp_path: Path) -> None:
+        """Таймаут запуска короче таймаута команды: умирает весь вызов."""
         launcher = _launcher(tmp_path, timeout_sec=0.5, kill_grace_sec=0.2)
 
-        outcome = launcher.call_text("sleep 30", "")
+        with pytest.raises(LauncherError, match="timed_out=True"):
+            ShellRun.call_text(launcher, "sleep 30")
 
-        assert outcome.result.timed_out
-        assert not outcome.succeeded
-
-    def test_channel_overflow_kills_the_command(self, tmp_path: Path) -> None:
+    def test_channel_overflow_kills_the_call(self, tmp_path: Path) -> None:
+        """Конверт с выводом больше канала результата не помещается."""
         launcher = _launcher(tmp_path, channel_limit_bytes=1024)
 
         with pytest.raises(ChannelOverflowError):
-            launcher.call_text("yes overflow", "")
+            ShellRun.call_text(launcher, "head -c 100000 /dev/zero | tr '\\0' x")
 
 
 class TestStreamingCall:

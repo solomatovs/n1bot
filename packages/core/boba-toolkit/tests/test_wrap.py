@@ -14,7 +14,6 @@ from boba.toolkit.frames import FrameHead, ToolFrame
 from boba.toolkit.launcher import (
     FrameSink,
     FrameTap,
-    LaunchOutcome,
     PayloadFailureError,
     RunResult,
     TappedCall,
@@ -23,7 +22,7 @@ from boba.toolkit.launcher import (
     ToolOutcome,
 )
 from boba.toolkit.protocol import REPLY, ReplyError, ToolCommand
-from boba.toolkit.result import TextResult
+from boba.toolkit.result import MarkdownResult
 from boba.toolkit.wrap import ToolProcessWrap, WrapErrorKind
 
 CFG = FakeConfig(token=SecretStr("t0ken"), limit=5)
@@ -92,16 +91,13 @@ class RecordingLauncher(ToolLauncher):
     def open_tap(self, command: ToolCommand) -> TappedCall:
         raise NotImplementedError
 
-    def call_text(self, command: str, stdin: str) -> LaunchOutcome:
-        raise NotImplementedError
-
 
 class TestSandboxMode:
     """С launcher'ом вызов уезжает командой; конверт разбирается в возврат."""
 
     OK_REPLY = (
         '{"status": "ok", "content": "done",'
-        ' "artifact": {"kind": "text", "ok": true, "text": "done"}}'
+        ' "artifact": {"kind": "markdown", "ok": true, "text": "done"}}'
     )
 
     def test_call_is_rendered_and_reply_returned(self) -> None:
@@ -115,8 +111,8 @@ class TestSandboxMode:
 
         if content != "done":
             raise AssertionError('content == "done"')
-        if not (isinstance(artifact, TextResult)):
-            raise AssertionError("isinstance(artifact, TextResult)")
+        if not (isinstance(artifact, MarkdownResult)):
+            raise AssertionError("isinstance(artifact, MarkdownResult)")
 
         command = launcher.commands[0]
         if "-m" not in command.argv:

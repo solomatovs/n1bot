@@ -399,8 +399,8 @@ class SandboxLogRelay:
 
     @classmethod
     def _level_of(cls, name: str) -> int:
-        resolved = logging.getLevelName(name.upper())
-        if not isinstance(resolved, int):
+        resolved = logging.getLevelNamesMapping().get(name.upper())
+        if resolved is None:
             return logging.INFO
 
         if resolved > cls.BODY_MAX_LEVEL:

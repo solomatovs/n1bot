@@ -148,7 +148,6 @@ class SandboxDefaults:
     """
 
     TMP_SIZE: ClassVar[str] = "512M"
-    SHELL: ClassVar[str] = "/bin/bash"
     WORKSPACE_TARGET: ClassVar[str] = "/workspace"
 
     HOST: ClassVar[dict[str, Any]] = {
@@ -214,7 +213,7 @@ class SandboxDefaults:
             },
             "isolation": dict(cls.ISOLATION),
             "limits": dict(cls.LIMITS),
-            "run": {"cwd": "/tmp", "shell": cls.SHELL},  # noqa: S108 — внутри песочницы  # nosec B108
+            "run": {"cwd": "/tmp"},  # noqa: S108 — внутри песочницы  # nosec B108
         }
 
     @classmethod

@@ -44,8 +44,11 @@ import {
 import type { StoredWorkflow, ToolCatalog } from "../model/workflow";
 import {
   Button,
+  Detail,
   EmptyState,
   Input,
+  Scene,
+  SceneView,
   TextArea,
   Toolbar,
   ToolbarHint,
@@ -83,11 +86,11 @@ export function BuildPage(): ReactElement {
 
   if (workflowId === undefined) {
     return (
-      <main className="stage stage--build">
+      <Scene>
         <EmptyState fill title="Build workflows">
           Pick a workflow or a run on the left, or press “+ New workflow”.
         </EmptyState>
-      </main>
+      </Scene>
     );
   }
 
@@ -511,7 +514,8 @@ function Builder({ catalog, stored }: BuilderProps): ReactElement {
     workflow.tasks.find((task) => task.name === selected) ?? null;
 
   return (
-    <main className="stage stage--build">
+    <>
+      <Scene>
       <Toolbar bar mark="builder">
         <ToolbarLabel>Builder</ToolbarLabel>
         <Input
@@ -578,7 +582,7 @@ function Builder({ catalog, stored }: BuilderProps): ReactElement {
           </div>
         </div>
       ) : (
-        <div className="view">
+        <SceneView>
           <EditorGraph
             workflow={workflow}
             positions={positions}
@@ -597,27 +601,30 @@ function Builder({ catalog, stored }: BuilderProps): ReactElement {
               );
             }}
           />
-          {selectedTask !== null && (
-            <TaskForm
-              edges={workflow.edges}
-              key={selectedTask.name}
-              task={selectedTask}
-              catalog={catalog}
-              taken={workflow.tasks.map((task) => task.name)}
-              onChange={changeTask}
-              onRename={(to) => {
-                rename(selectedTask.name, to);
-              }}
-              onRemove={() => {
-                remove(selectedTask.name);
-              }}
-              onClose={() => {
-                setSelected(null);
-              }}
-            />
-          )}
-        </div>
+        </SceneView>
       )}
-    </main>
+      </Scene>
+      {selectedTask !== null && !yamlMode && (
+        <Detail mark="task-form" label="task form">
+          <TaskForm
+            edges={workflow.edges}
+            key={selectedTask.name}
+            task={selectedTask}
+            catalog={catalog}
+            taken={workflow.tasks.map((task) => task.name)}
+            onChange={changeTask}
+            onRename={(to) => {
+              rename(selectedTask.name, to);
+            }}
+            onRemove={() => {
+              remove(selectedTask.name);
+            }}
+            onClose={() => {
+              setSelected(null);
+            }}
+          />
+        </Detail>
+      )}
+    </>
   );
 }

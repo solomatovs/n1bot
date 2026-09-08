@@ -37,6 +37,7 @@ from boba.sandbox.zygote import (
     ZygoteSupervisor,
     ZygoteToolCaller,
 )
+from boba.stand.shell import ShellRun
 from boba.stand.zygote import ProfileFields, SandboxStand
 from boba.toolkit.chain import CallRelay
 from boba.toolkit.channels import JournalChannel, ToolChannel
@@ -153,7 +154,6 @@ def _profile(**overrides: Any) -> SandboxProfile:
             "process_oom_score_adj": 0,
         },
         "run": {
-            "shell": "/bin/bash",
             "cwd": "/tmp",  # noqa: S108
         },
     }
@@ -678,16 +678,16 @@ class TestImageRootfs:
     def test_workspace_image_works_on_the_image_root(self, tmp_path: Path) -> None:
         caller = self._image_caller("fx-img-ws", tmp_path)
 
-        first = caller.call_text("echo hello > note.txt; pwd", stdin="")
-        if first.result.exit_code != 0:
-            raise AssertionError(f"rc={first.result.exit_code}: {first.result.stderr}")
+        first = ShellRun.call_text(caller, "echo hello > note.txt; pwd")
+        if first.exit_code != 0:
+            raise AssertionError(f"rc={first.exit_code}: {first.stderr}")
 
-        if "/workspace" not in first.result.stdout:
-            raise AssertionError(f"cwd не workspace: {first.result.stdout!r}")
+        if "/workspace" not in first.stdout:
+            raise AssertionError(f"cwd не workspace: {first.stdout!r}")
 
-        second = caller.call_text("cat /workspace/note.txt", stdin="")
-        if second.result.stdout.strip() != "hello":
-            raise AssertionError(f"файл не пережил вызов: {second.result.stdout!r}")
+        second = ShellRun.call_text(caller, "cat /workspace/note.txt")
+        if second.stdout.strip() != "hello":
+            raise AssertionError(f"файл не пережил вызов: {second.stdout!r}")
 
 
 @needs_mkfs
@@ -704,73 +704,68 @@ class TestShell:
             "fx-sh", supervisor, profile, lambda: {"user_id": user_id}
         )
 
-    def test_stdout_stderr_stdin_and_exit_code(self, tmp_path: Path) -> None:
+    def test_stdout_stderr_closed_stdin_and_exit_code(self, tmp_path: Path) -> None:
         caller = self._caller(tmp_path)
 
-        outcome = caller.call_text(
-            "cat; echo out-line; echo err-line >&2; exit 3", stdin="from-stdin\n"
+        outcome = ShellRun.call_text(
+            caller, "cat; echo out-line; echo err-line >&2; exit 3"
         )
 
-        if outcome.result.exit_code != 3:
-            raise AssertionError(f"rc={outcome.result.exit_code}")
+        if outcome.exit_code != 3:
+            raise AssertionError(f"rc={outcome.exit_code}")
 
-        if "from-stdin" not in outcome.result.stdout:
-            raise AssertionError(f"stdin не дошёл: {outcome.result.stdout!r}")
+        if not outcome.stdout.startswith("out-line"):
+            raise AssertionError(f"stdin is not closed: {outcome.stdout!r}")
 
-        if "out-line" not in outcome.result.stdout:
-            raise AssertionError(f"stdout={outcome.result.stdout!r}")
+        if "out-line" not in outcome.stdout:
+            raise AssertionError(f"stdout={outcome.stdout!r}")
 
-        if "err-line" not in outcome.result.stderr:
-            raise AssertionError(f"stderr={outcome.result.stderr!r}")
+        if "err-line" not in outcome.stderr:
+            raise AssertionError(f"stderr={outcome.stderr!r}")
 
         # кадры монтирования — голос обвязки, не команды: их забирает релей
-        if "sandbox-mount" in outcome.result.stderr:
-            raise AssertionError(
-                f"кадры обвязки в stderr команды: {outcome.result.stderr!r}"
-            )
+        if "sandbox-mount" in outcome.stderr:
+            raise AssertionError(f"кадры обвязки в stderr команды: {outcome.stderr!r}")
 
     def test_workspace_persists_between_commands(self, tmp_path: Path) -> None:
         caller = self._caller(tmp_path)
 
-        first = caller.call_text("pwd; echo hello > note.txt; ls", stdin="")
-        if first.result.exit_code != 0:
-            raise AssertionError(f"rc={first.result.exit_code}: {first.result.stderr}")
+        first = ShellRun.call_text(caller, "pwd; echo hello > note.txt; ls")
+        if first.exit_code != 0:
+            raise AssertionError(f"rc={first.exit_code}: {first.stderr}")
 
-        if "/workspace" not in first.result.stdout:
-            raise AssertionError(f"cwd не workspace: {first.result.stdout!r}")
+        if "/workspace" not in first.stdout:
+            raise AssertionError(f"cwd не workspace: {first.stdout!r}")
 
-        second = caller.call_text("cat /workspace/note.txt", stdin="")
-        if second.result.stdout.strip() != "hello":
-            raise AssertionError(f"файл не пережил вызов: {second.result.stdout!r}")
+        second = ShellRun.call_text(caller, "cat /workspace/note.txt")
+        if second.stdout.strip() != "hello":
+            raise AssertionError(f"файл не пережил вызов: {second.stdout!r}")
 
     def test_timeout_kills_command(self, tmp_path: Path) -> None:
+        """Таймаут профиля короче таймаута команды: умирает весь вызов."""
         caller = self._caller(tmp_path)
 
-        outcome = caller.call_text("sleep 30", stdin="")
-
-        if not outcome.result.timed_out:
-            raise AssertionError("timed_out должен быть выставлен")
-
-        if outcome.succeeded:
-            raise AssertionError("убитая по таймауту команда не успешна")
+        with pytest.raises(LauncherError, match="timeout_sec=5"):
+            ShellRun.call_text(caller, "sleep 30")
 
     def test_command_runs_isolated_without_capabilities(self, tmp_path: Path) -> None:
         caller = self._caller(tmp_path)
 
         # bash — ребёнок исполнителя (тот ещё гасит fuse2fs после команды),
         # поэтому init своего pid ns — python-исполнитель, а bash рядом с ним
-        outcome = caller.call_text(
+        outcome = ShellRun.call_text(
+            caller,
             "echo init=$(cat /proc/1/comm); echo procs=$(ls /proc | grep -c '^[0-9]');"
             " grep CapEff /proc/self/status",
-            stdin="",
         )
 
-        stdout = outcome.result.stdout
+        stdout = outcome.stdout
         if "init=python3" not in stdout:
             raise AssertionError(f"init pid ns — не исполнитель: {stdout!r}")
 
         procs = int(stdout.split("procs=")[1].split()[0])
-        if procs > 6:
+        # исполнитель, тело bash-тула, сам bash, subshell и утилиты echo
+        if procs > 8:
             raise AssertionError(f"в pid ns видны чужие процессы: {stdout!r}")
 
         if "0000000000000000" not in stdout:

@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, SecretStr, SerializationInfo, field_seria
 
 from boba.toolkit.entry import ToolAddress, ToolArgv
 from boba.toolkit.facade import Injected, tool
-from boba.toolkit.result import TextResult, ToolResult, pack_result
+from boba.toolkit.result import MarkdownResult
 from boba.toolkit.types import SecretRevealing
 
 MASK = "**********"
@@ -115,9 +115,9 @@ def test_revealed_dump_rebuilds_the_same_model() -> None:
 async def deep_echo(
     text: Annotated[str, Field(min_length=1, description="Что вернуть")],
     cfg: Annotated[DeepConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> MarkdownResult:
     """Возвращает текст; секрет читается из injected-конфига."""
-    return pack_result(TextResult(text=f"{text}|{cfg.api_key.get_secret_value()}"))
+    return MarkdownResult(text=f"{text}|{cfg.api_key.get_secret_value()}")
 
 
 def test_render_parse_roundtrip_carries_secret_off_argv() -> None:

@@ -37,7 +37,7 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import ClassVar
@@ -51,7 +51,6 @@ from boba.sandbox.diagnostics import SandboxDiagnostics
 from boba.sandbox.fds import FdReader
 from boba.sandbox.guest import (
     CallExit,
-    CallKind,
     CallMounts,
     CallRequest,
     CallSetupFailed,
@@ -84,7 +83,6 @@ from boba.toolkit.launcher import (
     ChannelTail,
     EnvelopeReply,
     LauncherError,
-    LaunchOutcome,
     RunResult,
     ToolCall,
     ToolLauncher,
@@ -604,7 +602,7 @@ class ZygoteSupervisor:
         mounting: ImageMounting | None = None,
         staging: Sequence[str] = (),
         cwd: str = "",
-        kind: CallKind = CallKind.MODULE,
+        module: str = "",
     ) -> _WiredCall:
         """Открыть проводку вызова: каналы и запрос зиготе, без насоса.
 
@@ -631,8 +629,8 @@ class ZygoteSupervisor:
         channels = _CallChannels(cgroup_fd)
         request = CallRequest(
             call_id=call_id,
-            kind=kind,
             argv=tuple(argv),
+            module=module,
             limits=limits,
             isolate=isolate,
             mounts=mounts,
@@ -720,7 +718,6 @@ class ZygoteSupervisor:
         mounting: ImageMounting | None = None,
         staging: Sequence[str] = (),
         cwd: str = "",
-        kind: CallKind = CallKind.MODULE,
     ) -> ZygoteOutcome:
         """Вызов с заранее известным входом: проводка, stdin и конфиг, насос."""
         wired = self.begin(
@@ -734,7 +731,6 @@ class ZygoteSupervisor:
             mounting=mounting,
             staging=staging,
             cwd=cwd,
-            kind=kind,
         )
 
         entry = CallInput(wired.channels.take_stdin())
@@ -1260,7 +1256,6 @@ class ZygoteToolCaller(ToolLauncher):
     в bwrap-песочнице.
 
     open() открывает проводку через ZygoteSupervisor.begin и отдаёт
-    PumpedCall; call_text() исполняет shell-команду изолированным ребёнком.
     Сюда же стянута профильная обвязка вызова: лимиты и образы (_plan),
     cgroup-leaf (_acquire_leaf/_release_leaf), диагностика сбоев лимитами
     профиля (_diagnose).
@@ -1293,58 +1288,6 @@ class ZygoteToolCaller(ToolLauncher):
     )
     """Каналы вызова модуля для журнального тапа; stderr ведёт релей сам."""
 
-    SHELL_JOURNAL: ClassVar[tuple[ToolChannel, ...]] = (
-        ToolChannel.STDOUT,
-        ToolChannel.RESULT,
-    )
-    """Каналы shell-команды для журнального тапа."""
-
-    def call_text(self, command: str, stdin: str) -> LaunchOutcome:
-        """Shell-команда в изолированном ребёнке: stdout/stderr/rc как есть."""
-        limit = self._profile.host.channel_limit_bytes
-        stdout = CappedChannel(limit, ToolChannel.STDOUT.value)
-        stderr = CappedChannel(limit, ToolChannel.STDERR.value)
-
-        relay = SandboxLogRelay(self._tool, _RelayTee(ToolChannelsTap.get(), stderr))
-
-        own: dict[ToolChannel, ChunkSink] = {
-            ToolChannel.STDERR: relay.feed,
-            ToolChannel.STDOUT: stdout.feed,
-        }
-        sinks = CallSinks.merged(own, self.SHELL_JOURNAL)
-
-        shell = self._profile.run.shell
-        if not shell:
-            msg = (
-                f"zygote {self._tool}: text command cannot run, "
-                f"profile run.shell is empty"
-            )
-            raise ZygoteCallError(msg)
-
-        argv = (shell, "-c", command)
-        plan = self._plan()
-
-        try:
-            outcome = self._grouped_call(
-                stdin.encode("utf-8"), argv, sinks, plan, kind=CallKind.SHELL
-            )
-        finally:
-            relay.flush()
-
-        run = RunResult(
-            exit_code=outcome.exit_code,
-            stdout=stdout.text(),
-            stderr=stderr.text(),
-            duration_ms=outcome.duration_ms,
-            timed_out=outcome.timed_out,
-        )
-        self._raise_on_setup_failure(outcome)
-
-        if run.exit_code != 0:
-            self._log_failure(run, self._profile.host.fail_tail_chars)
-
-        return LaunchOutcome(self._tool, run, self._diagnose(run, ""))
-
     def open(self, command: ToolCommand) -> ToolCall:
         """Вызов модуля в песочнице: конфиг первым кадром, кадры тела наружу.
 
@@ -1368,6 +1311,7 @@ class ZygoteToolCaller(ToolLauncher):
     def _open_call(self, command: ToolCommand, *, tap: bool) -> tuple[ToolCall, int]:
         """Общий открыватель вызова модуля; tap отдаёт канал кадров наружу."""
         argv_tail = self._argv_tail(command)
+        module = command.argv[self.ARGV_HEAD - 1]
         plan = self._plan()
 
         envelope = CappedChannel(
@@ -1408,7 +1352,7 @@ class ZygoteToolCaller(ToolLauncher):
                 mounting=plan.mounting,
                 staging=plan.staging,
                 cwd=plan.cwd,
-                kind=CallKind.MODULE,
+                module=module,
             )
         except BaseException:
             self._release_leaf(manager, leaf)
@@ -1477,7 +1421,7 @@ class ZygoteToolCaller(ToolLauncher):
         if run.exit_code != 0:
             self._log_failure(run, self._profile.host.fail_tail_chars)
 
-        diagnostic = self._diagnose(run, stderr_tail.text())
+        diagnostic = self._diagnose(run)
         reply = EnvelopeReply.parse(self._tool, envelope.data(), run, diagnostic)
 
         return ToolOutcome(reply=reply, run=run, diagnostic=diagnostic)
@@ -1507,13 +1451,11 @@ class ZygoteToolCaller(ToolLauncher):
             )
             raise SandboxMountError(msg)
 
-    def _diagnose(self, result: RunResult, tool_stderr: str) -> str:
-        """Объяснение сбоя лимитами профиля; в разборе и хвост tool_stderr."""
+    def _diagnose(self, result: RunResult) -> str:
+        """Объяснение смерти вызова лимитами профиля по коду возврата."""
         rendered = self._profile.render(dict(self._path_vars()))
 
-        merged = replace(result, stderr=f"{result.stderr}\n{tool_stderr}")
-
-        diagnostic = SandboxDiagnostics.explain(merged, rendered)
+        diagnostic = SandboxDiagnostics.explain(result, rendered)
         if diagnostic:
             logger.warning("zygote[%s]: %s", self._tool, diagnostic)
 
@@ -1572,40 +1514,6 @@ class ZygoteToolCaller(ToolLauncher):
             logger.warning("zygote[%s]: %s", self._tool, note)
 
         manager.release(leaf_path)
-
-    def _grouped_call(
-        self,
-        stdin: bytes,
-        argv: tuple[str, ...],
-        sinks: Mapping[ToolChannel, ChunkSink],
-        plan: _CallPlan,
-        *,
-        kind: CallKind,
-    ) -> ZygoteOutcome:
-        """Вызов с готовым входом в собственном cgroup-leaf'е, если он нужен."""
-        manager, leaf = self._acquire_leaf()
-
-        try:
-            return self._supervisor.call(
-                uuid.uuid4().hex,
-                argv,
-                stdin,
-                b"",
-                plan.limits,
-                sinks,
-                isolate=True,
-                mounts=self._call_mounts,
-                timeout_sec=plan.timeout_sec,
-                kill_grace_sec=plan.kill_grace_sec,
-                cgroup_leaf=leaf,
-                images=plan.images,
-                mounting=plan.mounting,
-                staging=plan.staging,
-                cwd=plan.cwd,
-                kind=kind,
-            )
-        finally:
-            self._release_leaf(manager, leaf)
 
     def _images_of(self, rendered: SandboxProfile) -> tuple[ImageMount, ...]:
         """Образ workspace путями внутри зиготы; путь уже отрендерен профилем."""

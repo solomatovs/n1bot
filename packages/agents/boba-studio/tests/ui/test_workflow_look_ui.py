@@ -30,13 +30,23 @@ LIST_WIDTH = (220, 0.22, 340)
 INSPECTOR_WIDTH = (300, 0.32, 480)
 
 
+# средний экран: колонки у своих минимумов (Layout.css)
+MEDIUM_MAX_WIDTH = 1200
+
+
 def list_width(viewport: int) -> float:
     minimum, share, maximum = LIST_WIDTH
+    if viewport <= MEDIUM_MAX_WIDTH:
+        return minimum
+
     return fluid(minimum, share, viewport, maximum)
 
 
 def inspector_width(viewport: int) -> float:
     minimum, share, maximum = INSPECTOR_WIDTH
+    if viewport <= MEDIUM_MAX_WIDTH:
+        return minimum
+
     return fluid(minimum, share, viewport, maximum)
 
 
@@ -93,16 +103,17 @@ class Sel:
 
     TOPBAR: ClassVar[str] = ".topbar"
     BRAND: ClassVar[str] = ".topbar__brand"
-    CRUMBS: ClassVar[str] = ".crumbs"
+    CRUMBS: ClassVar[str] = ".topbar__crumbs"
     THEME: ClassVar[str] = 'button[aria-label="Theme"]'
-    LIST: ClassVar[str] = ".list"
-    LIST_FILTER: ClassVar[str] = ".list__filter"
-    LIST_NEW: ClassVar[str] = ".list__new"
-    ITEM: ClassVar[str] = ".list .item"
-    ITEM_ON: ClassVar[str] = ".list .item--on"
-    ITEM_DOT: ClassVar[str] = ".item__dot"
-    ITEM_TOGGLE: ClassVar[str] = ".item__toggle"
-    ITEM_SUB: ClassVar[str] = ".item--sub"
+    LIST: ClassVar[str] = '[data-testid="workflows"]'
+    LIST_FILTER: ClassVar[str] = '[data-testid="workflows"] .search .input'
+    LIST_NEW: ClassVar[str] = ".rows__action"
+    ITEM: ClassVar[str] = '[data-testid="workflows"] .rows__row'
+    ITEM_ON: ClassVar[str] = '[data-testid="workflows"] .rows__row[data-active="true"]'
+    ITEM_LINK: ClassVar[str] = ".rows__link"
+    ITEM_DOT: ClassVar[str] = ".status-dot"
+    ITEM_TOGGLE: ClassVar[str] = '[data-testid="runs-toggle"]'
+    ITEM_SUB: ClassVar[str] = '[data-testid="workflows"] .rows__row--nested'
     CHIP: ClassVar[str] = ".chip"
     VITALS: ClassVar[str] = ".vitals"
     VITALS_FILL: ClassVar[str] = ".vitals__progress-fill"
@@ -125,7 +136,7 @@ class Sel:
     TL_GROUP: ClassVar[str] = ".tl__group"
     TABLE: ClassVar[str] = ".table"
     PILL: ClassVar[str] = ".chip--status"
-    INSPECTOR: ClassVar[str] = ".inspector"
+    INSPECTOR: ClassVar[str] = '[data-testid="inspector"]'
     INSPECTOR_CODE: ClassVar[str] = ".code"
     JSON_KEY: ClassVar[str] = ".json__key"
     JSON_STRING: ClassVar[str] = ".json__string"
@@ -146,7 +157,7 @@ class Sel:
     ARG_COMMAND: ClassVar[str] = 'textarea[aria-label="arg command"]'
     YAML_TEXT: ClassVar[str] = 'textarea[aria-label="workflow yaml"]'
     TOAST: ClassVar[str] = ".toast"
-    SHELL_BODY: ClassVar[str] = ".shell__body"
+    SHELL_BODY: ClassVar[str] = ".page__body"
 
 
 @dataclass(frozen=True)
@@ -325,9 +336,10 @@ class TestShell:
         drawer = page.get_by_role("button", name="Toggle list")
         expect(drawer).to_be_visible()
         drawer.click()
-        expect(listing).not_to_be_visible()
+        # свёрнутая панель уходит из сетки: сцена забирает всю ширину
+        expect(listing).to_have_count(0)
         columns = Css.of(page.locator(Sel.SHELL_BODY), "grid-template-columns")
-        assert columns.split()[0] == "0px"
+        assert len(columns.split()) == 1
 
         drawer.click()
         expect(listing).to_be_visible()
@@ -340,7 +352,7 @@ class TestShell:
         listing = page.locator(Sel.LIST)
         before = Css.box(listing).width
 
-        handle = page.locator(".list__resize")
+        handle = page.get_by_test_id("pane-grip")
         box = handle.bounding_box()
         assert box is not None
         page.mouse.move(box["x"] + box["width"] / 2, box["y"] + 200)
@@ -385,7 +397,7 @@ class TestLists:
         listing = page.locator(Sel.LIST)
         expect(listing).to_have_attribute("aria-label", "workflows")
         assert Css.of(page.locator(Sel.LIST_FILTER), "border-radius") == tokens.raw(
-            "r-cell"
+            "r-ctl"
         )
 
         toggle = page.locator(Sel.ITEM_TOGGLE).first
@@ -393,7 +405,7 @@ class TestLists:
 
         item = page.locator(Sel.ITEM_ON)
         expect(item).to_have_count(1)
-        assert "item--sub" in (item.get_attribute("class") or "")
+        assert "rows__row--nested" in (item.get_attribute("class") or "")
         assert Css.of(item, "border-left-color") == tokens.rgb("signal")
         assert Css.of(item, "background-color") == tokens.rgb("raised")
         dot = item.locator(Sel.ITEM_DOT)
@@ -403,7 +415,8 @@ class TestLists:
 
         # строка запуска отступает под родителя
         parent = page.locator(Sel.ITEM, has_text="look-flow").first
-        assert Css.box(item).x > Css.box(parent).x
+        nested = Css.box(item.locator(Sel.ITEM_LINK)).x
+        assert nested > Css.box(parent.locator(Sel.ITEM_LINK)).x
 
     def test_workflow_rows_expand_their_runs(
         self, page: Page, stand: StandProcess, seeded: SeededRun, tokens: Tokens
@@ -493,7 +506,7 @@ class TestLists:
     ) -> None:
         """Уведомление — фиксированная всплывашка: не двигает сцену и уходит сама."""
         _new(page, stand)
-        stage_before = Css.box(page.locator(".stage"))
+        stage_before = Css.box(page.locator(".page__scene"))
 
         page.get_by_role("button", name="Validate", exact=True).click()
         toast = page.locator(Sel.TOAST)
@@ -502,7 +515,7 @@ class TestLists:
         assert Css.of(page.locator(".toasts"), "position") == "fixed"
 
         # сцена не сдвинулась: всплывашка живёт поверх, а не в потоке
-        stage_after = Css.box(page.locator(".stage"))
+        stage_after = Css.box(page.locator(".page__scene"))
         assert stage_after.y == stage_before.y
 
         expect(toast).to_have_count(0, timeout=8_000)
@@ -630,17 +643,14 @@ class TestObserve:
         assert close(Css.box(inspector).width, inspector_width(WIDE["width"]))
         assert Css.of(inspector, "background-color") == tokens.rgb("surface")
         assert Css.of(inspector, "border-left-color") == tokens.rgb("hairline")
-        assert Css.of(inspector, "box-shadow") != "none"
+        assert Css.of(inspector, "border-left-style") == "solid"
         # итог задачи разобран по kind: сводка в шапке, stdout отдельным блоком
         result = inspector.locator(Sel.RESULT_VIEW)
         expect(result).to_have_attribute("data-kind", "shell")
         expect(result.locator(".chip").first).to_have_text("shell")
         expect(result.locator(".result-view__figure")).to_have_text("exit 0")
         expect(result.locator(".code").first).to_contain_text("LOOK_ONE")
-        assert (
-            Css.of(result.locator(".eyebrow").first, "text-transform")
-            == "uppercase"
-        )
+        assert Css.of(result.locator(".eyebrow").first, "text-transform") == "uppercase"
         assert Css.of(result.locator(".result__fact dt").first, "color") == tokens.rgb(
             "muted"
         )
@@ -697,7 +707,7 @@ class TestStatusPalette:
 
         item = page.locator(Sel.ITEM_ON)
         expect(item).to_contain_text("failed 1/2")
-        assert Css.of(item.locator(".is-error"), "color") == tokens.rgb("error")
+        assert Css.of(item.locator(".chip--error"), "color") == tokens.rgb("error")
         assert Css.of(item.locator(Sel.ITEM_DOT), "background-color") == tokens.rgb(
             "status-failed"
         )
@@ -906,7 +916,7 @@ class TestResponsive:
         assert 12 <= sizes[1] <= sizes[0] <= 14
 
     def test_narrow_shell_uses_a_drawer(
-        self, narrow_page: Page, stand: StandProcess, seeded: SeededRun
+        self, narrow_page: Page, stand: StandProcess, seeded: SeededRun, tokens: Tokens
     ) -> None:
         _open_run(narrow_page, stand, seeded)
         columns = Css.of(narrow_page.locator(Sel.SHELL_BODY), "grid-template-columns")
@@ -914,25 +924,26 @@ class TestResponsive:
         assert Css.of(narrow_page.locator(Sel.MINIMAP), "display") == "none"
         assert no_horizontal_scroll(narrow_page)
 
+        # панель — ящик: закрыта её нет, кнопка в топбаре кладёт её поверх сцены
         listing = narrow_page.locator(Sel.LIST)
-        assert Css.box(listing).right <= 0
+        expect(listing).to_have_count(0)
         drawer = narrow_page.get_by_role("button", name="Toggle list")
         expect(drawer).to_be_visible()
         drawer.click()
-        expect(listing).to_have_class(re.compile("list--open"))
-        narrow_page.wait_for_timeout(400)
+        expect(listing).to_be_visible()
         box = Css.box(listing)
         assert box.x == 0
         assert box.width <= NARROW["width"] * 0.85 + 1
 
-        narrow_page.locator(Sel.ITEM_ON).click()
-        expect(listing).not_to_have_class(re.compile("list--open"))
+        narrow_page.locator(Sel.ITEM_ON).locator(Sel.ITEM_LINK).click()
+        expect(listing).to_have_count(0)
 
-        # узкий экран: инспектор занимает всю сцену
+        # узкий экран: инспектор ложится поверх сцены у правого края
         _tab(narrow_page, "Table")
         narrow_page.locator(f"{Sel.TABLE} tbody tr").first.click()
         inspector = Css.box(narrow_page.locator(Sel.INSPECTOR))
-        assert inspector.width == NARROW["width"]
+        assert inspector.right == NARROW["width"]
+        assert inspector.width == min(NARROW["width"] * 0.92, tokens.px("w-detail-max"))
 
     def test_dense_screen_keeps_css_geometry(
         self, dense_page: Page, stand: StandProcess, tokens: Tokens

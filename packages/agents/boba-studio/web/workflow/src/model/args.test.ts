@@ -2,16 +2,26 @@ import { describe, expect, it } from "vitest";
 
 import { blockRows, intentOf, withIntent } from "./args";
 import type { EditableTask } from "./spec";
-import { ArgViewSchema, ToolCatalogSchema, looseViews, type ToolFacts } from "./workflow";
+import { FieldEditorSchema, ToolCatalogSchema, looseEditors, type ToolFacts } from "./workflow";
 
 const FACTS: ToolFacts = {
   name: "pg_query",
   availability: "available",
   description: "run sql",
   args: [
-    { name: "connection_name", required: true, view: { kind: "connection", placement: "body", family: "postgres" }, description: "" },
-    { name: "sql", required: true, view: { kind: "code", placement: "body", lang: "sql" }, description: "query" },
-    { name: "intent", required: false, view: { kind: "intent", placement: "header" }, description: "" },
+    {
+      name: "connection_name", required: true, placement: "body", description: "",
+      editor: { editor: "connection", family: "postgres" }, display: null,
+    },
+    {
+      name: "sql", required: true, placement: "body", description: "query",
+      editor: { editor: "text", multiline: false, placeholder: "" },
+      display: { kind: "markdown", ok: true, elapsed_ms: 0, metadata: {}, text: "", language: "sql" },
+    },
+    {
+      name: "intent", required: false, placement: "header", description: "",
+      editor: { editor: "text", multiline: false, placeholder: "" }, display: null,
+    },
   ],
   ports: [],
   results: ["table", "affected"],
@@ -34,7 +44,7 @@ describe("blockRows", () => {
     expect(rows.body.map((row) => row.name)).toEqual(["connection_name", "sql", "extra"]);
     expect(rows.body[1]?.bound).toBe("fetch.result");
     expect(rows.body[0]?.value).toBeUndefined();
-    expect(rows.body[2]?.view.kind).toBe("text");
+    expect(rows.body[2]?.editor.editor).toBe("text");
   });
 
   it("intent lives in args and is removed when cleared", () => {
@@ -44,11 +54,12 @@ describe("blockRows", () => {
   });
 });
 
-describe("ArgViewSchema", () => {
-  it("parses every known kind and falls back to text for unknown ones", () => {
-    expect(ArgViewSchema.parse({ kind: "number", placement: "body", minimum: 1, maximum: null, unit: "" }).kind).toBe("number");
-    const raw = { t: { ...FACTS, args: [{ name: "x", required: false, view: { kind: "hologram" }, description: "" }] } };
-    const catalog = ToolCatalogSchema.parse(looseViews(raw));
-    expect(catalog.t?.args[0]?.view.kind).toBe("text");
+describe("FieldEditorSchema", () => {
+  it("parses known editors and falls back to text for unknown ones", () => {
+    expect(FieldEditorSchema.parse({ editor: "number", minimum: 1, maximum: null }).editor).toBe("number");
+    const field = { name: "x", required: false, placement: "body", description: "", editor: { editor: "hologram" }, display: null };
+    const raw = { t: { ...FACTS, args: [field] } };
+    const catalog = ToolCatalogSchema.parse(looseEditors(raw));
+    expect(catalog.t?.args[0]?.editor.editor).toBe("text");
   });
 });

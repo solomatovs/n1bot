@@ -218,8 +218,8 @@ class TestToolMainAsProgram:
             raise AssertionError("isinstance(reply, ReplyOk)")
         if "ping|s3cret-token" not in reply.content:
             raise AssertionError('"ping|s3cret-token" in reply.content')
-        if reply.artifact.kind != "text":
-            raise AssertionError('reply.artifact.kind == "text"')
+        if reply.artifact.kind != "markdown":
+            raise AssertionError('reply.artifact.kind == "markdown"')
 
     def test_body_logs_land_on_stdout(self) -> None:
         """Логи тела — живой вывод: журнал и панель читают stdout процесса."""

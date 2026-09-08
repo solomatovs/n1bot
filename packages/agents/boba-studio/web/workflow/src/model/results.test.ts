@@ -1,38 +1,38 @@
 import { describe, expect, it } from "vitest";
 
 import { resultFlowLabel, resultSummary } from "./results";
-import { TaskStateSchema, withKnownResults, type ToolResult } from "./workflow";
+import { TaskStateSchema, type TaskState } from "./workflow";
 
 const base = { ok: true, elapsed_ms: 3, metadata: {} };
+const idle = { status: "done" as const, call_id: "", started_at: null, finished_at: null, error: "" };
 
 describe("resultSummary", () => {
-  it("counts rows, lines and items by kind", () => {
-    const table: ToolResult = { kind: "table", ...base, rows: [{ a: 1 }, { a: 2 }], note: null };
-    expect(resultSummary(table)).toEqual({ kind: "table", figure: "2", detail: "rows" });
-    const shell: ToolResult = {
-      kind: "shell", ...base, exit_code: 0, stdout: "a\nb", stdout_truncated: false, stderr: "",
-      stderr_truncated: false, duration_ms: 5, timed_out: false, diagnostic: "",
+  it("takes the summary the result rendered for the page", () => {
+    const table: TaskState = {
+      ...idle,
+      result: { kind: "table", ...base, rows: [{ a: 1 }, { a: 2 }], note: null },
+      view: { summary: { figure: "2", detail: "rows" }, blocks: [{ block: "grid", rows: [{ a: 1 }, { a: 2 }] }] },
     };
-    expect(resultSummary(shell).figure).toBe("exit 0");
+    expect(resultSummary(table)).toEqual({ kind: "table", figure: "2", detail: "rows" });
     expect(resultFlowLabel(table)).toBe("table ×2");
-    const multi: ToolResult = { kind: "multi", ...base, items: [table, shell] };
-    expect(resultSummary(multi)).toEqual({ kind: "multi", figure: "2", detail: "items" });
+
+    const visual: TaskState = {
+      ...idle,
+      result: { kind: "visual", ...base, element: "plotly", props: {}, title: "" },
+      view: { summary: { figure: "plotly", detail: "" }, blocks: [{ block: "widget", element: "plotly", props: {}, title: "" }] },
+    };
+    expect(resultFlowLabel(visual)).toBe("visual");
+    expect(resultSummary({ ...idle, result: null, view: null })).toBeNull();
   });
 
-  it("parses nested multi and unknown kinds from the run state", () => {
+  it("parses a result of a kind the page does not know", () => {
     const raw = {
-      tasks: {
-        a: {
-          status: "done", call_id: "", started_at: null, finished_at: null, error: "",
-          result: { kind: "multi", ...base, items: [{ kind: "affected", ...base, affected_rows: 3, status: "UPDATE 3" }, { kind: "hologram", ...base, x: 1 }] },
-        },
-      },
+      ...idle,
+      result: { kind: "hologram", ...base, x: 1 },
+      view: { summary: { figure: "1", detail: "thing" }, blocks: [{ block: "note", text: "hologram" }] },
     };
-    const normalized = withKnownResults(raw) as { tasks: Record<string, unknown> };
-    const state = TaskStateSchema.parse(normalized.tasks.a);
-    expect(state.result?.kind).toBe("multi");
-    if (state.result?.kind === "multi") {
-      expect(state.result.items.map((item) => item.kind)).toEqual(["affected", "opaque"]);
-    }
+    const state = TaskStateSchema.parse(raw);
+    expect(state.result?.kind).toBe("hologram");
+    expect(state.view?.blocks[0]?.block).toBe("note");
   });
 });

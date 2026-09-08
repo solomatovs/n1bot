@@ -26,6 +26,7 @@ from boba.runtime.plugins import EntryPointPlugins
 from boba.sandbox.profile import SandboxProfile
 from boba.sandbox.runner import has_bwrap
 from boba.stand.sandbox import section_profile
+from boba.stand.shell import ShellRun
 from boba.stand.zygote import ZygoteStand
 
 
@@ -176,16 +177,16 @@ class TestNetworkProfiles:
 
         caller = ZygoteStand.caller(cls.LABEL, profile, path_vars=lambda: cls.PATH_VARS)
         try:
-            outcome = caller.call_text(command, stdin="")
+            outcome = ShellRun.call_text(caller, command)
         finally:
             ZygoteStand.stop()
 
-        if outcome.result.exit_code != 0:
+        if outcome.exit_code != 0:
             raise AssertionError(
-                f"{command}: rc={outcome.result.exit_code} "
-                f"stdout={outcome.result.stdout!r} stderr={outcome.result.stderr!r}"
+                f"{command}: rc={outcome.exit_code} "
+                f"stdout={outcome.stdout!r} stderr={outcome.stderr!r}"
             )
-        return outcome.result.stdout
+        return outcome.stdout
 
     def test_network_profile_mounts_resolver(self) -> None:
         """resolv.conf и hosts обязаны быть в ro_binds сетевого профиля."""

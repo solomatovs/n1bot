@@ -22,10 +22,11 @@ from boba.cancellation import (
     current_cancellation,
     run_cancellation,
 )
-from boba.chainlit.agent.tools import BashToolConfig, build_bash_tool
-from boba.runtime.plugins import ToolBridge
+from boba.chainlit.agent.tools import BashToolConfig
 from boba.sandbox import SandboxProfile, SandboxToolConfig
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
+from boba.stand.shell import ShellRun
+from boba.stand.zygote import SandboxStand
 from boba.toolkit.result import ErrorResult
 from boba.toolrun.cancellation import CancellableTools
 from boba.transport.http import CancellableHttpTransport, HttpRequest
@@ -56,22 +57,6 @@ _SANDBOX = (
 _ROOTFS_IMAGE = _SANDBOX / "plugins" / "boba-tool-shell" / "rootfs.ext4"
 _SITE_PACKAGES = "/usr/local/lib/python3.11/site-packages"
 _PACKAGES = Path(__file__).resolve().parents[3]
-
-_SRC_PACKAGES = (
-    "core/boba-cancellation",
-    "core/boba-toolkit",
-    "infra/sandbox/boba-sandbox",
-)
-"""Пакеты, чей код нужен зиготе: их src приезжает биндом в /usr/src."""
-
-
-def _python_path() -> str:
-    parts: list[str] = []
-    for name in _SRC_PACKAGES:
-        parts.append(f"/usr/src/{name}/src")
-
-    return os.pathsep.join(parts)
-
 
 _ZYGOTE = ZygotePolicy(
     start_timeout_sec=60.0,
@@ -113,7 +98,7 @@ _PROFILE_RAW: dict[str, object] = {
         "network": False,
         "env": {
             "PATH": "/usr/local/bin:/usr/bin:/bin",
-            "PYTHONPATH": _python_path(),
+            "PYTHONPATH": SandboxStand.python_path(),
             "HOME": "/tmp",  # noqa: S108
         },
         "reap_poll_sec": 0.05,
@@ -127,7 +112,6 @@ _PROFILE_RAW: dict[str, object] = {
         "process_oom_score_adj": 0,
     },
     "run": {
-        "shell": "/bin/bash",
         "cwd": "/tmp",  # noqa: S108
     },
 }
@@ -329,7 +313,7 @@ class TestSubprocessAbort:
     DURATION = "5931.17"
     """Уникальная длительность sleep: она видна в argv и после exec'а bash."""
 
-    LIMITS = BashToolConfig(max_output_bytes=64 * 1024)
+    LIMITS = BashToolConfig(max_output_bytes=64 * 1024, timeout_sec=60.0)
     """Потолок вывода: команда ничего не печатает, значение роли не играет."""
 
     KILL_DEADLINE_SEC = 2.5
@@ -356,21 +340,18 @@ class TestSubprocessAbort:
     def test_cancel_kills_running_process(self) -> None:
         profile = _sandbox_config().profile
 
-        supervisor = ZygoteRegistry.obtain("cancel-bash", profile, (), _ZYGOTE)
+        supervisor = ZygoteRegistry.obtain(
+            "cancel-bash", profile, (ShellRun.MODULE,), _ZYGOTE
+        )
         caller = ZygoteToolCaller("cancel-bash", supervisor, profile)
 
-        def launcher(tool: str) -> ZygoteToolCaller:
-            return caller
-
-        tool_ = ToolBridge.as_structured_tool(build_bash_tool(self.LIMITS, launcher))
+        tool_ = ShellRun.tool(caller, self.LIMITS)
         with run_cancellation() as c:
             ctx = copy_context()
             with ThreadPoolExecutor(1) as pool:
                 future = pool.submit(
                     ctx.run,
-                    lambda: tool_.invoke(
-                        {"command": f"sleep {self.DURATION}", "stdin": ""}
-                    ),
+                    lambda: tool_.invoke({"command": f"sleep {self.DURATION}"}),
                 )
                 if c.wait(0.0) is not False:
                     raise AssertionError("c.wait(0.0) is False")

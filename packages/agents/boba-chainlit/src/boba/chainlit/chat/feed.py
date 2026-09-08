@@ -157,8 +157,7 @@ class TurnFeed(StreamFeed):
         ref = await self._payloads.put(
             self._scope, question.model_dump(mode="json", by_alias=True)
         )
-        message = TurnStarted(turn_id=self._turn_id, key=key, question=ref)
-        await self._publish(message)
+        await self._publish(TurnStarted(turn_id=self._turn_id, key=key, question=ref))
 
     async def model_answered(self) -> None:
         await self._publish(ModelAnswered(turn_id=self._turn_id))
@@ -170,12 +169,12 @@ class TurnFeed(StreamFeed):
         await self._publish(AnswerClosed(turn_id=self._turn_id, key=key))
 
     async def answer_interrupted(self, key: str, note: str) -> None:
-        message = AnswerInterrupted(turn_id=self._turn_id, key=key, note=note)
-        await self._publish(message)
+        await self._publish(
+            AnswerInterrupted(turn_id=self._turn_id, key=key, note=note)
+        )
 
     async def thinking_token(self, key: str, token: str) -> None:
-        message = ThinkingToken(turn_id=self._turn_id, key=key, token=token)
-        await self._publish(message)
+        await self._publish(ThinkingToken(turn_id=self._turn_id, key=key, token=token))
 
     async def thinking_complete(self, key: str, text: str) -> None:
         ref = await self._payloads.put(self._scope, text)
@@ -202,23 +201,24 @@ class TurnFeed(StreamFeed):
         await self._publish(message)
 
     async def stage_started(self, name: str, phase: str) -> None:
-        message = StageStarted(turn_id=self._turn_id, name=name, phase=phase)
-        await self._publish(message)
+        await self._publish(StageStarted(turn_id=self._turn_id, name=name, phase=phase))
 
     async def stage_queries(self, name: str, queries: Sequence[str]) -> None:
-        message = StageQueries(turn_id=self._turn_id, name=name, queries=tuple(queries))
-        await self._publish(message)
+        await self._publish(
+            StageQueries(turn_id=self._turn_id, name=name, queries=tuple(queries))
+        )
 
     async def stage_ended(
         self, name: str, queries: Sequence[str], elapsed_ms: int
     ) -> None:
-        message = StageEnded(
-            turn_id=self._turn_id,
-            name=name,
-            queries=tuple(queries),
-            elapsed_ms=elapsed_ms,
+        await self._publish(
+            StageEnded(
+                turn_id=self._turn_id,
+                name=name,
+                queries=tuple(queries),
+                elapsed_ms=elapsed_ms,
+            )
         )
-        await self._publish(message)
 
     async def tool_started(
         self, call_id: str, name: str, args: Mapping[str, Any]

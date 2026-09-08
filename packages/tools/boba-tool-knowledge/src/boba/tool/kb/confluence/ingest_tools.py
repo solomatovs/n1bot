@@ -55,7 +55,7 @@ from boba.tool.kb.indexing_log import IngestProgress, LoggingReader
 from boba.tool.kb.warm import WarmEmbedder
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool, warmup
-from boba.toolkit.result import TableResult, TextResult, ToolResult, pack_result
+from boba.toolkit.result import MarkdownResult, TableResult
 from boba.toolkit.timing import Elapsed
 from boba.toolkit.types import LLMStringList, SecretRevealing
 
@@ -277,7 +277,7 @@ async def confluence_index_pages(  # noqa: PLR0913 — фасад LLM, пара�
     skip_failed: Annotated[bool, Field(description=_SKIP_FAILED_DESCRIPTION)] = True,
     *,
     cfg: Annotated[IngestToolConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> TableResult:
     """Индексирует явный список страниц Confluence по page_id."""
     run_cfg = cfg.with_parser(
         ocr_enabled=ocr_enabled, num_workers=num_workers, ocr_language=ocr_language
@@ -303,8 +303,7 @@ async def confluence_index_pages(  # noqa: PLR0913 — фасад LLM, пара�
     )
 
     note = f"page_ids ({len(page_ids)}): {', '.join(page_ids)}"
-    table = TableResult(rows=[stats], note=note)
-    return pack_result(table)
+    return TableResult(rows=[stats], note=note)
 
 
 @tool
@@ -333,7 +332,7 @@ async def confluence_index_cql(  # noqa: PLR0913 — фасад LLM, парам�
     skip_failed: Annotated[bool, Field(description=_SKIP_FAILED_DESCRIPTION)] = True,
     *,
     cfg: Annotated[IngestToolConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> TableResult:
     """Индексирует страницы Confluence, найденные CQL-запросом."""
     run_cfg = cfg.with_parser(
         ocr_enabled=ocr_enabled, num_workers=num_workers, ocr_language=ocr_language
@@ -358,8 +357,7 @@ async def confluence_index_cql(  # noqa: PLR0913 — фасад LLM, парам�
         skip_failed=skip_failed,
     )
 
-    table = TableResult(rows=[stats])
-    return pack_result(table)
+    return TableResult(rows=[stats])
 
 
 @tool
@@ -390,7 +388,7 @@ async def confluence_index_spaces(  # noqa: PLR0913 — фасад LLM, пара
     skip_failed: Annotated[bool, Field(description=_SKIP_FAILED_DESCRIPTION)] = True,
     *,
     cfg: Annotated[IngestToolConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> TableResult:
     """Индексирует спейсы Confluence целиком."""
     run_cfg = cfg.with_parser(
         ocr_enabled=ocr_enabled, num_workers=num_workers, ocr_language=ocr_language
@@ -416,8 +414,7 @@ async def confluence_index_spaces(  # noqa: PLR0913 — фасад LLM, пара
     )
 
     note = f"space_keys ({len(space_keys)}): {', '.join(space_keys)}"
-    table = TableResult(rows=[stats], note=note)
-    return pack_result(table)
+    return TableResult(rows=[stats], note=note)
 
 
 @tool
@@ -439,7 +436,7 @@ async def confluence_attachment(  # noqa: PLR0913 — фасад LLM, парам
     ] = "rus+eng",
     *,
     cfg: Annotated[IngestToolConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> MarkdownResult:
     """Читает вложение страницы Confluence и возвращает его текст."""
     run_cfg = cfg.with_parser(
         ocr_enabled=ocr_enabled, num_workers=num_workers, ocr_language=ocr_language
@@ -471,8 +468,7 @@ async def confluence_attachment(  # noqa: PLR0913 — фасад LLM, парам
         LiteParseEngine.parse_bytes, params, content, filename
     )
 
-    artifact = TextResult(text=result.text)
-    return pack_result(artifact)
+    return MarkdownResult(text=result.text)
 
 
 def _attachment_link(data: dict[str, Any], filename: str) -> str:

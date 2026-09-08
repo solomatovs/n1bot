@@ -84,7 +84,7 @@ class TestStepContract:
                 content="hi",
                 tool_call_id=CALL_ID,
                 id=TOOL_MSG_ID,
-                artifact={"kind": "text", "text": "hi"},
+                artifact={"kind": "markdown", "text": "hi"},
             ),
             run_id=tool_run,
         )
@@ -106,7 +106,7 @@ class TestStepContract:
                 content="hi",
                 tool_call_id=CALL_ID,
                 id=TOOL_MSG_ID,
-                artifact={"kind": "text", "text": "hi"},
+                artifact={"kind": "markdown", "text": "hi"},
             ),
             AIMessage(content="ответ", id=ANSWER_ID),
         ]

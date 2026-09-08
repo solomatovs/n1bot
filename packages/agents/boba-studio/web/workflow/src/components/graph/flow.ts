@@ -103,12 +103,15 @@ export function flowOf(run: RunState, selectedTask: string | null): RunFlow {
 }
 
 function resultLine(state: TaskState | undefined): string {
-  const result = state?.result;
-  if (result === undefined || result === null) {
+  if (state === undefined) {
     return "";
   }
 
-  const summary = resultSummary(result);
+  const summary = resultSummary(state);
+  if (summary === null) {
+    return "";
+  }
+
   if (summary.detail === "") {
     return `${summary.kind} · ${summary.figure}`;
   }
@@ -118,12 +121,15 @@ function resultLine(state: TaskState | undefined): string {
 
 /** Ребро-значение подписывается тем, что по нему потекло, когда итог уже есть. */
 function edgeLabel(edge: LaidEdge, source: TaskState | undefined): string {
-  const result = source?.result;
-  if (edge.kind !== "value" || result === undefined || result === null) {
+  if (edge.kind !== "value" || source === undefined) {
     return edge.label;
   }
 
-  const flow = resultFlowLabel(result);
+  const flow = resultFlowLabel(source);
+  if (flow === "") {
+    return edge.label;
+  }
+
   if (edge.label === "") {
     return flow;
   }

@@ -504,7 +504,7 @@ class WorkflowStore(PostgresTable, WorkflowRepository):
             "initiator": Jsonb(dict(initiator)),
             "profile": profile,
             "status": state.status.value,
-            "state": Jsonb(state.model_dump(mode="json")),
+            "state": Jsonb(state.persisted()),
             "instance": instance,
         }
 
@@ -540,7 +540,7 @@ class WorkflowStore(PostgresTable, WorkflowRepository):
         params = {
             "id": run_id,
             "status": state.status.value,
-            "state": Jsonb(state.model_dump(mode="json")),
+            "state": Jsonb(state.persisted()),
             "terminal": state.status.terminal,
         }
 

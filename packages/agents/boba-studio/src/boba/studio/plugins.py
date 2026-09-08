@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from langchain_core.tools import BaseTool
-
 from boba.runtime import providers as runtime
 from boba.runtime.di import Container
 from boba.runtime.plugins import CoreTools, ToolPlugin
@@ -18,7 +16,7 @@ from boba.runtime.refs import RuntimeRefs
 from boba.studio.catalog import providers as catalog
 from boba.studio.catalog.tools import CatalogToolConfig, build_catalog_tools
 from boba.studio.config import StudioAppConfig
-from boba.toolkit.launcher import LauncherFactory
+from boba.toolkit.facade import PayloadTool
 
 __all__ = ["StudioTools"]
 
@@ -39,7 +37,7 @@ class StudioTools:
         return table
 
     @staticmethod
-    def _catalog(cfg: CatalogToolConfig, launchers: LauncherFactory) -> list[BaseTool]:
+    def _catalog(cfg: CatalogToolConfig) -> list[PayloadTool]:
         return build_catalog_tools(
             cfg, catalog.catalog_service_ref, StudioTools.page_prefix
         )

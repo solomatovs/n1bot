@@ -244,7 +244,8 @@ def t_embed_weights_shipped():
     if not os.path.isdir(EMBED_DIR):
         raise RuntimeError(f"нет каталога {EMBED_DIR}")
 
-    weights = glob.glob(os.path.join(EMBED_DIR, "models--*", "**", "*.onnx"), recursive=True)
+    pattern = os.path.join(EMBED_DIR, "models--*", "**", "*.onnx")
+    weights = glob.glob(pattern, recursive=True)
     if not weights:
         raise RuntimeError(f"нет весов *.onnx в {EMBED_DIR}")
 

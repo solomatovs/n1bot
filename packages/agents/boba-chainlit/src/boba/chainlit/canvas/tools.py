@@ -13,7 +13,6 @@ import logging
 from enum import StrEnum
 from typing import Annotated, Any
 
-from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, ConfigDict, Field
 
 import chainlit as cl
@@ -38,7 +37,8 @@ from boba.chainlit.canvas.panel import (
 from boba.chainlit.domain.context import ChatCallContext
 from boba.chainlit.infra.thread_room import ChatNotices
 from boba.identity.errors import RefusalError
-from boba.toolkit.result import ErrorResult, ToolResult, pack_result
+from boba.toolkit.facade import PayloadTool, tool
+from boba.toolkit.result import ErrorResult, VisualResult
 
 __all__ = [
     "CanvasActions",
@@ -98,16 +98,18 @@ class CanvasScope(BaseModel):
 class CanvasOpener:
     """Показ панели: единый код для тула и клика по ссылке в переписке."""
 
-    async def open(self, path: str) -> tuple[str, ToolResult]:
-        """Вызов тула: показать файл; представление для ленты отдаёт вьювер."""
+    async def open(self, path: str) -> VisualResult | ErrorResult:
+        """Вызов тула: показать файл; ссылку для ленты отдаёт вьювер, текст
+        для LLM — сводка о показе."""
         try:
             opened = await self.show(path, CanvasScope.of_context())
         except RefusalError as e:
-            return pack_result(ErrorResult(message=str(e), error_kind=e.kind))
+            return ErrorResult(message=str(e), error_kind=e.kind)
 
-        content = f"opened in the canvas: {opened.label} ({opened.path}); "
-        content += CanvasPrompt.NOTE
-        return content, opened.link
+        summary = f"opened in the canvas: {opened.label} ({opened.path}); "
+        summary += CanvasPrompt.NOTE
+
+        return opened.link.model_copy(update={"summary": summary})
 
     async def show(self, path: str, scope: CanvasScope) -> OpenedCanvas:
         """Панель с содержимым одного файла; слежение ставит CanvasPanel."""
@@ -190,7 +192,7 @@ class CanvasActions:
         return described.props()
 
 
-def build_canvas_tools(cfg: CanvasToolConfig) -> list[BaseTool]:
+def build_canvas_tools(cfg: CanvasToolConfig) -> list[PayloadTool]:
     opener = CanvasOpener()
 
     # вьюверы общего вида — забота самой панели; диаграммы регистрирует diagram
@@ -201,13 +203,13 @@ def build_canvas_tools(cfg: CanvasToolConfig) -> list[BaseTool]:
     CanvasRegistry.register(VideoViewer())
     CanvasRegistry.register(AudioViewer())
 
-    @tool(response_format="content_and_artifact")
+    @tool
     async def canvas_open(
         path: Annotated[
             str,
             Field(min_length=1, description=CanvasPrompt.PATH),
         ],
-    ) -> tuple[str, ToolResult]:
+    ) -> VisualResult | ErrorResult:
         """Показать файл workspace (диаграмму, изображение, pdf, текст) в
         панели справа от чата и оставить ссылку на него в переписке."""
         return await opener.open(path)

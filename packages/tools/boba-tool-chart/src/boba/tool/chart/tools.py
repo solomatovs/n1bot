@@ -18,10 +18,9 @@ from typing import Annotated, Any, Final
 
 from pydantic import Field
 
-from boba.toolkit.calls import ScriptCall
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import tool
-from boba.toolkit.result import ChartResult, ToolResult, pack_result
+from boba.toolkit.result import MarkdownResult, VisualResult
 
 
 class InvalidFigureSpecError(Exception):
@@ -93,14 +92,18 @@ async def visualize(
                 "указывай в layout.title — он попадёт в подпись и в сводку."
             ),
         ),
+        MarkdownResult(language="json"),
     ],
-) -> tuple[str, ToolResult]:
+) -> VisualResult:
     """Отрисовать интерактивный график по Plotly figure-спецификации."""
     parsed = FigureSpec.parsed(spec)
     title = FigureSpec.title_of(parsed)
 
-    artifact = ChartResult(spec=parsed, title=title or None)
-    return pack_result(artifact)
+    title_or_none = None
+    if title:
+        title_or_none = title
+
+    return VisualResult.plotly(parsed, title_or_none)
 
 
 EXPECTED: Mapping[type[Exception], ChartErrorKind] = {
@@ -109,7 +112,6 @@ EXPECTED: Mapping[type[Exception], ChartErrorKind] = {
 
 TOOLS: Final = ToolMain.toolset(
     visualize,
-    views={"visualize": ScriptCall(arg="spec", lang="json")},
 )
 
 if __name__ == "__main__":

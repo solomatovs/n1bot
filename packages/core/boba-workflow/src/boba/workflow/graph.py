@@ -13,11 +13,11 @@ from enum import StrEnum
 from graphlib import CycleError, TopologicalSorter
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from boba.access import ToolAvailability
-from boba.toolkit.calls import ArgView, TextArg
-from boba.toolkit.result import ToolResult
+from boba.toolkit.calls import StudioField
+from boba.toolkit.result import StudioView, ToolResult
 from boba.workflow.spec import (
     ArgTemplate,
     Edge,
@@ -38,7 +38,6 @@ __all__ = [
     "Stage",
     "TaskState",
     "TaskStatus",
-    "ToolArg",
     "ToolCatalog",
     "ToolFacts",
     "ToolPort",
@@ -46,17 +45,6 @@ __all__ = [
     "WorkflowPlan",
     "WorkflowPlanError",
 ]
-
-
-class ToolArg(BaseModel):
-    """Аргумент инструмента: обязательность, вид для страницы, описание."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    name: str
-    required: bool = False
-    view: ArgView = TextArg()
-    description: str = ""
 
 
 class ToolPort(BaseModel):
@@ -74,14 +62,15 @@ class ToolFacts(BaseModel):
     name: str
     availability: ToolAvailability
     description: str = ""
-    args: tuple[ToolArg, ...] = ()
+    args: tuple[StudioField, ...] = ()
+    """Поля формы задачи, видимые модели: intent в шапке, порты отдельно."""
     ports: tuple[ToolPort, ...] = ()
     results: tuple[str, ...] = ()
-    """Виды ToolResult, которые инструмент объявил через Produces."""
+    """Виды результата по аннотации возврата тела инструмента."""
     task_ports: bool = False
     """Порты объявляются в задаче, а не в сигнатуре (bash)."""
 
-    def arg(self, name: str) -> ToolArg | None:
+    def arg(self, name: str) -> StudioField | None:
         for arg in self.args:
             if arg.name == name:
                 return arg
@@ -774,7 +763,16 @@ class TaskState(BaseModel):
     finished_at: datetime | None = None
     error: str = ""
     result: ToolResult | None = None
-    """Итог инструмента по завершении; страница показывает его по kind."""
+    """Итог инструмента по завершении."""
+
+    @computed_field
+    @property
+    def view(self) -> StudioView | None:
+        """Показ итога на странице; в хранилище не пишется (RunState.persisted)."""
+        if self.result is None:
+            return None
+
+        return self.result.studio_view()
 
     @property
     def elapsed_ms(self) -> int:
@@ -799,6 +797,10 @@ class RunState(BaseModel):
     @property
     def ok(self) -> bool:
         return self.status is RunStatus.DONE
+
+    def persisted(self) -> dict[str, Any]:
+        """JSON для хранилища: без показов задач, они выводятся из итога."""
+        return self.model_dump(mode="json", exclude={"tasks": {"__all__": {"view"}}})
 
     def abandoned(self, note: str, at: datetime) -> RunState:
         """Снимок запуска без процесса: идущее — failed с причиной, ждущее — skipped."""

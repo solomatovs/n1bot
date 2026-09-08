@@ -86,7 +86,7 @@ class ToolProcessWrap:
         call = cls._process_call(address, schema, launcher)
 
         # wraps сохраняет исходное тело в __wrapped__: каталог workflow читает
-        # оттуда аннотацию результата (Produces)
+        # оттуда аннотацию результата
         if tool.func is not None:
             cls._set_func(tool, wraps(tool.func)(call))
 

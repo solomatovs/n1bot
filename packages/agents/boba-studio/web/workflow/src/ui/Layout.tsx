@@ -1,18 +1,19 @@
 import {
   createContext,
-  useCallback,
   useContext,
+  useMemo,
   useRef,
-  useState,
   type CSSProperties,
   type FormEvent,
   type HTMLAttributes,
   type PointerEvent as ReactPointerEvent,
   type ReactElement,
   type ReactNode,
+  type RefObject,
 } from "react";
 
 import "./Layout.css";
+import { useStoredWidth } from "./useStoredWidth";
 
 type Marked = {
   /** Метка для тестов: data-testid. */
@@ -38,140 +39,102 @@ export function PageNotices({ children }: { children?: ReactNode }): ReactElemen
   return <div className="page__notices">{children}</div>;
 }
 
-type BodyProps = {
-  pane: boolean;
-  detail: boolean;
-  children: ReactNode;
-};
+/** Ключи запомненных ширин колонок: одни на все страницы. */
+const WidthKey = {
+  PANE: "studio.pane-width",
+  DETAIL: "studio.detail-width",
+} as const;
 
-/** Ширина панели деталей, выбранная пользователем: хранится в браузере и
- * действует на всех страницах каталога; пределы задаёт CSS. */
-const DetailWidth = {
-  KEY: "catalog.detail-width",
-
-  load(): number | undefined {
-    let raw: string | null = null;
-    try {
-      raw = window.localStorage.getItem(DetailWidth.KEY);
-    } catch {
-      return undefined;
-    }
-
-    if (raw === null) {
-      return undefined;
-    }
-
-    const width = Number(raw);
-    if (!Number.isFinite(width) || width <= 0) {
-      return undefined;
-    }
-
-    return width;
-  },
-
-  save(width: number): void {
-    try {
-      window.localStorage.setItem(DetailWidth.KEY, String(Math.round(width)));
-    } catch {
-      return;
-    }
-  },
-
-  column(width: number | undefined): string | undefined {
-    if (width === undefined) {
-      return undefined;
-    }
-
-    return `clamp(var(--w-detail-min), ${Math.round(width)}px, var(--w-detail-user-max))`;
-  },
-};
-
-type DetailResize = {
-  /** Ширина, пока тянут; в конце — запомнить. */
+type ColumnResize = {
   resize: (width: number) => void;
   settle: (width: number) => void;
 };
 
-const DetailResizeContext = createContext<DetailResize | undefined>(undefined);
+type BodyResize = {
+  pane: ColumnResize;
+  detail: ColumnResize;
+};
 
-/** Тело страницы: колонки панели, сцены и деталей включаются флагами;
- * ширину колонки деталей задаёт запомненный выбор пользователя. */
-export function PageBody({ pane, detail, children }: BodyProps): ReactElement {
-  const [width, setWidth] = useState<number | undefined>(() => DetailWidth.load());
+const BodyResizeContext = createContext<BodyResize | undefined>(undefined);
 
-  const resize = useCallback((next: number) => {
-    setWidth(next);
-  }, []);
+/** Ширина колонки строкой для CSS: в пределах минимума и пользовательского максимума. */
+function column(width: number | undefined, kind: "pane" | "detail"): string | undefined {
+  if (width === undefined) {
+    return undefined;
+  }
 
-  const settle = useCallback((next: number) => {
-    setWidth(next);
-    DetailWidth.save(next);
-  }, []);
+  return `clamp(var(--w-${kind}-min), ${Math.round(width)}px, var(--w-${kind}-user-max))`;
+}
 
-  const [context] = useState<DetailResize>(() => ({ resize, settle }));
-  const column = DetailWidth.column(width);
-  let style: CSSProperties | undefined = undefined;
-  if (column !== undefined) {
-    style = { "--w-detail-col": column } as CSSProperties;
+/** Тело страницы: колонки панели, сцены и деталей появляются вместе с
+ * элементами Pane/Scene/Detail внутри (CSS :has); ширину колонок задаёт
+ * запомненный выбор пользователя. */
+export function PageBody({ children }: { children: ReactNode }): ReactElement {
+  const pane = useStoredWidth(WidthKey.PANE);
+  const detail = useStoredWidth(WidthKey.DETAIL);
+  const context = useMemo<BodyResize>(
+    () => ({
+      pane: { resize: pane.resize, settle: pane.settle },
+      detail: { resize: detail.resize, settle: detail.settle },
+    }),
+    [pane.resize, pane.settle, detail.resize, detail.settle],
+  );
+
+  const style: CSSProperties = {};
+  const paneColumn = column(pane.width, "pane");
+  if (paneColumn !== undefined) {
+    Object.assign(style, { "--w-pane-col": paneColumn });
+  }
+  const detailColumn = column(detail.width, "detail");
+  if (detailColumn !== undefined) {
+    Object.assign(style, { "--w-detail-col": detailColumn });
   }
 
   return (
-    <DetailResizeContext.Provider value={context}>
+    <BodyResizeContext.Provider value={context}>
       <div
         className="page__body"
-        data-pane={pane}
-        data-detail={detail}
-        data-detail-width={width}
+        data-pane-width={pane.width}
+        data-detail-width={detail.width}
         style={style}
       >
         {children}
       </div>
-    </DetailResizeContext.Provider>
+    </BodyResizeContext.Provider>
   );
 }
 
-export function Pane({ mark, children }: Marked): ReactElement {
-  return (
-    <aside className="page__pane" data-testid={mark}>
-      {children}
-    </aside>
-  );
-}
-
-type SceneProps = Marked & {
-  /** Текстовая сцена с прокруткой вместо холста. */
-  panel?: boolean;
+type GripProps = {
+  /** С какого края колонки полоса захвата и как считать ширину. */
+  side: "left" | "right";
+  label: string;
+  mark: string;
+  target: ColumnResize | undefined;
+  column: RefObject<HTMLElement | null>;
 };
 
-export function Scene({ mark, panel = false, children }: SceneProps): ReactElement {
-  const classes = ["page__scene"];
-  if (panel) {
-    classes.push("page__scene--panel");
+/** Полоса захвата у края колонки: за неё колонку тянут; ширина считается
+ * от противоположного края. */
+function Grip({ side, label, mark, target, column: box }: GripProps): ReactElement | null {
+  const pointer = useRef<number | null>(null);
+  if (target === undefined) {
+    return null;
   }
 
-  return (
-    <main className={classes.join(" ")} data-testid={mark}>
-      {children}
-    </main>
-  );
-}
-
-/** Панель деталей справа: за левый край тянется, ширина запоминается. */
-export function Detail({ mark, children }: Marked): ReactElement {
-  const resizing = useContext(DetailResizeContext);
-  const aside = useRef<HTMLElement | null>(null);
-  const pointer = useRef<number | null>(null);
-
   const widthAt = (clientX: number): number | undefined => {
-    const box = aside.current?.getBoundingClientRect();
-    if (box === undefined) {
+    const rect = box.current?.getBoundingClientRect();
+    if (rect === undefined) {
       return undefined;
     }
 
-    return box.right - clientX;
+    if (side === "left") {
+      return rect.right - clientX;
+    }
+
+    return clientX - rect.left;
   };
 
-  const gripDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
+  const down = (event: ReactPointerEvent<HTMLDivElement>): void => {
     if (event.button !== 0) {
       return;
     }
@@ -181,19 +144,19 @@ export function Detail({ mark, children }: Marked): ReactElement {
     pointer.current = event.pointerId;
   };
 
-  const gripMove = (event: ReactPointerEvent<HTMLDivElement>): void => {
-    if (pointer.current !== event.pointerId || resizing === undefined) {
+  const move = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (pointer.current !== event.pointerId) {
       return;
     }
 
     const width = widthAt(event.clientX);
     if (width !== undefined) {
-      resizing.resize(width);
+      target.resize(width);
     }
   };
 
-  const gripUp = (event: ReactPointerEvent<HTMLDivElement>): void => {
-    if (pointer.current !== event.pointerId || resizing === undefined) {
+  const up = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (pointer.current !== event.pointerId) {
       return;
     }
 
@@ -201,24 +164,103 @@ export function Detail({ mark, children }: Marked): ReactElement {
     pointer.current = null;
     const width = widthAt(event.clientX);
     if (width !== undefined) {
-      resizing.settle(width);
+      target.settle(width);
     }
   };
 
   return (
-    <aside className="page__detail" data-testid={mark} ref={aside}>
-      {resizing !== undefined && (
-        <div
-          className="page__detail-grip"
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="resize the details"
-          data-testid="detail-grip"
-          onPointerDown={gripDown}
-          onPointerMove={gripMove}
-          onPointerUp={gripUp}
-        />
-      )}
+    <div
+      className={`page__grip page__grip--${side}`}
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={label}
+      data-testid={mark}
+      onPointerDown={down}
+      onPointerMove={move}
+      onPointerUp={up}
+    />
+  );
+}
+
+type ColumnProps = Marked & {
+  /** aria-label колонки: чем она является для читалки. */
+  label?: string | undefined;
+};
+
+/** Левая панель: за правый край тянется, ширина запоминается. */
+export function Pane({ mark, label, children }: ColumnProps): ReactElement {
+  const resizing = useContext(BodyResizeContext);
+  const aside = useRef<HTMLElement | null>(null);
+
+  return (
+    <aside className="page__pane" data-testid={mark} aria-label={label} ref={aside}>
+      {children}
+      <Grip side="right" label="resize the pane" mark="pane-grip" target={resizing?.pane} column={aside} />
+    </aside>
+  );
+}
+
+/** Закреплённая полоса панели: заголовок, поиск, действия. */
+export function PaneBar({ mark, children }: Marked): ReactElement {
+  return (
+    <div className="page__pane-bar" data-testid={mark}>
+      {children}
+    </div>
+  );
+}
+
+/** Прокручиваемое тело панели. */
+export function PaneBody({ mark, children }: Marked): ReactElement {
+  return (
+    <div className="page__pane-body" data-testid={mark}>
+      {children}
+    </div>
+  );
+}
+
+type SceneProps = Marked &
+  Omit<HTMLAttributes<HTMLElement>, "className" | "children"> & {
+    /** Текстовая сцена с прокруткой вместо холста. */
+    panel?: boolean;
+  };
+
+/** Сцена: полосы сверху (vitals, тулбары), последний ребёнок — холст или
+ * вид на всю оставшуюся высоту. */
+export function Scene({ mark, panel = false, children, ...rest }: SceneProps): ReactElement {
+  const classes = ["page__scene"];
+  if (panel) {
+    classes.push("page__scene--panel");
+  }
+
+  return (
+    <main className={classes.join(" ")} data-testid={mark} {...rest}>
+      {children}
+    </main>
+  );
+}
+
+/** Вид сцены: область под полосами; scroll — прокручивается сама (таблица, таймлайн). */
+export function SceneView({ mark, scroll = false, children }: Marked & { scroll?: boolean }): ReactElement {
+  const classes = ["page__view"];
+  if (scroll) {
+    classes.push("page__view--scroll");
+  }
+
+  return (
+    <div className={classes.join(" ")} data-testid={mark}>
+      {children}
+    </div>
+  );
+}
+
+/** Панель деталей справа: за левый край тянется, ширина запоминается. */
+export function Detail({ mark, label, children }: ColumnProps): ReactElement {
+  const resizing = useContext(BodyResizeContext);
+  const aside = useRef<HTMLElement | null>(null);
+
+  return (
+    <aside className="page__detail" data-testid={mark} aria-label={label} ref={aside}>
+      <Grip side="left" label="resize the details" mark="detail-grip" target={resizing?.detail} column={aside} />
       <div className="page__detail-body">{children}</div>
     </aside>
   );

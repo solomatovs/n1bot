@@ -40,8 +40,10 @@ from boba.sandbox.zygote import (
     ZygoteSpawner,
     ZygoteToolCaller,
 )
+from boba.stand.shell import ShellRun
 from boba.stand.zygote import ROOTFS_IMAGE, ProfileFields, SandboxStand
-from boba.toolkit.launcher import LauncherError, LaunchOutcome
+from boba.toolkit.launcher import LauncherError
+from boba.toolkit.result import ShellResult
 from boba.toolkit.stream import Chunk, JournalChannel, StreamSink, ToolChannelsTap
 from boba.workspace.images import PartialCopy
 from boba.workspace.launcher import (
@@ -577,7 +579,6 @@ class LoadStand:
                 "process_oom_score_adj": 0,
             },
             "run": {
-                "shell": "/bin/bash",
                 "cwd": self.WORKSPACE,
             },
         }
@@ -718,10 +719,10 @@ class TestParallelLoad:
     """Много пользователей и потоков: результат верный, ресурсы освобождены."""
 
     @staticmethod
-    def _write_and_read(stand: LoadStand, user_id: str, index: int) -> LaunchOutcome:
+    def _write_and_read(stand: LoadStand, user_id: str, index: int) -> ShellResult:
         name = f"u{user_id}-{index}.txt"
         command = f"echo {user_id}-{index} > {name}; cat {name}"
-        return stand.caller(user_id).call_text(command, stdin="")
+        return ShellRun.call_text(stand.caller(user_id), command)
 
     def test_many_users_release_everything(self, stand: LoadStand) -> None:
         stand.warm()
@@ -740,10 +741,10 @@ class TestParallelLoad:
             outcomes = [future.result() for future in futures]
 
         for (user, index), outcome in zip(jobs, outcomes, strict=True):
-            if outcome.result.exit_code != 0:
-                raise AssertionError(outcome.result.stderr)
-            if f"{user}-{index}" not in outcome.result.stdout:
-                raise AssertionError('f"{user}-{index}" in outcome.result.stdout')
+            if outcome.exit_code != 0:
+                raise AssertionError(outcome.stderr)
+            if f"{user}-{index}" not in outcome.stdout:
+                raise AssertionError('f"{user}-{index}" in outcome.stdout')
 
         leak = stand.settle(before)
         if not (leak.empty):
@@ -756,18 +757,18 @@ class TestParallelLoad:
                 for user in range(LoadScale.USERS)
             ]
             for future in futures:
-                if future.result().result.exit_code != 0:
-                    raise AssertionError("future.result().result.exit_code == 0")
+                if future.result().exit_code != 0:
+                    raise AssertionError("future.result().exit_code == 0")
 
         for user in range(LoadScale.USERS):
             if not (stand.image_of(str(user)).exists()):
                 raise AssertionError("stand.image_of(str(user)).exists()")
 
-        listing = stand.caller("0").call_text(f"ls {LoadStand.WORKSPACE}", stdin="")
-        if "u0-0.txt" not in listing.result.stdout:
-            raise AssertionError('"u0-0.txt" in listing.result.stdout')
-        if "u1-0.txt" in listing.result.stdout:
-            raise AssertionError('"u1-0.txt" not in listing.result.stdout')
+        listing = ShellRun.call_text(stand.caller("0"), f"ls {LoadStand.WORKSPACE}")
+        if "u0-0.txt" not in listing.stdout:
+            raise AssertionError('"u0-0.txt" in listing.stdout')
+        if "u1-0.txt" in listing.stdout:
+            raise AssertionError('"u1-0.txt" not in listing.stdout')
 
     def test_one_image_shared_by_threads_keeps_all_writes(
         self, stand: LoadStand
@@ -782,15 +783,15 @@ class TestParallelLoad:
                 for index in range(LoadScale.THREADS)
             ]
             for future in futures:
-                if future.result().result.exit_code != 0:
-                    raise AssertionError("future.result().result.exit_code == 0")
+                if future.result().exit_code != 0:
+                    raise AssertionError("future.result().exit_code == 0")
 
-        listing = stand.caller("shared").call_text(
-            f"ls {LoadStand.WORKSPACE}", stdin=""
+        listing = ShellRun.call_text(
+            stand.caller("shared"), f"ls {LoadStand.WORKSPACE}"
         )
         for index in range(LoadScale.THREADS):
-            if f"ushared-{index}.txt" not in listing.result.stdout:
-                raise AssertionError('f"ushared-{index}.txt" in listing.result.stdout')
+            if f"ushared-{index}.txt" not in listing.stdout:
+                raise AssertionError('f"ushared-{index}.txt" in listing.stdout')
 
         leak = stand.settle(before)
         if not (leak.empty):
@@ -814,7 +815,7 @@ class TestParallelLoad:
             payload = f"attachment-{index}".encode()
             asyncio.run(storage.upload_file(self._attachment_key(index), payload))
 
-        def shell(index: int) -> LaunchOutcome:
+        def shell(index: int) -> ShellResult:
             return self._write_and_read(stand, self.MIX_USER, index)
 
         with ThreadPoolExecutor(max_workers=LoadScale.THREADS) as pool:
@@ -823,8 +824,8 @@ class TestParallelLoad:
             for future in uploads:
                 future.result()
             for future in shells:
-                if future.result().result.exit_code != 0:
-                    raise AssertionError("future.result().result.exit_code == 0")
+                if future.result().exit_code != 0:
+                    raise AssertionError("future.result().exit_code == 0")
 
         for index in range(self.MIX_CALLS):
             body = asyncio.run(self._read_all(storage, self._attachment_key(index)))
@@ -847,13 +848,13 @@ class TestParallelLoad:
 
     def test_repeated_calls_do_not_leak_descriptors(self, stand: LoadStand) -> None:
         """Дескрипторы и локи не накапливаются на серии вызовов."""
-        stand.caller("fd").call_text("true", stdin="")
+        ShellRun.call_text(stand.caller("fd"), "true")
         before = stand.census()
 
         for index in range(LoadScale.REPEATS):
-            outcome = stand.caller("fd").call_text(f"echo {index}", stdin="")
-            if outcome.result.exit_code != 0:
-                raise AssertionError("outcome.result.exit_code == 0")
+            outcome = ShellRun.call_text(stand.caller("fd"), f"echo {index}")
+            if outcome.exit_code != 0:
+                raise AssertionError("outcome.exit_code == 0")
 
         leak = stand.settle(before)
         if not (leak.empty):
@@ -872,10 +873,10 @@ class CallReport(BaseModel):
     MOUNT_FAILURE: ClassVar[str] = "image not mounted"
 
     @classmethod
-    def of(cls, outcome: LaunchOutcome) -> CallReport:
+    def of(cls, outcome: ShellResult) -> CallReport:
         return cls(
-            exit_code=outcome.result.exit_code,
-            stdout=outcome.result.stdout,
+            exit_code=outcome.exit_code,
+            stdout=outcome.stdout,
             failure="",
         )
 
@@ -899,7 +900,7 @@ class TestAbnormalTermination:
     def _report(caller: ZygoteToolCaller, command: str) -> CallReport:
         """Смерть цепочки — тоже исход вызова, а не поломка стенда."""
         try:
-            return CallReport.of(caller.call_text(command, stdin=""))
+            return CallReport.of(ShellRun.call_text(caller, command))
         except LauncherError as exc:
             return CallReport.failed(exc)
 
@@ -908,21 +909,21 @@ class TestAbnormalTermination:
         stand.warm(timeout_sec=1)
         before = stand.census()
 
-        outcome = stand.caller("timeout", timeout_sec=1).call_text(
-            self.LONG_COMMAND, stdin=""
-        )
+        # таймаут профиля снимает весь вызов: конверта нет, объясняет лаунчер
+        with pytest.raises(LauncherError, match="timeout_sec=1"):
+            ShellRun.call_text(
+                stand.caller("timeout", timeout_sec=1), self.LONG_COMMAND
+            )
 
-        if outcome.result.timed_out is not True:
-            raise AssertionError("outcome.result.timed_out is True")
         leak = stand.settle(before)
         if not (leak.empty):
             raise AssertionError(leak.describe())
 
-        again = stand.caller("timeout").call_text("echo alive", stdin="")
-        if again.result.exit_code != 0:
-            raise AssertionError("again.result.exit_code == 0")
-        if "alive" not in again.result.stdout:
-            raise AssertionError('"alive" in again.result.stdout')
+        again = ShellRun.call_text(stand.caller("timeout"), "echo alive")
+        if again.exit_code != 0:
+            raise AssertionError("again.exit_code == 0")
+        if "alive" not in again.stdout:
+            raise AssertionError('"alive" in again.stdout')
 
     def test_cancelled_turn_frees_image(self, stand: LoadStand) -> None:
         """Остановка хода посреди работы команды: образ и демон отпущены."""
@@ -935,16 +936,16 @@ class TestAbnormalTermination:
             stopper = _Stopper(stand, cancellation, marker)
             stopper.start()
             with pytest.raises(ToolStopped):
-                stand.caller("cancel").call_text(command, stdin="")
+                ShellRun.call_text(stand.caller("cancel"), command)
             stopper.join()
 
         leak = stand.settle(before)
         if not (leak.empty):
             raise AssertionError(leak.describe())
 
-        again = stand.caller("cancel").call_text("echo alive", stdin="")
-        if again.result.exit_code != 0:
-            raise AssertionError("again.result.exit_code == 0")
+        again = ShellRun.call_text(stand.caller("cancel"), "echo alive")
+        if again.exit_code != 0:
+            raise AssertionError("again.exit_code == 0")
 
     def test_failing_output_consumer_frees_image(self, stand: LoadStand) -> None:
         """Потребитель потока падает: процесс добивается, образ отпускается."""
@@ -955,7 +956,7 @@ class TestAbnormalTermination:
         ToolChannelsTap.set(BrokenSinks())
         try:
             with pytest.raises(RuntimeError, match="consumer is broken"):
-                caller.call_text("echo noise; sleep 300", stdin="")
+                ShellRun.call_text(caller, "echo noise; sleep 300")
         finally:
             ToolChannelsTap.set(None)
 
@@ -963,9 +964,9 @@ class TestAbnormalTermination:
         if not (leak.empty):
             raise AssertionError(leak.describe())
 
-        again = stand.caller("sink").call_text("echo alive", stdin="")
-        if again.result.exit_code != 0:
-            raise AssertionError("again.result.exit_code == 0")
+        again = ShellRun.call_text(stand.caller("sink"), "echo alive")
+        if again.exit_code != 0:
+            raise AssertionError("again.exit_code == 0")
 
     def test_killed_bwrap_frees_image(self, stand: LoadStand) -> None:
         """SIGKILL bwrap зиготы: её вызовы гаснут, секция поднимается заново."""
@@ -993,9 +994,9 @@ class TestAbnormalTermination:
         if not (leak.empty):
             raise AssertionError(leak.describe())
 
-        again = stand.caller("bwrap").call_text("echo alive", stdin="")
-        if again.result.exit_code != 0:
-            raise AssertionError("again.result.exit_code == 0")
+        again = ShellRun.call_text(stand.caller("bwrap"), "echo alive")
+        if again.exit_code != 0:
+            raise AssertionError("again.exit_code == 0")
 
     def test_killed_fuse_daemon_does_not_hang_next_call(self, stand: LoadStand) -> None:
         """SIGKILL смонтированному fuse2fs: команда теряет точку, вызов не висит."""
@@ -1021,11 +1022,11 @@ class TestAbnormalTermination:
         if not (leak.empty):
             raise AssertionError(leak.describe())
 
-        again = stand.caller("fuse").call_text("echo alive", stdin="")
-        if again.result.exit_code != 0:
-            raise AssertionError("again.result.exit_code == 0")
-        if "alive" not in again.result.stdout:
-            raise AssertionError('"alive" in again.result.stdout')
+        again = ShellRun.call_text(stand.caller("fuse"), "echo alive")
+        if again.exit_code != 0:
+            raise AssertionError("again.exit_code == 0")
+        if "alive" not in again.stdout:
+            raise AssertionError('"alive" in again.stdout')
 
     def test_killed_host_process_leaves_nothing_behind(
         self, stand: LoadStand, tmp_path: Path
@@ -1055,11 +1056,11 @@ class TestAbnormalTermination:
         if not (leak.empty):
             raise AssertionError(leak.describe())
 
-        again = stand.caller(_ChildCall.USER).call_text("echo alive", stdin="")
-        if again.result.exit_code != 0:
-            raise AssertionError("again.result.exit_code == 0")
-        if "alive" not in again.result.stdout:
-            raise AssertionError('"alive" in again.result.stdout')
+        again = ShellRun.call_text(stand.caller(_ChildCall.USER), "echo alive")
+        if again.exit_code != 0:
+            raise AssertionError("again.exit_code == 0")
+        if "alive" not in again.stdout:
+            raise AssertionError('"alive" in again.stdout')
 
     def test_killed_host_process_keeps_image_usable(
         self, stand: LoadStand, tmp_path: Path
@@ -1077,15 +1078,15 @@ class TestAbnormalTermination:
         finally:
             child.cleanup(proc)
 
-        listing = stand.caller(_ChildCall.USER).call_text(
-            f"ls {LoadStand.WORKSPACE}", stdin=""
+        listing = ShellRun.call_text(
+            stand.caller(_ChildCall.USER), f"ls {LoadStand.WORKSPACE}"
         )
-        if listing.result.exit_code != 0:
-            raise AssertionError("listing.result.exit_code == 0")
+        if listing.exit_code != 0:
+            raise AssertionError("listing.exit_code == 0")
 
-        written = stand.caller(_ChildCall.USER).call_text("echo ok", stdin="")
-        if written.result.exit_code != 0:
-            raise AssertionError("written.result.exit_code == 0")
+        written = ShellRun.call_text(stand.caller(_ChildCall.USER), "echo ok")
+        if written.exit_code != 0:
+            raise AssertionError("written.exit_code == 0")
 
     def test_parallel_load_survives_random_kills(self, stand: LoadStand) -> None:
         """Нагрузка вперемешку с убийствами: уцелевшие вызовы честны, мусора нет."""
@@ -1169,12 +1170,8 @@ import json
 import sys
 
 from boba.sandbox import SandboxProfile
-from boba.sandbox.zygote import (
-    ZygotePolicy,
-    ZygoteRegistry,
-    ZygoteSpawner,
-    ZygoteToolCaller,
-)
+from boba.stand.shell import ShellRun
+from boba.stand.zygote import ZygoteStand
 
 profile = SandboxProfile.model_validate_json(sys.argv[1])
 user_id = sys.argv[2]
@@ -1186,18 +1183,9 @@ def path_vars():
 
 
 print("ready", flush=True)
-policy = ZygotePolicy(
-    start_timeout_sec=60.0,
-    max_start_attempts=2,
-    restart_backoff_sec=0.1,
-    healthy_after_sec=1.0,
-    stop_wait_sec=5.0,
-    call_poll_sec=0.05,
-)
-supervisor = ZygoteRegistry.obtain("bash", profile, (), policy)
-caller = ZygoteToolCaller("bash", supervisor, profile, path_vars)
-outcome = caller.call_text(command, stdin="")
-print(json.dumps({"rc": outcome.result.exit_code}), flush=True)
+caller = ZygoteStand.caller("bash", profile, path_vars=path_vars)
+outcome = ShellRun.call_text(caller, command)
+print(json.dumps({"rc": outcome.exit_code}), flush=True)
 '''
 
     def __init__(self, stand: LoadStand, tmp_path: Path) -> None:
@@ -1292,7 +1280,7 @@ class TestGroupLimitsUnderLoad:
         )
         before = stand.census(cgroup_base)
 
-        def call(index: int) -> LaunchOutcome:
+        def call(index: int) -> ShellResult:
             caller = stand.caller(
                 str(index),
                 cgroup_base=cgroup_base,
@@ -1301,13 +1289,13 @@ class TestGroupLimitsUnderLoad:
                 group_swap_bytes=0,
                 group_oom_kill_all=True,
             )
-            return caller.call_text(f"echo {index}", stdin="")
+            return ShellRun.call_text(caller, f"echo {index}")
 
         with ThreadPoolExecutor(max_workers=LoadScale.THREADS) as pool:
             futures = [pool.submit(call, index) for index in range(LoadScale.THREADS)]
             for future in futures:
-                if future.result().result.exit_code != 0:
-                    raise AssertionError("future.result().result.exit_code == 0")
+                if future.result().exit_code != 0:
+                    raise AssertionError("future.result().exit_code == 0")
 
         leak = stand.settle(before, cgroup_base)
         if not (leak.empty):
@@ -1332,13 +1320,13 @@ class TestGroupLimitsUnderLoad:
             process_memory_bytes=1024 * 1024 * 1024,
         )
 
-        # tail держит окно в памяти целиком: 256 МБ против лимита в 64 МБ
-        outcome = caller.call_text(
-            "head -c 256M /dev/zero | tail -c 256M > /dev/null", stdin=""
-        )
+        # tail держит окно в памяти целиком: 256 МБ против лимита в 64 МБ;
+        # group_oom_kill_all снимает и тело — конверта нет, объясняет лаунчер
+        with pytest.raises(LauncherError, match="group_memory_bytes=67108864"):
+            ShellRun.call_text(
+                caller, "head -c 256M /dev/zero | tail -c 256M > /dev/null"
+            )
 
-        if outcome.result.exit_code == 0:
-            raise AssertionError("outcome.result.exit_code != 0")
         leak = stand.settle(before, cgroup_base)
         if not (leak.empty):
             raise AssertionError(leak.describe())
@@ -1360,12 +1348,19 @@ class TestGroupLimitsUnderLoad:
             timeout_sec=30,
         )
 
-        outcome = caller.call_text(
-            "bomb() { bomb | bomb & }; bomb; sleep 5; echo survived", stdin=""
-        )
+        # бомба душит и само тело: тогда вызов снимает таймаут профиля,
+        # а проверка одна — leaf после него исчезает
+        try:
+            outcome = ShellRun.call_text(
+                caller, "bomb() { bomb | bomb & }; bomb; sleep 5; echo survived"
+            )
+        except LauncherError as exc:
+            if "timeout_sec=30" not in str(exc):
+                raise
+        else:
+            if outcome.exit_code == 0 and "survived" not in outcome.stdout:
+                raise AssertionError(f"clean exit without a trace: {outcome}")
 
-        if not ("survived" in outcome.result.stdout or outcome.result.exit_code != 0):
-            raise AssertionError('"survived" in outcome.result.stdout or outcome.resu…')
         leak = stand.settle(before, cgroup_base)
         if not (leak.empty):
             raise AssertionError(leak.describe())
@@ -1387,10 +1382,10 @@ class TestCrashDebris:
         partial = Path(PartialCopy.render(str(image), self.DEAD_PID))
         partial.write_bytes(b"broken copy")
 
-        outcome = stand.caller("debris").call_text("echo alive", stdin="")
+        outcome = ShellRun.call_text(stand.caller("debris"), "echo alive")
 
-        if outcome.result.exit_code != 0:
-            raise AssertionError("outcome.result.exit_code == 0")
+        if outcome.exit_code != 0:
+            raise AssertionError("outcome.exit_code == 0")
         if not (image.exists()):
             raise AssertionError("image.exists()")
         if partial.exists():
@@ -1403,29 +1398,29 @@ class TestCrashDebris:
         partial.parent.mkdir(parents=True, exist_ok=True)
         partial.write_bytes(b"copy in progress")
 
-        outcome = stand.caller("live-debris").call_text("echo alive", stdin="")
+        outcome = ShellRun.call_text(stand.caller("live-debris"), "echo alive")
 
-        if outcome.result.exit_code != 0:
-            raise AssertionError("outcome.result.exit_code == 0")
+        if outcome.exit_code != 0:
+            raise AssertionError("outcome.exit_code == 0")
         if partial.exists():
             raise AssertionError("копия под чужим pid всё равно должна быть убрана")
 
     def test_abandoned_lock_file_does_not_block_calls(self, stand: LoadStand) -> None:
         """Файл лока переживает вызовы: значение имеет только сам flock."""
-        first = stand.caller("lock").call_text("echo first", stdin="")
+        first = ShellRun.call_text(stand.caller("lock"), "echo first")
         lock = stand.image_of("lock").with_suffix(".ext4.lock")
 
-        if first.result.exit_code != 0:
-            raise AssertionError("first.result.exit_code == 0")
+        if first.exit_code != 0:
+            raise AssertionError("first.exit_code == 0")
         if not (lock.exists()):
             raise AssertionError("lock.exists()")
 
-        second = stand.caller("lock").call_text("echo second", stdin="")
+        second = ShellRun.call_text(stand.caller("lock"), "echo second")
 
-        if second.result.exit_code != 0:
-            raise AssertionError("second.result.exit_code == 0")
-        if "second" not in second.result.stdout:
-            raise AssertionError('"second" in second.result.stdout')
+        if second.exit_code != 0:
+            raise AssertionError("second.exit_code == 0")
+        if "second" not in second.stdout:
+            raise AssertionError('"second" in second.stdout')
 
 
 @needs_fuse

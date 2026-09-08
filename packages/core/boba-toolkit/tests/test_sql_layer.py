@@ -8,12 +8,20 @@ from typing import Any, ClassVar
 from uuid import UUID
 
 from boba.toolkit.launcher import RowStream
-from boba.toolkit.result import AffectedSqlResult, ToolArtifact, render_for_llm
+from boba.toolkit.result import SqlResult, SqlStatement, ToolArtifact
 from boba.toolkit.sql import (
     RowPage,
     RowWindow,
     SqlLimits,
 )
+
+
+def _rows_of(statement: SqlStatement) -> list[dict[str, Any]]:
+    """Строки выборки страницы: у страницы они есть всегда."""
+    if statement.rows is None:
+        raise AssertionError("page statement carries rows")
+
+    return [dict(row) for row in statement.rows]
 
 
 class FakeLimits(SqlLimits):
@@ -73,26 +81,64 @@ class TestRowStreamPlain:
             raise AssertionError('plain["raw"].endswith("ok")')
 
 
-class TestAffectedSqlResult:
+class TestSqlStatementCaption:
     def test_status_wins_over_counter(self) -> None:
-        result = AffectedSqlResult(affected_rows=5, status="DELETE 5")
-        if render_for_llm(result) != "DELETE 5":
-            raise AssertionError('render_for_llm(result) == "DELETE 5"')
+        statement = SqlStatement(affected_rows=5, status="DELETE 5")
+        if statement.caption() != "DELETE 5":
+            raise AssertionError('statement.caption() == "DELETE 5"')
 
     def test_counter_is_used_without_status(self) -> None:
-        result = AffectedSqlResult(affected_rows=5, status=None)
-        if render_for_llm(result) != "affected rows: 5":
-            raise AssertionError('render_for_llm(result) == "affected rows: 5"')
+        statement = SqlStatement(affected_rows=5)
+        if statement.caption() != "affected rows: 5":
+            raise AssertionError('statement.caption() == "affected rows: 5"')
+
+    def test_rows_count_without_status(self) -> None:
+        statement = SqlStatement(rows=[{"a": 1}, {"a": 2}])
+        if statement.caption() != "2 rows":
+            raise AssertionError('statement.caption() == "2 rows"')
 
     def test_ddl_without_counter_still_reports_success(self) -> None:
-        result = AffectedSqlResult(affected_rows=None, status=None)
-        if render_for_llm(result) != "statement executed":
-            raise AssertionError('render_for_llm(result) == "statement executed"')
-        if result.ok is not True:
-            raise AssertionError("result.ok is True")
+        statement = SqlStatement()
+        if statement.caption() != "statement executed":
+            raise AssertionError('statement.caption() == "statement executed"')
+
+
+class TestSqlResult:
+    def test_single_statement_shows_rows_only(self) -> None:
+        result = SqlResult(
+            engine="clickhouse",
+            statements=[
+                SqlStatement(rows=[{"a": 1}], note="truncated to max_rows (1)")
+            ],
+        )
+        if result.llm_view() != '[{"a": 1}]\n\ntruncated to max_rows (1)':
+            raise AssertionError(f"llm_view: {result.llm_view()!r}")
+        if "| a" not in result.chat_view().markdown:
+            raise AssertionError("markdown table in chat view")
+        if "_truncated to max_rows (1)_" not in result.chat_view().markdown:
+            raise AssertionError("note under the table")
+
+    def test_several_statements_are_captioned(self) -> None:
+        result = SqlResult(
+            engine="postgres",
+            statements=[
+                SqlStatement(rows=[{"id": 1}], status="SELECT 1"),
+                SqlStatement(affected_rows=5, status="UPDATE 5"),
+            ],
+        )
+        if result.llm_view() != 'SELECT 1\n[{"id": 1}]\n\nUPDATE 5\nUPDATE 5':
+            raise AssertionError(f"llm_view: {result.llm_view()!r}")
+        markdown = result.chat_view().markdown
+        if not markdown.startswith("_SELECT 1_\n\n"):
+            raise AssertionError(f"caption first: {markdown!r}")
+        if not markdown.endswith("_UPDATE 5_\n\n_UPDATE 5_"):
+            raise AssertionError(f"status statement last: {markdown!r}")
 
     def test_artifact_survives_serialization(self) -> None:
-        result = AffectedSqlResult(affected_rows=1, status="UPDATE 1")
+        result = SqlResult(
+            engine="postgres",
+            statements=[SqlStatement(affected_rows=1, status="UPDATE 1")],
+        )
         revived = ToolArtifact.revive(result.model_dump(mode="json"))
         if revived != result:
             raise AssertionError("revived == result")
@@ -116,8 +162,8 @@ class TestRowWindow:
             if not page.add({"n": number}):
                 break
 
-        table = page.table()
-        expected = f"next offset={len(table.rows)}"
+        table = page.statement()
+        expected = f"next offset={len(_rows_of(table))}"
 
         if expected not in str(table.note):
             raise AssertionError(f"ожидалось {expected}, дано {table.note!r}")
@@ -146,9 +192,9 @@ class TestRowPage:
     def test_offset_skips_and_note_points_further(self) -> None:
         window = RowWindow(offset=2, max_rows=2, max_chars=10_000)
 
-        table = self._filled(window, self._rows(10)).table()
+        table = self._filled(window, self._rows(10)).statement()
 
-        if [row["n"] for row in table.rows] != [3, 4]:
+        if [row["n"] for row in _rows_of(table)] != [3, 4]:
             raise AssertionError(f"окно после пропуска, дано {table.rows!r}")
 
         if table.note != "rows 3-4; more rows available, next offset=4":
@@ -157,7 +203,7 @@ class TestRowPage:
     def test_last_page_says_the_result_ended(self) -> None:
         window = RowWindow(offset=0, max_rows=10, max_chars=10_000)
 
-        table = self._filled(window, self._rows(3)).table()
+        table = self._filled(window, self._rows(3)).statement()
 
         if table.note != "rows 1-3; end of result":
             raise AssertionError(f"конец выдачи, дано {table.note!r}")
@@ -165,7 +211,7 @@ class TestRowPage:
     def test_offset_past_the_end_returns_nothing(self) -> None:
         window = RowWindow(offset=50, max_rows=10, max_chars=10_000)
 
-        table = self._filled(window, self._rows(3)).table()
+        table = self._filled(window, self._rows(3)).statement()
 
         if table.rows:
             raise AssertionError("за концом выдачи строк нет")
@@ -178,7 +224,7 @@ class TestRowPage:
         window = RowWindow(offset=0, max_rows=100, max_chars=30)
 
         page = self._filled(window, self._rows(50))
-        table = page.table()
+        table = page.statement()
 
         if not table.rows:
             raise AssertionError("первая строка входит всегда")
@@ -197,7 +243,7 @@ class TestRowPage:
         листать некуда."""
         window = RowWindow(offset=0, max_rows=10, max_chars=1)
 
-        table = self._filled(window, [{"n": "x" * 500}]).table()
+        table = self._filled(window, [{"n": "x" * 500}]).statement()
 
-        if len(table.rows) != 1:
+        if len(_rows_of(table)) != 1:
             raise AssertionError("одна строка приходит даже сверх потолка")

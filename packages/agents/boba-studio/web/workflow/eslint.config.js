@@ -27,7 +27,7 @@ export default tseslint.config(
         "error",
         {
           selector:
-            'JSXAttribute[name.name="className"] Literal[value=/^(alert|btn|chip|code|dialog|dialog-backdrop|empty|eyebrow|facts|field|icon-btn|index|input|item|list__resize|menu|note|page|panel|row|rows|search|section|segmented|stack|table|table-scroll|toast|toasts|toolbar|topbar)([ -].*)?$/]',
+            'JSXAttribute[name.name="className"] Literal[value=/^(alert|btn|chip|code|dialog|dialog-backdrop|empty|eyebrow|facts|field|icon-btn|index|input|item|list__resize|menu|note|page|panel|row|rows|search|section|segmented|stack|table|table-scroll|status-dot|toast|toasts|toolbar|topbar)([ -].*)?$/]',
           message: "widget classes live in src/ui: use the widget component instead",
         },
       ],

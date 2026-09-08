@@ -54,7 +54,7 @@ from boba.chat.profiles import (
     SelectedProfile,
 )
 from boba.toolkit.calls import ToolIntent
-from boba.toolkit.result import ErrorResult, TableResult, ToolArtifact, pack_result
+from boba.toolkit.result import ErrorResult, TableResult, ToolArtifact
 from boba.toolrun.cancellation import CancellableTools
 
 pytestmark = pytest.mark.anyio
@@ -171,7 +171,7 @@ async def fts_probe(
     query: Annotated[str, Field(description="Search query.")],
 ) -> tuple[str, Any]:
     """Полнотекстовый поиск-заглушка."""
-    return pack_result(TableResult(rows=[{"hit": f"fts:{query}"}]))
+    return TableResult(rows=[{"hit": f"fts:{query}"}]).packed()
 
 
 @tool(response_format="content_and_artifact")
@@ -179,7 +179,7 @@ async def vector_probe(
     query: Annotated[str, Field(description="Search query.")],
 ) -> tuple[str, Any]:
     """Векторный поиск-заглушка."""
-    return pack_result(TableResult(rows=[{"hit": f"vector:{query}"}]))
+    return TableResult(rows=[{"hit": f"vector:{query}"}]).packed()
 
 
 @tool(response_format="content_and_artifact")
@@ -187,9 +187,9 @@ async def failing_probe(
     query: Annotated[str, Field(description="Search query.")],
 ) -> tuple[str, Any]:
     """Поиск, отвечающий отказом инструмента."""
-    return pack_result(
-        ErrorResult(message="database is down", error_kind="database_unavailable")
-    )
+    failure = ErrorResult(message="database is down", error_kind="database_unavailable")
+
+    return failure.packed()
 
 
 @tool(response_format="content_and_artifact")
@@ -199,7 +199,7 @@ async def slow_probe(
     """Поиск, не успевающий закончиться до остановки хода."""
     await asyncio.sleep(0.2)
 
-    return pack_result(TableResult(rows=[{"hit": f"slow:{query}"}]))
+    return TableResult(rows=[{"hit": f"slow:{query}"}]).packed()
 
 
 @tool(response_format="content_and_artifact")
@@ -207,7 +207,7 @@ async def strict_probe(
     query: Annotated[str, Field(min_length=5, description="Search query.")],
 ) -> tuple[str, Any]:
     """Поиск, не принимающий короткий запрос."""
-    return pack_result(TableResult(rows=[{"hit": f"strict:{query}"}]))
+    return TableResult(rows=[{"hit": f"strict:{query}"}]).packed()
 
 
 @tool(response_format="content_and_artifact")

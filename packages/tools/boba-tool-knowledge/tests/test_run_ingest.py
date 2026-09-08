@@ -40,11 +40,13 @@ async def test_run_confluence_ingest(ingest_cfg: IngestToolConfig) -> None:
     if body is None:
         raise AssertionError("body is not None")
 
-    content, _artifact = await body(
-        page_ids=RunArgs.PAGE_IDS,
-        prune_missing=RunArgs.PRUNE_MISSING,
-        force_update=RunArgs.FORCE_UPDATE,
-        cfg=ingest_cfg,
-    )
+    content = (
+        await body(
+            page_ids=RunArgs.PAGE_IDS,
+            prune_missing=RunArgs.PRUNE_MISSING,
+            force_update=RunArgs.FORCE_UPDATE,
+            cfg=ingest_cfg,
+        )
+    ).llm_view()
 
     print(content)

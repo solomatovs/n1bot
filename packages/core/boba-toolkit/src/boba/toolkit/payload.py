@@ -68,8 +68,8 @@ class PayloadLogging:
 
     @staticmethod
     def _parse(raw: str) -> int:
-        resolved = logging.getLevelName(raw.upper())
-        if isinstance(resolved, int):
-            return resolved
+        resolved = logging.getLevelNamesMapping().get(raw.upper())
+        if resolved is None:
+            return logging.INFO
 
-        return logging.INFO
+        return resolved

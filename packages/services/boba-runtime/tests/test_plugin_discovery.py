@@ -46,12 +46,13 @@ def _takes_connections(plugin: ToolPlugin) -> bool:
     return False
 
 
-def test_bash_plugin_builds_by_factory() -> None:
+def test_bash_plugin_is_a_module_tool() -> None:
     table = EntryPointPlugins.discover()
 
     bash = table["bash"]
-    assert bash.build is not None
-    assert bash.config_model is not None
+    assert bash.build is None
+    assert [tool.name for tool in bash.module_tools] == ["bash"]
+    assert bash.modules == ("boba.tool.shell.tools",)
 
 
 def test_discovered_plugin_without_config_file_refuses_start() -> None:

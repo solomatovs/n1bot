@@ -6,7 +6,7 @@ import type { RunState, TaskSpec, TaskState } from "../../model/workflow";
 import { JsonView } from "../JsonView";
 import { ResultView } from "../results/ResultView";
 import { OutputPanel } from "./OutputPanel";
-import { Chip, Code, Eyebrow, Facts, IconButton, type Fact } from "../../ui";
+import { Chip, Code, Facts, IconButton, Note, Panel, PanelHead, Section, type Fact } from "../../ui";
 
 type Props = {
   runId: string;
@@ -15,27 +15,38 @@ type Props = {
   onClose: () => void;
 };
 
-/** Инспектор задачи: выезжает справа, как в Studio. */
+/** Инспектор задачи в панели деталей запуска: факты, вывод, аргументы, итог. */
 export function Inspector({ runId, run, task, onClose }: Props): ReactElement {
   const spec = run.graph.spec.tasks[task];
   const state = run.tasks[task];
 
+  let status: ReactElement | null = null;
+  if (state !== undefined) {
+    status = <Chip status={state.status} />;
+  }
+
+  let body: ReactElement = <Note tone="muted">unknown task {task}</Note>;
+  if (spec !== undefined && state !== undefined) {
+    body = <TaskDetails runId={runId} spec={spec} state={state} />;
+  }
+
   return (
-    <aside className="inspector" aria-label="inspector">
-      <div className="inspector__head">
-        <Eyebrow>task</Eyebrow>
-        <h3 className="inspector__title">{task}</h3>
-        {state !== undefined && <Chip status={state.status} />}
-        <IconButton onClick={onClose} aria-label="Close inspector">
-          <X size={14} />
-        </IconButton>
-      </div>
-      {spec === undefined || state === undefined ? (
-        <div className="inspector__body muted">unknown task {task}</div>
-      ) : (
-        <TaskDetails runId={runId} spec={spec} state={state} />
-      )}
-    </aside>
+    <Panel>
+      <PanelHead
+        eyebrow="task"
+        name={task}
+        mono
+        actions={
+          <>
+            {status}
+            <IconButton onClick={onClose} aria-label="Close inspector">
+              <X size={14} />
+            </IconButton>
+          </>
+        }
+      />
+      {body}
+    </Panel>
   );
 }
 
@@ -56,27 +67,32 @@ function TaskDetails({ runId, spec, state }: DetailsProps): ReactElement {
   }
 
   return (
-    <div className="inspector__body">
-      <Facts facts={facts} mark="task-facts" />
-      {state.call_id !== "" && <OutputPanel runId={runId} callId={state.call_id} />}
-      <Eyebrow as="h4">args</Eyebrow>
-      <Code inset mark="task-args">
-        <JsonView value={spec.args} clip={0} />
-      </Code>
+    <>
+      <Section>
+        <Facts facts={facts} mark="task-facts" />
+      </Section>
+      {state.call_id !== "" && (
+        <Section>
+          <OutputPanel runId={runId} callId={state.call_id} />
+        </Section>
+      )}
+      <Section title="args">
+        <Code inset mark="task-args">
+          <JsonView value={spec.args} clip={0} />
+        </Code>
+      </Section>
       {state.result !== null && (
-        <>
-          <Eyebrow as="h4">result</Eyebrow>
-          <ResultView result={state.result} />
-        </>
+        <Section title="result">
+          <ResultView state={state} />
+        </Section>
       )}
       {state.error !== "" && (state.result === null || state.result.ok) && (
-        <>
-          <Eyebrow as="h4">error</Eyebrow>
+        <Section title="error">
           <Code inset tone="error">
             {state.error}
           </Code>
-        </>
+        </Section>
       )}
-    </div>
+    </>
   );
 }

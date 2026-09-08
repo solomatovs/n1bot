@@ -1,29 +1,28 @@
 import type { ReactElement } from "react";
 
-import { resultSummary } from "../../model/results";
 import type { TaskStatus } from "../../model/status";
-import type { ToolResult } from "../../model/workflow";
+import type { StudioBlock, TaskState } from "../../model/workflow";
 import { JsonView } from "../JsonView";
 import { Cell, Chip, Code, DataTable, Eyebrow, TableRow, Toolbar, ToolbarSpacer } from "../../ui";
 
-/** Итог задачи в инспекторе: своя форма на каждый kind ToolResult,
- * неизвестный вид — деревом json. */
+/** Итог задачи в инспекторе: блоки словаря StudioView по порядку. Вид
+ * результата страница не разбирает — показ собрал сам результат. */
 
 const MAX_ROWS = 50;
 
 type Props = {
-  result: ToolResult;
+  state: TaskState;
 };
 
-function Note({ text }: { text: string | null | undefined }): ReactElement | null {
-  if (text === null || text === undefined || text === "") {
+function Note({ text }: { text: string }): ReactElement | null {
+  if (text === "") {
     return null;
   }
 
   return <div className="result__note">{text}</div>;
 }
 
-function Meta({ items }: { items: [string, string][] }): ReactElement {
+function Facts({ items }: { items: [string, string][] }): ReactElement {
   return (
     <dl className="result__meta">
       {items.map(([key, value]) => (
@@ -36,7 +35,7 @@ function Meta({ items }: { items: [string, string][] }): ReactElement {
   );
 }
 
-function TableView({ rows, note }: { rows: Record<string, unknown>[]; note: string | null }): ReactElement {
+function Grid({ rows }: { rows: Record<string, unknown>[] }): ReactElement {
   const columns = rows.length === 0 ? [] : Object.keys(rows[0] ?? {});
   const shown = rows.slice(0, MAX_ROWS);
 
@@ -57,7 +56,6 @@ function TableView({ rows, note }: { rows: Record<string, unknown>[]; note: stri
         </div>
       )}
       {rows.length === 0 && <div className="result__note">no rows</div>}
-      <Note text={note} />
     </div>
   );
 }
@@ -74,142 +72,62 @@ function cellText(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function ShellView({ result }: { result: Extract<ToolResult, { kind: "shell" }> }): ReactElement {
-  const exit = result.timed_out ? "timed out" : `exit ${result.exit_code}`;
-  return (
-    <div className="result result--shell" data-exit={result.exit_code}>
-      <Meta items={[["status", exit], ["duration", `${result.duration_ms} ms`]]} />
-      {result.stdout !== "" && (
-        <>
-          <Eyebrow>stdout{result.stdout_truncated ? " · truncated" : ""}</Eyebrow>
-          <Code inset>{result.stdout}</Code>
-        </>
-      )}
-      {result.stderr !== "" && (
-        <>
-          <Eyebrow>stderr{result.stderr_truncated ? " · truncated" : ""}</Eyebrow>
-          <Code inset tone="error">
-            {result.stderr}
-          </Code>
-        </>
-      )}
-      <Note text={result.diagnostic} />
-    </div>
-  );
-}
-
-function ItemView({ result }: Props): ReactElement {
-  switch (result.kind) {
-    case "table":
-      return <TableView rows={result.rows} note={result.note} />;
-    case "shell":
-      return <ShellView result={result} />;
-    case "text":
+function Block({ block, failed }: { block: StudioBlock; failed: boolean }): ReactElement {
+  switch (block.block) {
+    case "code":
       return (
         <div className="result result--text">
-          {result.language !== "" && <Eyebrow>{result.language}</Eyebrow>}
-          <Code inset>{result.text}</Code>
-          <Note text={result.note} />
-        </div>
-      );
-    case "affected":
-      return (
-        <div className="result result--affected">
-          <Meta
-            items={[
-              ["affected rows", result.affected_rows === null ? "—" : String(result.affected_rows)],
-              ["status", result.status ?? ""],
-            ]}
-          />
-        </div>
-      );
-    case "json":
-      return (
-        <div className="result result--json">
-          <Code inset>
-            <JsonView value={result.payload} clip={0} />
+          {block.language !== "" && <Eyebrow>{block.language}</Eyebrow>}
+          <Code inset tone={failed ? "error" : "default"}>
+            {block.text}
           </Code>
         </div>
       );
-    case "chart":
-      return (
-        <div className="result result--chart">
-          <Note text={result.title} />
-          <Code inset>
-            <JsonView value={result.spec} clip={0} />
-          </Code>
-        </div>
-      );
-    case "diagram":
-      return (
-        <div className="result result--diagram">
-          <Note text={result.title} />
-          <Code inset>{result.spec}</Code>
-          <Meta items={[["path", result.path]]} />
-        </div>
-      );
-    case "custom_element":
+    case "grid":
+      return <Grid rows={block.rows} />;
+    case "facts":
+      return <Facts items={block.facts.map((fact) => [fact.key, fact.value])} />;
+    case "note":
+      return <Note text={block.text} />;
+    case "widget":
       return (
         <div className="result result--element">
-          <Meta items={[["element", result.element]]} />
+          <Facts items={[["element", block.element], ["title", block.title]]} />
           <Code inset>
-            <JsonView value={result.props} clip={0} />
-          </Code>
-        </div>
-      );
-    case "multi":
-      return (
-        <div className="result result--multi">
-          {result.items.map((item, index) => (
-            <div className="result__item" key={index}>
-              <Eyebrow>
-                #{index + 1} · {item.kind}
-              </Eyebrow>
-              <ItemView result={item} />
-            </div>
-          ))}
-        </div>
-      );
-    case "error":
-      return (
-        <div className="result result--error">
-          <Code inset tone="error">
-            {result.message}
-          </Code>
-          <Meta items={[["kind", result.error_kind]]} />
-        </div>
-      );
-    case "opaque":
-      return (
-        <div className="result">
-          <Code inset>
-            <JsonView value={result.payload} clip={0} />
+            <JsonView value={block.props} clip={0} />
           </Code>
         </div>
       );
   }
 }
 
-function statusOf(result: ToolResult): TaskStatus {
-  if (result.ok) {
+function statusOf(ok: boolean): TaskStatus {
+  if (ok) {
     return "done";
   }
 
   return "failed";
 }
 
-export function ResultView({ result }: Props): ReactElement {
-  const summary = resultSummary(result);
+export function ResultView({ state }: Props): ReactElement | null {
+  const result = state.result;
+  const view = state.view;
+  if (result === null || view === null) {
+    return null;
+  }
+
   return (
     <section className="result-view" data-kind={result.kind} aria-label="task result">
       <Toolbar>
-        <Chip>{summary.kind}</Chip>
-        <span className="result-view__figure">{summary.figure}</span>
-        <span className="result-view__detail">{summary.detail}</span>
+        <Chip>{result.kind}</Chip>
+        <span className="result-view__figure">{view.summary.figure}</span>
+        <span className="result-view__detail">{view.summary.detail}</span>
         <ToolbarSpacer />
-        <Chip status={statusOf(result)} />
+        <Chip status={statusOf(result.ok)} />
       </Toolbar>
-      <ItemView result={result} />
+      {view.blocks.map((block, index) => (
+        <Block key={index} block={block} failed={!result.ok} />
+      ))}
     </section>
   );
 }

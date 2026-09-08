@@ -27,7 +27,6 @@ import pytest
 from chat_ui import ChatOpener
 
 from boba.canvas.diagram import DiagramPrompt
-from boba.chainlit.rendering.tool import ToolCallMarkdown, ToolResultMarkdown
 from boba.config import bind
 from boba.liteparse.engine import LiteParseEngine
 from boba.runtime.config import AppLayers
@@ -50,13 +49,13 @@ from boba.tool.kb.confluence.parsing import ConfluenceJson
 from boba.tool.kb.confluence.request_sources import ConfluenceRest
 from boba.tool.kb.confluence.tools import ConfluenceToolsConfig, CqlSearch
 from boba.tool.kb.html.payload import PageOps
-from boba.toolkit.calls import JsonCall, ScriptCall
 from boba.toolkit.result import (
-    AffectedSqlResult,
     ErrorResult,
-    MultiResult,
+    FieldLines,
+    MarkdownResult,
+    SqlResult,
+    SqlStatement,
     TableResult,
-    TextResult,
     ToolResult,
 )
 from boba.transport.http import HttpxAuth
@@ -250,8 +249,9 @@ class ToolCall:
 
     tool: str
     arguments: Mapping[str, Any] = field(default_factory=dict)
-    view: JsonCall | ScriptCall = field(default_factory=JsonCall)
-    """Как лента рисует вход шага: json либо скрипт с языком."""
+    code: str = ""
+    """Аргумент, объявленный тулом как код: рисуется блоком с языком."""
+    language: str = ""
 
     @property
     def intent(self) -> str:
@@ -267,11 +267,21 @@ class ToolCall:
         if not self.arguments:
             return None
 
-        rendering = ToolCallMarkdown(self.view, self.arguments).render()
-        if rendering is None:
-            return None
+        blocks: list[str] = []
+        for name, value in self.arguments.items():
+            if name == self.code:
+                shown = MarkdownResult(
+                    text=str(value).strip("\n"), language=self.language
+                )
+                blocks.append(shown.chat_view().markdown)
+                continue
 
-        return rendering.markdown
+            if isinstance(value, str) and not value:
+                continue
+
+            blocks.append(FieldLines.line(name, value))
+
+        return "\n\n".join(blocks)
 
 
 @dataclass(frozen=True)
@@ -293,7 +303,7 @@ class ToolExpect:
         """Ожидание из модели результата: лента рисует её тем же рендером."""
         return cls(
             mark=StepMark.of(result.ok),
-            output=ToolResultMarkdown(result).render(),
+            output=result.chat_view().markdown,
             dom=dom,
         )
 
@@ -692,16 +702,18 @@ class GrepCase:
     CONTEXT: ClassVar[int] = 0
     LIMIT: ClassVar[int] = 100
 
-    def arguments(self) -> dict[str, Any]:
+    def arguments(self, *, as_markdown: bool) -> dict[str, Any]:
+        """Аргументы grep-тула в порядке его подписи: так рисуется вход шага."""
         return {
             "pattern": self.pattern,
+            "as_markdown": as_markdown,
             "case_insensitive": False,
             "context": self.CONTEXT,
             "limit": self.LIMIT,
             "fixed_string": True,
         }
 
-    def result(self) -> TextResult:
+    def result(self) -> MarkdownResult:
         compiled = TextGrep.compile_pattern(
             self.pattern, fixed_string=True, case_insensitive=False
         )
@@ -709,7 +721,9 @@ class GrepCase:
             context=self.CONTEXT, limit=self.LIMIT, clip_chars=self.clip_chars
         )
         report = TextGrep.report(self.text, compiled, limits, self.source)
-        return TextResult(text=report.render(), language=report.LANG, note=report.note)
+        return MarkdownResult(
+            text=report.render(), language=report.LANG, note=report.note
+        )
 
 
 @dataclass(frozen=True)
@@ -771,11 +785,11 @@ def probe_pdf(module_feed: ToolFeed) -> str:
         arguments={
             "command": (
                 f"mkdir -p {ProbeFile.DIR.value} && base64 -d > {ProbeFile.PDF.value} "
-                f"&& test -s {ProbeFile.PDF.value}"
+                f"<<'B64'\n{SamplePdf.base64()}\nB64\ntest -s {ProbeFile.PDF.value}"
             ),
-            "stdin": SamplePdf.base64(),
         },
-        view=ScriptCall(arg="command", lang="bash"),
+        code="command",
+        language="bash",
     )
     expect = ToolExpect(
         output="_(no output)_\n\n_exit code: 0_",
@@ -837,14 +851,16 @@ def probe_table(module_feed: ToolFeed) -> str:
     call = ToolCall(
         tool="pg_query",
         arguments={"connection": "main", "sql": ProbeSql.CREATE.value},
-        view=ScriptCall(arg="sql", lang="sql"),
+        code="sql",
+        language="sql",
     )
-    result = MultiResult(
-        items=[
-            AffectedSqlResult(affected_rows=None, status="DROP TABLE"),
-            AffectedSqlResult(affected_rows=None, status="CREATE TABLE"),
-            AffectedSqlResult(affected_rows=2, status="INSERT 0 2"),
-        ]
+    result = SqlResult(
+        engine="postgres",
+        statements=[
+            SqlStatement(status="DROP TABLE"),
+            SqlStatement(status="CREATE TABLE"),
+            SqlStatement(affected_rows=2, status="INSERT 0 2"),
+        ],
     )
     expect = ToolExpect.of(result, dom=["DROP TABLE", "CREATE TABLE", "INSERT 0 2"])
     module_feed.call(call, expect)
@@ -867,9 +883,10 @@ def saved_diagram(canvas_feed: ToolFeed) -> DiagramProbe:
     call = ToolCall(
         tool="diagram_save",
         arguments={"name": ProbeDiagram.NAME.value, "spec": ProbeDiagram.SPEC.value},
-        view=ScriptCall(arg="spec", lang="mermaid"),
+        code="spec",
+        language="mermaid",
     )
-    result = TextResult(
+    result = MarkdownResult(
         text=f"diagram saved: {probe.path}; {DiagramPrompt.SAVED_NOTE.value}"
     )
     canvas_feed.call(call, ToolExpect.of(result, dom=[f"diagram saved: {probe.path}"]))
@@ -930,7 +947,8 @@ class TestBash:
         call = ToolCall(
             tool="bash",
             arguments={"command": f"echo {ProbeText.BASH_ECHO.value}"},
-            view=ScriptCall(arg="command", lang="bash"),
+            code="command",
+            language="bash",
         )
         expect = ToolExpect(
             output=f"```stdout\n{ProbeText.BASH_ECHO.value}\n```\n\n_exit code: 0_",
@@ -943,7 +961,8 @@ class TestBash:
         call = ToolCall(
             tool="bash",
             arguments={"command": f"echo {ProbeText.BASH_STDERR.value} >&2; exit 3"},
-            view=ScriptCall(arg="command", lang="bash"),
+            code="command",
+            language="bash",
         )
         expect = ToolExpect(
             mark=StepMark.FAILED,
@@ -962,7 +981,8 @@ class TestBash:
         call = ToolCall(
             tool="bash",
             arguments={"command": f"echo {ProbeText.BASH_ECHO.value}"},
-            view=ScriptCall(arg="command", lang="bash"),
+            code="command",
+            language="bash",
         )
         feed.call(call, ToolExpect(dom=[ProbeText.BASH_ECHO.value]))
 
@@ -983,7 +1003,9 @@ class TestDocTools:
             arguments={"path": ProbeFile.PDF.value, "pages": "1-2", **OcrArgs.of()},
         )
         text = "\n\n".join(SamplePdf.PAGES)
-        feed.call(call, ToolExpect.of(TextResult(text=text), dom=list(SamplePdf.PAGES)))
+        feed.call(
+            call, ToolExpect.of(MarkdownResult(text=text), dom=list(SamplePdf.PAGES))
+        )
 
     def test_document_outline(self, feed: ToolFeed, probe_pdf: str) -> None:
         call = ToolCall(
@@ -1055,7 +1077,7 @@ class TestWebTools:
                 "line_count": 50,
             },
         )
-        result = TextResult(
+        result = MarkdownResult(
             text=FakePage.HTML.value, language="html", note=f"url={url}; lines 1-1 of 1"
         )
         feed.call(call, ToolExpect.of(result, dom=["stand page", "lines 1-1 of 1"]))
@@ -1073,7 +1095,7 @@ class TestWebTools:
             },
         )
         lines = FakePage.LINES.value.splitlines()
-        result = TextResult(
+        result = MarkdownResult(
             text=lines[1], language="html", note=f"url={url}; lines 2-2 of 3"
         )
         feed.call(call, ToolExpect.of(result, dom=[lines[1], "lines 2-2 of 3"]))
@@ -1091,8 +1113,7 @@ class TestWebTools:
             arguments={
                 "url": url,
                 "connection": "stand",
-                "as_markdown": False,
-                **grep.arguments(),
+                **grep.arguments(as_markdown=False),
             },
         )
         feed.call(
@@ -1112,8 +1133,7 @@ class TestWebTools:
             arguments={
                 "url": url,
                 "connection": "stand",
-                "as_markdown": False,
-                **grep.arguments(),
+                **grep.arguments(as_markdown=False),
             },
         )
         feed.call(call, ToolExpect.of(grep.result(), dom=["no matches found"]))
@@ -1166,7 +1186,7 @@ class TestConfluenceTools:
             tool="confluence_fetch",
             arguments={"page_id": confluence_page.page_id, "as_markdown": True},
         )
-        result = TextResult(text=confluence_page.markdown)
+        result = MarkdownResult(text=confluence_page.markdown)
         feed.call(call, ToolExpect.of(result, dom=[confluence_page.word]))
 
     def test_grep(
@@ -1185,8 +1205,7 @@ class TestConfluenceTools:
             tool="confluence_grep",
             arguments={
                 "page_id": confluence_page.page_id,
-                "as_markdown": True,
-                **grep.arguments(),
+                **grep.arguments(as_markdown=True),
             },
         )
         feed.call(call, ToolExpect.of(grep.result(), dom=[confluence_page.word]))
@@ -1245,7 +1264,7 @@ class TestIngestTools:
         result = ErrorResult(message=message, error_kind="ingest_request_failed")
         expect = ToolExpect(
             mark=StepMark.FAILED,
-            output=ToolResultMarkdown(result).render(),
+            output=result.chat_view().markdown,
             dom=["Error:", ProbeText.NO_SPACE.value],
             log_errors=True,
         )
@@ -1343,19 +1362,25 @@ class TestPgTools:
         call = ToolCall(
             tool="pg_query",
             arguments={"connection": "main", "sql": ProbeSql.UPDATE.value},
-            view=ScriptCall(arg="sql", lang="sql"),
+            code="sql",
+            language="sql",
         )
-        result = AffectedSqlResult(affected_rows=1, status="UPDATE 1")
-        feed.call(call, ToolExpect.of(result, dom=["rows affected: 1 (UPDATE 1)"]))
+        result = SqlResult(
+            engine="postgres",
+            statements=[SqlStatement(affected_rows=1, status="UPDATE 1")],
+        )
+        feed.call(call, ToolExpect.of(result, dom=["UPDATE 1"]))
 
     def test_query_select(self, feed: ToolFeed, probe_table: str) -> None:
         call = ToolCall(
             tool="pg_query",
             arguments={"connection": "main", "sql": ProbeSql.SELECT.value},
-            view=ScriptCall(arg="sql", lang="sql"),
+            code="sql",
+            language="sql",
         )
-        result = TableResult(
-            rows=[{"id": 1, "name": "alpha"}, {"id": 2, "name": "beta"}]
+        rows = [{"id": 1, "name": "alpha"}, {"id": 2, "name": "beta"}]
+        result = SqlResult(
+            engine="postgres", statements=[SqlStatement(rows=rows, status="SELECT 2")]
         )
         feed.call(call, ToolExpect.of(result, dom=["alpha", "beta"]))
 
@@ -1410,7 +1435,10 @@ class TestPgTools:
             self._column(2, "name", "text", nullable=False, primary_key=False),
             self._column(3, "note", "text", nullable=True, primary_key=False),
         ]
-        result = TableResult(rows=rows, note="rows 1-3; end of result")
+        result = SqlResult(
+            engine="postgres",
+            statements=[SqlStatement(rows=rows, note="rows 1-3; end of result")],
+        )
         feed.call(
             call, ToolExpect.of(result, dom=["column_name", "integer", "rows 1-3"])
         )
@@ -1436,9 +1464,10 @@ class TestPgTools:
         call = ToolCall(
             tool="pg_copy",
             arguments={"connection": "main", "sql": ProbeSql.COPY.value},
-            view=ScriptCall(arg="sql", lang="sql"),
+            code="sql",
+            language="sql",
         )
-        result = TextResult(text=ProbeSql.COPY_TEXT.value, language="csv")
+        result = MarkdownResult(text=ProbeSql.COPY_TEXT.value, language="csv")
         feed.call(call, ToolExpect.of(result, dom=["id,name", "1,alpha", "2,beta"]))
 
 
@@ -1454,9 +1483,11 @@ class TestChTools:
         call = ToolCall(
             tool="ch_query",
             arguments={"sql": ProbeSql.CH_SELECT.value, "connection": "main"},
-            view=ScriptCall(arg="sql", lang="sql"),
+            code="sql",
+            language="sql",
         )
-        result = TableResult(rows=[{"who": ProbeSql.CH_USER.value, "a": 1}])
+        rows = [{"who": ProbeSql.CH_USER.value, "a": 1}]
+        result = SqlResult(engine="clickhouse", statements=[SqlStatement(rows=rows)])
         feed.call(call, ToolExpect.of(result, dom=[ProbeSql.CH_USER.value]))
 
     def test_describe_table(self, feed: ToolFeed) -> None:
@@ -1476,7 +1507,10 @@ class TestChTools:
             "default_expression": "",
             "comment": "",
         }
-        result = TableResult(rows=[row], note="rows 1-1; end of result")
+        result = SqlResult(
+            engine="clickhouse",
+            statements=[SqlStatement(rows=[row], note="rows 1-1; end of result")],
+        )
         feed.call(call, ToolExpect.of(result, dom=["dummy", "UInt8"]))
 
     def test_list_tables(self, feed: ToolFeed) -> None:
@@ -1521,8 +1555,8 @@ class TestCanvasTools:
         before = stand_db.elements_named(CANVAS_ELEMENT)
 
         call = ToolCall(tool="canvas_open", arguments={"path": saved_diagram.path})
-        label = f"diagram rendered: {ProbeDiagram.NAME.value}"
-        canvas_feed.call(call, ToolExpect(output=label, dom=[label]))
+        caption = f"(CanvasView: {ProbeDiagram.NAME.value})"
+        canvas_feed.call(call, ToolExpect(output=f"_{caption}_", dom=[caption]))
 
         after = stand_db.elements_named(CANVAS_ELEMENT)
         if after <= before:
@@ -1553,7 +1587,7 @@ class TestCanvasTools:
         self, canvas_feed: ToolFeed, saved_diagram: DiagramProbe
     ) -> None:
         call = ToolCall(tool="send_file", arguments={"path": saved_diagram.path})
-        result = TextResult(
+        result = MarkdownResult(
             text=f"file attached to the chat: {ProbeDiagram.NAME.value}"
         )
         canvas_feed.call(
@@ -1620,7 +1654,8 @@ class TestWorkflowTools:
         call = ToolCall(
             tool="workflow_save",
             arguments={"spec": self.SPEC},
-            view=ScriptCall(arg="spec", lang="yaml"),
+            code="spec",
+            language="yaml",
         )
         expect = ToolExpect(
             patterns=[r"^workflow 'ui-flow' saved \(id [0-9a-f-]{36}\); tools: bash$"],
@@ -1670,13 +1705,15 @@ class TestPipeline:
         prepare = ToolCall(
             tool="pg_query",
             arguments={"connection": "main", "sql": ProbeSql.COPY_TARGET.value},
-            view=ScriptCall(arg="sql", lang="sql"),
+            code="sql",
+            language="sql",
         )
-        prepared = MultiResult(
-            items=[
-                AffectedSqlResult(affected_rows=None, status="DROP TABLE"),
-                AffectedSqlResult(affected_rows=None, status="CREATE TABLE"),
-            ]
+        prepared = SqlResult(
+            engine="postgres",
+            statements=[
+                SqlStatement(status="DROP TABLE"),
+                SqlStatement(status="CREATE TABLE"),
+            ],
         )
         feed.call(prepare, ToolExpect.of(prepared, dom=["CREATE TABLE"]))
 
@@ -1704,7 +1741,8 @@ class TestPipeline:
         run = ToolCall(
             tool="pipeline_run",
             arguments={"plan": plan},
-            view=ScriptCall(arg="plan", lang="json"),
+            code="plan",
+            language="json",
         )
         expect = ToolExpect(
             patterns=[r"copied out \d+ bytes", r"COPY 2"],
@@ -1770,9 +1808,10 @@ class TestSecondTab:
         call = ToolCall(
             tool="diagram_save",
             arguments={"name": self.NAME, "spec": ProbeDiagram.SPEC.value},
-            view=ScriptCall(arg="spec", lang="mermaid"),
+            code="spec",
+            language="mermaid",
         )
-        result = TextResult(
+        result = MarkdownResult(
             text=f"diagram saved: {path}; {DiagramPrompt.SAVED_NOTE.value}"
         )
         feed.call(call, ToolExpect.of(result, dom=[f"diagram saved: {path}"]))

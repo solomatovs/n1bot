@@ -205,7 +205,11 @@ class ToolSchema:
         add: Mapping[str, tuple[Any, Any]],
         drop: Iterable[str],
     ) -> type[BaseModel]:
-        """Та же схема с добавленными полями (аннотация, дефолт) и без снятых."""
+        """Та же схема с добавленными полями (аннотация, дефолт) и без снятых.
+
+        База модели сохраняется: показы вызова (ToolCallBase и класс вызова
+        тула) живут на ней, а не на пересобранном наследнике.
+        """
         dropped = frozenset(drop)
 
         fields: dict[str, Any] = {}
@@ -218,4 +222,6 @@ class ToolSchema:
         for name, declared in add.items():
             fields[name] = declared
 
-        return create_model(schema.__name__, **fields)
+        base = schema.__bases__[0]
+
+        return create_model(schema.__name__, __base__=base, **fields)

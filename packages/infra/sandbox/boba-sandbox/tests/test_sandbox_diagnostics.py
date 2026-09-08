@@ -1,24 +1,24 @@
-"""Превышение лимита должно объясняться словами, а не кодом ядра."""
+"""Диагностика лимитов песочницы: по коду возврата умершего вызова."""
 
 from __future__ import annotations
 
 import os
 import shutil
-import subprocess
-from pathlib import Path
 from typing import Any
 
 import pytest
 
-from boba.sandbox.diagnostics import SandboxDiagnostics
+from boba.sandbox.diagnostics import KilledBy, SandboxDiagnostics
 from boba.sandbox.profile import SandboxProfile
+from boba.sandbox.zygote import ZygoteToolCaller
+from boba.stand.shell import ShellRun
 from boba.stand.zygote import SandboxStand, ZygoteStand
-from boba.tool.shell.tools import BashToolConfig, build_bash_tool
-from boba.toolkit.launcher import RunResult
+from boba.tool.shell.tools import BashToolConfig
+from boba.toolkit.launcher import LauncherError, RunResult
 from boba.toolkit.result import ShellResult
 from boba.workspace.launcher import FUSE_DEVICE
 
-OUTPUT_LIMITS = BashToolConfig(max_output_bytes=4 * 1024 * 1024)
+OUTPUT_LIMITS = BashToolConfig(max_output_bytes=4 * 1024 * 1024, timeout_sec=60.0)
 
 needs_sandbox = pytest.mark.skipif(
     shutil.which("bwrap") is None
@@ -29,53 +29,23 @@ needs_sandbox = pytest.mark.skipif(
 )
 
 
-def _bin_dirs() -> list[str]:
-    """В тестах каталоги берутся из PATH; в проде их задаёт конфиг."""
-    dirs: list[str] = []
-
-    for entry in os.environ.get("PATH", "").split(os.pathsep):
-        if not entry.startswith("/"):
-            continue
-
-        dirs.append(entry)
-
-    return dirs
-
-
 @pytest.fixture(autouse=True)
 def chainlit_context() -> None:
     pass
-
-
-@pytest.fixture
-def template(tmp_path: Path) -> Path:
-    path = tmp_path / "template.ext4"
-    with path.open("wb") as f:
-        f.truncate(16 * 1024 * 1024)
-    mkfs = shutil.which("mkfs.ext4")
-    if mkfs is None:
-        raise AssertionError("mkfs is not None")
-    subprocess.run(
-        [mkfs, "-F", "-q", "-O", "^has_journal", "-m", "0", str(path)],
-        check=True,
-    )
-    return path
 
 
 def _profile(**kw: Any) -> SandboxProfile:
     return SandboxStand.profile(**kw)
 
 
-def _result(**kw: object) -> RunResult:
-    fields: dict[str, object] = {
-        "exit_code": 1,
-        "stdout": "",
-        "stderr": "",
-        "duration_ms": 10,
-        "timed_out": False,
-    }
-    fields.update(kw)
-    return RunResult(**fields)  # type: ignore[arg-type]
+def _result(exit_code: int = 1, *, timed_out: bool = False) -> RunResult:
+    return RunResult(
+        exit_code=exit_code,
+        stdout="",
+        stderr="",
+        duration_ms=10,
+        timed_out=timed_out,
+    )
 
 
 def _explain(result: RunResult, profile: SandboxProfile) -> str:
@@ -86,172 +56,129 @@ class TestDiagnosticText:
     """Текст обязан назвать лимит, его значение и что делать дальше."""
 
     def test_timeout_names_limit(self) -> None:
-        text = _explain(_result(timed_out=True), _profile(timeout_sec=7))
-        if "timeout_sec=7" not in text:
-            raise AssertionError('"timeout_sec=7" in text')
-        if "timeout" not in text.lower():
-            raise AssertionError('"timeout" in text.lower()')
+        message = _explain(_result(timed_out=True), _profile(timeout_sec=7))
+        if "timeout_sec=7" not in message:
+            raise AssertionError('"timeout_sec=7" in message')
+        if "smaller steps" not in message:
+            raise AssertionError('"smaller steps" in message')
 
     def test_cpu_limit_named(self) -> None:
-        text = _explain(_result(exit_code=152), _profile(process_cpu_sec=5))
-        if "process_cpu_sec=5" not in text:
-            raise AssertionError('"process_cpu_sec=5" in text')
-        if "SIGXCPU" not in text:
-            raise AssertionError('"SIGXCPU" in text')
+        message = _explain(_result(KilledBy.SIGXCPU), _profile(process_cpu_sec=3))
+        if "process_cpu_sec=3" not in message:
+            raise AssertionError('"process_cpu_sec=3" in message')
 
     def test_file_size_limit_named(self) -> None:
-        result = _result(stderr="bash: line 1: File size limit exceeded")
-        text = _explain(result, _profile(process_file_bytes=1024))
-        if "process_file_bytes=1024" not in text:
-            raise AssertionError('"process_file_bytes=1024" in text')
-
-    def test_open_files_limit_named(self) -> None:
-        result = _result(stderr="OSError: [Errno 24] Too many open files: 'x'")
-        text = _explain(result, _profile(process_open_files=10))
-        if "process_open_files=10" not in text:
-            raise AssertionError('"process_open_files=10" in text')
-
-    def test_process_limit_named(self) -> None:
-        result = _result(stderr="bash: fork: retry: Resource temporarily unavailable")
-        profile = _profile(cgroup_base="/sys/fs/cgroup/boba", group_pids_max=10)
-        text = _explain(result, profile)
-        if "group_pids_max=10" not in text:
-            raise AssertionError('"group_pids_max=10" in text')
+        message = _explain(
+            _result(KilledBy.SIGXFSZ),
+            _profile(process_file_bytes=1024),
+        )
+        if "process_file_bytes=1024" not in message:
+            raise AssertionError('"process_file_bytes=1024" in message')
 
     def test_memory_limit_named(self) -> None:
-        result = _result(stderr="MemoryError")
-        text = _explain(result, _profile(process_memory_bytes=64 * 1024 * 1024))
-        if "process_memory_bytes=67108864" not in text:
-            raise AssertionError('"process_memory_bytes=67108864" in text')
-
-    def test_thread_local_failure_is_a_memory_limit(self) -> None:
-        """glibc падает до main и пишет своё сообщение в нижнем регистре."""
-        result = _result(
-            exit_code=127,
-            stderr="cannot allocate memory for thread-local data: ABORT",
+        message = _explain(
+            _result(KilledBy.SIGKILL),
+            _profile(process_memory_bytes=1 << 20),
         )
-
-        text = _explain(result, _profile(process_memory_bytes=64 * 1024 * 1024))
-
-        if "process_memory_bytes=67108864" not in text:
-            raise AssertionError(f"падение TLS не объяснено лимитом: {text!r}")
-        if "RLIMIT_AS" not in text:
-            raise AssertionError(f"в объяснении нет RLIMIT_AS: {text!r}")
-
-    def test_full_image_explained(self) -> None:
-        result = _result(stderr="dd: writing 'big': No space left on device")
-        text = _explain(result, _profile())
-        if "workspace image" not in text:
-            raise AssertionError('"workspace image" in text')
-        if "No space left" not in text:
-            raise AssertionError('"No space left" in text')
-
-    def test_network_disabled_explained_with_alternatives(self) -> None:
-        result = _result(
-            stderr="socket.gaierror: [Errno -3] Temporary failure in name resolution"
-        )
-        text = _explain(result, _profile(network=False))
-        if "network=false" not in text:
-            raise AssertionError('"network=false" in text')
-        if "not at fault" not in text:
-            raise AssertionError('"not at fault" in text')
-
-    def test_network_error_ignored_when_network_enabled(self) -> None:
-        result = _result(stderr="Temporary failure in name resolution")
-        if _explain(result, _profile(network=True)) != "":
-            raise AssertionError('_explain(result, _profile(network=True)) == ""')
+        if "process_memory_bytes=1048576" not in message:
+            raise AssertionError('"process_memory_bytes=1048576" in message')
 
     def test_plain_failure_has_no_diagnostic(self) -> None:
-        result = _result(stderr="cat: f.txt: No such file or directory")
-        if _explain(result, _profile()) != "":
-            raise AssertionError('_explain(result, _profile()) == ""')
+        """Обычный ненулевой код — не лимит: команда сама объяснила себя в stderr."""
+        if _explain(_result(exit_code=1), _profile()) != "":
+            raise AssertionError('_explain(_result(exit_code=1), _profile()) == ""')
 
     def test_success_has_no_diagnostic(self) -> None:
         if _explain(_result(exit_code=0), _profile()) != "":
             raise AssertionError('_explain(_result(exit_code=0), _profile()) == ""')
 
 
-def _tool(section: str, profile: SandboxProfile):
-    """Bash-инструмент на своей зиготе: у теста свои лимиты — своя секция."""
-    launchers = ZygoteStand.launchers(
+def _caller(section: str, profile: SandboxProfile) -> ZygoteToolCaller:
+    """Зигота теста: у теста свои лимиты — своя секция."""
+    return ZygoteStand.caller(
         section, profile, path_vars=lambda: {"user_id": "7", "thread_id": "t1"}
     )
-    return build_bash_tool(OUTPUT_LIMITS, launchers)
 
 
-def _invoke(tool, command: str, stdin: str = "") -> ShellResult:
-    body = tool.func
-    if body is None:
-        raise AssertionError("bash tool has no sync body")
+def _invoke(
+    caller: ZygoteToolCaller, command: str, cfg: BashToolConfig = OUTPUT_LIMITS
+) -> ShellResult:
+    return ShellRun.call_text(caller, command, cfg=cfg)
 
-    _content, artifact = body(command=command, stdin=stdin)
-    if not isinstance(artifact, ShellResult):
-        raise AssertionError("isinstance(artifact, ShellResult)")
 
-    return artifact
+def _python(code: str) -> str:
+    """Команда python со скриптом в heredoc: stdin у bash-тула закрыт."""
+    return f"python3 - <<'PY'\n{code}PY\n"
 
 
 @needs_sandbox
 class TestDiagnosticAppearsLive:
-    """Лимит реально превышается — сообщение обязано быть в результате."""
+    """Лимит реально превышается: сигнал ядра доходит до обвязки запуска и
+    объясняется профилем; ошибка команды остаётся её кодом и stderr."""
 
     def teardown_method(self) -> None:
         ZygoteStand.stop()
 
-    def test_open_files(self) -> None:
+    def test_file_size_kills_the_call_with_the_limit_named(self) -> None:
+        """SIGXFSZ убивает команду, тело умирает тем же сигналом — вызов без
+        конверта, обвязка называет лимит по коду возврата."""
+        caller = _caller("dg-fsize", _profile(process_file_bytes=1024 * 1024))
+
+        with pytest.raises(LauncherError, match="process_file_bytes=1048576"):
+            _invoke(caller, "dd if=/dev/zero of=/tmp/big bs=64k count=64")
+
+    def test_open_files_is_a_plain_failure(self) -> None:
+        """EMFILE — ошибка команды, не сигнал: код и stderr как есть."""
         code = (
             "held = []\n"
             "for i in range(200):\n"
             "    held.append(open('/tmp/probe-%d' % i, 'w'))\n"
         )
-        tool = _tool("dg-files", _profile(process_open_files=10))
-        payload = _invoke(tool, "python3 -", stdin=code)
+        caller = _caller("dg-files", _profile(process_open_files=40))
+        payload = _invoke(caller, _python(code))
         if payload.exit_code == 0:
             raise AssertionError("payload.exit_code != 0")
-        if "process_open_files=10" not in payload.diagnostic:
-            raise AssertionError('"process_open_files=10" in payload.diagnostic')
+        if "Too many open files" not in payload.stderr:
+            raise AssertionError('"Too many open files" in payload.stderr')
 
-    def test_file_size(self) -> None:
-        tool = _tool("dg-fsize", _profile(process_file_bytes=1024 * 1024))
-        payload = _invoke(tool, "dd if=/dev/zero of=/tmp/big bs=64k count=64")
-        if payload.exit_code == 0:
-            raise AssertionError("payload.exit_code != 0")
-        if "process_file_bytes=1048576" not in payload.diagnostic:
-            raise AssertionError('"process_file_bytes=1048576" in payload.diagnostic')
-
-    def test_memory(self) -> None:
+    def test_address_space_is_a_plain_failure(self) -> None:
+        """RLIMIT_AS даёт MemoryError, а не сигнал: команда отчитывается сама."""
         code = "x = bytearray(400 * 1024 * 1024)\n"
-        tool = _tool("dg-mem", _profile(process_memory_bytes=64 * 1024 * 1024))
-        payload = _invoke(tool, "python3 -", stdin=code)
+        caller = _caller("dg-mem", _profile(process_memory_bytes=64 * 1024 * 1024))
+        payload = _invoke(caller, _python(code))
         if payload.exit_code == 0:
             raise AssertionError("payload.exit_code != 0")
-        if "process_memory_bytes=67108864" not in payload.diagnostic:
-            raise AssertionError(
-                '"process_memory_bytes=67108864" in payload.diagnostic'
-            )
+        if "MemoryError" not in payload.stderr:
+            raise AssertionError('"MemoryError" in payload.stderr')
 
-    def test_timeout(self) -> None:
-        tool = _tool("dg-timeout", _profile(timeout_sec=1))
-        payload = _invoke(tool, "sleep 10")
+    def test_profile_timeout_kills_the_call(self) -> None:
+        caller = _caller("dg-timeout", _profile(timeout_sec=1))
+
+        with pytest.raises(LauncherError, match="timeout_sec=1"):
+            _invoke(caller, "sleep 10")
+
+    def test_command_timeout_is_reported_by_the_tool(self) -> None:
+        """Таймаут самой команды из [tool.bash]: результат с timed_out."""
+        caller = _caller("dg-cmd-timeout", _profile(timeout_sec=30))
+        limits = BashToolConfig(max_output_bytes=4096, timeout_sec=1.0)
+        payload = _invoke(caller, "echo before; sleep 10", cfg=limits)
         if payload.timed_out is not True:
             raise AssertionError("payload.timed_out is True")
-        if "timeout_sec=1" not in payload.diagnostic:
-            raise AssertionError('"timeout_sec=1" in payload.diagnostic')
+        if payload.ok:
+            raise AssertionError("not payload.ok")
+        if "before" not in payload.stdout:
+            raise AssertionError('"before" in payload.stdout')
 
-    def test_network_disabled_explained(self) -> None:
+    def test_network_disabled_is_a_plain_failure(self) -> None:
         code = "import socket\nsocket.getaddrinfo('example.com', 443)\n"
-        tool = _tool("dg-net", _profile(network=False))
-        payload = _invoke(tool, "python3 -", stdin=code)
+        caller = _caller("dg-net", _profile(network=False))
+        payload = _invoke(caller, _python(code))
         if payload.exit_code == 0:
             raise AssertionError("payload.exit_code != 0")
-        if "network=false" not in payload.diagnostic:
-            raise AssertionError('"network=false" in payload.diagnostic')
-        if "not at fault" not in payload.diagnostic:
-            raise AssertionError('"not at fault" in payload.diagnostic')
 
-    def test_successful_command_has_empty_diagnostic(self) -> None:
-        payload = _invoke(_tool("dg-ok", _profile()), "echo ok")
+    def test_successful_command(self) -> None:
+        payload = _invoke(_caller("dg-ok", _profile()), "echo ok")
         if payload.exit_code != 0:
             raise AssertionError("payload.exit_code == 0")
-        if payload.diagnostic != "":
-            raise AssertionError('payload.diagnostic == ""')
+        if payload.stdout.strip() != "ok":
+            raise AssertionError('payload.stdout.strip() == "ok"')

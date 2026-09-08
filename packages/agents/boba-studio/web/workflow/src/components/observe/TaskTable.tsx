@@ -2,7 +2,7 @@ import type { ReactElement } from "react";
 
 import { formatDuration, formatInstant } from "../../model/time";
 import type { RunState } from "../../model/workflow";
-import { Cell, Chip, DataTable, TableRow } from "../../ui";
+import { Cell, Chip, DataTable, SceneView, TableRow } from "../../ui";
 
 type Props = {
   run: RunState;
@@ -45,10 +45,10 @@ export function TaskTable({ run, onSelect }: Props): ReactElement {
   }
 
   return (
-    <div className="view view--scroll">
+    <SceneView scroll>
       <DataTable head={HEAD} mark="task-table">
         {rows}
       </DataTable>
-    </div>
+    </SceneView>
   );
 }

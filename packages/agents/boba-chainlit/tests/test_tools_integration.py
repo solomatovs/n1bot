@@ -10,7 +10,7 @@ import json
 import os
 import re
 import shutil
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -20,7 +20,6 @@ from omegaconf import OmegaConf
 from psycopg import sql
 
 from boba.auth.credentials import KerberosCredentialSource, NoRefresh
-from boba.chainlit.rendering.tool import ToolCallMarkdown, ToolResultMarkdown
 from boba.config import bind
 from boba.connection_broker.tickets import ServiceTickets
 from boba.db.postgres import AsyncPostgresPool
@@ -31,22 +30,25 @@ from boba.runtime.launchers import ZygoteLaunchers
 from boba.runtime.plugins import ToolBridge
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
 from boba.stand.sandbox import section_profile
+from boba.stand.shell import ShellRun
 from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
 from boba.tool.kb.search import ConfluenceCollection
 from boba.tool.pg.tools import PgToolConfig
-from boba.tool.shell.tools import BashToolConfig, build_bash_tool
+from boba.tool.shell.tools import BashToolConfig
 from boba.tool.web.tools import WebGrepConfig
-from boba.toolkit.calls import ScriptCall
+from boba.toolkit.calls import ToolCallModels
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.launcher import LauncherFactory, PayloadFailureError, ToolLauncher
 from boba.toolkit.result import (
-    AffectedSqlResult,
-    ChartResult,
-    MultiResult,
+    ChatElement,
+    MarkdownResult,
     ShellResult,
+    SqlResult,
+    SqlStatement,
     TableResult,
-    TextResult,
     ToolArtifact,
+    ToolResultBase,
+    VisualResult,
 )
 from boba.toolkit.types import SecretReveal
 from boba.toolkit.wrap import ToolProcessWrap
@@ -245,9 +247,9 @@ def chainlit_context() -> None:
 @pytest.fixture(scope="module")
 def bash_tool(raw_config):
     cfg = ToolSetup.config(raw_config, "tool.bash", BashToolConfig)
-    launchers = ToolSetup.launchers(raw_config, "bash")
+    launcher = ToolSetup.caller(raw_config, "bash", [ShellRun.MODULE])
 
-    return ToolBridge.as_structured_tool(build_bash_tool(cfg, launchers))
+    return ShellRun.tool(launcher, cfg)
 
 
 @pytest.fixture(scope="module")
@@ -500,8 +502,10 @@ async def workspace_pdf(bash_tool, workspace_image) -> str:
     payload = base64.b64encode(SAMPLE_PDF).decode()
     result = await Call.ok(
         bash_tool,
-        command=f"base64 -d > {WORKSPACE_PDF}; test -s {WORKSPACE_PDF}",
-        stdin=payload,
+        command=(
+            f"base64 -d > {WORKSPACE_PDF} <<'B64'\n{payload}\nB64\n"
+            f"test -s {WORKSPACE_PDF}"
+        ),
     )
     if result.exit_code != 0:
         raise AssertionError("result.exit_code == 0")
@@ -571,25 +575,22 @@ class TestBashTool:
         """Показ вызова: команда — bash-блок входа, вывод — блок с кодом."""
         result = await Call.ok(bash_tool, command="echo hello")
 
-        rendering = ToolCallMarkdown(
-            ScriptCall(arg="command", lang="bash"),
-            {"command": "echo hello", "stdin": ""},
-        ).render()
-        md = ToolResultMarkdown(result).render()
+        call = ToolCallModels.call_of("bash", {"command": "echo hello"})
+        shown = call.chat_view().markdown
+        md = result.chat_view().markdown
 
-        if rendering is None:
-            raise AssertionError("rendering is not None")
-        if rendering.markdown != "```bash\necho hello\n```":
-            raise AssertionError('rendering.markdown == "```bash\\necho hello\\n```"')
+        if shown != "```bash\necho hello\n```":
+            raise AssertionError('shown == "```bash\\necho hello\\n```"')
         if "```stdout\nhello\n```" not in md:
             raise AssertionError('"```stdout\\nhello\\n```" in md')
         if "_exit code: 0_" not in md:
             raise AssertionError('"_exit code: 0_" in md')
 
-    async def test_stdin_reaches_command(self, bash_tool, workspace_image) -> None:
-        result = await Call.ok(bash_tool, command="cat", stdin="через stdin")
-        if result.stdout != "через stdin":
-            raise AssertionError('result.stdout == "через stdin"')
+    async def test_stdin_is_closed(self, bash_tool, workspace_image) -> None:
+        """Команда не ждёт ввода: stdin у bash-тула — /dev/null."""
+        result = await Call.ok(bash_tool, command="cat; echo done")
+        if result.stdout != "done\n":
+            raise AssertionError(f'result.stdout == "done", дано {result.stdout!r}')
 
     async def test_failed_command_is_not_ok(self, bash_tool, workspace_image) -> None:
         result = await Call.result(bash_tool, command="echo boom >&2; exit 3")
@@ -606,7 +607,7 @@ class TestBashTool:
         """Команда молчит в stdout: на экран идёт stderr, а не пустой блок."""
         result = await Call.result(bash_tool, command="echo boom >&2; exit 3")
 
-        md = ToolResultMarkdown(result).render()
+        md = result.chat_view().markdown
 
         if result.output.strip() != "boom":
             raise AssertionError('result.output.strip() == "boom"')
@@ -634,8 +635,8 @@ class TestDocTools:
             num_workers=1,
             ocr_language="rus+eng",
         )
-        if not (isinstance(result, TextResult)):
-            raise AssertionError("isinstance(result, TextResult)")
+        if not (isinstance(result, MarkdownResult)):
+            raise AssertionError("isinstance(result, MarkdownResult)")
         if "Alpha page one" not in result.text:
             raise AssertionError('"Alpha page one" in result.text')
         if "Beta page two" not in result.text:
@@ -718,12 +719,15 @@ class TestChartTool:
             }
         )
         result = await Call.ok(chart_tool, spec=spec)
-        if not (isinstance(result, ChartResult)):
-            raise AssertionError("isinstance(result, ChartResult)")
+        if not (isinstance(result, VisualResult)):
+            raise AssertionError("isinstance(result, VisualResult)")
+        if result.element != ChatElement.PLOTLY:
+            raise AssertionError("result.element == ChatElement.PLOTLY")
         if result.title != "итоги":
             raise AssertionError('result.title == "итоги"')
-        if result.spec["data"][0]["type"] != "bar":
-            raise AssertionError('result.spec["data"][0]["type"] == "bar"')
+        spec = result.props[VisualResult.PLOTLY_SPEC]
+        if spec["data"][0]["type"] != "bar":
+            raise AssertionError('spec["data"][0]["type"] == "bar"')
 
     async def test_broken_spec_fails_loudly(self, chart_tool) -> None:
         with pytest.raises(PayloadFailureError) as caught:
@@ -745,8 +749,8 @@ class TestWebTools:
             line_offset=0,
             line_count=20,
         )
-        if not (isinstance(result, TextResult)):
-            raise AssertionError("isinstance(result, TextResult)")
+        if not (isinstance(result, MarkdownResult)):
+            raise AssertionError("isinstance(result, MarkdownResult)")
         if result.language != "markdown":
             raise AssertionError('result.language == "markdown"')
         if len(result.text.splitlines()) > 20:
@@ -766,8 +770,8 @@ class TestWebTools:
             pattern="Confluence",
             limit=3,
         )
-        if not (isinstance(result, TextResult)):
-            raise AssertionError("isinstance(result, TextResult)")
+        if not (isinstance(result, MarkdownResult)):
+            raise AssertionError("isinstance(result, MarkdownResult)")
         if "Confluence" not in result.text:
             raise AssertionError('"Confluence" in result.text')
         if ": " not in result.text:
@@ -827,8 +831,8 @@ class TestConfluenceTools:
             page_id=confluence_page["page_id"],
             as_markdown=True,
         )
-        if not (isinstance(result, TextResult)):
-            raise AssertionError("isinstance(result, TextResult)")
+        if not (isinstance(result, MarkdownResult)):
+            raise AssertionError("isinstance(result, MarkdownResult)")
         if not (result.text.strip()):
             raise AssertionError("result.text.strip()")
 
@@ -841,8 +845,8 @@ class TestConfluenceTools:
             case_insensitive=True,
             limit=3,
         )
-        if not (isinstance(result, TextResult)):
-            raise AssertionError("isinstance(result, TextResult)")
+        if not (isinstance(result, MarkdownResult)):
+            raise AssertionError("isinstance(result, MarkdownResult)")
         if result.note is None:
             raise AssertionError("result.note is not None")
         if confluence_page["page_id"] not in result.note:
@@ -859,6 +863,26 @@ class TestConfluenceTools:
             raise AssertionError('failure.value.kind == "confluence_request_failed"')
 
 
+def _rows(result: ToolResultBase) -> Sequence[Mapping[str, Any]]:
+    """Строки единственной команды SQL-итога."""
+    if not isinstance(result, SqlResult):
+        raise AssertionError(f"SqlResult expected, got {type(result).__name__}")
+
+    statement: SqlStatement = result.statements[0]
+    if statement.rows is None:
+        raise AssertionError("statement carries rows")
+
+    return statement.rows
+
+
+def _note(result: ToolResultBase) -> str:
+    """Note единственной команды SQL-итога."""
+    if not isinstance(result, SqlResult):
+        raise AssertionError(f"SqlResult expected, got {type(result).__name__}")
+
+    return result.statements[0].note
+
+
 class TestPgTools:
     """pg: соединение, kerberos и SQL исполняются внутри песочницы."""
 
@@ -871,10 +895,12 @@ class TestPgTools:
             max_rows=50,
             max_chars=20000,
         )
-        if not (result.rows):
-            raise AssertionError("result.rows")
-        if set(result.rows[0]) < {"schema", "table_name", "kind", "owner"}:
-            raise AssertionError('set(result.rows[0]) >= {"schema", "table_name", "ki…')
+        if not (_rows(result)):
+            raise AssertionError("_rows(result)")
+        if set(_rows(result)[0]) < {"schema", "table_name", "kind", "owner"}:
+            raise AssertionError(
+                'set(_rows(result)[0]) >= {"schema", "table_name", "ki…'
+            )
 
     async def test_system_schemas_are_not_hidden(self, pg_tools, pg_connection) -> None:
         """Каталог не прячется: системные схемы видны наравне с остальными."""
@@ -886,7 +912,7 @@ class TestPgTools:
             max_chars=20000,
         )
         schemas = set()
-        for row in result.rows:
+        for row in _rows(result):
             schemas.add(row["schema"])
         if not (schemas):
             raise AssertionError("schemas")
@@ -901,9 +927,9 @@ class TestPgTools:
             max_rows=50,
             max_chars=20000,
         )
-        if not (result.rows):
-            raise AssertionError("result.rows")
-        for row in result.rows:
+        if not (_rows(result)):
+            raise AssertionError("_rows(result)")
+        for row in _rows(result):
             if not (row["table_name"].startswith("pg_cl")):
                 raise AssertionError('row["table_name"].startswith("pg_cl")')
 
@@ -917,7 +943,7 @@ class TestPgTools:
             max_rows=50,
             max_chars=20000,
         )
-        first = tables.rows[0]
+        first = _rows(tables)[0]
         result = await Call.ok(
             pg_tools["pg_describe_table"],
             connection=pg_connection,
@@ -927,10 +953,12 @@ class TestPgTools:
             max_rows=50,
             max_chars=20000,
         )
-        if not (result.rows):
-            raise AssertionError("result.rows")
-        if set(result.rows[0]) < {"column_name", "type", "nullable", "primary_key"}:
-            raise AssertionError('set(result.rows[0]) >= {"column_name", "type", "nul…')
+        if not (_rows(result)):
+            raise AssertionError("_rows(result)")
+        if set(_rows(result)[0]) < {"column_name", "type", "nullable", "primary_key"}:
+            raise AssertionError(
+                'set(_rows(result)[0]) >= {"column_name", "type", "nul…'
+            )
 
     async def test_pages_do_not_overlap(self, pg_tools, pg_connection) -> None:
         """Окно листается: вторая страница продолжает первую, а не повторяет."""
@@ -942,11 +970,11 @@ class TestPgTools:
             max_rows=2,
             max_chars=20000,
         )
-        if len(first.rows) != 2:
-            raise AssertionError(f"страница ровно по окну, дано {len(first.rows)}")
+        if len(_rows(first)) != 2:
+            raise AssertionError(f"страница ровно по окну, дано {len(_rows(first))}")
 
-        if "next offset=2" not in str(first.note):
-            raise AssertionError(f"note зовёт дальше, дано {first.note!r}")
+        if "next offset=2" not in str(_note(first)):
+            raise AssertionError(f"note зовёт дальше, дано {_note(first)!r}")
 
         second = await Call.ok(
             pg_tools["pg_list_tables"],
@@ -956,14 +984,14 @@ class TestPgTools:
             max_rows=2,
             max_chars=20000,
         )
-        if "rows 3-4" not in str(second.note):
-            raise AssertionError(f"вторая страница нумеруется, дано {second.note!r}")
+        if "rows 3-4" not in str(_note(second)):
+            raise AssertionError(f"вторая страница нумеруется, дано {_note(second)!r}")
 
         names = set()
-        for row in first.rows:
+        for row in _rows(first):
             names.add(row["table_name"])
 
-        for row in second.rows:
+        for row in _rows(second):
             if row["table_name"] in names:
                 raise AssertionError(f"строка {row['table_name']!r} пришла дважды")
 
@@ -977,11 +1005,11 @@ class TestPgTools:
             max_rows=100,
             max_chars=300,
         )
-        if len(result.rows) >= 100:
+        if len(_rows(result)) >= 100:
             raise AssertionError("узкий потолок обязан оборвать набор")
 
-        if "next offset=" not in str(result.note):
-            raise AssertionError(f"note зовёт за остатком, дано {result.note!r}")
+        if "next offset=" not in str(_note(result)):
+            raise AssertionError(f"note зовёт за остатком, дано {_note(result)!r}")
 
     async def test_query_returns_rows(self, pg_tools, pg_connection) -> None:
         result = await Call.ok(
@@ -989,12 +1017,12 @@ class TestPgTools:
             connection=pg_connection,
             sql="select 1 as one, 'два' as two",
         )
-        if not (isinstance(result, TableResult)):
-            raise AssertionError("isinstance(result, TableResult)")
-        if result.rows[0]["one"] != 1:
-            raise AssertionError('result.rows[0]["one"] == 1')
-        if result.rows[0]["two"] != "два":
-            raise AssertionError('result.rows[0]["two"] == "два"')
+        if not (isinstance(result, SqlResult)):
+            raise AssertionError("isinstance(result, SqlResult)")
+        if _rows(result)[0]["one"] != 1:
+            raise AssertionError('_rows(result)[0]["one"] == 1')
+        if _rows(result)[0]["two"] != "два":
+            raise AssertionError('_rows(result)[0]["two"] == "два"')
 
     async def test_statement_without_rows_reports_status(
         self, pg_tools, pg_connection
@@ -1005,10 +1033,10 @@ class TestPgTools:
             connection=pg_connection,
             sql="create temp table integration_probe(x int)",
         )
-        if not (isinstance(result, AffectedSqlResult)):
-            raise AssertionError("isinstance(result, AffectedSqlResult)")
-        if result.status != "CREATE TABLE":
-            raise AssertionError('result.status == "CREATE TABLE"')
+        if not (isinstance(result, SqlResult)):
+            raise AssertionError("isinstance(result, SqlResult)")
+        if result.statements[0].status != "CREATE TABLE":
+            raise AssertionError('result.statements[0].status == "CREATE TABLE"')
 
     async def test_copy_unloads_the_statement_as_is(
         self, pg_tools, pg_connection
@@ -1022,8 +1050,8 @@ class TestPgTools:
                 "TO STDOUT WITH (FORMAT CSV, HEADER)"
             ),
         )
-        if not isinstance(result, TextResult):
-            raise AssertionError("isinstance(result, TextResult)")
+        if not isinstance(result, MarkdownResult):
+            raise AssertionError("isinstance(result, MarkdownResult)")
         if result.text != "one,two\n1,два\n":
             raise AssertionError('result.text == "one,two\\n1,два\\n"')
         if result.language != "csv":
@@ -1074,15 +1102,15 @@ class TestPgTools:
             ),
         )
 
-        if not isinstance(result, MultiResult):
-            raise AssertionError("isinstance(result, MultiResult)")
-        kinds = [type(item).__name__ for item in result.items]
-        if kinds != ["AffectedSqlResult", "AffectedSqlResult", "TableResult"]:
-            raise AssertionError(f"итоги команд по порядку, получено {kinds}")
+        if not isinstance(result, SqlResult):
+            raise AssertionError("isinstance(result, SqlResult)")
+        statuses = [statement.status for statement in result.statements]
+        if statuses != ["CREATE TABLE", "INSERT 0 2", "SELECT 1"]:
+            raise AssertionError(f"итоги команд по порядку, получено {statuses}")
 
-        last = result.items[-1]
-        if not isinstance(last, TableResult):
-            raise AssertionError("isinstance(last, TableResult)")
+        last = result.statements[-1]
+        if last.rows is None:
+            raise AssertionError("last.rows is not None")
         if list(last.rows) != [{"n": 2}]:
             raise AssertionError('rows == [{"n": 2}]')
 
@@ -1105,7 +1133,7 @@ class TestPgTools:
             connection=pg_connection,
             sql="select to_regclass('rollback_probe') is null as gone",
         )
-        if list(after.rows) != [{"gone": True}]:
+        if list(_rows(after)) != [{"gone": True}]:
             raise AssertionError("таблица первой команды откачена")
 
 
@@ -1183,8 +1211,8 @@ class TestIngestTools:
             page_id=confluence_attachment_ref["page_id"],
             filename=confluence_attachment_ref["filename"],
         )
-        if not (isinstance(result, TextResult)):
-            raise AssertionError("isinstance(result, TextResult)")
+        if not (isinstance(result, MarkdownResult)):
+            raise AssertionError("isinstance(result, MarkdownResult)")
         if not (result.text.strip()):
             raise AssertionError("result.text.strip()")
 
@@ -1282,7 +1310,7 @@ class TestPgCopyPipeline:
         invoker = ToolInvoker(pg_tools)
         outcome = await PipelineService().run(invoker, plan)
 
-        if not isinstance(outcome, TextResult):
+        if not isinstance(outcome, MarkdownResult):
             raise AssertionError(f"pipeline failed: {outcome}")
         if "copied out" not in outcome.text or "COPY 1000" not in outcome.text:
             raise AssertionError(f"итог без счётчиков узлов: {outcome.text!r}")
@@ -1292,10 +1320,10 @@ class TestPgCopyPipeline:
             connection=pg_connection,
             sql="select count(*) as total, min(note) as first_note from it_pipe_dst",
         )
-        if rows.rows[0]["total"] != 1000:
-            raise AssertionError(f"строки не доехали: {rows.rows[0]}")
-        if rows.rows[0]["first_note"] != "строка 1":
-            raise AssertionError(f"текст исказился: {rows.rows[0]}")
+        if _rows(rows)[0]["total"] != 1000:
+            raise AssertionError(f"строки не доехали: {_rows(rows)[0]}")
+        if _rows(rows)[0]["first_note"] != "строка 1":
+            raise AssertionError(f"текст исказился: {_rows(rows)[0]}")
 
     async def test_wrong_direction_is_refused_before_the_database(
         self, pg_tools, pg_connection

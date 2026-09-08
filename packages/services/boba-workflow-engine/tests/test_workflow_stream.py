@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from uuid import UUID
 
@@ -25,6 +24,7 @@ from boba.stand.fake_toolmod import FakeConfig, fake_echo, fake_stream
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import PayloadTool
 from boba.toolkit.wrap import ToolProcessWrap
+from boba.toolrun.injected import InjectedConfig
 from boba.toolrun.intent import ToolIntentField
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 from boba.toolrun.registry import ToolRegistry
@@ -47,7 +47,6 @@ def _registry(workdir: Path) -> ToolRegistry:
             {
                 "provider": "process",
                 "workdir": str(workdir),
-                "shell": "/bin/bash",
                 "timeout_sec": 60.0,
                 "channel_limit_bytes": 8_000_000,
                 "stderr_tail_bytes": 4096,
@@ -76,6 +75,8 @@ def _registry(workdir: Path) -> ToolRegistry:
             )
         )
 
+    # injected-конфиг привязывает приложение, в аргументах задачи его нет
+    InjectedConfig.bind_all(list(bridged), lambda name, annotation: CFG)
     ToolIntentField.attach_all(list(bridged))
 
     names: list[str] = []
@@ -123,12 +124,11 @@ def _context(monkeypatch: pytest.MonkeyPatch) -> CallContext:
 
 
 def _spec(edges: str) -> str:
-    cfg = json.dumps(CFG.revealed())
     return (
         "name: stream-stage\n"
         "tasks:\n"
-        f"  produce: {{tool: fake_stream, args: {{prefix: 'a:', cfg: {cfg}}}}}\n"
-        f"  consume: {{tool: fake_stream, args: {{prefix: 'b:', cfg: {cfg}}}}}\n"
+        "  produce: {tool: fake_stream, args: {prefix: 'a:'}}\n"
+        "  consume: {tool: fake_stream, args: {prefix: 'b:'}}\n"
         "edges:\n"
         f"{edges}"
     )
@@ -150,8 +150,8 @@ async def test_stream_edge_moves_data_between_tasks(
     assert outcome.state.status is RunStatus.DONE, outcome.state
     assert outcome.state.tasks["produce"].status is TaskStatus.DONE
     assert outcome.state.tasks["consume"].status is TaskStatus.DONE
-    assert "streamed" in outcome.results["produce"].llm_text()
-    assert "streamed" in outcome.results["consume"].llm_text()
+    assert "streamed" in outcome.results["produce"].llm_view()
+    assert "streamed" in outcome.results["consume"].llm_view()
 
 
 async def test_unknown_stream_port_is_refused_on_save(

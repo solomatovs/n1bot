@@ -14,6 +14,7 @@ dependencies = [
     "boba-chat==0.0.17.dev3",
     "boba-connection-broker==0.0.17.dev3",
     "boba-sandbox==0.0.17.dev3",
+    "boba-tool-shell==0.0.17.dev3",
     "boba-workflow==0.0.17.dev3",
     "boba-workflow-engine==0.0.17.dev3",
     "boba-catalog-service==0.0.17.dev3",

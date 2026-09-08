@@ -11,6 +11,7 @@ import { PageUrls, pageConfig } from "./config";
 import { ToastProvider } from "./ui";
 import { AccountPage } from "./pages/AccountPage";
 import { BuildPage } from "./pages/BuildPage";
+import { ConnectionsPage } from "./pages/ConnectionsPage";
 import { LoginPage } from "./pages/LoginPage";
 import { ObservePage } from "./pages/ObservePage";
 
@@ -104,6 +105,7 @@ export function App(): ReactElement {
           <Route path={PageUrls.login()} element={<LoginPage />} />
           <Route element={<SignedInOnly />}>
             <Route path={PageUrls.account()} element={<AccountPage />} />
+            <Route path={PageUrls.connections()} element={<ConnectionsPage />} />
             {catalogRoutes()}
             <Route element={<Shell />}>
               <Route path={PageUrls.workflow()} element={<BuildPage />} />

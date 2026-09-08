@@ -21,7 +21,7 @@ from boba.text.document import LiteParseError
 from boba.tool.doc.config import DocToolsConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
-from boba.toolkit.result import TableResult, TextResult, ToolResult, pack_result
+from boba.toolkit.result import MarkdownResult, TableResult
 
 _PATH_DESCRIPTION = (
     "Путь к файлу в /workspace, например "
@@ -174,7 +174,7 @@ async def read_document(  # noqa: PLR0913 — фасад LLM, параметры
     ] = "rus+eng",
     *,
     cfg: Annotated[DocToolSection, Injected],
-) -> tuple[str, ToolResult]:
+) -> MarkdownResult:
     """Прочитать текст страниц документа из workspace; основной способ чтения."""
     # liteparse тяжёлый и нативный: импорт в теле, разбор в потоке (GIL)
     from boba.liteparse.engine import LiteParseEngine  # noqa: PLC0415
@@ -191,7 +191,7 @@ async def read_document(  # noqa: PLR0913 — фасад LLM, параметры
     for page in result.pages:
         parsed_pages.append(str(page.page_num))
 
-    artifact = TextResult(
+    return MarkdownResult(
         text=TextClip.mark(text, truncated, run_cfg.max_text_chars),
         metadata={
             "path": path,
@@ -199,7 +199,6 @@ async def read_document(  # noqa: PLR0913 — фасад LLM, параметры
             "truncated": str(truncated),
         },
     )
-    return pack_result(artifact)
 
 
 @tool
@@ -214,7 +213,7 @@ async def document_outline(
     ] = "rus+eng",
     *,
     cfg: Annotated[DocToolSection, Injected],
-) -> tuple[str, ToolResult]:
+) -> TableResult:
     """Карта документа по страницам: дешёвый обзор перед read_document."""
     from boba.liteparse.engine import LiteParseEngine  # noqa: PLC0415
 
@@ -235,12 +234,11 @@ async def document_outline(
         )
         rows.append(row.model_dump())
 
-    table = TableResult(
+    return TableResult(
         rows=rows,
         note=f"{path}: pages {result.num_pages}",
         metadata={"path": path},
     )
-    return pack_result(table)
 
 
 @tool
@@ -258,7 +256,7 @@ async def search_document(  # noqa: PLR0913 — фасад LLM, параметр
     ] = "rus+eng",
     *,
     cfg: Annotated[DocToolSection, Injected],
-) -> tuple[str, ToolResult]:
+) -> TableResult:
     """Найти фразу в документе: страница, координаты совпадения и сниппет."""
     from boba.liteparse.engine import LiteParseEngine  # noqa: PLC0415
 
@@ -292,12 +290,11 @@ async def search_document(  # noqa: PLR0913 — фасад LLM, параметр
     if limit_reached:
         note += " (search_max_matches limit reached)"
 
-    table = TableResult(
+    return TableResult(
         rows=rows,
         note=note,
         metadata={"path": path, "query": query},
     )
-    return pack_result(table)
 
 
 EXPECTED: Mapping[type[Exception], DocErrorKind] = {

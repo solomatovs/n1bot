@@ -36,7 +36,7 @@ from boba.connections.whitelist import AmbiguousConnectionError, ConnectionWhite
 from boba.identity.context import CallContext
 from boba.identity.errors import RefusalError
 from boba.kerberos import TicketAuth
-from boba.toolkit.calls import ConnectionArg
+from boba.toolkit.calls import ConnectionEditor
 from boba.toolkit.entry import ToolArgv
 from boba.toolrun.injected import AsyncInjected, ToolConfigError
 from boba.toolrun.wrapping import ToolBody, ToolSchema
@@ -68,8 +68,8 @@ TypesRef = Callable[[], ConnectionTypes]
 class ConnectionArgument:
     """Поле, которым параметр-соединение показывается модели: имя строки.
 
-    Вид соединения едет метадатой ConnectionArg: по ней страницы workflow
-    рисуют выбор из соединений нужного вида, а не поле для ввода текста.
+    Семейство соединения едет метадатой ConnectionEditor: по ней форма
+    задачи на странице workflow рисует выбор из соединений нужного вида.
     """
 
     DESCRIPTION: ClassVar[str] = (
@@ -79,7 +79,7 @@ class ConnectionArgument:
 
     @classmethod
     def field(cls, kind: str) -> tuple[Any, FieldInfo]:
-        annotation = Annotated[str, ConnectionArg(family=kind)]
+        annotation = Annotated[str, ConnectionEditor(family=kind)]
 
         return annotation, FieldInfo(min_length=1, description=cls.DESCRIPTION)
 

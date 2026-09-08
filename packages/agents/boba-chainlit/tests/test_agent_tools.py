@@ -11,8 +11,7 @@ import pytest
 from langchain_core.messages import ToolMessage
 from pydantic import BaseModel
 
-from boba.chainlit.agent.tools import BashToolConfig, build_bash_tool
-from boba.runtime.plugins import ToolBridge
+from boba.chainlit.agent.tools import BashToolConfig
 from boba.sandbox.argv import build_zygote_argv
 from boba.sandbox.profile import (
     BindSpec,
@@ -20,6 +19,8 @@ from boba.sandbox.profile import (
     SandboxToolConfig,
 )
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
+from boba.stand.shell import ShellRun
+from boba.stand.zygote import SandboxStand
 from boba.toolkit.launcher import LauncherError
 from boba.toolkit.result import ShellResult
 
@@ -93,7 +94,6 @@ _PROFILE_BASE: dict[str, object] = {
         "process_oom_score_adj": 0,
     },
     "run": {
-        "shell": "/bin/bash",
         "cwd": "",
     },
 }
@@ -156,25 +156,9 @@ _PYTHON_BINDS = (
 )
 """Интерпретатор и код в корень-образ: точки монтирования в нём уже есть."""
 
-_SRC_PACKAGES = (
-    "core/boba-cancellation",
-    "core/boba-toolkit",
-    "infra/sandbox/boba-sandbox",
-)
-"""Пакеты, чей код нужен зиготе: их src приезжает биндом в /usr/src."""
-
-
-def _python_path() -> str:
-    parts: list[str] = []
-    for name in _SRC_PACKAGES:
-        parts.append(f"/usr/src/{name}/src")
-
-    return os.pathsep.join(parts)
-
-
 _SANDBOX_ENV = {
     "PATH": "/usr/local/bin:/usr/bin:/bin",
-    "PYTHONPATH": _python_path(),
+    "PYTHONPATH": SandboxStand.python_path(),
     "HOME": "/tmp",  # noqa: S108
     "LANG": "C.UTF-8",
 }
@@ -330,7 +314,9 @@ class TestBashTool:
     def teardown_method(self) -> None:
         ZygoteRegistry.stop_all()
 
-    LIMITS: ClassVar[BashToolConfig] = BashToolConfig(max_output_bytes=4 * 1024 * 1024)
+    LIMITS: ClassVar[BashToolConfig] = BashToolConfig(
+        max_output_bytes=4 * 1024 * 1024, timeout_sec=60.0
+    )
 
     @classmethod
     def _make_tool(
@@ -364,16 +350,15 @@ class TestBashTool:
 
         tmp_size = profile.mounts.tmp
         section = f"bash-{workspace_root.name}-{profile.limits.timeout_sec}-{tmp_size}"
-        supervisor = ZygoteRegistry.obtain(section, profile, (), _ZYGOTE)
+        supervisor = ZygoteRegistry.obtain(
+            section, profile, (ShellRun.MODULE,), _ZYGOTE
+        )
         caller = ZygoteToolCaller(section, supervisor, profile)
 
-        return ToolBridge.as_structured_tool(
-            build_bash_tool(output, lambda tool: caller)
-        )
+        return ShellRun.tool(caller, output)
 
     @staticmethod
     def _invoke(tool, **args) -> ShellResult:
-        args.setdefault("stdin", "")
         msg: ToolMessage = tool.invoke(_tool_call("bash", args))
         if not (isinstance(msg.artifact, ShellResult)):
             raise AssertionError("isinstance(msg.artifact, ShellResult)")
@@ -431,20 +416,28 @@ class TestBashTool:
         if not ("done-2" in payload.stdout or "done-1" in payload.stdout):
             raise AssertionError('"done-2" in payload.stdout or "done-1" in payloa…')
 
-    def test_timeout_marks_timed_out(self, tmp_path: Path) -> None:
+    def test_command_timeout_marks_timed_out(self, tmp_path: Path) -> None:
+        """Таймаут команды из [tool.bash]: штатный результат с timed_out."""
+        limits = BashToolConfig(max_output_bytes=4096, timeout_sec=1.0)
         payload = self._invoke(
-            self._make_tool(tmp_path, _profile(timeout_sec=1)),
-            command="sleep 10",
+            self._make_tool(tmp_path, limits=limits), command="sleep 10"
         )
-        if not (payload.timed_out):
+        if not payload.timed_out:
             raise AssertionError("payload.timed_out")
+
+    def test_profile_timeout_kills_the_call(self, tmp_path: Path) -> None:
+        """Таймаут профиля снимает весь вызов: объясняет его лаунчер."""
+        tool = self._make_tool(tmp_path, _profile(timeout_sec=1))
+
+        with pytest.raises(LauncherError, match="timeout_sec=1"):
+            tool.invoke(_tool_call("bash", {"command": "sleep 10"}))
 
     def test_llm_does_not_choose_profile(self, tmp_path: Path) -> None:
         """Профиль задаёт конфиг: у инструмента нет такого аргумента."""
         tool = self._make_tool(tmp_path)
         schema = cast(type[BaseModel], tool.args_schema)
-        if set(schema.model_fields) != {"command", "stdin"}:
-            raise AssertionError('set(schema.model_fields) == {"command", "stdin"}')
+        if set(schema.model_fields) != {"command"}:
+            raise AssertionError('set(schema.model_fields) == {"command"}')
 
     def test_pid_namespace_isolation(self, tmp_path: Path) -> None:
         payload = self._invoke(
@@ -498,7 +491,7 @@ class TestBashTool:
             raise AssertionError('payload.stdout_bytes == len(b"hello\\n")')
 
     def test_large_output_is_clipped_to_budget(self, tmp_path: Path) -> None:
-        limits = BashToolConfig(max_output_bytes=200)
+        limits = BashToolConfig(max_output_bytes=200, timeout_sec=60.0)
         tool = self._make_tool(tmp_path, limits=limits)
 
         payload = self._invoke(tool, command="seq 1 100000")

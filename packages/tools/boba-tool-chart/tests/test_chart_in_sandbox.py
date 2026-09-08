@@ -13,7 +13,7 @@ from boba.sandbox import SandboxToolConfig
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
 from boba.stand.sandbox import needs_sandbox, needs_userns, sandbox_profile
 from boba.toolkit.launcher import PayloadFailureError
-from boba.toolkit.result import ChartResult
+from boba.toolkit.result import VisualResult
 from boba.toolkit.wrap import ToolProcessWrap
 
 ZYGOTE = ZygotePolicy(
@@ -83,24 +83,24 @@ class TestChartInSandbox:
         )
         message = _invoke(spec)
 
-        if not (isinstance(message.artifact, ChartResult)):
-            raise AssertionError("isinstance(message.artifact, ChartResult)")
+        if not (isinstance(message.artifact, VisualResult)):
+            raise AssertionError("isinstance(message.artifact, VisualResult)")
         if message.artifact.title != "Продажи":
             raise AssertionError('message.artifact.title == "Продажи"')
 
     def test_title_may_be_a_plain_string(self) -> None:
         message = _invoke('{"data": [], "layout": {"title": "Отчёт"}}')
 
-        if not (isinstance(message.artifact, ChartResult)):
-            raise AssertionError("isinstance(message.artifact, ChartResult)")
+        if not (isinstance(message.artifact, VisualResult)):
+            raise AssertionError("isinstance(message.artifact, VisualResult)")
         if message.artifact.title != "Отчёт":
             raise AssertionError('message.artifact.title == "Отчёт"')
 
     def test_spec_without_title(self) -> None:
         message = _invoke('{"data": [{"type": "bar", "x": ["a"], "y": [1]}]}')
 
-        if not (isinstance(message.artifact, ChartResult)):
-            raise AssertionError("isinstance(message.artifact, ChartResult)")
+        if not (isinstance(message.artifact, VisualResult)):
+            raise AssertionError("isinstance(message.artifact, VisualResult)")
         if message.artifact.title is not None:
             raise AssertionError("message.artifact.title is None")
 
@@ -111,14 +111,15 @@ class TestChartInSandbox:
         )
         message = _invoke(spec)
 
-        if not (isinstance(message.artifact, ChartResult)):
-            raise AssertionError("isinstance(message.artifact, ChartResult)")
+        if not (isinstance(message.artifact, VisualResult)):
+            raise AssertionError("isinstance(message.artifact, VisualResult)")
         if message.artifact.title != "T":
             raise AssertionError('message.artifact.title == "T"')
-        if message.artifact.spec["data"][0]["type"] != "bar":
-            raise AssertionError('message.artifact.spec["data"][0]["type"] == "bar"')
-        if message.content != "[chart rendered: T]":
-            raise AssertionError('message.content == "[chart rendered: T]"')
+        spec_back = message.artifact.props[VisualResult.PLOTLY_SPEC]
+        if spec_back["data"][0]["type"] != "bar":
+            raise AssertionError('spec_back["data"][0]["type"] == "bar"')
+        if message.content != "[plotly rendered: T]":
+            raise AssertionError('message.content == "[plotly rendered: T]"')
 
     def test_invalid_spec_reaches_the_caller(self) -> None:
         with pytest.raises(PayloadFailureError, match="rejected by plotly") as failure:

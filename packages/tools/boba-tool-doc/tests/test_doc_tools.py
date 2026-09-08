@@ -17,7 +17,7 @@ from boba.tool.doc.tools import (
     DocToolSection,
 )
 from boba.toolkit.entry import ToolArgv
-from boba.toolkit.result import TableResult, TextResult
+from boba.toolkit.result import MarkdownResult, TableResult
 
 pytestmark = pytest.mark.anyio
 
@@ -73,12 +73,12 @@ def pdf(tmp_path: Path) -> str:
 
 class TestReadDocument:
     async def test_returns_all_pages(self, pdf: str) -> None:
-        content, artifact = await _body("read_document")(
-            path=pdf, pages="1-2", cfg=_cfg()
-        )
+        artifact = await _body("read_document")(path=pdf, pages="1-2", cfg=_cfg())
 
-        if not (isinstance(artifact, TextResult)):
-            raise AssertionError("isinstance(artifact, TextResult)")
+        content = artifact.llm_view()
+
+        if not (isinstance(artifact, MarkdownResult)):
+            raise AssertionError("isinstance(artifact, MarkdownResult)")
         if "Alpha page one" not in content:
             raise AssertionError('"Alpha page one" in content')
         if "Beta page two" not in content:
@@ -89,12 +89,12 @@ class TestReadDocument:
             raise AssertionError('artifact.metadata["truncated"] == "False"')
 
     async def test_selects_subset(self, pdf: str) -> None:
-        content, artifact = await _body("read_document")(
-            path=pdf, pages="2", cfg=_cfg()
-        )
+        artifact = await _body("read_document")(path=pdf, pages="2", cfg=_cfg())
 
-        if not (isinstance(artifact, TextResult)):
-            raise AssertionError("isinstance(artifact, TextResult)")
+        content = artifact.llm_view()
+
+        if not (isinstance(artifact, MarkdownResult)):
+            raise AssertionError("isinstance(artifact, MarkdownResult)")
         if "Beta page two" not in content:
             raise AssertionError('"Beta page two" in content')
         if "page one" in content:
@@ -103,12 +103,14 @@ class TestReadDocument:
             raise AssertionError('artifact.metadata["pages"] == "2"')
 
     async def test_clips_text_and_marks_for_llm(self, pdf: str) -> None:
-        content, artifact = await _body("read_document")(
+        artifact = await _body("read_document")(
             path=pdf, pages="1-2", cfg=_cfg(max_text_chars=5)
         )
 
-        if not (isinstance(artifact, TextResult)):
-            raise AssertionError("isinstance(artifact, TextResult)")
+        content = artifact.llm_view()
+
+        if not (isinstance(artifact, MarkdownResult)):
+            raise AssertionError("isinstance(artifact, MarkdownResult)")
         if artifact.metadata["truncated"] != "True":
             raise AssertionError('artifact.metadata["truncated"] == "True"')
         if "[truncated to 5 characters]" not in content:
@@ -129,7 +131,7 @@ class TestReadDocument:
 
 class TestDocumentOutline:
     async def test_row_per_page(self, pdf: str) -> None:
-        _content, artifact = await _body("document_outline")(path=pdf, cfg=_cfg())
+        artifact = await _body("document_outline")(path=pdf, cfg=_cfg())
 
         if not (isinstance(artifact, TableResult)):
             raise AssertionError("isinstance(artifact, TableResult)")
@@ -151,9 +153,7 @@ class TestDocumentOutline:
 
 class TestSearchDocument:
     async def test_returns_coordinates_and_snippet(self, pdf: str) -> None:
-        _content, artifact = await _body("search_document")(
-            path=pdf, query="Alpha", cfg=_cfg()
-        )
+        artifact = await _body("search_document")(path=pdf, query="Alpha", cfg=_cfg())
 
         if not (isinstance(artifact, TableResult)):
             raise AssertionError("isinstance(artifact, TableResult)")
@@ -170,7 +170,7 @@ class TestSearchDocument:
             raise AssertionError("rows[0].height > 0")
 
     async def test_reports_limit(self, pdf: str) -> None:
-        _content, artifact = await _body("search_document")(
+        artifact = await _body("search_document")(
             path=pdf, query="Alpha", cfg=_cfg(search_max_matches=1)
         )
 

@@ -34,9 +34,9 @@ async def test_run_kb_vector_search(kb_cfg: KbToolConfig) -> None:
     if body is None:
         raise AssertionError("body is not None")
 
-    content, _artifact = await body(
-        query=RunArgs.QUERY, top_k=RunArgs.TOP_K, cfg=kb_cfg
-    )
+    content = (
+        await body(query=RunArgs.QUERY, top_k=RunArgs.TOP_K, cfg=kb_cfg)
+    ).llm_view()
 
     print(content)
 
@@ -46,8 +46,8 @@ async def test_run_kb_fts_search(kb_cfg: KbToolConfig) -> None:
     if body is None:
         raise AssertionError("body is not None")
 
-    content, _artifact = await body(
-        query=RunArgs.QUERY, top_k=RunArgs.TOP_K, cfg=kb_cfg
-    )
+    content = (
+        await body(query=RunArgs.QUERY, top_k=RunArgs.TOP_K, cfg=kb_cfg)
+    ).llm_view()
 
     print(content)

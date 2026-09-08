@@ -10,7 +10,7 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, tool
 
 from boba.sandbox.zygote import ZygoteCallError
-from boba.toolkit.result import ErrorResult, TextResult
+from boba.toolkit.result import ErrorResult, MarkdownResult
 from boba.toolrun.errors import ToolErrorGuard
 
 __all__: list[str] = []
@@ -26,9 +26,9 @@ class _BoomError(Exception):
 
 
 @tool(response_format="content_and_artifact")
-def good(text: str) -> tuple[str, TextResult]:
+def good(text: str) -> tuple[str, MarkdownResult]:
     """успешный инструмент"""
-    return text, TextResult(text=text)
+    return text, MarkdownResult(text=text)
 
 
 @tool(response_format="content_and_artifact")
@@ -54,8 +54,8 @@ class TestToolErrorGuard:
         message = TestToolErrorGuard._invoke(g, {"text": "hi"})
         if message.content != "hi":
             raise AssertionError('message.content == "hi"')
-        if message.artifact != TextResult(text="hi"):
-            raise AssertionError('message.artifact == TextResult(text="hi")')
+        if message.artifact != MarkdownResult(text="hi"):
+            raise AssertionError('message.artifact == MarkdownResult(text="hi")')
 
     @staticmethod
     def test_raised_exception_becomes_error_result() -> None:

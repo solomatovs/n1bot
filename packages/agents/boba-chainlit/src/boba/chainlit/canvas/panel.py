@@ -64,7 +64,7 @@ from boba.chainlit.data.storage import StorageClient
 from boba.chainlit.domain.keys import CanvasFileUrl, StreamUrl
 from boba.identity.errors import RefusalError
 from boba.toolkit.channels import JournalChannel
-from boba.toolkit.result import CustomElementResult
+from boba.toolkit.result import VisualResult
 from boba.toolrun.streams import JournalWatchSource, ToolStreams
 from boba.workspace.launcher import ReadWindow
 from chainlit.data import get_data_layer
@@ -286,7 +286,7 @@ class FileViewer(CanvasViewer):
         described = await self.content(key)
         await push(described)
 
-        link = CustomElementResult(
+        link = VisualResult(
             element=self.LINK_ELEMENT,
             props={"path": key.in_workspace(), "label": key.name},
             title=key.name,

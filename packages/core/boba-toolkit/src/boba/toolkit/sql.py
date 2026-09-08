@@ -16,7 +16,7 @@ from typing import Annotated, Any, ClassVar, Generic, TypeVar
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.toolkit.launcher import RowStream
-from boba.toolkit.result import ResultTooLargeError, TableResult
+from boba.toolkit.result import ResultTooLargeError, SqlStatement
 
 __all__ = [
     "CatalogQuery",
@@ -110,13 +110,13 @@ class RowBudget:
         self._rows.append(plain)
         return True
 
-    def table(self) -> TableResult:
-        """Собранная выдача; усечение помечено в note."""
-        note = None
+    def statement(self) -> SqlStatement:
+        """Собранная выдача одной команды; усечение помечено в note."""
+        note = ""
         if self._truncated:
             note = f"truncated to max_rows ({self._max_rows})"
 
-        return TableResult(rows=self._rows, note=note)
+        return SqlStatement(rows=self._rows, note=note)
 
 
 class RowWindow(BaseModel):
@@ -182,9 +182,9 @@ class RowPage:
 
         return True
 
-    def table(self) -> TableResult:
+    def statement(self) -> SqlStatement:
         """Собранная страница; note объясняет модели, как листать дальше."""
-        return TableResult(rows=self._rows, note=self._note())
+        return SqlStatement(rows=self._rows, note=self._note())
 
     def _note(self) -> str:
         if not self._rows:

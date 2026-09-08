@@ -1,11 +1,11 @@
-.item__dot {
-  grid-area: dot;
+.status-dot {
+  flex: none;
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: var(--status-color, var(--queued));
 }
 
-.item__dot[data-status="running"] {
+.status-dot[data-status="running"] {
   animation: pulse 1.2s ease-in-out infinite;
 }

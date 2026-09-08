@@ -2,7 +2,7 @@
 
 Каждая задача — `tool.ainvoke(ToolCall)` через всю цепочку хуков реестра:
 роли, журнал под `scope.id` запуска, `intent`, ошибка результатом. Задачи
-готовой стадии стартуют вместе; рёбра-значения подставляют `llm_text`
+готовой стадии стартуют вместе; рёбра-значения подставляют `llm_view`
 результата источника в аргументы приёмника. Потоковая стадия (задачи,
 связанные fd-рёбрами) поднимается цепочкой: каналы задач отдаются слотам
 (PipelineSlot), рёбра соединяет splice — данные текут между процессами
@@ -427,7 +427,7 @@ class _RunSession:
         """Аргументы задачи: спека плюс тексты результатов по привязкам графа."""
         texts: dict[str, str] = {}
         for source in self._graph.sources_of(name):
-            texts[source] = self._results[source].llm_text()
+            texts[source] = self._results[source].llm_view()
 
         return self._graph.args_of(name, texts)
 

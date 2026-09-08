@@ -23,7 +23,6 @@ from operator import attrgetter
 from typing import Annotated, Any, ClassVar
 from uuid import UUID
 
-from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from boba.catalog import (
@@ -60,16 +59,9 @@ from boba.catalog_service import (
 )
 from boba.identity.context import CallContext, Subject
 from boba.identity.errors import RefusalError
-from boba.toolkit.calls import ScriptCall, ToolCallViews
+from boba.toolkit.facade import PayloadTool, tool
 from boba.toolkit.failure import ValidationText
-from boba.toolkit.result import (
-    ErrorResult,
-    JsonResult,
-    TableResult,
-    TextResult,
-    ToolResult,
-    pack_result,
-)
+from boba.toolkit.result import ErrorResult, JsonBlock, MarkdownResult, TableResult
 
 __all__ = [
     "CatalogToolConfig",
@@ -438,27 +430,31 @@ class CatalogTools:
         self._service = service
         self._prefix = prefix
 
-    async def read(self, process: str, nodes: str) -> tuple[str, ToolResult]:
+    async def read(
+        self, process: str, nodes: str
+    ) -> TableResult | MarkdownResult | ErrorResult:
         try:
             subject = CallContext.current_subject()
             service = await self._service()
             if not process.strip():
                 listed = await service.list_processes(subject)
-                return pack_result(self._processes_table(listed))
+                return self._processes_table(listed)
 
             found = await self._process_by(service, subject, process)
             snapshot = await service.snapshot(subject, found.id)
             pins = await service.published_pins(subject, found.id)
             resolver = await service.resolver_of(subject, pins)
         except (RefusalError, CatalogServiceError) as exc:
-            return pack_result(self._error(exc))
+            return self._error(exc)
 
         labels = NameList.parse(nodes)
         view = CatalogView.of(found, snapshot, pins, resolver, labels)
 
-        return pack_result(JsonResult(payload=view.model_dump(mode="json")))
+        return self._json(view.model_dump(mode="json"))
 
-    async def draft(self, process: str, name: str) -> tuple[str, ToolResult]:
+    async def draft(
+        self, process: str, name: str
+    ) -> TableResult | MarkdownResult | ErrorResult:
         """Черновик процесса либо нового процесса (пустой process); пустое
         имя — свои открытые черновики."""
         try:
@@ -470,7 +466,7 @@ class CatalogTools:
 
             if not name.strip():
                 drafts = await service.my_drafts(subject)
-                return pack_result(self._drafts_table(drafts, found))
+                return self._drafts_table(drafts, found)
 
             process_id = None
             if found is not None:
@@ -478,7 +474,7 @@ class CatalogTools:
 
             created = await service.create_draft(subject, process_id, name.strip())
         except (RefusalError, CatalogServiceError) as exc:
-            return pack_result(self._error(exc))
+            return self._error(exc)
 
         if found is None:
             text = (
@@ -492,11 +488,11 @@ class CatalogTools:
                 f"{created.base_version} of process {found.name!r}; propose "
                 "operations with catalog_propose"
             )
-        return pack_result(
-            TextResult(text=text, metadata={"draft_id": str(created.id)})
-        )
+        return MarkdownResult(text=text, metadata={"draft_id": str(created.id)})
 
-    async def propose(self, draft_id: str, operations: str) -> tuple[str, ToolResult]:
+    async def propose(
+        self, draft_id: str, operations: str
+    ) -> MarkdownResult | ErrorResult:
         try:
             subject = CallContext.current_subject()
             parsed_id = self._uuid(draft_id)
@@ -504,26 +500,24 @@ class CatalogTools:
             service = await self._service()
             state = await self._append(service, subject, parsed_id, ops)
         except (RefusalError, CatalogServiceError, CatalogOpError) as exc:
-            return pack_result(self._error(exc))
+            return self._error(exc)
 
-        return pack_result(
-            TextResult(
-                text=DiffReport(state).render(), metadata={"seq": str(state.seq)}
-            )
+        return MarkdownResult(
+            text=DiffReport(state).render(), metadata={"seq": str(state.seq)}
         )
 
-    async def diff(self, draft_id: str) -> tuple[str, ToolResult]:
+    async def diff(self, draft_id: str) -> MarkdownResult | ErrorResult:
         try:
             subject = CallContext.current_subject()
             parsed_id = self._uuid(draft_id)
             service = await self._service()
             state = await service.draft_state(subject, parsed_id)
         except (RefusalError, CatalogServiceError) as exc:
-            return pack_result(self._error(exc))
+            return self._error(exc)
 
-        return pack_result(TextResult(text=DiffReport(state).render()))
+        return MarkdownResult(text=DiffReport(state).render())
 
-    async def open(self, kind: str, entity_id: str) -> tuple[str, ToolResult]:
+    async def open(self, kind: str, entity_id: str) -> MarkdownResult | ErrorResult:
         try:
             subject = CallContext.current_subject()
             link_kind = self._link_kind(kind)
@@ -531,14 +525,14 @@ class CatalogTools:
             service = await self._service()
             label, url = await self._target(service, subject, link_kind, parsed_id)
         except (RefusalError, CatalogServiceError) as exc:
-            return pack_result(self._error(exc))
+            return self._error(exc)
 
         content = f"{link_kind.value} {label!r}: {url}"
         metadata = {"url": url, "label": label, "kind": link_kind.value}
 
-        return pack_result(TextResult(text=content, metadata=metadata))
+        return MarkdownResult(text=content, metadata=metadata)
 
-    async def sync(self, connection: str, schemas: str) -> tuple[str, ToolResult]:
+    async def sync(self, connection: str, schemas: str) -> MarkdownResult | ErrorResult:
         """Синхронизация подключения до конца: запись версии или причина отказа."""
         try:
             context = CallContext.current()
@@ -549,21 +543,19 @@ class CatalogTools:
             started = await service.start_sync(caller, info.id, scope)
             finished = await service.syncs.wait(started.id)
         except (RefusalError, CatalogServiceError) as exc:
-            return pack_result(self._error(exc))
+            return self._error(exc)
 
         payload = finished.model_dump(mode="json")
         if finished.status is SyncStatus.DONE:
-            return pack_result(JsonResult(payload=payload))
+            return self._json(payload)
 
         message = (
             f"sync {finished.id} of connection {info.name!r} ended as "
             f"{finished.status.value}: {finished.error}"
         )
-        return pack_result(
-            ErrorResult(message=message, error_kind=CatalogToolError.SYNC_REFUSED)
-        )
+        return ErrorResult(message=message, error_kind=CatalogToolError.SYNC_REFUSED)
 
-    async def upgrade(self, target: str) -> tuple[str, ToolResult]:
+    async def upgrade(self, target: str) -> MarkdownResult | ErrorResult:
         """Запуск upgrade — задачей, как синхронизация — и ожидание итога:
         процесса, черновика или всех отставших процессов; ответ — запуск с
         результатами по процессам и проблемами у остановленных."""
@@ -577,19 +569,17 @@ class CatalogTools:
             finished = await service.wait_upgrade(started.id)
             report = await service.upgrade_report(subject, finished.id)
         except (RefusalError, CatalogServiceError) as exc:
-            return pack_result(self._error(exc))
+            return self._error(exc)
 
         payload = report.model_dump(mode="json")
         if finished.status is SyncStatus.DONE:
-            return pack_result(JsonResult(payload=payload))
+            return self._json(payload)
 
         message = (
             f"upgrade {finished.id} ({finished.target.value}) ended as "
             f"{finished.status.value}: {finished.error}"
         )
-        return pack_result(
-            ErrorResult(message=message, error_kind=CatalogToolError.UPGRADE_REFUSED)
-        )
+        return ErrorResult(message=message, error_kind=CatalogToolError.UPGRADE_REFUSED)
 
     async def _upgrade_target(
         self, service: CatalogService, subject: Subject, raw: str
@@ -695,7 +685,7 @@ class CatalogTools:
             raise RefusalError(CatalogToolError.BAD_OPERATIONS.value, msg) from exc
 
     @staticmethod
-    def _processes_table(processes: Sequence[Process]) -> ToolResult:
+    def _processes_table(processes: Sequence[Process]) -> TableResult | MarkdownResult:
         rows: list[dict[str, Any]] = []
         for process in processes:
             rows.append(
@@ -712,14 +702,16 @@ class CatalogTools:
             )
 
         if not rows:
-            return TextResult(
+            return MarkdownResult(
                 text="no processes yet; the user creates one on the catalog page"
             )
 
         return TableResult(rows=rows)
 
     @staticmethod
-    def _drafts_table(drafts: Sequence[Draft], process: Process | None) -> ToolResult:
+    def _drafts_table(
+        drafts: Sequence[Draft], process: Process | None
+    ) -> TableResult | MarkdownResult:
         """Свои открытые черновики; с процессом — только его."""
         rows: list[dict[str, Any]] = []
         for draft in drafts:
@@ -741,7 +733,7 @@ class CatalogTools:
             )
 
         if not rows:
-            return TextResult(text="no open drafts; create one with catalog_draft")
+            return MarkdownResult(text="no open drafts; create one with catalog_draft")
 
         return TableResult(rows=rows)
 
@@ -755,6 +747,11 @@ class CatalogTools:
         (SnapshotKindMismatchError, CatalogToolError.SYNC_REFUSED),
     )
     """Ошибки сервиса, у которых виду отказа хватает текста самой ошибки."""
+
+    @staticmethod
+    def _json(payload: Any) -> MarkdownResult:
+        """Модель для LLM и страницы json-текстом с отступами."""
+        return MarkdownResult(text=JsonBlock.pretty(payload), language="json")
 
     @classmethod
     def _error(cls, exc: Exception) -> ErrorResult:
@@ -788,15 +785,14 @@ class CatalogTools:
 
 def build_catalog_tools(
     cfg: CatalogToolConfig, service: ServiceSource, prefix: PrefixSource
-) -> list[BaseTool]:
+) -> list[PayloadTool]:
     tools = CatalogTools(service, prefix)
-    ToolCallViews.register("catalog_propose", ScriptCall(arg="operations", lang="json"))
 
-    @tool(response_format="content_and_artifact")
+    @tool
     async def catalog_read(
         process: Annotated[str, Field(description=CatalogPrompt.PROCESS)],
         nodes: Annotated[str, Field(description=CatalogPrompt.NODES)],
-    ) -> tuple[str, ToolResult]:
+    ) -> TableResult | MarkdownResult | ErrorResult:
         """List the data flow processes (empty process) or read a published
         process: nodes (objects of synced connections with their columns,
         canvas positions and optional groups), groups and flows between nodes
@@ -804,69 +800,71 @@ def build_catalog_tools(
         existing ids and addresses."""
         return await tools.read(process, nodes)
 
-    @tool(response_format="content_and_artifact")
+    @tool
     async def catalog_draft(
         process: Annotated[str, Field(description=CatalogPrompt.DRAFT_PROCESS)],
         name: Annotated[str, Field(description=CatalogPrompt.DRAFT_NAME)],
-    ) -> tuple[str, ToolResult]:
+    ) -> TableResult | MarkdownResult | ErrorResult:
         """Create a draft of a process (or of a new process when the process is
         empty) or list the user's open drafts (empty name). Changes go into a
         draft first; the user reviews and publishes it on the catalog page."""
         return await tools.draft(process, name)
 
-    @tool(response_format="content_and_artifact")
+    @tool
     async def catalog_propose(
         draft_id: Annotated[
             str, Field(min_length=1, description=CatalogPrompt.DRAFT_ID)
         ],
         operations: Annotated[
-            str, Field(min_length=1, description=CatalogPrompt.OPERATIONS)
+            str,
+            Field(min_length=1, description=CatalogPrompt.OPERATIONS),
+            MarkdownResult(language="json"),
         ],
-    ) -> tuple[str, ToolResult]:
+    ) -> MarkdownResult | ErrorResult:
         """Append a list of catalog operations to a draft. The list is applied
         atomically: one rejected operation rejects the whole list with its
         index and reason. The answer is the draft diff against the published
         version."""
         return await tools.propose(draft_id, operations)
 
-    @tool(response_format="content_and_artifact")
+    @tool
     async def catalog_diff(
         draft_id: Annotated[
             str, Field(min_length=1, description=CatalogPrompt.DRAFT_ID)
         ],
-    ) -> tuple[str, ToolResult]:
+    ) -> MarkdownResult | ErrorResult:
         """Show what a draft changes against the published catalog: added,
         modified and removed entities."""
         return await tools.diff(draft_id)
 
-    @tool(response_format="content_and_artifact")
+    @tool
     async def catalog_open(
         kind: Annotated[str, Field(min_length=1, description=CatalogPrompt.LINK_KIND)],
         entity_id: Annotated[
             str, Field(min_length=1, description=CatalogPrompt.LINK_ID)
         ],
-    ) -> tuple[str, ToolResult]:
+    ) -> MarkdownResult | ErrorResult:
         """Give the link to the catalog page of a process or a draft so the
         user can open the diagram."""
         return await tools.open(kind, entity_id)
 
-    @tool(response_format="content_and_artifact")
+    @tool
     async def catalog_sync(
         connection: Annotated[
             str, Field(min_length=1, description=CatalogPrompt.SYNC_CONNECTION)
         ],
         schemas: Annotated[str, Field(description=CatalogPrompt.SYNC_SCHEMAS)],
-    ) -> tuple[str, ToolResult]:
+    ) -> MarkdownResult | ErrorResult:
         """Snapshot the structure of a database behind a connection and store
         it as a new catalog version of that connection. Waits for the sync to
         finish and returns its record: version number, object counts or the
         failure reason."""
         return await tools.sync(connection, schemas)
 
-    @tool(response_format="content_and_artifact")
+    @tool
     async def catalog_upgrade(
         target: Annotated[str, Field(description=CatalogPrompt.UPGRADE_TARGET)],
-    ) -> tuple[str, ToolResult]:
+    ) -> MarkdownResult | ErrorResult:
         """Move a process, a draft or every lagging process onto the latest
         catalog snapshots of its connections. Runs as a task like sync and
         waits for it; the answer is the run with a result per process. Moved:

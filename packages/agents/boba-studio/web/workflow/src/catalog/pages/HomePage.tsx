@@ -9,7 +9,7 @@ import { Async } from "../../components/Async";
 import { useLoadable } from "../../hooks/useLoadable";
 import type { CatalogApi } from "../api/client";
 import { useCatalog, useCatalogChanges } from "../services";
-import { ConnectionDialog } from "../components/connections/ConnectionDialog";
+import { ConnectionDialog } from "../../components/connections/ConnectionsBoard";
 import { NewProcessDialog } from "../components/edit/NewProcessDialog";
 import { LeftPane } from "../components/LeftPane";
 import { ObjectPanel } from "../components/ObjectPanel";
@@ -174,7 +174,7 @@ export function HomePage(): ReactElement {
             <UpgradeBar run={latestRun} canCancel={access.can_edit} onCancel={cancelUpgrade} />
           )}
         </PageNotices>
-        <PageBody pane={paneOpen} detail={url.object !== undefined}>
+        <PageBody>
           {paneOpen && (
             <Pane>
               <LeftPane

@@ -31,7 +31,9 @@ async def test_run_visualize() -> None:
     if body is None:
         raise AssertionError("body is not None")
 
-    content, artifact = await body(spec=RunArgs.spec())
+    artifact = await body(spec=RunArgs.spec())
+
+    content = artifact.llm_view()
 
     print(content)
     print(artifact)

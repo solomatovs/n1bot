@@ -41,7 +41,7 @@ from boba.db.postgres.catalog import (
 from boba.db.postgres.profile import PostgresConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
-from boba.toolkit.result import TextResult, ToolResult, pack_result
+from boba.toolkit.result import MarkdownResult
 
 PgConnection = Annotated[PostgresConfig, UserConnection]
 
@@ -748,7 +748,7 @@ async def pg_schema_snapshot(
         ),
     ],
     catalog: Annotated[CatalogStoreConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> MarkdownResult:
     """Снимает структуру базы подключения в каталог данных: схемы, таблицы
     и представления с колонками, ограничениями и индексами, функции и
     процедуры, последовательности, типы. Строки перетекают из каталогов
@@ -790,7 +790,7 @@ async def pg_schema_snapshot(
         SnapshotResultKey.OBJECTS.value: str(source.objects),
     }
     metadata.update(outcome.metadata())
-    return pack_result(TextResult(text=summary, metadata=metadata))
+    return MarkdownResult(text=summary, metadata=metadata)
 
 
 TOOLS: Final = ToolMain.toolset(pg_schema_snapshot)

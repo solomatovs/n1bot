@@ -30,7 +30,7 @@ from boba.identity.context import (
     Subject,
 )
 from boba.identity.errors import RefusalError
-from boba.toolkit.calls import ArgViews, ConnectionArg, JsonCall
+from boba.toolkit.calls import ConnectionEditor, ToolCallBase
 from boba.toolkit.entry import ToolArgv
 from boba.toolkit.facade import UserConnection
 from boba.toolrun.injected import ToolConfigError
@@ -118,7 +118,7 @@ def _probe_row(name: str, host: str) -> StoredConnection:
 
 def _tool(name: str, fields: dict[str, Any]) -> BaseTool:
     """Инструмент, чьё тело возвращает полученные аргументы как есть."""
-    schema = create_model(f"{name}_args", **fields)
+    schema = create_model(f"{name}_args", __base__=ToolCallBase, **fields)
 
     async def body(**kwargs: object) -> dict[str, object]:
         return kwargs
@@ -198,12 +198,12 @@ class TestSchemaShownToTheModel:
 
         schema = ToolSchema.of(tool)
         assert schema is not None
+        assert issubclass(schema, ToolCallBase)
 
-        view = ArgViews.of_field(
-            "connection", schema.model_fields["connection"], JsonCall()
-        )
-        assert isinstance(view, ConnectionArg)
-        assert view.family == "probe"
+        fields = {field.name: field for field in schema.studio_view().fields}
+        editor = fields["connection"].editor
+        assert isinstance(editor, ConnectionEditor)
+        assert editor.family == "probe"
 
     def test_no_connection_fields_are_left_in_the_shown_schema(self) -> None:
         tool = _bound(_one_connection(), [_probe_row("main", "db.local")])

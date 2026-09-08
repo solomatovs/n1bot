@@ -3,7 +3,7 @@ import { type ReactElement, useState } from "react";
 import { phaseColor } from "../../model/summary";
 import { formatClock, parseInstant } from "../../model/time";
 import type { RunState } from "../../model/workflow";
-import { ToolbarHint } from "../../ui";
+import { SceneView, ToolbarHint } from "../../ui";
 
 type Props = {
   run: RunState;
@@ -45,7 +45,7 @@ export function Timeline({ run, startedAt, now, onSelect }: Props): ReactElement
   const active = cursorMs === null ? 0 : [...bars.values()].filter((bar) => bar.start <= cursorMs && cursorMs <= bar.end).length;
 
   return (
-    <div className="view view--scroll">
+    <SceneView scroll>
       <div className="tl">
         <div className="tl__axis">
           <ToolbarHint>times from the run</ToolbarHint>
@@ -122,7 +122,7 @@ export function Timeline({ run, startedAt, now, onSelect }: Props): ReactElement
           cursor <b>{formatClock(cursorMs ?? 0)}</b> · <b>{active}</b> active
         </div>
       </div>
-    </div>
+    </SceneView>
   );
 }
 

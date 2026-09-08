@@ -131,17 +131,19 @@ async def test_catalog_lists_tools(
     assert catalog["canvas_open"]["availability"] == "chat_only"
     args = {arg["name"]: arg["required"] for arg in catalog["slow"]["args"]}
     assert args == {"label": True, "delay": True, "intent": False}
-    views = {arg["name"]: arg["view"] for arg in catalog["slow"]["args"]}
-    assert views["label"] == {
-        "kind": "text",
-        "placement": "body",
+    fields = {arg["name"]: arg for arg in catalog["slow"]["args"]}
+    assert fields["label"]["editor"] == {
+        "editor": "text",
         "multiline": False,
         "placeholder": "",
     }
-    assert views["delay"]["kind"] == "number"
-    assert views["intent"] == {"kind": "intent", "placement": "header"}
-    assert catalog["slow"]["results"] == []
-    assert catalog["echo"]["results"] == ["text"]
+    assert fields["label"]["placement"] == "body"
+    assert fields["label"]["display"] is None
+    assert fields["delay"]["editor"]["editor"] == "number"
+    assert fields["intent"]["placement"] == "header"
+    assert catalog["slow"]["results"] == ["markdown"]
+    assert catalog["fail"]["results"] == ["error"]
+    assert catalog["echo"]["results"] == ["markdown"]
 
 
 async def test_validate_and_save(

@@ -20,12 +20,11 @@ from boba.chainlit.rendering.chat_view import (
     StepText,
 )
 from boba.toolkit.result import (
-    ChartResult,
     ErrorResult,
-    JsonResult,
+    MarkdownResult,
     TableResult,
-    TextResult,
     ToolArtifact,
+    VisualResult,
 )
 
 THREAD = "11111111-1111-1111-1111-111111111111"
@@ -47,14 +46,14 @@ def make_view() -> tuple[ChatView, RecordingSink]:
 
 class TestToolArtifact:
     def test_revives_model_from_dict(self) -> None:
-        revived = ToolArtifact.revive({"kind": "text", "text": "hi"})
-        if not (isinstance(revived, TextResult)):
-            raise AssertionError("isinstance(revived, TextResult)")
+        revived = ToolArtifact.revive({"kind": "markdown", "text": "hi"})
+        if not (isinstance(revived, MarkdownResult)):
+            raise AssertionError("isinstance(revived, MarkdownResult)")
         if revived.text != "hi":
             raise AssertionError('revived.text == "hi"')
 
     def test_keeps_model_as_is(self) -> None:
-        original = TextResult(text="hi")
+        original = MarkdownResult(text="hi")
         if ToolArtifact.revive(original) is not original:
             raise AssertionError("ToolArtifact.revive(original) is original")
 
@@ -66,7 +65,7 @@ class TestToolArtifact:
 
     def test_broken_own_artifact_raises(self) -> None:
         with pytest.raises(ValidationError):
-            ToolArtifact.revive({"kind": "text"})
+            ToolArtifact.revive({"kind": "shell"})
 
 
 class TestToolFinished:
@@ -81,7 +80,7 @@ class TestToolFinished:
         return run(scenario()), sink
 
     def test_markdown_text(self) -> None:
-        step, _ = self._finish(TextResult(text="hi"))
+        step, _ = self._finish(MarkdownResult(text="hi"))
         if step.output != "hi":
             raise AssertionError('step.output == "hi"')
         if step.language is not None:
@@ -97,9 +96,9 @@ class TestToolFinished:
             raise AssertionError('"boom" in step.output')
 
     def test_chart_adds_top_level_step(self) -> None:
-        step, sink = self._finish(ChartResult(spec={"data": []}, title="T"))
-        if step.output != "chart rendered: T":
-            raise AssertionError('step.output == "chart rendered: T"')
+        step, sink = self._finish(VisualResult.plotly({"data": []}, "T"))
+        if step.output != "_(plotly: T)_":
+            raise AssertionError('step.output == "_(plotly: T)_"')
         chart = [s for s in sink.steps if s.get("type") == "assistant_message"]
         if len(chart) != 1:
             raise AssertionError("len(chart) == 1")
@@ -109,28 +108,26 @@ class TestToolFinished:
             raise AssertionError('chart[0].get("parentId") is None')
 
     def test_chart_step_id_is_derived_from_tool_call(self) -> None:
-        _, sink = self._finish(ChartResult(spec={"data": []}, title="T"))
+        _, sink = self._finish(VisualResult.plotly({"data": []}, "T"))
         chart = next(s for s in sink.steps if s.get("type") == "assistant_message")
         if chart.get("id") != ChatView.derive_id(THREAD, "call_1", StepRole.CHART):
             raise AssertionError('chart.get("id") == ChatView.derive_id(THREAD, "call…')
 
     def test_artifact_dict_renders_like_model(self) -> None:
-        step, _ = self._finish({"kind": "text", "text": "from checkpoint"})
+        step, _ = self._finish({"kind": "markdown", "text": "from checkpoint"})
         if step.output != "from checkpoint":
             raise AssertionError('step.output == "from checkpoint"')
 
     def test_failed_command_is_marked_red(self) -> None:
         """Ненулевой код возврата — неуспех, хотя инструмент отработал."""
-        step, _ = self._finish(
-            JsonResult(ok=False, payload={"exit_code": 127, "stderr": "not found"})
-        )
+        step, _ = self._finish(MarkdownResult(ok=False, text="not found"))
         if step.name != StepStatus.FAILED.title("demo"):
             raise AssertionError('step.name == StepStatus.FAILED.title("demo")')
         if step.is_error is not True:
             raise AssertionError("step.is_error is True")
 
     def test_successful_command_is_marked_green(self) -> None:
-        step, _ = self._finish(JsonResult(payload={"exit_code": 0, "stdout": "ok"}))
+        step, _ = self._finish(MarkdownResult(text="ok"))
         if step.name != StepStatus.DONE.title("demo"):
             raise AssertionError('step.name == StepStatus.DONE.title("demo")')
         if step.is_error is not False:
@@ -139,8 +136,8 @@ class TestToolFinished:
     def test_error_result_is_not_ok_by_default(self) -> None:
         if ErrorResult(message="boom", error_kind="e").ok is not False:
             raise AssertionError('ErrorResult(message="boom", error_kind="e").ok is F…')
-        if TextResult(text="hi").ok is not True:
-            raise AssertionError('TextResult(text="hi").ok is True')
+        if MarkdownResult(text="hi").ok is not True:
+            raise AssertionError('MarkdownResult(text="hi").ok is True')
 
     def test_stopped_tool_is_marked_red(self) -> None:
         view, sink = make_view()
@@ -187,11 +184,16 @@ class TestTranscript:
                     ],
                 ),
                 ToolMessage(
-                    content="[chart rendered: Final]",
+                    content="[plotly rendered: Final]",
                     id="m3",
                     name="visualize",
                     tool_call_id="call_1",
-                    artifact={"kind": "chart", "spec": {"data": []}, "title": "Final"},
+                    artifact={
+                        "kind": "visual",
+                        "element": "plotly",
+                        "props": {"spec": {"data": []}},
+                        "title": "Final",
+                    },
                 ),
                 AIMessage(content="готово", id="m4"),
             ]

@@ -79,7 +79,7 @@ class CatalogStoreBase(PostgresTable):
         return sql.SQL(text).format(**names)
 
     @asynccontextmanager
-    async def _guarded(self, action: str) -> AsyncGenerator[None]:
+    async def _guarded(self, action: str) -> AsyncGenerator[None, None]:
         """Граница слоя: отказ базы, пула или домена уходит наружу как
         CatalogStoreError."""
         try:

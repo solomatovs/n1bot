@@ -1,15 +1,15 @@
 """Инструменты стенда для тестов исполнения: зонд контекста, задержка, эхо, отказ."""
 
 import asyncio
-from typing import Annotated, Any
-
-from langchain_core.tools import tool
+from typing import Any
 
 from boba.access import ProfileGrant, RoleConfig, ToolAccess, ToolSurfaces
 from boba.identity.context import CallContext
 from boba.runtime.launchers import CallSurface
+from boba.runtime.plugins import ToolBridge
 from boba.stand.context import TEST_PROFILE
-from boba.toolkit.result import ErrorResult, Produces, TextResult, pack_result
+from boba.toolkit.facade import tool
+from boba.toolkit.result import ErrorResult, MarkdownResult
 from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.errors import ToolErrorGuard
 from boba.toolrun.intent import ToolIntentField
@@ -29,31 +29,29 @@ class Probe:
     def tools(self) -> list[Any]:
         contexts = self.contexts
 
-        @tool(response_format="content_and_artifact")
-        async def slow(label: str, delay: float) -> tuple[str, Any]:
+        @tool
+        async def slow(label: str, delay: float) -> MarkdownResult:
             """Спит delay секунд, отдаёт label."""
             contexts.append(CallContext.current())
             await asyncio.sleep(delay)
-            return pack_result(TextResult(text=f"done {label}"))
+            return MarkdownResult(text=f"done {label}")
 
-        @tool(response_format="content_and_artifact")
-        async def echo(
-            text: str,
-        ) -> Annotated[tuple[str, Any], Produces.of(TextResult)]:
+        @tool
+        async def echo(text: str) -> MarkdownResult:
             """Отдаёт text."""
-            return pack_result(TextResult(text=text))
+            return MarkdownResult(text=text)
 
-        @tool(response_format="content_and_artifact")
-        async def fail(text: str) -> tuple[str, Any]:
+        @tool
+        async def fail(text: str) -> ErrorResult:
             """Отказ результатом."""
-            return pack_result(ErrorResult(message=text, error_kind="probe"))
+            return ErrorResult(message=text, error_kind="probe")
 
-        @tool(response_format="content_and_artifact")
-        async def canvas_open(path: str) -> tuple[str, Any]:
+        @tool
+        async def canvas_open(path: str) -> MarkdownResult:
             """Инструмент чата: в workflow не допускается."""
-            return pack_result(TextResult(text=path))
+            return MarkdownResult(text=path)
 
-        tools = [slow, echo, fail, canvas_open]
+        tools = list(ToolBridge.toolset([slow, echo, fail, canvas_open]))
         ToolCallIdField.attach_all(tools)
         ToolIntentField.attach_all(tools)
         ToolRunLogger.guard_all(

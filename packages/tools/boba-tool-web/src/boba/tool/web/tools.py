@@ -24,12 +24,7 @@ from pydantic import ConfigDict, Field
 from boba.text.grep import GrepLimits, TextGrep
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
-from boba.toolkit.result import (
-    ResultTooLargeError,
-    TextResult,
-    ToolResult,
-    pack_result,
-)
+from boba.toolkit.result import MarkdownResult, ResultTooLargeError
 from boba.toolkit.types import SecretRevealing
 from boba.transport.http import HttpxAuth
 from boba.transport.http.profile import HttpConnection
@@ -180,7 +175,7 @@ async def web_fetch_page(  # noqa: PLR0913
         Field(ge=1, description="Сколько строк вернуть начиная с line_offset"),
     ],
     cfg: Annotated[WebGrepConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> MarkdownResult:
     """Скачивает URL соединением connection (см. connection_list) и возвращает
     окно строк; строка под текстом называет срез и общее число строк — по ней
     листай страницу дальше."""
@@ -192,13 +187,12 @@ async def web_fetch_page(  # noqa: PLR0913
 
     window = PageWindow.of(url, page, line_offset, line_count)
 
-    artifact = TextResult(
+    return MarkdownResult(
         text=window.text(),
         language=PageFormat.of(as_markdown=as_markdown),
         note=window.note(),
         metadata={"url": url},
     )
-    return pack_result(artifact)
 
 
 @tool
@@ -234,7 +228,7 @@ async def web_grep_page(  # noqa: PLR0913
     ] = False,
     *,
     cfg: Annotated[WebGrepConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> MarkdownResult:
     """Найти совпадения pattern в содержимом страницы, скачанной соединением
     connection (см. connection_list)."""
     profile = WebHost.bound(connection, url)
@@ -250,13 +244,12 @@ async def web_grep_page(  # noqa: PLR0913
     limits = GrepLimits(context=context, limit=limit, clip_chars=cfg.max_text_chars)
     report = TextGrep.report(text, compiled, limits, f"url={url}")
 
-    artifact = TextResult(
+    return MarkdownResult(
         text=report.render(),
         language=report.LANG,
         note=report.note,
         metadata={"url": url},
     )
-    return pack_result(artifact)
 
 
 EXPECTED: Mapping[type[Exception], WebErrorKind] = {

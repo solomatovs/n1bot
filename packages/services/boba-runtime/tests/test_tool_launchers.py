@@ -22,7 +22,6 @@ def _process_section(workdir: Path) -> dict[str, object]:
         "tool_launcher": {
             "provider": "process",
             "workdir": str(workdir),
-            "shell": "/bin/bash",
             "timeout_sec": 60,
             "channel_limit_bytes": 1_000_000,
             "stderr_tail_bytes": 4096,

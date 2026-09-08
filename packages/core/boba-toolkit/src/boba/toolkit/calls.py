@@ -1,25 +1,24 @@
-"""Sealed-семейство представления вызова инструмента и реестр объявлений.
+"""Семейство вызова инструмента: аргументы протокола LLM как модель.
 
-Результат вызова давно описан семейством ToolResult — сам вызов рисовала
-эвристика по форме словаря аргументов. Здесь инструмент объявляет, чем
-является его вход: скриптом с языком подсветки, обычным json или ничем.
-Рендер ленты выбирает форму match'ем по семейству, как и для результата.
+ToolCallBase — база модели аргументов: фасад @tool строит наследника из
+подписи тела, тул с особым показом объявляет наследника сам. Показы те же,
+что у результата: llm_view (аргументы, как их прислала модель), chat_view
+(вход шага ленты) и studio_view (форма задачи на странице). Показ значения
+аргумента объявляется экземпляром результата в Annotated поля —
+MarkdownResult(language="sql") — и рисуется этим результатом; редактор поля
+для формы выводится из типа.
 
 ToolIntent — общая для всех инструментов подпись вызова: строку пишет LLM,
 показывает её название шага ленты.
-
-ArgView — sealed-семейство представления аргумента: инструмент объявляет вид
-у поля через Annotated (CodeArg, ConnectionArg, ...), остальное ArgViews
-выводит из типа поля. Виды уходят в каталог workflow; страница рендерит
-аргумент виджетом по kind.
 
 Ошибки: своих не выпускает.
 """
 
 from __future__ import annotations
 
+import json
 from abc import ABC
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from enum import Enum, StrEnum
 from types import UnionType
 from typing import (
@@ -46,81 +45,35 @@ from pydantic import (
 from pydantic.fields import FieldInfo
 from pydantic_core import CoreSchema
 
+from boba.toolkit.ports import StreamPorts
+from boba.toolkit.result import (
+    ChatView,
+    FieldLines,
+    JsonBlock,
+    MarkdownResult,
+    ToolResult,
+    ToolResultBase,
+)
+
 __all__ = [
-    "ArgPlacement",
-    "ArgView",
-    "ArgViewBase",
-    "ArgViews",
-    "BoolArg",
-    "CodeArg",
-    "ConnectionArg",
-    "EnumArg",
-    "HiddenCall",
-    "IntentArg",
-    "JsonArg",
-    "JsonCall",
-    "NumberArg",
-    "PathArg",
-    "ScriptCall",
-    "SecretArg",
-    "TextArg",
-    "ToolCallView",
-    "ToolCallViewBase",
-    "ToolCallViews",
+    "BoolEditor",
+    "CallIdPrefix",
+    "ConnectionEditor",
+    "FieldEditor",
+    "FieldEditorBase",
+    "FieldMarks",
+    "FieldPlacement",
+    "JsonEditor",
+    "NumberEditor",
+    "SecretEditor",
+    "SelectEditor",
+    "StudioField",
+    "StudioForm",
+    "TextEditor",
+    "ToolCallBase",
+    "ToolCallModels",
     "ToolIntent",
 ]
-
-
-class ToolCallViewBase(BaseModel, ABC):
-    """База вариантов представления вызова (тип значения — ToolCallView)."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-
-class JsonCall(ToolCallViewBase):
-    """Аргументы показываются json'ом; вариант по умолчанию.
-
-    Инструмент с кодом или спекой во входе обязан объявить ScriptCall —
-    многострочный текст внутри json нечитаем, и рендер этого не чинит.
-    """
-
-    kind: Literal["json"] = "json"
-
-
-class ScriptCall(ToolCallViewBase):
-    """Главный аргумент — код: рисуется блоком с подсветкой языка.
-
-    Остальные аргументы показываются следом; пустые строки опускаются.
-    """
-
-    kind: Literal["script"] = "script"
-    arg: str
-    """Имя аргумента со скриптом."""
-    lang: str
-    """Язык подсветки markdown-блока."""
-
-
-class HiddenCall(ToolCallViewBase):
-    """Вход шага не показывается: вызов целиком виден в его результате."""
-
-    kind: Literal["hidden"] = "hidden"
-
-
-ToolCallView: TypeAlias = Annotated[
-    JsonCall | ScriptCall | HiddenCall,
-    Field(discriminator="kind"),
-]
-
-
-class CallIdPrefix(StrEnum):
-    """Префикс id вызова по источнику: отличим от id, которые выдаёт модель."""
-
-    API = "api-"
-    WORKFLOW = "wf-"
-    PIPELINE = "pl-"
-
-    def new_id(self) -> str:
-        return f"{self.value}{uuid4().hex}"
 
 
 class ToolIntent:
@@ -182,54 +135,33 @@ class ToolIntent:
         return f"{clipped}{cls.ELLIPSIS}"
 
 
-class ToolCallViews:
-    """Объявления представлений: заполняет сборка тулов, читает рендер ленты.
+class CallIdPrefix(StrEnum):
+    """Префикс id вызова по источнику: отличим от id, которые выдаёт модель."""
 
-    Инструмент без объявления показывается как JsonCall — прежнее поведение.
-    Повторная регистрация того же имени перезаписывает запись: тулы
-    собираются на каждую сессию, и это контракт загрузки.
-    """
+    API = "api-"
+    WORKFLOW = "wf-"
+    PIPELINE = "pl-"
 
-    _VIEWS: ClassVar[dict[str, ToolCallView]] = {}
-
-    DEFAULT: ClassVar[ToolCallView] = JsonCall()
-
-    @classmethod
-    def register(cls, tool_name: str, view: ToolCallView) -> None:
-        cls._VIEWS[tool_name] = view
-
-    @classmethod
-    def of(cls, tool_name: str) -> ToolCallView:
-        view = cls._VIEWS.get(tool_name)
-        if view is None:
-            return cls.DEFAULT
-
-        return view
-
-    @classmethod
-    def reset(cls) -> None:
-        """Сброс реестра: пользуются тесты, приложению это не нужно."""
-        cls._VIEWS.clear()
+    def new_id(self) -> str:
+        return f"{self.value}{uuid4().hex}"
 
 
-class ArgPlacement(StrEnum):
-    """Где страница показывает аргумент: строкой-портом тела, в шапке, нигде."""
+class FieldPlacement(StrEnum):
+    """Где страница показывает поле: строкой тела, в шапке, нигде."""
 
     BODY = "body"
     HEADER = "header"
     HIDDEN = "hidden"
 
 
-class ArgViewBase(BaseModel, ABC):
-    """База видов аргумента (тип значения — ArgView).
+class FieldEditorBase(BaseModel, ABC):
+    """База редакторов поля формы (тип значения — FieldEditor).
 
-    Экземпляр живёт в метаданных Annotated поля инструмента: там он должен
-    быть прозрачен для pydantic и не подменять схему самого поля.
+    Экземпляр может лежать в metadata Annotated поля: там он прозрачен для
+    pydantic и схему значения не подменяет.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
-
-    placement: ArgPlacement = ArgPlacement.BODY
 
     @classmethod
     def __get_pydantic_core_schema__(
@@ -241,137 +173,247 @@ class ArgViewBase(BaseModel, ABC):
         return handler(source)
 
 
-class TextArg(ArgViewBase):
-    """Свободный текст; вид по умолчанию для строк."""
+class TextEditor(FieldEditorBase):
+    """Свободный текст; редактор по умолчанию для строк."""
 
-    kind: Literal["text"] = "text"
+    editor: Literal["text"] = "text"
     multiline: bool = False
     placeholder: str = ""
 
 
-class CodeArg(ArgViewBase):
-    """Код с подсветкой языка: главный аргумент блока."""
-
-    kind: Literal["code"] = "code"
-    lang: str
-
-
-class ConnectionArg(ArgViewBase):
-    """Имя подключения пользователя; family сужает список (postgres, clickhouse)."""
-
-    kind: Literal["connection"] = "connection"
-    family: str
+class NumberEditor(FieldEditorBase):
+    editor: Literal["number"] = "number"
+    minimum: float | None = None
+    maximum: float | None = None
 
 
-class EnumArg(ArgViewBase):
-    """Выбор из фиксированного набора."""
+class SelectEditor(FieldEditorBase):
+    """Выбор из вариантов Literal или Enum."""
 
-    kind: Literal["enum"] = "enum"
+    editor: Literal["select"] = "select"
     options: tuple[str, ...]
 
 
-class NumberArg(ArgViewBase):
-    """Число; границы — из ограничений поля, отсутствуют — если их нет в схеме."""
-
-    kind: Literal["number"] = "number"
-    minimum: float | None = None
-    maximum: float | None = None
-    unit: str = ""
+class BoolEditor(FieldEditorBase):
+    editor: Literal["bool"] = "bool"
 
 
-class BoolArg(ArgViewBase):
-    kind: Literal["bool"] = "bool"
+class ConnectionEditor(FieldEditorBase):
+    """Выбор соединения субъекта нужного семейства."""
+
+    editor: Literal["connection"] = "connection"
+    family: str
 
 
-class PathArg(ArgViewBase):
-    """Путь в рабочем пространстве."""
+class JsonEditor(FieldEditorBase):
+    """Структура: списки, словари, модели."""
 
-    kind: Literal["path"] = "path"
-
-
-class JsonArg(ArgViewBase):
-    """Структура (объект, список): показывается деревом, правится как json."""
-
-    kind: Literal["json"] = "json"
+    editor: Literal["json"] = "json"
 
 
-class SecretArg(ArgViewBase):
-    """Значение маскируется при показе."""
-
-    kind: Literal["secret"] = "secret"
+class SecretEditor(FieldEditorBase):
+    editor: Literal["secret"] = "secret"
 
 
-class IntentArg(ArgViewBase):
-    """Подпись вызова: подзаголовок блока, не порт."""
-
-    kind: Literal["intent"] = "intent"
-    placement: ArgPlacement = ArgPlacement.HEADER
-
-
-ArgView: TypeAlias = Annotated[
-    TextArg
-    | CodeArg
-    | ConnectionArg
-    | EnumArg
-    | NumberArg
-    | BoolArg
-    | PathArg
-    | JsonArg
-    | SecretArg
-    | IntentArg,
-    Field(discriminator="kind"),
+FieldEditor: TypeAlias = Annotated[
+    TextEditor
+    | NumberEditor
+    | SelectEditor
+    | BoolEditor
+    | ConnectionEditor
+    | JsonEditor
+    | SecretEditor,
+    Field(discriminator="editor"),
 ]
+"""Словарь редакторов формы: закрыт намеренно, как блоки страницы."""
 
 
-class ArgViews:
-    """Вид аргумента по объявлению у поля, иначе — по его типу и ограничениям."""
+class FieldMarks:
+    """Маркеры полей вызова по именам классов в metadata: сравнение типов
+    между процессами невозможно, langchain-маркеры toolkit не импортирует."""
 
-    MULTILINE_CHARS: ClassVar[int] = 200
+    _EDITORS: ClassVar[TypeAdapter[FieldEditor]] = TypeAdapter(FieldEditor)
 
-    @classmethod
-    def of_field(cls, name: str, field: FieldInfo, call: ToolCallView) -> ArgView:
-        declared = cls._declared(field)
-        if declared is not None:
-            return declared
-
-        if name == ToolIntent.NAME:
-            return IntentArg()
-
-        if isinstance(call, ScriptCall) and call.arg == name:
-            return CodeArg(lang=call.lang)
-
-        return cls.infer(field)
-
-    KINDS: ClassVar[tuple[type[ArgViewBase], ...]] = (
-        TextArg,
-        CodeArg,
-        ConnectionArg,
-        EnumArg,
-        NumberArg,
-        BoolArg,
-        PathArg,
-        JsonArg,
-        SecretArg,
-        IntentArg,
-    )
+    INJECTED: ClassVar[frozenset[str]] = frozenset({"Injected", "InjectedToolCallId"})
+    """Injected фасада и InjectedToolCallId langchain: последним обвязка
+    call_id помечает поле идентификатора вызова, дописанное в схему."""
+    CONNECTION: ClassVar[frozenset[str]] = frozenset({"UserConnection"})
 
     @classmethod
-    def _declared(cls, field: FieldInfo) -> ArgView | None:
+    def injected(cls, field: FieldInfo) -> bool:
+        return cls._marked(field.metadata, cls.INJECTED)
+
+    @classmethod
+    def connection(cls, field: FieldInfo) -> bool:
+        return cls._marked(field.metadata, cls.CONNECTION)
+
+    @staticmethod
+    def port(field: FieldInfo) -> bool:
+        return StreamPorts.is_port(field.annotation)
+
+    @staticmethod
+    def display(field: FieldInfo) -> ToolResultBase | None:
+        """Объявленный показ значения: экземпляр результата в metadata."""
         for item in field.metadata:
-            if isinstance(item, cls.KINDS):
-                return TypeAdapter(ArgView).validate_python(item)
+            if isinstance(item, ToolResultBase):
+                return item
 
         return None
 
     @classmethod
-    def infer(cls, field: FieldInfo) -> ArgView:
-        """Вид по типу поля: Literal/Enum → enum, bool, числа с границами,
-        SecretStr → secret, структуры → json, строка → text."""
+    def editor(cls, field: FieldInfo) -> FieldEditor | None:
+        """Объявленный редактор поля: ставит обвязка соединений."""
+        for item in field.metadata:
+            if isinstance(item, FieldEditorBase):
+                return cls._EDITORS.validate_python(item)
+
+        return None
+
+    @staticmethod
+    def _marked(metadata: Sequence[Any], markers: frozenset[str]) -> bool:
+        for item in metadata:
+            klass = item if isinstance(item, type) else type(item)
+            names = {parent.__name__ for parent in klass.__mro__}
+            if names & markers:
+                return True
+
+        return False
+
+
+class StudioField(BaseModel):
+    """Поле формы задачи: редактор из типа, показ значения — объявленный результат."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    description: str = ""
+    required: bool = False
+    placement: FieldPlacement = FieldPlacement.BODY
+    editor: FieldEditor = TextEditor()
+    display: ToolResult | None = None
+
+
+class StudioForm(BaseModel):
+    """Показ вызова на странице studio: поля формы по порядку."""
+
+    model_config = ConfigDict(frozen=True)
+
+    fields: Sequence[StudioField]
+
+
+class ToolCallBase(BaseModel, ABC):
+    """Вызов инструмента: аргументы протокола LLM как модель.
+
+    Поля — аргументы тела, включая injected и порты: их отсеивают маркеры.
+    Показы собираются из объявленных у полей результатов; наследник
+    переопределяет их, когда нужен иной вид.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    MULTILINE_CHARS: ClassVar[int] = 200
+    """Строка с потолком длиннее — многострочный редактор."""
+
+    @classmethod
+    def llm_fields(cls) -> Iterator[str]:
+        """Поля, которые заполняет модель: без injected и портов."""
+        for name, field in cls.model_fields.items():
+            if FieldMarks.injected(field):
+                continue
+
+            if FieldMarks.port(field):
+                continue
+
+            yield name
+
+    def llm_view(self) -> str:
+        """Аргументы, как их прислала модель: JSON её полей."""
+        shown = self.model_dump(mode="json", include=set(self.llm_fields()))
+
+        return json.dumps(shown, ensure_ascii=False)
+
+    def chat_view(self) -> ChatView:
+        """Вход шага: показы аргументов по порядку полей; пусто — входа нет."""
+        blocks: list[str] = []
+        for result in self._argument_results():
+            blocks.append(result.chat_view().markdown)
+
+        return ChatView(markdown="\n\n".join(blocks))
+
+    @classmethod
+    def studio_view(cls) -> StudioForm:
+        """Форма задачи: редактор из типа поля, показ — из объявленного результата."""
+        return StudioForm(fields=list(cls._fields()))
+
+    def _argument_results(self) -> Iterator[ToolResultBase]:
+        """Значение каждого присланного поля тела результатом по его объявлению;
+        дефолты, которых модель не писала, во вход не идут."""
+        for name, field in type(self).model_fields.items():
+            if name not in self.model_fields_set:
+                continue
+
+            if self._placement(field, name) is not FieldPlacement.BODY:
+                continue
+
+            value = getattr(self, name, None)
+            if value is None:
+                continue
+
+            if isinstance(value, SecretStr):
+                continue
+
+            display = FieldMarks.display(field)
+            if display is not None:
+                yield display.bound(value)
+                continue
+
+            if isinstance(value, str) and not value:
+                continue
+
+            yield MarkdownResult(text=FieldLines.line(name, value))
+
+    @classmethod
+    def _fields(cls) -> Iterator[StudioField]:
+        for name, field in cls.model_fields.items():
+            description = field.description
+            if description is None:
+                description = ""
+
+            yield StudioField(
+                name=name,
+                description=description,
+                required=field.is_required(),
+                placement=cls._placement(field, name),
+                editor=cls._editor(field),
+                display=FieldMarks.display(field),
+            )
+
+    @staticmethod
+    def _placement(field: FieldInfo, name: str) -> FieldPlacement:
+        """Injected и порты скрыты, intent в шапке, остальное в теле."""
+        if FieldMarks.injected(field):
+            return FieldPlacement.HIDDEN
+
+        if FieldMarks.port(field):
+            return FieldPlacement.HIDDEN
+
+        if name == ToolIntent.NAME:
+            return FieldPlacement.HEADER
+
+        return FieldPlacement.BODY
+
+    @classmethod
+    def _editor(cls, field: FieldInfo) -> FieldEditor:
+        """Редактор по объявлению, иначе по типу и ограничениям поля."""
+        declared = FieldMarks.editor(field)
+        if declared is not None:
+            return declared
+
         annotation = cls._unwrap_optional(field.annotation)
 
         options = cls._options(annotation)
         if options is not None:
-            return EnumArg(options=options)
+            return SelectEditor(options=options)
 
         if annotation in (int, float):
             return cls._number(field)
@@ -379,8 +421,9 @@ class ArgViews:
         if annotation is str:
             return cls._text(field)
 
-        plain: dict[Any, ArgView] = {bool: BoolArg(), SecretStr: SecretArg()}
-        return plain.get(annotation, JsonArg())
+        plain: dict[Any, FieldEditor] = {bool: BoolEditor(), SecretStr: SecretEditor()}
+
+        return plain.get(annotation, JsonEditor())
 
     @staticmethod
     def _options(annotation: Any) -> tuple[str, ...] | None:
@@ -407,7 +450,7 @@ class ArgViews:
         return members[0]
 
     @classmethod
-    def _number(cls, field: FieldInfo) -> NumberArg:
+    def _number(cls, field: FieldInfo) -> NumberEditor:
         minimum: float | None = None
         maximum: float | None = None
         for item in field.metadata:
@@ -420,7 +463,7 @@ class ArgViews:
             if isinstance(item, Lt):
                 maximum = cls._bound(item.lt)
 
-        return NumberArg(minimum=minimum, maximum=maximum)
+        return NumberEditor(minimum=minimum, maximum=maximum)
 
     @staticmethod
     def _bound(value: object) -> float | None:
@@ -430,9 +473,49 @@ class ArgViews:
         return None
 
     @classmethod
-    def _text(cls, field: FieldInfo) -> TextArg:
+    def _text(cls, field: FieldInfo) -> TextEditor:
         for item in field.metadata:
             if isinstance(item, MaxLen) and item.max_length > cls.MULTILINE_CHARS:
-                return TextArg(multiline=True)
+                return TextEditor(multiline=True)
 
-        return TextArg()
+        return TextEditor()
+
+
+class ToolCallModels:
+    """Модели вызова по имени инструмента: наполняет фасад @tool, читает лента.
+
+    Повторная регистрация имени перезаписывает запись: тулы собираются на
+    каждую сессию, и это контракт загрузки.
+    """
+
+    _MODELS: ClassVar[dict[str, type[ToolCallBase]]] = {}
+
+    @classmethod
+    def register(cls, tool_name: str, model: type[ToolCallBase]) -> None:
+        cls._MODELS[tool_name] = model
+
+    @classmethod
+    def call_of(cls, tool_name: str, args: Mapping[str, Any]) -> ToolCallBase:
+        """Вызов по аргументам без валидации: битые аргументы показываются
+        как есть. Инструмент без модели — аргументы json-текстом."""
+        model = cls._MODELS.get(tool_name)
+        if model is None:
+            return RawCall.model_construct(args=dict(args))
+
+        return model.model_construct(**args)
+
+    @classmethod
+    def reset(cls) -> None:
+        """Сброс реестра: пользуются тесты, приложению это не нужно."""
+        cls._MODELS.clear()
+
+
+class RawCall(ToolCallBase):
+    """Вызов инструмента без модели: аргументы показываются json-блоком."""
+
+    args: Mapping[str, Any]
+
+    def chat_view(self) -> ChatView:
+        return MarkdownResult(
+            text=JsonBlock.pretty(dict(self.args)), language="json"
+        ).chat_view()

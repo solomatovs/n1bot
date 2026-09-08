@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from enum import StrEnum
 
-from boba.toolkit.result import MultiResult, TextResult, ToolResult
-from boba.workflow.graph import TaskStatus
+from boba.toolkit.result import MarkdownResult
 from boba.workflow.records import RunOutcome, StoredWorkflow
 
 __all__ = ["ReportKey", "RunReport", "WorkflowListing", "WorkflowPrompt"]
@@ -42,29 +41,27 @@ class ReportKey(StrEnum):
     RUN_ID = "run_id"
     STATUS = "status"
     TASKS = "tasks"
-    TASK = "task"
 
 
 class RunReport:
-    """Итог запуска для модели: статус каждой задачи и результаты по порядку."""
+    """Итог запуска для модели: сводка по задачам и результат каждой по порядку.
+
+    Отчёт — текст: сводка со статусами, затем под заголовком задачи её
+    результат в том виде, в каком его видит модель. Сами результаты задач
+    лежат в RunOutcome.results и в отчёт не копируются моделями.
+    """
 
     @classmethod
-    def of(cls, outcome: RunOutcome) -> ToolResult:
-        """Первый элемент — сводка по задачам, дальше результаты в порядке спеки."""
-        items: list[ToolResult] = []
+    def of(cls, outcome: RunOutcome) -> MarkdownResult:
         marks: list[str] = []
         for name, task in outcome.state.tasks.items():
             marks.append(f"{name}={task.status.value}")
-            result = outcome.results.get(name)
-            if result is None:
-                continue
 
-            items.append(cls._labelled(name, task.status, result))
+        sections = [cls._summary(outcome), *cls._task_sections(outcome)]
 
-        summary = TextResult(text=cls._summary(outcome))
-        return MultiResult(
+        return MarkdownResult(
             ok=outcome.state.ok,
-            items=[summary, *items],
+            text="\n\n".join(sections),
             metadata={
                 ReportKey.RUN_ID: str(outcome.run.id),
                 ReportKey.STATUS: outcome.state.status.value,
@@ -85,12 +82,14 @@ class RunReport:
         return "\n".join(lines)
 
     @staticmethod
-    def _labelled(name: str, status: TaskStatus, result: ToolResult) -> ToolResult:
-        """Результат задачи с её именем и статусом в metadata."""
-        metadata = dict(result.metadata)
-        metadata[ReportKey.TASK] = name
-        metadata[ReportKey.STATUS] = status.value
-        return result.model_copy(update={"metadata": metadata})
+    def _task_sections(outcome: RunOutcome) -> Iterator[str]:
+        """Результат каждой задачи под заголовком с её именем и статусом."""
+        for name, task in outcome.state.tasks.items():
+            result = outcome.results.get(name)
+            if result is None:
+                continue
+
+            yield f"### {name}: {task.status.value}\n{result.llm_view()}"
 
 
 class WorkflowListing:

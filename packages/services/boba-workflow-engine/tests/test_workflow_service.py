@@ -18,13 +18,14 @@ from boba.identity.context import CallContext, LlmInitiator, Scope, ScopeKind, S
 from boba.identity.locks import MemoryLiveLocks, RunLocking
 from boba.messaging import Envelope, MemoryMessageBus, WorkflowDraftChanged
 from boba.runtime.commands import CommandRunner
+from boba.runtime.plugins import ToolBridge
 from boba.stand.context import use_context
 from boba.stand.tools import PROBE_ROLE as ROLE
 from boba.stand.tools import Probe
-from boba.toolkit.calls import ScriptCall, ToolCallViews
+from boba.toolkit.calls import ToolCallModels
 from boba.toolkit.result import (
     ErrorResult,
-    MultiResult,
+    MarkdownResult,
 )
 from boba.toolrun.registry import ToolRegistry
 from boba.workflow import RunStatus, TaskStatus
@@ -192,7 +193,7 @@ class TestRun:
         assert outcome.state.status is RunStatus.DONE
         a, b, c = (outcome.state.tasks[name] for name in ("a", "b", "c"))
         assert a.result is not None
-        assert a.result.kind == "text"
+        assert a.result.kind == "markdown"
         assert a.started_at is not None
         assert b.started_at is not None
         assert abs((a.started_at - b.started_at).total_seconds()) < 0.2
@@ -200,7 +201,7 @@ class TestRun:
         assert a.finished_at is not None
         assert b.finished_at is not None
         assert c.started_at >= max(a.finished_at, b.finished_at)
-        assert outcome.results["c"].llm_text() == "done c"
+        assert outcome.results["c"].llm_view() == "done c"
 
         # задачи шли под областью запуска; инициатор — вызов модели в треде
         assert len(probe.contexts) == 3
@@ -224,8 +225,8 @@ class TestRun:
         outcome = await service.run(context, stored, service.new_run_id())
 
         assert outcome.state.status is RunStatus.DONE
-        assert outcome.results["second"].llm_text() == "hello world"
-        assert outcome.results["third"].llm_text() == "hello world"
+        assert outcome.results["second"].llm_view() == "hello world"
+        assert outcome.results["third"].llm_view() == "hello world"
 
     async def test_failure_skips_dependants(
         self, service: WorkflowService, context: CallContext
@@ -369,12 +370,10 @@ class TestTools:
         async def source() -> WorkflowService:
             return service
 
-        by_name = {
-            t.name: t for t in build_workflow_tools(WorkflowToolConfig(), source)
-        }
-        view = ToolCallViews.of("workflow_save")
-        assert isinstance(view, ScriptCall)
-        assert view.lang == "yaml"
+        built = build_workflow_tools(WorkflowToolConfig(), source)
+        by_name = {t.name: t for t in ToolBridge.toolset(built)}
+        shown = ToolCallModels.call_of("workflow_save", {"spec": "name: x"})
+        assert shown.chat_view().markdown.startswith("```yaml\nname: x")
 
         saved = await by_name["workflow_save"].ainvoke({"spec": VALUES})
         assert "saved" in saved
@@ -391,17 +390,15 @@ class TestTools:
             }
         )
         report = message.artifact
-        assert isinstance(report, MultiResult)
+        assert isinstance(report, MarkdownResult)
         assert report.ok
         assert report.metadata[ReportKey.STATUS] == "done"
         assert "third=done" in report.metadata[ReportKey.TASKS]
-        summary, *rest = report.items
-        assert "third: done" in summary.llm_text()
-        assert [item.metadata[ReportKey.TASK] for item in rest] == [
-            "first",
-            "second",
-            "third",
+        assert "- third: done" in report.text
+        headings = [
+            line for line in report.text.splitlines() if line.startswith("### ")
         ]
+        assert headings == ["### first: done", "### second: done", "### third: done"]
 
         missing = await by_name["workflow_run"].ainvoke(
             {

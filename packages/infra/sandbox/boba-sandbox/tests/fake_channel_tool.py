@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field, SecretStr
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool, warmup
 from boba.toolkit.ports import Inbound, Outbound
-from boba.toolkit.result import TextResult, ToolResult, render_for_llm
+from boba.toolkit.result import MarkdownResult
 
 
 class ChannelConfig(BaseModel):
@@ -67,7 +67,7 @@ async def fx_echo(
     sleep_sec: Annotated[float, Field(ge=0, description="Пауза перед ответом")] = 0,
     *,
     cfg: Annotated[ChannelConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> MarkdownResult:
     """Печатает болтовню в оба потока и возвращает текст с секретом."""
     print("noise on stdout")
     print("noise on stderr", file=sys.stderr)
@@ -87,15 +87,13 @@ async def fx_echo(
         probe = Path("/workspace/fx-probe.txt")
         probe.write_text("written by fx_echo")
         listing = ",".join(sorted(p.name for p in Path("/workspace").iterdir()))
-        artifact = TextResult(text=f"workspace:{listing}")
-        return render_for_llm(artifact), artifact
+        return MarkdownResult(text=f"workspace:{listing}")
 
-    artifact = TextResult(text=f"{text}|{cfg.token.get_secret_value()}")
-    return render_for_llm(artifact), artifact
+    return MarkdownResult(text=f"{text}|{cfg.token.get_secret_value()}")
 
 
 @tool
-async def fx_chatter() -> tuple[str, ToolResult]:
+async def fx_chatter() -> MarkdownResult:
     """Пишет в логер и печатает без flush: всё это идёт в stdout процесса."""
     logger = logging.getLogger("fx")
     logger.info("info line from the body")
@@ -103,21 +101,19 @@ async def fx_chatter() -> tuple[str, ToolResult]:
 
     print("print line from the body")
 
-    artifact = TextResult(text="chatter")
-    return "chatter", artifact
+    return MarkdownResult(text="chatter")
 
 
 @tool
-async def fx_warm_state() -> tuple[str, ToolResult]:
+async def fx_warm_state() -> MarkdownResult:
     """Отдаёт содержимое кэша процесса: тёплое — унаследовано от зиготы."""
-    artifact = TextResult(text=WarmCache.value)
-    return WarmCache.value, artifact
+    return MarkdownResult(text=WarmCache.value)
 
 
 @tool
 async def fx_probe_tmp(
     marker: Annotated[str, Field(min_length=1, description="Имя файла-маркера")],
-) -> tuple[str, ToolResult]:
+) -> MarkdownResult:
     """Пишет маркер в /tmp и отдаёт наблюдаемую изоляцию вызова."""
     own = Path("/tmp") / marker  # noqa: S108
     own.write_text("mine")
@@ -146,8 +142,7 @@ async def fx_probe_tmp(
         "cap_eff": cap_eff,
         "userns_max": userns_max,
     }
-    artifact = TextResult(text=json.dumps(state))
-    return json.dumps(state), artifact
+    return MarkdownResult(text=json.dumps(state))
 
 
 class FxChunkHead(BaseModel):
@@ -171,7 +166,7 @@ async def fx_stream(
     cfg: Annotated[ChannelConfig, Injected],
     feed: Annotated[Inbound[FxChunkHead | FxDoneHead], Injected],
     out: Annotated[Outbound[FxChunkHead | FxDoneHead], Injected],
-) -> tuple[str, ToolResult]:
+) -> MarkdownResult:
     """Отвечает кадром на каждый кадр входа: потоковый вызов в песочнице."""
     total = 0
     for item in feed:
@@ -180,8 +175,7 @@ async def fx_stream(
 
     out.emit(FxDoneHead(total=total))
 
-    artifact = TextResult(text=f"streamed {total}|{cfg.token.get_secret_value()}")
-    return render_for_llm(artifact), artifact
+    return MarkdownResult(text=f"streamed {total}|{cfg.token.get_secret_value()}")
 
 
 EXPECTED: Mapping[type[Exception], FxErrorKind] = {

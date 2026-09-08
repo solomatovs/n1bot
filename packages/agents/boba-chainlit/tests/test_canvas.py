@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar
 from urllib.parse import quote
 from uuid import UUID
 
 import chainlit as cl
 import pytest
 from chainlit_stand import use_session
-from pydantic import BaseModel
 
 from boba.canvas.canvas import (
     CanvasAction,
@@ -42,7 +41,7 @@ from boba.chainlit.canvas.tools import (
 from boba.chainlit.data.storage import LocalStorageClient
 from boba.chainlit.infra.config import LocalStorageConfig
 from boba.identity.context import CallContext, ContextKind
-from boba.toolkit.result import CustomElementResult, ErrorResult
+from boba.toolkit.result import ErrorResult, VisualResult
 from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig
 
@@ -79,7 +78,7 @@ class FakeViewer(CanvasViewer):
         self.opened.append(key)
         await push(await self.content(key))
 
-        link = CustomElementResult(
+        link = VisualResult(
             element="CanvasLink",
             props={"path": key.in_workspace(), "label": key.name},
             title=key.name,
@@ -186,7 +185,7 @@ class TestToolInterface:
 
     def test_schema_fields(self) -> None:
         tool = build_canvas_tools(CanvasToolConfig())[0]
-        schema = cast(type[BaseModel], tool.tool_call_schema)
+        schema = tool.args_schema
         if set(schema.model_fields) != {"path"}:
             raise AssertionError('set(schema.model_fields) == {"path"}')
 
@@ -198,7 +197,7 @@ class TestRefusal:
     async def test_without_session(self) -> None:
         opener = CanvasOpener()
 
-        _, result = await opener.open(f"/workspace/{THREAD}/mermaid/a.mmd")
+        result = await opener.open(f"/workspace/{THREAD}/mermaid/a.mmd")
 
         if not (isinstance(result, ErrorResult)):
             raise AssertionError("isinstance(result, ErrorResult)")
@@ -209,7 +208,7 @@ class TestRefusal:
     async def test_path_outside_thread(self, monkeypatch: pytest.MonkeyPatch) -> None:
         use_session(monkeypatch, user_id=USER, thread_id=THREAD)
 
-        _, result = await CanvasOpener().open("/etc/passwd")
+        result = await CanvasOpener().open("/etc/passwd")
 
         if not (isinstance(result, ErrorResult)):
             raise AssertionError("isinstance(result, ErrorResult)")
@@ -347,8 +346,8 @@ class TestFileViewers:
 
         if opened.label != "график.png":
             raise AssertionError('opened.label == "график.png"')
-        if not (isinstance(opened.link, CustomElementResult)):
-            raise AssertionError("isinstance(opened.link, CustomElementResult)")
+        if not (isinstance(opened.link, VisualResult)):
+            raise AssertionError("isinstance(opened.link, VisualResult)")
         if opened.link.props["path"] != opened.path:
             raise AssertionError('opened.link.props["path"] == opened.path')
         content = sink.shown[0]
@@ -406,14 +405,12 @@ class TestFileViewers:
         build_canvas_tools(CanvasToolConfig())
         await storage.upload_file(f"{USER}/{THREAD}/upload/график.png", self.PNG)
 
-        content, result = await CanvasOpener().open(
-            f"/workspace/{THREAD}/upload/график.png"
-        )
+        result = await CanvasOpener().open(f"/workspace/{THREAD}/upload/график.png")
 
         if isinstance(result, ErrorResult):
             raise AssertionError("not isinstance(result, ErrorResult)")
-        if "график.png" not in content:
-            raise AssertionError('"график.png" in content')
+        if "график.png" not in result.llm_view():
+            raise AssertionError('"график.png" in result.llm_view()')
 
 
 class TestStorageWindows:

@@ -3,7 +3,7 @@ import type { CSSProperties, ReactElement, ReactNode } from "react";
 import type { RunStatus, TaskStatus } from "../model/status";
 import "./Chip.css";
 
-export type ChipTone = "default" | "muted" | "draft" | "warn";
+export type ChipTone = "default" | "muted" | "draft" | "warn" | "error";
 
 type Props = {
   tone?: ChipTone;

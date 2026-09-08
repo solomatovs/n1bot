@@ -192,7 +192,7 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
         return sql.SQL(text).format(**names)
 
     @asynccontextmanager
-    async def _guarded(self, action: str) -> AsyncGenerator[None]:
+    async def _guarded(self, action: str) -> AsyncGenerator[None, None]:
         """Граница слоя: отказ базы или пула уходит наружу как ConnectionStoreError."""
         try:
             yield

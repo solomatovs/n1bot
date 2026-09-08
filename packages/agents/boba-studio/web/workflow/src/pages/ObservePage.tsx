@@ -17,7 +17,7 @@ import { useClock } from "../hooks/useClock";
 import { useShellData } from "../hooks/useShellData";
 import { runFinished } from "../model/status";
 import type { RunSnapshot, StoredRun } from "../model/workflow";
-import { Button, EmptyState, Toolbar, ToolbarHint, ToolbarSpacer, useToast } from "../ui";
+import { Button, Detail, EmptyState, Scene, SceneView, Toolbar, ToolbarHint, ToolbarSpacer, useToast } from "../ui";
 
 type View = "grid" | "table" | "timeline";
 
@@ -148,38 +148,39 @@ export function ObservePage(): ReactElement {
 
   if (runId === undefined) {
     return (
-      <main className="stage">
+      <Scene>
         <EmptyState fill title="Runs">
           Expand a workflow on the left and pick a run.
         </EmptyState>
-      </main>
+      </Scene>
     );
   }
 
   if (run.kind === "loading") {
     return (
-      <main className="stage">
+      <Scene>
         <EmptyState fill>Loading…</EmptyState>
-      </main>
+      </Scene>
     );
   }
 
   if (run.kind === "error") {
     return (
-      <main className="stage">
+      <Scene>
         <EmptyState fill>
           <Alert tone="error" title="Run failed">
             {run.message}
           </Alert>
         </EmptyState>
-      </main>
+      </Scene>
     );
   }
 
   const loaded = run.value;
   return (
-    <main className="stage" data-run-status={loaded.status}>
-      <Vitals run={loaded} now={now} />
+    <>
+      <Scene data-run-status={loaded.status}>
+        <Vitals run={loaded} now={now} />
       <Toolbar bar mark="viewbar">
         <ToolbarHint>{loaded.instance}</ToolbarHint>
         <ToolbarSpacer />
@@ -192,25 +193,28 @@ export function ObservePage(): ReactElement {
           Stop
         </Button>
       </Toolbar>
-      {view === "grid" && (
-        <div className="view">
-          <RunGraph run={loaded.state} selectedTask={selectedTask} onSelectTask={setSelectedTask} />
-        </div>
-      )}
-      {view === "table" && <TaskTable run={loaded.state} onSelect={setSelectedTask} />}
-      {view === "timeline" && (
-        <Timeline run={loaded.state} startedAt={loaded.started_at} now={now} onSelect={setSelectedTask} />
-      )}
+        {view === "grid" && (
+          <SceneView>
+            <RunGraph run={loaded.state} selectedTask={selectedTask} onSelectTask={setSelectedTask} />
+          </SceneView>
+        )}
+        {view === "table" && <TaskTable run={loaded.state} onSelect={setSelectedTask} />}
+        {view === "timeline" && (
+          <Timeline run={loaded.state} startedAt={loaded.started_at} now={now} onSelect={setSelectedTask} />
+        )}
+      </Scene>
       {selectedTask !== null && (
-        <Inspector
-          runId={runId}
-          run={loaded.state}
-          task={selectedTask}
-          onClose={() => {
-            setSelectedTask(null);
-          }}
-        />
+        <Detail mark="inspector" label="inspector">
+          <Inspector
+            runId={runId}
+            run={loaded.state}
+            task={selectedTask}
+            onClose={() => {
+              setSelectedTask(null);
+            }}
+          />
+        </Detail>
       )}
-    </main>
+    </>
   );
 }
