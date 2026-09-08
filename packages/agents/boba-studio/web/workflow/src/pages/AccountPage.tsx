@@ -1,32 +1,20 @@
-import { ArrowLeft, LogOut, Workflow } from "lucide-react";
-import { type ReactElement, useCallback, useState } from "react";
+import { ArrowLeft, LogOut, Plug, Workflow } from "lucide-react";
+import { type ReactElement, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { useServices } from "../services";
 import { PageUrls } from "../config";
 import { Async } from "../components/Async";
-import { ConnectionsTab } from "../components/account/ConnectionsTab";
-import { Segmented } from "../ui/Segmented";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { useLoadable } from "../hooks/useLoadable";
 import type { Me } from "../model/account";
-import { Button, IconLink, Topbar, TopbarSpacer } from "../ui";
+import { Button, IconLink, Topbar, TopbarBrand, TopbarCrumbs, TopbarSlot, TopbarSpacer } from "../ui";
 
-type Tab = "connections";
-
-const TABS: { value: Tab; label: string }[] = [{ value: "connections", label: "Connections" }];
-
-/** Содержимое вкладок по ключу: новая вкладка — новая запись здесь и в TABS. */
-const TAB_VIEWS: Record<Tab, () => ReactElement> = {
-  connections: () => <ConnectionsTab />,
-};
-
-/** Личный кабинет: кто вошёл, выход и вкладки приватных настроек. */
+/** Личный кабинет: кто вошёл, выход и переход к соединениям. */
 export function AccountPage(): ReactElement {
   const { api } = useServices();
   const navigate = useNavigate();
   const [me] = useLoadable(useCallback(() => api.me(), [api]));
-  const [tab, setTab] = useState<Tab>("connections");
 
   const logout = useCallback(() => {
     void api.logout().then(
@@ -54,15 +42,12 @@ export function AccountPage(): ReactElement {
   return (
     <div className="account">
       <Topbar>
-        {/* слот кнопки панели: держит сетку топбара той же, что на сцене */}
-        <span className="topbar__slot" aria-hidden="true" />
-        <div className="topbar__brand">
+        <TopbarSlot />
+        <TopbarBrand>
           <Workflow size={18} />
           <b>Boba</b> Workflow <span>Studio</span>
-        </div>
-        <nav className="crumbs" aria-label="breadcrumbs">
-          <span>Account</span>
-        </nav>
+        </TopbarBrand>
+        <TopbarCrumbs root="Account" />
         <TopbarSpacer />
         <Button onClick={logout} aria-label="Sign out">
           <LogOut size={14} />
@@ -76,8 +61,17 @@ export function AccountPage(): ReactElement {
       </Topbar>
       <div className="account__body">
         <Async state={me} render={renderHeader} />
-        <Segmented options={TABS} value={tab} onChange={setTab} label="account sections" />
-        {TAB_VIEWS[tab]()}
+        <div>
+          <Button
+            icon={Plug}
+            onClick={() => {
+              void navigate(PageUrls.connections());
+            }}
+            data-testid="account-connections"
+          >
+            Connections
+          </Button>
+        </div>
       </div>
     </div>
   );

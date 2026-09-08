@@ -594,14 +594,6 @@ class RunSpec(BaseModel):
             "{user_id}/{thread_id}. Пустая — корень."
         ),
     )
-    shell: str = Field(
-        default="",
-        description=(
-            "Интерпретатор, которым исполняется команда bash-инструмента. "
-            "Обязателен для секций, где такой инструмент включён; путь "
-            "должен существовать внутри корня песочницы."
-        ),
-    )
 
     @field_validator("cwd", mode="after")
     @classmethod

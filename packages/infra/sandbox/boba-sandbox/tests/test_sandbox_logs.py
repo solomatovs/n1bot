@@ -280,7 +280,6 @@ _PROFILE_BASE: dict[str, object] = {
         "process_oom_score_adj": 0,
     },
     "run": {
-        "shell": "/bin/bash",
         "cwd": "/tmp",  # noqa: S108
     },
 }

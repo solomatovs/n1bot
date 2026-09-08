@@ -1,6 +1,5 @@
 import { z } from "zod";
 
-import type { ConnectionView } from "../../model/account";
 
 /** Снимок процесса, записи сервиса и снимки подключений, как их отдаёт JSON
  * API; разбор на границе делает zod, соответствие OpenAPI проверяет
@@ -725,29 +724,3 @@ export type FieldChange = z.infer<typeof FieldChangeSchema>;
 export type PartChange = z.infer<typeof PartChangeSchema>;
 export type ObjectChange = z.infer<typeof ObjectChangeSchema>;
 export type SourceDiff = z.infer<typeof SourceDiffSchema>;
-
-/** Подключение на странице: строка брокера и что о ней знает каталог. */
-export type ConnectionRow = {
-  view: ConnectionView;
-  /** У вида подключения есть снимок: его можно синхронизировать. */
-  syncable: boolean;
-  synced: SyncedConnection | undefined;
-};
-
-/** Список подключений с пометками каталога; чужие личные подключения с
- * версиями в брокере не видны, но в каталоге есть: они идут без строки. */
-export function connectionRows(
-  views: ConnectionView[],
-  kinds: string[],
-  synced: SyncedConnection[],
-): { rows: ConnectionRow[]; foreign: SyncedConnection[] } {
-  const byId = new Map(synced.map((item) => [item.connection_id, item]));
-  const rows = views.map((view) => ({
-    view,
-    syncable: kinds.includes(view.kind),
-    synced: byId.get(view.id),
-  }));
-  const seen = new Set(views.map((view) => view.id));
-  const foreign = synced.filter((item) => !seen.has(item.connection_id));
-  return { rows, foreign };
-}

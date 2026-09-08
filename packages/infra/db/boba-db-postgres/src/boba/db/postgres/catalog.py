@@ -40,7 +40,7 @@ from boba.catalog import (
     TreeScope,
 )
 from boba.db.postgres.profile import PostgresConfig
-from boba.toolkit.result import TextResult, ToolResult
+from boba.toolkit.result import MarkdownResult, ToolResult
 from boba.toolkit.types import SecretRevealing
 
 logger = logging.getLogger(__name__)
@@ -563,7 +563,7 @@ class SnapshotResultKey(StrEnum):
 
 class SnapshotOutcome(BaseModel):
     """Итог снятия: версия, под которой строки легли в домен, и версия
-    сервера источника. Инструмент кладёт его в metadata TextResult,
+    сервера источника. Инструмент кладёт его в metadata MarkdownResult,
     приложение читает обратно."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -582,9 +582,9 @@ class SnapshotOutcome(BaseModel):
         """Ошибки:
         CatalogDomainError — итог не текстовый или без версии.
         """
-        if not isinstance(result, TextResult):
+        if not isinstance(result, MarkdownResult):
             msg = (
-                "snapshot tool result: expected a TextResult with the version "
+                "snapshot tool result: expected a MarkdownResult with the version "
                 f"in metadata, got {type(result).__name__}"
             )
             raise CatalogDomainError(msg)

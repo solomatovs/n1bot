@@ -42,8 +42,9 @@
 Подключение — строка брокера соединений (`boba-connection-broker`): имя,
 вид (`kind` типа соединения из реестра `boba.connections` — «postgres»,
 «clickhouse», «web»…), профиль с секретами, владелец и права по ролям.
-Каталог своих подключений не заводит: страница `/catalog/connections` и
-вкладка подключений ходят в общий `ConnectionsApi` брокера studio под
+Каталог своих подключений не заводит: общая страница studio `/connections`
+(доска `ConnectionsBoard`, каталог дополняет её версиями снимков и sync) и
+вкладка подключений на странице процесса ходят в общий `ConnectionsApi` брокера studio под
 `/api/v1/connections`.
 
 Снимок каждого вида живёт в пакете-владельце драйвера
@@ -282,7 +283,7 @@ key}]}, stale}` — всё, что странице нужно от снимко
 | `{prefix}/workflow/catalog/processes/{process_id}` | опубликованный процесс |
 | `{prefix}/workflow/catalog/drafts/{draft_id}` | черновик процесса с правками |
 | `{prefix}/workflow/catalog/shared/{token}` | процесс по ссылке для гостя, только чтение |
-| `{prefix}/workflow/catalog/connections` | подключения: форма по JSON Schema, check, sync, edit, delete, версия снимка |
+| `{prefix}/workflow/connections` | подключения studio: форма по JSON Schema, check, edit, delete; при включённом каталоге — версия снимка и sync |
 | `{prefix}/workflow/catalog/connections/{connection_id}` | дерево версии снимка, карточки объектов, diff версий, синхронизация с ходом, forget versions |
 
 Состояние страницы процесса живёт в адресе: `?active=<node_id>` —

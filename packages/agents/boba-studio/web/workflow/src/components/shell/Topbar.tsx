@@ -1,11 +1,11 @@
-import { Database, PanelLeft, Settings, Workflow } from "lucide-react";
+import { Database, PanelLeft, Plug, Settings, Workflow } from "lucide-react";
 import type { ReactElement } from "react";
 
 import type { StoredRun, StoredWorkflow } from "../../model/workflow";
 import { PageUrls } from "../../config";
 import { ThemeToggle } from "../ThemeToggle";
 import { SocketLamp } from "./SocketLamp";
-import { IconButton, IconLink, Topbar as TopbarFrame, TopbarSpacer } from "../../ui";
+import { IconButton, IconLink, Topbar as TopbarFrame, TopbarBrand, TopbarCrumbs, TopbarSpacer } from "../../ui";
 
 type Props = {
   run: StoredRun | null;
@@ -32,32 +32,22 @@ export function Topbar({ run, workflow, listOpen, onToggleList }: Props): ReactE
 
   return (
     <TopbarFrame>
-      <IconButton
-        className="topbar__drawer"
-        aria-label="Toggle list"
-        aria-expanded={listOpen}
-        onClick={onToggleList}
-      >
+      <IconButton aria-label="Toggle list" aria-expanded={listOpen} onClick={onToggleList} data-testid="drawer">
         <PanelLeft size={16} />
       </IconButton>
-      <div className="topbar__brand">
+      <TopbarBrand>
         <Workflow size={18} />
         <b>Boba</b> Workflow <span>Studio</span>
-      </div>
-      <nav className="crumbs" aria-label="breadcrumbs">
-        <span>{crumb}</span>
-        {current !== "" && (
-          <>
-            <span className="crumbs__sep">›</span>
-            <span className="crumbs__current">{current}</span>
-          </>
-        )}
-      </nav>
+      </TopbarBrand>
+      <TopbarCrumbs root={crumb} current={current} />
       <TopbarSpacer />
       <SocketLamp />
       <ThemeToggle />
       <IconLink to={PageUrls.catalog.home()} aria-label="Catalog" title="Data catalog">
         <Database size={16} />
+      </IconLink>
+      <IconLink to={PageUrls.connections()} aria-label="Connections" title="Connections">
+        <Plug size={16} />
       </IconLink>
       <IconLink to={PageUrls.account()} aria-label="Account" title="Account">
         <Settings size={16} />

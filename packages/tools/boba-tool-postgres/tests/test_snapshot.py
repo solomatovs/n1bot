@@ -187,7 +187,7 @@ async def _run_tool(
     if body is None:
         raise AssertionError("pg_schema_snapshot has no coroutine body")
 
-    _content, artifact = await body(
+    artifact = await body(
         connection=connection.identified(CONNECTION_ID, "snap"),
         schemas=schemas,
         catalog=CatalogStoreConfig(connection=connection, db_schema=CATALOG),

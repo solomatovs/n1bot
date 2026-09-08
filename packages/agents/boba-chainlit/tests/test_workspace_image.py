@@ -23,8 +23,9 @@ from boba.chainlit.data.storage import (
 from boba.chainlit.infra.config import LocalStorageConfig
 from boba.sandbox.profile import SandboxProfile
 from boba.sandbox.runner import SandboxMountError
+from boba.stand.shell import ShellRun
 from boba.stand.zygote import ROOTFS_IMAGE, ProfileFields, SandboxStand, ZygoteStand
-from boba.tool.shell.tools import BashToolConfig, build_bash_tool
+from boba.tool.shell.tools import BashToolConfig
 from boba.toolkit.result import ShellResult
 from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.images import LauncherOptions
@@ -38,7 +39,7 @@ from boba.workspace.launcher import (
 
 HOST_RO_BINDS = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc/alternatives")
 
-OUTPUT_LIMITS = BashToolConfig(max_output_bytes=4 * 1024 * 1024)
+OUTPUT_LIMITS = BashToolConfig(max_output_bytes=4 * 1024 * 1024, timeout_sec=60.0)
 
 
 def _bin_dirs() -> list[str]:
@@ -156,7 +157,6 @@ _PROFILE_BASE: dict[str, object] = {
         "process_oom_score_adj": 0,
     },
     "run": {
-        "shell": "/bin/bash",
         "cwd": "",
     },
 }
@@ -183,25 +183,15 @@ def _bash(tmp_path: Path, template: Path, thread_id: str = "t1", **profile_kw):
 
     # у каждого теста свой tmp_path и свои лимиты: имя секции — ключ реестра
     section = f"ws-{tmp_path.name}-{thread_id}-{profile_kw.get('timeout_sec', 0)}"
-    launchers = ZygoteStand.launchers(
+    return ZygoteStand.caller(
         section,
         profile_dto,
         path_vars=lambda: {"user_id": "7", "thread_id": thread_id},
     )
 
-    return build_bash_tool(OUTPUT_LIMITS, launchers)
 
-
-def _invoke(tool, command: str, stdin: str = "") -> ShellResult:
-    body = tool.func
-    if body is None:
-        raise AssertionError("bash tool has no sync body")
-
-    _content, artifact = body(command=command, stdin=stdin)
-    if not isinstance(artifact, ShellResult):
-        raise AssertionError("isinstance(artifact, ShellResult)")
-
-    return artifact
+def _invoke(caller, command: str) -> ShellResult:
+    return ShellRun.call_text(caller, command, cfg=OUTPUT_LIMITS)
 
 
 def _storage(

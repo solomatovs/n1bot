@@ -5,11 +5,10 @@ import { useServices } from "../../services";
 import { ApiError } from "../../api/transport";
 import { ShellDataContext, type ShellData } from "../../hooks/useShellData";
 import type { StoredRun, StoredWorkflow } from "../../model/workflow";
-import { SidePanel, narrowScreen, useNarrowScreen } from "../../ui";
+import { Page, PageBody, Pane, narrowScreen, useNarrowScreen } from "../../ui";
 import { Topbar } from "./Topbar";
 import { WorkflowList } from "./WorkflowList";
 
-const LIST_WIDTH_KEY = "studio.list.width";
 const LIST_COLLAPSED_KEY = "studio.list.collapsed";
 
 function storedCollapsed(): boolean {
@@ -28,10 +27,11 @@ function remember(key: string, value: string): void {
   }
 }
 
-/** Каркас Studio: топбар, единый список workflow с их запусками, сцена справа.
+/** Каркас Studio на Page/PageBody: топбар, панель со списком workflow и их
+ * запусков, сцена страницы (и её панель деталей) из Outlet.
  *
  * Панель списка живёт в двух режимах: на широком экране её можно свернуть и
- * растянуть за правый край (размер и свёрнутость запоминаются), на узком —
+ * растянуть за правый край (ширина и свёрнутость запоминаются), на узком —
  * это ящик поверх сцены. */
 export function Shell(): ReactElement {
   const { api, socket } = useServices();
@@ -127,33 +127,23 @@ export function Shell(): ReactElement {
 
   return (
     <ShellDataContext.Provider value={data}>
-      <div className="shell">
-        <Topbar
-          run={currentRun}
-          workflow={currentWorkflow}
-          listOpen={panelShown}
-          onToggleList={toggleList}
-        />
-        <div className="shell__body">
-          <SidePanel
-            aria-label="workflows"
-            className="list"
-            open={listOpen}
-            collapsed={collapsed && !narrow}
-            narrow={narrow}
-            storageKey={LIST_WIDTH_KEY}
-          >
-            <WorkflowList
-              workflows={workflows}
-              runs={runs}
-              selectedWorkflow={workflowId ?? null}
-              selectedRun={runId ?? null}
-              onPick={closeList}
-            />
-          </SidePanel>
+      <Page mark="studio-page">
+        <Topbar run={currentRun} workflow={currentWorkflow} listOpen={panelShown} onToggleList={toggleList} />
+        <PageBody>
+          {panelShown && (
+            <Pane mark="workflows" label="workflows">
+              <WorkflowList
+                workflows={workflows}
+                runs={runs}
+                selectedWorkflow={workflowId ?? null}
+                selectedRun={runId ?? null}
+                onPick={closeList}
+              />
+            </Pane>
+          )}
           <Outlet />
-        </div>
-      </div>
+        </PageBody>
+      </Page>
     </ShellDataContext.Provider>
   );
 }

@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Annotated
 
-from langchain_core.tools import BaseTool, tool
 from pydantic import Field
 
 from boba.canvas.journal import (
@@ -25,7 +24,8 @@ from boba.canvas.journal import (
 )
 from boba.identity.context import CallContext
 from boba.identity.errors import RefusalError
-from boba.toolkit.result import ErrorResult, TextResult, ToolResult, pack_result
+from boba.toolkit.facade import PayloadTool, tool
+from boba.toolkit.result import ErrorResult, MarkdownResult
 from boba.toolrun.streams import ToolStreams
 
 __all__ = [
@@ -163,44 +163,42 @@ class StreamLogsOps:
         return f"journals of thread {thread_id} deleted, freed {freed} bytes"
 
 
-def build_stream_logs_tools(cfg: None) -> list[BaseTool]:
-    @tool(response_format="content_and_artifact")
-    def stream_logs_usage() -> tuple[str, ToolResult]:
+def build_stream_logs_tools(cfg: None) -> list[PayloadTool]:
+    @tool
+    def stream_logs_usage() -> MarkdownResult | ErrorResult:
         """Показать занятость тома журналов вывода инструментов."""
         try:
             text = StreamLogsOps.resolve().usage_text()
         except RefusalError as e:
-            return pack_result(ErrorResult(message=str(e), error_kind=e.kind))
+            return ErrorResult(message=str(e), error_kind=e.kind)
         except StreamJournalError as e:
             message = f"reading the stream journal usage failed: {e}"
-            return pack_result(
-                ErrorResult(message=message, error_kind=StreamLogsErrorKind.NO_JOURNAL)
+            return ErrorResult(
+                message=message, error_kind=StreamLogsErrorKind.NO_JOURNAL
             )
 
-        return pack_result(TextResult(text=text))
+        return MarkdownResult(text=text)
 
-    @tool(response_format="content_and_artifact")
+    @tool
     def stream_logs_cleanup(
         thread_id: Annotated[
             str,
             Field(min_length=1, description=StreamLogsPrompt.THREAD_ID),
         ],
-    ) -> tuple[str, ToolResult]:
+    ) -> MarkdownResult | ErrorResult:
         """Удалить журналы вывода инструментов одного треда."""
         try:
             text = StreamLogsOps.resolve().purge(thread_id)
         except RefusalError as e:
-            return pack_result(ErrorResult(message=str(e), error_kind=e.kind))
+            return ErrorResult(message=str(e), error_kind=e.kind)
         except StreamJournalError as e:
             message = f"purging the journals of thread {thread_id} failed: {e}"
-            return pack_result(
-                ErrorResult(
-                    message=message,
-                    error_kind=StreamLogsErrorKind.PURGE_FAILED,
-                )
+            return ErrorResult(
+                message=message,
+                error_kind=StreamLogsErrorKind.PURGE_FAILED,
             )
 
-        return pack_result(TextResult(text=text))
+        return MarkdownResult(text=text)
 
     stream_logs_usage.description = str(StreamLogsPrompt.USAGE)
     stream_logs_cleanup.description = str(StreamLogsPrompt.CLEANUP)

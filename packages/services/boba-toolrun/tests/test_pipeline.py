@@ -16,7 +16,7 @@ from pydantic import SecretStr
 from boba.stand.fake_toolmod import FakeConfig, fake_echo, fake_relay, fake_stream
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import PayloadTool
-from boba.toolkit.result import ErrorResult, TextResult
+from boba.toolkit.result import ErrorResult, MarkdownResult
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.intent import ToolIntentField
 from boba.toolrun.invoke import ToolInvoker
@@ -34,7 +34,6 @@ def _invoker(workdir: Path) -> ToolInvoker:
             {
                 "provider": "process",
                 "workdir": str(workdir),
-                "shell": "/bin/bash",
                 "timeout_sec": 60.0,
                 "channel_limit_bytes": 8_000_000,
                 "stderr_tail_bytes": 4096,
@@ -77,7 +76,7 @@ class TestCatalog:
 
         result = PipelineService().catalog(invoker)
 
-        assert isinstance(result, TextResult)
+        assert isinstance(result, MarkdownResult)
         assert "fake_stream" in result.text
         assert "fake_relay" in result.text
         assert "fake_echo" not in result.text
@@ -98,7 +97,7 @@ class TestRun:
 
         result = asyncio.run(PipelineService().run(invoker, plan))
 
-        assert isinstance(result, TextResult), result
+        assert isinstance(result, MarkdownResult), result
         assert "streamed 0" in result.text
         assert "streamed 1" in result.text
         assert "bytes moved" in result.text

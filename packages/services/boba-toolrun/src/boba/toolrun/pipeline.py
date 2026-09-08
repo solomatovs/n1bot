@@ -27,11 +27,11 @@ from collections.abc import Awaitable, Callable, Sequence
 from itertools import pairwise
 from typing import Annotated, Any, ClassVar
 
-from langchain_core.tools import BaseTool, tool
+from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from boba.identity.context import CallContext
-from boba.toolkit.calls import CallIdPrefix, ScriptCall, ToolCallViews
+from boba.toolkit.calls import CallIdPrefix
 from boba.toolkit.chain import (
     CallRelay,
     ChainCheck,
@@ -40,8 +40,9 @@ from boba.toolkit.chain import (
     PipelineSlot,
     RelayStats,
 )
+from boba.toolkit.facade import PayloadTool, tool
 from boba.toolkit.ports import PortDirection, StreamSpec, ToolStreamSpecs
-from boba.toolkit.result import ErrorResult, TextResult, ToolResult, pack_result
+from boba.toolkit.result import ErrorResult, MarkdownResult, ToolResult, ToolResultBase
 from boba.toolrun.invoke import InvokeReply, ToolInvoker
 from boba.toolrun.registry import ToolRegistry
 
@@ -120,7 +121,7 @@ class PipelineService:
     """Сколько ждать дескриптор канала узла: узел, упавший до открытия
     вызова (доступ, битые аргументы), канала не отдаст."""
 
-    def catalog(self, invoker: ToolInvoker) -> ToolResult:
+    def catalog(self, invoker: ToolInvoker) -> MarkdownResult:
         """Каталог узлов: потоковые инструменты, видимые субъекту."""
         lines: list[str] = []
 
@@ -132,10 +133,10 @@ class PipelineService:
             lines.append(self._node_line(name, spec, invoker))
 
         if not lines:
-            return TextResult(text="no streaming tools are available")
+            return MarkdownResult(text="no streaming tools are available")
 
         header = "streaming tools (pipeline nodes):"
-        return TextResult(text="\n".join([header, *lines]))
+        return MarkdownResult(text="\n".join([header, *lines]))
 
     async def run(self, invoker: ToolInvoker, plan_text: str) -> ToolResult:
         """Разобрать план, проверить стыковку и прогнать цепочку."""
@@ -296,7 +297,7 @@ class PipelineService:
                 error_kind=PipelineErrorKind.RUN,
             )
 
-        return TextResult(text=f"pipeline finished:\n{text}")
+        return MarkdownResult(text=f"pipeline finished:\n{text}")
 
     def _node_line(self, name: str, spec: StreamSpec, invoker: ToolInvoker) -> str:
         described = invoker.tool(name).description.strip().split("\n")[0]
@@ -336,11 +337,9 @@ class PipelineService:
 
 def build_pipeline_tools(
     cfg: PipelineToolConfig, registry: RegistrySource
-) -> list[BaseTool]:
+) -> list[PayloadTool]:
     """Инструменты pipeline_catalog / pipeline_run для реестра приложения."""
     service = PipelineService()
-
-    ToolCallViews.register("pipeline_run", ScriptCall(arg="plan", lang="json"))
 
     async def _invoker() -> ToolInvoker:
         subject = CallContext.current().subject
@@ -348,17 +347,21 @@ def build_pipeline_tools(
 
         return ToolInvoker.for_subject(resolved, subject)
 
-    @tool(response_format="content_and_artifact")
-    async def pipeline_catalog() -> tuple[str, ToolResult]:
+    @tool
+    async def pipeline_catalog() -> MarkdownResult:
         """Каталог узлов конвейера: потоковые инструменты и их kind'ы."""
-        return pack_result(service.catalog(await _invoker()))
+        return service.catalog(await _invoker())
 
-    @tool(response_format="content_and_artifact")
+    @tool
     async def pipeline_run(
-        plan: Annotated[str, Field(min_length=1, description=PipelinePrompt.PLAN)],
-    ) -> tuple[str, ToolResult]:
+        plan: Annotated[
+            str,
+            Field(min_length=1, description=PipelinePrompt.PLAN),
+            MarkdownResult(language="json"),
+        ],
+    ) -> ToolResultBase:
         """Запустить линейный конвейер потоковых инструментов."""
-        return pack_result(await service.run(await _invoker(), plan))
+        return await service.run(await _invoker(), plan)
 
     pipeline_catalog.description = PipelinePrompt.CATALOG
     pipeline_run.description = PipelinePrompt.RUN

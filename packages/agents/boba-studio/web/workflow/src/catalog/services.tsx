@@ -49,9 +49,6 @@ export function useCatalogChanges(listener: CatalogChangeListener | null): void 
 // код каталога (с ELK) грузится отдельным чанком при первом заходе под /catalog
 const CatalogSection = lazy(() => import("./section"));
 const HomePage = lazy(() => import("./pages/HomePage").then((module) => ({ default: module.HomePage })));
-const ConnectionsPage = lazy(() =>
-  import("./pages/ConnectionsPage").then((module) => ({ default: module.ConnectionsPage })),
-);
 const ConnectionPage = lazy(() =>
   import("./pages/ConnectionPage").then((module) => ({ default: module.ConnectionPage })),
 );
@@ -69,7 +66,6 @@ export function catalogRoutes(): ReactElement {
       <Route path={PageUrls.catalog.process(":processId")} element={<ProcessRoute />} />
       <Route path={PageUrls.catalog.draft(":draftId")} element={<DraftRoute />} />
       <Route path={PageUrls.catalog.shared(":token")} element={<SharedRoute />} />
-      <Route path={PageUrls.catalog.connections()} element={<ConnectionsPage />} />
       <Route path={PageUrls.catalog.connection(":connectionId")} element={<ConnectionPage />} />
       <Route path={`${PageUrls.catalog.home()}/*`} element={<NoSuchPage />} />
     </Route>

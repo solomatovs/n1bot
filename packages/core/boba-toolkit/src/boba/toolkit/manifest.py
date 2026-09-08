@@ -16,11 +16,10 @@ from typing import Any, ClassVar
 from pydantic import BaseModel
 
 from boba.toolkit.entry import ToolLike
-from boba.toolkit.launcher import LauncherFactory
 
 __all__ = ["LaunchSpec", "ToolPluginManifest"]
 
-ManifestBuild = Callable[[Any, LauncherFactory], Sequence[ToolLike]]
+ManifestBuild = Callable[[Any], Sequence[ToolLike]]
 """Фабрика инструментов секции: конфиг секции и исполнители -> инструменты."""
 
 

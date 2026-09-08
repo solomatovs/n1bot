@@ -219,7 +219,6 @@ def sandbox_profile(
             "process_oom_score_adj": 0,
         },
         "run": {
-            "shell": "/bin/bash",
             "cwd": "/tmp",  # noqa: S108  # nosec B108
         },
     }

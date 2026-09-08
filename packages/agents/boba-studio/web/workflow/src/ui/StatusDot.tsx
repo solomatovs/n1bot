@@ -7,7 +7,7 @@ type Props = {
   status?: string | undefined;
 };
 
-/** Цветовая точка строки списка. Единственное место с классом `item__dot`
+/** Цветовая точка строки списка. Единственное место с классом `status-dot`
  * и его inline-переменной цвета. */
 export function StatusDot({ status }: Props): ReactElement {
   let paint = "var(--signal)";
@@ -17,7 +17,7 @@ export function StatusDot({ status }: Props): ReactElement {
 
   return (
     <span
-      className="item__dot"
+      className="status-dot"
       data-status={status}
       style={{ "--status-color": paint } as CSSProperties}
     />

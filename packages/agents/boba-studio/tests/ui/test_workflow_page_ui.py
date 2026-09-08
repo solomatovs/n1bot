@@ -44,12 +44,15 @@ class Selector:
     """Селекторы страницы: одно место, чтобы разметка менялась в одном."""
 
     BRAND: ClassVar[str] = ".topbar__brand"
-    LIST_NEW: ClassVar[str] = ".list__new"
-    LIST_ITEM: ClassVar[str] = ".list .item"
-    LIST_ITEM_ON: ClassVar[str] = ".list .item--on"
-    LIST_ITEM_SUB: ClassVar[str] = ".list .item--sub"
-    ITEM_TOGGLE: ClassVar[str] = ".item__toggle"
-    CRUMB_CURRENT: ClassVar[str] = ".crumbs__current"
+    LIST_NEW: ClassVar[str] = ".rows__action"
+    LIST_ITEM: ClassVar[str] = '[data-testid="workflows"] .rows__row'
+    LIST_ITEM_ON: ClassVar[str] = (
+        '[data-testid="workflows"] .rows__row[data-active="true"]'
+    )
+    LIST_ITEM_SUB: ClassVar[str] = '[data-testid="workflows"] .rows__row--nested'
+    ITEM_LINK: ClassVar[str] = ".rows__link"
+    ITEM_TOGGLE: ClassVar[str] = '[data-testid="runs-toggle"]'
+    CRUMB_CURRENT: ClassVar[str] = ".topbar__crumbs-current"
     YAML_TEXT: ClassVar[str] = 'textarea[aria-label="workflow yaml"]'
     TOAST: ClassVar[str] = ".toast"
     RUN_STATUS: ClassVar[str] = ".vitals__badge"
@@ -57,7 +60,7 @@ class Selector:
     EDITOR_NODE: ClassVar[str] = ".editor-node"
     TIMELINE_ROW: ClassVar[str] = ".tl__row"
     TIMELINE_BAR: ClassVar[str] = ".tl__bar"
-    INSPECTOR: ClassVar[str] = ".inspector"
+    INSPECTOR: ClassVar[str] = '[data-testid="inspector"]'
     ARG_COMMAND: ClassVar[str] = 'textarea[aria-label="arg command"]'
     TABLE: ClassVar[str] = ".table"
     OUTPUT_TEXT: ClassVar[str] = ".output .code"
@@ -145,7 +148,9 @@ def test_shell_navigation(page: Page, stand: StandProcess) -> None:
     _open(page, stand, "/workflow")
     expect(page.locator(".rail")).to_have_count(0)
     expect(page.locator('.topbar [role="tablist"]')).to_have_count(0)
-    expect(page.locator(".list[aria-label='workflows']")).to_be_visible()
+    expect(
+        page.locator("[data-testid='workflows'][aria-label='workflows']")
+    ).to_be_visible()
     expect(page.locator(Selector.LIST_NEW)).to_have_text("+ New workflow")
 
     # старые адреса живут редиректами
@@ -262,13 +267,13 @@ def test_lists_show_saved_workflows_and_runs(page: Page, stand: StandProcess) ->
     _expand_runs(page, "ui-page-flow")
     run_row = page.locator(Selector.LIST_ITEM_SUB).first
     expect(run_row).to_be_visible()
-    run_row.click()
+    run_row.locator(Selector.ITEM_LINK).click()
     expect(page).to_have_url(re.compile(r"/workflow/runs/[0-9a-f-]+$"))
     expect(page.locator(Selector.RUN_STATUS)).to_have_text("done")
 
     item = page.locator(Selector.LIST_ITEM, has_text="ui-page-flow")
     expect(item.first).to_contain_text("runs")
-    item.first.locator(".item__body").click()
+    item.first.locator(Selector.ITEM_LINK).click()
     expect(page).to_have_url(re.compile(r"/workflow/workflow/[0-9a-f-]{36}$"))
     expect(page.locator(Selector.EDITOR_NODE)).to_have_count(2)
 
@@ -277,7 +282,7 @@ def test_finished_run_loads_lists_once(page: Page, stand: StandProcess) -> None:
     """Снимок законченного запуска не крутит перезапрос списков по кругу."""
     _open(page, stand, "/workflow")
     _expand_runs(page, "ui-page-flow")
-    page.locator(Selector.LIST_ITEM_SUB).first.click()
+    page.locator(Selector.LIST_ITEM_SUB).first.locator(Selector.ITEM_LINK).click()
     expect(page.locator(Selector.RUN_STATUS)).to_have_text("done")
     expect(page.locator(Selector.TASK_NODE).first).to_be_visible()
 
@@ -312,7 +317,7 @@ def test_second_tab_sees_a_new_run_through_the_bus(
 
         _open(page, stand, "/workflow")
         _expand_runs(page, "ui-page-flow")
-        page.locator(Selector.LIST_ITEM_SUB).first.click()
+        page.locator(Selector.LIST_ITEM_SUB).first.locator(Selector.ITEM_LINK).click()
         page.get_by_role("button", name=re.compile("Re-run")).click()
         expect(page).to_have_url(re.compile(r"/workflow/runs/[0-9a-f-]+$"))
         expect(page.locator(Selector.RUN_STATUS)).to_have_text("done")
@@ -331,7 +336,7 @@ def test_second_tab_follows_builder_edits_through_the_bus(
     """
     _open(page, stand, "/workflow")
     row = page.locator(Selector.LIST_ITEM, has_text="ui-page-flow").first
-    row.locator(".item__body").click()
+    row.locator(Selector.ITEM_LINK).click()
     expect(page).to_have_url(re.compile(r"/workflow/workflow/[0-9a-f-]{36}$"))
     expect(page.locator(Selector.EDITOR_NODE).first).to_be_visible()
     before = page.locator(Selector.EDITOR_NODE).count()
@@ -375,25 +380,21 @@ def test_narrow_screen_drawer_opens_and_closes_the_list(
     narrow.set_default_timeout(PAGE_TIMEOUT_MS)
     try:
         _open(narrow, stand, "/workflow")
-        drawer = narrow.locator(".topbar__drawer")
+        drawer = narrow.get_by_test_id("drawer")
         expect(drawer).to_be_visible()
-        panel = narrow.locator("aside.list")
-        expect(panel).not_to_have_class(re.compile(r"list--open"))
-        box_hidden = panel.bounding_box()
-        assert box_hidden is not None
-        assert box_hidden["x"] + box_hidden["width"] <= 0
+        panel = narrow.get_by_test_id("workflows")
+        expect(panel).to_have_count(0)
 
         drawer.click()
         expect(drawer).to_have_attribute("aria-expanded", "true")
-        expect(panel).to_have_class(re.compile(r"list--open"))
-        narrow.wait_for_timeout(400)
+        expect(panel).to_be_visible()
         box_open = panel.bounding_box()
         assert box_open is not None
         assert box_open["x"] >= 0
 
         narrow.locator(Selector.LIST_ITEM, has_text="ui-page-flow").first.locator(
-            ".item__body"
+            Selector.ITEM_LINK
         ).click()
-        expect(panel).not_to_have_class(re.compile(r"list--open"))
+        expect(panel).to_have_count(0)
     finally:
         context.close()

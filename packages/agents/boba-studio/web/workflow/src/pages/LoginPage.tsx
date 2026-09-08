@@ -11,7 +11,7 @@ import { Async } from "../components/Async";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { useLoadable } from "../hooks/useLoadable";
 import type { SignInProviders } from "../model/account";
-import { Button, Field, Input, LinkButton } from "../ui";
+import { Button, Field, Input, LinkButton, TopbarSpacer } from "../ui";
 
 const NextStateSchema = z.object({ next: z.string() });
 
@@ -129,7 +129,7 @@ export function LoginPage(): ReactElement {
         <div className="login__brand">
           <Workflow size={22} />
           <b>Boba</b> Workflow <span>Studio</span>
-          <span className="topbar__spacer" />
+          <TopbarSpacer />
           <ThemeToggle />
         </div>
         <Async state={providers} render={renderForm} />

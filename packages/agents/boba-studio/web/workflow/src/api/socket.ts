@@ -5,7 +5,6 @@ import {
   RunSnapshotSchema,
   StreamEventSchema,
   UserEventSchema,
-  withKnownResults,
   type RunSnapshot,
   type StreamEvent,
   type UserEvent,
@@ -163,7 +162,7 @@ export class RunSocket {
 
   subscribe(runId: string, onSnapshot: SnapshotListener, onRefused: RefusalListener): () => void {
     const deliver = (payload: unknown): void => {
-      const parsed = RunSnapshotSchema.safeParse(withKnownResults(payload));
+      const parsed = RunSnapshotSchema.safeParse(payload);
       if (!parsed.success) {
         onRefused(`bad snapshot: ${parsed.error.message}`);
         return;

@@ -72,7 +72,7 @@ class InvokeReply(BaseModel):
             return self.content
 
         if not self.result.ok:
-            return self.result.llm_text()
+            return self.result.llm_view()
 
         return ""
 

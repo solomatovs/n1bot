@@ -1,36 +1,22 @@
-"""Тесты семейств вызова и результата: render_for_llm, рендеры входа и выхода."""
+"""Тесты семейств вызова и результата: llm_view, chat_view и рендер входа."""
 
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 
-from boba.chainlit.rendering.tool import (
-    ChartRendering,
-    MarkdownRendering,
-    ToolCallMarkdown,
-    ToolResultMarkdown,
-    ToolResultView,
-)
-from boba.toolkit.calls import (
-    HiddenCall,
-    JsonCall,
-    ScriptCall,
-    ToolCallViews,
-)
+from boba.toolkit.calls import ToolCallBase, ToolCallModels
 from boba.toolkit.result import (
-    AffectedSqlResult,
-    ChartResult,
     ErrorResult,
-    JsonResult,
-    MultiResult,
+    MarkdownResult,
     ShellResult,
+    SqlResult,
+    SqlStatement,
     TableResult,
-    TextResult,
     ToolArtifact,
-    pack_result,
-    render_for_llm,
+    VisualResult,
 )
 
 
@@ -46,7 +32,6 @@ def shell_result(**overrides: object) -> ShellResult:
         "stderr_truncated": False,
         "duration_ms": 12,
         "timed_out": False,
-        "diagnostic": "",
     }
     fields.update(overrides)
 
@@ -60,82 +45,69 @@ def chainlit_context() -> None:
 
 class TestRenderForLlm:
     def test_text(self) -> None:
-        if render_for_llm(TextResult(text="hello")) != "hello":
-            raise AssertionError('render_for_llm(TextResult(text="hello")) == "hello"')
-
-    def test_json(self) -> None:
-        if render_for_llm(JsonResult(payload={"a": 1})) != '{"a": 1}':
-            raise AssertionError(
-                'render_for_llm(JsonResult(payload={"a": 1})) == \'{"…'
-            )
+        if MarkdownResult(text="hello").llm_view() != "hello":
+            raise AssertionError('MarkdownResult(text="hello").llm_view() == "hello"')
 
     def test_table_with_note(self) -> None:
         result = TableResult(rows=[{"a": 1}], note="truncated")
-        if render_for_llm(result) != '[{"a": 1}]\n\ntruncated':
-            raise AssertionError(
-                "render_for_llm(result) == '[{\"a\": 1}]\\n\\ntruncated'"
-            )
+        if result.llm_view() != '[{"a": 1}]\n\ntruncated':
+            raise AssertionError("result.llm_view() == '[{\"a\": 1}]\\n\\ntruncated'")
 
     def test_table_without_note(self) -> None:
         result = TableResult(rows=[{"a": 1}])
-        if render_for_llm(result) != '[{"a": 1}]':
-            raise AssertionError("render_for_llm(result) == '[{\"a\": 1}]'")
+        if result.llm_view() != '[{"a": 1}]':
+            raise AssertionError("result.llm_view() == '[{\"a\": 1}]'")
 
     def test_chart_confirmation(self) -> None:
-        if not (
-            render_for_llm(ChartResult(spec={"data": []}, title="Sales"))
-            == ("[chart rendered: Sales]")
-        ):
-            raise AssertionError('render_for_llm(ChartResult(spec={"data": []}, title…')
-        if render_for_llm(ChartResult(spec={"data": []})) != "[chart rendered]":
-            raise AssertionError('render_for_llm(ChartResult(spec={"data": []})) == "…')
+        titled = VisualResult.plotly({"data": []}, "Sales").llm_view()
+        if titled != "[plotly rendered: Sales]":
+            raise AssertionError('titled == "[plotly rendered: Sales]"')
+
+        untitled = VisualResult.plotly({"data": []}, None).llm_view()
+        if untitled != "[plotly rendered]":
+            raise AssertionError('untitled == "[plotly rendered]"')
 
     def test_error(self) -> None:
         result = ErrorResult(message="boom", error_kind="timeout")
-        if render_for_llm(result) != "boom":
-            raise AssertionError('render_for_llm(result) == "boom"')
+        if result.llm_view() != "boom":
+            raise AssertionError('result.llm_view() == "boom"')
 
 
-class TestPackResult:
+class TestPacked:
     def test_returns_content_and_result(self) -> None:
-        result = TextResult(text="x")
-        content, artifact = pack_result(result)
+        result = MarkdownResult(text="x")
+        content, artifact = result.packed()
         if content != "x":
             raise AssertionError('content == "x"')
         if artifact is not result:
             raise AssertionError("artifact is result")
 
 
-class TestToolResultView:
+class TestChatElement:
     def test_chart(self) -> None:
-        result = ChartResult(spec={"data": []}, title="t")
-        if not (
-            ToolResultView(result).render()
-            == ChartRendering(
-                spec={"data": []},
-                title="t",
-            )
-        ):
-            raise AssertionError("ToolResultView(result).render() == ChartRendering( …")
+        result = VisualResult.plotly({"data": []}, "t")
+        view = result.chat_view()
+        if view.element is not result:
+            raise AssertionError("view.element is result")
+        if view.markdown != "_(plotly: t)_":
+            raise AssertionError('view.markdown == "_(plotly: t)_"')
 
-    def test_markdown_variants(self) -> None:
+    def test_text_variants_have_no_visual(self) -> None:
         for result in (
-            TextResult(text="x"),
-            JsonResult(payload={"a": 1}),
+            MarkdownResult(text="x"),
             TableResult(rows=[{"a": 1}]),
             ErrorResult(message="boom", error_kind="e"),
         ):
-            rendering = ToolResultView(result).render()
-            if not (isinstance(rendering, MarkdownRendering)):
-                raise AssertionError("isinstance(rendering, MarkdownRendering)")
-            if not (rendering.markdown):
-                raise AssertionError("rendering.markdown")
+            if result.chat_view().element is not None:
+                raise AssertionError("result.chat_view().element is None")
+            if not (result.chat_view().markdown):
+                raise AssertionError("result.chat_view().markdown")
 
 
-class TestToolResultMarkdown:
+class TestHumanText:
     def test_table_is_gfm(self) -> None:
         result = TableResult(rows=[{"name": "a", "n": 1}], note="cut")
-        md = ToolResultMarkdown(result).render()
+        md = result.chat_view().markdown
         if "|" not in md:
             raise AssertionError('"|" in md')
         if "_cut_" not in md:
@@ -144,30 +116,17 @@ class TestToolResultMarkdown:
             raise AssertionError('md.startswith("\\n")')
 
     def test_empty_table(self) -> None:
-        if ToolResultMarkdown(TableResult(rows=[])).render() != "\n_(no rows)_":
-            raise AssertionError("ToolResultMarkdown(TableResult(rows=[])).render() =…")
-
-    def test_json_fence_multiline(self) -> None:
-        md = ToolResultMarkdown(JsonResult(payload={"a": [1, 2]})).render()
-        if not (md.startswith("\n```json\n")):
-            raise AssertionError('md.startswith("\\n```json\\n")')
-        if not (md.endswith("```\n")):
-            raise AssertionError('md.endswith("```\\n")')
-
-    def test_json_inline_short(self) -> None:
-        if ToolResultMarkdown(JsonResult(payload={})).render() != "`{}`":
-            raise AssertionError("ToolResultMarkdown(JsonResult(payload={})).render()…")
+        if TableResult(rows=[]).chat_view().markdown != "\n_(no rows)_":
+            raise AssertionError("TableResult(rows=[]).chat_view().markdown =…")
 
     def test_error(self) -> None:
-        rendered = ToolResultMarkdown(
-            ErrorResult(message="boom", error_kind="e")
-        ).render()
+        rendered = ErrorResult(message="boom", error_kind="e").chat_view().markdown
         if rendered != "**Error:** boom":
             raise AssertionError('rendered == "**Error:** boom"')
 
     def test_flatten_cell_newlines(self) -> None:
         result = TableResult(rows=[{"a": "x\ny"}])
-        md = ToolResultMarkdown(result).render()
+        md = result.chat_view().markdown
         if not ("\n" not in md.split("| a")[1].split("|")[1] or True):
             raise AssertionError(
                 '"\\n" not in md.split("| a")[1].split("|")[1] or True'
@@ -183,7 +142,7 @@ class TestShellResult:
         """LLM разбирает потоки сама: в отчёте они оба и код возврата."""
         result = shell_result(stdout="out\n", stderr="warn\n", stderr_bytes=5)
 
-        report = json.loads(render_for_llm(result))
+        report = json.loads(result.llm_view())
 
         if report["stdout"] != "out\n":
             raise AssertionError('report["stdout"] == "out\\n"')
@@ -224,7 +183,7 @@ class TestShellResult:
         """Блок с шапкой потока, код возврата строкой под ним; команды нет."""
         result = shell_result(stdout="total 0\n")
 
-        md = ToolResultMarkdown(result).render()
+        md = result.chat_view().markdown
 
         if "```stdout\ntotal 0\n```" not in md:
             raise AssertionError('"```stdout\\ntotal 0\\n```" in md')
@@ -237,7 +196,7 @@ class TestShellResult:
         """Отрицательный код — процесс убит сигналом, а не «exit code: -9»."""
         result = shell_result(exit_code=-9, stdout="partial\n")
 
-        md = ToolResultMarkdown(result).render()
+        md = result.chat_view().markdown
 
         if "_killed by signal 9_" not in md:
             raise AssertionError('"_killed by signal 9_" in md')
@@ -253,7 +212,7 @@ class TestShellResult:
             stderr_bytes=17,
         )
 
-        md = ToolResultMarkdown(result).render()
+        md = result.chat_view().markdown
 
         if "```stderr\nls: no such file\n```" not in md:
             raise AssertionError('"```stderr\\nls: no such file\\n```" in md')
@@ -264,7 +223,7 @@ class TestShellResult:
         """Молчат оба потока: блока нет, код возврата остаётся на виду."""
         result = shell_result(stdout="", stdout_bytes=0, exit_code=7)
 
-        md = ToolResultMarkdown(result).render()
+        md = result.chat_view().markdown
 
         if "_(no output)_" not in md:
             raise AssertionError('"_(no output)_" in md')
@@ -277,10 +236,9 @@ class TestShellResult:
             stdout="head\n",
             stdout_truncated=True,
             timed_out=True,
-            diagnostic="killed by the memory limit",
         )
 
-        md = ToolResultMarkdown(result).render()
+        md = result.chat_view().markdown
 
         if "timed out" not in md:
             raise AssertionError('"timed out" in md')
@@ -288,117 +246,102 @@ class TestShellResult:
             raise AssertionError('"exit code: 124" in md')
         if "output truncated" not in md:
             raise AssertionError('"output truncated" in md')
-        if "killed by the memory limit" not in md:
-            raise AssertionError('"killed by the memory limit" in md')
 
     def test_fence_survives_backticks_in_the_output(self) -> None:
         """Вывод с ``` внутри не разрывает блок: ограда длиннее вложенной."""
         result = shell_result(stdout="```\nnested\n```\n")
 
-        md = ToolResultMarkdown(result).render()
+        md = result.chat_view().markdown
 
         if "````stdout\n```\nnested\n```\n````" not in md:
             raise AssertionError("ограда не переросла вложенную")
 
-    def test_view_renders_shell_as_markdown(self) -> None:
-        rendering = ToolResultView(shell_result()).render()
-
-        if not isinstance(rendering, MarkdownRendering):
-            raise AssertionError("isinstance(rendering, MarkdownRendering)")
+    def test_shell_has_no_visual(self) -> None:
+        if shell_result().chat_view().element is not None:
+            raise AssertionError("shell_result().chat_view().element is None")
 
 
-class TestToolCallMarkdown:
-    """Вход шага по объявлению: зеркало рендера результата."""
+class TestToolCallChatView:
+    """Вход шага рисует модель вызова из объявленных у полей результатов."""
 
-    def test_json_call_renders_pretty_json(self) -> None:
-        rendering = ToolCallMarkdown(JsonCall(), {"path": "/workspace/a.png"}).render()
+    @staticmethod
+    def _call(name: str, args: dict[str, Any]) -> ToolCallBase:
+        return ToolCallModels.call_of(name, args)
 
-        if rendering is None:
-            raise AssertionError("rendering is not None")
-        if not rendering.markdown.startswith("{"):
-            raise AssertionError('rendering.markdown.startswith("{")')
-        if rendering.show_input != "json":
-            raise AssertionError('rendering.show_input == "json"')
+    @staticmethod
+    def _declare_bash() -> None:
+        """Импорт модуля bash объявляет его модель вызова."""
+        from boba.tool.shell.tools import TOOLS
 
-    def test_script_call_renders_a_language_block(self) -> None:
-        rendering = ToolCallMarkdown(
-            ScriptCall(arg="command", lang="bash"),
-            {"command": "ls -la", "stdin": ""},
-        ).render()
+        if not TOOLS:
+            raise AssertionError("shell module declared its tools")
 
-        if rendering is None:
-            raise AssertionError("rendering is not None")
-        if rendering.markdown != "```bash\nls -la\n```":
-            raise AssertionError('rendering.markdown == "```bash\\nls -la\\n```"')
-        if rendering.show_input is not True:
-            raise AssertionError("rendering.show_input is True")
+    def test_unknown_tool_renders_json(self) -> None:
+        markdown = (
+            self._call("no_such_tool", {"path": "/workspace/a.png"})
+            .chat_view()
+            .markdown
+        )
 
-    def test_script_call_keeps_non_empty_arguments(self) -> None:
-        """Непустой stdin виден рядом со скриптом; пустой не шумит."""
-        rendering = ToolCallMarkdown(
-            ScriptCall(arg="command", lang="bash"),
-            {"command": "cat", "stdin": "line1\nline2"},
-        ).render()
+        if not markdown.startswith("```json\n{"):
+            raise AssertionError('markdown.startswith("```json\\n{")')
 
-        if rendering is None:
-            raise AssertionError("rendering is not None")
-        if "```bash\ncat\n```" not in rendering.markdown:
-            raise AssertionError('"```bash\\ncat\\n```" in rendering.markdown')
-        if "**stdin:**" not in rendering.markdown:
-            raise AssertionError('"**stdin:**" in rendering.markdown')
+    def test_bash_renders_a_language_block(self) -> None:
+        self._declare_bash()
+        markdown = self._call("bash", {"command": "ls -la"}).chat_view().markdown
 
-    def test_script_call_without_the_argument_falls_back(self) -> None:
-        """Объявление разошлось со схемой: вход показывается json'ом."""
-        rendering = ToolCallMarkdown(
-            ScriptCall(arg="command", lang="bash"), {"path": "/workspace/a.png"}
-        ).render()
+        if markdown != "```bash\nls -la\n```":
+            raise AssertionError(
+                f'markdown == "```bash\\nls -la\\n```", дано {markdown!r}'
+            )
 
-        if rendering is None:
-            raise AssertionError("rendering is not None")
-        if rendering.show_input != "json":
-            raise AssertionError('rendering.show_input == "json"')
+    def test_missing_argument_is_skipped(self) -> None:
+        """Аргументы разошлись со схемой: показывается то, что пришло."""
+        self._declare_bash()
+        markdown = self._call("bash", {"path": "/workspace/a.png"}).chat_view().markdown
 
-    def test_hidden_call_shows_nothing(self) -> None:
-        if ToolCallMarkdown(HiddenCall(), {"secret": "x"}).render() is not None:
-            raise AssertionError("HiddenCall рендерится в None")
+        if markdown != "":
+            raise AssertionError(f"пустой вход, дано {markdown!r}")
 
     def test_sql_input_renders_as_a_sql_block(self) -> None:
-        rendering = ToolCallMarkdown(
-            ScriptCall(arg="sql", lang="sql"),
-            {"connection_name": "dwh", "sql": "select 1\nfrom t"},
-        ).render()
+        from boba.tool.pg.tools import TOOLS
 
-        if rendering is None:
-            raise AssertionError("rendering is not None")
-        if "```sql\nselect 1\nfrom t\n```" not in rendering.markdown:
+        if not TOOLS:
+            raise AssertionError("pg module declared its tools")
+        markdown = (
+            self._call("pg_query", {"connection": "dwh", "sql": "select 1\nfrom t"})
+            .chat_view()
+            .markdown
+        )
+
+        if "```sql\nselect 1\nfrom t\n```" not in markdown:
             raise AssertionError('"```sql\\nselect 1\\nfrom t\\n```" in markdown')
-        if "**connection_name:** `dwh`" not in rendering.markdown:
-            raise AssertionError('"**connection_name:** `dwh`" in markdown')
+        if "**connection:** `dwh`" not in markdown:
+            raise AssertionError('"**connection:** `dwh`" in markdown')
 
     def test_mermaid_spec_renders_as_a_mermaid_block(self) -> None:
-        rendering = ToolCallMarkdown(
-            ScriptCall(arg="spec", lang="mermaid"),
-            {"name": "a.mmd", "spec": "flowchart LR\n    A --> B"},
-        ).render()
+        from boba.canvas.diagram import DiagramToolConfig
+        from boba.chainlit.canvas.diagram import build_diagram_tools
 
-        if rendering is None:
-            raise AssertionError("rendering is not None")
-        if "```mermaid\nflowchart LR\n    A --> B\n```" not in rendering.markdown:
+        build_diagram_tools(DiagramToolConfig(max_chars=1000))
+        markdown = (
+            self._call(
+                "diagram_save", {"name": "a.mmd", "spec": "flowchart LR\n    A --> B"}
+            )
+            .chat_view()
+            .markdown
+        )
+
+        if "```mermaid\nflowchart LR\n    A --> B\n```" not in markdown:
             raise AssertionError("спека рисуется mermaid-блоком")
-        if "**name:** `a.mmd`" not in rendering.markdown:
-            raise AssertionError('"**name:** `a.mmd`" in rendering.markdown')
+        if "**name:** `a.mmd`" not in markdown:
+            raise AssertionError('"**name:** `a.mmd`" in markdown')
 
 
-class TestDeclaredViews:
-    """Объявления инструментов регистрируются и защищены от опечаток.
+class TestDeclaredDisplays:
+    """Объявления показа живут у полей модулей тулов и видны через модель."""
 
-    Реестр наполняется импортом модулей и живёт весь процесс: чистить его
-    между тестами нельзя — второй импорт уже ничего не объявит.
-    """
-
-    def test_module_declarations_register_through_the_toolset(self) -> None:
-        """Импорт модулей тулов объявляет представления в реестре."""
-        # импорт TOOLS и есть объявление: toolset модуля регистрирует views
+    def test_module_declarations_register_through_the_facade(self) -> None:
         from boba.tool.ch.tools import TOOLS as CH_TOOLS
         from boba.tool.chart.tools import TOOLS as CHART_TOOLS
         from boba.tool.pg.tools import TOOLS as PG_TOOLS
@@ -407,144 +350,133 @@ class TestDeclaredViews:
             raise AssertionError("модули отдали свои TOOLS")
 
         expected = {
-            "pg_query": ScriptCall(arg="sql", lang="sql"),
-            "pg_copy": ScriptCall(arg="sql", lang="sql"),
-            "ch_query": ScriptCall(arg="sql", lang="sql"),
-            "visualize": ScriptCall(arg="spec", lang="json"),
+            ("pg_query", "sql"): "sql",
+            ("pg_copy", "sql"): "sql",
+            ("ch_query", "sql"): "sql",
+            ("visualize", "spec"): "json",
         }
-        for name, view in expected.items():
-            if ToolCallViews.of(name) != view:
-                raise AssertionError(f"ToolCallViews.of({name!r}) == {view!r}")
-
-    def test_view_for_an_unknown_tool_name_fails_loudly(self) -> None:
-        """Опечатка в views не должна тихо оставить инструмент на дефолте."""
-        from boba.tool.pg.tools import pg_query
-        from boba.toolkit.entry import ToolEntryError, ToolMain
-
-        try:
-            ToolMain.toolset(
-                pg_query, views={"pg_qeury": ScriptCall(arg="sql", lang="sql")}
-            )
-        except ToolEntryError as e:
-            if "pg_qeury" not in str(e):
-                raise AssertionError('"pg_qeury" in str(e)') from e
-            return
-
-        raise AssertionError("toolset обязан отвергнуть чужое имя")
+        for (name, arg), language in expected.items():
+            call = ToolCallModels.call_of(name, {arg: "x"})
+            fields = {field.name: field for field in call.studio_view().fields}
+            display = fields[arg].display
+            if not isinstance(display, MarkdownResult):
+                raise AssertionError(f"{name}.{arg}: display is MarkdownResult")
+            if display.language != language:
+                raise AssertionError(f"{name}.{arg}: language == {language!r}")
 
 
 class TestTextResultLanguage:
-    """Текст с языком уходит в блок: зеркало ScriptCall на входе."""
+    """Текст с языком уходит в блок, как и объявленный показ аргумента."""
 
     def test_plain_text_stays_markdown(self) -> None:
-        rendered = ToolResultMarkdown(TextResult(text="**bold**")).render()
+        rendered = MarkdownResult(text="**bold**").chat_view().markdown
 
         if rendered != "**bold**":
             raise AssertionError('rendered == "**bold**"')
 
     def test_language_wraps_the_text_into_a_block(self) -> None:
-        result = TextResult(text="one,two\n1,два\n", language="csv")
+        result = MarkdownResult(text="one,two\n1,два\n", language="csv")
 
-        rendered = ToolResultMarkdown(result).render()
+        rendered = result.chat_view().markdown
 
         if rendered != "```csv\none,two\n1,два\n```":
             raise AssertionError('rendered == "```csv\\none,two\\n1,два\\n```"')
 
     def test_fence_survives_backticks_inside(self) -> None:
-        result = TextResult(text="a\n```\nb", language="csv")
+        result = MarkdownResult(text="a\n```\nb", language="csv")
 
-        rendered = ToolResultMarkdown(result).render()
+        rendered = result.chat_view().markdown
 
         if not rendered.startswith("````csv\n"):
             raise AssertionError('rendered.startswith("````csv\\n")')
 
     def test_llm_gets_the_text_without_the_fence(self) -> None:
         """Блок — дело показа: LLM получает дамп как есть."""
-        result = TextResult(text="one,two\n1,два\n", language="csv")
+        result = MarkdownResult(text="one,two\n1,два\n", language="csv")
 
-        if render_for_llm(result) != "one,two\n1,два\n":
-            raise AssertionError("render_for_llm(result) == текст дампа")
+        if result.llm_view() != "one,two\n1,два\n":
+            raise AssertionError("result.llm_view() == текст дампа")
 
 
 class TestTextResultNote:
     """Подпись источника под текстом: окно строк страницы, сводка грепа."""
 
     def test_note_goes_under_the_block(self) -> None:
-        result = TextResult(text="<p>hi</p>", language="html", note="url=x; lines 1-1")
+        result = MarkdownResult(
+            text="<p>hi</p>", language="html", note="url=x; lines 1-1"
+        )
 
-        rendered = ToolResultMarkdown(result).render()
+        rendered = result.chat_view().markdown
 
         if rendered != "```html\n<p>hi</p>\n```\n\n_url=x; lines 1-1_":
             raise AssertionError(f"подпись под блоком, получено {rendered!r}")
 
     def test_empty_text_leaves_only_the_note(self) -> None:
         """Греп без совпадений: пустой блок в ленте не рисуется."""
-        result = TextResult(text="", language="text", note="url=x: no matches found")
+        result = MarkdownResult(
+            text="", language="text", note="url=x: no matches found"
+        )
 
-        rendered = ToolResultMarkdown(result).render()
+        rendered = result.chat_view().markdown
 
         if rendered != "_url=x: no matches found_":
             raise AssertionError(f"одна подпись, получено {rendered!r}")
 
     def test_llm_gets_the_note_after_the_text(self) -> None:
-        result = TextResult(text="page", note="url=x; lines 1-1 of 9")
+        result = MarkdownResult(text="page", note="url=x; lines 1-1 of 9")
 
-        if render_for_llm(result) != "page\n\nurl=x; lines 1-1 of 9":
+        if result.llm_view() != "page\n\nurl=x; lines 1-1 of 9":
             raise AssertionError("подпись уходит в LLM отдельным абзацем")
 
     def test_llm_gets_only_the_note_when_text_is_empty(self) -> None:
-        result = TextResult(text="", note="url=x: no matches found")
+        result = MarkdownResult(text="", note="url=x: no matches found")
 
-        if render_for_llm(result) != "url=x: no matches found":
+        if result.llm_view() != "url=x: no matches found":
             raise AssertionError("пустой текст не даёт пустых абзацев")
 
 
-class TestMultiResult:
-    """Набор итогов: команды одного запроса рисуются своими же рендерами."""
+class TestSqlResult:
+    """Итог запроса: команды рисуются своими блоками под подписью статуса."""
 
     @staticmethod
-    def _both() -> MultiResult:
-        return MultiResult(
-            items=(
-                TableResult(rows=[{"blobs": 3}]),
-                AffectedSqlResult(affected_rows=5, status="DELETE 5"),
-            )
+    def _both() -> SqlResult:
+        return SqlResult(
+            engine="postgres",
+            statements=(
+                SqlStatement(rows=[{"blobs": 3}], status="SELECT 1"),
+                SqlStatement(affected_rows=5, status="DELETE 5"),
+            ),
         )
 
-    def test_llm_gets_every_statement_numbered(self) -> None:
-        report = render_for_llm(self._both())
+    def test_llm_gets_every_statement_captioned(self) -> None:
+        report = self._both().llm_view()
 
-        if "[1] " not in report:
-            raise AssertionError('"[1] " in report')
+        if not report.startswith("SELECT 1\n"):
+            raise AssertionError('report.startswith("SELECT 1\\n")')
         if '[{"blobs": 3}]' not in report:
             raise AssertionError("выдача первой команды в отчёте")
-        if "[2] DELETE 5" not in report:
-            raise AssertionError('"[2] DELETE 5" in report')
+        if not report.endswith("DELETE 5\nDELETE 5"):
+            raise AssertionError('report.endswith("DELETE 5\\nDELETE 5")')
 
-    def test_markdown_keeps_each_kind_of_result(self) -> None:
-        md = ToolResultMarkdown(self._both()).render()
+    def test_markdown_keeps_each_kind_of_statement(self) -> None:
+        md = self._both().chat_view().markdown
 
-        if "_statement 1_" not in md:
-            raise AssertionError('"_statement 1_" in md')
+        if "_SELECT 1_" not in md:
+            raise AssertionError('"_SELECT 1_" in md')
         if "| blobs" not in md:
             raise AssertionError("выборка осталась таблицей")
-        if "_statement 2_" not in md:
-            raise AssertionError('"_statement 2_" in md')
-        if "_rows affected: 5 (DELETE 5)_" not in md:
+        if "_DELETE 5_" not in md:
             raise AssertionError("счётчик остался строкой статуса")
 
-    def test_view_renders_the_set_as_markdown(self) -> None:
-        rendering = ToolResultView(self._both()).render()
+    def test_the_result_has_no_visual(self) -> None:
+        if self._both().chat_view().element is not None:
+            raise AssertionError("self._both().chat_view().element is None")
 
-        if not isinstance(rendering, MarkdownRendering):
-            raise AssertionError("isinstance(rendering, MarkdownRendering)")
-
-    def test_set_survives_the_artifact_round_trip(self) -> None:
-        """Набор персистится в checkpointer: вложенные варианты оживают."""
+    def test_result_survives_the_artifact_round_trip(self) -> None:
+        """Итог персистится в checkpointer: команды оживают."""
         revived = ToolArtifact.revive(self._both().model_dump(mode="json"))
 
-        if not isinstance(revived, MultiResult):
-            raise AssertionError("isinstance(revived, MultiResult)")
-        kinds = [type(item).__name__ for item in revived.items]
-        if kinds != ["TableResult", "AffectedSqlResult"]:
-            raise AssertionError('kinds == ["TableResult", "AffectedSqlResult"]')
+        if not isinstance(revived, SqlResult):
+            raise AssertionError("isinstance(revived, SqlResult)")
+        if len(revived.statements) != 2:
+            raise AssertionError("len(revived.statements) == 2")

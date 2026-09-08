@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from boba.stand.shell import ShellRun
 from boba.stand.zygote import SandboxStand, ZygoteStand
 from boba.toolkit.channels import JournalChannel, ToolChannel, WrapChannel
 from boba.toolkit.stream import (
@@ -80,7 +81,7 @@ class TestCallTextTap:
         windows = Windows()
         ToolChannelsTap.set(windows)
 
-        outcome = self._caller().call_text("echo привет; echo беда >&2", stdin="")
+        outcome = ShellRun.call_text(self._caller(), "echo привет; echo беда >&2")
 
         out = windows.text_of(ToolChannel.STDOUT)
         err = windows.text_of(ToolChannel.STDERR)
@@ -96,18 +97,18 @@ class TestCallTextTap:
             raise AssertionError(f"в канале обвязки нет тайминга подготовки: {wrap!r}")
         if "привет" in wrap:
             raise AssertionError("вывод команды не должен попадать в канал обвязки")
-        if "привет" not in outcome.result.stdout:
-            raise AssertionError('"привет" in outcome.result.stdout')
-        if "беда" not in outcome.result.stderr:
-            raise AssertionError('"беда" in outcome.result.stderr')
+        if "привет" not in outcome.stdout:
+            raise AssertionError('"привет" in outcome.stdout')
+        if "беда" not in outcome.stderr:
+            raise AssertionError('"беда" in outcome.stderr')
 
     def test_without_tap_nothing_changes(self) -> None:
         ToolChannelsTap.set(None)
 
-        outcome = self._caller().call_text("echo одинокий", stdin="")
+        outcome = ShellRun.call_text(self._caller(), "echo одинокий")
 
-        if "одинокий" not in outcome.result.stdout:
-            raise AssertionError('"одинокий" in outcome.result.stdout')
+        if "одинокий" not in outcome.stdout:
+            raise AssertionError('"одинокий" in outcome.stdout')
 
     def test_window_stays_bounded_on_huge_output(self) -> None:
         """Мегабайты вывода не оседают в окне: оно держит только хвост.
@@ -120,7 +121,7 @@ class TestCallTextTap:
         ToolChannelsTap.set(windows)
 
         # ~1.6 МБ: 200000 строк по 8 байт
-        outcome = self._caller().call_text("seq -w 1 200000", stdin="")
+        outcome = ShellRun.call_text(self._caller(), "seq -w 1 200000")
 
         window = windows.buffer_of(ToolChannel.STDOUT).snapshot()
         if len(window.text.encode()) > window_bytes:
@@ -131,15 +132,15 @@ class TestCallTextTap:
             raise AssertionError('"200000" in window.text')
         if "\n000002\n" in window.text:
             raise AssertionError('"\\n000002\\n" not in window.text')
-        if not (outcome.result.stdout.startswith("000001\n")):
-            raise AssertionError('outcome.result.stdout.startswith("000001\\n")')
+        if not (outcome.stdout.startswith("000001\n")):
+            raise AssertionError('outcome.stdout.startswith("000001\\n")')
 
     def test_window_fills_while_the_process_runs(self) -> None:
         """Пробуждения приходят по ходу процесса, а не одним махом в конце."""
         windows = Windows()
         ToolChannelsTap.set(windows)
 
-        self._caller().call_text("echo старт; sleep 0.3; echo финиш", stdin="")
+        ShellRun.call_text(self._caller(), "echo старт; sleep 0.3; echo финиш")
 
         sizes = windows.wake_sizes
 

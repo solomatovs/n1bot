@@ -10,14 +10,16 @@ RuntimeError — конфиг противоречит плагину: у уст
     (см. boba.runtime.launchers), секция с соединениями пользователя без
     [connections].
 ToolConfigError — injected-параметр инструмента не привязан к секции конфига.
-TypeError — TOOLS модуля содержит не PayloadTool и не BaseTool.
+TypeError — TOOLS модуля содержит не PayloadTool и не BaseTool; тело
+    инструмента вернуло не модель результата.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import wraps
 from importlib.metadata import entry_points
 from typing import Any
 
@@ -41,8 +43,9 @@ from boba.runtime.launchers import CallSurface, SectionLaunchers, ToolLaunchers
 from boba.runtime.refs import RuntimeRefs
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolEntryError, ToolLike, ToolMain
 from boba.toolkit.facade import PayloadTool
-from boba.toolkit.launcher import LauncherFactory, ToolLauncher
-from boba.toolkit.manifest import LaunchSpec, ToolPluginManifest
+from boba.toolkit.launcher import ToolLauncher
+from boba.toolkit.manifest import LaunchSpec, ManifestBuild, ToolPluginManifest
+from boba.toolkit.result import ToolResultBase
 from boba.toolkit.types import StringList
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.access import ToolAccessGuard
@@ -78,7 +81,9 @@ class ToolPlugin:
     """Один tool-плагин: как собрать инструменты из секции [tool.<name>]."""
 
     section: str
-    build: Callable[[Any, LauncherFactory], list[BaseTool]] | None = None
+    build: ManifestBuild | None = None
+    """Фабрика инструментов секции: отдаёт PayloadTool фасада либо готовые
+    langchain-инструменты, мост в langchain ставит загрузчик."""
     config_model: type[BaseModel] | None = None
     sandboxed: bool = True
     """False — инструменты плагина ничего не запускают; True — тела исполняются
@@ -113,8 +118,8 @@ class PluginMeta(BaseModel):
 class ToolBridge:
     """Мост TOOLS модулей инструментов в langchain: toolkit langchain не знает."""
 
-    @staticmethod
-    def as_structured_tool(tool: ToolLike) -> BaseTool:
+    @classmethod
+    def as_structured_tool(cls, tool: ToolLike) -> BaseTool:
         """PayloadTool фасада -> StructuredTool; langchain-инструмент — как есть.
 
         Injected-параметры остаются в args_schema: их снимает InjectedConfig
@@ -130,14 +135,61 @@ class ToolBridge:
             )
             raise TypeError(msg)
 
+        func = None
+        if tool.func is not None:
+            func = cls._packed(tool, tool.func)
+
+        coroutine = None
+        if tool.coroutine is not None:
+            coroutine = cls._packed_async(tool, tool.coroutine)
+
         return StructuredTool(
             name=tool.name,
             description=tool.description,
             args_schema=tool.args_schema,
-            func=tool.func,
-            coroutine=tool.coroutine,
+            func=func,
+            coroutine=coroutine,
             response_format=PayloadTool.RESPONSE_FORMAT,
         )
+
+    @classmethod
+    def _packed(
+        cls, tool: PayloadTool, body: Callable[..., Any]
+    ) -> Callable[..., tuple[str, ToolResultBase]]:
+        """Тело, отдающее модель, -> тело с парой (content, artifact) langchain.
+
+        Аргументы langchain приходят по отдельности: тело с классом вызова
+        получает их его экземпляром. wraps сохраняет исходное тело в
+        __wrapped__: адрес запуска и каталог workflow читают оттуда модуль
+        и аннотацию результата.
+        """
+
+        @wraps(body)
+        def call(**kwargs: Any) -> tuple[str, ToolResultBase]:
+            return cls._pack(tool.name, body(**tool.packed_kwargs(kwargs)))
+
+        return call
+
+    @classmethod
+    def _packed_async(
+        cls, tool: PayloadTool, body: Callable[..., Awaitable[Any]]
+    ) -> Callable[..., Awaitable[tuple[str, ToolResultBase]]]:
+        @wraps(body)
+        async def call(**kwargs: Any) -> tuple[str, ToolResultBase]:
+            return cls._pack(tool.name, await body(**tool.packed_kwargs(kwargs)))
+
+        return call
+
+    @staticmethod
+    def _pack(name: str, result: object) -> tuple[str, ToolResultBase]:
+        if not isinstance(result, ToolResultBase):
+            msg = (
+                f"tool {name!r} must return a ToolResultBase model, "
+                f"got {type(result).__name__}"
+            )
+            raise TypeError(msg)
+
+        return result.packed()
 
     @classmethod
     def toolset(cls, tools: Sequence[ToolLike]) -> tuple[BaseTool, ...]:
@@ -241,8 +293,9 @@ class ToolLoader:
         if plugin.config_model is not None:
             cfg = bind(self._raw, f"tool.{name}", plugin.config_model)
 
+        built = self._enabled_tools(plugin, cfg, meta)
         if not plugin.sandboxed:
-            return self._enabled_tools(plugin, cfg, self._no_launchers, meta)
+            return built
 
         spec = LaunchSpec(
             section=plugin.section,
@@ -250,11 +303,6 @@ class ToolLoader:
             package=plugin.package,
         )
         launcher = launchers.launcher_of(spec)
-
-        def factory(tool: str) -> ToolLauncher:
-            return launcher
-
-        built = self._enabled_tools(plugin, cfg, factory, meta)
 
         built.extend(self._module_tools(plugin, meta, launcher))
         return built
@@ -292,10 +340,7 @@ class ToolLoader:
 
     @staticmethod
     def _enabled_tools(
-        plugin: ToolPlugin,
-        cfg: ConfigT,
-        launchers: LauncherFactory,
-        meta: PluginMeta,
+        plugin: ToolPlugin, cfg: ConfigT, meta: PluginMeta
     ) -> list[BaseTool]:
         """Инструменты фабрики плагина, перечисленные в [tool.<name>] tools."""
         if plugin.build is None:
@@ -303,11 +348,11 @@ class ToolLoader:
 
         built: list[BaseTool] = []
 
-        for tool in plugin.build(cfg, launchers):
+        for tool in plugin.build(cfg):
             if tool.name not in meta.tools:
                 continue
 
-            built.append(tool)
+            built.append(ToolBridge.as_structured_tool(tool))
 
         return built
 
@@ -341,15 +386,6 @@ class ToolLoader:
             return bind(raw, section, annotation)
 
         return resolve
-
-    @staticmethod
-    def _no_launchers(tool: str) -> ToolLauncher:
-        """Плагин живёт в процессе приложения: запускать ему нечего."""
-        msg = (
-            f"tool {tool!r} runs in the app process and has no launcher, "
-            "yet a launcher was requested for it"
-        )
-        raise RuntimeError(msg)
 
     @staticmethod
     def _headless_of(
@@ -457,31 +493,13 @@ class EntryPointPlugins:
 
         return ToolPlugin(
             section=manifest.section,
-            build=cls._build_of(manifest),
+            build=manifest.build,
             config_model=manifest.config_model,
             module_tools=ToolBridge.toolset(manifest.tools),
             modules=ToolBridge.modules_of(manifest.tools),
             discovered=True,
             package=package,
         )
-
-    @staticmethod
-    def _build_of(
-        manifest: ToolPluginManifest,
-    ) -> Callable[[Any, LauncherFactory], list[BaseTool]] | None:
-        """Фабрика манифеста с мостом в langchain; манифест langchain не знает."""
-        source = manifest.build
-        if source is None:
-            return None
-
-        def build(cfg: Any, launchers: LauncherFactory) -> list[BaseTool]:
-            built: list[BaseTool] = []
-            for tool in source(cfg, launchers):
-                built.append(ToolBridge.as_structured_tool(tool))
-
-            return built
-
-        return build
 
 
 class CoreTools:
@@ -519,12 +537,10 @@ class CoreTools:
     @staticmethod
     def _connections_builder(
         refs: RuntimeRefs,
-    ) -> Callable[[ConnectionCatalogConfig, LauncherFactory], list[BaseTool]]:
+    ) -> Callable[[ConnectionCatalogConfig], list[PayloadTool]]:
         """Каталог соединений субъекта: строки берутся из таблицы на вызов."""
 
-        def build(
-            cfg: ConnectionCatalogConfig, launchers: LauncherFactory
-        ) -> list[BaseTool]:
+        def build(cfg: ConnectionCatalogConfig) -> list[PayloadTool]:
             return build_connection_tools(
                 cfg, UserConnectionsService(refs.connection_store)
             )
@@ -534,12 +550,10 @@ class CoreTools:
     @staticmethod
     def _pipeline_builder(
         refs: RuntimeRefs,
-    ) -> Callable[[PipelineToolConfig, LauncherFactory], list[BaseTool]]:
+    ) -> Callable[[PipelineToolConfig], list[PayloadTool]]:
         """Реестр инструментов берётся из входов приложения на каждый вызов."""
 
-        def build(
-            cfg: PipelineToolConfig, launchers: LauncherFactory
-        ) -> list[BaseTool]:
+        def build(cfg: PipelineToolConfig) -> list[PayloadTool]:
             return build_pipeline_tools(cfg, refs.tool_registry)
 
         return build
@@ -547,12 +561,10 @@ class CoreTools:
     @staticmethod
     def _workflow_builder(
         refs: RuntimeRefs,
-    ) -> Callable[[WorkflowToolConfig, LauncherFactory], list[BaseTool]]:
+    ) -> Callable[[WorkflowToolConfig], list[PayloadTool]]:
         """Сервис workflow берётся из входов приложения на каждый вызов."""
 
-        def build(
-            cfg: WorkflowToolConfig, launchers: LauncherFactory
-        ) -> list[BaseTool]:
+        def build(cfg: WorkflowToolConfig) -> list[PayloadTool]:
             return build_workflow_tools(cfg, refs.workflow_service)
 
         return build

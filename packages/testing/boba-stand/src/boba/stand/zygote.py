@@ -13,13 +13,14 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, ClassVar
 
-from boba.sandbox import SandboxProfile
+from boba.sandbox import BindSpec, SandboxProfile
 from boba.sandbox.guest import WarmupCall
 from boba.sandbox.zygote import (
     ZygotePolicy,
     ZygoteRegistry,
     ZygoteToolCaller,
 )
+from boba.stand.shell import ShellRun
 
 REPO = Path(__file__).resolve().parents[6]
 SANDBOX = REPO / "build" / "chainlit" / "src" / "sandbox"
@@ -88,10 +89,15 @@ class SandboxStand:
 
     SITE_PACKAGES: ClassVar[str] = "/usr/local/lib/python3.11/site-packages"
 
+    SHELL_SRC: ClassVar[str] = "tools/boba-tool-shell"
+    """Пакет bash-тула: тело shell-команд стенда; в профили чужих плагинов
+    его src доезжает биндом (with_shell)."""
+
     SRC_PACKAGES: ClassVar[tuple[str, ...]] = (
         "core/boba-cancellation",
         "core/boba-toolkit",
         "infra/sandbox/boba-sandbox",
+        SHELL_SRC,
     )
     """Пакеты, чей код нужен зиготе стенда: их src уезжает в PYTHONPATH."""
 
@@ -140,6 +146,36 @@ class SandboxStand:
             parts.append(f"/usr/src/{name}/src")
 
         return os.pathsep.join(parts)
+
+    SHELL_GUEST: ClassVar[str] = "/srv"
+    """Куда бинд bash-тула садится в образ чужого плагина: точка обязана
+    существовать в read-only корне, /srv в образах пуст."""
+
+    @classmethod
+    def with_shell(cls, profile: SandboxProfile) -> SandboxProfile:
+        """Профиль, в котором гостю виден модуль bash.
+
+        Профили плагинов боевого конфига несут только свой пакет; стенд
+        подкладывает исходники bash-тула биндом и ставит их в PYTHONPATH.
+        Профили самого стенда уже держат их в /usr/src.
+        """
+        env = dict(profile.isolation.env)
+        entries = env.get("PYTHONPATH", "").split(os.pathsep)
+        if f"/usr/src/{cls.SHELL_SRC}/src" in entries:
+            return profile
+
+        guest = cls.SHELL_GUEST
+        kept: list[str] = [guest]
+        for entry in entries:
+            if entry:
+                kept.append(entry)
+
+        env["PYTHONPATH"] = os.pathsep.join(kept)
+        host = REPO / "packages" / cls.SHELL_SRC / "src"
+        bind = BindSpec(host=str(host), target=guest)
+        mounts = profile.mounts.model_copy(update={"ro": (*profile.mounts.ro, bind)})
+        isolation = profile.isolation.model_copy(update={"env": env})
+        return profile.model_copy(update={"mounts": mounts, "isolation": isolation})
 
     @classmethod
     def image_ro_binds(cls) -> tuple[str, ...]:
@@ -198,7 +234,7 @@ class SandboxStand:
                 "process_open_files": 1024,
                 "process_oom_score_adj": 0,
             },
-            "run": {"cwd": "/tmp", "shell": "/bin/bash"},  # noqa: S108  # nosec B108
+            "run": {"cwd": "/tmp"},  # noqa: S108  # nosec B108
         }
 
         return SandboxProfile.model_validate(ProfileFields.merged(raw, overrides))
@@ -259,10 +295,16 @@ class ZygoteStand:
         path_vars: Callable[[], Mapping[str, str]] = dict,
         warmup_calls: Sequence[WarmupCall] = (),
     ) -> ZygoteToolCaller:
+        # модуль bash грузится всегда: shell-команды стенда идут через него
+        loaded = [
+            ShellRun.MODULE,
+            *(name for name in modules if name != ShellRun.MODULE),
+        ]
+        provisioned = SandboxStand.with_shell(profile)
         supervisor = ZygoteRegistry.obtain(
-            section, profile, modules, cls.POLICY, warmup_calls=warmup_calls
+            section, provisioned, loaded, cls.POLICY, warmup_calls=warmup_calls
         )
-        return ZygoteToolCaller(section, supervisor, profile, path_vars)
+        return ZygoteToolCaller(section, supervisor, provisioned, path_vars)
 
     @classmethod
     def launchers(

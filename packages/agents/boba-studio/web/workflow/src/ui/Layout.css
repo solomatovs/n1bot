@@ -23,9 +23,12 @@
   padding: 0;
 }
 
-/* колонка деталей: по умолчанию из токена, средний экран жмёт к минимуму;
-   выбранная пользователем ширина ставится inline и перекрывает оба */
+/* колонки тела появляются вместе с элементами внутри (:has); ширина по
+   умолчанию из токена, средний экран жмёт к минимуму, выбранная
+   пользователем ширина ставится inline и перекрывает оба */
 .page__body {
+  --w-pane-col: var(--w-pane);
+  --w-pane-user-max: 60vw;
   --w-detail-col: var(--w-detail);
   --w-detail-user-max: 70vw;
   grid-row: 3;
@@ -36,34 +39,51 @@
   position: relative;
 }
 
-.page__body[data-pane="true"] {
-  grid-template-columns: var(--w-pane) minmax(0, 1fr);
+.page__body:has(> .page__pane) {
+  grid-template-columns: var(--w-pane-col) minmax(0, 1fr);
 }
 
-.page__body[data-pane="true"][data-detail="true"] {
-  grid-template-columns: var(--w-pane) minmax(0, 1fr) var(--w-detail-col);
+.page__body:has(> .page__pane):has(> .page__detail) {
+  grid-template-columns: var(--w-pane-col) minmax(0, 1fr) var(--w-detail-col);
 }
 
-.page__body[data-pane="false"][data-detail="true"] {
+.page__body:not(:has(> .page__pane)):has(> .page__detail) {
   grid-template-columns: minmax(0, 1fr) var(--w-detail-col);
 }
 
 .page__pane,
 .page__detail {
+  position: relative;
   min-height: 0;
   min-width: 0;
   overflow: hidden;
   background: var(--surface);
 }
 
+/* панель: закреплённые полосы и прокручиваемое тело */
 .page__pane {
+  display: flex;
+  flex-direction: column;
   border-right: 1px solid var(--hairline);
+}
+
+.page__pane-bar {
+  flex: none;
+  display: grid;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.page__pane-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 /* панель деталей не скроллится сама: скролл у её тела, чтобы полоса
    захвата у левого края стояла на всю высоту */
 .page__detail {
-  position: relative;
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   border-left: 1px solid var(--hairline);
@@ -75,28 +95,42 @@
   overflow-y: auto;
 }
 
-/* полоса у левого края панели деталей: за неё панель тянут */
-.page__detail-grip {
+/* полоса захвата у края колонки: за неё колонку тянут */
+.page__grip {
   position: absolute;
-  inset: 0 auto 0 0;
+  top: 0;
+  bottom: 0;
   width: var(--s2);
-  margin-left: calc(-1 * var(--s1));
   cursor: col-resize;
   z-index: 2;
   touch-action: none;
 }
 
-.page__detail-grip:hover,
-.page__detail-grip:active {
+.page__grip--left {
+  left: 0;
+  margin-left: calc(-1 * var(--s1));
+}
+
+.page__grip--right {
+  right: 0;
+}
+
+.page__grip:hover,
+.page__grip:active {
   background: color-mix(in srgb, var(--signal) 40%, transparent);
 }
 
+/* сцена: до двух полос сверху, последний ребёнок забирает остаток */
 .page__scene {
   position: relative;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
+}
+
+.page__scene:not(.page__scene--panel) > :last-child {
+  grid-row: 3;
 }
 
 .page__scene--panel {
@@ -104,30 +138,30 @@
   overflow: auto;
 }
 
+.page__view {
+  position: relative;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.page__view--scroll {
+  overflow: auto;
+}
+
 /* средний экран: панели у своих минимумов */
 @media (max-width: 1200px) {
-  .page__body[data-pane="true"] {
-    grid-template-columns: var(--w-pane-min) minmax(0, 1fr);
-  }
-
   .page__body {
+    --w-pane-col: var(--w-pane-min);
     --w-detail-col: var(--w-detail-min);
-  }
-
-  .page__body[data-pane="true"][data-detail="true"] {
-    grid-template-columns: var(--w-pane-min) minmax(0, 1fr) var(--w-detail-col);
-  }
-
-  .page__body[data-pane="false"][data-detail="true"] {
-    grid-template-columns: minmax(0, 1fr) var(--w-detail-col);
   }
 }
 
 /* узкий экран: панели становятся ящиками поверх сцены */
 @media (max-width: 900px) {
-  .page__body[data-pane="true"],
-  .page__body[data-pane="true"][data-detail="true"],
-  .page__body[data-pane="false"][data-detail="true"] {
+  .page__body:has(> .page__pane),
+  .page__body:has(> .page__pane):has(> .page__detail),
+  .page__body:not(:has(> .page__pane)):has(> .page__detail) {
     grid-template-columns: minmax(0, 1fr);
   }
 

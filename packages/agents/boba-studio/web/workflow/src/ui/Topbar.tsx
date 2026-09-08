@@ -37,6 +37,37 @@ export function TopbarHint({ mark, children }: { mark?: string; children: ReactN
   );
 }
 
+/** Марка приложения в шапке: иконка и имя. */
+export function TopbarBrand({ children }: { children: ReactNode }): ReactElement {
+  return <div className="topbar__brand">{children}</div>;
+}
+
+/** Слот кнопки панели: держит сетку шапки той же на страницах без панели. */
+export function TopbarSlot(): ReactElement {
+  return <span className="topbar__slot" aria-hidden="true" />;
+}
+
+type CrumbsProps = {
+  /** Корень раздела и текущая запись в нём. */
+  root: ReactNode;
+  current?: string | undefined;
+};
+
+/** Крошки шапки: раздел и текущая запись; на узком экране прячутся. */
+export function TopbarCrumbs({ root, current }: CrumbsProps): ReactElement {
+  return (
+    <nav className="topbar__crumbs" aria-label="breadcrumbs">
+      <span>{root}</span>
+      {current !== undefined && current !== "" && (
+        <>
+          <span className="topbar__crumbs-sep">›</span>
+          <span className="topbar__crumbs-current">{current}</span>
+        </>
+      )}
+    </nav>
+  );
+}
+
 /** Группа действий шапки: кнопки одного режима держатся вместе. */
 export function TopbarGroup({ mark, children }: { mark?: string; children: ReactNode }): ReactElement {
   return (

@@ -11,19 +11,14 @@ from typing import Annotated, Any, ClassVar
 
 import pytest
 from langchain_core.callbacks import AsyncCallbackHandler
-from langchain_core.tools import InjectedToolArg, tool
 from pydantic import BaseModel, Field, SecretStr
 
 from boba.canvas.journal import CallStream
-from boba.chainlit.rendering.tool import MarkdownRendering, ToolResultView
 from boba.toolkit.calls import ToolIntent
+from boba.runtime.plugins import ToolBridge
 from boba.toolkit.channels import JournalChannel
-from boba.toolkit.result import (
-    TextResult,
-    ToolArtifact,
-    ToolResult,
-    render_for_llm,
-)
+from boba.toolkit.facade import Injected, tool
+from boba.toolkit.result import MarkdownResult, ToolArtifact
 from boba.toolkit.stream import ToolChannelsTap
 from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.injected import InjectedConfig
@@ -46,15 +41,16 @@ def chainlit_context() -> None:
 def build_pipeline() -> Any:
     """Свежий инструмент, обёрнутый как в загрузчике."""
 
-    @tool(response_format="content_and_artifact")
-    async def pipe_echo(
+    @tool
+    async def pipe_echo_body(
         text: Annotated[str, Field(min_length=1, description="Что вернуть")],
-        cfg: Annotated[PipeConfig, InjectedToolArg],
-    ) -> tuple[str, ToolResult]:
+        *,
+        cfg: Annotated[PipeConfig, Injected],
+    ) -> MarkdownResult:
         """Возвращает текст с секретом конфига."""
-        artifact = TextResult(text=f"{text}|{cfg.token.get_secret_value()}")
-        return render_for_llm(artifact), artifact
+        return MarkdownResult(text=f"{text}|{cfg.token.get_secret_value()}")
 
+    pipe_echo = ToolBridge.as_structured_tool(pipe_echo_body)
     InjectedConfig.bind_all(
         [pipe_echo],
         lambda name, annotation: PipeConfig(token=SecretStr("p1p3")),
@@ -127,14 +123,13 @@ class TestArtifactRendering:
         message = asyncio.run(pipe_echo.ainvoke(call_envelope("hi")))
 
         revived = ToolArtifact.revive(message.artifact)
-        if not (isinstance(revived, TextResult)):
-            raise AssertionError("isinstance(revived, TextResult)")
+        if not (isinstance(revived, MarkdownResult)):
+            raise AssertionError("isinstance(revived, MarkdownResult)")
 
-        rendering = ToolResultView(revived).render()
-        if not (isinstance(rendering, MarkdownRendering)):
-            raise AssertionError("isinstance(rendering, MarkdownRendering)")
-        if "hi|p1p3" not in rendering.markdown:
-            raise AssertionError('"hi|p1p3" in rendering.markdown')
+        if revived.chat_view().element is not None:
+            raise AssertionError("revived.chat_view().element is None")
+        if "hi|p1p3" not in revived.chat_view().markdown:
+            raise AssertionError('"hi|p1p3" in revived.chat_view().markdown')
 
     def test_serialized_artifact_revives_from_history(self) -> None:
         """История хранит артефакт сериализованным dict'ом (langgraph)."""
@@ -144,8 +139,8 @@ class TestArtifactRendering:
         stored = message.artifact.model_dump(mode="json")
 
         revived = ToolArtifact.revive(stored)
-        if not (isinstance(revived, TextResult)):
-            raise AssertionError("isinstance(revived, TextResult)")
+        if not (isinstance(revived, MarkdownResult)):
+            raise AssertionError("isinstance(revived, MarkdownResult)")
         if "hi|p1p3" not in revived.text:
             raise AssertionError('"hi|p1p3" in revived.text')
 
@@ -195,8 +190,8 @@ class TestChannelTap:
         ) -> tuple[str, ToolResult]:
             """Фиксирует, какие тапы видит тело во время вызова."""
             seen.append(ToolChannelsTap.get())
-            artifact = TextResult(text=text)
-            return render_for_llm(artifact), artifact
+            artifact = MarkdownResult(text=text)
+            return artifact.packed()
 
         ToolCallIdField.attach_all([tap_probe])
         ToolRunLogger.guard_all(

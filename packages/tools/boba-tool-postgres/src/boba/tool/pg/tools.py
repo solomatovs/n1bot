@@ -25,19 +25,14 @@ from pydantic import Field
 from boba.db.postgres import PayloadPostgres, PostgresError
 from boba.db.postgres.profile import PostgresConfig
 from boba.tool.pg.catalog import PgCatalog, PgCatalogQuery
-from boba.toolkit.calls import ScriptCall
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
 from boba.toolkit.ports import RawInbound, RawOutbound
 from boba.toolkit.result import (
-    AffectedSqlResult,
-    MultiResult,
-    Produces,
+    MarkdownResult,
     ResultTooLargeError,
-    TableResult,
-    TextResult,
-    ToolResult,
-    pack_result,
+    SqlResult,
+    SqlStatement,
 )
 from boba.toolkit.sql import (
     MaxChars,
@@ -98,21 +93,22 @@ class PgToolConfig(SecretRevealing, SqlLimits):
     """Лимиты выдачи pg-инструментов; [tool.pg]."""
 
     SECTION: ClassVar[str] = "tool.pg"
+    ENGINE: ClassVar[str] = "postgres"
+    """Подпись движка в SqlResult."""
 
 
 async def _query_rows(
     connection: PostgresConfig,
     query: PgCatalogQuery,
     cfg: PgToolConfig,
-) -> tuple[str, ToolResult]:
+) -> SqlResult:
     """Выполнить запрос и собрать итог каждой его команды по порядку.
 
     Команд в запросе может быть несколько (`select ...; update ...;`): без
     подготовки psycopg шлёт их простым протоколом, и postgres выполняет
     набор одной неявной транзакцией — падение любой команды откатывает всё.
-    Один итог отдаётся сам собой, несколько — набором MultiResult.
     """
-    results: list[ToolResult] = []
+    statements: list[SqlStatement] = []
     spent = 0
 
     conn = await PayloadPostgres.connect_config(connection)
@@ -123,26 +119,23 @@ async def _query_rows(
 
         while True:
             if cur.description is None:
-                results.append(_affected(cur))
+                statements.append(_affected(cur))
             else:
-                table, size = await _fetch_table(cur, cfg, cfg.max_bytes - spent)
+                statement, size = await _fetch_rows(cur, cfg, cfg.max_bytes - spent)
                 spent += size
-                results.append(table)
+                statements.append(statement)
 
             if not cur.nextset():
                 break
 
-    if len(results) == 1:
-        return pack_result(results[0])
-
-    return pack_result(MultiResult(items=tuple(results)))
+    return SqlResult(engine=PgToolConfig.ENGINE, statements=statements)
 
 
 async def _catalog_page(
     connection: PostgresConfig,
     query: PgCatalogQuery,
     window: RowWindow,
-) -> tuple[str, ToolResult]:
+) -> SqlResult:
     """Каталожный запрос страницей окна: границы выдачи назначает вызов.
 
     Порядок строк задан самим запросом, поэтому окно повторяемо: тот же
@@ -158,15 +151,15 @@ async def _catalog_page(
             if not page.add(row):
                 break
 
-    return pack_result(page.table())
+    return SqlResult(engine=PgToolConfig.ENGINE, statements=[page.statement()])
 
 
-async def _fetch_table(
+async def _fetch_rows(
     cur: psycopg.AsyncCursor[Any],
     cfg: PgToolConfig,
     max_bytes: int,
-) -> tuple[TableResult, int]:
-    """Выборка одной команды таблицей и её вес.
+) -> tuple[SqlStatement, int]:
+    """Выборка одной команды и её вес.
 
     Потолок строк действует на команду, потолок байтов — на весь вызов:
     выдача уходит в одно сообщение, поэтому следующей команде остаётся
@@ -179,16 +172,26 @@ async def _fetch_table(
         if not budget.add(row):
             break
 
-    return budget.table(), budget.size
+    status = cur.statusmessage
+    if status is None:
+        status = ""
+
+    statement = budget.statement().model_copy(update={"status": status})
+
+    return statement, budget.size
 
 
-def _affected(cur: psycopg.AsyncCursor[Any]) -> AffectedSqlResult:
-    """Итог запроса без выборки; rowcount -1 у psycopg значит «счётчика нет»."""
+def _affected(cur: psycopg.AsyncCursor[Any]) -> SqlStatement:
+    """Итог команды без выборки; rowcount -1 у psycopg значит «счётчика нет»."""
     rowcount: int | None = cur.rowcount
     if cur.rowcount < 0:
         rowcount = None
 
-    return AffectedSqlResult(affected_rows=rowcount, status=cur.statusmessage)
+    status = cur.statusmessage
+    if status is None:
+        status = ""
+
+    return SqlStatement(affected_rows=rowcount, status=status)
 
 
 @tool
@@ -218,7 +221,7 @@ async def pg_list_tables(  # noqa: PLR0913 — окно выдачи задаё�
     max_rows: MaxRows,
     max_chars: MaxChars,
     cfg: Annotated[PgToolConfig, Injected],
-) -> Annotated[tuple[str, ToolResult], Produces.of(TableResult)]:
+) -> SqlResult:
     """Таблицы и view подключения из pg_catalog.
 
     Колонки: schema, table_name, kind, approx_rows, owner, total_bytes,
@@ -254,7 +257,7 @@ async def pg_describe_table(  # noqa: PLR0913 — окно выдачи зада
     max_rows: MaxRows,
     max_chars: MaxChars,
     cfg: Annotated[PgToolConfig, Injected],
-) -> Annotated[tuple[str, ToolResult], Produces.of(TableResult)]:
+) -> SqlResult:
     """Схема таблицы из pg_catalog: колонки, нативные типы, ключи.
 
     Колонки: schema, position, column_name, type, nullable,
@@ -283,11 +286,10 @@ async def pg_query(
                 "каждой по порядку; падение любой откатывает весь набор."
             ),
         ),
+        MarkdownResult(language="sql"),
     ],
     cfg: Annotated[PgToolConfig, Injected],
-) -> Annotated[
-    tuple[str, ToolResult], Produces.of(TableResult, AffectedSqlResult, MultiResult)
-]:
+) -> SqlResult:
     """Выполнить SQL на подключении: строки либо счётчик затронутых."""
 
     return await _query_rows(connection, PgCatalogQuery(text=sql, params=()), cfg)
@@ -308,9 +310,10 @@ async def pg_copy(
                 "лимита — добавьте LIMIT в сам запрос."
             ),
         ),
+        MarkdownResult(language="sql"),
     ],
     cfg: Annotated[PgToolConfig, Injected],
-) -> Annotated[tuple[str, ToolResult], Produces.of(TextResult)]:
+) -> MarkdownResult:
     """Выгрузить данные стейтментом COPY ... TO STDOUT как есть."""
 
     parts: list[str] = []
@@ -341,8 +344,7 @@ async def pg_copy(
     if tail:
         parts.append(tail)
 
-    artifact = TextResult(text="".join(parts), language=CopyDump.LANG)
-    return pack_result(artifact)
+    return MarkdownResult(text="".join(parts), language=CopyDump.LANG)
 
 
 @tool
@@ -362,10 +364,11 @@ async def pg_copy_out(
                 "совпадать."
             ),
         ),
+        MarkdownResult(language="sql"),
     ],
     out: Annotated[RawOutbound, Injected],
     cfg: Annotated[PgToolConfig, Injected],
-) -> Annotated[tuple[str, ToolResult], Produces.of(TextResult)]:
+) -> MarkdownResult:
     """Насос выгрузки: COPY ... TO STDOUT сырым потоком в выходной порт.
 
     Узел конвейера (pipeline_run): данные идут следующему узлу, а не в чат.
@@ -386,8 +389,7 @@ async def pg_copy_out(
             total += len(data)
             out.write(data)
 
-    artifact = TextResult(text=f"copied out {total} bytes")
-    return pack_result(artifact)
+    return MarkdownResult(text=f"copied out {total} bytes")
 
 
 @tool
@@ -404,10 +406,11 @@ async def pg_copy_in(
                 "тем, что отдаёт источник цепочки."
             ),
         ),
+        MarkdownResult(language="sql"),
     ],
     feed: Annotated[RawInbound, Injected],
     cfg: Annotated[PgToolConfig, Injected],
-) -> Annotated[tuple[str, ToolResult], Produces.of(TextResult)]:
+) -> MarkdownResult:
     """Насос загрузки: сырой поток входного порта в COPY ... FROM STDIN.
 
     Узел конвейера (pipeline_run): данные приходят от предыдущего узла.
@@ -428,8 +431,7 @@ async def pg_copy_in(
 
         status = cur.statusmessage
 
-    artifact = TextResult(text=f"copied in {total} bytes; server: {status}")
-    return pack_result(artifact)
+    return MarkdownResult(text=f"copied in {total} bytes; server: {status}")
 
 
 EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
@@ -446,12 +448,6 @@ TOOLS: Final = ToolMain.toolset(
     pg_copy,
     pg_copy_out,
     pg_copy_in,
-    views={
-        "pg_query": ScriptCall(arg="sql", lang="sql"),
-        "pg_copy": ScriptCall(arg="sql", lang="sql"),
-        "pg_copy_out": ScriptCall(arg="sql", lang="sql"),
-        "pg_copy_in": ScriptCall(arg="sql", lang="sql"),
-    },
 )
 
 if __name__ == "__main__":

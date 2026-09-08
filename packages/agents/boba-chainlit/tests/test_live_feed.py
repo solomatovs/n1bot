@@ -42,7 +42,7 @@ from boba.runtime.locks import PgLiveLocks
 from boba.runtime.payloads import PgPayloadStore
 from boba.runtime.turns import StaleTurnCloser
 from boba.toolkit.channels import CallOutcome, ToolChannel
-from boba.toolkit.result import TextResult
+from boba.toolkit.result import MarkdownResult
 from boba.toolrun.streams import StreamPump, StreamPumps, ToolStream, ToolStreams
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -158,7 +158,7 @@ async def test_turn_on_one_instance_is_rendered_on_another(
         await feed.started(TURN, QuestionBody(text="question"))
         await feed.model_answered()
         await feed.tool_started(CALL, "kb_probe", {"query": "x"})
-        await feed.tool_finished(CALL, TextResult(text="hits", elapsed_ms=10))
+        await feed.tool_finished(CALL, MarkdownResult(text="hits", elapsed_ms=10))
         for token in ("hel", "lo"):
             await feed.answer_token(TURN, token)
 
@@ -208,7 +208,7 @@ async def test_payload_store_keeps_bodies_and_purges_idle(
     holder, viewer = nodes
     scope = Scope.chat(str(uuid4()))
 
-    model_ref = await holder.payloads.put(scope, TextResult(text="t", elapsed_ms=1))
+    model_ref = await holder.payloads.put(scope, MarkdownResult(text="t", elapsed_ms=1))
     text_ref = await holder.payloads.put(scope, "plain")
     args_ref = await holder.payloads.put(scope, {"query": "x", "n": 2})
 

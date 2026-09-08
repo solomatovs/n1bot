@@ -16,17 +16,10 @@ from pydantic import BaseModel, ConfigDict
 
 from boba.cancellation import StopReason
 from boba.canvas.canvas import CanvasAction
-from boba.chainlit.rendering.tool import (
-    ChartRendering,
-    CustomElementRendering,
-    DiagramRendering,
-    MarkdownRendering,
-    ToolCallMarkdown,
-    ToolResultView,
-)
-from boba.toolkit.calls import ToolCallViews, ToolIntent
+from boba.chainlit.rendering.tool import ChatElements
+from boba.toolkit.calls import ToolCallModels, ToolIntent
 from boba.toolkit.failure import FailureText
-from boba.toolkit.result import ToolArtifact
+from boba.toolkit.result import ToolArtifact, VisualResult
 from boba.toolrun.streams import ToolStreams
 from chainlit.config import config as chainlit_config
 from chainlit.context import context
@@ -932,10 +925,10 @@ class ChatView:
         self._tool_names[step.id] = label
 
         if call_args:
-            rendering = ToolCallMarkdown(ToolCallViews.of(name), call_args).render()
-            if rendering is not None:
-                step.input = rendering.markdown
-                step.show_input = rendering.show_input
+            view = ToolCallModels.call_of(name, call_args).chat_view()
+            if view.markdown:
+                step.input = view.markdown
+                step.show_input = True
 
         # фронт chainlit рисует секцию output (с inline-элементами, в том числе
         # кнопкой живого вывода) только при непустом output шага
@@ -996,29 +989,16 @@ class ChatView:
         step.name = status.timed(
             self._tool_names.get(step.id, step.name), result.elapsed_ms
         )
-        match ToolResultView(result).render():
-            case ChartRendering() as chart:
-                step.output = "chart rendered"
-                if chart.title:
-                    step.output = f"chart rendered: {chart.title}"
-                await self._sink.put(step)
-                await self._element(chart, tool_call_id)
-            case CustomElementRendering() as custom:
-                step.output = "element rendered"
-                if custom.title:
-                    step.output = f"element rendered: {custom.title}"
-                await self._sink.put(step)
-                await self._element(custom, tool_call_id)
-            case DiagramRendering() as diagram:
-                step.output = "diagram rendered"
-                if diagram.title:
-                    step.output = f"diagram rendered: {diagram.title}"
-                await self._sink.put(step)
-                await self._element(diagram, tool_call_id)
-            case MarkdownRendering(markdown=markdown):
-                step.output = markdown
-                step.is_error = failed
-                await self._sink.put(step)
+        view = result.chat_view()
+        step.output = view.markdown
+
+        if view.element is None:
+            step.is_error = failed
+            await self._sink.put(step)
+            return
+
+        await self._sink.put(step)
+        await self._element(view.element, tool_call_id)
 
     async def tool_stopped(self, step: Step, note: str) -> None:
         """Инструмент не доработал: ход остановлен."""
@@ -1043,11 +1023,7 @@ class ChatView:
         step.end = ended
         await self._sink.put(step)
 
-    async def _element(
-        self,
-        rendering: ChartRendering | CustomElementRendering | DiagramRendering,
-        tool_call_id: str | None,
-    ) -> None:
+    async def _element(self, result: VisualResult, tool_call_id: str | None) -> None:
         """Шаг-носитель элемента: график и кастомный компонент рисуются одинаково."""
         step = self._step(
             self._assistant_name,
@@ -1056,13 +1032,12 @@ class ChatView:
             step_id=self.derive_id(self._thread_id, tool_call_id, StepRole.CHART),
         )
 
-        title = rendering.title
-        if not title:
-            title = ""
-        step.output = title
+        step.output = ""
+        if result.title:
+            step.output = result.title
 
         if self._sink.emits_elements:
-            element = rendering.chat_element()
+            element = ChatElements.of(result)
             element_id = self.derive_id(self._thread_id, tool_call_id, StepRole.ELEMENT)
             if not element_id:
                 element_id = element.id

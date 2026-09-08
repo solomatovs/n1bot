@@ -183,7 +183,7 @@ class ToolRunLogger:
         if payload.ok:
             return None
 
-        return payload.llm_text()
+        return payload.llm_view()
 
     @staticmethod
     def _log_failure(name: str, started: float, error: BaseException) -> None:

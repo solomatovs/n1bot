@@ -11,7 +11,7 @@ import type { CatalogApi } from "../api/client";
 import { useCatalog, useCatalogChanges, type CatalogChangeListener } from "../services";
 import { Canvas } from "../components/canvas/Canvas";
 import { CanvasToolbar } from "../components/CanvasToolbar";
-import { ConnectionDialog } from "../components/connections/ConnectionDialog";
+import { ConnectionDialog } from "../../components/connections/ConnectionsBoard";
 import { DetailPanel } from "../components/DetailPanel";
 import { DraftActions } from "../components/edit/DraftActions";
 import { FlowForm } from "../components/edit/FlowForm";
@@ -668,7 +668,7 @@ export function ProcessPage({ source }: { source: PageSource }): ReactElement {
               </Alert>
             )}
           </PageNotices>
-          <PageBody pane={paneOpen} detail={active !== undefined || selectedObject !== undefined}>
+          <PageBody>
             {paneOpen && (
               <Pane>
                 <LeftPane

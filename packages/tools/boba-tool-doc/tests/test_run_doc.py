@@ -56,7 +56,7 @@ async def test_run_read_document(doc_cfg: DocToolSection, document: str) -> None
     if body is None:
         raise AssertionError("body is not None")
 
-    content, _artifact = await body(path=document, pages=RunArgs.PAGES, cfg=doc_cfg)
+    content = (await body(path=document, pages=RunArgs.PAGES, cfg=doc_cfg)).llm_view()
 
     print(content)
 
@@ -66,7 +66,7 @@ async def test_run_document_outline(doc_cfg: DocToolSection, document: str) -> N
     if body is None:
         raise AssertionError("body is not None")
 
-    content, _artifact = await body(path=document, cfg=doc_cfg)
+    content = (await body(path=document, cfg=doc_cfg)).llm_view()
 
     print(content)
 
@@ -76,6 +76,6 @@ async def test_run_search_document(doc_cfg: DocToolSection, document: str) -> No
     if body is None:
         raise AssertionError("body is not None")
 
-    content, _artifact = await body(path=document, query=RunArgs.QUERY, cfg=doc_cfg)
+    content = (await body(path=document, query=RunArgs.QUERY, cfg=doc_cfg)).llm_view()
 
     print(content)

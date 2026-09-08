@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 from abc import abstractmethod
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
@@ -43,7 +43,6 @@ __all__ = [
     "ErrorKind",
     "FrameSink",
     "FrameTap",
-    "LaunchOutcome",
     "LaunchPayload",
     "LauncherError",
     "LauncherFactory",
@@ -260,22 +259,6 @@ class RunResult:
     first_output_ms: int | None = None
 
 
-class LaunchOutcome:
-    """Итог shell-команды (call_text): процессные поля плюс диагностика
-    упёршегося лимита песочницы."""
-
-    def __init__(self, tool: str, result: RunResult, diagnostic: str) -> None:
-        self.tool = tool
-        self.result = result
-        self.diagnostic = diagnostic
-
-    @property
-    def succeeded(self) -> bool:
-        if self.result.timed_out:
-            return False
-        return self.result.exit_code == 0
-
-
 @dataclass(frozen=True)
 class ToolOutcome:
     """Итог вызова инструмента: разобранный конверт плюс процессные поля.
@@ -391,8 +374,7 @@ class ToolLauncher(Protocol):
 
     open() начинает потоковый вызов команды модуля инструментов и отдаёт
     ToolCall; open_tap() — вариант для перекачки: канал кадров вызова
-    отдаётся дескриптором и хостом не разбирается; call_text() исполняет
-    shell-команду и возвращает её вывод как есть (bash-инструмент).
+    отдаётся дескриптором и хостом не разбирается.
     Реализации: ProcessToolCaller (dev-режим без песочницы) и
     ZygoteToolCaller (bwrap-песочница). Накопительный вызов строится поверх
     open компонентом CollectedCall — отдельного входа в порт у него нет.
@@ -406,11 +388,6 @@ class ToolLauncher(Protocol):
     @abstractmethod
     def open_tap(self, command: ToolCommand) -> TappedCall:
         """Открыть вызов-источник перекачки: канал кадров — дескриптором."""
-        ...
-
-    @abstractmethod
-    def call_text(self, command: str, stdin: str) -> LaunchOutcome:
-        """Выполнить команду; stdout/stderr/rc возвращаются без разбора."""
         ...
 
 
@@ -486,7 +463,7 @@ class FrameTap:
 
     @classmethod
     @contextmanager
-    def applied(cls, sink: FrameSink) -> Iterator[None]:
+    def applied(cls, sink: FrameSink) -> Generator[None, None, None]:
         token = cls.set(sink)
         try:
             yield

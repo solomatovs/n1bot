@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from typing import ClassVar
 
@@ -32,16 +33,17 @@ class Sel:
     ALERT_ICON: ClassVar[str] = ".alert__icon"
     ACCOUNT_LOGIN: ClassVar[str] = ".account__login"
     ACCOUNT_META: ClassVar[str] = ".account__meta"
-    CRUMBS: ClassVar[str] = ".crumbs"
+    CRUMBS: ClassVar[str] = ".topbar__crumbs"
     SIGN_OUT: ClassVar[str] = 'button[aria-label="Sign out"]'
     BACK: ClassVar[str] = 'a[aria-label="Back to studio"]'
-    TAB: ClassVar[str] = '[role="tab"]'
-    CONNECTIONS: ClassVar[str] = ".connections"
-    CONNECTIONS_LIST: ClassVar[str] = ".connections__list"
-    CONNECTIONS_SCENE: ClassVar[str] = ".connections__scene"
-    LIST_GROUP: ClassVar[str] = ".list__group"
-    LIST_NEW: ClassVar[str] = ".list__new"
-    ITEM: ClassVar[str] = ".connections__list .item"
+    CONNECTIONS_BUTTON: ClassVar[str] = '[data-testid="account-connections"]'
+    CONNECTIONS_PAGE: ClassVar[str] = '[data-testid="connections-page"]'
+    CONNECTIONS_LIST: ClassVar[str] = '[data-testid="connections-list"]'
+    MINE: ClassVar[str] = '[data-testid="connections-mine"]'
+    SHARED: ClassVar[str] = '[data-testid="connections-shared"]'
+    SECTION_HEAD: ClassVar[str] = ".section__head"
+    ROW: ClassVar[str] = '[data-testid="connections-list"] .rows__row'
+    ADD: ClassVar[str] = '[data-testid="add-connection"]'
     FORM: ClassVar[str] = '[data-testid="connection-form"]'
     KIND: ClassVar[str] = 'select[aria-label="profile.kind"]'
     AUTH_BLOCK: ClassVar[str] = 'fieldset[data-path="profile.auth"]'
@@ -106,8 +108,8 @@ def _open(page: Page, stand: StandProcess, path: str) -> None:
 def _open_new_connection(page: Page, stand: StandProcess) -> None:
     """Форма нового соединения на виде postgres: порядок видов задаёт реестр
     плагинов, поэтому вид выбирается явно."""
-    _open(page, stand, "/account")
-    page.locator(Sel.LIST_NEW).click()
+    _open(page, stand, "/connections")
+    page.locator(Sel.ADD).click()
     expect(page.locator(Sel.FORM)).to_be_visible()
     page.locator(Sel.KIND).select_option("postgres")
 
@@ -164,7 +166,7 @@ class TestLogin:
 
 @pytest.mark.usefixtures("shared_connections")
 class TestAccount:
-    def test_header_facts_and_tabs(
+    def test_header_facts_and_connections_link(
         self, page: Page, stand: StandProcess, tokens: Tokens
     ) -> None:
         _open(page, stand, "/account")
@@ -190,41 +192,37 @@ class TestAccount:
         theme = page.locator('button[aria-label="Theme"]')
         assert Css.box(back).x > Css.box(theme).x
 
-        tab = page.locator(Sel.TAB, has_text="Connections")
-        expect(tab).to_have_attribute("aria-selected", "true")
-        assert Css.of(tab, "border-radius") == tokens.raw("r-pill")
+        # соединения живут на своей странице: кнопка ведёт на /connections
+        page.locator(Sel.CONNECTIONS_BUTTON).click()
+        expect(page).to_have_url(re.compile(r"/workflow/connections$"))
+        expect(page.locator(Sel.CONNECTIONS_PAGE)).to_be_visible()
 
     def test_connections_layout_wide_and_narrow(
         self, page: Page, narrow_page: Page, stand: StandProcess, tokens: Tokens
     ) -> None:
-        _open(page, stand, "/account")
-        wide = page.locator(Sel.CONNECTIONS)
-        expect(wide).to_be_visible()
-        assert Css.of(wide, "display") == "grid"
-        columns = Css.of(wide, "grid-template-columns").split()
-        assert len(columns) == 2
-        assert Css.of(
-            page.locator(Sel.CONNECTIONS_LIST), "background-color"
-        ) == tokens.rgb("surface")
-        groups = page.locator(Sel.LIST_GROUP)
-        expect(groups).to_have_count(2)
-        expect(groups.nth(0)).to_contain_text("mine")
-        expect(groups.nth(1)).to_contain_text("shared")
+        _open(page, stand, "/connections")
+        listing = page.locator(Sel.CONNECTIONS_LIST)
+        expect(listing).to_be_visible()
+        heads = listing.locator(Sel.SECTION_HEAD)
+        expect(heads).to_have_count(2)
+        expect(heads.nth(0)).to_contain_text("mine")
+        expect(heads.nth(1)).to_contain_text("shared")
+        assert Css.of(heads.nth(0).locator(".eyebrow"), "color") == tokens.rgb("muted")
         # общие соединения стенда посеяны для ролей: main (pg, ch) и stand (web)
-        expect(page.locator(Sel.ITEM)).to_have_count(3)
-        expect(page.locator(Sel.CONNECTIONS_SCENE)).to_contain_text("Pick a connection")
+        expect(page.locator(Sel.SHARED).locator(".rows__row")).to_have_count(3)
+        expect(page.locator(Sel.MINE).locator(Sel.ADD)).to_be_visible()
+        assert no_horizontal_scroll(page)
 
-        _open(narrow_page, stand, "/account")
-        narrow = narrow_page.locator(Sel.CONNECTIONS)
-        expect(narrow).to_be_visible()
-        assert len(Css.of(narrow, "grid-template-columns").split()) == 1
+        _open(narrow_page, stand, "/connections")
+        expect(narrow_page.locator(Sel.CONNECTIONS_LIST)).to_be_visible()
+        expect(narrow_page.locator(Sel.SHARED).locator(".rows__row")).to_have_count(3)
         assert no_horizontal_scroll(narrow_page)
 
     def test_shared_connection_is_read_only(
         self, page: Page, stand: StandProcess
     ) -> None:
-        _open(page, stand, "/account")
-        page.locator(Sel.ITEM, has_text="stand").click()
+        _open(page, stand, "/connections")
+        page.get_by_role("button", name="view stand", exact=True).click()
 
         expect(page.locator(Sel.ALERT_INFO)).to_contain_text("read-only")
         expect(page.locator(Sel.KIND)).to_have_value("web")

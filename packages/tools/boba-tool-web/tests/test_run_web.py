@@ -44,14 +44,16 @@ async def test_run_web_fetch(
     if body is None:
         raise AssertionError("body is not None")
 
-    content, _artifact = await body(
-        url=covered_url,
-        connection=connection,
-        as_markdown=True,
-        line_offset=0,
-        line_count=20,
-        cfg=web_cfg,
-    )
+    content = (
+        await body(
+            url=covered_url,
+            connection=connection,
+            as_markdown=True,
+            line_offset=0,
+            line_count=20,
+            cfg=web_cfg,
+        )
+    ).llm_view()
 
     print(content)
 
@@ -63,11 +65,13 @@ async def test_run_web_grep(
     if body is None:
         raise AssertionError("body is not None")
 
-    content, _artifact = await body(
-        url=covered_url,
-        connection=connection,
-        pattern=".",
-        cfg=web_cfg,
-    )
+    content = (
+        await body(
+            url=covered_url,
+            connection=connection,
+            pattern=".",
+            cfg=web_cfg,
+        )
+    ).llm_view()
 
     print(content)

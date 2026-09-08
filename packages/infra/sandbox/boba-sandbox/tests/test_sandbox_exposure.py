@@ -28,6 +28,7 @@ from boba.sandbox.zygote import (
     ZygoteToolCaller,
 )
 from boba.stand.sandbox import section_profile
+from boba.stand.shell import ShellRun
 from boba.stand.zygote import ZygoteStand
 from boba.toolkit.launcher import ChannelOverflowError
 
@@ -138,11 +139,11 @@ class TestImagesAreHidden:
         exposed: list[str] = []
         for section in sections:
             caller = caller_of(section)
-            outcome = caller.call_text(
-                FileHunt.script(self.PATTERN, self.PREDICATES), stdin=""
+            outcome = ShellRun.call_text(
+                caller, FileHunt.script(self.PATTERN, self.PREDICATES)
             )
 
-            found = outcome.result.stdout.strip()
+            found = outcome.stdout.strip()
             if not found:
                 continue
 
@@ -168,9 +169,9 @@ class TestKeytabStaysOutside:
         exposed: list[str] = []
         for section in sections:
             caller = caller_of(section)
-            outcome = caller.call_text(FileHunt.script(self.PATTERN), stdin="")
+            outcome = ShellRun.call_text(caller, FileHunt.script(self.PATTERN))
 
-            found = outcome.result.stdout.strip()
+            found = outcome.stdout.strip()
             if not found:
                 continue
 
@@ -195,9 +196,9 @@ class TestServiceCcacheStaysOutside:
         exposed: list[str] = []
         for section in sections:
             caller = caller_of(section)
-            outcome = caller.call_text(FileHunt.script(self.PATTERN), stdin="")
+            outcome = ShellRun.call_text(caller, FileHunt.script(self.PATTERN))
 
-            found = outcome.result.stdout.strip()
+            found = outcome.stdout.strip()
             if not found:
                 continue
 
@@ -225,9 +226,9 @@ class TestBodyHasNoCapabilities:
         kept: list[str] = []
         for section in sections:
             caller = caller_of(section)
-            outcome = caller.call_text(probe, stdin="")
+            outcome = ShellRun.call_text(caller, probe)
 
-            line = outcome.result.stdout.strip()
+            line = outcome.stdout.strip()
             mask = line.replace(self.BOUNDING, "").strip()
             if mask and int(mask, 16) == 0:
                 continue
@@ -257,16 +258,16 @@ class TestForgedMarkerIsIgnored:
         section = sections[0]
         caller = caller_of(section)
 
-        forged = caller.call_text(self.FORGERY, stdin="")
-        if "done" not in forged.result.stdout:
-            raise AssertionError(f"вызов не отработал: {forged.result.stdout!r}")
+        forged = ShellRun.call_text(caller, self.FORGERY)
+        if "done" not in forged.stdout:
+            raise AssertionError(f"вызов не отработал: {forged.stdout!r}")
 
         state = caller.supervisor.state
         if state is not ZygoteState.READY:
             raise AssertionError(f"секция ушла в {state} из-за подделки")
 
-        after = caller.call_text("echo alive", stdin="")
-        if "alive" not in after.result.stdout:
+        after = ShellRun.call_text(caller, "echo alive")
+        if "alive" not in after.stdout:
             raise AssertionError("секция не обслуживает вызовы после подделки")
 
 
@@ -293,7 +294,7 @@ class TestChannelCapStopsTheFlood:
 
         flood = f"head -c {self.LIMIT * 8} /dev/zero | tr '\\0' 'A'"
         with pytest.raises(ChannelOverflowError) as failure:
-            caller.call_text(flood, stdin="")
+            ShellRun.call_text(caller, flood)
 
         if "the limit is" not in str(failure.value):
             raise AssertionError(f"обрыв не по лимиту: {failure.value}")

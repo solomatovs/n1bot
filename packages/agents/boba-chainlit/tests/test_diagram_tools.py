@@ -9,7 +9,6 @@ from uuid import UUID
 
 import pytest
 from chainlit_stand import FakeTurn, make_context, use_session
-from pydantic import BaseModel
 
 from boba.canvas.canvas import (
     CanvasError,
@@ -40,7 +39,8 @@ from boba.identity.context import ContextKind
 from boba.identity.errors import RefusalError
 from boba.identity.run import RunRegistry
 from boba.runtime.launchers import CallSurface
-from boba.toolkit.result import DiagramResult, ErrorResult, TextResult
+from boba.runtime.plugins import ToolBridge
+from boba.toolkit.result import ErrorResult, MarkdownResult, VisualResult
 from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.run_log import ToolRunLogger
 from boba.workspace.binaries import TrustedBinaries
@@ -126,7 +126,7 @@ class TestToolInterface:
 
     def test_save_schema_fields(self) -> None:
         save = build_diagram_tools(DiagramToolConfig(max_chars=1000))[0]
-        schema = cast(type[BaseModel], save.tool_call_schema)
+        schema = save.args_schema
         if set(schema.model_fields) != {"name", "spec"}:
             raise AssertionError('set(schema.model_fields) == {"name", "spec"}')
 
@@ -260,10 +260,10 @@ class TestSaveAndView:
 
         if opened.label != "orders.mmd":
             raise AssertionError('opened.label == "orders.mmd"')
-        if not (isinstance(opened.link, DiagramResult)):
-            raise AssertionError("isinstance(opened.link, DiagramResult)")
-        if opened.link.spec != ER_SPEC:
-            raise AssertionError("opened.link.spec == ER_SPEC")
+        if not (isinstance(opened.link, VisualResult)):
+            raise AssertionError("isinstance(opened.link, VisualResult)")
+        if opened.link.props["text"] != ER_SPEC:
+            raise AssertionError('opened.link.props["text"] == ER_SPEC')
         if len(shown) != 1:
             raise AssertionError("len(shown) == 1")
         content = shown[0]
@@ -572,7 +572,8 @@ class TestSaveToolEndToEnd:
         Та же обвязка, что ставит load_tools: id вызова со схемы уходит в
         контекст, и карточка получает адрес элемента по нему.
         """
-        save = build_diagram_tools(DiagramToolConfig(max_chars=32000))[0]
+        built = build_diagram_tools(DiagramToolConfig(max_chars=32000))[0]
+        save = ToolBridge.as_structured_tool(built)
         ToolCallIdField.attach_all([save])
         ToolRunLogger.guard_all(
             [save], lambda tool, call_id: None, CallSurface.tool_call_scope
@@ -645,8 +646,8 @@ class TestSaveToolEndToEnd:
         """Успех — диаграмма в панели плюс кликабельная карточка в ленте."""
         content, result = await self._call(ER_SPEC, {"ok": True, "error": ""}, panel)
 
-        if not (isinstance(result, TextResult)):
-            raise AssertionError("isinstance(result, TextResult)")
+        if not (isinstance(result, MarkdownResult)):
+            raise AssertionError("isinstance(result, MarkdownResult)")
         if "diagram saved" not in content:
             raise AssertionError('"diagram saved" in content')
 

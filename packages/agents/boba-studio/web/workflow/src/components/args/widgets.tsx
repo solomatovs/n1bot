@@ -2,26 +2,30 @@ import type { ReactElement } from "react";
 
 import { valueText } from "../../model/args";
 import { clipText } from "../../model/json";
-import type { ArgKind, ArgView } from "../../model/workflow";
+import type { ArgRow } from "../../model/args";
+import type { EditorKind, FieldEditor, ToolResult } from "../../model/workflow";
 import { JsonView } from "../JsonView";
 import { Input, Select, TextArea } from "../../ui";
 
-/** Реестр виджетов аргумента по kind: Row — значение строкой в узле,
- * Editor — поле формы. Неизвестный kind сюда не доходит: схема каталога
- * подменяет его текстом. */
+/** Реестр виджетов аргумента по редактору: Row — значение строкой в узле,
+ * Editor — поле формы. Аргумент с объявленным показом markdown с языком
+ * редактируется как код. Неизвестный редактор сюда не доходит: схема
+ * каталога подменяет его текстовым. */
 
 const ROW_CLIP = 48;
 const CODE_ROWS = 6;
 const MASK = "••••••";
 
 export type RowProps = {
-  view: ArgView;
+  editor: FieldEditor;
+  display: ToolResult | null;
   value: unknown;
 };
 
 export type EditorProps = {
   name: string;
-  view: ArgView;
+  editor: FieldEditor;
+  display: ToolResult | null;
   value: unknown;
   required: boolean;
   onChange: (value: unknown) => void;
@@ -57,14 +61,8 @@ function BoolRow({ value }: RowProps): ReactElement {
   );
 }
 
-function NumberRow({ view, value }: RowProps): ReactElement {
-  const unit = view.kind === "number" ? view.unit : "";
-  return (
-    <span className="arg-row__value arg-row__value--number">
-      {valueText(value)}
-      {value !== undefined && unit !== "" ? ` ${unit}` : ""}
-    </span>
-  );
+function NumberRow({ value }: RowProps): ReactElement {
+  return <span className="arg-row__value arg-row__value--number">{valueText(value)}</span>;
 }
 
 function SecretRow({ value }: RowProps): ReactElement {
@@ -81,7 +79,7 @@ function JsonRow({ value }: RowProps): ReactElement {
   }
 
   if (typeof value !== "object" || value === null) {
-    return <Line view={{ kind: "json", placement: "body" }} value={value} />;
+    return <Line editor={{ editor: "json" }} display={null} value={value} />;
   }
 
   return (
@@ -93,15 +91,15 @@ function JsonRow({ value }: RowProps): ReactElement {
 
 function TextEditor({
   name,
-  view,
+  editor,
   value,
   required,
   onChange,
 }: EditorProps): ReactElement {
-  const multiline = view.kind === "text" && view.multiline;
+  const multiline = editor.editor === "text" && editor.multiline;
   const placeholder =
-    view.kind === "text" && view.placeholder !== ""
-      ? view.placeholder
+    editor.editor === "text" && editor.placeholder !== ""
+      ? editor.placeholder
       : hint(required);
   if (multiline) {
     return (
@@ -133,12 +131,12 @@ function TextEditor({
 
 function CodeEditor({
   name,
-  view,
+  display,
   value,
   required,
   onChange,
 }: EditorProps): ReactElement {
-  const lang = view.kind === "code" ? view.lang : "";
+  const lang = codeLanguage(display);
   return (
     <TextArea
       mono
@@ -158,12 +156,12 @@ function CodeEditor({
 
 function ConnectionEditor({
   name,
-  view,
+  editor,
   value,
   required,
   onChange,
 }: EditorProps): ReactElement {
-  const family = view.kind === "connection" ? view.family : "";
+  const family = editor.editor === "connection" ? editor.family : "";
   return (
     <Input
       mono
@@ -177,13 +175,13 @@ function ConnectionEditor({
   );
 }
 
-function EnumEditor({
+function SelectEditor({
   name,
-  view,
+  editor,
   value,
   onChange,
 }: EditorProps): ReactElement {
-  const options = view.kind === "enum" ? view.options : [];
+  const options = editor.editor === "select" ? editor.options : [];
   return (
     <Select
       mono
@@ -205,12 +203,12 @@ function EnumEditor({
 
 function NumberEditor({
   name,
-  view,
+  editor,
   value,
   required,
   onChange,
 }: EditorProps): ReactElement {
-  const bounds = view.kind === "number" ? view : null;
+  const bounds = editor.editor === "number" ? editor : null;
   return (
     <Input
       mono
@@ -322,19 +320,36 @@ function jsonOf(text: string): unknown {
   }
 }
 
-const WIDGETS: Record<ArgKind, ArgWidget> = {
+const WIDGETS: Record<EditorKind, ArgWidget> = {
   text: { Row: Line, Editor: TextEditor },
-  code: { Row: CodeRow, Editor: CodeEditor },
   connection: { Row: Line, Editor: ConnectionEditor },
-  enum: { Row: Line, Editor: EnumEditor },
+  select: { Row: Line, Editor: SelectEditor },
   number: { Row: NumberRow, Editor: NumberEditor },
   bool: { Row: BoolRow, Editor: BoolEditor },
-  path: { Row: Line, Editor: TextEditor },
   json: { Row: JsonRow, Editor: JsonEditor },
   secret: { Row: SecretRow, Editor: SecretEditor },
-  intent: { Row: Line, Editor: TextEditor },
 };
 
-export function widgetOf(view: ArgView): ArgWidget {
-  return WIDGETS[view.kind];
+const CODE: ArgWidget = { Row: CodeRow, Editor: CodeEditor };
+
+/** Язык объявленного показа markdown; пусто — показ не код. */
+export function codeLanguage(display: ToolResult | null): string {
+  if (display?.kind !== "markdown") {
+    return "";
+  }
+
+  const language = display.language;
+  if (typeof language !== "string") {
+    return "";
+  }
+
+  return language;
+}
+
+export function widgetOf(row: Pick<ArgRow, "editor" | "display">): ArgWidget {
+  if (codeLanguage(row.display) !== "") {
+    return CODE;
+  }
+
+  return WIDGETS[row.editor.editor];
 }

@@ -66,7 +66,7 @@ export function ConnectionsPane({
   return (
     <>
       <div className="pane__bar pane__actions" data-testid="connections-actions">
-        <Link to={PageUrls.catalog.connections()} data-testid="connections-link">
+        <Link to={PageUrls.connections()} data-testid="connections-link">
           <Button size="sm" tone="ghost">
             all connections
           </Button>

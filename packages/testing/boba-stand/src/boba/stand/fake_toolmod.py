@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field, SecretStr
 from boba.toolkit.entry import EntryFlag, ToolMain
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.ports import Inbound, Outbound, RawInbound, RawOutbound
-from boba.toolkit.result import TextResult, ToolResult, render_for_llm
+from boba.toolkit.result import MarkdownResult
 from boba.toolkit.types import SecretRevealing
 
 
@@ -47,7 +47,7 @@ async def fake_echo(
     text: Annotated[str, Field(min_length=1, description="Что вернуть")],
     repeat: Annotated[int, Field(ge=1, description="Сколько раз")],
     cfg: Annotated[FakeConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> MarkdownResult:
     """Повторяет текст, приправив секретом из конфига."""
     if text == "boom":
         msg = f"fake_echo({text!r}): fake backend is down"
@@ -60,8 +60,7 @@ async def fake_echo(
     logging.getLogger("fake.tool").info("echo progress: %s", text)
 
     body = " ".join([text] * min(repeat, cfg.limit))
-    artifact = TextResult(text=f"{body}|{cfg.token.get_secret_value()}")
-    return render_for_llm(artifact), artifact
+    return MarkdownResult(text=f"{body}|{cfg.token.get_secret_value()}")
 
 
 class FakeChunkHead(BaseModel):
@@ -84,7 +83,7 @@ async def fake_stream(
     cfg: Annotated[FakeConfig, Injected],
     feed: Annotated[Inbound[FakeChunkHead | FakeDoneHead], Injected],
     out: Annotated[Outbound[FakeChunkHead | FakeDoneHead], Injected],
-) -> tuple[str, ToolResult]:
+) -> MarkdownResult:
     """Отвечает кадром на каждый кадр входа: образец потокового инструмента."""
     total = 0
     for item in feed:
@@ -94,8 +93,7 @@ async def fake_stream(
 
     out.emit(FakeDoneHead(total=total))
 
-    artifact = TextResult(text=f"streamed {total}|{cfg.token.get_secret_value()}")
-    return render_for_llm(artifact), artifact
+    return MarkdownResult(text=f"streamed {total}|{cfg.token.get_secret_value()}")
 
 
 class FakePidHead(BaseModel):
@@ -109,12 +107,11 @@ class FakePidHead(BaseModel):
 async def fake_deaf(
     sleep_sec: Annotated[float, Field(ge=0, description="Сколько спать")],
     cfg: Annotated[FakeConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> MarkdownResult:
     """Глухое тело: спит, не читая вход, — хост упирается в полный пайп."""
     time.sleep(sleep_sec)
 
-    artifact = TextResult(text=f"deaf woke up|{cfg.token.get_secret_value()}")
-    return render_for_llm(artifact), artifact
+    return MarkdownResult(text=f"deaf woke up|{cfg.token.get_secret_value()}")
 
 
 @tool
@@ -122,7 +119,7 @@ async def fake_hostage(
     cfg: Annotated[FakeConfig, Injected],
     feed: Annotated[Inbound[FakePidHead], Injected],
     out: Annotated[Outbound[FakePidHead], Injected],
-) -> tuple[str, ToolResult]:
+) -> MarkdownResult:
     """Заложник: называет свой pid кадром и ждёт входа, которого не будет."""
     out.emit(FakePidHead(pid=os.getpid()))
 
@@ -130,14 +127,13 @@ async def fake_hostage(
     for _item in feed:
         total += 1
 
-    artifact = TextResult(text=f"hostage got {total}|{cfg.token.get_secret_value()}")
-    return render_for_llm(artifact), artifact
+    return MarkdownResult(text=f"hostage got {total}|{cfg.token.get_secret_value()}")
 
 
 @tool
 async def fake_garbage(
     cfg: Annotated[FakeConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> MarkdownResult:
     """Пишет мусор в канал кадров мимо кодека: читатель обязан увидеть обрыв.
 
     Номер канала берётся из полного sys.argv: флаги каналов ToolMain из
@@ -148,8 +144,7 @@ async def fake_garbage(
         fd = int(sys.argv[sys.argv.index(flag) + 1])
         os.write(fd, b"\xff\xff\xff\xff not a frame at all")
 
-    artifact = TextResult(text=f"garbage sent|{cfg.token.get_secret_value()}")
-    return render_for_llm(artifact), artifact
+    return MarkdownResult(text=f"garbage sent|{cfg.token.get_secret_value()}")
 
 
 @tool
@@ -157,15 +152,14 @@ async def fake_relay(
     cfg: Annotated[FakeConfig, Injected],
     feed: Annotated[RawInbound, Injected],
     out: Annotated[RawOutbound, Injected],
-) -> tuple[str, ToolResult]:
+) -> MarkdownResult:
     """Passthrough: переливает сырой поток со входа на выход без разбора."""
     total = 0
     for chunk in feed:
         total += len(chunk)
         out.write(chunk)
 
-    artifact = TextResult(text=f"relayed {total}|{cfg.token.get_secret_value()}")
-    return render_for_llm(artifact), artifact
+    return MarkdownResult(text=f"relayed {total}|{cfg.token.get_secret_value()}")
 
 
 EXPECTED: Mapping[type[Exception], FakeErrorKind] = {

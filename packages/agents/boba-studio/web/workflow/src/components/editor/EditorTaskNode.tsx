@@ -101,8 +101,8 @@ function RowValue({ row }: { row: ArgRow }): ReactElement {
     return <span className="arg-row__value arg-row__value--empty">{row.required ? "required" : "—"}</span>;
   }
 
-  const { Row } = widgetOf(row.view);
-  return <Row view={row.view} value={row.value} />;
+  const { Row } = widgetOf(row);
+  return <Row editor={row.editor} display={row.display} value={row.value} />;
 }
 
 /** Узел редактора: шапка (инструмент, имя, intent) с управлением, строки-порты, футер result. */

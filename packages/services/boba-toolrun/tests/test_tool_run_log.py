@@ -12,7 +12,7 @@ from langchain_core.tools import StructuredTool, tool
 
 from boba.sandbox.runner import FailureLog
 from boba.toolkit.launcher import RunResult
-from boba.toolkit.result import TextResult, ToolArtifact, pack_result
+from boba.toolkit.result import MarkdownResult, ToolArtifact
 from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.run_log import NoCallScope, StreamSource, ToolRunLogger
 
@@ -188,7 +188,7 @@ class TestElapsedInResult:
         async def slow_probe(query: str) -> tuple[str, Any]:
             """Инструмент, который заметно работает."""
             await asyncio.sleep(0.05)
-            return pack_result(TextResult(text=f"found {query}"))
+            return MarkdownResult(text=f"found {query}").packed()
 
         ToolCallIdField.attach_all([slow_probe])
         ToolRunLogger.guard_all([slow_probe], NO_STREAMS, NoCallScope.enter)
@@ -203,7 +203,7 @@ class TestElapsedInResult:
         )
         result = ToolArtifact.revive(message.artifact)
 
-        if not isinstance(result, TextResult):
+        if not isinstance(result, MarkdownResult):
             raise AssertionError(f"артефакт разобран: {result}")
 
         if result.elapsed_ms < 50:

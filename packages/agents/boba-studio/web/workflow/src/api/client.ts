@@ -11,8 +11,7 @@ import {
   ChannelViewSchema,
   StreamSliceSchema,
   ToolCatalogSchema,
-  looseViews,
-  withKnownResults,
+  looseEditors,
   type RunState,
   type StoredRun,
   type StoredWorkflow,
@@ -147,12 +146,12 @@ export class WorkflowApi {
 
   async catalog(): Promise<ToolCatalog> {
     const raw = await this.raw("get", "/v1/tools", {}, undefined, undefined);
-    return ToolCatalogSchema.parse(looseViews(raw));
+    return ToolCatalogSchema.parse(looseEditors(raw));
   }
 
   async validate(spec: string): Promise<RunState> {
     const raw = await this.raw("post", "/v1/workflows/validate", {}, undefined, { spec });
-    return RunStateSchema.parse(withKnownResults(raw));
+    return RunStateSchema.parse(raw);
   }
 
   listWorkflows(): Promise<StoredWorkflow[]> {
@@ -215,12 +214,12 @@ export class WorkflowApi {
 
   async listRuns(limit = 50): Promise<StoredRun[]> {
     const raw = await this.raw("get", "/v1/workflow-runs", {}, { limit }, undefined);
-    return StoredRunSchema.array().parse(z.array(z.unknown()).parse(raw).map(withKnownResults));
+    return StoredRunSchema.array().parse(raw);
   }
 
   async getRun(runId: string): Promise<StoredRun> {
     const raw = await this.raw("get", "/v1/workflow-runs/{run_id}", { run_id: runId }, undefined, undefined);
-    return StoredRunSchema.parse(withKnownResults(raw));
+    return StoredRunSchema.parse(raw);
   }
 
   streamChannels(runId: string, callId: string): Promise<ChannelView[]> {

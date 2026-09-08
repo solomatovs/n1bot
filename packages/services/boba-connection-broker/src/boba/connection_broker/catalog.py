@@ -15,13 +15,13 @@ from __future__ import annotations
 from collections.abc import Iterator, Sequence
 from typing import Any, ClassVar
 
-from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, ConfigDict
 
 from boba.connection_broker.service import UserConnectionsService, VisibleConnection
 from boba.connections.profile import StoredConnection
 from boba.identity.context import CallContext
-from boba.toolkit.result import TableResult, ToolResult, pack_result
+from boba.toolkit.facade import PayloadTool, tool
+from boba.toolkit.result import TableResult
 
 __all__ = ["ConnectionCatalogConfig", "build_connection_tools"]
 
@@ -103,14 +103,14 @@ class ConnectionCatalog:
 
 def build_connection_tools(
     cfg: ConnectionCatalogConfig, service: UserConnectionsService
-) -> list[BaseTool]:
+) -> list[PayloadTool]:
     """Инструмент connection_list для реестра приложения."""
     catalog = ConnectionCatalog(service)
 
-    @tool(response_format="content_and_artifact")
-    async def connection_list() -> tuple[str, ToolResult]:
+    @tool
+    async def connection_list() -> TableResult:
         """Доступные соединения: имя, вид и описание."""
-        return pack_result(await catalog.rows())
+        return await catalog.rows()
 
     connection_list.description = CatalogPrompt.LIST
 

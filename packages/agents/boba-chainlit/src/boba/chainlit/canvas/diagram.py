@@ -10,9 +10,8 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Annotated, ClassVar
+from typing import Annotated, Any, ClassVar
 
-from langchain_core.tools import BaseTool, tool
 from pydantic import Field
 
 import chainlit as cl
@@ -45,13 +44,12 @@ from boba.chainlit.data.data_layer import AttachmentDataLayer
 from boba.chainlit.domain.context import ChatCallContext
 from boba.identity.errors import RefusalError
 from boba.identity.run import ElementTarget, RunPort, RunRegistry
-from boba.toolkit.calls import ScriptCall, ToolCallViews
+from boba.toolkit.facade import PayloadTool, tool
 from boba.toolkit.result import (
-    DiagramResult,
+    ChatElement,
     ErrorResult,
-    TextResult,
-    ToolResult,
-    pack_result,
+    MarkdownResult,
+    VisualResult,
 )
 from boba.workspace.launcher import ReadWindow
 
@@ -200,7 +198,7 @@ class MermaidViewer(FileViewer):
             )
 
         entry = DiagramEntry.of(key, text)
-        link = DiagramResult(spec=text, path=entry.path, title=entry.label)
+        link = DiagramCard.link(entry)
 
         return OpenedCanvas(label=entry.label, path=entry.path, nonce=nonce, link=link)
 
@@ -235,10 +233,29 @@ class DiagramCard:
     поэтому карточка уходит без nonce и браузер по ней не отчитывается.
     """
 
-    ELEMENT: ClassVar[str] = "CanvasView"
-
     def __init__(self, files: DiagramFiles) -> None:
         self._files = files
+
+    @classmethod
+    def link(cls, entry: DiagramEntry) -> VisualResult:
+        """Карточка как результат инструмента: ссылка на файл в ленте."""
+        return VisualResult(
+            element=ChatElement.CANVAS_VIEW,
+            props=cls.props_of(entry),
+            title=entry.label,
+        )
+
+    @staticmethod
+    def props_of(entry: DiagramEntry) -> dict[str, Any]:
+        """Props компактной карточки CanvasView: содержимое панели плюс preview."""
+        content = CanvasContent(
+            kind=CanvasKind.MERMAID,
+            path=entry.path,
+            label=entry.label,
+            text=entry.spec,
+        )
+
+        return {**content.props(), "preview": True}
 
     async def publish(self, key: ObjectKey) -> None:
         """Показать карточку в ленте; переживает перезагрузку треда."""
@@ -259,15 +276,9 @@ class DiagramCard:
         call_id: str,
     ) -> None:
         entry = DiagramEntry.of(key, text)
-        content = CanvasContent(
-            kind=CanvasKind.MERMAID,
-            path=entry.path,
-            label=entry.label,
-            text=entry.spec,
-        )
-        props = {**content.props(), "preview": True}
+        props = self.props_of(entry)
 
-        element = cl.CustomElement(name=self.ELEMENT, props=props)
+        element = cl.CustomElement(name=ChatElement.CANVAS_VIEW, props=props)
         element.id = target.element_id
         element.thread_id = key.thread_id
         element.for_id = target.for_id
@@ -275,14 +286,13 @@ class DiagramCard:
         await port.show_element(call_id, element.to_dict())
 
 
-def build_diagram_tools(cfg: DiagramToolConfig) -> list[BaseTool]:
+def build_diagram_tools(cfg: DiagramToolConfig) -> list[PayloadTool]:
     files = DiagramFiles(cfg.max_chars)
     card = DiagramCard(files)
     # клик по карточке открывает файл в канвасе: вьювер знает про .mmd отсюда
     CanvasRegistry.register(MermaidViewer(files))
-    ToolCallViews.register("diagram_save", ScriptCall(arg="spec", lang="mermaid"))
 
-    @tool(response_format="content_and_artifact")
+    @tool
     async def diagram_save(
         name: Annotated[
             str,
@@ -291,8 +301,9 @@ def build_diagram_tools(cfg: DiagramToolConfig) -> list[BaseTool]:
         spec: Annotated[
             str,
             Field(min_length=1, description=DiagramPrompt.SPEC),
+            MarkdownResult(language="mermaid"),
         ],
-    ) -> tuple[str, ToolResult]:
+    ) -> MarkdownResult | ErrorResult:
         """Сохранить спеку mermaid файлом в workspace, показать её в панели
         канваса и оставить карточку в переписке.
 
@@ -307,7 +318,7 @@ def build_diagram_tools(cfg: DiagramToolConfig) -> list[BaseTool]:
         try:
             key = await files.save(name, spec)
         except RefusalError as e:
-            return pack_result(ErrorResult(message=str(e), error_kind=e.kind))
+            return ErrorResult(message=str(e), error_kind=e.kind)
 
         path = key.in_workspace()
 
@@ -318,18 +329,16 @@ def build_diagram_tools(cfg: DiagramToolConfig) -> list[BaseTool]:
                 f"diagram saved: {path}, but {e}; "
                 "fix the spec and call diagram_save again"
             )
-            return pack_result(ErrorResult(message=message, error_kind=e.kind))
+            return ErrorResult(message=message, error_kind=e.kind)
 
         try:
             await card.publish(key)
         except RefusalError as e:
-            return pack_result(ErrorResult(message=str(e), error_kind=e.kind))
+            return ErrorResult(message=str(e), error_kind=e.kind)
 
-        return pack_result(
-            TextResult(
-                text=f"diagram saved: {path}; {DiagramPrompt.SAVED_NOTE}",
-                metadata={"path": path},
-            )
+        return MarkdownResult(
+            text=f"diagram saved: {path}; {DiagramPrompt.SAVED_NOTE}",
+            metadata={"path": path},
         )
 
     return [diagram_save]

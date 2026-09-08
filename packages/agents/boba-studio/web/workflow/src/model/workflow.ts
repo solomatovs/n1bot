@@ -70,101 +70,31 @@ const resultBase = {
   metadata: z.record(z.string()),
 };
 
-/** Итог инструмента — те же kind, что у ToolResult в boba.toolkit.result.
- * `opaque` — страничный вид для kind, которого страница не знает: сырой
- * итог целиком в payload (см. withKnownResults). */
-export const ToolResultLeafSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("text"), ...resultBase, text: z.string(), language: z.string(), note: z.string().nullable() }),
-  z.object({ kind: z.literal("json"), ...resultBase, payload: z.unknown() }),
-  z.object({ kind: z.literal("table"), ...resultBase, rows: z.array(z.record(z.unknown())), note: z.string().nullable() }),
-  z.object({
-    kind: z.literal("affected"),
-    ...resultBase,
-    affected_rows: z.number().nullable(),
-    status: z.string().nullable(),
-  }),
-  z.object({ kind: z.literal("chart"), ...resultBase, spec: z.record(z.unknown()), title: z.string().nullable() }),
-  z.object({
-    kind: z.literal("custom_element"),
-    ...resultBase,
-    element: z.string(),
-    props: z.record(z.unknown()),
-    title: z.string().nullable(),
-  }),
-  z.object({ kind: z.literal("diagram"), ...resultBase, spec: z.string(), path: z.string(), title: z.string().nullable() }),
-  z.object({
-    kind: z.literal("shell"),
-    ...resultBase,
-    exit_code: z.number(),
-    stdout: z.string(),
-    stdout_truncated: z.boolean(),
-    stderr: z.string(),
-    stderr_truncated: z.boolean(),
-    duration_ms: z.number(),
-    timed_out: z.boolean(),
-    diagnostic: z.string(),
-  }),
-  z.object({ kind: z.literal("error"), ...resultBase, message: z.string(), error_kind: z.string() }),
-  z.object({ kind: z.literal("opaque"), ...resultBase, payload: z.unknown() }),
+/** Итог инструмента: kind и поля базы; остальное — данные конкретного вида,
+ * страница их не разбирает: показ приходит готовым StudioView в task.view. */
+export const ToolResultSchema = z.object({ kind: z.string(), ...resultBase }).passthrough();
+export type ToolResult = z.infer<typeof ToolResultSchema>;
+
+export const FactSchema = z.object({ key: z.string(), value: z.string() });
+
+/** Словарь блоков страницы — тот же, что StudioBlock в boba.toolkit.result. */
+export const StudioBlockSchema = z.discriminatedUnion("block", [
+  z.object({ block: z.literal("code"), text: z.string(), language: z.string() }),
+  z.object({ block: z.literal("grid"), rows: z.array(z.record(z.unknown())) }),
+  z.object({ block: z.literal("facts"), facts: z.array(FactSchema) }),
+  z.object({ block: z.literal("note"), text: z.string() }),
+  z.object({ block: z.literal("widget"), element: z.string(), props: z.record(z.unknown()), title: z.string() }),
 ]);
-export type ToolResultLeaf = z.infer<typeof ToolResultLeafSchema>;
+export type StudioBlock = z.infer<typeof StudioBlockSchema>;
 
-export type ToolResult =
-  | ToolResultLeaf
-  | { kind: "multi"; ok: boolean; elapsed_ms: number; metadata: Record<string, string>; items: ToolResult[] };
+export const StudioSummarySchema = z.object({ figure: z.string(), detail: z.string() });
+export type StudioSummary = z.infer<typeof StudioSummarySchema>;
 
-/** multi вложен рекурсивно: элементы — любые итоги, включая multi. */
-export const ToolResultSchema: z.ZodType<ToolResult> = z.lazy(() =>
-  z.union([z.object({ kind: z.literal("multi"), ...resultBase, items: z.array(ToolResultSchema) }), ToolResultLeafSchema]),
-);
-
-const KNOWN_RESULT_KINDS = new Set<string>([...ToolResultLeafSchema.options.map((option) => option.shape.kind.value), "multi"]);
-
-const RawResultSchema = z.object({ kind: z.string(), ...resultBase }).passthrough();
-
-function knownResult(raw: unknown): unknown {
-  const parsed = RawResultSchema.safeParse(raw);
-  if (!parsed.success) {
-    return raw;
-  }
-
-  if (!KNOWN_RESULT_KINDS.has(parsed.data.kind)) {
-    const { ok, elapsed_ms, metadata } = parsed.data;
-    return { kind: "opaque", ok, elapsed_ms, metadata, payload: raw };
-  }
-
-  if (parsed.data.kind === "multi" && Array.isArray(parsed.data.items)) {
-    return { ...parsed.data, items: parsed.data.items.map(knownResult) };
-  }
-
-  return raw;
-}
-
-const RawTasksSchema = z.object({ tasks: z.record(z.object({ result: z.unknown() }).passthrough()) }).passthrough();
-
-/** Неизвестный kind итога (бэкенд новее страницы) не ломает разбор запуска:
- * такой итог становится opaque. Принимает состояние запуска или запись с state. */
-export function withKnownResults(raw: unknown): unknown {
-  if (typeof raw !== "object" || raw === null) {
-    return raw;
-  }
-
-  if ("state" in raw) {
-    return { ...raw, state: withKnownResults(raw.state) };
-  }
-
-  const state = RawTasksSchema.safeParse(raw);
-  if (!state.success) {
-    return raw;
-  }
-
-  const tasks: Record<string, unknown> = {};
-  for (const [name, task] of Object.entries(state.data.tasks)) {
-    tasks[name] = { ...task, result: task.result === null ? null : knownResult(task.result) };
-  }
-
-  return { ...state.data, tasks };
-}
+export const StudioViewSchema = z.object({
+  summary: StudioSummarySchema,
+  blocks: z.array(StudioBlockSchema),
+});
+export type StudioView = z.infer<typeof StudioViewSchema>;
 
 export const TaskStateSchema = z.object({
   status: TaskStatusSchema,
@@ -173,6 +103,7 @@ export const TaskStateSchema = z.object({
   finished_at: z.string().nullable(),
   error: z.string(),
   result: ToolResultSchema.nullable(),
+  view: StudioViewSchema.nullable(),
 });
 export type TaskState = z.infer<typeof TaskStateSchema>;
 
@@ -230,49 +161,41 @@ export type RunSnapshot = z.infer<typeof RunSnapshotSchema>;
 export const ToolAvailabilitySchema = z.enum(["available", "denied", "chat_only", "headless_only"]);
 export type ToolAvailability = z.infer<typeof ToolAvailabilitySchema>;
 
-export const ArgPlacementSchema = z.enum(["body", "header", "hidden"]);
-export type ArgPlacement = z.infer<typeof ArgPlacementSchema>;
+export const FieldPlacementSchema = z.enum(["body", "header", "hidden"]);
+export type FieldPlacement = z.infer<typeof FieldPlacementSchema>;
 
-const placed = { placement: ArgPlacementSchema };
-
-/** Виды аргумента — те же kind, что у ArgView в boba.toolkit.calls. */
-export const ArgViewSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("text"), ...placed, multiline: z.boolean(), placeholder: z.string() }),
-  z.object({ kind: z.literal("code"), ...placed, lang: z.string() }),
-  z.object({ kind: z.literal("connection"), ...placed, family: z.string() }),
-  z.object({ kind: z.literal("enum"), ...placed, options: z.array(z.string()) }),
-  z.object({
-    kind: z.literal("number"),
-    ...placed,
-    minimum: z.number().nullable(),
-    maximum: z.number().nullable(),
-    unit: z.string(),
-  }),
-  z.object({ kind: z.literal("bool"), ...placed }),
-  z.object({ kind: z.literal("path"), ...placed }),
-  z.object({ kind: z.literal("json"), ...placed }),
-  z.object({ kind: z.literal("secret"), ...placed }),
-  z.object({ kind: z.literal("intent"), ...placed }),
+/** Редакторы поля формы — те же, что FieldEditor в boba.toolkit.calls. */
+export const FieldEditorSchema = z.discriminatedUnion("editor", [
+  z.object({ editor: z.literal("text"), multiline: z.boolean(), placeholder: z.string() }),
+  z.object({ editor: z.literal("number"), minimum: z.number().nullable(), maximum: z.number().nullable() }),
+  z.object({ editor: z.literal("select"), options: z.array(z.string()) }),
+  z.object({ editor: z.literal("bool") }),
+  z.object({ editor: z.literal("connection"), family: z.string() }),
+  z.object({ editor: z.literal("json") }),
+  z.object({ editor: z.literal("secret") }),
 ]);
-export type ArgView = z.infer<typeof ArgViewSchema>;
-export type ArgKind = ArgView["kind"];
+export type FieldEditor = z.infer<typeof FieldEditorSchema>;
+export type EditorKind = FieldEditor["editor"];
 
-export const TEXT_VIEW: ArgView = { kind: "text", placement: "body", multiline: false, placeholder: "" };
+export const TEXT_EDITOR: FieldEditor = { editor: "text", multiline: false, placeholder: "" };
 
-export const ToolArgSchema = z.object({
+/** Поле формы задачи: редактор из типа, показ значения — объявленный результат. */
+export const StudioFieldSchema = z.object({
   name: z.string(),
-  required: z.boolean(),
-  view: ArgViewSchema,
   description: z.string(),
+  required: z.boolean(),
+  placement: FieldPlacementSchema,
+  editor: FieldEditorSchema,
+  display: ToolResultSchema.nullable(),
 });
-export type ToolArg = z.infer<typeof ToolArgSchema>;
+export type StudioField = z.infer<typeof StudioFieldSchema>;
 
-const RawArgSchema = z.object({ view: z.unknown() }).passthrough();
-const RawFactsSchema = z.object({ args: z.array(RawArgSchema) }).passthrough();
+const RawFieldSchema = z.object({ editor: z.unknown() }).passthrough();
+const RawFactsSchema = z.object({ args: z.array(RawFieldSchema) }).passthrough();
 
-/** Неизвестный kind (бэкенд новее страницы) не ломает каталог: такой вид
- * подменяется текстом до строгого разбора. */
-export function looseViews(raw: unknown): unknown {
+/** Неизвестный редактор (бэкенд новее страницы) не ломает каталог: он
+ * подменяется текстовым до строгого разбора. */
+export function looseEditors(raw: unknown): unknown {
   const facts = z.record(RawFactsSchema).safeParse(raw);
   if (!facts.success) {
     return raw;
@@ -281,11 +204,11 @@ export function looseViews(raw: unknown): unknown {
   const patched: Record<string, unknown> = {};
   for (const [name, tool] of Object.entries(facts.data)) {
     const args = tool.args.map((arg) => {
-      if (ArgViewSchema.safeParse(arg.view).success) {
+      if (FieldEditorSchema.safeParse(arg.editor).success) {
         return arg;
       }
 
-      return { ...arg, view: TEXT_VIEW };
+      return { ...arg, editor: TEXT_EDITOR };
     });
     patched[name] = { ...tool, args };
   }
@@ -300,7 +223,7 @@ export const ToolFactsSchema = z.object({
   name: z.string(),
   availability: ToolAvailabilitySchema,
   description: z.string(),
-  args: z.array(ToolArgSchema),
+  args: z.array(StudioFieldSchema),
   ports: z.array(ToolPortSchema),
   results: z.array(z.string()),
   task_ports: z.boolean(),

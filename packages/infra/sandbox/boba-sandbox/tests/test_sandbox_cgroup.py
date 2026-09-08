@@ -128,7 +128,6 @@ class TestProfileValidation:
                 "process_oom_score_adj": 0,
             },
             "run": {
-                "shell": "/bin/bash",
                 "cwd": "",
             },
         }

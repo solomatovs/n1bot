@@ -1,9 +1,10 @@
 """Фасад инструмента без langchain: декораторы @tool и @warmup.
 
 Модуль инструментов объявляет тело этим декоратором и живёт в песочнице на
-одном pydantic: схема аргументов строится из Annotated-подписи так же, как её
-строил langchain. Приложение заворачивает PayloadTool в StructuredTool на
-своей стороне — payload-процесс langchain не импортирует.
+одном pydantic: модель вызова (ToolCallBase) строится из Annotated-подписи
+так же, как схему строил langchain; тело с одним параметром-наследником
+ToolCallBase получает вызов этой моделью. Приложение заворачивает PayloadTool
+в StructuredTool на своей стороне — payload-процесс langchain не импортирует.
 
 Прогрев зиготы пишет автор инструмента: @warmup объявляет корутину, которая
 исполняется в зиготе один раз до готовности, и её результат дети получают
@@ -11,15 +12,17 @@
 условленный атрибут.
 
 Ошибки:
-ToolFacadeError — подпись тела не годится для схемы: нет докстринга,
-    *args/**kwargs, параметр без аннотации; хук прогрева объявлен не
-    корутиной либо без единственного параметра-модели.
+ToolFacadeError — подпись тела не годится для модели вызова: нет докстринга,
+    *args/**kwargs, параметр без аннотации, рядом с моделью вызова параметр
+    не injected и не порт, возврат не результат семейства ToolResultBase;
+    хук прогрева объявлен не корутиной либо без единственного
+    параметра-модели.
 """
 
 from __future__ import annotations
 
 import inspect
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from typing import (
     Annotated,
     Any,
@@ -33,7 +36,9 @@ from typing import (
 
 from pydantic import BaseModel, ConfigDict, create_model
 
+from boba.toolkit.calls import FieldMarks, ToolCallBase, ToolCallModels
 from boba.toolkit.ports import StreamPorts
+from boba.toolkit.result import ResultKindError, ResultKinds
 
 __all__ = [
     "Injected",
@@ -57,8 +62,8 @@ class ToolFacadeError(Exception):
 class Injected:
     """Маркер injected-параметра в Annotated: значение кладёт приложение.
 
-    Распознаётся по имени класса (ToolArgv.INJECTED_MARKERS), как и
-    langchain-маркеры, — сравнение типов между процессами невозможно.
+    Распознаётся по имени класса (FieldMarks.INJECTED): сравнение типов
+    между процессами невозможно.
     """
 
 
@@ -80,8 +85,9 @@ class PayloadTool(BaseModel):
 
     Реализует ToolLike структурно: наследовать протокол нельзя, метакласс
     pydantic с ним несовместим. func/coroutine — обычные поля, их подменяет
-    обёртка запуска (ToolProcessWrap). Ответ тела всегда (content, artifact) —
-    формат зафиксирован контрактом конверта ToolMain.
+    обёртка запуска (ToolProcessWrap). Тело возвращает модель результата
+    (ToolResultBase); пару (content, artifact) для langchain собирает мост
+    приложения, конверт ToolMain — в песочнице.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -90,9 +96,34 @@ class PayloadTool(BaseModel):
 
     name: str
     description: str
-    args_schema: type[BaseModel]
+    args_schema: type[ToolCallBase]
+    """Модель вызова: все параметры тела, включая injected и порты."""
+    call_param: str = ""
+    """Параметр, которым тело принимает вызов моделью; пусто — тело берёт
+    аргументы по отдельности."""
+    call_class: type[ToolCallBase] | None = None
+    """Класс вызова, объявленный телом; None — модель построена из подписи."""
+    results: tuple[str, ...]
+    """Виды результата по аннотации возврата тела; пусто — тело объявило базу."""
     func: Callable[..., Any] | None
     coroutine: Callable[..., Awaitable[Any]] | None
+
+    def packed_kwargs(self, kwargs: Mapping[str, Any]) -> dict[str, Any]:
+        """kwargs вызова для тела: поля класса вызова собираются в его экземпляр."""
+        if self.call_class is None:
+            return dict(kwargs)
+
+        own: dict[str, Any] = {}
+        rest: dict[str, Any] = {}
+        for name, value in kwargs.items():
+            if name in self.call_class.model_fields:
+                own[name] = value
+            else:
+                rest[name] = value
+
+        rest[self.call_param] = self.call_class(**own)
+
+        return rest
 
 
 class WarmupHook(BaseModel):
@@ -188,13 +219,18 @@ def tool(fn: Callable[..., Any]) -> PayloadTool:
         msg = f"tool {fn.__name__!r} has no docstring: LLM needs a description"
         raise ToolFacadeError(msg)
 
-    schema = _schema_of(fn)
+    call = _CallModel.of(fn)
+    results = _results_of(fn)
+    ToolCallModels.register(fn.__name__, call.model)
 
     if inspect.iscoroutinefunction(fn):
         return PayloadTool(
             name=fn.__name__,
             description=description,
-            args_schema=schema,
+            args_schema=call.model,
+            call_param=call.param,
+            call_class=call.declared,
+            results=results,
             func=None,
             coroutine=fn,
         )
@@ -202,48 +238,117 @@ def tool(fn: Callable[..., Any]) -> PayloadTool:
     return PayloadTool(
         name=fn.__name__,
         description=description,
-        args_schema=schema,
+        args_schema=call.model,
+        call_param=call.param,
+        call_class=call.declared,
+        results=results,
         func=fn,
         coroutine=None,
     )
 
 
-def _schema_of(fn: Callable[..., Any]) -> type[BaseModel]:
-    """Pydantic-модель аргументов из Annotated-подписи тела."""
-    hints = get_type_hints(fn, include_extras=True)
-    signature = inspect.signature(fn)
+def _results_of(fn: Callable[..., Any]) -> tuple[str, ...]:
+    """Виды результата из аннотации возврата тела."""
+    annotation = get_type_hints(fn).get("return")
+    if annotation is None:
+        msg = (
+            f"tool {fn.__name__!r} has no return annotation: the body must "
+            "declare which ToolResultBase model it returns"
+        )
+        raise ToolFacadeError(msg)
 
-    banned = (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+    try:
+        return ResultKinds.kinds_of(annotation)
+    except ResultKindError as exc:
+        msg = f"tool {fn.__name__!r}: {exc}"
+        raise ToolFacadeError(msg) from exc
 
-    fields: dict[str, Any] = {}
-    for name, parameter in signature.parameters.items():
-        if parameter.kind in banned:
+
+class _CallModel(BaseModel):
+    """Модель вызова тела: построенная из подписи либо объявленная классом."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    model: type[ToolCallBase]
+    param: str = ""
+    declared: type[ToolCallBase] | None = None
+
+    @classmethod
+    def of(cls, fn: Callable[..., Any]) -> _CallModel:
+        hints = get_type_hints(fn, include_extras=True)
+        signature = inspect.signature(fn)
+
+        banned = (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+
+        declared: type[ToolCallBase] | None = None
+        param = ""
+        fields: dict[str, Any] = {}
+        for name, parameter in signature.parameters.items():
+            if parameter.kind in banned:
+                msg = (
+                    f"tool {fn.__name__!r}: parameter {name!r} is {parameter.kind.name}"
+                    ", *args/**kwargs are not allowed in a tool signature"
+                )
+                raise ToolFacadeError(msg)
+
+            annotation = hints.get(name)
+            if annotation is None:
+                msg = (
+                    f"tool {fn.__name__!r}: parameter {name!r} has no type "
+                    "annotation, the call model needs one"
+                )
+                raise ToolFacadeError(msg)
+
+            bare = _bare(annotation)
+            if isinstance(bare, type) and issubclass(bare, ToolCallBase):
+                if declared is not None:
+                    msg = (
+                        f"tool {fn.__name__!r}: parameters {param!r} and {name!r} "
+                        "are both call models, a body takes at most one"
+                    )
+                    raise ToolFacadeError(msg)
+
+                declared = bare
+                param = name
+                continue
+
+            default = parameter.default
+            if default is inspect.Parameter.empty:
+                default = ...
+
+            if StreamPorts.is_port(bare):
+                # порт строит гость на вызове: хост значения не передаёт, и в
+                # схеме поле обязательным быть не может
+                default = None
+
+            fields[name] = (annotation, default)
+
+        base: type[ToolCallBase] = ToolCallBase
+        if declared is not None:
+            cls._check_companions(fn, fields)
+            base = declared
+
+        model = create_model(f"{fn.__name__}_call", __base__=base, **fields)
+
+        return cls(model=model, param=param, declared=declared)
+
+    @staticmethod
+    def _check_companions(fn: Callable[..., Any], fields: Mapping[str, Any]) -> None:
+        """Рядом с классом вызова тело принимает только injected и порты:
+        аргументы модели живут в классе."""
+        probe = create_model(f"{fn.__name__}_companions", **dict(fields))
+        for name, field in probe.model_fields.items():
+            if FieldMarks.injected(field):
+                continue
+
+            if FieldMarks.port(field):
+                continue
+
             msg = (
-                f"tool {fn.__name__!r}: parameter {name!r} is {parameter.kind.name}"
-                ", *args/**kwargs are not allowed in a tool signature"
+                f"tool {fn.__name__!r}: parameter {name!r} next to the call model "
+                "must be injected or a port; LLM arguments belong to the model"
             )
             raise ToolFacadeError(msg)
-
-        annotation = hints.get(name)
-        if annotation is None:
-            msg = (
-                f"tool {fn.__name__!r}: parameter {name!r} has no type "
-                "annotation, the argument schema needs one"
-            )
-            raise ToolFacadeError(msg)
-
-        default = parameter.default
-        if default is inspect.Parameter.empty:
-            default = ...
-
-        if StreamPorts.is_port(_bare(annotation)):
-            # порт строит гость на вызове: хост значения не передаёт, и в
-            # схеме поле обязательным быть не может
-            default = None
-
-        fields[name] = (annotation, default)
-
-    return create_model(f"{fn.__name__}_args", **fields)
 
 
 def _bare(annotation: Any) -> Any:

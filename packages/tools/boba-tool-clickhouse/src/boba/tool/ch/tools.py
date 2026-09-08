@@ -22,16 +22,9 @@ from pydantic import Field
 from boba.db.clickhouse import ClickHouseError
 from boba.db.clickhouse.payload import PayloadClickHouse
 from boba.db.clickhouse.profile import ClickHouseConfig
-from boba.toolkit.calls import ScriptCall
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
-from boba.toolkit.result import (
-    Produces,
-    ResultTooLargeError,
-    TableResult,
-    ToolResult,
-    pack_result,
-)
+from boba.toolkit.result import MarkdownResult, ResultTooLargeError, SqlResult
 from boba.toolkit.sql import (
     CatalogQuery,
     MaxChars,
@@ -56,6 +49,8 @@ class ChToolConfig(SecretRevealing, SqlLimits):
     """Лимиты выдачи ch-инструментов; [tool.ch]."""
 
     SECTION: ClassVar[str] = "tool.ch"
+    ENGINE: ClassVar[str] = "clickhouse"
+    """Подпись движка в SqlResult."""
 
 
 class ChCatalog:
@@ -162,7 +157,7 @@ async def _catalog_page(
     connection: ClickHouseConfig,
     query: CatalogQuery[ChParams],
     window: RowWindow,
-) -> tuple[str, ToolResult]:
+) -> SqlResult:
     """Каталожный запрос страницей окна: границы выдачи назначает вызов."""
     parameters = query.params
     if not parameters:
@@ -186,14 +181,14 @@ async def _catalog_page(
             )
             raise ClickHouseError(msg) from exc
 
-    return pack_result(page.table())
+    return SqlResult(engine=ChToolConfig.ENGINE, statements=[page.statement()])
 
 
 async def _query_rows(
     connection: ClickHouseConfig,
     query: CatalogQuery[ChParams],
     cfg: ChToolConfig,
-) -> tuple[str, ToolResult]:
+) -> SqlResult:
     """Выполнить запрос и собрать выдачу таблицей; блоки стримятся с лимитом."""
     parameters = query.params
     if not parameters:
@@ -218,7 +213,7 @@ async def _query_rows(
             )
             raise ClickHouseError(msg) from exc
 
-    return pack_result(budget.table())
+    return SqlResult(engine=ChToolConfig.ENGINE, statements=[budget.statement()])
 
 
 @tool
@@ -239,7 +234,7 @@ async def ch_list_tables(  # noqa: PLR0913 — окно выдачи задаё�
     max_rows: MaxRows,
     max_chars: MaxChars,
     cfg: Annotated[ChToolConfig, Injected],
-) -> Annotated[tuple[str, ToolResult], Produces.of(TableResult)]:
+) -> SqlResult:
     """Список таблиц/view подключения. Колонки: database, table, engine.
 
     Выдача постраничная: сколько показано и как листать, сказано в note.
@@ -267,7 +262,7 @@ async def ch_describe_table(  # noqa: PLR0913 — окно выдачи зада
     max_rows: MaxRows,
     max_chars: MaxChars,
     cfg: Annotated[ChToolConfig, Injected],
-) -> Annotated[tuple[str, ToolResult], Produces.of(TableResult)]:
+) -> SqlResult:
     """Схема таблицы: колонки, типы, default-выражения, комментарии.
 
     Широкая таблица приходит частями: как листать, сказано в note.
@@ -290,10 +285,11 @@ async def ch_query(
                 "— добавьте LIMIT в сам запрос."
             ),
         ),
+        MarkdownResult(language="sql"),
     ],
     connection: ChConnection,
     cfg: Annotated[ChToolConfig, Injected],
-) -> Annotated[tuple[str, ToolResult], Produces.of(TableResult)]:
+) -> SqlResult:
     """Выполнить SQL на выбранном соединении."""
 
     return await _query_rows(connection, CatalogQuery(text=sql, params={}), cfg)
@@ -309,7 +305,6 @@ TOOLS: Final = ToolMain.toolset(
     ch_list_tables,
     ch_describe_table,
     ch_query,
-    views={"ch_query": ScriptCall(arg="sql", lang="sql")},
 )
 
 if __name__ == "__main__":

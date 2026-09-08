@@ -97,7 +97,6 @@ class FakeSyncRegistry:
                 {
                     "provider": "process",
                     "workdir": str(workdir),
-                    "shell": "/bin/bash",
                     "timeout_sec": 60.0,
                     "channel_limit_bytes": 8_000_000,
                     "stderr_tail_bytes": 4096,

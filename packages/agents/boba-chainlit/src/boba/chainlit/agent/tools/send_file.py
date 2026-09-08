@@ -12,7 +12,6 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar
 
-from langchain_core.tools import BaseTool, tool
 from pydantic import Field
 
 import chainlit as cl
@@ -22,7 +21,8 @@ from boba.chainlit.data.data_layer import AttachmentDataLayer
 from boba.chainlit.domain.context import ChatCallContext
 from boba.identity.errors import RefusalError
 from boba.identity.run import ElementTarget, RunRegistry
-from boba.toolkit.result import ErrorResult, TextResult, ToolResult, pack_result
+from boba.toolkit.facade import PayloadTool, tool
+from boba.toolkit.result import ErrorResult, MarkdownResult
 
 __all__ = [
     "AttachmentErrorKind",
@@ -77,7 +77,7 @@ class FileAttachment:
     FALLBACK_MIME: ClassVar[str] = "application/octet-stream"
 
     @classmethod
-    async def attach(cls, path: str) -> ToolResult:
+    async def attach(cls, path: str) -> MarkdownResult | ErrorResult:
         try:
             target = cls._resolve(path)
             await cls._require_file(target.key)
@@ -85,7 +85,7 @@ class FileAttachment:
             return ErrorResult(message=str(e), error_kind=e.kind)
 
         await cls._send(target)
-        return TextResult(
+        return MarkdownResult(
             text=f"file attached to the chat: {target.key.name}",
             metadata={"path": target.key.in_workspace()},
         )
@@ -154,15 +154,15 @@ class FileAttachment:
         await port.show_element(target.call_id, element.to_dict())
 
 
-def build_send_file_tool() -> BaseTool:
-    @tool(response_format="content_and_artifact")
+def build_send_file_tool() -> PayloadTool:
+    @tool
     async def send_file(
         path: Annotated[
             str,
             Field(min_length=1, description=FileAttachment.PATH_DESCRIPTION),
         ],
-    ) -> tuple[str, ToolResult]:
+    ) -> MarkdownResult | ErrorResult:
         """Отправить пользователю файл из workspace вложением в чат."""
-        return pack_result(await FileAttachment.attach(path))
+        return await FileAttachment.attach(path)
 
     return send_file

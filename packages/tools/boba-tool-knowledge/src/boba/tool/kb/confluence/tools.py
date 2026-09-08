@@ -24,7 +24,7 @@ from boba.tool.kb.confluence.parsing import ConfluenceJson
 from boba.tool.kb.confluence.request_sources import ConfluenceRest
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
-from boba.toolkit.result import TableResult, TextResult, ToolResult, pack_result
+from boba.toolkit.result import MarkdownResult, TableResult
 from boba.toolkit.sql import RowOffset
 from boba.toolkit.types import LLMStringList, SecretRevealing
 from boba.transport.http import HttpxAuth
@@ -220,12 +220,11 @@ async def confluence_fetch(
     ] = True,
     *,
     cfg: Annotated[ConfluenceToolsConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> MarkdownResult:
     """Скачивает одну Confluence-страницу и возвращает её контент."""
     text = await ConfluencePageText.of_page(cfg, page_id, as_markdown=as_markdown)
 
-    artifact = TextResult(text=text)
-    return pack_result(artifact)
+    return MarkdownResult(text=text)
 
 
 @tool
@@ -265,7 +264,7 @@ async def confluence_grep(  # noqa: PLR0913 — независимые флаг�
     ] = False,
     *,
     cfg: Annotated[ConfluenceToolsConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> MarkdownResult:
     """Ищет совпадения по тексту одной Confluence-страницы."""
     text = await ConfluencePageText.of_page(cfg, page_id, as_markdown=as_markdown)
 
@@ -276,13 +275,12 @@ async def confluence_grep(  # noqa: PLR0913 — независимые флаг�
     limits = GrepLimits(context=context, limit=limit, clip_chars=cfg.max_text_chars)
     report = TextGrep.report(text, compiled, limits, f"page_id={page_id}")
 
-    artifact = TextResult(
+    return MarkdownResult(
         text=report.render(),
         language=report.LANG,
         note=report.note,
         metadata={"page_id": page_id},
     )
-    return pack_result(artifact)
 
 
 @tool
@@ -311,7 +309,7 @@ async def confluence_search(  # noqa: PLR0913 — окно выдачи зада
     *,
     offset: RowOffset,
     cfg: Annotated[ConfluenceToolsConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> TableResult:
     """Ищет страницы в Confluence через CQL и возвращает таблицу hits.
 
     Выдача постраничная: сколько показано и как листать, сказано в note.
@@ -330,8 +328,7 @@ async def confluence_search(  # noqa: PLR0913 — окно выдачи зада
     for hit in data.get("results") or []:
         rows.append(CqlSearch.hit_row(hit, base, snippet_chars))
 
-    table = TableResult(rows=rows, note=CqlSearch.page_note(data, offset, len(rows)))
-    return pack_result(table)
+    return TableResult(rows=rows, note=CqlSearch.page_note(data, offset, len(rows)))
 
 
 @tool
@@ -355,7 +352,7 @@ async def confluence_spaces(
     ] = 200,
     *,
     cfg: Annotated[ConfluenceToolsConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> TableResult:
     """Список spaces Confluence с опциональным glob-фильтром."""
     path = ConfluenceRest.space_list_path(space_type, limit=limit)
     data = json.loads(await ConfluenceHttp.get(cfg, path))
@@ -377,8 +374,7 @@ async def confluence_spaces(
 
         rows.append(row)
 
-    table = TableResult(rows=rows)
-    return pack_result(table)
+    return TableResult(rows=rows)
 
 
 EXPECTED: Mapping[type[Exception], ConfluenceErrorKind] = {

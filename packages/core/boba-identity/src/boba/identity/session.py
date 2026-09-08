@@ -159,7 +159,7 @@ class LogUserMark:
         return cls._current.get()
 
     @contextlib.contextmanager
-    def applied(self) -> Generator[None]:
+    def applied(self) -> Generator[None, None, None]:
         token = self._current.set(self._label)
         try:
             yield

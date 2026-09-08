@@ -812,7 +812,7 @@ class TestHomeButtons:
 
         page.get_by_role("tab", name="connections").click()
         page.get_by_test_id("connections-link").click()
-        page.wait_for_url(re.compile(r"/catalog/connections$"), timeout=30_000)
+        page.wait_for_url(re.compile(r"/workflow/connections$"), timeout=30_000)
         expect(page.get_by_test_id("connections-page")).to_be_visible()
 
     def test_pane_toggle_and_object_card_on_the_entry(

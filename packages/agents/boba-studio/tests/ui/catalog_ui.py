@@ -58,7 +58,7 @@ class CatalogPage(StrEnum):
     HOME = "/catalog/"
     PROCESS = CatalogPageUrl.PROCESS.value
     DRAFT = CatalogPageUrl.DRAFT.value
-    CONNECTIONS = "/catalog/connections"
+    CONNECTIONS = "/connections"
     CONNECTION = "/catalog/connections/{connection_id}"
     SHARED = "/catalog/shared/{token}"
 

@@ -1,678 +1,501 @@
-# Инструменты: конфиг, секреты, соединения пользователя и запуск
+# Как написать tool-плагин: конфиг, секреты, соединения пользователя
 
-Инструкция для того, кто пишет tool-плагин впервые или хочет понять, что
-происходит между «LLM вызвала pg_query» и «тело инструмента открыло базу».
-Три сквозных примера от простого к сложному, потом внутренности launcher'а.
+Документ ведёт от первого вызова до собранного образа песочницы на одном
+сквозном примере. Мы напишем плагин `redis`: сначала инструмент, который
+ходит на сервер из конфига администратора, потом тип соединения, чтобы
+пользователи заводили свои сервера на странице «Соединения», потом
+инструмент с двумя соединениями сразу и потоковый инструмент для конвейера.
+Имена в примере вымышленные, но каждый шаг повторяет живой код репозитория,
+и в конце шага названо, где этот код лежит.
 
 Содержание:
 
-1. Как устроен вызов инструмента
-2. Пример 1. Простой инструмент с injected-конфигом
-3. Пример 2. Injected-конфиг с секретом
-4. Пример 3. Инструмент с соединениями пользователя
-5. Как это устроено внутри launcher'а
-6. Потоковые инструменты: порты
-7. Сборка образа песочницы: `[tool.boba.sandbox]`
-8. Проверка и отладка
-9. Куда смотреть, если что-то не так
-
-Во всех примерах имена (`wordcount`, `weather`, `redis`) вымышленные:
-подставьте своё. Живые аналоги указаны в конце каждого раздела.
+1. Что происходит, когда модель вызывает инструмент
+2. Плагин с конфигом администратора
+3. Секрет в конфиге
+4. Тип соединения: своё соединение для каждого пользователя
+5. Инструмент с соединением пользователя
+6. Kerberos: что тип обязан уметь
+7. Потоковый инструмент: порты
+8. Песочница: изоляция и образ
+9. Запуск руками и отладка
+10. Симптомы и причины
 
 ---
 
-## 1. Как устроен вызов инструмента
+## 1. Что происходит, когда модель вызывает инструмент
 
-### 1.1. Три вида параметров
+Приложение (chainlit с чатом или studio с API и страницами) мы дальше
+называем **хостом**. У хоста есть набор инструментов, которые он показывает
+LLM. Когда модель присылает `tool_call`, хост не исполняет код инструмента
+у себя: он собирает команду и запускает её в отдельном процессе. Функция,
+которая в этом процессе реально работает, называется **телом** инструмента.
 
-Инструмент — это обычная async-функция с декоратором `@tool` из
-`boba.toolkit.facade`. Вид каждого параметра задаётся аннотацией:
+Тело живёт в pip-пакете, который мы называем **плагином**. Плагин объявляет
+себя entry point'ом группы `boba.tools`, и хост находит все установленные
+плагины сам, без списка в коде. У каждого плагина есть короткое имя,
+**секция**: `pg`, `doc`, `web`. По секции хост находит конфиг плагина в
+файле `conf/plugins/<секция>.toml` и подшивает его к общему конфигу
+приложения как таблицу `[tool.<секция>]`. Поэтому внутри файла плагина
+работают те же интерполяции, что и в основном конфиге: `${env.models}`,
+`${site.redis_password}`, `${postgres}`.
 
-| Вид | Как объявлен | Кто заполняет | Как едет в тело |
-|---|---|---|---|
-| LLM-аргумент | `sql: Annotated[str, Field(...)]` | модель | флаг argv `--sql "..."` |
-| Injected-конфиг | `cfg: Annotated[MyConfig, Injected]` | приложение из toml | JSON отдельным дескриптором `--injected-fd` |
-| Соединение пользователя | `connection: Annotated[PgConn, UserConnection]` | хост по имени, которое назвала модель | тем же каналом конфига |
-| Порт данных | `out: Annotated[Outbound[...], Injected]` | гость на вызове | канал кадров, см. раздел 6 |
+Как тело запускается, решает секция `[tool_launcher]` конфига приложения.
+Есть два способа:
 
-Три правила, которые объясняют почти всё дальнейшее:
+- `provider = "process"`: обычный субпроцесс `python -m <модуль>` на хосте.
+  Используется в разработке и под отладчиком.
+- `provider = "sandbox"`: тело исполняется внутри изолированного контейнера
+  на bwrap, с собственным образом корня `rootfs.ext4` для каждого плагина.
+  Так работает релиз. Чтобы не платить за старт python и импорт тяжёлых
+  библиотек на каждом вызове, для каждой секции при старте приложения
+  поднимается **зигота**: процесс внутри песочницы, который уже всё
+  импортировал и ждёт. Вызов инструмента становится форком зиготы.
 
-- LLM видит в схеме только LLM-аргументы. Injected-поля приложение снимает
-  со схемы после установки обвязок, модель их не видит и подделать не может.
-- Секреты никогда не попадают в argv: argv виден в `ps`, в журнале и в
-  трейсбеке. Всё, что может быть секретом, идёт injected-каналом.
-- Тело инструмента ничего не знает о пользователе, сессии и таблицах:
-  оно получает готовый конфиг и работает с ним. Всю «политику» (кому что
-  можно, чей билет) решает хост до запуска тела.
+Теперь сам путь вызова. Модель прислала `pg_query(connection="analytics",
+sql="select 1")`. Хост:
 
-### 1.2. Что происходит при вызове
+1. проверяет роли пользователя, пишет журнал, ставит отмену по кнопке;
+2. подкладывает в аргументы вызова то, чего модель не присылала:
+   конфиг секции `[tool.pg]` и профиль соединения `analytics` из таблицы
+   соединений, с билетом kerberos для этого вызова;
+3. превращает аргументы в команду: то, что прислала модель, становится
+   флагами argv, а подложенное хостом уезжает отдельным JSON по файловому
+   дескриптору;
+4. отдаёт команду launcher'у.
 
-```
-LLM  ──tool_call {sql: "...", connection: "main"}──▶  приложение (хост)
-                                                              │
-        обвязки на хосте, снаружи внутрь:                     │
-        1. доступ по ролям, журнал, отмена                    │
-        2. InjectedConfig   — статический конфиг секции в kwargs["cfg"]
-        3. ServiceTickets   — keytab статического конфига → билет вызова
-        4. UserConnections  — профиль соединения → kwargs["connection"]
-        5. ToolProcessWrap  — kwargs → argv + JSON injected
-                                                              │
-                                        launcher ([tool_launcher] provider)
-                                        process: субпроцесс python -m <модуль>
-                                        sandbox: форк зиготы внутри bwrap
-                                                              │
-                                                              ▼
-        тело: ToolMain.run(TOOLS)  ──▶  argv → kwargs, JSON → модели
-                                        → await tool(**kwargs)
-                                        → конверт ReplyOk|ReplyError в --fd-result
-```
+Тело делает обратное: разбирает argv и JSON обратно в типизированные
+модели, зовёт функцию инструмента и пишет ответ **конвертом** в другой
+дескриптор. Конверт бывает двух видов: `ReplyOk` с результатом и
+`ReplyError` с видом отказа и текстом для пользователя.
 
-Каждая обвязка — это `CallHooks`, установленная `ToolBody.hook_all` поверх
-предыдущей. Установленная последней оказывается снаружи и срабатывает
-первой. Поэтому порядок в `ToolLoader._module_tools` важен и разбирается
-в разделе 5.1.
+Из этого пути следуют три правила, которые объясняют всё дальнейшее:
 
-### 1.3. Словарь
-
-- **Плагин** — pip-пакет с инструментами. Объявляет манифест в entry point
-  группы `boba.tools`; приложение находит установленные пакеты само.
-- **Секция** — идентификатор плагина (`pg`, `doc`, `web`). Он же имя секции
-  конфига `tool.<секция>` и имя файла `conf/plugins/<секция>.toml`.
-- **Встроенный плагин** — плагин самого chainlit без отдельного пакета и
-  entry point: `send_file`, `diagram`, `canvas`, `catalog`, `stream_logs`
-  из таблицы `ChatPlugins.table` в `boba/chainlit/infra/plugins.py`. Файл
-  `conf/plugins/<секция>.toml` у него обязателен так же, как у внешнего;
-  тела работают in-process над сервисами хоста, песочница им не нужна.
-  Плагин `catalog` описан в `catalog.md`.
-- **`SECTION`** — `ClassVar[str]` на модели injected-конфига: полный путь
-  секции в собранном конфиге (`"tool.pg"`). По нему хост находит, из какой
-  таблицы toml собрать значение для параметра.
-- **Файл плагина** — `compose/<app>/conf/plugins/<секция>.toml`. Его
-  содержимое ложится в конфиг как секция `tool.<секция>`, интерполяции
-  `${env.*}`, `${postgres}`, `${site.*}` резолвятся от корня.
-- **Launcher / провайдер** — способ исполнения тела: секция
-  `[tool_launcher]`, `provider = "process"` (используется для отладки, запускает обычный sub-process) или
-  `"sandbox"` (используется в релиз, запуск процесса происходит внутри изолированного контейнера с использованием утилиты bwrap).
-- **Зигота** — заранее подготовленный процесс (стартует вместе со стартом самого приложения), который готовиться для каждого отдельного плагина. Подготовка заключается в том, что процесс импортирует всё необходимое для работы (прогревает кэш), и соответственно когда нужно запустить инструмент приложение просто делает fork зиготы, что сокращает время на старта, по сравнению если бы мы поднимали процесс каждый раз заново.
-- **Конверт** — JSON-ответ тела: `ReplyOk(content, artifact)` либо
-  `ReplyError(kind, message)`. Уезжает дескриптором `--fd-result`.
+- Модель видит в схеме только те параметры, которые сама заполняет.
+  Подложенные хостом поля из схемы вырезаны: модель их не видит и подделать
+  не может.
+- Всё, что может быть секретом, идёт JSON-каналом, а не argv: argv виден в
+  `ps`, в журнале и в трейсбеке.
+- Тело ничего не знает о пользователе, ролях и таблице соединений. Оно
+  получает готовые модели и работает с ними. Вся политика решена хостом до
+  запуска.
 
 ---
 
-## 2. Пример 1. Простой инструмент с injected-конфигом
+## 2. Плагин с конфигом администратора
 
-Инструмент `wordcount`: считает слова в тексте, потолок длины текста
-задаёт администратор в конфиге. Секретов нет, соединений нет.
+Начнём с инструмента `redis_scan`: он перебирает ключи по шаблону на
+сервере, который задаёт администратор в конфиге. Пока без пользовательских
+соединений.
 
-### Шаг 1. Пакет
+### Пакет
 
 ```
-packages/tools/boba-tool-wordcount/
+packages/tools/boba-tool-redis/
     pyproject.toml
-    src/boba/tool/wordcount/
+    src/boba/tool/redis/
         __init__.py
-        plugin.py      # манифест
-        tools.py       # конфиг + инструменты + TOOLS
+        plugin.py      # манифест: entry point boba.tools
+        tools.py       # конфиг, инструменты, TOOLS
 ```
 
-Зарегистрируйте пакет в `members` корневого `pyproject.toml` по образцу
-соседей.
+Пакет добавляется в `members` корневого `pyproject.toml` рядом с соседями.
 
-### Шаг 2. Модель конфига
+### Три вида параметров
 
-Модель — обычный pydantic. Обязателен только `SECTION`; он говорит хосту,
-из какой секции toml собирать значение. `extra = "ignore"` нужен потому,
-что в той же таблице toml лежат служебные ключи `enable`, `tools`,
-`sandbox` — их читает загрузчик, а не ваша модель.
+Инструмент — это `async def` с декоратором `@tool` из
+`boba.toolkit.facade`. Каким путём значение параметра попадёт в тело,
+определяет аннотация:
+
+| Параметр | Аннотация | Кто заполняет | Как едет в тело |
+|---|---|---|---|
+| аргумент модели | `pattern: Annotated[str, Field(...)]` | LLM | флаг argv `--pattern "user:*"` |
+| injected-конфиг | `cfg: Annotated[RedisToolConfig, Injected]` | хост из `[tool.redis]` | JSON-канал, ключ `"cfg"` |
+| соединение пользователя | `connection: Annotated[RedisConnection, UserConnection]` | хост из таблицы соединений | JSON-канал, ключ `"connection"` |
+| порт данных | `out: Annotated[Outbound[...], Injected]` | песочница на вызове | канал кадров, раздел 7 |
+
+Соединения и порты появятся в разделах 5 и 7. Сейчас нужны первые два.
+
+### Модель конфига и тело
 
 ```python
-"""Инструмент wordcount: функции уровня модуля, модуль — обычная программа.
+"""Инструменты redis: функции уровня модуля, модуль — обычная программа.
 
-Запуск: `python -m boba.tool.wordcount.tools wordcount --text "..."`.
+Запуск: `python -m boba.tool.redis.tools redis_scan --pattern "user:*"`.
 
 Ошибки:
-TextTooLongError — текст длиннее max_chars конфига.
+RedisError — сервер недоступен или отверг команду.
 """
 
 from __future__ import annotations
 
 import sys
-from collections import Counter
 from collections.abc import Mapping
-from enum import StrEnum
 from typing import Annotated, ClassVar, Final
 
 from pydantic import BaseModel, ConfigDict, Field
+from redis.asyncio import Redis
+from redis.exceptions import RedisError
 
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
-from boba.toolkit.result import TableResult, ToolResult, pack_result
+from boba.toolkit.result import TableResult
+from boba.toolkit.sql import SqlErrorKind, SqlLimits
 
 
-class WordCountConfig(BaseModel):
-    """Лимиты wordcount; секция [tool.wordcount]."""
+class RedisServer(BaseModel):
+    """Адрес сервера из конфига администратора."""
+
+    host: str = Field(min_length=1)
+    port: int = Field(default=6379, ge=1)
+    db: int = Field(default=0, ge=0)
+
+
+class RedisToolConfig(SqlLimits):
+    """Сервер и лимиты выдачи; секция [tool.redis]."""
 
     model_config = ConfigDict(extra="ignore")
 
-    SECTION: ClassVar[str] = "tool.wordcount"
+    SECTION: ClassVar[str] = "tool.redis"
 
-    max_chars: int = Field(gt=0, description="Потолок длины входного текста.")
-    top: int = Field(default=10, ge=1, description="Сколько самых частых слов показать.")
-
-
-class TextTooLongError(Exception):
-    """Текст не помещается в лимит; текст готов для пользователя."""
+    server: RedisServer
+    scan_batch: int = Field(default=500, ge=1)
 
 
-class WordCountErrorKind(StrEnum):
-    """Ожидаемые отказы wordcount."""
+class RedisKeyRow(BaseModel):
+    """Строка выдачи redis_scan."""
 
-    TEXT_TOO_LONG = "text_too_long"
-```
+    key: str
+    type: str
+    ttl: int
 
-### Шаг 3. Тело
 
-```python
-# tools.py
 @tool
-async def wordcount(
-    text: Annotated[str, Field(min_length=1, description="Текст для подсчёта")],
-    cfg: Annotated[WordCountConfig, Injected],
-) -> tuple[str, ToolResult]:
-    """Считает частоту слов в тексте и показывает самые частые."""
-    if len(text) > cfg.max_chars:
-        msg = f"text is {len(text)} chars, limit is {cfg.max_chars}"
-        raise TextTooLongError(msg)
-
-    counts = Counter(text.lower().split())
+async def redis_scan(
+    pattern: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Шаблон ключей в синтаксисе SCAN MATCH, например 'user:*' "
+                "или 'session:2026-*'. Выдача ограничена max_rows конфига."
+            ),
+        ),
+    ],
+    cfg: Annotated[RedisToolConfig, Injected],
+) -> TableResult:
+    """Перебрать ключи по шаблону с типом и TTL каждого."""
+    client = Redis(host=cfg.server.host, port=cfg.server.port, db=cfg.server.db)
 
     rows: list[dict[str, object]] = []
-    for word, count in counts.most_common(cfg.top):
-        rows.append({"word": word, "count": count})
+    try:
+        async for key in client.scan_iter(match=pattern, count=cfg.scan_batch):
+            if len(rows) >= cfg.max_rows:
+                break
 
-    return pack_result(TableResult(rows=rows))
+            row = RedisKeyRow(
+                key=key.decode(),
+                type=(await client.type(key)).decode(),
+                ttl=await client.ttl(key),
+            )
+            rows.append(row.model_dump())
+    finally:
+        await client.aclose()
+
+    return TableResult(rows=rows)
 
 
-EXPECTED: Mapping[type[Exception], WordCountErrorKind] = {
-    TextTooLongError: WordCountErrorKind.TEXT_TOO_LONG,
+EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
+    RedisError: SqlErrorKind.DATABASE_UNAVAILABLE,
 }
 
-TOOLS: Final = ToolMain.toolset(wordcount)
+TOOLS: Final = ToolMain.toolset(redis_scan)
 
 if __name__ == "__main__":
     sys.exit(ToolMain.run(TOOLS))
 ```
 
-Что здесь за что отвечает:
+Разберём, что здесь за что отвечает.
 
-- Докстринг обязателен: это описание инструмента для LLM. Без него `@tool`
-  падает `ToolFacadeError`.
-- `Field(description=...)` у LLM-аргумента — единственное, что модель
-  прочитает про параметр. Пишите так, чтобы модель поняла формат.
-- `cfg` в схему для LLM не попадает. В теле это уже провалидированная
-  модель, не dict.
-- Возврат всегда `(content, artifact)`: `content` — текст для LLM,
-  `artifact` — модель семейства `ToolResult` (`TextResult`, `TableResult`,
-  `ChartResult`, ...). `pack_result` собирает пару из одного артефакта.
-- `EXPECTED` — карта «исключение → kind отказа». Такое исключение уезжает
-  конвертом `ReplyError(kind, message)` и показывается пользователю текстом;
-  всё прочее — дефект, трейсбек в stderr и код выхода не ноль.
-- `TOOLS` и блок `__main__` делают модуль запускаемой программой: ту же
-  команду `python -m ... <имя> --флаги` исполняет и launcher, и человек.
+**`SECTION`** на модели конфига говорит хосту, из какой таблицы toml
+собирать значение для параметра `cfg`. Хост читает `SECTION` с аннотации,
+валидирует таблицу `[tool.redis]` этой моделью и кладёт результат в
+JSON-канал под ключом `"cfg"`, то есть под именем параметра. Без `SECTION`
+старт падает с текстом «injected parameter 'cfg' has no SECTION on its
+model».
 
-### Шаг 4. Манифест
+**`extra = "ignore"`** нужен потому, что в той же таблице toml лежат
+служебные ключи `enable`, `tools`, `headless`, `sandbox`. Их читает
+загрузчик хоста, а не ваша модель.
+
+**`SqlLimits`** из `boba.toolkit.sql` даёт поля `max_rows` и `max_bytes`,
+общие для всех инструментов с табличной выдачей. Инструменту без таблиц
+подойдёт обычный `BaseModel` с `SECTION`.
+
+**Докстринг** функции обязателен: это описание инструмента, которое читает
+модель. **`Field(description=...)`** у аргумента модели — единственное, что
+модель узнает про параметр, поэтому в описании нужен формат и пример
+значения, как выше у `pattern`.
+
+**Возврат** — модель результата, наследник `ToolResultBase` из
+`boba.toolkit.result`: `MarkdownResult` для текста и кода, `TableResult` для
+таблиц не из SQL, `SqlResult` для выдачи SQL любой базы, `ShellResult` для
+команд, `VisualResult` для картинок и диаграмм. Аннотация возврата обязана
+назвать класс. По ней хост знает, как показать результат в чате и на
+странице workflow.
+
+**`EXPECTED`** — карта «исключение → вид отказа». Исключение из этой карты
+уезжает конвертом `ReplyError` и показывается пользователю текстом. Любое
+другое исключение считается дефектом: трейсбек в stderr, код выхода не
+ноль, хост поднимает `LauncherError` с хвостом stderr.
+
+**`TOOLS` и блок `__main__`** делают модуль программой. Одну и ту же
+команду `python -m boba.tool.redis.tools redis_scan --pattern "user:*"`
+исполняет launcher и человек в терминале.
+
+### Манифест и pyproject
 
 ```python
-"""Манифест плагина wordcount: entry point группы boba.tools."""
-# plugin.py
+"""Манифест плагина redis: entry point группы boba.tools."""
+
 from typing import Final
 
-from boba.tool.wordcount.tools import TOOLS
+from boba.tool.redis.tools import TOOLS
 from boba.toolkit.manifest import ToolPluginManifest
 
-MANIFEST: Final = ToolPluginManifest(section="wordcount", tools=tuple(TOOLS))
+MANIFEST: Final = ToolPluginManifest(section="redis", tools=tuple(TOOLS))
 ```
 
-`section` — идентификатор плагина. Когда приложение стартует, оно загружает основной конфиг приложения `config.toml`, а дальше выполняет поиск плагинов по entrypoint'ам внутри установленных пакетов. Каждый плагин рассматривается как tool у которого есть свой собственный под конфиг, который ищется приложением в локации `conf/plugins/<section>.toml`. Далее загружает этот файл как если бы, содержимое этого файла находилось в основном конфиге приложения в секции `[tool.<section>]`. Для тебя это означает, что можно использовать интерполяцию и в конфиге plugin'а использовать ключи из основного конфига приложения, например вот так можно отрендерить порт приложения `${env.port}`
-
-### Шаг 5. pyproject
-
 ```toml
-# pyproject.toml
 [project]
-name = "boba-tool-wordcount"
-version = "0.0.15.dev6"
-dependencies = ["boba-toolkit==0.0.15.dev6"]
+name = "boba-tool-redis"
+version = "0.0.17.dev3"
+dependencies = ["boba-toolkit==0.0.17.dev3"]
 
 [project.entry-points."boba.tools"]
-wordcount = "boba.tool.wordcount.plugin:MANIFEST"
+redis = "boba.tool.redis.plugin:MANIFEST"
 
 [project.optional-dependencies]
-payload = []
+payload = ["redis>=5"]
 
 [tool.boba.sandbox]
-imports = ["boba.tool.wordcount.tools"]
+imports = ["redis"]
 ```
 
-- `payload` — зависимости тела tools'а (различные клиенты, например psycopg2 или clickhouse драйверы, парсеры, например bs4, markdownlify и прочее). Основное приложение (его называют Хост) не знает об этих зависимостях ничего и никогда не ставит их у себя. Таким образом каждый tool это упакованный мини проект на python с pyproject.toml, entrypoint и функциями, со своими зависимостями и логикой, которую можно запустить и проверить без участия LLM.
-- `[tool.boba.sandbox]` — это описание для release-сборщика. Ему необходимо знать какие python-пакеты нужно поставить внутрь изолированной песочницы, какие apt/yum зависимости (к примеру для распознавания текста используется tessdata, а для чтения pdf/xlsx/odt/docs и прочего нативный пакет liteparce); подробно в
-  разделе 7. `imports` — смоук-проверка образа после сборки. Запускает release-сборщик косле того как sandbox твоего плагина будет собран. Позволяет тебе как разработчику плагина определить логику проверки работоспособности пакета после сборки. Например можно попробовать выполнить `import psycopg3` в плагине для работы с postgres и проверить таким образом, установился ли psycopg3 внутрь песочницы
+Группа **`payload`** — зависимости тела. Хост их у себя не ставит и не
+импортирует: клиент redis нужен только внутри процесса тела. Так каждый
+плагин остаётся самостоятельной программой со своими зависимостями, которую
+можно запустить и проверить без LLM.
 
-### Шаг 6. Файл конфига
+Секция **`[tool.boba.sandbox]`** нужна сборщику образа песочницы; в рантайме
+она не читается. Ключ `imports` перечисляет модули, которые сборщик
+попробует импортировать внутри готового образа: если `redis` в образ не
+попал, сборка упадёт здесь, а не на первом вызове в проде. Остальные ключи
+секции описаны в разделе 8.
 
-Плагин не стартует без файла конфигураций - `conf/plugins/wordcount.toml is missing`. Файл кладётся в каждое
-развёртывание, где плагин установлен: `compose/chainlit/conf/plugins/` и
-`compose/studio/conf/plugins/`.
+Entry point материализуется установкой: после правки pyproject нужен
+`uv sync --all-packages`.
+
+### Файл конфига
+
+Хост не стартует, пока для установленного плагина нет файла
+`conf/plugins/redis.toml`. Файл кладётся в каждое развёртывание, где плагин
+установлен: `compose/chainlit/conf/plugins/` и `compose/studio/conf/plugins/`.
 
 ```toml
-enable    = true
-tools     = ["wordcount"]
-max_chars = 200000
-top       = 20
+enable     = true
+tools      = ["redis_scan"]
+max_rows   = 200
+max_bytes  = 1000000
+scan_batch = 500
 
-[sandbox]
-```
-
-- `enable` — выключенная секция не загружается вовсе.
-- `tools` — allowlist имён инструментов которые доступны llm. Инструменты, которых нет в списке, LLM не получит, даже если они есть в `TOOLS`. Так администратор контролирует список доступных инструментов.
-- `headless` — подмножество `tools`, которое модели в чате не отдаётся: такие инструменты зовут страница, REST и workflow (например `pg_schema_snapshot` — снятие снимка каталога по задаче синхронизации). Имя вне `tools` — отказ при старте.
-- Остальные ключи конфига — это поля вашей модели (`WordCountConfig`).
-- `[sandbox]` — особенности изоляции в sandbox-режиме запуска: по умолчанию нет сети,
-  нет воркспейса, 1 GiB памяти. Пустая таблица значит «дефолт». Все ключи
-  в разделе 5.6.
-
-### Шаг 7. Что находится в cfg и откуда берётся каждый параметр
-
-Команда тела собирается из подписи функции. У `wordcount` два параметра,
-и каждый приезжает своим путём:
-
-```python
-async def wordcount(
-    text: Annotated[str, Field(...)],            # LLM-аргумент  → флаг argv  --text
-    cfg:  Annotated[WordCountConfig, Injected],  # injected      → JSON-канал, ключ "cfg"
-)
-```
-
-| Параметр подписи | Признак | Откуда значение | Как едет в тело |
-|---|---|---|---|
-| `text` | нет маркера `Injected` | его придумала LLM в tool_call (или разработчик при ручном запуске) | флаг `--text "..."`: имя параметра, `_` → `-` |
-| `cfg` | есть маркер `Injected` | хост читает `SECTION` модели, зовёт `bind(config, "tool.wordcount", WordCountConfig)`, pydantic превращает toml в модель | один JSON-объект `{"cfg": {...}}`, ключ равен имени параметра, канал `--injected-fd` |
-
-Вызов LLM `wordcount(text="a b a")` хост (`ToolArgv.render`) превращает в:
-
-```
-argv:      python3 -m boba.tool.wordcount.tools wordcount --text "a b a"
-                                                 ^^^^^^^^^ ^^^^^^^^^^^^^^
-                                                 имя тула  параметр text
-                                                 ^^^^^^^^^ ^^^^^^^^^^^^^^
-                                                 имя тула  параметр text
-injected:  {"cfg": {"max_chars": 200000, "top": 20}}
-            ^^^^^   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-            параметр cfg   поля WordCountConfig из conf/plugins/wordcount.toml
-```
-
-Будь в подписи третий LLM-аргумент `top_n: int`, появился бы флаг
-`--top-n 5`; будь второй injected-параметр `limits: Annotated[LimitsConfig,
-Injected]`, в JSON появился бы второй ключ `"limits"` со своей секцией.
-
-Тело делает обратное (`ToolArgv.parse`): флаг `--text` находит поле `text`
-схемы и валидирует значение его типом; ключ `"cfg"` из JSON валидируется в
-`WordCountConfig`. Дальше `await wordcount(text=..., cfg=...)`. Нет ключа
-`cfg` или значение не проходит модель — `ReplyError(kind="invalid_request")`.
-            ^^^^^   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-            параметр cfg   поля WordCountConfig из conf/plugins/wordcount.toml
-```
-
-Будь в подписи третий LLM-аргумент `top_n: int`, появился бы флаг
-`--top-n 5`; будь второй injected-параметр `limits: Annotated[LimitsConfig,
-Injected]`, в JSON появился бы второй ключ `"limits"` со своей секцией.
-
-Тело делает обратное (`ToolArgv.parse`): флаг `--text` находит поле `text`
-схемы и валидирует значение его типом; ключ `"cfg"` из JSON валидируется в
-`WordCountConfig`. Дальше `await wordcount(text=..., cfg=...)`. Нет ключа
-`cfg` или значение не проходит модель — `ReplyError(kind="invalid_request")`.
-
-### Шаг 8. Проверка руками
-
-Запуск руками — та же команда, только вместо канала `--injected-fd` от
-launcher'а вы даёте файл `--injected`, а результат читаете из stdout.
-Служебные флаги, которых нет в подписи функции:
-
-| Флаг | Кто передаёт | Зачем |
-|---|---|---|
-| `--injected <файл>` | человек | JSON с injected-параметрами; тот же объект, что launcher шлёт по `--injected-fd` |
-| `--injected-fd <n>` | launcher | номер дескриптора с тем же JSON |
-| `--fd-result <n>` | launcher | куда писать конверт; без него `content` печатается в stdout |
-| `--artifact` | человек | вдобавок к `content` напечатать JSON артефакта (`TableResult` и т.п.) |
-Запуск руками — та же команда, только вместо канала `--injected-fd` от
-launcher'а вы даёте файл `--injected`, а результат читаете из stdout.
-Служебные флаги, которых нет в подписи функции:
-
-| Флаг | Кто передаёт | Зачем |
-|---|---|---|
-| `--injected <файл>` | человек | JSON с injected-параметрами; тот же объект, что launcher шлёт по `--injected-fd` |
-| `--injected-fd <n>` | launcher | номер дескриптора с тем же JSON |
-| `--fd-result <n>` | launcher | куда писать конверт; без него `content` печатается в stdout |
-| `--artifact` | человек | вдобавок к `content` напечатать JSON артефакта (`TableResult` и т.п.) |
-
-```bash
-cat > /tmp/wc.json <<'EOF'
-{"cfg": {"max_chars": 1000, "top": 3}}
-EOF
-
-
-.venv/bin/python -m boba.tool.wordcount.tools wordcount \
-    --text "a b a c" \
-    --injected /tmp/wc.json \
-    --artifact
-```
-
-Здесь `--text "a b a c"` — LLM-аргумент `text`; `--injected /tmp/wc.json` —
-injected-параметр `cfg` (файл с ключом `"cfg"` и полями `WordCountConfig`);
-`--artifact` — служебный флаг «показать ещё и артефакт».
-
-Подсказку по флагам конкретного инструмента печатает
-`python -m boba.tool.wordcount.tools wordcount --help`: в ней перечислены
-только LLM-аргументы, injected-параметры в argv не принимаются.
-
-Здесь `--text "a b a c"` — LLM-аргумент `text`; `--injected /tmp/wc.json` —
-injected-параметр `cfg` (файл с ключом `"cfg"` и полями `WordCountConfig`);
-`--artifact` — служебный флаг «показать ещё и артефакт».
-
-Подсказку по флагам конкретного инструмента печатает
-`python -m boba.tool.wordcount.tools wordcount --help`: в ней перечислены
-только LLM-аргументы, injected-параметры в argv не принимаются.
-
-По toml приложения, injected собирает CLI хоста:
-
-```bash
-.venv/bin/python -m boba.runtime.toolcli boba.tool.wordcount.tools wordcount \
-    --text "a b a c" --config compose/chainlit/conf/config.toml
-```
-
-Через приложение: `uv sync --all-packages`, тест обнаружения
-`packages/services/boba-runtime/tests/test_plugin_discovery.py`, дальше
-интеграционный тест по образцу `packages/tools/boba-tool-doc/tests/test_run_doc.py`.
-
-Живой пример: `packages/tools/boba-tool-doc/` — `DocToolSection` с
-`SECTION = "tool.doc"`, файл `compose/chainlit/conf/plugins/doc.toml`.
-Плагин без injected вовсе: `packages/tools/boba-tool-chart/`.
-
----
-
-## 3. Пример 2. Injected-конфиг с секретом
-
-Инструмент `weather`: ходит во внешний API по ключу. Ключ лежит в конфиге
-и обязан доехать до тела, но не попасть ни в argv, ни в лог, ни в дамп.
-
-### 3.1. Как секрет живёт в модели и что сделать, чтобы он доехал до тела
-
-Секретное поле объявляется типом `SecretStr`. Сам по себе он только
-маскирует: `repr`, `model_dump`, трейсбек показывают `**********`. Чтобы
-секрет **раскрылся** при отправке в тело и **собрался обратно** в
-`SecretStr` на его стороне, нужно ровно три шага:
-
-1. **Объявить поле типом `SecretStr`**, а не `str`:
-   `api_key: SecretStr = Field(min_length=1)`. На любой глубине: во
-   вложенной модели, в `dict[str, SecretStr]`, в списке моделей.
-2. **Унаследовать модель конфига от `SecretRevealing`**
-   (`boba.toolkit.types`). Это даёт метод `revealed()`, который хост зовёт
-   вместо обычного дампа: он дампит модель с контекстом
-   `{"reveal_secrets": True}` и обходом заменяет каждый голый `SecretStr`
-   открытой строкой (`SecretReveal`). Никаких сериализаторов писать не
-   нужно.
-3. **В теле читать секрет только через `get_secret_value()`** в момент
-   использования (заголовок, параметр `connect`), не сохраняя строку в
-   переменные и не подставляя её в сообщения об ошибках.
-
-Так это выглядит целиком:
-
-```python
-"""Инструмент weather: прогноз по внешнему API.
-
-Ошибки:
-WeatherRequestError — API недоступен или ответил статусом.
-"""
-
-from __future__ import annotations
-
-from typing import Annotated, ClassVar
-
-import httpx
-from pydantic import ConfigDict, Field, SecretStr
-
-from boba.toolkit.facade import Injected, tool
-from boba.toolkit.result import TextResult, ToolResult, pack_result
-from boba.toolkit.types import SecretRevealing
-
-
-class WeatherRequestError(Exception):
-    """API недоступен или ответил статусом; текст готов для пользователя."""
-
-
-class WeatherConfig(SecretRevealing):
-    """Адрес и ключ API; секция [tool.weather]."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    SECTION: ClassVar[str] = "tool.weather"
-
-    base_url: str = Field(min_length=1)
-    api_key: SecretStr = Field(min_length=1)
-    timeout_sec: float = Field(default=10.0, gt=0)
-```
-
-Что происходит и что будет, если шаг пропустить:
-
-- Хост на отправке (`ToolArgv.reveal`) смотрит, есть ли у значения метод
-  `revealed()`. Есть — зовёт его. Нет — обычный `dump_python(mode="json")`,
-  где pydantic дампит `SecretStr` как `**********`. Пропущен шаг 2 — тело
-  соберёт модель успешно, получит звёздочки вместо ключа и упадёт
-  непонятной 401 на первом запросе, далеко от причины.
-- На стороне тела ничего делать не нужно: `ToolArgv.parse` валидирует JSON
-  в ту же модель, и открытая строка снова становится `SecretStr`. Поэтому
-  в теле секрет читается как обычно — `cfg.api_key.get_secret_value()`.
-- Ключ контекста один на весь проект: `SecretRevealing.REVEAL_CONTEXT`
-  (`"reveal_secrets"`). Свою строку не придумывайте.
-
-Единственное исключение: поле, у которого объявлен свой
-`@field_serializer`, обход не трогает — считается, что у поля своя
-политика. Сериализатор нужен только там, где поле должно вести себя
-иначе, чем «раскрыть при отправке в тело»: например, пароль
-`KerberosPasswordAuth` маскируется всегда, потому что в песочницу едет
-билет, а не он. Для обычного секрета сериализатор писать не надо.
-```
-
-Что происходит и что будет, если шаг пропустить:
-
-- Хост на отправке (`ToolArgv.reveal`) смотрит, есть ли у значения метод
-  `revealed()`. Есть — зовёт его. Нет — обычный `dump_python(mode="json")`,
-  где pydantic дампит `SecretStr` как `**********`. Пропущен шаг 2 — тело
-  соберёт модель успешно, получит звёздочки вместо ключа и упадёт
-  непонятной 401 на первом запросе, далеко от причины.
-- На стороне тела ничего делать не нужно: `ToolArgv.parse` валидирует JSON
-  в ту же модель, и открытая строка снова становится `SecretStr`. Поэтому
-  в теле секрет читается как обычно — `cfg.api_key.get_secret_value()`.
-- Ключ контекста один на весь проект: `SecretRevealing.REVEAL_CONTEXT`
-  (`"reveal_secrets"`). Свою строку не придумывайте.
-
-Единственное исключение: поле, у которого объявлен свой
-`@field_serializer`, обход не трогает — считается, что у поля своя
-политика. Сериализатор нужен только там, где поле должно вести себя
-иначе, чем «раскрыть при отправке в тело»: например, пароль
-`KerberosPasswordAuth` маскируется всегда, потому что в песочницу едет
-билет, а не он. Для обычного секрета сериализатор писать не надо.
-
-### 3.2. Как секрет читается в теле
-
-Только через `get_secret_value()` и только в момент, когда значение реально
-уходит наружу. Хранить распакованную строку в переменной «на потом» не
-надо: объект `SecretStr` маскируется в трейсбеке, строка — нет.
-
-```python
-@tool
-async def weather(
-    city: Annotated[str, Field(min_length=1, description="Город")],
-    cfg: Annotated[WeatherConfig, Injected],
-) -> tuple[str, ToolResult]:
-    """Текущая погода в городе по внешнему API."""
-    headers = {"Authorization": f"Bearer {cfg.api_key.get_secret_value()}"}
-
-    url = f"{cfg.base_url}/now"
-
-    try:
-        async with httpx.AsyncClient(timeout=cfg.timeout_sec) as client:
-            response = await client.get(url, params={"q": city}, headers=headers)
-            response.raise_for_status()
-    except httpx.HTTPError as exc:
-        msg = f"weather request failed: {type(exc).__name__}: {exc}"
-        raise WeatherRequestError(msg) from exc
-
-    return pack_result(TextResult(text=response.text))
-```
-
-Обратите внимание на `except httpx.HTTPError` с `raise ... from exc`:
-текст исключения httpx не содержит заголовков, поэтому ключ в сообщение
-пользователю не попадает. Не форматируйте в сообщение ни `headers`, ни
-сам `cfg`.
-
-### 3.3. Секрет в toml
-
-В файл плагина секрет напрямую писать не надо. Конфиги плагинов желательно делать одинаковые во всех местах, где работает приложение.
-Секрет нужно положить в основной конфиг приложения - `config.toml`, например в секцию `[site]`, а уже в конфиге плагина ссылается на него интерполяцией:
-В файл плагина секрет напрямую писать не надо. Конфиги плагинов желательно делать одинаковые во всех местах, где работает приложение.
-Секрет нужно положить в основной конфиг приложения - `config.toml`, например в секцию `[site]`, а уже в конфиге плагина ссылается на него интерполяцией:
-
-```toml
-# compose/chainlit/conf/plugins/weather.toml
-enable   = true
-tools    = ["weather"]
-base_url = "https://api.weather.example/v1"
-api_key  = "${site.weather_api_key}"
+[server]
+    host = "redis.corp"
+    port = 6379
+    db   = 0
 
 [sandbox]
     network = true
     binds   = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts"]
 ```
 
-`network = true` обязателен для того, что бы внутри sandbox был интернет.
-Без него песочница поднимается с `--unshare-net`, и никакой API недоступен.
-Бинды `resolv.conf` и `hosts` нужны для резолвинга dns имён внутри песочницы.
-`network = true` обязателен для того, что бы внутри sandbox был интернет.
-Без него песочница поднимается с `--unshare-net`, и никакой API недоступен.
-Бинды `resolv.conf` и `hosts` нужны для резолвинга dns имён внутри песочницы.
+- `enable = false` выключает секцию целиком: плагин не загружается.
+- `tools` — список инструментов, которые получит модель. Инструмент есть
+  в `TOOLS`, но не в списке — модели он не виден. Так администратор
+  управляет набором.
+- `headless` — подмножество `tools`, которое модели в чате не отдаётся:
+  такие инструменты зовут страница, REST и задачи workflow. Живой пример:
+  `pg_schema_snapshot` в `pg.toml` снимает снимок каталога по задаче
+  синхронизации.
+- Остальные ключи — поля `RedisToolConfig`, вложенная таблица `[server]`
+  — поля `RedisServer`.
+- `[sandbox]` — изоляция для sandbox-режима. По умолчанию у тела нет сети,
+  поэтому для инструмента, который ходит на сервер, нужен `network = true`
+  и бинды `resolv.conf` и `hosts`, иначе имя `redis.corp` не разрешится.
+  Все ключи секции в разделе 8.
 
-Целая секция подключается ссылкой: `confluence = "${web.wiki}"` берёт
-таблицу `[web.wiki]` из `config.toml` вместе с её auth-частью.
-Целая секция подключается ссылкой: `confluence = "${web.wiki}"` берёт
-таблицу `[web.wiki]` из `config.toml` вместе с её auth-частью.
+### Что получает тело
 
-### 3.4. Kerberos в статическом конфиге
+Вызов `redis_scan(pattern="user:*")` хост превращает в две части:
 
-Если в injected-конфиге лежит профиль с kerberos-секцией keytab (как
-`connection = "${postgres}"` у `kb` и `ingest`), keytab в песочницу не
-уезжает никогда. Работает так:
+```
+argv:      python3 -m boba.tool.redis.tools redis_scan --pattern "user:*"
+injected:  {"cfg": {"max_rows": 200, "max_bytes": 1000000, "scan_batch": 500,
+                    "server": {"host": "redis.corp", "port": 6379, "db": 0}}}
+```
 
-1. На загрузке `ServiceTickets.bind_all` смотрит, есть ли внутри
-   статического значения профиль с `KeytabAuth`, `KerberosPasswordAuth`
-   или `DelegatedAuth` (`ProfileSections.needs_arming`). Есть — ставит
-   обвязку на этот параметр.
-2. На вызове обвязка выпускает **один сервисный билет** к
-   `profile.service_name()` из keytab (`ServiceTicketIssuer`) и подменяет
-   секцию на `TicketAuth` (`profile.with_call_ticket(ticket)`).
-   `DelegatedAuth` в статическом конфиге — ошибка `ToolConfigError`:
-   делегировать тут некому, сессии пользователя нет.
-3. Дальше обычный `revealed()`: `TicketAuth.ccache` (base64 FILE-ccache с
-   одним билетом) раскрывается по контексту. Если бы до дампа дошёл
-   keytab, `KerberosDump.json` упал бы с
-   `credentials may not leave the application` — это fail-closed, а не баг.
-4. В теле `ClientCredentials.of(auth)` даёт `TicketCredentials`;
-   внутри `applied_async()` байты кладутся во временный файл (в песочнице
-   это приватный tmpfs вызова), `KRB5CCNAME` указывает на него, по выходу
-   файл удаляется. TGT в ccache нет: выпустить билет к другому сервису
-   тело не может.
+Имя параметра становится флагом с заменой `_` на `-`: параметр `scan_limit`
+дал бы флаг `--scan-limit`. Строки едут как есть, остальные типы JSON.
+Ключ JSON-канала равен имени параметра: второй injected-параметр
+`limits: Annotated[LimitsConfig, Injected]` добавил бы ключ `"limits"` со
+своей секцией.
 
-Для этого профиль обязан быть наследником `ConnectionProfileBase` с
-реализованными `kerberos_section()`, `service_name()`, `with_call_ticket()`.
-Как их писать — раздел 4.2.
+Тело валидирует флаг `--pattern` типом поля и ключ `"cfg"` моделью
+`RedisToolConfig`, потом зовёт `await redis_scan(pattern=..., cfg=...)`.
+Нет ключа или значение не проходит модель — конверт `ReplyError` с видом
+`invalid_request`.
 
-Живые примеры: `packages/tools/boba-tool-knowledge/src/boba/tool/kb/confluence/tools.py`
-(`ConfluenceToolsConfig` с `HttpConnection`), `kb/tools.py` (`KbToolConfig` с
-`connection: PostgresConfig` и `@warmup`), стендовый
-`packages/testing/boba-stand/src/boba/stand/fake_toolmod.py` (`FakeConfig`:
-голый `SecretStr` под `SecretRevealing`, без сериализаторов). Тесты
-раскрытия — `packages/core/boba-toolkit/tests/test_secret_reveal.py`.
-`packages/testing/boba-stand/src/boba/stand/fake_toolmod.py` (`FakeConfig`:
-голый `SecretStr` под `SecretRevealing`, без сериализаторов). Тесты
-раскрытия — `packages/core/boba-toolkit/tests/test_secret_reveal.py`.
+Так же устроен плагин `doc` в `packages/tools/boba-tool-doc`: модель
+`DocToolSection` с `SECTION = "tool.doc"` и файл `conf/plugins/doc.toml`.
 
 ---
 
-## 4. Пример 3. Инструмент с соединением пользователя
+## 3. Секрет в конфиге
 
-Соединения лежат в таблице и выдаются пользователям и ролям. Какое из них
-доступно этому вызову, решает хост: инструмент только объявляет, что ему
-нужно соединение, и получает готовый профиль.
+У сервера появился пароль. Он обязан доехать до тела, но не попасть ни в
+argv, ни в лог, ни в трейсбек. Для этого в `RedisServer` добавляется поле
+типа `SecretStr`, а модель конфига наследует `SecretRevealing` вместо
+`BaseModel`:
 
-### 4.1. Откуда берутся соединения пользователя
+```python
+from pydantic import SecretStr
 
-Таблицы `connections` (id, name, data jsonb с зашифрованным профилем),
-`roles` и `grants` описывают, кому что выдано. Секретная часть профиля
-шифруется `SecretCipher` ключом из секции `[connections]` конфига.
+from boba.toolkit.types import SecretRevealing
 
-Каждый профиль несёт поле **kind** — дискриминатор типа. По нему реестр
-`ConnectionTypes` (entry points `boba.connections`) находит модель, в
-которую разбирается содержимое строки. Поэтому у инструмента с соединением
-всегда две части:
 
-- **тип соединения**: модель профиля и проба, entry point `boba.connections`
-  — раздел 4.3;
-- **tool-плагин**: инструменты, которые на тип ссылаются, entry point
-  `boba.tools` — разделы 4.4–4.6.
+class RedisServer(BaseModel):
+    """Адрес и пароль сервера из конфига администратора."""
 
-Части разные, а пакетов может быть один или два: это ваш выбор, и следующий
-раздел объясняет, как выбрать.
+    host: str = Field(min_length=1)
+    port: int = Field(default=6379, ge=1)
+    db: int = Field(default=0, ge=0)
+    password: SecretStr = Field(min_length=1)
 
-### 4.2. Один пакет или два
 
-Раскладка ни на что в рантайме не влияет: реестры типов и инструментов
-независимы, и приложение находит оба entry point у любого установленного
-пакета. Разница только в том, кто и что вынужден ставить себе.
+class RedisToolConfig(SecretRevealing, SqlLimits):
+    """Сервер и лимиты выдачи; секция [tool.redis]."""
 
-**Вариант A: два пакета.** Тип живёт в инфра-пакете (`packages/infra/db/…`,
-`packages/infra/transport/…`), инструменты — в `packages/tools/…`, второй
-зависит от первого. Так сделаны postgres, clickhouse и web.
+    model_config = ConfigDict(extra="ignore")
 
-```
-packages/infra/db/boba-db-redis/         # тип: профиль + клиент + проба
-    pyproject.toml                       # [project.entry-points."boba.connections"]
-    src/boba/db/redis/{profile,client,connection}.py
+    SECTION: ClassVar[str] = "tool.redis"
 
-packages/tools/boba-tool-redis/          # инструменты поверх типа
-    pyproject.toml                       # [project.entry-points."boba.tools"]
-                                         # dependencies = ["boba-db-redis==…"]
-    src/boba/tool/redis/{tools,plugin}.py
+    server: RedisServer
+    scan_batch: int = Field(default=500, ge=1)
 ```
 
-**Вариант B: один пакет.** Пакет объявляет оба entry point сразу:
+Что делает каждая часть.
+
+`SecretStr` сам по себе только маскирует: `repr`, `model_dump` и трейсбек
+показывают `**********`. Но JSON-канал в тело — это тоже дамп, и без
+дополнительных мер тело получило бы звёздочки вместо пароля и упало бы
+непонятной ошибкой авторизации на первом запросе.
+
+`SecretRevealing` даёт модели метод `revealed()`. Хост перед отправкой в
+тело проверяет, есть ли у значения такой метод, и зовёт его вместо обычного
+дампа. Метод обходит модель на любую глубину, включая вложенные модели,
+списки и словари, и заменяет каждый `SecretStr` открытой строкой. Никаких
+сериализаторов писать не нужно. На стороне тела ничего делать не надо:
+JSON валидируется в ту же модель, и открытая строка снова становится
+`SecretStr`.
+
+Единственное исключение: поле со своим `@field_serializer` обход не трогает,
+считается, что у поля своя политика. Так сделано у kerberos-секций: пароль
+и keytab маскируются всегда, потому что в тело едет билет, а не они
+(раздел 6).
+
+В теле секрет читается через `get_secret_value()` в момент использования и
+не сохраняется в переменные:
+
+```python
+client = Redis(
+    host=cfg.server.host,
+    port=cfg.server.port,
+    db=cfg.server.db,
+    password=cfg.server.password.get_secret_value(),
+)
+```
+
+В сообщения об ошибках нельзя форматировать ни `cfg`, ни параметры
+подключения целиком. У `RedisError` в тексте пароля нет, поэтому карта
+`EXPECTED` остаётся прежней.
+
+В файл плагина пароль напрямую не пишется: конфиги плагинов одинаковы во
+всех развёртываниях. Секрет лежит в основном `config.toml`, а файл плагина
+ссылается на него интерполяцией:
+
+```toml
+[server]
+    host     = "redis.corp"
+    port     = 6379
+    db       = 0
+    password = "${site.redis_password}"
+```
+
+Целую таблицу можно подключить одной ссылкой: `server = "${site.redis}"`
+возьмёт таблицу `[site.redis]` из `config.toml` вместе с паролем. Так
+сделано у плагина `kb`: `connection = "${postgres}"`.
+
+Так устроен `KbToolConfig` плагина `kb`: модель наследует
+`SecretRevealing`, а внутри лежит целый `PostgresConfig` с паролем.
+
+---
+
+## 4. Тип соединения: своё соединение для каждого пользователя
+
+Сервер в конфиге администратора — это один сервер на всех. Обычно нужно
+иначе: пользователь заводит свой redis на странице «Соединения», выдаёт его
+себе или роли, и модель по имени выбирает, куда идти. Для этого хост хранит
+соединения в таблице `connections`: id, имя, описание и `data jsonb` с
+профилем, секретная часть которого зашифрована ключом из секции
+`[connections]` конфига. Таблицы `roles` и `grants` описывают, кому какое
+соединение выдано.
+
+Чтобы хост умел разбирать строку таблицы в модель, у каждого профиля есть
+поле `kind`. По нему реестр типов соединений, собираемый из entry points
+группы `boba.connections`, находит модель профиля и функцию пробы. Проба —
+это кнопка «Check» на странице соединений.
+
+Тип соединения и плагин инструментов — разные вещи с разными entry points.
+Их можно положить в один пакет или в два. Postgres, clickhouse и web
+сделаны двумя: тип живёт в инфра-пакете (`packages/infra/db/boba-db-postgres`),
+инструменты в `packages/tools/boba-tool-postgres` и зависят от него. Так
+нужно, когда типом пользуется несколько плагинов или когда тип нужен
+studio отдельно от инструментов. Для redis типом пользуется только наш
+плагин, поэтому объявим оба entry point в одном пакете:
 
 ```
 packages/tools/boba-tool-redis/
     pyproject.toml
     src/boba/tool/redis/
         profile.py       # модель профиля
-        client.py        # клиент
         connection.py    # MANIFEST типа    -> boba.connections
         tools.py         # инструменты
         plugin.py        # MANIFEST плагина -> boba.tools
 ```
 
+У одного пакета есть следствие. Модуль с манифестом типа импортируется
+хостом при старте, и неудачный импорт роняет запуск. Поэтому всё, что
+`connection.py` тянет на уровне модуля, обязано лежать в обычных
+`dependencies`, а не в `payload`. Клиент redis попадает туда неизбежно:
+проба ходит на сервер по-настоящему.
+
 ```toml
 [project]
 name = "boba-tool-redis"
+version = "0.0.17.dev3"
 dependencies = [
-    "boba-toolkit==0.0.15.dev6",
-    "boba-connections==0.0.15.dev6",
+    "boba-toolkit==0.0.17.dev3",
+    "boba-connections==0.0.17.dev3",
     "redis>=5",
 ]
 
@@ -683,47 +506,22 @@ redis = "boba.tool.redis.connection:MANIFEST"
 redis = "boba.tool.redis.plugin:MANIFEST"
 ```
 
-Имя entry point в первой группе обязано совпадать с `kind` профиля, во
-второй — быть идентификатором секции (`tool.redis`, файл
-`conf/plugins/redis.toml`).
+Имя entry point в группе `boba.connections` обязано совпадать с `kind`
+профиля, реестр проверяет это на старте.
 
-**Что важно учесть в варианте B.** Модуль с манифестом типа импортируется
-при старте приложения: `ConnectionTypes.discover()` зовёт `entry.load()` без
-обработки ошибок, и неудачный импорт роняет запуск. Поэтому всё, что этот
-модуль тянет на уровне модуля, обязано лежать в обычных зависимостях пакета,
-а не в `payload`. Клиент базы сюда попадает неизбежно: проба ходит в систему
-по-настоящему, значит библиотека нужна и приложению.
+### Профиль
 
-Второе следствие: тип начинает жить и умирать вместе с плагином. Приложения
-ставят tool-пакеты дополнительной группой `tools`, поэтому entry point виден.
-Но сборка без этой группы останется и без типа, а строки таких соединений
-получат пометку «type not installed».
-
-| Берите один пакет | Берите два пакета |
-|---|---|
-| типом пользуется только этот плагин | типом пользуется несколько плагинов |
-| клиент лёгкий, приложению его не жалко | клиент тяжёлый и приложению не нужен |
-| инфра-пакета для этой системы ещё нет | инфра-пакет уже есть — добавляйте тип туда |
-| | тип нужен studio отдельно от инструментов |
-
-Перейти с одного пакета на два потом несложно: код профиля и пробы
-переезжает в новый пакет, entry point `boba.connections` — вместе с ним,
-а tool-пакет получает зависимость. Значение `kind` не меняется, поэтому
-строки в базе править не нужно.
-
-### 4.3. Тип соединения: профиль, проба, entry point
-
-Пакет `packages/infra/db/boba-db-redis`. Если инфра-пакет для системы уже
-есть — добавляйте туда.
-
-**Профиль** `src/boba/db/redis/profile.py`:
+Профиль наследует `ConnectionProfileBase` из `boba.connections.base`.
+Базовый класс даёт поля `kind`, `description` и `source`, а от наследника
+требует метод `trace()`; остальные методы переопределяются по
+необходимости.
 
 ```python
 """Профиль соединения redis."""
 
 from __future__ import annotations
 
-from typing import Literal, Self
+from typing import ClassVar, Literal
 
 from pydantic import Field, SecretStr
 
@@ -731,7 +529,7 @@ from boba.connections.base import ClientIdentity, ConnectionProfileBase
 
 
 class ClientName:
-    """Подпись сессии для redis: CLIENT SETNAME не принимает пробелы и длинное."""
+    """Подпись сессии для redis: CLIENT SETNAME режет длинное и не терпит пробелов."""
 
     MAX_BYTES: ClassVar[int] = 63
     SEPARATOR: ClassVar[str] = ":"
@@ -739,6 +537,7 @@ class ClientName:
     @classmethod
     def of(cls, client: ClientIdentity) -> str:
         joined = cls.SEPARATOR.join((client.application, client.login, client.tool))
+
         raw = joined.encode("utf-8")
         if len(raw) <= cls.MAX_BYTES:
             return joined
@@ -763,59 +562,63 @@ class RedisConnection(ConnectionProfileBase):
     def trace(self) -> str:
         return f"auth=password host={self.host} db={self.db}"
 
-    def labeled(self, client: ClientIdentity) -> Self:
+    def labeled(self, client: ClientIdentity) -> RedisConnection:
         return self.model_copy(update={"client_name": ClientName.of(client)})
 ```
 
-Что и зачем:
+- `kind: Literal["redis"]` хранится в jsonb каждой строки. Менять потом
+  нельзя: строки в базе перестанут находить модель.
+- `description` наследуется от базы. Это текст, который модель читает в
+  `connection_list`, выбирая соединение под задачу (раздел 5). Заполняет
+  его администратор на странице соединений.
+- `trace()` — строка журнала «под кем идём». Хост пишет её по профилю,
+  который реально уедет в тело.
+- `labeled(client)` — подпись сессии, если сервер такое умеет. Хост знает
+  только `ClientIdentity`: приложение, логин, инструмент. Как их собрать и
+  куда положить, решает профиль: у postgres это `application_name` с
+  пределом в 63 байта, у clickhouse — `client_name`. Тело потом
+  передаёт `client_name` в `CLIENT SETNAME`, и в `CLIENT LIST` на сервере
+  видно `boba:ivanov:redis_query`. Сервер без такого поля метод не
+  переопределяет: база возвращает профиль как есть.
+- `password: SecretStr`, и больше ничего: в таблице поле шифруется само, а
+  в тело раскрывается тем же обходом, что в разделе 3. Профили не
+  наследуют `SecretRevealing`: раскрытие для них делает хост, когда
+  кладёт профиль в JSON-канал.
 
-- `kind: Literal["redis"]` — по нему строка из базы находит свою модель.
-  Хранится в jsonb, менять потом нельзя.
-- `description` наследуется от базового класса: это текст, который читает
-  модель в `connection_list`, выбирая соединение под задачу пользователя.
-  Заполняет его администратор на странице соединений.
-- `trace()` обязателен: строка журнала «под кем идём». Пишется по профилю,
-  который реально уедет в тело, поэтому у kerberos-строк здесь виден билет
-  вызова, а не keytab.
-- `labeled(client)` — подпись сессии, если сервер такое умеет. Хост передаёт
-  только данные (`ClientIdentity`: приложение, логин, инструмент), а как их
-  отрендерить и куда положить, решает профиль. У postgres это
-  `application_name`, у clickhouse — `client_name`, и предел длины у каждого
-  свой. Сервер без такого поля метод не переопределяет.
-- `password: SecretStr` — и больше ничего: в базе поле шифруется само, а в
-  тело раскрывается обходом `SecretReveal` (раздел 3.1).
-- Kerberos. Если тип умеет kerberos, реализуйте ещё три метода базового
-  класса: `kerberos_section()` — где в профиле лежит секция;
-  `service_name()` — SPN в форме `service@host`, к которому выпускать билет;
-  `with_call_ticket(ticket)` — копия профиля с `TicketAuth` на месте секции.
-  Хост типов не разбирает: он зовёт эти методы. Живой образец —
-  `packages/infra/db/boba-db-postgres/src/boba/db/postgres/profile/config.py`.
-  Обратная сторона в теле: `ClientCredentials.of(auth)` и `applied_async()`
-  вокруг открытия соединения, как в `boba.db.postgres.payload`.
-
-**Манифест с пробой** `src/boba/db/redis/connection.py`. Проба — это кнопка
-«Check» на странице соединений:
+### Манифест с пробой
 
 ```python
-"""Тип соединения redis: манифест для реестра boba.connections."""
+"""Тип соединения redis: манифест для реестра boba.connections.
+
+Ошибки:
+ConnectionTypeError — проба получила профиль чужого типа.
+RedisError — сервер недоступен или отверг PING.
+"""
+
+from redis.asyncio import Redis
 
 from boba.connections.base import ConnectionProfileBase, ConnectionTypeError
 from boba.connections.manifest import ConnectionTypeManifest
-from boba.db.redis.client import open_redis
-from boba.db.redis.profile import RedisConnection
+from boba.tool.redis.profile import RedisConnection
 
 __all__ = ["MANIFEST"]
 
 
 async def _probe(profile: ConnectionProfileBase) -> str:
     if not isinstance(profile, RedisConnection):
-        raise ConnectionTypeError(f"redis probe got a {profile.kind!r} profile")
+        msg = f"redis probe expects a RedisConnection profile, got kind {profile.kind!r}"
+        raise ConnectionTypeError(msg)
 
-    client = await open_redis(profile)
+    client = Redis(
+        host=profile.host,
+        port=profile.port,
+        db=profile.db,
+        password=profile.password.get_secret_value(),
+    )
     try:
         pong = await client.ping()
     finally:
-        await client.close()
+        await client.aclose()
 
     return f"PONG {pong}"
 
@@ -823,216 +626,163 @@ async def _probe(profile: ConnectionProfileBase) -> str:
 MANIFEST = ConnectionTypeManifest(kind="redis", profile=RedisConnection, probe=_probe)
 ```
 
-Исключения пробы глотать не нужно: граница превратит их в
-`ProbeResult(ok=False, message=...)`.
+Исключения пробы глотать не надо: граница превратит их в результат
+«проверка не прошла» с текстом.
 
-**Entry point** в `pyproject.toml` пакета-владельца; имя обязано совпадать
-с `kind`, реестр проверяет это на старте:
-
-```toml
-[project.entry-points."boba.connections"]
-redis = "boba.db.redis.connection:MANIFEST"
-```
-
-Проверка после `uv sync --all-packages`:
+После `uv sync --all-packages` тип виден реестру:
 
 ```bash
 .venv/bin/python -c "from boba.connections.manifest import ConnectionTypes; print(ConnectionTypes.discover().kinds())"
 ```
 
-Страница «Соединения» покажет тип сама: форма строится из json-schema
-реестра. Если пакет типа удалить, строки его вида в списках помечаются
-«type not installed», а использование падает `UnknownConnectionKindError`.
+Страница «Соединения» покажет новый тип сама: форма строится из json-schema
+модели профиля. Если пакет типа удалить, строки его вида в списках получат
+пометку «type not installed».
 
-### 4.4. Параметр-соединение в инструменте
+Образец в репозитории: `PostgresConfig` в пакете `boba-db-postgres`, где
+проба выполняет `select version()` и возвращает версию сервера.
 
-Соединение объявляется прямо в подписи: тип параметра — модель профиля,
-маркер `UserConnection` рядом с ним.
+---
+
+## 5. Инструмент с соединением пользователя
+
+Теперь перепишем инструменты так, чтобы сервер приходил из таблицы
+соединений, а не из конфига. Соединение объявляется прямо в подписи: тип
+параметра — модель профиля, маркер `UserConnection` рядом:
 
 ```python
+from boba.toolkit.facade import Injected, UserConnection, tool
+
 RedisTarget = Annotated[RedisConnection, UserConnection]
 ```
 
-У такого параметра две ипостаси:
+У такого параметра две стороны. Для модели это строка: имя соединения,
+которое она выбирает по выдаче `connection_list`. Хост правит схему при
+загрузке, и вместо модели профиля модель видит строку с подсказкой. Для
+тела это готовый профиль с паролем внутри. Ничего регистрировать не нужно:
+вид соединения хост выводит из типа параметра через реестр типов.
 
-- **для модели** это строка: имя соединения, которое она выбирает по выдаче
-  `connection_list`. Схему правит хост при загрузке инструментов, поэтому в
-  описании поля модель видит подсказку про `connection_list`, а не модель
-  профиля;
-- **для тела** это готовый профиль с кредами внутри.
-
-Ничего наследовать, регистрировать и перечислять не нужно: вид соединения
-хост выводит из типа параметра через реестр типов. Параметров может быть
-несколько — например источник и приёмник перекачки:
+Параметров-соединений может быть несколько. Инструмент перекачки берёт
+источник и приёмник:
 
 ```python
 @tool
 async def redis_copy(
-    source: Annotated[RedisConnection, UserConnection],
-    target: Annotated[RedisConnection, UserConnection],
-    pattern: Annotated[str, Field(description="Шаблон ключей")],
-) -> tuple[str, ToolResult]: ...
-```
-
-### 4.5. Конфиг секции рядом с соединением
-
-Секция плагина остаётся обычным injected-конфигом: в ней живут потолки
-выдачи и прочие настройки администратора. Соединений в ней больше нет.
-
-```python
-class RedisToolConfig(SecretRevealing, SqlLimits):
-    """Лимиты выдачи redis-инструментов; [tool.redis]."""
-
-    SECTION: ClassVar[str] = "tool.redis"
-```
-
-`SqlLimits` из `boba.toolkit.sql` даёт `max_rows` и `max_bytes` — общие
-границы выдачи SQL-инструментов. Если ваши инструменты не про SQL, берите
-обычную модель с `SECTION`, как в разделе 2.
-
-### 4.6. Тела
-
-```python
-@tool
-async def redis_query(
-    connection: RedisTarget,
-    command: Annotated[str, Field(min_length=1, description="Команда redis, например GET key")],
+    source: RedisTarget,
+    target: RedisTarget,
+    pattern: Annotated[
+        str,
+        Field(min_length=1, description="Шаблон ключей источника, например 'cache:*'."),
+    ],
     cfg: Annotated[RedisToolConfig, Injected],
-) -> tuple[str, ToolResult]:
-    """Выполнить команду redis на выбранном соединении."""
-    client = await open_redis(connection)
+) -> MarkdownResult:
+    """Скопировать ключи по шаблону с одного сервера на другой с сохранением TTL."""
+    src = _client(source)
+    dst = _client(target)
+
+    copied = 0
     try:
-        reply = await client.execute_command(*command.split())
+        async for key in src.scan_iter(match=pattern, count=cfg.scan_batch):
+            if copied >= cfg.max_rows:
+                break
+
+            dump = await src.dump(key)
+            if dump is None:
+                continue
+
+            ttl_ms = await src.pttl(key)
+            if ttl_ms < 0:
+                ttl_ms = 0
+
+            await dst.restore(key, ttl_ms, dump, replace=True)
+            copied += 1
     finally:
-        await client.close()
+        await src.aclose()
+        await dst.aclose()
 
-    return pack_result(TextResult(text=str(reply)))
+    return MarkdownResult(text=f"copied {copied} keys from {source.host} to {target.host}")
 
 
-EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
-    RedisError: SqlErrorKind.DATABASE_UNAVAILABLE,
-}
+def _client(profile: RedisConnection) -> Redis:
+    return Redis(
+        host=profile.host,
+        port=profile.port,
+        db=profile.db,
+        password=profile.password.get_secret_value(),
+        client_name=profile.client_name,
+    )
 ```
 
-Обратите внимание, чего в теле **нет**: поиска соединения по имени, проверки
-прав, работы с billетами, whitelist'а. Всё это осталось на хосте. Тело
-получает профиль и работает с ним.
+Обратите внимание, чего в теле нет: поиска соединения по имени, проверки
+прав, whitelist'а. Всё это осталось на хосте. Конфиг секции при этом
+никуда не делся: в нём живут лимиты и настройки администратора, а
+`server` из него теперь можно убрать.
 
-Единственное требование: инструмент обязан быть `async def`. Обвязка ждёт
-таблицу и билет, синхронный вызов падает `InjectedAsyncOnlyError`.
+Два требования к такому инструменту. Он обязан быть `async def`: хост ждёт
+таблицу и билет, синхронный вызов падает `InjectedAsyncOnlyError`. И
+инструменты с соединениями работают только при `[connections] enable = true`
+в `config.toml`, иначе старт падает с текстом «takes its connections from
+the connections table».
 
-Отдельного `*_connection_list` писать не надо: список доступных соединений
-всех видов отдаёт общий инструмент `connection_list` (раздел 4.8).
-
-### 4.7. Манифест и конфиг развёртывания
-
-```python
-"""Манифест плагина redis: entry point группы boba.tools."""
-
-from typing import Final
-
-from boba.tool.redis.tools import TOOLS
-from boba.toolkit.manifest import ToolPluginManifest
-
-MANIFEST: Final = ToolPluginManifest(section="redis", tools=tuple(TOOLS))
-```
-
-Манифест обычный: про соединения он ничего не объявляет, потому что это
-сказано в подписях инструментов.
-
-Файл `conf/plugins/redis.toml`:
+Манифест и файл плагина остаются обычными. Профилей в файле нет: они
+приходят из таблицы на каждый вызов.
 
 ```toml
-enable   = true
-tools    = ["redis_query"]
-max_rows = 200
+enable     = true
+tools      = ["redis_scan", "redis_copy"]
+max_rows   = 200
+max_bytes  = 1000000
+scan_batch = 500
 
 [sandbox]
     network = true
     binds   = ["/etc/resolv.conf:/etc/resolv.conf", "/etc/hosts:/etc/hosts"]
 ```
 
-Профилей в файле нет: они приходят из таблицы на каждый вызов. Инструменты с
-соединениями работают только при `[connections] enable = true` в
-`config.toml`, иначе старт падает с понятным текстом. Для kerberos-типов
-добавьте бинд `"${env.krb}/krb5.conf:/etc/krb5.conf"`.
+### Как модель узнаёт имена
 
-### 4.8. Как модель узнаёт имена: connection_list
-
-Встроенный инструмент `connection_list` (секция `[tool.connections]`) отдаёт
-все соединения, доступные пользователю, тремя колонками:
+Встроенный инструмент `connection_list` из секции `[tool.connections]`
+отдаёт все соединения, доступные пользователю:
 
 | connection | kind | description |
 |---|---|---|
-| `analytics` | `postgres` | витрины продаж, только чтение |
-| `events` | `clickhouse` | сырые события, партиции по дням |
-| `wiki` | `web` | внутренняя вики, доступ по SSO |
+| `cache` | `redis` | кэш сессий прода, только чтение |
+| `cache-staging` | `redis` | кэш стейджинга, можно писать |
+| `analytics` | `postgres` | витрины продаж |
 
-По виду модель понимает, какому инструменту имя годится: `postgres` — для
-pg-инструментов, `web` — для web. По описанию выбирает нужное под задачу.
-Описание берётся из поля `description` профиля, поэтому заполнять его стоит
-осмысленно: это единственная подсказка, которую модель видит.
+По `kind` модель понимает, какому инструменту имя годится, по описанию
+выбирает под задачу. Описание берётся из поля `description` профиля, это
+единственная подсказка, которую модель видит.
 
-Конфиг развёртывания:
+### Что происходит на вызове
 
-```toml
-# conf/plugins/connections.toml
-enable = true
-tools  = ["connection_list"]
-```
+Модель вызвала `redis_copy(source="cache", target="cache-staging",
+pattern="cache:*")`.
 
-### 4.9. Что происходит на вызове, по шагам
+1. На загрузке хост нашёл у `redis_copy` два параметра с маркером и вывел
+   их вид из типа: `redis`. В схеме для модели на их месте строки.
+2. На вызове хост читает из аргументов имена `cache` и `cache-staging`.
+3. Берёт субъект вызова из контекста: пользователь, логин, роли.
+4. Одним SQL читает гранты на пользователя и его роли с фильтром по виду
+   `redis` и группирует по имени. Имя, выданное дважды с разными строками
+   (лично и ролью), попадает в список неоднозначных.
+5. Выбирает строку по каждому имени. Нет такой — отказ с перечнем
+   доступных имён, чтобы модель исправилась и повторила вызов. Дубль —
+   отказ `ambiguous_connection`.
+6. Зовёт `profile.labeled(client)`: профиль подписывает сессию сам.
+7. Для kerberos-типов меняет kerberos-секцию на билет вызова (раздел 6).
+8. Имена остаются строками в argv, профили уезжают JSON-каналом под
+   ключами `"source"` и `"target"`.
+9. Тело собирает JSON обратно в два `RedisConnection` и работает.
 
-Модель вызвала `redis_query(connection="cache", command="GET x")`.
+В тело уезжают ровно те профили, которые назвал вызов. Остальные соединения
+пользователя туда не попадают, даже именами.
 
-| # | Где | Что делает |
-|---|---|---|
-| 1 | загрузка | у инструмента найден параметр с маркером, вид выведен из типа: `redis` |
-| 2 | загрузка | схема для модели: на месте параметра строка с описанием и меткой вида |
-| 3 | `UserConnections.value` | читает `kwargs["connection"]` → `"cache"` |
-| 4 | `CallContext.current()` | субъект вызова: user_id, логин, роли |
-| 5 | `store.for_subject(subject, "redis")` | один SQL: гранты на пользователя и его роли, фильтр по виду |
-| 6 | `ConnectionWhitelist.of(rows)` | группировка по имени; имя, выданное дважды, уходит в `ambiguous` |
-| 7 | `whitelist.pick("cache")` | строка; нет такой — отказ со списком доступных; дубль — отказ `ambiguous_connection` |
-| 8 | `profile.labeled(client)` | профиль подписывает сессию сам: `boba:ivanov:redis_query` |
-| 9 | `credentials.for_connection` | kerberos-секция меняется на билет этого вызова (раздел 4.10) |
-| 10 | `ToolArgv.render` | имя остаётся строкой в аргументах, профиль уезжает каналом конфига |
-| 11 | launcher | процесс или форк зиготы, раздел 5 |
-| 12 | тело | `ToolArgv.parse` собирает профиль обратно в `RedisConnection`; тело открывает соединение |
+### Проверка хоста для web
 
-Ключевое отличие от прежней схемы: в песочницу уезжает ровно один профиль —
-тот, который назвал вызов. Остальные соединения пользователя туда не
-попадают вовсе, даже именами.
-
-### 4.10. Kerberos: как строка таблицы превращается в билет
-
-Строка таблицы может нести kerberos-секцию двух видов:
-
-- `{method = "kerberos_delegated"}` — в сервис идёт сам пользователь.
-  Работает, если он вошёл через SSO и браузер делегировал креды. Иначе
-  `RefusalError(no_delegated_credentials)`.
-- `{method = "kerberos_keytab", principal, keytab}` — сервисная учётка,
-  keytab лежит на хосте приложения.
-
-В обоих случаях хост зовёт `KerberosCredentialSource.for_connection`, а тот
-работает только через методы профиля:
-
-1. `profile.service_name()` → SPN, например `postgres@db01.corp`;
-2. `ServiceTicketIssuer` выпускает билет к этому SPN и копирует его в свежий
-   FILE-ccache; остаток жизни обязан быть не меньше `min_lifetime`;
-3. `TicketAuth.of_bytes(...)` — секция с ccache в base64;
-4. `profile.with_call_ticket(ticket)` — билет на месте старой секции.
-
-Форма профиля не меняется, и тело не знает, как билет получен. Keytab или
-пароль, добравшиеся до дампа, роняют его с сообщением «may not leave the
-application». В теле `TicketCredentials.applied_async()` материализует ccache
-во временный файл вызова и выставляет `KRB5CCNAME`.
-
-### 4.11. Web: проверку хоста делает инструмент
-
-Профиль `HttpConnection` покрывает хост своего `base_url` — точное имя или
-шаблон `*.corp.example`. Проверить, что запрошенный URL под него попадает,
-обязан сам инструмент: только он знает, какой URL собирается открыть.
+У типа `web` профиль `HttpConnection` покрывает хост своего `base_url`,
+точным именем или шаблоном `*.corp.example`. Хост не знает, какой URL
+инструмент собирается открыть, поэтому проверка на стороне тела:
 
 ```python
 @tool
@@ -1040,284 +790,123 @@ async def web_fetch_page(
     url: Annotated[str, Field(min_length=1, description="URL для скачивания")],
     connection: Annotated[HttpConnection, UserConnection],
     cfg: Annotated[WebGrepConfig, Injected],
-) -> tuple[str, ToolResult]:
-    """Скачивает URL выбранным соединением."""
+) -> MarkdownResult:
+    """Скачивает URL соединением connection (см. connection_list)."""
     profile = WebHost.bound(connection, url)
 ```
 
-`WebHost.bound` из `boba.transport.http.web` проверяет покрытие и возвращает
-профиль, привязанный к конкретному хосту; чужой хост — `UnknownHostError`,
-который объявлен в `EXPECTED` модуля как `unknown_host`.
+`WebHost.bound` из `boba.transport.http.web` проверяет покрытие и
+возвращает профиль, привязанный к конкретному хосту. Чужой хост —
+`UnknownHostError`, объявленный в `EXPECTED` модуля как `unknown_host`.
 
-Ограничение, о котором стоит помнить: для профиля с шаблоном и Negotiate
-билет выпускается по `service_name()` профиля, а тот требует конкретного
-хоста. Для kerberos-соединений указывайте в `base_url` точное имя.
-
-### 4.12. Ошибки по kind
-
-| Ситуация | Кто поднимает | Kind |
-|---|---|---|
-| имя не выдано субъекту | хост | `connection_not_visible` |
-| имя выдано дважды | хост | `ambiguous_connection` |
-| параметр пуст | хост | `connection_not_visible` |
-| delegated-строка без SSO-кредов | хост | `no_delegated_credentials` |
-| строка таблицы с готовым билетом | хост | `ToolConfigError` |
-| параметр объявлен не моделью профиля | загрузка | `ToolConfigError` |
-| пакет типа не установлен | загрузка | `ToolConfigError` |
-| синхронный вызов | хост | `InjectedAsyncOnlyError` |
-| хост URL вне соединения | тело | `unknown_host` |
-
-Отказы хоста (`RefusalError`) — это `ToolRefusalError` с kind из
-`ConnectionRefusal`; `ToolErrorGuard` превращает их в `ErrorResult`, и модель
-получает текст. Отказ по неизвестному имени называет доступные имена, чтобы
-модель могла исправиться и повторить вызов.
-
-### 4.13. Отладка тела с соединением
-
-Профиль в бою подаёт хост, поэтому при ручном запуске его надо передать
-самому — тем же каналом конфига, ключом по имени параметра:
-
-```bash
-cat > /tmp/pg.json <<'EOF'
-{
-  "connection": {
-    "kind": "postgres",
-    "host": "db01.corp",
-    "dbname": "boba",
-    "auth": {"method": "password", "user": "u", "password": "…"}
-  },
-  "cfg": {"max_rows": 100}
-}
-EOF
-
-.venv/bin/python -m boba.tool.pg.tools pg_query \
-    --sql "select 42" --injected /tmp/pg.json --artifact
-```
-
-Профиль с keytab так передать нельзя: дамп упадёт «may not leave the
-application», потому что билет выпускает приложение. Для отладки таких
-соединений подставляйте в файл готовую секцию `kerberos_ticket` либо
-профиль с паролем.
-
-Живые примеры: `packages/tools/boba-tool-postgres/` (pg),
-`boba-tool-clickhouse/` (ch), `boba-tool-web/` (web); типы —
-`packages/infra/db/boba-db-postgres/src/boba/db/postgres/{profile,connection.py}`,
-`boba-db-clickhouse`, `packages/infra/transport/boba-transport-http/`.
-Хостовая обвязка —
-`packages/services/boba-connection-broker/src/boba/connection_broker/user_connections.py`,
-её тесты — `test_connection_binding.py` в том же пакете.
-
-## 5. Как это устроено внутри launcher'а
-
-### 5.1. Порядок обвязок на хосте
-
-`ToolLoader._module_tools` (`boba.runtime.plugins`) для каждого
-инструмента из `tools` файла плагина делает копию `PayloadTool` и ставит
-обвязки в таком порядке:
-
-1. `ToolProcessWrap.guard_all(tools, launcher)` — подменяет тело: вместо
-   функции теперь «собрать команду и запустить launcher'ом». Схема
-   аргументов запоминается полной, с injected-полями: по ней рендерится
-   команда.
-2. `UserConnections.bind_all` — только если у инструмента есть параметры с
-   маркером `UserConnection`. Заодно правит схему для модели: на месте
-   параметра появляется строка с именем и меткой вида соединения.
-3. `ServiceTickets.bind_all` — только если статическое значение параметра
-   содержит профиль с keytab/password/delegated-секцией.
-4. `InjectedConfig.bind_all` — партиал статических значений и **снятие
-   injected-полей со схемы**: LLM видит усечённую схему.
-
-Выполняются они в обратном порядке (снаружи внутрь): 4 → 3 → 2 → 1.
-Партиал кладёт значение через `setdefault`, обвязки 2 и 3 его
-перезаписывают. Снаружи всех стоят общие guard'ы: доступ по ролям, журнал
-вызова, отмена, `ToolErrorGuard`.
-
-Статические значения собираются один раз на загрузке:
-`resolve(param, annotation)` читает `SECTION` с аннотации и зовёт
-`bind(raw, section, annotation)`. Нет `SECTION` — `ToolConfigError` на
-старте.
-
-### 5.2. Контракт команды тела
-
-Команду строит `ToolArgv.render`, разбирает `ToolArgv.parse`. Одна и та же
-команда у launcher'а и у человека:
-
-```
-python3 -m <модуль> <имя-инструмента> --<арг> <значение> ... \
-    [--injected <файл> | --injected-fd <n>] [--fd-result <n>] [--fd-frames <n>] [--artifact]
-```
-
-- `--<арг>`: имя параметра с `_` → `-`. Строковые значения как есть,
-  остальные JSON. Значение больше `MAX_ARG_STRLEN` — `argument_too_large`.
-- `--injected-fd <n>` — дескриптор, из которого тело читает JSON injected
-  до EOF. Человек вместо него передаёт `--injected <файл>`. stdin конфиг
-  не несёт никогда: он принадлежит прикладным кадрам входа.
-- `--fd-result <n>` — куда тело пишет конверт. Без него `content` печатается
-  в stdout, `--artifact` дописывает JSON артефакта.
-- `--fd-frames <n>` — канал исходящих кадров портов (раздел 6).
-- stdout тела — его лог (`logging` настроен на stdout, уровень из
-  `BOBA_LOG_LEVEL`); stdout и stderr журналируются и стримятся в панель.
-- Коды выхода `ToolMain.Exit`: `0` ок, `1` ожидаемый отказ (`EXPECTED`),
-  `2` нарушение контракта запуска (`unknown_tool`, `invalid_request`,
-  `internal_error`). Неожиданное исключение тела — трейсбек, код не ноль,
-  конверта нет; хост поднимает `LauncherError` с хвостом stderr.
-
-Конверт (`boba.toolkit.protocol`): `ReplyOk{status="ok", content, artifact}`
-или `ReplyError{status="error", kind, message}`. Хост превращает
-`ReplyError` в `PayloadFailureError(kind, message)`, `ToolErrorGuard` — в
-`ErrorResult` для LLM.
-
-### 5.3. Секция `[tool_launcher]`
-
-Union по `provider`; переключается `${env.tool_launcher}`, значение из
-`BOBA_TOOL_LAUNCHER`. Секция одна на все режимы, поэтому модели с
-`extra="ignore"`.
-
-`provider = "sandbox"` — других полей нет: пути берутся из `[env]`
-(`base`, `data`, `sandbox`, `models`, `krb`, `cgroup_base`), изоляция из
-`[sandbox]` файла плагина.
-
-`provider = "process"` (dev-хост):
-
-| Поле | Значение |
-|---|---|
-| `workdir` | рабочий каталог тел; тело получает `workdir/<scope.id>` (пер-тредовая папка), вне контекста — общий |
-| `shell` | интерпретатор для `call_text` (bash-инструмент) |
-| `timeout_sec` | потолок вызова |
-| `channel_limit_bytes` | лимит каналов, буферизуемых целиком в памяти (`tool_result`, stdout/stderr shell) |
-| `stderr_tail_bytes` | хвост stderr для объяснения вызова без конверта |
-| `kill_grace_sec` | пауза между SIGTERM и SIGKILL |
-
-`probe()` на старте: `process` проверяет, что `workdir` существует;
-`sandbox` — что `[env]` полон. Остальное `sandbox` проверяет на каждой
-секции при создании launcher'а: наличие `bwrap` (тихой деградации в
-процесс хоста нет), cgroup-проба, регистрация точки воркспейса.
-
-### 5.4. Провайдер `process`: последовательность вызова
-
-`ProcessToolCaller` (`boba.toolrun.process`):
-
-1. `argv[1]` обязан быть `-m`; `python3` заменяется на `sys.executable`.
-2. Создаются пайпы: stdin, result, frames, injected; размер данных-пайпов
-   поднимается до 1 MiB. Номера детских концов дописываются флагами
-   `--fd-result --fd-frames --injected-fd`.
-3. `subprocess.Popen(..., cwd=workdir/<scope.id>, env=os.environ,
-   pass_fds=(...), start_new_session=True)` — своя группа процессов ради
-   `killpg`.
-4. Стартует поток насоса (`ChannelPump`): читает stdout/stderr/result/frames,
-   раскладывает по стокам. `RESULT` → `CappedChannel(channel_limit_bytes)`,
-   `STDERR` → `ChannelTail`, `FRAMES` → `CallInbox`; те же каналы тиражируются
-   в журнал через `ToolChannelsTap`. Переполнение `CappedChannel` убивает
-   вызов (`ChannelOverflowError`).
-5. Только после старта насоса injected JSON пишется в свой пайп и
-   закрывается: тело читает его до EOF.
-6. Насос крутится, пока открыты каналы или процесс жив, проверяя отмену
-   хода и дедлайн `timeout_sec`; отмена — `killpg(SIGTERM)`, через
-   `kill_grace_sec` — `SIGKILL`.
-7. Конверт парсится `EnvelopeReply.parse`; пустой канал — `LauncherError`
-   «no envelope on tool_result» с хвостом stderr.
-
-`@warmup` и cgroup-лимиты в этом режиме не действуют.
-
-### 5.5. Провайдер `sandbox`: зигота, bwrap, гость
-
-**Зигота на секцию.** `ZygoteRegistry.obtain(section, profile, modules, ...)`
-держит по одному `ZygoteSupervisor` на секцию плагина. Старт:
-`socketpair(SEQPACKET)` → цепочка bwrap → гость `boba.sandbox.guest`
-импортирует модули тел, исполняет `@warmup`-хуки (конфиг хука хост
-собирает из `tool.<секция>` и шлёт с раскрытыми секретами) → `ready`.
-Смерть зиготы — перезапуск с backoff по `ZygotePolicy`
-(`[sandbox.zygote]`); после `max_start_attempts` секция в `FAILED`, все её
-вызовы падают.
-
-**Цепочка bwrap** (`ZygoteSpawner._argv`):
-
-```
-bwrap (userns, uid 0, --unshare-net если network=false)
-  └─ python -m boba.workspace.launcher  --ro-image plugins/<пакет>/rootfs.ext4 /tmp/boba-rootfs  (fuse2fs)
-       └─ bwrap (--ro-bind rootfs /, --unshare-pid/ipc/uts, --proc, --dev, tmpfs /tmp, ro-бинды из [sandbox] binds, --clearenv)
-            └─ python3 -m boba.sandbox.guest --socket-fd N <модули>
-```
-
-Образ корня плагина монтируется read-only один раз на жизнь зиготы.
-`network = true` в файле плагина убирает `--unshare-net` у внешнего
-bwrap — единственный способ дать телу сеть.
-
-**Вызов** (`ZygoteToolCaller._open_call`):
-
-1. `argv_tail` — команда без `python3 -m <модуль>`: модуль уже импортирован.
-2. `plan` — таймаут, rlimits процесса (`process_*` из `limits`), образ
-   воркспейса `data/workspace/<user_id>.ext4 → /workspace` (если
-   `workspace = true`), `cwd`.
-3. Если запрошены `group_*` лимиты — берётся cgroup-лист под
-   `[env] cgroup_base`.
-4. `supervisor.begin(...)` — одна SEQPACKET-датаграмма с SCM_RIGHTS:
-   дескрипторы `STDIN, STDOUT, STDERR, RESULT, FRAMES, INJECTED, CONTROL[, CGROUP]`.
-5. Насос стартует, потом injected JSON пишется в свой пайп — так же, как в
-   `process`.
-6. Завершение узнаётся по control-сокету: `born` с pid исполнителя
-   (SCM_CREDENTIALS), `CallSetupFailed`, `CallExit`. Убийство — `SIGKILL`
-   этому pid.
-
-**Гость, порядок операций исполнителя** (`ZygoteMain._grandchild`):
-
-1. форк → `unshare(NEWNS|NEWIPC|NEWUTS)` → второй форк `clone3` с
-   `CLONE_INTO_CGROUP` (исполнитель рождается уже в листе вызова);
-2. приватные `/proc` и tmpfs `/tmp` размером `mounts.tmp`;
-3. `dup2` stdin/stdout/stderr; закрыть лишнее (для shell-вызовов — ещё и
-   result/frames/injected: пользовательская команда до них не дотянется);
-4. `born` хосту;
-5. монтирование образа воркспейса fuse2fs, затем `umount2(MNT_DETACH)`
-   каталога всех образов: тело чужих не увидит;
-6. `setrlimit` по `process_*`, `oom_score_adj`, affinity;
-7. сброс всех capabilities, `NO_NEW_PRIVS`;
-8. `chdir(cwd)`, дописать `--fd-result --fd-frames --injected-fd`,
-   `ToolMain.run(TOOLS, argv)` с уже импортированными `TOOLS`, `os._exit(code)`.
-
-Kerberos-билет вызова в песочницу **не биндится**: он едет внутри injected
-JSON как `TicketAuth.ccache`, тело кладёт его в `/tmp` вызова (приватный
-tmpfs) только внутри `applied()`, и файл умирает с вызовом. Биндится
-только `krb5.conf`.
-
-### 5.6. Секция `[sandbox]` в файле плагина
-
-Модель `PluginSandbox`, `extra="forbid"`: опечатка в ключе — ошибка старта.
-
-| Ключ | Что делает |
-|---|---|
-| `profile` | полный профиль ссылкой `"${sandbox.profiles.<имя>}"`; взаимоисключим со всеми дельта-ключами ниже. Нужен встроенным плагинам без образа |
-| `network` | `true` — сеть хоста (снимает `--unshare-net`); по умолчанию сети нет |
-| `workspace` | `true` — монтирует ext4 воркспейса пользователя в `/workspace` и делает его `cwd`; по умолчанию воркспейса нет, `cwd = /tmp` |
-| `binds` | пары `host:guest`, только явные файлы/каталоги хоста, read-only; строка без `:` — ошибка. Пути через `${env.*}` |
-| `[sandbox.limits]` | накладывается на дефолт: `process_memory_bytes` (1 GiB), `process_cpu_sec`, `process_file_bytes`, `process_open_files` (1024), `process_oom_score_adj` (900), `group_memory_bytes` (1 GiB), `group_swap_bytes` (0), `group_cpu_percent` (100 = одно ядро), `group_cpu_weight`, `group_pids_max` (256), `group_oom_kill_all`, `timeout_sec` (86400) |
-| `[sandbox.isolation]` | `network`, `reap_poll_sec`, `env` (PATH, HOME=/tmp, LANG) |
-| `[sandbox.run]` | `cwd`, `shell` |
-| `[sandbox.host]` | хостовые буферы: `stderr_tail_bytes`, `channel_limit_bytes`, `fail_tail_chars`, `kill_grace_sec`, `mounting` |
-| `[sandbox.zygote]` | `ZygotePolicy`: `max_start_attempts`, `restart_backoff_sec`, `start_timeout_sec`, `healthy_after_sec` |
-
-Как накладывается (`ZygoteLaunchers._composed`): база из
-`SandboxDefaults.profile(env, package)` (rootfs
-`${env.sandbox}/plugins/<пакет>/rootfs.ext4`, дефолтные лимиты) →
-`network`/`binds`/`workspace` дельты → таблицы `host/isolation/limits/run`
-сливаются рекурсивно (словари сливаются, скаляры и списки заменяются) →
-`SandboxProfile.model_validate`. `group_*` лимиты требуют непустого
-`cgroup_base`.
-
-Ориентиры: `pg.toml` — сеть и krb5.conf; `bash.toml` — `workspace = true`;
-`kb.toml` — сеть, бинд весов, `group_cpu_percent = 400`, память 16/8 GiB.
+Образец в репозитории: плагин `pg` объявляет
+`PgConnection = Annotated[PostgresConfig, UserConnection]` и строит на нём
+все семь инструментов. Хостовая сторона, которая ищет строку и подкладывает
+профиль, живёт в пакете `boba-connection-broker`.
 
 ---
 
-## 6. Потоковые инструменты: порты
+## 6. Kerberos: что тип обязан уметь
 
-Если инструменту нужно получать данные порциями или отдавать по ходу
-работы, он объявляет каналы в подписи. Единица обмена — кадр: JSON-заголовок
-с полем `kind` (строковый `Literal`) плюс тело байтами.
+Redis kerberos не умеет, поэтому этот раздел про postgres и web. Строка
+таблицы может нести kerberos-секцию трёх видов:
+
+- `{method = "kerberos_delegated"}`: в сервис идёт сам пользователь.
+  Работает, если он вошёл через SSO и браузер делегировал креды. Иначе
+  отказ `no_delegated_credentials`.
+- `{method = "kerberos_keytab", principal, keytab}`: сервисная учётка,
+  keytab лежит на хосте приложения.
+- `{method = "kerberos_password", principal, password}`: то же, но паролем.
+
+Ни keytab, ни пароль в тело не уезжают. Хост выпускает **один сервисный
+билет** к конкретному сервису и подменяет секцию профиля на
+`{method = "kerberos_ticket", ccache}` с этим билетом в base64. Форма
+профиля не меняется, и тело не знает, как билет получен. TGT в ccache нет,
+выпустить билет к другому сервису тело не может.
+
+Чтобы хост мог это сделать, не зная устройства профиля, профиль реализует
+три метода базового класса. Так они выглядят у `PostgresConfig`:
 
 ```python
-class RowsChunk(BaseModel):
-    kind: Literal["redis.rows"] = "redis.rows"
+def kerberos_section(self) -> KerberosAuthBase | None:
+    if isinstance(self.auth, KerberosAuthBase):
+        return self.auth
+
+    return None
+
+def service_name(self) -> str:
+    if not self.host:
+        msg = "postgres connection: kerberos SPN needs host, hostaddr alone is not enough"
+        raise ValueError(msg)
+
+    if not isinstance(self.auth, KerberosAuthBase):
+        msg = f"postgres connection to {self.host}: auth {self.auth.method} is not kerberos"
+        raise ValueError(msg)
+
+    return f"{PostgresKerberos.service_of(self.auth)}@{self.host}"
+
+def with_call_ticket(self, ticket: TicketAuth) -> PostgresConfig:
+    return self.model_copy(update={"auth": ticket})
+```
+
+- `kerberos_section()` говорит, где в профиле лежит секция; `None` — тип
+  аутентифицируется иначе, и хост ничего не делает.
+- `service_name()` — SPN в форме `service@host`, к которому выпускать
+  билет: `postgres@db01.corp`, `HTTP@wiki.corp`. Для web с шаблоном хостов
+  SPN получить нельзя, поэтому kerberos-соединения web указывают точный
+  `base_url`.
+- `with_call_ticket(ticket)` — копия профиля с билетом на месте секции.
+
+Защита от утечки встроена в сериализатор поля `auth`: если до дампа в
+JSON-канал дошёл keytab или пароль, дамп падает с текстом «credentials may
+not leave the application». Это ожидаемое поведение, а не баг.
+
+В теле открытие соединения оборачивается кредами. Так делает
+`PayloadPostgres.connect_config`:
+
+```python
+credentials = ClientCredentials.of(connection.auth)
+
+async with credentials.applied_async():
+    conn = await PayloadPostgres._connect(connection)
+```
+
+`applied_async()` кладёт байты ccache во временный файл вызова (в песочнице
+это приватный tmpfs), выставляет `KRB5CCNAME` и удаляет файл по выходу.
+Для kerberos-типов в `[sandbox]` файла плагина нужен бинд
+`"${env.krb}/krb5.conf:/etc/krb5.conf"`, как в `pg.toml` и `web.toml`.
+
+То же самое работает для kerberos-профиля в статическом конфиге
+администратора (раздел 3), как `connection = "${postgres}"` у `kb`: хост
+находит секцию внутри injected-значения и подменяет её билетом на каждом
+вызове. Только `kerberos_delegated` там невозможен: делегировать некому,
+сессии пользователя у статического конфига нет.
+
+---
+
+## 7. Потоковый инструмент: порты
+
+`redis_copy` копирует ключи между двумя redis. А если нужно выгрузить ключи
+в postgres или файл? Для этого есть конвейер: модель собирает цепочку
+инструментов через `pipeline_run`, и данные текут между узлами через ядро,
+не проходя ни через модель, ни через хост.
+
+Инструмент становится узлом конвейера, когда объявляет **порт** в подписи.
+Единица обмена — кадр: JSON-заголовок с полем `kind` плюс тело байтами.
+Заголовки описываются pydantic-моделями со строковым `Literal` в `kind`, и
+порт типизируется их объединением:
+
+```python
+from typing import Literal
+
+from boba.toolkit.ports import Inbound, Outbound
+
+
+class KeysChunk(BaseModel):
+    kind: Literal["redis.keys"] = "redis.keys"
     seq: int
+    count: int
+
 
 class ScanDone(BaseModel):
     kind: Literal["redis.done"] = "redis.done"
@@ -1326,91 +915,238 @@ class ScanDone(BaseModel):
 
 @tool
 async def redis_scan_stream(
-    pattern: Annotated[str, Field(description="Шаблон ключей")],
+    connection: RedisTarget,
+    pattern: Annotated[str, Field(min_length=1, description="Шаблон ключей, например 'user:*'.")],
+    out: Annotated[Outbound[KeysChunk | ScanDone], Injected],
     cfg: Annotated[RedisToolConfig, Injected],
-    out: Annotated[Outbound[RowsChunk | ScanDone], Injected],
-) -> tuple[str, ToolResult]:
-    """Отдаёт ключи порциями по мере обхода."""
+) -> MarkdownResult:
+    """Узел конвейера: отдаёт пары ключ-значение порциями в выходной порт."""
+    client = _client(connection)
+
     seq = 0
-    async for batch in _scan(cfg, pattern):
-        seq += 1
-        out.emit(RowsChunk(seq=seq), _encode(batch))
+    total = 0
+    try:
+        async for key in client.scan_iter(match=pattern, count=cfg.scan_batch):
+            value = await client.get(key)
+            if value is None:
+                continue
 
-    out.emit(ScanDone(total=seq))
+            seq += 1
+            total += 1
+            body = key + b"\t" + value + b"\n"
+            out.emit(KeysChunk(seq=seq, count=1), body)
+    finally:
+        await client.aclose()
 
-    return pack_result(TextResult(text=f"streamed {seq} batches"))
+    out.emit(ScanDone(total=total))
+
+    return MarkdownResult(text=f"streamed {total} keys")
 ```
 
-- Входной порт — итератор `for item in feed:` с `item.head` (модель) и
-  `item.body` (memoryview). Конец входа — конец цикла.
-- Не больше одного входного и одного выходного порта; несколько видов —
-  союз моделей в одном порте. Кадр с kind вне декларации роняет вызов на
-  границе.
-- `RawInbound`/`RawOutbound` — голые байты без кадрирования (COPY между
-  базами, файлы). Сырое совместимо только с сырым; хост его не разбирает,
-  перекачка — splice через ядро.
-- Запись блокируется при медленном потребителе: залить хост тело не может.
+Принимающий узел объявляет `Inbound` и читает кадры циклом:
+
+```python
+@tool
+async def redis_restore_stream(
+    connection: RedisTarget,
+    feed: Annotated[Inbound[KeysChunk | ScanDone], Injected],
+    cfg: Annotated[RedisToolConfig, Injected],
+) -> MarkdownResult:
+    """Узел конвейера: принимает пары ключ-значение и пишет их на сервер."""
+    client = _client(connection)
+
+    written = 0
+    try:
+        for item in feed:
+            if isinstance(item.head, ScanDone):
+                break
+
+            for line in bytes(item.body).splitlines():
+                key, value = line.split(b"\t", 1)
+                await client.set(key, value)
+                written += 1
+    finally:
+        await client.aclose()
+
+    return MarkdownResult(text=f"restored {written} keys")
+```
+
+Правила портов:
+
+- Не больше одного входного и одного выходного порта на инструмент.
+  Несколько видов кадров — объединение моделей в одном порте. Кадр с
+  `kind` вне объявления роняет вызов на границе, до тела.
+- `item.head` — модель заголовка, `item.body` — `memoryview` на буфер
+  кадра; для склейки нужен `bytes(item.body)`.
+- `RawInbound` и `RawOutbound` — голые байты без кадров, для перекачки
+  вроде `COPY ... TO STDOUT` → `COPY ... FROM STDIN`. Сырое совместимо
+  только с сырым, стыковку с кадровым портом конвейер отвергает до старта.
+- Запись в порт блокируется при медленном потребителе: залить хост тело
+  не может.
 - `return` остаётся: конверт — итог, кадры — то, что по дороге.
-- Порты не снимаются со схемы, но обязательными быть не могут: значение
-  строит гость по `--fd-frames` и stdin.
+- Порты не снимаются со схемы, но обязательными быть не могут: их значение
+  строит песочница на вызове.
 
-Потоковые инструменты — узлы конвейера: LLM собирает цепочку через
-`pipeline_catalog` и `pipeline_run`, стыковку проверяет `ChainCheck` по
-декларациям до старта, данные текут между узлами через ядро. Регистрации
-не нужно: порт в подписи — уже узел каталога.
+Регистрировать узел не нужно: порт в подписи уже делает инструмент узлом
+каталога `pipeline_catalog`, стыковку по объявленным `kind` проверяет
+конвейер до запуска.
 
-Образцы: `packages/testing/boba-stand/src/boba/stand/fake_toolmod.py`
-(`fake_stream`, `fake_relay`), `pg_copy_out`/`pg_copy_in` в
-`boba-tool-postgres`. Архитектура канала —
-`docs/streaming-tools-rework-plan.md`.
+Образец сырых портов в репозитории: `pg_copy_out` и `pg_copy_in` плагина
+`pg`, которые гонят `COPY` между двумя базами байт в байт.
 
 ---
 
-## 7. Сборка образа песочницы: `[tool.boba.sandbox]`
+## 8. Песочница: изоляция и образ
 
-В sandbox-режиме тело исполняется внутри собственного образа корня
-`sandbox/plugins/<пакет>/rootfs.ext4`. Секция `[tool.boba.sandbox]` в
-pyproject — декларация «что должно оказаться внутри моего образа». Её
-читает `make -C build/<app> plugin-rootfs PLUGIN=<пакет>`
-(скрипт `build/*/scripts/plugin_rootfs.py`); в рантайме секция не участвует.
+В sandbox-режиме тело исполняется внутри образа корня
+`sandbox/plugins/<пакет>/rootfs.ext4`, смонтированного только для чтения.
+Два места описывают, что там происходит: секция `[sandbox]` файла плагина
+задаёт изоляцию на каждый вызов, секция `[tool.boba.sandbox]` в pyproject
+задаёт, что положить в образ при сборке.
 
+### `[sandbox]` в файле плагина
+
+Модель секции запрещает неизвестные ключи: опечатка — ошибка старта.
+
+| Ключ | Что делает |
+|---|---|
+| `network` | `true` — сеть хоста; по умолчанию сети нет |
+| `workspace` | `true` — монтирует ext4-образ воркспейса пользователя в `/workspace` и делает его рабочим каталогом; по умолчанию воркспейса нет, рабочий каталог `/tmp` |
+| `binds` | пары `host:guest`, только явные файлы и каталоги хоста, read-only; пути через `${env.*}` |
+| `[sandbox.limits]` | `process_memory_bytes` (1 GiB), `process_cpu_sec`, `process_file_bytes`, `process_open_files` (1024), `group_memory_bytes` (1 GiB), `group_cpu_percent` (100 = одно ядро), `group_pids_max` (256), `timeout_sec` (86400) |
+| `[sandbox.zygote]` | `max_start_attempts`, `restart_backoff_sec`, `start_timeout_sec` |
+| `profile` | полный профиль ссылкой `"${sandbox.profiles.<имя>}"` вместо всех ключей выше; нужен встроенным плагинам без образа |
+
+Так выглядит секция плагина `kb`, которому нужны сеть, kerberos, веса
+модели и много памяти:
+
+```toml
+[sandbox]
+    network = true
+    binds   = [
+        "${env.models}/fastembed:/var/cache/fastembed",
+        "/etc/resolv.conf:/etc/resolv.conf",
+        "/etc/hosts:/etc/hosts",
+        "${env.krb}/krb5.conf:/etc/krb5.conf"
+    ]
+    [sandbox.limits]
+        process_memory_bytes = 17179869184
+        group_memory_bytes   = 8589934592
+        group_cpu_percent    = 400
+```
+
+Ориентиры: `pg.toml` — сеть и `krb5.conf`; `bash.toml` — `workspace = true`;
+`doc.toml` — воркспейс и бинд `tessdata`.
+
+Тело, убитое лимитом, отчитаться не успевает, и вызов без конверта
+песочница объясняет по коду возврата: 152 — `process_cpu_sec`, 153 —
+`process_file_bytes`, 137 и 134 — память, таймаут — `timeout_sec`.
+
+### `[tool.boba.sandbox]` в pyproject
+
+Секцию читает `make -C build/<app> plugin-rootfs PLUGIN=<пакет>`.
 Python-часть образа декларировать не нужно: в него автоматически ставится
 закрытие `payload`-зависимостей пакета. Секция описывает остальное:
 
-- `imports` — смоук-проверка: модули, которые сборка импортирует внутри
-  образа после установки; не импортируется — сборка падает здесь, а не
-  первым вызовом в проде.
-- `apt` — нативные debian-пакеты (утилиты, разделяемые библиотеки, шрифты).
-- `data` — данные из fetch-артефактов сборки: пары
-  `<каталог в build/<app>/src>:<путь внутри образа>` (веса моделей,
-  словари; сети песочнице не положено).
+- `imports` — модули смоук-проверки после сборки.
+- `apt` — нативные debian-пакеты: утилиты, разделяемые библиотеки, шрифты.
+- `data` — пути внутри образа, куда развёртывание подмонтирует данные:
+  веса моделей, словари OCR. Сборка создаёт точку монтирования, а сами
+  данные приезжают биндом из `[sandbox] binds` файла плагина, как
+  `"${env.models}/tessdata:/usr/share/tessdata"` у `doc`.
 - `root` — каталог-оверлей внутри пакета, копируется поверх корня как есть.
-- `setup` — shell-скрипт внутри пакета, исполняется после apt и `root`.
+- `setup` — shell-скрипт внутри пакета, исполняется после `apt` и `root`.
 
-**Сборка читает декларации не только вашего пакета, но и всех boba-пакетов
-по закрытию зависимостей.** Зависит `boba-tool-doc` от `boba-liteparse` —
-сборка образа doc заберёт `apt`, `data`, `root`, `setup` liteparse тоже.
-Поэтому каждая декларация живёт у настоящего владельца стека: libreoffice
-и tessdata объявляет liteparse, а doc и knowledge про них не знают.
+Сборка читает декларации не только вашего пакета, но и всех boba-пакетов по
+закрытию зависимостей. `boba-tool-doc` зависит от `boba-liteparse`, и образ
+doc получает `apt`, `data`, `root` и `setup` из liteparse. Поэтому каждая
+декларация живёт у владельца стека: libreoffice и tessdata объявляет
+liteparse, а doc про них не знает.
 
-Служебный ключ `guest = true` у `boba-sandbox` помечает пакеты, чей код
-исполняется внутри образа как гость зиготы; обычному плагину не нужен.
+```toml
+[tool.boba.sandbox]
+data  = ["/usr/share/tessdata"]
+apt   = ["imagemagick", "libreoffice-writer", "libreoffice-calc", "ghostscript", "fonts-dejavu-core"]
+root  = "sandbox-root"
+setup = "sandbox-setup.sh"
+```
 
-Живые декларации: `boba-tool-shell` (только `imports`), `boba-tool-doc`
-(`imports = ["liteparse"]`, стек приезжает по закрытию), `boba-liteparse`
-(`apt`, `data`, `root`, `setup`), `boba-llm` (`data` с весами эмбеддера),
-`boba-sandbox` (`guest = true`).
+После правок `boba-toolkit` или `boba-sandbox` образы всех плагинов
+пересобираются (`make plugin-rootfs-all`): гость внутри rootfs отстаёт от
+хоста по протоколу каналов. У chainlit и studio песочницы свои:
+`build/chainlit` и `build/studio`.
 
-После правок `boba-toolkit`/`boba-sandbox` образы обязаны пересобираться
-(`make plugin-rootfs-all`): гость внутри rootfs отстаёт от хоста по
-протоколу каналов. У chainlit и studio песочницы свои: `build/chainlit` и
-`build/studio`.
+### Прогрев зиготы
+
+Если тело на каждом вызове поднимает что-то тяжёлое (модель ONNX, словарь),
+это можно сделать один раз в зиготе, и форки получат результат через
+copy-on-write. Для этого объявляется корутина с декоратором `@warmup` и
+единственным параметром-моделью конфига. Так делает `kb`:
+
+```python
+@warmup
+async def warm_embedder(cfg: KbWarmupConfig) -> None:
+    """Модель ONNX поднимается в зиготе: дети берут её через COW."""
+    embedder = WarmEmbedder.load(cfg.embedding)
+    await embedder.embed_query("warm-up")
+```
+
+Конфиг хука хост собирает из той же секции `[tool.<секция>]` с раскрытыми
+секретами. В режиме `process` прогрев не действует.
 
 ---
 
-## 8. Проверка и отладка
+## 9. Запуск руками и отладка
 
-Установка и обнаружение:
+Тело — обычная программа, и запустить его можно без хоста. Отличие от
+запуска launcher'ом только в том, как передаётся injected: вместо
+дескриптора `--injected-fd` человек даёт файл `--injected`, а результат
+читает из stdout.
+
+| Флаг | Кто передаёт | Зачем |
+|---|---|---|
+| `--injected <файл>` | человек | JSON с injected-параметрами: тот же объект, что launcher шлёт по дескриптору |
+| `--injected-fd <n>` | launcher | дескриптор с тем же JSON |
+| `--fd-result <n>` | launcher | куда писать конверт; без него `content` печатается в stdout |
+| `--fd-frames <n>` | launcher | канал кадров портов |
+| `--artifact` | человек | вдобавок к `content` напечатать JSON артефакта |
+
+Профиль соединения при ручном запуске подаётся тем же файлом, ключом по
+имени параметра:
+
+```bash
+cat > /tmp/redis.json <<'EOF'
+{
+  "source": {"kind": "redis", "host": "redis.corp", "db": 0, "password": "…"},
+  "target": {"kind": "redis", "host": "redis-staging.corp", "db": 0, "password": "…"},
+  "cfg": {"max_rows": 100, "max_bytes": 1000000, "scan_batch": 200}
+}
+EOF
+
+.venv/bin/python -m boba.tool.redis.tools redis_copy \
+    --source cache --target cache-staging --pattern "cache:*" \
+    --injected /tmp/redis.json --artifact
+```
+
+Имена `cache` и `cache-staging` в argv тело не использует: профили берутся
+из файла. Подсказку по флагам инструмента печатает
+`python -m boba.tool.redis.tools redis_copy --help`; в ней только аргументы
+модели, injected-параметры в argv не принимаются.
+
+Профиль с keytab так передать нельзя: дамп упадёт «may not leave the
+application», потому что билет выпускает приложение. Для отладки
+kerberos-соединений в файл подставляется готовая секция `kerberos_ticket`
+либо профиль с паролем.
+
+Injected по toml приложения собирает CLI хоста, и под ним же тело идёт под
+отладчиком (цель «pg_query tool» в `launch.json`):
+
+```bash
+.venv/bin/python -m boba.runtime.toolcli boba.tool.redis.tools redis_scan \
+    --pattern "user:*" --config compose/chainlit/conf/config.toml
+```
+
+Проверка обнаружения плагина после установки:
 
 ```bash
 ./build/chainlit/src/uv/uv sync --all-packages
@@ -1418,60 +1154,42 @@ cd compose/chainlit && BOBA_TOOL_LAUNCHER=process ../../.venv/bin/python -m pyte
     ../../packages/services/boba-runtime/tests/test_plugin_discovery.py -q
 ```
 
-Entry points материализуются установкой: после правки pyproject пакет
-нужно переустановить (`uv sync` либо `pip install --no-deps --force-reinstall -e`).
-
-Тело руками — раздел 2, шаг 8. Под дебаггером — цель `launch.json`
-«pg_query tool» с `boba.runtime.toolcli`: `--config` даёт `[krb]`, `--injected`
-даёт готовый JSON (обязателен для keytab-профилей, раздел 4.12).
-
-Тесты — интеграционные, на реальных зависимостях, по образцу соседей:
-
-- конфиг из toml: `bind(raw_config, "tool.doc", DocToolSection)` и вызов
-  корутины напрямую (`packages/tools/boba-tool-doc/tests/test_run_doc.py`);
-- whitelist вручную: `limits.model_copy(update={"profiles": {"main": service}})`
-  (`packages/tools/boba-tool-postgres/tests/test_run_pg.py`);
-- контракт запуска субпроцессом с JSON injected
-  (`packages/core/boba-toolkit/tests/test_entry.py`);
-- инструмент виден в чате — сценарий в UI-стенде `tests/ui/test_tools_ui.py`.
-
-Полный прогон — по пакетам отдельными pytest-процессами; однопроцессный
-прогон всего набора каскадит.
+Тесты пишутся интеграционными, на реальных зависимостях. Образец теста
+тела, который собирает конфиг из toml и зовёт корутину напрямую, лежит в
+`packages/tools/boba-tool-doc/tests/test_run_doc.py`.
 
 ---
 
-## 9. Куда смотреть, если что-то не так
+## 10. Симптомы и причины
 
-- Тип не появился в `kinds()` — не прогнан `uv sync`, или имя entry point
+- Тип не появился в `kinds()`: не прогнан `uv sync`, или имя entry point
   не совпало с `kind`.
-- Старт падает «conf/plugins/<name>.toml is missing» — плагин установлен,
-  файла в развёртывании нет (в studio тоже).
-- Старт падает «injected parameter 'cfg' has no SECTION on its model» —
+- Старт падает «conf/plugins/<name>.toml is missing»: плагин установлен,
+  файла в развёртывании нет. Проверить и studio.
+- Старт падает «injected parameter 'cfg' has no SECTION on its model»:
   забыт `SECTION: ClassVar[str]`.
-- Старт падает «takes its connections from the connections table» — у
+- Старт падает «takes its connections from the connections table»: у
   инструментов есть параметры-соединения при `[connections] enable = false`.
-- Старт падает «is not a connection profile» или «package is not installed»
-  — параметр с маркером объявлен не моделью профиля либо пакет типа не
-  установлен в этом развёртывании.
-- Тело получает `**********` вместо секрета — модель конфига не наследует
-  `SecretRevealing` (раздел 3.1) либо у поля объявлен свой
-  `field_serializer`, который маскирует.
-- «credentials may not leave the application» — keytab/пароль kerberos
-  дошёл до дампа: профиль не наследует `ConnectionProfileBase`, не
-  реализует `kerberos_section`/`service_name`/`with_call_ticket`, либо это
-  ручной запуск с keytab-профилем (раздел 4.13).
-- «is built in the async body only» — инструмент с соединениями объявлен
+- Старт падает «is not a connection profile» или «package is not
+  installed»: параметр с маркером объявлен не моделью профиля, либо пакет
+  типа не установлен в этом развёртывании.
+- Тело получает `**********` вместо секрета: модель конфига не наследует
+  `SecretRevealing`, либо у поля свой `field_serializer`, который маскирует.
+- «credentials may not leave the application»: keytab или пароль kerberos
+  дошёл до дампа. Профиль не реализует `kerberos_section`,
+  `service_name`, `with_call_ticket`, либо это ручной запуск с
+  keytab-профилем.
+- «is built in the async body only»: инструмент с соединениями объявлен
   `def`, а не `async def`.
-- Соединение есть в таблице, а вызов получает «not available to you» — имя
-  выдано дважды (лично и ролью) и попало в `ambiguous`, либо грант есть, но
-  вид строки не тот, что объявлен типом параметра.
-- Строка соединения с пометкой «type not installed» — пакет типа не
-  установлен в этом развёртывании.
-- Зигота секции не поднимается в контейнере — образ плагина не собран или
-  собран до правок деклараций: `make plugin-rootfs PLUGIN=<пакет>`.
-- «control closed on call …» или смерть зиготы на первом вызове — гость в
-  rootfs отстал от хоста: `make plugin-rootfs-all` для обеих сборок.
-- Тело не видит сеть — нет `network = true` или биндов `resolv.conf`/`hosts`.
-- «inbound frame does not match the declared port» — источник шлёт kind
-  вне декларации входа; «raw and framed ports do not mix» — кадровый выход
+- Соединение есть в таблице, а вызов получает «not available to you»: имя
+  выдано дважды и попало в неоднозначные, либо вид строки не тот, что
+  объявлен типом параметра.
+- Зигота секции не поднимается: образ плагина не собран или собран до
+  правок деклараций, `make plugin-rootfs PLUGIN=<пакет>`.
+- «control closed on call» или смерть зиготы на первом вызове: гость в
+  rootfs отстал от хоста, `make plugin-rootfs-all` для обеих сборок.
+- Тело не видит сеть: нет `network = true` или биндов `resolv.conf` и
+  `hosts`.
+- «inbound frame does not match the declared port»: источник шлёт `kind`
+  вне объявления входа. «raw and framed ports do not mix»: кадровый выход
   соединили с сырым входом.

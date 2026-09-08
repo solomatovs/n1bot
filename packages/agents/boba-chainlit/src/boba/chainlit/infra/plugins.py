@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from langchain_core.tools import BaseTool
 from omegaconf import DictConfig
 
 from boba.access import GrantCheck
@@ -15,7 +14,7 @@ from boba.chainlit.canvas.stream_logs import build_stream_logs_tools
 from boba.chainlit.canvas.tools import CanvasToolConfig, build_canvas_tools
 from boba.runtime.plugins import CoreTools, ToolLoader, ToolPlugin
 from boba.runtime.refs import RuntimeRefs
-from boba.toolkit.launcher import LauncherFactory
+from boba.toolkit.facade import PayloadTool
 from boba.toolrun.registry import ToolRegistry
 
 __all__ = ["ChatPlugins"]
@@ -68,17 +67,17 @@ class ChatPlugins:
         return table
 
     @staticmethod
-    def _send_file(cfg: None, launchers: LauncherFactory) -> list[BaseTool]:
+    def _send_file(cfg: None) -> list[PayloadTool]:
         return [build_send_file_tool()]
 
     @staticmethod
-    def _diagram(cfg: DiagramToolConfig, launchers: LauncherFactory) -> list[BaseTool]:
+    def _diagram(cfg: DiagramToolConfig) -> list[PayloadTool]:
         return build_diagram_tools(cfg)
 
     @staticmethod
-    def _canvas(cfg: CanvasToolConfig, launchers: LauncherFactory) -> list[BaseTool]:
+    def _canvas(cfg: CanvasToolConfig) -> list[PayloadTool]:
         return build_canvas_tools(cfg)
 
     @staticmethod
-    def _stream_logs(cfg: None, launchers: LauncherFactory) -> list[BaseTool]:
+    def _stream_logs(cfg: None) -> list[PayloadTool]:
         return build_stream_logs_tools(cfg)

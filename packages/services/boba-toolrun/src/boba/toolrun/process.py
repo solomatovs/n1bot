@@ -42,7 +42,6 @@ from boba.toolkit.launcher import (
     ChannelTail,
     EnvelopeReply,
     LauncherError,
-    LaunchOutcome,
     RunResult,
     ToolCall,
     ToolLauncher,
@@ -53,7 +52,6 @@ from boba.toolkit.pump import (
     CallInput,
     CallSinks,
     ChannelPump,
-    OpenRun,
     PipePlumbing,
     PumpedCall,
 )
@@ -85,11 +83,6 @@ class ProcessLauncherConfig(BaseModel):
         description="Рабочий каталог tool-процессов; файлы инструментов пишутся сюда.",
     )
 
-    shell: str = Field(
-        min_length=1,
-        description="Шелл для текстовых команд (bash-инструмент).",
-    )
-
     timeout_sec: float = Field(gt=0, description="Потолок времени одного вызова.")
 
     channel_limit_bytes: int = Field(
@@ -115,25 +108,14 @@ class _CallPipes:
     Субпроцесс даёт из коробки только stdin/stdout/stderr — остальные
     каналы открываются здесь. Дескрипторы тела наследуются с теми же
     номерами (pass_fds), и эти номера дописываются в команду флагами
-    --fd-result/--fd-frames/--injected-fd (argv_flags). У shell-команды
-    пайпов модуля нет вовсе — все методы пусты.
+    --fd-result/--fd-frames/--injected-fd (argv_flags).
     """
 
-    def __init__(self, *, module: bool) -> None:
-        self._module = module
-        self._child_open = module
+    def __init__(self) -> None:
+        self._host_open = True
+        self._child_open = True
         self._injected_taken = False
         self._frames_taken = False
-
-        self.result_r = -1
-        self.result_w = -1
-        self.frames_r = -1
-        self.frames_w = -1
-        self.injected_r = -1
-        self.injected_w = -1
-
-        if not module:
-            return
 
         self.result_r, self.result_w = os.pipe()
         self.frames_r, self.frames_w = os.pipe()
@@ -142,9 +124,6 @@ class _CallPipes:
 
     def argv_flags(self) -> tuple[str, ...]:
         """Флаги каналов для команды тела: номера унаследованных дескрипторов."""
-        if not self._module:
-            return ()
-
         return (
             EntryFlag.FD_RESULT.value,
             str(self.result_w),
@@ -155,20 +134,10 @@ class _CallPipes:
         )
 
     def child_fds(self) -> tuple[int, ...]:
-        if not self._module:
-            return ()
-
         return (self.result_w, self.frames_w, self.injected_r)
 
     def take_injected(self) -> int:
         """Отдать канал конфига писателю: закрытия каналов его не трогают."""
-        if not self._module:
-            msg = (
-                "process call pipes: the injected channel was asked for a "
-                "non-module call that has no such channel"
-            )
-            raise LauncherError(msg)
-
         if self._injected_taken:
             msg = (
                 "process call pipes: the injected channel was already taken "
@@ -182,13 +151,6 @@ class _CallPipes:
     def take_frames(self) -> int:
         """Отдать канал кадров перекачке: насос его не читает, закрытия
         каналов его не трогают; владеет дескриптором перекачка."""
-        if not self._module:
-            msg = (
-                "process call pipes: the frames channel was asked for a "
-                "non-module call that has no such channel"
-            )
-            raise LauncherError(msg)
-
         if self._frames_taken:
             msg = (
                 "process call pipes: the frames channel was already taken "
@@ -200,9 +162,6 @@ class _CallPipes:
         return self.frames_r
 
     def host_reads(self) -> tuple[tuple[ToolChannel, int], ...]:
-        if not self._module:
-            return ()
-
         reads: list[tuple[ToolChannel, int]] = [(ToolChannel.RESULT, self.result_r)]
 
         if not self._frames_taken:
@@ -220,10 +179,10 @@ class _CallPipes:
                 os.close(fd)
 
     def close_host_ends(self) -> None:
-        if not self._module:
+        if not self._host_open:
             return
 
-        self._module = False
+        self._host_open = False
         with suppress(OSError):
             os.close(self.result_r)
 
@@ -292,9 +251,8 @@ class _ProcessPump(ChannelPump):
 class ProcessToolCaller(ToolLauncher):
     """Реализация протокола ToolLauncher субпроцессом хоста.
 
-    open() спавнит тело и отдаёт PumpedCall для потокового вызова;
-    call_text() исполняет shell-команду через тот же OpenRun. Создаётся
-    фабрикой лончеров по одному на инструмент (имя идёт в логи).
+    open() спавнит тело и отдаёт PumpedCall для потокового вызова.
+    Создаётся фабрикой лончеров по одному на инструмент (имя идёт в логи).
     """
 
     ARGV_HEAD: ClassVar[int] = 3
@@ -309,12 +267,6 @@ class ProcessToolCaller(ToolLauncher):
         ToolChannel.FRAMES,
     )
     """Каналы вызова модуля, попадающие в журнал при поставленном тапе."""
-
-    SHELL_JOURNAL: ClassVar[tuple[ToolChannel, ...]] = (
-        ToolChannel.STDOUT,
-        ToolChannel.STDERR,
-    )
-    """Каналы shell-команды: конверта и кадров у неё нет."""
 
     def __init__(self, tool: str, cfg: ProcessLauncherConfig) -> None:
         self._tool = tool
@@ -360,7 +312,7 @@ class ProcessToolCaller(ToolLauncher):
 
         sinks = CallSinks.merged(own, tuple(journal))
 
-        live = self._spawn(argv, with_result=True)
+        live = self._spawn(argv)
 
         frames_fd = -1
         if tap:
@@ -394,56 +346,6 @@ class ProcessToolCaller(ToolLauncher):
         config_input.finish()
 
         return call, frames_fd
-
-    def call_text(self, command: str, stdin: str) -> LaunchOutcome:
-        """Shell-команда на хосте: stdout/stderr/rc как есть."""
-        limit = self._cfg.channel_limit_bytes
-        stdout = CappedChannel(limit, ToolChannel.STDOUT.value)
-        stderr = CappedChannel(limit, ToolChannel.STDERR.value)
-
-        own: dict[ToolChannel, ChunkSink] = {
-            ToolChannel.STDOUT: stdout.feed,
-            ToolChannel.STDERR: stderr.feed,
-        }
-        sinks = CallSinks.merged(own, self.SHELL_JOURNAL)
-
-        argv = (self._cfg.shell, "-c", command)
-        live = self._spawn(argv, with_result=False)
-        entry = CallInput(live.stdin_w)
-
-        def pump_run(cancellation: RunCancellation) -> _ProcRun:
-            return self._pump_live(live, sinks, cancellation)
-
-        try:
-            opened = OpenRun(self._tool, entry, pump_run)
-        except BaseException:
-            # ход уже отменён: насос не родился, прибираем процесс сами
-            entry.abandon()
-            self._kill(live.proc)
-            live.proc.wait()
-            live.channels.close_host_ends()
-            self._close_pipes(live.proc)
-            raise
-
-        entry.send_bytes(stdin.encode("utf-8"))
-        entry.finish()
-
-        outcome = opened.wait()
-
-        run = RunResult(
-            exit_code=outcome.exit_code,
-            stdout=stdout.text(),
-            stderr=stderr.text(),
-            duration_ms=outcome.duration_ms,
-            timed_out=outcome.timed_out,
-            spawn_ms=outcome.spawn_ms,
-            first_output_ms=outcome.first_output_ms,
-        )
-
-        if run.exit_code != 0:
-            self.log_failure(run)
-
-        return LaunchOutcome(self._tool, run, "")
 
     def log_failure(self, run: RunResult) -> None:
         logger.warning(
@@ -487,7 +389,7 @@ class ProcessToolCaller(ToolLauncher):
         scoped.mkdir(parents=True, exist_ok=True)
         return str(scoped)
 
-    def _spawn(self, argv: Sequence[str], *, with_result: bool) -> _LiveCall:
+    def _spawn(self, argv: Sequence[str]) -> _LiveCall:
         """Запустить тело с каналами; спавн идёт в потоке вызывающего.
 
         Здесь же снимаются контексты вызова (workdir области, журнальный тап):
@@ -495,7 +397,7 @@ class ProcessToolCaller(ToolLauncher):
         """
         workdir = self._call_workdir()
 
-        channels = _CallPipes(module=with_result)
+        channels = _CallPipes()
         stdin_r, stdin_w = os.pipe()
         PipePlumbing.widen(stdin_w)
 

@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 import pytest
@@ -34,9 +36,8 @@ from boba.stand.context import use_context
 from boba.studio.catalog.tools import CatalogTools
 from boba.toolkit.result import (
     ErrorResult,
-    JsonResult,
+    MarkdownResult,
     TableResult,
-    TextResult,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -85,33 +86,42 @@ def _operations(process: ProcessSample) -> str:
     return ops.model_dump_json()
 
 
+def _payload(result: MarkdownResult) -> Any:
+    """JSON-текст результата обратно в структуру для проверок."""
+    return json.loads(result.text)
+
+
 async def test_read_lists_processes_and_reads_an_empty_one(
     tools: CatalogTools, editor: Subject, service: CatalogService
 ) -> None:
-    _, none = await tools.read("", "")
-    assert isinstance(none, TextResult)
+    none = await tools.read("", "")
+    assert isinstance(none, MarkdownResult)
     assert "no processes yet" in none.text
 
     created = await service.create_process(
         editor, ProcessSpec(name="orders", description="sales")
     )
-    _, listed = await tools.read("", "")
+    listed = await tools.read("", "")
     assert isinstance(listed, TableResult)
     assert listed.rows[0]["process_id"] == str(created.id)
     assert listed.rows[0]["name"] == "orders"
     assert listed.rows[0]["nodes"] == 0
 
-    _, result = await tools.read("orders", "")
-    assert isinstance(result, JsonResult)
-    assert result.payload["process"] == "orders"
-    assert result.payload["version"] == 0
-    assert result.payload["nodes"] == []
+    result = await tools.read("orders", "")
+    assert isinstance(result, MarkdownResult)
 
-    _, by_id = await tools.read(str(created.id), "")
-    assert isinstance(by_id, JsonResult)
-    assert by_id.payload["process_id"] == str(created.id)
+    result_json = _payload(result)
+    assert result_json["process"] == "orders"
+    assert result_json["version"] == 0
+    assert result_json["nodes"] == []
 
-    _, missing = await tools.read("nowhere", "")
+    by_id = await tools.read(str(created.id), "")
+    assert isinstance(by_id, MarkdownResult)
+
+    by_id_json = _payload(by_id)
+    assert by_id_json["process_id"] == str(created.id)
+
+    missing = await tools.read("nowhere", "")
     assert isinstance(missing, ErrorResult)
     assert missing.error_kind == "catalog_bad_id"
 
@@ -119,37 +129,38 @@ async def test_read_lists_processes_and_reads_an_empty_one(
 async def test_draft_propose_diff_open(
     tools: CatalogTools, editor: Subject, process: ProcessSample
 ) -> None:
-    _, listed = await tools.draft("orders", "")
-    assert isinstance(listed, TextResult)
+    listed = await tools.draft("orders", "")
+    assert isinstance(listed, MarkdownResult)
     assert "no open drafts" in listed.text
 
-    _, created = await tools.draft("orders", "first")
-    assert isinstance(created, TextResult)
+    created = await tools.draft("orders", "first")
+    assert isinstance(created, MarkdownResult)
     draft_id = created.metadata["draft_id"]
     assert "draft created" in created.text
     assert "process 'orders'" in created.text
 
-    _, table = await tools.draft("orders", " ")
+    table = await tools.draft("orders", " ")
     assert isinstance(table, TableResult)
     assert [row["draft_id"] for row in table.rows] == [draft_id]
 
-    _, proposed = await tools.propose(draft_id, _operations(process))
-    assert isinstance(proposed, TextResult)
+    proposed = await tools.propose(draft_id, _operations(process))
+    assert isinstance(proposed, MarkdownResult)
     assert proposed.metadata["seq"] == "1"
     assert "added group 'raw'" in proposed.text
     assert f"added node '{process.orders.ref.render()}'" in proposed.text
 
-    _, diff = await tools.diff(draft_id)
-    assert isinstance(diff, TextResult)
+    diff = await tools.diff(draft_id)
+    assert isinstance(diff, MarkdownResult)
     assert "at seq 1 over version 0: 2 change(s)" in diff.text
 
-    _, rejected = await tools.propose(draft_id, _operations(process))
+    rejected = await tools.propose(draft_id, _operations(process))
     assert isinstance(rejected, ErrorResult)
     assert rejected.error_kind == "catalog_operation_rejected"
     assert "operation #0 (add_group) was rejected" in rejected.message
 
-    content, link = await tools.open("draft", draft_id)
-    assert isinstance(link, TextResult)
+    link = await tools.open("draft", draft_id)
+    content = link.llm_view()
+    assert isinstance(link, MarkdownResult)
     assert link.metadata["url"] == f"{PREFIX}/catalog/drafts/{draft_id}"
     assert link.metadata["label"] == "first"
     assert f"{PREFIX}/catalog/drafts/{draft_id}" in content
@@ -160,22 +171,22 @@ async def test_draft_of_a_new_process_is_listed_and_named_by_the_tool(
 ) -> None:
     """Пустой process заводит черновик нового процесса; пустое имя без
     процесса перечисляет все свои черновики, с процессом — только его."""
-    _, created = await tools.draft("", "refunds")
-    assert isinstance(created, TextResult)
+    created = await tools.draft("", "refunds")
+    assert isinstance(created, MarkdownResult)
     assert "of a new process" in created.text
     draft_id = created.metadata["draft_id"]
 
-    _, mine = await tools.draft("", "")
+    mine = await tools.draft("", "")
     assert isinstance(mine, TableResult)
     assert [row["draft_id"] for row in mine.rows] == [draft_id]
     assert mine.rows[0]["process_id"] == ""
 
-    _, of_orders = await tools.draft("orders", "")
-    assert isinstance(of_orders, TextResult)
+    of_orders = await tools.draft("orders", "")
+    assert isinstance(of_orders, MarkdownResult)
     assert "no open drafts" in of_orders.text
 
-    _, proposed = await tools.propose(draft_id, _operations(process))
-    assert isinstance(proposed, TextResult)
+    proposed = await tools.propose(draft_id, _operations(process))
+    assert isinstance(proposed, MarkdownResult)
     assert "over version 0" in proposed.text
 
 
@@ -188,23 +199,25 @@ async def test_read_slice_with_neighbours(
     """Срез по узлу orders тянет v_orders по потоку и clients как второго
     соседа v_orders, колонки берутся из привязанной версии источника,
     неизвестная подпись возвращается списком."""
-    _, created = await tools.draft("orders", "seed")
-    assert isinstance(created, TextResult)
+    created = await tools.draft("orders", "seed")
+    assert isinstance(created, MarkdownResult)
     draft_id = created.metadata["draft_id"]
     await tools.propose(draft_id, process.ops().model_dump_json())
 
     await service.publish(editor, UUID(draft_id), AuthorVia.USER)
 
-    _, sliced = await tools.read("orders", "orders, missing")
-    assert isinstance(sliced, JsonResult)
-    assert sliced.payload["version"] == 1
-    assert sliced.payload["pins"] == {str(process.connection_id): 1}
-    assert {n["label"] for n in sliced.payload["nodes"]} == {
+    sliced = await tools.read("orders", "orders, missing")
+    assert isinstance(sliced, MarkdownResult)
+
+    sliced_json = _payload(sliced)
+    assert sliced_json["version"] == 1
+    assert sliced_json["pins"] == {str(process.connection_id): 1}
+    assert {n["label"] for n in sliced_json["nodes"]} == {
         process.orders.label,
         process.v_orders.label,
         process.customers.label,
     }
-    by_label = {n["label"]: n for n in sliced.payload["nodes"]}
+    by_label = {n["label"]: n for n in sliced_json["nodes"]}
     assert by_label[process.orders.label]["group"] == "raw"
     assert by_label[process.orders.label]["position"] == {"x": 0.0, "y": 0.0}
     assert by_label[process.v_orders.label]["group_id"] == str(process.dm.id)
@@ -213,34 +226,34 @@ async def test_read_slice_with_neighbours(
         "amount",
         "created_at",
     ]
-    assert len(sliced.payload["flows"]) == 2
-    flows = {f["from_node"]: f for f in sliced.payload["flows"]}
+    assert len(sliced_json["flows"]) == 2
+    flows = {f["from_node"]: f for f in sliced_json["flows"]}
     assert flows[process.orders.label]["columns"] == [
         {"from_column": "id", "to_column": "id"},
         {"from_column": "amount", "to_column": "id"},
     ]
-    assert sliced.payload["unknown_nodes"] == ["missing"]
+    assert sliced_json["unknown_nodes"] == ["missing"]
 
 
 async def test_bad_inputs_are_error_results(
     tools: CatalogTools, editor: Subject, process: ProcessSample
 ) -> None:
-    _, bad_id = await tools.diff("not-a-uuid")
+    bad_id = await tools.diff("not-a-uuid")
     assert isinstance(bad_id, ErrorResult)
     assert bad_id.error_kind == "catalog_bad_id"
 
-    _, missing = await tools.diff(str(UUID(int=404)))
+    missing = await tools.diff(str(UUID(int=404)))
     assert isinstance(missing, ErrorResult)
     assert missing.error_kind == "catalog_not_found"
 
-    _, created = await tools.draft("orders", "bad ops")
-    assert isinstance(created, TextResult)
+    created = await tools.draft("orders", "bad ops")
+    assert isinstance(created, MarkdownResult)
     bad_ops = '[{"op": "nope"}]'
-    _, malformed = await tools.propose(created.metadata["draft_id"], bad_ops)
+    malformed = await tools.propose(created.metadata["draft_id"], bad_ops)
     assert isinstance(malformed, ErrorResult)
     assert malformed.error_kind == "catalog_bad_operations"
 
-    _, wrong_kind = await tools.open("page", str(UUID(int=1)))
+    wrong_kind = await tools.open("page", str(UUID(int=1)))
     assert isinstance(wrong_kind, ErrorResult)
     assert wrong_kind.error_kind == "catalog_bad_id"
 
@@ -253,13 +266,13 @@ async def test_process_link_and_role_refusal(
 ) -> None:
     created = await service.create_process(editor, ProcessSpec(name="all"))
 
-    _, link = await tools.open("process", str(created.id))
-    assert isinstance(link, TextResult)
+    link = await tools.open("process", str(created.id))
+    assert isinstance(link, MarkdownResult)
     assert link.metadata["url"] == f"{PREFIX}/catalog/processes/{created.id}"
     assert link.metadata["label"] == "all"
 
     use_context(monkeypatch, thread_id="other-thread", user_id=UUID(int=99), roles=())
-    _, refused = await tools.read("", "")
+    refused = await tools.read("", "")
     assert isinstance(refused, ErrorResult)
     assert refused.error_kind == "catalog_view_forbidden"
 
@@ -299,33 +312,41 @@ async def test_upgrade_by_name_id_or_everything(
     await service.append_ops(editor, draft.id, 0, process.ops(), AuthorVia.USER)
     published = await service.publish(editor, draft.id, AuthorVia.USER)
 
-    _, same = await tools.upgrade("flows")
-    assert isinstance(same, JsonResult), same
-    assert same.payload["run"]["status"] == "done"
-    assert same.payload["run"]["target"] == "process"
-    assert (same.payload["run"]["moved"], same.payload["run"]["blocked"]) == (1, 0)
-    assert same.payload["upgrades"] == []
+    same = await tools.upgrade("flows")
+    assert isinstance(same, MarkdownResult), same
 
-    _, nothing = await tools.upgrade("")
-    assert isinstance(nothing, JsonResult)
-    assert nothing.payload["run"]["total"] == 0
+    same_json = _payload(same)
+    assert same_json["run"]["status"] == "done"
+    assert same_json["run"]["target"] == "process"
+    assert (same_json["run"]["moved"], same_json["run"]["blocked"]) == (1, 0)
+    assert same_json["upgrades"] == []
+
+    nothing = await tools.upgrade("")
+    assert isinstance(nothing, MarkdownResult)
+
+    nothing_json = _payload(nothing)
+    assert nothing_json["run"]["total"] == 0
 
     await service.write_connection_version(
         editor, PG_CONNECTION.id, PgSample().next_version()
     )
-    _, blocked = await tools.upgrade(str(published.process_id))
-    assert isinstance(blocked, JsonResult), blocked
-    result = blocked.payload["upgrades"][0]
+    blocked = await tools.upgrade(str(published.process_id))
+    assert isinstance(blocked, MarkdownResult), blocked
+
+    blocked_json = _payload(blocked)
+    result = blocked_json["upgrades"][0]
     assert result["status"] == "blocked"
     reasons = {problem["reason"] for problem in result["problems"]}
     assert reasons == {"object_removed"}
 
-    _, everything = await tools.upgrade("")
-    assert isinstance(everything, JsonResult)
-    run = everything.payload["run"]
+    everything = await tools.upgrade("")
+    assert isinstance(everything, MarkdownResult)
+
+    everything_json = _payload(everything)
+    run = everything_json["run"]
     assert (run["moved"], run["blocked"]) == (0, 1)
 
-    _, empty = await tools.upgrade("orders")
+    empty = await tools.upgrade("orders")
     assert isinstance(empty, ErrorResult)
     assert "no published versions" in empty.message
 
@@ -336,20 +357,24 @@ async def test_sync_by_connection_name_or_id(
     """Подключение по имени или id; ответ — запись синхронизации с номером
     версии; сорвавшаяся синхронизация — ErrorResult с причиной; неизвестное
     имя — отказ с текстом."""
-    _, done = await sync_tools.sync("prod-pg", "")
-    assert isinstance(done, JsonResult), done
-    assert done.payload["status"] == "done"
-    assert done.payload["version"] == 1
-    assert done.payload["connection_name"] == "prod-pg"
+    done = await sync_tools.sync("prod-pg", "")
+    assert isinstance(done, MarkdownResult), done
 
-    _, failed = await sync_tools.sync(str(CONNECTION_ID), "crash")
+    done_json = _payload(done)
+    assert done_json["status"] == "done"
+    assert done_json["version"] == 1
+    assert done_json["connection_name"] == "prod-pg"
+
+    failed = await sync_tools.sync(str(CONNECTION_ID), "crash")
     assert isinstance(failed, ErrorResult)
     assert "crashed on purpose" in failed.message
 
-    _, replica = await sync_tools.sync("prod-replica", "")
-    assert isinstance(replica, JsonResult), replica
-    assert replica.payload["connection_id"] == str(SPARE_CONNECTION.id)
+    replica = await sync_tools.sync("prod-replica", "")
+    assert isinstance(replica, MarkdownResult), replica
 
-    _, missing = await sync_tools.sync("nowhere", "")
+    replica_json = _payload(replica)
+    assert replica_json["connection_id"] == str(SPARE_CONNECTION.id)
+
+    missing = await sync_tools.sync("nowhere", "")
     assert isinstance(missing, ErrorResult)
     assert "expected a uuid id" in missing.message

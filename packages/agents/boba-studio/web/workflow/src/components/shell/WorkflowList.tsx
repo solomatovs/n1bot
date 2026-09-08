@@ -8,7 +8,24 @@ import { runsOfWorkflow } from "../../hooks/useShellData";
 import { renderSpecText } from "../../model/spec";
 import { formatAgo, formatDuration } from "../../model/time";
 import type { Initiator, StoredRun, StoredWorkflow } from "../../model/workflow";
-import { Chip, EmptyState, Eyebrow, ItemRow, useToast } from "../../ui";
+import {
+  Chip,
+  EmptyState,
+  Eyebrow,
+  IconButton,
+  List,
+  ListAction,
+  ListLink,
+  ListMeta,
+  ListName,
+  ListRow,
+  PaneBar,
+  PaneBody,
+  Search,
+  StatusDot,
+  useToast,
+} from "../../ui";
+import { ChevronDown, ChevronRight } from "lucide-react";
 
 type Props = {
   workflows: StoredWorkflow[];
@@ -131,61 +148,63 @@ export function WorkflowList({
 
   return (
     <>
-      <div className="list__head">
+      <PaneBar>
         <Eyebrow>Workflows</Eyebrow>
-        <span className="list__count">{workflows.length}</span>
-      </div>
-      <input
-        className="list__filter"
-        placeholder="filter workflows…"
-        value={filter}
-        onChange={(event) => {
-          setFilter(event.target.value);
-        }}
-        aria-label="filter workflows"
-      />
-      <div className="list__scroll">
-        <button type="button" className="list__new" onClick={() => void create()}>
+        <Search value={filter} onChange={setFilter} label="filter workflows" placeholder="filter workflows…" />
+      </PaneBar>
+      <PaneBody>
+        <ListAction onClick={() => void create()} mark="new-workflow">
           + New workflow
-        </button>
+        </ListAction>
         {shown.length === 0 && <EmptyState>No workflows in this filter.</EmptyState>}
-        {shown.map((item) => {
-          const own = runsOfWorkflow(runs, item.id);
-          const opened = expanded.has(item.id);
-          return (
-            <div key={item.id}>
-              <ItemRow
-                href={PageUrls.workflow(item.id)}
-                selected={item.id === selectedWorkflow}
-                toggle={{
-                  expanded: opened,
-                  label: `runs of ${item.name}`,
-                  onToggle: () => {
+        <List kind="nav" mark="workflow-list">
+          {shown.flatMap((item) => {
+            const own = runsOfWorkflow(runs, item.id);
+            const opened = expanded.has(item.id);
+            const rows: ReactElement[] = [
+              <ListRow key={item.id} active={item.id === selectedWorkflow} data-workflow={item.name}>
+                <IconButton
+                  size="sm"
+                  ghost
+                  aria-label={`runs of ${item.name}`}
+                  aria-expanded={opened}
+                  data-testid="runs-toggle"
+                  onClick={() => {
                     toggle(item.id);
-                  },
-                }}
-                name={item.name}
-                pills={
-                  <>
+                  }}
+                >
+                  {opened ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                </IconButton>
+                <ListLink to={PageUrls.workflow(item.id)} onClick={onPick}>
+                  <ListName>{item.name}</ListName>
+                  <ListMeta>
                     {item.draft_spec !== null && <Chip tone="draft">draft</Chip>}
                     {item.tools.map((tool) => (
                       <Chip key={tool}>{tool}</Chip>
                     ))}
                     <Chip tone="muted">{own.length} runs</Chip>
                     {own[0] !== undefined && <Chip tone="muted">{formatAgo(own[0].started_at)}</Chip>}
-                  </>
-                }
-                onClick={onPick}
-              />
-              {opened && own.length === 0 && <EmptyState sub>No runs yet.</EmptyState>}
-              {opened &&
-                own.map((run) => (
-                  <RunItem key={run.id} run={run} selected={run.id === selectedRun} onPick={onPick} />
-                ))}
-            </div>
-          );
-        })}
-      </div>
+                  </ListMeta>
+                </ListLink>
+              </ListRow>,
+            ];
+            if (opened && own.length === 0) {
+              rows.push(
+                <ListRow key={`${item.id}:empty`} nested>
+                  <ListMeta>No runs yet.</ListMeta>
+                </ListRow>,
+              );
+            }
+            if (opened) {
+              for (const run of own) {
+                rows.push(<RunItem key={run.id} run={run} selected={run.id === selectedRun} onPick={onPick} />);
+              }
+            }
+
+            return rows;
+          })}
+        </List>
+      </PaneBody>
     </>
   );
 }
@@ -201,25 +220,21 @@ function RunItem({
 }): ReactElement {
   const failed = failedCount(run);
   return (
-    <ItemRow
-      href={PageUrls.run(run.id)}
-      sub
-      selected={selected}
-      status={run.status}
-      onClick={onPick}
-      meta={
-        <>
+    <ListRow nested active={selected} status={run.status} data-run={run.id}>
+      <StatusDot status={run.status} />
+      <ListLink to={PageUrls.run(run.id)} onClick={onPick}>
+        <ListMeta>
           <span>{taskCount(run)} tasks</span>
           <span>{describeInitiator(run.initiator)}</span>
           <span>{formatAgo(run.started_at)}</span>
           <span>{formatDuration(run.started_at, run.finished_at)}</span>
           {failed > 0 && (
-            <span className="is-error">
+            <Chip tone="error">
               failed {failed}/{taskCount(run)}
-            </span>
+            </Chip>
           )}
-        </>
-      }
-    />
+        </ListMeta>
+      </ListLink>
+    </ListRow>
   );
 }

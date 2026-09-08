@@ -22,6 +22,7 @@ from boba.sandbox import (
 )
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
 from boba.stand.sandbox import needs_sandbox, needs_userns, sandbox_profile
+from boba.stand.shell import ShellRun
 from boba.toolkit.launcher import CollectedCall, LauncherError, ToolOutcome
 from boba.toolkit.protocol import ReplyError, ReplyOk, ToolCommand
 
@@ -168,7 +169,8 @@ class TestDocumentsInSandbox:
             raise AssertionError('"Alpha" in reply.content')
 
     def test_small_address_space_is_reported(self, docs: Path) -> None:
-        """Заниженный RLIMIT_AS ломает pdfium — ошибка должна это объяснить."""
+        """Заниженный RLIMIT_AS ломает pdfium: тело умирает своим кодом без
+        конверта, и ошибка несёт его stderr — лаунчер вывод не толкует."""
         caller = _caller(docs, process_memory_bytes=512 * 1024 * 1024)
 
         # конкретный класс задаёт исполнитель; контракт слоя — LauncherError
@@ -181,11 +183,11 @@ class TestDocumentsInSandbox:
             )
 
         message = str(failure.value)
-        if "RLIMIT_AS" not in message:
-            raise AssertionError(
-                "падение по адресному пространству должно объясняться словами, "
-                f"а не паникой rust: {message}"
-            )
+        if "no envelope" not in message:
+            raise AssertionError(f"смерть тела без конверта не названа: {message}")
+
+        if "pdfium" not in message:
+            raise AssertionError(f"stderr тела не в ошибке: {message}")
 
     def test_ocr_without_tessdata_is_reported(self, docs: Path) -> None:
         """Без моделей OCR liteparse пошёл бы в сеть; сети в песочнице нет."""
@@ -308,14 +310,14 @@ class TestRootfsContents:
         supervisor = ZygoteRegistry.obtain("rootfs-test", profile, (), ZYGOTE)
         caller = ZygoteToolCaller("rootfs-test", supervisor, profile)
         try:
-            outcome = caller.call_text(f"python3 -c 'import {module}'", stdin="")
+            outcome = ShellRun.call_text(caller, f"python3 -c 'import {module}'")
         finally:
             ZygoteRegistry.stop_all()
 
-        if outcome.result.exit_code != 0:
+        if outcome.exit_code != 0:
             raise AssertionError(
                 f"в песочнице нет {module}: пересобери — make fetch sandbox "
-                f"(stderr: {outcome.result.stderr.strip()})"
+                f"(stderr: {outcome.stderr.strip()})"
             )
 
 
@@ -334,13 +336,13 @@ class TestEmbedderInSandbox:
         supervisor = ZygoteRegistry.obtain("kb-test", profile, (), ZYGOTE)
         caller = ZygoteToolCaller("kb-test", supervisor, profile)
         try:
-            outcome = caller.call_text(
-                f"test -d {self.WEIGHTS} && ls {self.WEIGHTS}", stdin=""
+            outcome = ShellRun.call_text(
+                caller, f"test -d {self.WEIGHTS} && ls {self.WEIGHTS}"
             )
         finally:
             ZygoteRegistry.stop_all()
 
-        if outcome.result.exit_code != 0:
+        if outcome.exit_code != 0:
             raise AssertionError(f"нет весов {self.WEIGHTS}: скачай — make fetch")
-        if not (outcome.result.stdout.strip()):
-            raise AssertionError("outcome.result.stdout.strip()")
+        if not (outcome.stdout.strip()):
+            raise AssertionError("outcome.stdout.strip()")

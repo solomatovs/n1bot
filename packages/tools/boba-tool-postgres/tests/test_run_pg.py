@@ -44,7 +44,9 @@ async def test_run_pg_query(pg_cfg: PgToolConfig, connection: PostgresConfig) ->
     if body is None:
         raise AssertionError("body is not None")
 
-    content, artifact = await body(connection=connection, sql=RunArgs.SQL, cfg=pg_cfg)
+    artifact = await body(connection=connection, sql=RunArgs.SQL, cfg=pg_cfg)
+
+    content = artifact.llm_view()
 
     print(content)
     print(artifact)
@@ -57,15 +59,17 @@ async def test_run_pg_list_tables(
     if body is None:
         raise AssertionError("body is not None")
 
-    content, _artifact = await body(
-        connection=connection,
-        pg_schema="public",
-        table_pattern=None,
-        offset=0,
-        max_rows=50,
-        max_chars=20000,
-        cfg=pg_cfg,
-    )
+    content = (
+        await body(
+            connection=connection,
+            pg_schema="public",
+            table_pattern=None,
+            offset=0,
+            max_rows=50,
+            max_chars=20000,
+            cfg=pg_cfg,
+        )
+    ).llm_view()
 
     print(content)
 
@@ -75,8 +79,8 @@ async def test_run_pg_copy(pg_cfg: PgToolConfig, connection: PostgresConfig) -> 
     if body is None:
         raise AssertionError("body is not None")
 
-    content, _artifact = await body(
-        connection=connection, sql=RunArgs.COPY_SQL, cfg=pg_cfg
-    )
+    content = (
+        await body(connection=connection, sql=RunArgs.COPY_SQL, cfg=pg_cfg)
+    ).llm_view()
 
     print(content)

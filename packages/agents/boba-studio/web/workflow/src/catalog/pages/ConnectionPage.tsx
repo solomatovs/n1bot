@@ -187,7 +187,7 @@ function ConnectionView({ connectionId }: { connectionId: string }): ReactElemen
       <Page mark="connection-page" data-connection={name} data-version={version} data-can-edit={access.can_edit}>
         <Topbar>
           <TopbarLink to={PageUrls.catalog.home()}>catalog</TopbarLink>
-          <TopbarLink to={PageUrls.catalog.connections()}>connections</TopbarLink>
+          <TopbarLink to={PageUrls.connections()}>connections</TopbarLink>
           <TopbarTitle>{name}</TopbarTitle>
           <Chip tone="muted">{kind}</Chip>
           {view === null && <Chip tone="muted">not yours</Chip>}
@@ -271,7 +271,7 @@ function ConnectionView({ connectionId }: { connectionId: string }): ReactElemen
             />
           )}
         </PageNotices>
-        <PageBody pane={true} detail={false}>
+        <PageBody>
           <Pane>
             {versions.length === 0 ? (
               <EmptyState title="no versions yet">

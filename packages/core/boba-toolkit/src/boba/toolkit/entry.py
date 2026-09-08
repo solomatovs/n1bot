@@ -41,7 +41,8 @@ from typing import (
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
-from boba.toolkit.calls import ToolCallView, ToolCallViews
+from boba.toolkit.calls import FieldMarks
+from boba.toolkit.facade import PayloadTool
 from boba.toolkit.failure import ValidationText
 from boba.toolkit.frames import ToolIo
 from boba.toolkit.launcher import PayloadFailureError
@@ -52,6 +53,7 @@ from boba.toolkit.ports import (
     StreamSpec,
 )
 from boba.toolkit.protocol import ReplyError, ReplyOk, ToolCommand
+from boba.toolkit.result import ToolResultBase
 from boba.toolkit.timing import Elapsed
 from boba.toolkit.types import SecretReveal
 
@@ -273,15 +275,6 @@ class ToolArgv:
     MAX_VALUE_BYTES: ClassVar[int] = 131_071
     """MAX_ARG_STRLEN минус завершающий нуль; ровно 131072 даёт E2BIG."""
 
-    INJECTED_MARKERS: ClassVar[frozenset[str]] = frozenset(
-        {"Injected", "InjectedToolArg", "InjectedToolCallId"}
-    )
-    """Имена injected-маркеров по MRO: Injected — свой (facade), остальные —
-    langchain-метадата; её типов toolkit не импортирует."""
-
-    CONNECTION_MARKERS: ClassVar[frozenset[str]] = frozenset({"UserConnection"})
-    """Имя маркера соединения: значение подаёт хост из строк субъекта вызова."""
-
     @classmethod
     def render(
         cls,
@@ -301,11 +294,11 @@ class ToolArgv:
                 continue
 
             value = kwargs[name]
-            if cls._injected(field.metadata):
+            if FieldMarks.injected(field):
                 config_payload[name] = cls.reveal(field.annotation, value)
                 continue
 
-            if cls._connection(field.metadata):
+            if FieldMarks.connection(field):
                 config_payload[name] = cls.reveal(field.annotation, value)
                 continue
 
@@ -386,7 +379,7 @@ class ToolArgv:
             if cls.is_io(field.annotation):
                 continue
 
-            if cls._injected(field.metadata):
+            if FieldMarks.injected(field):
                 fields[name] = field.annotation
 
         return fields
@@ -399,7 +392,7 @@ class ToolArgv:
             if cls.is_io(field.annotation):
                 continue
 
-            if cls._connection(field.metadata):
+            if FieldMarks.connection(field):
                 fields[name] = field.annotation
 
         return fields
@@ -422,24 +415,6 @@ class ToolArgv:
     @staticmethod
     def flag_of(param: str) -> str:
         return "--" + param.replace("_", "-")
-
-    @classmethod
-    def _injected(cls, metadata: Sequence[Any]) -> bool:
-        return cls._marked(metadata, cls.INJECTED_MARKERS)
-
-    @classmethod
-    def _connection(cls, metadata: Sequence[Any]) -> bool:
-        return cls._marked(metadata, cls.CONNECTION_MARKERS)
-
-    @staticmethod
-    def _marked(metadata: Sequence[Any], markers: frozenset[str]) -> bool:
-        for item in metadata:
-            klass = item if isinstance(item, type) else type(item)
-            names = {parent.__name__ for parent in klass.__mro__}
-            if names & markers:
-                return True
-
-        return False
 
     @classmethod
     def _encode(cls, name: str, annotation: Any, value: object) -> str:
@@ -597,19 +572,11 @@ class ToolMain:
     )
 
     @classmethod
-    def toolset(
-        cls,
-        *tools: object,
-        views: Mapping[str, ToolCallView] | None = None,
-    ) -> tuple[ToolLike, ...]:
+    def toolset(cls, *tools: object) -> tuple[ToolLike, ...]:
         """Кортеж TOOLS из tool-объектов с проверкой duck-полей.
 
         Декоратор @tool статически отдаёт BaseTool без func/coroutine —
         мост к ToolLike делается здесь, один раз на модуль.
-
-        views — представления вызовов инструментов модуля: имя тула ->
-        вариант ToolCallView. Неперечисленные показываются как JsonCall.
-        Имя вне модуля — ошибка: опечатка не должна тихо оставить дефолт.
         """
         checked: list[ToolLike] = []
         for tool in tools:
@@ -624,24 +591,7 @@ class ToolMain:
             accepted: Any = tool
             checked.append(accepted)
 
-        if views:
-            cls._register_views(checked, views)
-
         return tuple(checked)
-
-    @classmethod
-    def _register_views(
-        cls, tools: Sequence[ToolLike], views: Mapping[str, ToolCallView]
-    ) -> None:
-        names = {tool.name for tool in tools}
-
-        for tool_name, view in views.items():
-            if tool_name not in names:
-                known = ", ".join(sorted(names))
-                msg = f"call view for unknown tool: {tool_name!r} (module has {known})"
-                raise ToolEntryError(EntryErrorKind.INTERNAL_ERROR, msg)
-
-            ToolCallViews.register(tool_name, view)
 
     LOG_FORMAT: ClassVar[str] = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
@@ -857,6 +807,9 @@ class ToolMain:
 
         expected = ExpectedErrors.of_body(body)
 
+        if isinstance(tool, PayloadTool):
+            kwargs = tool.packed_kwargs(kwargs)
+
         elapsed = Elapsed()
         try:
             if tool.coroutine is not None:
@@ -884,23 +837,14 @@ class ToolMain:
 
     @classmethod
     def _pack(cls, tool: ToolLike, result: object) -> ReplyOk:
-        if not isinstance(result, tuple) or len(result) != 2:  # noqa: PLR2004
+        if not isinstance(result, ToolResultBase):
             msg = (
-                f"tool {tool.name!r} must return (content, artifact), "
+                f"tool {tool.name!r} must return a ToolResultBase model, "
                 f"got {type(result).__name__}"
             )
             raise ToolEntryError(EntryErrorKind.INTERNAL_ERROR, msg)
 
-        content, artifact = result
-
-        try:
-            return ReplyOk(content=str(content), artifact=artifact)
-        except ValidationError as exc:
-            msg = (
-                f"tool {tool.name!r} returned artifact of type "
-                f"{type(artifact).__name__}, expected a ToolResult: {exc}"
-            )
-            raise ToolEntryError(EntryErrorKind.INTERNAL_ERROR, msg) from exc
+        return ReplyOk(content=result.llm_view(), artifact=result)
 
     @classmethod
     def _deliver(cls, reply: ReplyOk, wiring: CallWiring, want_artifact: bool) -> int:

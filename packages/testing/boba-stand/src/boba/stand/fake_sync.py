@@ -31,7 +31,7 @@ from boba.db.postgres.catalog import (
 from boba.db.postgres.snapshot_sample import PgSample
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
-from boba.toolkit.result import TextResult, ToolResult, render_for_llm
+from boba.toolkit.result import MarkdownResult
 
 
 class FakeSyncScenario(StrEnum):
@@ -89,7 +89,7 @@ async def fake_pg_snapshot(
     connection: Annotated[str, Field(description="Имя подключения")],
     schemas: Annotated[str, Field(description="Сценарий FakeSyncScenario")],
     catalog: Annotated[CatalogStoreConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> MarkdownResult:
     """Снимок образца PgSample в домен каталога; сценарий выбирает schemas."""
     scenario = FakeSyncScenario.parse(schemas)
     sample = PgSample()
@@ -126,11 +126,10 @@ async def fake_pg_snapshot(
     if scenario is FakeSyncScenario.BROKEN_OUTCOME:
         metadata = {}
 
-    artifact = TextResult(
+    return MarkdownResult(
         text=f"fake snapshot of {connection!r}: version {version}, {batches} batches",
         metadata=metadata,
     )
-    return render_for_llm(artifact), artifact
 
 
 TOOLS: Final = ToolMain.toolset(fake_pg_snapshot)

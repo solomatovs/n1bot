@@ -180,13 +180,6 @@ class CallFd(IntEnum):
         return len(cls) - 1
 
 
-class CallKind(StrEnum):
-    """Что исполняет ребёнок: модуль инструментов либо shell-команду."""
-
-    MODULE = "module"
-    SHELL = "shell"
-
-
 class ControlMark(StrEnum):
     """Байтовые метки пер-вызовного control-сокета."""
 
@@ -306,8 +299,9 @@ class CallRequest(BaseModel):
 
     op: str = "call"
     call_id: str = Field(min_length=1)
-    kind: CallKind = CallKind.MODULE
     argv: tuple[str, ...] = Field(min_length=1)
+    module: str = ""
+    """Модуль тела: не прогретый зиготой догружается в процессе вызова."""
     limits: ChildLimits
     isolate: bool
     mounts: CallMounts
@@ -327,8 +321,26 @@ class CallRequest(BaseModel):
     """Шестым дескриптором приехал каталог cgroup-leaf'а вызова."""
 
 
+class WaitStatus:
+    """Код возврата ребёнка в соглашении shell: смерть по сигналу — 128 + номер.
+
+    Хост объясняет смерть вызова по коду (SandboxDiagnostics), и на каждом
+    уровне форков код обязан переживать передачу через os._exit без потерь:
+    отрицательный код python в байте выхода превращается в мусор.
+    """
+
+    SIGNAL_BASE: ClassVar[int] = 128
+
+    @classmethod
+    def exit_code(cls, status: int) -> int:
+        if os.WIFSIGNALED(status):
+            return cls.SIGNAL_BASE + os.WTERMSIG(status)
+
+        return os.WEXITSTATUS(status)
+
+
 class CallExit(BaseModel):
-    """Итог вызова: код выхода исполнителя."""
+    """Итог вызова: код выхода исполнителя в соглашении shell (WaitStatus)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -635,11 +647,16 @@ class ZygoteMain:
     """Вложенные userns запрещаются до первого вызова, как в цепочке лаунчера."""
 
     def __init__(
-        self, sock: socket.socket, tools: Sequence[ToolLike], reap_poll_sec: float
+        self,
+        sock: socket.socket,
+        tools: Sequence[ToolLike],
+        modules: Mapping[str, ModuleType],
+        reap_poll_sec: float,
     ) -> None:
         self._reap_poll_sec = reap_poll_sec
         self._sock = sock
         self._tools = tools
+        self._modules = modules
         self._children: dict[int, tuple[str, socket.socket]] = {}
 
         # смерть ребёнка будит select немедленно: exit-репорт без опроса
@@ -683,7 +700,7 @@ class ZygoteMain:
 
         cls._block_new_userns()
 
-        main = cls(sock, tools, args.reap_poll_sec)
+        main = cls(sock, tools, modules, args.reap_poll_sec)
         ZygoteWire.send(sock, ZygoteReady(warmup_ms=warmup.ms()))
 
         return main.serve()
@@ -840,7 +857,7 @@ class ZygoteMain:
                 continue
 
             call_id, control = entry
-            code = os.waitstatus_to_exitcode(status)
+            code = WaitStatus.exit_code(status)
             logger.info("zygote: call %s finished rc=%d", call_id, code)
 
             try:
@@ -882,7 +899,7 @@ class ZygoteMain:
             pid, join_self = self._spawn_executor(request, fds)
             if pid != 0:
                 _, status = os.waitpid(pid, 0)
-                os._exit(os.waitstatus_to_exitcode(status) & 0xFF)
+                os._exit(WaitStatus.exit_code(status))
 
             if join_self:
                 Isolation.join_cgroup(fds[CallFd.CGROUP])
@@ -983,15 +1000,8 @@ class ZygoteMain:
 
     @staticmethod
     def _channel_argv(request: CallRequest, fds: list[int]) -> list[str]:
-        """Команда тела с номерами каналов вызова аргументами.
-
-        Shell-команде каналы модуля не принадлежат: её argv остаётся как
-        есть, а сами дескрипторы закрывает _close_inherited.
-        """
+        """Команда тела с номерами каналов вызова аргументами."""
         argv = list(request.argv)
-        if request.kind is CallKind.SHELL:
-            return argv
-
         argv.append(EntryFlag.FD_RESULT.value)
         argv.append(str(fds[CallFd.RESULT]))
         argv.append(EntryFlag.FD_FRAMES.value)
@@ -1019,12 +1029,6 @@ class ZygoteMain:
                 continue
 
             os.close(fd)
-
-        if request.kind is not CallKind.SHELL:
-            return
-
-        for index in (CallFd.RESULT, CallFd.FRAMES, CallFd.INJECTED):
-            os.close(fds[index])
 
     def _grandchild(
         self, request: CallRequest, fds: list[int], timing: SetupTiming
@@ -1113,15 +1117,20 @@ class ZygoteMain:
             self._body(request, argv)
 
         _, status = os.waitpid(pid, 0)
-        return os.waitstatus_to_exitcode(status)
+        return WaitStatus.exit_code(status)
+
+    def _tools_for(self, request: CallRequest) -> Sequence[ToolLike]:
+        """Тулы вызова: прогретые зиготой плюс модуль запроса, если его не грели."""
+        if not request.module or request.module in self._modules:
+            return self._tools
+
+        module = importlib.import_module(request.module)
+
+        return [*self._tools, *module.TOOLS]
 
     def _body_here(self, request: CallRequest, argv: list[str]) -> int:
-        """Тело в самом исполнителе: shell замещает процесс, модуль отдаёт код."""
-        if request.kind is CallKind.SHELL:
-            self._flush_streams()
-            os.execv(argv[0], argv)  # noqa: S606 — argv собран хостом, без shell
-
-        code = ToolMain.run(self._tools, argv)
+        """Тело в самом исполнителе: модуль отдаёт код возврата."""
+        code = ToolMain.run(self._tools_for(request), argv)
         self._flush_streams()
 
         return code
@@ -1131,11 +1140,7 @@ class ZygoteMain:
         # так гарантирует init, в голом запуске — только pdeathsig
         FuseMounter.set_pdeathsig()
 
-        if request.kind is CallKind.SHELL:
-            self._flush_streams()
-            os.execv(argv[0], argv)  # noqa: S606 — argv собран хостом, без shell
-
-        code = ToolMain.run(self._tools, argv)
+        code = ToolMain.run(self._tools_for(request), argv)
 
         # os._exit не сбрасывает буферы: печать тела иначе не доедет до канала
         self._flush_streams()

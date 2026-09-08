@@ -30,6 +30,11 @@
   border-color: var(--status-modified);
 }
 
+.chip--error {
+  color: var(--error);
+  border-color: var(--error);
+}
+
 /* статус: точка цвета статуса, круглая пилюля */
 .chip--status {
   gap: var(--s1);

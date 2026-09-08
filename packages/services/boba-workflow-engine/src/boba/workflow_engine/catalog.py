@@ -1,8 +1,8 @@
 """Каталог инструментов для workflow: что домен знает о реестре под субъекта.
 
-Доступность — решение ToolAccess под роли и профиль субъекта. Аргументы — из
-LLM-схемы инструмента с видом по объявлению у поля (ArgViews); виды
-результата — из Produces в аннотации возвращаемого типа. Порты появятся с
+Доступность — решение ToolAccess под роли и профиль субъекта. Аргументы —
+форма модели вызова (ToolCallBase.studio_view) без скрытых полей; виды
+результата — из аннотации возвращаемого типа тела. Порты появятся с
 потоками; пока портов ни у кого нет.
 
 Ошибки: своих не выпускает.
@@ -12,17 +12,17 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable, Iterable, Iterator
-from typing import Annotated, Any, get_args, get_origin
+from typing import Any
 
 from langchain_core.tools import BaseTool
-from pydantic import BaseModel
 
-from boba.toolkit.calls import ArgViews, ToolCallViews
+from boba.toolkit.calls import FieldPlacement, StudioField, ToolCallBase
 from boba.toolkit.ports import PortDirection as StreamDirection
-from boba.toolkit.ports import StreamPorts, ToolStreamSpecs
-from boba.toolkit.result import Produces
+from boba.toolkit.ports import ToolStreamSpecs
+from boba.toolkit.result import ResultKindError, ResultKinds
 from boba.toolrun.registry import ToolRegistry
-from boba.workflow import ToolArg, ToolCatalog, ToolFacts, ToolPort
+from boba.toolrun.wrapping import ToolSchema
+from boba.workflow import ToolCatalog, ToolFacts, ToolPort
 from boba.workflow.spec import PortDirection
 
 __all__ = ["CatalogBuilder"]
@@ -80,33 +80,25 @@ class CatalogBuilder:
         return first_line.strip()
 
     @staticmethod
-    def _args(tool: BaseTool) -> Iterator[ToolArg]:
-        """Аргументы, которые видит модель; intent задача задаёт по желанию."""
-        schema = tool.tool_call_schema
-        if not isinstance(schema, type) or not issubclass(schema, BaseModel):
+    def _args(tool: BaseTool) -> Iterator[StudioField]:
+        """Поля формы, которые видит модель: скрытые (injected, порты) не в счёт;
+        intent задача задаёт по желанию."""
+        schema = ToolSchema.of(tool)
+        if schema is None:
             return
 
-        call = ToolCallViews.of(tool.name)
-        for name, field in schema.model_fields.items():
-            # порт данных — не аргумент: он уходит в facts.ports хэндлом узла
-            if StreamPorts.is_port(field.annotation):
+        if not issubclass(schema, ToolCallBase):
+            return
+
+        for field in schema.studio_view().fields:
+            if field.placement is FieldPlacement.HIDDEN:
                 continue
 
-            view = ArgViews.of_field(name, field, call)
-            description = field.description
-            if description is None:
-                description = ""
-
-            yield ToolArg(
-                name=name,
-                required=field.is_required(),
-                view=view,
-                description=description,
-            )
+            yield field
 
     @classmethod
     def _results(cls, tool: BaseTool) -> tuple[str, ...]:
-        """Виды результата из Produces в Annotated возвращаемого типа тела."""
+        """Виды результата из аннотации возврата тела: класс либо union."""
         body = cls._body(tool)
         if body is None:
             return ()
@@ -117,14 +109,13 @@ class CatalogBuilder:
         except (NameError, TypeError, ValueError):
             return ()
 
-        if get_origin(returns) is not Annotated:
+        if returns is inspect.Signature.empty:
             return ()
 
-        for item in get_args(returns)[1:]:
-            if isinstance(item, Produces):
-                return item.kinds
-
-        return ()
+        try:
+            return ResultKinds.kinds_of(returns)
+        except ResultKindError:
+            return ()
 
     @staticmethod
     def _body(tool: BaseTool) -> Callable[..., Any] | None:

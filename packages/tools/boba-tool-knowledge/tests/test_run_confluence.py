@@ -39,7 +39,7 @@ async def test_run_confluence_spaces(confluence_cfg: ConfluenceToolsConfig) -> N
     if body is None:
         raise AssertionError("body is not None")
 
-    content, _artifact = await body(limit=10, cfg=confluence_cfg)
+    content = (await body(limit=10, cfg=confluence_cfg)).llm_view()
 
     print(content)
 
@@ -49,9 +49,9 @@ async def test_run_confluence_search(confluence_cfg: ConfluenceToolsConfig) -> N
     if body is None:
         raise AssertionError("body is not None")
 
-    content, _artifact = await body(
-        query=RunArgs.QUERY, limit=5, offset=0, cfg=confluence_cfg
-    )
+    content = (
+        await body(query=RunArgs.QUERY, limit=5, offset=0, cfg=confluence_cfg)
+    ).llm_view()
 
     print(content)
 
@@ -61,6 +61,6 @@ async def test_run_confluence_fetch(confluence_cfg: ConfluenceToolsConfig) -> No
     if body is None:
         raise AssertionError("body is not None")
 
-    content, _artifact = await body(page_id=RunArgs.PAGE_ID, cfg=confluence_cfg)
+    content = (await body(page_id=RunArgs.PAGE_ID, cfg=confluence_cfg)).llm_view()
 
     print(content[:500])

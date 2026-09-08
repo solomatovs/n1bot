@@ -149,7 +149,9 @@ def catalog(store: ConnectionStore) -> Any:
     """Общий connection_list над тем же хранилищем, что и инструменты."""
     service = UserConnectionsService(lambda: store)
 
-    return build_connection_tools(ConnectionCatalogConfig(), service)[0]
+    built = build_connection_tools(ConnectionCatalogConfig(), service)[0]
+
+    return ToolBridge.as_structured_tool(built)
 
 
 @pytest.fixture
@@ -249,7 +251,7 @@ async def test_granted_connection_is_visible_and_works(
     result = await Call.ok(
         pg_tools["pg_query"], connection="main", sql="select 1 as answer"
     )
-    if result.rows != [{"answer": 1}]:
+    if result.statements[0].rows != [{"answer": 1}]:
         raise AssertionError(f"query must run on the granted connection: {result}")
 
 
@@ -366,7 +368,7 @@ async def test_delegated_connection_runs_as_the_session_principal(
         connection="mine",
         sql="select current_user as who",
     )
-    if result.rows != [{"who": SERVICE_USER}]:
+    if result.statements[0].rows != [{"who": SERVICE_USER}]:
         raise AssertionError(f"query must run as the delegated principal: {result}")
 
 

@@ -1,13 +1,15 @@
 import type { EditableEdge, EditableTask } from "./spec";
-import { TEXT_VIEW, type ArgView, type ToolFacts } from "./workflow";
+import { TEXT_EDITOR, type FieldEditor, type ToolFacts, type ToolResult } from "./workflow";
 
-/** Строки аргументов блока: каталог задаёт порядок и вид, задача — значение,
+/** Строки аргументов блока: каталог задаёт порядок, редактор и показ, задача — значение,
  * рёбра-значения — привязку (что подставится вместо литерала). Чистая модель
  * для узла, формы и раскладки. */
 
 export type ArgRow = {
   name: string;
-  view: ArgView;
+  editor: FieldEditor;
+  /** Объявленный показ значения; null — строкой как есть. */
+  display: ToolResult | null;
   required: boolean;
   description: string;
   value: unknown;
@@ -50,13 +52,14 @@ export function blockRows(task: EditableTask, facts: ToolFacts | undefined, edge
 
   for (const arg of facts?.args ?? []) {
     seen.add(arg.name);
-    if (arg.view.placement !== "body") {
+    if (arg.placement !== "body") {
       continue;
     }
 
     body.push({
       name: arg.name,
-      view: arg.view,
+      editor: arg.editor,
+      display: arg.display,
       required: arg.required,
       description: arg.description,
       value: task.args[arg.name],
@@ -69,7 +72,15 @@ export function blockRows(task: EditableTask, facts: ToolFacts | undefined, edge
       continue;
     }
 
-    body.push({ name, view: TEXT_VIEW, required: false, description: "", value, bound: bound.get(name) ?? "" });
+    body.push({
+      name,
+      editor: TEXT_EDITOR,
+      display: null,
+      required: false,
+      description: "",
+      value,
+      bound: bound.get(name) ?? "",
+    });
   }
 
   return { intent: intentOf(task), body };

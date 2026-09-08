@@ -28,6 +28,7 @@ from pydantic import SecretStr
 from boba.sandbox import SandboxProfile
 from boba.sandbox.guest import WarmupCall
 from boba.sandbox.zygote import ZygoteRegistry, ZygoteSpawner, ZygoteState
+from boba.stand.shell import ShellRun
 from boba.stand.zygote import ROOTFS_IMAGE, SandboxStand, ZygoteStand
 from boba.toolkit.channels import JournalChannel, ToolChannel
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolMain
@@ -307,11 +308,13 @@ class TestFailureIsLogged:
     ) -> None:
         caller = ZygoteStand.caller(section, _profile())
 
-        with caplog.at_level(logging.WARNING, logger=self.LOGGER):
-            outcome = caller.call_text("echo boom >&2; exit 3", stdin="")
-
-        if outcome.result.exit_code != 3:
-            raise AssertionError(f"rc={outcome.result.exit_code}")
+        # код команды — штатный ShellResult; вызов падает лишь со смертью
+        # тела, и bash-тул умирает тем же сигналом, что и его команда
+        with (
+            caplog.at_level(logging.WARNING, logger=self.LOGGER),
+            pytest.raises(LauncherError),
+        ):
+            ShellRun.call_text(caller, "echo boom >&2; kill -KILL $$")
 
         messages: list[str] = []
         for record in caplog.records:
@@ -319,7 +322,7 @@ class TestFailureIsLogged:
 
         failures: list[str] = []
         for message in messages:
-            if "failed (rc=3)" in message:
+            if "failed (rc=137)" in message:
                 failures.append(message)
 
         if not failures:
@@ -338,7 +341,7 @@ class TestBrokenSinkFreesTheCall:
 
     def test_failing_sink_kills_the_executor(self, section: str) -> None:
         caller = ZygoteStand.caller(section, _profile())
-        caller.call_text("echo warm", stdin="")
+        ShellRun.call_text(caller, "echo warm")
 
         zygote_pid = caller.supervisor.pid
         if zygote_pid == 0:
@@ -349,7 +352,7 @@ class TestBrokenSinkFreesTheCall:
         ToolChannelsTap.set(BrokenSinks())
         try:
             with pytest.raises(RuntimeError, match=BrokenSink.FAILURE):
-                caller.call_text("echo noise; sleep 300", stdin="")
+                ShellRun.call_text(caller, "echo noise; sleep 300")
         finally:
             ToolChannelsTap.set(None)
 
@@ -357,9 +360,9 @@ class TestBrokenSinkFreesTheCall:
         if survivors:
             raise AssertionError(f"исполнитель пережил сбой приёмника: {survivors}")
 
-        again = caller.call_text("echo alive", stdin="")
-        if again.result.exit_code != 0:
-            raise AssertionError(f"секция сломана: rc={again.result.exit_code}")
+        again = ShellRun.call_text(caller, "echo alive")
+        if again.exit_code != 0:
+            raise AssertionError(f"секция сломана: rc={again.exit_code}")
 
 
 class TestConcurrentStart:
@@ -376,8 +379,8 @@ class TestConcurrentStart:
 
         def call(index: int) -> int:
             caller = ZygoteStand.caller(section, profile)
-            outcome = caller.call_text(f"echo {index}", stdin="")
-            return outcome.result.exit_code
+            outcome = ShellRun.call_text(caller, f"echo {index}")
+            return outcome.exit_code
 
         with ThreadPoolExecutor(max_workers=self.THREADS) as pool:
             futures = []
@@ -422,9 +425,9 @@ class TestZygoteOutlivesSpawningThread:
         if caller.supervisor.state is not ZygoteState.READY:
             raise AssertionError(f"состояние={caller.supervisor.state}")
 
-        outcome = caller.call_text("echo alive", stdin="")
-        if outcome.result.exit_code != 0:
-            raise AssertionError(f"rc={outcome.result.exit_code}")
+        outcome = ShellRun.call_text(caller, "echo alive")
+        if outcome.exit_code != 0:
+            raise AssertionError(f"rc={outcome.exit_code}")
 
 
 class TestRootMountRecovery:
@@ -477,9 +480,9 @@ class TestRootMountRecovery:
         profile = _profile(rootfs=str(ROOTFS_IMAGE))
         caller = ZygoteStand.caller(section, profile)
 
-        warm = caller.call_text("echo warm", stdin="")
-        if warm.result.exit_code != 0:
-            raise AssertionError(f"rc={warm.result.exit_code}")
+        warm = ShellRun.call_text(caller, "echo warm")
+        if warm.exit_code != 0:
+            raise AssertionError(f"rc={warm.exit_code}")
 
         born = caller.supervisor.pid
         daemon = self._fuse_of(born)
@@ -490,16 +493,16 @@ class TestRootMountRecovery:
             os.kill(daemon, signal.SIGKILL)
 
             with pytest.raises(LauncherError):
-                caller.call_text("echo after-kill", stdin="")
+                ShellRun.call_text(caller, "echo after-kill")
 
             restarted = self._await_restart(caller, born)
 
         if restarted == born:
             raise AssertionError("секция не перезапущена после смерти демона корня")
 
-        again = caller.call_text("echo alive", stdin="")
-        if again.result.exit_code != 0:
-            raise AssertionError(f"секция не обслуживает вызовы: {again.result!r}")
+        again = ShellRun.call_text(caller, "echo alive")
+        if again.exit_code != 0:
+            raise AssertionError(f"секция не обслуживает вызовы: {again!r}")
 
         messages: list[str] = []
         for record in caplog.records:
@@ -545,12 +548,12 @@ done
         """
         caller = ZygoteStand.caller(section, _profile())
 
-        outcome = caller.call_text(self.PROBE, stdin="")
-        if outcome.result.exit_code != 0:
-            raise AssertionError(f"rc={outcome.result.exit_code}")
+        outcome = ShellRun.call_text(caller, self.PROBE)
+        if outcome.exit_code != 0:
+            raise AssertionError(f"rc={outcome.exit_code}")
 
         pipes: list[str] = []
-        for line in outcome.result.stdout.splitlines():
+        for line in outcome.stdout.splitlines():
             if "pipe:" not in line:
                 continue
 
@@ -570,12 +573,12 @@ done
         )
         caller = ZygoteStand.caller(section, profile)
 
-        outcome = caller.call_text(self.PROBE, stdin="")
-        if outcome.result.exit_code != 0:
-            raise AssertionError(f"rc={outcome.result.exit_code}")
+        outcome = ShellRun.call_text(caller, self.PROBE)
+        if outcome.exit_code != 0:
+            raise AssertionError(f"rc={outcome.exit_code}")
 
         targets: list[str] = []
-        for line in outcome.result.stdout.splitlines():
+        for line in outcome.stdout.splitlines():
             if not line.strip():
                 continue
 
@@ -612,8 +615,8 @@ for fd in /proc/self/fd/*; do
 done
 echo done
 """
-        outcome = caller.call_text(attack, stdin="")
-        if "lifted" in outcome.result.stdout:
+        outcome = ShellRun.call_text(caller, attack)
+        if "lifted" in outcome.stdout:
             raise AssertionError("тело сняло себе групповой лимит памяти")
 
 
@@ -652,9 +655,9 @@ class TestPartialCopyCleanup:
         caller = ZygoteStand.caller(
             section, profile, path_vars=lambda: {"user_id": self.USER}
         )
-        first = caller.call_text("echo warm", stdin="")
-        if first.result.exit_code != 0:
-            raise AssertionError(f"rc={first.result.exit_code}")
+        first = ShellRun.call_text(caller, "echo warm")
+        if first.exit_code != 0:
+            raise AssertionError(f"rc={first.exit_code}")
 
         image = Path(workspace.image_of(self.USER))
         if not image.exists():
@@ -663,9 +666,9 @@ class TestPartialCopyCleanup:
         partial = Path(PartialCopy.render(str(image), self.OWN_PID))
         partial.write_bytes(b"copy in progress")
 
-        second = caller.call_text("echo alive", stdin="")
-        if second.result.exit_code != 0:
-            raise AssertionError(f"rc={second.result.exit_code}")
+        second = ShellRun.call_text(caller, "echo alive")
+        if second.exit_code != 0:
+            raise AssertionError(f"rc={second.exit_code}")
 
         if partial.exists():
             raise AssertionError("брошенная копия осталась на месте")

@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from typing import cast
 from uuid import UUID
 
 import pytest
 from chainlit_stand import use_context, use_session
-from pydantic import BaseModel
 
 from boba.chainlit.agent.tools.send_file import FileAttachment, build_send_file_tool
+from boba.runtime.plugins import ToolBridge
 from boba.toolkit.result import ErrorResult
 
 THREAD = "11111111-1111-1111-1111-111111111111"
@@ -23,7 +22,7 @@ def chainlit_context() -> None:
 class TestToolInterface:
     def test_llm_sees_only_path(self) -> None:
         """tool_call_id подставляет langchain: в схеме для модели его быть не должно."""
-        schema = cast(type[BaseModel], build_send_file_tool().tool_call_schema)
+        schema = build_send_file_tool().args_schema
         if set(schema.model_fields) != {"path"}:
             raise AssertionError('set(schema.model_fields) == {"path"}')
 
@@ -40,7 +39,9 @@ class TestToolInterface:
             "name": "send_file",
             "type": "tool_call",
         }
-        message = await build_send_file_tool().ainvoke(call)
+        message = await ToolBridge.as_structured_tool(build_send_file_tool()).ainvoke(
+            call
+        )
 
         # аргумент связался: до отказа по сессии дело дошло, а не до ошибки схемы
         if not (isinstance(message.artifact, ErrorResult)):

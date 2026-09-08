@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 
 import "./List.css";
 
-export type ListKind = "plain" | "spaced" | "cards";
+export type ListKind = "plain" | "spaced" | "cards" | "nav";
 
 type ListProps = Omit<HTMLAttributes<HTMLUListElement>, "className"> & {
   kind?: ListKind;
@@ -13,8 +13,9 @@ type ListProps = Omit<HTMLAttributes<HTMLUListElement>, "className"> & {
   children?: ReactNode;
 };
 
-/** Список строк: плотный (панель), с зазором (индекс) или карточками (потоки,
- * виды загрузки). Состояние строки —
+/** Список строк: плотный (панель), с зазором (индекс), карточками (потоки,
+ * виды загрузки) или навигация (workflow и запуски: строки-ссылки с
+ * подсветкой). Состояние строки —
  * `data-active`, `data-status`, `data-hidden`, `data-stale`.
  * Единственное место, где существуют классы `rows*`. */
 export function List({ kind = "plain", empty, mark, children, ...rest }: ListProps): ReactElement {
@@ -110,4 +111,41 @@ export function ListName({ onClick, to, strong = false, title, mark, children }:
 /** Хвост строки: чипы и кнопки-иконки справа от имени. */
 export function ListAside({ children }: { children: ReactNode }): ReactElement {
   return <span className="rows__aside">{children}</span>;
+}
+
+type LinkProps = {
+  to: string;
+  onClick?: (() => void) | undefined;
+  mark?: string | undefined;
+  children: ReactNode;
+};
+
+/** Тело строки-ссылки в несколько строк: имя и мета под ним; клик по любой
+ * части ведёт по адресу. */
+export function ListLink({ to, onClick, mark, children }: LinkProps): ReactElement {
+  return (
+    <Link to={to} className="rows__link" onClick={onClick} data-testid={mark}>
+      {children}
+    </Link>
+  );
+}
+
+/** Строка меты под именем: чипы, счётчики, время. */
+export function ListMeta({ children }: { children: ReactNode }): ReactElement {
+  return <span className="rows__meta">{children}</span>;
+}
+
+type ActionProps = {
+  onClick: () => void;
+  mark?: string | undefined;
+  children: ReactNode;
+};
+
+/** Действие над списком пунктирной кнопкой во всю ширину: «+ New workflow». */
+export function ListAction({ onClick, mark, children }: ActionProps): ReactElement {
+  return (
+    <button type="button" className="rows__action" onClick={onClick} data-testid={mark}>
+      {children}
+    </button>
+  );
 }

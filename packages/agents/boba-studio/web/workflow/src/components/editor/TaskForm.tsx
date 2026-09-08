@@ -9,7 +9,7 @@ import {
 } from "../../model/spec";
 import type { PortDirection, ToolCatalog } from "../../model/workflow";
 import { widgetOf } from "../args/widgets";
-import { Button, Eyebrow, Field, IconButton, Input, Select } from "../../ui";
+import { Button, Field, IconButton, Input, Panel, PanelHead, Section, Select } from "../../ui";
 
 type Props = {
   task: EditableTask;
@@ -37,7 +37,7 @@ type FieldProps = {
 
 /** Поле аргумента: виджет по виду; привязанный ребром аргумент показывает источник. */
 function ArgField({ row, known, onValue, onClear }: FieldProps): ReactElement {
-  const { Editor } = widgetOf(row.view);
+  const { Editor } = widgetOf(row);
 
   return (
     <Field
@@ -55,7 +55,8 @@ function ArgField({ row, known, onValue, onClear }: FieldProps): ReactElement {
     >
       <Editor
         name={row.name}
-        view={row.view}
+        editor={row.editor}
+        display={row.display}
         value={row.value}
         required={row.required}
         onChange={onValue}
@@ -119,30 +120,32 @@ export function TaskForm({
   };
 
   return (
-    <aside className="inspector form" aria-label="task form">
-      <div className="inspector__head">
-        <Eyebrow>task</Eyebrow>
-        <Input
-          mono
-          value={draftName}
-          onChange={(event) => {
-            setDraftName(event.target.value);
-          }}
-          onBlur={commitName}
-          aria-label="task name"
-        />
-        <IconButton
-          onClick={onRemove}
-          title="Remove task"
-          aria-label="Remove task"
-        >
-          <Trash2 size={14} />
-        </IconButton>
-        <IconButton onClick={onClose} aria-label="Close inspector">
-          <X size={14} />
-        </IconButton>
-      </div>
-      <div className="inspector__body">
+    <Panel>
+      <PanelHead
+        eyebrow="task"
+        name={
+          <Input
+            mono
+            value={draftName}
+            onChange={(event) => {
+              setDraftName(event.target.value);
+            }}
+            onBlur={commitName}
+            aria-label="task name"
+          />
+        }
+        actions={
+          <>
+            <IconButton onClick={onRemove} title="Remove task" aria-label="Remove task">
+              <Trash2 size={14} />
+            </IconButton>
+            <IconButton onClick={onClose} aria-label="Close inspector">
+              <X size={14} />
+            </IconButton>
+          </>
+        }
+      />
+      <Section>
         <Field label="tool" hint={facts?.description}>
           <Select
             mono
@@ -178,7 +181,8 @@ export function TaskForm({
           />
         </Field>
 
-        <Eyebrow as="h4">args</Eyebrow>
+      </Section>
+      <Section title="args">
         {rows.body.map((row) => (
           <ArgField
             key={row.name}
@@ -215,9 +219,9 @@ export function TaskForm({
           </Button>
         </Field>
 
-        {(facts?.task_ports ?? false) && (
-          <>
-            <Eyebrow as="h4">ports</Eyebrow>
+      </Section>
+      {(facts?.task_ports ?? false) && (
+        <Section title="ports">
             {Object.entries(task.ports).map(([name, direction]) => (
               <Field row key={name}>
                 <span className="mono">{name}</span>
@@ -265,9 +269,8 @@ export function TaskForm({
                 add
               </Button>
             </Field>
-          </>
-        )}
-      </div>
-    </aside>
+        </Section>
+      )}
+    </Panel>
   );
 }

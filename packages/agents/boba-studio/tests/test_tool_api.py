@@ -12,7 +12,6 @@ from uuid import uuid4
 import pytest
 from fastapi import APIRouter, FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
-from langchain_core.tools import tool
 from starlette.requests import Request
 from studio_stand import StandProfiles
 
@@ -28,11 +27,13 @@ from boba.identity.token import CookieSpec, SessionRenewal
 from boba.runtime.config import StudioRuntimeConfig
 from boba.runtime.http import RequestTokens
 from boba.runtime.launchers import CallSurface
+from boba.runtime.plugins import ToolBridge
 from boba.runtime.users import UsersTable
 from boba.stand.auth import StubAuthenticator
 from boba.studio.api.auth import ApiAuth
 from boba.studio.api.tools import ToolCallBody, ToolCalling
-from boba.toolkit.result import TextResult, pack_result
+from boba.toolkit.facade import tool
+from boba.toolkit.result import MarkdownResult
 from boba.toolrun.call_id import ToolCallIdField
 from boba.toolrun.errors import ToolErrorGuard
 from boba.toolrun.intent import ToolIntentField
@@ -51,19 +52,19 @@ class Probe:
     def tools(self) -> list[Any]:
         seen = self.seen
 
-        @tool(response_format="content_and_artifact")
-        async def probe(query: str) -> tuple[str, Any]:
+        @tool
+        async def probe(query: str) -> MarkdownResult:
             """Зонд контекста вызова."""
             seen.append(CallContext.current())
-            return pack_result(TextResult(text=f"seen {query}"))
+            return MarkdownResult(text=f"seen {query}")
 
-        @tool(response_format="content_and_artifact")
-        async def canvas_open(path: str) -> tuple[str, Any]:
+        @tool
+        async def canvas_open(path: str) -> MarkdownResult:
             """Инструмент чата: сюда дойти не должно."""
-            return pack_result(TextResult(text=path))
+            return MarkdownResult(text=path)
 
         # та же обвязка, что ставит load_tools: id и intent вызова, журнал, ошибки
-        tools = [probe, canvas_open]
+        tools = list(ToolBridge.toolset([probe, canvas_open]))
         ToolCallIdField.attach_all(tools)
         ToolIntentField.attach_all(tools)
         ToolRunLogger.guard_all(

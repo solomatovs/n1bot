@@ -267,7 +267,9 @@ def catalog(store: ConnectionStore) -> Any:
     """Общий connection_list над тем же хранилищем, что и инструменты."""
     service = UserConnectionsService(lambda: store)
 
-    return build_connection_tools(ConnectionCatalogConfig(), service)[0]
+    built = build_connection_tools(ConnectionCatalogConfig(), service)[0]
+
+    return ToolBridge.as_structured_tool(built)
 
 
 @pytest.fixture
@@ -365,8 +367,9 @@ async def test_postgres_query_runs_as_the_signed_in_principal(
         pg_tools["pg_query"], connection="pg-me", sql="select current_user as who"
     )
 
-    if result.rows != [{"who": ROLE_NAME}]:
-        raise AssertionError(f"postgres must see the principal: {result.rows}")
+    rows = result.statements[0].rows
+    if rows != [{"who": ROLE_NAME}]:
+        raise AssertionError(f"postgres must see the principal: {rows}")
 
 
 async def test_clickhouse_query_runs_as_the_signed_in_principal(
@@ -381,8 +384,9 @@ async def test_clickhouse_query_runs_as_the_signed_in_principal(
         ch_tools["ch_query"], connection="ch-me", sql="select currentUser() as who"
     )
 
-    if result.rows != [{"who": ROLE_NAME}]:
-        raise AssertionError(f"clickhouse must see the principal: {result.rows}")
+    rows = result.statements[0].rows
+    if rows != [{"who": ROLE_NAME}]:
+        raise AssertionError(f"clickhouse must see the principal: {rows}")
 
 
 async def test_confluence_page_is_fetched_as_the_signed_in_principal(

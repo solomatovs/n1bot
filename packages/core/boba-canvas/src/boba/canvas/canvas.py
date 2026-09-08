@@ -25,7 +25,7 @@ from pydantic import (
 from boba.canvas.keys import ObjectKey
 from boba.identity.errors import RefusalError
 from boba.toolkit.channels import JournalChannel, JournalChannels, ToolChannel
-from boba.toolkit.result import CustomElementResult, DiagramResult
+from boba.toolkit.result import VisualResult
 
 __all__ = [
     "CanvasAction",
@@ -228,7 +228,7 @@ class OpenedCanvas:
     label: str
     path: str
     nonce: str
-    link: CustomElementResult | DiagramResult
+    link: VisualResult
 
 
 class CanvasPush(Protocol):

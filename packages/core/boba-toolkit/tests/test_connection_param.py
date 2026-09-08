@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, SecretStr, SerializationInfo, field_seria
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolEntryError
 from boba.toolkit.facade import Injected, PayloadTool, UserConnection, tool
 from boba.toolkit.protocol import ToolCommand
-from boba.toolkit.result import TextResult, ToolResult, pack_result
+from boba.toolkit.result import MarkdownResult
 from boba.toolkit.types import SecretRevealing
 
 PASSWORD = "connection-secret-value"
@@ -51,26 +51,26 @@ async def probe_query(
     connection: Annotated[StoredProfile, UserConnection],
     sql: Annotated[str, Field(min_length=1, description="Запрос")],
     cfg: Annotated[SectionConfig, Injected],
-) -> tuple[str, ToolResult]:
+) -> MarkdownResult:
     """Выполняет запрос на соединении пользователя."""
-    return pack_result(TextResult(text=f"{connection.host}|{sql}|{cfg.max_rows}"))
+    return MarkdownResult(text=f"{connection.host}|{sql}|{cfg.max_rows}")
 
 
 @tool
 async def probe_copy(
     source: Annotated[StoredProfile, UserConnection],
     target: Annotated[StoredProfile, UserConnection],
-) -> tuple[str, ToolResult]:
+) -> MarkdownResult:
     """Перекачивает данные между двумя соединениями пользователя."""
-    return pack_result(TextResult(text=f"{source.host}->{target.host}"))
+    return MarkdownResult(text=f"{source.host}->{target.host}")
 
 
 @tool
 async def probe_guarded(
     connection: Annotated[GuardedProfile, UserConnection],
-) -> tuple[str, ToolResult]:
+) -> MarkdownResult:
     """Работает с профилем, чей секрет остаётся в приложении."""
-    return pack_result(TextResult(text=connection.host))
+    return MarkdownResult(text=connection.host)
 
 
 def _profile(host: str = "db.local") -> StoredProfile:

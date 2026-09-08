@@ -19,7 +19,7 @@ from langchain_core.tools import BaseTool
 
 from boba.toolkit.failure import FailureText, ToolRefusalError
 from boba.toolkit.launcher import ErrorKind
-from boba.toolkit.result import ErrorResult, ToolResult, pack_result
+from boba.toolkit.result import ErrorResult
 from boba.toolrun.wrapping import CallHooks, ToolBody
 
 __all__ = ["ToolErrorGuard"]
@@ -55,13 +55,13 @@ class ToolErrorGuard:
         return ToolBody.hook_all(tools, cls._Hooks())
 
     @classmethod
-    def _failure(cls, name: str, error: Exception) -> tuple[str, ToolResult]:
-        return pack_result(
-            ErrorResult(
-                message=cls._message(name, error),
-                error_kind=cls._kind(error),
-            )
+    def _failure(cls, name: str, error: Exception) -> tuple[str, ErrorResult]:
+        failure = ErrorResult(
+            message=cls._message(name, error),
+            error_kind=cls._kind(error),
         )
+
+        return failure.packed()
 
     @classmethod
     def _message(cls, name: str, error: Exception) -> str:

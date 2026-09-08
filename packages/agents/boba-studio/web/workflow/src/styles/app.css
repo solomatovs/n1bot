@@ -42,179 +42,6 @@ button {
 }
 
 
-/* --- каркас: топбар, рейл, список, сцена --- */
-
-.shell {
-  display: grid;
-  grid-template-rows: var(--h-topbar) 1fr;
-  height: 100vh;
-  width: 100vw;
-  overflow: hidden;
-}
-
-.shell__body {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  min-height: 0;
-  min-width: 0;
-}
-
-.topbar__slot {
-  display: inline-flex;
-  width: 32px;
-  height: 32px;
-  flex: none;
-}
-
-.topbar__brand {
-  display: flex;
-  align-items: center;
-  gap: var(--s2);
-  font-family: var(--font-display);
-  font-size: 17px;
-  font-weight: 700;
-  color: var(--ink);
-  white-space: nowrap;
-}
-
-.topbar__brand b {
-  color: var(--signal);
-}
-
-.topbar__brand span {
-  font-weight: 400;
-  color: var(--muted);
-}
-
-
-.crumbs {
-  display: flex;
-  align-items: center;
-  gap: var(--s1);
-  font-family: var(--font-mono);
-  font-size: var(--fs-data);
-  color: var(--muted);
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-}
-
-.crumbs__sep {
-  color: var(--faint);
-}
-
-.crumbs__current {
-  color: var(--ink);
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.topbar__drawer {
-  display: inline-flex;
-}
-
-
-.list {
-  position: relative;
-  width: var(--w-list);
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  background: var(--surface);
-  border-right: 1px solid var(--hairline);
-}
-
-.list__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: var(--s3) var(--s3) var(--s2);
-}
-
-.list__count {
-  font-family: var(--font-mono);
-  font-size: var(--fs-data);
-  color: var(--ink);
-}
-
-.list__filter {
-  margin: 0 var(--s3) var(--s2);
-  padding: 8px 10px;
-  border: 1px solid var(--hairline);
-  border-radius: var(--r-cell);
-  background: var(--bg);
-  color: var(--ink);
-  font-family: var(--font-mono);
-  font-size: var(--fs-data);
-}
-
-.list__filter::placeholder {
-  color: var(--faint);
-}
-
-.list__scroll {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-}
-
-.list__new {
-  display: block;
-  margin: var(--s2) var(--s3);
-  padding: 9px;
-  text-align: center;
-  font-family: var(--font-mono);
-  font-size: var(--fs-data);
-  font-weight: 600;
-  color: var(--signal);
-  background: color-mix(in srgb, var(--signal) 8%, transparent);
-  border: 1px dashed color-mix(in srgb, var(--signal) 40%, transparent);
-  border-radius: var(--r-cell);
-  cursor: pointer;
-}
-
-.list__group {
-  display: flex;
-  align-items: center;
-  gap: var(--s2);
-  width: 100%;
-  padding: 8px var(--s3);
-  font-family: var(--font-mono);
-  font-size: var(--fs-data);
-  color: var(--ink);
-  border: 0;
-  border-bottom: 1px solid var(--hairline);
-  background: var(--surface);
-  text-align: left;
-  cursor: pointer;
-  position: sticky;
-  top: 0;
-  z-index: 1;
-}
-
-.list__group-count {
-  padding: 1px 7px;
-  border-radius: var(--r-pill);
-  background: var(--raised-2);
-  color: var(--muted);
-  font-size: var(--fs-micro);
-}
-
-
-.stage {
-  position: relative;
-  display: grid;
-  grid-template-rows: auto auto 1fr;
-  min-height: 0;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.stage--build {
-  grid-template-rows: auto auto 1fr;
-}
-
-
 /* --- vitals --- */
 
 .vitals {
@@ -317,19 +144,6 @@ button {
   color: var(--status-color, var(--muted));
   text-transform: uppercase;
   letter-spacing: 0.04em;
-}
-
-/* --- панель вида --- */
-
-.view {
-  position: relative;
-  min-height: 0;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.view--scroll {
-  overflow: auto;
 }
 
 /* --- таблица --- */
@@ -453,63 +267,6 @@ button {
 
 .tl__body {
   position: relative;
-}
-
-/* --- инспектор --- */
-
-.inspector {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: var(--w-inspector);
-  max-width: 100%;
-  display: flex;
-  flex-direction: column;
-  background: var(--surface);
-  border-left: 1px solid var(--hairline);
-  box-shadow: var(--shadow-pop);
-  z-index: 5;
-  animation: slide-in var(--t-panel) var(--ease-in);
-  overflow: auto;
-}
-
-@keyframes slide-in {
-  from {
-    transform: translateX(24px);
-    opacity: 0;
-  }
-  to {
-    transform: none;
-    opacity: 1;
-  }
-}
-
-.inspector__head {
-  display: flex;
-  align-items: center;
-  gap: var(--s2);
-  padding: var(--s3) var(--s4);
-  border-bottom: 1px solid var(--hairline);
-}
-
-.inspector__title {
-  flex: 1;
-  margin: 0;
-  font-family: var(--font-display);
-  font-size: var(--fs-title);
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.inspector__body {
-  padding: var(--s3) var(--s4);
-}
-
-.inspector__body h4 {
-  margin: var(--s3) 0 var(--s1);
 }
 
 /* --- итог задачи: строка на узле и разбор по kind в инспекторе --- */
@@ -1005,52 +762,12 @@ button {
 /* --- резиновость --- */
 
 @media (max-width: 900px) {
-  .shell__body {
-    grid-template-columns: 1fr;
-  }
-
-  .crumbs {
-    display: none;
-  }
-
-  /* список становится ящиком поверх сцены; открывает кнопка в топбаре */
-  .list {
-    position: fixed;
-    top: var(--h-topbar);
-    bottom: 0;
-    left: 0;
-    width: min(85vw, var(--w-list-max));
-    z-index: 7;
-    box-shadow: var(--shadow-pop);
-    transform: translateX(-100%);
-    transition: transform var(--t-panel) var(--ease-in);
-  }
-
-  .list--open {
-    transform: none;
-  }
-
   .react-flow__minimap {
     display: none;
   }
 
-  .inspector {
-    width: 100%;
-  }
-
   .tl {
     --tl-label: 110px;
-  }
-}
-
-@media (min-width: 901px) {
-  .list--collapsed {
-    width: 0;
-    min-width: 0;
-    padding: 0;
-    border-right: none;
-    overflow: hidden;
-    visibility: hidden;
   }
 }
 
@@ -1129,36 +846,6 @@ button {
   font-family: var(--font-mono);
   font-size: var(--fs-micro);
   color: var(--muted);
-}
-
-.connections {
-  display: grid;
-  grid-template-columns: 280px 1fr;
-  gap: var(--s3);
-  min-height: 420px;
-}
-
-.connections__list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  border: 1px solid var(--hairline);
-  border-radius: var(--r-cell);
-  padding: var(--s2);
-  background: var(--surface);
-}
-
-.connections__scene {
-  border: 1px solid var(--hairline);
-  border-radius: var(--r-cell);
-  padding: var(--s3);
-  background: var(--surface);
-}
-
-@media (max-width: 720px) {
-  .connections {
-    grid-template-columns: 1fr;
-  }
 }
 
 /* единое сообщение: блок, переносит текст, цвет по тону */

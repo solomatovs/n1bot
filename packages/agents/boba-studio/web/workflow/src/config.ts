@@ -57,10 +57,6 @@ const CatalogUrls = {
     return CatalogUrls.withSearch(`/catalog/drafts/${draftId}`, search);
   },
 
-  connections(): string {
-    return "/catalog/connections";
-  },
-
   connection(connectionId: string, query: ConnectionQuery = {}): string {
     const search = new URLSearchParams();
     if (query.v !== undefined) {
@@ -101,6 +97,11 @@ export class PageUrls {
 
   static account(): string {
     return "/account";
+  }
+
+  /** Соединения пользователя: одна страница на всю studio. */
+  static connections(): string {
+    return "/connections";
   }
 
   /** Билдер: без id — новый workflow. */
