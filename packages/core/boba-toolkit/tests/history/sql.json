@@ -1,0 +1,1 @@
+{"kind": "sql", "ok": true, "elapsed_ms": 0, "metadata": {}, "engine": "postgres", "statements": [{"rows": [{"a": 1}], "affected_rows": null, "status": "SELECT 1", "note": ""}]}
