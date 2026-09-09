@@ -440,6 +440,61 @@ class TestOpenAiChatProvider:
         if "".join(d.content for d in deltas) != "ответ":
             raise AssertionError(f"дельты: {deltas}")
 
+    async def test_null_delta_fields_are_empty(self) -> None:
+        """llama.cpp шлёт role-чанк с content: null и null в function."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = _sse(
+                {
+                    "choices": [
+                        {
+                            "finish_reason": None,
+                            "index": 0,
+                            "delta": {
+                                "role": "assistant",
+                                "content": None,
+                                "reasoning_content": None,
+                                "tool_calls": None,
+                            },
+                        }
+                    ],
+                    "created": 1788946810,
+                    "id": "chatcmpl-x",
+                    "model": "qwen",
+                    "object": "chat.completion.chunk",
+                },
+                _delta_chunk({"content": "ok"}),
+                _delta_chunk(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call-1",
+                                "function": {"name": None, "arguments": None},
+                            }
+                        ]
+                    }
+                ),
+                _delta_chunk(
+                    {
+                        "tool_calls": [
+                            {"index": 0, "function": {"name": "probe", "arguments": "{}"}}
+                        ]
+                    }
+                ),
+            )
+            return httpx.Response(200, content=body)
+
+        events = await _events(_provider(handler), REQUEST)
+
+        reply = events[-1]
+        if not isinstance(reply, ChatReply):
+            raise AssertionError("финал потока — ChatReply")
+        if reply.content != "ok":
+            raise AssertionError(reply.content)
+        if reply.tool_calls[0].name != "probe" or reply.tool_calls[0].arguments != {}:
+            raise AssertionError(reply.tool_calls)
+
     async def test_content_filter_finish_is_an_honest_error(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             body = _sse(

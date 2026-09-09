@@ -26,7 +26,7 @@ from httpx_sse import ServerSentEvent
 # декодер построчный, а не EventSource: вотчдог паузы считает каждую строку,
 # включая keepalive-комментарии прокси, и content-type сервера не проверяется
 from httpx_sse._decoders import SSEDecoder
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from boba.chat.provider import (
     ChatDelta,
@@ -102,6 +102,14 @@ class WireFunctionDelta(BaseModel):
     name: str = ""
     arguments: str = ""
 
+    @field_validator("name", "arguments", mode="before")
+    @classmethod
+    def _null_as_empty(cls, value: object) -> object:
+        if value is None:
+            return ""
+
+        return value
+
 
 class WireCallDelta(BaseModel):
     """Дельта вызова инструмента: копится по index."""
@@ -114,7 +122,7 @@ class WireCallDelta(BaseModel):
 
 
 class WireDelta(BaseModel):
-    """delta одного SSE-чанка."""
+    """delta одного SSE-чанка; провайдеры шлют null вместо отсутствующего поля."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -122,6 +130,22 @@ class WireDelta(BaseModel):
     reasoning_content: str = ""
     reasoning: str = ""
     tool_calls: Sequence[WireCallDelta] = ()
+
+    @field_validator("content", "reasoning_content", "reasoning", mode="before")
+    @classmethod
+    def _null_text_as_empty(cls, value: object) -> object:
+        if value is None:
+            return ""
+
+        return value
+
+    @field_validator("tool_calls", mode="before")
+    @classmethod
+    def _null_calls_as_empty(cls, value: object) -> object:
+        if value is None:
+            return ()
+
+        return value
 
     def reasoning_text(self) -> str:
         if self.reasoning_content:
