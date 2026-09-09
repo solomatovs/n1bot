@@ -65,9 +65,9 @@ def test_module_loads_and_validates_config(raw_config: DictConfig) -> None:
             "python3",
             "-m",
             MODULE,
-            "confluence_index_pages",
-            "--page-ids",
-            '["1"]',
+            "confluence_index_page",
+            "--page-id",
+            "1",
         ),
         config=b'{"cfg": {}}',
     )

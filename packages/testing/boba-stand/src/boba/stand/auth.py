@@ -14,7 +14,7 @@ from uuid import UUID
 from boba.chat.threads import ThreadOwnership
 from boba.identity.api import AuthenticatedUser, Authenticator, UserSettingsStore
 from boba.identity.errors import AuthenticationError
-from boba.identity.session import UserMetadataField
+from boba.identity.session import Login, UserMetadataField
 
 __all__ = ["MemoryUsers", "NoThreads", "NoUsers", "StubAuthenticator"]
 
@@ -55,7 +55,7 @@ class MemoryUsers(UserSettingsStore):
         self._user = user
         self.chosen: dict[UUID, str] = {}
 
-    async def get_user(self, identifier: str) -> AuthenticatedUser | None:
+    async def get_user(self, identifier: Login) -> AuthenticatedUser | None:
         if self._user is None:
             return None
 

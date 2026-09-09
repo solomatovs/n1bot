@@ -27,7 +27,7 @@ from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import MarkdownResult, TableResult
 from boba.toolkit.sql import RowOffset
 from boba.toolkit.types import LLMStringList, SecretRevealing
-from boba.transport.http import HttpxAuth
+from boba.transport.http import HttpRequest, HttpTransport
 from boba.transport.http.profile import HttpConnection
 
 _PAGE_ID_DESCRIPTION = "ID страницы Confluence (из URL `viewpage.action?pageId=<id>`)."
@@ -65,26 +65,23 @@ class ConfluenceToolsConfig(SecretRevealing):
 
 
 class ConfluenceHttp:
-    """Пути и запросы REST Confluence."""
+    """Запросы REST Confluence общим транспортом web-профиля: корень адреса
+    подставляет профиль, retry и auth — HttpTransport."""
 
     @staticmethod
     async def get(cfg: ConfluenceToolsConfig, path: str) -> bytes:
         profile = cfg.confluence
-        url = (profile.base_url or "").rstrip("/") + path
+        url = profile.url_of(path)
         try:
-            async with httpx.AsyncClient(
-                timeout=profile.timeout_sec,
-                verify=profile.ssl_verify,
-                follow_redirects=True,
-                auth=HttpxAuth.of(profile),
-            ) as client:
-                response = await client.get(url)
-                response.raise_for_status()
-                return await response.aread()
+            async with (
+                HttpTransport(profile) as transport,
+                transport.fetch(HttpRequest(url=path)) as got,
+            ):
+                return await got.stream.read()
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
-            head = exc.response.text[:200]
-            msg = f"GET {url} on confluence: expected 2xx, got {status}: {head!r}"
+            reason = exc.response.reason_phrase
+            msg = f"GET {url} on confluence: expected 2xx, got {status} {reason}"
             raise ConfluenceRequestError(msg) from exc
         except httpx.HTTPError as exc:
             msg = f"GET {url} on confluence: {type(exc).__name__}: {exc}"
@@ -177,7 +174,9 @@ class CqlSearch:
         return f"rows {first}-{last} of {total}; next offset={last}"
 
     @staticmethod
-    def hit_row(hit: dict[str, Any], base: str, snippet_chars: int) -> dict[str, Any]:
+    def hit_row(
+        hit: dict[str, Any], profile: HttpConnection, snippet_chars: int
+    ) -> dict[str, Any]:
         html = ConfluenceJson.body_html(hit, "view")
         excerpt = ConfluencePageText.excerpt_of(html, snippet_chars)
 
@@ -186,13 +185,15 @@ class CqlSearch:
         if isinstance(space, dict):
             space_key = str(space.get("key") or "")
 
-        webui = str(hit.get("_links", {}).get("webui") or "")
+        url = profile.root_url()
+        if webui := ConfluenceJson.webui(hit):
+            url = profile.url_of(webui)
 
         return {
             "page_id": str(hit.get("id") or ""),
             "title": str(hit.get("title") or ""),
             "space_key": space_key,
-            "url": f"{base}{webui}" if webui else base,
+            "url": str(url),
             "excerpt": excerpt,
         }
 
@@ -320,13 +321,10 @@ async def confluence_search(  # noqa: PLR0913 — окно выдачи зада
     )
 
     data = json.loads(await ConfluenceHttp.get(cfg, path))
-    base = ConfluenceJson.response_base(data)
-    if not base:
-        base = str(cfg.confluence.base_url or "").rstrip("/")
 
     rows: list[dict[str, Any]] = []
     for hit in data.get("results") or []:
-        rows.append(CqlSearch.hit_row(hit, base, snippet_chars))
+        rows.append(CqlSearch.hit_row(hit, cfg.confluence, snippet_chars))
 
     return TableResult(rows=rows, note=CqlSearch.page_note(data, offset, len(rows)))
 

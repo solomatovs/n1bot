@@ -71,8 +71,8 @@ class ConnectionProfileBase(BaseModel):
     description: str = Field(
         default="",
         description=(
-            "Для чего это соединение: текст читает LLM в connection_list, "
-            "чтобы выбрать имя под задачу пользователя."
+            "Для чего это соединение: текст читает LLM в connection_list и "
+            "connection_search, чтобы выбрать имя под задачу пользователя."
         ),
     )
 

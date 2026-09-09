@@ -16,7 +16,7 @@ from typing import Protocol
 from pydantic import BaseModel, ConfigDict
 
 from boba.identity.context import Credential, DelegatedTicket, NoUserCredential
-from boba.identity.session import SignInProvider, UserMetadataField
+from boba.identity.session import Login, SignInProvider, UserMetadataField
 
 __all__ = ["PasswordSignIn", "SignInMetadata", "SignedIn"]
 
@@ -149,7 +149,7 @@ class SignedIn(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    identifier: str
+    identifier: Login
     display_name: str
     sign_in: SignInMetadata
 

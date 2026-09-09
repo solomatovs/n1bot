@@ -24,11 +24,15 @@ pytestmark = pytest.mark.ui
 ADMIN_LOGIN = "admin"
 """Логин с ролью ADM: видит все инструменты, tools=['*']."""
 
-STAND_TOOLS = frozenset({"send_file", "diagram_save", "canvas_open", "connection_list"})
+STAND_TOOLS = frozenset(
+    {"send_file", "diagram_save", "canvas_open", "connection_list", "connection_search"}
+)
 """Инструменты, собранные стендом: песочные секции выключены StandConfig,
 остаются чатовые и каталог соединений."""
 
-DEV_ROLE_TOOLS = frozenset({"diagram_save", "send_file", "connection_list"})
+DEV_ROLE_TOOLS = frozenset(
+    {"diagram_save", "send_file", "connection_list", "connection_search"}
+)
 """Набор роли DEV в конфиге стенда: без canvas_open."""
 
 SEARCH_PROFILE_TOOLS = frozenset({"diagram_save", "canvas_open"})

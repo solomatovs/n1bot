@@ -13,7 +13,7 @@ import pytest
 from boba.config import bind
 from boba.tool.kb.confluence.ingest_tools import (
     IngestToolConfig,
-    confluence_index_pages,
+    confluence_index_page,
 )
 from boba.toolkit.entry import ToolMain
 
@@ -23,7 +23,7 @@ pytestmark = [pytest.mark.run, pytest.mark.anyio]
 class RunArgs:
     """Аргументы прогона: правятся перед запуском."""
 
-    PAGE_IDS: ClassVar[list[str]] = ["950276"]
+    PAGE_ID: ClassVar[str] = "950276"
 
     PRUNE_MISSING: ClassVar[bool] = False
 
@@ -36,13 +36,13 @@ def ingest_cfg(raw_config) -> IngestToolConfig:
 
 
 async def test_run_confluence_ingest(ingest_cfg: IngestToolConfig) -> None:
-    body = ToolMain.toolset(confluence_index_pages)[0].coroutine
+    body = ToolMain.toolset(confluence_index_page)[0].coroutine
     if body is None:
         raise AssertionError("body is not None")
 
     content = (
         await body(
-            page_ids=RunArgs.PAGE_IDS,
+            page_id=RunArgs.PAGE_ID,
             prune_missing=RunArgs.PRUNE_MISSING,
             force_update=RunArgs.FORCE_UPDATE,
             cfg=ingest_cfg,

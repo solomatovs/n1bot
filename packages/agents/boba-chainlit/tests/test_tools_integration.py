@@ -164,11 +164,7 @@ class ToolSetup:
     @staticmethod
     def web_connection(raw: Any) -> HttpConnection:
         """Профиль соединения теста: в бою его подаёт хост из строк субъекта."""
-        service = bind(raw, path="tool.ingest.confluence", model=HttpConnection)
-        if service.base_url is None:
-            raise AssertionError("[tool.ingest.confluence] has no base_url")
-
-        return service
+        return bind(raw, path="tool.ingest.confluence", model=HttpConnection)
 
     @staticmethod
     def sandbox_raw(raw: Any) -> Any:
@@ -320,7 +316,7 @@ def web_connection(raw_config) -> HttpConnection:
 @pytest.fixture(scope="module")
 def covered_url(raw_config) -> str:
     """Адрес под хостом соединения: другие хосты тело отвергнет."""
-    host = ToolSetup.web_connection(raw_config).host()
+    host = ToolSetup.web_connection(raw_config).host
     return f"https://{host}/"
 
 
@@ -1143,8 +1139,8 @@ class TestIngestTools:
         self, ingest_tools, confluence_page, kb_collection
     ) -> None:
         result = await Call.ok(
-            ingest_tools["confluence_index_pages"],
-            page_ids=[confluence_page["page_id"]],
+            ingest_tools["confluence_index_page"],
+            page_id=confluence_page["page_id"],
             prune_missing=False,
             force_update=True,
         )
@@ -1176,8 +1172,8 @@ class TestIngestTools:
     ) -> None:
         """Обход целого space'а: страницы уже в коллекции — переиндексации нет."""
         result = await Call.ok(
-            ingest_tools["confluence_index_spaces"],
-            space_keys=[confluence_page["space_key"]],
+            ingest_tools["confluence_index_space"],
+            space_key=confluence_page["space_key"],
             prune_missing=False,
             force_update=False,
         )
@@ -1193,8 +1189,8 @@ class TestIngestTools:
         """Несуществующий space — объявленный отказ с kind'ом инструмента."""
         with pytest.raises(PayloadFailureError) as failure:
             await Call.result(
-                ingest_tools["confluence_index_spaces"],
-                space_keys=["NOSUCHSPACE"],
+                ingest_tools["confluence_index_space"],
+                space_key="NOSUCHSPACE",
                 prune_missing=False,
                 force_update=False,
             )
@@ -1223,8 +1219,8 @@ class TestKbTools:
         self, kb_tools, ingest_tools, confluence_page
     ) -> None:
         await Call.ok(
-            ingest_tools["confluence_index_pages"],
-            page_ids=[confluence_page["page_id"]],
+            ingest_tools["confluence_index_page"],
+            page_id=confluence_page["page_id"],
             prune_missing=False,
             force_update=False,
         )
@@ -1245,8 +1241,8 @@ class TestKbTools:
         self, kb_tools, ingest_tools, confluence_page
     ) -> None:
         await Call.ok(
-            ingest_tools["confluence_index_pages"],
-            page_ids=[confluence_page["page_id"]],
+            ingest_tools["confluence_index_page"],
+            page_id=confluence_page["page_id"],
             prune_missing=False,
             force_update=False,
         )

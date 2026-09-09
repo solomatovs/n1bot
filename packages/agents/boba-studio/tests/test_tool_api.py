@@ -22,6 +22,7 @@ from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import CallContext, HumanInitiator, ScopeKind
 from boba.identity.errors import AuthenticationError, AuthorizationError
 from boba.identity.locks import MemoryLiveLocks
+from boba.identity.session import Login
 from boba.identity.signin import SignedIn, SignInMetadata
 from boba.identity.token import CookieSpec, SessionRenewal
 from boba.runtime.config import StudioRuntimeConfig
@@ -251,7 +252,7 @@ class TestAuthenticator:
         await users.setup()
         tester = await users.ensure_user(
             SignedIn(
-                identifier=f"tester-{uuid4().hex[:8]}",
+                identifier=Login(f"tester-{uuid4().hex[:8]}"),
                 display_name="Tester",
                 sign_in=SignInMetadata(
                     roles=frozenset(StandProfiles.roles(studio_config))
@@ -294,9 +295,11 @@ class TestAuthenticator:
         # токен подтверждает роли, но личность не заводит: без строки users входа нет
         nobody = f"nobody-{uuid4().hex[:8]}"
         stranger = issuer.issue(
-            SignedIn(identifier=nobody, display_name="", sign_in=SignInMetadata())
+            SignedIn(
+                identifier=Login(nobody), display_name="", sign_in=SignInMetadata()
+            )
         )
         with pytest.raises(AuthenticationError):
             await authenticator.user_of_token(stranger)
 
-        assert await users.get_user(nobody) is None
+        assert await users.get_user(Login(nobody)) is None

@@ -340,7 +340,14 @@ class StandConfig:
         """
         doc["roles"] = {
             "ADM": {"tools": ["*"]},
-            "DEV": {"tools": ["diagram_save", "send_file", "connection_list"]},
+            "DEV": {
+                "tools": [
+                    "diagram_save",
+                    "send_file",
+                    "connection_list",
+                    "connection_search",
+                ]
+            },
             "GST": {"tools": []},
         }
 

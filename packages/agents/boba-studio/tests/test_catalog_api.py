@@ -35,6 +35,7 @@ from boba.db.postgres.profile import PostgresConfig
 from boba.db.postgres.snapshot_sample import PgSample
 from boba.identity.api import AuthenticatedUser
 from boba.identity.errors import ServiceDisabledError
+from boba.identity.session import Login
 from boba.identity.signin import SignInMetadata
 from boba.stand.catalog_ports import (
     FakeConnections,
@@ -70,7 +71,7 @@ STAND_CONNECTIONS = (PG_CONNECTION, CH_CONNECTION, ORACLE_CONNECTION)
 def _user(user_id: UUID, *roles: str) -> AuthenticatedUser:
     return AuthenticatedUser(
         id=user_id,
-        identifier=f"user-{user_id.int}",
+        identifier=Login(f"user-{user_id.int}"),
         sign_in=SignInMetadata(roles=frozenset(roles)),
     )
 
@@ -842,10 +843,10 @@ async def connections_stand(
     return Stand(service, ChatProfiles(studio_config.profiles), connections)
 
 
-def _web_body(name: str, url: str) -> dict[str, object]:
+def _web_body(name: str, host: str) -> dict[str, object]:
     return {
         "name": name,
-        "profile": {"kind": "web", "base_url": url, "ssl_verify": False},
+        "profile": {"kind": "web", "host": host, "port": 443, "ssl_verify": False},
     }
 
 
@@ -857,9 +858,9 @@ async def test_connections_are_served_next_to_the_catalog(
     удаляются, чужие не видны, вход обязателен."""
     stand = connections_stand
     roles = StoredRole.by_name(await connections.roles())
-    shared = await connections.add("shared", HttpConnection(base_url="https://a.test"))
+    shared = await connections.add("shared", HttpConnection(host="a.test", port=443))
     await connections.grant(shared, GrantTarget.role(roles[CONNECTION_ROLE]))
-    hidden = await connections.add("hidden", HttpConnection(base_url="https://b.test"))
+    hidden = await connections.add("hidden", HttpConnection(host="b.test", port=443))
     await connections.grant(hidden, GrantTarget.user(UUID(int=999_999)))
 
     async with stand.client(None) as client:
@@ -878,7 +879,7 @@ async def test_connections_are_served_next_to_the_catalog(
 
         created = await client.post(
             Stand.api_url(ConnectionUrl.CONNECTIONS),
-            json=_web_body("mine", "https://c.test"),
+            json=_web_body("mine", "c.test"),
         )
         assert created.status_code == 200, created.text
         assert created.json()["mine"] is True
@@ -891,7 +892,7 @@ async def test_connections_are_served_next_to_the_catalog(
 
         replaced = await client.put(
             Stand.api_url(ConnectionUrl.CONNECTION, connection_id=connection_id),
-            json=_web_body("mine2", "https://c.test"),
+            json=_web_body("mine2", "c.test"),
         )
         assert replaced.status_code == 200
         assert replaced.json()["name"] == "mine2"

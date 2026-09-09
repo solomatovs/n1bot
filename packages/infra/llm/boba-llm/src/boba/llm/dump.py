@@ -125,7 +125,7 @@ class DumpChannel:
         return self._current.get()
 
     @contextlib.contextmanager
-    def activate(self, path: Path) -> Generator[HttpDump]:
+    def activate(self, path: Path) -> Generator[HttpDump, None, None]:
         with HttpDump(path) as dump:
             prev = self._current.get()
             self._current.set(dump)

@@ -14,7 +14,6 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 from typing import Any, ClassVar
-from urllib.parse import urlparse
 
 import pytest
 from omegaconf import OmegaConf
@@ -99,7 +98,8 @@ class Stand(BaseModel):
     ch_user: str = Field(default="", description="Пользователь clickhouse с паролем.")
     ch_password: SecretStr = SecretStr("")
 
-    confluence_url: str
+    confluence_host: str
+    confluence_port: int
     confluence_token: SecretStr = SecretStr("")
 
     @classmethod
@@ -171,15 +171,6 @@ class Stand(BaseModel):
     def ch_spn(self) -> str:
         """SPN clickhouse в форме hostbased."""
         return f"{self.ch_krbsrvname}@{self.ch_host}"
-
-    @property
-    def confluence_host(self) -> str:
-        host = urlparse(self.confluence_url).hostname
-        if host is None:
-            msg = f"stand: confluence_url has no host: {self.confluence_url!r}"
-            raise StandError(msg)
-
-        return host
 
     @property
     def confluence_spn(self) -> str:

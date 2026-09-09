@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Sequence
 from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
@@ -20,7 +21,7 @@ from boba.connection_broker.user_connections import UserConnections
 from boba.connections.base import ClientIdentity, ConnectionProfileBase
 from boba.connections.manifest import ConnectionTypeManifest, ConnectionTypes
 from boba.connections.marks import ConnectionRefusal
-from boba.connections.profile import StoredConnection
+from boba.connections.profile import GrantedConnection, StoredConnection
 from boba.identity.context import (
     CallContext,
     HumanInitiator,
@@ -90,11 +91,19 @@ class Rows:
 
     async def for_subject(
         self, subject: Subject, kind: str
-    ) -> Sequence[StoredConnection]:
-        found: list[StoredConnection] = []
+    ) -> Sequence[GrantedConnection]:
+        """Как SubjectGrantsQuery: дубль — одно имя дважды внутри вида."""
+        names: Counter[str] = Counter()
         for row in self._rows:
             if row.kind == kind:
-                found.append(row)
+                names[row.name] += 1
+
+        found: list[GrantedConnection] = []
+        for row in self._rows:
+            if row.kind != kind:
+                continue
+
+            found.append(GrantedConnection(row=row, ambiguous=names[row.name] > 1))
 
         return found
 

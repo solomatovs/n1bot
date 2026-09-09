@@ -15,7 +15,7 @@ import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, TypeVar
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import quote, urlencode
 
 from pydantic import BaseModel
 
@@ -37,10 +37,10 @@ from boba.tool.kb.confluence.parsing import ConfluenceJson
 from boba.tool.kb.indexing_log import IngestProgress
 from boba.toolkit.timing import Elapsed
 from boba.transport.http import CancellableHttpTransport, HttpRequest
+from boba.transport.http.profile import HttpConnection
 
 __all__ = [
     "ConfluenceCqlRequestSource",
-    "ConfluenceMultiSpaceRequestSource",
     "ConfluencePagesRequestSource",
     "ConfluencePaginator",
     "ConfluenceRequest",
@@ -58,9 +58,9 @@ class ConfluenceRequest(Request):
     """Индексационный план запроса Confluence: чистый HTTP + metadata.
 
     Удовлетворяет Request-протокол (только metadata). source_id НЕ часть запроса:
-    его выводит транспорт из реально запрашиваемого URL (base_url профиля +
+    его выводит транспорт из реально запрашиваемого URL (корень профиля +
     http.url, без волатильного query) — см. ConfluenceHttpTransport.source_id.
-    Поэтому http.url несёт только path; base_url знает профиль/транспорт.
+    Поэтому http.url несёт только path; корень адреса знает профиль/транспорт.
     Логические/презентационные URL (viewpage и т.п.) живут в metadata.
 
     http — чистый HttpRequest (path), который исполняет HttpTransport. Обогащение
@@ -137,11 +137,6 @@ class ConfluenceRest:
         return urlencode(params, quote_via=quote, safe=",")
 
     @staticmethod
-    def extract_host(base_url: str) -> str:
-        netloc = urlparse(base_url).netloc
-        return netloc or base_url.split("://", 1)[-1].split("/", 1)[0]
-
-    @staticmethod
     def make_page_request(
         *,
         host: str,
@@ -161,7 +156,7 @@ class ConfluenceRest:
     @staticmethod
     def make_attachment_request(
         *,
-        base_url: str,
+        profile: HttpConnection,
         parent_metadata: Metadata,
         attachment: AttachmentInfo,
     ) -> ConfluenceRequest:
@@ -182,12 +177,11 @@ class ConfluenceRest:
             meta = meta.set(ConfluenceKeys.ANCESTORS_TITLES, ancestors)
         if (parent_url := parent_metadata.get(ConfluenceKeys.SOURCE_URL)) is not None:
             meta = meta.set(ConfluenceKeys.PARENT_URL, parent_url)
-        base = base_url.rstrip("/")
         att_path = attachment.download_path
         if attachment.webui:
             att_path = attachment.webui
-        att_url = f"{base}{att_path}"
-        meta = meta.set(ConfluenceKeys.SOURCE_URL, att_url)
+
+        meta = meta.set(ConfluenceKeys.SOURCE_URL, str(profile.url_of(att_path)))
         return ConfluenceRequest(
             http=HttpRequest(url=attachment.download_path, method="GET"),
             metadata=meta,
@@ -204,8 +198,8 @@ class ConfluencePaginator:
     исключение пробрасывается наверх (caller решает: fail или degrade).
 
     Исполнение и retry (5xx/transport) — внутри HttpTransport, собранного из
-    conn.profile; пагинатор лишь строит path и парсит JSON, а base_url к нему
-    подставляет httpx-клиент из профиля (CancellableHttpTransport(base_url=...)).
+    conn.profile; пагинатор лишь строит path и парсит JSON, а корень адреса
+    к нему подставляет httpx-клиент из профиля (root_url()).
     """
 
     def __init__(self, conn: ConfluenceConnection):
@@ -302,7 +296,7 @@ class ConfluenceCqlRequestSource(RequestSource[ConfluenceRequest]):
         self._conn = conn
         self._cql = cql
         self._body_format = body_format
-        self._host = ConfluenceRest.extract_host(conn.base_url)
+        self._host = conn.profile.address_host()
         self._progress = progress
 
     async def requests(self) -> AsyncIterator[ConfluenceRequest]:
@@ -325,12 +319,12 @@ class ConfluencePagesRequestSource(RequestSource[ConfluenceRequest]):
     def __init__(
         self,
         *,
-        base_url: str,
+        profile: HttpConnection,
         page_ids: Sequence[str],
         body_format: str,
         progress: IngestProgress,
     ) -> None:
-        self._host = ConfluenceRest.extract_host(base_url)
+        self._host = profile.address_host()
         self._page_ids = list(page_ids)
         self._body_format = body_format
         self._progress = progress
@@ -362,7 +356,7 @@ class ConfluenceSpaceRequestSource(RequestSource[ConfluenceRequest]):
         self._conn = conn
         self._space_key = space_key
         self._body_format = body_format
-        self._host = ConfluenceRest.extract_host(conn.base_url)
+        self._host = conn.profile.address_host()
         self._progress = progress
 
     @property
@@ -370,8 +364,9 @@ class ConfluenceSpaceRequestSource(RequestSource[ConfluenceRequest]):
         return self._space_key
 
     async def requests(self) -> AsyncIterator[ConfluenceRequest]:
-        """Закрытие обнаружения — за владельцем обхода: space'ов может быть много."""
+        """Страницы обнаружены полностью после последней страницы space."""
         logger.info("discovery start: space %s", self._space_key)
+        self._progress.spaces_found(1)
         pages = ConfluencePaginator.discover_space_pages(
             self._conn,
             self._space_key,
@@ -384,53 +379,5 @@ class ConfluenceSpaceRequestSource(RequestSource[ConfluenceRequest]):
                 body_format=self._body_format,
             )
 
-
-class ConfluenceMultiSpaceRequestSource(RequestSource[ConfluenceRequest]):
-    """Все страницы из НЕСКОЛЬКИХ space'ов — последовательно через
-    ConfluenceSpaceRequestSource для каждого ключа.
-
-    Pipeline-семантика: всё ведёт себя как ОДНА выгрузка над union страниц.
-    Cleanup идёт через touch-based mark (reconcile refresh'ит updated_at для
-    всех виденных chunk'ов; FullCleanup сносит остальные).
-    """
-
-    def __init__(
-        self,
-        *,
-        conn: ConfluenceConnection,
-        space_keys: Sequence[str],
-        body_format: str,
-        progress: IngestProgress,
-    ) -> None:
-        if not space_keys:
-            msg = (
-                "confluence multi-space source expects at least one space key, "
-                "got an empty space_keys"
-            )
-            raise ValueError(msg)
-
-        self._inner: list[ConfluenceSpaceRequestSource] = []
-        for key in space_keys:
-            self._inner.append(
-                ConfluenceSpaceRequestSource(
-                    conn=conn,
-                    space_key=key,
-                    body_format=body_format,
-                    progress=progress,
-                )
-            )
-
-        self._space_keys = tuple(space_keys)
-        self._host = ConfluenceRest.extract_host(conn.base_url)
-        self._progress = progress
-        progress.spaces_found(len(self._space_keys))
-
-    async def requests(self) -> AsyncIterator[ConfluenceRequest]:
-        """Space'ы идут подряд; страницы обнаружены полностью после последнего."""
-        for src in self._inner:
-            async for request in src.requests():
-                yield request
-
-            self._progress.space_done(src.space_key)
-
+        self._progress.space_done(self._space_key)
         self._progress.pages_closed()

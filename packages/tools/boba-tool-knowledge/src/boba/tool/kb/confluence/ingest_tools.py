@@ -46,9 +46,9 @@ from boba.tool.kb.confluence.ingest_base import (
 )
 from boba.tool.kb.confluence.request_sources import (
     ConfluenceCqlRequestSource,
-    ConfluenceMultiSpaceRequestSource,
     ConfluencePagesRequestSource,
     ConfluenceRequest,
+    ConfluenceSpaceRequestSource,
 )
 from boba.tool.kb.confluence.tools import ConfluenceHttp, ConfluenceToolsConfig
 from boba.tool.kb.indexing_log import IngestProgress, LoggingReader
@@ -57,7 +57,7 @@ from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool, warmup
 from boba.toolkit.result import MarkdownResult, TableResult
 from boba.toolkit.timing import Elapsed
-from boba.toolkit.types import LLMStringList, SecretRevealing
+from boba.toolkit.types import SecretRevealing
 
 logger = logging.getLogger("boba.tool.kb.confluence.ingest")
 
@@ -237,15 +237,14 @@ class IngestRun:
 
 
 @tool
-async def confluence_index_pages(  # noqa: PLR0913 — фасад LLM, параметры независимы
-    page_ids: Annotated[
-        LLMStringList,
+async def confluence_index_page(  # noqa: PLR0913 — фасад LLM, параметры независимы
+    page_id: Annotated[
+        str,
         Field(
             min_length=1,
             description=(
-                "Список page_id страниц Confluence для индексации, "
-                'например ["950276", "950278"]. Каждый id — строка '
-                "из URL `viewpage.action?pageId=<id>`."
+                "page_id страницы Confluence для индексации, например \"950276\": "
+                "строка из URL `viewpage.action?pageId=<id>`."
             ),
         ),
     ],
@@ -278,16 +277,18 @@ async def confluence_index_pages(  # noqa: PLR0913 — фасад LLM, пара�
     *,
     cfg: Annotated[IngestToolConfig, Injected],
 ) -> TableResult:
-    """Индексирует явный список страниц Confluence по page_id."""
+    """Индексирует одну страницу Confluence по page_id."""
     run_cfg = cfg.with_parser(
-        ocr_enabled=ocr_enabled, num_workers=num_workers, ocr_language=ocr_language
+        ocr_enabled=ocr_enabled,
+        num_workers=num_workers,
+        ocr_language=ocr_language,
     )
 
     conn = IngestRun.connection(run_cfg)
     progress = IngestProgress(logger)
     source = ConfluencePagesRequestSource(
-        base_url=conn.base_url,
-        page_ids=list(page_ids),
+        profile=conn.profile,
+        page_ids=(page_id,),
         body_format=conn.body_format,
         progress=progress,
     )
@@ -302,8 +303,7 @@ async def confluence_index_pages(  # noqa: PLR0913 — фасад LLM, пара�
         skip_failed=skip_failed,
     )
 
-    note = f"page_ids ({len(page_ids)}): {', '.join(page_ids)}"
-    return TableResult(rows=[stats], note=note)
+    return TableResult(rows=[stats], note=f"page_id: {page_id}")
 
 
 @tool
@@ -361,12 +361,12 @@ async def confluence_index_cql(  # noqa: PLR0913 — фасад LLM, парам�
 
 
 @tool
-async def confluence_index_spaces(  # noqa: PLR0913 — фасад LLM, параметры независимы
-    space_keys: Annotated[
-        LLMStringList,
+async def confluence_index_space(  # noqa: PLR0913 — фасад LLM, параметры независимы
+    space_key: Annotated[
+        str,
         Field(
             min_length=1,
-            description='Ключи спейсов целиком, например ["DQ", "IPKD"].',
+            description='Ключ спейса целиком, например "DQ".',
         ),
     ],
     prune_missing: Annotated[
@@ -389,16 +389,16 @@ async def confluence_index_spaces(  # noqa: PLR0913 — фасад LLM, пара
     *,
     cfg: Annotated[IngestToolConfig, Injected],
 ) -> TableResult:
-    """Индексирует спейсы Confluence целиком."""
+    """Индексирует спейс Confluence целиком."""
     run_cfg = cfg.with_parser(
         ocr_enabled=ocr_enabled, num_workers=num_workers, ocr_language=ocr_language
     )
 
     conn = IngestRun.connection(run_cfg)
     progress = IngestProgress(logger)
-    source = ConfluenceMultiSpaceRequestSource(
+    source = ConfluenceSpaceRequestSource(
         conn=conn,
-        space_keys=list(space_keys),
+        space_key=space_key,
         body_format=conn.body_format,
         progress=progress,
     )
@@ -413,8 +413,7 @@ async def confluence_index_spaces(  # noqa: PLR0913 — фасад LLM, пара
         skip_failed=skip_failed,
     )
 
-    note = f"space_keys ({len(space_keys)}): {', '.join(space_keys)}"
-    return TableResult(rows=[stats], note=note)
+    return TableResult(rows=[stats], note=f"space_key: {space_key}")
 
 
 @tool
@@ -513,9 +512,9 @@ EXPECTED: Mapping[type[Exception], IngestErrorKind] = {
 }
 
 TOOLS: Final = ToolMain.toolset(
-    confluence_index_pages,
+    confluence_index_page,
     confluence_index_cql,
-    confluence_index_spaces,
+    confluence_index_space,
     confluence_attachment,
 )
 

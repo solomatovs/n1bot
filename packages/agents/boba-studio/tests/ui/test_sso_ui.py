@@ -31,7 +31,7 @@ from boba.stand.ui.stand import (
     free_port,
 )
 from boba.transport.http import HttpRequest, HttpTransport
-from boba.transport.http.profile import HttpConnection, NegotiateAuth
+from boba.transport.http.profile import HttpConnection, NegotiateAuth, UrlScheme
 
 pytestmark = pytest.mark.ui
 
@@ -242,7 +242,10 @@ def _visit(profile: HttpConnection, request: HttpRequest) -> None:
 def test_studio_accepts_negotiate_on_its_own_url(sso_stand: StandProcess) -> None:
     """Тот же обмен на URL studio: вход принят, делегирование сохранено."""
     profile = HttpConnection(
-        base_url=_domain_url(sso_stand),
+        scheme=UrlScheme.HTTP,
+        host=STAND.krb_domain,
+        port=sso_stand.config.app_port,
+        path=sso_stand.config.url_prefix,
         auth=NegotiateAuth(
             method="negotiate",
             kerberos=KerberosPasswordAuth(

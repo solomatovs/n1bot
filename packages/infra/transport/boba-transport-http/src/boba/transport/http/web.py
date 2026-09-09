@@ -1,7 +1,7 @@
 """Привязка web-профиля к хосту запроса: проверка покрытия делается в теле.
 
 Профиль соединения приходит инструменту параметром вызова; хост URL, который
-инструмент собирается открыть, обязан попадать под base_url профиля — точный
+инструмент собирается открыть, обязан попадать под host профиля — точный
 или шаблон `*.domain`. Проверку делает сам инструмент: только он знает, какой
 именно URL запрашивает.
 
@@ -35,7 +35,7 @@ class WebHost:
         if not profile.covers(host):
             msg = (
                 f"web: host {host!r} is outside the chosen connection "
-                f"(it covers {profile.host()!r}). URL={url!r}"
+                f"(it covers {profile.host!r}). URL={url!r}"
             )
             raise UnknownHostError(msg)
 

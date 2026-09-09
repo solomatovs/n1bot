@@ -38,7 +38,7 @@ from boba.stand.ui.stand import (
     free_port,
 )
 from boba.transport.http import HttpRequest, HttpTransport
-from boba.transport.http.profile import HttpConnection, NegotiateAuth
+from boba.transport.http.profile import HttpConnection, NegotiateAuth, UrlScheme
 
 pytestmark = pytest.mark.ui
 
@@ -262,7 +262,10 @@ def test_server_accepts_negotiate_and_keeps_the_delegated_ticket(
     браузере, а не в приложении.
     """
     profile = HttpConnection(
-        base_url=_domain_url(sso_stand),
+        scheme=UrlScheme.HTTP,
+        host=STAND.krb_domain,
+        port=sso_stand.config.app_port,
+        path=sso_stand.config.url_prefix,
         auth=NegotiateAuth(
             method="negotiate",
             kerberos=KerberosPasswordAuth(

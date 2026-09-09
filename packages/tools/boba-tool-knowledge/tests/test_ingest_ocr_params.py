@@ -26,7 +26,7 @@ def _config() -> IngestToolConfig:
                 "batch_size": 4,
                 "progress_every": 1,
             },
-            "confluence": {"base_url": "https://confl.example"},
+            "confluence": {"host": "confl.example", "port": 443},
             "tessdata_path": "/usr/share/tessdata",
             "page_workers": 1,
         }
@@ -40,9 +40,9 @@ def chainlit_context() -> None:
 
 class TestIngestOcrParams:
     _NAMES: ClassVar[list[str]] = [
-        "confluence_index_pages",
+        "confluence_index_page",
         "confluence_index_cql",
-        "confluence_index_spaces",
+        "confluence_index_space",
         "confluence_attachment",
     ]
 
@@ -76,9 +76,9 @@ class TestIngestOcrParams:
     @pytest.mark.parametrize(
         "name",
         [
-            "confluence_index_pages",
+            "confluence_index_page",
             "confluence_index_cql",
-            "confluence_index_spaces",
+            "confluence_index_space",
             "confluence_attachment",
         ],
     )

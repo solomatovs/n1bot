@@ -727,34 +727,11 @@ class TestNoConnections:
 
         _expect(result, "KeytabError", "absent.keytab")
 
-    async def test_web_row_without_base_url_covers_no_host(
-        self, raw_config, store, layer
-    ) -> None:
-        user = await Session.user(layer, "f-web", Session.local())
-        row = HttpConnection(ssl_verify=False)
-        await store.grant(
-            await store.add("blank", row), GrantTarget.user(UUID(user.id))
-        )
-        Session.enter(user, Session.local())
-
-        result = await Guarded.failure(
-            Guarded.web(raw_config, store),
-            url="https://example.com/",
-            connection="blank",
-        )
-
-        _expect(
-            result,
-            "UnknownHostError",
-            "host 'example.com' is outside the chosen connection",
-            "it covers ''",
-        )
-
     async def test_web_url_outside_the_connection_host(
         self, raw_config, store, layer
     ) -> None:
         user = await Session.user(layer, "f-web-host", Session.local())
-        row = HttpConnection(base_url="https://*.example.com", ssl_verify=False)
+        row = HttpConnection(host="*.example.com", port=443, ssl_verify=False)
         await store.grant(await store.add("lab", row), GrantTarget.user(UUID(user.id)))
         Session.enter(user, Session.local())
 

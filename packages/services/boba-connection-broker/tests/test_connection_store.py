@@ -71,7 +71,8 @@ def _ch() -> ClickHouseConfig:
 
 def _web(token: str) -> HttpConnection:
     return HttpConnection(
-        base_url="https://confl",
+        host="confl",
+        port=443,
         auth=BearerAuth(method="bearer", token=SecretStr(token)),
     )
 
@@ -293,15 +294,15 @@ async def test_for_subject_by_user_role_and_kind(store: ConnectionStore) -> None
 
     reader = _subject(UUID(int=1), ["read"])
     pg_rows = await store.for_subject(reader, "postgres")
-    if {row.id for row in pg_rows} != {personal, shared}:
+    if {item.row.id for item in pg_rows} != {personal, shared}:
         raise AssertionError(f"reader must see personal and role rows: {pg_rows}")
 
     web_rows = await store.for_subject(reader, "web")
-    if [row.id for row in web_rows] != [web]:
+    if [item.row.id for item in web_rows] != [web]:
         raise AssertionError("kind filter must hold")
 
     ch_rows = await store.for_subject(reader, "clickhouse")
-    if [row.id for row in ch_rows] != [ch]:
+    if [item.row.id for item in ch_rows] != [ch]:
         raise AssertionError("clickhouse rows must be selectable")
 
     stranger = _subject(UUID(int=2), [])
@@ -309,10 +310,11 @@ async def test_for_subject_by_user_role_and_kind(store: ConnectionStore) -> None
         raise AssertionError("stranger must see nothing")
 
     writer = _subject(UUID(int=2), ["wrt"])
-    if [row.id for row in await store.for_subject(writer, "postgres")] != [other_role]:
+    writer_rows = await store.for_subject(writer, "postgres")
+    if [item.row.id for item in writer_rows] != [other_role]:
         raise AssertionError("role grant must be visible to any role holder")
 
-    if nobody in [row.id for row in pg_rows]:
+    if nobody in [item.row.id for item in pg_rows]:
         raise AssertionError("ungranted row must stay invisible")
 
 
@@ -327,8 +329,33 @@ async def test_for_subject_lists_doubly_granted_row_once(
 
     rows = await store.for_subject(_subject(UUID(int=1), ["read"]), "postgres")
 
-    if [row.id for row in rows] != [connection_id]:
+    if [item.row.id for item in rows] != [connection_id]:
         raise AssertionError("row granted twice must be listed once")
+
+    if rows[0].ambiguous:
+        raise AssertionError("one row granted twice is not a duplicate name")
+
+
+async def test_for_subject_marks_duplicate_names_within_a_kind(
+    store: ConnectionStore,
+) -> None:
+    await store.sync_roles(["read"])
+    roles = StoredRole.by_name(await store.roles())
+    personal = await store.add("main", _pg(FakeSecret.DB))
+    by_role = await store.add("main", _pg(FakeSecret.DB))
+    web = await store.add("main", _web(FakeSecret.HTTP_BEARER))
+    await store.grant(personal, GrantTarget.user(UUID(int=1)))
+    await store.grant(by_role, GrantTarget.role(roles["read"]))
+    await store.grant(web, GrantTarget.user(UUID(int=1)))
+
+    subject = _subject(UUID(int=1), ["read"])
+    pg_rows = await store.for_subject(subject, "postgres")
+    if {item.ambiguous for item in pg_rows} != {True}:
+        raise AssertionError(f"same name within a kind is a duplicate: {pg_rows}")
+
+    web_rows = await store.for_subject(subject, "web")
+    if [item.ambiguous for item in web_rows] != [False]:
+        raise AssertionError(f"same name in another kind is unique: {web_rows}")
 
 
 async def test_revoke_takes_effect_immediately(store: ConnectionStore) -> None:

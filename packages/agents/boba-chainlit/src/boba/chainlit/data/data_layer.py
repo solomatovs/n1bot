@@ -40,7 +40,7 @@ from boba.chat.threads import (
 )
 from boba.identity.api import StoredUser, UserRows
 from boba.identity.context import Scope
-from boba.identity.session import SessionSource
+from boba.identity.session import Login, SessionSource
 from boba.identity.signin import SignInMetadata
 from boba.messaging import (
     AnyMessage,
@@ -336,7 +336,8 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
 
     @data_boundary
     async def get_user(self, identifier: str) -> PersistedUser | None:
-        stored = await self._users.stored(identifier)
+        # граница chainlit: identifier из его JWT приходит как набран
+        stored = await self._users.stored(Login(identifier))
         if stored is None:
             return None
 
@@ -347,7 +348,7 @@ class PostgresDataLayer(AttachmentDataLayer, ThreadOwnership):
         # в строку users уходит только вход без билета; настройки строки не трогаются
         sign_in = SignInMetadata.parse(dict(user.metadata))
         stored = await self._users.upsert(
-            user.identifier, sign_in.persistable().render()
+            Login(user.identifier), sign_in.persistable().render()
         )
 
         return ThreadDicts.user(stored)

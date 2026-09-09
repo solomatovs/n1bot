@@ -17,6 +17,7 @@ from boba.chainlit.infra.log_context import (
     UserLogContext,
 )
 from boba.chainlit.infra.session import ChainlitSession
+from boba.identity.session import Login
 from boba.identity.signin import SignedIn, SignInMetadata
 
 
@@ -125,7 +126,7 @@ class TestRequestUserMiddleware:
             seen.append(RequestUserContext.get())
 
         signed = SignedIn(
-            identifier="sidorov", display_name="", sign_in=SignInMetadata()
+            identifier=Login("sidorov"), display_name="", sign_in=SignInMetadata()
         )
         token = JwtTokens(self.SECRET, 60).issue(signed)
         scope = self._scope([(b"authorization", f"Bearer {token}".encode())])

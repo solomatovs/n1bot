@@ -17,9 +17,17 @@ from collections.abc import Iterator, Mapping
 from enum import StrEnum
 from typing import Any, ClassVar, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from boba.identity.context import DelegatedTicket
+from boba.identity.session import Login
 from boba.identity.signin import SignedIn, SignInMetadata
 from boba.toolkit.failure import ValidationText
 
@@ -78,7 +86,7 @@ class SessionClaims(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="ignore")
 
-    identifier: str = Field(min_length=1)
+    identifier: Login
     display_name: str = ""
     metadata: Mapping[str, object] = Field(default_factory=dict)
     exp: int = Field(gt=0)
@@ -95,6 +103,25 @@ class SessionClaims(BaseModel):
             return ""
 
         return value
+
+    @model_validator(mode="before")
+    @classmethod
+    def _display_from_identifier(cls, data: object) -> object:
+        """Токен без имени (чужой выпуск по секрету) показывает логин как набран."""
+        if not isinstance(data, Mapping):
+            return data
+
+        if data.get(ClaimKey.DISPLAY_NAME.value):
+            return data
+
+        raw = data.get(ClaimKey.IDENTIFIER.value)
+        if not isinstance(raw, str):
+            return data
+
+        filled = dict(data)
+        filled[ClaimKey.DISPLAY_NAME.value] = raw.strip()
+
+        return filled
 
     @classmethod
     def of_signed(cls, signed: SignedIn, issued_at: int, ttl_sec: int) -> SessionClaims:

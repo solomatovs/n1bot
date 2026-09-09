@@ -48,6 +48,7 @@ from boba.chainlit.domain.fields import ElementField, FileField
 from boba.chainlit.domain.keys import AppPrefix
 from boba.chainlit.infra.session import ChainlitSession, session_source_ref
 from boba.identity.errors import AuthenticationError
+from boba.identity.session import Login
 from boba.toolkit.channels import JournalChannels, ToolChannel
 from boba.toolkit.failure import ValidationText
 from boba.workspace.launcher import ReadWindow
@@ -738,7 +739,8 @@ class UploadRoute:
         if not current_user:
             return session
 
-        if session.identifier != current_user.identifier:
+        # current_user — cl.User из JWT chainlit, логин в нём как набран
+        if session.identifier != Login(current_user.identifier):
             msg = (
                 f"session {session_id} belongs to another user: "
                 f"{session.identifier!r}, not {current_user.identifier!r}"

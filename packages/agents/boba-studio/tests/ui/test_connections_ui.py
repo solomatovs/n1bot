@@ -72,9 +72,10 @@ def test_plug_opens_connections_and_own_connection_round_trips(
     form = page.locator(Selector.FORM)
     form.get_by_label("connection name").fill("ui-own")
     form.get_by_label("profile.kind", exact=True).select_option("web")
-    form.get_by_label("profile.base_url", exact=True).fill(
-        f"http://127.0.0.1:{stand.config.llm_port}/health"
-    )
+    form.get_by_label("profile.scheme", exact=True).select_option("http")
+    form.get_by_label("profile.host", exact=True).fill("127.0.0.1")
+    form.get_by_label("profile.port", exact=True).fill(str(stand.config.llm_port))
+    form.get_by_label("profile.path", exact=True).fill("/health")
     # проверка черновика до сохранения: фейковый LLM стенда отвечает по /health
     form.get_by_role("button", name="check", exact=True).click()
     expect(form.locator('[data-notice="probe"]')).to_contain_text("HTTP 200")
@@ -119,7 +120,8 @@ def test_missing_type_connection_is_marked_and_deletable(
     form = page.locator(Selector.FORM)
     form.get_by_label("connection name").fill("ui-broken")
     form.get_by_label("profile.kind", exact=True).select_option("web")
-    form.get_by_label("profile.base_url", exact=True).fill("http://broken.test")
+    form.get_by_label("profile.host", exact=True).fill("broken.test")
+    form.get_by_label("profile.port", exact=True).fill("443")
     form.get_by_role("button", name="save", exact=True).click()
     expect(_row(page, "ui-broken")).to_have_count(1)
 

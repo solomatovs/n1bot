@@ -10,6 +10,7 @@ PostgresError — схему создать не удалось не по пра
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from enum import StrEnum
 
 from psycopg import AsyncConnection, sql
@@ -32,6 +33,23 @@ class SqlNames:
     @staticmethod
     def table(schema: str, name: StrEnum) -> sql.Identifier:
         return sql.Identifier(schema, name.value)
+
+    @classmethod
+    def mapping(
+        cls,
+        schema: str,
+        tables: Mapping[str, StrEnum],
+        columns: Mapping[str, StrEnum],
+    ) -> dict[str, sql.Composable]:
+        """Плейсхолдеры запроса → идентификаторы: таблицы со схемой, колонки без."""
+        names: dict[str, sql.Composable] = {}
+        for placeholder, table in tables.items():
+            names[placeholder] = cls.table(schema, table)
+
+        for placeholder, column in columns.items():
+            names[placeholder] = cls.ident(column)
+
+        return names
 
 
 class PostgresSchema:

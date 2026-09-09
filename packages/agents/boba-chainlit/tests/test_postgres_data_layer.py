@@ -8,13 +8,14 @@ from chainlit.element import CustomElement, Text
 from chainlit.step import StepDict
 from chainlit.types import Feedback as FeedbackPayload
 from chainlit.types import Pagination, ThreadFilter
+from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
 from chainlit_stand import Seed, use_session
 
 from boba.canvas.keys import ObjectKey
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.infra.config import AppConfig
-from boba.chat.threads import DataRejectedError, DataUnavailableError
+from boba.chat.threads import DataRejectedError
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import Scope
 from boba.identity.session import UserMetadataField
@@ -60,10 +61,11 @@ async def test_create_and_get_user(layer: PostgresDataLayer):
 
 
 async def test_identifier_case_cannot_split_a_user(layer: PostgresDataLayer):
-    """Канон логина ставит вход; хранилище лишь не даёт завести двойника.
+    """Слой данных — граница chainlit: identifier из его cl.User канонизируется.
 
-    Второе написание того же логина означает, что мимо авторизатора прошёл
-    неканоничный identifier: такое падает, а не сливается молча.
+    Chainlit отдаёт логин как он записан в JWT, и токен партнёра, выпущенный
+    по секрету, несёт любой регистр. Второе написание попадает в ту же
+    строку users, а не заводит двойника и не падает на индексе.
     """
     created = await layer.create_user(
         ChainlitUser(identifier="maksimov.ma", metadata={"roles": ["DEV"]})
@@ -71,18 +73,51 @@ async def test_identifier_case_cannot_split_a_user(layer: PostgresDataLayer):
     if created is None:
         raise AssertionError("created is not None")
 
-    with pytest.raises(DataUnavailableError):
-        await layer.create_user(ChainlitUser(identifier="Maksimov.MA"))
+    again = await layer.create_user(ChainlitUser(identifier="Maksimov.MA"))
+    if again is None:
+        raise AssertionError("second spelling is created")
 
-    fetched = await layer.get_user("maksimov.ma")
+    if again.id != created.id:
+        raise AssertionError("second spelling merges into the same users row")
+
+    if again.identifier != "maksimov.ma":
+        raise AssertionError(f"persisted identifier is canonical: {again.identifier}")
+
+    fetched = await layer.get_user("MAKSIMOV.MA")
     if fetched is None:
-        raise AssertionError("канонный логин находится")
+        raise AssertionError("lookup by another spelling finds the row")
 
     if fetched.id != created.id:
-        raise AssertionError("та же строка")
+        raise AssertionError("same row")
 
-    if await layer.get_user("MAKSIMOV.MA") is not None:
-        raise AssertionError("хранилище ищет ровно то, что дал вход")
+
+async def test_partner_jwt_signs_in_as_the_canonical_user(
+    layer: PostgresDataLayer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Путь /auth/jwt и подключения сокета: chainlit сам декодирует JWT партнёра
+    и зовёт authenticate_user; на выходе — строка users с каноничным логином."""
+    import chainlit.data as chainlit_data
+    from chainlit.auth import authenticate_user
+    from chainlit.auth.jwt import create_jwt
+
+    monkeypatch.setattr(chainlit_data, "_data_layer", layer)
+    monkeypatch.setattr(chainlit_data, "_data_layer_initialized", True)
+
+    first = await layer.create_user(ChainlitUser(identifier="ivanov.ii"))
+    if first is None:
+        raise AssertionError("first sign-in is created")
+
+    partner_token = create_jwt(ChainlitUser(identifier="Ivanov.II"))
+    user = await authenticate_user(partner_token)
+
+    if not isinstance(user, PersistedUser):
+        raise AssertionError(f"authenticate_user returns the persisted user: {user!r}")
+
+    if user.id != first.id:
+        raise AssertionError("partner spelling signs in as the same users row")
+
+    if user.identifier != "ivanov.ii":
+        raise AssertionError(f"session identifier is canonical: {user.identifier}")
 
 
 async def test_create_user_keeps_the_sign_in_label_on_the_caller(

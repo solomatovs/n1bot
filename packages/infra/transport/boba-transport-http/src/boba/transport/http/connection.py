@@ -1,8 +1,7 @@
 """Тип соединения web: манифест для реестра boba.connections.
 
 Ошибки:
-ConnectionTypeError — probe-хук получил профиль чужого типа или профиль без
-    base_url.
+ConnectionTypeError — probe-хук получил профиль чужого типа.
 httpx.HTTPError — пробный запрос не прошёл.
 """
 
@@ -21,16 +20,9 @@ async def _probe(profile: ConnectionProfileBase) -> str:
         msg = f"web probe expects an HttpConnection profile, got kind {profile.kind!r}"
         raise ConnectionTypeError(msg)
 
-    if not profile.base_url:
-        msg = (
-            "web probe needs base_url to know which server to check, "
-            f"got {profile.base_url!r}"
-        )
-        raise ConnectionTypeError(msg)
-
     async with (
         HttpTransport(profile) as transport,
-        transport.fetch(HttpRequest(url=profile.base_url)) as got,
+        transport.fetch(HttpRequest(url=str(profile.root_url()))) as got,
     ):
         await got.stream.read()
         return f"HTTP {got.status}"

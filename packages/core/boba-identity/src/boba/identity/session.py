@@ -16,13 +16,17 @@ from collections.abc import Generator, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import ClassVar, Final, Protocol
+from typing import Any, ClassVar, Final, Protocol
+
+from pydantic import GetCoreSchemaHandler
+from pydantic_core import core_schema
 
 from boba.toolkit.template import FieldTemplate, TemplateError
 
 __all__ = [
     "LogLine",
     "LogUserMark",
+    "Login",
     "LoginTemplate",
     "Session",
     "SessionSource",
@@ -51,23 +55,53 @@ class SignInProvider(StrEnum):
     LOCAL = "LocalAuth"
 
 
+class Login(str):
+    """Каноничный логин пользователя: identifier строки users и claims токена.
+
+    Регистр и пробелы по краям не заводят вторую личность, поэтому значение
+    существует только в нижнем регистре и получить его иначе нельзя: конструктор
+    канонизирует любую строку. Сигнатуры домена принимают этот тип, а не str,
+    так что чужой логин (cl.User из JWT партнёра, ввод формы) обязан пройти
+    через Login() на границе, иначе pyright не пропустит вызов. В pydantic-
+    моделях поле этого типа канонизируется при валидации.
+    """
+
+    __slots__ = ()
+
+    def __new__(cls, raw: str) -> Login:
+        canonical = raw.strip().lower()
+        if not canonical:
+            msg = f"login expects a non-blank string, got {raw!r}"
+            raise ValueError(msg)
+
+        return super().__new__(cls, canonical)
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls, source: type[Any], handler: GetCoreSchemaHandler
+    ) -> core_schema.CoreSchema:
+        return core_schema.no_info_after_validator_function(
+            cls, core_schema.str_schema()
+        )
+
+
 @dataclass(frozen=True)
 class UserLogin:
     """Логин входа: ключ строки users и его человеческий вид.
 
-    Регистр набора не заводит вторую личность: в identifier уходит key,
-    а исходное написание остаётся именем в интерфейсе. Источник логина
-    выбирает провайдер: ввод формы, sAMAccountName каталога, принципал.
+    В identifier уходит канон Login, а исходное написание остаётся именем в
+    интерфейсе. Источник логина выбирает провайдер: ввод формы,
+    sAMAccountName каталога, принципал.
     """
 
-    key: str
+    key: Login
     display: str
 
     @classmethod
     def of(cls, raw: str) -> UserLogin:
         name = raw.strip()
 
-        return cls(key=name.lower(), display=name)
+        return cls(key=Login(name), display=name)
 
 
 class LoginTemplate:

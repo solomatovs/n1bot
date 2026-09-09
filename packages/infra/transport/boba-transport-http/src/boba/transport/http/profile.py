@@ -1,7 +1,8 @@
-"""HTTP-профиль соединения: base_url, timeout/ssl/retry и способ auth.
+"""HTTP-профиль соединения: адрес сервера частями httpx.URL,
+timeout/ssl/retry и способ auth.
 
-Хост base_url может быть шаблоном `*.domain`: профиль покрывает поддомены
-любой глубины, но не сам domain; перед запросом профиль привязывается к
+Хост может быть шаблоном `*.domain`: профиль покрывает поддомены любой
+глубины, но не сам domain; перед запросом профиль привязывается к
 конкретному хосту URL. Аутентификатор httpx по профилю строит
 boba.transport.http.HttpxAuth.
 
@@ -10,10 +11,13 @@ boba.transport.http.HttpxAuth.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Annotated, Any, ClassVar, Literal, Self
+import posixpath
+from collections.abc import Iterator, Mapping
+from enum import StrEnum
+from typing import Annotated, Any, ClassVar, Literal
 from urllib.parse import urlparse
 
+import httpx
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -36,6 +40,8 @@ __all__ = [
     "HttpConnection",
     "NegotiateAuth",
     "NoneAuth",
+    "UrlPart",
+    "UrlScheme",
     "WebAuth",
 ]
 
@@ -122,8 +128,8 @@ class NegotiateAuth(_AuthBase):
     service_host: str | None = Field(
         default=None,
         description=(
-            "Хост SPN (HTTP/<service_host>), если он отличается от хоста "
-            "base_url: адрес по IP, reverse proxy. None — хост base_url."
+            "Хост SPN (HTTP/<service_host>), если он отличается от host профиля: "
+            "адрес по IP, reverse proxy. None — host профиля."
         ),
     )
     login_path: str | None = Field(
@@ -201,8 +207,42 @@ class HostPattern(BaseModel):
         return host.lower()
 
 
+class UrlScheme(StrEnum):
+    """Схема адреса web-профиля."""
+
+    HTTP = "http"
+    HTTPS = "https"
+
+
+class UrlPart(StrEnum):
+    """Части адреса, которые профиль передаёт в httpx.URL под этими же
+    именами. Части, которые httpx принимает байтами, перечислены в
+    raw_parts()."""
+
+    SCHEME = "scheme"
+    USERNAME = "username"
+    PASSWORD = "password"  # noqa: S105 — имя аргумента httpx.URL, не секрет
+    HOST = "host"
+    PORT = "port"
+    PATH = "path"
+    QUERY = "query"
+    FRAGMENT = "fragment"
+    USERINFO = "userinfo"
+    NETLOC = "netloc"
+    RAW_PATH = "raw_path"
+
+    @classmethod
+    def raw_parts(cls) -> frozenset[UrlPart]:
+        return frozenset({cls.QUERY, cls.USERINFO, cls.NETLOC, cls.RAW_PATH})
+
+
 class HttpConnection(ConnectionProfileBase):
-    """Транспортный профиль: timeout/ssl/retry + auth. Без url."""
+    """Транспортный профиль web-соединения: адрес сервера, timeout/ssl/retry
+    и auth. Адрес хранится частями с именами аргументов httpx.URL; заданная
+    часть подставляется в URL, незаданная — нет. URL собирают только
+    root_url() и url_of() средствами httpx.URL; хост запроса обязан
+    попадать под host профиля (точный или шаблон `*.domain`).
+    """
 
     model_config = ConfigDict(extra="ignore")
 
@@ -210,17 +250,60 @@ class HttpConnection(ConnectionProfileBase):
         default="web",
         description="Дискриминатор соединения при хранении в базе.",
     )
-    base_url: str | None = Field(
+    scheme: UrlScheme = Field(
+        default=UrlScheme.HTTPS,
+        description="Схема запросов: http или https.",
+    )
+    username: str | None = Field(
+        default=None,
+        description="Имя пользователя в адресе (userinfo URL).",
+    )
+    password: SecretStr | None = Field(
+        default=None,
+        description="Пароль в адресе (userinfo URL).",
+    )
+    host: str | None = Field(
+        default=None,
+        description="Хост сервера или шаблон `*.example.com` для поддоменов.",
+    )
+    port: int | None = Field(
+        default=None,
+        ge=1,
+        le=65535,
+        description="Порт сервера; пусто — порт схемы.",
+    )
+    path: str | None = Field(
+        default=None,
+        description="Корневой путь сервиса, например `/wiki`; пусто — корень сервера.",
+    )
+    query: str | None = Field(
+        default=None,
+        description="Query-строка корня без `?`, например `tenant=a`.",
+    )
+    fragment: str | None = Field(
+        default=None,
+        description="Фрагмент адреса без `#`.",
+    )
+    userinfo: SecretStr | None = Field(
         default=None,
         description=(
-            "Базовый URL для всех запросов с этим профилем (например, `https://api.example.com/v1/`)"
+            "Готовая часть `user:password` "
+            "адреса; перекрывает username/password."
         ),
+    )
+    netloc: str | None = Field(
+        default=None,
+        description="Готовая часть `host:port` адреса; перекрывает host/port.",
+    )
+    raw_path: str | None = Field(
+        default=None,
+        description="Готовый путь с query в percent-кодировке; перекрывает path/query.",
     )
     auth: WebAuth = Field(
         default=NoneAuth(method="none"),
         description=(
-            "Auth-метод inline: `{ method = 'none'|'basic'|'bearer'|'digest', "
-            "... }`. По умолчанию anonymous (`method='none'`)."
+            "Auth-метод inline: `{ method = 'none'|'basic'|'bearer'|'digest'"
+            "|'negotiate', ... }`. По умолчанию anonymous (`method='none'`)."
         ),
     )
 
@@ -250,68 +333,134 @@ class HttpConnection(ConnectionProfileBase):
     HTTP_SERVICE: ClassVar[str] = "HTTP"
     """Имя kerberos-сервиса веб-серверов; SPN вида HTTP/host."""
 
+    RAW_ENCODING: ClassVar[str] = "ascii"
+    """Кодировка байтовых частей httpx.URL: они уже percent-кодированы."""
+
+    @field_validator("host")
+    @classmethod
+    def _lowercase_host(cls, value: str | None) -> str | None:
+        """Имена хостов регистронезависимы; шаблон и SPN сравниваются в нижнем."""
+        if value is None:
+            return None
+
+        return value.lower()
+
+    @field_validator("path")
+    @classmethod
+    def _normalize_path(cls, value: str | None) -> str | None:
+        """Путь с ведущим слэшем и без хвостового; корень сервера — пустая строка."""
+        if value is None:
+            return None
+
+        stripped = value.strip("/")
+        if not stripped:
+            return ""
+
+        return posixpath.join("/", stripped)
+
     @model_validator(mode="after")
-    def _negotiate_needs_host(self) -> Self:
-        if not isinstance(self.auth, NegotiateAuth):
-            return self
+    def _address_names_a_host(self) -> HttpConnection:
+        """Части обязаны собираться в адрес с хостом: без него ни запрос,
+        ни проверка покрытия невозможны."""
+        try:
+            root = self.root_url()
+        except (httpx.InvalidURL, TypeError, UnicodeEncodeError) as exc:
+            msg = f"web profile: address parts do not form a URL: {exc}"
+            raise ValueError(msg) from exc
 
-        if self.base_url is None:
-            msg = (
-                "web profile: negotiate auth needs base_url to name the SPN, "
-                "got no base_url"
-            )
-            raise ValueError(msg)
-
-        if not self.host():
-            msg = f"web profile: base_url {self.base_url!r} has no host for the SPN"
+        if not root.host:
+            msg = "web profile: address needs a host, set host or netloc"
             raise ValueError(msg)
 
         return self
 
-    def host(self) -> str:
-        """Хост base_url в нижнем регистре (может быть шаблоном); пустая — нет."""
-        if self.base_url is None:
-            return ""
+    def _url_parts(self) -> Iterator[tuple[UrlPart, object]]:
+        """Заданные части адреса в виде аргументов httpx.URL."""
+        yield UrlPart.SCHEME, self.scheme.value
+        yield from self._authority_parts()
+        yield from self._resource_parts()
 
-        return HostPattern.host_of(self.base_url)
+    def _authority_parts(self) -> Iterator[tuple[UrlPart, object]]:
+        """Учётные данные и сервер: userinfo/netloc перекрывают раздельные части."""
+        if self.username is not None:
+            yield UrlPart.USERNAME, self.username
+
+        if self.password is not None:
+            yield UrlPart.PASSWORD, self.password.get_secret_value()
+
+        if self.userinfo is not None:
+            yield UrlPart.USERINFO, self._raw(self.userinfo.get_secret_value())
+
+        if self.host is not None:
+            yield UrlPart.HOST, self.host
+
+        if self.port is not None:
+            yield UrlPart.PORT, self.port
+
+        if self.netloc is not None:
+            yield UrlPart.NETLOC, self._raw(self.netloc)
+
+    def _resource_parts(self) -> Iterator[tuple[UrlPart, object]]:
+        """Путь, query и фрагмент: raw_path перекрывает path и query."""
+        if self.path is not None:
+            yield UrlPart.PATH, self.path
+
+        if self.query is not None:
+            yield UrlPart.QUERY, self._raw(self.query)
+
+        if self.raw_path is not None:
+            yield UrlPart.RAW_PATH, self._raw(self.raw_path)
+
+        if self.fragment is not None:
+            yield UrlPart.FRAGMENT, self.fragment
+
+    @classmethod
+    def _raw(cls, value: str) -> bytes:
+        return value.encode(cls.RAW_ENCODING)
+
+    def root_url(self) -> httpx.URL:
+        """Адрес сервиса из заданных частей; порт по умолчанию схемы httpx
+        опускает, учётные данные адреса остаются в URL."""
+        kwargs: dict[str, Any] = {}
+        for part, value in self._url_parts():
+            kwargs[part.value] = value
+
+        return httpx.URL(**kwargs)
+
+    def public_url(self) -> httpx.URL:
+        """Адрес сервиса без учётных данных: для журнала и сообщений."""
+        return self.root_url().copy_with(userinfo=b"")
+
+    def url_of(self, relative: str) -> httpx.URL:
+        """URL запроса под корнем сервиса: относительный путь дописывается
+        так же, как httpx.Client(base_url=...) дописывает запрос."""
+        root = self.root_url()
+        folder = root.copy_with(path=posixpath.join(root.path, ""))
+        return folder.join(relative.lstrip("/"))
+
+    def address_host(self) -> str:
+        """Хост собранного адреса в нижнем регистре: точный или шаблон."""
+        return self.root_url().host
 
     def covers(self, host: str) -> bool:
-        """Попадает ли хост под base_url профиля (точный или шаблон)."""
-        own = self.host()
-        if not own:
-            return False
-
-        return HostPattern(value=own).matches(host)
+        """Попадает ли хост под host профиля (точный или шаблон)."""
+        return HostPattern(value=self.address_host()).matches(host)
 
     def bound_to(self, host: str) -> HttpConnection:
-        """Профиль с конкретным хостом вместо шаблона в base_url."""
-        if self.base_url is None:
+        """Профиль с конкретным хостом вместо шаблона; порт сохраняется."""
+        root = self.root_url()
+        if not HostPattern(value=root.host).wildcard:
             return self
 
-        own = self.host()
-        if not HostPattern(value=own).wildcard:
-            return self
-
-        parts = urlparse(self.base_url)
-        netloc = host
-        if parts.port is not None:
-            netloc = f"{host}:{parts.port}"
-
-        bound = parts._replace(netloc=netloc).geturl()
-        return self.model_copy(update={"base_url": bound})
+        return self.model_copy(
+            update={"host": host.lower(), "port": root.port, "netloc": None}
+        )
 
     def service_name(self) -> str:
-        """SPN сервера в форме hostbased: HTTP@<service_host или host base_url>."""
-        host = self.host()
+        """SPN сервера в форме hostbased: HTTP@<service_host или host профиля>."""
+        host = self.address_host()
         if isinstance(self.auth, NegotiateAuth) and self.auth.service_host:
             host = self.auth.service_host.lower()
-
-        if not host:
-            msg = (
-                f"web profile: SPN needs a host from base_url {self.base_url!r} "
-                "or auth.service_host, both are empty"
-            )
-            raise ValueError(msg)
 
         if HostPattern(value=host).wildcard:
             msg = f"web profile: SPN needs a concrete host, got pattern {host!r}"
@@ -333,7 +482,7 @@ class HttpConnection(ConnectionProfileBase):
         return self.model_copy(update={"auth": auth})
 
     def trace(self) -> str:
-        return f"{self.auth.trace()} url={self.base_url}"
+        return f"{self.auth.trace()} url={self.public_url()}"
 
     def login_url(self) -> str | None:
         """URL login-сервлета negotiate-профиля; None — сервлета нет."""
@@ -343,7 +492,4 @@ class HttpConnection(ConnectionProfileBase):
         if self.auth.login_path is None:
             return None
 
-        if self.base_url is None:
-            return None
-
-        return self.base_url.rstrip("/") + "/" + self.auth.login_path.lstrip("/")
+        return str(self.url_of(self.auth.login_path))
