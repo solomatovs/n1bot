@@ -280,7 +280,7 @@ class ScenarioBook:
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
         call = ToolCallSpec(
             call_id=f"call_long_{digest}",
-            name="stream_logs_usage",
+            name="connection_list",
             arguments="{}",
         )
         answer = (
@@ -322,14 +322,14 @@ class ScenarioBook:
     @classmethod
     def _tool(cls) -> Scenario:
         call = ToolCallSpec(
-            call_id="call_stream_logs",
-            name="stream_logs_usage",
+            call_id="call_connection_list",
+            name="connection_list",
             arguments="{}",
         )
         return Scenario(
             turns=[
-                TurnScript(reasoning="I need the journal usage", tool_calls=[call]),
-                TurnScript(content="The journal usage is above"),
+                TurnScript(reasoning="I need the connections", tool_calls=[call]),
+                TurnScript(content="The connections are above"),
             ]
         )
 
@@ -337,15 +337,13 @@ class ScenarioBook:
     def _tool_error(cls) -> Scenario:
         call = ToolCallSpec(
             call_id="call_broken",
-            name="stream_logs_cleanup",
-            arguments=json.dumps({"thread_id": "no-such-thread"}),
+            name="send_file",
+            arguments=json.dumps({"path": "no-such-file"}),
         )
         return Scenario(
             turns=[
-                TurnScript(
-                    reasoning="I will purge a missing thread", tool_calls=[call]
-                ),
-                TurnScript(content="The purge failed"),
+                TurnScript(reasoning="I will send a missing file", tool_calls=[call]),
+                TurnScript(content="The attachment failed"),
             ]
         )
 

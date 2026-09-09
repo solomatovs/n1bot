@@ -19,7 +19,6 @@ dependencies = [
     "boba-toolkit==0.0.17.dev3",
     "boba-cancellation==0.0.17.dev3",
     "boba-access==0.0.17.dev3",
-    "boba-tool-shell==0.0.17.dev3",
     "boba-db-postgres==0.0.17.dev3",
     "boba-sandbox==0.0.17.dev3",
     "boba-krb==0.0.17.dev3",
@@ -46,8 +45,11 @@ dependencies = [
 
 [project.optional-dependencies]
 tools = [
+    "boba-tool-shell==0.0.17.dev3",
     "boba-tool-chart==0.0.17.dev3",
     "boba-tool-clickhouse==0.0.17.dev3",
+    "boba-tool-connections==0.0.17.dev3",
+    "boba-tool-canvas==0.0.17.dev3",
     "boba-tool-doc==0.0.17.dev3",
     "boba-tool-knowledge==0.0.17.dev3",
     "boba-tool-postgres==0.0.17.dev3",
@@ -64,9 +66,12 @@ dev = [
     "boba-text==0.0.17.dev3",
     "boba-tool-chart==0.0.17.dev3",
     "boba-tool-clickhouse==0.0.17.dev3",
+    "boba-tool-connections==0.0.17.dev3",
+    "boba-tool-canvas==0.0.17.dev3",
     "boba-tool-doc==0.0.17.dev3",
     "boba-tool-knowledge==0.0.17.dev3",
     "boba-tool-postgres==0.0.17.dev3",
+    "boba-tool-shell==0.0.17.dev3",
     "boba-tool-web==0.0.17.dev3",
     "boba-transport-http==0.0.17.dev3",
     "gssapi>=1.9",

@@ -181,7 +181,6 @@ class StandConfig:
         "chart",
         "web",
         "confluence",
-        "workflow",
         "ingest",
         "kb",
         "pg",
@@ -341,14 +340,7 @@ class StandConfig:
         """
         doc["roles"] = {
             "ADM": {"tools": ["*"]},
-            "DEV": {
-                "tools": [
-                    "diagram_save",
-                    "send_file",
-                    "stream_logs_usage",
-                    "stream_logs_cleanup",
-                ]
-            },
+            "DEV": {"tools": ["diagram_save", "send_file", "connection_list"]},
             "GST": {"tools": []},
         }
 
@@ -409,9 +401,11 @@ class StandConfig:
         doc["postgres"]["dbname"] = self.db_name
 
     def _use_local_storage(self, doc: MutableMapping[str, Any]) -> None:
+        """Файлы стенда: без песочницы — каталог на диске; с песочницей — образы
+        workspace, как в бою: тела пишут в образ, и хост обязан читать его же."""
         files_dir = self.workdir / "files"
         files_dir.mkdir(parents=True, exist_ok=True)
-        if "storage" in doc:
+        if "storage" in doc and not self.sandbox:
             storage = doc["storage"]
             storage["kind"] = "local"
             storage["files_dir"] = str(files_dir)

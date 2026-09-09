@@ -99,6 +99,7 @@ from boba.studio.api.workflows import Deleted
 __all__ = [
     "CatalogApi",
     "CatalogHttp",
+    "CatalogPageUrl",
     "CatalogUrl",
     "CurrentCatalog",
     "DraftBody",
@@ -107,6 +108,21 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 ServiceSource = Callable[[], Awaitable[CatalogService]]
+
+
+class CatalogPageUrl(StrEnum):
+    """Адреса страницы каталога относительно префикса приложения."""
+
+    DRAFT = "/catalog/drafts/{draft_id}"
+    PROCESS = "/catalog/processes/{process_id}"
+
+    @classmethod
+    def draft(cls, prefix: str, draft_id: UUID) -> str:
+        return prefix + cls.DRAFT.value.format(draft_id=draft_id)
+
+    @classmethod
+    def process(cls, prefix: str, process_id: UUID) -> str:
+        return prefix + cls.PROCESS.value.format(process_id=process_id)
 
 
 class CatalogUrl(StrEnum):

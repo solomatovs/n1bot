@@ -237,15 +237,13 @@ def bash(
         ),
         MarkdownResult(language="bash"),
     ],
-    *,
     cfg: Annotated[BashToolConfig, Injected],
 ) -> ShellResult:
     """Выполнить shell-команду и вернуть вывод; доступ к ФС и сети ограничен.
 
-    Stdin команды закрыт: входные данные передавайте самой командой
-    (heredoc, printf | ..., файл). Объём вывода ограничивайте командой
-    (head, tail, grep, wc): всё, что вышло за аварийный потолок, отброшено,
-    а ответ помечен truncated.
+    Объём вывода ограничивайте командой (head, tail, grep, wc):
+    всё, что вышло за аварийный потолок отбрасывается,
+    а ответ помечается как truncated.
     """
     result = BashOutput.run(command, cfg)
 

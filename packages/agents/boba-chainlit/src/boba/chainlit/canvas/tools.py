@@ -1,19 +1,17 @@
-"""Tool canvas_open: показ файла workspace в панели канваса.
+"""Панель канваса со стороны чата: вьюверы, разбор пути сессии и
+обработчики действий фронта (клик по ссылке, смена файла).
 
-Вьюверы содержимого живут в canvas.panel; здесь — фасад тула, разбор
-пути сессии и обработчики действий фронта (клик по ссылке, смена файла).
-
-Ошибки: ErrorResult — нет сессии, путь вне каталогов треда, файл некому
-показать, не читается или слишком велик; остальное упаковывает ToolErrorGuard.
+Ошибки:
+CanvasError — путь вне каталогов треда, файл некому показать, не
+    читается или слишком велик; текст причины готов для LLM.
 """
 
 from __future__ import annotations
 
 import logging
-from enum import StrEnum
-from typing import Annotated, Any
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 import chainlit as cl
 from boba.canvas.canvas import (
@@ -25,6 +23,7 @@ from boba.canvas.canvas import (
     OpenedCanvas,
 )
 from boba.canvas.keys import ObjectKey
+from boba.chainlit.canvas.diagram import DiagramFiles, MermaidViewer
 from boba.chainlit.canvas.panel import (
     AudioViewer,
     CanvasPanel,
@@ -34,82 +33,46 @@ from boba.chainlit.canvas.panel import (
     PdfViewer,
     VideoViewer,
 )
-from boba.chainlit.domain.context import ChatCallContext
 from boba.chainlit.infra.thread_room import ChatNotices
 from boba.identity.errors import RefusalError
-from boba.toolkit.facade import PayloadTool, tool
-from boba.toolkit.result import ErrorResult, VisualResult
 
 __all__ = [
     "CanvasActions",
     "CanvasOpener",
-    "CanvasPrompt",
     "CanvasScope",
-    "CanvasToolConfig",
-    "build_canvas_tools",
+    "CanvasViewers",
 ]
 
 logger = logging.getLogger(__name__)
 
 
-class CanvasToolConfig(BaseModel):
-    """Секция [tool.canvas]: у панели своих параметров нет."""
+class CanvasViewers:
+    """Вьюверы панели: регистрируются процессом чата на старте, чтобы панель
+    открывалась кликом до первого хода."""
 
-    model_config = ConfigDict(extra="ignore")
-
-
-class CanvasPrompt(StrEnum):
-    """Тексты фасада: описание параметра и оговорка для LLM."""
-
-    PATH = (
-        "Путь к файлу в workspace треда: '/workspace/<thread_id>/mermaid/<имя>.mmd' "
-        "или '/workspace/<thread_id>/upload/<имя>'. Файл должен существовать. "
-        "Поддерживаются диаграммы mermaid (.mmd), изображения "
-        "(.png/.jpg/.jpeg/.gif/.svg/.webp), .pdf, текст (.txt/.md/.log), "
-        "видео (.mp4/.webm/.mov) и аудио (.mp3/.wav/.ogg/.m4a/.flac) — "
-        "сгенерируй файл любым инструментом и покажи его здесь."
-    )
-    NOTE = (
-        "the panel is open for the user and a link to it stays in the chat; "
-        "mermaid files are rendered by the browser and a render failure "
-        "comes back to you as a tool error"
-    )
+    @staticmethod
+    def register_all() -> None:
+        CanvasRegistry.register(ImageViewer())
+        CanvasRegistry.register(PdfViewer())
+        CanvasRegistry.register(MarkdownViewer())
+        CanvasRegistry.register(LogViewer())
+        CanvasRegistry.register(VideoViewer())
+        CanvasRegistry.register(AudioViewer())
+        CanvasRegistry.register(MermaidViewer(DiagramFiles()))
 
 
 class CanvasScope(BaseModel):
-    """Чьи файлы показывает панель: пользователь и тред.
-
-    Тул берёт их из контекста вызова, действия фронта — из сессии чата:
-    у клика по панели контекста вызова нет.
-    """
+    """Чьи файлы показывает панель: пользователь и тред из сессии чата —
+    у клика по панели контекста вызова нет."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     user_id: str
     thread_id: str
 
-    @classmethod
-    def of_context(cls) -> CanvasScope:
-        context = ChatCallContext.require()
-
-        return cls(user_id=context.subject.user_key, thread_id=context.scope.id)
-
 
 class CanvasOpener:
-    """Показ панели: единый код для тула и клика по ссылке в переписке."""
-
-    async def open(self, path: str) -> VisualResult | ErrorResult:
-        """Вызов тула: показать файл; ссылку для ленты отдаёт вьювер, текст
-        для LLM — сводка о показе."""
-        try:
-            opened = await self.show(path, CanvasScope.of_context())
-        except RefusalError as e:
-            return ErrorResult(message=str(e), error_kind=e.kind)
-
-        summary = f"opened in the canvas: {opened.label} ({opened.path}); "
-        summary += CanvasPrompt.NOTE
-
-        return opened.link.model_copy(update={"summary": summary})
+    """Показ панели по клику: файл в панель и описание для смены файла."""
 
     async def show(self, path: str, scope: CanvasScope) -> OpenedCanvas:
         """Панель с содержимым одного файла; слежение ставит CanvasPanel."""
@@ -190,28 +153,3 @@ class CanvasActions:
             return {}
 
         return described.props()
-
-
-def build_canvas_tools(cfg: CanvasToolConfig) -> list[PayloadTool]:
-    opener = CanvasOpener()
-
-    # вьюверы общего вида — забота самой панели; диаграммы регистрирует diagram
-    CanvasRegistry.register(ImageViewer())
-    CanvasRegistry.register(PdfViewer())
-    CanvasRegistry.register(MarkdownViewer())
-    CanvasRegistry.register(LogViewer())
-    CanvasRegistry.register(VideoViewer())
-    CanvasRegistry.register(AudioViewer())
-
-    @tool
-    async def canvas_open(
-        path: Annotated[
-            str,
-            Field(min_length=1, description=CanvasPrompt.PATH),
-        ],
-    ) -> VisualResult | ErrorResult:
-        """Показать файл workspace (диаграмму, изображение, pdf, текст) в
-        панели справа от чата и оставить ссылку на него в переписке."""
-        return await opener.open(path)
-
-    return [canvas_open]

@@ -62,7 +62,6 @@ class IssueCode(StrEnum):
     EDGE_KIND = "edge_kind"
     UNKNOWN_TOOL = "unknown_tool"
     TOOL_DENIED = "tool_denied"
-    TOOL_CHAT_ONLY = "tool_chat_only"
     UNKNOWN_ARG = "unknown_arg"
     MISSING_ARG = "missing_arg"
     PORTS_NOT_ALLOWED = "ports_not_allowed"

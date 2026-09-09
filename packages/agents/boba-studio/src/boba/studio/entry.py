@@ -28,6 +28,7 @@ from boba.runtime.config import (
     StudioRuntimeConfig,
 )
 from boba.runtime.di import Container
+from boba.runtime.plugins import CoreTools
 from boba.runtime.spa import BuiltSpa, DevSpa, SpaPaths
 from boba.runtime.users import UsersTable
 from boba.sandbox.zygote import ZygoteRegistry
@@ -39,7 +40,6 @@ from boba.studio.catalog import providers as catalog
 from boba.studio.catalog.api import CatalogApi
 from boba.studio.catalog.sync_ports import CatalogHoldGuard
 from boba.studio.config import StudioAppConfig
-from boba.studio.plugins import StudioTools
 
 __all__ = ["StudioEntry", "StudioHost"]
 
@@ -51,7 +51,7 @@ class StudioHost:
     def build(cls, config: StudioAppConfig) -> FastAPI:
         container = Container(level="app")
         container.provide(providers.get_runtime_config, config)
-        container.provide(providers.plugin_table, StudioTools.table)
+        container.provide(providers.plugin_table, CoreTools.table)
         container.provide(providers.app_name, AppName.STUDIO)
         container.eager(providers.message_bus)
         container.eager(providers.stream_journal)

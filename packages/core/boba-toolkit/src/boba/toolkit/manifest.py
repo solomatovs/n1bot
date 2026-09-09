@@ -9,18 +9,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, ClassVar
-
-from pydantic import BaseModel
+from typing import ClassVar
 
 from boba.toolkit.entry import ToolLike
 
 __all__ = ["LaunchSpec", "ToolPluginManifest"]
-
-ManifestBuild = Callable[[Any], Sequence[ToolLike]]
-"""Фабрика инструментов секции: конфиг секции и исполнители -> инструменты."""
 
 
 @dataclass(frozen=True)
@@ -36,8 +30,6 @@ class ToolPluginManifest:
 
     section: str
     tools: tuple[ToolLike, ...] = ()
-    config_model: type[BaseModel] | None = None
-    build: ManifestBuild | None = None
 
 
 @dataclass(frozen=True)
@@ -45,7 +37,7 @@ class LaunchSpec:
     """Что секции нужно от способа запуска: имя, модули тел, пакет и изоляция.
 
     package — дистрибутив entry point'а: по нему ищется образ корня
-    plugins/<package>/rootfs.ext4; пусто — плагин встроен в приложение.
+    plugins/<package>/rootfs.ext4.
     """
 
     section: str

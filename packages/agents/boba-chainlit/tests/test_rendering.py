@@ -16,6 +16,7 @@ from boba.toolkit.result import (
     SqlStatement,
     TableResult,
     ToolArtifact,
+    VisualElement,
     VisualResult,
 )
 
@@ -87,8 +88,9 @@ class TestChatElement:
     def test_chart(self) -> None:
         result = VisualResult.plotly({"data": []}, "t")
         view = result.chat_view()
-        if view.element is not result:
-            raise AssertionError("view.element is result")
+        widgets = [item for item in view.items if isinstance(item, VisualElement)]
+        if len(widgets) != 1 or widgets[0].element != "plotly":
+            raise AssertionError(view.items)
         if view.markdown != "_(plotly: t)_":
             raise AssertionError('view.markdown == "_(plotly: t)_"')
 
@@ -98,8 +100,8 @@ class TestChatElement:
             TableResult(rows=[{"a": 1}]),
             ErrorResult(message="boom", error_kind="e"),
         ):
-            if result.chat_view().element is not None:
-                raise AssertionError("result.chat_view().element is None")
+            if result.chat_view().items != ():
+                raise AssertionError(result.chat_view().items)
             if not (result.chat_view().markdown):
                 raise AssertionError("result.chat_view().markdown")
 
@@ -257,8 +259,8 @@ class TestShellResult:
             raise AssertionError("ограда не переросла вложенную")
 
     def test_shell_has_no_visual(self) -> None:
-        if shell_result().chat_view().element is not None:
-            raise AssertionError("shell_result().chat_view().element is None")
+        if shell_result().chat_view().items != ():
+            raise AssertionError(shell_result().chat_view().items)
 
 
 class TestToolCallChatView:
@@ -320,10 +322,10 @@ class TestToolCallChatView:
             raise AssertionError('"**connection:** `dwh`" in markdown')
 
     def test_mermaid_spec_renders_as_a_mermaid_block(self) -> None:
-        from boba.canvas.diagram import DiagramToolConfig
-        from boba.chainlit.canvas.diagram import build_diagram_tools
+        from boba.tool.canvas.tools import TOOLS
 
-        build_diagram_tools(DiagramToolConfig(max_chars=1000))
+        if not TOOLS:
+            raise AssertionError("canvas module declared its tools")
         markdown = (
             self._call(
                 "diagram_save", {"name": "a.mmd", "spec": "flowchart LR\n    A --> B"}
@@ -469,8 +471,8 @@ class TestSqlResult:
             raise AssertionError("счётчик остался строкой статуса")
 
     def test_the_result_has_no_visual(self) -> None:
-        if self._both().chat_view().element is not None:
-            raise AssertionError("self._both().chat_view().element is None")
+        if self._both().chat_view().items != ():
+            raise AssertionError(self._both().chat_view().items)
 
     def test_result_survives_the_artifact_round_trip(self) -> None:
         """Итог персистится в checkpointer: команды оживают."""

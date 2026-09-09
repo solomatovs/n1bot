@@ -11,7 +11,6 @@ import pytest
 from langchain_core.messages import ToolMessage
 from pydantic import BaseModel
 
-from boba.chainlit.agent.tools import BashToolConfig
 from boba.sandbox.argv import build_zygote_argv
 from boba.sandbox.profile import (
     BindSpec,
@@ -21,6 +20,7 @@ from boba.sandbox.profile import (
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
 from boba.stand.shell import ShellRun
 from boba.stand.zygote import SandboxStand
+from boba.tool.shell.tools import BashToolConfig
 from boba.toolkit.launcher import LauncherError
 from boba.toolkit.result import ShellResult
 

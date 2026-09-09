@@ -297,14 +297,6 @@ class _Checker:
             )
             return
 
-        if facts.availability is ToolAvailability.CHAT_ONLY:
-            self._issue(
-                IssueCode.TOOL_CHAT_ONLY,
-                name,
-                f"tool {task.tool!r} is chat_only and cannot run in a workflow",
-            )
-            return
-
         for arg in task.args:
             if facts.arg(arg) is not None:
                 continue

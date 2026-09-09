@@ -3,7 +3,7 @@
 import asyncio
 from typing import Any
 
-from boba.access import ProfileGrant, RoleConfig, ToolAccess, ToolSurfaces
+from boba.access import ProfileGrant, RoleConfig, ToolAccess
 from boba.identity.context import CallContext
 from boba.runtime.launchers import CallSurface
 from boba.runtime.plugins import ToolBridge
@@ -46,12 +46,7 @@ class Probe:
             """Отказ результатом."""
             return ErrorResult(message=text, error_kind="probe")
 
-        @tool
-        async def canvas_open(path: str) -> MarkdownResult:
-            """Инструмент чата: в workflow не допускается."""
-            return MarkdownResult(text=path)
-
-        tools = list(ToolBridge.toolset([slow, echo, fail, canvas_open]))
+        tools = list(ToolBridge.toolset([slow, echo, fail]))
         ToolCallIdField.attach_all(tools)
         ToolIntentField.attach_all(tools)
         ToolRunLogger.guard_all(
@@ -71,6 +66,5 @@ class Probe:
             tool_names=names,
             roles={PROBE_ROLE: RoleConfig(tools=["*"])},
             profiles={profile: ProfileGrant(tools=granted, roles=["*"])},
-            surfaces=ToolSurfaces(chat_only=frozenset({"canvas_open"})),
         )
         return ToolRegistry(tools=tools, access=access)

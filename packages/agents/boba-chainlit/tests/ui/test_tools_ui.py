@@ -45,13 +45,16 @@ from boba.stand.ui.stand import (
 )
 from boba.text.document import LiteParseParams
 from boba.text.grep import GrepLimits, TextGrep
+from boba.tool.canvas.tools import CanvasPrompt
 from boba.tool.kb.confluence.parsing import ConfluenceJson
 from boba.tool.kb.confluence.request_sources import ConfluenceRest
 from boba.tool.kb.confluence.tools import ConfluenceToolsConfig, CqlSearch
 from boba.tool.kb.html.payload import PageOps
 from boba.toolkit.result import (
+    CanvasResult,
     ErrorResult,
     FieldLines,
+    FileResult,
     MarkdownResult,
     SqlResult,
     SqlStatement,
@@ -876,8 +879,9 @@ def canvas_feed(sandbox_stand: StandProcess, module_chats: ChatOpener) -> ToolFe
 @pytest.fixture(scope="module")
 def saved_diagram(canvas_feed: ToolFeed) -> DiagramProbe:
     """Диаграмма сохранена diagram_save; путь файла назван в ответе тула."""
-    usage = ToolCall(tool="stream_logs_usage")
-    step = canvas_feed.call(usage, ToolExpect(patterns=[UsagePattern.VOLUME]))
+    # вызов без аргументов даёт id треда вкладки: он нужен пути файла
+    listing = ToolCall(tool="connection_list")
+    step = canvas_feed.call(listing, ToolExpect.of(_connection_catalog()))
     probe = DiagramProbe(thread_id=step.thread_id)
 
     call = ToolCall(
@@ -886,8 +890,11 @@ def saved_diagram(canvas_feed: ToolFeed) -> DiagramProbe:
         code="spec",
         language="mermaid",
     )
-    result = MarkdownResult(
-        text=f"diagram saved: {probe.path}; {DiagramPrompt.SAVED_NOTE.value}"
+    result = CanvasResult(
+        path=probe.path,
+        label=ProbeDiagram.NAME.value,
+        summary=f"diagram saved: {probe.path}",
+        note=DiagramPrompt.SAVED_NOTE.value,
     )
     canvas_feed.call(call, ToolExpect.of(result, dom=[f"diagram saved: {probe.path}"]))
     return probe
@@ -913,18 +920,6 @@ class TablePattern:
             parts.append(f" {cell} +")
 
         return "\\|" + "\\|".join(parts) + "\\|"
-
-
-class UsagePattern:
-    """Строки отчёта stream_logs_usage: объёмы живые, форма фиксирована."""
-
-    SIZE: ClassVar[str] = r"\d+(?:\.\d+)? (?:KiB|MiB|GiB)"
-    VOLUME: ClassVar[str] = f"^volume: {SIZE} used of {SIZE}, {SIZE} free$"
-    THREADS: ClassVar[str] = r"^journals by thread, oldest first:$"
-
-    @classmethod
-    def thread(cls, thread_id: str) -> str:
-        return f"^- {re.escape(thread_id)}: {cls.SIZE} in \\d+ calls$"
 
 
 def _connection_catalog() -> TableResult:
@@ -1555,8 +1550,13 @@ class TestCanvasTools:
         before = stand_db.elements_named(CANVAS_ELEMENT)
 
         call = ToolCall(tool="canvas_open", arguments={"path": saved_diagram.path})
-        caption = f"(CanvasView: {ProbeDiagram.NAME.value})"
-        canvas_feed.call(call, ToolExpect(output=f"_{caption}_", dom=[caption]))
+        result = CanvasResult(
+            path=saved_diagram.path,
+            label=ProbeDiagram.NAME.value,
+            note=CanvasPrompt.OPENED_NOTE.value,
+        )
+        opened = f"opened in the canvas: {ProbeDiagram.NAME.value}"
+        canvas_feed.call(call, ToolExpect.of(result, dom=[opened]))
 
         after = stand_db.elements_named(CANVAS_ELEMENT)
         if after <= before:
@@ -1587,8 +1587,10 @@ class TestCanvasTools:
         self, canvas_feed: ToolFeed, saved_diagram: DiagramProbe
     ) -> None:
         call = ToolCall(tool="send_file", arguments={"path": saved_diagram.path})
-        result = MarkdownResult(
-            text=f"file attached to the chat: {ProbeDiagram.NAME.value}"
+        result = FileResult(
+            path=saved_diagram.path,
+            name=ProbeDiagram.NAME.value,
+            mime="application/octet-stream",
         )
         canvas_feed.call(
             call,
@@ -1596,159 +1598,6 @@ class TestCanvasTools:
                 result, dom=[f"file attached to the chat: {ProbeDiagram.NAME.value}"]
             ),
         )
-
-
-class TestStreamLogsTools:
-    """stream_logs: журналы вызовов песочницы; чужой тред чистится, свой — нет."""
-
-    def test_usage_lists_the_bash_thread(self, feed: ToolFeed, probe_pdf: str) -> None:
-        call = ToolCall(tool="stream_logs_usage")
-        expect = ToolExpect(
-            patterns=[
-                UsagePattern.VOLUME,
-                UsagePattern.THREADS,
-                UsagePattern.thread(probe_pdf),
-            ],
-            dom=["volume:", probe_pdf],
-        )
-        feed.call(call, expect)
-
-    def test_cleanup_missing_thread_is_refused(self, feed: ToolFeed) -> None:
-        call = ToolCall(
-            tool="stream_logs_cleanup",
-            arguments={"thread_id": ProbeText.MISSING_THREAD.value},
-        )
-        result = ErrorResult(
-            message=f"no journals found for thread {ProbeText.MISSING_THREAD.value}",
-            error_kind="thread_not_found",
-        )
-        feed.call(call, ToolExpect.of(result, dom=["Error:", "no journals found"]))
-
-    def test_cleanup_purges_the_bash_thread(
-        self, feed: ToolFeed, probe_pdf: str
-    ) -> None:
-        """Идёт последним: журнал bash-треда нужен тесту usage."""
-        call = ToolCall(tool="stream_logs_cleanup", arguments={"thread_id": probe_pdf})
-        expect = ToolExpect(
-            patterns=[
-                f"^journals of thread {re.escape(probe_pdf)} deleted, freed \\d+ bytes$"
-            ],
-            dom=[f"journals of thread {probe_pdf} deleted"],
-        )
-        feed.call(call, expect)
-
-
-class TestWorkflowTools:
-    """workflow_*: спека yaml сохраняется, список её показывает, запуск гонит bash."""
-
-    SPEC: ClassVar[str] = (
-        "name: ui-flow\n"
-        "tasks:\n"
-        "  first: {tool: bash, args: {command: echo UI_FLOW_ONE}}\n"
-        "  second: {tool: bash, args: {command: echo UI_FLOW_TWO}}\n"
-        "edges:\n"
-        "  - first -> second\n"
-    )
-
-    def test_save_shows_yaml_and_confirms(self, module_feed: ToolFeed) -> None:
-        call = ToolCall(
-            tool="workflow_save",
-            arguments={"spec": self.SPEC},
-            code="spec",
-            language="yaml",
-        )
-        expect = ToolExpect(
-            patterns=[r"^workflow 'ui-flow' saved \(id [0-9a-f-]{36}\); tools: bash$"],
-            dom=["ui-flow", "saved"],
-        )
-        module_feed.call(call, expect)
-
-    def test_list_names_the_saved_workflow(self, module_feed: ToolFeed) -> None:
-        call = ToolCall(tool="workflow_list")
-        expect = ToolExpect(
-            patterns=[r"^- ui-flow \(id [0-9a-f-]{36}\): tools bash$"],
-            dom=["ui-flow"],
-        )
-        module_feed.call(call, expect)
-
-    def test_run_reports_every_task(self, module_feed: ToolFeed) -> None:
-        """Обе задачи bash отработали, сводка называет каждую и её статус."""
-        call = ToolCall(tool="workflow_run", arguments={"name": "ui-flow"})
-        expect = ToolExpect(
-            patterns=[
-                r"workflow run [0-9a-f-]+: done",
-                r"- first: done",
-                r"- second: done",
-                r"UI_FLOW_ONE",
-                r"UI_FLOW_TWO",
-            ],
-            dom=["first: done", "second: done", "UI_FLOW_TWO"],
-        )
-        module_feed.call(call, expect, timeout_sec=TURN_TIMEOUT_SEC * 2)
-
-
-class TestPipeline:
-    """Конвейер: каталог узлов и перекачка строк pg -> pg через ядро."""
-
-    def test_catalog_lists_streaming_nodes(self, feed: ToolFeed) -> None:
-        call = ToolCall(tool="pipeline_catalog")
-        expect = ToolExpect(
-            patterns=[r"^streaming tools", r"pg_copy_out", r"pg_copy_in"],
-            dom=["pg_copy_out", "pg_copy_in"],
-        )
-        feed.call(call, expect)
-
-    def test_run_moves_rows_between_tables(
-        self, feed: ToolFeed, probe_table: str
-    ) -> None:
-        """Строки стенда уезжают в копию таблицы: оба насоса отчитались."""
-        prepare = ToolCall(
-            tool="pg_query",
-            arguments={"connection": "main", "sql": ProbeSql.COPY_TARGET.value},
-            code="sql",
-            language="sql",
-        )
-        prepared = SqlResult(
-            engine="postgres",
-            statements=[
-                SqlStatement(status="DROP TABLE"),
-                SqlStatement(status="CREATE TABLE"),
-            ],
-        )
-        feed.call(prepare, ToolExpect.of(prepared, dom=["CREATE TABLE"]))
-
-        copy_table = ProbeSql.COPY_TABLE.value
-        plan = json.dumps(
-            {
-                "nodes": [
-                    {
-                        "tool": "pg_copy_out",
-                        "args": {
-                            "connection": "main",
-                            "sql": f"COPY public.{probe_table} TO STDOUT",
-                        },
-                    },
-                    {
-                        "tool": "pg_copy_in",
-                        "args": {
-                            "connection": "main",
-                            "sql": f"COPY public.{copy_table} FROM STDIN",
-                        },
-                    },
-                ]
-            }
-        )
-        run = ToolCall(
-            tool="pipeline_run",
-            arguments={"plan": plan},
-            code="plan",
-            language="json",
-        )
-        expect = ToolExpect(
-            patterns=[r"copied out \d+ bytes", r"COPY 2"],
-            dom=["COPY 2"],
-        )
-        feed.call(run, expect)
 
 
 class TestCoverage:

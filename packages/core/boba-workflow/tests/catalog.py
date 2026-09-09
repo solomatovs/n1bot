@@ -45,11 +45,6 @@ def catalog() -> ToolCatalog:
             args=(StudioField(name="table", required=True),),
             ports=(ToolPort(name="src", direction=PortDirection.READ),),
         ),
-        "canvas_open": ToolFacts(
-            name="canvas_open",
-            availability=ToolAvailability.CHAT_ONLY,
-            args=(StudioField(name="path", required=True),),
-        ),
         "secret_tool": ToolFacts(
             name="secret_tool",
             availability=ToolAvailability.DENIED,

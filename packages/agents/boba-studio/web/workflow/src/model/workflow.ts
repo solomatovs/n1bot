@@ -158,7 +158,7 @@ export const RunSnapshotSchema = z.object({
 });
 export type RunSnapshot = z.infer<typeof RunSnapshotSchema>;
 
-export const ToolAvailabilitySchema = z.enum(["available", "denied", "chat_only", "headless_only"]);
+export const ToolAvailabilitySchema = z.enum(["available", "denied", "headless_only"]);
 export type ToolAvailability = z.infer<typeof ToolAvailabilitySchema>;
 
 export const FieldPlacementSchema = z.enum(["body", "header", "hidden"]);

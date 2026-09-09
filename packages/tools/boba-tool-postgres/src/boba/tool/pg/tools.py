@@ -371,7 +371,7 @@ async def pg_copy_out(
 ) -> MarkdownResult:
     """Насос выгрузки: COPY ... TO STDOUT сырым потоком в выходной порт.
 
-    Узел конвейера (pipeline_run): данные идут следующему узлу, а не в чат.
+    Узел графа workflow: данные идут следующему узлу, а не в чат.
     В ответ возвращается только счётчик перекачанных байтов.
     """
     CopyStatement.require(sql, CopyStatement.TO_STDOUT, "pg_copy_out")
@@ -413,7 +413,7 @@ async def pg_copy_in(
 ) -> MarkdownResult:
     """Насос загрузки: сырой поток входного порта в COPY ... FROM STDIN.
 
-    Узел конвейера (pipeline_run): данные приходят от предыдущего узла.
+    Узел графа workflow: данные приходят от предыдущего узла.
     В ответ возвращается счётчик байтов и статус сервера (COPY N).
     """
     CopyStatement.require(sql, CopyStatement.FROM_STDIN, "pg_copy_in")

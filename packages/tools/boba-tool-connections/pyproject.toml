@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-tool-connections"
+version = "0.0.17.dev3"
+description = "Инструмент connection_list: соединения, выданные субъекту, из таблиц приложения."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba-toolkit==0.0.17.dev3",
+    "boba-identity==0.0.17.dev3",
+    "boba-connections==0.0.17.dev3",
+    "boba-db-postgres==0.0.17.dev3",
+    "psycopg[binary,pool]>=3.2",
+    "pydantic>=2.10,<2.11",
+]
+
+[project.entry-points."boba.tools"]
+connections = "boba.tool.connections.plugin:MANIFEST"
+
+[project.optional-dependencies]
+payload = [
+]
+dev = [
+    "boba-connection-broker==0.0.17.dev3",
+    "pytest>=8",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true
+
+[tool.boba.sandbox]
+imports = ["psycopg"]
