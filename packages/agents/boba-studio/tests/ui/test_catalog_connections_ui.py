@@ -14,7 +14,7 @@ from playwright.sync_api import Browser, Locator, Page, expect
 
 from boba.db.postgres.snapshot_sample import PgSample
 from boba.stand.ui.look import no_horizontal_scroll
-from boba.stand.ui.stand import StandProcess
+from boba.stand.ui.stand import StandProcess, StandUrl
 
 pytestmark = pytest.mark.ui
 
@@ -93,7 +93,10 @@ class TestConnectionsList:
         expect(form.get_by_test_id("save-connection")).to_be_disabled()
         form.get_by_label("connection name").fill("src_page_web")
         form.get_by_label("profile.kind").select_option("web")
-        form.get_by_label("profile.base_url").fill(stand.config.base_url)
+        form.get_by_label("profile.scheme").select_option(StandUrl.SCHEME.value)
+        form.get_by_label("profile.host").fill(StandUrl.HOST.value)
+        form.get_by_label("profile.port").fill(str(stand.config.app_port))
+        form.get_by_label("profile.path").fill(stand.config.url_prefix)
         form.get_by_test_id("check-connection").click()
         expect(form.locator('[data-notice="probe"]')).to_be_visible(timeout=30_000)
         form.get_by_test_id("save-connection").click()
