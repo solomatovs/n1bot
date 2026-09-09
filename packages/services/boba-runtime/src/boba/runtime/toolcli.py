@@ -30,6 +30,7 @@ from boba.config import bind
 from boba.krb import KerberosWorkspaceConfig
 from boba.runtime.config import AppLayers
 from boba.toolkit.entry import EntryFlag, ToolArgv, ToolLike, ToolMain
+from boba.toolrun.callvalues import CallContextValues
 
 __all__ = ["HostConfig", "ToolCli", "ToolCliError"]
 
@@ -60,9 +61,22 @@ class HostConfig:
         bind(self._raw, self.KERBEROS_SECTION, KerberosWorkspaceConfig).apply()
 
     def injected(self, fields: Mapping[str, Any]) -> bytes:
-        """Injected-модели из секций toml; каждая знает свою секцию SECTION."""
+        """Injected-модели из секций toml; каждая знает свою секцию SECTION.
+
+        Значения контекста вызова (субъект, область, корень workspace) из toml
+        не собрать: у CLI нет пользователя. Такой инструмент запускается с
+        готовым файлом --injected.
+        """
         payload: dict[str, Any] = {}
         for name, annotation in fields.items():
+            if annotation in CallContextValues.SOURCES:
+                msg = (
+                    f"toolcli: parameter {name!r} is a call context value "
+                    f"({annotation.__name__}) and cannot be built from the toml; "
+                    f"pass the whole injected JSON with {EntryFlag.INJECTED} <file>"
+                )
+                raise ToolCliError(msg)
+
             section = ToolArgv.section_of(name, annotation)
             model = bind(self._raw, section, annotation)
             payload[name] = ToolArgv.reveal(annotation, model)

@@ -315,9 +315,20 @@ class ChatSink(ABC):
     async def drop(self, step: Step) -> None:
         """Убирает шаг из ленты; следующий put ставит его в конец заново."""
 
+    @abstractmethod
+    def rebuilt(self) -> None:
+        """Лента собрана заново из истории: всё отправленное раньше забыто,
+        следующий put любого шага — отправка, а не обновление."""
+
 
 class LiveSink(ChatSink):
-    """Отдаёт шаги в открытую сессию chainlit."""
+    """Отдаёт шаги в открытую сессию chainlit.
+
+    Помнит id отправленных шагов: повторный put того же id — обновление.
+    После пересборки ленты из истории (правка вопроса) память сбрасывается,
+    иначе шаги нового хода с прежними id ушли бы обновлениями к шагам,
+    которых во вкладке больше нет.
+    """
 
     EMITS_ELEMENTS: ClassVar[bool] = True
 
@@ -331,6 +342,9 @@ class LiveSink(ChatSink):
 
         self._sent.add(step.id)
         await step.send()
+
+    def rebuilt(self) -> None:
+        self._sent.clear()
 
     async def drop(self, step: Step) -> None:
         if step.id not in self._sent:
@@ -353,6 +367,9 @@ class RecordingSink(ChatSink):
 
     async def drop(self, step: Step) -> None:
         self._steps.pop(step.id, None)
+
+    def rebuilt(self) -> None:
+        self._steps.clear()
 
     @property
     def steps(self) -> list[StepDict]:
@@ -464,6 +481,9 @@ class BatchedSink(ChatSink):
     async def drop(self, step: Step) -> None:
         await self._batch.flush()
         await self._inner.drop(step)
+
+    def rebuilt(self) -> None:
+        self._inner.rebuilt()
 
 
 class TurnPulse:
@@ -607,6 +627,11 @@ class ChatView:
         """Ход закончен любым исходом: кружок ожидания снимается."""
         await self._batch.flush()
         await self._pulse.stop()
+
+    def rebuilt(self) -> None:
+        """Вкладки собрали ленту заново из истории: шаги нового хода с прежними
+        id (правка вопроса) уходят отправкой, а не обновлением."""
+        self._sink.rebuilt()
 
     def _new_pulse(self, key: str | None) -> TurnPulse:
         step = self._step(

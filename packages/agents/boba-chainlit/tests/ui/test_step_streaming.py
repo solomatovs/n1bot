@@ -7,10 +7,12 @@ DOM: шаг присутствует в дереве под своим типо�
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 
 from boba.chainlit.rendering.chat_view import StepText
-from boba.stand.ui.chat_page import ChatPage, StepKind
+from boba.stand.ui.chat_page import ChatPage, Selector, StepKind
 from boba.stand.ui.fake_llm import ScenarioName
 from boba.stand.ui.socket_log import ChatEvent, SocketLog
 
@@ -179,3 +181,75 @@ class TestTurnOrder:
         answer_at = chat.log.index_of(ChatEvent.STREAM_START, answers[0])
         if not (thinking_at < tool_at < answer_at):
             raise AssertionError(chat.log.describe())
+
+
+class TestEditedQuestion:
+    """Правка вопроса: ход после правки показывается целиком, как первый.
+
+    Вкладки собирают ленту заново из истории, а контейнер и ответ нового хода
+    получают те же id, что у прежнего: лента обязана прислать их новыми
+    шагами, а не обновлениями к тому, чего во вкладке уже нет. DOM после
+    правки — тот же полный ход: вопрос, process с рассуждением и
+    инструментом внутри, ответ.
+    """
+
+    CALL: ClassVar[str] = '{"name": "connection_list", "arguments": {}}'
+    EDITED_CALL: ClassVar[str] = (
+        '{"name": "connection_list", "arguments": {}, "edit": 1}'
+    )
+
+    @staticmethod
+    def _outline(chat: ChatPage) -> list[str]:
+        """Типы шагов в порядке DOM; process раскрыт, чтобы дети были в дереве."""
+        chat.expand_process()
+        types: list[str] = []
+        for node in chat.page.locator(Selector.STEP.value).all():
+            types.append(str(node.get_attribute("data-step-type")))
+
+        return types
+
+    def test_dom_after_the_edit_is_a_full_turn(self, chat: ChatPage) -> None:
+        chat.ask(f"{ScenarioName.CALL.value} {self.CALL}")
+        chat.await_idle()
+        before = self._outline(chat)
+        expected = [
+            StepKind.USER.value,
+            StepKind.RUN.value,
+            StepKind.LLM.value,
+            StepKind.TOOL.value,
+            StepKind.ASSISTANT.value,
+        ]
+        if before != expected:
+            raise AssertionError(f"first turn outline: {before}")
+
+        page = chat.page
+        page.locator(".edit-message").last.click(force=True)
+        page.locator("#edit-chat-input").fill(
+            f"{ScenarioName.CALL.value} {self.EDITED_CALL}"
+        )
+        chat.log.clear()
+        page.locator(".confirm-edit").click()
+        chat.await_idle()
+
+        runs = chat.log.steps_of_type(StepKind.RUN.value)
+        if not runs:
+            raise AssertionError(
+                f"no process step after the edit\n{chat.log.describe()}"
+            )
+
+        run_id = str(runs[0]["id"])
+        if chat.log.index_of(ChatEvent.NEW_MESSAGE, run_id) < 0:
+            raise AssertionError(
+                f"the process step came as an update, not a new step\n"
+                f"{chat.log.describe()}"
+            )
+
+        after = self._outline(chat)
+        if after != expected:
+            raise AssertionError(
+                f"outline after the edit: {after}, expected {expected}"
+            )
+
+        step = chat.expand_step(StepKind.TOOL.value)
+        if "connection_list" not in step.inner_text():
+            raise AssertionError(step.inner_text())

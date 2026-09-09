@@ -101,32 +101,61 @@ packages/tools/boba-tool-redis/
 
 Пакет добавляется в `members` корневого `pyproject.toml` рядом с соседями.
 
-### Три вида параметров
+### Параметры инструмента: модель заполняет одни, хост — остальные
 
 Инструмент — это `async def` с декоратором `@tool` из
-`boba.toolkit.facade`. Каким путём значение параметра попадёт в тело,
-определяет аннотация:
+`boba.toolkit.facade`. Модель заполняет только аргументы с `Field(...)`:
+они попадают в её схему и едут флагами argv. Всё остальное подкладывает
+хост, и таких **предопределённых injected-параметров** ровно шесть видов.
+Принцип один: параметр объявляется аннотацией, хост узнаёт его по типу или
+маркеру и подставляет значение на каждом вызове; модель этих параметров
+не видит и подделать не может. Объявить любой из них может любой
+инструмент любого плагина — никакой регистрации, кроме самой аннотации.
 
-| Параметр | Аннотация | Кто заполняет | Как едет в тело |
+| Параметр | Аннотация | Откуда значение | Кто подставляет |
 |---|---|---|---|
-| аргумент модели | `pattern: Annotated[str, Field(...)]` | LLM | флаг argv `--pattern "user:*"` |
-| injected-конфиг | `cfg: Annotated[RedisToolConfig, Injected]` | хост из `[tool.redis]` | JSON-канал, ключ `"cfg"` |
-| connection пользователя | `connection: Annotated[RedisConnection, UserConnection]` | хост из таблицы connections | JSON-канал, ключ `"connection"` |
-| субъект вызова | `subject: Annotated[Subject, Injected]` | хост из CallContext на вызов | JSON-канал, ключ `"subject"` |
-| область вызова | `scope: Annotated[Scope, Injected]` | хост из CallContext на вызов | JSON-канал, ключ `"scope"` |
-| корень workspace | `root: Annotated[WorkspaceRoot, Injected]` | хост из профиля запуска | JSON-канал, ключ `"root"` |
-| порт данных | `out: Annotated[Outbound[...], Injected]` | песочница на вызове | канал кадров, раздел 7 |
+| аргумент модели | `pattern: Annotated[str, Field(...)]` | LLM | — (флаг argv `--pattern "user:*"`) |
+| конфиг секции | `cfg: Annotated[RedisToolConfig, Injected]` | таблица `[tool.<секция>]` по `SECTION` модели | `InjectedConfig` на загрузке |
+| connection пользователя | `connection: Annotated[RedisConnection, UserConnection]` | строка таблицы connections по имени от модели | `UserConnections` на вызове |
+| субъект вызова | `subject: Annotated[Subject, Injected]` | `CallContext`: id пользователя, логин, роли, профиль | `CallContextValues` на вызове |
+| область вызова | `scope: Annotated[Scope, Injected]` | `CallContext`: тред чата, запуск workflow или задание | `CallContextValues` на вызове |
+| корень workspace | `root: Annotated[WorkspaceRoot, Injected]` | профиль запуска: `/workspace` в песочнице, `workdir` в `process` | `CallContextValues` на вызове |
+| порт данных | `out: Annotated[Outbound[...], Injected]` | канал кадров графа workflow | песочница на вызове (раздел 7) |
+
+Все injected-значения, кроме портов, уезжают телу одним JSON по
+дескриптору, ключ — имя параметра. Модели контекста живут в core:
+`Subject` и `Scope` в `boba.identity.context`, `WorkspaceRoot` в
+`boba.canvas.keys`; список типов, которые хост умеет подставлять, — это
+`CallContextValues.SOURCES` в `boba.toolrun.callvalues`. Новый вид
+значения добавляется туда же одной строкой, а не обвязкой в плагине.
+
+Если инструменту нужны сразу несколько таких параметров, они просто
+перечисляются в подписи. Так устроен `diagram_save` плагина
+`boba-tool-canvas`: аргументы модели `name` и `spec`, а дальше `subject`,
+`scope`, `root` и `cfg`:
+
+```python
+@tool
+async def diagram_save(
+    name: Annotated[str, Field(min_length=1, description=DiagramPrompt.NAME)],
+    spec: Annotated[str, Field(min_length=1, description=DiagramPrompt.SPEC), MarkdownResult(language="mermaid")],
+    subject: Annotated[Subject, Injected],
+    scope: Annotated[Scope, Injected],
+    root: Annotated[WorkspaceRoot, Injected],
+    cfg: Annotated[CanvasToolConfig, Injected],
+) -> CanvasResult | ErrorResult:
+```
+
+Третья метадата у `spec` — `MarkdownResult(language="mermaid")` — говорит
+ленте и странице, как показывать значение аргумента (блок кода с
+подсветкой); на модель и на тело она не влияет.
 
 Connection и порты появятся в разделах 5 и 7. Сейчас нужны первые два.
 
-Три строки про контекст — тот же `Injected`, но значение берётся не из toml,
-а из вызова: хост узнаёт модель по типу аннотации (`Subject`, `Scope`,
-`WorkspaceRoot`) и подставляет её на каждом вызове. Субъект
-(`boba.identity.context.Subject`: id пользователя, логин, роли) нужен телу,
-которое само считает права по таблицам, — так устроен `connection_list`
-(раздел 5). Область (`Scope`: тред чата или запуск workflow) и корень
-workspace (`WorkspaceRoot`) нужны телу, которое работает с файлами треда.
-Так выглядит `send_file` плагина `boba-tool-canvas`:
+Контекст вызова нужен телу, которое само считает права по таблицам
+(`Subject` — так устроен `connection_list`, раздел 5) или работает с
+файлами треда (`Scope` и `WorkspaceRoot`). Так выглядит `send_file` плагина
+`boba-tool-canvas`:
 
 ```python
 @tool
@@ -399,7 +428,14 @@ injected:  {"cfg": {"max_rows": 200, "max_bytes": 1000000, "scan_batch": 500,
 дал бы флаг `--scan-limit`. Строки едут как есть, остальные типы JSON.
 Ключ JSON-канала равен имени параметра: второй injected-параметр
 `limits: Annotated[LimitsConfig, Injected]` добавил бы ключ `"limits"` со
-своей секцией.
+своей секцией, а параметры контекста — ключи с их моделями. Для
+`send_file(path=...)` из предыдущего раздела JSON выглядит так:
+
+```
+injected:  {"subject": {"user_id": "f8920970-…", "login": "ivanov", "roles": ["DEV"], "profile": "general"},
+            "scope":   {"kind": "chat", "id": "38586395-…"},
+            "root":    {"path": "/workspace"}}
+```
 
 Тело валидирует флаг `--pattern` типом поля и ключ `"cfg"` моделью
 `RedisToolConfig`, потом зовёт `await redis_scan(pattern=..., cfg=...)`.
@@ -1197,6 +1233,18 @@ EOF
 application», потому что билет выпускает приложение. Для отладки
 kerberos-connection в файл подставляется готовая секция `kerberos_ticket`
 либо профиль с паролем.
+
+Значения контекста подаются тем же файлом: у CLI нет пользователя, и
+`boba.runtime.toolcli` из toml их не соберёт, а назовёт параметр, который
+нужно подать через `--injected`. Для `send_file` файл выглядит так:
+
+```json
+{
+  "subject": {"user_id": "00000000-0000-0000-0000-000000000007", "login": "dev", "roles": [], "profile": "general"},
+  "scope": {"kind": "chat", "id": "11111111-1111-1111-1111-111111111111"},
+  "root": {"path": "/home/dev/workspace"}
+}
+```
 
 Injected по toml приложения собирает CLI хоста, и под ним же тело идёт под
 отладчиком (цель «pg_query tool» в `launch.json`):

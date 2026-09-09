@@ -973,6 +973,9 @@ class ElementSink(ChatSink):
 
         self.steps = kept
 
+    def rebuilt(self) -> None:
+        self.steps.clear()
+
 
 class TestStreamButton:
     """Кнопка потока живёт на шаге потокового тула и адресуется по call_id."""
