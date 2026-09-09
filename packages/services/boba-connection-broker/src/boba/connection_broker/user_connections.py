@@ -73,8 +73,8 @@ class ConnectionArgument:
     """
 
     DESCRIPTION: ClassVar[str] = (
-        "Имя соединения из connection_list. Бери имя строки, чей kind подходит "
-        "инструменту, а описание — задаче пользователя."
+        "Имя соединения из connection_list или connection_search. Бери имя "
+        "строки, чей kind подходит инструменту, а описание — задаче пользователя."
     )
 
     @classmethod
@@ -203,7 +203,8 @@ class UserConnections(AsyncInjected):
 
         msg = (
             f"{tool} needs a connection name in {self._param!r}, got {value!r}; "
-            "call connection_list to see the names available to you"
+            "call connection_list or connection_search to see the names "
+            "available to you"
         )
         raise RefusalError(ConnectionRefusal.NOT_VISIBLE, msg)
 

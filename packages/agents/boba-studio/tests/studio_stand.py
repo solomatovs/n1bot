@@ -15,6 +15,7 @@ from httpx import ASGITransport, AsyncClient
 
 from boba.chat.profiles import ChatProfiles
 from boba.identity.api import AuthenticatedUser
+from boba.identity.session import Login
 from boba.identity.signin import SignInMetadata
 from boba.runtime.config import StudioRuntimeConfig
 from boba.runtime.refs import RuntimeRefs
@@ -60,7 +61,7 @@ class StandProfiles:
         roles = [*sorted(config.roles), *extra_roles]
         return AuthenticatedUser(
             id=uuid4(),
-            identifier="user-1",
+            identifier=Login("user-1"),
             sign_in=SignInMetadata(roles=frozenset(roles)),
         )
 

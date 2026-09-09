@@ -54,7 +54,7 @@ from boba.toolkit.sql import SqlErrorKind
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.callvalues import CallContextValues
 from boba.toolrun.injected import InjectedConfig
-from boba.transport.http.profile import HttpConnection, NegotiateAuth
+from boba.transport.http.profile import HttpConnection, NegotiateAuth, UrlScheme
 
 _REPO = Path(__file__).resolve().parents[4]
 _SANDBOX_STAGING = _REPO / "build" / "chainlit" / "src" / "sandbox"
@@ -483,7 +483,9 @@ async def test_web_negotiate_connection_authenticates_as_the_principal(
     """Web-строка negotiate/delegated: HTTP-интерфейс ClickHouse видит принципал."""
     user = await Session.user(layer, "conn-web-negotiate")
     row = HttpConnection(
-        base_url=CH_URL,
+        scheme=UrlScheme.HTTP,
+        host=STAND.ch_addr,
+        port=STAND.ch_port,
         ssl_verify=False,
         auth=NegotiateAuth(
             method="negotiate",

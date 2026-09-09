@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import httpx
 import pytest
-from pydantic import ValidationError
 
 from boba.kerberos import DelegatedAuth, KerberosError, TicketAuth
 from boba.krb import KerberosCredentials
@@ -33,22 +32,24 @@ def _keytab() -> dict[str, object]:
 
 
 class TestNegotiateProfile:
-    def test_service_name_comes_from_base_url(self) -> None:
+    def test_service_name_comes_from_host(self) -> None:
         auth = _delegated()
         profile = HttpConnection(
-            base_url="https://Wiki.example.com:8443/wiki", auth=auth
+            host="Wiki.example.com", port=8443, path="/wiki", auth=auth
         )
         if profile.service_name() != "HTTP@wiki.example.com":
             raise AssertionError(profile.service_name())
 
-    def test_negotiate_without_base_url_is_rejected(self) -> None:
+    def test_wildcard_host_has_no_service_name(self) -> None:
         auth = _delegated()
-        with pytest.raises(ValidationError, match="needs base_url"):
-            HttpConnection(auth=auth)
+        profile = HttpConnection(host="*.example.com", port=443, auth=auth)
+        with pytest.raises(ValueError, match="concrete host"):
+            profile.service_name()
 
     def test_delegated_row_validates(self) -> None:
         raw = {
-            "base_url": "https://wiki.example.com",
+            "host": "wiki.example.com",
+            "port": 443,
             "auth": {
                 "method": "negotiate",
                 "kerberos": {"method": "kerberos_delegated"},
@@ -63,7 +64,8 @@ class TestNegotiateProfile:
     def test_reveal_refuses_a_keytab(self) -> None:
         profile = HttpConnection.model_validate(
             {
-                "base_url": "https://wiki.example.com",
+                "host": "wiki.example.com",
+                "port": 443,
                 "auth": {"method": "negotiate", "kerberos": _keytab()},
             }
         )
@@ -75,7 +77,8 @@ class TestNegotiateProfile:
             "u@EXAMPLE.COM", "HTTP@wiki.example.com", b"ccache", 60
         )
         profile = HttpConnection(
-            base_url="https://wiki.example.com",
+            host="wiki.example.com",
+            port=443,
             auth=NegotiateAuth(method="negotiate", kerberos=ticket),
         )
         dumped = profile.model_dump(mode="json", context=REVEAL)
@@ -93,7 +96,8 @@ class TestNegotiateProfile:
     def test_ticket_is_masked_without_reveal(self) -> None:
         ticket = TicketAuth.of_bytes("u@R", "HTTP@h", b"secret-bytes", 60)
         profile = HttpConnection(
-            base_url="https://h",
+            host="h",
+            port=443,
             auth=NegotiateAuth(method="negotiate", kerberos=ticket),
         )
         dumped = profile.model_dump(mode="json")
@@ -102,7 +106,7 @@ class TestNegotiateProfile:
 
     def test_other_methods_keep_working(self) -> None:
         profile = HttpConnection.model_validate(
-            {"base_url": "https://x", "auth": {"method": "bearer", "token": "t"}}
+            {"host": "x", "port": 443, "auth": {"method": "bearer", "token": "t"}}
         )
         if HttpxAuth.of(profile) is None:
             raise AssertionError("bearer auth must still be built")
@@ -219,7 +223,8 @@ class TestLoginServletFlow:
 
     def test_profile_builds_login_url(self) -> None:
         profile = HttpConnection(
-            base_url="https://wiki.example.com/",
+            host="wiki.example.com",
+            port=443,
             auth=_delegated(login_path="/plugins/servlet/kerberos/ntlm/login"),
         )
         expected = "https://wiki.example.com/plugins/servlet/kerberos/ntlm/login"

@@ -12,7 +12,7 @@ __all__ = ["ConfluenceConnection"]
 
 
 class ConfluenceConnection(BaseModel):
-    """Confluence endpoint: body_format + транспортный профиль (base_url внутри)."""
+    """Confluence endpoint: body_format + транспортный профиль (адрес внутри)."""
 
     body_format: Literal["view", "export_view", "storage"] = Field(
         default="view",
@@ -23,19 +23,9 @@ class ConfluenceConnection(BaseModel):
     )
     profile: HttpConnection = Field(
         description=(
-            "Транспортный web-профиль (base_url/timeout/ssl/auth) ссылкой "
-            '`profile = "${web.<name>}"`. base_url Confluence задаётся в профиле; '
+            "Транспортный web-профиль (host/port/path/timeout/ssl/auth) ссылкой "
+            '`profile = "${web.<name>}"`. Адрес Confluence задаётся в профиле; '
             "auth (PAT/Basic) — там же `auth = { method = 'bearer', token = '...' }`."
         ),
     )
 
-    @property
-    def base_url(self) -> str:
-        if self.profile.base_url is None:
-            msg = (
-                "confluence connection: the referenced web profile has no "
-                "base_url, expected the Confluence root url there"
-            )
-            raise ValueError(msg)
-
-        return self.profile.base_url

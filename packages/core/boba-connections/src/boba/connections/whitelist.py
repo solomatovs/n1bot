@@ -1,7 +1,8 @@
 """Соединения субъекта по имени: выбор строки под запрос вызова.
 
-Имя, встреченное у субъекта дважды (лично и через роль, две роли), числится
-неоднозначным: выбирать наугад нельзя, и такое имя не резолвится.
+Имя, выданное субъекту дважды внутри вида (лично и через роль, две роли),
+числится неоднозначным: выбирать наугад нельзя, и такое имя не резолвится.
+Дубли считает SubjectGrantsQuery, сюда они приходят признаком строки.
 
 Ошибки:
 AmbiguousConnectionError — запрошенное имя выдано субъекту дважды.
@@ -9,11 +10,11 @@ AmbiguousConnectionError — запрошенное имя выдано субъ
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterable, Mapping
 
 from pydantic import BaseModel, ConfigDict
 
-from boba.connections.profile import ConnectionProfileBase, StoredConnection
+from boba.connections.profile import ConnectionProfileBase, GrantedConnection
 
 __all__ = [
     "AmbiguousConnectionError",
@@ -44,19 +45,16 @@ class ConnectionWhitelist(BaseModel):
     ambiguous: frozenset[str]
 
     @classmethod
-    def of(cls, rows: Iterable[StoredConnection]) -> ConnectionWhitelist:
-        by_name: dict[str, list[StoredConnection]] = {}
-        for row in rows:
-            by_name.setdefault(row.name, []).append(row)
-
+    def of(cls, granted: Iterable[GrantedConnection]) -> ConnectionWhitelist:
         profiles: dict[str, ConnectionProfileBase] = {}
-        for name, row in cls._unique(by_name):
-            profiles[name] = row.profile.identified(row.id, row.name)
+        ambiguous: set[str] = set()
+        for item in granted:
+            if item.ambiguous:
+                ambiguous.add(item.row.name)
+                continue
 
-        ambiguous: list[str] = []
-        for name, group in by_name.items():
-            if len(group) > 1:
-                ambiguous.append(name)
+            row = item.row
+            profiles[row.name] = row.profile.identified(row.id, row.name)
 
         return cls(profiles=profiles, ambiguous=frozenset(ambiguous))
 
@@ -81,13 +79,3 @@ class ConnectionWhitelist(BaseModel):
             return None
 
         return Picked(name=requested, profile=profile)
-
-    @staticmethod
-    def _unique(
-        by_name: Mapping[str, Sequence[StoredConnection]],
-    ) -> Iterator[tuple[str, StoredConnection]]:
-        for name, group in by_name.items():
-            if len(group) != 1:
-                continue
-
-            yield name, group[0]

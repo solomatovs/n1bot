@@ -360,9 +360,11 @@ def delegated_ch(raw_config: Any) -> ClickHouseConfig:
 def delegated_confluence(raw_config: Any) -> HttpConnection:
     from omegaconf import OmegaConf
 
-    base_url = str(OmegaConf.select(raw_config, "site.confluence_url"))
+    host = str(OmegaConf.select(raw_config, "site.confluence_host"))
+    port = int(OmegaConf.select(raw_config, "site.confluence_port"))
     return HttpConnection(
-        base_url=base_url,
+        host=host,
+        port=port,
         ssl_verify=False,
         timeout_sec=30.0,
         auth=NegotiateAuth(
@@ -417,7 +419,7 @@ async def test_confluence_page_is_fetched_as_the_signed_in_principal(
 
     result = await Call.ok(
         web_tools["web_fetch_page"],
-        url=f"{delegated_confluence.base_url}/rest/api/user/current",
+        url=str(delegated_confluence.url_of("/rest/api/user/current")),
         connection="confl",
         as_markdown=False,
         line_offset=0,

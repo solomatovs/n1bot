@@ -28,7 +28,7 @@ from boba.chainlit.auth.refresh import PageUrls, SessionRefresh
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.identity.admission import RoleExcludeConfig
-from boba.identity.session import SignInProvider, UserMetadataField
+from boba.identity.session import Login, SignInProvider, UserMetadataField
 from boba.identity.sso import OwnRequest, SsoChallenge
 from boba.identity.token import CookieSpec, SessionRenewal
 from boba.krb import KerberosEnv, ServiceTicketIssuer
@@ -294,7 +294,7 @@ async def test_users_row_keeps_no_ticket(
 ) -> None:
     """Билет живёт только в JWT: строка users, заведённая входом, идёт без него."""
     user = await _signed_in(kerberos_auth, tmp_path)
-    stored = await _users(runtime_config, pool).get_user(user.identifier)
+    stored = await _users(runtime_config, pool).get_user(Login(user.identifier))
     assert stored is not None, "sign-in must persist the users row"
     if stored.sign_in.sealed_ticket:
         raise AssertionError(

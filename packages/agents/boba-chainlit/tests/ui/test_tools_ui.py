@@ -30,6 +30,7 @@ from boba.canvas.diagram import DiagramPrompt
 from boba.config import bind
 from boba.liteparse.engine import LiteParseEngine
 from boba.runtime.config import AppLayers
+from boba.stand.site import Stand
 from boba.stand.ui.chat_page import ChatPage, StepKind
 from boba.stand.ui.database import StandDatabase
 from boba.stand.ui.fake_llm import FakePage, FakeRoute, ScenarioName
@@ -542,7 +543,7 @@ class ConfluenceSite:
     def __init__(self, config: ConfluenceToolsConfig) -> None:
         self._config = config
         profile = config.confluence
-        self._base = str(profile.base_url or "").rstrip("/")
+        self._profile = profile
         self._client = httpx.Client(
             timeout=profile.timeout_sec,
             verify=profile.ssl_verify,
@@ -562,9 +563,8 @@ class ConfluenceSite:
     def max_text_chars(self) -> int:
         return self._config.max_text_chars
 
-    @property
-    def base_url(self) -> str:
-        return self._base
+    def url_of(self, path: str) -> str:
+        return str(self._profile.url_of(path))
 
     def close(self) -> None:
         self._client.close()
@@ -578,7 +578,7 @@ class ConfluenceSite:
         attempt = 0
         while True:
             attempt += 1
-            response = self._client.get(self._base + path)
+            response = self._client.get(self.url_of(path))
             if response.status_code not in self.RETRY_STATUSES:
                 response.raise_for_status()
                 return response.json()
@@ -591,7 +591,7 @@ class ConfluenceSite:
             time.sleep(self.RETRY_SEC)
 
     def get_bytes(self, path: str) -> bytes:
-        response = self._client.get(self._base + path)
+        response = self._client.get(self.url_of(path))
         response.raise_for_status()
         return response.content
 
@@ -827,9 +827,9 @@ def indexed_page(
 ) -> ConfluencePage:
     """Страница проиндексирована в базу знаний стенда: поиск ищет по ней."""
     call = ToolCall(
-        tool="confluence_index_pages",
+        tool="confluence_index_page",
         arguments={
-            "page_ids": [confluence_page.page_id],
+            "page_id": confluence_page.page_id,
             "prune_missing": False,
             "force_update": True,
         },
@@ -840,9 +840,9 @@ def indexed_page(
                 "collection", "indexed", "skipped_unchanged", "pruned", "failed"
             ),
             TablePattern.row("kb_confluence", r"[1-9]\d*", "0", r"\d+", "0"),
-            f"^_page_ids \\(1\\): {confluence_page.page_id}_$",
+            f"^_page_id: {confluence_page.page_id}_$",
         ],
-        dom=["kb_confluence", f"page_ids (1): {confluence_page.page_id}"],
+        dom=["kb_confluence", f"page_id: {confluence_page.page_id}"],
     )
     module_feed.call(call, expect, timeout_sec=INGEST_TIMEOUT_SEC)
     return confluence_page
@@ -924,9 +924,16 @@ class TablePattern:
 
 def _connection_catalog() -> TableResult:
     """Выдача connection_list: все строки стенда, по виду и имени."""
+    stand = Stand.required()
+    listed = (
+        ("main", "clickhouse", stand.ch_host),
+        ("main", "postgres", stand.pg_host),
+        ("stand", "web", StandUrl.HOST.value),
+    )
+
     rows: list[dict[str, Any]] = []
-    for name, kind in (("main", "clickhouse"), ("main", "postgres"), ("stand", "web")):
-        rows.append({"connection": name, "kind": kind, "description": ""})
+    for name, kind, host in listed:
+        rows.append({"connection": name, "kind": kind, "host": host, "description": ""})
 
     return TableResult(rows=rows)
 
@@ -1240,18 +1247,18 @@ class TestIngestTools:
     ) -> None:
         """Отказ тела приходит конвертом: текст ошибки — как у httpx."""
         call = ToolCall(
-            tool="confluence_index_spaces",
+            tool="confluence_index_space",
             arguments={
-                "space_keys": [ProbeText.NO_SPACE.value],
+                "space_key": ProbeText.NO_SPACE.value,
                 "prune_missing": False,
                 "force_update": False,
             },
         )
-        url = confluence_site.base_url + ConfluenceRest.space_pages_path(
-            ProbeText.NO_SPACE.value
+        url = confluence_site.url_of(
+            ConfluenceRest.space_pages_path(ProbeText.NO_SPACE.value)
         )
         message = (
-            f"tool failed 'confluence_index_spaces': PayloadFailureError: "
+            f"tool failed 'confluence_index_space': PayloadFailureError: "
             f"Client error '404 ' for url '{url}'\n"
             "For more information check: "
             "https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404"

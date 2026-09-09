@@ -6,7 +6,7 @@ from uuid import UUID
 
 import pytest
 
-from boba.connections.profile import StoredConnection
+from boba.connections.profile import GrantedConnection, StoredConnection
 from boba.connections.whitelist import (
     AmbiguousConnectionError,
     ConnectionWhitelist,
@@ -19,21 +19,24 @@ def chainlit_context() -> None:
     """Чистая логика: сессия приложения не нужна."""
 
 
-def _row(row_id: UUID, name: str, base_url: str) -> StoredConnection:
-    return StoredConnection(
+def _row(
+    row_id: UUID, name: str, host: str, *, ambiguous: bool = False
+) -> GrantedConnection:
+    stored = StoredConnection(
         id=row_id,
         name=name,
-        profile=HttpConnection(base_url=base_url, ssl_verify=False),
+        profile=HttpConnection(host=host, port=443, ssl_verify=False),
     )
+    return GrantedConnection(row=stored, ambiguous=ambiguous)
 
 
-def _whitelist(*rows: StoredConnection) -> ConnectionWhitelist:
+def _whitelist(*rows: GrantedConnection) -> ConnectionWhitelist:
     return ConnectionWhitelist.of(rows)
 
 
 class TestPick:
     def test_name_is_matched_exactly(self) -> None:
-        whitelist = _whitelist(_row(UUID(int=1), "confl", "https://wiki.example.com"))
+        whitelist = _whitelist(_row(UUID(int=1), "confl", "wiki.example.com"))
         picked = whitelist.pick("confl")
         if picked is None or picked.name != "confl":
             raise AssertionError(f"name must match exactly: {picked}")
@@ -42,8 +45,8 @@ class TestPick:
 
     def test_duplicate_name_is_ambiguous(self) -> None:
         whitelist = _whitelist(
-            _row(UUID(int=1), "confl", "https://wiki.example.com"),
-            _row(UUID(int=2), "confl", "https://*.example.com"),
+            _row(UUID(int=1), "confl", "wiki.example.com", ambiguous=True),
+            _row(UUID(int=2), "confl", "*.example.com", ambiguous=True),
         )
         if "confl" not in whitelist.ambiguous or whitelist.profiles:
             raise AssertionError("duplicate name must be ambiguous and unlisted")
@@ -52,9 +55,9 @@ class TestPick:
 
     def test_names_list_only_unambiguous_rows(self) -> None:
         whitelist = _whitelist(
-            _row(UUID(int=1), "confl", "https://wiki.example.com"),
-            _row(UUID(int=2), "dup", "https://a.example.com"),
-            _row(UUID(int=3), "dup", "https://b.example.com"),
+            _row(UUID(int=1), "confl", "wiki.example.com"),
+            _row(UUID(int=2), "dup", "a.example.com", ambiguous=True),
+            _row(UUID(int=3), "dup", "b.example.com", ambiguous=True),
         )
         if whitelist.names() != ("confl",):
             raise AssertionError(f"ambiguous names stay unlisted: {whitelist.names()}")

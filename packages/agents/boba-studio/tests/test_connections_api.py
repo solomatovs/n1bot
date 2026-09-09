@@ -81,10 +81,10 @@ async def granted(
     postgres = await store.add("main", studio_config.data_layer.postgres)
     await store.grant(postgres, GrantTarget.role(roles[ROLE]))
 
-    web = await store.add("site", HttpConnection(base_url="https://example.test"))
+    web = await store.add("site", HttpConnection(host="example.test", port=443))
     await store.grant(web, GrantTarget.role(roles[ROLE]))
 
-    stranger = await store.add("secret", HttpConnection(base_url="https://other.test"))
+    stranger = await store.add("secret", HttpConnection(host="other.test", port=443))
     await store.grant(stranger, GrantTarget.user(UUID(int=999_999)))
 
     return {"postgres": postgres, "web": web, "stranger": stranger}
@@ -96,10 +96,10 @@ def _query(studio_config: StudioRuntimeConfig, **extra: str) -> dict[str, str]:
     return query
 
 
-def _web_body(name: str, url: str) -> dict[str, object]:
+def _web_body(name: str, host: str) -> dict[str, object]:
     return {
         "name": name,
-        "profile": {"kind": "web", "base_url": url, "ssl_verify": False},
+        "profile": {"kind": "web", "host": host, "port": 443, "ssl_verify": False},
     }
 
 
@@ -131,7 +131,7 @@ async def test_lists_granted_rows_with_masked_secrets(
     assert rows["main"]["kind"] == "postgres"
     assert rows["site"]["kind"] == "web"
     assert rows["site"]["mine"] is False
-    assert rows["site"]["profile"]["base_url"] == "https://example.test"
+    assert rows["site"]["profile"]["host"] == "example.test"
 
     for secret in _secrets_of(studio_config.data_layer.postgres):
         assert secret not in reply.text
@@ -189,7 +189,7 @@ async def test_owner_creates_replaces_and_deletes_own_connection(
     created = await client.post(
         f"{ApiVersion.V1}{ConnectionUrl.CONNECTIONS}",
         params=_query(studio_config),
-        json=_web_body("own", "https://own.test"),
+        json=_web_body("own", "own.test"),
     )
     assert created.status_code == 200, created.text
     row = created.json()
@@ -205,11 +205,11 @@ async def test_owner_creates_replaces_and_deletes_own_connection(
     replaced = await client.put(
         f"{ApiVersion.V1}/connections/{row['id']}",
         params=_query(studio_config),
-        json=_web_body("own-2", "https://own-2.test"),
+        json=_web_body("own-2", "own-2.test"),
     )
     assert replaced.status_code == 200, replaced.text
     assert replaced.json()["name"] == "own-2"
-    assert replaced.json()["profile"]["base_url"] == "https://own-2.test"
+    assert replaced.json()["profile"]["host"] == "own-2.test"
 
     deleted = await client.delete(
         f"{ApiVersion.V1}/connections/{row['id']}", params=_query(studio_config)
@@ -229,7 +229,7 @@ async def test_shared_and_foreign_rows_are_not_editable(
     shared = await client.put(
         f"{ApiVersion.V1}/connections/{granted['web']}",
         params=_query(studio_config),
-        json=_web_body("site", "https://hijack.test"),
+        json=_web_body("site", "hijack.test"),
     )
     assert shared.status_code == 403, shared.text
 
@@ -251,7 +251,7 @@ async def test_name_must_be_free_among_visible_rows(
     taken = await client.post(
         f"{ApiVersion.V1}{ConnectionUrl.CONNECTIONS}",
         params=_query(studio_config),
-        json=_web_body("site", "https://dup.test"),
+        json=_web_body("site", "dup.test"),
     )
 
     assert taken.status_code == 409, taken.text
@@ -299,7 +299,9 @@ async def test_check_of_a_stored_row_and_of_a_draft(
         json={
             "profile": {
                 "kind": "web",
-                "base_url": "http://127.0.0.1:9",
+                "scheme": "http",
+                "host": "127.0.0.1",
+                "port": 9,
                 "ssl_verify": False,
             }
         },

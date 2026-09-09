@@ -89,7 +89,7 @@ class CatalogStoreBase(PostgresTable):
             raise CatalogStoreError(msg) from exc
 
     @asynccontextmanager
-    async def _transaction(self, action: str) -> AsyncGenerator[Cursor]:
+    async def _transaction(self, action: str) -> AsyncGenerator[Cursor, None]:
         """Курсор словарей внутри одной транзакции на выделенном соединении."""
         pool = await self._pool()
         async with (

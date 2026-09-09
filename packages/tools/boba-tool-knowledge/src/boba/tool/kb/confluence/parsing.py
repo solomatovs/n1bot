@@ -29,6 +29,7 @@ from boba.tool.kb.confluence.models import (
     ConfluencePayloadError,
     HttpKeys,
 )
+from boba.transport.http.profile import HttpConnection
 
 __all__ = ["ConfluenceJson", "ConfluenceJsonDecoder"]
 
@@ -89,19 +90,6 @@ class ConfluenceJson:
         )
 
     @staticmethod
-    def source_url(data: dict[str, Any]) -> str:
-        links = ConfluenceJson.as_dict(data.get("_links"))
-        webui, base = links.get("webui"), links.get("base")
-        if webui and base:
-            return f"{str(base).rstrip('/')}{webui}"
-        return ""
-
-    @staticmethod
-    def response_base(data: dict[str, Any]) -> str:
-        base = ConfluenceJson.as_dict(data.get("_links")).get("base")
-        return str(base).rstrip("/") if base else ""
-
-    @staticmethod
     def webui(data: dict[str, Any]) -> str:
         return str(ConfluenceJson.as_dict(data.get("_links")).get("webui") or "")
 
@@ -141,7 +129,8 @@ class ConfluenceJsonDecoder(Decoder):
     этому факту, чтобы DispatchReader мог честно роутить страницы через
     HTMLReader (а не через несуществующий JSONReader)."""
 
-    def __init__(self, *, body_format: str = "export_view") -> None:
+    def __init__(self, *, profile: HttpConnection, body_format: str) -> None:
+        self._profile = profile
         self._body_format = body_format
 
     def decoder_id(self) -> DecoderId:
@@ -175,8 +164,8 @@ class ConfluenceJsonDecoder(Decoder):
             meta = meta.set(ConfluenceKeys.SPACE_KEY, space_key)
         if titles := ConfluenceJson.ancestor_titles(data):
             meta = meta.set(ConfluenceKeys.ANCESTORS_TITLES, titles)
-        if source_url := ConfluenceJson.source_url(data):
-            meta = meta.set(ConfluenceKeys.SOURCE_URL, source_url)
+        if webui := ConfluenceJson.webui(data):
+            meta = meta.set(ConfluenceKeys.SOURCE_URL, str(self._profile.url_of(webui)))
         meta = self._enrich_with_attachments(meta, data)
 
         return replace(

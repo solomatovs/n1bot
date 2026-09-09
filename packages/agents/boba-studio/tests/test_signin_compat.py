@@ -10,6 +10,7 @@ import pytest
 
 from boba.auth import AuthService, JwtTokens
 from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
+from boba.identity.session import Login
 from boba.identity.signin import SignedIn, SignInMetadata
 from boba.identity.token import CookieSpec, SessionRenewal
 from boba.runtime.config import StudioRuntimeConfig
@@ -25,7 +26,7 @@ class OneUser(PersistedUsers, UsersUpsert):
 
     async def get_user(self, identifier: str) -> AuthenticatedUser | None:
         return AuthenticatedUser(
-            id=self._id, identifier=identifier, sign_in=SignInMetadata()
+            id=self._id, identifier=Login(identifier), sign_in=SignInMetadata()
         )
 
     async def ensure_user(self, signed: SignedIn) -> AuthenticatedUser:
@@ -73,7 +74,7 @@ def test_issued_token_carries_the_peer_claims(
     secret = studio_config.session.auth_secret
     token = JwtTokens(secret, 60).issue(
         SignedIn(
-            identifier="alice",
+            identifier=Login("alice"),
             display_name="Alice",
             sign_in=SignInMetadata(roles=frozenset({"DEV"})),
         )

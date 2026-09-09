@@ -35,7 +35,6 @@ import logging
 from collections import Counter
 from collections.abc import AsyncIterator
 from dataclasses import replace
-from urllib.parse import urlsplit
 
 import httpx
 
@@ -68,6 +67,7 @@ from boba.transport.http import (
     HttpResponse,
     HttpTransport,
 )
+from boba.transport.http.profile import HttpConnection
 
 logger = logging.getLogger(__name__)
 
@@ -123,9 +123,9 @@ class ConfluenceHttpTransport(Transport[ConfluenceRequest]):
 
     def source_id(self, request: ConfluenceRequest) -> SourceId:
         """URL запроса без query и фрагмента: одна страница — один id."""
-        resolved = self._http.resolve_url(request.http)
-        bare = urlsplit(resolved)._replace(query="", fragment="")
-        return SourceId(bare.geturl())
+        resolved = httpx.URL(self._http.resolve_url(request.http))
+        bare = resolved.copy_with(query=None, fragment=None)
+        return SourceId(str(bare))
 
     async def fetch(self, request: ConfluenceRequest) -> AsyncIterator[RawDocument]:
         source_id = self.source_id(request)
@@ -164,14 +164,14 @@ class ConfluenceContentTransport(Transport[ConfluenceRequest]):
         *,
         inner: Transport[ConfluenceRequest],
         body_format: str,
-        base_url: str,
+        profile: HttpConnection,
         progress: IngestProgress,
         gate: AttachmentGate,
         skip_failed: bool,
     ) -> None:
         self._inner = inner
-        self._decoder = ConfluenceJsonDecoder(body_format=body_format)
-        self._base_url = base_url
+        self._decoder = ConfluenceJsonDecoder(profile=profile, body_format=body_format)
+        self._profile = profile
         self._gate = gate
         self._progress = progress
         self._skip_failed = skip_failed
@@ -206,7 +206,7 @@ class ConfluenceContentTransport(Transport[ConfluenceRequest]):
             yield self._watched(decoded, f"page {source_id}")
             attachments = self._iter_attachments(
                 parent=decoded,
-                base_url=self._base_url,
+                profile=self._profile,
                 transport=self._inner,
                 gate=self._gate,
                 progress=self._progress,
@@ -224,7 +224,7 @@ class ConfluenceContentTransport(Transport[ConfluenceRequest]):
     async def _iter_attachments(  # noqa: PLR0913 — обход и наблюдение независимы
         *,
         parent: RawDocument,
-        base_url: str,
+        profile: HttpConnection,
         transport: Transport[ConfluenceRequest],
         progress: IngestProgress,
         gate: AttachmentGate,
@@ -255,7 +255,7 @@ class ConfluenceContentTransport(Transport[ConfluenceRequest]):
             progress.attachments_found(1)
 
             req = ConfluenceRest.make_attachment_request(
-                base_url=base_url,
+                profile=profile,
                 parent_metadata=parent.metadata,
                 attachment=att,
             )
@@ -308,7 +308,7 @@ class ConfluenceContentTransport(Transport[ConfluenceRequest]):
         return cls(
             inner=ConfluenceHttpTransport(CancellableHttpTransport(conn.profile)),
             body_format=conn.body_format,
-            base_url=conn.base_url,
+            profile=conn.profile,
             progress=progress,
             gate=gate,
             skip_failed=skip_failed,

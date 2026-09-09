@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
+from boba.identity.session import Login
 from boba.identity.token import RenewVerdict, SessionClaims, SessionRenewal
 
 
@@ -10,7 +14,7 @@ class TestSessionRenewal:
 
     @staticmethod
     def _claims(exp: int, iat: int, since: int) -> SessionClaims:
-        return SessionClaims(identifier="alice", exp=exp, iat=iat, since=since)
+        return SessionClaims(identifier=Login("alice"), exp=exp, iat=iat, since=since)
 
     def test_signal_goes_when_the_token_is_about_to_expire(self) -> None:
         renewal = SessionRenewal.of(ttl_sec=3600, max_sec=86400)
@@ -52,3 +56,32 @@ class TestSessionRenewal:
 
         assert (renewed.exp, renewed.iat, renewed.since) == (9600, 6000, 1000)
         assert renewed.identifier == claims.identifier
+
+
+class TestClaimsLogin:
+    """Identifier claims — канон Login: чужой токен по секрету несёт любой регистр."""
+
+    def test_identifier_is_canonical_and_display_keeps_the_spelling(self) -> None:
+        claims = SessionClaims.model_validate(
+            {"identifier": " Ivanov.II ", "exp": 10, "iat": 5}
+        )
+
+        assert claims.identifier == "ivanov.ii"
+        assert claims.display_name == "Ivanov.II"
+
+    def test_given_display_name_wins(self) -> None:
+        claims = SessionClaims.model_validate(
+            {"identifier": "Ivanov.II", "display_name": "Иван Иванов", "exp": 10}
+        )
+
+        assert claims.identifier == "ivanov.ii"
+        assert claims.display_name == "Иван Иванов"
+
+    def test_blank_identifier_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            SessionClaims.model_validate({"identifier": "   ", "exp": 10})
+
+    def test_rendered_claims_carry_the_canonical_login(self) -> None:
+        claims = SessionClaims(identifier=Login("Petrov.PP"), exp=10)
+
+        assert claims.render()["identifier"] == "petrov.pp"

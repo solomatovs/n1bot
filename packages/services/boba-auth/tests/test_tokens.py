@@ -9,6 +9,7 @@ import jwt
 import pytest
 
 from boba.auth import JwtTokens
+from boba.identity.session import Login
 from boba.identity.signin import SignedIn, SignInMetadata
 from boba.identity.token import ClaimKey, TokenRejectedError, TokenRejection
 
@@ -25,7 +26,7 @@ class TestJwtTokens:
     def test_issued_token_reads_back(self) -> None:
         tokens = JwtTokens(SECRET, 60)
         signed = SignedIn(
-            identifier="alice",
+            identifier=Login("alice"),
             display_name="Alice",
             sign_in=SignInMetadata(roles=frozenset({"DEV"})),
         )
@@ -37,7 +38,7 @@ class TestJwtTokens:
 
     def test_claims_match_the_peer_layout(self) -> None:
         signed = SignedIn(
-            identifier="alice", display_name="Alice", sign_in=SignInMetadata()
+            identifier=Login("alice"), display_name="Alice", sign_in=SignInMetadata()
         )
         token = JwtTokens(SECRET, 60).issue(signed)
 

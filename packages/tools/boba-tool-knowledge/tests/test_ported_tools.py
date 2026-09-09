@@ -21,10 +21,9 @@ from boba.toolkit.entry import ToolMain
 from boba.toolkit.result import (
     ToolArtifact,
 )
-from boba.transport.http.profile import HttpConnection
+from boba.transport.http.profile import HttpConnection, UrlScheme
 
 # порт 1 закрыт всегда: тест проверяет ошибку соединения, а не адрес
-DEAD_URL = "{}://{}:1".format("http", "127.0.0.1")
 
 
 @pytest.fixture(autouse=True)
@@ -225,7 +224,7 @@ class TestConfluenceTools:
         import boba.tool.kb.confluence.tools as confluence_tools
 
         cfg = ConfluenceToolsConfig(
-            confluence=HttpConnection(base_url=DEAD_URL),
+            confluence=HttpConnection(scheme=UrlScheme.HTTP, host="127.0.0.1", port=1),
         )
 
         body = ToolMain.toolset(confluence_tools.confluence_fetch)[0].coroutine

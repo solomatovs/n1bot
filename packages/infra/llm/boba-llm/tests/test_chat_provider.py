@@ -478,7 +478,10 @@ class TestOpenAiChatProvider:
                 _delta_chunk(
                     {
                         "tool_calls": [
-                            {"index": 0, "function": {"name": "probe", "arguments": "{}"}}
+                            {
+                                "index": 0,
+                                "function": {"name": "probe", "arguments": "{}"},
+                            }
                         ]
                     }
                 ),
@@ -1104,7 +1107,7 @@ class TestTruncatedReply:
     """Обрыв по потолку токенов: причина названа, а не спрятана за 'мусор'."""
 
     TRUNCATED = (
-        '{"space_keys": ["ARROW", "ASTERIXDB"], "attachments": "*", '
+        '{"space_key": "ARROW", "attachments": "*", '
         '"force_update": true, "ocr_language": "rus+eng"'
     )
     """Аргументы вызова, оборванные на середине: закрывающей скобки нет."""
@@ -1118,7 +1121,7 @@ class TestTruncatedReply:
                             {
                                 "index": 0,
                                 "id": "call-1",
-                                "function": {"name": "confluence_index_spaces"},
+                                "function": {"name": "confluence_index_space"},
                             }
                         ]
                     }
@@ -1141,7 +1144,7 @@ class TestTruncatedReply:
             await _events(_provider(handler), REQUEST)
 
         message = str(caught.value)
-        if "confluence_index_spaces" not in message:
+        if "confluence_index_space" not in message:
             raise AssertionError(f"в ошибке нет имени вызова: {message}")
         if "4096" not in message:
             raise AssertionError(f"в ошибке нет истраченных токенов: {message}")

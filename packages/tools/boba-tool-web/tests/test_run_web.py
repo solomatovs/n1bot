@@ -25,16 +25,12 @@ def web_cfg(raw_config) -> WebGrepConfig:
 @pytest.fixture(scope="module")
 def connection(raw_config) -> HttpConnection:
     """Профиль соединения: в бою его подаёт хост из строк пользователя."""
-    profile = bind(raw_config, path="tool.ingest.confluence", model=HttpConnection)
-    if profile.base_url is None:
-        raise AssertionError("[tool.ingest.confluence] has no base_url")
-
-    return profile
+    return bind(raw_config, path="tool.ingest.confluence", model=HttpConnection)
 
 
 @pytest.fixture(scope="module")
 def covered_url(connection: HttpConnection) -> str:
-    return f"https://{connection.host()}/"
+    return f"https://{connection.host}/"
 
 
 async def test_run_web_fetch(

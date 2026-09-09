@@ -14,6 +14,7 @@ from boba.auth.signin import PasswordSignIns
 from boba.identity.admission import RoleMappingConfig
 from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
 from boba.identity.errors import AuthenticationError, ExternalServiceError
+from boba.identity.session import Login
 from boba.identity.signin import SignedIn, SignInMetadata
 from boba.identity.token import CookieSpec, SessionRenewal
 from boba.ldap import Ldap3Directory
@@ -30,7 +31,7 @@ class Users(PersistedUsers, UsersUpsert):
         self.asked: list[str] = []
         self.rows = {
             "reader": AuthenticatedUser(
-                id=UUID(int=7), identifier="reader", sign_in=SignInMetadata()
+                id=UUID(int=7), identifier=Login("reader"), sign_in=SignInMetadata()
             )
         }
 

@@ -45,7 +45,7 @@ async def test_returns_status_headers_and_body(monkeypatch):
     _patch(monkeypatch, handler)
 
     async with (
-        HttpTransport(HttpConnection()) as transport,
+        HttpTransport(HttpConnection(host="x.test", port=443)) as transport,
         transport.fetch(HttpRequest(url="https://x.test/doc")) as resp,
     ):
         # заголовки отдаются сырыми; обогащение/strip — забота потребителя
@@ -68,7 +68,7 @@ async def test_body_arrives_as_a_stream(monkeypatch):
 
     seen: list[bytes] = []
     async with (
-        HttpTransport(HttpConnection()) as transport,
+        HttpTransport(HttpConnection(host="x.test", port=443)) as transport,
         transport.fetch(HttpRequest(url="https://x.test/big")) as resp,
     ):
         async for chunk in resp.stream:
@@ -90,7 +90,9 @@ async def test_retry_recovers_after_5xx(monkeypatch):
 
     _patch(monkeypatch, handler)
 
-    profile = HttpConnection(retry_attempts=3, retry_backoff_sec=0)
+    profile = HttpConnection(
+        host="x.test", port=443, retry_attempts=3, retry_backoff_sec=0
+    )
     async with (
         HttpTransport(profile) as transport,
         transport.fetch(HttpRequest(url="https://x.test/y")) as resp,
@@ -112,7 +114,9 @@ async def test_retry_exhausted_raises_last_5xx(monkeypatch):
 
     _patch(monkeypatch, handler)
 
-    transport = HttpTransport(HttpConnection(retry_attempts=2, retry_backoff_sec=0))
+    transport = HttpTransport(
+        HttpConnection(host="x.test", port=443, retry_attempts=2, retry_backoff_sec=0)
+    )
     with pytest.raises(httpx.HTTPStatusError) as exc:
         async with transport.fetch(HttpRequest(url="https://x.test/y")):
             pass
@@ -133,7 +137,9 @@ async def test_4xx_not_retried(monkeypatch):
 
     _patch(monkeypatch, handler)
 
-    transport = HttpTransport(HttpConnection(retry_attempts=3, retry_backoff_sec=0))
+    transport = HttpTransport(
+        HttpConnection(host="x.test", port=443, retry_attempts=3, retry_backoff_sec=0)
+    )
     with pytest.raises(httpx.HTTPStatusError) as exc:
         async with transport.fetch(HttpRequest(url="https://x.test/y")):
             pass
@@ -156,7 +162,7 @@ async def test_url_query_preserved_with_empty_params(monkeypatch):
 
     req = HttpRequest(url="https://x.test/rest/api/content/1?expand=body.view")
     async with (
-        HttpTransport(HttpConnection()) as transport,
+        HttpTransport(HttpConnection(host="x.test", port=443)) as transport,
         transport.fetch(req) as resp,
     ):
         await resp.stream.read()
@@ -177,7 +183,9 @@ async def test_auth_from_profile_applied_to_client(monkeypatch):
     _patch(monkeypatch, handler)
 
     profile = HttpConnection(
-        auth=BasicAuth(method="basic", user="u", password=SecretStr("p"))
+        host="x.test",
+        port=443,
+        auth=BasicAuth(method="basic", user="u", password=SecretStr("p")),
     )
     async with (
         HttpTransport(profile) as transport,

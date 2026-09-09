@@ -8,6 +8,7 @@ import pytest
 from boba.chainlit.data.data_layer import ThreadDicts
 from boba.chat.threads import StoredThread
 from boba.identity.api import StoredUser
+from boba.identity.session import Login
 
 
 @pytest.fixture(autouse=True)
@@ -18,7 +19,10 @@ def chainlit_context() -> None:
 class TestUserDict:
     def test_persisted_id_is_the_uuid(self) -> None:
         stored = StoredUser(
-            id=UUID(int=7), identifier="boba", created_at=datetime.now(UTC), meta={}
+            id=UUID(int=7),
+            identifier=Login("boba"),
+            created_at=datetime.now(UTC),
+            meta={},
         )
 
         persisted = ThreadDicts.user(stored)

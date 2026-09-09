@@ -91,7 +91,7 @@ class HttpTransport:
         self._retry = RetryPolicy(profile)
         # headers/params на клиент не кладём: они целиком per-request
         self._client = httpx.AsyncClient(
-            base_url=profile.base_url or "",
+            base_url=profile.root_url(),
             timeout=profile.timeout_sec,
             verify=profile.ssl_verify,
             auth=HttpxAuth.of(profile),

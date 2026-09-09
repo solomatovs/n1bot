@@ -29,6 +29,7 @@ __all__ = [
     "ConnectionsColumn",
     "GrantKind",
     "GrantTarget",
+    "GrantedConnection",
     "GrantsColumn",
     "MissingTypeConnection",
     "RolesColumn",
@@ -148,6 +149,15 @@ class StoredConnection(BaseModel):
         return self.profile.kind
 
 
+class GrantedConnection(BaseModel):
+    """Строка, выданная субъекту, с признаком дубля имени внутри вида."""
+
+    model_config = ConfigDict(frozen=True)
+
+    row: StoredConnection
+    ambiguous: bool
+
+
 class MissingTypeConnection(BaseModel):
     """Строка connections, чей тип не установлен: в списках живёт с пометкой."""
 
@@ -216,7 +226,7 @@ class ConnectionRepository(Protocol):
     @abstractmethod
     async def for_subject(
         self, subject: Subject, kind: str
-    ) -> Sequence[StoredConnection]: ...
+    ) -> Sequence[GrantedConnection]: ...
 
 
 class ProbeResult(BaseModel):

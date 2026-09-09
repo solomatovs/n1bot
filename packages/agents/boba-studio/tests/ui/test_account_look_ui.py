@@ -227,7 +227,7 @@ class TestAccount:
         expect(page.locator(Sel.ALERT_INFO)).to_contain_text("read-only")
         expect(page.locator(Sel.KIND)).to_have_value("web")
         expect(page.locator(Sel.KIND)).to_be_disabled()
-        expect(page.get_by_label("profile.base_url", exact=True)).to_be_disabled()
+        expect(page.get_by_label("profile.host", exact=True)).to_be_disabled()
         expect(page.get_by_role("button", name="save", exact=True)).to_have_count(0)
         expect(page.get_by_role("button", name="delete", exact=True)).to_have_count(0)
         expect(page.get_by_role("button", name="check", exact=True)).to_be_visible()
@@ -311,9 +311,10 @@ class TestSchemaForm:
     ) -> None:
         _open_new_connection(page, stand)
         page.locator(Sel.KIND).select_option("web")
-        page.get_by_label("profile.base_url", exact=True).fill(
-            f"http://127.0.0.1:{stand.config.llm_port}/health"
-        )
+        page.get_by_label("profile.scheme", exact=True).select_option("http")
+        page.get_by_label("profile.host", exact=True).fill("127.0.0.1")
+        page.get_by_label("profile.port", exact=True).fill(str(stand.config.llm_port))
+        page.get_by_label("profile.path", exact=True).fill("/health")
         page.get_by_role("button", name="check", exact=True).click()
 
         ok = page.locator(Sel.ALERT_OK)

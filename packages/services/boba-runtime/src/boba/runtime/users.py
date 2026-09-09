@@ -28,7 +28,7 @@ from boba.identity.api import (
     UserSettingsStore,
     UsersUpsert,
 )
-from boba.identity.session import UserMetadataField
+from boba.identity.session import Login, UserMetadataField
 from boba.identity.signin import SignedIn
 from boba.runtime.table import PgTable
 
@@ -91,7 +91,7 @@ class UsersTable(PgTable, UserRows, UserSettingsStore, UsersUpsert):
         )
         await self._run(ddl, "users.setup")
 
-    async def stored(self, identifier: str) -> StoredUser | None:
+    async def stored(self, identifier: Login) -> StoredUser | None:
         query = sql.SQL(
             "select {cols} from {users} where {identifier} = %(identifier)s limit 1"
         ).format(
@@ -133,14 +133,14 @@ class UsersTable(PgTable, UserRows, UserSettingsStore, UsersUpsert):
 
         return self._stored(row)
 
-    async def get_user(self, identifier: str) -> AuthenticatedUser | None:
+    async def get_user(self, identifier: Login) -> AuthenticatedUser | None:
         stored = await self.stored(identifier)
         if stored is None:
             return None
 
         return stored.authenticated()
 
-    async def upsert(self, identifier: str, meta: Mapping[str, Any]) -> StoredUser:
+    async def upsert(self, identifier: Login, meta: Mapping[str, Any]) -> StoredUser:
         """Новая строка либо metadata поверх прежней; что писать — решает вызывающий."""
         metadata = dict(meta)
         query = sql.SQL(

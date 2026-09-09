@@ -29,6 +29,7 @@ from boba.transport.http.profile import (
     HttpConnection,
     NegotiateAuth,
     NoneAuth,
+    UrlScheme,
 )
 
 STAND = Stand.required()
@@ -61,14 +62,21 @@ def workspace(tmp_path: Path) -> Iterator[None]:
 
 def _clickhouse(auth: Any) -> HttpConnection:
     return HttpConnection(
-        base_url=f"http://{STAND.ch_addr}:{STAND.ch_port}",
+        scheme=UrlScheme.HTTP,
+        host=STAND.ch_addr,
+        port=STAND.ch_port,
         auth=auth,
         timeout_sec=15.0,
     )
 
 
 def _confluence(auth: Any) -> HttpConnection:
-    return HttpConnection(base_url=STAND.confluence_url, auth=auth, ssl_verify=False)
+    return HttpConnection(
+        host=STAND.confluence_host,
+        port=STAND.confluence_port,
+        auth=auth,
+        ssl_verify=False,
+    )
 
 
 async def _body(profile: HttpConnection, request: HttpRequest) -> tuple[int, str]:

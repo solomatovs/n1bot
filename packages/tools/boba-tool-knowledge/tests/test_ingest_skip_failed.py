@@ -48,7 +48,7 @@ from boba.tool.kb.indexing_log import (
     LoggingChunkStore,
     LoggingReader,
 )
-from boba.transport.http.profile import HttpConnection
+from boba.transport.http.profile import HttpConnection, UrlScheme
 
 pytestmark = pytest.mark.anyio
 
@@ -153,9 +153,8 @@ class LiveServer:
             await self._task
 
     @property
-    def base_url(self) -> str:
-        port = self._server.servers[0].sockets[0].getsockname()[1]
-        return f"http://127.0.0.1:{port}"
+    def port(self) -> int:
+        return self._server.servers[0].sockets[0].getsockname()[1]
 
 
 class BrokenReader(Reader[str]):
@@ -185,18 +184,18 @@ class BrokenReader(Reader[str]):
 class SkipStand:
     """Прогон ingest против стенда: наружу — итог, прогресс и хранилище."""
 
-    def __init__(
-        self, base_url: str, *, skip_failed: bool, reader: Reader[str]
-    ) -> None:
+    def __init__(self, port: int, *, skip_failed: bool, reader: Reader[str]) -> None:
         self.store = MemoryChunkStore()
         self.progress = IngestProgress(LOGGER)
-        self._base_url = base_url
+        self._port = port
         self._skip_failed = skip_failed
         self._reader = reader
 
     def connection(self) -> ConfluenceConnection:
         profile = HttpConnection(
-            base_url=self._base_url,
+            scheme=UrlScheme.HTTP,
+            host="127.0.0.1",
+            port=self._port,
             retry_attempts=1,
             retry_backoff_sec=0.0,
             timeout_sec=10.0,
@@ -206,7 +205,7 @@ class SkipStand:
     async def run(self) -> IndexStats:
         conn = self.connection()
         source = ConfluencePagesRequestSource(
-            base_url=conn.base_url,
+            profile=conn.profile,
             page_ids=(GOOD_PAGE, BROKEN_PAGE),
             body_format=conn.body_format,
             progress=self.progress,
@@ -254,7 +253,7 @@ class TestSkipFailed:
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         async with LiveServer(ConfluenceStub.app()) as server:
-            stand = SkipStand(server.base_url, skip_failed=True, reader=TextReader())
+            stand = SkipStand(server.port, skip_failed=True, reader=TextReader())
             with caplog.at_level(logging.INFO):
                 stats = await stand.run()
 
@@ -267,7 +266,7 @@ class TestSkipFailed:
 
     async def test_broken_attachment_does_not_lose_the_page(self) -> None:
         async with LiveServer(ConfluenceStub.app()) as server:
-            stand = SkipStand(server.base_url, skip_failed=True, reader=TextReader())
+            stand = SkipStand(server.port, skip_failed=True, reader=TextReader())
             stats = await stand.run()
 
         sources: set[str] = set()
@@ -291,7 +290,7 @@ class TestSkipFailed:
 
     async def test_failed_counter_shows_up_in_progress(self) -> None:
         async with LiveServer(ConfluenceStub.app()) as server:
-            stand = SkipStand(server.base_url, skip_failed=True, reader=TextReader())
+            stand = SkipStand(server.port, skip_failed=True, reader=TextReader())
             await stand.run()
 
         summary = stand.progress.render()
@@ -305,7 +304,7 @@ class TestReaderFailure:
     async def test_broken_parse_is_counted_and_the_rest_is_indexed(self) -> None:
         async with LiveServer(ConfluenceStub.app()) as server:
             stand = SkipStand(
-                server.base_url,
+                server.port,
                 skip_failed=True,
                 reader=BrokenReader(GOOD_PAGE),
             )
@@ -320,6 +319,6 @@ class TestStrictRun:
 
     async def test_run_stops_on_the_first_failure(self) -> None:
         async with LiveServer(ConfluenceStub.app()) as server:
-            stand = SkipStand(server.base_url, skip_failed=False, reader=TextReader())
+            stand = SkipStand(server.port, skip_failed=False, reader=TextReader())
             with pytest.raises(TransportError):
                 await stand.run()

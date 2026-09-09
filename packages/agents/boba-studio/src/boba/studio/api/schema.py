@@ -20,6 +20,7 @@ from boba.identity.api import (
     Authenticator,
 )
 from boba.identity.locks import MemoryLiveLocks
+from boba.identity.session import Login
 from boba.identity.signin import SignedIn
 from boba.identity.token import CookieSpec, SessionRenewal
 from boba.messaging import MemoryMessageBus
@@ -45,7 +46,7 @@ class NoOne(Authenticator):
 class NoUsers(AuthUsers):
     """Строки users для схемы: никого не читает и не пишет."""
 
-    async def get_user(self, identifier: str) -> AuthenticatedUser | None:
+    async def get_user(self, identifier: Login) -> AuthenticatedUser | None:
         msg = (
             f"get_user({identifier!r}) while rendering the OpenAPI schema: "
             f"the users table is not part of the schema stand"

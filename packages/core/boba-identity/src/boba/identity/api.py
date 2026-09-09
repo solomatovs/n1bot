@@ -23,6 +23,7 @@ from boba.identity.context import (
     Scope,
     Subject,
 )
+from boba.identity.session import Login
 from boba.identity.signin import SignedIn, SignInMetadata
 
 __all__ = [
@@ -45,7 +46,7 @@ class AuthenticatedUser(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: UUID
-    identifier: str
+    identifier: Login
     sign_in: SignInMetadata
     settings: Mapping[str, object] = {}
     """Строка users как есть: настройки LLM по профилям, выбранный профиль studio."""
@@ -100,7 +101,7 @@ class StoredUser(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: UUID
-    identifier: str
+    identifier: Login
     created_at: datetime
     meta: Mapping[str, Any] = {}
 
@@ -117,7 +118,7 @@ class UserRows(Protocol):
     """Строки users целиком: чтение по логину и id, upsert, настройки LLM профиля."""
 
     @abstractmethod
-    async def stored(self, identifier: str) -> StoredUser | None:
+    async def stored(self, identifier: Login) -> StoredUser | None:
         """None — строки с таким логином нет."""
 
     @abstractmethod
@@ -125,7 +126,7 @@ class UserRows(Protocol):
         """None — строки с таким id нет."""
 
     @abstractmethod
-    async def upsert(self, identifier: str, meta: Mapping[str, Any]) -> StoredUser:
+    async def upsert(self, identifier: Login, meta: Mapping[str, Any]) -> StoredUser:
         """Новая строка либо metadata поверх прежней."""
 
     @abstractmethod
@@ -154,7 +155,7 @@ class PersistedUsers(Protocol):
     """Строки users по идентификатору входа: id строки и сохранённые metadata."""
 
     @abstractmethod
-    async def get_user(self, identifier: str) -> AuthenticatedUser | None:
+    async def get_user(self, identifier: Login) -> AuthenticatedUser | None:
         """None — вход ещё не заводил строку users."""
 
 

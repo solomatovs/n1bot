@@ -51,6 +51,7 @@ from boba.identity.context import (
 from boba.identity.errors import RefusalError
 from boba.identity.locks import MemoryLiveLocks
 from boba.identity.run import ElementTarget, RunPort, RunRefusal
+from boba.identity.session import Login
 from boba.identity.signin import SignedIn, SignInMetadata
 from boba.identity.token import SessionClaims, TokenReader
 from boba.kerberos import DelegationMode, SignInTicket
@@ -355,7 +356,9 @@ class SessionStub:
             metadata={},
         )
         # токен входа как у живой сессии: без него ход отказывает
-        signed = SignedIn(identifier=name, display_name="", sign_in=SignInMetadata())
+        signed = SignedIn(
+            identifier=Login(name), display_name="", sign_in=SignInMetadata()
+        )
         self.token = StandTokens.tokens().issue(signed)
 
 

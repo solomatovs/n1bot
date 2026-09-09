@@ -17,7 +17,7 @@ from __future__ import annotations
 import base64
 import binascii
 import logging
-from collections.abc import AsyncGenerator, Iterable, Sequence
+from collections.abc import AsyncGenerator, Iterable, Iterator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any, ClassVar, LiteralString
 from uuid import UUID
@@ -33,6 +33,12 @@ from pydantic import (
     field_validator,
 )
 
+from boba.connections.grants import (
+    ConnectionFilter,
+    ConnectionNames,
+    SubjectGrantsQuery,
+    SubjectRowColumn,
+)
 from boba.connections.manifest import (
     ConnectionTypes,
     ConnectionTypesError,
@@ -45,6 +51,7 @@ from boba.connections.profile import (
     ConnectionsColumn,
     ConnectionStoreError,
     ConnectionTable,
+    GrantedConnection,
     GrantKind,
     GrantsColumn,
     GrantTarget,
@@ -174,20 +181,11 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
         return self._table(ConnectionTable.GRANTS)
 
     def _sql(self, text: LiteralString) -> sql.Composed:
-        """SQL с именами таблиц и колонок из enum'ов: c_* — connections, r_* — roles,
-        g_* — grants.
-        """
-        names: dict[str, sql.Composable] = {
-            "connections": self._connections(),
-            "roles": self._roles(),
-            "grants": self._grants(),
-        }
-        for column in ConnectionsColumn:
-            names[f"c_{column.value}"] = SqlNames.ident(column)
-        for column in RolesColumn:
-            names[f"r_{column.name.lower()}"] = SqlNames.ident(column)
-        for column in GrantsColumn:
-            names[f"g_{column.value}"] = SqlNames.ident(column)
+        """SQL с именами таблиц и колонок по картам ConnectionNames: c_* —
+        connections, r_* — roles, g_* — grants."""
+        names = SqlNames.mapping(
+            self._cfg.db_schema, ConnectionNames.tables(), ConnectionNames.columns()
+        )
 
         return sql.SQL(text).format(**names)
 
@@ -655,7 +653,7 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
         Строка типа без установленного пакета не теряется — она попадает в
         missing и показывается спискам с пометкой.
         """
-        raw_rows = await self._subject_rows(subject, kind=None)
+        raw_rows = await self._subject_rows(subject, ConnectionFilter.none())
 
         rows: list[StoredConnection] = []
         missing: list[MissingTypeConnection] = []
@@ -665,7 +663,9 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
             except UnknownConnectionKindError as exc:
                 missing.append(
                     MissingTypeConnection(
-                        id=UUID(str(row["id"])), name=row["name"], kind=exc.kind
+                        id=UUID(str(row[SubjectRowColumn.ID])),
+                        name=row[SubjectRowColumn.NAME],
+                        kind=exc.kind,
                     )
                 )
 
@@ -673,84 +673,19 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
 
     async def for_subject(
         self, subject: Subject, kind: str
-    ) -> Sequence[StoredConnection]:
-        """Соединения вида kind, выданные пользователю лично или любой его роли."""
-        rows = await self._subject_rows(subject, kind)
+    ) -> Sequence[GrantedConnection]:
+        """Соединения вида kind, выданные пользователю лично или любой его роли,
+        с признаком дубля имени."""
+        rows = await self._subject_rows(subject, ConnectionFilter.of_kind(kind))
 
-        return self._stored_rows(rows)
+        return list(self._granted_rows(rows))
 
     async def _subject_rows(
-        self, subject: Subject, kind: str | None
+        self, subject: Subject, flt: ConnectionFilter
     ) -> list[dict[str, Any]]:
-        """Строки, выданные субъекту лично или по роли; kind=None — все виды."""
-        kind_filter = ""
-        if kind is not None:
-            kind_filter = "and c.{c_data} ->> 'kind' = %(kind)s"
-
-        query = self._sql(
-            """
-            with
-                subject_roles as (
-                    select
-                        r.{r_id}
-                    from
-                        {roles} r
-                    where
-                        r.{r_role} = any(%(roles)s)
-                ),
-                user_grants as (
-                    select
-                        g.{g_src_kind_id} as connection_id
-                    from
-                        {grants} g
-                    where 1=1
-                        and g.{g_src_kind} = %(src_kind)s
-                        and g.{g_tgt_kind} = %(users_kind)s
-                        and g.{g_tgt_kind_id} = %(user_id)s
-                ),
-                role_grants as (
-                    select
-                        g.{g_src_kind_id} as connection_id
-                    from
-                        {grants} g
-                        inner join subject_roles sr on
-                            g.{g_tgt_kind_id} = sr.{r_id}
-                    where 1=1
-                        and g.{g_src_kind} = %(src_kind)s
-                        and g.{g_tgt_kind} = %(roles_kind)s
-                ),
-                granted as (
-                    select
-                        connection_id
-                    from
-                        user_grants
-                    union
-                    select
-                        connection_id
-                    from
-                        role_grants
-                )
-            select
-                c.{c_id},
-                c.{c_name},
-                c.{c_data}
-            from
-                {connections} c
-                inner join granted on granted.connection_id = c.{c_id}
-            where 1=1
-                KIND_FILTER
-            order by
-                c.{c_name}
-            """.replace("KIND_FILTER", kind_filter)
-        )
-        params = {
-            "kind": kind,
-            "src_kind": GrantKind.CONNECTIONS.value,
-            "users_kind": GrantKind.USERS.value,
-            "roles_kind": GrantKind.ROLES.value,
-            "user_id": subject.user_id,
-            "roles": sorted(subject.roles),
-        }
+        """Строки SubjectGrantsQuery, прошедшие фильтр."""
+        query = self._sql(SubjectGrantsQuery.text(flt))
+        params = SubjectGrantsQuery.params(subject, flt)
 
         pool = await self._pool()
         async with self._guarded("for subject"), pool.dict_cursor() as cur:
@@ -785,6 +720,25 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
                 )
 
         return stored
+
+    def _granted_rows(self, rows: list[dict[str, Any]]) -> Iterator[GrantedConnection]:
+        """Строки субъекта с признаком дубля; строка без типа пропускается
+        так же, как в _stored_rows."""
+        for row in rows:
+            try:
+                stored = self._stored(row)
+            except UnknownConnectionKindError as exc:
+                logger.warning(
+                    "connections: row #%s %r skipped: %s",
+                    row[SubjectRowColumn.ID],
+                    row[SubjectRowColumn.NAME],
+                    exc,
+                )
+                continue
+
+            copies = int(row[SubjectRowColumn.COPIES])
+
+            yield GrantedConnection(row=stored, ambiguous=copies > 1)
 
     def _stored(self, row: dict[str, Any]) -> StoredConnection:
         try:

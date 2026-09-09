@@ -13,7 +13,6 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
-from chainlit_stand import FakeUrl
 from langchain_core.tools import tool
 
 from boba.cancellation import (
@@ -30,7 +29,7 @@ from boba.tool.shell.tools import BashToolConfig
 from boba.toolkit.result import ErrorResult
 from boba.toolrun.cancellation import CancellableTools
 from boba.transport.http import CancellableHttpTransport, HttpRequest
-from boba.transport.http.profile import HttpConnection
+from boba.transport.http.profile import HttpConnection, UrlScheme
 
 
 def _bin_dirs() -> list[str]:
@@ -268,22 +267,24 @@ class TestHttpAbort:
     ABORT_DEADLINE_SEC = 3.0
 
     @pytest.fixture
-    def drip_url(self) -> Iterator[str]:
+    def drip_port(self) -> Iterator[int]:
         server = HTTPServer(("127.0.0.1", 0), _DripHandler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         try:
-            yield FakeUrl.loopback(server.server_port)
+            yield server.server_port
         finally:
             server.shutdown()
 
-    def test_cancel_aborts_in_flight_request(self, drip_url: str) -> None:
+    def test_cancel_aborts_in_flight_request(self, drip_port: int) -> None:
         """Отмена приходит из чужого потока и обязана оборвать задачу запроса."""
 
         async def read_all() -> int:
-            profile = HttpConnection(base_url=drip_url)
+            profile = HttpConnection(
+                scheme=UrlScheme.HTTP, host="127.0.0.1", port=drip_port
+            )
             async with (
                 CancellableHttpTransport(profile) as transport,
-                transport.fetch(HttpRequest(url=f"{drip_url}/slow")) as resp,
+                transport.fetch(HttpRequest(url="/slow")) as resp,
             ):
                 return len(await resp.stream.read())
 

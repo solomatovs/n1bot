@@ -205,7 +205,8 @@ class UserConnectionsService:
     ) -> list[StoredConnection]:
         rows: list[StoredConnection] = []
         for kind in kinds:
-            rows.extend(await store.for_subject(subject, kind))
+            for granted in await store.for_subject(subject, kind):
+                rows.append(granted.row)
 
         return rows
 

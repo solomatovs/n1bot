@@ -19,6 +19,7 @@ from boba.auth.signin import PasswordSignIns
 from boba.chainlit.auth.refresh import PageUrls, SessionRefresh
 from boba.identity.admission import RoleMappingConfig
 from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
+from boba.identity.session import Login
 from boba.identity.signin import SignedIn, SignInMetadata
 from boba.identity.sso import OwnRequest
 from boba.identity.token import CookieSpec, SessionRenewal
@@ -36,7 +37,7 @@ class Users(PersistedUsers, UsersUpsert):
     def __init__(self) -> None:
         self.row = AuthenticatedUser(
             id=UUID(int=7),
-            identifier="alice",
+            identifier=Login("alice"),
             sign_in=SignInMetadata(roles=frozenset({"DEV"})),
         )
 

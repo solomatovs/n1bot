@@ -9,6 +9,7 @@ from psycopg import sql
 
 from boba.chat.threads import DataRejectedError, ThreadUpsert
 from boba.db.postgres import AsyncPostgresPool
+from boba.identity.session import Login
 from boba.identity.signin import SignedIn, SignInMetadata
 from boba.runtime.config import RuntimeConfig
 from boba.runtime.threads import ThreadsTable
@@ -43,7 +44,9 @@ async def test_upsert_get_list_and_author(
 ) -> None:
     users, threads = tables
     owner = await users.ensure_user(
-        SignedIn(identifier="owner", display_name="owner", sign_in=SignInMetadata())
+        SignedIn(
+            identifier=Login("owner"), display_name="owner", sign_in=SignInMetadata()
+        )
     )
     thread_id = uuid4()
 
@@ -88,17 +91,17 @@ async def test_user_rows_and_llm_settings(
     tables: tuple[UsersTable, ThreadsTable],
 ) -> None:
     users, _ = tables
-    stored = await users.upsert("reader", {"roles": ["DEV"]})
+    stored = await users.upsert(Login("reader"), {"roles": ["DEV"]})
 
     assert (await users.stored_by_id(stored.id)) == stored
-    assert (await users.stored("reader")) == stored
+    assert (await users.stored(Login("reader"))) == stored
 
     await users.set_llm_settings(stored.id, "general", {"temperature": 0.2})
-    again = await users.stored("reader")
+    again = await users.stored(Login("reader"))
     assert again is not None
     assert again.meta["llm"] == {"general": {"temperature": 0.2}}
 
     await users.set_llm_settings(stored.id, "general", {})
-    cleared = await users.stored("reader")
+    cleared = await users.stored(Login("reader"))
     assert cleared is not None
     assert cleared.meta["llm"] == {}

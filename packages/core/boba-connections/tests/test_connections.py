@@ -234,7 +234,7 @@ class TestRealProfiles:
     )
     def test_web_auth_variants_roundtrip(self, auth) -> None:
         cipher = _cipher()
-        sealed = cipher.encrypt(HttpConnection(base_url="https://x", auth=auth))
+        sealed = cipher.encrypt(HttpConnection(host="x", port=443, auth=auth))
         blob = json.dumps(sealed, ensure_ascii=False)
         if FakeSecret.HTTP_BASIC in blob:
             raise AssertionError("пароль утёк в зашифрованный профиль")
@@ -252,7 +252,8 @@ class TestRealProfiles:
 
     def test_token_masked_in_dump(self) -> None:
         profile = HttpConnection(
-            base_url="https://x",
+            host="x",
+            port=443,
             auth=BearerAuth(method="bearer", token=SecretStr(FakeSecret.HTTP_BEARER)),
         )
         if FakeSecret.HTTP_BEARER in profile.model_dump_json():
@@ -276,7 +277,7 @@ class TestConnectionKind:
             raise AssertionError("clickhouse profile must carry kind clickhouse")
 
     def test_kind_of_web(self) -> None:
-        if HttpConnection().kind != "web":
+        if HttpConnection(host="x", port=443).kind != "web":
             raise AssertionError("http profile must carry kind web")
 
     def test_kind_is_part_of_the_model(self) -> None:

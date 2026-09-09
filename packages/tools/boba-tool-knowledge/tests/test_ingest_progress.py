@@ -47,12 +47,14 @@ from boba.tool.kb.indexing_log import (
     LoggingChunkStore,
     LoggingReader,
 )
+from boba.transport.http.profile import HttpConnection
 
 pytestmark = pytest.mark.anyio
 
 LOGGER = logging.getLogger("test.ingest.progress")
 COLLECTION = CollectionId("kb_test")
-BASE_URL = "https://confluence.example.local"
+PROFILE = HttpConnection(host="confluence.example.local", port=443)
+BASE_URL = str(PROFILE.root_url())
 PAGE_IDS = ("101", "102")
 
 
@@ -138,7 +140,7 @@ class IngestStand:
 
     def source(self) -> RequestSource[ConfluenceRequest]:
         return ConfluencePagesRequestSource(
-            base_url=BASE_URL,
+            profile=PROFILE,
             page_ids=PAGE_IDS,
             body_format="view",
             progress=self.progress,
@@ -148,7 +150,7 @@ class IngestStand:
         return ConfluenceContentTransport(
             inner=_CannedTransport(self._attachments_per_page),
             body_format="view",
-            base_url=BASE_URL,
+            profile=PROFILE,
             progress=self.progress,
             gate=AttachmentGate.of(AttachmentFilter(), "*", ocr_enabled=True),
             skip_failed=True,
