@@ -1481,6 +1481,20 @@ class TestChTools:
         call = ToolCall(tool="connection_list")
         feed.call(call, ToolExpect.of(_connection_catalog(), dom=CATALOG_DOM))
 
+    def test_connection_search(self, feed: ToolFeed) -> None:
+        """Поиск по виду отбирает из каталога только clickhouse-строку."""
+        call = ToolCall(
+            tool="connection_search",
+            arguments={"kind": "clickhouse", "name": "", "host": "", "description": ""},
+        )
+        rows: list[dict[str, Any]] = []
+        for row in _connection_catalog().rows:
+            if row["kind"] == "clickhouse":
+                rows.append(dict(row))
+
+        found = TableResult(rows=rows)
+        feed.call(call, ToolExpect.of(found, dom=["main", "clickhouse"]))
+
     def test_query(self, feed: ToolFeed) -> None:
         call = ToolCall(
             tool="ch_query",

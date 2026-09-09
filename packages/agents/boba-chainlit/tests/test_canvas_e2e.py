@@ -121,6 +121,15 @@ async def _wait_for_server() -> None:
     pytest.fail(f"приложение не поднялось: {last_error}")
 
 
+async def _cookie_header(context: Any) -> str:
+    """Все cookie контекста браузера одной строкой заголовка Cookie."""
+    pairs: list[str] = []
+    for cookie in await context.cookies():
+        pairs.append(f"{cookie['name']}={cookie['value']}")
+
+    return "; ".join(pairs)
+
+
 def _tool_view(thread_id: str, name: str) -> str:
     """Путь файла глазами тела инструмента: гостевой в песочнице, хостовый в process."""
     from omegaconf import OmegaConf
@@ -279,10 +288,15 @@ async def panel(app_server: None) -> AsyncIterator[Any]:
                     "id": "e2e",
                 },
             }
+            # cookie входа может быть Secure (SameSite=None в конфиге): по http
+            # API-контекст Playwright её не отправит, поэтому заголовок явный
             await page.request.post(
                 BASE + "/project/action",
                 data=json.dumps(payload),
-                headers={"content-type": "application/json"},
+                headers={
+                    "content-type": "application/json",
+                    "cookie": await _cookie_header(context),
+                },
             )
             await page.wait_for_timeout(3000)
             return page.locator("#side-view-content")
