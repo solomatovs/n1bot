@@ -1131,6 +1131,8 @@ class ToolArtifact:
     Чужое значение — строка старой истории, словарь без известного kind —
     даёт None: лента показывает его сырым текстом. Словарь известного kind
     с битыми полями — ValidationError: это дефект, а не чужое значение.
+    История переживает версии результата: поля, которых у класса больше
+    нет, отбрасываются, а не роняют загрузку треда.
     """
 
     _ADAPTER: ClassVar[TypeAdapter[ToolResultBase]] = TypeAdapter(ToolResult)
@@ -1146,8 +1148,22 @@ class ToolArtifact:
         if not isinstance(artifact, Mapping):
             return None
 
-        kind = artifact.get("kind")
-        if ResultKinds.of(str(kind)) is None:
+        model = ResultKinds.of(str(artifact.get("kind")))
+        if model is None:
             return None
 
-        return cls._ADAPTER.validate_python(dict(artifact))
+        return cls._ADAPTER.validate_python(cls._known_fields(model, artifact))
+
+    @staticmethod
+    def _known_fields(
+        model: type[ToolResultBase], artifact: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Поля артефакта, известные текущей модели вида."""
+        kept: dict[str, Any] = {}
+        for name, value in artifact.items():
+            if name not in model.model_fields:
+                continue
+
+            kept[name] = value
+
+        return kept

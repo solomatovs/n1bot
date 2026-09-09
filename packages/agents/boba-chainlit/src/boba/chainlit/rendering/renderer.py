@@ -357,7 +357,11 @@ class ChatRenderer:
         await self._surface.window_message(signal.payload())
 
     async def _on_thread_rewound(self, message: ThreadRewound) -> None:
+        """Правка вопроса: вкладки перечитывают историю до этого вопроса, и шаги
+        нового хода — контейнер, ответ — получают те же id, что у прежнего.
+        Лента обязана забыть, что уже отправляла их."""
         await self._surface.resume_thread()
+        self._view.rebuilt()
 
     async def _on_element_shown(self, message: ElementShown) -> None:
         raw = await self._payloads.get(message.element)
