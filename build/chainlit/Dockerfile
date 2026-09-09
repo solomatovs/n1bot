@@ -293,7 +293,7 @@ urllib.request.urlopen(url, timeout=4)"
 ENTRYPOINT ["python3"]
 
 
-# фронт chainlit из исходников тега с overlay web/chainlit-ui поверх: offline из pnpm-store,
+# UI chainlit (фронт + copilot) из исходников тега с overlay web/chainlit-ui поверх: offline из pnpm-store,
 # который кладёт make fetch. Что и зачем правится — docs/chainlit-frontend-patch.md
 FROM ${NODE_IMAGE} AS chainlit-ui-build
 
