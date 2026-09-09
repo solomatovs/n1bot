@@ -59,3 +59,4 @@ packages/agents/boba-chainlit/web/catalog/.eslintcache
 packages/agents/boba-chainlit/web/catalog/*.tsbuildinfo
 packages/agents/boba-chainlit/assets/catalog/
 packages/agents/boba-chainlit/assets/ui/
+/docs/catalog.md

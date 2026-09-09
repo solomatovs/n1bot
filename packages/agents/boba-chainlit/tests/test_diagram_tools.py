@@ -1,48 +1,28 @@
-"""Tool diagram_save и вьювер .mmd: разбор спеки, отказы, файл в storage."""
+"""Вьювер .mmd канваса: разбор спеки, чтение из storage, вердикт рендера."""
 
 from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 from uuid import UUID
 
 import pytest
-from chainlit_stand import FakeTurn, make_context, use_session
+from chainlit_stand import use_session
 
 from boba.canvas.canvas import (
     CanvasError,
     CanvasErrorKind,
-    CanvasRegistry,
     RenderStatus,
     RenderVerdicts,
 )
-from boba.canvas.diagram import (
-    DiagramEntry,
-    DiagramErrorKind,
-    DiagramRefusedError,
-    DiagramSpecError,
-    DiagramToolConfig,
-    MermaidSpec,
-)
+from boba.canvas.diagram import DiagramEntry, DiagramSpecError, MermaidSpec
 from boba.canvas.keys import ObjectKey, ThreadDir
-from boba.chainlit.canvas.diagram import (
-    DiagramFiles,
-    MermaidViewer,
-    build_diagram_tools,
-)
-from boba.chainlit.canvas.panel import CanvasPanel
+from boba.chainlit.canvas.diagram import DiagramFiles, MermaidViewer
 from boba.chainlit.data.data_layer import AttachmentDataLayer
 from boba.chainlit.data.storage import LocalStorageClient
 from boba.chainlit.infra.config import LocalStorageConfig
-from boba.identity.context import ContextKind
-from boba.identity.errors import RefusalError
-from boba.identity.run import RunRegistry
-from boba.runtime.launchers import CallSurface
-from boba.runtime.plugins import ToolBridge
-from boba.toolkit.result import ErrorResult, MarkdownResult, VisualResult
-from boba.toolrun.call_id import ToolCallIdField
-from boba.toolrun.run_log import ToolRunLogger
+from boba.toolkit.result import VisualResult
 from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig
 
@@ -118,73 +98,6 @@ class TestMermaidSpec:
             MermaidSpec.parse("```mermaid\n```")
 
 
-class TestToolInterface:
-    def test_tool_names(self) -> None:
-        tools = build_diagram_tools(DiagramToolConfig(max_chars=1000))
-        if [t.name for t in tools] != ["diagram_save"]:
-            raise AssertionError('[t.name for t in tools] == ["diagram_save"]')
-
-    def test_save_schema_fields(self) -> None:
-        save = build_diagram_tools(DiagramToolConfig(max_chars=1000))[0]
-        schema = save.args_schema
-        if set(schema.model_fields) != {"name", "spec"}:
-            raise AssertionError('set(schema.model_fields) == {"name", "spec"}')
-
-    def test_build_registers_viewer(self) -> None:
-        """Канвас узнаёт про .mmd только отсюда — иначе файл некому показать."""
-        CanvasRegistry.reset()
-        build_diagram_tools(DiagramToolConfig(max_chars=1000))
-
-        viewer = CanvasRegistry.viewer_for("orders.mmd")
-
-        if not (isinstance(viewer, MermaidViewer)):
-            raise AssertionError("isinstance(viewer, MermaidViewer)")
-        if CanvasRegistry.viewer_for("notes.txt") is not None:
-            raise AssertionError('CanvasRegistry.viewer_for("notes.txt") is None')
-
-
-class TestRefusal:
-    """Отказ доезжает до LLM ошибкой с причиной, а не исключением."""
-
-    @pytest.mark.anyio
-    async def test_save_without_session(self) -> None:
-        with pytest.raises(RefusalError) as failure:
-            await DiagramFiles(1000).save("x.mmd", ER_SPEC)
-
-        if failure.value.kind != ContextKind.NO_CONTEXT:
-            raise AssertionError("failure.value.kind == ContextKind.NO_CONTEXT")
-
-    @pytest.mark.anyio
-    async def test_save_bad_spec(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        use_session(monkeypatch, user_id=str(UUID(int=7)), thread_id=THREAD)
-
-        with pytest.raises(DiagramRefusedError) as failure:
-            await DiagramFiles(1000).save("x.mmd", "не mermaid вовсе")
-
-        if failure.value.kind != DiagramErrorKind.INVALID_SPEC:
-            raise AssertionError("failure.value.kind == DiagramErrorKind.INVALID_SPEC")
-
-    @pytest.mark.anyio
-    async def test_save_over_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        use_session(monkeypatch, user_id=str(UUID(int=7)), thread_id=THREAD)
-
-        with pytest.raises(DiagramRefusedError) as failure:
-            await DiagramFiles(10).save("x.mmd", ER_SPEC)
-
-        if failure.value.kind != DiagramErrorKind.INVALID_SPEC:
-            raise AssertionError("failure.value.kind == DiagramErrorKind.INVALID_SPEC")
-
-    @pytest.mark.anyio
-    async def test_save_path_traversal_in_name(
-        self, monkeypatch: pytest.MonkeyPatch, files: DiagramFiles
-    ) -> None:
-        """Имя от LLM чистится: файл остаётся в каталоге диаграмм треда."""
-        key = await files.save("../../etc/passwd.mmd", ER_SPEC)
-
-        if key.in_workspace() != f"/workspace/{THREAD}/mermaid/passwd.mmd":
-            raise AssertionError('key.in_workspace() == f"/workspace/{THREAD}/mermaid…')
-
-
 class _StorageOnlyLayer:
     """Доступ тулов к слою в тесте: storage и запись элементов, которые уходят в
     ленту.
@@ -218,24 +131,24 @@ def files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> DiagramFiles:
     use_session(monkeypatch, user_id=str(UUID(int=7)), thread_id=THREAD)
     monkeypatch.setattr(AttachmentDataLayer, "require", classmethod(lambda cls: layer))
 
-    return DiagramFiles(1000)
+    return DiagramFiles()
+
+
+async def _stored(
+    name: str, text: str, dir_thread: ThreadDir = ThreadDir.MERMAID
+) -> None:
+    """Спека в storage тем путём, каким её кладёт тело diagram_save."""
+    storage = AttachmentDataLayer.require().storage
+    await storage.upload_file(
+        object_key=f"{UUID(int=7)}/{THREAD}/{dir_thread.value}/{name}",
+        data=text,
+        mime="text/plain",
+        overwrite=True,
+    )
 
 
 class TestSaveAndView:
-    """Файл проходит цикл целиком: сохранение, чтение, показ вьювером."""
-
-    @pytest.mark.anyio
-    async def test_save_writes_normalized_file(
-        self, files: DiagramFiles, tmp_path: Path
-    ) -> None:
-        key = await files.save("orders.mmd", f"```mermaid\n{ER_SPEC}\n```")
-
-        if key.in_workspace() != f"/workspace/{THREAD}/mermaid/orders.mmd":
-            raise AssertionError('key.in_workspace() == f"/workspace/{THREAD}/mermaid…')
-
-        stored = tmp_path / str(UUID(int=7)) / THREAD / "mermaid" / "orders.mmd"
-        if stored.read_text(encoding="utf-8") != ER_SPEC:
-            raise AssertionError('stored.read_text(encoding="utf-8") == ER_SPEC')
+    """Сохранённый файл читается и показывается вьювером."""
 
     @pytest.fixture
     def fast_verdict(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -246,7 +159,7 @@ class TestSaveAndView:
     async def test_viewer_shows_saved_file(
         self, files: DiagramFiles, http_context: None, fast_verdict: None
     ) -> None:
-        await files.save("orders.mmd", ER_SPEC)
+        await _stored("orders.mmd", ER_SPEC)
 
         shown: list[Any] = []
 
@@ -279,12 +192,7 @@ class TestSaveAndView:
         self, files: DiagramFiles, http_context: None, fast_verdict: None
     ) -> None:
         """Пользовательский .mmd из upload/ показывается тем же вьювером."""
-        storage = AttachmentDataLayer.require().storage
-        await storage.upload_file(
-            object_key=f"{UUID(int=7)}/{THREAD}/upload/mine.mmd",
-            data=ER_SPEC,
-            mime="text/plain",
-        )
+        await _stored("mine.mmd", ER_SPEC, ThreadDir.UPLOAD)
 
         shown: list[Any] = []
 
@@ -313,11 +221,11 @@ class TestSaveAndView:
             str(UUID(int=7)), THREAD, "no.mmd", "el-1", dir_thread=ThreadDir.MERMAID
         )
 
-        with pytest.raises(DiagramRefusedError) as failure:
+        with pytest.raises(CanvasError) as failure:
             await files.read(key)
 
-        if failure.value.kind != DiagramErrorKind.FILE_NOT_FOUND:
-            raise AssertionError("failure.value.kind == DiagramErrorKind.FILE_NOT_FOU…")
+        if failure.value.kind != CanvasErrorKind.FILE_NOT_FOUND:
+            raise AssertionError(failure.value.kind)
 
 
 class TestEntry:
@@ -366,11 +274,11 @@ class TestEntry:
             str(UUID(int=7)), THREAD, "bin.mmd", "el-1", dir_thread=ThreadDir.MERMAID
         )
 
-        with pytest.raises(DiagramRefusedError) as failure:
+        with pytest.raises(CanvasError) as failure:
             await files.read(key)
 
-        if failure.value.kind != DiagramErrorKind.BAD_FILE:
-            raise AssertionError("failure.value.kind == DiagramErrorKind.BAD_FILE")
+        if failure.value.kind != CanvasErrorKind.BAD_FILE:
+            raise AssertionError("failure.value.kind == CanvasErrorKind.BAD_FILE")
 
     @pytest.mark.anyio
     async def test_read_refuses_file_over_the_limit(self, files: DiagramFiles) -> None:
@@ -379,23 +287,18 @@ class TestEntry:
         Файл в mermaid/ пишет bash, поэтому он может быть сколь угодно велик,
         а спека целиком уезжает в props элемента и в LLM.
         """
-        storage = AttachmentDataLayer.require().storage
         oversized = "flowchart LR\n" + "  A --> B\n" * 4000
-        await storage.upload_file(
-            object_key=f"{UUID(int=7)}/{THREAD}/mermaid/huge.mmd",
-            data=oversized,
-            mime="text/plain",
-        )
+        await _stored("huge.mmd", oversized)
 
         key = ObjectKey.build(
             str(UUID(int=7)), THREAD, "huge.mmd", "el-1", dir_thread=ThreadDir.MERMAID
         )
 
-        with pytest.raises(DiagramRefusedError) as failure:
-            await files.read(key)
+        with pytest.raises(CanvasError) as failure:
+            await DiagramFiles(max_bytes=1000).read(key)
 
-        if failure.value.kind != DiagramErrorKind.BAD_FILE:
-            raise AssertionError("failure.value.kind == DiagramErrorKind.BAD_FILE")
+        if failure.value.kind != CanvasErrorKind.TOO_LARGE:
+            raise AssertionError(failure.value.kind)
 
 
 class TestWatchSource:
@@ -405,7 +308,7 @@ class TestWatchSource:
     async def test_probe_changes_only_on_new_content(
         self, files: DiagramFiles, http_context: None
     ) -> None:
-        await files.save("orders.mmd", ER_SPEC)
+        await _stored("orders.mmd", ER_SPEC)
         key = ObjectKey.build(
             str(UUID(int=7)), THREAD, "orders.mmd", "el-1", dir_thread=ThreadDir.MERMAID
         )
@@ -417,7 +320,7 @@ class TestWatchSource:
         first = await source.probe()
         same = await source.probe()
 
-        await files.save("orders.mmd", ER_SPEC + "\n  C ||--o{ D : owns")
+        await _stored("orders.mmd", ER_SPEC + "\n  C ||--o{ D : owns")
         changed = await source.probe()
 
         if first is None or same is None or changed is None:
@@ -432,7 +335,7 @@ class TestWatchSource:
         self, files: DiagramFiles, http_context: None
     ) -> None:
         """Файл в момент чтения переписывается — тик отдаёт прежнее состояние."""
-        await files.save("orders.mmd", ER_SPEC)
+        await _stored("orders.mmd", ER_SPEC)
         key = ObjectKey.build(
             str(UUID(int=7)), THREAD, "orders.mmd", "el-1", dir_thread=ThreadDir.MERMAID
         )
@@ -502,7 +405,7 @@ class TestViewerVerdict:
     async def test_render_failure_raises(
         self, files: DiagramFiles, http_context: None
     ) -> None:
-        await files.save("orders.mmd", ER_SPEC)
+        await _stored("orders.mmd", ER_SPEC)
         key = ObjectKey.build(
             str(UUID(int=7)), THREAD, "orders.mmd", "el-1", dir_thread=ThreadDir.MERMAID
         )
@@ -529,141 +432,3 @@ class TestViewerVerdict:
             raise AssertionError("failure.value.kind == CanvasErrorKind.RENDER_FAILED")
         if "Parse error on line 5" not in str(failure.value):
             raise AssertionError('"Parse error on line 5" in str(failure.value)')
-
-
-class TestSaveToolEndToEnd:
-    """diagram_save целиком: сохранить, карточку в ленту, вердикт — с панели.
-
-    Во время хода смонтирована только панель, поэтому показ в ней и есть
-    верификация спеки; карточка уходит без nonce и вердикт не репортит.
-    """
-
-    @pytest.fixture(autouse=True)
-    def active_turn(self) -> Any:
-        """Карточка цепляется к шагу ответа: без живого хода её некуда деть."""
-        scope = RunRegistry.open(make_context(THREAD), cast(Any, FakeTurn()))
-        scope.__enter__()
-        yield
-        scope.__exit__(None, None, None)
-
-    @pytest.fixture
-    def feed(self) -> list[Any]:
-        """Лента под тест: карточки, записанные слоем данных перед показом по шине."""
-        layer = AttachmentDataLayer.require()
-        if not isinstance(layer, _StorageOnlyLayer):
-            raise AssertionError("the test layer is installed by the files fixture")
-
-        return layer.elements
-
-    @pytest.fixture
-    def panel(self, monkeypatch: pytest.MonkeyPatch) -> list[Any]:
-        """Панель под тест: собирает содержимое, ушедшее бы в side view."""
-        pushed: list[Any] = []
-
-        async def capture(cls: Any, content: Any) -> None:
-            pushed.append(content)
-
-        monkeypatch.setattr(CanvasPanel, "_push", classmethod(capture))
-        return pushed
-
-    async def _call(self, spec: str, verdict: dict[str, Any], panel: list[Any]) -> Any:
-        """Зовёт тул как агент — tool_call, иначе artifact до вызывающего не дойдёт.
-
-        Та же обвязка, что ставит load_tools: id вызова со схемы уходит в
-        контекст, и карточка получает адрес элемента по нему.
-        """
-        built = build_diagram_tools(DiagramToolConfig(max_chars=32000))[0]
-        save = ToolBridge.as_structured_tool(built)
-        ToolCallIdField.attach_all([save])
-        ToolRunLogger.guard_all(
-            [save], lambda tool, call_id: None, CallSurface.tool_call_scope
-        )
-        request = {
-            "name": "diagram_save",
-            "args": {"name": "orders.mmd", "spec": spec},
-            "id": "call-1",
-            "type": "tool_call",
-        }
-        call = asyncio.ensure_future(save.ainvoke(request))
-
-        await asyncio.wait_for(self._await_push(panel), 5)
-
-        RenderVerdicts.report({"nonce": panel[0].nonce, **verdict})
-        message = await asyncio.wait_for(call, 5)
-
-        return message.content, message.artifact
-
-    @staticmethod
-    async def _await_push(pushed: list[Any]) -> None:
-        while not pushed:
-            await asyncio.sleep(0.01)
-
-    @pytest.mark.anyio
-    async def test_render_failure_becomes_tool_error(
-        self,
-        files: DiagramFiles,
-        http_context: None,
-        feed: list[Any],
-        panel: list[Any],
-    ) -> None:
-        """Битую спеку ловит только браузер — LLM обязана узнать об этом."""
-        _, result = await self._call(
-            ER_SPEC, {"ok": False, "error": "Parse error on line 5"}, panel
-        )
-
-        if not (isinstance(result, ErrorResult)):
-            raise AssertionError("isinstance(result, ErrorResult)")
-        if result.error_kind != CanvasErrorKind.RENDER_FAILED:
-            raise AssertionError("result.error_kind == CanvasErrorKind.RENDER_FAILED")
-        if "Parse error on line 5" not in result.message:
-            raise AssertionError('"Parse error on line 5" in result.message')
-        if "diagram saved" not in result.message:
-            raise AssertionError('"diagram saved" in result.message')
-
-    @pytest.mark.anyio
-    async def test_failed_diagram_leaves_no_card_in_the_feed(
-        self,
-        files: DiagramFiles,
-        http_context: None,
-        feed: list[Any],
-        panel: list[Any],
-    ) -> None:
-        """Неотрисованная спека в переписке не остаётся: её правят следующим
-        вызовом, а попытка видна шагом инструмента внутри хода."""
-        await self._call(ER_SPEC, {"ok": False, "error": "Parse error"}, panel)
-
-        if feed != []:
-            raise AssertionError("feed == []")
-
-    @pytest.mark.anyio
-    async def test_rendered_diagram_card_goes_to_the_feed(
-        self,
-        files: DiagramFiles,
-        http_context: None,
-        feed: list[Any],
-        panel: list[Any],
-    ) -> None:
-        """Успех — диаграмма в панели плюс кликабельная карточка в ленте."""
-        content, result = await self._call(ER_SPEC, {"ok": True, "error": ""}, panel)
-
-        if not (isinstance(result, MarkdownResult)):
-            raise AssertionError("isinstance(result, MarkdownResult)")
-        if "diagram saved" not in content:
-            raise AssertionError('"diagram saved" in content')
-
-        if panel[0].kind != "mermaid":
-            raise AssertionError('panel[0].kind == "mermaid"')
-        if panel[0].text != ER_SPEC:
-            raise AssertionError("panel[0].text == ER_SPEC")
-
-        card = feed[0]
-        if card.props["kind"] != "mermaid":
-            raise AssertionError('card.props["kind"] == "mermaid"')
-        if card.props["preview"] is not True:
-            raise AssertionError('card.props["preview"] is True')
-        if card.props["text"] != ER_SPEC:
-            raise AssertionError('card.props["text"] == ER_SPEC')
-        if card.props.get("nonce"):
-            raise AssertionError("карточка не участвует в верификации")
-        if card.props["path"] != f"/workspace/{THREAD}/mermaid/orders.mmd":
-            raise AssertionError('card.props["path"] == f"/workspace/{THREAD}/mermaid…')

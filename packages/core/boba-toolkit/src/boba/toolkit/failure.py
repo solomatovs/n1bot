@@ -157,7 +157,7 @@ class FailureText:
 
 
 class ToolUnavailableError(Exception):
-    """Инструмент не виден субъекту вне чата: не собран, запрещён или chat_only."""
+    """Инструмент не виден субъекту вне чата: не собран или запрещён."""
 
 
 class ToolContractError(Exception):

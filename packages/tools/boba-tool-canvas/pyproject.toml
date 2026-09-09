@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-tool-canvas"
+version = "0.0.17.dev3"
+description = "Инструменты канваса: показ файла workspace в панели, вложение в чат, сохранение диаграммы mermaid."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba-toolkit==0.0.17.dev3",
+    "boba-identity==0.0.17.dev3",
+    "boba-canvas==0.0.17.dev3",
+    "pydantic>=2.10,<2.11",
+]
+
+[project.entry-points."boba.tools"]
+canvas = "boba.tool.canvas.plugin:MANIFEST"
+
+[project.optional-dependencies]
+payload = [
+]
+dev = [
+    "pytest>=8",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true
+
+[tool.boba.sandbox]
+imports = []

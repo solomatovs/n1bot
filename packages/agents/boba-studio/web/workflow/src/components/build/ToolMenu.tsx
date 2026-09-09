@@ -10,7 +10,7 @@ type Props = {
   onAdd: (tool: string) => void;
 };
 
-const ORDER: ToolAvailability[] = ["available", "headless_only", "chat_only", "denied"];
+const ORDER: ToolAvailability[] = ["available", "headless_only", "denied"];
 
 /** В workflow инструмент зовётся вне чата: годятся available и headless_only. */
 function usable(availability: ToolAvailability): boolean {

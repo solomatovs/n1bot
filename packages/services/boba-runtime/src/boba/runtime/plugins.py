@@ -30,11 +30,6 @@ from pydantic import BaseModel, ConfigDict
 from boba.access import GrantCheck, ToolAccess, ToolSurfaces
 from boba.chat.profiles import ProfilesSection, RolesSection
 from boba.config import bind
-from boba.connection_broker.catalog import (
-    ConnectionCatalogConfig,
-    build_connection_tools,
-)
-from boba.connection_broker.service import UserConnectionsService
 from boba.connection_broker.store import ConnectionsConfig
 from boba.connection_broker.tickets import ServiceTickets
 from boba.connection_broker.user_connections import UserConnections
@@ -44,22 +39,21 @@ from boba.runtime.refs import RuntimeRefs
 from boba.toolkit.entry import ToolAddress, ToolArgv, ToolEntryError, ToolLike, ToolMain
 from boba.toolkit.facade import PayloadTool
 from boba.toolkit.launcher import ToolLauncher
-from boba.toolkit.manifest import LaunchSpec, ManifestBuild, ToolPluginManifest
+from boba.toolkit.manifest import LaunchSpec, ToolPluginManifest
 from boba.toolkit.result import ToolResultBase
 from boba.toolkit.types import StringList
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.access import ToolAccessGuard
 from boba.toolrun.call_id import ToolCallIdField
+from boba.toolrun.callvalues import CallContextValues
 from boba.toolrun.cancellation import CancellableTools
 from boba.toolrun.errors import ToolErrorGuard
 from boba.toolrun.injected import InjectedConfig, ToolConfigError
 from boba.toolrun.intent import ToolIntentField
-from boba.toolrun.pipeline import PipelineToolConfig, build_pipeline_tools
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.run_log import ToolRunLogger
 from boba.toolrun.streams import ToolStreams
-from boba.toolrun.wrapping import ToolAsyncBody, ToolSchema
-from boba.workflow_engine.tools import WorkflowToolConfig, build_workflow_tools
+from boba.toolrun.wrapping import CallHooks, ToolAsyncBody, ToolBody, ToolSchema
 
 __all__ = [
     "CoreTools",
@@ -73,34 +67,24 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-ConfigT = Any
-
 
 @dataclass(frozen=True)
 class ToolPlugin:
-    """Один tool-плагин: как собрать инструменты из секции [tool.<name>]."""
+    """Один tool-плагин: функции модуля из секции [tool.<name>].
+
+    Плагин приходит entry point'ом установленного пакета; его секция
+    tool.<section> обязана прийти файлом conf/plugins/<section>.toml, тела
+    исполняются отдельным процессом способом из [tool_launcher].
+    """
 
     section: str
-    build: ManifestBuild | None = None
-    """Фабрика инструментов секции: отдаёт PayloadTool фасада либо готовые
-    langchain-инструменты, мост в langchain ставит загрузчик."""
-    config_model: type[BaseModel] | None = None
-    sandboxed: bool = True
-    """False — инструменты плагина ничего не запускают; True — тела исполняются
-    отдельным процессом способом из [tool_launcher]."""
     module_tools: tuple[BaseTool, ...] = ()
-    """Функции уровня модуля новой модели: обёртка запуска ставится на них."""
+    """Функции уровня модуля: обёртка запуска ставится на них."""
     modules: tuple[str, ...] = ()
     """Модули тел module_tools: их прогревает зигота секции."""
-    chat_only: bool = False
-    """True — инструментам нужна поверхность чата (панель, карточки, вложения):
-    вне хода чата они отказывают, в каталог workflow не попадают."""
-    discovered: bool = False
-    """True — плагин пришёл entry point'ом установленного пакета: его секция
-    tool.<section> обязана прийти файлом conf/plugins/<section>.toml."""
     package: str = ""
     """Дистрибутив entry point'а: по нему ищется образ корня песочницы
-    plugins/<package>/rootfs.ext4; пусто — плагин встроен в приложение."""
+    plugins/<package>/rootfs.ext4."""
 
 
 class PluginMeta(BaseModel):
@@ -226,6 +210,7 @@ class ToolLoader:
         plugins: Mapping[str, ToolPlugin],
         refs: RuntimeRefs,
         grant_check: GrantCheck,
+        surface_hooks: Sequence[CallHooks[Any]] = (),
     ) -> None:
         self._raw = raw_config
         self._plugins = plugins
@@ -233,16 +218,18 @@ class ToolLoader:
         self._credentials_ref = refs.credentials
         self._types_ref = refs.connection_types
         self._grant_check = grant_check
+        self._surface_hooks = tuple(surface_hooks)
+        """Обвязки поверхности процесса (чат монтирует элементы результата):
+        ставятся сразу после тела, до журнала и разбора ошибок."""
 
     def load(self) -> ToolRegistry:
         launchers = ToolLaunchers.of(self._raw)
 
         tools: list[BaseTool] = []
-        chat_only: set[str] = set()
         headless_only: set[str] = set()
         for name, plugin in self._plugins.items():
             section = OmegaConf.select(self._raw, f"tool.{name}")
-            if section is None and plugin.discovered:
+            if section is None:
                 msg = (
                     f"conf/plugins/{name}.toml is missing: the installed "
                     f"plugin {name!r} requires its config"
@@ -253,23 +240,21 @@ class ToolLoader:
             if not meta.enable:
                 continue
 
-            built = self._plugin_tools(name, plugin, meta, launchers)
+            built = self._plugin_tools(plugin, meta, launchers)
             tools.extend(built)
             headless_only.update(self._headless_of(name, meta, built))
 
-            if plugin.chat_only:
-                for tool in built:
-                    chat_only.add(tool.name)
+            # живой вывод есть у отдельных процессов: кнопка потока
+            # рисуется на шагах инструментов
+            streamable: list[str] = []
+            for tool in built:
+                streamable.append(tool.name)
+            ToolStreams.mark_streamable(streamable)
 
-            # живой вывод есть только у отдельных процессов: кнопка потока
-            # рисуется на шагах этих инструментов
-            if plugin.sandboxed:
-                streamable: list[str] = []
-                for tool in built:
-                    streamable.append(tool.name)
-                ToolStreams.mark_streamable(streamable)
+        access = self._access_of(tools, headless_only)
+        for hooks in self._surface_hooks:
+            ToolBody.hook_all(tools, hooks)
 
-        access = self._access_of(tools, chat_only, headless_only)
         ToolCallIdField.attach_all(tools)
         ToolIntentField.attach_all(tools)
         ToolRunLogger.guard_all(
@@ -283,20 +268,11 @@ class ToolLoader:
 
     def _plugin_tools(
         self,
-        name: str,
         plugin: ToolPlugin,
         meta: PluginMeta,
         launchers: SectionLaunchers,
     ) -> list[BaseTool]:
-        """Инструменты плагина: фабричные старого пути плюс функции модуля."""
-        cfg: ConfigT = None
-        if plugin.config_model is not None:
-            cfg = bind(self._raw, f"tool.{name}", plugin.config_model)
-
-        built = self._enabled_tools(plugin, cfg, meta)
-        if not plugin.sandboxed:
-            return built
-
+        """Инструменты плагина: функции модуля под launcher'ом секции."""
         spec = LaunchSpec(
             section=plugin.section,
             modules=plugin.modules,
@@ -304,8 +280,7 @@ class ToolLoader:
         )
         launcher = launchers.launcher_of(spec)
 
-        built.extend(self._module_tools(plugin, meta, launcher))
-        return built
+        return self._module_tools(plugin, meta, launcher)
 
     def _module_tools(
         self,
@@ -325,6 +300,7 @@ class ToolLoader:
             return []
 
         ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
+        CallContextValues.bind_all(functions)
 
         if self._takes_connections(functions):
             self._require_connections(plugin.section)
@@ -337,24 +313,6 @@ class ToolLoader:
         InjectedConfig.bind_all(functions, resolve)
 
         return functions
-
-    @staticmethod
-    def _enabled_tools(
-        plugin: ToolPlugin, cfg: ConfigT, meta: PluginMeta
-    ) -> list[BaseTool]:
-        """Инструменты фабрики плагина, перечисленные в [tool.<name>] tools."""
-        if plugin.build is None:
-            return []
-
-        built: list[BaseTool] = []
-
-        for tool in plugin.build(cfg):
-            if tool.name not in meta.tools:
-                continue
-
-            built.append(ToolBridge.as_structured_tool(tool))
-
-        return built
 
     @staticmethod
     def _takes_connections(tools: Sequence[BaseTool]) -> bool:
@@ -409,7 +367,6 @@ class ToolLoader:
     def _access_of(
         self,
         tools: Sequence[BaseTool],
-        chat_only: Iterable[str],
         headless_only: Iterable[str],
     ) -> ToolAccess:
         """Права из [roles.*]/[profiles.*]; опечатка в имени инструмента — отказ."""
@@ -417,9 +374,7 @@ class ToolLoader:
         profiles = bind(self._raw, "profiles", ProfilesSection).root
         known = frozenset(tool.name for tool in tools)
 
-        surfaces = ToolSurfaces(
-            chat_only=frozenset(chat_only), headless_only=frozenset(headless_only)
-        )
+        surfaces = ToolSurfaces(headless_only=frozenset(headless_only))
         return ToolAccess(known, roles, profiles, surfaces, self._grant_check)
 
     def _require_connections(self, name: str) -> None:
@@ -435,7 +390,7 @@ class ToolLoader:
         raise RuntimeError(msg)
 
 
-PluginTable = Callable[[RuntimeRefs], Mapping[str, ToolPlugin]]
+PluginTable = Callable[[], Mapping[str, ToolPlugin]]
 """Таблица плагинов процесса: общая часть плюс своё (у чата — chat-only инструменты)."""
 
 
@@ -490,81 +445,18 @@ class EntryPointPlugins:
 
     @classmethod
     def _plugin_of(cls, manifest: ToolPluginManifest, package: str) -> ToolPlugin:
-
         return ToolPlugin(
             section=manifest.section,
-            build=manifest.build,
-            config_model=manifest.config_model,
             module_tools=ToolBridge.toolset(manifest.tools),
             modules=ToolBridge.modules_of(manifest.tools),
-            discovered=True,
             package=package,
         )
 
 
 class CoreTools:
-    """Таблица плагинов, общая для процессов: обнаруженные пакеты плюс
-    встроенные workflow и pipeline."""
-
-    @classmethod
-    def table(cls, refs: RuntimeRefs) -> dict[str, ToolPlugin]:
-        """workflow и pipeline встроены: им нужны входы приложения."""
-        table = EntryPointPlugins.discover()
-
-        table["workflow"] = ToolPlugin(
-            section="workflow",
-            config_model=WorkflowToolConfig,
-            build=cls._workflow_builder(refs),
-            sandboxed=False,
-        )
-
-        table["pipeline"] = ToolPlugin(
-            section="pipeline",
-            config_model=PipelineToolConfig,
-            build=cls._pipeline_builder(refs),
-            sandboxed=False,
-        )
-
-        table["connections"] = ToolPlugin(
-            section="connections",
-            config_model=ConnectionCatalogConfig,
-            build=cls._connections_builder(refs),
-            sandboxed=False,
-        )
-
-        return table
+    """Таблица плагинов, общая для процессов: обнаруженные пакеты."""
 
     @staticmethod
-    def _connections_builder(
-        refs: RuntimeRefs,
-    ) -> Callable[[ConnectionCatalogConfig], list[PayloadTool]]:
-        """Каталог соединений субъекта: строки берутся из таблицы на вызов."""
-
-        def build(cfg: ConnectionCatalogConfig) -> list[PayloadTool]:
-            return build_connection_tools(
-                cfg, UserConnectionsService(refs.connection_store)
-            )
-
-        return build
-
-    @staticmethod
-    def _pipeline_builder(
-        refs: RuntimeRefs,
-    ) -> Callable[[PipelineToolConfig], list[PayloadTool]]:
-        """Реестр инструментов берётся из входов приложения на каждый вызов."""
-
-        def build(cfg: PipelineToolConfig) -> list[PayloadTool]:
-            return build_pipeline_tools(cfg, refs.tool_registry)
-
-        return build
-
-    @staticmethod
-    def _workflow_builder(
-        refs: RuntimeRefs,
-    ) -> Callable[[WorkflowToolConfig], list[PayloadTool]]:
-        """Сервис workflow берётся из входов приложения на каждый вызов."""
-
-        def build(cfg: WorkflowToolConfig) -> list[PayloadTool]:
-            return build_workflow_tools(cfg, refs.workflow_service)
-
-        return build
+    def table() -> dict[str, ToolPlugin]:
+        """Плагины установленных пакетов: все инструменты приходят entry point'ами."""
+        return EntryPointPlugins.discover()

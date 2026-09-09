@@ -51,7 +51,9 @@ from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import CoreSchema
 
 __all__ = [
+    "CanvasResult",
     "ChatElement",
+    "ChatItem",
     "ChatView",
     "CodeBlock",
     "ErrorResult",
@@ -59,12 +61,15 @@ __all__ = [
     "FactsBlock",
     "Fence",
     "FieldLines",
+    "FileElement",
+    "FileResult",
     "GridBlock",
     "JsonBlock",
     "MarkdownResult",
     "MarkdownTable",
     "NoteBlock",
     "NoteLine",
+    "PanelOpen",
     "ResultKindError",
     "ResultKinds",
     "ResultTooLargeError",
@@ -79,6 +84,7 @@ __all__ = [
     "ToolArtifact",
     "ToolResult",
     "ToolResultBase",
+    "VisualElement",
     "VisualResult",
     "WidgetBlock",
 ]
@@ -227,14 +233,57 @@ class ChatElement(StrEnum):
     CANVAS_VIEW = "CanvasView"
 
 
+class VisualElement(BaseModel):
+    """Виджет рядом с шагом: график plotly по имени ChatElement.PLOTLY либо
+    jsx-компонент public/elements/<element>.jsx с props."""
+
+    model_config = ConfigDict(frozen=True)
+
+    item: Literal["visual"] = "visual"
+    element: str
+    props: Mapping[str, Any]
+    title: str = ""
+
+
+class FileElement(BaseModel):
+    """Вложение: файл workspace, который чат отдаёт пользователю ссылкой."""
+
+    model_config = ConfigDict(frozen=True)
+
+    item: Literal["file"] = "file"
+    path: str
+    name: str
+    mime: str
+
+
+class PanelOpen(BaseModel):
+    """Команда поверхности: открыть файл workspace в панели канваса и оставить
+    ссылку на него в переписке. Показ и есть проверка файла: если вьювер
+    браузера отвечает вердиктом и не смог показать файл, вызов считается
+    неудачным."""
+
+    model_config = ConfigDict(frozen=True)
+
+    item: Literal["panel"] = "panel"
+    path: str
+
+
+ChatItem: TypeAlias = Annotated[
+    VisualElement | FileElement | PanelOpen,
+    Field(discriminator="item"),
+]
+"""Словарь того, что лента умеет смонтировать помимо markdown: закрыт
+намеренно, как блоки страницы studio; результаты собирают показ из него."""
+
+
 class ChatView(BaseModel):
-    """Показ результата в ленте чата: markdown выхода шага и, если результат
-    визуальный, элемент ленты рядом с шагом."""
+    """Показ результата в ленте чата: markdown выхода шага и элементы,
+    которые поверхность чата монтирует рядом с шагом."""
 
     model_config = ConfigDict(frozen=True)
 
     markdown: str
-    element: VisualResult | None = None
+    items: Sequence[ChatItem] = ()
 
 
 class Fact(BaseModel):
@@ -843,10 +892,14 @@ class VisualResult(ToolResultBase):
     def chat_view(self) -> ChatView:
         """Подпись вместо самого элемента: элемент уходит рядом с шагом."""
         caption = NoteLine.render(f"({self.element})")
+        title = ""
         if self.title:
             caption = NoteLine.render(f"({self.element}: {self.title})")
+            title = self.title
 
-        return ChatView(markdown=caption, element=self)
+        widget = VisualElement(element=self.element, props=self.props, title=title)
+
+        return ChatView(markdown=caption, items=[widget])
 
     def studio_view(self) -> StudioView:
         title = self.title
@@ -861,6 +914,71 @@ class VisualResult(ToolResultBase):
 
     def bound(self, value: Any) -> Self:
         return self.model_copy(update={"props": dict(value)})
+
+
+class FileResult(ToolResultBase):
+    """Файл workspace, отданный пользователю вложением в чат."""
+
+    kind: Literal["file"] = "file"
+    path: str
+    name: str
+    mime: str
+
+    def llm_view(self) -> str:
+        return f"file attached to the chat: {self.name}"
+
+    def chat_view(self) -> ChatView:
+        attachment = FileElement(path=self.path, name=self.name, mime=self.mime)
+
+        return ChatView(markdown=self.llm_view(), items=[attachment])
+
+    def studio_view(self) -> StudioView:
+        facts = [
+            Fact(key="path", value=self.path),
+            Fact(key="name", value=self.name),
+            Fact(key="mime", value=self.mime),
+        ]
+
+        return StudioView(
+            summary=StudioSummary(figure="file", detail=self.name),
+            blocks=[FactsBlock(facts=facts)],
+        )
+
+
+class CanvasResult(ToolResultBase):
+    """Файл workspace, показанный в панели канваса: путь, подпись и что
+    сказать модели дальше."""
+
+    kind: Literal["canvas"] = "canvas"
+    path: str
+    label: str
+    summary: str = ""
+    """Что сделано, словами для LLM; пусто — стандартная фраза о показе."""
+    note: str = ""
+    """Оговорка для LLM: что происходит дальше и как читать отказ."""
+
+    def llm_view(self) -> str:
+        text = self.summary
+        if not text:
+            text = f"opened in the canvas: {self.label} ({self.path})"
+
+        if self.note:
+            text = f"{text}; {self.note}"
+
+        return text
+
+    def chat_view(self) -> ChatView:
+        return ChatView(markdown=self.llm_view(), items=[PanelOpen(path=self.path)])
+
+    def studio_view(self) -> StudioView:
+        facts = [Fact(key="path", value=self.path), Fact(key="label", value=self.label)]
+        blocks: list[StudioBlock] = [FactsBlock(facts=facts)]
+        if self.note:
+            blocks.append(NoteBlock(text=self.note))
+
+        return StudioView(
+            summary=StudioSummary(figure="canvas", detail=self.label), blocks=blocks
+        )
 
 
 class ShellResult(ToolResultBase):
@@ -1033,7 +1151,3 @@ class ToolArtifact:
             return None
 
         return cls._ADAPTER.validate_python(dict(artifact))
-
-
-ChatView.model_rebuild()
-"""Показ ссылается на элемент, объявленный после него."""

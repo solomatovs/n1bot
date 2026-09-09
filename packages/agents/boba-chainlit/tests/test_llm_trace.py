@@ -70,23 +70,23 @@ class TestLlmStateLog:
         return LlmStateLog(LogUserMark(USER, THREAD))
 
     @staticmethod
-    def _journal_tools() -> list[BaseTool]:
+    def _stand_tools() -> list[BaseTool]:
         def usage() -> str:
-            return "journal usage"
+            return "connections"
 
-        def cleanup(thread_id: str) -> str:
-            raise ValueError(f"unknown thread: {thread_id}")
+        def cleanup(path: str) -> str:
+            raise ValueError(f"file not found: {path}")
 
         return [
             StructuredTool.from_function(
                 func=usage,
-                name="stream_logs_usage",
-                description="Journal usage",
+                name="connection_list",
+                description="Connections of the caller",
             ),
             StructuredTool.from_function(
                 func=cleanup,
-                name="stream_logs_cleanup",
-                description="Purge the journal of a thread",
+                name="send_file",
+                description="Send a workspace file",
             ),
         ]
 
@@ -104,7 +104,7 @@ class TestLlmStateLog:
         """Ход как в проде: langgraph поверх модели, стрим сообщениями."""
         agent = create_agent(
             model=self._chat(provider),
-            tools=self._journal_tools(),
+            tools=self._stand_tools(),
             system_prompt="test agent",
         )
         stream = agent.astream(
@@ -256,15 +256,15 @@ class TestLlmStateLog:
             raise AssertionError("self._complaints(caplog) == []")
         if heads.count("llm request started") != 2:
             raise AssertionError('heads.count("llm request started") == 2')
-        if "tool stream_logs_usage started" not in heads:
-            raise AssertionError('"tool stream_logs_usage started" in heads')
-        if "tool stream_logs_usage finished" not in heads:
-            raise AssertionError('"tool stream_logs_usage finished" in heads')
+        if "tool connection_list started" not in heads:
+            raise AssertionError('"tool connection_list started" in heads')
+        if "tool connection_list finished" not in heads:
+            raise AssertionError('"tool connection_list finished" in heads')
         if not (
-            heads.index("tool stream_logs_usage started")
+            heads.index("tool connection_list started")
             > heads.index("llm request finished")
         ):
-            raise AssertionError('heads.index("tool stream_logs_usage started") > hea…')
+            raise AssertionError('heads.index("tool connection_list started") > hea…')
 
     async def test_tool_line_reports_call_id_and_duration(
         self, provider: httpx.AsyncClient, caplog: pytest.LogCaptureFixture
@@ -274,21 +274,21 @@ class TestLlmStateLog:
         finished = next(
             line
             for line in self._lines(caplog)
-            if line.startswith("tool stream_logs_usage finished")
+            if line.startswith("tool connection_list finished")
         )
-        if "call=call_stream_logs" not in finished:
-            raise AssertionError('"call=call_stream_logs" in finished')
-        if "output=13 chars" not in finished:
-            raise AssertionError('"output=13 chars" in finished')
+        if "call=call_connection_list" not in finished:
+            raise AssertionError('"call=call_connection_list" in finished')
+        if "output=11 chars" not in finished:
+            raise AssertionError('"output=11 chars" in finished')
 
     async def test_failed_tool_is_logged_as_failed(
         self, provider: httpx.AsyncClient, caplog: pytest.LogCaptureFixture
     ) -> None:
         """Инструмент падает по-настоящему: ошибка уходит наверх, ход её покажет."""
-        with pytest.raises(ValueError, match="unknown thread"):
+        with pytest.raises(ValueError, match="file not found"):
             await self._stream_agent(provider, ScenarioName.TOOL_ERROR)
 
         if self._complaints(caplog) != []:
             raise AssertionError("self._complaints(caplog) == []")
-        if "tool stream_logs_cleanup failed" not in self._heads(caplog):
-            raise AssertionError('"tool stream_logs_cleanup failed" in self._heads(ca…')
+        if "tool send_file failed" not in self._heads(caplog):
+            raise AssertionError('"tool send_file failed" in self._heads(ca…')

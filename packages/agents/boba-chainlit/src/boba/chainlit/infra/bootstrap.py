@@ -34,9 +34,10 @@ from boba.chainlit.infra.socket_events import SocketEvents
 from boba.chainlit.infra.stale_action import StaleActionMiddleware
 from boba.identity.run import RunRegistry
 from boba.runtime import providers as runtime
-from boba.runtime.config import AppName, RawConfig
+from boba.runtime.config import AppName
 from boba.runtime.di import Container
 from boba.runtime.http import DomainErrorMiddleware
+from boba.runtime.plugins import CoreTools
 from boba.sandbox.zygote import ZygoteRegistry
 
 
@@ -242,15 +243,13 @@ def _use_stream_journal(c: AppConfig) -> None:
 
 
 def _use_canvas_viewers() -> None:
-    """
-    Вьюверы канваса — на старте: панель открывается кликом до первого хода
-    """
+    """Вьюверы канваса — на старте: панель открывается кликом до первого хода."""
     from boba.chainlit.canvas.panel import CanvasWatch  # noqa: PLC0415
-    from boba.chainlit.infra.plugins import ChatPlugins  # noqa: PLC0415
+    from boba.chainlit.canvas.tools import CanvasViewers  # noqa: PLC0415
     from boba.chainlit.infra.thread_room import CanvasRoomTransport  # noqa: PLC0415
 
     CanvasWatch.configure(CanvasRoomTransport())
-    ChatPlugins.load(RawConfig.get(), runtime.runtime_refs())
+    CanvasViewers.register_all()
 
 
 def _use_auth(container: Container) -> None:
@@ -301,7 +300,8 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container = Container(level="app")
     container.provide(providers.get_app_config, c)
     container.provide(runtime.get_runtime_config, c)
-    container.provide(runtime.plugin_table, ChatPlugins.table)
+    container.provide(runtime.plugin_table, CoreTools.table)
+    container.provide(runtime.surface_hooks, ChatPlugins.surface_hooks())
     container.provide(runtime.grant_check, GrantCheck.STRICT)
     container.provide(runtime.app_name, AppName.CHAINLIT)
     tokens = runtime.session_tokens(c)
@@ -331,6 +331,8 @@ def _use_di_container(app: FastAPI, c: AppConfig) -> Container:
     container.eager(runtime.live_locks)
     container.eager(runtime.lock_reaper)
     container.eager(runtime.command_runner)
+    # инструменты собираются на старте: конфиг плагинов проверяется до сессий
+    container.eager(runtime.tool_registry)
     # локальные модели грузятся на старте: первая сессия не ждёт веса
     container.eager(providers.local_chat_runtimes)
     Container.set_root(container)

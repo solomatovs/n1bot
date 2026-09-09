@@ -22,11 +22,11 @@ from boba.cancellation import (
     current_cancellation,
     run_cancellation,
 )
-from boba.chainlit.agent.tools import BashToolConfig
 from boba.sandbox import SandboxProfile, SandboxToolConfig
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
 from boba.stand.shell import ShellRun
 from boba.stand.zygote import SandboxStand
+from boba.tool.shell.tools import BashToolConfig
 from boba.toolkit.result import ErrorResult
 from boba.toolrun.cancellation import CancellableTools
 from boba.transport.http import CancellableHttpTransport, HttpRequest

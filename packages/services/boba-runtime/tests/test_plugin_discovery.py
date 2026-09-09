@@ -20,7 +20,7 @@ def test_installed_packages_are_discovered() -> None:
     assert set(table) >= EXPECTED
 
     for plugin in table.values():
-        assert plugin.discovered
+        assert plugin.package
 
 
 def test_connection_parameters_are_declared_by_the_tools() -> None:
@@ -50,14 +50,13 @@ def test_bash_plugin_is_a_module_tool() -> None:
     table = EntryPointPlugins.discover()
 
     bash = table["bash"]
-    assert bash.build is None
     assert [tool.name for tool in bash.module_tools] == ["bash"]
     assert bash.modules == ("boba.tool.shell.tools",)
 
 
 def test_discovered_plugin_without_config_file_refuses_start() -> None:
     raw = OmegaConf.create({"tool_launcher": {"provider": "sandbox"}})
-    plugins = {"pg": ToolPlugin(section="pg", discovered=True)}
+    plugins = {"pg": ToolPlugin(section="pg")}
     loader = ToolLoader(raw, plugins, StandRefs.none(), GrantCheck.HOSTED)
 
     with pytest.raises(RuntimeError, match=r"conf/plugins/pg\.toml is missing"):

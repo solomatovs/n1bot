@@ -9,7 +9,7 @@ ServiceDisabledError — сервис выключаемой секции зап
 
 import logging
 from collections.abc import AsyncGenerator, Sequence
-from typing import Annotated, TypeVar
+from typing import Annotated, Any, TypeVar
 
 from omegaconf import DictConfig
 
@@ -59,6 +59,7 @@ from boba.runtime.users import UsersTable
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.streams import ToolStreams
+from boba.toolrun.wrapping import CallHooks
 from boba.workflow_engine.service import WorkflowService
 from boba.workflow_engine.store import WorkflowConfig, WorkflowStore
 
@@ -173,8 +174,13 @@ def live_sessions() -> LiveSessions:
 
 
 def grant_check() -> GrantCheck:
-    """Сверка грантов: процесс без chat-only инструментов проверяет только свои."""
+    """Сверка грантов: процесс без чата проверяет только свои инструменты."""
     return GrantCheck.HOSTED
+
+
+def surface_hooks() -> Sequence[CallHooks[Any]]:
+    """Обвязки поверхности процесса поверх тел; у процесса без чата их нет."""
+    return ()
 
 
 def _root() -> Container:
@@ -253,9 +259,10 @@ def tool_registry(
     raw: Annotated[DictConfig, Depends(get_raw_config)],
     table: Annotated[PluginTable, Depends(plugin_table)],
     check: Annotated[GrantCheck, Depends(grant_check)],
+    hooks: Annotated[Sequence[CallHooks[Any]], Depends(surface_hooks)],
 ) -> ToolRegistry:
     refs = runtime_refs()
-    loader = ToolLoader(raw, table(refs), refs, check)
+    loader = ToolLoader(raw, table(), refs, check, hooks)
 
     return loader.load()
 

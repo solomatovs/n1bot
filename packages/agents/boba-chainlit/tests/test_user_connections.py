@@ -22,16 +22,12 @@ from psycopg import sql
 from pydantic import SecretStr
 from test_tools_integration import Call, ToolSetup
 
-from boba.auth.credentials import KerberosCredentialSource
+from boba.auth.credentials import KerberosCredentialSource, NoRefresh
 from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.config import bind
-from boba.connection_broker.catalog import (
-    ConnectionCatalogConfig,
-    build_connection_tools,
-)
-from boba.connection_broker.service import UserConnectionsService
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
+from boba.connection_broker.tickets import ServiceTickets
 from boba.connection_broker.user_connections import UserConnections
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.marks import ConnectionRefusal
@@ -49,12 +45,14 @@ from boba.runtime.plugins import ToolBridge
 from boba.runtime.refresh import BusRefreshSignal
 from boba.sandbox.zygote import ZygoteRegistry
 from boba.stand.site import Stand
+from boba.tool.connections.tools import ConnectionsToolConfig
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.web.tools import WebGrepConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.launcher import PayloadFailureError
 from boba.toolkit.sql import SqlErrorKind
 from boba.toolkit.wrap import ToolProcessWrap
+from boba.toolrun.callvalues import CallContextValues
 from boba.toolrun.injected import InjectedConfig
 from boba.transport.http.profile import HttpConnection, NegotiateAuth
 
@@ -145,13 +143,33 @@ def sso(tmp_path: Path) -> tuple[SsoTickets, str]:
 
 
 @pytest.fixture
-def catalog(store: ConnectionStore) -> Any:
-    """Общий connection_list над тем же хранилищем, что и инструменты."""
-    service = UserConnectionsService(lambda: store)
+def catalog(
+    raw_config: Any, store: ConnectionStore, test_postgres: PostgresConfig
+) -> Any:
+    """connection_list плагина над теми же таблицами, что и инструменты:
+    тело в зиготе секции, субъект и конфиг — обвязками загрузчика."""
+    from importlib import reload
 
-    built = build_connection_tools(ConnectionCatalogConfig(), service)[0]
+    import boba.tool.connections.tools as connections_module
 
-    return ToolBridge.as_structured_tool(built)
+    module = reload(connections_module)
+    launcher = ToolSetup.caller(raw_config, "connections", [module.__name__])
+
+    functions = [ToolBridge.as_structured_tool(tool) for tool in module.TOOLS]
+    ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
+    CallContextValues.bind_all(functions)
+
+    def resolve(name: str, annotation: Any) -> object:
+        return ConnectionsToolConfig(connection=test_postgres, db_schema=SCHEMA)
+
+    ServiceTickets.bind_all(functions, _credentials, resolve)
+    InjectedConfig.bind_all(functions, resolve)
+
+    return functions[0]
+
+
+def _credentials() -> KerberosCredentialSource:
+    return KerberosCredentialSource(None, NoRefresh())
 
 
 @pytest.fixture

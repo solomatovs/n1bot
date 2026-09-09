@@ -128,7 +128,6 @@ async def test_catalog_lists_tools(
     assert reply.status_code == 200, reply.text
     catalog = reply.json()
     assert catalog["echo"]["availability"] == "available"
-    assert catalog["canvas_open"]["availability"] == "chat_only"
     args = {arg["name"]: arg["required"] for arg in catalog["slow"]["args"]}
     assert args == {"label": True, "delay": True, "intent": False}
     fields = {arg["name"]: arg for arg in catalog["slow"]["args"]}

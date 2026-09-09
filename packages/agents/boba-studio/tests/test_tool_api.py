@@ -1,7 +1,7 @@
 """REST-запуск инструмента человеком: тот же реестр, контекст под HumanInitiator.
 
-Стенд: реестр из одного инструмента-зонда, записывающего контекст вызова,
-плюс инструмент чата в chat_only; тред и пользователь — в тестовой базе.
+Стенд: реестр из одного инструмента-зонда, записывающего контекст вызова;
+тред и пользователь — в тестовой базе.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from httpx import ASGITransport, AsyncClient
 from starlette.requests import Request
 from studio_stand import StandProfiles
 
-from boba.access import ProfileGrant, RoleConfig, ToolAccess, ToolSurfaces
+from boba.access import ProfileGrant, RoleConfig, ToolAccess
 from boba.auth import AuthService, JwtTokens
 from boba.chat.profiles import ChatProfiles
 from boba.db.postgres import AsyncPostgresPool
@@ -58,13 +58,8 @@ class Probe:
             seen.append(CallContext.current())
             return MarkdownResult(text=f"seen {query}")
 
-        @tool
-        async def canvas_open(path: str) -> MarkdownResult:
-            """Инструмент чата: сюда дойти не должно."""
-            return MarkdownResult(text=path)
-
         # та же обвязка, что ставит load_tools: id и intent вызова, журнал, ошибки
-        tools = list(ToolBridge.toolset([probe, canvas_open]))
+        tools = list(ToolBridge.toolset([probe]))
         ToolCallIdField.attach_all(tools)
         ToolIntentField.attach_all(tools)
         ToolRunLogger.guard_all(
@@ -90,7 +85,6 @@ def _registry(probe: Probe, studio_config: StudioRuntimeConfig) -> ToolRegistry:
         profiles={
             StandProfiles.profile(studio_config): ProfileGrant(tools=["*"], roles=["*"])
         },
-        surfaces=ToolSurfaces(chat_only=frozenset({"canvas_open"})),
     )
     return ToolRegistry(tools=tools, access=access)
 
@@ -148,14 +142,14 @@ class TestServe:
         if CallContext.peek() is not None:
             raise AssertionError("the call context must not outlive the call")
 
-    async def test_chat_only_tool_is_refused(
+    async def test_unknown_tool_is_not_found(
         self, studio_config: StudioRuntimeConfig
     ) -> None:
         user = StandProfiles.user(studio_config)
 
         with pytest.raises(HTTPException) as caught:
             await _calling(Probe(), studio_config).serve(
-                "canvas_open", _body(studio_config), user
+                "no_such_tool", _body(studio_config), user
             )
 
         if caught.value.status_code != 404:

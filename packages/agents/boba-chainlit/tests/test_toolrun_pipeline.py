@@ -14,8 +14,8 @@ from langchain_core.callbacks import AsyncCallbackHandler
 from pydantic import BaseModel, Field, SecretStr
 
 from boba.canvas.journal import CallStream
-from boba.toolkit.calls import ToolIntent
 from boba.runtime.plugins import ToolBridge
+from boba.toolkit.calls import ToolIntent
 from boba.toolkit.channels import JournalChannel
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import MarkdownResult, ToolArtifact
@@ -42,7 +42,7 @@ def build_pipeline() -> Any:
     """Свежий инструмент, обёрнутый как в загрузчике."""
 
     @tool
-    async def pipe_echo_body(
+    async def pipe_echo(
         text: Annotated[str, Field(min_length=1, description="Что вернуть")],
         *,
         cfg: Annotated[PipeConfig, Injected],
@@ -50,16 +50,16 @@ def build_pipeline() -> Any:
         """Возвращает текст с секретом конфига."""
         return MarkdownResult(text=f"{text}|{cfg.token.get_secret_value()}")
 
-    pipe_echo = ToolBridge.as_structured_tool(pipe_echo_body)
+    bridged = ToolBridge.as_structured_tool(pipe_echo)
     InjectedConfig.bind_all(
-        [pipe_echo],
+        [bridged],
         lambda name, annotation: PipeConfig(token=SecretStr("p1p3")),
     )
-    ToolCallIdField.attach_all([pipe_echo])
-    ToolIntentField.attach_all([pipe_echo])
-    ToolRunLogger.guard_all([pipe_echo], lambda tool, call_id: None, NoCallScope.enter)
+    ToolCallIdField.attach_all([bridged])
+    ToolIntentField.attach_all([bridged])
+    ToolRunLogger.guard_all([bridged], lambda tool, call_id: None, NoCallScope.enter)
 
-    return pipe_echo
+    return bridged
 
 
 def call_envelope(text: str) -> dict[str, Any]:
@@ -126,8 +126,8 @@ class TestArtifactRendering:
         if not (isinstance(revived, MarkdownResult)):
             raise AssertionError("isinstance(revived, MarkdownResult)")
 
-        if revived.chat_view().element is not None:
-            raise AssertionError("revived.chat_view().element is None")
+        if revived.chat_view().items != ():
+            raise AssertionError(revived.chat_view().items)
         if "hi|p1p3" not in revived.chat_view().markdown:
             raise AssertionError('"hi|p1p3" in revived.chat_view().markdown')
 
@@ -184,21 +184,21 @@ class TestChannelTap:
         stream = _FakeStream()
         seen: list[Any] = []
 
-        @tool(response_format="content_and_artifact")
+        @tool
         async def tap_probe(
             text: Annotated[str, Field(min_length=1, description="Что вернуть")],
-        ) -> tuple[str, ToolResult]:
+        ) -> MarkdownResult:
             """Фиксирует, какие тапы видит тело во время вызова."""
             seen.append(ToolChannelsTap.get())
-            artifact = MarkdownResult(text=text)
-            return artifact.packed()
+            return MarkdownResult(text=text)
 
-        ToolCallIdField.attach_all([tap_probe])
+        bridged = ToolBridge.as_structured_tool(tap_probe)
+        ToolCallIdField.attach_all([bridged])
         ToolRunLogger.guard_all(
-            [tap_probe], lambda tool, call_id: stream, NoCallScope.enter
+            [bridged], lambda tool, call_id: stream, NoCallScope.enter
         )
 
-        await tap_probe.ainvoke(
+        await bridged.ainvoke(
             {
                 "name": "tap_probe",
                 "args": {"text": "ping"},
@@ -236,11 +236,11 @@ class TestAsyncBody:
     @staticmethod
     def _sync_tool() -> Any:
         @tool
-        def sync_echo(text: str) -> str:
+        def sync_echo(text: str) -> MarkdownResult:
             """Возвращает текст."""
-            return text
+            return MarkdownResult(text=text)
 
-        return sync_echo
+        return ToolBridge.as_structured_tool(sync_echo)
 
     @pytest.mark.anyio
     async def test_callbacks_run_in_the_caller_loop(self) -> None:

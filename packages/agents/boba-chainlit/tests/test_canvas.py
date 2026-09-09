@@ -24,24 +24,24 @@ from boba.canvas.canvas import (
 )
 from boba.canvas.keys import ObjectKey
 from boba.chainlit.canvas import panel as rendering_canvas
+from boba.chainlit.canvas.diagram import MermaidViewer
 from boba.chainlit.canvas.panel import CanvasPanel
 from boba.chainlit.canvas.tools import (
     AudioViewer,
     CanvasActions,
     CanvasOpener,
     CanvasScope,
-    CanvasToolConfig,
+    CanvasViewers,
     ImageViewer,
     LogViewer,
     MarkdownViewer,
     PdfViewer,
     VideoViewer,
-    build_canvas_tools,
 )
 from boba.chainlit.data.storage import LocalStorageClient
 from boba.chainlit.infra.config import LocalStorageConfig
-from boba.identity.context import CallContext, ContextKind
-from boba.toolkit.result import ErrorResult, VisualResult
+from boba.identity.context import CallContext
+from boba.toolkit.result import VisualResult
 from boba.workspace.binaries import TrustedBinaries
 from boba.workspace.launcher import MountingConfig
 
@@ -158,15 +158,11 @@ class TestPanel:
             raise AssertionError('"notes.txt" in str(failure.value)')
 
 
-class TestToolInterface:
-    def test_tool_name(self) -> None:
-        tools = build_canvas_tools(CanvasToolConfig())
-        if [t.name for t in tools] != ["canvas_open"]:
-            raise AssertionError('[t.name for t in tools] == ["canvas_open"]')
-
-    def test_build_registers_file_viewers(self) -> None:
+class TestViewers:
+    def test_register_all_covers_file_viewers(self) -> None:
         """PNG от bash/python-тулов обязан показываться — ход из бага."""
-        build_canvas_tools(CanvasToolConfig())
+        CanvasRegistry.reset()
+        CanvasViewers.register_all()
 
         if not (isinstance(CanvasRegistry.viewer_for("график.png"), ImageViewer)):
             raise AssertionError('isinstance(CanvasRegistry.viewer_for("график.png"),…')
@@ -180,40 +176,26 @@ class TestToolInterface:
             raise AssertionError('isinstance(CanvasRegistry.viewer_for("demo.mp4"), V…')
         if not (isinstance(CanvasRegistry.viewer_for("voice.mp3"), AudioViewer)):
             raise AssertionError('isinstance(CanvasRegistry.viewer_for("voice.mp3"), …')
+        if not (isinstance(CanvasRegistry.viewer_for("orders.mmd"), MermaidViewer)):
+            raise AssertionError(
+                'isinstance(CanvasRegistry.viewer_for("orders.mmd"), …'
+            )
         if CanvasRegistry.viewer_for("data.bin") is not None:
             raise AssertionError('CanvasRegistry.viewer_for("data.bin") is None')
 
-    def test_schema_fields(self) -> None:
-        tool = build_canvas_tools(CanvasToolConfig())[0]
-        schema = tool.args_schema
-        if set(schema.model_fields) != {"path"}:
-            raise AssertionError('set(schema.model_fields) == {"path"}')
-
 
 class TestRefusal:
-    """Отказ доезжает до LLM ошибкой с причиной, а не исключением."""
+    """Отказ показа по клику: путь вне каталогов треда."""
 
     @pytest.mark.anyio
-    async def test_without_session(self) -> None:
-        opener = CanvasOpener()
+    async def test_path_outside_thread(self) -> None:
+        scope = CanvasScope(user_id=USER, thread_id=THREAD)
 
-        result = await opener.open(f"/workspace/{THREAD}/mermaid/a.mmd")
+        with pytest.raises(CanvasError) as failure:
+            await CanvasOpener().show("/etc/passwd", scope)
 
-        if not (isinstance(result, ErrorResult)):
-            raise AssertionError("isinstance(result, ErrorResult)")
-        if result.error_kind != ContextKind.NO_CONTEXT:
-            raise AssertionError("result.error_kind == ContextKind.NO_CONTEXT")
-
-    @pytest.mark.anyio
-    async def test_path_outside_thread(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        use_session(monkeypatch, user_id=USER, thread_id=THREAD)
-
-        result = await CanvasOpener().open("/etc/passwd")
-
-        if not (isinstance(result, ErrorResult)):
-            raise AssertionError("isinstance(result, ErrorResult)")
-        if result.error_kind != CanvasErrorKind.BAD_PATH:
-            raise AssertionError("result.error_kind == CanvasErrorKind.BAD_PATH")
+        if failure.value.kind != CanvasErrorKind.BAD_PATH:
+            raise AssertionError(failure.value.kind)
 
 
 class _StorageOnlyLayer:
@@ -258,7 +240,8 @@ class TestShow:
         await storage.upload_file(f"{USER}/{THREAD}/mermaid/a.mmd", "erDiagram")
 
         opened = await CanvasOpener().show(
-            f"/workspace/{THREAD}/mermaid/a.mmd", CanvasScope.of_context()
+            f"/workspace/{THREAD}/mermaid/a.mmd",
+            CanvasScope(user_id=USER, thread_id=THREAD),
         )
 
         if opened.label != "a.mmd":
@@ -298,10 +281,12 @@ class TestShow:
         monkeypatch.setattr(rendering_canvas.cl, "ElementSidebar", Sidebar)
 
         await CanvasOpener().show(
-            f"/workspace/{THREAD}/upload/a.png", CanvasScope.of_context()
+            f"/workspace/{THREAD}/upload/a.png",
+            CanvasScope(user_id=USER, thread_id=THREAD),
         )
         await CanvasOpener().show(
-            f"/workspace/{THREAD}/upload/b.png", CanvasScope.of_context()
+            f"/workspace/{THREAD}/upload/b.png",
+            CanvasScope(user_id=USER, thread_id=THREAD),
         )
 
         if [e.props["label"] for e in shown] != ["a.png", "b.png"]:
@@ -398,19 +383,20 @@ class TestFileViewers:
             raise AssertionError('".mp3" in AudioViewer.suffixes')
 
     @pytest.mark.anyio
-    async def test_tool_opens_png_end_to_end(
+    async def test_click_opens_png_end_to_end(
         self, storage: LocalStorageClient, http_context: None
     ) -> None:
-        """Сценарий из бага: bash сгенерировал png — canvas_open обязан показать."""
-        build_canvas_tools(CanvasToolConfig())
+        """Сценарий из бага: bash сгенерировал png — панель обязана показать."""
+        CanvasViewers.register_all()
         await storage.upload_file(f"{USER}/{THREAD}/upload/график.png", self.PNG)
 
-        result = await CanvasOpener().open(f"/workspace/{THREAD}/upload/график.png")
+        opened = await CanvasOpener().show(
+            f"/workspace/{THREAD}/upload/график.png",
+            CanvasScope(user_id=USER, thread_id=THREAD),
+        )
 
-        if isinstance(result, ErrorResult):
-            raise AssertionError("not isinstance(result, ErrorResult)")
-        if "график.png" not in result.llm_view():
-            raise AssertionError('"график.png" in result.llm_view()')
+        if opened.label != "график.png":
+            raise AssertionError(opened.label)
 
 
 class TestStorageWindows:

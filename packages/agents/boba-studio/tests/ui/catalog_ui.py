@@ -37,8 +37,7 @@ from boba.runtime.config import StudioPath
 from boba.stand.ui.database import StandDatabase
 from boba.stand.ui.stand import StandProcess
 from boba.studio.api.urls import ApiVersion
-from boba.studio.catalog.api import CatalogUrl
-from boba.studio.catalog.tools import CatalogPageUrl
+from boba.studio.catalog.api import CatalogPageUrl, CatalogUrl
 
 
 class Selector(StrEnum):

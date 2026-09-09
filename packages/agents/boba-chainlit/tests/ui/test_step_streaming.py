@@ -151,7 +151,7 @@ class TestToolStep:
         chat.expand_process()
 
         step = chat.expand_step(StepKind.TOOL.value)
-        if "stream_logs_usage" not in step.inner_text():
+        if "connection_list" not in step.inner_text():
             raise AssertionError(step.inner_text())
 
 

@@ -36,8 +36,8 @@ pytestmark = pytest.mark.anyio
 
 THREAD = "7f0d2d1c-6a63-4d0e-9a0e-0d7d6c9a1f42"
 USER = str(UUID(int=7))
-CALL_ID = "call_stream_logs"
-TOOL_NAME = "stream_logs_usage"
+CALL_ID = "call_connection_list"
+TOOL_NAME = "connection_list"
 
 
 class DeadSocketEmitter(BaseChainlitEmitter):
@@ -89,22 +89,22 @@ class TestTracerRunIndex:
     @staticmethod
     def _tools() -> list[BaseTool]:
         def usage() -> str:
-            return "journal usage"
+            return "connections"
 
-        def cleanup(thread_id: str) -> str:
-            msg = f"unknown thread: {thread_id}"
+        def cleanup(path: str) -> str:
+            msg = f"file not found: {path}"
             raise ValueError(msg)
 
         return [
             StructuredTool.from_function(
                 func=usage,
                 name=TOOL_NAME,
-                description="Journal usage",
+                description="Connections of the caller",
             ),
             StructuredTool.from_function(
                 func=cleanup,
-                name="stream_logs_cleanup",
-                description="Purge the journal of a thread",
+                name="send_file",
+                description="Send a workspace file",
             ),
         ]
 
@@ -207,7 +207,7 @@ class TestTracerRunIndex:
         """Аварийный инструмент: on_tool_error тоже обязан найти свой прогон."""
         with (
             caplog.at_level(logging.DEBUG),
-            pytest.raises(ValueError, match="unknown thread"),
+            pytest.raises(ValueError, match="file not found"),
         ):
             await self._turn(provider, ScenarioName.TOOL_ERROR)
 

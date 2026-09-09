@@ -110,6 +110,10 @@ class CallHooks(Generic[CallCtx]):
     def after(self, ctx: CallCtx, result: object) -> object:
         return result
 
+    async def after_async(self, ctx: CallCtx, result: object) -> object:
+        """Крючок async-тела; по умолчанию — тот же after."""
+        return self.after(ctx, result)
+
     def on_error(self, ctx: CallCtx, error: Exception) -> object:
         raise error
 
@@ -172,7 +176,7 @@ class ToolBody:
                 except Exception as e:
                     return hooks.on_error(ctx, e)
                 else:
-                    return hooks.after(ctx, result)
+                    return await hooks.after_async(ctx, result)
                 finally:
                     hooks.cleanup(ctx)
 

@@ -1,10 +1,10 @@
-# Как написать tool-плагин: конфиг, секреты, соединения пользователя
+# Как написать tool-плагин: конфиг, секреты, connection пользователя
 
 Документ ведёт от первого вызова до собранного образа песочницы на одном
 сквозном примере. Мы напишем плагин `redis`: сначала инструмент, который
-ходит на сервер из конфига администратора, потом тип соединения, чтобы
-пользователи заводили свои сервера на странице «Соединения», потом
-инструмент с двумя соединениями сразу и потоковый инструмент для конвейера.
+ходит на сервер из конфига администратора, потом тип connection, чтобы
+пользователи заводили свои сервера на странице «Connections», потом
+инструмент с двумя connection сразу и потоковый инструмент для конвейера.
 Имена в примере вымышленные, но каждый шаг повторяет живой код репозитория,
 и в конце шага названо, где этот код лежит.
 
@@ -13,8 +13,8 @@
 1. Что происходит, когда модель вызывает инструмент
 2. Плагин с конфигом администратора
 3. Секрет в конфиге
-4. Тип соединения: своё соединение для каждого пользователя
-5. Инструмент с соединением пользователя
+4. Тип connection: свой connection у каждого пользователя
+5. Инструмент с connection пользователя
 6. Kerberos: что тип обязан уметь
 7. Потоковый инструмент: порты
 8. Песочница: изоляция и образ
@@ -57,8 +57,8 @@ sql="select 1")`. Хост:
 
 1. проверяет роли пользователя, пишет журнал, ставит отмену по кнопке;
 2. подкладывает в аргументы вызова то, чего модель не присылала:
-   конфиг секции `[tool.pg]` и профиль соединения `analytics` из таблицы
-   соединений, с билетом kerberos для этого вызова;
+   конфиг секции `[tool.pg]` и профиль connection `analytics` из таблицы
+   connections, с билетом kerberos для этого вызова;
 3. превращает аргументы в команду: то, что прислала модель, становится
    флагами argv, а подложенное хостом уезжает отдельным JSON по файловому
    дескриптору;
@@ -76,7 +76,7 @@ sql="select 1")`. Хост:
   не может.
 - Всё, что может быть секретом, идёт JSON-каналом, а не argv: argv виден в
   `ps`, в журнале и в трейсбеке.
-- Тело ничего не знает о пользователе, ролях и таблице соединений. Оно
+- Тело ничего не знает о пользователе, ролях и таблице connections. Оно
   получает готовые модели и работает с ними. Вся политика решена хостом до
   запуска.
 
@@ -86,7 +86,7 @@ sql="select 1")`. Хост:
 
 Начнём с инструмента `redis_scan`: он перебирает ключи по шаблону на
 сервере, который задаёт администратор в конфиге. Пока без пользовательских
-соединений.
+connection.
 
 ### Пакет
 
@@ -111,10 +111,45 @@ packages/tools/boba-tool-redis/
 |---|---|---|---|
 | аргумент модели | `pattern: Annotated[str, Field(...)]` | LLM | флаг argv `--pattern "user:*"` |
 | injected-конфиг | `cfg: Annotated[RedisToolConfig, Injected]` | хост из `[tool.redis]` | JSON-канал, ключ `"cfg"` |
-| соединение пользователя | `connection: Annotated[RedisConnection, UserConnection]` | хост из таблицы соединений | JSON-канал, ключ `"connection"` |
+| connection пользователя | `connection: Annotated[RedisConnection, UserConnection]` | хост из таблицы connections | JSON-канал, ключ `"connection"` |
+| субъект вызова | `subject: Annotated[Subject, Injected]` | хост из CallContext на вызов | JSON-канал, ключ `"subject"` |
+| область вызова | `scope: Annotated[Scope, Injected]` | хост из CallContext на вызов | JSON-канал, ключ `"scope"` |
+| корень workspace | `root: Annotated[WorkspaceRoot, Injected]` | хост из профиля запуска | JSON-канал, ключ `"root"` |
 | порт данных | `out: Annotated[Outbound[...], Injected]` | песочница на вызове | канал кадров, раздел 7 |
 
-Соединения и порты появятся в разделах 5 и 7. Сейчас нужны первые два.
+Connection и порты появятся в разделах 5 и 7. Сейчас нужны первые два.
+
+Три строки про контекст — тот же `Injected`, но значение берётся не из toml,
+а из вызова: хост узнаёт модель по типу аннотации (`Subject`, `Scope`,
+`WorkspaceRoot`) и подставляет её на каждом вызове. Субъект
+(`boba.identity.context.Subject`: id пользователя, логин, роли) нужен телу,
+которое само считает права по таблицам, — так устроен `connection_list`
+(раздел 5). Область (`Scope`: тред чата или запуск workflow) и корень
+workspace (`WorkspaceRoot`) нужны телу, которое работает с файлами треда.
+Так выглядит `send_file` плагина `boba-tool-canvas`:
+
+```python
+@tool
+async def send_file(
+    path: Annotated[str, Field(min_length=1, description=CanvasPrompt.FILE_PATH)],
+    subject: Annotated[Subject, Injected],
+    scope: Annotated[Scope, Injected],
+    root: Annotated[WorkspaceRoot, Injected],
+) -> FileResult | ErrorResult:
+    """Отправить пользователю файл из workspace вложением в чат."""
+    try:
+        key = ThreadFiles(subject, scope, root).existing(path)
+    except CanvasRefusedError as e:
+        return e.result()
+
+    return FileResult(path=key.in_workspace(), name=key.name, mime=ThreadFiles.mime_of(key))
+```
+
+`ThreadFiles` зовёт `root.apply()`, и после этого `ObjectKey.from_workspace`
+принимает только пути своего треда: `/workspace/<thread_id>/upload/...` в
+песочнице, `<workdir>/<thread_id>/upload/...` в режиме `process`. Всё, что
+тело делает с чатом, умещается в возврате `FileResult`: вложение к шагу
+прикрепляет хост.
 
 ### Модель конфига и тело
 
@@ -240,9 +275,25 @@ model».
 **Возврат** — модель результата, наследник `ToolResultBase` из
 `boba.toolkit.result`: `MarkdownResult` для текста и кода, `TableResult` для
 таблиц не из SQL, `SqlResult` для выдачи SQL любой базы, `ShellResult` для
-команд, `VisualResult` для картинок и диаграмм. Аннотация возврата обязана
-назвать класс. По ней хост знает, как показать результат в чате и на
-странице workflow.
+команд, `VisualResult` для графиков и jsx-виджетов, `FileResult` для файла
+workspace, который уходит вложением в чат, `CanvasResult` для файла,
+который показывается в панели канваса. Аннотация возврата обязана назвать
+класс. По ней хост знает, как показать результат в чате и на странице
+workflow: `llm_view()` — текст модели, `chat_view()` — markdown шага и
+`items` для поверхности чата (`VisualElement`, `FileElement`, `PanelOpen`),
+`studio_view()` — блоки страницы.
+
+Тело ничего не знает про чат: файл оно пишет в смонтированный workspace и
+возвращает результат. Элементы монтирует обвязка чата `ChatMount` после
+тела: вложение — строкой элемента и показом через шину хода, панель —
+содержимым вьювера плюс ссылкой в переписке. Если вьювер браузера ответил,
+что файл не отрисовался (mermaid), обвязка подменяет результат на
+`ErrorResult` с вердиктом — так отказ доходит до модели тем же путём, что
+любой отказ инструмента. Образец — плагин `boba-tool-canvas`
+(`canvas_open`, `send_file`, `diagram_save`, секция `[tool.canvas]` с
+`workspace = true`). Телу, которому нужен корень workspace или тред вызова,
+хост подаёт их injected-параметрами `root: Annotated[WorkspaceRoot, Injected]`
+и `scope: Annotated[Scope, Injected]`.
 
 **`EXPECTED`** — карта «исключение → вид отказа». Исключение из этой карты
 уезжает конвертом `ReplyError` и показывается пользователю текстом. Любое
@@ -450,22 +501,22 @@ client = Redis(
 
 ---
 
-## 4. Тип соединения: своё соединение для каждого пользователя
+## 4. Тип connection: свой connection у каждого пользователя
 
 Сервер в конфиге администратора — это один сервер на всех. Обычно нужно
-иначе: пользователь заводит свой redis на странице «Соединения», выдаёт его
+иначе: пользователь заводит свой redis на странице «Connections», выдаёт его
 себе или роли, и модель по имени выбирает, куда идти. Для этого хост хранит
-соединения в таблице `connections`: id, имя, описание и `data jsonb` с
+connection в таблице `connections`: id, имя, описание и `data jsonb` с
 профилем, секретная часть которого зашифрована ключом из секции
-`[connections]` конфига. Таблицы `roles` и `grants` описывают, кому какое
-соединение выдано.
+`[connections]` конфига. Таблицы `roles` и `grants` описывают, кому какой
+connection выдан.
 
 Чтобы хост умел разбирать строку таблицы в модель, у каждого профиля есть
-поле `kind`. По нему реестр типов соединений, собираемый из entry points
+поле `kind`. По нему реестр типов connection, собираемый из entry points
 группы `boba.connections`, находит модель профиля и функцию пробы. Проба —
-это кнопка «Check» на странице соединений.
+это кнопка «Check» на странице connections.
 
-Тип соединения и плагин инструментов — разные вещи с разными entry points.
+Тип connection и плагин инструментов — разные вещи с разными entry points.
 Их можно положить в один пакет или в два. Postgres, clickhouse и web
 сделаны двумя: тип живёт в инфра-пакете (`packages/infra/db/boba-db-postgres`),
 инструменты в `packages/tools/boba-tool-postgres` и зависят от него. Так
@@ -517,7 +568,7 @@ redis = "boba.tool.redis.plugin:MANIFEST"
 необходимости.
 
 ```python
-"""Профиль соединения redis."""
+"""Профиль connection redis."""
 
 from __future__ import annotations
 
@@ -550,7 +601,7 @@ class RedisConnection(ConnectionProfileBase):
 
     kind: Literal["redis"] = Field(
         default="redis",
-        description="Дискриминатор соединения при хранении в базе.",
+        description="Дискриминатор connection при хранении в базе.",
     )
 
     host: str = Field(min_length=1)
@@ -569,8 +620,8 @@ class RedisConnection(ConnectionProfileBase):
 - `kind: Literal["redis"]` хранится в jsonb каждой строки. Менять потом
   нельзя: строки в базе перестанут находить модель.
 - `description` наследуется от базы. Это текст, который модель читает в
-  `connection_list`, выбирая соединение под задачу (раздел 5). Заполняет
-  его администратор на странице соединений.
+  `connection_list`, выбирая connection под задачу (раздел 5). Заполняет
+  его администратор на странице connections.
 - `trace()` — строка журнала «под кем идём». Хост пишет её по профилю,
   который реально уедет в тело.
 - `labeled(client)` — подпись сессии, если сервер такое умеет. Хост знает
@@ -588,7 +639,7 @@ class RedisConnection(ConnectionProfileBase):
 ### Манифест с пробой
 
 ```python
-"""Тип соединения redis: манифест для реестра boba.connections.
+"""Тип connection redis: манифест для реестра boba.connections.
 
 Ошибки:
 ConnectionTypeError — проба получила профиль чужого типа.
@@ -635,7 +686,7 @@ MANIFEST = ConnectionTypeManifest(kind="redis", profile=RedisConnection, probe=_
 .venv/bin/python -c "from boba.connections.manifest import ConnectionTypes; print(ConnectionTypes.discover().kinds())"
 ```
 
-Страница «Соединения» покажет новый тип сама: форма строится из json-schema
+Страница «Connections» покажет новый тип сама: форма строится из json-schema
 модели профиля. Если пакет типа удалить, строки его вида в списках получат
 пометку «type not installed».
 
@@ -644,10 +695,10 @@ MANIFEST = ConnectionTypeManifest(kind="redis", profile=RedisConnection, probe=_
 
 ---
 
-## 5. Инструмент с соединением пользователя
+## 5. Инструмент с connection пользователя
 
 Теперь перепишем инструменты так, чтобы сервер приходил из таблицы
-соединений, а не из конфига. Соединение объявляется прямо в подписи: тип
+connections, а не из конфига. Connection объявляется прямо в подписи: тип
 параметра — модель профиля, маркер `UserConnection` рядом:
 
 ```python
@@ -656,13 +707,13 @@ from boba.toolkit.facade import Injected, UserConnection, tool
 RedisTarget = Annotated[RedisConnection, UserConnection]
 ```
 
-У такого параметра две стороны. Для модели это строка: имя соединения,
+У такого параметра две стороны. Для модели это строка: имя connection,
 которое она выбирает по выдаче `connection_list`. Хост правит схему при
 загрузке, и вместо модели профиля модель видит строку с подсказкой. Для
 тела это готовый профиль с паролем внутри. Ничего регистрировать не нужно:
-вид соединения хост выводит из типа параметра через реестр типов.
+вид connection хост выводит из типа параметра через реестр типов.
 
-Параметров-соединений может быть несколько. Инструмент перекачки берёт
+Параметров-connection может быть несколько. Инструмент перекачки берёт
 источник и приёмник:
 
 ```python
@@ -713,14 +764,14 @@ def _client(profile: RedisConnection) -> Redis:
     )
 ```
 
-Обратите внимание, чего в теле нет: поиска соединения по имени, проверки
+Обратите внимание, чего в теле нет: поиска connection по имени, проверки
 прав, whitelist'а. Всё это осталось на хосте. Конфиг секции при этом
 никуда не делся: в нём живут лимиты и настройки администратора, а
 `server` из него теперь можно убрать.
 
 Два требования к такому инструменту. Он обязан быть `async def`: хост ждёт
 таблицу и билет, синхронный вызов падает `InjectedAsyncOnlyError`. И
-инструменты с соединениями работают только при `[connections] enable = true`
+инструменты с connection работают только при `[connections] enable = true`
 в `config.toml`, иначе старт падает с текстом «takes its connections from
 the connections table».
 
@@ -741,8 +792,15 @@ scan_batch = 500
 
 ### Как модель узнаёт имена
 
-Встроенный инструмент `connection_list` из секции `[tool.connections]`
-отдаёт все соединения, доступные пользователю:
+Инструмент `connection_list` — обычный плагин `boba-tool-connections`
+(секция `[tool.connections]`, файл `conf/plugins/connections.toml`). Его
+тело исполняется в песочнице как любое другое и читает таблицы
+connections/roles/grants приложения своим подключением из конфига
+(`connection = "${postgres}"`, `db_schema`). Кто спрашивает, тело узнаёт
+из injected-параметра `subject: Annotated[Subject, Injected]`: хост
+подставляет субъект вызова обвязкой `CallContextValues`, как соединения — обвязкой
+`UserConnections`. Выдача — все connection, доступные пользователю лично
+или любой его роли:
 
 | connection | kind | description |
 |---|---|---|
@@ -752,7 +810,9 @@ scan_batch = 500
 
 По `kind` модель понимает, какому инструменту имя годится, по описанию
 выбирает под задачу. Описание берётся из поля `description` профиля, это
-единственная подсказка, которую модель видит.
+единственная подсказка, которую модель видит. Имя, выданное дважды внутри
+одного вида, в выдачу не попадает: вызов отверг бы его как неоднозначное.
+Секреты профилей тело не читает — только открытые ключи jsonb.
 
 ### Что происходит на вызове
 
@@ -775,7 +835,7 @@ pattern="cache:*")`.
    ключами `"source"` и `"target"`.
 9. Тело собирает JSON обратно в два `RedisConnection` и работает.
 
-В тело уезжают ровно те профили, которые назвал вызов. Остальные соединения
+В тело уезжают ровно те профили, которые назвал вызов. Остальные connection
 пользователя туда не попадают, даже именами.
 
 ### Проверка хоста для web
@@ -853,7 +913,7 @@ def with_call_ticket(self, ticket: TicketAuth) -> PostgresConfig:
   аутентифицируется иначе, и хост ничего не делает.
 - `service_name()` — SPN в форме `service@host`, к которому выпускать
   билет: `postgres@db01.corp`, `HTTP@wiki.corp`. Для web с шаблоном хостов
-  SPN получить нельзя, поэтому kerberos-соединения web указывают точный
+  SPN получить нельзя, поэтому kerberos-connection web указывают точный
   `base_url`.
 - `with_call_ticket(ticket)` — копия профиля с билетом на месте секции.
 
@@ -861,7 +921,7 @@ def with_call_ticket(self, ticket: TicketAuth) -> PostgresConfig:
 JSON-канал дошёл keytab или пароль, дамп падает с текстом «credentials may
 not leave the application». Это ожидаемое поведение, а не баг.
 
-В теле открытие соединения оборачивается кредами. Так делает
+В теле открытие подключения к базе оборачивается кредами. Так делает
 `PayloadPostgres.connect_config`:
 
 ```python
@@ -887,11 +947,11 @@ async with credentials.applied_async():
 ## 7. Потоковый инструмент: порты
 
 `redis_copy` копирует ключи между двумя redis. А если нужно выгрузить ключи
-в postgres или файл? Для этого есть конвейер: модель собирает цепочку
-инструментов через `pipeline_run`, и данные текут между узлами через ядро,
-не проходя ни через модель, ни через хост.
+в postgres или файл? Для этого есть граф workflow (страница и API studio):
+узлы графа — инструменты, и данные текут между ними через ядро, не проходя
+ни через модель, ни через хост.
 
-Инструмент становится узлом конвейера, когда объявляет **порт** в подписи.
+Инструмент становится узлом графа, когда объявляет **порт** в подписи.
 Единица обмена — кадр: JSON-заголовок с полем `kind` плюс тело байтами.
 Заголовки описываются pydantic-моделями со строковым `Literal` в `kind`, и
 порт типизируется их объединением:
@@ -988,8 +1048,8 @@ async def redis_restore_stream(
   строит песочница на вызове.
 
 Регистрировать узел не нужно: порт в подписи уже делает инструмент узлом
-каталога `pipeline_catalog`, стыковку по объявленным `kind` проверяет
-конвейер до запуска.
+каталога `GET /v1/tools`, стыковку по объявленным `kind` проверяет
+движок workflow до запуска.
 
 Образец сырых портов в репозитории: `pg_copy_out` и `pg_copy_in` плагина
 `pg`, которые гонят `COPY` между двумя базами байт в байт.
@@ -1015,7 +1075,7 @@ async def redis_restore_stream(
 | `binds` | пары `host:guest`, только явные файлы и каталоги хоста, read-only; пути через `${env.*}` |
 | `[sandbox.limits]` | `process_memory_bytes` (1 GiB), `process_cpu_sec`, `process_file_bytes`, `process_open_files` (1024), `group_memory_bytes` (1 GiB), `group_cpu_percent` (100 = одно ядро), `group_pids_max` (256), `timeout_sec` (86400) |
 | `[sandbox.zygote]` | `max_start_attempts`, `restart_backoff_sec`, `start_timeout_sec` |
-| `profile` | полный профиль ссылкой `"${sandbox.profiles.<имя>}"` вместо всех ключей выше; нужен встроенным плагинам без образа |
+| `profile` | полный профиль ссылкой `"${sandbox.profiles.<имя>}"` вместо всех ключей выше |
 
 Так выглядит секция плагина `kb`, которому нужны сеть, kerberos, веса
 модели и много памяти:
@@ -1111,7 +1171,7 @@ async def warm_embedder(cfg: KbWarmupConfig) -> None:
 | `--fd-frames <n>` | launcher | канал кадров портов |
 | `--artifact` | человек | вдобавок к `content` напечатать JSON артефакта |
 
-Профиль соединения при ручном запуске подаётся тем же файлом, ключом по
+Профиль connection при ручном запуске подаётся тем же файлом, ключом по
 имени параметра:
 
 ```bash
@@ -1135,7 +1195,7 @@ EOF
 
 Профиль с keytab так передать нельзя: дамп упадёт «may not leave the
 application», потому что билет выпускает приложение. Для отладки
-kerberos-соединений в файл подставляется готовая секция `kerberos_ticket`
+kerberos-connection в файл подставляется готовая секция `kerberos_ticket`
 либо профиль с паролем.
 
 Injected по toml приложения собирает CLI хоста, и под ним же тело идёт под
@@ -1154,9 +1214,20 @@ cd compose/chainlit && BOBA_TOOL_LAUNCHER=process ../../.venv/bin/python -m pyte
     ../../packages/services/boba-runtime/tests/test_plugin_discovery.py -q
 ```
 
-Тесты пишутся интеграционными, на реальных зависимостях. Образец теста
-тела, который собирает конфиг из toml и зовёт корутину напрямую, лежит в
-`packages/tools/boba-tool-doc/tests/test_run_doc.py`.
+Тесты пишутся интеграционными, на реальных зависимостях, и живут в
+пакете плагина (`tests/` рядом с `src/`). Три образца:
+
+- тело как функция: `packages/tools/boba-tool-canvas/tests/test_canvas_tools.py`
+  зовёт `tool.coroutine(**kwargs)` над временным workspace, подавая
+  `Subject`, `Scope` и `WorkspaceRoot` руками;
+- тело над живой базой: `packages/tools/boba-tool-connections/tests/test_connection_list.py`
+  кладёт строки и гранты хранилищем брокера и проверяет выдачу под
+  разными субъектами;
+- тело под обвязками хоста: `packages/agents/boba-chainlit/tests/test_user_connections.py`
+  собирает инструмент как загрузчик (`ToolBridge.as_structured_tool`,
+  `CallContextValues.bind_all`, `UserConnections.bind_all`,
+  `InjectedConfig.bind_all`) и зовёт его через зиготу секции; для чата
+  так же ставится `ChatMount` (`test_chat_mount.py`).
 
 ---
 
@@ -1169,7 +1240,7 @@ cd compose/chainlit && BOBA_TOOL_LAUNCHER=process ../../.venv/bin/python -m pyte
 - Старт падает «injected parameter 'cfg' has no SECTION on its model»:
   забыт `SECTION: ClassVar[str]`.
 - Старт падает «takes its connections from the connections table»: у
-  инструментов есть параметры-соединения при `[connections] enable = false`.
+  инструментов есть параметры-connection при `[connections] enable = false`.
 - Старт падает «is not a connection profile» или «package is not
   installed»: параметр с маркером объявлен не моделью профиля, либо пакет
   типа не установлен в этом развёртывании.
@@ -1179,9 +1250,14 @@ cd compose/chainlit && BOBA_TOOL_LAUNCHER=process ../../.venv/bin/python -m pyte
   дошёл до дампа. Профиль не реализует `kerberos_section`,
   `service_name`, `with_call_ticket`, либо это ручной запуск с
   keytab-профилем.
-- «is built in the async body only»: инструмент с соединениями объявлен
-  `def`, а не `async def`.
-- Соединение есть в таблице, а вызов получает «not available to you»: имя
+- «is built in the async body only»: инструмент с connection или
+  контекстом (`Subject`, `Scope`, `WorkspaceRoot`) объявлен `def`, а не
+  `async def`.
+- «this tool works only inside a chat turn»: результат несёт `PanelOpen`
+  или `FileElement`, а вызов пришёл не из хода чата. Само тело отработало;
+  вне чата (REST, workflow) такие элементы монтировать некому, и тул там
+  показывает лишь `studio_view()`.
+- Connection есть в таблице, а вызов получает «not available to you»: имя
   выдано дважды и попало в неоднозначные, либо вид строки не тот, что
   объявлен типом параметра.
 - Зигота секции не поднимается: образ плагина не собран или собран до

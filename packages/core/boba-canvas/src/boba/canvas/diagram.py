@@ -1,8 +1,7 @@
-"""Диаграммы mermaid: разбор спецификации, маркеры и тексты фасада, запись диаграммы.
+"""Диаграммы mermaid: разбор спецификации, маркеры и тексты фасада.
 
 Ошибки:
 DiagramSpecError — спецификация не разобрана.
-DiagramRefusedError — диаграмма отклонена; код — DiagramErrorKind.
 """
 
 from __future__ import annotations
@@ -11,19 +10,16 @@ import textwrap
 from enum import StrEnum
 from typing import ClassVar, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from boba.canvas.keys import ObjectKey
-from boba.identity.errors import RefusalError
 
 __all__ = [
     "DiagramEntry",
     "DiagramErrorKind",
     "DiagramMarker",
     "DiagramPrompt",
-    "DiagramRefusedError",
     "DiagramSpecError",
-    "DiagramToolConfig",
     "MermaidSpec",
     "MermaidToken",
 ]
@@ -34,25 +30,9 @@ class DiagramSpecError(ValueError):
 
 
 class DiagramErrorKind(StrEnum):
-    """Коды отказов тулов диаграмм: уезжают в ErrorResult.error_kind."""
+    """Коды отказов тула диаграмм: уезжают в ErrorResult.error_kind."""
 
     INVALID_SPEC = "invalid_diagram_spec"
-    BAD_PATH = "bad_path"
-    FILE_NOT_FOUND = "file_not_found"
-    STORAGE_ERROR = "storage_error"
-    BAD_FILE = "bad_file"
-
-
-class DiagramRefusedError(RefusalError):
-    """Тул отработать не может; текст причины готов для LLM."""
-
-
-class DiagramToolConfig(BaseModel):
-    """Секция [tool.diagram]: предел размера спеки."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    max_chars: int = Field(ge=1)
 
 
 class MermaidToken(StrEnum):
@@ -68,6 +48,7 @@ class DiagramMarker(StrEnum):
     """Служебные имена: jsx-компонент, mime файла, канвас, fallback-имя."""
 
     MIME = "text/plain"
+    ENCODING = "utf-8"
     FALLBACK_NAME = "diagram.mmd"
     SUFFIX = ".mmd"
 

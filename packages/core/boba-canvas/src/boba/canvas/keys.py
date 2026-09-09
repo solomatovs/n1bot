@@ -22,6 +22,7 @@ __all__ = [
     "ObjectKey",
     "ThreadDir",
     "WorkspaceMount",
+    "WorkspaceRoot",
 ]
 
 
@@ -60,6 +61,23 @@ class WorkspaceMount:
             raise RuntimeError(msg)
 
         return cls._PATH
+
+
+class WorkspaceRoot(BaseModel):
+    """Корень workspace того запуска, которым идёт вызов: телу инструмента
+    его подаёт хост injected-параметром, и тело настраивает по нему
+    WorkspaceMount своего процесса."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str
+
+    @classmethod
+    def current(cls) -> Self:
+        return cls(path=WorkspaceMount.path())
+
+    def apply(self) -> None:
+        WorkspaceMount.configure(self.path)
 
 
 class KeyField(StrEnum):

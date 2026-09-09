@@ -19,7 +19,7 @@ from boba.canvas.canvas import CanvasAction
 from boba.chainlit.rendering.tool import ChatElements
 from boba.toolkit.calls import ToolCallModels, ToolIntent
 from boba.toolkit.failure import FailureText
-from boba.toolkit.result import ToolArtifact, VisualResult
+from boba.toolkit.result import ToolArtifact, VisualElement
 from boba.toolrun.streams import ToolStreams
 from chainlit.config import config as chainlit_config
 from chainlit.context import context
@@ -992,13 +992,19 @@ class ChatView:
         view = result.chat_view()
         step.output = view.markdown
 
-        if view.element is None:
+        widgets: list[VisualElement] = []
+        for item in view.items:
+            if isinstance(item, VisualElement):
+                widgets.append(item)
+
+        if not widgets:
             step.is_error = failed
             await self._sink.put(step)
             return
 
         await self._sink.put(step)
-        await self._element(view.element, tool_call_id)
+        for widget in widgets:
+            await self._element(widget, tool_call_id)
 
     async def tool_stopped(self, step: Step, note: str) -> None:
         """Инструмент не доработал: ход остановлен."""
@@ -1023,7 +1029,7 @@ class ChatView:
         step.end = ended
         await self._sink.put(step)
 
-    async def _element(self, result: VisualResult, tool_call_id: str | None) -> None:
+    async def _element(self, widget: VisualElement, tool_call_id: str | None) -> None:
         """Шаг-носитель элемента: график и кастомный компонент рисуются одинаково."""
         step = self._step(
             self._assistant_name,
@@ -1032,12 +1038,10 @@ class ChatView:
             step_id=self.derive_id(self._thread_id, tool_call_id, StepRole.CHART),
         )
 
-        step.output = ""
-        if result.title:
-            step.output = result.title
+        step.output = widget.title
 
         if self._sink.emits_elements:
-            element = ChatElements.of(result)
+            element = ChatElements.of(widget)
             element_id = self.derive_id(self._thread_id, tool_call_id, StepRole.ELEMENT)
             if not element_id:
                 element_id = element.id

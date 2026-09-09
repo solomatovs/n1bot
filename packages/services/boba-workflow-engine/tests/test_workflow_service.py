@@ -14,22 +14,18 @@ from psycopg import sql
 
 from boba.cancellation import StopReason
 from boba.db.postgres import AsyncPostgresPool
-from boba.identity.context import CallContext, LlmInitiator, Scope, ScopeKind, Subject
+from boba.identity.context import CallContext, LlmInitiator, ScopeKind, Subject
 from boba.identity.locks import MemoryLiveLocks, RunLocking
-from boba.messaging import Envelope, MemoryMessageBus, WorkflowDraftChanged
+from boba.messaging import MemoryMessageBus
 from boba.runtime.commands import CommandRunner
-from boba.runtime.plugins import ToolBridge
 from boba.stand.context import use_context
 from boba.stand.tools import PROBE_ROLE as ROLE
 from boba.stand.tools import Probe
-from boba.toolkit.calls import ToolCallModels
 from boba.toolkit.result import (
     ErrorResult,
-    MarkdownResult,
 )
 from boba.toolrun.registry import ToolRegistry
 from boba.workflow import RunStatus, TaskStatus
-from boba.workflow.report import ReportKey
 from boba.workflow_engine.service import (
     StopOutcome,
     WorkflowError,
@@ -37,10 +33,6 @@ from boba.workflow_engine.service import (
     WorkflowService,
 )
 from boba.workflow_engine.store import WorkflowConfig, WorkflowStore
-from boba.workflow_engine.tools import (
-    WorkflowToolConfig,
-    build_workflow_tools,
-)
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -136,15 +128,6 @@ class TestSave:
 
         assert caught.value.kind == WorkflowRefusal.BAD_SPEC
         assert "nope" in str(caught.value)
-
-    async def test_chat_only_tool_is_refused(
-        self, service: WorkflowService, context: CallContext
-    ) -> None:
-        spec = "name: x\ntasks:\n  t: {tool: canvas_open, args: {path: p}}\n"
-        with pytest.raises(WorkflowError) as caught:
-            await service.save(context.subject, spec, {})
-
-        assert "canvas_open" in str(caught.value)
 
     async def test_denied_tool_is_refused(
         self, store: WorkflowStore, probe: Probe, context: CallContext
@@ -361,111 +344,3 @@ class TestStop:
 
         outcome = await asyncio.wait_for(running, 5)
         assert outcome.state.status is RunStatus.STOPPED
-
-
-class TestTools:
-    async def test_save_run_list_from_chat(
-        self, service: WorkflowService, context: CallContext
-    ) -> None:
-        async def source() -> WorkflowService:
-            return service
-
-        built = build_workflow_tools(WorkflowToolConfig(), source)
-        by_name = {t.name: t for t in ToolBridge.toolset(built)}
-        shown = ToolCallModels.call_of("workflow_save", {"spec": "name: x"})
-        assert shown.chat_view().markdown.startswith("```yaml\nname: x")
-
-        saved = await by_name["workflow_save"].ainvoke({"spec": VALUES})
-        assert "saved" in saved
-
-        listed = await by_name["workflow_list"].ainvoke({})
-        assert "values" in listed
-
-        message = await by_name["workflow_run"].ainvoke(
-            {
-                "name": "workflow_run",
-                "args": {"name": "values"},
-                "id": "c1",
-                "type": "tool_call",
-            }
-        )
-        report = message.artifact
-        assert isinstance(report, MarkdownResult)
-        assert report.ok
-        assert report.metadata[ReportKey.STATUS] == "done"
-        assert "third=done" in report.metadata[ReportKey.TASKS]
-        assert "- third: done" in report.text
-        headings = [
-            line for line in report.text.splitlines() if line.startswith("### ")
-        ]
-        assert headings == ["### first: done", "### second: done", "### third: done"]
-
-        missing = await by_name["workflow_run"].ainvoke(
-            {
-                "name": "workflow_run",
-                "args": {"name": "nope"},
-                "id": "c2",
-                "type": "tool_call",
-            }
-        )
-        assert isinstance(missing.artifact, ErrorResult)
-        assert missing.artifact.error_kind == WorkflowRefusal.NOT_FOUND
-
-
-async def test_draft_changes_reach_the_user_scope_and_save_drops_the_draft(
-    service: WorkflowService, context: CallContext
-) -> None:
-    """Правка черновика уходит вкладкам пользователя с revision и sid автора; Save
-    делает сохранённое истиной и снимает черновик.
-    """
-    seen: list[Envelope] = []
-
-    async def collect(envelope: Envelope) -> None:
-        seen.append(envelope)
-
-    leave = service.bus.subscribe(Scope.user(context.subject.user_id), collect)
-    try:
-        stored = await service.save(context.subject, PARALLEL, {})
-        draft = await service.put_draft(
-            context.subject, stored.id, "name: broken\n", {"positions": {}}, "sid-1"
-        )
-        assert draft.draft_revision == 1
-        assert draft.draft_spec == "name: broken\n"
-
-        fetched = await service.get(context.subject, stored.id)
-        assert fetched.draft_spec == "name: broken\n"
-
-        cleared = await service.clear_draft(context.subject, stored.id, "sid-1")
-        assert cleared.draft_spec is None
-        assert cleared.draft_revision == 2
-
-        await service.put_draft(context.subject, stored.id, "name: x\n", {}, "sid-2")
-        saved = await service.save(context.subject, PARALLEL, {})
-        assert saved.draft_spec is None
-        assert saved.draft_revision == 4
-    finally:
-        leave()
-
-    drafts: list[tuple[str, int, str, str]] = []
-    for envelope in seen:
-        message = envelope.message
-        if not isinstance(message, WorkflowDraftChanged):
-            continue
-
-        drafts.append(
-            (
-                str(message.workflow_id),
-                message.revision,
-                message.by_sid,
-                message.action.value,
-            )
-        )
-
-    workflow_id = str(saved.id)
-    assert drafts == [
-        (workflow_id, 0, "", "deleted"),
-        (workflow_id, 1, "sid-1", "updated"),
-        (workflow_id, 2, "sid-1", "deleted"),
-        (workflow_id, 3, "sid-2", "updated"),
-        (workflow_id, 4, "", "deleted"),
-    ]

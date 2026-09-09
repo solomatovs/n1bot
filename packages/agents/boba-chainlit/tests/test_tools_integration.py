@@ -50,7 +50,6 @@ from boba.toolkit.result import (
     ToolResultBase,
     VisualResult,
 )
-from boba.toolkit.types import SecretReveal
 from boba.toolkit.wrap import ToolProcessWrap
 from boba.toolrun.injected import InjectedConfig
 from boba.transport.http.profile import HttpConnection
@@ -1262,7 +1261,8 @@ class TestKbTools:
 
 
 class TestPgCopyPipeline:
-    """Насосы pg_copy_out/pg_copy_in: перекачка pg->pg конвейером через ядро."""
+    """Насосы pg_copy_out/pg_copy_in: проверки направления COPY до базы;
+    перекачка между узлами покрыта тестами графа workflow."""
 
     async def _prepare(self, pg_tools, pg_connection) -> None:
         await Call.ok(
@@ -1276,54 +1276,6 @@ class TestPgCopyPipeline:
                 " select g, 'строка ' || g from generate_series(1, 1000) g"
             ),
         )
-
-    async def test_pipeline_moves_rows_between_tables(
-        self, pg_tools, pg_connection
-    ) -> None:
-        from boba.toolrun.invoke import ToolInvoker
-        from boba.toolrun.pipeline import PipelineService
-
-        await self._prepare(pg_tools, pg_connection)
-
-        profile = SecretReveal.dumped(pg_connection)
-        plan = json.dumps(
-            {
-                "nodes": [
-                    {
-                        "tool": "pg_copy_out",
-                        "args": {
-                            "connection": profile,
-                            "sql": "COPY it_pipe_src TO STDOUT",
-                        },
-                    },
-                    {
-                        "tool": "pg_copy_in",
-                        "args": {
-                            "connection": profile,
-                            "sql": "COPY it_pipe_dst FROM STDIN",
-                        },
-                    },
-                ]
-            }
-        )
-
-        invoker = ToolInvoker(pg_tools)
-        outcome = await PipelineService().run(invoker, plan)
-
-        if not isinstance(outcome, MarkdownResult):
-            raise AssertionError(f"pipeline failed: {outcome}")
-        if "copied out" not in outcome.text or "COPY 1000" not in outcome.text:
-            raise AssertionError(f"итог без счётчиков узлов: {outcome.text!r}")
-
-        rows = await Call.ok(
-            pg_tools["pg_query"],
-            connection=pg_connection,
-            sql="select count(*) as total, min(note) as first_note from it_pipe_dst",
-        )
-        if _rows(rows)[0]["total"] != 1000:
-            raise AssertionError(f"строки не доехали: {_rows(rows)[0]}")
-        if _rows(rows)[0]["first_note"] != "строка 1":
-            raise AssertionError(f"текст исказился: {_rows(rows)[0]}")
 
     async def test_wrong_direction_is_refused_before_the_database(
         self, pg_tools, pg_connection

@@ -142,13 +142,6 @@ def test_module_tool_ports() -> None:
             [IssueCode.TOOL_DENIED],
         ),
         (
-            {
-                "name": "w",
-                "tasks": {"a": {"tool": "canvas_open", "args": {"path": "x"}}},
-            },
-            [IssueCode.TOOL_CHAT_ONLY],
-        ),
-        (
             {"name": "w", "tasks": {"a": {"tool": "pg_query", "args": {"sql": "x"}}}},
             [IssueCode.UNKNOWN_ARG, IssueCode.MISSING_ARG],
         ),

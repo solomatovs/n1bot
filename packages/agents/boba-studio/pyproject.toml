@@ -33,6 +33,8 @@ dependencies = [
 [project.optional-dependencies]
 tools = [
     "boba-tool-shell==0.0.17.dev3",
+    "boba-tool-connections==0.0.17.dev3",
+    "boba-tool-canvas==0.0.17.dev3",
     "boba-tool-chart==0.0.17.dev3",
     "boba-tool-web==0.0.17.dev3",
     "boba-tool-doc==0.0.17.dev3",
