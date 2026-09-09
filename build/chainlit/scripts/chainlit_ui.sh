@@ -1,12 +1,14 @@
 #!/bin/sh
-# Фронт chainlit из исходников тега с overlay поверх (web/chainlit-ui).
+# UI chainlit из исходников тега с overlay поверх (web/chainlit-ui): все пакеты
+# workspace — react-client, app (фронт) и copilot (виджет), как pnpm build у upstream.
+# custom_build в chainlit заменяет весь UI: и фронт, и copilot ищутся в одном каталоге.
 #   store <src.tar.gz> <store.tar.gz>                 — pnpm-store для offline-сборки (нужна сеть)
 #   build <src.tar.gz> <store.tar.gz> <overlay> <out> — сборка dist без сети
 # Запускается в образе nodejs (node + pnpm), как стадией Dockerfile, так и целью make.
 set -eu
 
 export HOME=/tmp HUSKY=0 CYPRESS_INSTALL_BINARY=0
-PNPM_OPTS="--frozen-lockfile --config.package-manager-strict=false --filter @chainlit/react-client --filter @chainlit/app"
+PNPM_OPTS="--frozen-lockfile --config.package-manager-strict=false --filter @chainlit/react-client --filter @chainlit/app --filter @chainlit/copilot"
 WORK="${UI_WORK:-/tmp/chainlit-ui}"
 
 unpack_sources() {
@@ -25,6 +27,16 @@ patch_index() {
         -e 's#https://cdn.jsdelivr.net/npm/katex@[0-9.]*/dist/katex.min.css#/public/vendor/katex/katex.min.css#' \
         "$1"
     ! grep -E 'fonts\.(googleapis|gstatic)\.com|cdn\.jsdelivr\.net' "$1"
+}
+
+# контракт chainlit/server.py: в каталоге custom_build лежат index.html фронта и index.js copilot
+check_ui() {
+    for name in index.html index.js; do
+        if [ ! -f "$1/$name" ]; then
+            echo "chainlit_ui.sh: $1/$name is missing — the ui build is incomplete" >&2
+            exit 1
+        fi
+    done
 }
 
 case "${1:-}" in
@@ -48,10 +60,13 @@ build)
     pnpm --filter @chainlit/react-client run type-check
     pnpm --filter @chainlit/app run type-check
     pnpm --filter @chainlit/app run build
+    pnpm --filter @chainlit/copilot run build
     patch_index frontend/dist/index.html
     mkdir -p "$5"
     find "$5" -mindepth 1 -delete
     cp -a frontend/dist/. "$5/"
+    cp -a libs/copilot/dist/. "$5/"
+    check_ui "$5"
     ;;
 *)
     echo "usage: chainlit_ui.sh store <src.tar.gz> <store.tar.gz> | build <src.tar.gz> <store.tar.gz> <overlay> <out>" >&2

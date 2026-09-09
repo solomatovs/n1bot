@@ -116,7 +116,7 @@ MERMAID_VERSION ?= 11.16.1
 MERMAID_URL     ?= https://registry.npmjs.org/mermaid/-/mermaid-$(MERMAID_VERSION).tgz
 WEB_FILES       := $(WEBASSETS_DIR)/katex/katex.min.css $(WEBASSETS_DIR)/inter/inter.css $(WEBASSETS_DIR)/mermaid/mermaid.min.js
 
-# фронт chainlit собирается из исходников тега с overlay web/chainlit-ui поверх:
+# UI chainlit (фронт + copilot) собирается из исходников тега с overlay web/chainlit-ui поверх:
 # версия — в UPSTREAM рядом с overlay, offline-сборку кормит pnpm-store из fetch
 UI_DIR          := $(WEB_DIR)/web/chainlit-ui
 CHAINLIT_VERSION := $(shell cat $(UI_DIR)/UPSTREAM)
@@ -254,7 +254,7 @@ help:
 	echo "  make clean     удалить release и src/, кроме моделей"
 	echo "  make all       всё: fetch + sandbox + plugin-rootfs-all + web + build + dev"
 	echo "  make web       весь фронт для dev-дерева node'ом образа: page.js,"
-	echo "                 фронт chainlit $(CHAINLIT_VERSION) с overlay web/chainlit-ui (assets/ui); dev и all зовут сам,"
+	echo "                 UI chainlit $(CHAINLIT_VERSION) (фронт + copilot) с overlay web/chainlit-ui (assets/ui); dev и all зовут сам,"
 	echo "                 в образ то же собирают стадии web-build, chainlit-ui-build"
 	echo ""
 	echo "  Версия одна на все пакеты: version — показать, version-set VER=X.Y.Z — проставить"
@@ -432,7 +432,8 @@ test: build
 
 # что обязано лежать в дереве установки
 RELEASE_PARTS_common := sandbox/plugins sandbox/workspace.ext4 third/bin/bwrap third/bin/fuse2fs \
-                        app/bin app_root/public app_root/public/page.js app_root/public/vendor app_root/ui
+                        app/bin app_root/public app_root/public/page.js app_root/public/vendor \
+                        app_root/ui/index.html app_root/ui/index.js
 RELEASE_PARTS := $(RELEASE_PARTS_common) models/onnx-genai models/fastembed models/tessdata
 
 # дерево установки из готового образа: пути и шебанги переводятся с DEST_DIR на INSTALL_DIR
@@ -527,7 +528,7 @@ all: fetch sandbox plugin-rootfs-all web build dev
 
 # --- фронт для dev-дерева: одна цель web, в образ то же собирают стадии Dockerfile ---
 
-# весь фронт: скрипт страницы, страница каталога, фронт chainlit с overlay
+# весь фронт: скрипт страницы, страница каталога, UI chainlit (фронт + copilot) с overlay
 .PHONY: web
 web: $(PAGE_JS) $(UI_DIST)/index.html
 
@@ -540,11 +541,11 @@ $(PAGE_JS): $(PAGE_SRCS)
 	    -c 'npm ci --no-audit --no-fund && npm run check && npm run build'
 	ls -la "$@"
 
-# фронт chainlit с overlay в assets/ui: тот же скрипт, что у стадии chainlit-ui-build;
+# UI chainlit (фронт + copilot) с overlay в assets/ui: тот же скрипт, что у стадии chainlit-ui-build;
 # пересобирается, когда overlay, UPSTREAM, тарболлы или скрипт новее сборки
 $(UI_DIST)/index.html: $(UI_SRCS) $(CHAINLIT_TARBALL) $(CHAINLIT_STORE)
 	@$(check-inputs)
-	echo "== фронт chainlit $(CHAINLIT_VERSION) + overlay: $(NODE_IMAGE) -> $(UI_DIST) =="
+	echo "== UI chainlit $(CHAINLIT_VERSION) (фронт + copilot) + overlay: $(NODE_IMAGE) -> $(UI_DIST) =="
 	mkdir -p "$(UI_DIST)"
 	docker run --rm --network none --entrypoint /bin/sh -u "$$(id -u):$$(id -g)" \
 	    -v "$(DEPS_DIR):/deps:ro" -v "$(SCRIPTS_DIR):/scripts:ro" -v "$(UI_DIR):/ui:ro" \
