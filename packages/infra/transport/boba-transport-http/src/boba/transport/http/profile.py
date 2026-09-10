@@ -22,6 +22,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    RootModel,
     SecretStr,
     SerializationInfo,
     field_serializer,
@@ -40,6 +41,7 @@ __all__ = [
     "HttpConnection",
     "NegotiateAuth",
     "NoneAuth",
+    "RetryStatuses",
     "UrlPart",
     "UrlScheme",
     "WebAuth",
@@ -236,6 +238,44 @@ class UrlPart(StrEnum):
         return frozenset({cls.QUERY, cls.USERINFO, cls.NETLOC, cls.RAW_PATH})
 
 
+class RetryStatuses(RootModel[dict[int, int]]):
+    """Сколько всего попыток положено ответу с данным HTTP-статусом.
+
+    Общее правило транспорта — повторять 5xx и transport-ошибки; эта таблица
+    задаёт исключения по коду, чтобы throttling сервера (429, а у некоторых
+    Confluence-инсталляций и 401 на частых запросах) не валил прогон с первого
+    ответа. Заполняется в профиле плагина, читает её RetryPolicy.
+    """
+
+    root: dict[int, int] = {}
+
+    MIN_STATUS: ClassVar[int] = 100
+    MAX_STATUS: ClassVar[int] = 599
+
+    @model_validator(mode="after")
+    def _validate(self) -> RetryStatuses:
+        for status, attempts in self.root.items():
+            if status < self.MIN_STATUS or status > self.MAX_STATUS:
+                msg = (
+                    f"retry_statuses: {status} is not an HTTP status code "
+                    f"({self.MIN_STATUS}..{self.MAX_STATUS})"
+                )
+                raise ValueError(msg)
+
+            if attempts < 1:
+                msg = (
+                    f"retry_statuses: status {status} expects at least one "
+                    f"attempt, got {attempts}"
+                )
+                raise ValueError(msg)
+
+        return self
+
+    def attempts_for(self, status: int) -> int:
+        """Сколько попыток делать на этом статусе; 0 — правила нет."""
+        return self.root.get(status, 0)
+
+
 class HttpConnection(ConnectionProfileBase):
     """Транспортный профиль web-соединения: адрес сервера, timeout/ssl/retry
     и auth. Адрес хранится частями с именами аргументов httpx.URL; заданная
@@ -328,6 +368,22 @@ class HttpConnection(ConnectionProfileBase):
         default=1.0,
         ge=0,
         description="Базовый линейный backoff между попытками (сек) × номер попытки.",
+    )
+    retry_statuses: RetryStatuses = Field(
+        default_factory=lambda: RetryStatuses.model_validate({}),
+        description=(
+            "Статусы ответа, которые повторяются сверх общего правила: "
+            "код -> сколько всего попыток. `{ 429 = 5 }` — пять попыток на "
+            "throttling. Пусто — повторяются только 5xx и transport-ошибки."
+        ),
+    )
+    retry_after_max_sec: float = Field(
+        default=60.0,
+        ge=0,
+        description=(
+            "Потолок паузы из заголовка Retry-After (сек). Сервер вправе "
+            "попросить час, столько прогон не ждёт."
+        ),
     )
 
     HTTP_SERVICE: ClassVar[str] = "HTTP"
