@@ -13,6 +13,7 @@ from typing import Generic, Literal, NewType, Protocol, TypeVar, runtime_checkab
 
 from boba.indexing.chunks import Chunk
 from boba.indexing.errors import IncompatibleContentError
+from boba.indexing.ledger import SourceMark
 from boba.indexing.sections import RawDocument, Section, SourceId
 from boba.indexing.values import Metadata, MetadataKey
 
@@ -102,13 +103,16 @@ class Embedder(ABC, Generic[T]):
 
 @runtime_checkable
 class Request(Protocol):
-    """Контракт Request-DTO — чистый план «что забрать» + исходная metadata.
+    """Контракт Request-DTO — план «что забрать», исходная metadata и отметка
+    источника для реестра.
 
     source_id НЕ часть Request — его вычисляет Transport из реального адреса,
-    чтобы identity не дрейфовала.
+    чтобы identity не дрейфовала. mark конвейер сверяет с реестром до fetch:
+    совпавший отпечаток избавляет от скачивания.
     """
 
     metadata: Metadata
+    mark: SourceMark
 
 
 ReqT = TypeVar("ReqT", bound=Request)

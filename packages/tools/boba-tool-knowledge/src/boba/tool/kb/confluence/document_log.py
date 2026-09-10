@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from pathlib import Path
 
 from boba.liteparse.engine import LiteParseReader
 from boba.text.document import ParsedPage
@@ -32,6 +33,16 @@ class LoggingDocumentReader(LiteParseReader):
         logger.info("parse start: %s, %d bytes", filename, len(data))
         elapsed = Elapsed()
         pages = super().parse_pages(data, filename)
+        logger.info(
+            "parse done: %s -> %d pages in %dms", filename, len(pages), elapsed.ms()
+        )
+
+        return pages
+
+    def parse_file(self, path: Path, filename: str) -> Sequence[ParsedPage]:
+        logger.info("parse start: %s, %d bytes", filename, path.stat().st_size)
+        elapsed = Elapsed()
+        pages = super().parse_file(path, filename)
         logger.info(
             "parse done: %s -> %d pages in %dms", filename, len(pages), elapsed.ms()
         )
