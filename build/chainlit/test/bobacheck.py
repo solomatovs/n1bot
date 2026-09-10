@@ -234,10 +234,11 @@ def t_plugin_images_present():
 
 check("plugin images present", t_plugin_images_present)
 
-# 8) веса эмбеддера: лежат в релизе рядом с моделями и едут в песочницу kb биндом
+# 8) веса эмбеддера: лежат в релизе рядом с моделями и едут биндом в песочницы,
+# где считается эмбеддинг: поиск kb и индексация confluence
 print("== fastembed weights shipped next to the models ==")
 EMBED_DIR = os.path.join(BASE_DIR, "models", "fastembed")
-KB_IMAGE = os.path.join(PLUGINS_DIR, "boba-tool-knowledge", "rootfs.ext4")
+EMBED_PACKAGES = ("boba-tool-knowledge", "boba-tool-confluence")
 
 
 def t_embed_weights_shipped():
@@ -249,8 +250,10 @@ def t_embed_weights_shipped():
     if not weights:
         raise RuntimeError(f"нет весов *.onnx в {EMBED_DIR}")
 
-    if not os.path.isfile(KB_IMAGE):
-        raise RuntimeError(f"нет образа {KB_IMAGE}")
+    for package in EMBED_PACKAGES:
+        image = os.path.join(PLUGINS_DIR, package, "rootfs.ext4")
+        if not os.path.isfile(image):
+            raise RuntimeError(f"нет образа {image}")
 
     print(f"  файлов весов: {len(weights)}")
 

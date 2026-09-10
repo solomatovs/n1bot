@@ -19,6 +19,11 @@ from typing import Annotated, Any, ClassVar, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from boba.confluence.models import (
+    AttachmentFilter,
+    AttachmentGate,
+    ParseGrade,
+)
 from boba.db.pgvector.config import PostgresStoreConfig
 from boba.db.pgvector.store import (
     PostgresChunkStore,
@@ -40,26 +45,15 @@ from boba.indexing import (
 )
 from boba.indexing.ports import Chunker, Embedder, ReaderId
 from boba.indexing.values import CollectionId
+from boba.llm.embedding import EmbeddingConfig
+from boba.llm.warm import WarmEmbedder
 from boba.text.document import LiteParseParams
-from boba.tool.kb.chunking import (
+from boba.tool.confluence.chunking import (
     ChunkerParams,
     StructuralChunkerFactory,
 )
-from boba.tool.kb.confluence.connection import ConfluenceConnection
-from boba.tool.kb.confluence.models import (
-    AttachmentFilter,
-    AttachmentGate,
-    ParseGrade,
-)
-from boba.tool.kb.confluence.pipeline import ConfluenceSourceTransport
-from boba.tool.kb.confluence.request_sources import (
-    ConfluenceCql,
-    ConfluenceDiscovery,
-    ConfluencePaginator,
-    ConfluenceProbe,
-    ConfluenceRest,
-)
-from boba.tool.kb.indexing_log import (
+from boba.tool.confluence.connection import ConfluenceConnection
+from boba.tool.confluence.indexing_log import (
     IngestProgress,
     LoggedIndexRun,
     LoggingChunker,
@@ -68,7 +62,14 @@ from boba.tool.kb.indexing_log import (
     LoggingSourceLedger,
     RunOutcome,
 )
-from boba.tool.kb.warm import EmbeddingConfig, WarmEmbedder
+from boba.tool.confluence.pipeline import ConfluenceSourceTransport
+from boba.tool.confluence.request_sources import (
+    ConfluenceCql,
+    ConfluenceDiscovery,
+    ConfluencePaginator,
+    ConfluenceProbe,
+    ConfluenceRest,
+)
 from boba.toolkit.timing import Elapsed
 from boba.toolkit.types import StringList
 from boba.transport.http.profile import HttpConnection
@@ -82,7 +83,7 @@ __all__ = [
     "IngestStamp",
 ]
 
-logger = logging.getLogger("boba.tool.kb.confluence.ingest")
+logger = logging.getLogger("boba.tool.confluence.ingest")
 
 
 class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams, LiteParseParams):

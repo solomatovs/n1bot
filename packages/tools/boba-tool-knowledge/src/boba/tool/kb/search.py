@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, ClassVar, Literal, LiteralString
 
+from boba.confluence.models import ConfluenceKeys
 from boba.indexing import MetadataKey, ReaderKeys, SectionKeys
 from boba.kbdoc import KbDocKeys
-from boba.tool.kb.confluence.models import ConfluenceKeys
 from boba.tool.kb.models import SearchHit
 
 __all__ = [

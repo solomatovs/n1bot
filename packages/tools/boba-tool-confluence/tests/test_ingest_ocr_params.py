@@ -6,8 +6,8 @@ from typing import Any, ClassVar
 
 import pytest
 
-from boba.tool.kb.confluence.ingest_tools import TOOLS as INGEST_TOOLS
-from boba.tool.kb.confluence.ingest_tools import IngestToolConfig
+from boba.tool.confluence.ingest_tools import TOOLS as INGEST_TOOLS
+from boba.tool.confluence.ingest_tools import IngestToolConfig
 
 
 def _config() -> IngestToolConfig:

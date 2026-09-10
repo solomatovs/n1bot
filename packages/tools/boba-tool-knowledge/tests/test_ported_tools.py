@@ -1,49 +1,23 @@
-"""Тесты перенесённых инструментов: pg, kb, confluence."""
+"""Тесты перенесённых инструментов: pg и kb."""
 
 from __future__ import annotations
 
 import os
-from typing import Any, ClassVar
+from typing import ClassVar
 
 import pytest
 
 from boba.sandbox import SandboxToolConfig
 from boba.stand.sandbox import ROOTFS_IMAGE
-from boba.tool.kb.confluence.tools import TOOLS as CONFLUENCE_TOOLS
-from boba.tool.kb.confluence.tools import (
-    ConfluenceToolsConfig,
-    SpaceList,
-)
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
 from boba.tool.kb.tools import TOOLS as KB_TOOLS
 from boba.tool.pg.tools import TOOLS as PG_TOOLS
 from boba.tool.pg.tools import PgToolConfig
-from boba.toolkit.entry import ToolMain
-from boba.toolkit.result import (
-    ToolArtifact,
-)
-from boba.transport.http.profile import HttpConnection, UrlScheme
-
-# порт 1 закрыт всегда: тест проверяет ошибку соединения, а не адрес
 
 
 @pytest.fixture(autouse=True)
 def chainlit_context() -> None:
     pass
-
-
-class _NoLauncher:
-    """Исполнитель-заглушка: тесты проверяют обвязку, песочница им не нужна."""
-
-    def call_text(self, command: str, stdin: str) -> Any:
-        raise AssertionError("песочница не должна вызываться")
-
-    def call_json(self, entry: Any, request: Any, schema: Any) -> Any:
-        raise AssertionError("песочница не должна вызываться")
-
-
-def _no_launcher(tool: str) -> Any:
-    return _NoLauncher()
 
 
 def pg_config() -> PgToolConfig:
@@ -69,21 +43,6 @@ def kb_config() -> PostgresKnowledgeBaseConfig:
             "sandbox": _SANDBOX,
         }
     )
-
-
-def invoke(tool: Any, args: dict[str, Any]) -> Any:
-    message = tool.invoke(
-        {"name": tool.name, "args": args, "id": "c1", "type": "tool_call"}
-    )
-    return ToolArtifact.revive(message.artifact)
-
-
-async def ainvoke(tool: Any, args: dict[str, Any]) -> Any:
-    """pg-инструменты асинхронные: sync-вызова у них нет по построению."""
-    message = await tool.ainvoke(
-        {"name": tool.name, "args": args, "id": "c1", "type": "tool_call"}
-    )
-    return ToolArtifact.revive(message.artifact)
 
 
 class TestPgTools:
@@ -201,93 +160,3 @@ _PROFILE_RAW: dict[str, object] = {
 }
 
 _SANDBOX = SandboxToolConfig.model_validate({"profile": _PROFILE_RAW})
-
-
-class TestConfluenceTools:
-    pytestmark = pytest.mark.anyio
-
-    def test_module_declares_the_toolset(self) -> None:
-        names = [t.name for t in CONFLUENCE_TOOLS]
-        if not (
-            names
-            == [
-                "confluence_fetch",
-                "confluence_grep",
-                "confluence_search",
-                "confluence_spaces",
-            ]
-        ):
-            raise AssertionError('names == [ "confluence_fetch", "confluence_grep", "…')
-
-    async def test_network_error_raises_domain_error(self) -> None:
-        # класс ошибки берётся из того же модуля, что и тело: соседние тесты
-        # перезагружают модуль инструментов, и класс с import'а модуля устаревает
-        import boba.tool.kb.confluence.tools as confluence_tools
-
-        cfg = ConfluenceToolsConfig(
-            confluence=HttpConnection(scheme=UrlScheme.HTTP, host="127.0.0.1", port=1),
-        )
-
-        body = ToolMain.toolset(confluence_tools.confluence_fetch)[0].coroutine
-        if body is None:
-            raise AssertionError("body is not None")
-        with pytest.raises(confluence_tools.ConfluenceRequestError):
-            await body(page_id="1", cfg=cfg)
-
-
-class TestSpaceList:
-    """Строка спейса: ключ, название, тип и адрес для перехода."""
-
-    PROFILE: ClassVar[HttpConnection] = HttpConnection(
-        host="confluence.example.local", port=443
-    )
-
-    ANSWER: ClassVar[dict[str, Any]] = {
-        "results": [
-            {
-                "key": "DQ",
-                "name": "Качество данных",
-                "type": "global",
-                "_links": {"webui": "/display/DQ"},
-            },
-            {"key": "BARE", "name": "Без ссылки", "type": "personal"},
-        ]
-    }
-
-    def test_row_carries_the_space_url(self) -> None:
-        [space, _] = SpaceList.items(self.ANSWER, "/rest/api/space")
-
-        row = SpaceList.row(space, self.PROFILE)
-
-        if row["url"] != "https://confluence.example.local/display/DQ":
-            raise AssertionError(f"unexpected url: {row}")
-        if row["key"] != "DQ" or row["name"] != "Качество данных":
-            raise AssertionError(f"unexpected row: {row}")
-
-    def test_space_without_webui_falls_back_to_the_service_root(self) -> None:
-        [_, bare] = SpaceList.items(self.ANSWER, "/rest/api/space")
-
-        row = SpaceList.row(bare, self.PROFILE)
-
-        if row["url"] != "https://confluence.example.local":
-            raise AssertionError(f"unexpected url: {row}")
-
-    def test_pattern_matches_key_or_name(self) -> None:
-        [space, _] = SpaceList.items(self.ANSWER, "/rest/api/space")
-
-        if not SpaceList.matches(space, None):
-            raise AssertionError("no pattern takes every space")
-        if not SpaceList.matches(space, "d*"):
-            raise AssertionError("the key matches the glob")
-        if not SpaceList.matches(space, "*данных*"):
-            raise AssertionError("the name matches the glob")
-        if SpaceList.matches(space, "PHDD*"):
-            raise AssertionError("a foreign glob must not match")
-
-    def test_broken_results_raise_the_layer_error(self) -> None:
-        import boba.tool.kb.confluence.tools as confluence_tools
-
-        with pytest.raises(confluence_tools.ConfluenceRequestError, match="space"):
-            confluence_tools.SpaceList.items(
-                {"results": [{"name": "no key here"}]}, "/rest/api/space"
-            )

@@ -11,7 +11,7 @@ from typing import ClassVar
 import pytest
 
 from boba.config import bind
-from boba.tool.kb.confluence.ingest_tools import (
+from boba.tool.confluence.ingest_tools import (
     IngestToolConfig,
     confluence_index_page,
 )

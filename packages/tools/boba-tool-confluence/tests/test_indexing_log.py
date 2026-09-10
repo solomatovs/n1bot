@@ -21,7 +21,7 @@ from boba.indexing import (
     SourceId,
 )
 from boba.indexing.values import StringContentHash
-from boba.tool.kb.indexing_log import (
+from boba.tool.confluence.indexing_log import (
     IngestProgress,
     LoggingChunker,
     LoggingReader,

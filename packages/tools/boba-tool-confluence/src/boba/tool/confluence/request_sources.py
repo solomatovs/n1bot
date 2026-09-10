@@ -24,20 +24,7 @@ from urllib.parse import quote, urlencode
 import httpx
 from pydantic import BaseModel, ValidationError
 
-from boba.indexing import (
-    Metadata,
-    ReaderKeys,
-    Request,
-    RequestSource,
-    SourceId,
-    SourceMark,
-    SourceProbe,
-    SourceRecord,
-    TransportError,
-    TransportKeys,
-)
-from boba.tool.kb.confluence.connection import ConfluenceConnection
-from boba.tool.kb.confluence.models import (
+from boba.confluence.models import (
     AttachmentBlock,
     AttachmentGate,
     AttachmentInfo,
@@ -51,8 +38,21 @@ from boba.tool.kb.confluence.models import (
     ConfluenceSpaceItem,
     ParseGrade,
 )
-from boba.tool.kb.confluence.parsing import ConfluenceJson
-from boba.tool.kb.indexing_log import IngestProgress
+from boba.confluence.parsing import ConfluenceJson
+from boba.indexing import (
+    Metadata,
+    ReaderKeys,
+    Request,
+    RequestSource,
+    SourceId,
+    SourceMark,
+    SourceProbe,
+    SourceRecord,
+    TransportError,
+    TransportKeys,
+)
+from boba.tool.confluence.connection import ConfluenceConnection
+from boba.tool.confluence.indexing_log import IngestProgress
 from boba.toolkit.timing import Elapsed
 from boba.transport.http import CancellableHttpTransport, HttpRequest
 from boba.transport.http.profile import HttpConnection

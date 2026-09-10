@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from boba.db.postgres import PayloadPostgres, PostgresError
 from boba.llm.embedding import EmbeddingConfig, EmbeddingError
+from boba.llm.warm import WarmEmbedder
 from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
 from boba.tool.kb.models import SearchHit
 from boba.tool.kb.search import (
@@ -33,7 +34,6 @@ from boba.tool.kb.search import (
     ConfluenceCollection,
     KbSearch,
 )
-from boba.tool.kb.warm import WarmEmbedder
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool, warmup
 from boba.toolkit.result import TableResult

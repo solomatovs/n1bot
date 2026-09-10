@@ -63,7 +63,7 @@ def _caller(docs_dir: Path | None = None, **kw: Any) -> ZygoteToolCaller:
     """Зигота под каждый набор путей и лимитов: имя секции — ключ реестра."""
     sandbox = SandboxToolConfig.model_validate(
         {
-            "profile": sandbox_profile("boba-tool-knowledge", docs_dir, **kw),
+            "profile": sandbox_profile("boba-tool-confluence", docs_dir, **kw),
             "override": {},
         }
     )
@@ -304,7 +304,7 @@ class TestRootfsContents:
     )
     def test_module_is_installed(self, module: str) -> None:
         sandbox = SandboxToolConfig.model_validate(
-            {"profile": sandbox_profile("boba-tool-knowledge")}
+            {"profile": sandbox_profile("boba-tool-confluence")}
         )
         profile = sandbox.profile
         supervisor = ZygoteRegistry.obtain("rootfs-test", profile, (), ZYGOTE)
@@ -330,7 +330,7 @@ class TestEmbedderInSandbox:
 
     def test_weights_are_mounted(self) -> None:
         sandbox = SandboxToolConfig.model_validate(
-            {"profile": sandbox_profile("boba-tool-knowledge")}
+            {"profile": sandbox_profile("boba-tool-confluence")}
         )
         profile = sandbox.profile
         supervisor = ZygoteRegistry.obtain("kb-test", profile, (), ZYGOTE)
