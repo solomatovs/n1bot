@@ -17,7 +17,7 @@ import pytest
 from pydantic import SecretStr
 
 from boba.cancellation import ToolStopped, run_cancellation
-from boba.stand.fake_toolmod import (
+from boba.stand_core.fake_toolmod import (
     FakeChunkHead,
     FakeConfig,
     FakePidHead,
@@ -34,7 +34,7 @@ from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
 
 CFG = FakeConfig(token=SecretStr("t0ken"), limit=5)
 
-MODULE = "boba.stand.fake_toolmod"
+MODULE = "boba.stand_core.fake_toolmod"
 
 STREAM_TOOL = ToolMain.toolset(fake_stream)[0]
 RELAY_TOOL = ToolMain.toolset(fake_relay)[0]

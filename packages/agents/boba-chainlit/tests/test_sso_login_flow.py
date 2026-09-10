@@ -16,13 +16,17 @@ import chainlit as cl
 import krb5
 import pytest
 from chainlit.auth.jwt import create_jwt
-from chainlit_stand import SESSIONS
+from chainlit_stand import SESSIONS, StandTokens
 from gssapi import Credentials, Name, NameType, SecurityContext
 from starlette.requests import Request
 
 from boba.auth import AuthService, IssuedSession, JwtTokens
-from boba.auth.config import KerberosAuthConfig, KerberosRolesConfig
-from boba.auth.sso import SpnegoGate, SsoSignIn
+from boba.auth.config import (
+    KerberosAuthConfig,
+    KerberosRoleProviders,
+    PrincipalRolesConfig,
+)
+from boba.auth.sso import SpnegoGate
 from boba.chainlit.auth.kerberos import KerberosAuth
 from boba.chainlit.auth.refresh import PageUrls, SessionRefresh
 from boba.config import bind
@@ -32,10 +36,10 @@ from boba.identity.session import Login, SignInProvider, UserMetadataField
 from boba.identity.sso import OwnRequest, SsoChallenge
 from boba.identity.token import CookieSpec, SessionRenewal
 from boba.krb import KerberosEnv, ServiceTicketIssuer
-from boba.ldap import Ldap3Directory
 from boba.runtime.config import RuntimeConfig
 from boba.runtime.http import SsoRequests
 from boba.runtime.users import UsersTable
+from boba.stand.signin import SignInStand
 from boba.stand.site import Stand
 
 STAND = Stand.required()
@@ -82,14 +86,17 @@ def _kerberos_auth(
     session = runtime_config.session
     users = _users(runtime_config, pool)
     auth = AuthService(
-        tokens=JwtTokens(session.auth_secret, session.session_ttl_sec),
+        tokens=JwtTokens(
+            session.auth_secret, session.session_ttl_sec, StandTokens.GENERATION
+        ),
         cookie=CookieSpec(
             name=session.cookie,
             samesite=session.cookie_samesite,
             ttl_sec=session.session_ttl_sec,
         ),
         password=None,
-        sso=SpnegoGate(SsoSignIn(config, session.auth_secret, Ldap3Directory())),
+        sso=SpnegoGate(SignInStand.assembly().sso(config, session.auth_secret)),
+        proxy=None,
         users=users,
         renewal=SessionRenewal.of(
             session.session_ttl_sec, session.session_ttl_sec * 24
@@ -120,14 +127,17 @@ def excluding_auth(
 ) -> KerberosAuth:
     """Тот же SSO, но принципал стенда попал в список исключённых AD."""
     config = bind(raw_config, path="auth.kerberos", model=KerberosAuthConfig)
-    roles = config.roles
-    if roles is None:
-        roles = KerberosRolesConfig()
+    principal = config.roles.principal
+    if principal is None:
+        principal = PrincipalRolesConfig()
 
-    excluded = roles.model_copy(
+    excluded = principal.model_copy(
         update={"principal_ex": RoleExcludeConfig([USER_PRINCIPAL])}
     )
-    modified = config.model_copy(update={"roles": excluded})
+    providers: KerberosRoleProviders = config.roles.model_copy(
+        update={"principal": excluded}
+    )
+    modified = config.model_copy(update={"roles": providers})
 
     return _kerberos_auth(modified, runtime_config, pool)
 

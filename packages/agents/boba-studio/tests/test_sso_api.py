@@ -18,7 +18,7 @@ from studio_stand import ApiStand
 
 from boba.auth import AuthService, JwtTokens
 from boba.auth.config import KerberosAuthConfig
-from boba.auth.sso import SpnegoGate, SsoSignIn
+from boba.auth.sso import SpnegoGate
 from boba.chat.profiles import ChatProfiles
 from boba.config import bind
 from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
@@ -27,10 +27,10 @@ from boba.identity.signin import SignedIn
 from boba.identity.sso import OwnRequest
 from boba.identity.token import CookieSpec, SessionRenewal
 from boba.krb import KerberosEnv
-from boba.ldap import Ldap3Directory
 from boba.runtime.config import StudioRuntimeConfig
 from boba.stand.kerberos import SsoBrowser
 from boba.stand.refs import StandRefs
+from boba.stand.signin import SignInStand
 from boba.stand.site import Stand as Site
 from boba.studio.api.signin import PageUrls, SignInWiring
 from boba.studio.api.urls import ApiVersion, SignInUrl
@@ -84,18 +84,20 @@ class Stand:
         config = bind(raw_config, path="auth.kerberos", model=KerberosAuthConfig)
         secret = studio_config.session.auth_secret
         self.users = Users()
-        self.sign_in = SsoSignIn(config, secret, Ldap3Directory())
+        self.sign_in = SignInStand.assembly().sso(config, secret)
         self.auth = AuthService(
-            tokens=JwtTokens(secret, 3600),
+            tokens=JwtTokens(secret, 3600, "stand-generation"),
             cookie=CookieSpec(name=COOKIE, samesite="lax", ttl_sec=3600),
             password=None,
             sso=SpnegoGate(self.sign_in),
+            proxy=None,
             users=self.users,
             renewal=SessionRenewal.of(3600, 3600 * 24),
         )
         wiring = SignInWiring(
             auth=self.auth,
             sso_url=f"{PREFIX}/api{ApiVersion.V1}{SignInUrl.SSO}",
+            proxy=None,
             page=PageUrls(root=PAGE, login=f"{PAGE}/login", home=f"{PAGE}/observe"),
         )
         self.api = ApiStand(

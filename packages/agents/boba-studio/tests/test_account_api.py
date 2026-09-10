@@ -15,8 +15,8 @@ from boba.chat.provider import OpenAiChatConfig
 from boba.identity.api import AuthenticatedUser
 from boba.identity.session import Login
 from boba.identity.signin import SignInMetadata
-from boba.stand.auth import MemoryUsers
 from boba.stand.refs import StandRefs
+from boba.stand_core.auth import MemoryUsers
 from boba.studio.api.urls import AccountUrl, ApiVersion, ConnectionUrl
 
 pytestmark = pytest.mark.anyio
@@ -52,12 +52,16 @@ def _profiles() -> ChatProfiles:
 
 
 def _user(roles: list[str]) -> AuthenticatedUser:
+    """Пользователь с профилями по ролям, как их выдал бы вход."""
+    given = frozenset(roles)
+
     return AuthenticatedUser(
         id=UUID(int=7),
         identifier=Login("reader"),
         sign_in=SignInMetadata(
             provider="KerberosAuth",
-            roles=frozenset(roles),
+            roles=given,
+            profiles=_profiles().granted_by_roles(given),
             principal="reader@EXAMPLE",
             sealed_ticket="sealed",
         ),

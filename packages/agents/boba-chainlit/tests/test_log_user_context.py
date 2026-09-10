@@ -102,7 +102,7 @@ class TestRequestUserMiddleware:
     @classmethod
     def _middleware(cls, app: Any) -> RequestUserMiddleware:
         return RequestUserMiddleware(
-            app, tokens=JwtTokens(cls.SECRET, 60), cookie=cls.COOKIE
+            app, tokens=JwtTokens(cls.SECRET, 60, "stand-generation"), cookie=cls.COOKIE
         )
 
     @staticmethod
@@ -128,7 +128,7 @@ class TestRequestUserMiddleware:
         signed = SignedIn(
             identifier=Login("sidorov"), display_name="", sign_in=SignInMetadata()
         )
-        token = JwtTokens(self.SECRET, 60).issue(signed)
+        token = JwtTokens(self.SECRET, 60, "stand-generation").issue(signed)
         scope = self._scope([(b"authorization", f"Bearer {token}".encode())])
         self._run(self._middleware(app), scope)
         if seen != ["sidorov"]:

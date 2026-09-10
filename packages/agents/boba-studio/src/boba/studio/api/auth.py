@@ -56,13 +56,13 @@ class ApiAuth:
     def resolve(
         user: AuthenticatedUser, profile: str | None, profiles: ChatProfiles
     ) -> ApiSubject:
-        """Субъект под профилем: AuthorizationError — профиль недоступен ролям."""
+        """Субъект под профилем: AuthorizationError — профиль не выдан входу."""
         try:
-            selected = profiles.resolve_or_default(profile, user.roles).name
+            selected = profiles.resolve_or_default(profile, user.sign_in).name
         except RefusalError as exc:
             msg = (
                 f"resolving profile {profile!r} for user {user.identifier!r} "
-                f"with roles {sorted(user.roles)}: {exc}"
+                f"granted {sorted(user.profiles)}: {exc}"
             )
             raise AuthorizationError(msg) from exc
 

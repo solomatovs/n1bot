@@ -12,9 +12,9 @@ from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.profile import PostgresConfig
 from boba.runtime.config import ConfigLocator, RawConfig, RuntimeConfig
-from boba.stand.context import call_context_cleared
 from boba.stand.database import TestDatabase
 from boba.stand.site import StandLayers
+from boba.stand_core.context import call_context_cleared
 
 __all__ = ["call_context_cleared"]
 

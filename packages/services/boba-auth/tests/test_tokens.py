@@ -24,7 +24,7 @@ def _encode(secret: str, identifier: str, ttl_sec: int) -> str:
 
 class TestJwtTokens:
     def test_issued_token_reads_back(self) -> None:
-        tokens = JwtTokens(SECRET, 60)
+        tokens = JwtTokens(SECRET, 60, "stand-generation")
         signed = SignedIn(
             identifier=Login("alice"),
             display_name="Alice",
@@ -33,14 +33,34 @@ class TestJwtTokens:
 
         claims = tokens.read(tokens.issue(signed))
 
-        assert claims.signed() == signed
+        assert claims.signed() == tokens.stamp(signed)
+        assert claims.sign_in().generation == "stand-generation"
         assert claims.exp - claims.iat == 60
+
+    def test_token_of_another_generation_is_refused(self) -> None:
+        signed = SignedIn(
+            identifier=Login("alice"), display_name="Alice", sign_in=SignInMetadata()
+        )
+        token = JwtTokens(SECRET, 60, "generation-a").issue(signed)
+
+        with pytest.raises(TokenRejectedError) as caught:
+            JwtTokens(SECRET, 60, "generation-b").read(token)
+
+        assert caught.value.reason is TokenRejection.GENERATION
+
+    def test_chainlit_token_without_generation_is_refused(self) -> None:
+        token = _encode(SECRET, "alice", 60)
+
+        with pytest.raises(TokenRejectedError) as caught:
+            JwtTokens(SECRET, 60, "stand-generation").read(token)
+
+        assert caught.value.reason is TokenRejection.GENERATION
 
     def test_claims_match_the_peer_layout(self) -> None:
         signed = SignedIn(
             identifier=Login("alice"), display_name="Alice", sign_in=SignInMetadata()
         )
-        token = JwtTokens(SECRET, 60).issue(signed)
+        token = JwtTokens(SECRET, 60, "stand-generation").issue(signed)
 
         raw = jwt.decode(token, SECRET, algorithms=["HS256"])
 
@@ -62,10 +82,10 @@ class TestJwtTokens:
     ) -> None:
         """Токен собирается в самом тесте: срок из параметра истёк бы за прогон."""
         with pytest.raises(TokenRejectedError) as caught:
-            JwtTokens(SECRET, 60).read(token())
+            JwtTokens(SECRET, 60, "stand-generation").read(token())
 
         assert caught.value.reason is reason
 
     def test_empty_secret_is_a_build_error(self) -> None:
         with pytest.raises(ValueError, match="secret"):
-            JwtTokens("", 60)
+            JwtTokens("", 60, "stand-generation")

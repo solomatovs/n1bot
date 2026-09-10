@@ -7,7 +7,7 @@ from boba.access import ProfileGrant, RoleConfig, ToolAccess
 from boba.identity.context import CallContext
 from boba.runtime.launchers import CallSurface
 from boba.runtime.plugins import ToolBridge
-from boba.stand.context import TEST_PROFILE
+from boba.stand_core.context import TEST_PROFILE
 from boba.toolkit.facade import tool
 from boba.toolkit.result import ErrorResult, MarkdownResult
 from boba.toolrun.call_id import ToolCallIdField

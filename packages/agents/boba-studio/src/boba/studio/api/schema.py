@@ -94,10 +94,11 @@ class OpenApiDocument:
     def _signin(cls) -> SignInWiring:
         """Маршруты входа в схеме есть; провайдера паролей у схемы нет."""
         auth = AuthService(
-            tokens=JwtTokens(cls.JWT_KEY, 1),
+            tokens=JwtTokens(cls.JWT_KEY, 1, "stand-generation"),
             cookie=CookieSpec(name=cls.COOKIE, samesite="lax", ttl_sec=1),
             password=None,
             sso=None,
+            proxy=None,
             users=NoUsers(),
             renewal=SessionRenewal.of(1, 1 * 24),
         )
@@ -105,6 +106,7 @@ class OpenApiDocument:
         return SignInWiring(
             auth=auth,
             sso_url="",
+            proxy=None,
             page=PageUrls(root="/workflow", login="/workflow/login", home="/workflow"),
         )
 

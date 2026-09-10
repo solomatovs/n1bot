@@ -8,7 +8,6 @@ from typing import ClassVar
 
 from omegaconf import OmegaConf
 
-from boba.chainlit.domain.keys import AppPrefix
 from boba.config import bind
 from boba.runtime.config import AppLayers, SessionConfig
 
@@ -22,6 +21,7 @@ class ChainlitEnv(StrEnum):
     AUTH_SECRET = "CHAINLIT_AUTH_SECRET"  # noqa: S105 — имя переменной, не секрет
     COOKIE_NAME = "CHAINLIT_AUTH_COOKIE_NAME"
     COOKIE_SAMESITE = "CHAINLIT_COOKIE_SAMESITE"
+    ROOT_PATH = "CHAINLIT_ROOT_PATH"
 
 
 class AppEntry:
@@ -79,7 +79,7 @@ class AppEntry:
 
         # chainlit складывает пути от APP_ROOT сам, относительный сбился бы на chdir
         os.environ[ChainlitEnv.APP_ROOT] = str(Path(root).resolve())
-        os.environ[AppPrefix.ENV] = section.get("url_prefix") or ""
+        os.environ[ChainlitEnv.ROOT_PATH] = section.get("url_prefix") or ""
 
         os.environ[ChainlitEnv.AUTH_SECRET] = session.auth_secret
         os.environ[ChainlitEnv.COOKIE_NAME] = session.cookie

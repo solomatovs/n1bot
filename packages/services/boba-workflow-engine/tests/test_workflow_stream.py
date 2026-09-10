@@ -19,8 +19,8 @@ from boba.db.postgres import AsyncPostgresPool
 from boba.identity.context import CallContext
 from boba.identity.locks import MemoryLiveLocks, RunLocking
 from boba.messaging import MemoryMessageBus
-from boba.stand.context import TEST_PROFILE, make_context
-from boba.stand.fake_toolmod import FakeConfig, fake_echo, fake_stream
+from boba.stand_core.context import TEST_PROFILE, make_context
+from boba.stand_core.fake_toolmod import FakeConfig, fake_echo, fake_stream
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import PayloadTool
 from boba.toolkit.wrap import ToolProcessWrap
@@ -116,7 +116,7 @@ async def service(pool: AsyncPostgresPool, tmp_path: Path) -> WorkflowService:
 
 
 def _context(monkeypatch: pytest.MonkeyPatch) -> CallContext:
-    from boba.stand.context import install_context
+    from boba.stand_core.context import install_context
 
     context = make_context("wf-stream", user_id=OWNER, login="tester", roles=[ROLE])
     install_context(monkeypatch, context)

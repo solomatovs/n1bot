@@ -11,7 +11,6 @@ from uuid import UUID
 import pytest
 from pydantic import BaseModel, Field, SecretStr, ValidationError
 
-from boba.connection_broker.store import ConnectionsConfig
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.profile import (
     GrantKind,
@@ -30,7 +29,7 @@ from boba.db.postgres.profile import (
     PostgresOptionsConfig,
     PostgresPoolConfig,
 )
-from boba.stand.fakes import FakeSecret
+from boba.stand_core.fakes import FakeSecret
 from boba.transport.http import HttpxAuth
 from boba.transport.http.profile import (
     BasicAuth,
@@ -309,49 +308,6 @@ class TestConnectionKind:
             StoredConnection.model_validate(
                 {"id": str(UUID(int=1)), "name": "x", "profile": {}}
             )
-
-
-class TestConnectionsConfig:
-    def test_key_must_be_base64(self) -> None:
-        with pytest.raises(ValueError, match="base64"):
-            ConnectionsConfig(
-                db_schema="chainlit", encryption_key=SecretStr("не base64!")
-            )
-
-    def test_key_must_be_32_bytes(self) -> None:
-        short = SecretStr(base64.b64encode(std_secrets.token_bytes(16)).decode())
-        with pytest.raises(
-            ValueError, match="expected 32 bytes in base64, got 16 bytes"
-        ):
-            ConnectionsConfig(db_schema="chainlit", encryption_key=short)
-
-    def test_valid_key_decodes(self) -> None:
-        if (
-            len(
-                ConnectionsConfig(
-                    db_schema="chainlit", encryption_key=_key()
-                ).key_bytes()
-            )
-            != 32
-        ):
-            raise AssertionError("the key must decode to 32 bytes")
-
-    def test_missing_key_raises_on_use(self) -> None:
-        with pytest.raises(ValueError, match="encryption_key is not set"):
-            ConnectionsConfig(db_schema="chainlit").key_bytes()
-
-    def test_missing_connection_raises_on_use(self) -> None:
-        with pytest.raises(ValueError, match="connection is not set"):
-            ConnectionsConfig(
-                db_schema="chainlit", encryption_key=_key()
-            ).require_conn()
-
-    def test_defaults(self) -> None:
-        cfg = ConnectionsConfig(db_schema="chainlit")
-        if cfg.enable is not False:
-            raise AssertionError("cfg.enable is False")
-        if cfg.db_schema != "chainlit":
-            raise AssertionError('cfg.db_schema == "chainlit"')
 
 
 class TestGrantTarget:

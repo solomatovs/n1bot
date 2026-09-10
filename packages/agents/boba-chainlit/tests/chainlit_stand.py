@@ -25,7 +25,7 @@ from boba.chainlit.chat.feed import TurnFeed
 from boba.chainlit.chat.history import ThreadMessages, TranscriptFeed
 from boba.chainlit.data.data_layer import PostgresDataLayer
 from boba.chainlit.data.storage import LocalStorageClient
-from boba.chainlit.domain.keys import AttachmentLinks
+from boba.chainlit.domain.keys import AppPrefix, AttachmentLinks
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.session import (
     ChainlitSession,
@@ -51,7 +51,7 @@ from boba.identity.context import (
 from boba.identity.errors import RefusalError
 from boba.identity.locks import MemoryLiveLocks
 from boba.identity.run import ElementTarget, RunPort, RunRefusal
-from boba.identity.session import Login
+from boba.identity.session import Login, UserMetadataField
 from boba.identity.signin import SignedIn, SignInMetadata
 from boba.identity.token import SessionClaims, TokenReader
 from boba.kerberos import DelegationMode, SignInTicket
@@ -61,13 +61,13 @@ from boba.llm.openai_chat import OpenAiChatProvider
 from boba.messaging import LockToken, MemoryMessageBus, MemoryPayloadStore
 from boba.runtime.config import AppLayers
 from boba.runtime.elements import ChatTables
-from boba.stand.context import TEST_PROFILE as TEST_PROFILE
-from boba.stand.context import TEST_TURN as TEST_TURN
-from boba.stand.context import install_context as install_context
-from boba.stand.context import make_context as make_context
-from boba.stand.context import use_context as use_context
-from boba.stand.fakes import FakeSecret as FakeSecret
-from boba.stand.fakes import FakeUrl as FakeUrl
+from boba.stand_core.context import TEST_PROFILE as TEST_PROFILE
+from boba.stand_core.context import TEST_TURN as TEST_TURN
+from boba.stand_core.context import install_context as install_context
+from boba.stand_core.context import make_context as make_context
+from boba.stand_core.context import use_context as use_context
+from boba.stand_core.fakes import FakeSecret as FakeSecret
+from boba.stand_core.fakes import FakeUrl as FakeUrl
 
 AUTH_USER = "test-user"
 
@@ -138,6 +138,12 @@ def app_config() -> AppConfig:
     return bind(built, path="app", model=AppConfig)
 
 
+@pytest.fixture(scope="session", autouse=True)
+def app_prefix(app_config: AppConfig) -> None:
+    """Как bootstrap: ссылки на файлы и потоки строятся с префиксом приложения."""
+    AppPrefix.install(app_config.chainlit.url_prefix)
+
+
 @pytest.fixture
 def files_dir(tmp_path: Path) -> Path:
     return tmp_path / "uploads"
@@ -196,7 +202,7 @@ def auth_token(app_config: AppConfig) -> str:
 
     from chainlit.auth.jwt import create_jwt
 
-    return create_jwt(ChainlitUser(identifier=AUTH_USER))
+    return create_jwt(StandTokens.user(AUTH_USER))
 
 
 @pytest.fixture(autouse=True)
@@ -297,6 +303,7 @@ class StandTokens(TokenReader):
 
     TTL_SEC: ClassVar[int] = 3600
     FALLBACK_SECRET: ClassVar[str] = "chainlit-stand-secret"
+    GENERATION: ClassVar[str] = "stand-generation"
 
     @classmethod
     def secret(cls) -> str:
@@ -310,7 +317,18 @@ class StandTokens(TokenReader):
 
     @classmethod
     def tokens(cls) -> JwtTokens:
-        return JwtTokens(cls.secret(), cls.TTL_SEC)
+        return JwtTokens(cls.secret(), cls.TTL_SEC, cls.GENERATION)
+
+    @classmethod
+    def user(
+        cls, identifier: str, metadata: dict[str, Any] | None = None
+    ) -> ChainlitUser:
+        """cl.User стенда с поколением сессий в metadata, как его помечает вход."""
+        marked: dict[str, Any] = {UserMetadataField.GENERATION: cls.GENERATION}
+        if metadata is not None:
+            marked.update(metadata)
+
+        return ChainlitUser(identifier=identifier, metadata=marked)
 
     def read(self, token: str) -> SessionClaims:
         return self.tokens().read(token)

@@ -14,8 +14,7 @@ from chainlit_stand import SESSIONS, StandTokens
 from fastapi import Request
 
 from boba.auth import AuthService, JwtTokens
-from boba.auth.config import LocalAuthConfig
-from boba.auth.signin import PasswordSignIns
+from boba.auth.config import LocalAuthConfig, LocalRoleProviders, LocalRolesConfig
 from boba.chainlit.auth.refresh import PageUrls, SessionRefresh
 from boba.identity.admission import RoleMappingConfig
 from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
@@ -23,7 +22,7 @@ from boba.identity.session import Login
 from boba.identity.signin import SignedIn, SignInMetadata
 from boba.identity.sso import OwnRequest
 from boba.identity.token import CookieSpec, SessionRenewal
-from boba.ldap import Ldap3Directory
+from boba.stand.signin import SignInStand
 
 pytestmark = pytest.mark.anyio
 
@@ -59,13 +58,17 @@ def chainlit_context() -> None:
 def _refresh() -> SessionRefresh:
     secret = StandTokens.secret()
     config = LocalAuthConfig(
-        users={"alice": "pw"}, roles=RoleMappingConfig(root={"alice": ["DEV"]})
+        users={"alice": "pw"},
+        roles=LocalRoleProviders(
+            local=LocalRolesConfig(mapping=RoleMappingConfig(root={"alice": ["DEV"]}))
+        ),
     )
     auth = AuthService(
-        tokens=JwtTokens(secret, 60),
+        tokens=JwtTokens(secret, 60, StandTokens.GENERATION),
         cookie=CookieSpec(name=COOKIE, samesite="lax", ttl_sec=60),
-        password=PasswordSignIns.of([config], Ldap3Directory()),
+        password=SignInStand.assembly().password([config]),
         sso=None,
+        proxy=None,
         users=Users(),
         renewal=SessionRenewal.of(60, 3600),
     )

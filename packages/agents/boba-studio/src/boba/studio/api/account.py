@@ -135,13 +135,13 @@ class AccountApi:
 
     async def set_profile(self, body: ProfileChoice, current_user: CurrentUser) -> Me:
         user = current_user
-        visible = self._profiles.visible_for(user.roles)
+        visible = self._profiles.visible_for(user.profiles)
         if body.profile not in visible:
             names = sorted(visible)
             msg = (
                 f"setting profile for user {user.identifier!r}: "
-                f"profile {body.profile!r} is not visible to roles "
-                f"{sorted(user.roles)}, visible are {names}"
+                f"profile {body.profile!r} is not granted to the sign-in, "
+                f"granted are {names}"
             )
             raise AuthorizationError(msg)
 
@@ -173,7 +173,7 @@ class AccountApi:
         if not isinstance(chosen, str):
             return None
 
-        if chosen not in self._profiles.visible_for(user.roles):
+        if chosen not in self._profiles.visible_for(user.profiles):
             return None
 
         return chosen
@@ -182,7 +182,7 @@ class AccountApi:
         user = current_user
 
         views: list[ProfileView] = []
-        for name, config in self._profiles.visible_for(user.roles).items():
+        for name, config in self._profiles.visible_for(user.profiles).items():
             views.append(ProfileView.of(name, config))
 
         return views

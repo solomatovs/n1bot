@@ -20,10 +20,10 @@ from boba.messaging.bus import ListenerState, StaticBusWatch
 from boba.runtime.bus import PgMessageBus
 from boba.runtime.config import AppName, StudioRuntimeConfig
 from boba.runtime.locks import PgLiveLocks
-from boba.stand.auth import StubAuthenticator
-from boba.stand.context import use_context
 from boba.stand.tools import PROBE_ROLE as ROLE
 from boba.stand.tools import Probe
+from boba.stand_core.auth import StubAuthenticator
+from boba.stand_core.context import use_context
 from boba.studio.api.auth import SocketSignIn
 from boba.studio.api.workflow_socket import (
     StudioSessions,

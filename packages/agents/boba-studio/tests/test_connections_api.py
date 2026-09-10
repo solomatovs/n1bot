@@ -19,7 +19,6 @@ from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.profile import GrantTarget, StoredRole
 from boba.db.postgres import AsyncPostgresPool
-from boba.identity.signin import SignInMetadata
 from boba.runtime.config import StudioRuntimeConfig
 from boba.stand.refs import StandRefs
 from boba.studio.api.urls import ApiVersion, ConnectionUrl
@@ -107,8 +106,8 @@ def _web_body(name: str, host: str) -> dict[str, object]:
 async def client(
     store: ConnectionStore, studio_config: StudioRuntimeConfig
 ) -> AsyncIterator[AsyncClient]:
-    user = StandProfiles.user(studio_config).model_copy(
-        update={"sign_in": SignInMetadata(roles=frozenset({ROLE}))}
+    user = StandProfiles.with_roles(
+        studio_config, StandProfiles.user(studio_config), {ROLE}
     )
     stand = ApiStand(
         StandRefs.of(lambda: store, lambda: None), ChatProfiles(studio_config.profiles)

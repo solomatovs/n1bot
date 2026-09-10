@@ -7,25 +7,30 @@ from typing import Any
 import pytest
 from omegaconf import DictConfig
 
-from boba.auth.config import KerberosAuthConfig, KerberosRolesConfig
-from boba.auth.sso import SsoSignIn
+from boba.auth.config import (
+    KerberosAuthConfig,
+    KerberosRoleProviders,
+    PrincipalRolesConfig,
+)
 from boba.config import bind
 from boba.identity.admission import RoleExcludeConfig, RoleMappingConfig
 from boba.identity.errors import AuthorizationError
 from boba.krb import SpnegoIdentity
-from boba.ldap import Ldap3Directory
+from boba.stand.signin import SignInStand
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
 USERNAME = "reader"
 
 
-def _config(raw_config: DictConfig, roles: KerberosRolesConfig) -> KerberosAuthConfig:
+def _config(
+    raw_config: DictConfig, principal: PrincipalRolesConfig
+) -> KerberosAuthConfig:
+    """Секция стенда с единственным провайдером principal: без каталога."""
     config = bind(raw_config, path="auth.kerberos", model=KerberosAuthConfig)
+    providers = KerberosRoleProviders(principal=principal)
 
-    return config.model_copy(
-        update={"roles": roles, "ldap_roles": None, "require_roles": False}
-    )
+    return config.model_copy(update={"roles": providers, "require_roles": False})
 
 
 def _principal(config: KerberosAuthConfig) -> str:
@@ -36,9 +41,9 @@ def _principal(config: KerberosAuthConfig) -> str:
 async def test_unparsed_pac_is_refused_when_sid_exclusions_are_configured(
     raw_config: Any,
 ) -> None:
-    roles = KerberosRolesConfig(sid_ex=RoleExcludeConfig(root=["S-1-5-21-1"]))
+    roles = PrincipalRolesConfig(sid_ex=RoleExcludeConfig(root=["S-1-5-21-1"]))
     config = _config(raw_config, roles)
-    sign_in = SsoSignIn(config, "secret", Ldap3Directory())
+    sign_in = SignInStand.assembly().sso(config, "secret")
 
     identity = SpnegoIdentity(principal=_principal(config), pac_parsed=False)
 
@@ -47,12 +52,10 @@ async def test_unparsed_pac_is_refused_when_sid_exclusions_are_configured(
 
 
 async def test_unparsed_pac_passes_without_sid_exclusions(raw_config: Any) -> None:
-    config = _config(raw_config, KerberosRolesConfig())
+    config = _config(raw_config, PrincipalRolesConfig())
     principal = _principal(config)
-    roles = KerberosRolesConfig(principal=RoleMappingConfig(root={principal: ["DEV"]}))
-    sign_in = SsoSignIn(
-        config.model_copy(update={"roles": roles}), "secret", Ldap3Directory()
-    )
+    roles = PrincipalRolesConfig(principal=RoleMappingConfig(root={principal: ["DEV"]}))
+    sign_in = SignInStand.assembly().sso(_config(raw_config, roles), "secret")
 
     identity = SpnegoIdentity(principal=principal, pac_parsed=False)
 

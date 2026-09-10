@@ -143,6 +143,7 @@ class StudioHost:
         return SignInWiring(
             auth=auth,
             sso_url=f"{studio.api_prefix()}{ApiVersion.V1}{SignInUrl.SSO}",
+            proxy=config.proxy(),
             page=PageUrls(
                 root=page_root,
                 login=f"{page_root}/login",

@@ -43,6 +43,9 @@ class UserMetadataField:
     PRINCIPAL: Final = "principal"
     TICKET: Final = "sso_ticket"
     ROLES: Final = "roles"
+    PROFILES: Final = "profiles"
+    PROFILE: Final = "profile"
+    GENERATION: Final = "generation"
     LLM: Final = "llm"
     STUDIO_PROFILE: Final = "studio_profile"
 
@@ -53,6 +56,7 @@ class SignInProvider(StrEnum):
     KERBEROS = "KerberosAuth"
     LDAP = "LdapAuth"
     LOCAL = "LocalAuth"
+    PROXY = "ProxyAuth"
 
 
 class Login(str):

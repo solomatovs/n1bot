@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr
 
-from boba.stand.fake_toolmod import (
+from boba.stand_core.fake_toolmod import (
     EXPECTED,
     FakeConfig,
     FakeUnavailableError,
@@ -69,7 +69,7 @@ def run_module(
         pass_fds.append(write_fd)
 
     proc = subprocess.run(
-        [sys.executable, "-m", "boba.stand.fake_toolmod", *arguments, *extra],
+        [sys.executable, "-m", "boba.stand_core.fake_toolmod", *arguments, *extra],
         capture_output=True,
         env=env,
         pass_fds=pass_fds,
@@ -99,13 +99,17 @@ class TestAddress:
     def test_roundtrip(self) -> None:
         address = ToolAddress.of(FAKE)
 
-        if address.module != "boba.stand.fake_toolmod":
-            raise AssertionError('address.module == "boba.stand.fake_toolmod"')
+        if address.module != "boba.stand_core.fake_toolmod":
+            raise AssertionError('address.module == "boba.stand_core.fake_toolmod"')
         if address.name != "fake_echo":
             raise AssertionError('address.name == "fake_echo"')
-        if address.argv_head()[1:] != ["-m", "boba.stand.fake_toolmod", "fake_echo"]:
+        if address.argv_head()[1:] != [
+            "-m",
+            "boba.stand_core.fake_toolmod",
+            "fake_echo",
+        ]:
             raise AssertionError(
-                'address.argv_head()[1:] == ["-m", "boba.stand.fake_toolmod", "…'
+                'address.argv_head()[1:] == ["-m", "boba.stand_core.fake_toolmod", "…'
             )
 
 

@@ -9,7 +9,7 @@ from typing import Annotated, Literal
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from boba.stand.fake_toolmod import fake_echo, fake_stream
+from boba.stand_core.fake_toolmod import fake_echo, fake_stream
 from boba.toolkit.entry import ToolArgv, ToolMain
 from boba.toolkit.frames import (
     FrameCodec,

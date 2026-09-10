@@ -10,8 +10,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from boba.auth import AuthService, JwtTokens
-from boba.auth.config import LocalAuthConfig
-from boba.auth.signin import PasswordSignIns
+from boba.auth.config import LocalAuthConfig, LocalRoleProviders, LocalRolesConfig
 from boba.chat.http import HttpConfig
 from boba.chat.profiles import ChatProfileConfig, ChatProfiles
 from boba.chat.provider import OpenAiChatConfig
@@ -25,8 +24,8 @@ from boba.identity.api import (
 from boba.identity.signin import SignedIn
 from boba.identity.sso import OwnRequest
 from boba.identity.token import CookieSpec, SessionRenewal
-from boba.ldap import Ldap3Directory
 from boba.stand.refs import StandRefs
+from boba.stand.signin import SignInStand
 from boba.studio.api.app import ApiAccess, ApiApp
 from boba.studio.api.signin import PageUrls, SignInWiring
 from boba.studio.api.urls import AccountUrl, ApiVersion, SignInUrl
@@ -87,8 +86,12 @@ def _profiles() -> ChatProfiles:
 def _local() -> LocalAuthConfig:
     return LocalAuthConfig(
         users={"Alice": "pw", "bob": "pw", "eve": "pw"},
-        roles=RoleMappingConfig(root={"Alice": ["DEV"], "eve": ["DEV"]}),
-        roles_ex=RoleExcludeConfig(root=["eve"]),
+        roles=LocalRoleProviders(
+            local=LocalRolesConfig(
+                mapping=RoleMappingConfig(root={"Alice": ["DEV"], "eve": ["DEV"]}),
+                exclude=RoleExcludeConfig(root=["eve"]),
+            )
+        ),
     )
 
 
@@ -96,16 +99,18 @@ def _local() -> LocalAuthConfig:
 async def client() -> AsyncIterator[AsyncClient]:
     users = Users()
     auth = AuthService(
-        tokens=JwtTokens(SECRET, 3600),
+        tokens=JwtTokens(SECRET, 3600, "stand-generation"),
         cookie=CookieSpec(name=COOKIE, samesite="lax", ttl_sec=3600),
-        password=PasswordSignIns.of([_local()], Ldap3Directory()),
+        password=SignInStand.assembly(_profiles()).password([_local()]),
         sso=None,
+        proxy=None,
         users=users,
         renewal=SessionRenewal.of(3600, 3600 * 24),
     )
     wiring = SignInWiring(
         auth=auth,
         sso_url="/boba-debug/api/v1/auth/sso",
+        proxy=None,
         page=PageUrls(
             root="/boba-debug/workflow",
             login="/boba-debug/workflow/login",
@@ -142,7 +147,12 @@ async def test_login_sets_a_chainlit_shaped_cookie_and_opens_me(
     claims = jwt.decode(token, SECRET, algorithms=["HS256"])
     assert claims["identifier"] == "alice"
     assert claims["display_name"] == "Alice"
-    assert claims["metadata"] == {"provider": "LocalAuth", "roles": ["DEV"]}
+    assert claims["metadata"] == {
+        "provider": "LocalAuth",
+        "roles": ["DEV"],
+        "profiles": ["general"],
+        "generation": "stand-generation",
+    }
     assert set(claims) == {
         "identifier",
         "display_name",

@@ -34,7 +34,7 @@ def _token(identifier: str, expires_in: int) -> str:
     now = int(time.time())
     claims = {
         "identifier": identifier,
-        "metadata": {},
+        "metadata": {"generation": "stand-generation"},
         "exp": now + expires_in,
         "iat": now,
         "since": now,
@@ -67,7 +67,7 @@ async def test_sweep_signals_each_expiring_user_once() -> None:
     keeper = SessionKeeper(
         bus,
         sessions,
-        JwtTokens(SECRET, 3600),
+        JwtTokens(SECRET, 3600, "stand-generation"),
         SessionRenewal.of(3600, 86400),
         period_sec=60,
     )

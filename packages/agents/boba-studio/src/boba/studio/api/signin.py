@@ -1,11 +1,13 @@
-"""Вход через api: пароль и SPNEGO сервисом входа, JWT и cookie.
+"""Вход через api: пароль, SPNEGO и доверенный заголовок сервисом входа, JWT и cookie.
 
 SSO: GET /auth/sso?next= — обмен на своём URL, после входа 303 на страницу;
 POST /auth/sso/refresh — свежий билет для живой сессии.
+Proxy: POST /auth/proxy — заголовки бэкенда партнёра по именам из [auth.proxy],
+в ответ 204 и cookie.
 
 Ошибки: свои не выпускает — ошибки сервиса входа (BaseError) переводит в HTTP
 DomainErrorMiddleware; AuthorizationError — вход/выход без метки своего запроса
-(OwnRequest); роуты SSO монтируются только при настроенном SSO.
+(OwnRequest); роуты SSO и proxy монтируются только при настроенном провайдере.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.auth import AuthService, IssuedSession
+from boba.auth.config import ProxyAuthConfig
 from boba.identity.errors import (
     AuthenticationError,
     AuthorizationError,
@@ -25,7 +28,7 @@ from boba.identity.errors import (
     InternalServiceError,
 )
 from boba.identity.sso import SsoChallenge, SsoErrorCode, SsoRefused
-from boba.runtime.http import SessionCookie, SsoRequests, SsoResponses
+from boba.runtime.http import ProxyRequests, SessionCookie, SsoRequests, SsoResponses
 from boba.studio.api.urls import SignInUrl
 
 __all__ = [
@@ -48,10 +51,12 @@ class PageUrls:
 
 @dataclass(frozen=True)
 class SignInWiring:
-    """Что нужно входу: сервис входа, адрес SSO и адреса страницы."""
+    """Что нужно входу: сервис входа, адрес SSO, конфиг proxy-входа (None — нет)
+    и адреса страницы."""
 
     auth: AuthService
     sso_url: str
+    proxy: ProxyAuthConfig | None
     page: PageUrls
 
 
@@ -106,6 +111,16 @@ class SignInApi:
             tags=[self.TAG],
             include_in_schema=False,
         )
+        if self._wiring.proxy is not None:
+            router.add_api_route(
+                SignInUrl.PROXY.value,
+                self.proxy,
+                methods=["POST"],
+                tags=[self.TAG],
+                status_code=204,
+                include_in_schema=False,
+            )
+
         if not self._auth.providers().sso:
             return
 
@@ -129,6 +144,25 @@ class SignInApi:
     async def login(self, body: Credentials, request: Request) -> Response:
         self._own(request)
         session = await self._auth.by_password(body.username, body.password)
+
+        response = Response(status_code=204)
+        self._cookie.put(response, request.cookies, session.token)
+
+        return response
+
+    async def proxy(self, request: Request) -> Response:
+        """Вход по подписанному заголовку: 204 + cookie; отказ — ошибкой сервиса."""
+        proxy = self._wiring.proxy
+        if proxy is None:
+            msg = (
+                f"{request.method} {request.url.path}: proxy sign-in is not "
+                "configured in [auth]"
+            )
+            raise InternalServiceError(internal_detail=msg, user_detail=None)
+
+        session = await self._auth.by_proxy(
+            ProxyRequests.of(request, proxy.header_names())
+        )
 
         response = Response(status_code=204)
         self._cookie.put(response, request.cookies, session.token)

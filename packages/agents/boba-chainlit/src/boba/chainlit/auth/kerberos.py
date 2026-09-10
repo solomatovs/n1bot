@@ -40,7 +40,7 @@ class KerberosAuth:
     Обновление сессии и скрипт страницы — у SessionRefresh, общего для всех входов.
     """
 
-    _CUSTOM_AUTH_ENV: ClassVar[str] = "CHAINLIT_CUSTOM_AUTH"
+    CUSTOM_AUTH_ENV: ClassVar[str] = "CHAINLIT_CUSTOM_AUTH"
     """Флаг chainlit: вход обязателен, хотя свой колбэк авторизации не задан."""
 
     def __init__(self, sso_path: str, urls: PageUrls, auth: AuthService) -> None:
@@ -53,7 +53,7 @@ class KerberosAuth:
     def install(self, chainlit_app: FastAPI) -> None:
         # без password/header-колбэка chainlit считает, что логина нет, и пускает
         # анонима; флаг включает обязательный вход без автозапроса /auth/header
-        os.environ[self._CUSTOM_AUTH_ENV] = "1"
+        os.environ[self.CUSTOM_AUTH_ENV] = "1"
 
         SessionRefresh.prepend_route(chainlit_app, self._sso_path, self.auth_sso)
 

@@ -10,6 +10,7 @@ from boba.db.postgres.async_pool import (
     PostgresPoolClosedError,
     PostgresPoolLoopError,
 )
+from boba.db.postgres.cursor import LoggingCursor
 from boba.db.postgres.names import PostgresSchema, SqlNames
 from boba.db.postgres.payload import PayloadPostgres
 from boba.db.postgres.table import PostgresTable
@@ -18,6 +19,7 @@ __all__ = [
     "AsyncPostgresPool",
     "CancellablePool",
     "KerberosConnection",
+    "LoggingCursor",
     "PayloadPostgres",
     "PostgresError",
     "PostgresPoolClosedError",

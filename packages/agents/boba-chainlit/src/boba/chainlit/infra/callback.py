@@ -183,11 +183,11 @@ async def set_chat_profiles(
     language: str | None,
     registry: Annotated[ChatProfiles, Depends(chat_profiles_registry)],
 ) -> list[cl.ChatProfile]:
-    """Профили, видимые ролям пользователя; выбор профиля обязателен."""
-    roles = ChainlitSession.roles_of(user)
+    """Профили, выданные входу пользователя; выбор профиля обязателен."""
+    granted = ChainlitSession.profiles_of(user)
 
     profiles: list[cl.ChatProfile] = []
-    for name, profile in registry.visible_for(roles).items():
+    for name, profile in registry.visible_for(granted).items():
         icon = None
         if profile.icon:
             icon = profile.icon
@@ -208,7 +208,7 @@ async def set_chat_profiles(
 def _session_selected_profile(registry: ChatProfiles) -> SelectedProfile:
     session = current_session()
 
-    return registry.resolve(session.chat_profile, session.roles)
+    return registry.resolve(session.chat_profile, session.sign_in)
 
 
 def _session_view(config: AppConfig, registry: ChatProfiles) -> SettingsView:
@@ -265,7 +265,7 @@ class SettingsRefresh:
         token = context_var.set(ChainlitContext(socket, ChainlitEmitter(socket)))
         try:
             session = current_session()
-            selected = registry.resolve(session.chat_profile, session.roles)
+            selected = registry.resolve(session.chat_profile, session.sign_in)
             if selected.name != profile:
                 return
 

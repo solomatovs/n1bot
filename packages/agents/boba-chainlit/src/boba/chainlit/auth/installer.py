@@ -3,8 +3,10 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from boba.auth import AuthService
+from boba.auth.config import ProxyAuthConfig
 from boba.chainlit.auth.composite import PasswordCallback
 from boba.chainlit.auth.kerberos import KerberosAuth
+from boba.chainlit.auth.proxy import ProxyAuth
 from boba.chainlit.auth.refresh import PageUrls, SessionRefresh
 from boba.chainlit.infra.session import ChainlitSessions
 from chainlit.config import config as chainlit_config
@@ -25,6 +27,7 @@ class ChainlitAuthInstaller:
         self,
         url_prefix: str,
         sso_path: str,
+        proxy: ProxyAuthConfig | None,
         auth: AuthService,
         session_ttl_sec: int,
         sessions: ChainlitSessions,
@@ -32,13 +35,14 @@ class ChainlitAuthInstaller:
     ) -> None:
         self._url_prefix = url_prefix
         self._sso_path = sso_path
+        self._proxy = proxy
         self._auth = auth
         self._session_ttl_sec = session_ttl_sec
         self._sessions = sessions
         self._app_root = app_root
 
     def install(self, chainlit_app: FastAPI) -> None:
-        """Ставит способы входа: SSO-роуты и password-callback."""
+        """Ставит способы входа: SSO-роуты, proxy-роут и password-callback."""
         ChainlitSessionTtl.apply(self._session_ttl_sec)
 
         urls = PageUrls.of(self._url_prefix, self._sso_path)
@@ -49,6 +53,9 @@ class ChainlitAuthInstaller:
         providers = self._auth.providers()
         if providers.sso:
             KerberosAuth(self._sso_path, urls, self._auth).install(chainlit_app)
+
+        if self._proxy is not None:
+            ProxyAuth(self._proxy, self._auth).install(chainlit_app)
 
         if providers.password:
             PasswordCallback(self._auth).install()

@@ -16,12 +16,12 @@ from omegaconf import DictConfig
 from boba.access import GrantCheck
 from boba.auth import AuthService, JwtTokens
 from boba.auth.credentials import KerberosCredentialSource
-from boba.auth.signin import PasswordSignIns
-from boba.auth.sso import SpnegoGate, SsoSignIn
-from boba.chat.profiles import RolesSection
+from boba.auth.sso import SpnegoGate
+from boba.chat.profiles import ChatProfiles, RolesSection
 from boba.config import bind
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
 from boba.connections.manifest import ConnectionTypes
+from boba.db.pgvector.config import KnowledgeBaseSchemaConfig
 from boba.db.pgvector.schema import KbSchema
 from boba.identity.directory import UserDirectory
 from boba.identity.errors import ServiceDisabledError
@@ -53,10 +53,10 @@ from boba.runtime.payloads import PgPayloadStore
 from boba.runtime.plugins import PluginMeta, PluginTable, ToolLoader
 from boba.runtime.refresh import BusRefreshSignal, LiveSessions, SessionKeeper
 from boba.runtime.refs import RuntimeRefs
+from boba.runtime.signin import SignInAssembly
 from boba.runtime.threads import ThreadsTable
 from boba.runtime.turns import StaleTurnCloser
 from boba.runtime.users import UsersTable
-from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
 from boba.toolrun.registry import ToolRegistry
 from boba.toolrun.streams import ToolStreams
 from boba.toolrun.wrapping import CallHooks
@@ -287,7 +287,7 @@ async def kb_schema(
     if not meta.enable:
         return
 
-    cfg = bind(raw, "tool.kb", PostgresKnowledgeBaseConfig)
+    cfg = bind(raw, "tool.kb", KnowledgeBaseSchemaConfig)
     await KbSchema(cfg, dim=cfg.embedding.dim).setup()
 
 
@@ -414,10 +414,13 @@ def threads_table(
 def session_tokens(
     config: Annotated[RuntimeConfig, Depends(get_runtime_config)],
 ) -> JwtTokens:
-    """Выпуск и чтение JWT сессии под секретом [session]: один читатель на процесс."""
+    """Выпуск и чтение JWT сессии под секретом [session]: один читатель на процесс,
+    поколение сессий выбирается здесь же и живёт до конца процесса."""
     session = config.session
+    generation = session.session_generation()
+    logger.info("session generation of this process: %s", generation)
 
-    return JwtTokens(session.auth_secret, session.session_ttl_sec)
+    return JwtTokens(session.auth_secret, session.session_ttl_sec, generation)
 
 
 def auth_service(
@@ -426,23 +429,30 @@ def auth_service(
     tokens: Annotated[JwtTokens, Depends(session_tokens)],
     directory: Annotated[UserDirectory, Depends(user_directory)],
 ) -> AuthService:
-    """Вход пользователя: пароли и SPNEGO из [auth], токен и cookie из [session]."""
+    """Вход пользователя: пароли, SPNEGO и proxy из [auth], профили входа из
+    [profiles], токен и cookie из [session]."""
     session = config.session
     cookie = CookieSpec(
         name=session.cookie,
         samesite=session.cookie_samesite,
         ttl_sec=session.session_ttl_sec,
     )
+    assembly = SignInAssembly(directory, ChatProfiles(config.profiles))
 
     sso = None
     if kerberos := config.kerberos():
-        sso = SpnegoGate(SsoSignIn(kerberos, session.auth_secret, directory))
+        sso = SpnegoGate(assembly.sso(kerberos, session.auth_secret))
+
+    proxy = None
+    if proxy_config := config.proxy():
+        proxy = assembly.proxy(proxy_config)
 
     return AuthService(
         tokens=tokens,
         cookie=cookie,
-        password=PasswordSignIns.of(config.auth, directory),
+        password=assembly.password(config.auth),
         sso=sso,
+        proxy=proxy,
         users=table,
         renewal=session.renewal(),
     )

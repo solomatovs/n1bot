@@ -17,7 +17,7 @@ import krb5
 import pytest
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
-from chainlit_stand import SsoStand, enter_context
+from chainlit_stand import SsoStand, StandTokens, enter_context
 from langchain_core.tools import StructuredTool
 from omegaconf import DictConfig, OmegaConf
 from psycopg import sql
@@ -254,9 +254,7 @@ class Session:
         from chainlit.auth.jwt import create_jwt
         from chainlit.context import init_http_context
 
-        token = create_jwt(
-            ChainlitUser(identifier=user.identifier, metadata=login_metadata)
-        )
+        token = create_jwt(StandTokens.user(user.identifier, login_metadata))
         context = init_http_context(user=user, auth_token=token, thread_id=THREAD)
         context.session.chat_profile = PROFILE
         enter_context()

@@ -37,11 +37,11 @@ class OneUser(PersistedUsers, UsersUpsert):
 
 def _peer_token(secret: str) -> str:
     """Токен, как его выпускает соседнее приложение: identifier, display_name,
-    metadata, exp."""
+    metadata с поколением сессий, exp."""
     claims = {
         "identifier": "alice",
         "display_name": "Alice",
-        "metadata": {"roles": ["ADM"]},
+        "metadata": {"roles": ["ADM"], "generation": "stand-generation"},
         "exp": int(time.time()) + 60,
     }
     return jwt.encode(claims, secret, algorithm="HS256")
@@ -49,10 +49,11 @@ def _peer_token(secret: str) -> str:
 
 def _service(secret: str) -> AuthService:
     return AuthService(
-        tokens=JwtTokens(secret, 60),
+        tokens=JwtTokens(secret, 60, "stand-generation"),
         cookie=CookieSpec(name="access_token", samesite="lax", ttl_sec=60),
         password=None,
         sso=None,
+        proxy=None,
         users=OneUser(),
         renewal=SessionRenewal.of(60, 60 * 24),
     )
@@ -72,7 +73,7 @@ def test_issued_token_carries_the_peer_claims(
 ) -> None:
     """Выпущенный studio токен читается теми же claims, что и токен чата."""
     secret = studio_config.session.auth_secret
-    token = JwtTokens(secret, 60).issue(
+    token = JwtTokens(secret, 60, "stand-generation").issue(
         SignedIn(
             identifier=Login("alice"),
             display_name="Alice",
@@ -83,4 +84,4 @@ def test_issued_token_carries_the_peer_claims(
 
     assert claims["identifier"] == "alice"
     assert claims["display_name"] == "Alice"
-    assert claims["metadata"] == {"roles": ["DEV"]}
+    assert claims["metadata"] == {"roles": ["DEV"], "generation": "stand-generation"}

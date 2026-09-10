@@ -18,9 +18,9 @@ from boba.identity.context import CallContext, LlmInitiator, ScopeKind, Subject
 from boba.identity.locks import MemoryLiveLocks, RunLocking
 from boba.messaging import MemoryMessageBus
 from boba.runtime.commands import CommandRunner
-from boba.stand.context import use_context
 from boba.stand.tools import PROBE_ROLE as ROLE
 from boba.stand.tools import Probe
+from boba.stand_core.context import use_context
 from boba.toolkit.result import (
     ErrorResult,
 )

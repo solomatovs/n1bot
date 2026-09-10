@@ -33,7 +33,7 @@ from boba.db.postgres.profile import (
     PostgresPoolConfig,
 )
 from boba.identity.context import Subject
-from boba.stand.fakes import FakeSecret
+from boba.stand_core.fakes import FakeSecret
 from boba.transport.http.profile import BearerAuth, HttpConnection
 
 pytestmark = pytest.mark.anyio

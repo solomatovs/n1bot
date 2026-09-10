@@ -10,8 +10,8 @@ import pytest
 from pydantic import SecretStr
 
 from boba.cancellation import ToolStopped
-from boba.stand.fake_toolmod import FakeChunkHead, FakeConfig
 from boba.stand.shell import ShellRun
+from boba.stand_core.fake_toolmod import FakeChunkHead, FakeConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.frames import ToolFrame
 from boba.toolkit.launcher import (
@@ -30,7 +30,7 @@ from boba.toolrun.process import (
 
 CFG = FakeConfig(token=SecretStr("t0ken"), limit=5)
 
-MODULE_ARGV = ("python3", "-m", "boba.stand.fake_toolmod", "fake_echo")
+MODULE_ARGV = ("python3", "-m", "boba.stand_core.fake_toolmod", "fake_echo")
 
 
 def _launcher(workdir: Path, **overrides: object) -> ProcessToolCaller:
@@ -51,7 +51,7 @@ def _fresh_tool():
     """Свежий tool-объект: guard_all подменяет тела на месте."""
     from importlib import reload
 
-    from boba.stand import fake_toolmod
+    from boba.stand_core import fake_toolmod
 
     reload(fake_toolmod)
     return ToolMain.toolset(fake_toolmod.fake_echo)[0]
@@ -158,7 +158,7 @@ class TestCallText:
 class TestStreamingCall:
     """Потоковый вызов: кадр в ответ на кадр, конверт после конца входа."""
 
-    STREAM_ARGV = ("python3", "-m", "boba.stand.fake_toolmod", "fake_stream")
+    STREAM_ARGV = ("python3", "-m", "boba.stand_core.fake_toolmod", "fake_stream")
 
     def _command(self, prefix: str) -> ToolCommand:
         config = json.dumps({"cfg": CFG.revealed()}).encode("utf-8")
