@@ -12,14 +12,15 @@ from __future__ import annotations
 import fnmatch
 import json
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Final, Literal
 
 import httpx
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, ValidationError
 
 from boba.text.grep import GrepLimits, TextGrep
+from boba.tool.kb.confluence.models import ConfluenceSpaceItem
 from boba.tool.kb.confluence.parsing import ConfluenceJson
 from boba.tool.kb.confluence.request_sources import ConfluenceRest
 from boba.toolkit.entry import ToolMain
@@ -124,6 +125,46 @@ class ConfluencePageText:
         if len(excerpt) > snippet_chars:
             excerpt = excerpt[: snippet_chars - 1].rstrip() + "…"
         return excerpt
+
+
+class SpaceList:
+    """Разбор выдачи /rest/api/space и строка таблицы для одного спейса."""
+
+    @staticmethod
+    def items(data: Mapping[str, Any], path: str) -> Sequence[ConfluenceSpaceItem]:
+        found: list[ConfluenceSpaceItem] = []
+        for raw in ConfluenceJson.results(dict(data)):
+            try:
+                found.append(ConfluenceSpaceItem.model_validate(raw))
+            except ValidationError as exc:
+                msg = (
+                    f"GET {path} on confluence: expected space results, "
+                    f"got {json.dumps(raw, ensure_ascii=False)[:200]}: {exc}"
+                )
+                raise ConfluenceRequestError(msg) from exc
+
+        return found
+
+    @staticmethod
+    def matches(space: ConfluenceSpaceItem, pattern: str | None) -> bool:
+        """Glob по ключу или названию целиком; без шаблона проходят все."""
+        if pattern is None:
+            return True
+
+        lowered = pattern.lower()
+        if fnmatch.fnmatch(space.key.lower(), lowered):
+            return True
+
+        return fnmatch.fnmatch(space.name.lower(), lowered)
+
+    @staticmethod
+    def row(space: ConfluenceSpaceItem, profile: HttpConnection) -> dict[str, Any]:
+        return {
+            "key": space.key,
+            "name": space.name,
+            "type": space.type,
+            "url": space.url_at(profile),
+        }
 
 
 class CqlSearch:
@@ -351,26 +392,20 @@ async def confluence_spaces(
     *,
     cfg: Annotated[ConfluenceToolsConfig, Injected],
 ) -> TableResult:
-    """Список spaces Confluence с опциональным glob-фильтром."""
+    """Список spaces Confluence с опциональным glob-фильтром.
+
+    В строке есть адрес спейса: по нему открывают его в браузере и с него
+    начинают обход, не собирая ссылку из ключа руками.
+    """
     path = ConfluenceRest.space_list_path(space_type, limit=limit)
     data = json.loads(await ConfluenceHttp.get(cfg, path))
 
     rows: list[dict[str, Any]] = []
-    for space in data.get("results") or []:
-        row = {
-            "key": str(space.get("key") or ""),
-            "name": str(space.get("name") or ""),
-            "type": str(space.get("type") or ""),
-        }
+    for space in SpaceList.items(data, path):
+        if not SpaceList.matches(space, pattern):
+            continue
 
-        if pattern is not None:
-            lowered = pattern.lower()
-            key_match = fnmatch.fnmatch(row["key"].lower(), lowered)
-            name_match = fnmatch.fnmatch(row["name"].lower(), lowered)
-            if not key_match and not name_match:
-                continue
-
-        rows.append(row)
+        rows.append(SpaceList.row(space, cfg.confluence))
 
     return TableResult(rows=rows)
 

@@ -13,8 +13,9 @@ ConfluenceHttpTransport исполняет чистый HTTP-запрос и с�
 то, что уже разбирал.
 
 Ошибки:
-TransportError — Confluence недоступен, ответил статусом или оборвал тело;
-    ошибки httpx наружу не выходят.
+SourceGoneError — Confluence ответил 404: страницы или вложения больше нет.
+TransportError — Confluence недоступен, ответил другим статусом или оборвал
+    тело; ошибки httpx наружу не выходят.
 ConfluencePayloadError — тело страницы не разбирается как JSON Confluence.
 """
 
@@ -27,6 +28,7 @@ import tempfile
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from pathlib import Path
+from typing import ClassVar
 
 import httpx
 
@@ -34,6 +36,7 @@ from boba.indexing import (
     AsyncBinaryStream,
     Metadata,
     RawDocument,
+    SourceGoneError,
     SourceId,
     SpooledBody,
     Transport,
@@ -100,6 +103,9 @@ class ConfluenceHttpTransport(Transport[ConfluenceRequest]):
     ключи из заголовков ответа). Handle живёт, пока идёт итерация результата.
     """
 
+    GONE_STATUS: ClassVar[int] = 404
+    """Confluence отвечает так на удалённую страницу и снятое вложение."""
+
     def __init__(self, http: HttpTransport) -> None:
         self._http = http
 
@@ -119,6 +125,15 @@ class ConfluenceHttpTransport(Transport[ConfluenceRequest]):
                     source_id=source_id,
                     metadata=self._enrich(request.metadata, resp),
                 )
+        except httpx.HTTPStatusError as exc:
+            msg = (
+                f"GET confluence {source_id}: expected 2xx, got "
+                f"{exc.response.status_code} {exc.response.reason_phrase}"
+            )
+            if exc.response.status_code == self.GONE_STATUS:
+                raise SourceGoneError(msg) from exc
+
+            raise TransportError(msg) from exc
         except httpx.HTTPError as exc:
             msg = f"GET confluence {source_id}: {type(exc).__name__}: {exc}"
             raise TransportError(msg) from exc

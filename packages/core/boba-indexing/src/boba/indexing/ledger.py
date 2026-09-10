@@ -22,6 +22,7 @@ __all__ = [
     "ChangePolicy",
     "LedgerError",
     "NoProbe",
+    "RunScope",
     "SourceLedger",
     "SourceMark",
     "SourceProbe",
@@ -51,6 +52,28 @@ class SourceMark:
     fingerprint: str
     grade: int = 0
     parent: SourceId | None = None
+    skip: str = ""
+    """Причина, по которой источник в индекс не идёт: правила обхода его
+    отсекли. Пустая строка — брать. Источник всё равно существует, поэтому
+    конвейер отмечает его увиденным, и очистка не считает его исчезнувшим."""
+
+
+@dataclass(frozen=True)
+class RunScope:
+    """Кто отмечает источники и что вправе снимать.
+
+    run — метка прогона: по ней очистка отличает «этот прогон видел» от
+    «видел кто-то другой», и параллельные прогоны не принимают чужие
+    источники за исчезнувшие. scope — область владения обхода, в пределах
+    которой прогон вправе удалять корни; пустая область не удаляет ничего
+    сверх детей увиденных родителей.
+    """
+
+    run: str
+    scope: str = ""
+
+    def owns_roots(self) -> bool:
+        return bool(self.scope)
 
 
 @dataclass(frozen=True)
@@ -65,13 +88,15 @@ class SourceRecord:
     stamp: str
     seen_at: float
     indexed_at: float
+    seen_run: str = ""
+    scope: str = ""
 
 
 class SourceLedger(ABC):
     """Порт реестра источников одной коллекции.
 
     Конвейер зовёт lookup перед скачиванием, touch для увиденных без
-    изменений, record после индексации и unseen/children/forget в очистке.
+    изменений, record после индексации, а в очистке orphans и unseen_roots.
     Реализация хранит записи рядом с чанками (PostgresSourceLedger).
     """
 
@@ -81,8 +106,15 @@ class SourceLedger(ABC):
         ...
 
     @abstractmethod
-    async def touch(self, source_ids: Sequence[SourceId], *, at: float) -> None:
-        """Отметить источники увиденными; неизвестные реестру пропускаются."""
+    async def touch(
+        self, source_ids: Sequence[SourceId], *, at: float, scope: RunScope
+    ) -> None:
+        """Отметить источники увиденными этим прогоном; чужие пропускаются.
+
+        Прогон с областью заодно записывает её увиденным источникам: иначе
+        область знали бы только переиндексированные, и удалять исчезнувшее
+        было бы не по чему. Прогон без области чужую пометку не трогает.
+        """
         ...
 
     @abstractmethod
@@ -91,8 +123,18 @@ class SourceLedger(ABC):
         ...
 
     @abstractmethod
-    def unseen(self, *, before: float) -> AsyncIterator[SourceRecord]:
-        """Источники, которых не видели с момента before; потоком, без списка."""
+    def orphans(self, run: str) -> AsyncIterator[SourceRecord]:
+        """Дети родителей, увиденных этим прогоном, которых он сам не видел.
+
+        Родитель отдал полный список детей, значит отсутствующий в списке
+        ребёнок исчез. Привязка к метке прогона, а не ко времени: соседний
+        прогон обновляет свои источники и чужих детей не задевает.
+        """
+        ...
+
+    @abstractmethod
+    def unseen_roots(self, scope: str, run: str) -> AsyncIterator[SourceRecord]:
+        """Корни области, которых этот прогон не видел; кандидаты на пробу."""
         ...
 
     @abstractmethod

@@ -6,11 +6,16 @@ sections() и index().
 источника перекрывается работой остальных. Синхронную часть (разбор документа,
 инференс эмбеддера) уносят с loop'а сами реализации портов.
 
-Перед скачиванием источник сверяется с реестром: совпавший отпечаток даёт
-SourceSkippedUnchanged без единого запроса к телу. Скачанное тело сверяется
-по хэшу: тот же байт в байт документ не разбирается заново. После обхода
-реестр называет источники, которых обход не видел: детей увиденных
-родителей конвейер снимает сам, корни проверяет через SourceProbe.
+Источник, отсечённый правилами обхода, отмечается увиденным и даёт
+SourceSkipped: он существует, просто не нужен. Остальные сверяются с
+реестром: совпавший отпечаток даёт SourceSkippedUnchanged без запроса к телу.
+Скачанное тело сверяется по хэшу: тот же байт в байт документ не разбирается
+заново.
+
+Очистка идёт по метке прогона, а не по времени: снимаются дети родителей,
+увиденных этим прогоном, и корни его области, не подтверждённые пробой.
+Поэтому одновременные прогоны по соседним областям не принимают чужие
+источники за исчезнувшие.
 
 Отказ источника изолируется: любая ошибка стадий этого источника становится
 событием SourceFailed с причиной и попадает в счётчик sources_failed, остальные
@@ -26,7 +31,7 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import ClassVar, Generic, TypeVar
 
-from boba.indexing.errors import IndexingError
+from boba.indexing.errors import IndexingError, SourceGoneError
 from boba.indexing.events import (
     ChunksDeleted,
     CleanupStarted,
@@ -40,12 +45,14 @@ from boba.indexing.events import (
     SourceGone,
     SourceIndexed,
     SourceKind,
+    SourceSkipped,
     SourceSkippedUnchanged,
     new_run_id,
 )
 from boba.indexing.ledger import (
     ChangePolicy,
     LedgerError,
+    RunScope,
     SourceLedger,
     SourceProbe,
     SourceRecord,
@@ -71,6 +78,11 @@ class IndexerConfig(Generic[T]):
     stamp: str
     """Штамп конвейера: модель, нарезка, ридеры. Запись реестра с другим штампом
     устарела, источник индексируется заново."""
+
+    scope: str = ""
+    """Область владения обхода: в её пределах прогон снимает корни, которых
+    больше нет у источника данных. Пустая область не удаляет ни одного корня —
+    выборка по запросу не говорит, что не попавшее в неё исчезло."""
 
     def __post_init__(self) -> None:
         if self.workers < 1:
@@ -123,7 +135,7 @@ class Pipeline(Generic[ReqT, T]):
     ) -> AsyncIterator[IndexEvent]:
         """Индексировать все источники; ленивый поток IndexEvent, cleanup после всех."""
         run_id = new_run_id()
-        run_start = time.time()
+        scope = RunScope(run=str(run_id), scope=config.scope)
         stats = IndexStatsBuilder()
 
         yield RunStarted(run_id=run_id, monotonic_ns=time.monotonic_ns())
@@ -133,6 +145,7 @@ class Pipeline(Generic[ReqT, T]):
             sink=sink,
             config=config,
             run_id=run_id,
+            scope=scope,
         ):
             self._observe(event, stats=stats)
             yield event
@@ -140,7 +153,7 @@ class Pipeline(Generic[ReqT, T]):
         async for event in self._run_cleanup(
             sink=sink,
             run_id=run_id,
-            run_start=run_start,
+            scope=scope,
         ):
             self._observe(event, stats=stats)
             yield event
@@ -172,6 +185,7 @@ class Pipeline(Generic[ReqT, T]):
         sink: IndexSink[T],
         config: IndexerConfig[T],
         run_id: RunId,
+        scope: RunScope,
     ) -> AsyncIterator[IndexEvent]:
         """Обход источников по config.workers штук в полёте; событие — как готово."""
         pending: set[asyncio.Task[Sequence[IndexEvent]]] = set()
@@ -185,6 +199,7 @@ class Pipeline(Generic[ReqT, T]):
                             sink=sink,
                             config=config,
                             run_id=run_id,
+                            scope=scope,
                         ),
                     ),
                 )
@@ -229,7 +244,7 @@ class Pipeline(Generic[ReqT, T]):
 
         await asyncio.gather(*pending, return_exceptions=True)
 
-    async def _process_source(
+    async def _process_source(  # noqa: PLR0913 — стадии источника независимы
         self,
         *,
         request: ReqT,
@@ -237,15 +252,27 @@ class Pipeline(Generic[ReqT, T]):
         sink: IndexSink[T],
         config: IndexerConfig[T],
         run_id: RunId,
+        scope: RunScope,
     ) -> Sequence[IndexEvent]:
         """Один источник от сверки с реестром до записи; ровно одно итоговое событие."""
         source_id = self._transport.source_id(request)
+        kind = SourceKind.of(request.mark.parent)
         now = time.time()
         try:
-            kind = SourceKind.of(request.mark.parent)
+            if reason := request.mark.skip:
+                await self._ledger.touch([source_id], at=now, scope=scope)
+                skipped = SourceSkipped(
+                    run_id=run_id,
+                    monotonic_ns=time.monotonic_ns(),
+                    source_id=source_id,
+                    kind=kind,
+                    reason=reason,
+                )
+                return [skipped]
+
             record = await self._ledger.lookup(source_id)
             if ChangePolicy.unchanged(record, request.mark, config.stamp):
-                await self._ledger.touch([source_id], at=now)
+                await self._ledger.touch([source_id], at=now, scope=scope)
                 skipped = SourceSkippedUnchanged(
                     run_id=run_id,
                     monotonic_ns=time.monotonic_ns(),
@@ -263,14 +290,18 @@ class Pipeline(Generic[ReqT, T]):
                 sink=sink,
                 config=config,
                 run_id=run_id,
+                scope=scope,
                 now=now,
             )
         except LedgerError:
             raise
+        except SourceGoneError:
+            # источник данных ответил «нет такого»: это факт, а не догадка
+            return await self._forget_source(source_id, sink, run_id, kind)
         except Exception as exc:
             # запись о прошлой индексации остаётся увиденной: сорвавшийся источник
             # существует, и очистка не должна принять его за исчезнувший
-            await self._ledger.touch([source_id], at=now)
+            await self._ledger.touch([source_id], at=now, scope=scope)
             failed = SourceFailed(
                 run_id=run_id,
                 monotonic_ns=time.monotonic_ns(),
@@ -279,6 +310,23 @@ class Pipeline(Generic[ReqT, T]):
                 reason=Pipeline._reason(exc),
             )
             return [failed]
+
+    async def _forget_source(
+        self,
+        source_id: SourceId,
+        sink: IndexSink[T],
+        run_id: RunId,
+        kind: SourceKind,
+    ) -> Sequence[IndexEvent]:
+        """Источник и его дети сняты по ответу источника данных."""
+        events: list[IndexEvent] = []
+        async for child in self._ledger.children(source_id):
+            events.append(
+                await self._forget(child.source_id, sink, run_id, SourceKind.CHILD)
+            )
+
+        events.append(await self._forget(source_id, sink, run_id, kind))
+        return events
 
     async def _index_source(  # noqa: PLR0913 — стадии одного источника независимы
         self,
@@ -290,6 +338,7 @@ class Pipeline(Generic[ReqT, T]):
         sink: IndexSink[T],
         config: IndexerConfig[T],
         run_id: RunId,
+        scope: RunScope,
         now: float,
     ) -> Sequence[IndexEvent]:
         kind = SourceKind.of(request.mark.parent)
@@ -326,6 +375,8 @@ class Pipeline(Generic[ReqT, T]):
                 stamp=config.stamp,
                 seen_at=now,
                 indexed_at=now,
+                seen_run=scope.run,
+                scope=scope.scope,
             )
         )
 
@@ -388,33 +439,28 @@ class Pipeline(Generic[ReqT, T]):
         *,
         sink: IndexSink[T],
         run_id: RunId,
-        run_start: float,
+        scope: RunScope,
     ) -> AsyncIterator[IndexEvent]:
-        """Снять то, чего обход не видел: детей увиденных родителей сразу, корни
-        после проверки существования пакетами."""
+        """Снять то, чего обход не нашёл: сначала детей увиденных родителей,
+        затем корни своей области, не подтверждённые пробой."""
         yield CleanupStarted(run_id=run_id, monotonic_ns=time.monotonic_ns())
 
-        roots: list[SourceRecord] = []
-        async for record in self._ledger.unseen(before=run_start):
-            if record.parent is None:
-                roots.append(record)
-                if len(roots) < self.PROBE_BATCH:
-                    continue
-
-                async for event in self._forget_gone(roots, sink, run_id):
-                    yield event
-
-                roots = []
-                continue
-
-            parent = await self._ledger.lookup(record.parent)
-            if parent is None:
-                continue
-
-            if parent.seen_at < run_start:
-                continue
-
+        async for record in self._ledger.orphans(scope.run):
             yield await self._forget(record.source_id, sink, run_id, SourceKind.CHILD)
+
+        if not scope.owns_roots():
+            return
+
+        roots: list[SourceRecord] = []
+        async for record in self._ledger.unseen_roots(scope.scope, scope.run):
+            roots.append(record)
+            if len(roots) < self.PROBE_BATCH:
+                continue
+
+            async for event in self._forget_gone(roots, sink, run_id):
+                yield event
+
+            roots = []
 
         if roots:
             async for event in self._forget_gone(roots, sink, run_id):
@@ -464,6 +510,9 @@ class Pipeline(Generic[ReqT, T]):
             tally = stats.of(event.kind)
             tally.seen += 1
             tally.unchanged += 1
+
+        elif isinstance(event, SourceSkipped):
+            stats.of(event.kind).skipped += 1
 
         elif isinstance(event, SourceFailed):
             tally = stats.of(event.kind)

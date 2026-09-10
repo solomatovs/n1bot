@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncIterable, AsyncIterator, Sequence
+from dataclasses import replace
 
 import pytest
 
@@ -26,6 +27,7 @@ from boba.indexing import (
     Request,
     RequestSource,
     RunFinished,
+    RunScope,
     Section,
     SourceFailed,
     SourceGone,
@@ -47,6 +49,7 @@ pytestmark = pytest.mark.anyio
 _FETCH_DELAY_SEC = 0.1
 _PAGES = 8
 _STAMP = "test"
+_SCOPE = "test-scope"
 
 
 @pytest.fixture(scope="module")
@@ -177,30 +180,42 @@ class _Ledger(SourceLedger):
     async def lookup(self, source_id: SourceId) -> SourceRecord | None:
         return self.records.get(source_id)
 
-    async def touch(self, source_ids: Sequence[SourceId], *, at: float) -> None:
+    async def touch(
+        self, source_ids: Sequence[SourceId], *, at: float, scope: RunScope
+    ) -> None:
         for source_id in source_ids:
             record = self.records.get(source_id)
             if record is None:
                 continue
 
-            self.records[source_id] = SourceRecord(
-                source_id=record.source_id,
-                parent=record.parent,
-                fingerprint=record.fingerprint,
-                content_hash=record.content_hash,
-                grade=record.grade,
-                stamp=record.stamp,
-                seen_at=at,
-                indexed_at=record.indexed_at,
+            owned = scope.scope or record.scope
+            self.records[source_id] = replace(
+                record, seen_at=at, seen_run=scope.run, scope=owned
             )
 
     async def record(self, record: SourceRecord) -> None:
         self.records[record.source_id] = record
 
-    async def unseen(self, *, before: float) -> AsyncIterator[SourceRecord]:
+    async def orphans(self, run: str) -> AsyncIterator[SourceRecord]:
         for record in list(self.records.values()):
-            if record.seen_at < before:
-                yield record
+            if record.parent is None or record.seen_run == run:
+                continue
+
+            parent = self.records.get(record.parent)
+            if parent is None or parent.seen_run != run:
+                continue
+
+            yield record
+
+    async def unseen_roots(self, scope: str, run: str) -> AsyncIterator[SourceRecord]:
+        for record in list(self.records.values()):
+            if record.parent is not None:
+                continue
+
+            if record.scope != scope or record.seen_run == run:
+                continue
+
+            yield record
 
     async def children(self, parent: SourceId) -> AsyncIterator[SourceRecord]:
         for record in list(self.records.values()):
@@ -246,7 +261,9 @@ class _Stand:
         )
 
     async def run(self, requests: Sequence[_Request], *, workers: int) -> list[object]:
-        config: IndexerConfig[str] = IndexerConfig(workers=workers, stamp=_STAMP)
+        config: IndexerConfig[str] = IndexerConfig(
+            workers=workers, stamp=_STAMP, scope=_SCOPE
+        )
         stream = self.pipeline(requests).index(
             chunker=_Chunker(), sink=self.sink, config=config
         )
@@ -328,7 +345,9 @@ class TestLedger:
         await stand.run(_pages(2), workers=2)
         stand.reader.read_pages.clear()
 
-        config: IndexerConfig[str] = IndexerConfig(workers=2, stamp="other")
+        config: IndexerConfig[str] = IndexerConfig(
+            workers=2, stamp="other", scope=_SCOPE
+        )
         stream = stand.pipeline(_pages(2)).index(
             chunker=_Chunker(), sink=stand.sink, config=config
         )

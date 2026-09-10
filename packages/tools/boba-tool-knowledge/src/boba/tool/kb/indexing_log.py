@@ -20,6 +20,7 @@ IngestProgress ведёт счёт по единицам прогона — spac
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from collections.abc import (
     AsyncIterable,
     AsyncIterator,
@@ -55,6 +56,7 @@ from boba.indexing import (
     ReaderId,
     ReaderKeys,
     RunFinished,
+    RunScope,
     Section,
     Severity,
     SourceFailed,
@@ -64,6 +66,7 @@ from boba.indexing import (
     SourceKind,
     SourceLedger,
     SourceRecord,
+    SourceSkipped,
     SourceSkippedUnchanged,
     TransportKeys,
 )
@@ -103,7 +106,8 @@ class LedgerOp(StrEnum):
     LOOKUP = "lookup"
     TOUCH = "touch"
     RECORD = "record"
-    UNSEEN = "unseen"
+    ORPHANS = "orphans"
+    UNSEEN_ROOTS = "unseen_roots"
     CHILDREN = "children"
     FORGET = "forget"
 
@@ -148,7 +152,7 @@ class IngestProgress:
         self._chunks = 0
         self._failed = 0
         self._gone = 0
-        self._skipped: dict[str, int] = {}
+        self._skipped = 0
 
     def spaces_found(self, count: int) -> None:
         """Список space'ов известен целиком до обхода."""
@@ -178,12 +182,9 @@ class IngestProgress:
     def attachments_found(self, count: int) -> None:
         self._attachments.add_found(count)
 
-    def attachment_skipped(self, reason: str) -> None:
-        """Вложение отсечено правилами: в индекс не пойдёт, но существует."""
-        self._skipped[reason] = self._skipped.get(reason, 0) + 1
-
-    def skipped_attachments(self) -> Mapping[str, int]:
-        return dict(self._skipped)
+    def source_skipped(self) -> None:
+        """Источник отсечён правилами: в индекс не пойдёт, но существует."""
+        self._skipped += 1
 
     def found_pages(self) -> int:
         return self._pages.found
@@ -212,7 +213,7 @@ class IngestProgress:
             f" | chunks {self._chunks}"
             f" | failed {self._failed}"
             f" | gone {self._gone}"
-            f" | skipped {sum(self._skipped.values())}"
+            f" | skipped {self._skipped}"
         )
 
     def say(self) -> None:
@@ -221,17 +222,23 @@ class IngestProgress:
 
 @dataclass
 class RunOutcome:
-    """Итог прогона для отчёта вызывающему: счёт по видам и причины отказов.
+    """Итог прогона для отчёта вызывающему: счёт по видам, отказы и пропуски.
 
-    Причина хранится первой на вид: в отчёт инструмента уходит именно она,
-    иначе вызывающий видит только число failed и не знает, что чинить.
+    Причина отказа хранится первой на вид: в отчёт инструмента уходит именно
+    она, иначе вызывающий видит только число failed и не знает, что чинить.
+    Причины пропуска считаются все: их немного, а по ним видно, почему
+    источник не пошёл в индекс.
     """
 
     stats: IndexStats
     reasons: dict[SourceKind, str] = field(default_factory=dict)
+    skips: dict[SourceKind, Counter[str]] = field(default_factory=dict)
 
     def reason_of(self, kind: SourceKind) -> str:
         return self.reasons.get(kind, "")
+
+    def skips_of(self, kind: SourceKind) -> Mapping[str, int]:
+        return self.skips.get(kind, Counter())
 
 
 class LoggedIndexRun:
@@ -270,6 +277,11 @@ class LoggedIndexRun:
 
     @staticmethod
     def _remember(outcome: RunOutcome, event: IndexEvent) -> None:
+        if isinstance(event, SourceSkipped):
+            counted = outcome.skips.setdefault(event.kind, Counter())
+            counted[event.reason] += 1
+            return
+
         if not isinstance(event, SourceFailed):
             return
 
@@ -284,6 +296,10 @@ class LoggedIndexRun:
         if isinstance(event, SourceGone):
             progress.source_gone()
             progress.say()
+            return
+
+        if isinstance(event, SourceSkipped):
+            progress.source_skipped()
             return
 
         if isinstance(event, SourceFailed):
@@ -452,22 +468,36 @@ class LoggingSourceLedger(SourceLedger):
         with self._step(LedgerOp.LOOKUP, source_id):
             return await self._inner.lookup(source_id)
 
-    async def touch(self, source_ids: Sequence[SourceId], *, at: float) -> None:
+    async def touch(
+        self, source_ids: Sequence[SourceId], *, at: float, scope: RunScope
+    ) -> None:
         with self._step(LedgerOp.TOUCH, f"{len(source_ids)} sources"):
-            await self._inner.touch(source_ids, at=at)
+            await self._inner.touch(source_ids, at=at, scope=scope)
 
     async def record(self, record: SourceRecord) -> None:
         with self._step(LedgerOp.RECORD, record.source_id):
             await self._inner.record(record)
 
-    async def unseen(self, *, before: float) -> AsyncIterator[SourceRecord]:
-        self._logger.info("ledger %s start", LedgerOp.UNSEEN.value)
+    async def orphans(self, run: str) -> AsyncIterator[SourceRecord]:
+        async for record in self._scanned(LedgerOp.ORPHANS, self._inner.orphans(run)):
+            yield record
+
+    async def unseen_roots(self, scope: str, run: str) -> AsyncIterator[SourceRecord]:
+        scan = self._inner.unseen_roots(scope, run)
+        async for record in self._scanned(LedgerOp.UNSEEN_ROOTS, scan):
+            yield record
+
+    async def _scanned(
+        self, op: LedgerOp, scan: AsyncIterator[SourceRecord]
+    ) -> AsyncIterator[SourceRecord]:
+        """Обход реестра под логом: сам обход ленивый, счёт идёт по ходу."""
+        self._logger.info("ledger %s start", op.value)
         count = 0
-        async for record in self._inner.unseen(before=before):
+        async for record in scan:
             count += 1
             yield record
 
-        self._logger.info("ledger %s done: %d sources", LedgerOp.UNSEEN.value, count)
+        self._logger.info("ledger %s done: %d sources", op.value, count)
 
     async def children(self, parent: SourceId) -> AsyncIterator[SourceRecord]:
         with self._step(LedgerOp.CHILDREN, parent):

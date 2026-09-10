@@ -35,7 +35,7 @@ from boba.indexing.filter import (
     Or,
     UnsupportedFilterError,
 )
-from boba.indexing.ledger import LedgerError, SourceLedger, SourceRecord
+from boba.indexing.ledger import LedgerError, RunScope, SourceLedger, SourceRecord
 from boba.indexing.sections import SourceId
 from boba.indexing.store import (
     ChunkStore,
@@ -650,7 +650,9 @@ class PostgresSourceLedger(SourceLedger):
                 grade,
                 stamp,
                 extract(epoch from seen_at),
-                extract(epoch from indexed_at)
+                extract(epoch from indexed_at),
+                seen_run,
+                scope
             from
                 {sources_table}
             where 1=1
@@ -675,7 +677,9 @@ class PostgresSourceLedger(SourceLedger):
 
         return self._row_to_record(row)
 
-    async def touch(self, source_ids: Sequence[SourceId], *, at: float) -> None:
+    async def touch(
+        self, source_ids: Sequence[SourceId], *, at: float, scope: RunScope
+    ) -> None:
         ids: list[str] = []
         for source_id in source_ids:
             ids.append(str(source_id))
@@ -686,16 +690,19 @@ class PostgresSourceLedger(SourceLedger):
         query = sql.SQL(
             """
             update {sources_table} set
-                seen_at = to_timestamp(%s)
+                seen_at  = to_timestamp(%s),
+                seen_run = %s,
+                scope    = case when %s <> '' then %s else scope end
             where 1=1
                 and collection = %s
                 and source_id = ANY(%s)
             """,
         ).format(sources_table=self._tables.sources_ident())
+        params = (at, scope.run, scope.scope, scope.scope, self._collection, ids)
         try:
             pool = await self._pool()
             async with pool.cursor() as cur:
-                await cur.execute(query, (at, self._collection, ids))
+                await cur.execute(query, params)
         except (PostgresError, psycopg.Error) as exc:
             msg = (
                 f"ledger: touching {len(ids)} sources in "
@@ -719,9 +726,14 @@ class PostgresSourceLedger(SourceLedger):
                 grade,
                 stamp,
                 seen_at,
-                indexed_at
+                indexed_at,
+                seen_run,
+                scope
             )
-            values (%s, %s, %s, %s, %s, %s, %s, to_timestamp(%s), to_timestamp(%s))
+            values (
+                %s, %s, %s, %s, %s, %s, %s,
+                to_timestamp(%s), to_timestamp(%s), %s, %s
+            )
             on conflict (collection, source_id) do update set
                 parent_id    = excluded.parent_id,
                 fingerprint  = excluded.fingerprint,
@@ -729,7 +741,12 @@ class PostgresSourceLedger(SourceLedger):
                 grade        = excluded.grade,
                 stamp        = excluded.stamp,
                 seen_at      = excluded.seen_at,
-                indexed_at   = excluded.indexed_at
+                indexed_at   = excluded.indexed_at,
+                seen_run     = excluded.seen_run,
+                scope        = case
+                    when excluded.scope <> '' then excluded.scope
+                    else {sources_table}.scope
+                end
             """,
         ).format(sources_table=self._tables.sources_ident())
         params = (
@@ -742,6 +759,8 @@ class PostgresSourceLedger(SourceLedger):
             record.stamp,
             record.seen_at,
             record.indexed_at,
+            record.seen_run,
+            record.scope,
         )
         try:
             pool = await self._pool()
@@ -754,7 +773,49 @@ class PostgresSourceLedger(SourceLedger):
             )
             raise LedgerError(msg) from exc
 
-    async def unseen(self, *, before: float) -> AsyncIterator[SourceRecord]:
+    async def orphans(self, run: str) -> AsyncIterator[SourceRecord]:
+        query = sql.SQL(
+            """
+            select
+                child.source_id,
+                child.parent_id,
+                child.fingerprint,
+                child.content_hash,
+                child.grade,
+                child.stamp,
+                extract(epoch from child.seen_at),
+                extract(epoch from child.indexed_at),
+                child.seen_run,
+                child.scope
+            from
+                {sources_table} as child
+                join {sources_table} as parent
+                    on parent.collection = child.collection
+                    and parent.source_id = child.parent_id
+            where 1=1
+                and child.collection = %s
+                and child.parent_id <> ''
+                and child.seen_run <> %s
+                and parent.seen_run = %s
+                and child.source_id > %s
+            order by
+                child.source_id
+            limit %s
+            """,
+        ).format(sources_table=self._tables.sources_ident())
+        after = ""
+        while True:
+            params = (self._collection, run, run, after, self.PAGE)
+            rows = await self._page(query, params)
+            if not rows:
+                return
+
+            for row in rows:
+                yield self._row_to_record(row)
+
+            after = str(rows[-1][0])
+
+    async def unseen_roots(self, scope: str, run: str) -> AsyncIterator[SourceRecord]:
         query = sql.SQL(
             """
             select
@@ -765,12 +826,16 @@ class PostgresSourceLedger(SourceLedger):
                 grade,
                 stamp,
                 extract(epoch from seen_at),
-                extract(epoch from indexed_at)
+                extract(epoch from indexed_at),
+                seen_run,
+                scope
             from
                 {sources_table}
             where 1=1
                 and collection = %s
-                and seen_at < to_timestamp(%s)
+                and scope = %s
+                and parent_id = ''
+                and seen_run <> %s
                 and source_id > %s
             order by
                 source_id
@@ -779,7 +844,9 @@ class PostgresSourceLedger(SourceLedger):
         ).format(sources_table=self._tables.sources_ident())
         after = ""
         while True:
-            rows = await self._page(query, (self._collection, before, after, self.PAGE))
+            rows = await self._page(
+                query, (self._collection, scope, run, after, self.PAGE)
+            )
             if not rows:
                 return
 
@@ -799,7 +866,9 @@ class PostgresSourceLedger(SourceLedger):
                 grade,
                 stamp,
                 extract(epoch from seen_at),
-                extract(epoch from indexed_at)
+                extract(epoch from indexed_at),
+                seen_run,
+                scope
             from
                 {sources_table}
             where 1=1
@@ -873,6 +942,8 @@ class PostgresSourceLedger(SourceLedger):
             stamp=str(row[5]),
             seen_at=float(row[6]),
             indexed_at=float(row[7]),
+            seen_run=str(row[8]),
+            scope=str(row[9]),
         )
 
 

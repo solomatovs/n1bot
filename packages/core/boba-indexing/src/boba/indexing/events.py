@@ -31,6 +31,7 @@ __all__ = [
     "SourceGone",
     "SourceIndexed",
     "SourceKind",
+    "SourceSkipped",
     "SourceSkippedUnchanged",
     "SourceTally",
     "TallyBuilder",
@@ -203,6 +204,7 @@ class RunFinished(PhaseTransition):
             fields[f"{kind.value}_seen"] = str(tally.seen)
             fields[f"{kind.value}_indexed"] = str(tally.indexed)
             fields[f"{kind.value}_unchanged"] = str(tally.unchanged)
+            fields[f"{kind.value}_skipped"] = str(tally.skipped)
             fields[f"{kind.value}_failed"] = str(tally.failed)
             fields[f"{kind.value}_deleted"] = str(tally.deleted)
 
@@ -329,6 +331,29 @@ class ChunksDeleted(CompletedItem):
 
 
 @dataclass(frozen=True)
+class SourceSkipped(CompletedItem):
+    """Источник существует, но правила обхода его не берут."""
+
+    source_id: SourceId
+    kind: SourceKind
+    reason: str
+
+    @classmethod
+    def name(cls) -> str:
+        return "source.skipped"
+
+    def headline(self) -> str:
+        return f"skipped {self.source_id}: {self.reason}"
+
+    def details(self) -> Mapping[str, str]:
+        return {
+            "source_id": self.source_id,
+            "kind": self.kind.value,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
 class SourceGone(CompletedItem):
     """Источника больше нет в источнике данных: его чанки и запись сняты."""
 
@@ -362,6 +387,7 @@ class SourceTally:
     seen: int = 0
     indexed: int = 0
     unchanged: int = 0
+    skipped: int = 0
     failed: int = 0
     deleted: int = 0
     chunks_upserted: int = 0
@@ -398,6 +424,7 @@ class TallyBuilder:
     seen: int = 0
     indexed: int = 0
     unchanged: int = 0
+    skipped: int = 0
     failed: int = 0
     deleted: int = 0
     chunks_upserted: int = 0
@@ -408,6 +435,7 @@ class TallyBuilder:
             seen=self.seen,
             indexed=self.indexed,
             unchanged=self.unchanged,
+            skipped=self.skipped,
             failed=self.failed,
             deleted=self.deleted,
             chunks_upserted=self.chunks_upserted,

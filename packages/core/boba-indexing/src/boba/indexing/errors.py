@@ -5,6 +5,7 @@ from __future__ import annotations
 __all__ = [
     "IncompatibleContentError",
     "IndexingError",
+    "SourceGoneError",
     "TransportError",
 ]
 
@@ -34,4 +35,12 @@ class TransportError(IndexingError):
     """Transport не смог забрать источник: сеть, статус ответа, обрыв тела.
 
     Transient по природе: pipeline изолирует источник и идёт к следующему.
+    """
+
+
+class SourceGoneError(TransportError):
+    """Источника у источника данных больше нет: он ответил «не найдено».
+
+    Не догадка очистки, а прямой ответ: конвейер снимает такой источник
+    вместе с чанками и детьми, не дожидаясь конца обхода.
     """

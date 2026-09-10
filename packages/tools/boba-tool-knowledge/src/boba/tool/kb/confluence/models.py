@@ -217,18 +217,26 @@ class ConfluenceSpaceItem(BaseModel):
     удобного доступа без .description.plain.value цепочки.
     """
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     key: str
     name: str = ""
     type: str = ""
     description: ConfluenceDescription | None = None
+    links: ConfluenceLinks = Field(default_factory=ConfluenceLinks, alias="_links")
 
     @property
     def description_plain(self) -> str:
         if self.description and self.description.plain:
             return self.description.plain.value
         return ""
+
+    def url_at(self, profile: HttpConnection) -> str:
+        """Адрес спейса на сервере профиля; без webui — корень сервиса."""
+        if not self.links.webui:
+            return str(profile.root_url())
+
+        return str(profile.url_of(self.links.webui))
 
 
 @dataclass(frozen=True, slots=True)
@@ -345,12 +353,19 @@ class AttachmentFilter:
 
 
 class AttachmentVerdict(StrEnum):
-    """Решение по одному вложению; попадает в лог как причина пропуска."""
+    """Решение по одному вложению; попадает в отчёт как причина пропуска."""
 
     TAKE = "take"
     NOT_REQUESTED = "not requested"
     NOT_ALLOWED = "not allowed by config"
     IMAGE_WITHOUT_OCR = "image without ocr"
+
+    def skipped(self) -> str:
+        """Причина для отметки источника; у взятого вложения её нет."""
+        if self is AttachmentVerdict.TAKE:
+            return ""
+
+        return self.value
 
 
 @dataclass(frozen=True, slots=True)
@@ -410,10 +425,15 @@ class ConfluenceMarks:
 
     @staticmethod
     def attachment(
-        att: AttachmentInfo, *, parent: SourceId, grade: ParseGrade
+        att: AttachmentInfo, *, parent: SourceId, grade: ParseGrade, skip: str = ""
     ) -> SourceMark:
         fingerprint = f"v{att.version}:{att.when}:{att.file_size}:{att.media_type}"
-        return SourceMark(fingerprint=fingerprint, grade=int(grade), parent=parent)
+        return SourceMark(
+            fingerprint=fingerprint,
+            grade=int(grade),
+            parent=parent,
+            skip=skip,
+        )
 
 
 class ConfluenceSourceId:

@@ -20,6 +20,7 @@ from boba.indexing.chunks import (
 from boba.indexing.errors import (
     IncompatibleContentError,
     IndexingError,
+    SourceGoneError,
     TransportError,
 )
 from boba.indexing.events import (
@@ -41,6 +42,7 @@ from boba.indexing.events import (
     SourceGone,
     SourceIndexed,
     SourceKind,
+    SourceSkipped,
     SourceSkippedUnchanged,
     SourceTally,
 )
@@ -66,6 +68,7 @@ from boba.indexing.ledger import (
     ChangePolicy,
     LedgerError,
     NoProbe,
+    RunScope,
     SourceLedger,
     SourceMark,
     SourceProbe,
@@ -203,6 +206,7 @@ __all__ = [
     "RequestSource",
     "RunFinished",
     "RunId",
+    "RunScope",
     "RunStarted",
     "Section",
     "SectionKeys",
@@ -211,6 +215,7 @@ __all__ = [
     "SourceBasedChunkId",
     "SourceFailed",
     "SourceGone",
+    "SourceGoneError",
     "SourceId",
     "SourceIndexed",
     "SourceKind",
@@ -218,6 +223,7 @@ __all__ = [
     "SourceMark",
     "SourceProbe",
     "SourceRecord",
+    "SourceSkipped",
     "SourceSkippedUnchanged",
     "SourceTally",
     "SplitPiece",
