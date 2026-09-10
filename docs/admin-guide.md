@@ -481,7 +481,7 @@ curl -s -c cookies.txt -X POST "$B/auth/proxy" \
 Заготовка: таблица соединений, гранты, плагины `conf/plugins/*.toml`,
 списки `tools` и `headless`, роли на инструменты. Разработка новых
 соединений и инструментов описана в
-[adding-connections-and-tools.md](adding-connections-and-tools.md).
+[developer-guide.md](developer-guide.md).
 
 ## 7. Песочница и лимиты
 

@@ -442,16 +442,17 @@ class StandConfig:
                 },
             }
             if self.sso_roles:
-                doc["auth"]["kerberos"]["roles"] = {"principal": dict(self.sso_roles)}
+                doc["auth"]["kerberos"]["roles"] = {
+                    "principal": {"principal": dict(self.sso_roles)}
+                }
 
         if self.auth.local:
             providers.append("${auth.local}")
+            mapping = {login: list(roles) for login, roles in self.STAND_ROLES.items()}
             doc["auth"]["local"] = {
                 "type": "local",
                 "users": dict(self.STAND_USERS),
-                "roles": {
-                    login: list(roles) for login, roles in self.STAND_ROLES.items()
-                },
+                "roles": {"local": {"mapping": mapping}},
                 "require_roles": True,
             }
 

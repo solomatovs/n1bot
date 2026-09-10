@@ -5,8 +5,8 @@ launcher'а приложения и у человека в терминале.
 
 Ошибки:
 ClickHouseError — до базы не достучаться (сеть, TLS, kerberos).
+ClickHouseQueryError — сервер отклонил запрос (синтаксис, права).
 UnknownConnectionError — имя подключения вне whitelist'а конфига.
-clickhouse DriverError — сервер отклонил запрос (синтаксис, права).
 ResultTooLargeError — выдача превысила max_bytes конфига.
 """
 
@@ -16,11 +16,9 @@ import sys
 from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, ClassVar, Final, cast
 
-from clickhouse_connect.driver.exceptions import ClickHouseError as DriverError
 from pydantic import Field
 
-from boba.db.clickhouse import ClickHouseError
-from boba.db.clickhouse.payload import PayloadClickHouse
+from boba.db.clickhouse import ClickHouseError, ClickHouseQueryError
 from boba.db.clickhouse.profile import ClickHouseConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
@@ -127,6 +125,17 @@ order by
         return f"{select}where\n    {where}\n{order}"
 
 
+def _payload() -> Any:
+    """Клиент базы: тянет clickhouse-connect, которого в приложении нет.
+
+    Модуль инструмента читает хост ради объявлений, а драйвер живёт только
+    в песочнице — поэтому импорт отложен до самого вызова.
+    """
+    from boba.db.clickhouse import payload  # noqa: PLC0415
+
+    return payload.PayloadClickHouse
+
+
 async def _collect_blocks(
     blocks: Any,
     names: Sequence[str],
@@ -165,21 +174,12 @@ async def _catalog_page(
 
     page = RowPage(window)
 
-    async with PayloadClickHouse.opened_config(connection) as client:
-        try:
-            stream = await client.query_row_block_stream(
-                query.text, parameters=parameters
-            )
-            async with stream as blocks:
-                names: Sequence[str] = cast("Any", blocks.source).column_names
-                await _collect_page(blocks, names, page)
-        except DriverError as exc:
-            target = f"{connection.host}:{connection.port}/{connection.database}"
-            msg = (
-                f"catalog query on clickhouse {target} failed: "
-                f"{type(exc).__name__}: {exc}"
-            )
-            raise ClickHouseError(msg) from exc
+    client_module = _payload()
+
+    async with client_module.opened_config(connection) as client:
+        blocks = client_module.row_blocks(client, connection, query.text, parameters)
+        async with blocks as rows:
+            await _collect_page(rows.blocks, rows.names, page)
 
     return SqlResult(engine=ChToolConfig.ENGINE, statements=[page.statement()])
 
@@ -196,22 +196,12 @@ async def _query_rows(
 
     budget = RowBudget(max_rows=cfg.max_rows, max_bytes=cfg.max_bytes)
 
-    async with PayloadClickHouse.opened_config(connection) as client:
-        try:
-            stream = await client.query_row_block_stream(
-                query.text, parameters=parameters
-            )
-            async with stream as blocks:
-                names: Sequence[str] = cast("Any", blocks.source).column_names
-                await _collect_blocks(blocks, names, budget)
-        except DriverError as exc:
-            target = f"{connection.host}:{connection.port}/{connection.database}"
-            head = query.text[:200]
-            msg = (
-                f"query on clickhouse {target} failed: {type(exc).__name__}: "
-                f"{exc}; query: {head!r}"
-            )
-            raise ClickHouseError(msg) from exc
+    client_module = _payload()
+
+    async with client_module.opened_config(connection) as client:
+        blocks = client_module.row_blocks(client, connection, query.text, parameters)
+        async with blocks as rows:
+            await _collect_blocks(rows.blocks, rows.names, budget)
 
     return SqlResult(engine=ChToolConfig.ENGINE, statements=[budget.statement()])
 
@@ -297,7 +287,7 @@ async def ch_query(
 
 EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
     ClickHouseError: SqlErrorKind.DATABASE_UNAVAILABLE,
-    DriverError: SqlErrorKind.SQL_FAILED,
+    ClickHouseQueryError: SqlErrorKind.SQL_FAILED,
     ResultTooLargeError: SqlErrorKind.RESULT_TOO_LARGE,
 }
 

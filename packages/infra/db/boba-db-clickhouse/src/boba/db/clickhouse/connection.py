@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from boba.connections.base import ConnectionProfileBase, ConnectionTypeError
 from boba.connections.manifest import ConnectionTypeManifest
-from boba.db.clickhouse.payload import PayloadClickHouse
 from boba.db.clickhouse.profile import ClickHouseConfig
 from boba.db.clickhouse.snapshot import ChSourceKind
 
@@ -25,6 +24,10 @@ async def _probe(profile: ConnectionProfileBase) -> str:
             f"got kind {profile.kind!r}"
         )
         raise ConnectionTypeError(msg)
+
+    # клиент тянет clickhouse-connect: в окружении приложения его нет,
+    # а манифест читается там при разборе конфига соединений
+    from boba.db.clickhouse.payload import PayloadClickHouse  # noqa: PLC0415
 
     async with PayloadClickHouse.opened_config(profile) as client:
         result = await client.query(PROBE_SQL)
