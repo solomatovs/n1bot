@@ -184,6 +184,13 @@ class TransportKeys:
         decode=str,
         encode=str,
     )
+    BODY_HASH: ClassVar[MetadataKey[str]] = MetadataKey(
+        name="transport.body_hash",
+        decode=str,
+        encode=str,
+    )
+    """Хэш тела, посчитанный транспортом при скачивании: конвейер сверяет его
+    с реестром и не разбирает тело, которое уже разбирал."""
 
 
 class ReaderKeys:

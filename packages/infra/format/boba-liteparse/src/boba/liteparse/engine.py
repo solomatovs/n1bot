@@ -15,6 +15,7 @@ import os
 import tempfile
 from collections.abc import Generator, Iterator, Sequence
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, ClassVar, Protocol
 
 from boba.text.document import (
@@ -114,6 +115,14 @@ class LiteParseEngine:
             return cls.parse(params, tmp_path)
 
     @classmethod
+    def parse_file_as(
+        cls, params: LiteParseParams, path: Path, filename: str
+    ) -> ParseResult:
+        """Распарсить файл под расширением filename: жёсткая ссылка вместо копии."""
+        with cls._linked_as(path, filename) as linked:
+            return cls.parse(params, linked)
+
+    @classmethod
     def parse_native(cls, params: LiteParseParams, path: str) -> Any:
         """Нативный парсер: только он отдаёт PyTextItem для search_items."""
         cls.check_ocr(params)
@@ -188,6 +197,18 @@ class LiteParseEngine:
 
     @staticmethod
     @contextmanager
+    def _linked_as(path: Path, filename: str) -> Generator[str, None, None]:
+        """Жёсткая ссылка на файл с суффиксом filename рядом с ним; снимается."""
+        suffix = os.path.splitext(filename)[1]
+        linked = path.with_name(f"{path.stem}-as{suffix}")
+        os.link(path, linked)
+        try:
+            yield str(linked)
+        finally:
+            os.unlink(linked)
+
+    @staticmethod
+    @contextmanager
     def _on_disk(data: bytes, filename: str) -> Generator[str, None, None]:
         """Байты во временный файл с суффиксом исходного имени; файл удаляется."""
         # office-форматы (docx/xlsx/pptx — это zip) liteparse узнаёт по расширению
@@ -212,6 +233,10 @@ class LiteParseReader(PagedDocumentReader):
 
     def parse_pages(self, data: bytes, filename: str) -> Sequence[ParsedPage]:
         result = LiteParseEngine.parse_bytes(self._params, data, filename)
+        return tuple(self._pages(result))
+
+    def parse_file(self, path: Path, filename: str) -> Sequence[ParsedPage]:
+        result = LiteParseEngine.parse_file_as(self._params, path, filename)
         return tuple(self._pages(result))
 
     @staticmethod

@@ -1,4 +1,4 @@
-"""Границы прогона ingest для тестов: хранилище в памяти и нулевой эмбеддер.
+"""Границы прогона ingest для тестов: хранилище и реестр в памяти, нулевой эмбеддер.
 
 Всё остальное в тестах остаётся настоящим — Pipeline, транспорт Confluence,
 чанкер и обёртки наблюдения.
@@ -23,10 +23,55 @@ from boba.indexing import (
     ReaderId,
     Section,
     SourceId,
+    SourceLedger,
+    SourceRecord,
 )
 from boba.indexing.ports import Embedder
 
-__all__ = ["MemoryChunkStore", "TextReader", "ZeroEmbedder"]
+__all__ = ["MemoryChunkStore", "MemorySourceLedger", "TextReader", "ZeroEmbedder"]
+
+
+class MemorySourceLedger(SourceLedger):
+    """Реестр источников в памяти: граница postgres для быстрых тестов."""
+
+    def __init__(self) -> None:
+        self.records: dict[SourceId, SourceRecord] = {}
+
+    async def lookup(self, source_id: SourceId) -> SourceRecord | None:
+        return self.records.get(source_id)
+
+    async def touch(self, source_ids: Sequence[SourceId], *, at: float) -> None:
+        for source_id in source_ids:
+            record = self.records.get(source_id)
+            if record is None:
+                continue
+
+            self.records[source_id] = SourceRecord(
+                source_id=record.source_id,
+                parent=record.parent,
+                fingerprint=record.fingerprint,
+                content_hash=record.content_hash,
+                grade=record.grade,
+                stamp=record.stamp,
+                seen_at=at,
+                indexed_at=record.indexed_at,
+            )
+
+    async def record(self, record: SourceRecord) -> None:
+        self.records[record.source_id] = record
+
+    async def unseen(self, *, before: float) -> AsyncIterator[SourceRecord]:
+        for record in list(self.records.values()):
+            if record.seen_at < before:
+                yield record
+
+    async def children(self, parent: SourceId) -> AsyncIterator[SourceRecord]:
+        for record in list(self.records.values()):
+            if record.parent == parent:
+                yield record
+
+    async def forget(self, source_id: SourceId) -> None:
+        self.records.pop(source_id, None)
 
 
 class MemoryChunkStore(ChunkStore[str]):
@@ -119,6 +164,28 @@ class MemoryChunkStore(ChunkStore[str]):
     ) -> None:
         for chunk_id in chunk_ids:
             self.chunks.pop(chunk_id, None)
+
+    async def delete_by_source(
+        self,
+        collection: CollectionId,
+        source_id: SourceId,
+        *,
+        from_index: int,
+    ) -> int:
+        doomed: list[ChunkId] = []
+        for chunk in self.chunks.values():
+            if chunk.source_id != source_id:
+                continue
+
+            if chunk.chunk_index < from_index:
+                continue
+
+            doomed.append(chunk.chunk_id)
+
+        for chunk_id in doomed:
+            del self.chunks[chunk_id]
+
+        return len(doomed)
 
 
 class ZeroEmbedder(Embedder[str]):

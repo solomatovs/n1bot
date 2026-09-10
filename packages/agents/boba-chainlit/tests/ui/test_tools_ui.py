@@ -830,16 +830,20 @@ def indexed_page(
         tool="confluence_index_page",
         arguments={
             "page_id": confluence_page.page_id,
-            "prune_missing": False,
-            "force_update": True,
+            "attachments": True,
         },
     )
     expect = ToolExpect(
         patterns=[
             TablePattern.row(
-                "collection", "indexed", "skipped_unchanged", "pruned", "failed"
+                "collection",
+                "indexed",
+                "skipped_unchanged",
+                "deleted_sources",
+                "deleted_chunks",
+                "failed",
             ),
-            TablePattern.row("kb_confluence", r"[1-9]\d*", "0", r"\d+", "0"),
+            TablePattern.row("kb_confluence", r"\d+", r"\d+", r"\d+", r"\d+", "0"),
             f"^_page_id: {confluence_page.page_id}_$",
         ],
         dom=["kb_confluence", f"page_id: {confluence_page.page_id}"],
@@ -1226,13 +1230,14 @@ class TestIngestTools:
     ) -> None:
         call = ToolCall(
             tool="confluence_index_cql",
-            arguments={"cql": f"id = {indexed_page.page_id}", "prune_missing": False},
+            arguments={"cql": f"id = {indexed_page.page_id}"},
         )
         row = {
             "collection": "kb_confluence",
             "indexed": 0,
             "skipped_unchanged": 1,
-            "pruned": 0,
+            "deleted_sources": 0,
+            "deleted_chunks": 0,
             "failed": 0,
         }
         result = TableResult(rows=[row])
@@ -1250,15 +1255,13 @@ class TestIngestTools:
             tool="confluence_index_space",
             arguments={
                 "space_key": ProbeText.NO_SPACE.value,
-                "prune_missing": False,
-                "force_update": False,
             },
         )
-        url = confluence_site.url_of(
-            ConfluenceRest.space_pages_path(ProbeText.NO_SPACE.value)
-        )
+        path = ConfluenceRest.space_path(ProbeText.NO_SPACE.value)
+        url = confluence_site.url_of(path)
         message = (
             f"tool failed 'confluence_index_space': PayloadFailureError: "
+            f"GET {path} on confluence: HTTPStatusError: "
             f"Client error '404 ' for url '{url}'\n"
             "For more information check: "
             "https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404"
@@ -1280,7 +1283,7 @@ class TestIngestTools:
             arguments={
                 "page_id": confluence_attachment.page_id,
                 "filename": confluence_attachment.filename,
-                **OcrArgs.of(),
+                "ocr": False,
             },
         )
         patterns: list[str] = []

@@ -22,7 +22,7 @@ from psycopg import sql
 from psycopg.rows import dict_row
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.connections.grants import (
+from boba.access.grants import (
     ConnectionFilter,
     ConnectionNames,
     SubjectGrantsQuery,

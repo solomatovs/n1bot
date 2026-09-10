@@ -33,6 +33,5 @@ class IncompatibleContentError(IndexingError):
 class TransportError(IndexingError):
     """Transport не смог забрать источник: сеть, статус ответа, обрыв тела.
 
-    Transient по природе: pipeline изолирует источник и идёт к следующему,
-    если прогон запущен со skip_failed.
+    Transient по природе: pipeline изолирует источник и идёт к следующему.
     """

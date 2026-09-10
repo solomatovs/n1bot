@@ -1,8 +1,9 @@
 """Разбор REST-JSON Confluence -> RawDocument.
 
-- ConfluenceJson        — извлечение полей схемы (title/version/space/...).
-- ConfluenceJsonDecoder — REST-JSON -> HTML-handle + расширенная metadata
-  (title/version/space/ancestors/attachments).
+- ConfluenceJson        — извлечение полей схемы для инструментов чтения.
+- ConfluenceJsonDecoder — REST-JSON страницы -> HTML-handle + хэш тела +
+  расширенная metadata (title/version/space/ancestors).
+- BodyDigest            — хэш тела для реестра источников.
 
 Саму HTML-разметку здесь никто не разбирает: heading-aware extraction поверх
 BeautifulSoup живёт в payload'е песочницы (payloads/parse/pages.py).
@@ -10,28 +11,30 @@ BeautifulSoup живёт в payload'е песочницы (payloads/parse/pages.
 
 from __future__ import annotations
 
-import json
+import hashlib
 from dataclasses import replace
+from enum import StrEnum
 from typing import Any, ClassVar
+
+from pydantic import ValidationError
 
 from boba.indexing import (
     ChunkStream,
     Decoder,
     DecoderId,
-    Metadata,
     RawDocument,
     ReaderKeys,
     TransportKeys,
 )
 from boba.tool.kb.confluence.models import (
-    AttachmentInfo,
+    ConfluenceContent,
     ConfluenceKeys,
     ConfluencePayloadError,
     HttpKeys,
 )
 from boba.transport.http.profile import HttpConnection
 
-__all__ = ["ConfluenceJson", "ConfluenceJsonDecoder"]
+__all__ = ["BodyDigest", "BodyEncoding", "ConfluenceJson", "ConfluenceJsonDecoder"]
 
 
 class ConfluenceJson:
@@ -114,12 +117,12 @@ class ConfluenceJson:
 
 
 class ConfluenceJsonDecoder(Decoder):
-    """Confluence REST JSON -> HTML-handle + расширенная metadata.
+    """Confluence REST JSON страницы -> HTML-handle + расширенная metadata.
 
-    Вынимает HTML из body.<body_format>.value, обогащает metadata: title
-    (ReaderKeys.PAGE_TITLE), version (ConfluenceKeys.VERSION), space,
-    ancestors, attachments, last_modified (HttpKeys.LAST_MODIFIED, если ещё
-    не заполнен HttpTransport'ом).
+    Вынимает HTML из body.<body_format>.value и считает хэш заголовка с телом
+    (TransportKeys.BODY_HASH); обогащает metadata: title (ReaderKeys.PAGE_TITLE),
+    version (ConfluenceKeys.VERSION), space, ancestors, source_url,
+    last_modified (HttpKeys.LAST_MODIFIED, если ещё не заполнен транспортом).
     """
 
     DECODER_ID: ClassVar[DecoderId] = DecoderId("ext.confluence_json")
@@ -138,71 +141,55 @@ class ConfluenceJsonDecoder(Decoder):
 
     async def decode(self, value: RawDocument) -> RawDocument:
         payload = await value.handle.read()
-        if not payload:
-            return value
         try:
-            data: dict[str, Any] = json.loads(payload)
-        except json.JSONDecodeError as e:
+            content = ConfluenceContent.model_validate_json(payload)
+        except ValidationError as e:
             head = payload[:200]
             msg = (
                 f"ConfluenceJsonDecoder: decoding page {value.source_id} expected "
-                f"a JSON body from Confluence, got {head!r}: {e}"
+                f"a JSON page from Confluence, got {head!r}: {e}"
             )
             raise ConfluencePayloadError(msg) from e
-        html = ConfluenceJson.body_html(data, self._body_format)
 
+        html = content.body_html(self._body_format).encode(BodyEncoding.UTF8)
+
+        # заголовок сидит в heading_path чанков: переименование меняет хэш
+        titled = content.title.encode(BodyEncoding.UTF8) + b"\n" + html
         meta = value.metadata.set(TransportKeys.CONTENT_TYPE, self._HTML_CONTENT_TYPE)
-        if title := ConfluenceJson.title(data):
-            meta = meta.set(ReaderKeys.PAGE_TITLE, title)
-        if (version := ConfluenceJson.version_number(data)) is not None:
-            meta = meta.set(ConfluenceKeys.VERSION, version)
-        if (when := ConfluenceJson.last_modified(data)) and not meta.has(
-            HttpKeys.LAST_MODIFIED,
-        ):
-            meta = meta.set(HttpKeys.LAST_MODIFIED, when)
-        if space_key := ConfluenceJson.space_key(data):
-            meta = meta.set(ConfluenceKeys.SPACE_KEY, space_key)
-        if titles := ConfluenceJson.ancestor_titles(data):
+        meta = meta.set(TransportKeys.BODY_HASH, BodyDigest.of(titled))
+        if content.title:
+            meta = meta.set(ReaderKeys.PAGE_TITLE, content.title)
+
+        meta = meta.set(ConfluenceKeys.VERSION, content.version.number)
+        if content.version.when and not meta.has(HttpKeys.LAST_MODIFIED):
+            meta = meta.set(HttpKeys.LAST_MODIFIED, content.version.when)
+
+        if content.space.key:
+            meta = meta.set(ConfluenceKeys.SPACE_KEY, content.space.key)
+
+        if titles := content.ancestor_titles():
             meta = meta.set(ConfluenceKeys.ANCESTORS_TITLES, titles)
-        if webui := ConfluenceJson.webui(data):
-            meta = meta.set(ConfluenceKeys.SOURCE_URL, str(self._profile.url_of(webui)))
-        meta = self._enrich_with_attachments(meta, data)
 
-        return replace(
-            value,
-            handle=ChunkStream.of(html.encode("utf-8")),
-            metadata=meta,
-        )
+        if content.links.webui:
+            url = str(self._profile.url_of(content.links.webui))
+            meta = meta.set(ConfluenceKeys.SOURCE_URL, url)
 
-    @staticmethod
-    def _enrich_with_attachments(meta: Metadata, data: dict[str, Any]) -> Metadata:
-        block = ConfluenceJson.as_dict(
-            ConfluenceJson.as_dict(data.get("children")).get("attachment"),
-        )
-        results = block.get("results")
-        if not isinstance(results, list):
-            return meta
+        return replace(value, handle=ChunkStream.of(html), metadata=meta)
 
-        items = tuple(
-            ConfluenceJsonDecoder._attachment_from_json(a)
-            for a in results
-            if isinstance(a, dict)
-        )
-        if not items:
-            return meta
-        return meta.set(ConfluenceKeys.ATTACHMENTS, items)
+
+class BodyEncoding(StrEnum):
+    """Кодировка тел, которые собирает сам транспорт."""
+
+    UTF8 = "utf-8"
+
+
+class BodyDigest:
+    """Хэш тела для реестра: одна функция на страницы и вложения."""
 
     @staticmethod
-    def _attachment_from_json(a: dict[str, Any]) -> AttachmentInfo:
-        extensions = ConfluenceJson.as_dict(a.get("extensions"))
-        version = ConfluenceJson.as_dict(a.get("version"))
-        links = ConfluenceJson.as_dict(a.get("_links"))
-        return AttachmentInfo(
-            id=str(a.get("id", "")),
-            title=str(a.get("title", "")),
-            media_type=str(extensions.get("mediaType", "")),
-            file_size=ConfluenceJson.as_int(extensions.get("fileSize"), default=0),
-            download_path=str(links.get("download", "")),
-            webui=str(links.get("webui", "")),
-            version=ConfluenceJson.as_int(version.get("number"), default=1),
-        )
+    def of(payload: bytes) -> str:
+        return hashlib.sha256(payload).hexdigest()
+
+    @staticmethod
+    def new() -> hashlib._Hash:
+        return hashlib.sha256()

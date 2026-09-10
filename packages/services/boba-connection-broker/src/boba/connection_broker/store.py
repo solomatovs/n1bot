@@ -33,7 +33,7 @@ from pydantic import (
     field_validator,
 )
 
-from boba.connections.grants import (
+from boba.access.grants import (
     ConnectionFilter,
     ConnectionNames,
     SubjectGrantsQuery,
