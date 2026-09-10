@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from typing import Annotated, Any, ClassVar, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -375,37 +376,45 @@ class ConfluenceIngest:
         config: IndexerConfig[str] = IndexerConfig(
             workers=workers, stamp=stamp, scope=scope.owned()
         )
-        ConfluenceIngest._widen_thread_pool(workers)
-        try:
-            pipeline: Pipeline[Any, str] = Pipeline(
-                source=source,
-                transport=transport,
-                reader=reader,
-                ledger=ledger,
-                probe=scope.probe_of(conn),
-            )
-            outcome = await LoggedIndexRun.drain(
-                pipeline.index(chunker=chunker, sink=view, config=config),
-                logger,
-                progress,
-            )
-        finally:
-            await transport.close()
+        async with ConfluenceIngest._wide_thread_pool(workers):
+            try:
+                pipeline: Pipeline[Any, str] = Pipeline(
+                    source=source,
+                    transport=transport,
+                    reader=reader,
+                    ledger=ledger,
+                    probe=scope.probe_of(conn),
+                )
+                outcome = await LoggedIndexRun.drain(
+                    pipeline.index(chunker=chunker, sink=view, config=config),
+                    logger,
+                    progress,
+                )
+            finally:
+                await transport.close()
 
         return IngestReport.of(outcome, progress, collection=str(collection_id))
 
     @staticmethod
-    def _widen_thread_pool(workers: int) -> None:
+    @asynccontextmanager
+    async def _wide_thread_pool(workers: int) -> AsyncGenerator[None, None]:
         """Свой пул под asyncio.to_thread: дефолтный ограничен min(32, cpu+4).
 
         Слотов на один больше числа источников — разбор не должен ждать, пока
-        освободится поток, занятый эмбеддингом батча.
+        освободится поток, занятый эмбеддингом батча. На выходе пул закрывается:
+        подменённый и брошенный, он остаётся дефолтным на весь процесс, и
+        завершение asyncio.run ждёт его потоки.
         """
         pool = ThreadPoolExecutor(
             max_workers=workers + 1,
             thread_name_prefix="boba-ingest",
         )
         asyncio.get_running_loop().set_default_executor(pool)
+
+        try:
+            yield
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
 
     @staticmethod
     async def ingest(

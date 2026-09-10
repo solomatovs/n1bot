@@ -77,18 +77,13 @@ class PostgresOptionsConfig(BaseModel):
     )
     search_path: str | None = Field(default=None, description="search_path сессии.")
 
-    def to_options(self, override_options: dict[str, str] | None = None) -> str | None:
-        """libpq options '-c k=v ...': GUC-поля + override; None если пусто."""
+    def to_options(self) -> str | None:
+        """libpq options '-c k=v ...' по заполненным GUC-полям; None если пусто."""
         parts = []
 
         for name in type(self).model_fields:
             if (value := getattr(self, name)) is not None:
                 parts.append(f"-c {name}={value}")
-
-        if override_options:
-            for name, value in override_options.items():
-                if value is not None:
-                    parts.append(f"-c {name}={value}")
 
         return " ".join(parts)
 
@@ -320,10 +315,7 @@ class PostgresConfig(ConnectionProfileBase):
 
         return self
 
-    def conn_settings(
-        self,
-        override_options: dict[str, str] | None = None,
-    ) -> dict[str, Any]:
+    def conn_settings(self) -> dict[str, Any]:
         "kwargs для connect(): libpq-ключи + autocommit/prepare_threshold + opts"
         conn: dict[str, Any] = {}
 
@@ -346,7 +338,7 @@ class PostgresConfig(ConnectionProfileBase):
 
         conn.update(PostgresLibpq.of(self.auth))
 
-        if opts := self.options.to_options(override_options):
+        if opts := self.options.to_options():
             conn["options"] = opts
 
         return conn

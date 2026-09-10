@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
+import sys
 import threading
 from collections.abc import Iterator
 from pathlib import Path
@@ -209,6 +211,87 @@ class TestKerberosEnv:
 
         if ticks != 20:
             raise AssertionError("ticks == 20")
+
+    def test_cancelled_wait_keeps_the_lock_free(self, clean_env: None) -> None:
+        """Отменённое ожидание не уносит лок: следующий берёт его сразу."""
+
+        async def hold(entered: asyncio.Event, release: asyncio.Event) -> None:
+            values = {KerberosEnv.CCACHE: "FILE:/tmp/hold"}
+            async with KerberosEnv.applied_async(values):
+                entered.set()
+                await release.wait()
+
+        async def take() -> None:
+            values = {KerberosEnv.CCACHE: "FILE:/tmp/take"}
+            async with KerberosEnv.applied_async(values):
+                await asyncio.sleep(0)
+
+        async def main() -> None:
+            entered = asyncio.Event()
+            release = asyncio.Event()
+            holder = asyncio.create_task(hold(entered, release))
+            await entered.wait()
+
+            lost = asyncio.create_task(take())
+            await asyncio.sleep(0.05)
+            lost.cancel()
+
+            release.set()
+            await holder
+
+            # брошенному ожиданию дают шанс подобрать освободившийся лок
+            await asyncio.sleep(0.2)
+
+            await asyncio.wait_for(take(), timeout=2.0)
+
+        asyncio.run(main())
+
+    def test_cancelled_wait_lets_the_process_finish(self) -> None:
+        """Ожидание не занимает поток исполнителя: asyncio.run завершается сам.
+
+        Утёкший лок вешал не сам прогон, а выход из asyncio.run: очередной
+        ждущий занимал поток дефолтного исполнителя навсегда, и завершение
+        loop'а ждало его join. Проверяется отдельным процессом по таймауту.
+        """
+        script = (
+            "import asyncio\n"
+            "from boba.krb import KerberosEnv\n"
+            "async def hold(entered, release):\n"
+            "    async with KerberosEnv.applied_async({'PROBE': '1'}):\n"
+            "        entered.set()\n"
+            "        await release.wait()\n"
+            "async def take():\n"
+            "    async with KerberosEnv.applied_async({'PROBE': '2'}):\n"
+            "        await asyncio.sleep(0)\n"
+            "async def main():\n"
+            "    entered = asyncio.Event()\n"
+            "    release = asyncio.Event()\n"
+            "    holder = asyncio.create_task(hold(entered, release))\n"
+            "    await entered.wait()\n"
+            "    lost = asyncio.create_task(take())\n"
+            "    await asyncio.sleep(0.05)\n"
+            "    lost.cancel()\n"
+            "    release.set()\n"
+            "    await holder\n"
+            "    await asyncio.sleep(0.2)\n"
+            "    asyncio.create_task(take())\n"
+            "    await asyncio.sleep(0.1)\n"
+            "asyncio.run(main())\n"
+        )
+
+        try:
+            finished = subprocess.run(
+                [sys.executable, "-c", script],
+                timeout=30,
+                capture_output=True,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            msg = "asyncio.run did not finish in 30s: the lock wait holds a thread"
+            raise AssertionError(msg) from exc
+
+        if finished.returncode != 0:
+            raise AssertionError(finished.stderr.decode("utf-8", errors="replace"))
 
 
 @live_kdc

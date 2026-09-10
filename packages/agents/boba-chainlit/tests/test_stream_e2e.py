@@ -62,9 +62,7 @@ def _config() -> AppConfig:
 async def _seed_history(config: AppConfig, thread_id: str) -> None:
     """История с вызовом bash — в checkpointer приложения."""
     cp = config.checkpointer
-    pool = AsyncPostgresPool(
-        cp.postgres, override_options={"search_path": cp.db_schema}
-    )
+    pool = AsyncPostgresPool(cp.postgres.with_schema(cp.db_schema))
     await pool.open()
     try:
         graph = StateGraph(MessagesState)
@@ -102,9 +100,7 @@ async def _seed_thread_and_button(
 ) -> None:
     """Тред пользователя и элемент кнопки потока — в data layer."""
     dl = config.data_layer
-    pool = AsyncPostgresPool(
-        dl.postgres, override_options={"search_path": dl.db_schema}
-    )
+    pool = AsyncPostgresPool(dl.postgres.with_schema(dl.db_schema))
     await pool.open()
     try:
         threads_query = sql.SQL(

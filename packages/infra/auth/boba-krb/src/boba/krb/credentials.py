@@ -19,6 +19,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, Generator, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager
+from enum import Enum
 from typing import ClassVar
 
 import krb5
@@ -45,10 +46,32 @@ __all__ = [
     "IssuedCredentials",
     "KerberosCredentials",
     "KerberosEnv",
+    "KerberosWait",
     "KeytabCredentials",
     "PasswordCredentials",
     "TicketCredentials",
 ]
+
+
+class KerberosWait(float, Enum):
+    """Паузы между попытками взять процессный лок KerberosEnv.
+
+    Первая пауза короткая: обычно лок держат единицы миллисекунд, и ждущий
+    подхватывает его сразу. Дальше пауза растёт до предела, чтобы долгое
+    ожидание не крутило loop впустую.
+    """
+
+    FIRST = 0.001
+    LIMIT = 0.05
+
+    @classmethod
+    def next_delay(cls, delay: float) -> float:
+        """Следующая пауза: удвоение с потолком LIMIT."""
+        grown = delay * 2
+        if grown > cls.LIMIT:
+            return float(cls.LIMIT)
+
+        return grown
 
 
 class KerberosEnv:
@@ -82,18 +105,13 @@ class KerberosEnv:
     async def applied_async(
         cls, values: Mapping[str, str]
     ) -> AsyncGenerator[None, None]:
-        """То же для корутин: ожидание лока уходит в поток, loop не блокируется.
+        """То же для корутин: ожидание лока не занимает поток исполнителя.
 
-        Отмена во время ожидания не теряет лок: поток всё равно его захватит,
-        и колбэк тут же отпустит.
+        Захват идёт неблокирующей попыткой между паузами, поэтому отмена
+        ожидания приходит только в момент, когда лок нам не принадлежит,
+        и потерять его нельзя.
         """
-        loop = asyncio.get_running_loop()
-        waiter = loop.run_in_executor(None, cls._lock.acquire)
-        try:
-            await waiter
-        except asyncio.CancelledError:
-            waiter.add_done_callback(cls._release_abandoned)
-            raise
+        await cls._acquire_async()
 
         try:
             with cls._swapped(values):
@@ -102,16 +120,12 @@ class KerberosEnv:
             cls._lock.release()
 
     @classmethod
-    def _release_abandoned(cls, waiter: asyncio.Future[bool]) -> None:
-        """Лок, захваченный уже после отмены ожидающего, отпускается сразу."""
-        if waiter.cancelled():
-            return
-
-        if waiter.exception() is not None:
-            return
-
-        if waiter.result():
-            cls._lock.release()
+    async def _acquire_async(cls) -> None:
+        """Ждёт процессный лок паузами, отдавая управление loop'у."""
+        delay = float(KerberosWait.FIRST)
+        while not cls._lock.acquire(blocking=False):
+            await asyncio.sleep(delay)
+            delay = KerberosWait.next_delay(delay)
 
     @classmethod
     @contextmanager
