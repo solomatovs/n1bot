@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-connections"
-version = "0.0.19.dev5"
+version = "0.0.19.dev6"
 description = "Инструменты connection_list и connection_search: соединения, выданные субъекту, из таблиц приложения."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-toolkit==0.0.19.dev5",
-    "boba-identity==0.0.19.dev5",
-    "boba-access==0.0.19.dev5",
-    "boba-db-postgres==0.0.19.dev5",
+    "boba-toolkit==0.0.19.dev6",
+    "boba-identity==0.0.19.dev6",
+    "boba-access==0.0.19.dev6",
+    "boba-db-postgres==0.0.19.dev6",
     "psycopg[binary,pool]>=3.2",
     "pydantic>=2.10,<2.11",
 ]
@@ -23,9 +23,9 @@ connections = "boba.tool.connections.plugin:MANIFEST"
 payload = [
 ]
 dev = [
-    "boba-connection-broker==0.0.19.dev5",
-    "boba-connections==0.0.19.dev5",
-    "boba-transport-http==0.0.19.dev5",
+    "boba-connection-broker==0.0.19.dev6",
+    "boba-connections==0.0.19.dev6",
+    "boba-transport-http==0.0.19.dev6",
     "pytest>=8",
 ]
 
