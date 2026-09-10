@@ -29,6 +29,7 @@ class StubRoute(StrEnum):
     """Какие запросы считает заглушка."""
 
     SEARCH = "search"
+    SPACE = "space"
     BODY = "body"
     ATTACHMENTS = "attachments"
     DOWNLOAD = "download"
@@ -139,6 +140,15 @@ class ConfluenceStub:
     def __init__(self) -> None:
         self.pages: dict[str, StubPage] = {}
         self.calls: Counter[StubRoute] = Counter()
+        self.spaces: set[str] = set()
+
+    def has_space(self, key: str) -> bool:
+        """Спейс есть, если объявлен явно или в нём есть хоть одна страница."""
+        keys = set(self.spaces)
+        for page in self.pages.values():
+            keys.add(page.space)
+
+        return key in keys
 
     def add(self, page: StubPage) -> StubPage:
         self.pages[page.id] = page
@@ -179,6 +189,14 @@ class ConfluenceStub:
                 data["_links"]["next"] = f"/rest/api/content/search?{urlencode(params)}"
 
             return self._json(data)
+
+        @app.get("/rest/api/space/{key}")
+        async def space(key: str) -> Response:
+            self.calls[StubRoute.SPACE] += 1
+            if not self.has_space(key):
+                return Response(status_code=404)
+
+            return self._json({"key": key, "name": key, "type": "global"})
 
         @app.get("/rest/api/content/{page_id}/child/attachment")
         async def attachments(page_id: str, request: Request) -> Response:
