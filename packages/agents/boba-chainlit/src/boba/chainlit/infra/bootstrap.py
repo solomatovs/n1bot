@@ -19,6 +19,7 @@ from boba.access import GrantCheck
 from boba.auth import AuthService
 from boba.cancellation import StopReason
 from boba.chainlit.auth.installer import ChainlitAuthInstaller
+from boba.chainlit.domain.keys import AppPrefix
 from boba.chainlit.infra import providers
 from boba.chainlit.infra.config import (
     AppConfig,
@@ -36,7 +37,7 @@ from boba.identity.run import RunRegistry
 from boba.runtime import providers as runtime
 from boba.runtime.config import AppName
 from boba.runtime.di import Container
-from boba.runtime.http import DomainErrorMiddleware
+from boba.runtime.http import DomainErrorMiddleware, StaleSessionMiddleware
 from boba.runtime.plugins import CoreTools
 from boba.sandbox.zygote import ZygoteRegistry
 
@@ -47,6 +48,8 @@ def run_app(config_path: Path):
 
     UserLogContext.install()
     logging.config.dictConfig(c.logger)
+    # ссылки на файлы и потоки строятся с префиксом приложения из конфига
+    AppPrefix.install(c.chainlit.url_prefix)
 
     app = FastAPI(lifespan=_run_container)
 
@@ -286,12 +289,19 @@ def _use_auth(container: Container) -> None:
     installer = ChainlitAuthInstaller(
         config.chainlit.url_prefix,
         sso_path,
+        config.proxy(),
         auth,
         config.session.session_ttl_sec,
         sessions,
         Path(config.chainlit.root).resolve(),
     )
     installer.install(chainlit_app)
+
+    # cookie прежнего поколения сессий отсекается до маршрутов chainlit: его
+    # декодер поколения не знает и принял бы старую сессию после рестарта
+    chainlit_app.add_middleware(
+        StaleSessionMiddleware, tokens=auth.tokens, cookie=auth.cookie()
+    )
 
 
 def _use_di_container(app: FastAPI, c: AppConfig) -> Container:

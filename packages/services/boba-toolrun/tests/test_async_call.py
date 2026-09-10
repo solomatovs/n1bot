@@ -8,7 +8,7 @@ from pathlib import Path
 
 from pydantic import SecretStr
 
-from boba.stand.fake_toolmod import FakeChunkHead, FakeConfig
+from boba.stand_core.fake_toolmod import FakeChunkHead, FakeConfig
 from boba.toolkit.frames import ToolFrame
 from boba.toolkit.protocol import ReplyOk, ToolCommand
 from boba.toolrun.process import ProcessLauncherConfig, ProcessToolCaller
@@ -16,7 +16,7 @@ from boba.toolrun.streaming import AsyncToolCall
 
 CFG = FakeConfig(token=SecretStr("t0ken"), limit=5)
 
-STREAM_ARGV = ("python3", "-m", "boba.stand.fake_toolmod", "fake_stream")
+STREAM_ARGV = ("python3", "-m", "boba.stand_core.fake_toolmod", "fake_stream")
 
 
 def _launcher(workdir: Path) -> ProcessToolCaller:

@@ -8,6 +8,7 @@ version = "0.0.19.dev1"
 description = "Boba HTTP transport: HttpRequest + HttpTransport + auth callables (PatAuth/BasicAuth) на httpx."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "pydantic>=2.10,<2.11",
     "boba-connections==0.0.19.dev1",
     "boba-kerberos==0.0.19.dev1",
     "boba-cancellation==0.0.19.dev1",
@@ -18,7 +19,6 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "boba-stand==0.0.19.dev1",
-    "pydantic>=2.10,<2.11",
     "pytest>=8",
 ]
 

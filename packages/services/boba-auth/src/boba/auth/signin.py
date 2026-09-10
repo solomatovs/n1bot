@@ -15,7 +15,9 @@ from collections.abc import Sequence
 
 from pydantic import SecretStr
 
-from boba.auth.config import AuthConfig, LdapAuthConfig, LocalAuthConfig
+from boba.auth.config import LdapAuthConfig, LocalAuthConfig
+from boba.auth.profiles import ProfileProviders
+from boba.auth.roles import RoleProviders
 from boba.identity.admission import PrincipalFacts
 from boba.identity.directory import (
     DirectoryBinding,
@@ -42,24 +44,31 @@ __all__ = [
     "CompositeSignIn",
     "LdapSignIn",
     "LocalSignIn",
-    "PasswordSignIns",
 ]
 
 
 class LocalSignIn(PasswordSignIn):
     """Вход по статической таблице логин/пароль из конфига."""
 
-    def __init__(self, config: LocalAuthConfig) -> None:
+    def __init__(
+        self, config: LocalAuthConfig, roles: RoleProviders, profiles: ProfileProviders
+    ) -> None:
         self._config = config
-        self._rules = config.rules()
+        self._roles = roles
+        self._profiles = profiles
 
     async def sign_in(self, username: str, password: str) -> SignedIn | None:
         if self._config.users.get(username) != password:
             return None
 
-        roles = self._rules.admit(PrincipalFacts(login=username))
+        facts = PrincipalFacts(login=username)
+        roles = frozenset(await self._roles.admit(facts))
+        grant = await self._profiles.granted(facts, roles)
         sign_in = SignInMetadata(
-            provider=SignInProvider.LOCAL.value, roles=frozenset(roles)
+            provider=SignInProvider.LOCAL.value,
+            roles=roles,
+            profiles=grant.granted,
+            profile=grant.selected,
         )
 
         login = UserLogin.of(username)
@@ -72,10 +81,17 @@ class LocalSignIn(PasswordSignIn):
 class LdapSignIn(PasswordSignIn):
     """Логин/пароль с проверкой bind'ом в AD; роли — по атрибутам каталога."""
 
-    def __init__(self, config: LdapAuthConfig, directory: UserDirectory) -> None:
+    def __init__(
+        self,
+        config: LdapAuthConfig,
+        directory: UserDirectory,
+        roles: RoleProviders,
+        profiles: ProfileProviders,
+    ) -> None:
         self._config = config
         self._directory = directory
-        self._rules = config.rules()
+        self._roles = roles
+        self._profiles = profiles
         self._logger = logging.getLogger(__name__)
 
     async def sign_in(self, username: str, password: str) -> SignedIn | None:
@@ -153,9 +169,13 @@ class LdapSignIn(PasswordSignIn):
         facts = PrincipalFacts(
             login=entry.samaccountname, dn=entry.dn, member_of=tuple(entry.member_of)
         )
-        roles = self._rules.admit(facts)
+        roles = frozenset(await self._roles.admit(facts))
+        grant = await self._profiles.granted(facts, roles)
         sign_in = SignInMetadata(
-            provider=SignInProvider.LDAP.value, roles=frozenset(roles)
+            provider=SignInProvider.LDAP.value,
+            roles=roles,
+            profiles=grant.granted,
+            profile=grant.selected,
         )
 
         login = UserLogin.of(entry.samaccountname)
@@ -188,24 +208,3 @@ class CompositeSignIn(PasswordSignIn):
             raise last_error
 
         return None
-
-
-class PasswordSignIns:
-    """Провайдеры паролей из [auth]: local и ldap; kerberos сюда не входит."""
-
-    @classmethod
-    def of(
-        cls, configs: Sequence[AuthConfig], directory: UserDirectory
-    ) -> CompositeSignIn | None:
-        providers: list[PasswordSignIn] = []
-        for config in configs:
-            if isinstance(config, LocalAuthConfig):
-                providers.append(LocalSignIn(config))
-
-            if isinstance(config, LdapAuthConfig):
-                providers.append(LdapSignIn(config, directory))
-
-        if not providers:
-            return None
-
-        return CompositeSignIn(providers)

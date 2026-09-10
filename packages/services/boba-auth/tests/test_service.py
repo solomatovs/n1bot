@@ -9,19 +9,19 @@ import jwt
 import pytest
 
 from boba.auth import AuthService, JwtTokens
-from boba.auth.config import LocalAuthConfig
-from boba.auth.signin import PasswordSignIns
+from boba.auth.config import LocalAuthConfig, LocalRoleProviders, LocalRolesConfig
 from boba.identity.admission import RoleMappingConfig
 from boba.identity.api import AuthenticatedUser, PersistedUsers, UsersUpsert
 from boba.identity.errors import AuthenticationError, ExternalServiceError
 from boba.identity.session import Login
 from boba.identity.signin import SignedIn, SignInMetadata
 from boba.identity.token import CookieSpec, SessionRenewal
-from boba.ldap import Ldap3Directory
+from boba.stand.signin import SignInStand
 
 pytestmark = pytest.mark.anyio
 
 SECRET = "stand-secret"
+GENERATION = "stand-generation"
 
 
 class Users(PersistedUsers, UsersUpsert):
@@ -53,24 +53,36 @@ def _service(users: Users, password: bool = False) -> AuthService:
     provider = None
     if password:
         config = LocalAuthConfig(
-            users={"alice": "pw"}, roles=RoleMappingConfig(root={"alice": ["DEV"]})
+            users={"alice": "pw"},
+            roles=LocalRoleProviders(
+                local=LocalRolesConfig(
+                    mapping=RoleMappingConfig(root={"alice": ["DEV"]})
+                )
+            ),
         )
-        provider = PasswordSignIns.of([config], Ldap3Directory())
+        provider = SignInStand.assembly().password([config])
 
     return AuthService(
-        tokens=JwtTokens(SECRET, 60),
+        tokens=JwtTokens(SECRET, 60, GENERATION),
         cookie=CookieSpec(name="access_token", samesite="lax", ttl_sec=60),
         password=provider,
         sso=None,
+        proxy=None,
         users=users,
         renewal=SessionRenewal.of(60, 60 * 24),
     )
 
 
 def _token(secret: str, **claims: object) -> str:
-    payload = {
+    """Токен стенда: metadata из claims дополняет роли и поколение по умолчанию."""
+    metadata: dict[str, object] = {"roles": ["read"], "generation": GENERATION}
+    given = claims.pop("metadata", None)
+    if isinstance(given, dict):
+        metadata.update(given)
+
+    payload: dict[str, object] = {
         "identifier": "reader",
-        "metadata": {"roles": ["read"]},
+        "metadata": metadata,
         "exp": int(time.time()) + 60,
         "iat": int(time.time()),
     }
@@ -150,10 +162,11 @@ class TestRenew:
     @staticmethod
     def _service(users: Users, ttl: int = 60, max_sec: int = 3600) -> AuthService:
         return AuthService(
-            tokens=JwtTokens(SECRET, ttl),
+            tokens=JwtTokens(SECRET, ttl, GENERATION),
             cookie=CookieSpec(name="access_token", samesite="lax", ttl_sec=ttl),
             password=None,
             sso=None,
+            proxy=None,
             users=users,
             renewal=SessionRenewal.of(ttl, max_sec),
         )
@@ -165,8 +178,8 @@ class TestRenew:
 
         renewed = await service.renew(first)
 
-        before = JwtTokens(SECRET, 60).read(first)
-        after = JwtTokens(SECRET, 60).read(renewed.token)
+        before = JwtTokens(SECRET, 60, GENERATION).read(first)
+        after = JwtTokens(SECRET, 60, GENERATION).read(renewed.token)
         assert after.exp >= before.exp
         assert after.started_at() == before.started_at()
         assert renewed.user.identifier == "reader"
@@ -178,7 +191,9 @@ class TestRenew:
 
         renewed = await service.renew(stale)
 
-        assert JwtTokens(SECRET, 60).read(renewed.token).identifier == "reader"
+        assert (
+            JwtTokens(SECRET, 60, GENERATION).read(renewed.token).identifier == "reader"
+        )
 
     async def test_token_beyond_grace_is_refused(self) -> None:
         service = self._service(Users())
@@ -193,7 +208,7 @@ class TestRenew:
         old = jwt.encode(
             {
                 "identifier": "reader",
-                "metadata": {},
+                "metadata": {"generation": GENERATION},
                 "exp": int(time.time()) + 30,
                 "iat": int(time.time()) - 30,
                 "since": int(time.time()) - 600,

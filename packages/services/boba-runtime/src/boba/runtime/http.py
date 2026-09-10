@@ -15,15 +15,24 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from boba.identity.errors import BaseError, FailureReport, to_domain
 from boba.identity.session import LogLine
+from boba.identity.signin import ProxyHeaderNames, ProxyRequest
 from boba.identity.sso import OwnRequest, RequestHeader, SsoErrorCode, SsoRequest
-from boba.identity.token import CookieJar, CookieSpec
+from boba.identity.token import (
+    CookieJar,
+    CookieSpec,
+    TokenReader,
+    TokenRejectedError,
+    TokenRejection,
+)
 
 __all__ = [
     "DomainErrorMiddleware",
+    "ProxyRequests",
     "RequestTokens",
     "SessionCookie",
     "SsoRequests",
     "SsoResponses",
+    "StaleSessionMiddleware",
 ]
 
 
@@ -76,6 +85,35 @@ class SessionCookie:
             path=self._spec.path,
             secure=self._spec.secure,
             samesite=self._spec.samesite,
+        )
+
+
+class ProxyRequests:
+    """Запрос proxy-входа из запроса starlette: заголовки по именам из
+    ProxyHeaderNames и адрес клиента."""
+
+    @classmethod
+    def of(cls, request: Request, names: ProxyHeaderNames) -> ProxyRequest:
+        roles = ""
+        if names.roles:
+            roles = request.headers.get(names.roles, "")
+
+        profiles = ""
+        if names.profiles:
+            profiles = request.headers.get(names.profiles, "")
+
+        profile = ""
+        if names.profile:
+            profile = request.headers.get(names.profile, "")
+
+        return ProxyRequest(
+            login=request.headers.get(names.user, ""),
+            timestamp=request.headers.get(names.timestamp, ""),
+            signature=request.headers.get(names.signature, ""),
+            roles=roles,
+            profiles=profiles,
+            profile=profile,
+            client=SsoRequests.client_of(request),
         )
 
 
@@ -156,6 +194,63 @@ class RequestTokens:
         return self.of_cookies(cookies)
 
 
+class StaleSessionMiddleware:
+    """Отсекает cookie входа чужого поколения сессий до маршрутов приложения.
+
+    Chainlit проверяет cookie своим декодером и поколения не знает, поэтому
+    после рестарта процесса его маршруты приняли бы старую сессию. Здесь
+    токен читается нашим читателем: чужое поколение — 401 и снятие cookie,
+    страница уходит на вход. Прочие отказы (срок, подпись) оставляются
+    маршрутам, они умеют их сами.
+    """
+
+    STALE_GRACE_SEC: ClassVar[int] = 10 * 365 * 24 * 3600
+    """Срок здесь не проверяется: просроченный токен — забота маршрутов."""
+
+    def __init__(self, app: ASGIApp, tokens: TokenReader, cookie: CookieSpec) -> None:
+        self.app = app
+        self._tokens = tokens
+        self._cookie = SessionCookie(cookie)
+        self._request_tokens = RequestTokens(cookie.name)
+        self._logger = logging.getLogger(__name__)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        request = Request(scope)
+        token = self._request_tokens.of_cookies(request.cookies)
+        if token is None:
+            return await self.app(scope, receive, send)
+
+        try:
+            self._tokens.read_stale(token, self.STALE_GRACE_SEC)
+        except TokenRejectedError as exc:
+            if exc.reason is not TokenRejection.GENERATION:
+                return await self.app(scope, receive, send)
+
+            self._logger.info(
+                "%s %s: stale session cookie refused: %s",
+                scope.get("method", "?"),
+                scope.get("path", "?"),
+                exc,
+            )
+            response = JSONResponse(
+                content={
+                    "detail": (
+                        "your sign-in belongs to a previous session generation, "
+                        "sign in again"
+                    )
+                },
+                status_code=401,
+            )
+            self._cookie.clear(response, request.cookies)
+
+            return await response(scope, receive, send)
+
+        return await self.app(scope, receive, send)
+
+
 class DomainErrorMiddleware:
     "Единая точка обработки исключений приложения"
 
@@ -212,12 +307,16 @@ class SsoRequests:
         return SsoRequest(
             authorization=request.headers.get(RequestHeader.AUTHORIZATION, ""),
             own_request=OwnRequest.asked(mark),
-            client=cls._client_of(request),
+            client=cls.client_of(request),
         )
 
     @staticmethod
-    def _client_of(request: Request) -> str:
-        """Лучший идентификатор клиента для логов: реальный IP за прокси, иначе peer."""
+    def client_of(request: Request) -> str:
+        """Лучший идентификатор клиента: реальный IP за прокси, иначе peer.
+
+        X-Forwarded-For и X-Real-IP доверяются, потому что nginx перед
+        приложением перезаписывает их сам.
+        """
         if xff := request.headers.get(RequestHeader.FORWARDED_FOR):
             first, _, _ = xff.partition(",")
             return first.strip()

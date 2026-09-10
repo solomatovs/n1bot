@@ -30,7 +30,7 @@ from boba.runtime.http import RequestTokens
 from boba.runtime.launchers import CallSurface
 from boba.runtime.plugins import ToolBridge
 from boba.runtime.users import UsersTable
-from boba.stand.auth import StubAuthenticator
+from boba.stand_core.auth import StubAuthenticator
 from boba.studio.api.auth import ApiAuth
 from boba.studio.api.tools import ToolCallBody, ToolCalling
 from boba.toolkit.facade import tool
@@ -168,9 +168,8 @@ class TestServe:
     async def test_roles_without_grants_see_no_tool(
         self, studio_config: StudioRuntimeConfig
     ) -> None:
-        user = StandProfiles.user(studio_config)
-        user = user.model_copy(
-            update={"sign_in": SignInMetadata(roles=frozenset({"stranger"}))}
+        user = StandProfiles.with_roles(
+            studio_config, StandProfiles.user(studio_config), {"stranger"}
         )
 
         with pytest.raises(HTTPException) as caught:
@@ -259,12 +258,13 @@ class TestAuthenticator:
                 ),
             )
         )
-        issuer = JwtTokens(secret, 60)
+        issuer = JwtTokens(secret, 60, "stand-generation")
         authenticator = AuthService(
             tokens=issuer,
             cookie=CookieSpec(name="access_token", samesite="lax", ttl_sec=60),
             password=None,
             sso=None,
+            proxy=None,
             users=users,
             renewal=SessionRenewal.of(60, 60 * 24),
         )

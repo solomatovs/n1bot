@@ -60,6 +60,7 @@ class TokenRejection(StrEnum):
     EXPIRED = "expired"
     SIGNATURE = "signature"
     MALFORMED = "malformed"
+    GENERATION = "generation"
 
 
 class TokenRejectedError(Exception):

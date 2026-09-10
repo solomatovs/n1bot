@@ -14,7 +14,7 @@ from typing import ClassVar
 import pytest
 
 from boba.config import bind
-from boba.stand.samples import SamplePdf
+from boba.stand_core.samples import SamplePdf
 from boba.tool.doc.tools import (
     DocToolSection,
     document_outline,

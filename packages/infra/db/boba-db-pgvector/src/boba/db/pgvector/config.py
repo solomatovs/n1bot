@@ -12,11 +12,13 @@ from __future__ import annotations
 from typing import Self
 
 from psycopg import sql
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from boba.db.postgres.profile import PostgresConfig
 
 __all__ = [
+    "EmbeddingDimension",
+    "KnowledgeBaseSchemaConfig",
     "PostgresStoreConfig",
     "PostgresStoreSchema",
 ]
@@ -94,3 +96,19 @@ class PostgresStoreConfig(BaseModel):
 
     connection: PostgresConfig
     tables: PostgresStoreSchema
+
+
+class EmbeddingDimension(BaseModel):
+    """Из профиля embedding хранилищу нужна только размерность вектора: остальные
+    ключи профиля читает инструмент, здесь они не разбираются."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    dim: int = Field(gt=0, description="Размерность вектора колонки pgvector.")
+
+
+class KnowledgeBaseSchemaConfig(PostgresStoreConfig):
+    """Секция [tool.kb] глазами подготовки схемы: подключение, таблицы и
+    размерность вектора. Полный конфиг инструмента живёт у самого плагина."""
+
+    embedding: EmbeddingDimension

@@ -19,7 +19,7 @@ from boba.identity.session import Login
 from boba.identity.signin import SignInMetadata
 from boba.runtime.config import StudioRuntimeConfig
 from boba.runtime.refs import RuntimeRefs
-from boba.stand.auth import NoUsers, StubAuthenticator
+from boba.stand_core.auth import NoUsers, StubAuthenticator
 from boba.studio.api.account import UsersSource
 from boba.studio.api.app import ApiAccess, ApiApp, ApiExtras
 from boba.studio.api.signin import SignInWiring
@@ -39,9 +39,9 @@ class StandProfiles:
 
     @classmethod
     def profile(cls, config: StudioRuntimeConfig) -> str:
-        """Первый профиль, видимый ролям стенда."""
-        visible = cls.profiles(config).visible_for(frozenset(cls.roles(config)))
-        names = sorted(visible)
+        """Первый профиль, выдаваемый ролям стенда."""
+        granted = cls.profiles(config).granted_by_roles(frozenset(cls.roles(config)))
+        names = sorted(granted)
         if not names:
             roles = sorted(cls.roles(config))
             configured = sorted(config.profiles)
@@ -53,16 +53,31 @@ class StandProfiles:
 
         return names[0]
 
-    @staticmethod
+    @classmethod
     def user(
-        config: StudioRuntimeConfig, extra_roles: Iterable[str] = ()
+        cls, config: StudioRuntimeConfig, extra_roles: Iterable[str] = ()
     ) -> AuthenticatedUser:
-        """Пользователь стенда со всеми ролями конфига."""
-        roles = [*sorted(config.roles), *extra_roles]
+        """Пользователь стенда со всеми ролями конфига и профилями по ним, как
+        их выдал бы вход."""
+        roles = frozenset([*sorted(config.roles), *extra_roles])
+        profiles = cls.profiles(config).granted_by_roles(roles)
+
         return AuthenticatedUser(
             id=uuid4(),
             identifier=Login("user-1"),
-            sign_in=SignInMetadata(roles=frozenset(roles)),
+            sign_in=SignInMetadata(roles=roles, profiles=profiles),
+        )
+
+    @classmethod
+    def with_roles(
+        cls, config: StudioRuntimeConfig, user: AuthenticatedUser, roles: Iterable[str]
+    ) -> AuthenticatedUser:
+        """Тот же пользователь с другими ролями и профилями по ним."""
+        given = frozenset(roles)
+        profiles = cls.profiles(config).granted_by_roles(given)
+
+        return user.model_copy(
+            update={"sign_in": SignInMetadata(roles=given, profiles=profiles)}
         )
 
 

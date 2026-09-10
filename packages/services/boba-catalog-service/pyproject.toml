@@ -23,6 +23,7 @@ dependencies = [
 dev = [
     "boba-db-clickhouse==0.0.19.dev1",
     "boba-stand==0.0.19.dev1",
+    "boba-stand-core==0.0.19.dev1",
     "pytest>=8",
 ]
 

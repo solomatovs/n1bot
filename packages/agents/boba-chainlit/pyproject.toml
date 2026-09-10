@@ -56,13 +56,14 @@ tools = [
     "boba-tool-web==0.0.19.dev1",
 ]
 dev = [
+    "boba-krb[seal]==0.0.19.dev1",
     "boba-connections==0.0.19.dev1",
     "boba-db-clickhouse==0.0.19.dev1",
-    "boba-ldap==0.0.19.dev1",
     "boba-kerberos==0.0.19.dev1",
     "boba-connection-broker==0.0.19.dev1",
     "boba-liteparse==0.0.19.dev1",
     "boba-stand==0.0.19.dev1",
+    "boba-stand-core==0.0.19.dev1",
     "boba-text==0.0.19.dev1",
     "boba-tool-chart==0.0.19.dev1",
     "boba-tool-clickhouse==0.0.19.dev1",

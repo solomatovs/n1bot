@@ -1,10 +1,11 @@
-"""Вход пользователя: пароль, SPNEGO, выпуск и чтение токена — одна точка для обоих
-приложений. Строка users заводится входом; чужой токен строку не заводит.
+"""Вход пользователя: пароль, SPNEGO, доверенный заголовок, выпуск и чтение токена —
+одна точка для обоих приложений. Строка users заводится входом; чужой токен
+строку не заводит.
 
 Ошибки:
-AuthenticationError — логин или пароль неверен, токен не принят либо у входа нет
-    строки users.
-AuthorizationError — вход запрещён провайдером: роли, исключения.
+AuthenticationError — логин или пароль неверен, подпись proxy-запроса не сходится,
+    токен не принят либо у входа нет строки users.
+AuthorizationError — вход запрещён провайдером: роли, исключения, адрес клиента.
 ExternalServiceError — каталог входа недоступен или способ входа не настроен.
 InternalServiceError — ошибка конфига каталога или kerberos на нашей стороне.
 """
@@ -26,7 +27,7 @@ from boba.identity.api import (
 )
 from boba.identity.context import DelegatedTicket
 from boba.identity.errors import AuthenticationError, ExternalServiceError
-from boba.identity.signin import PasswordSignIn, SignedIn
+from boba.identity.signin import PasswordSignIn, ProxyRequest, ProxySignIn, SignedIn
 from boba.identity.sso import (
     SpnegoExchange,
     SsoChallenge,
@@ -59,6 +60,7 @@ class SignInProviders(BaseModel):
 
     password: bool
     sso: bool
+    proxy: bool
 
 
 class IssuedSession(BaseModel):
@@ -72,7 +74,8 @@ class IssuedSession(BaseModel):
 
 
 class AuthService(Authenticator):
-    """Вход по паролю и SPNEGO, токен и cookie сессии, пользователь по токену."""
+    """Вход по паролю, SPNEGO и доверенному заголовку, токен и cookie сессии,
+    пользователь по токену."""
 
     def __init__(  # noqa: PLR0913 — сервис входа собирается всеми зависимостями сразу
         self,
@@ -80,6 +83,7 @@ class AuthService(Authenticator):
         cookie: CookieSpec,
         password: PasswordSignIn | None,
         sso: SpnegoExchange | None,
+        proxy: ProxySignIn | None,
         users: AuthUsers,
         renewal: SessionRenewal,
     ) -> None:
@@ -87,6 +91,7 @@ class AuthService(Authenticator):
         self._cookie = cookie
         self._password = password
         self._sso = sso
+        self._proxy = proxy
         self._users = users
         self._renewal = renewal
 
@@ -96,11 +101,17 @@ class AuthService(Authenticator):
 
     def providers(self) -> SignInProviders:
         return SignInProviders(
-            password=self._password is not None, sso=self._sso is not None
+            password=self._password is not None,
+            sso=self._sso is not None,
+            proxy=self._proxy is not None,
         )
 
     def cookie(self) -> CookieSpec:
         return self._cookie
+
+    @property
+    def tokens(self) -> JwtTokens:
+        return self._tokens
 
     def jar(self) -> CookieJar:
         return CookieJar(self._cookie.name)
@@ -112,7 +123,8 @@ class AuthService(Authenticator):
 
     async def sign_in(self, username: str, password: str) -> SignedIn:
         """Итог входа по паролю без строки users и токена: для хоста, который
-        заводит пользователя и выпускает сессию сам (chainlit).
+        заводит пользователя и выпускает сессию сам (chainlit). Вход уже помечен
+        поколением сессий, чтобы токен хоста прошёл проверку.
         """
         if self._password is None:
             message = (
@@ -129,7 +141,20 @@ class AuthService(Authenticator):
             )
             raise AuthenticationError(message)
 
-        return signed
+        return self._tokens.stamp(signed)
+
+    async def by_proxy(self, request: ProxyRequest) -> IssuedSession:
+        """Вход по подписанному заголовку доверенного бэкенда."""
+        if self._proxy is None:
+            message = (
+                f"proxy sign-in of {request.login!r} from {request.client}: "
+                "[auth] has no proxy provider configured"
+            )
+            raise ExternalServiceError("auth", message)
+
+        signed = await self._proxy.sign_in(request)
+
+        return await self.issue(signed)
 
     async def by_spnego(self, request: SsoRequest) -> SsoChallenge | IssuedSession:
         outcome = await self._exchange().handshake(request)
@@ -200,11 +225,13 @@ class AuthService(Authenticator):
             return SsoRefused(reason=str(exc))
 
     async def issue(self, signed: SignedIn) -> IssuedSession:
-        """Строка users по итогу входа и токен сессии с claims этого входа."""
-        user = await self._users.ensure_user(signed)
-        token = self._tokens.issue(signed)
+        """Строка users по итогу входа и токен сессии с claims этого входа; итог
+        помечен поколением сессий, как и токен."""
+        stamped = self._tokens.stamp(signed)
+        user = await self._users.ensure_user(stamped)
+        token = self._tokens.issue(stamped)
 
-        return IssuedSession(signed=signed, user=user, token=token)
+        return IssuedSession(signed=stamped, user=user, token=token)
 
     async def user_of_token(self, token: str) -> AuthenticatedUser:
         """Пользователь входа: строка users по токену, metadata — из токена."""

@@ -24,7 +24,7 @@ import krb5
 import pytest
 from chainlit.user import PersistedUser
 from chainlit.user import User as ChainlitUser
-from chainlit_stand import SsoStand, enter_context
+from chainlit_stand import SsoStand, StandTokens, enter_context
 from gssapi import Credentials, Name, NameType, SecurityContext
 from psycopg import sql
 from pydantic import SecretStr
@@ -215,7 +215,7 @@ async def session(
     if user is None:
         raise AssertionError("user was not created")
 
-    token = create_jwt(ChainlitUser(identifier=user.identifier, metadata=metadata))
+    token = create_jwt(StandTokens.user(user.identifier, metadata))
     context = init_http_context(user=user, auth_token=token, thread_id=THREAD)
     context.session.chat_profile = PROFILE
     enter_context()

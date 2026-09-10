@@ -45,6 +45,7 @@ from boba.stand.catalog_ports import (
 )
 from boba.stand.catalog_stand import CatalogStand
 from boba.stand.refs import StandRefs
+from boba.stand.signin import SignInStand
 from boba.studio.api.app import ApiExtras
 from boba.studio.catalog.api import CatalogApi, CatalogUrl
 from boba.studio.catalog.sync_ports import (
@@ -69,10 +70,15 @@ STAND_CONNECTIONS = (PG_CONNECTION, CH_CONNECTION, ORACLE_CONNECTION)
 
 
 def _user(user_id: UUID, *roles: str) -> AuthenticatedUser:
+    """Пользователь с профилями по ролям, как их выдал бы вход: профиль стенда
+    носит то же имя, что профиль по умолчанию в конфиге."""
+    given = frozenset(roles)
+    profiles = SignInStand.profiles().granted_by_roles(given)
+
     return AuthenticatedUser(
         id=user_id,
         identifier=Login(f"user-{user_id.int}"),
-        sign_in=SignInMetadata(roles=frozenset(roles)),
+        sign_in=SignInMetadata(roles=given, profiles=profiles),
     )
 
 
@@ -702,7 +708,7 @@ async def test_connection_snapshots_over_http(stand: Stand) -> None:
         statuses = {
             tuple(e["ref"]["path"]): e["status"] for e in diff.json()["entries"]
         }
-        assert statuses[("prod", "public", "customers")] == "removed"
+        assert statuses["prod", "public", "customers"] == "removed"
 
         refused = await client.delete(
             stand.url(CatalogUrl.CONNECTION_VERSIONS, connection_id=CONNECTION_ID)

@@ -43,7 +43,6 @@ tools = [
     "boba-tool-knowledge==0.0.19.dev1",
 ]
 dev = [
-    "boba-ldap==0.0.19.dev1",
     "httpx>=0.28,<1",
     "starlette>=0.40",
     "websockets>=13",
@@ -55,6 +54,7 @@ dev = [
     "boba-db-postgres==0.0.19.dev1",
     "boba-config==0.0.19.dev1",
     "boba-stand==0.0.19.dev1",
+    "boba-stand-core==0.0.19.dev1",
     "boba-transport-http==0.0.19.dev1",
     "krb5>=0.7",
     "playwright>=1.47",

@@ -11,7 +11,7 @@ from boba.toolkit.entry import ToolMain
 
 
 class TestToolCli:
-    MODULE = "boba.stand.fake_toolmod"
+    MODULE = "boba.stand_core.fake_toolmod"
 
     @staticmethod
     def run_cli(arguments: list[str]) -> subprocess.CompletedProcess[bytes]:

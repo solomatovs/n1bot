@@ -1,9 +1,15 @@
-"""Сверка объявленных зависимостей пакетов репозитория с их импортами.
+"""Сверка объявленных зависимостей пакетов репозитория с их импортами и
+правилами графа.
 
 Источник правды — pyproject каждого пакета и AST его модулей: src сверяется с
-dependencies и extras, tests — с dependencies и экстрой dev. Владельца стороннего
-модуля даёт список файлов дистрибутивов текущего интерпретатора, владельца
-boba.* — каталоги src пакетов репозитория.
+dependencies и extras кроме dev, tests — с dependencies и экстрой dev. Владельца
+стороннего модуля даёт список файлов дистрибутивов текущего интерпретатора,
+владельца boba.* — каталоги src пакетов репозитория. Подмодуль, который живёт
+за extra владельца ([tool.boba.extras] в его pyproject), требует у импортёра
+объявления этого extra. Слой пакета — каталог под packages: core ← infra ←
+services ← agents; ребро против направления в src — расхождение, tools —
+плагины и в services не импортируются, testing вне оси. Циклы ищутся по
+dependencies.
 
 Ошибки:
 DepsAuditError — pyproject не разбирается, каталог packages не найден или модуль
@@ -71,10 +77,59 @@ class Scope(StrEnum):
 
 
 class FindingKind(StrEnum):
-    """Расхождение между pyproject и импортами."""
+    """Расхождение между pyproject, импортами и правилами графа."""
 
     MISSING = "missing"
     UNUSED = "unused"
+    MISSING_EXTRA = "missing-extra"
+    LAYER = "layer"
+    CYCLE = "cycle"
+
+
+class Layer(StrEnum):
+    """Слой пакета по каталогу под packages; порядок — направление зависимостей."""
+
+    CORE = "core"
+    INFRA = "infra"
+    SERVICES = "services"
+    TOOLS = "tools"
+    AGENTS = "agents"
+    TESTING = "testing"
+
+    @classmethod
+    def of(cls, packages_root: Path, project_root: Path) -> Layer:
+        name = project_root.relative_to(packages_root).parts[0]
+        try:
+            return cls(name)
+        except ValueError as exc:
+            msg = (
+                f"package {project_root}: directory {name!r} under {packages_root} "
+                f"is not a layer, expected one of {[m.value for m in cls]}"
+            )
+            raise DepsAuditError(msg) from exc
+
+    def rank(self) -> int:
+        order = {
+            Layer.CORE: 0,
+            Layer.INFRA: 1,
+            Layer.SERVICES: 2,
+            Layer.TOOLS: 2,
+            Layer.AGENTS: 3,
+            Layer.TESTING: 4,
+        }
+
+        return order[self]
+
+    def may_import(self, other: Layer) -> bool:
+        """Ребро слоя к слою: только вниз или вбок; tools — плагины, их знают
+        только agents и testing; testing вне оси и импортирует что угодно."""
+        if self is Layer.TESTING:
+            return True
+
+        if other is Layer.TOOLS:
+            return self in (Layer.TOOLS, Layer.AGENTS)
+
+        return other.rank() <= self.rank()
 
 
 class Requirement(BaseModel):
@@ -128,19 +183,26 @@ class PackageProject(BaseModel):
     TESTS_DIR: ClassVar[str] = "tests"
     NAMESPACE: ClassVar[str] = "boba"
 
+    TOOL_EXTRAS: ClassVar[tuple[str, ...]] = ("tool", "boba", "extras")
+    """Таблица [tool.boba.extras]: модуль пакета → extra, за которым он живёт."""
+
     name: str
     root: Path
     dependencies: Sequence[Requirement]
     extras: Mapping[str, Sequence[Requirement]]
+    module_extras: Mapping[str, str] = {}
 
     @classmethod
     def load(cls, pyproject: Path) -> PackageProject:
         try:
             with pyproject.open("rb") as handle:
-                project = tomllib.load(handle)["project"]
+                document = tomllib.load(handle)
+            project = document["project"]
         except (OSError, tomllib.TOMLDecodeError, KeyError) as exc:
             msg = f"reading [project] of {pyproject}: {type(exc).__name__}: {exc}"
             raise DepsAuditError(msg) from exc
+
+        module_extras = cls._module_extras(document, pyproject)
 
         dependencies: list[Requirement] = []
         for spec in project.get("dependencies", []):
@@ -157,7 +219,34 @@ class PackageProject(BaseModel):
             root=pyproject.parent,
             dependencies=dependencies,
             extras=extras,
+            module_extras=module_extras,
         )
+
+    @classmethod
+    def _module_extras(
+        cls, document: Mapping[str, object], pyproject: Path
+    ) -> dict[str, str]:
+        section: object = document
+        for key in cls.TOOL_EXTRAS:
+            if not isinstance(section, Mapping):
+                return {}
+            section = section.get(key, {})
+
+        if not isinstance(section, Mapping):
+            msg = f"{pyproject}: [tool.boba.extras] expects a table module = extra"
+            raise DepsAuditError(msg)
+
+        declared: dict[str, str] = {}
+        for module, extra in section.items():
+            if not isinstance(module, str) or not isinstance(extra, str):
+                msg = (
+                    f"{pyproject}: [tool.boba.extras] expects string keys and "
+                    f"values, got {module!r} = {extra!r}"
+                )
+                raise DepsAuditError(msg)
+            declared[module] = extra
+
+        return declared
 
     @property
     def src(self) -> Path:
@@ -180,11 +269,32 @@ class PackageProject(BaseModel):
     def dev_requirements(self) -> Sequence[Requirement]:
         return self.extras.get(self.DEV, ())
 
+    def shipped_requirements(self) -> Iterator[Requirement]:
+        """Что ставится с пакетом: dependencies и extras кроме dev."""
+        yield from self.dependencies
+
+        for extra, requirements in self.extras.items():
+            if extra == self.DEV:
+                continue
+            yield from requirements
+
     def all_requirements(self) -> Iterator[Requirement]:
         yield from self.dependencies
 
         for requirements in self.extras.values():
             yield from requirements
+
+    def extra_of_module(self, module: str) -> str | None:
+        """Extra, за которым живёт модуль пакета или его родитель; None — ни за
+        каким."""
+        parts = module.split(".")
+        while parts:
+            extra = self.module_extras.get(".".join(parts))
+            if extra is not None:
+                return extra
+            parts.pop()
+
+        return None
 
 
 class ModuleOwners:
@@ -281,6 +391,26 @@ class ModuleOwners:
 
     def is_plugin_of_pytest(self, dist: str) -> bool:
         return dist in self._plugins
+
+    def project_of(self, dist: str) -> PackageProject | None:
+        return self._projects.get(dist)
+
+    def gated_of(self, modules: Iterable[str]) -> Iterator[tuple[str, str]]:
+        """Пары (дистрибутив, extra) для импортов boba.*, живущих за extra владельца."""
+        for module in modules:
+            if module.split(".")[0] != PackageProject.NAMESPACE:
+                continue
+
+            owner = self._boba_owner(module)
+            project = self._projects.get(owner)
+            if project is None:
+                continue
+
+            extra = project.extra_of_module(module)
+            if extra is None:
+                continue
+
+            yield owner, extra
 
     def dists_of(
         self, modules: Iterable[str], local_roots: Sequence[Path]
@@ -413,7 +543,8 @@ class ImportScan:
 
 
 class Finding(BaseModel):
-    """Одно расхождение: дистрибутив, которого не хватает или который лишний."""
+    """Одно расхождение: дистрибутив, которого не хватает или который лишний,
+    extra без объявления, ребро против слоёв или цикл."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -444,6 +575,7 @@ class DepsAudit:
         self._projects = self._load_projects()
         self._owners = ModuleOwners(self._projects)
         self._scan = ImportScan()
+        self._layers = {p.name: Layer.of(packages_root, p.root) for p in self._projects}
 
     def _load_projects(self) -> list[PackageProject]:
         projects: list[PackageProject] = []
@@ -462,7 +594,12 @@ class DepsAudit:
             result.extend(self._src_findings(project))
             result.extend(self._tests_findings(project))
 
+        result.extend(self._cycle_findings())
+
         return result
+
+    def layer_of(self, dist: str) -> Layer:
+        return self._layers[dist]
 
     def render(self, findings: Sequence[Finding]) -> str:
         lines: list[str] = []
@@ -476,7 +613,7 @@ class DepsAudit:
 
         declared: set[str] = set()
         via_extras: set[str] = set()
-        for requirement in project.all_requirements():
+        for requirement in project.shipped_requirements():
             declared.add(requirement.name)
             via_extras |= self._owners.brought_by_extras(requirement)
 
@@ -492,6 +629,11 @@ class DepsAudit:
                 dist=dist,
                 files=sorted(used[dist]),
             )
+
+        yield from self._extra_findings(
+            project, Scope.SRC, project.src, list(project.shipped_requirements())
+        )
+        yield from self._layer_findings(project, used)
 
         yield from self._unused(project, Scope.SRC, project.dependencies, used)
 
@@ -528,7 +670,103 @@ class DepsAudit:
                 files=sorted(used[dist]),
             )
 
+        yield from self._extra_findings(
+            project,
+            Scope.TESTS,
+            project.tests,
+            [*project.dependencies, *project.dev_requirements()],
+        )
+
         yield from self._unused(project, Scope.TESTS, project.dev_requirements(), used)
+
+    def _extra_findings(
+        self,
+        project: PackageProject,
+        scope: Scope,
+        directory: Path,
+        requirements: Sequence[Requirement],
+    ) -> Iterator[Finding]:
+        """Импорт модуля за extra владельца требует dist[extra] у импортёра."""
+        declared: dict[str, set[str]] = {}
+        for requirement in requirements:
+            declared.setdefault(requirement.name, set()).update(requirement.extras)
+
+        missing: dict[tuple[str, str], set[str]] = {}
+        for path, modules in self._scan.modules_by_file(directory):
+            for dist, extra in self._owners.gated_of(modules):
+                if dist == project.name:
+                    continue
+                if extra in declared.get(dist, set()):
+                    continue
+                key = (dist, extra)
+                missing.setdefault(key, set()).add(str(path.relative_to(directory)))
+
+        for (dist, extra), files in sorted(missing.items()):
+            yield Finding(
+                package=project.name,
+                scope=scope,
+                kind=FindingKind.MISSING_EXTRA,
+                dist=f"{dist}[{extra}]",
+                files=sorted(files),
+            )
+
+    def _layer_findings(
+        self, project: PackageProject, used: Mapping[str, set[str]]
+    ) -> Iterator[Finding]:
+        """Ребро src против направления слоёв: core ← infra ← services ← agents."""
+        layer = self._layers[project.name]
+        for dist in sorted(used):
+            other = self._layers.get(dist)
+            if other is None:
+                continue
+            if layer.may_import(other):
+                continue
+            yield Finding(
+                package=project.name,
+                scope=Scope.SRC,
+                kind=FindingKind.LAYER,
+                dist=f"{dist} ({layer} -> {other})",
+                files=sorted(used[dist]),
+            )
+
+    def _cycle_findings(self) -> Iterator[Finding]:
+        """Циклы по dependencies пакетов репозитория; extras в граф не входят."""
+        edges: dict[str, list[str]] = {}
+        for project in self._projects:
+            targets: list[str] = []
+            for requirement in project.dependencies:
+                if requirement.name in self._layers:
+                    targets.append(requirement.name)
+            edges[project.name] = sorted(targets)
+
+        seen: set[tuple[str, ...]] = set()
+        for start in sorted(edges):
+            for path in self._cycles_from(start, edges):
+                key = tuple(sorted(path))
+                if key in seen:
+                    continue
+                seen.add(key)
+                yield Finding(
+                    package=start,
+                    scope=Scope.SRC,
+                    kind=FindingKind.CYCLE,
+                    dist=" -> ".join([*path, start]),
+                )
+
+    @staticmethod
+    def _cycles_from(
+        start: str, edges: Mapping[str, Sequence[str]]
+    ) -> Iterator[list[str]]:
+        stack: list[tuple[str, list[str]]] = [(start, [start])]
+        while stack:
+            node, path = stack.pop()
+            for target in edges.get(node, ()):
+                if target == start:
+                    yield path
+                    continue
+                if target in path:
+                    continue
+                stack.append((target, [*path, target]))
 
     def _used(self, project: PackageProject, directory: Path) -> dict[str, set[str]]:
         used: dict[str, set[str]] = {}

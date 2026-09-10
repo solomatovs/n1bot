@@ -150,6 +150,16 @@ class ChainlitSession(Session):
         return self.signed_in().sign_in().roles
 
     @property
+    def profiles(self) -> frozenset[str]:
+        """Профили, выданные входу, — из токена сессии, как и роли."""
+        return self.signed_in().sign_in().profiles
+
+    @property
+    def sign_in(self) -> SignInMetadata:
+        """Вход целиком из токена сессии: роли, профили, выбранный профиль."""
+        return self.signed_in().sign_in()
+
+    @property
     def chat_profile(self) -> str | None:
         value = getattr(self._session, "chat_profile", None)
         if not value:
@@ -294,6 +304,11 @@ class ChainlitSession(Session):
     def roles_of(cls, user: cl.User | cl.PersistedUser | None) -> frozenset[str]:
         """Роли пользователя из metadata; годится и вне контекста сессии."""
         return SignInMetadata.parse(cls.metadata_of(user)).roles
+
+    @classmethod
+    def profiles_of(cls, user: cl.User | cl.PersistedUser | None) -> frozenset[str]:
+        """Профили входа из metadata; годится и вне контекста сессии."""
+        return SignInMetadata.parse(cls.metadata_of(user)).profiles
 
 
 class ChainlitSessions(SessionSource, LiveSessions):

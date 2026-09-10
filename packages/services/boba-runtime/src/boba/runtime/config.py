@@ -7,6 +7,7 @@ RuntimeError — конфиг ещё не загружен (RawConfig.get до R
 from __future__ import annotations
 
 import os
+import secrets
 import tomllib
 from enum import StrEnum
 from pathlib import Path
@@ -19,6 +20,7 @@ from boba.access import RoleConfig
 from boba.auth.config import (
     AuthConfig,
     KerberosAuthConfig,
+    ProxyAuthConfig,
 )
 from boba.chat.profiles import ChatProfileConfig
 from boba.config import ConfigBuilder, bind
@@ -419,6 +421,15 @@ class SessionConfig(BaseModel):
             "Потолок сессии от первого входа: дольше без нового входа не продлить."
         ),
     )
+    generation: str = Field(
+        default="",
+        description=(
+            "Поколение сессий: токены другого поколения отвергаются. Пусто — "
+            "случайное на каждый старт процесса, и рестарт разлогинивает всех; "
+            "задано — общее для приложений, которые должны принимать токены "
+            "друг друга."
+        ),
+    )
 
     @model_validator(mode="after")
     def _max_covers_ttl(self) -> SessionConfig:
@@ -434,6 +445,19 @@ class SessionConfig(BaseModel):
 
     def renewal(self) -> SessionRenewal:
         return SessionRenewal.of(self.session_ttl_sec, self.session_max_sec)
+
+    _process_generation: ClassVar[str] = ""
+    """Случайное поколение процесса: одно на все читатели токенов в нём."""
+
+    def session_generation(self) -> str:
+        """Поколение из конфига либо случайное, общее для процесса."""
+        if self.generation:
+            return self.generation
+
+        if not SessionConfig._process_generation:
+            SessionConfig._process_generation = secrets.token_hex(16)
+
+        return SessionConfig._process_generation
 
 
 class StudioConfig(BaseModel):
@@ -586,6 +610,13 @@ class RuntimeConfig(BaseModel):
     def kerberos(self) -> KerberosAuthConfig | None:
         for entry in self.auth:
             if isinstance(entry, KerberosAuthConfig):
+                return entry
+
+        return None
+
+    def proxy(self) -> ProxyAuthConfig | None:
+        for entry in self.auth:
+            if isinstance(entry, ProxyAuthConfig):
                 return entry
 
         return None

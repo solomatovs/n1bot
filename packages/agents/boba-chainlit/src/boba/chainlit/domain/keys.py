@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import ClassVar
 from urllib.parse import quote
@@ -27,15 +26,28 @@ __all__ = [
 
 
 class AppPrefix:
-    """Префикс подмонтированного приложения; ссылка без него уйдёт в корень домена."""
+    """Префикс подмонтированного приложения; ссылка без него уйдёт в корень домена.
 
-    ENV: ClassVar[str] = "CHAINLIT_ROOT_PATH"
+    Значение ставит bootstrap из [chainlit].url_prefix конфига один раз на
+    процесс; строители ссылок читают его отсюда, окружения не знают.
+    """
+
+    _prefix: ClassVar[str | None] = None
+
+    @classmethod
+    def install(cls, prefix: str) -> None:
+        cls._prefix = prefix.rstrip("/")
 
     @classmethod
     def render(cls) -> str:
-        prefix = os.getenv(cls.ENV, "")
+        if cls._prefix is None:
+            msg = (
+                "app prefix is not installed: bootstrap must call "
+                "AppPrefix.install([chainlit].url_prefix) before links are built"
+            )
+            raise RuntimeError(msg)
 
-        return prefix.rstrip("/")
+        return cls._prefix
 
 
 @dataclass(frozen=True, slots=True)

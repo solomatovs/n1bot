@@ -13,23 +13,13 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from typing import ClassVar
 
-from boba.auth.config import KerberosAuthConfig, KerberosRolesInLdapConfig
-from boba.identity.admission import PrincipalFacts, RoleRules
+from boba.auth.config import KerberosAuthConfig
+from boba.auth.profiles import ProfileGrant, ProfileProviders
+from boba.auth.roles import RoleProviders
+from boba.identity.admission import PrincipalFacts
 from boba.identity.context import DelegatedTicket
-from boba.identity.directory import (
-    ADUserEntry,
-    DirectoryBinding,
-    DirectorySearch,
-    LDAPError,
-    LDAPInvalidCredentialsError,
-    LDAPServerUnavailableError,
-    LDAPUserNotFoundError,
-    UserDirectory,
-)
 from boba.identity.errors import (
-    AuthenticationError,
     AuthorizationError,
     BaseError,
     ExternalServiceError,
@@ -63,7 +53,6 @@ from boba.toolkit.template import TemplateError
 
 __all__ = [
     "KerberosErrorToDomain",
-    "KerberosRolesInLdapProvider",
     "SpnegoGate",
     "SsoSignIn",
 ]
@@ -99,59 +88,15 @@ class KerberosErrorToDomain:
         )
 
 
-class KerberosRolesInLdapProvider:
-    """Факты о принципале из каталога: DN, sAMAccountName и группы по UPN."""
-
-    UPN_FILTER: ClassVar[str] = "(userPrincipalName={principal})"
-
-    def __init__(self, config: KerberosRolesInLdapConfig, directory: UserDirectory):
-        self._config = config
-        self._directory = directory
-
-    async def request(self, principal: str) -> ADUserEntry:
-        binding = DirectoryBinding(
-            server=self._config.server,
-            bind_dn=self._config.bind_dn,
-            bind_password=self._config.bind_password,
-        )
-        search = DirectorySearch(
-            base_dn=self._config.base_dn,
-            filter=self.UPN_FILTER.format(principal=principal),
-        )
-
-        server = self._config.server
-        try:
-            return await self._directory.find(binding, search)
-        except LDAPUserNotFoundError as e:
-            message = (
-                f"User {principal!r} is not registered: no entry matching "
-                f"{search.filter} under {search.base_dn} on {server}"
-            )
-            raise AuthenticationError(message) from e
-        except LDAPServerUnavailableError as e:
-            message = (
-                f"LDAP server {server} is unavailable, please try again later: {e}"
-            )
-            raise ExternalServiceError("ldap", message) from e
-        except LDAPInvalidCredentialsError as e:
-            detail = (
-                f"sso roles of {principal!r}: service bind as "
-                f"{self._config.bind_dn} on {server} rejected: {e}"
-            )
-            raise InternalServiceError(internal_detail=detail, user_detail=None) from e
-        except LDAPError as e:
-            detail = (
-                f"sso roles of {principal!r}: search {search.filter} under "
-                f"{search.base_dn} on {server} failed: {e}"
-            )
-            raise InternalServiceError(internal_detail=detail, user_detail=None) from e
-
-
 class SsoSignIn(SsoAdmission):
     """Вход по SPNEGO-личности: роли по правилам конфига и запечатанный билет."""
 
     def __init__(
-        self, config: KerberosAuthConfig, secret: str, directory: UserDirectory
+        self,
+        config: KerberosAuthConfig,
+        secret: str,
+        roles: RoleProviders,
+        profiles: ProfileProviders,
     ) -> None:
         if not secret:
             msg = (
@@ -166,10 +111,8 @@ class SsoSignIn(SsoAdmission):
         self.sealer = TicketSealer(secret)
         self.krb5_config = config.delegation.krb5_config
         self._logger = logging.getLogger(SsoSignIn.__name__)
-        self._rules: RoleRules = config.rules()
-        self._directory: KerberosRolesInLdapProvider | None = None
-        if ldap_roles := config.ldap_roles:
-            self._directory = KerberosRolesInLdapProvider(ldap_roles, directory)
+        self._roles = roles
+        self._profiles = profiles
 
     @property
     def config(self) -> KerberosAuthConfig:
@@ -211,9 +154,12 @@ class SsoSignIn(SsoAdmission):
         return self.sealer.seal(ticket)
 
     async def signed_in(self, identity: SpnegoIdentity, sealed: str) -> SignedIn:
-        """Итог входа: логин из принципала, роли по допуску, билет в metadata."""
-        roles = await self.roles_of(self.facts_of(identity))
-        sign_in = self._sign_in_of(identity.principal, sealed, roles)
+        """Итог входа: логин из принципала, роли и профили провайдерами, билет
+        в metadata."""
+        facts = self.facts_of(identity)
+        roles = await self.roles_of(facts)
+        grant = await self._profiles.granted(facts, frozenset(roles))
+        sign_in = self._sign_in_of(identity.principal, sealed, roles, grant)
 
         username = self._username_from_principal(
             self._config.principal_format, identity.principal
@@ -225,27 +171,21 @@ class SsoSignIn(SsoAdmission):
         )
 
     async def roles_of(self, facts: PrincipalFacts) -> list[str]:
-        """Роли по фактам SPNEGO плюс фактам каталога, если он настроен.
+        """Роли провайдерами конфига по фактам SPNEGO.
 
         Зовётся и при входе, и при повторном обмене: запрет в AD должен
         отсекать обмен так же, как отсёк бы новый вход.
         """
-        if self._directory is not None:
-            entry = await self._directory.request(facts.principal)
-            facts = facts.model_copy(
-                update={
-                    "login": entry.samaccountname,
-                    "dn": entry.dn,
-                    "member_of": tuple(entry.member_of),
-                }
-            )
-
-        return self._rules.admit(facts)
+        return await self._roles.admit(facts)
 
     def _sign_in_of(
-        self, principal: str, sealed: str, roles: Sequence[str]
+        self,
+        principal: str,
+        sealed: str,
+        roles: Sequence[str],
+        grant: ProfileGrant,
     ) -> SignInMetadata:
-        """Metadata входа: провайдер, принципал, роли и запечатанный билет."""
+        """Metadata входа: провайдер, принципал, роли, профили и билет."""
         if not sealed:
             # без билета сессия останется без делегированных кредов: причина в логе выше
             self._logger.warning(
@@ -257,6 +197,8 @@ class SsoSignIn(SsoAdmission):
             principal=principal,
             sealed_ticket=sealed,
             roles=frozenset(roles),
+            profiles=grant.granted,
+            profile=grant.selected,
         )
 
 

@@ -10,12 +10,15 @@ import pytest
 from pydantic import SecretStr
 
 from boba.auth.config import (
-    KerberosRolesConfig,
-    KerberosRolesInLdapConfig,
-    KerberosRolesInLdapMappingConfig,
+    DirectoryRolesConfig,
+    KerberosRoleProviders,
+    LdapRolesConfig,
     LocalAuthConfig,
+    LocalRoleProviders,
+    LocalRolesConfig,
+    PrincipalRolesConfig,
 )
-from boba.auth.signin import LocalSignIn
+from boba.auth.roles import PrincipalRoles, RoleProviders
 from boba.identity.admission import (
     PrincipalFacts,
     RoleExcludeConfig,
@@ -24,7 +27,9 @@ from boba.identity.admission import (
 )
 from boba.identity.errors import AuthorizationError
 from boba.identity.session import UserLogin
-from boba.stand.fakes import FakeSecret
+from boba.identity.signin import PasswordSignIn
+from boba.stand.signin import SignInStand
+from boba.stand_core.fakes import FakeSecret
 
 pytestmark = pytest.mark.anyio
 
@@ -32,6 +37,31 @@ pytestmark = pytest.mark.anyio
 @pytest.fixture(autouse=True)
 def chainlit_context() -> None:
     pass
+
+
+def _local_sign_in(config: LocalAuthConfig) -> PasswordSignIn:
+    """Вход по конфигу через сборку стенда: тест — точка bootstrap."""
+    signed = SignInStand.assembly().password([config])
+    if signed is None:
+        raise AssertionError("a local config yields a password sign-in")
+
+    return signed
+
+
+def _local_roles(
+    mapping: dict[str, list[str]] | None = None, exclude: list[str] | None = None
+) -> LocalRoleProviders:
+    if mapping is None:
+        mapping = {}
+
+    if exclude is None:
+        exclude = []
+
+    return LocalRoleProviders(
+        local=LocalRolesConfig(
+            mapping=RoleMappingConfig(mapping), exclude=RoleExcludeConfig(exclude)
+        )
+    )
 
 
 def test_sid_roles_maps_each_group() -> None:
@@ -63,9 +93,9 @@ def test_sid_exclusions_need_a_parsed_pac() -> None:
 async def test_local_auth_allows_user_with_roles() -> None:
     config = LocalAuthConfig(
         users={"alice": "pw"},
-        roles=RoleMappingConfig({"alice": ["admin"]}),
+        roles=_local_roles(mapping={"alice": ["admin"]}),
     )
-    user = await LocalSignIn(config).sign_in("alice", "pw")
+    user = await _local_sign_in(config).sign_in("alice", "pw")
     if user is None:
         raise AssertionError("user is not None")
     if user.identifier != "alice":
@@ -76,7 +106,7 @@ async def test_local_auth_allows_user_with_roles() -> None:
 
 async def test_local_auth_rejects_wrong_password() -> None:
     config = LocalAuthConfig(users={"alice": "pw"})
-    user = await LocalSignIn(config).sign_in("alice", "nope")
+    user = await _local_sign_in(config).sign_in("alice", "nope")
     if user is not None:
         raise AssertionError("user is None")
 
@@ -84,21 +114,21 @@ async def test_local_auth_rejects_wrong_password() -> None:
 async def test_local_auth_rejects_excluded_user() -> None:
     config = LocalAuthConfig(
         users={"alice": "pw"},
-        roles_ex=RoleExcludeConfig(["alice"]),
+        roles=_local_roles(exclude=["alice"]),
     )
     with pytest.raises(AuthorizationError):
-        await LocalSignIn(config).sign_in("alice", "pw")
+        await _local_sign_in(config).sign_in("alice", "pw")
 
 
 async def test_local_auth_rejects_no_roles_when_required() -> None:
     config = LocalAuthConfig(users={"alice": "pw"})
     with pytest.raises(AuthorizationError):
-        await LocalSignIn(config).sign_in("alice", "pw")
+        await _local_sign_in(config).sign_in("alice", "pw")
 
 
 async def test_local_auth_allows_no_roles_when_not_required() -> None:
     config = LocalAuthConfig(users={"alice": "pw"}, require_roles=False)
-    user = await LocalSignIn(config).sign_in("alice", "pw")
+    user = await _local_sign_in(config).sign_in("alice", "pw")
     if user is None:
         raise AssertionError("user is not None")
     if user.sign_in.roles:
@@ -106,7 +136,7 @@ async def test_local_auth_allows_no_roles_when_not_required() -> None:
 
 
 def test_ldap_rules_map_roles_from_all_sources() -> None:
-    mapping = KerberosRolesInLdapMappingConfig(
+    mapping = DirectoryRolesConfig(
         samaccountname=RoleMappingConfig({"alice": ["admin"]}),
         member_of=RoleMappingConfig({"CN=Devs,OU=G": ["dev"]}),
         dn=RoleMappingConfig({"CN=alice,OU=U": ["devops"]}),
@@ -116,15 +146,15 @@ def test_ldap_rules_map_roles_from_all_sources() -> None:
         dn="CN=alice,OU=U",
         member_of=("CN=Devs,OU=G", "CN=Other,OU=G"),
     )
-    if mapping.rules(require_roles=True).admit(facts) != ["admin", "dev", "devops"]:
+    if mapping.rules().admit(facts) != ["admin", "dev", "devops"]:
         raise AssertionError('admit(facts) == ["admin", "dev", "devops"]')
 
 
 def test_ldap_rules_exclude_by_any_source() -> None:
-    rules = KerberosRolesInLdapMappingConfig(
+    rules = DirectoryRolesConfig(
         samaccountname_ex=RoleExcludeConfig(["bob"]),
         member_of_ex=RoleExcludeConfig(["CN=Blocked,OU=G"]),
-    ).rules(require_roles=False)
+    ).rules()
 
     with pytest.raises(AuthorizationError):
         rules.admit(PrincipalFacts(login="bob", dn="CN=bob,OU=U"))
@@ -143,25 +173,39 @@ def test_ldap_rules_exclude_by_any_source() -> None:
         raise AssertionError("a user outside the exclusions must pass")
 
 
-def test_kerberos_rules_merge_principal_sid_and_directory() -> None:
-    config = KerberosRolesInLdapConfig(
+async def test_kerberos_providers_join_principal_and_directory_roles() -> None:
+    """Провайдеры principal и ldap складывают роли; каталог здесь заменён
+    фактами с уже известными группами через правила directory."""
+    ldap = LdapRolesConfig(
         server="ldaps://dc.example.com:636",
         base_dn="DC=example,DC=com",
         bind_dn="cn=svc",
         bind_password=SecretStr(FakeSecret.LDAP_BIND),
-        mapping=KerberosRolesInLdapMappingConfig(
+        mapping=DirectoryRolesConfig(
             member_of=RoleMappingConfig({"CN=Devs,OU=G": ["dev"]})
         ),
     )
-    roles = KerberosRolesConfig(principal=RoleMappingConfig({"alice@X": ["adm"]}))
-    rules = (
-        RoleRules(require_roles=True)
-        .merged(roles.rules(True))
-        .merged(config.mapping.rules(True))
-    )
+    principal = PrincipalRolesConfig(principal=RoleMappingConfig({"alice@X": ["adm"]}))
+    providers = KerberosRoleProviders(principal=principal, ldap=ldap)
     facts = PrincipalFacts(principal="alice@X", member_of=("CN=Devs,OU=G",))
-    if rules.admit(facts) != ["adm", "dev"]:
-        raise AssertionError('rules.admit(facts) == ["adm", "dev"]')
+
+    by_principal = await RoleProviders([PrincipalRoles(principal)], True).admit(facts)
+    if by_principal != ["adm"]:
+        raise AssertionError(f'principal provider alone gives ["adm"]: {by_principal}')
+
+    by_directory_rules = ldap.mapping.rules().admit(facts)
+    if by_directory_rules != ["dev"]:
+        raise AssertionError(f'directory rules give ["dev"]: {by_directory_rules}')
+
+    if providers.ldap is None or providers.principal is None:
+        raise AssertionError("both providers stay configured")
+
+
+async def test_no_providers_with_require_roles_refuses() -> None:
+    providers = RoleProviders([], require_roles=True)
+
+    with pytest.raises(AuthorizationError, match="no role came"):
+        await providers.admit(PrincipalFacts(login="alice"))
 
 
 class TestUserLoginCanon:
@@ -189,10 +233,10 @@ class TestLocalSignInIdentifier:
     async def test_identifier_is_the_canonical_login(self) -> None:
         config = LocalAuthConfig(
             users={"Maksimov.MA": "pw"},
-            roles=RoleMappingConfig({"Maksimov.MA": ["admin"]}),
+            roles=_local_roles(mapping={"Maksimov.MA": ["admin"]}),
         )
 
-        user = await LocalSignIn(config).sign_in("Maksimov.MA", "pw")
+        user = await _local_sign_in(config).sign_in("Maksimov.MA", "pw")
 
         if user is None:
             raise AssertionError("user is not None")

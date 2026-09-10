@@ -23,12 +23,13 @@ class ApiVersion(StrEnum):
 
 
 class SignInUrl(StrEnum):
-    """Вход по паролю, SPNEGO-обмен, обновление сессии, выход."""
+    """Вход по паролю, SPNEGO-обмен, доверенный заголовок, обновление сессии, выход."""
 
     PROVIDERS = "/auth/providers"
     LOGIN = "/auth/login"
     LOGOUT = "/auth/logout"
     SSO = "/auth/sso"
+    PROXY = "/auth/proxy"
     REFRESH = "/auth/refresh"
 
 

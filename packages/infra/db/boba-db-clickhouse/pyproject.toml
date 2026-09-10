@@ -8,6 +8,7 @@ version = "0.0.19.dev1"
 description = "Boba ClickHouse: ClickHouseConfig + подключение payload'а по HTTP, пароль или Kerberos SPNEGO на каждый запрос."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "pydantic>=2.10,<2.11",
     "boba-toolkit==0.0.19.dev1",
     "boba-catalog==0.0.19.dev1",
     "boba-connections==0.0.19.dev1",
@@ -21,7 +22,6 @@ payload = [
 ]
 dev = [
     "boba-stand==0.0.19.dev1",
-    "pydantic>=2.10,<2.11",
     "pytest>=8",
 ]
 

@@ -12,7 +12,7 @@ AuthorizationError — принципал исключён, без ролей п
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
@@ -58,6 +58,8 @@ class PrincipalFacts(BaseModel):
     group_sids: Sequence[str] = ()
     pac_parsed: bool = True
     """False — PAC не разобрался: группы неизвестны, исключения по SID не проверить."""
+    attributes: Mapping[str, str] = {}
+    """Доверенные атрибуты транспорта: значения заголовков proxy-входа под подписью."""
 
     def label(self) -> str:
         """Кем назвать входящего в журнале."""

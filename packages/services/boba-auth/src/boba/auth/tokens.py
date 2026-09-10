@@ -1,8 +1,10 @@
-"""JWT входа: подпись секретом [session].auth_secret, claims — boba.identity.token.
+"""JWT входа: подпись секретом [session].auth_secret, claims — boba.identity.token,
+поколение сессий в metadata входа.
 
 Ошибки:
-TokenRejectedError — токен истёк, подписан другим секретом либо не разбирается.
-ValueError — пустой секрет при сборке.
+TokenRejectedError — токен истёк, подписан другим секретом, выпущен при другом
+    поколении сессий либо не разбирается.
+ValueError — пустой секрет или поколение при сборке.
 """
 
 from __future__ import annotations
@@ -26,9 +28,14 @@ __all__ = ["JwtTokens"]
 
 
 class JwtTokens(TokenIssuer, TokenReader):
-    """Выпуск и чтение токена входа одним секретом и сроком."""
+    """Выпуск и чтение токена входа одним секретом, сроком и поколением сессий.
 
-    def __init__(self, secret: str, ttl_sec: int) -> None:
+    Поколение пишется в metadata входа при выпуске и перевыпуске; токен
+    другого поколения — отказ, так рестарт процесса или смена значения в
+    конфиге разлогинивает всех.
+    """
+
+    def __init__(self, secret: str, ttl_sec: int, generation: str) -> None:
         if not secret:
             msg = (
                 "jwt tokens: [session].auth_secret is required to sign the "
@@ -43,16 +50,40 @@ class JwtTokens(TokenIssuer, TokenReader):
             )
             raise ValueError(msg)
 
+        if not generation:
+            msg = (
+                "jwt tokens: a session generation is required to mark the "
+                "sign-in token, got an empty string"
+            )
+            raise ValueError(msg)
+
         self._secret = secret
         self._ttl_sec = ttl_sec
+        self._generation = generation
+
+    @property
+    def generation(self) -> str:
+        return self._generation
+
+    def stamp(self, signed: SignedIn) -> SignedIn:
+        """Итог входа с текущим поколением: для токенов, которые выпускает не этот
+        класс, а chainlit из cl.User."""
+        return signed.model_copy(
+            update={"sign_in": signed.sign_in.issued_at(self._generation)}
+        )
 
     def issue(self, signed: SignedIn) -> str:
-        claims = SessionClaims.of_signed(signed, int(time.time()), self._ttl_sec)
+        claims = SessionClaims.of_signed(
+            self.stamp(signed), int(time.time()), self._ttl_sec
+        )
 
         return self._encode(claims)
 
     def renew(self, claims: SessionClaims) -> str:
-        return self._encode(claims.renewed(int(time.time()), self._ttl_sec))
+        renewed = claims.renewed(int(time.time()), self._ttl_sec)
+        metadata = renewed.sign_in().issued_at(self._generation).render()
+
+        return self._encode(renewed.model_copy(update={"metadata": metadata}))
 
     def read(self, token: str) -> SessionClaims:
         if not token:
@@ -61,7 +92,7 @@ class JwtTokens(TokenIssuer, TokenReader):
 
         raw = self._decode(token, verify_exp=True)
 
-        return SessionClaims.parse(raw)
+        return self._current(SessionClaims.parse(raw))
 
     def read_stale(self, token: str, grace_sec: int) -> SessionClaims:
         if not token:
@@ -77,7 +108,20 @@ class JwtTokens(TokenIssuer, TokenReader):
             )
             raise TokenRejectedError(TokenRejection.EXPIRED, msg)
 
-        return claims
+        return self._current(claims)
+
+    def _current(self, claims: SessionClaims) -> SessionClaims:
+        """Claims только текущего поколения; чужое или пустое — отказ."""
+        issued = claims.sign_in().generation
+        if issued == self._generation:
+            return claims
+
+        msg = (
+            f"sign-in token of {claims.identifier!r} belongs to session "
+            f"generation {issued or 'none'!r}, this process accepts "
+            f"{self._generation!r}: sign in again"
+        )
+        raise TokenRejectedError(TokenRejection.GENERATION, msg)
 
     def _encode(self, claims: SessionClaims) -> str:
         return jwt.encode(claims.render(), self._secret, algorithm=TokenAlgorithm.HS256)

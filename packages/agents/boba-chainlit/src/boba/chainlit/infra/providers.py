@@ -120,7 +120,7 @@ def session_profile(
     """
     session = current_session()
 
-    return registry.resolve(session.chat_profile, session.roles)
+    return registry.resolve(session.chat_profile, session.sign_in)
 
 
 def session_settings_view(
@@ -288,7 +288,7 @@ async def chainlit_data_layer(  # noqa: PLR0913 — слой данных соб
     try:
         tables = ChatTables.around(users, cfg.postgres, cfg.db_schema, pool)
         await tables.setup()
-        layer = PostgresDataLayer(
+        yield PostgresDataLayer(
             users=tables.users,
             threads=tables.threads,
             elements=tables.elements,
@@ -299,7 +299,6 @@ async def chainlit_data_layer(  # noqa: PLR0913 — слой данных соб
             sessions=sessions,
             bus=bus,
         )
-        yield layer
     finally:
         await pool.close()
 

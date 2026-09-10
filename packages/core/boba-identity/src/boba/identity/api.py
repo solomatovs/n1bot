@@ -56,6 +56,10 @@ class AuthenticatedUser(BaseModel):
         return self.sign_in.roles
 
     @property
+    def profiles(self) -> frozenset[str]:
+        return self.sign_in.profiles
+
+    @property
     def credential(self) -> Credential:
         """Делегированный билет входа либо причина его отсутствия."""
         return self.sign_in.credential()

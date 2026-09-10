@@ -11,7 +11,6 @@ from pathlib import Path
 import pytest
 from chainlit_stand import FakeSecret
 
-from boba.chainlit.domain.keys import AppPrefix
 from boba.chainlit.infra.entry import AppEntry, ChainlitEnv
 
 
@@ -66,7 +65,7 @@ class TestExportEnv:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.delenv(ChainlitEnv.APP_ROOT, raising=False)
-        monkeypatch.delenv(AppPrefix.ENV, raising=False)
+        monkeypatch.delenv(ChainlitEnv.ROOT_PATH, raising=False)
         monkeypatch.delenv(ChainlitEnv.AUTH_SECRET, raising=False)
 
         root = tmp_path / "data"
@@ -74,8 +73,8 @@ class TestExportEnv:
 
         if os.environ[ChainlitEnv.APP_ROOT] != str(root):
             raise AssertionError("os.environ[ChainlitEnv.APP_ROOT] == str(root)")
-        if os.environ[AppPrefix.ENV] != "/boba":
-            raise AssertionError('os.environ[AppPrefix.ENV] == "/boba"')
+        if os.environ[ChainlitEnv.ROOT_PATH] != "/boba":
+            raise AssertionError('os.environ[ChainlitEnv.ROOT_PATH] == "/boba"')
         if os.environ[ChainlitEnv.AUTH_SECRET] != FakeSecret.AUTH:
             raise AssertionError("os.environ[ChainlitEnv.AUTH_SECRET] == FakeSecret.…")
 

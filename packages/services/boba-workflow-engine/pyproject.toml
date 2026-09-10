@@ -25,6 +25,7 @@ dev = [
     "boba-access==0.0.19.dev1",
     "boba-runtime==0.0.19.dev1",
     "boba-stand==0.0.19.dev1",
+    "boba-stand-core==0.0.19.dev1",
     "pytest>=8",
 ]
 

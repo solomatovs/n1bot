@@ -25,6 +25,7 @@ from boba.access import ProfileGrant, RoleConfig, ToolGrant
 from boba.chat.generation import GenerationConfig
 from boba.chat.provider import ChatBackendConfig
 from boba.identity.errors import RefusalError
+from boba.identity.signin import SignInMetadata
 from boba.toolkit.types import StringList
 
 __all__ = [
@@ -283,13 +284,16 @@ class SelectedProfile(BaseModel):
 
 
 class ChatProfiles:
-    """Реестр профилей чата: видимость по ролям и выбор профиля сессии.
+    """Реестр профилей чата: набор, выданный входом, и выбор профиля сессии.
 
-    Работа без профиля невозможна: не выбранный пользователем профиль
-    назначается автоматически только когда доступный профиль единственный.
+    Какие профили доступны, решают провайдеры входа: по ролям через
+    granted_by_roles и, у proxy, по заголовку; итог лежит в metadata входа и
+    в токене. Здесь набор из токена сверяется с конфигом и из него выбирается
+    профиль сессии. Работа без профиля невозможна: не выбранный пользователем
+    профиль назначается автоматически только когда доступный единственный.
 
     Ошибки:
-    RefusalError — профиль не выбран, недоступен ролям или ролям не виден
+    RefusalError — профиль не выбран, не выдан входу или входу не выдан
         ни один профиль.
     """
 
@@ -321,66 +325,89 @@ class ChatProfiles:
         msg = f"section [profiles]: none of {list(self._profiles)} sets default = true"
         raise RuntimeError(msg)
 
-    def visible_for(
-        self, user_roles: frozenset[str]
-    ) -> Mapping[str, ChatProfileConfig]:
-        visible: dict[str, ChatProfileConfig] = {}
+    def granted_by_roles(self, user_roles: frozenset[str]) -> frozenset[str]:
+        """Имена профилей, видимых ролям по [profiles.X].roles: провайдер входа."""
+        names: set[str] = set()
         for name, profile in self._profiles.items():
             if profile.visible_for(user_roles):
+                names.add(name)
+
+        return frozenset(names)
+
+    def known(self, name: str) -> bool:
+        return name in self._profiles
+
+    def visible_for(self, granted: frozenset[str]) -> Mapping[str, ChatProfileConfig]:
+        """Профили из набора входа, которые есть в конфиге; чужие имена не видны."""
+        visible: dict[str, ChatProfileConfig] = {}
+        for name, profile in self._profiles.items():
+            if name in granted:
                 visible[name] = profile
 
         return visible
 
-    def resolve(
-        self,
-        name: str | None,
-        user_roles: frozenset[str],
-    ) -> SelectedProfile:
-        visible = self.visible_for(user_roles)
-        roles = sorted(user_roles)
+    def resolve(self, name: str | None, sign_in: SignInMetadata) -> SelectedProfile:
+        """Профиль сессии: выбор пользователя, затем выбор входа из токена, затем
+        единственный выданный, затем default конфига, если он выдан; иначе отказ.
+        """
+        visible = self.visible_for(sign_in.profiles)
 
         if not visible:
-            msg = f"no chat profile is available for your roles {roles}"
+            msg = "no chat profile is granted to your sign-in"
             raise RefusalError(ProfileRefusal.NO_PROFILE_ACCESS, msg)
 
         if name is not None:
-            if name not in visible:
-                msg = (
-                    f"chat profile {name!r} is not available for your roles "
-                    f"{roles}, available: {sorted(visible)}"
-                )
-                raise RefusalError(ProfileRefusal.PROFILE_NOT_ALLOWED, msg)
+            return self._chosen(name, visible)
 
-            return SelectedProfile(name=name, config=visible[name])
+        if sign_in.profile:
+            return self._chosen(sign_in.profile, visible)
 
         if len(visible) == 1:
             only_name = next(iter(visible))
             return SelectedProfile(name=only_name, config=visible[only_name])
 
+        default = self._default_in(visible)
+        if default is not None:
+            return default
+
         msg = f"select a chat profile to start the chat, available: {sorted(visible)}"
         raise RefusalError(ProfileRefusal.PROFILE_NOT_SELECTED, msg)
 
     def resolve_or_default(
-        self,
-        name: str | None,
-        user_roles: frozenset[str],
+        self, name: str | None, sign_in: SignInMetadata
     ) -> SelectedProfile:
-        """Как resolve, но без имени берётся профиль по умолчанию: для API и страниц."""
-        if name is not None:
-            return self.resolve(name, user_roles)
+        """Как resolve, но вместо отказа берётся первый выданный: для API и страниц."""
+        try:
+            return self.resolve(name, sign_in)
+        except RefusalError as exc:
+            if exc.kind is not ProfileRefusal.PROFILE_NOT_SELECTED:
+                raise
 
-        visible = self.visible_for(user_roles)
-        if not visible:
-            roles = sorted(user_roles)
-            msg = f"no chat profile is available for your roles {roles}"
-            raise RefusalError(ProfileRefusal.NO_PROFILE_ACCESS, msg)
+        visible = self.visible_for(sign_in.profiles)
+        first = next(iter(visible))
 
+        return SelectedProfile(name=first, config=visible[first])
+
+    @staticmethod
+    def _chosen(name: str, visible: Mapping[str, ChatProfileConfig]) -> SelectedProfile:
+        if name not in visible:
+            msg = (
+                f"chat profile {name!r} is not granted to your sign-in, "
+                f"available: {sorted(visible)}"
+            )
+            raise RefusalError(ProfileRefusal.PROFILE_NOT_ALLOWED, msg)
+
+        return SelectedProfile(name=name, config=visible[name])
+
+    @staticmethod
+    def _default_in(
+        visible: Mapping[str, ChatProfileConfig],
+    ) -> SelectedProfile | None:
         for profile_name, profile in visible.items():
             if profile.default:
                 return SelectedProfile(name=profile_name, config=profile)
 
-        first = next(iter(visible))
-        return SelectedProfile(name=first, config=visible[first])
+        return None
 
 
 class NumberBounds(BaseModel):

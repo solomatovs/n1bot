@@ -36,8 +36,8 @@ from boba.identity.context import HumanInitiator, NoUserCredential, Subject
 from boba.messaging import ChangeAction
 from boba.stand.catalog_ports import FakeConnections, FakeSyncPorts
 from boba.stand.catalog_stand import CatalogStand, ChangeCollector
-from boba.stand.context import TEST_PROFILE
 from boba.stand.fake_sync import FakeSyncScenario
+from boba.stand_core.context import TEST_PROFILE
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
