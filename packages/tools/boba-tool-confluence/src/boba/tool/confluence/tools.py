@@ -70,13 +70,13 @@ class ConfluenceHttp:
     подставляет профиль, retry и auth — HttpTransport."""
 
     @staticmethod
-    async def get(cfg: ConfluenceToolsConfig, path: str) -> bytes:
+    async def get(cfg: ConfluenceToolsConfig, path: httpx.URL) -> bytes:
         profile = cfg.confluence
-        url = profile.url_of(path)
+        url = profile.url_of(str(path))
         try:
             async with (
                 HttpTransport(profile) as transport,
-                transport.fetch(HttpRequest(url=path)) as got,
+                transport.fetch(HttpRequest(url=str(path))) as got,
             ):
                 return await got.stream.read()
         except httpx.HTTPStatusError as exc:
@@ -131,7 +131,9 @@ class SpaceList:
     """Разбор выдачи /rest/api/space и строка таблицы для одного спейса."""
 
     @staticmethod
-    def items(data: Mapping[str, Any], path: str) -> Sequence[ConfluenceSpaceItem]:
+    def items(
+        data: Mapping[str, Any], path: httpx.URL
+    ) -> Sequence[ConfluenceSpaceItem]:
         found: list[ConfluenceSpaceItem] = []
         for raw in ConfluenceJson.results(dict(data)):
             try:
@@ -163,6 +165,7 @@ class SpaceList:
             "key": space.key,
             "name": space.name,
             "type": space.type,
+            "status": space.status,
             "url": space.url_at(profile),
         }
 
@@ -395,7 +398,10 @@ async def confluence_spaces(
     """Список spaces Confluence с опциональным glob-фильтром.
 
     В строке есть адрес спейса: по нему открывают его в браузере и с него
-    начинают обход, не собирая ссылку из ключа руками.
+    начинают обход, не собирая ссылку из ключа руками. Колонка status
+    показывает архивные спейсы (archived): их содержимое живо и индексируется,
+    но поиск Confluence его не отдаёт, поэтому по CQL такой спейс выглядит
+    пустым.
     """
     path = ConfluenceRest.space_list_path(space_type, limit=limit)
     data = json.loads(await ConfluenceHttp.get(cfg, path))

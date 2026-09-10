@@ -50,6 +50,7 @@ from boba.tool.confluence.ingest_base import (
     IngestReport,
     IngestScope,
 )
+from boba.tool.confluence.request_sources import ConfluenceUrl
 from boba.tool.confluence.tools import ConfluenceHttp, ConfluenceToolsConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool, warmup
@@ -266,6 +267,11 @@ async def confluence_index_cql(
 ) -> TableResult:
     """Индексирует страницы Confluence, найденные CQL-запросом.
 
+    Запрос исполняет поиск Confluence, а он знает не весь сайт: контента
+    архивных спейсов в нём нет, и только что созданные страницы появляются
+    с задержкой. Такой спейс индексируется через confluence_index_space —
+    тот идёт списком страниц спейса, а не поиском.
+
     Отчёт идёт двумя строками, pages и attachments: found — сколько нашлось
     в Confluence, indexed — записано заново, unchanged — уже в индексе и не
     менялось, skipped — отсечено правилами, failed — сорвалось, причина в
@@ -345,7 +351,7 @@ async def confluence_attachment(
         )
         raise AttachmentNotFoundError(msg)
 
-    content = await ConfluenceHttp.get(rest_cfg, link)
+    content = await ConfluenceHttp.get(rest_cfg, ConfluenceUrl.link(link))
 
     from boba.liteparse.engine import LiteParseEngine  # noqa: PLC0415
 

@@ -222,6 +222,9 @@ class ConfluenceSpaceItem(BaseModel):
     key: str
     name: str = ""
     type: str = ""
+    status: str = ""
+    """current или archived: контент архивного спейса поиск Confluence не отдаёт."""
+
     description: ConfluenceDescription | None = None
     links: ConfluenceLinks = Field(default_factory=ConfluenceLinks, alias="_links")
 

@@ -1,11 +1,12 @@
-"""Доступ к Confluence Server REST: CQL, пути, пагинатор, discovery и проба.
+"""Доступ к Confluence Server REST: адреса, пагинатор, обходы и discovery.
 
-- ConfluenceCql        — сборка CQL для трёх режимов обхода и пробы существования.
-- ConfluenceRest       — фабрики путей и запросов страниц и вложений.
-- ConfluencePaginator  — httpx-клиент для пагинированных discovery-запросов.
-- ConfluenceDiscovery  — RequestSource: список страниц с версиями и вложениями
-  без тел; запрос на каждую страницу и на каждое вложение, прошедшее гейт.
-- ConfluenceProbe      — SourceProbe: какие из невиденных страниц исчезли.
+- ConfluenceUrl        — сборка относительных адресов на httpx.URL.
+- ConfluenceRest       — адреса запросов страниц, вложений, спейсов и поиска.
+- ConfluencePaginator  — httpx-клиент пагинированных discovery-запросов.
+- ContentListing       — откуда берётся список страниц: SpaceListing (список
+  контента спейса), CqlListing (поиск по CQL), PageListing (одна страница).
+- ConfluenceDiscovery  — RequestSource: страницы с версиями и вложениями без
+  тел; запрос на каждую страницу и на каждое вложение, прошедшее гейт.
 
 Ошибки:
 TransportError — Confluence недоступен, ответил статусом или оборвал тело.
@@ -16,10 +17,11 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
+from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, TypeVar
-from urllib.parse import quote, urlencode
+from urllib.parse import quote
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -46,8 +48,6 @@ from boba.indexing import (
     RequestSource,
     SourceId,
     SourceMark,
-    SourceProbe,
-    SourceRecord,
     TransportError,
     TransportKeys,
 )
@@ -58,12 +58,15 @@ from boba.transport.http import CancellableHttpTransport, HttpRequest
 from boba.transport.http.profile import HttpConnection
 
 __all__ = [
-    "ConfluenceCql",
     "ConfluenceDiscovery",
     "ConfluencePaginator",
-    "ConfluenceProbe",
     "ConfluenceRequest",
     "ConfluenceRest",
+    "ConfluenceUrl",
+    "ContentListing",
+    "CqlListing",
+    "PageListing",
+    "SpaceListing",
 ]
 
 logger = logging.getLogger(__name__)
@@ -86,33 +89,41 @@ class ConfluenceRequest(Request):
     metadata: Metadata = field(default_factory=Metadata.empty)
 
 
-class ConfluenceCql:
-    """Сборка CQL: режимы обхода и проба существования одной грамматикой."""
+class ConfluenceUrl:
+    """Сборка относительных адресов Confluence REST: сегменты пути и query.
 
-    @staticmethod
-    def literal(value: str) -> str:
-        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-        return f'"{escaped}"'
+    Единственное место, где адрес собирается: сегменты квотируются здесь
+    (id и ключи приходят от LLM, `/`, `?`, `#` в них — просто байты), query
+    кодирует httpx.URL. Ни один вызывающий строк не клеит.
+    """
 
-    @classmethod
-    def space(cls, space_key: str) -> str:
-        return f"space = {cls.literal(space_key)} and type = page"
-
-    @classmethod
-    def page(cls, page_id: str) -> str:
-        return f"id = {cls.literal(page_id)}"
+    ROOT: ClassVar[str] = "/rest/api"
+    SEPARATOR: ClassVar[str] = "/"
 
     @classmethod
-    def ids(cls, page_ids: Iterable[str]) -> str:
-        quoted: list[str] = []
-        for page_id in page_ids:
-            quoted.append(cls.literal(page_id))
+    def of(
+        cls,
+        *segments: str,
+        params: Mapping[str, object] | None = None,
+    ) -> httpx.URL:
+        parts = [cls.ROOT]
+        for segment in segments:
+            parts.append(quote(segment, safe=""))
 
-        return f"id in ({', '.join(quoted)})"
+        path = cls.SEPARATOR.join(parts)
+        if params is None:
+            return httpx.URL(path=path)
+
+        return httpx.URL(path=path, params=dict(params))
+
+    @classmethod
+    def link(cls, href: str) -> httpx.URL:
+        """Ссылка `_links.next` от Confluence: она уже собрана и закодирована."""
+        return httpx.URL(href)
 
 
 class ConfluenceRest:
-    """Фабрики Confluence REST: URL/path-builders и HttpRequest-конструкторы."""
+    """Фабрики Confluence REST: адреса запросов и HttpRequest-конструкторы."""
 
     DEFAULT_PAGE_LIMIT: ClassVar[int] = 50
 
@@ -124,45 +135,82 @@ class ConfluenceRest:
 
     ATTACHMENTS_EXPAND: ClassVar[str] = "version"
 
+    UNKNOWN_VERSION: ClassVar[int] = 0
+    """Версия страницы, которой обход не увидел: с записью реестра не совпадёт."""
+
     @staticmethod
-    def page_fetch_path(page_id: str, *, body_format: str) -> str:
+    def page_fetch_path(page_id: str, *, body_format: str) -> httpx.URL:
         """Страница целиком: тело и вложения — для инструментов чтения."""
         expand = (
             f"body.{body_format},version,ancestors,space,metadata.labels,"
             "children.attachment.version,children.attachment.extensions"
         )
-        segment = ConfluenceRest._segment(page_id)
-        query = ConfluenceRest._query({"expand": expand})
-        return f"/rest/api/content/{segment}?{query}"
+        return ConfluenceUrl.of("content", page_id, params={"expand": expand})
 
     @staticmethod
-    def page_body_path(page_id: str, *, body_format: str) -> str:
+    def page_body_path(page_id: str, *, body_format: str) -> httpx.URL:
         """Тело страницы для индексации; вложения уже известны из списка."""
         expand = f"body.{body_format},version,ancestors,space,metadata.labels"
-        segment = ConfluenceRest._segment(page_id)
-        query = ConfluenceRest._query({"expand": expand})
-        return f"/rest/api/content/{segment}?{query}"
+        return ConfluenceUrl.of("content", page_id, params={"expand": expand})
+
+    @staticmethod
+    def page_summary_path(page_id: str) -> httpx.URL:
+        """Страница без тела: версия и вложения — обход по одной странице.
+
+        Идёт мимо поиска, поэтому видит и страницы архивных спейсов.
+        """
+        return ConfluenceUrl.of(
+            "content",
+            page_id,
+            params={"expand": ConfluenceRest.DISCOVERY_EXPAND},
+        )
 
     @staticmethod
     def attachments_path(
         page_id: str,
         *,
         limit: int = DEFAULT_PAGE_LIMIT,
-    ) -> str:
+    ) -> httpx.URL:
         """Полный список вложений страницы: раскрытие в списке ограничено."""
-        segment = ConfluenceRest._segment(page_id)
-        params: dict[str, object] = {
-            "limit": limit,
-            "start": 0,
-            "expand": ConfluenceRest.ATTACHMENTS_EXPAND,
-        }
-        query = ConfluenceRest._query(params)
-        return f"/rest/api/content/{segment}/child/attachment?{query}"
+        return ConfluenceUrl.of(
+            "content",
+            page_id,
+            "child",
+            "attachment",
+            params={
+                "limit": limit,
+                "start": 0,
+                "expand": ConfluenceRest.ATTACHMENTS_EXPAND,
+            },
+        )
 
     @staticmethod
-    def space_path(space_key: str) -> str:
+    def space_path(space_key: str) -> httpx.URL:
         """Один space: 404 на несуществующий ключ."""
-        return f"/rest/api/space/{ConfluenceRest._segment(space_key)}"
+        return ConfluenceUrl.of("space", space_key)
+
+    @staticmethod
+    def space_content_path(
+        space_key: str,
+        *,
+        limit: int = DEFAULT_PAGE_LIMIT,
+    ) -> httpx.URL:
+        """Страницы спейса списком из базы, а не из поискового индекса.
+
+        Поиск не отдаёт контент архивных спейсов и отстаёт от только что
+        созданных страниц; этот список знает и то, и другое.
+        """
+        return ConfluenceUrl.of(
+            "space",
+            space_key,
+            "content",
+            "page",
+            params={
+                "limit": limit,
+                "start": 0,
+                "expand": ConfluenceRest.DISCOVERY_EXPAND,
+            },
+        )
 
     @staticmethod
     def space_list_path(
@@ -170,7 +218,7 @@ class ConfluenceRest:
         *,
         expand: str | None = None,
         limit: int = DEFAULT_PAGE_LIMIT,
-    ) -> str:
+    ) -> httpx.URL:
         params: dict[str, object] = {"limit": limit, "start": 0}
         if space_type != "any":
             params["type"] = space_type
@@ -178,7 +226,7 @@ class ConfluenceRest:
         if expand:
             params["expand"] = expand
 
-        return f"/rest/api/space?{ConfluenceRest._query(params)}"
+        return ConfluenceUrl.of("space", params=params)
 
     @staticmethod
     def cql_search_path(
@@ -187,22 +235,12 @@ class ConfluenceRest:
         limit: int = DEFAULT_PAGE_LIMIT,
         start: int = 0,
         expand: str | None = None,
-    ) -> str:
+    ) -> httpx.URL:
         params: dict[str, object] = {"cql": cql, "limit": limit, "start": start}
         if expand:
             params["expand"] = expand
 
-        return f"/rest/api/content/search?{ConfluenceRest._query(params)}"
-
-    @staticmethod
-    def _segment(value: str) -> str:
-        """Сегмент пути: id и ключи идут от LLM, `/`, `?`, `#` в них — просто байты."""
-        return quote(value, safe="")
-
-    @staticmethod
-    def _query(params: Mapping[str, object]) -> str:
-        """Query-строка; запятая в expand остаётся запятой, как ждёт Confluence."""
-        return urlencode(params, quote_via=quote, safe=",")
+        return ConfluenceUrl.of("content", "search", params=params)
 
     @staticmethod
     def make_page_request(
@@ -218,8 +256,33 @@ class ConfluenceRest:
             .set(ConfluenceKeys.HOST, profile.address_host())
         )
         return ConfluenceRequest(
-            http=HttpRequest(url=path, method="GET"),
+            http=HttpRequest(url=str(path), method="GET"),
             mark=ConfluenceMarks.page(content.version.number),
+            metadata=meta,
+        )
+
+    @staticmethod
+    def make_gone_request(
+        *,
+        profile: HttpConnection,
+        page_id: str,
+        body_format: str,
+    ) -> ConfluenceRequest:
+        """Запрос страницы, которой обход не нашёл: ответ 404 снимет её с индекса.
+
+        Отметка версии заведомо не совпадёт с записью реестра, поэтому конвейер
+        сходит за телом и получит от Confluence прямой ответ, есть страница
+        или нет.
+        """
+        path = ConfluenceRest.page_body_path(page_id, body_format=body_format)
+        meta = (
+            Metadata.empty()
+            .set(ConfluenceKeys.PAGE_ID, page_id)
+            .set(ConfluenceKeys.HOST, profile.address_host())
+        )
+        return ConfluenceRequest(
+            http=HttpRequest(url=str(path), method="GET"),
+            mark=ConfluenceMarks.page(ConfluenceRest.UNKNOWN_VERSION),
             metadata=meta,
         )
 
@@ -265,6 +328,117 @@ class ConfluenceRest:
         )
 
 
+class ContentListing(ABC):
+    """Откуда прогон берёт список страниц: спейс, запрос CQL или одна страница.
+
+    Базовый класс трёх режимов обхода. Реализацию выбирает IngestScope и
+    отдаёт ConfluenceDiscovery, который из полученных страниц строит запросы
+    тел и вложений — сами режимы отличаются только источником списка.
+    """
+
+    @abstractmethod
+    def label(self) -> str:
+        """Что обходим — для логов и сообщений об ошибках."""
+        ...
+
+    @abstractmethod
+    def contents(
+        self, paginator: ConfluencePaginator
+    ) -> AsyncIterator[ConfluenceContent]:
+        """Страницы обхода: версии и вложения, без тел."""
+        ...
+
+    def missing(self) -> Sequence[str]:
+        """Id страниц, которых источник данных не отдал; проверяет их конвейер."""
+        return ()
+
+
+class SpaceListing(ContentListing):
+    """Страницы спейса списком контента, а не поиском.
+
+    Поиск Confluence не видит архивные спейсы и отстаёт от свежих правок, а
+    список спейса читает базу, поэтому обход спейса идёт им.
+    """
+
+    def __init__(self, space_key: str) -> None:
+        self._space_key = space_key
+
+    def label(self) -> str:
+        return f"space {self._space_key}"
+
+    def contents(
+        self, paginator: ConfluencePaginator
+    ) -> AsyncIterator[ConfluenceContent]:
+        return paginator(
+            ConfluenceRest.space_content_path(self._space_key),
+            ConfluenceContent,
+        )
+
+
+class CqlListing(ContentListing):
+    """Страницы выборки CQL: запрос задаёт вызывающий, поиск исполняет.
+
+    Всё, что вне поискового индекса (архивные спейсы, только что созданные
+    страницы), в такую выборку не попадает — это свойство самого поиска.
+    """
+
+    def __init__(self, cql: str) -> None:
+        self._cql = cql
+
+    @property
+    def cql(self) -> str:
+        return self._cql
+
+    def label(self) -> str:
+        return f"cql {self._cql}"
+
+    def contents(
+        self, paginator: ConfluencePaginator
+    ) -> AsyncIterator[ConfluenceContent]:
+        return paginator(
+            ConfluenceRest.cql_search_path(
+                self._cql,
+                expand=ConfluenceRest.DISCOVERY_EXPAND,
+            ),
+            ConfluenceContent,
+        )
+
+
+class PageListing(ContentListing):
+    """Одна страница по id: прямой запрос вместо поиска.
+
+    Страница читается по адресу, поэтому режим работает и в архивном спейсе.
+    Ответ 404 запоминается в missing(): страницы нет, и конвейер снимет её
+    с индекса вместе с вложениями.
+    """
+
+    def __init__(self, page_id: str) -> None:
+        self._page_id = page_id
+        self._missing: list[str] = []
+
+    def label(self) -> str:
+        return f"page {self._page_id}"
+
+    async def contents(
+        self, paginator: ConfluencePaginator
+    ) -> AsyncIterator[ConfluenceContent]:
+        self._missing = []
+        try:
+            content = await paginator.one(
+                ConfluenceRest.page_summary_path(self._page_id),
+                ConfluenceContent,
+            )
+        except TransportError as exc:
+            logger.info("page %s is not readable: %s", self._page_id, exc)
+            self._missing.append(self._page_id)
+            return
+
+        yield content
+
+    def missing(self) -> Sequence[str]:
+        return tuple(self._missing)
+
+
 class ConfluencePaginator:
     """httpx-клиент для пагинированных Confluence REST discovery-запросов.
 
@@ -276,40 +450,54 @@ class ConfluencePaginator:
     def __init__(self, conn: ConfluenceConnection):
         self._http = CancellableHttpTransport(conn.profile)
 
-    async def __call__(self, path: str, item: type[T]) -> AsyncIterator[T]:
-        next_path: str | None = path
-        while next_path:
-            data = await self.get_json(next_path)
+    async def __call__(self, url: httpx.URL, item: type[T]) -> AsyncIterator[T]:
+        next_url: httpx.URL | None = url
+        while next_url is not None:
+            data = await self.get_json(next_url)
             results = ConfluenceJson.results(data)
-            next_path = ConfluenceJson.next_link(data)
+            next_url = self._next(data)
             logger.info(
                 "discovery page: %d items, next=%s",
                 len(results),
-                bool(next_path),
+                next_url is not None,
             )
             for raw in results:
-                yield self._item(item, raw, path)
+                yield self.item(item, raw, url)
+
+    async def one(self, url: httpx.URL, item: type[T]) -> T:
+        """Один объект вместо списка: содержимое ответа и есть результат."""
+        data = await self.get_json(url)
+
+        return self.item(item, data, url)
 
     @staticmethod
-    def _item(item: type[T], raw: dict[str, Any], path: str) -> T:
+    def _next(data: dict[str, Any]) -> httpx.URL | None:
+        link = ConfluenceJson.next_link(data)
+        if not link:
+            return None
+
+        return ConfluenceUrl.link(link)
+
+    @staticmethod
+    def item(item: type[T], raw: dict[str, Any], url: httpx.URL) -> T:
         try:
             return item.model_validate(raw)
         except ValidationError as exc:
             msg = (
-                f"confluence discovery: GET {path} expected {item.__name__} items, "
+                f"confluence discovery: GET {url} expected {item.__name__} items, "
                 f"got {json.dumps(raw)[:200]}: {exc}"
             )
             raise ConfluencePayloadError(msg) from exc
 
-    async def get_json(self, path: str) -> dict[str, Any]:
+    async def get_json(self, url: httpx.URL) -> dict[str, Any]:
         """Один GET с разбором JSON: статус и обрыв уходят TransportError."""
-        logger.info("discovery request: GET %s", path)
+        logger.info("discovery request: GET %s", url)
         elapsed = Elapsed()
         try:
-            async with self._http.fetch(HttpRequest(url=path)) as resp:
+            async with self._http.fetch(HttpRequest(url=str(url))) as resp:
                 payload = await resp.stream.read()
         except httpx.HTTPError as exc:
-            msg = f"GET {path} on confluence: {type(exc).__name__}: {exc}"
+            msg = f"GET {url} on confluence: {type(exc).__name__}: {exc}"
             raise TransportError(msg) from exc
 
         logger.info("discovery response: %d bytes in %dms", len(payload), elapsed.ms())
@@ -317,7 +505,8 @@ class ConfluencePaginator:
             data = json.loads(payload)
         except json.JSONDecodeError as exc:
             msg = (
-                f"GET {path} on confluence: expected JSON, got {payload[:200]!r}: {exc}"
+                f"GET {url} on confluence: expected JSON, "
+                f"got {payload[:200]!r}: {exc}"
             )
             raise ConfluencePayloadError(msg) from exc
 
@@ -357,29 +546,25 @@ class ConfluenceDiscovery(RequestSource[ConfluenceRequest]):
         self,
         *,
         conn: ConfluenceConnection,
-        cql: str,
+        listing: ContentListing,
         gate: AttachmentGate,
         grade: ParseGrade,
         progress: IngestProgress,
     ) -> None:
         self._conn = conn
-        self._cql = cql
+        self._listing = listing
         self._gate = gate
         self._grade = grade
         self._progress = progress
 
     @property
-    def cql(self) -> str:
-        return self._cql
+    def listing(self) -> ContentListing:
+        return self._listing
 
     async def requests(self) -> AsyncIterator[ConfluenceRequest]:
-        logger.info("discovery start: %s", self._cql)
-        path = ConfluenceRest.cql_search_path(
-            self._cql,
-            expand=ConfluenceRest.DISCOVERY_EXPAND,
-        )
+        logger.info("discovery start: %s", self._listing.label())
         async with ConfluencePaginator(self._conn) as paginator:
-            async for content in paginator(path, ConfluenceContent):
+            async for content in self._listing.contents(paginator):
                 self._progress.pages_found(1)
                 yield ConfluenceRest.make_page_request(
                     profile=self._conn.profile,
@@ -390,6 +575,13 @@ class ConfluenceDiscovery(RequestSource[ConfluenceRequest]):
                 async for request in self._attachment_requests(paginator, content):
                     yield request
 
+            for page_id in self._listing.missing():
+                yield ConfluenceRest.make_gone_request(
+                    profile=self._conn.profile,
+                    page_id=page_id,
+                    body_format=self._conn.body_format,
+                )
+
         self._progress.pages_closed()
 
     async def _attachment_requests(
@@ -398,12 +590,10 @@ class ConfluenceDiscovery(RequestSource[ConfluenceRequest]):
         content: ConfluenceContent,
     ) -> AsyncIterator[ConfluenceRequest]:
         profile = self._conn.profile
-        page_source = ConfluenceSourceId.of(
-            profile,
-            ConfluenceRest.page_body_path(
-                content.id, body_format=self._conn.body_format
-            ),
+        body_url = ConfluenceRest.page_body_path(
+            content.id, body_format=self._conn.body_format
         )
+        page_source = ConfluenceSourceId.of(profile, str(body_url))
         async for att in self._attachments(paginator, content):
             self._progress.attachments_found(1)
             verdict = self._gate.verdict(att)
@@ -446,49 +636,3 @@ class ConfluenceDiscovery(RequestSource[ConfluenceRequest]):
         path = ConfluenceRest.attachments_path(content.id)
         async for item in paginator(path, ConfluenceAttachmentItem):
             yield item.info()
-
-
-class ConfluenceProbe(SourceProbe):
-    """Проба существования страниц одним CQL `id in (...)` на пакет.
-
-    В ответе поиска только живые и доступные учётке страницы; остальные из
-    пакета исчезли, и их вместе с вложениями снимает конвейер.
-    """
-
-    def __init__(self, conn: ConfluenceConnection) -> None:
-        self._conn = conn
-
-    async def gone(self, records: Sequence[SourceRecord]) -> Sequence[SourceId]:
-        by_page: dict[str, SourceId] = {}
-        for record in records:
-            page_id = ConfluenceSourceId.page_id_of(record.source_id)
-            if page_id is None:
-                continue
-
-            by_page[page_id] = record.source_id
-
-        if not by_page:
-            return ()
-
-        alive = await self._alive(list(by_page))
-        gone: list[SourceId] = []
-        for page_id, source_id in by_page.items():
-            if page_id in alive:
-                continue
-
-            gone.append(source_id)
-
-        logger.info("probe: %d pages asked, %d gone", len(by_page), len(gone))
-        return gone
-
-    async def _alive(self, page_ids: Sequence[str]) -> set[str]:
-        path = ConfluenceRest.cql_search_path(
-            ConfluenceCql.ids(page_ids),
-            limit=len(page_ids),
-        )
-        alive: set[str] = set()
-        async with ConfluencePaginator(self._conn) as paginator:
-            async for content in paginator(path, ConfluenceContent):
-                alive.add(content.id)
-
-        return alive

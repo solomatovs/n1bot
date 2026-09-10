@@ -42,7 +42,7 @@ from boba.tool.confluence.indexing_log import (
 )
 from boba.tool.confluence.pipeline import ConfluenceSourceTransport
 from boba.tool.confluence.request_sources import (
-    ConfluenceCql,
+    SpaceListing,
     ConfluenceDiscovery,
     ConfluenceRequest,
 )
@@ -119,7 +119,7 @@ class IngestStand:
         ledger = LoggingSourceLedger(self.ledger, LOGGER)
         source = ConfluenceDiscovery(
             conn=self.conn,
-            cql=ConfluenceCql.space(SPACE),
+            listing=SpaceListing(SPACE),
             gate=AttachmentGate(allowed=AttachmentFilter(), requested=True, ocr=True),
             grade=ParseGrade.OCR,
             progress=self.progress,
