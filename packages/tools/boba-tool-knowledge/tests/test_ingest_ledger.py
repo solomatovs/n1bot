@@ -48,6 +48,7 @@ from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.ingest_base import (
     ConfluenceIngest,
     ConfluenceIngestConfig,
+    IngestReport,
     IngestScope,
 )
 from boba.tool.kb.confluence.models import (
@@ -195,9 +196,11 @@ class IngestStand:
         attachments: bool = True,
         ocr: bool = False,
         workers: int = 2,
-    ) -> dict[str, Any]:
+    ) -> IngestReport:
         self.stub.reset_calls()
         self.reader.reads.clear()
+        # счёт ведётся на прогон, как в теле инструмента
+        self.progress = IngestProgress(LOGGER)
         gate = AttachmentGate(
             allowed=AttachmentFilter.of_masks(self.ATTACHMENT_MASKS),
             requested=attachments,
@@ -318,9 +321,9 @@ class TestFirstRun:
             stand = await _stand(stub, server, store_cfg)
             stats = await stand.run(IngestScope.space(SPACE))
 
-        if stats["failed"] != 0:
+        if stats.pages.failed + stats.attachments.failed != 0:
             raise AssertionError(f"failed: {stats}")
-        if stats["indexed"] <= 0:
+        if stats.pages.chunks + stats.attachments.chunks <= 0:
             raise AssertionError(f"indexed: {stats}")
 
         page = await stand.record(stand.page_source("101"))
@@ -357,6 +360,73 @@ class TestFirstRun:
             raise AssertionError("skipped image must not be recorded")
 
 
+class TestReport:
+    """Отчёт читается без догадок: ноль записанных и ноль найденных различимы."""
+
+    async def test_found_is_visible_when_nothing_changed(
+        self, store_cfg: PostgresStoreConfig
+    ) -> None:
+        stub = ConfluenceStub()
+        _space(stub)
+        async with LiveServer(stub.app()) as server:
+            stand = await _stand(stub, server, store_cfg)
+            await stand.run(IngestScope.space(SPACE))
+            report = await stand.run(IngestScope.space(SPACE))
+
+        if report.pages.found != 3:
+            raise AssertionError(f"pages are still found: {report.pages}")
+        if report.pages.unchanged != 3:
+            raise AssertionError(f"pages are unchanged, not missing: {report.pages}")
+        if report.pages.chunks != 0:
+            raise AssertionError(f"nothing rewritten: {report.pages}")
+
+    async def test_empty_query_shows_zero_found(
+        self, store_cfg: PostgresStoreConfig
+    ) -> None:
+        stub = ConfluenceStub()
+        _space(stub)
+        stub.spaces.add("EMPTY")
+        async with LiveServer(stub.app()) as server:
+            stand = await _stand(stub, server, store_cfg)
+            report = await stand.run(IngestScope.space("EMPTY"))
+
+        if report.pages.found != 0:
+            raise AssertionError(f"an empty space finds nothing: {report.pages}")
+        if report.pages.unchanged != 0:
+            raise AssertionError(f"nothing to skip either: {report.pages}")
+
+    async def test_skipped_attachments_carry_their_reason(
+        self, store_cfg: PostgresStoreConfig
+    ) -> None:
+        stub = ConfluenceStub()
+        _space(stub)
+        async with LiveServer(stub.app()) as server:
+            stand = await _stand(stub, server, store_cfg)
+            report = await stand.run(IngestScope.space(SPACE), attachments=False)
+
+        if report.attachments.found != 3:
+            raise AssertionError(f"attachments are counted: {report.attachments}")
+        if report.attachments.skipped != 3:
+            raise AssertionError(f"all of them skipped: {report.attachments}")
+        if "not requested" not in report.attachments.skipped_reasons:
+            raise AssertionError(f"the reason is named: {report.attachments}")
+
+    async def test_failure_reason_reaches_the_report(
+        self, store_cfg: PostgresStoreConfig
+    ) -> None:
+        stub = ConfluenceStub()
+        _space(stub)
+        stub.pages["101"].broken = True
+        async with LiveServer(stub.app()) as server:
+            stand = await _stand(stub, server, store_cfg)
+            report = await stand.run(IngestScope.space(SPACE))
+
+        if report.pages.failed != 1:
+            raise AssertionError(f"one page failed: {report.pages}")
+        if "500" not in report.pages.error:
+            raise AssertionError(f"the status is in the report: {report.pages.error}")
+
+
 class TestSecondRun:
     async def test_unchanged_sources_cost_no_body_requests(
         self, store_cfg: PostgresStoreConfig
@@ -368,9 +438,9 @@ class TestSecondRun:
             await stand.run(IngestScope.space(SPACE))
             stats = await stand.run(IngestScope.space(SPACE))
 
-        if stats["indexed"] != 0:
+        if stats.pages.chunks + stats.attachments.chunks != 0:
             raise AssertionError(f"second run must index nothing: {stats}")
-        if stats["skipped_unchanged"] != 5:
+        if stats.pages.unchanged + stats.attachments.unchanged != 5:
             raise AssertionError(f"3 pages + 2 attachments unchanged: {stats}")
         if stub.calls[StubRoute.BODY] != 0:
             raise AssertionError(f"page bodies requested: {stub.calls}")
@@ -394,7 +464,7 @@ class TestSecondRun:
             raise AssertionError(f"only the edited page body: {stub.calls}")
         if stub.calls[StubRoute.DOWNLOAD] != 0:
             raise AssertionError(f"attachments must stay: {stub.calls}")
-        if stats["indexed"] <= 0:
+        if stats.pages.chunks + stats.attachments.chunks <= 0:
             raise AssertionError(f"edited page must be indexed: {stats}")
 
         page = await stand.record(stand.page_source("101"))
@@ -431,7 +501,7 @@ class TestSecondRun:
             raise AssertionError(f"one download expected: {stub.calls}")
         if stand.reader.parsed("report.pdf") != 0:
             raise AssertionError("same bytes must not be parsed")
-        if stats["indexed"] != 0:
+        if stats.pages.chunks + stats.attachments.chunks != 0:
             raise AssertionError(f"nothing to upsert: {stats}")
 
         att = await stand.record(stand.attachment_source("101", "report.pdf"))
@@ -452,7 +522,7 @@ class TestSecondRun:
 
         if stand.reader.parsed("notes.txt") != 1:
             raise AssertionError("replaced attachment must be parsed")
-        if stats["indexed"] != 1:
+        if stats.pages.chunks + stats.attachments.chunks != 1:
             raise AssertionError(f"one chunk upserted: {stats}")
 
     async def test_shrunk_page_drops_its_tail_chunks(
@@ -473,7 +543,7 @@ class TestSecondRun:
             raise AssertionError(f"long page must give several chunks: {before}")
         if after != 1:
             raise AssertionError(f"short page must keep one chunk: {after}")
-        if stats["deleted_chunks"] != before - 1:
+        if stats.pages.chunks_deleted != before - 1:
             raise AssertionError(f"tail chunks deleted: {stats}")
 
 
@@ -491,9 +561,9 @@ class TestAdditions:
 
         if stub.calls[StubRoute.BODY] != 1:
             raise AssertionError(f"only the new page body: {stub.calls}")
-        if stats["indexed"] != 1:
+        if stats.pages.chunks + stats.attachments.chunks != 1:
             raise AssertionError(f"one new chunk: {stats}")
-        if stats["skipped_unchanged"] != 5:
+        if stats.pages.unchanged + stats.attachments.unchanged != 5:
             raise AssertionError(f"old sources untouched: {stats}")
         if await stand.record(stand.page_source("104")) is None:
             raise AssertionError("new page must be in the ledger")
@@ -515,7 +585,7 @@ class TestAdditions:
             raise AssertionError(f"only the new attachment: {stub.calls}")
         if stub.calls[StubRoute.BODY] != 0:
             raise AssertionError(f"page bodies stay untouched: {stub.calls}")
-        if stats["indexed"] != 1:
+        if stats.pages.chunks + stats.attachments.chunks != 1:
             raise AssertionError(f"one new chunk: {stats}")
         if await stand.chunk_count(stand.attachment_source("103", "extra.txt")) != 1:
             raise AssertionError("new attachment must be indexed")
@@ -538,7 +608,7 @@ class TestAttachmentsFlag:
 
         if stub.calls[StubRoute.DOWNLOAD] != 0:
             raise AssertionError(f"no downloads without attachments: {stub.calls}")
-        if stats["deleted_sources"] != 0:
+        if stats.pages.deleted + stats.attachments.deleted != 0:
             raise AssertionError(f"attachments must survive: {stats}")
         if await stand.chunk_count(stand.attachment_source("101", "notes.txt")) != 1:
             raise AssertionError("attachment chunks must survive")
@@ -555,7 +625,7 @@ class TestAttachmentsFlag:
             page.attachments = [page.attachment("report.pdf")]
             stats = await stand.run(IngestScope.space(SPACE), attachments=False)
 
-        if stats["deleted_sources"] != 1:
+        if stats.pages.deleted + stats.attachments.deleted != 1:
             raise AssertionError(f"removed attachment must go: {stats}")
         if await stand.chunk_count(stand.attachment_source("101", "notes.txt")) != 0:
             raise AssertionError("removed attachment chunks must go")
@@ -605,7 +675,7 @@ class TestDeletedPages:
             stub.delete("101")
             stats = await stand.run(IngestScope.space(SPACE))
 
-        if stats["deleted_sources"] != 3:
+        if stats.pages.deleted + stats.attachments.deleted != 3:
             raise AssertionError(f"page and two attachments must go: {stats}")
         if await stand.chunk_count(stand.page_source("101")) != 0:
             raise AssertionError("deleted page chunks must go")
@@ -624,7 +694,7 @@ class TestDeletedPages:
             await stand.run(IngestScope.space(SPACE))
             stats = await stand.run(IngestScope.query('id = "103"'))
 
-        if stats["deleted_sources"] != 0:
+        if stats.pages.deleted + stats.attachments.deleted != 0:
             raise AssertionError(f"existing pages must survive a narrow query: {stats}")
         if stub.calls[StubRoute.SEARCH] != 2:
             raise AssertionError(f"discovery plus one probe batch: {stub.calls}")
@@ -640,7 +710,7 @@ class TestDeletedPages:
             stub.delete("102")
             stats = await stand.run(IngestScope.page("103"))
 
-        if stats["deleted_sources"] != 0:
+        if stats.pages.deleted + stats.attachments.deleted != 0:
             raise AssertionError(f"single page must not touch others: {stats}")
         if stub.calls[StubRoute.SEARCH] != 1:
             raise AssertionError(f"no probe for a single page: {stub.calls}")
@@ -660,9 +730,9 @@ class TestFailures:
             page.broken = True
             stats = await stand.run(IngestScope.space(SPACE))
 
-        if stats["failed"] != 1:
+        if stats.pages.failed + stats.attachments.failed != 1:
             raise AssertionError(f"one failed page: {stats}")
-        if stats["deleted_sources"] != 0:
+        if stats.pages.deleted + stats.attachments.deleted != 0:
             raise AssertionError(f"failed page must not be treated as gone: {stats}")
         if await stand.chunk_count(stand.page_source("101")) == 0:
             raise AssertionError("old chunks of a failed page must survive")
@@ -679,7 +749,7 @@ class TestFailures:
             stand = await _stand(stub, server, store_cfg)
             stats = await stand.run(IngestScope.space(SPACE))
 
-        if stats["failed"] != 1:
+        if stats.pages.failed + stats.attachments.failed != 1:
             raise AssertionError(f"one failed attachment: {stats}")
         if await stand.chunk_count(stand.page_source("101")) == 0:
             raise AssertionError("page must be indexed")
@@ -715,7 +785,7 @@ class TestManyAttachments:
             raise AssertionError(f"30 attachments by 10 per listing page: {stub.calls}")
         if stub.calls[StubRoute.DOWNLOAD] != 30:
             raise AssertionError(f"every attachment downloaded: {stub.calls}")
-        if stats["failed"] != 0:
+        if stats.pages.failed + stats.attachments.failed != 0:
             raise AssertionError(f"failed: {stats}")
         if len(await stand.sources()) != 31:
             raise AssertionError("page and 30 attachments in the ledger")

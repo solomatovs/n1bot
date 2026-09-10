@@ -30,6 +30,7 @@ from boba.indexing import (
     SourceFailed,
     SourceGone,
     SourceId,
+    SourceKind,
     SourceLedger,
     SourceMark,
     SourceProbe,
@@ -344,10 +345,15 @@ class TestRunOutcome:
         events = await stand.run(_pages(_PAGES), workers=4)
 
         [finished] = [e for e in events if isinstance(e, RunFinished)]
-        if finished.stats.sources_processed != _PAGES:
-            raise AssertionError("finished.stats.sources_processed == _PAGES")
-        if finished.stats.chunks_upserted != _PAGES:
-            raise AssertionError("finished.stats.chunks_upserted == _PAGES")
+        roots = finished.stats.roots
+        if roots.seen != _PAGES:
+            raise AssertionError(f"every source seen: {roots}")
+        if roots.indexed != _PAGES:
+            raise AssertionError(f"every source indexed: {roots}")
+        if roots.chunks_upserted != _PAGES:
+            raise AssertionError(f"a chunk per source: {roots}")
+        if finished.stats.children.seen != 0:
+            raise AssertionError("no children in this run")
 
     async def test_unseen_roots_are_probed_after_all_sources(self) -> None:
         """Исчезнувшее снимается строго последним, после всех источников."""
@@ -359,6 +365,9 @@ class TestRunOutcome:
         gone = [e for e in events if isinstance(e, SourceGone)]
         if sorted(str(e.source_id) for e in gone) != ["page:2", "page:3"]:
             raise AssertionError(f"unseen pages must go: {gone}")
+        for event in gone:
+            if event.kind is not SourceKind.ROOT:
+                raise AssertionError(f"pages are root sources: {event}")
         if stand.probe.batches != [2]:
             raise AssertionError(f"one probe batch of two: {stand.probe.batches}")
 

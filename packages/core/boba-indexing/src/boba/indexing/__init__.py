@@ -40,7 +40,9 @@ from boba.indexing.events import (
     SourceFailed,
     SourceGone,
     SourceIndexed,
+    SourceKind,
     SourceSkippedUnchanged,
+    SourceTally,
 )
 from boba.indexing.filter import (
     And,
@@ -211,11 +213,13 @@ __all__ = [
     "SourceGone",
     "SourceId",
     "SourceIndexed",
+    "SourceKind",
     "SourceLedger",
     "SourceMark",
     "SourceProbe",
     "SourceRecord",
     "SourceSkippedUnchanged",
+    "SourceTally",
     "SplitPiece",
     "Splitter",
     "SpooledBody",

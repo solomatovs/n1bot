@@ -12,11 +12,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import Annotated, Any, ClassVar, Literal, Self
 
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from boba.db.pgvector.config import PostgresStoreConfig
 from boba.db.pgvector.store import (
@@ -32,6 +32,7 @@ from boba.indexing import (
     NoProbe,
     Pipeline,
     Reader,
+    SourceKind,
     SourceLedger,
     SourceProbe,
     TransportKeys,
@@ -47,7 +48,6 @@ from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.models import (
     AttachmentFilter,
     AttachmentGate,
-    ConfluenceSourceId,
     ParseGrade,
 )
 from boba.tool.kb.confluence.pipeline import ConfluenceSourceTransport
@@ -65,13 +65,21 @@ from boba.tool.kb.indexing_log import (
     LoggingChunkStore,
     LoggingEmbedder,
     LoggingSourceLedger,
+    RunOutcome,
 )
 from boba.tool.kb.warm import EmbeddingConfig, WarmEmbedder
 from boba.toolkit.timing import Elapsed
 from boba.toolkit.types import StringList
 from boba.transport.http.profile import HttpConnection
 
-__all__ = ["ConfluenceIngest", "ConfluenceIngestConfig", "IngestScope", "IngestStamp"]
+__all__ = [
+    "ConfluenceIngest",
+    "ConfluenceIngestConfig",
+    "IngestLine",
+    "IngestReport",
+    "IngestScope",
+    "IngestStamp",
+]
 
 logger = logging.getLogger("boba.tool.kb.confluence.ingest")
 
@@ -145,6 +153,108 @@ class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams, LiteParseParams
     def with_ocr(self, *, ocr: bool) -> Self:
         """Копия с режимом OCR, выбранным вызовом; язык и воркеры из конфига."""
         return self.model_copy(update={"ocr_enabled": ocr})
+
+
+class IngestLine(BaseModel):
+    """Строка отчёта по одному виду источников."""
+
+    kind: str
+    found: int
+    indexed: int
+    unchanged: int
+    skipped: int
+    failed: int
+    deleted: int
+    chunks: int
+    chunks_deleted: int
+    skipped_reasons: str
+    error: str
+
+
+class IngestReport(BaseModel):
+    """Итог прогона глазами вызывающего: страницы и вложения отдельными строками.
+
+    Одного числа записанных чанков мало: ноль означает и «нечего было менять»,
+    и «ничего не доехало». Поэтому в строке видно, сколько источников нашлось
+    у Confluence, сколько совпало с индексом, сколько отсечено правилами и
+    сколько сорвалось, а у сорвавшихся показана первая причина.
+    """
+
+    ERROR_CHARS: ClassVar[int] = 300
+
+    collection: str
+    pages: IngestLine
+    attachments: IngestLine
+
+    @classmethod
+    def of(
+        cls, outcome: RunOutcome, progress: IngestProgress, *, collection: str
+    ) -> IngestReport:
+        by_reason = progress.skipped_attachments()
+        skipped = 0
+        for count in by_reason.values():
+            skipped += count
+
+        return cls(
+            collection=collection,
+            pages=cls._line(
+                "pages",
+                outcome,
+                SourceKind.ROOT,
+                found=progress.found_pages(),
+                skipped=0,
+                reasons="",
+            ),
+            attachments=cls._line(
+                "attachments",
+                outcome,
+                SourceKind.CHILD,
+                found=progress.found_attachments(),
+                skipped=skipped,
+                reasons=cls._reasons(by_reason),
+            ),
+        )
+
+    @staticmethod
+    def _reasons(by_reason: Mapping[str, int]) -> str:
+        """Почему вложения не пошли в индекс: причина и сколько раз."""
+        parts: list[str] = []
+        for reason, count in sorted(by_reason.items()):
+            parts.append(f"{reason}: {count}")
+
+        return ", ".join(parts)
+
+    @classmethod
+    def _line(  # noqa: PLR0913 — счёт, пропуски и причины приходят врозь
+        cls,
+        kind: str,
+        outcome: RunOutcome,
+        source_kind: SourceKind,
+        *,
+        found: int,
+        skipped: int,
+        reasons: str,
+    ) -> IngestLine:
+        tally = outcome.stats.tally_of(source_kind)
+        return IngestLine(
+            kind=kind,
+            found=found,
+            indexed=tally.indexed,
+            unchanged=tally.unchanged,
+            skipped=skipped,
+            failed=tally.failed,
+            deleted=tally.deleted,
+            chunks=tally.chunks_upserted,
+            chunks_deleted=tally.chunks_deleted,
+            skipped_reasons=reasons,
+            error=outcome.reason_of(source_kind)[: cls.ERROR_CHARS],
+        )
+
+    def rows(self) -> Sequence[Mapping[str, Any]]:
+        return [self.pages.model_dump(), self.attachments.model_dump()]
+
+    def note(self) -> str:
+        return f"collection: {self.collection}"
 
 
 class IngestStamp:
@@ -236,7 +346,7 @@ class ConfluenceIngest:
         gate: AttachmentGate,
         grade: ParseGrade,
         routes: Mapping[str, Reader[str]],
-    ) -> dict[str, Any]:
+    ) -> IngestReport:
         """Полный Confluence -> kb_chunks конвейер для собранного scope."""
         await scope.verify(conn)
 
@@ -279,23 +389,15 @@ class ConfluenceIngest:
                 ledger=ledger,
                 probe=scope.probe_of(conn),
             )
-            stats = await LoggedIndexRun.drain(
+            outcome = await LoggedIndexRun.drain(
                 pipeline.index(chunker=chunker, sink=view, config=config),
                 logger,
                 progress,
-                ConfluenceSourceId,
             )
         finally:
             await transport.close()
 
-        return {
-            "collection": str(collection_id),
-            "indexed": stats.chunks_upserted,
-            "skipped_unchanged": stats.sources_skipped_unchanged,
-            "deleted_sources": stats.sources_deleted,
-            "deleted_chunks": stats.chunks_deleted,
-            "failed": stats.sources_failed,
-        }
+        return IngestReport.of(outcome, progress, collection=str(collection_id))
 
     @staticmethod
     def _widen_thread_pool(workers: int) -> None:
@@ -318,7 +420,7 @@ class ConfluenceIngest:
         attachments: bool,
         progress: IngestProgress,
         routes: Mapping[str, Reader[str]],
-    ) -> dict[str, Any]:
+    ) -> IngestReport:
         """Собрать stores/ledger/embedder/chunker/gate из cfg и вызвать run."""
         chunk_store = LoggingChunkStore(PostgresChunkStore(cfg=cfg), logger)
         collections_store = PostgresCollectionsStore(cfg=cfg)

@@ -39,6 +39,7 @@ from boba.indexing.events import (
     SourceFailed,
     SourceGone,
     SourceIndexed,
+    SourceKind,
     SourceSkippedUnchanged,
     new_run_id,
 )
@@ -241,6 +242,7 @@ class Pipeline(Generic[ReqT, T]):
         source_id = self._transport.source_id(request)
         now = time.time()
         try:
+            kind = SourceKind.of(request.mark.parent)
             record = await self._ledger.lookup(source_id)
             if ChangePolicy.unchanged(record, request.mark, config.stamp):
                 await self._ledger.touch([source_id], at=now)
@@ -248,6 +250,7 @@ class Pipeline(Generic[ReqT, T]):
                     run_id=run_id,
                     monotonic_ns=time.monotonic_ns(),
                     source_id=source_id,
+                    kind=kind,
                     chunks_total=0,
                 )
                 return [skipped]
@@ -272,6 +275,7 @@ class Pipeline(Generic[ReqT, T]):
                 run_id=run_id,
                 monotonic_ns=time.monotonic_ns(),
                 source_id=source_id,
+                kind=SourceKind.of(request.mark.parent),
                 reason=Pipeline._reason(exc),
             )
             return [failed]
@@ -288,6 +292,7 @@ class Pipeline(Generic[ReqT, T]):
         run_id: RunId,
         now: float,
     ) -> Sequence[IndexEvent]:
+        kind = SourceKind.of(request.mark.parent)
         trace = _BodyTrace()
         sections = self._sections_of(
             request=request,
@@ -306,6 +311,7 @@ class Pipeline(Generic[ReqT, T]):
                         run_id=run_id,
                         monotonic_ns=time.monotonic_ns(),
                         source_id=source_id,
+                        kind=kind,
                         count=dropped,
                     )
                 )
@@ -329,6 +335,7 @@ class Pipeline(Generic[ReqT, T]):
                     run_id=run_id,
                     monotonic_ns=time.monotonic_ns(),
                     source_id=source_id,
+                    kind=kind,
                     chunks_total=summary.total,
                 )
             )
@@ -339,6 +346,7 @@ class Pipeline(Generic[ReqT, T]):
                 run_id=run_id,
                 monotonic_ns=time.monotonic_ns(),
                 source_id=source_id,
+                kind=kind,
                 chunks_total=summary.total,
                 chunks_upserted=summary.upserted,
                 chunks_skipped=summary.unchanged,
@@ -406,7 +414,7 @@ class Pipeline(Generic[ReqT, T]):
             if parent.seen_at < run_start:
                 continue
 
-            yield await self._forget(record.source_id, sink, run_id)
+            yield await self._forget(record.source_id, sink, run_id, SourceKind.CHILD)
 
         if roots:
             async for event in self._forget_gone(roots, sink, run_id):
@@ -420,15 +428,18 @@ class Pipeline(Generic[ReqT, T]):
     ) -> AsyncIterator[IndexEvent]:
         for source_id in await self._probe.gone(roots):
             async for child in self._ledger.children(source_id):
-                yield await self._forget(child.source_id, sink, run_id)
+                yield await self._forget(
+                    child.source_id, sink, run_id, SourceKind.CHILD
+                )
 
-            yield await self._forget(source_id, sink, run_id)
+            yield await self._forget(source_id, sink, run_id, SourceKind.ROOT)
 
     async def _forget(
         self,
         source_id: SourceId,
         sink: IndexSink[T],
         run_id: RunId,
+        kind: SourceKind,
     ) -> IndexEvent:
         deleted = await sink.forget(source_id, from_index=0)
         await self._ledger.forget(source_id)
@@ -436,6 +447,7 @@ class Pipeline(Generic[ReqT, T]):
             run_id=run_id,
             monotonic_ns=time.monotonic_ns(),
             source_id=source_id,
+            kind=kind,
             chunks_deleted=deleted,
         )
 
@@ -443,19 +455,25 @@ class Pipeline(Generic[ReqT, T]):
     def _observe(event: IndexEvent, *, stats: IndexStatsBuilder) -> None:
         """Единственная точка обновления stats; один вызов на event."""
         if isinstance(event, SourceIndexed):
-            stats.source_seen()
-            stats.chunks_upserted_add(event.chunks_upserted)
+            tally = stats.of(event.kind)
+            tally.seen += 1
+            tally.indexed += 1
+            tally.chunks_upserted += event.chunks_upserted
 
         elif isinstance(event, SourceSkippedUnchanged):
-            stats.source_seen()
-            stats.source_skipped_unchanged()
+            tally = stats.of(event.kind)
+            tally.seen += 1
+            tally.unchanged += 1
 
         elif isinstance(event, SourceFailed):
-            stats.source_failed()
+            tally = stats.of(event.kind)
+            tally.seen += 1
+            tally.failed += 1
 
         elif isinstance(event, ChunksDeleted):
-            stats.chunks_deleted_add(event.count)
+            stats.of(event.kind).chunks_deleted += event.count
 
         elif isinstance(event, SourceGone):
-            stats.source_deleted()
-            stats.chunks_deleted_add(event.chunks_deleted)
+            tally = stats.of(event.kind)
+            tally.deleted += 1
+            tally.chunks_deleted += event.chunks_deleted

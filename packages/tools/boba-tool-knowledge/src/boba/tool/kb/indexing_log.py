@@ -29,9 +29,9 @@ from collections.abc import (
     Sequence,
 )
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import ClassVar, Generic, Protocol, TypeVar
+from typing import ClassVar, Generic, TypeVar
 
 from boba.indexing import (
     AsyncBinaryStream,
@@ -61,6 +61,7 @@ from boba.indexing import (
     SourceGone,
     SourceId,
     SourceIndexed,
+    SourceKind,
     SourceLedger,
     SourceRecord,
     SourceSkippedUnchanged,
@@ -77,7 +78,7 @@ __all__ = [
     "LoggingEmbedder",
     "LoggingReader",
     "LoggingSourceLedger",
-    "SourceKinds",
+    "RunOutcome",
 ]
 
 T = TypeVar("T")
@@ -105,13 +106,6 @@ class LedgerOp(StrEnum):
     UNSEEN = "unseen"
     CHILDREN = "children"
     FORGET = "forget"
-
-
-class SourceKinds(Protocol):
-    """Как отличить вложение от страницы по source_id: знает только источник."""
-
-    @staticmethod
-    def is_attachment(source_id: SourceId) -> bool: ...
 
 
 @dataclass
@@ -154,6 +148,7 @@ class IngestProgress:
         self._chunks = 0
         self._failed = 0
         self._gone = 0
+        self._skipped: dict[str, int] = {}
 
     def spaces_found(self, count: int) -> None:
         """Список space'ов известен целиком до обхода."""
@@ -183,6 +178,19 @@ class IngestProgress:
     def attachments_found(self, count: int) -> None:
         self._attachments.add_found(count)
 
+    def attachment_skipped(self, reason: str) -> None:
+        """Вложение отсечено правилами: в индекс не пойдёт, но существует."""
+        self._skipped[reason] = self._skipped.get(reason, 0) + 1
+
+    def skipped_attachments(self) -> Mapping[str, int]:
+        return dict(self._skipped)
+
+    def found_pages(self) -> int:
+        return self._pages.found
+
+    def found_attachments(self) -> int:
+        return self._attachments.found
+
     def attachment_done(self) -> None:
         self._attachments.complete()
 
@@ -204,14 +212,30 @@ class IngestProgress:
             f" | chunks {self._chunks}"
             f" | failed {self._failed}"
             f" | gone {self._gone}"
+            f" | skipped {sum(self._skipped.values())}"
         )
 
     def say(self) -> None:
         self._logger.info("%s", self.render())
 
 
+@dataclass
+class RunOutcome:
+    """Итог прогона для отчёта вызывающему: счёт по видам и причины отказов.
+
+    Причина хранится первой на вид: в отчёт инструмента уходит именно она,
+    иначе вызывающий видит только число failed и не знает, что чинить.
+    """
+
+    stats: IndexStats
+    reasons: dict[SourceKind, str] = field(default_factory=dict)
+
+    def reason_of(self, kind: SourceKind) -> str:
+        return self.reasons.get(kind, "")
+
+
 class LoggedIndexRun:
-    """Слив IndexEvent-потока с per-event логированием; возвращает IndexStats."""
+    """Слив IndexEvent-потока с per-event логированием; возвращает RunOutcome."""
 
     _LEVELS: ClassVar[dict[Severity, int]] = {
         Severity.INFO: logging.INFO,
@@ -224,17 +248,17 @@ class LoggedIndexRun:
         events: AsyncIterable[IndexEvent],
         logger: logging.Logger,
         progress: IngestProgress,
-        kinds: SourceKinds,
-    ) -> IndexStats:
+    ) -> RunOutcome:
         """Потребить поток Pipeline.index(...), пишет каждое событие в logger."""
-        stats = IndexStatsBuilder().build()
+        outcome = RunOutcome(stats=IndexStatsBuilder().build())
         async for event in events:
             LoggedIndexRun._emit(logger, event)
-            LoggedIndexRun._count(progress, event, kinds)
+            LoggedIndexRun._count(progress, event)
+            LoggedIndexRun._remember(outcome, event)
             if isinstance(event, RunFinished):
-                stats = event.stats
+                outcome.stats = event.stats
 
-        return stats
+        return outcome
 
     @staticmethod
     def _emit(logger: logging.Logger, event: IndexEvent) -> None:
@@ -245,7 +269,17 @@ class LoggedIndexRun:
         logger.log(LoggedIndexRun._LEVELS[event.severity()], "%s", message)
 
     @staticmethod
-    def _count(progress: IngestProgress, event: IndexEvent, kinds: SourceKinds) -> None:
+    def _remember(outcome: RunOutcome, event: IndexEvent) -> None:
+        if not isinstance(event, SourceFailed):
+            return
+
+        if event.kind in outcome.reasons:
+            return
+
+        outcome.reasons[event.kind] = event.reason
+
+    @staticmethod
+    def _count(progress: IngestProgress, event: IndexEvent) -> None:
         """Источник закрыт своим событием; страница и вложение считаются врозь."""
         if isinstance(event, SourceGone):
             progress.source_gone()
@@ -253,7 +287,7 @@ class LoggedIndexRun:
             return
 
         if isinstance(event, SourceFailed):
-            if kinds.is_attachment(event.source_id):
+            if event.kind is SourceKind.CHILD:
                 progress.attachment_failed()
             else:
                 progress.page_failed()
@@ -264,7 +298,7 @@ class LoggedIndexRun:
         if not isinstance(event, (SourceIndexed, SourceSkippedUnchanged)):
             return
 
-        if kinds.is_attachment(event.source_id):
+        if event.kind is SourceKind.CHILD:
             progress.attachment_done()
         else:
             progress.page_done()

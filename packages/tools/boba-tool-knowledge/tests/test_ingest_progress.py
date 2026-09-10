@@ -30,7 +30,6 @@ from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.models import (
     AttachmentFilter,
     AttachmentGate,
-    ConfluenceSourceId,
     ParseGrade,
 )
 from boba.tool.kb.confluence.pipeline import ConfluenceSourceTransport
@@ -152,9 +151,7 @@ class IngestStand:
             config=IndexerConfig(workers=1, stamp="test"),
         )
         try:
-            await LoggedIndexRun.drain(
-                events, LOGGER, self.progress, ConfluenceSourceId
-            )
+            await LoggedIndexRun.drain(events, LOGGER, self.progress)
         finally:
             await transport.close()
 

@@ -1140,6 +1140,15 @@ class TestPgTools:
             raise AssertionError("таблица первой команды откачена")
 
 
+def _ingest_lines(result) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Отчёт ingest: строка страниц и строка вложений по имени вида."""
+    by_kind: dict[str, Any] = {}
+    for row in result.rows:
+        by_kind[row["kind"]] = row
+
+    return by_kind["pages"], by_kind["attachments"]
+
+
 class TestIngestTools:
     """ingest: обход Confluence, чтение вложений и запись в KB — в песочнице."""
 
@@ -1151,13 +1160,15 @@ class TestIngestTools:
             page_id=confluence_page["page_id"],
             attachments=True,
         )
-        stats = result.rows[0]
-        if stats["collection"] != kb_collection:
-            raise AssertionError('stats["collection"] == kb_collection')
-        if stats["indexed"] <= 0:
-            raise AssertionError('stats["indexed"] > 0')
-        if stats["failed"] != 0:
-            raise AssertionError('stats["failed"] == 0')
+        pages, attachments = _ingest_lines(result)
+        if kb_collection not in (result.note or ""):
+            raise AssertionError(f"collection in the note: {result.note}")
+        if pages["found"] != 1:
+            raise AssertionError(f"one page found: {pages}")
+        if pages["chunks"] <= 0:
+            raise AssertionError(f"page chunks written: {pages}")
+        if pages["failed"] != 0 or attachments["failed"] != 0:
+            raise AssertionError(f"nothing failed: {pages}, {attachments}")
 
     async def test_index_cql_skips_unchanged(
         self, ingest_tools, confluence_page
@@ -1167,11 +1178,13 @@ class TestIngestTools:
             ingest_tools["confluence_index_cql"],
             cql=f"id = {confluence_page['page_id']}",
         )
-        stats = result.rows[0]
-        if stats["skipped_unchanged"] != 1:
-            raise AssertionError('stats["skipped_unchanged"] == 1')
-        if stats["indexed"] != 0:
-            raise AssertionError('stats["indexed"] == 0')
+        pages, _ = _ingest_lines(result)
+        if pages["found"] != 1:
+            raise AssertionError(f"the page is still found: {pages}")
+        if pages["unchanged"] != 1:
+            raise AssertionError(f"the page is unchanged: {pages}")
+        if pages["chunks"] != 0:
+            raise AssertionError(f"nothing rewritten: {pages}")
 
     async def test_index_spaces(
         self, ingest_tools, confluence_page, kb_collection
@@ -1181,13 +1194,13 @@ class TestIngestTools:
             ingest_tools["confluence_index_space"],
             space_key=confluence_page["space_key"],
         )
-        stats = result.rows[0]
-        if stats["collection"] != kb_collection:
-            raise AssertionError('stats["collection"] == kb_collection')
-        if stats["failed"] != 0:
-            raise AssertionError('stats["failed"] == 0')
-        if stats["skipped_unchanged"] < 1:
-            raise AssertionError('stats["skipped_unchanged"] >= 1')
+        pages, attachments = _ingest_lines(result)
+        if kb_collection not in (result.note or ""):
+            raise AssertionError(f"collection in the note: {result.note}")
+        if pages["failed"] != 0 or attachments["failed"] != 0:
+            raise AssertionError(f"nothing failed: {pages}, {attachments}")
+        if pages["unchanged"] < 1:
+            raise AssertionError(f"pages already in the index: {pages}")
 
     async def test_unknown_space_reports_error(self, ingest_tools) -> None:
         """Несуществующий space — объявленный отказ с kind'ом инструмента."""

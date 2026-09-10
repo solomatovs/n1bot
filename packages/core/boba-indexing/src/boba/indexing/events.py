@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import NewType
 from uuid import UUID
@@ -30,7 +30,10 @@ __all__ = [
     "SourceFailed",
     "SourceGone",
     "SourceIndexed",
+    "SourceKind",
     "SourceSkippedUnchanged",
+    "SourceTally",
+    "TallyBuilder",
     "new_run_id",
 ]
 
@@ -41,6 +44,26 @@ RunId = NewType("RunId", UUID)
 def new_run_id() -> RunId:
     """Свежий RunId."""
     return RunId(uuid.uuid4())
+
+
+class SourceKind(StrEnum):
+    """Вид источника: корневой или числящийся за родителем.
+
+    Различие доменное, а не предметное: у дочернего источника заполнен
+    SourceMark.parent, и живёт он ровно столько, сколько живёт родитель.
+    Счёт по видам ведётся врозь, иначе в итоге прогона не видно, что именно
+    не доехало до индекса.
+    """
+
+    ROOT = "root"
+    CHILD = "child"
+
+    @classmethod
+    def of(cls, parent: object | None) -> SourceKind:
+        if parent is None:
+            return cls.ROOT
+
+        return cls.CHILD
 
 
 class Severity(StrEnum):
@@ -164,22 +187,26 @@ class RunFinished(PhaseTransition):
         return "run.finished"
 
     def label(self) -> str:
-        s = self.stats
+        roots = self.stats.roots
+        children = self.stats.children
         return (
-            f"run finished: {s.sources_processed} src "
-            f"({s.chunks_upserted} upserted, {s.chunks_deleted} deleted)"
+            f"run finished: roots {roots.indexed} indexed, "
+            f"{roots.unchanged} unchanged, {roots.failed} failed; "
+            f"children {children.indexed} indexed, "
+            f"{children.unchanged} unchanged, {children.failed} failed"
         )
 
     def details(self) -> Mapping[str, str]:
-        s = self.stats
-        return {
-            "sources_processed": str(s.sources_processed),
-            "sources_failed": str(s.sources_failed),
-            "sources_skipped_unchanged": str(s.sources_skipped_unchanged),
-            "sources_deleted": str(s.sources_deleted),
-            "chunks_upserted": str(s.chunks_upserted),
-            "chunks_deleted": str(s.chunks_deleted),
-        }
+        fields: dict[str, str] = {}
+        for kind in SourceKind:
+            tally = self.stats.tally_of(kind)
+            fields[f"{kind.value}_seen"] = str(tally.seen)
+            fields[f"{kind.value}_indexed"] = str(tally.indexed)
+            fields[f"{kind.value}_unchanged"] = str(tally.unchanged)
+            fields[f"{kind.value}_failed"] = str(tally.failed)
+            fields[f"{kind.value}_deleted"] = str(tally.deleted)
+
+        return fields
 
 
 @dataclass(frozen=True)
@@ -190,6 +217,7 @@ class SourceIndexed(CompletedItem):
     chunks_total: int
     chunks_upserted: int
     chunks_skipped: int
+    kind: SourceKind
 
     @classmethod
     def name(cls) -> str:
@@ -205,6 +233,7 @@ class SourceIndexed(CompletedItem):
     def details(self) -> Mapping[str, str]:
         return {
             "source_id": self.source_id,
+            "kind": self.kind.value,
             "chunks_total": str(self.chunks_total),
             "chunks_upserted": str(self.chunks_upserted),
             "chunks_skipped": str(self.chunks_skipped),
@@ -217,6 +246,7 @@ class SourceFailed(CompletedItem):
 
     source_id: SourceId
     reason: str
+    kind: SourceKind
 
     @classmethod
     def name(cls) -> str:
@@ -228,6 +258,7 @@ class SourceFailed(CompletedItem):
     def details(self) -> Mapping[str, str]:
         return {
             "source_id": self.source_id,
+            "kind": self.kind.value,
             "reason": self.reason,
         }
 
@@ -241,6 +272,7 @@ class SourceSkippedUnchanged(CompletedItem):
 
     source_id: SourceId
     chunks_total: int
+    kind: SourceKind
 
     @classmethod
     def name(cls) -> str:
@@ -283,6 +315,7 @@ class ChunksDeleted(CompletedItem):
 
     source_id: SourceId
     count: int
+    kind: SourceKind
 
     @classmethod
     def name(cls) -> str:
@@ -301,6 +334,7 @@ class SourceGone(CompletedItem):
 
     source_id: SourceId
     chunks_deleted: int
+    kind: SourceKind
 
     @classmethod
     def name(cls) -> str:
@@ -317,15 +351,68 @@ class SourceGone(CompletedItem):
 
 
 @dataclass(frozen=True)
-class IndexStats:
-    """Сводка одного Pipeline.run() / .index()."""
+class SourceTally:
+    """Счёт источников одного вида за прогон.
 
-    sources_processed: int
-    sources_failed: int
-    sources_skipped_unchanged: int
-    sources_deleted: int
-    chunks_upserted: int
-    chunks_deleted: int
+    seen — сколько дошло до конвейера, из них indexed получили новые чанки,
+    unchanged совпали с индексом, failed сорвались. deleted сняты очисткой как
+    исчезнувшие у источника данных.
+    """
+
+    seen: int = 0
+    indexed: int = 0
+    unchanged: int = 0
+    failed: int = 0
+    deleted: int = 0
+    chunks_upserted: int = 0
+    chunks_deleted: int = 0
+
+
+@dataclass(frozen=True)
+class IndexStats:
+    """Сводка одного Pipeline.run() / .index(): корни и дети врозь."""
+
+    roots: SourceTally
+    children: SourceTally
+
+    def chunks_upserted(self) -> int:
+        return self.roots.chunks_upserted + self.children.chunks_upserted
+
+    def chunks_deleted(self) -> int:
+        return self.roots.chunks_deleted + self.children.chunks_deleted
+
+    def failed(self) -> int:
+        return self.roots.failed + self.children.failed
+
+    def tally_of(self, kind: SourceKind) -> SourceTally:
+        if kind is SourceKind.ROOT:
+            return self.roots
+
+        return self.children
+
+
+@dataclass
+class TallyBuilder:
+    """Мутабельный счёт одного вида источников."""
+
+    seen: int = 0
+    indexed: int = 0
+    unchanged: int = 0
+    failed: int = 0
+    deleted: int = 0
+    chunks_upserted: int = 0
+    chunks_deleted: int = 0
+
+    def build(self) -> SourceTally:
+        return SourceTally(
+            seen=self.seen,
+            indexed=self.indexed,
+            unchanged=self.unchanged,
+            failed=self.failed,
+            deleted=self.deleted,
+            chunks_upserted=self.chunks_upserted,
+            chunks_deleted=self.chunks_deleted,
+        )
 
 
 @dataclass
@@ -336,37 +423,14 @@ class IndexStatsBuilder:
     источники считаются счётчиком, без множества увиденных id.
     """
 
-    sources_processed: int = 0
-    sources_failed: int = 0
-    sources_skipped_unchanged: int = 0
-    sources_deleted: int = 0
-    chunks_upserted: int = 0
-    chunks_deleted: int = 0
+    roots: TallyBuilder = field(default_factory=TallyBuilder)
+    children: TallyBuilder = field(default_factory=TallyBuilder)
 
-    def source_seen(self) -> None:
-        self.sources_processed += 1
+    def of(self, kind: SourceKind) -> TallyBuilder:
+        if kind is SourceKind.ROOT:
+            return self.roots
 
-    def source_failed(self) -> None:
-        self.sources_failed += 1
-
-    def source_skipped_unchanged(self) -> None:
-        self.sources_skipped_unchanged += 1
-
-    def source_deleted(self) -> None:
-        self.sources_deleted += 1
-
-    def chunks_upserted_add(self, n: int) -> None:
-        self.chunks_upserted += n
-
-    def chunks_deleted_add(self, n: int) -> None:
-        self.chunks_deleted += n
+        return self.children
 
     def build(self) -> IndexStats:
-        return IndexStats(
-            sources_processed=self.sources_processed,
-            sources_failed=self.sources_failed,
-            sources_skipped_unchanged=self.sources_skipped_unchanged,
-            sources_deleted=self.sources_deleted,
-            chunks_upserted=self.chunks_upserted,
-            chunks_deleted=self.chunks_deleted,
-        )
+        return IndexStats(roots=self.roots.build(), children=self.children.build())
