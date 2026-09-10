@@ -7,8 +7,9 @@ extra `payload` и ставится только в песочницу.
 
 from __future__ import annotations
 
-from boba.db.clickhouse.errors import ClickHouseError
+from boba.db.clickhouse.errors import ClickHouseError, ClickHouseQueryError
 
 __all__ = [
     "ClickHouseError",
+    "ClickHouseQueryError",
 ]

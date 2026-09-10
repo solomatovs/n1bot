@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from typing import Any, ClassVar
 
 import pytest
@@ -52,6 +54,38 @@ class TestChTools:
 
         if hasattr(cfg, "profiles"):
             raise AssertionError("profiles must not live in the section any more")
+
+
+class TestHostImports:
+    """Хост читает объявления инструмента: драйвер туда ехать не должен.
+
+    clickhouse-connect объявлен extra payload и ставится только в песочницу,
+    поэтому импорт модулей, которые читает приложение, обязан обходиться без
+    него. Проверка идёт отдельным процессом: в текущем драйвер уже загружен
+    соседними тестами.
+    """
+
+    MODULES: ClassVar[list[str]] = [
+        "boba.tool.ch.tools",
+        "boba.tool.ch.plugin",
+        "boba.db.clickhouse.connection",
+    ]
+
+    def test_declarations_load_without_the_driver(self) -> None:
+        imports = "; ".join(f"import {name}" for name in self.MODULES)
+        code = f"import sys; {imports}; print('clickhouse_connect' in sys.modules)"
+
+        done = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        if done.returncode != 0:
+            raise AssertionError(f"declarations must import: {done.stderr[-400:]}")
+        if done.stdout.strip() != "False":
+            raise AssertionError("the driver must stay out of the app environment")
 
 
 class TestClickHouseConfig:

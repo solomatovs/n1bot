@@ -848,7 +848,7 @@ def indexed_page(
                 "skipped_reasons",
                 "error",
             ),
-            TablePattern.row("pages", "1", r"\d+", r"\d+", "0", "0", "0", r"\d+"),
+            TablePattern.cells("pages", "1", r"\d+", r"\d+", "0", "0", "0"),
             f"^_collection: kb_confluence; page_id: {confluence_page.page_id}_$",
         ],
         dom=["kb_confluence", f"page_id: {confluence_page.page_id}"],
@@ -1239,8 +1239,8 @@ class TestIngestTools:
         )
         expect = ToolExpect(
             patterns=[
-                TablePattern.row("pages", "1", "0", "1", "0", "0", "0", "0"),
-                TablePattern.row("attachments", r"\d+", "0", r"\d+", r"\d+", "0"),
+                TablePattern.cells("pages", "1", "0", "1", "0", "0", "0"),
+                TablePattern.cells("attachments", r"\d+", "0", r"\d+"),
                 "^_collection: kb_confluence_$",
             ],
             dom=["unchanged", "kb_confluence"],
