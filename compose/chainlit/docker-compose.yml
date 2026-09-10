@@ -13,7 +13,7 @@ x-runtime: &runtime
 services:
   chainlit:
     <<: *runtime
-    image: boba-chainlit:${BOBA_TAG:-latest}
+    image: boba-chainlit:0.0.19.dev3
     hostname: chainlit
     container_name: chainlit
     env_file: ./conf/boba.env
@@ -28,7 +28,7 @@ services:
       - 127.0.0.1:8501:8501
   chainlit2:
     <<: *runtime
-    image: boba-chainlit:${BOBA_TAG:-latest}
+    image: boba-chainlit:0.0.19.dev2
     hostname: chainlit2
     container_name: chainlit2
     env_file: ./conf/boba.env

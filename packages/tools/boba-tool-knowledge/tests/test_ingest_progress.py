@@ -122,7 +122,6 @@ class IngestStand:
             cql=ConfluenceCql.space(SPACE),
             gate=AttachmentGate(allowed=AttachmentFilter(), requested=True, ocr=True),
             grade=ParseGrade.OCR,
-            ledger=ledger,
             progress=self.progress,
         )
         reader: DispatchReader[str] = DispatchReader(

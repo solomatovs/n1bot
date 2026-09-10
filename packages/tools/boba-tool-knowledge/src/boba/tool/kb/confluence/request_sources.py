@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, TypeVar
@@ -31,7 +30,6 @@ from boba.indexing import (
     Request,
     RequestSource,
     SourceId,
-    SourceLedger,
     SourceMark,
     SourceProbe,
     SourceRecord,
@@ -226,13 +224,14 @@ class ConfluenceRest:
         )
 
     @staticmethod
-    def make_attachment_request(
+    def make_attachment_request(  # noqa: PLR0913 — адрес, родитель и режим врозь
         *,
         profile: HttpConnection,
         page: ConfluenceContent,
         page_source: SourceId,
         attachment: AttachmentInfo,
         grade: ParseGrade,
+        skip: str = "",
     ) -> ConfluenceRequest:
         meta = (
             Metadata.empty()
@@ -260,7 +259,7 @@ class ConfluenceRest:
         return ConfluenceRequest(
             http=HttpRequest(url=attachment.download_path, method="GET"),
             mark=ConfluenceMarks.attachment(
-                attachment, parent=page_source, grade=grade
+                attachment, parent=page_source, grade=grade, skip=skip
             ),
             metadata=meta,
         )
@@ -349,26 +348,24 @@ class ConfluenceDiscovery(RequestSource[ConfluenceRequest]):
     """Обход по CQL: страницы с версиями и вложениями, без тел.
 
     На каждую страницу — запрос тела с отметкой версии; конвейер сам решит по
-    реестру, нужно ли его исполнять. На каждое вложение, прошедшее гейт, —
-    запрос скачивания с отпечатком из списка. Вложения, отсечённые гейтом,
-    отмечаются в реестре увиденными: они существуют, просто не индексируются.
+    реестру, нужно ли его исполнять. На каждое вложение — запрос скачивания с
+    отпечатком из списка, а отсечённое гейтом уходит с причиной в отметке:
+    конвейер его не скачивает, но помнит, что оно существует.
     """
 
-    def __init__(  # noqa: PLR0913 — обход, гейт, реестр и счёт независимы
+    def __init__(
         self,
         *,
         conn: ConfluenceConnection,
         cql: str,
         gate: AttachmentGate,
         grade: ParseGrade,
-        ledger: SourceLedger,
         progress: IngestProgress,
     ) -> None:
         self._conn = conn
         self._cql = cql
         self._gate = gate
         self._grade = grade
-        self._ledger = ledger
         self._progress = progress
 
     @property
@@ -411,9 +408,6 @@ class ConfluenceDiscovery(RequestSource[ConfluenceRequest]):
             self._progress.attachments_found(1)
             verdict = self._gate.verdict(att)
             if verdict is not AttachmentVerdict.TAKE:
-                source = ConfluenceSourceId.of(profile, att.download_path)
-                await self._ledger.touch([source], at=time.time())
-                self._progress.attachment_skipped(verdict.value)
                 logger.info(
                     "attachment skipped (%s): id=%s title=%r media_type=%r",
                     verdict.value,
@@ -421,7 +415,6 @@ class ConfluenceDiscovery(RequestSource[ConfluenceRequest]):
                     att.title,
                     att.media_type,
                 )
-                continue
 
             yield ConfluenceRest.make_attachment_request(
                 profile=profile,
@@ -429,6 +422,7 @@ class ConfluenceDiscovery(RequestSource[ConfluenceRequest]):
                 page_source=page_source,
                 attachment=att,
                 grade=self._grade,
+                skip=verdict.skipped(),
             )
 
     @staticmethod

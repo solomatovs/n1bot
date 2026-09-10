@@ -78,6 +78,8 @@ class StubPage:
     when: str = "2026-01-01T00:00:00.000Z"
     attachments: list[StubAttachment] = field(default_factory=list)
     broken: bool = False
+    missing: bool = False
+    """Страница пропала: список её ещё отдаёт, а тело отвечает 404."""
 
     def edit(self, *, html: str | None = None, title: str | None = None) -> None:
         if html is not None:
@@ -234,7 +236,7 @@ class ConfluenceStub:
         async def body(page_id: str) -> Response:
             self.calls[StubRoute.BODY] += 1
             page = self.pages.get(page_id)
-            if page is None:
+            if page is None or page.missing:
                 return Response(status_code=404)
 
             if page.broken:

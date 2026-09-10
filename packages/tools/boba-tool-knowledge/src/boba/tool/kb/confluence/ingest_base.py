@@ -190,34 +190,22 @@ class IngestReport(BaseModel):
     def of(
         cls, outcome: RunOutcome, progress: IngestProgress, *, collection: str
     ) -> IngestReport:
-        by_reason = progress.skipped_attachments()
-        skipped = 0
-        for count in by_reason.values():
-            skipped += count
-
         return cls(
             collection=collection,
             pages=cls._line(
-                "pages",
-                outcome,
-                SourceKind.ROOT,
-                found=progress.found_pages(),
-                skipped=0,
-                reasons="",
+                "pages", outcome, SourceKind.ROOT, found=progress.found_pages()
             ),
             attachments=cls._line(
                 "attachments",
                 outcome,
                 SourceKind.CHILD,
                 found=progress.found_attachments(),
-                skipped=skipped,
-                reasons=cls._reasons(by_reason),
             ),
         )
 
     @staticmethod
     def _reasons(by_reason: Mapping[str, int]) -> str:
-        """Почему вложения не пошли в индекс: причина и сколько раз."""
+        """Почему источники не пошли в индекс: причина и сколько раз."""
         parts: list[str] = []
         for reason, count in sorted(by_reason.items()):
             parts.append(f"{reason}: {count}")
@@ -225,15 +213,13 @@ class IngestReport(BaseModel):
         return ", ".join(parts)
 
     @classmethod
-    def _line(  # noqa: PLR0913 — счёт, пропуски и причины приходят врозь
+    def _line(
         cls,
         kind: str,
         outcome: RunOutcome,
         source_kind: SourceKind,
         *,
         found: int,
-        skipped: int,
-        reasons: str,
     ) -> IngestLine:
         tally = outcome.stats.tally_of(source_kind)
         return IngestLine(
@@ -241,12 +227,12 @@ class IngestReport(BaseModel):
             found=found,
             indexed=tally.indexed,
             unchanged=tally.unchanged,
-            skipped=skipped,
+            skipped=tally.skipped,
             failed=tally.failed,
             deleted=tally.deleted,
             chunks=tally.chunks_upserted,
             chunks_deleted=tally.chunks_deleted,
-            skipped_reasons=reasons,
+            skipped_reasons=cls._reasons(outcome.skips_of(source_kind)),
             error=outcome.reason_of(source_kind)[: cls.ERROR_CHARS],
         )
 
@@ -281,35 +267,43 @@ class IngestStamp:
 class IngestScope:
     """Что обходит прогон и что он вправе снимать за пределами увиденного.
 
-    Спейс и CQL покрывают коллекцию: невиденные страницы проверяются пробой и
-    исчезнувшие снимаются. Одна страница ничего вокруг себя не трогает.
-    Спейс перед обходом проверяется на существование: CQL по неизвестному
-    ключу отдаёт пустой список, а не ошибку.
+    Спейс покрывает себя целиком: страницы, которых он больше не отдаёт,
+    проверяются пробой и снимаются. Запрос и одна страница области не имеют:
+    выборка по CQL молчит о том, что в неё не попало, поэтому чужие страницы
+    такой прогон не трогает. Вложения увиденных страниц снимаются в любом
+    режиме — их полный список приходит вместе со страницей.
+
+    Область записывается в реестр, поэтому спейс не удалит чужое даже когда
+    прогоны идут одновременно.
     """
 
-    def __init__(self, *, cql: str, probe: bool, space_key: str = "") -> None:
+    SPACE_PREFIX: ClassVar[str] = "space:"
+
+    def __init__(self, *, cql: str, space_key: str = "") -> None:
         self.cql = cql
-        self.probe = probe
         self.space_key = space_key
 
     @classmethod
     def space(cls, space_key: str) -> IngestScope:
-        return cls(
-            cql=ConfluenceCql.space(space_key),
-            probe=True,
-            space_key=space_key,
-        )
+        return cls(cql=ConfluenceCql.space(space_key), space_key=space_key)
 
     @classmethod
     def query(cls, cql: str) -> IngestScope:
-        return cls(cql=cql, probe=True)
+        return cls(cql=cql)
 
     @classmethod
     def page(cls, page_id: str) -> IngestScope:
-        return cls(cql=ConfluenceCql.page(page_id), probe=False)
+        return cls(cql=ConfluenceCql.page(page_id))
+
+    def owned(self) -> str:
+        """Метка области для реестра; пустая — прогон корней не снимает."""
+        if not self.space_key:
+            return ""
+
+        return self.SPACE_PREFIX + self.space_key
 
     def probe_of(self, conn: ConfluenceConnection) -> SourceProbe:
-        if not self.probe:
+        if not self.space_key:
             return NoProbe()
 
         return ConfluenceProbe(conn)
@@ -376,10 +370,11 @@ class ConfluenceIngest:
             cql=scope.cql,
             gate=gate,
             grade=grade,
-            ledger=ledger,
             progress=progress,
         )
-        config: IndexerConfig[str] = IndexerConfig(workers=workers, stamp=stamp)
+        config: IndexerConfig[str] = IndexerConfig(
+            workers=workers, stamp=stamp, scope=scope.owned()
+        )
         ConfluenceIngest._widen_thread_pool(workers)
         try:
             pipeline: Pipeline[Any, str] = Pipeline(

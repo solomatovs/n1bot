@@ -54,6 +54,12 @@ class Migrations:
             sources_collection_parent_idx_name=sql.Identifier(
                 f"{schema_cfg.sources_table}_collection_parent",
             ),
+            sources_collection_scope_idx_name=sql.Identifier(
+                f"{schema_cfg.sources_table}_collection_scope",
+            ),
+            sources_collection_parent_run_idx_name=sql.Identifier(
+                f"{schema_cfg.sources_table}_collection_parent_run",
+            ),
             # drop index требует схему в имени: search_path соединения миграций
             # до схемы KB не расширяется
             chunks_tsv_gin_qualified=sql.Identifier(

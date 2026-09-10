@@ -9,6 +9,7 @@ pytest -m integration.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator, Sequence
 from typing import Any, ClassVar
@@ -257,11 +258,18 @@ class IngestStand:
         return int(row[0])
 
     async def sources(self) -> Sequence[str]:
+        """Все записи реестра коллекции: пустая метка прогона ничего не видела."""
         ids: list[str] = []
-        async for record in self.ledger.unseen(before=1e12):
+        async for record in self.ledger.unseen_roots(_scope_of(SPACE), ""):
             ids.append(str(record.source_id))
+            async for child in self.ledger.children(record.source_id):
+                ids.append(str(child.source_id))
 
         return ids
+
+
+def _scope_of(space: str) -> str:
+    return IngestScope.space(space).owned()
 
 
 def _space(stub: ConfluenceStub) -> None:
@@ -696,8 +704,10 @@ class TestDeletedPages:
 
         if stats.pages.deleted + stats.attachments.deleted != 0:
             raise AssertionError(f"existing pages must survive a narrow query: {stats}")
-        if stub.calls[StubRoute.SEARCH] != 2:
-            raise AssertionError(f"discovery plus one probe batch: {stub.calls}")
+        if stub.calls[StubRoute.SEARCH] != 1:
+            raise AssertionError(
+                f"a query owns nothing, so it never probes: {stub.calls}"
+            )
 
     async def test_single_page_scope_does_not_probe(
         self, store_cfg: PostgresStoreConfig
@@ -714,6 +724,93 @@ class TestDeletedPages:
             raise AssertionError(f"single page must not touch others: {stats}")
         if stub.calls[StubRoute.SEARCH] != 1:
             raise AssertionError(f"no probe for a single page: {stub.calls}")
+
+
+class TestParallelRuns:
+    """Соседние спейсы обходятся одновременно и не трогают чужое."""
+
+    async def test_runs_over_two_spaces_keep_each_other_sources(
+        self, store_cfg: PostgresStoreConfig
+    ) -> None:
+        stub = ConfluenceStub()
+        _space(stub)
+        stub.add(
+            StubPage(
+                id="401",
+                space="OTHER",
+                title="Neighbour",
+                html="<p>neighbour</p>",
+                attachments=[StubAttachment("b1", "near.txt", TEXT, b"near text")],
+            )
+        )
+        async with LiveServer(stub.app()) as server:
+            stand = await _stand(stub, server, store_cfg)
+            await stand.run(IngestScope.space(SPACE))
+            await stand.run(IngestScope.space("OTHER"))
+
+            first, second = await asyncio.gather(
+                stand.run(IngestScope.space(SPACE)),
+                stand.run(IngestScope.space("OTHER")),
+            )
+
+        deleted = (
+            first.pages.deleted
+            + first.attachments.deleted
+            + second.pages.deleted
+            + second.attachments.deleted
+        )
+        if deleted != 0:
+            raise AssertionError(
+                f"parallel runs must delete nothing: {first}, {second}"
+            )
+        if await stand.chunk_count(stand.attachment_source("101", "notes.txt")) != 1:
+            raise AssertionError("a neighbour run must not drop these chunks")
+        if await stand.record(stand.attachment_source("401", "near.txt")) is None:
+            raise AssertionError("the neighbour attachment must survive")
+
+
+class TestGoneAnswer:
+    """404 от Confluence — прямой ответ «нет такого», а не догадка."""
+
+    async def test_single_page_run_deletes_a_page_that_answers_404(
+        self, store_cfg: PostgresStoreConfig
+    ) -> None:
+        stub = ConfluenceStub()
+        _space(stub)
+        async with LiveServer(stub.app()) as server:
+            stand = await _stand(stub, server, store_cfg)
+            await stand.run(IngestScope.space(SPACE))
+            stub.pages["101"].version += 1
+            stub.pages["101"].missing = True
+            report = await stand.run(IngestScope.page("101"))
+
+        if report.pages.deleted != 1:
+            raise AssertionError(f"the page is gone: {report.pages}")
+        if report.attachments.deleted != 2:
+            raise AssertionError(f"its attachments go with it: {report.attachments}")
+        if await stand.chunk_count(stand.page_source("101")) != 0:
+            raise AssertionError("chunks of a gone page must go")
+        if await stand.record(stand.attachment_source("101", "notes.txt")) is not None:
+            raise AssertionError("its attachment record must go")
+
+    async def test_failed_page_is_not_deleted(
+        self, store_cfg: PostgresStoreConfig
+    ) -> None:
+        stub = ConfluenceStub()
+        _space(stub)
+        async with LiveServer(stub.app()) as server:
+            stand = await _stand(stub, server, store_cfg)
+            await stand.run(IngestScope.space(SPACE))
+            stub.pages["101"].version += 1
+            stub.pages["101"].broken = True
+            report = await stand.run(IngestScope.space(SPACE))
+
+        if report.pages.failed != 1:
+            raise AssertionError(f"the page failed: {report.pages}")
+        if report.pages.deleted != 0:
+            raise AssertionError(f"a failed page stays in the index: {report.pages}")
+        if await stand.chunk_count(stand.page_source("101")) == 0:
+            raise AssertionError("its chunks stay too")
 
 
 class TestFailures:
