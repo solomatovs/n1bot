@@ -9,6 +9,10 @@
 - ParseGrade/ConfluenceMarks  — уровень разбора и отпечатки версий для реестра.
 - ConfluenceSourceId          — identity страницы и вложения по URL.
 - ConfluenceKeys              — Confluence-специфичные MetadataKey.
+- PageSections/PageSection    — результат разбора страницы: карточка, текст
+  под заголовками и таблицы; контракт между разбором HTML и ридером.
+- TableShape                  — пороги, по которым таблица раскладывается
+  построчно или сеткой.
 """
 
 from __future__ import annotations
@@ -19,12 +23,12 @@ from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import asdict, dataclass
 from enum import IntEnum, StrEnum
 from fnmatch import fnmatchcase
-from typing import Any, ClassVar
+from typing import Annotated, Any, ClassVar, Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.indexing import MetadataKey, SourceId, SourceMark
+from boba.indexing import MetadataKey, SourceId, SourceMark, TableLayout
 from boba.transport.http.profile import HttpConnection
 
 __all__ = [
@@ -36,14 +40,27 @@ __all__ = [
     "ConfluenceContent",
     "ConfluenceDescription",
     "ConfluenceKeys",
+    "ConfluenceLabel",
+    "ConfluenceLabels",
     "ConfluenceMarks",
+    "ConfluenceMetadata",
     "ConfluencePageItem",
     "ConfluencePayloadError",
     "ConfluencePlainText",
     "ConfluenceSourceId",
     "ConfluenceSpaceItem",
     "HttpKeys",
+    "PageCardSection",
+    "PageOutlineItem",
+    "PageParseRequest",
+    "PageSection",
+    "PageSectionBase",
+    "PageSectionKind",
+    "PageSections",
+    "PageTableSection",
+    "PageTextSection",
     "ParseGrade",
+    "TableShape",
 ]
 
 
@@ -161,9 +178,34 @@ class ConfluenceAncestor(BaseModel):
     title: str = ""
 
 
+class ConfluenceLabel(BaseModel):
+    """Метка страницы из expand=metadata.labels."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str = ""
+
+
+class ConfluenceLabels(BaseModel):
+    """Список меток внутри metadata.labels."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    results: list[ConfluenceLabel] = Field(default_factory=list)
+
+
+class ConfluenceMetadata(BaseModel):
+    """metadata страницы; из всего блока нужны только labels."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    labels: ConfluenceLabels = Field(default_factory=ConfluenceLabels)
+
+
 class ConfluenceContent(BaseModel):
     """Страница из content/search или content/{id} с раскрытыми version,
-    space, ancestors и children.attachment; body есть только у запроса тела."""
+    space, ancestors, metadata.labels и children.attachment; body есть только
+    у запроса тела."""
 
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
@@ -173,6 +215,7 @@ class ConfluenceContent(BaseModel):
     space: ConfluenceSpaceRef = Field(default_factory=ConfluenceSpaceRef)
     ancestors: list[ConfluenceAncestor] = Field(default_factory=list)
     children: ConfluenceChildren = Field(default_factory=ConfluenceChildren)
+    metadata: ConfluenceMetadata = Field(default_factory=ConfluenceMetadata)
     links: ConfluenceLinks = Field(default_factory=ConfluenceLinks, alias="_links")
     body: dict[str, Any] = Field(default_factory=dict)
 
@@ -184,6 +227,21 @@ class ConfluenceContent(BaseModel):
                 titles.append(title)
 
         return tuple(titles)
+
+    def label_names(self) -> tuple[str, ...]:
+        """Метки страницы; пустые и повторы отброшены."""
+        names: list[str] = []
+        for label in self.metadata.labels.results:
+            name = label.name.strip()
+            if not name:
+                continue
+
+            if name in names:
+                continue
+
+            names.append(name)
+
+        return tuple(names)
 
     def body_html(self, body_format: str) -> str:
         block = self.body.get(body_format)
@@ -405,6 +463,131 @@ class AttachmentGate:
         return att.media_type.lower().startswith(cls.IMAGE_MEDIA_PREFIX)
 
 
+class PageSectionKind(StrEnum):
+    """Вид записи разбора страницы."""
+
+    TEXT = "text"
+    TABLE = "table"
+    CARD = "card"
+
+
+class TableShape(BaseModel):
+    """Пороги выбора раскладки таблицы.
+
+    Узкая и длинная таблица — справочник: в ней ищут одну строку, поэтому
+    она раскладывается построчно. Широкая или короткая остаётся сеткой с
+    повторяемой шапкой. Решение принимает модель, чтобы порог не разъехался
+    между разбором и тестами.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    row_layout_max_columns: int = Field(
+        ge=1,
+        description=(
+            "Колонок не больше — таблица считается справочником и режется "
+            "построчно записями «колонка: значение»."
+        ),
+    )
+    row_layout_min_rows: int = Field(
+        ge=1,
+        description=(
+            "Строк не меньше — иначе таблица короткая и целиком влезает "
+            "в один чанк сеткой."
+        ),
+    )
+
+    def layout_for(self, *, columns: int, rows: int) -> TableLayout:
+        if columns > self.row_layout_max_columns:
+            return TableLayout.GRID
+
+        if rows < self.row_layout_min_rows:
+            return TableLayout.GRID
+
+        return TableLayout.ROWS
+
+
+class PageParseRequest(BaseModel):
+    """Вход разбора страницы: тело, заголовок и пороги раскладки таблиц."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    html: str
+    title: str = ""
+    table_shape: TableShape
+
+
+class PageOutlineItem(BaseModel):
+    """Строка оглавления страницы: уровень заголовка, текст и якорь."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    level: int = Field(ge=0)
+    text: str
+    anchor: str = ""
+
+
+class PageSectionBase(BaseModel):
+    """Общие поля записи разбора: место в документе и локус цитирования."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    order: int = Field(ge=0)
+    heading_path: str = ""
+    anchor: str = ""
+
+
+class PageTextSection(PageSectionBase):
+    """Текст под заголовком; таблицы из него вынуты отдельными записями."""
+
+    kind: Literal[PageSectionKind.TEXT] = PageSectionKind.TEXT
+    content: str
+    heading_level: int = Field(default=0, ge=0)
+    heading_text: str = ""
+
+
+class PageTableSection(PageSectionBase):
+    """Таблица страницы с разобранной шапкой и строками."""
+
+    kind: Literal[PageSectionKind.TABLE] = PageSectionKind.TABLE
+    caption: str = ""
+    columns: tuple[str, ...] = ()
+    rows: tuple[tuple[str, ...], ...] = ()
+    layout: TableLayout = TableLayout.GRID
+
+
+class PageCardSection(PageSectionBase):
+    """Карточка страницы: что за страница, из чего состоит, на что ссылается.
+
+    Метки и хлебные крошки сюда не входят — они приходят не из HTML, а из
+    ответа REST, и их добавляет ридер при сборке доменной секции.
+    """
+
+    kind: Literal[PageSectionKind.CARD] = PageSectionKind.CARD
+    title: str = ""
+    outline: tuple[PageOutlineItem, ...] = ()
+    links: tuple[str, ...] = ()
+
+
+PageSection = Annotated[
+    PageTextSection | PageTableSection | PageCardSection,
+    Field(discriminator="kind"),
+]
+
+
+class PageSections(BaseModel):
+    """Результат разбора страницы — контракт между разбором и ридером.
+
+    Разбор (bs4 живёт только в нём) отдаёт model_dump, ридер конвейера
+    валидирует обратно: расхождение полей падает один раз в точке разбора,
+    а не всплывает отсутствующим ключом посреди индексации.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    sections: tuple[PageSection, ...] = ()
+
+
 class ParseGrade(IntEnum):
     """Уровень разбора вложения; OCR выше текстового слоя и не откатывается."""
 
@@ -422,9 +605,14 @@ class ParseGrade(IntEnum):
 class ConfluenceMarks:
     """Отпечатки версий для реестра: что известно из списка без скачивания."""
 
-    @staticmethod
-    def page(version: int) -> SourceMark:
-        return SourceMark(fingerprint=f"v{version}")
+    PAGE_LAYOUT: ClassVar[int] = 2
+    """Версия раскладки страницы на секции. Входит в отпечаток: без неё уже
+    проиндексированные страницы не переразбираются после смены разбора,
+    сколько бы он ни улучшился. Поднимается при каждой такой смене."""
+
+    @classmethod
+    def page(cls, version: int) -> SourceMark:
+        return SourceMark(fingerprint=f"v{version}:l{cls.PAGE_LAYOUT}")
 
     @staticmethod
     def attachment(
@@ -548,6 +736,19 @@ class ConfluenceKeys:
         decode=_decode_titles,
         encode=_encode_titles,
     )
+    LABELS: ClassVar[MetadataKey[tuple[str, ...]]] = MetadataKey(
+        name="confluence.labels",
+        decode=_decode_titles,
+        encode=_encode_titles,
+    )
+    """Метки страницы из metadata.labels — настоящие теги Confluence."""
+
+    LINKS: ClassVar[MetadataKey[tuple[str, ...]]] = MetadataKey(
+        name="confluence.links",
+        decode=_decode_titles,
+        encode=_encode_titles,
+    )
+    """Заголовки страниц, на которые ссылается эта: явный граф переходов."""
     ATTACHMENT_INFO: ClassVar[MetadataKey[AttachmentInfo]] = MetadataKey(
         name="confluence.attachment_info",
         decode=AttachmentInfo.decode,

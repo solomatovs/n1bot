@@ -33,6 +33,10 @@ def _config() -> IngestToolConfig:
             "ocr_language": "rus",
             "num_workers": 3,
             "page_workers": 1,
+            "table_shape": {
+                "row_layout_max_columns": 4,
+                "row_layout_min_rows": 3,
+            },
         }
     )
 

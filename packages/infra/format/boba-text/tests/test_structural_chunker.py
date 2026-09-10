@@ -49,6 +49,12 @@ class _StaticIdGenerator(ChunkIdGenerator[str]):
 class _IdentitySplitter(Splitter[str]):
     """Один piece на весь body — для unit-тестов compose-логики."""
 
+    BUDGET = 1_000_000
+    """Практически без предела: тест проверяет compose, а не набор пачек."""
+
+    def budget(self) -> int:
+        return self.BUDGET
+
     def split(self, value: str) -> Iterable[SplitPiece[str]]:
         if not value:
             return
@@ -213,6 +219,85 @@ async def test_table_replicates_header_in_each_row_chunk():
         raise AssertionError('table_chunks[0].raw_content.startswith("<tr>")')
     if table_chunks[0].raw_content == table_chunks[1].raw_content:
         raise AssertionError("table_chunks[0].raw_content != table_chunks[1].raw_cont…")
+
+
+_LONG_ROWS = (
+    "Параметр: connect_timeout; Значение: 30s; Описание: установка соединения",
+    "Параметр: read_timeout; Значение: 60s; Описание: чтение ответа сервера",
+)
+
+
+@dataclass(frozen=True)
+class _LongAtomicSection(Section[str]):
+    """Два неделимых блока, каждый длиннее бюджета и с пробелами внутри."""
+
+    def to_format_plan(self) -> FormatPlan:
+        blocks: list[FormatBlock] = []
+        for row in _LONG_ROWS:
+            blocks.append(
+                FormatBlock(
+                    format_content=row,
+                    raw_content=row,
+                    location=ChunkLocation(start=0, end=len(row)),
+                    is_atomic=True,
+                )
+            )
+
+        return FormatPlan(blocks=tuple(blocks), block_glue="\n\n")
+
+
+async def test_atomic_block_longer_than_budget_is_never_cut():
+    """Splitter порезал бы строку по пробелу; атомарный блок уходит целиком."""
+    section = _LongAtomicSection(source_id=SourceId("a"), content="<table/>", order=0)
+
+    def factory(extra_overhead: int) -> Splitter[str]:
+        return OverlapCharSplitter(
+            chunk_size=20,
+            chunk_overlap=0,
+            extra_overhead=extra_overhead,
+        )
+
+    chunks = [item async for item in _chunker(factory).chunk(_astream([section]))]
+    contents = [chunk.format_content for chunk in chunks]
+    if contents != list(_LONG_ROWS):
+        raise AssertionError(f"атомарный блок разрезан или склеен: {contents!r}")
+
+
+@dataclass(frozen=True)
+class _ShortAtomicSection(Section[str]):
+    """Много коротких неделимых блоков: чанкер набирает их пачками."""
+
+    def to_format_plan(self) -> FormatPlan:
+        blocks: list[FormatBlock] = []
+        for index in range(6):
+            row = f"row-{index}"
+            blocks.append(
+                FormatBlock(
+                    format_content=row,
+                    raw_content=row,
+                    location=ChunkLocation(start=0, end=len(row)),
+                    is_atomic=True,
+                )
+            )
+
+        return FormatPlan(blocks=tuple(blocks), block_glue="\n")
+
+
+async def test_short_atomic_blocks_are_packed_up_to_budget():
+    section = _ShortAtomicSection(source_id=SourceId("p"), content="<table/>", order=0)
+
+    def factory(extra_overhead: int) -> Splitter[str]:
+        return OverlapCharSplitter(
+            chunk_size=11,
+            chunk_overlap=0,
+            extra_overhead=extra_overhead,
+        )
+
+    chunks = [item async for item in _chunker(factory).chunk(_astream([section]))]
+    contents = [chunk.format_content for chunk in chunks]
+    expected = ["row-0\nrow-1", "row-2\nrow-3", "row-4\nrow-5"]
+    if contents != expected:
+        raise AssertionError(f"пачки собраны не по бюджету: {contents!r}")
 
 
 # ---------------- code: fenced wrapping ----------------------------------------

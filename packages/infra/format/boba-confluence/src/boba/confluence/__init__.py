@@ -10,7 +10,9 @@
 - models.py  — DTO ответов content/search, content/{id} и space; вложение
   (AttachmentInfo) с фильтром и гейтом администратора; ConfluenceSourceId —
   identity страницы и вложения по URL; ConfluenceKeys/HttpKeys — типизированные
-  MetadataKey; ConfluenceMarks — отпечатки версий для реестра источников.
+  MetadataKey; ConfluenceMarks — отпечатки версий для реестра источников;
+  PageSections — результат разбора страницы (карточка, текст, таблицы) с
+  порогами раскладки TableShape.
 - parsing.py — ConfluenceJson и ConfluenceJsonDecoder: REST-JSON -> RawDocument
   с расширенной metadata; BodyDigest — хэш тела страницы.
 
@@ -36,7 +38,16 @@ from boba.confluence.models import (
     ConfluenceSourceId,
     ConfluenceSpaceItem,
     HttpKeys,
+    PageCardSection,
+    PageOutlineItem,
+    PageParseRequest,
+    PageSection,
+    PageSectionKind,
+    PageSections,
+    PageTableSection,
+    PageTextSection,
     ParseGrade,
+    TableShape,
 )
 from boba.confluence.parsing import BodyDigest, ConfluenceJson, ConfluenceJsonDecoder
 
@@ -59,5 +70,14 @@ __all__ = [
     "ConfluenceSourceId",
     "ConfluenceSpaceItem",
     "HttpKeys",
+    "PageCardSection",
+    "PageOutlineItem",
+    "PageParseRequest",
+    "PageSection",
+    "PageSectionKind",
+    "PageSections",
+    "PageTableSection",
+    "PageTextSection",
     "ParseGrade",
+    "TableShape",
 ]

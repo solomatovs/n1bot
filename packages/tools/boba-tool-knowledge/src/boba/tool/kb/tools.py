@@ -91,7 +91,17 @@ class KbRows:
             distance=distance,
             metadata=cls._metadata(row),
             format_content=row["format_content"] or "",
+            tags=cls._tags(row),
         )
+
+    @staticmethod
+    def _tags(row: dict[str, Any]) -> tuple[str, ...]:
+        raw = row.get("tags") or ()
+        tags: list[str] = []
+        for tag in raw:
+            tags.append(str(tag))
+
+        return tuple(tags)
 
     @staticmethod
     def _metadata(row: dict[str, Any]) -> dict[str, str]:

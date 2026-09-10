@@ -161,6 +161,16 @@ class Metadata:
         """Слить два Metadata; other побеждает при коллизии ключей."""
         return Metadata(data={**self.data, **other.data})
 
+    def without(self, key: MetadataKey[Any]) -> Metadata:
+        """Новый Metadata без ключа — для значений, которые дальше живут не в
+        metadata (метки уходят в tags чанка) и дублироваться не должны."""
+        if key.name not in self.data:
+            return self
+
+        data = dict(self.data)
+        del data[key.name]
+        return Metadata(data=data)
+
     def has(self, key: MetadataKey[Any]) -> bool:
         """True если ключ присутствует в Metadata."""
         return key.name in self.data
