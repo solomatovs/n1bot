@@ -83,16 +83,34 @@ class LiteParseEngine:
 
     @staticmethod
     def check_ocr(params: LiteParseParams) -> None:
-        """Проверяет каталог моделей: без него liteparse лезет в сеть."""
+        """Проверяет каталог и модели языков: без них liteparse лезет в сеть."""
         if not params.ocr_enabled:
             return
-        if os.path.isdir(params.tessdata_path):
+
+        if not os.path.isdir(params.tessdata_path):
+            msg = (
+                f"liteparse: ocr_enabled=true expects a tessdata models directory "
+                f"at {params.tessdata_path!r}, but it does not exist in the sandbox "
+                f"rootfs: put tessdata there or set ocr_enabled=false"
+            )
+            raise LiteParseError(msg)
+
+        missing: list[str] = []
+        for name in params.traineddata_names():
+            if os.path.exists(os.path.join(params.tessdata_path, name)):
+                continue
+
+            missing.append(name)
+
+        if not missing:
             return
 
+        present = sorted(os.listdir(params.tessdata_path))
         msg = (
-            f"liteparse: ocr_enabled=true expects a tessdata models directory "
-            f"at {params.tessdata_path!r}, but it does not exist in the sandbox "
-            f"rootfs: put tessdata there or set ocr_enabled=false"
+            f"liteparse: ocr_language={params.ocr_language!r} expects "
+            f"{', '.join(missing)} in {params.tessdata_path!r}, but the directory "
+            f"holds only {', '.join(present)}: the parser would try to download "
+            f"the missing models, and the sandbox has no route to the internet"
         )
         raise LiteParseError(msg)
 

@@ -77,8 +77,10 @@ E2FSPROGS_TARBALL := $(DEPS_DIR)/e2fsprogs-$(E2FSPROGS_VERSION).tar.xz
 SANDBOX_WS_SIZE ?= 1G
 
 TESS_LANGS      ?= eng rus osd
+TESS_PAIRS      ?= rus+eng eng+rus
 TESSDATA_REPO   ?= https://github.com/tesseract-ocr/tessdata_best/raw/main
-TESS_FILES      := $(TESS_LANGS:%=$(DEPS_DIR)/tessdata/%.traineddata)
+TESS_FILES      := $(TESS_LANGS:%=$(DEPS_DIR)/tessdata/%.traineddata) \
+                   $(TESS_PAIRS:%=$(DEPS_DIR)/tessdata/%.traineddata)
 
 # веса эмбеддера: версия качалки фиксируется, иначе приедет произвольный набор моделей
 FASTEMBED_VERSION ?= 0.8.0
@@ -305,6 +307,14 @@ $(UV_BIN):
 
 $(DEPS_DIR)/tessdata/%.traineddata:
 	@$(call fetch,$(TESSDATA_REPO)/$*.traineddata,$@)
+
+# tesseract разбирает "rus+eng" сам, а liteparse ищет комбинацию отдельным файлом:
+# алиас рядом со скачанными; каталог моделей монтируется поверх образа песочницы
+$(DEPS_DIR)/tessdata/rus+eng.traineddata: $(DEPS_DIR)/tessdata/rus.traineddata $(DEPS_DIR)/tessdata/eng.traineddata
+	ln -sf rus.traineddata "$@"
+
+$(DEPS_DIR)/tessdata/eng+rus.traineddata: $(DEPS_DIR)/tessdata/eng.traineddata $(DEPS_DIR)/tessdata/rus.traineddata
+	ln -sf eng.traineddata "$@"
 
 $(DEPS_DIR)/fastembed/.%: | base
 	@$(call fetch-model,fastembed==$(FASTEMBED_VERSION),$(DEPS_DIR)/fastembed,fastembed "$(subst --,/,$*)" /out)

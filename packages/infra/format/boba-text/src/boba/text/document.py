@@ -80,6 +80,26 @@ class LiteParseParams(BaseModel):
         description="Параллелизм OCR; ~50-100 MiB памяти на воркер.",
     )
 
+    LANGUAGE_SEPARATOR: ClassVar[str] = "+"
+    """Комбинация языков tesseract: 'rus+eng' читает оба."""
+
+    TRAINEDDATA_SUFFIX: ClassVar[str] = ".traineddata"
+
+    def traineddata_names(self) -> tuple[str, ...]:
+        """Имена файлов моделей, которые обязаны лежать в tessdata_path.
+
+        Tesseract разбирает комбинацию сам, а liteparse ищет её отдельным
+        файлом, поэтому в списке и сама комбинация, и каждый её язык. Файла
+        комбинации в upstream нет, его кладёт сборка алиасом.
+        """
+        names = [self.ocr_language + self.TRAINEDDATA_SUFFIX]
+        for language in self.ocr_language.split(self.LANGUAGE_SEPARATOR):
+            name = language.strip() + self.TRAINEDDATA_SUFFIX
+            if name not in names:
+                names.append(name)
+
+        return tuple(names)
+
     def with_parser(
         self,
         *,

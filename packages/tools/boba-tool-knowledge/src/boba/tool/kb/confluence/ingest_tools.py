@@ -44,6 +44,7 @@ from boba.text.document import LiteParseError, LiteParseParams
 from boba.tool.kb.confluence.ingest_base import (
     ConfluenceIngest,
     ConfluenceIngestConfig,
+    IngestReport,
     IngestScope,
 )
 from boba.tool.kb.confluence.models import ConfluencePayloadError
@@ -199,10 +200,10 @@ class IngestRun:
         *,
         attachments: bool,
         ocr: bool,
-    ) -> dict[str, Any]:
+    ) -> IngestReport:
         run_cfg = cfg.with_ocr(ocr=ocr)
         progress = IngestProgress(logger)
-        stats = await ConfluenceIngest.ingest(
+        report = await ConfluenceIngest.ingest(
             run_cfg,
             scope,
             attachments=attachments,
@@ -210,7 +211,7 @@ class IngestRun:
             routes=cls.routes(run_cfg),
         )
         progress.say()
-        return stats
+        return report
 
 
 @tool
@@ -232,17 +233,19 @@ async def confluence_index_page(
 ) -> TableResult:
     """Индексирует одну страницу Confluence по page_id.
 
-    Неизменившиеся страница и вложения пропускаются; вложения, удалённые со
-    страницы, уходят из коллекции.
+    Отчёт идёт двумя строками, pages и attachments: found — сколько нашлось
+    в Confluence, indexed — записано заново, unchanged — уже в индексе и не
+    менялось, skipped — отсечено правилами, failed — сорвалось, причина в
+    колонке error. found без indexed это норма: содержимое не менялось.
     """
-    stats = await IngestRun.run(
+    report = await IngestRun.run(
         cfg,
         IngestScope.page(page_id),
         attachments=attachments,
         ocr=ocr,
     )
 
-    return TableResult(rows=[stats], note=f"page_id: {page_id}")
+    return TableResult(rows=report.rows(), note=f"{report.note()}; page_id: {page_id}")
 
 
 @tool
@@ -263,17 +266,19 @@ async def confluence_index_cql(
 ) -> TableResult:
     """Индексирует страницы Confluence, найденные CQL-запросом.
 
-    Неизменившиеся страницы и вложения пропускаются; страницы, удалённые в
-    Confluence, уходят из коллекции вместе с вложениями.
+    Отчёт идёт двумя строками, pages и attachments: found — сколько нашлось
+    в Confluence, indexed — записано заново, unchanged — уже в индексе и не
+    менялось, skipped — отсечено правилами, failed — сорвалось, причина в
+    колонке error. found без indexed это норма: содержимое не менялось.
     """
-    stats = await IngestRun.run(
+    report = await IngestRun.run(
         cfg,
         IngestScope.query(cql),
         attachments=attachments,
         ocr=ocr,
     )
 
-    return TableResult(rows=[stats])
+    return TableResult(rows=report.rows(), note=report.note())
 
 
 @tool
@@ -292,17 +297,21 @@ async def confluence_index_space(
 ) -> TableResult:
     """Индексирует спейс Confluence целиком.
 
-    Неизменившиеся страницы и вложения пропускаются; страницы, удалённые в
-    Confluence, уходят из коллекции вместе с вложениями.
+    Отчёт идёт двумя строками, pages и attachments: found — сколько нашлось
+    в Confluence, indexed — записано заново, unchanged — уже в индексе и не
+    менялось, skipped — отсечено правилами, failed — сорвалось, причина в
+    колонке error. found без indexed это норма: содержимое не менялось.
     """
-    stats = await IngestRun.run(
+    report = await IngestRun.run(
         cfg,
         IngestScope.space(space_key),
         attachments=attachments,
         ocr=ocr,
     )
 
-    return TableResult(rows=[stats], note=f"space_key: {space_key}")
+    return TableResult(
+        rows=report.rows(), note=f"{report.note()}; space_key: {space_key}"
+    )
 
 
 @tool

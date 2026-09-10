@@ -26,6 +26,22 @@ services:
       - /sys/fs/cgroup/boba.slice:/cgroup:rw
     ports:
       - 127.0.0.1:8501:8501
+  chainlit2:
+    <<: *runtime
+    image: boba-chainlit:${BOBA_TAG:-latest}
+    hostname: chainlit2
+    container_name: chainlit2
+    env_file: ./conf/boba.env
+    volumes:
+      - ./conf:/app/boba/conf:ro
+      - ./conf/krb/krb5.conf:/etc/krb5.conf:ro
+      - ./data:/app/boba/data:rw
+      - ./models:/app/boba/models:ro
+      - ../../build/chainlit/src/sandbox:/app/boba/sandbox:ro
+      - /sys/fs/cgroup/boba.slice:/cgroup:rw
+    ports:
+      - 127.0.0.1:8503:8501
+
 
 networks:
   default:

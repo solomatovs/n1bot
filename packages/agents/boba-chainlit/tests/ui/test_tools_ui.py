@@ -836,15 +836,20 @@ def indexed_page(
     expect = ToolExpect(
         patterns=[
             TablePattern.row(
-                "collection",
+                "kind",
+                "found",
                 "indexed",
-                "skipped_unchanged",
-                "deleted_sources",
-                "deleted_chunks",
+                "unchanged",
+                "skipped",
                 "failed",
+                "deleted",
+                "chunks",
+                "chunks_deleted",
+                "skipped_reasons",
+                "error",
             ),
-            TablePattern.row("kb_confluence", r"\d+", r"\d+", r"\d+", r"\d+", "0"),
-            f"^_page_id: {confluence_page.page_id}_$",
+            TablePattern.row("pages", "1", r"\d+", r"\d+", "0", "0", "0", r"\d+"),
+            f"^_collection: kb_confluence; page_id: {confluence_page.page_id}_$",
         ],
         dom=["kb_confluence", f"page_id: {confluence_page.page_id}"],
     )
@@ -1232,20 +1237,15 @@ class TestIngestTools:
             tool="confluence_index_cql",
             arguments={"cql": f"id = {indexed_page.page_id}"},
         )
-        row = {
-            "collection": "kb_confluence",
-            "indexed": 0,
-            "skipped_unchanged": 1,
-            "deleted_sources": 0,
-            "deleted_chunks": 0,
-            "failed": 0,
-        }
-        result = TableResult(rows=[row])
-        feed.call(
-            call,
-            ToolExpect.of(result, dom=["skipped_unchanged", "kb_confluence"]),
-            timeout_sec=INGEST_TIMEOUT_SEC,
+        expect = ToolExpect(
+            patterns=[
+                TablePattern.row("pages", "1", "0", "1", "0", "0", "0", "0"),
+                TablePattern.row("attachments", r"\d+", "0", r"\d+", r"\d+", "0"),
+                "^_collection: kb_confluence_$",
+            ],
+            dom=["unchanged", "kb_confluence"],
         )
+        feed.call(call, expect, timeout_sec=INGEST_TIMEOUT_SEC)
 
     def test_index_unknown_space_fails(
         self, feed: ToolFeed, confluence_site: ConfluenceSite

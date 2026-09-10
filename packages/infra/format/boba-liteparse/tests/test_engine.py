@@ -79,6 +79,46 @@ def test_ocr_without_tessdata_raises(pdf_path: str):
         LiteParseEngine.parse(params, pdf_path)
 
 
+def test_language_combination_needs_its_own_file(tmp_path, pdf_path: str):
+    """Комбинация языков ищется отдельным файлом: без него был бы поход в сеть."""
+    tessdata = tmp_path / "tessdata"
+    tessdata.mkdir()
+    (tessdata / "rus.traineddata").write_bytes(b"stub")
+    (tessdata / "eng.traineddata").write_bytes(b"stub")
+
+    params = LiteParseParams(
+        ocr_enabled=True,
+        ocr_language="rus+eng",
+        tessdata_path=str(tessdata),
+    )
+    with pytest.raises(LiteParseError, match=r"rus\+eng\.traineddata"):
+        LiteParseEngine.parse(params, pdf_path)
+
+
+def test_single_language_passes_the_check(tmp_path, pdf_path: str):
+    tessdata = tmp_path / "tessdata"
+    tessdata.mkdir()
+    (tessdata / "rus.traineddata").write_bytes(b"stub")
+
+    params = LiteParseParams(
+        ocr_enabled=True,
+        ocr_language="rus",
+        tessdata_path=str(tessdata),
+    )
+    LiteParseEngine.check_ocr(params)
+
+
+def test_traineddata_names_list_pair_and_languages():
+    params = LiteParseParams(ocr_language="rus+eng")
+
+    if params.traineddata_names() != (
+        "rus+eng.traineddata",
+        "rus.traineddata",
+        "eng.traineddata",
+    ):
+        raise AssertionError(f"unexpected names: {params.traineddata_names()}")
+
+
 def test_native_search_items_finds_on_both_pages(
     params: LiteParseParams, pdf_path: str
 ):

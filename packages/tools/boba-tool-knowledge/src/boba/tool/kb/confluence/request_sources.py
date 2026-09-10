@@ -408,10 +408,12 @@ class ConfluenceDiscovery(RequestSource[ConfluenceRequest]):
             ),
         )
         async for att in self._attachments(paginator, content):
+            self._progress.attachments_found(1)
             verdict = self._gate.verdict(att)
             if verdict is not AttachmentVerdict.TAKE:
                 source = ConfluenceSourceId.of(profile, att.download_path)
                 await self._ledger.touch([source], at=time.time())
+                self._progress.attachment_skipped(verdict.value)
                 logger.info(
                     "attachment skipped (%s): id=%s title=%r media_type=%r",
                     verdict.value,
@@ -421,7 +423,6 @@ class ConfluenceDiscovery(RequestSource[ConfluenceRequest]):
                 )
                 continue
 
-            self._progress.attachments_found(1)
             yield ConfluenceRest.make_attachment_request(
                 profile=profile,
                 page=content,
