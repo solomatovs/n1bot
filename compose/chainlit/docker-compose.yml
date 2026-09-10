@@ -13,7 +13,7 @@ x-runtime: &runtime
 services:
   chainlit:
     <<: *runtime
-    image: boba-chainlit:0.0.19.dev3
+    image: boba-chainlit:0.0.19.dev6
     hostname: chainlit
     container_name: chainlit
     env_file: ./conf/boba.env
