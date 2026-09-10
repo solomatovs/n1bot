@@ -42,6 +42,7 @@ from boba.indexing import (
     SourceLedger,
     SourceProbe,
     TransportKeys,
+    UnseenGone,
 )
 from boba.indexing.ports import Chunker, Embedder, ReaderId
 from boba.indexing.values import CollectionId
@@ -64,11 +65,13 @@ from boba.tool.confluence.indexing_log import (
 )
 from boba.tool.confluence.pipeline import ConfluenceSourceTransport
 from boba.tool.confluence.request_sources import (
-    ConfluenceCql,
     ConfluenceDiscovery,
     ConfluencePaginator,
-    ConfluenceProbe,
     ConfluenceRest,
+    ContentListing,
+    CqlListing,
+    PageListing,
+    SpaceListing,
 )
 from boba.toolkit.timing import Elapsed
 from boba.toolkit.types import StringList
@@ -269,11 +272,12 @@ class IngestStamp:
 class IngestScope:
     """Что обходит прогон и что он вправе снимать за пределами увиденного.
 
-    Спейс покрывает себя целиком: страницы, которых он больше не отдаёт,
-    проверяются пробой и снимаются. Запрос и одна страница области не имеют:
-    выборка по CQL молчит о том, что в неё не попало, поэтому чужие страницы
-    такой прогон не трогает. Вложения увиденных страниц снимаются в любом
-    режиме — их полный список приходит вместе со страницей.
+    Спейс покрывает себя целиком: его страницы приходят списком контента, и
+    страница, которой в списке нет, снимается с индекса. Запрос и одна
+    страница области не имеют: выборка по CQL молчит о том, что в неё не
+    попало, поэтому чужие страницы такой прогон не трогает. Вложения увиденных
+    страниц снимаются в любом режиме — их полный список приходит вместе со
+    страницей.
 
     Область записывается в реестр, поэтому спейс не удалит чужое даже когда
     прогоны идут одновременно.
@@ -281,21 +285,24 @@ class IngestScope:
 
     SPACE_PREFIX: ClassVar[str] = "space:"
 
-    def __init__(self, *, cql: str, space_key: str = "") -> None:
-        self.cql = cql
+    def __init__(self, *, listing: ContentListing, space_key: str = "") -> None:
+        self.listing = listing
         self.space_key = space_key
 
     @classmethod
     def space(cls, space_key: str) -> IngestScope:
-        return cls(cql=ConfluenceCql.space(space_key), space_key=space_key)
+        return cls(listing=SpaceListing(space_key), space_key=space_key)
 
     @classmethod
     def query(cls, cql: str) -> IngestScope:
-        return cls(cql=cql)
+        return cls(listing=CqlListing(cql))
 
     @classmethod
     def page(cls, page_id: str) -> IngestScope:
-        return cls(cql=ConfluenceCql.page(page_id))
+        return cls(listing=PageListing(page_id))
+
+    def label(self) -> str:
+        return self.listing.label()
 
     def owned(self) -> str:
         """Метка области для реестра; пустая — прогон корней не снимает."""
@@ -304,11 +311,16 @@ class IngestScope:
 
         return self.SPACE_PREFIX + self.space_key
 
-    def probe_of(self, conn: ConfluenceConnection) -> SourceProbe:
+    def probe(self) -> SourceProbe:
+        """Кому верить в вопросе «страница исчезла».
+
+        Список контента спейса полон, поэтому для спейса ответ даёт сам обход.
+        У запроса и одной страницы области нет, снимать им нечего.
+        """
         if not self.space_key:
             return NoProbe()
 
-        return ConfluenceProbe(conn)
+        return UnseenGone()
 
     async def verify(self, conn: ConfluenceConnection) -> None:
         """Спейс должен существовать; остальные режимы проверять нечем."""
@@ -369,7 +381,7 @@ class ConfluenceIngest:
         transport = ConfluenceSourceTransport.from_connection(conn)
         source = ConfluenceDiscovery(
             conn=conn,
-            cql=scope.cql,
+            listing=scope.listing,
             gate=gate,
             grade=grade,
             progress=progress,
@@ -384,7 +396,7 @@ class ConfluenceIngest:
                     transport=transport,
                     reader=reader,
                     ledger=ledger,
-                    probe=scope.probe_of(conn),
+                    probe=scope.probe(),
                 )
                 outcome = await LoggedIndexRun.drain(
                     pipeline.index(chunker=chunker, sink=view, config=config),
@@ -402,19 +414,24 @@ class ConfluenceIngest:
         """Свой пул под asyncio.to_thread: дефолтный ограничен min(32, cpu+4).
 
         Слотов на один больше числа источников — разбор не должен ждать, пока
-        освободится поток, занятый эмбеддингом батча. На выходе пул закрывается:
-        подменённый и брошенный, он остаётся дефолтным на весь процесс, и
-        завершение asyncio.run ждёт его потоки.
+        освободится поток, занятый эмбеддингом батча. На выходе широкий пул
+        закрывается (брошенный, он остался бы дефолтным на весь процесс, и
+        завершение asyncio.run ждало бы его потоки), но дефолтным сначала
+        становится свежий: закрытый executor валит любой следующий to_thread
+        с «cannot schedule new futures after shutdown» — например kerberos-
+        логин соединения postgres.
         """
+        loop = asyncio.get_running_loop()
         pool = ThreadPoolExecutor(
             max_workers=workers + 1,
             thread_name_prefix="boba-ingest",
         )
-        asyncio.get_running_loop().set_default_executor(pool)
+        loop.set_default_executor(pool)
 
         try:
             yield
         finally:
+            loop.set_default_executor(ThreadPoolExecutor())
             pool.shutdown(wait=False, cancel_futures=True)
 
     @staticmethod
@@ -442,7 +459,10 @@ class ConfluenceIngest:
         )
         grade = ParseGrade.of(ocr=cfg.ocr_enabled)
         logger.info(
-            "ingest %s: attachments=%s ocr=%s", scope.cql, attachments, cfg.ocr_enabled
+            "ingest %s: attachments=%s ocr=%s",
+            scope.label(),
+            attachments,
+            cfg.ocr_enabled,
         )
         conn = ConfluenceConnection(
             profile=cfg.confluence,

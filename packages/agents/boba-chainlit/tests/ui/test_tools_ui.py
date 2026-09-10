@@ -573,12 +573,12 @@ class ConfluenceSite:
     RETRIES: ClassVar[int] = 3
     RETRY_SEC: ClassVar[float] = 2.0
 
-    def get_json(self, path: str) -> dict[str, Any]:
+    def get_json(self, path: httpx.URL) -> dict[str, Any]:
         """Публичный Confluence изредка отвечает 401/5xx на ровном месте: повторяем."""
         attempt = 0
         while True:
             attempt += 1
-            response = self._client.get(self.url_of(path))
+            response = self._client.get(self.url_of(str(path)))
             if response.status_code not in self.RETRY_STATUSES:
                 response.raise_for_status()
                 return response.json()
@@ -1258,7 +1258,7 @@ class TestIngestTools:
             },
         )
         path = ConfluenceRest.space_path(ProbeText.NO_SPACE.value)
-        url = confluence_site.url_of(path)
+        url = confluence_site.url_of(str(path))
         message = (
             f"tool failed 'confluence_index_space': PayloadFailureError: "
             f"GET {path} on confluence: HTTPStatusError: "

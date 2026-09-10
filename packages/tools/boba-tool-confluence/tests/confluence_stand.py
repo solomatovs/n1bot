@@ -17,8 +17,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from types import TracebackType
 from typing import Any, ClassVar, Self
-from urllib.parse import urlencode
-
+import httpx
 import uvicorn
 from fastapi import FastAPI, Request, Response
 
@@ -30,6 +29,7 @@ class StubRoute(StrEnum):
 
     SEARCH = "search"
     SPACE = "space"
+    SPACE_CONTENT = "space_content"
     BODY = "body"
     ATTACHMENTS = "attachments"
     DOWNLOAD = "download"
@@ -53,14 +53,17 @@ class StubAttachment:
         self.when = when
 
     def json(self, page_id: str) -> dict[str, Any]:
-        query = urlencode({"version": self.version, "api": "v2"})
+        download = httpx.URL(
+            path=f"/download/attachments/{page_id}/{self.title}",
+            params={"version": self.version, "api": "v2"},
+        )
         return {
             "id": self.id,
             "title": self.title,
             "version": {"number": self.version, "when": self.when},
             "extensions": {"mediaType": self.media_type, "fileSize": len(self.content)},
             "_links": {
-                "download": f"/download/attachments/{page_id}/{self.title}?{query}",
+                "download": str(download),
                 "webui": f"/pages/viewpageattachments.action?pageId={page_id}",
             },
         }
@@ -143,6 +146,8 @@ class ConfluenceStub:
         self.pages: dict[str, StubPage] = {}
         self.calls: Counter[StubRoute] = Counter()
         self.spaces: set[str] = set()
+        self.archived: set[str] = set()
+        """Архивные спейсы: поиск их контент не отдаёт, список спейса — отдаёт."""
 
     def has_space(self, key: str) -> bool:
         """Спейс есть, если объявлен явно или в нём есть хоть одна страница."""
@@ -151,6 +156,29 @@ class ConfluenceStub:
             keys.add(page.space)
 
         return key in keys
+
+    def archive(self, key: str) -> None:
+        """Спейс уходит в архив: как в Confluence, из поиска он пропадает."""
+        self.spaces.add(key)
+        self.archived.add(key)
+
+    def status_of(self, key: str) -> str:
+        if key in self.archived:
+            return "archived"
+
+        return "current"
+
+    def pages_of(self, key: str) -> list[StubPage]:
+        """Страницы спейса в порядке id — так их отдаёт список контента."""
+        found: list[StubPage] = []
+        for page in self.pages.values():
+            if page.space != key:
+                continue
+
+            found.append(page)
+
+        found.sort(key=lambda page: page.id)
+        return found
 
     def add(self, page: StubPage) -> StubPage:
         self.pages[page.id] = page
@@ -188,7 +216,9 @@ class ConfluenceStub:
             if start + limit < len(matched):
                 params = dict(request.query_params)
                 params["start"] = str(start + limit)
-                data["_links"]["next"] = f"/rest/api/content/search?{urlencode(params)}"
+                data["_links"]["next"] = str(
+                    httpx.URL(path="/rest/api/content/search", params=params)
+                )
 
             return self._json(data)
 
@@ -198,7 +228,46 @@ class ConfluenceStub:
             if not self.has_space(key):
                 return Response(status_code=404)
 
-            return self._json({"key": key, "name": key, "type": "global"})
+            return self._json(
+                {
+                    "key": key,
+                    "name": key,
+                    "type": "global",
+                    "status": self.status_of(key),
+                }
+            )
+
+        @app.get("/rest/api/space/{key}/content/page")
+        async def space_content(key: str, request: Request) -> Response:
+            self.calls[StubRoute.SPACE_CONTENT] += 1
+            if not self.has_space(key):
+                return Response(status_code=404)
+
+            pages = self.pages_of(key)
+            start = int(request.query_params.get("start", "0"))
+            limit = int(request.query_params.get("limit", "25"))
+            window = pages[start : start + limit]
+            results: list[dict[str, Any]] = []
+            for page in window:
+                results.append(page.summary(expansion_limit=self.EXPANSION_LIMIT))
+
+            data: dict[str, Any] = {
+                "results": results,
+                "start": start,
+                "limit": limit,
+                "size": len(results),
+                "_links": {},
+            }
+            if start + limit < len(pages):
+                params = dict(request.query_params)
+                params["start"] = str(start + limit)
+                data["_links"]["next"] = str(
+                    httpx.URL(
+                        path=f"/rest/api/space/{key}/content/page", params=params
+                    )
+                )
+
+            return self._json(data)
 
         @app.get("/rest/api/content/{page_id}/child/attachment")
         async def attachments(page_id: str, request: Request) -> Response:
@@ -226,8 +295,11 @@ class ConfluenceStub:
             if start + limit < len(page.attachments):
                 params = dict(request.query_params)
                 params["start"] = str(start + limit)
-                data["_links"]["next"] = (
-                    f"/rest/api/content/{page_id}/child/attachment?{urlencode(params)}"
+                data["_links"]["next"] = str(
+                    httpx.URL(
+                        path=f"/rest/api/content/{page_id}/child/attachment",
+                        params=params,
+                    )
                 )
 
             return self._json(data)
@@ -276,9 +348,13 @@ class ConfluenceStub:
         raise ValueError(msg)
 
     def _ordered(self, keep: Any) -> list[StubPage]:
+        """Совпавшие страницы поиска; контент архивных спейсов в индекс не попадает."""
         pages: list[StubPage] = []
         for page_id in sorted(self.pages):
             page = self.pages[page_id]
+            if page.space in self.archived:
+                continue
+
             if keep(page):
                 pages.append(page)
 

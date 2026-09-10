@@ -73,6 +73,7 @@ from boba.indexing.ledger import (
     SourceMark,
     SourceProbe,
     SourceRecord,
+    UnseenGone,
 )
 from boba.indexing.pipeline import IndexerConfig, Pipeline
 from boba.indexing.ports import (
@@ -234,5 +235,6 @@ __all__ = [
     "Transport",
     "TransportError",
     "TransportKeys",
+    "UnseenGone",
     "UnsupportedFilterError",
 ]

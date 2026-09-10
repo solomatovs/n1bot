@@ -167,6 +167,23 @@ class NoProbe(SourceProbe):
         return ()
 
 
+class UnseenGone(SourceProbe):
+    """Обход отдал область целиком: чего он не показал, того у источника нет.
+
+    Для источника данных, который перечисляет область полностью (список
+    контента спейса, каталог файлов), спрашивать про каждый невиденный корень
+    незачем — обход и есть ответ. Прогон с неполной выборкой (поиск, запрос)
+    такую пробу брать не вправе: он молчит о том, что в выборку не попало.
+    """
+
+    async def gone(self, records: Sequence[SourceRecord]) -> Sequence[SourceId]:
+        ids: list[SourceId] = []
+        for record in records:
+            ids.append(record.source_id)
+
+        return ids
+
+
 class ChangePolicy:
     """Правило, когда источник можно не скачивать и не разбирать."""
 

@@ -183,7 +183,7 @@ class IngestStand:
 
     def page_source(self, page_id: str) -> SourceId:
         path = ConfluenceRest.page_body_path(page_id, body_format="view")
-        return ConfluenceSourceId.of(self.connection().profile, path)
+        return ConfluenceSourceId.of(self.connection().profile, str(path))
 
     def attachment_source(self, page_id: str, title: str) -> SourceId:
         return ConfluenceSourceId.of(
@@ -709,7 +709,7 @@ class TestDeletedPages:
                 f"a query owns nothing, so it never probes: {stub.calls}"
             )
 
-    async def test_single_page_scope_does_not_probe(
+    async def test_single_page_scope_reads_only_its_page(
         self, store_cfg: PostgresStoreConfig
     ) -> None:
         stub = ConfluenceStub()
@@ -722,8 +722,12 @@ class TestDeletedPages:
 
         if stats.pages.deleted + stats.attachments.deleted != 0:
             raise AssertionError(f"single page must not touch others: {stats}")
-        if stub.calls[StubRoute.SEARCH] != 1:
-            raise AssertionError(f"no probe for a single page: {stub.calls}")
+        if stub.calls[StubRoute.SEARCH] != 0:
+            raise AssertionError(
+                f"a single page goes by id, not by search: {stub.calls}"
+            )
+        if stub.calls[StubRoute.SPACE_CONTENT] != 0:
+            raise AssertionError(f"a single page does not walk its space: {stub.calls}")
 
 
 class TestParallelRuns:
@@ -886,3 +890,60 @@ class TestManyAttachments:
             raise AssertionError(f"failed: {stats}")
         if len(await stand.sources()) != 31:
             raise AssertionError("page and 30 attachments in the ledger")
+
+
+class TestArchivedSpace:
+    """Архивный спейс: поиск его контент не отдаёт, список спейса — отдаёт.
+
+    Confluence держит архивные спейсы вне поискового индекса, поэтому обход
+    по CQL находит там ноль страниц, хотя страницы живы и читаются.
+    """
+
+    async def test_archived_space_pages_are_indexed(
+        self, store_cfg: PostgresStoreConfig
+    ) -> None:
+        stub = ConfluenceStub()
+        _space(stub)
+        stub.archive(SPACE)
+        async with LiveServer(stub.app()) as server:
+            stand = await _stand(stub, server, store_cfg)
+            stats = await stand.run(IngestScope.space(SPACE), attachments=False)
+
+        if stats.pages.found != 3:
+            raise AssertionError(f"an archived space still lists its pages: {stats}")
+        if stats.pages.indexed != 3:
+            raise AssertionError(f"archived pages must be indexed: {stats}")
+        if await stand.chunk_count(stand.page_source("101")) == 0:
+            raise AssertionError("archived page chunks must be stored")
+
+    async def test_archived_space_survives_the_next_run(
+        self, store_cfg: PostgresStoreConfig
+    ) -> None:
+        """Спейс архивировали после индексации: cleanup не считает его пустым."""
+        stub = ConfluenceStub()
+        _space(stub)
+        async with LiveServer(stub.app()) as server:
+            stand = await _stand(stub, server, store_cfg)
+            await stand.run(IngestScope.space(SPACE))
+            stub.archive(SPACE)
+            stats = await stand.run(IngestScope.space(SPACE))
+
+        if stats.pages.deleted + stats.attachments.deleted != 0:
+            raise AssertionError(f"archiving deletes nothing from the index: {stats}")
+        if await stand.chunk_count(stand.page_source("101")) == 0:
+            raise AssertionError("archived page chunks must survive")
+
+    async def test_archived_page_is_indexed_by_id(
+        self, store_cfg: PostgresStoreConfig
+    ) -> None:
+        stub = ConfluenceStub()
+        _space(stub)
+        stub.archive(SPACE)
+        async with LiveServer(stub.app()) as server:
+            stand = await _stand(stub, server, store_cfg)
+            stats = await stand.run(IngestScope.page("103"), attachments=False)
+
+        if stats.pages.indexed != 1:
+            raise AssertionError(f"a page of an archived space is readable: {stats}")
+        if await stand.chunk_count(stand.page_source("103")) == 0:
+            raise AssertionError("archived page chunks must be stored")
