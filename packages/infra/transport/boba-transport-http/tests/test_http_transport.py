@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import httpx
 import pytest
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from boba.transport.http import HttpRequest, HttpTransport
-from boba.transport.http.profile import BasicAuth, HttpConnection
+from boba.transport.http.profile import BasicAuth, HttpConnection, RetryStatuses
 
 pytestmark = pytest.mark.anyio
 
@@ -197,3 +197,159 @@ async def test_auth_from_profile_applied_to_client(monkeypatch):
         raise AssertionError('"authorization" in seen_headers')
     if not (seen_headers["authorization"].lower().startswith("basic ")):
         raise AssertionError('seen_headers["authorization"].lower().startswith("basic…')
+
+
+async def test_status_listed_in_the_profile_is_retried(monkeypatch):
+    """429 повторяется столько раз, сколько задано профилю для этого статуса."""
+    calls = {"n": 0}
+
+    def handler(_req):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return httpx.Response(429, content=b"slow down")
+        return httpx.Response(200, content=b"ok")
+
+    _patch(monkeypatch, handler)
+
+    profile = HttpConnection(
+        host="x.test",
+        port=443,
+        retry_attempts=1,
+        retry_backoff_sec=0,
+        retry_statuses=RetryStatuses({429: 3}),
+    )
+    async with (
+        HttpTransport(profile) as transport,
+        transport.fetch(HttpRequest(url="https://x.test/y")) as resp,
+    ):
+        body = await resp.stream.read()
+
+    if calls["n"] != 3:
+        raise AssertionError(f'429 is retried until it passes: {calls["n"]}')
+    if body != b"ok":
+        raise AssertionError('body == b"ok"')
+
+
+async def test_status_outside_the_profile_is_not_retried(monkeypatch):
+    """4xx, которого нет в таблице, остаётся клиентской ошибкой без повторов."""
+    calls = {"n": 0}
+
+    def handler(_req):
+        calls["n"] += 1
+        return httpx.Response(429, content=b"slow down")
+
+    _patch(monkeypatch, handler)
+
+    transport = HttpTransport(
+        HttpConnection(
+            host="x.test", port=443, retry_attempts=3, retry_backoff_sec=0
+        )
+    )
+    with pytest.raises(httpx.HTTPStatusError) as exc:
+        async with transport.fetch(HttpRequest(url="https://x.test/y")):
+            pass
+
+    if exc.value.response.status_code != 429:
+        raise AssertionError("exc.value.response.status_code == 429")
+    if calls["n"] != 1:
+        raise AssertionError(f'a status without a rule is not retried: {calls["n"]}')
+
+    await transport.close()
+
+
+async def test_retry_after_header_sets_the_pause(monkeypatch):
+    """Пауза перед повтором берётся из Retry-After, а не из backoff профиля."""
+    slept: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr("boba.transport.http.transport.asyncio.sleep", sleep)
+
+    calls = {"n": 0}
+
+    def handler(_req):
+        calls["n"] += 1
+        if calls["n"] < 2:
+            return httpx.Response(429, headers={"retry-after": "7"})
+        return httpx.Response(200, content=b"ok")
+
+    _patch(monkeypatch, handler)
+
+    profile = HttpConnection(
+        host="x.test",
+        port=443,
+        retry_backoff_sec=0,
+        retry_statuses=RetryStatuses({429: 2}),
+        retry_after_max_sec=30,
+    )
+    async with (
+        HttpTransport(profile) as transport,
+        transport.fetch(HttpRequest(url="https://x.test/y")) as resp,
+    ):
+        await resp.stream.read()
+
+    if slept != [7.0]:
+        raise AssertionError(f"the pause comes from Retry-After: {slept}")
+
+
+async def test_retry_after_is_capped_by_the_profile(monkeypatch):
+    """Сервер может попросить час ожидания: ждём не дольше потолка профиля."""
+    slept: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr("boba.transport.http.transport.asyncio.sleep", sleep)
+
+    calls = {"n": 0}
+
+    def handler(_req):
+        calls["n"] += 1
+        if calls["n"] < 2:
+            return httpx.Response(503, headers={"retry-after": "3600"})
+        return httpx.Response(200, content=b"ok")
+
+    _patch(monkeypatch, handler)
+
+    profile = HttpConnection(
+        host="x.test",
+        port=443,
+        retry_attempts=2,
+        retry_backoff_sec=0,
+        retry_after_max_sec=5,
+    )
+    async with (
+        HttpTransport(profile) as transport,
+        transport.fetch(HttpRequest(url="https://x.test/y")) as resp,
+    ):
+        await resp.stream.read()
+
+    if slept != [5.0]:
+        raise AssertionError(f"Retry-After is capped: {slept}")
+
+
+class TestRetryStatusesValidation:
+    """Таблица повторов разбирается на границе конфига, а не в транспорте."""
+
+    def test_table_from_the_config_is_typed(self) -> None:
+        profile = HttpConnection.model_validate(
+            {"host": "x.test", "port": 443, "retry_statuses": {"429": "5"}}
+        )
+
+        if profile.retry_statuses.attempts_for(429) != 5:
+            raise AssertionError(f"429 -> 5 attempts: {profile.retry_statuses.root}")
+        if profile.retry_statuses.attempts_for(503) != 0:
+            raise AssertionError("a status without a rule has no attempts")
+
+    def test_status_outside_the_http_range_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="status code"):
+            HttpConnection.model_validate(
+                {"host": "x.test", "port": 443, "retry_statuses": {42: 2}}
+            )
+
+    def test_zero_attempts_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="at least one"):
+            HttpConnection.model_validate(
+                {"host": "x.test", "port": 443, "retry_statuses": {429: 0}}
+            )

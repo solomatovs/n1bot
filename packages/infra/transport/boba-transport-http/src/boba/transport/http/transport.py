@@ -12,7 +12,7 @@ import logging
 from collections.abc import AsyncGenerator, AsyncIterator, Iterable, Mapping
 from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 
 import httpx
 
@@ -34,31 +34,78 @@ logger = logging.getLogger(__name__)
 
 
 class RetryPolicy:
-    """Политика повторов: 5xx и transport-ошибки повторяются, 4xx — нет."""
+    """Политика повторов: 5xx и transport-ошибки, плюс статусы из профиля.
+
+    Сколько попыток положено ошибке, решает она сама: у статуса из
+    retry_statuses своё число (throttling просят повторять дольше), у
+    остального — общий retry_attempts. Паузу задаёт заголовок Retry-After
+    ответа, а без него — линейный backoff профиля.
+    """
+
+    RETRY_AFTER: ClassVar[str] = "retry-after"
 
     def __init__(self, profile: HttpConnection) -> None:
         self._attempts = profile.retry_attempts
         self._backoff = profile.retry_backoff_sec
+        self._statuses = profile.retry_statuses
+        self._after_cap = profile.retry_after_max_sec
 
-    @property
-    def attempts(self) -> int:
-        return self._attempts
-
-    @staticmethod
-    def retryable(exc: httpx.HTTPError) -> bool:
+    def attempts_for(self, exc: httpx.HTTPError) -> int:
+        """Сколько всего попыток положено этой ошибке; 0 — повторять нельзя."""
         if isinstance(exc, httpx.HTTPStatusError):
-            return exc.response.is_server_error
-        return isinstance(exc, httpx.TransportError)
+            status = exc.response.status_code
+            if attempts := self._statuses.attempts_for(status):
+                return attempts
 
-    def more(self, attempt: int) -> bool:
-        """Остались ли попытки после attempt."""
-        return attempt < self._attempts
+            if exc.response.is_server_error:
+                return self._attempts
 
-    def delay(self, attempt: int) -> float:
-        """Линейный backoff между попытками."""
-        return self._backoff * attempt
+            return 0
 
-    def log(self, attempt: int, request: HttpRequest, exc: httpx.HTTPError) -> None:
+        if isinstance(exc, httpx.TransportError):
+            return self._attempts
+
+        return 0
+
+    def delay(self, attempt: int, exc: httpx.HTTPError) -> float:
+        """Пауза перед следующей попыткой: Retry-After сервера или backoff."""
+        asked = self._retry_after(exc)
+        if asked is None:
+            return self._backoff * attempt
+
+        return min(asked, self._after_cap)
+
+    @classmethod
+    def _retry_after(cls, exc: httpx.HTTPError) -> float | None:
+        """Retry-After ответа в секундах; None — заголовка нет или он не число.
+
+        Спека допускает и HTTP-дату, но её присылают редко: непонятное
+        значение уводит запрос на обычный backoff, а не роняет его.
+        """
+        if not isinstance(exc, httpx.HTTPStatusError):
+            return None
+
+        raw = exc.response.headers.get(cls.RETRY_AFTER)
+        if raw is None:
+            return None
+
+        try:
+            seconds = float(raw)
+        except ValueError:
+            return None
+
+        if seconds < 0:
+            return None
+
+        return seconds
+
+    def log(
+        self,
+        attempt: int,
+        limit: int,
+        request: HttpRequest,
+        exc: httpx.HTTPError,
+    ) -> None:
         logger.warning(
             "HTTP %s %s failed (%s: %s); retry %d/%d in %.1fs",
             request.method,
@@ -66,16 +113,8 @@ class RetryPolicy:
             type(exc).__name__,
             exc,
             attempt,
-            self._attempts,
-            self.delay(attempt),
-        )
-
-    @staticmethod
-    def exhausted(request: HttpRequest) -> httpx.HTTPError:
-        """Недостижимая ветка: цикл либо вернул ответ, либо запомнил ошибку."""
-        return httpx.HTTPError(
-            f"HTTP {request.method} {request.url}: retry loop ended without "
-            "a response or a recorded error",
+            limit,
+            self.delay(attempt, exc),
         )
 
 
@@ -131,9 +170,10 @@ class HttpTransport:
             await resp.aclose()
 
     async def _open_with_retry(self, request: HttpRequest) -> httpx.Response:
-        """Соединение + заголовки + статус; retry на 5xx/transport-ошибках."""
-        last_exc: httpx.HTTPError | None = None
-        for attempt in range(1, self._retry.attempts + 1):
+        """Соединение + заголовки + статус; сколько повторов — решает политика."""
+        attempt = 0
+        while True:
+            attempt += 1
             resp: httpx.Response | None = None
             try:
                 resp = await self._client.send(self._build(request), stream=True)
@@ -142,16 +182,13 @@ class HttpTransport:
             except httpx.HTTPError as e:
                 if resp is not None:
                     await resp.aclose()
-                if not self._retry.retryable(e):
+
+                limit = self._retry.attempts_for(e)
+                if attempt >= limit:
                     raise
-                last_exc = e
-                if not self._retry.more(attempt):
-                    break
-                self._retry.log(attempt, request, e)
-                await asyncio.sleep(self._retry.delay(attempt))
-        if last_exc is None:
-            raise RetryPolicy.exhausted(request)
-        raise last_exc
+
+                self._retry.log(attempt, limit, request, e)
+                await asyncio.sleep(self._retry.delay(attempt, e))
 
     def _build(self, request: HttpRequest) -> httpx.Request:
         return self._client.build_request(
