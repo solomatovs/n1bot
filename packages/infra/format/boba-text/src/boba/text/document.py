@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 from abc import abstractmethod
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from pathlib import Path
 from typing import ClassVar, Self
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.indexing import (
+    AsyncBinaryStream,
     IncompatibleContentError,
     RawDocument,
     Reader,
@@ -17,6 +19,7 @@ from boba.indexing import (
     ReaderKeys,
     Section,
     SectionKeys,
+    SpooledBody,
     TransportKeys,
 )
 
@@ -218,16 +221,16 @@ class PagedDocumentReader(Reader[str]):
         return DocumentMedia.media_types()
 
     async def read(self, value: RawDocument) -> AsyncIterator[Section[str]]:
-        """Разбор документа уходит в поток: liteparse и OCR отпускают GIL."""
+        """Разбор документа уходит в поток: liteparse и OCR отпускают GIL.
+
+        Тело, уже лежащее файлом (SpooledBody), парсится по пути без копии в
+        памяти; потоковое тело читается целиком.
+        """
         suffix = self._resolve_suffix(value)
-
-        data = await value.handle.read()
-        if not data:
-            return
-
         filename = DocumentMedia.filename_for(suffix)
+
         try:
-            pages = await asyncio.to_thread(self.parse_pages, data, filename)
+            pages = await self._parse(value.handle, filename)
         except self.PARSE_ERRORS as e:
             reason = f"parsing {filename!r} of {suffix} document failed: {e}"
             raise self._incompatible(value, reason) from e
@@ -236,9 +239,25 @@ class PagedDocumentReader(Reader[str]):
         for section in PageSectionBuilder.build(value, pages, doc_type):
             yield section
 
+    async def _parse(
+        self, handle: AsyncBinaryStream, filename: str
+    ) -> Sequence[ParsedPage]:
+        if isinstance(handle, SpooledBody):
+            return await asyncio.to_thread(self.parse_file, handle.path, filename)
+
+        data = await handle.read()
+        if not data:
+            return ()
+
+        return await asyncio.to_thread(self.parse_pages, data, filename)
+
     @abstractmethod
     def parse_pages(self, data: bytes, filename: str) -> Sequence[ParsedPage]:
         """Распарсить байты документа в страницы; формат — по расширению filename."""
+
+    @abstractmethod
+    def parse_file(self, path: Path, filename: str) -> Sequence[ParsedPage]:
+        """Распарсить документ из файла path; формат — по расширению filename."""
 
     def _resolve_suffix(self, value: RawDocument) -> str:
         content_type = value.metadata.get(TransportKeys.CONTENT_TYPE)

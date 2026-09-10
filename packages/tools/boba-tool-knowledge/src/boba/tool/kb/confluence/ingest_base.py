@@ -1,4 +1,12 @@
-"""Общая база Confluence-ingest: конфиг и сборка pipeline'а для confluence_ingest_*."""
+"""Общая база Confluence-ingest: конфиг и сборка конвейера для confluence_index_*.
+
+Ошибки:
+LedgerError — реестр источников недоступен, прогон оборван.
+PostgresError — до хранилища чанков не достучаться.
+EmbeddingError — эмбеддер недоступен или ответил мусором.
+TransportError — список страниц забрать не удалось; отказ отдельной страницы
+    или вложения наружу не выходит, он считается в failed.
+"""
 
 from __future__ import annotations
 
@@ -14,18 +22,18 @@ from boba.db.pgvector.config import PostgresStoreConfig
 from boba.db.pgvector.store import (
     PostgresChunkStore,
     PostgresCollectionsStore,
+    PostgresSourceLedger,
 )
 from boba.indexing import (
     ChunkStore,
-    CleanupStrategy,
     CollectionScopedView,
     DispatchReader,
-    FullCleanup,
     IndexerConfig,
-    NoneCleanup,
+    NoProbe,
     Pipeline,
     Reader,
-    RequestSource,
+    SourceLedger,
+    SourceProbe,
     TransportKeys,
 )
 from boba.indexing.ports import Chunker, Embedder, ReaderId
@@ -35,30 +43,41 @@ from boba.tool.kb.chunking import (
     ChunkerParams,
     StructuralChunkerFactory,
 )
-from boba.tool.kb.confluence.cleanup import ConfluencePageScopeCleanup
 from boba.tool.kb.confluence.connection import ConfluenceConnection
-from boba.tool.kb.confluence.models import AttachmentFilter, AttachmentGate
-from boba.tool.kb.confluence.pipeline import ConfluenceContentTransport
-from boba.tool.kb.confluence.request_sources import ConfluenceRequest
+from boba.tool.kb.confluence.models import (
+    AttachmentFilter,
+    AttachmentGate,
+    ConfluenceSourceId,
+    ParseGrade,
+)
+from boba.tool.kb.confluence.pipeline import ConfluenceSourceTransport
+from boba.tool.kb.confluence.request_sources import (
+    ConfluenceCql,
+    ConfluenceDiscovery,
+    ConfluencePaginator,
+    ConfluenceProbe,
+    ConfluenceRest,
+)
 from boba.tool.kb.indexing_log import (
     IngestProgress,
     LoggedIndexRun,
     LoggingChunker,
     LoggingChunkStore,
     LoggingEmbedder,
+    LoggingSourceLedger,
 )
 from boba.tool.kb.warm import EmbeddingConfig, WarmEmbedder
 from boba.toolkit.timing import Elapsed
 from boba.toolkit.types import StringList
 from boba.transport.http.profile import HttpConnection
 
-__all__ = ["ConfluenceIngest", "ConfluenceIngestConfig"]
+__all__ = ["ConfluenceIngest", "ConfluenceIngestConfig", "IngestScope", "IngestStamp"]
 
 logger = logging.getLogger("boba.tool.kb.confluence.ingest")
 
 
 class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams, LiteParseParams):
-    """Self-contained конфиг семейства tool'ов confluence_ingest_*."""
+    """Self-contained конфиг семейства tool'ов confluence_index_*."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -74,27 +93,17 @@ class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams, LiteParseParams
         max_length=255,
         description="Target-коллекция в `kb_chunks`.",
     )
-    attachment_media_types: Annotated[
+    attachments: Annotated[
         StringList,
         Field(
             description=(
-                "Allowlist fnmatch-globs для `attachment.media_type` "
-                "(напр. `application/pdf`, `image/*`). Если пусто И "
-                "`attachment_titles` пуст — пропускаются ВСЕ вложения "
-                "(старое поведение). Если задано — attachment проходит, "
-                "если матчит хоть один паттерн в любом из двух списков (OR)."
+                "Allowlist вложений масками fnmatch: маска с косой чертой — "
+                "тип содержимого (`application/pdf`, `image/*`), без неё — "
+                "имя файла (`*.pdf`). Пусто — разрешены все вложения. "
+                "Вызов с attachments=true берёт всё, что проходит allowlist."
             ),
         ),
-    ] = []  # noqa: RUF012
-    attachment_titles: Annotated[
-        StringList,
-        Field(
-            description=(
-                "Allowlist fnmatch-globs для `attachment.title` "
-                "(напр. `*.pdf`, `report-*.docx`). См. `attachment_media_types`."
-            ),
-        ),
-    ] = []  # noqa: RUF012
+    ]
     text_encodings: Annotated[
         StringList,
         Field(
@@ -106,23 +115,22 @@ class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams, LiteParseParams
                 "уходит в `failed`."
             ),
         ),
-    ] = ["utf-8"]  # noqa: RUF012
+    ]
     page_workers: int = Field(
         ge=1,
         description=(
-            "Сколько страниц индексируется одновременно; обязателен. Каждая "
-            "страница занимает поток разбора, поэтому реальный потолок задают "
-            "лимиты песочницы: cpu-квота (`cgroup_cpu_percent`), суммарное "
-            "cpu-время (`max_cpu_sec` — оно тратится в page_workers раз "
-            "быстрее) и память (`cgroup_memory_bytes`: вложение читается "
-            "целиком, а OCR берёт ещё `num_workers` × 50-100 MiB на страницу). "
-            "Пул соединений postgres должен быть не меньше page_workers."
+            "Сколько источников индексируется одновременно; обязателен. Каждый "
+            "занимает поток разбора, поэтому реальный потолок задают лимиты "
+            "песочницы: cpu-квота (`cgroup_cpu_percent`), суммарное cpu-время "
+            "(`max_cpu_sec` — оно тратится в page_workers раз быстрее) и память "
+            "(`cgroup_memory_bytes`: OCR берёт `num_workers` × 50-100 MiB на "
+            "документ). Пул соединений postgres должен быть не меньше page_workers."
         ),
     )
 
     @model_validator(mode="after")
     def _pool_fits_workers(self) -> Self:
-        """Параллельные страницы пишут одновременно — пула должно хватать."""
+        """Параллельные источники пишут одновременно — пула должно хватать."""
         pool = self.connection.pool
         limit = pool.max_size if pool.max_size is not None else pool.min_size
         if limit < self.page_workers:
@@ -134,32 +142,104 @@ class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams, LiteParseParams
             raise ValueError(msg)
         return self
 
+    def with_ocr(self, *, ocr: bool) -> Self:
+        """Копия с режимом OCR, выбранным вызовом; язык и воркеры из конфига."""
+        return self.model_copy(update={"ocr_enabled": ocr})
+
+
+class IngestStamp:
+    """Штамп конвейера для реестра: модель, размерность, нарезка, ридеры."""
+
+    SEPARATOR: ClassVar[str] = "|"
+
+    @classmethod
+    def of(cls, cfg: ConfluenceIngestConfig, routes: Mapping[str, Reader[str]]) -> str:
+        reader_ids: set[str] = set()
+        for reader in routes.values():
+            reader_ids.add(str(reader.reader_id()))
+
+        parts = [
+            cfg.embedding.model,
+            str(cfg.embedding.dim),
+            str(cfg.chunk_size),
+            str(cfg.chunk_overlap),
+            ",".join(sorted(reader_ids)),
+        ]
+        return cls.SEPARATOR.join(parts)
+
+
+class IngestScope:
+    """Что обходит прогон и что он вправе снимать за пределами увиденного.
+
+    Спейс и CQL покрывают коллекцию: невиденные страницы проверяются пробой и
+    исчезнувшие снимаются. Одна страница ничего вокруг себя не трогает.
+    Спейс перед обходом проверяется на существование: CQL по неизвестному
+    ключу отдаёт пустой список, а не ошибку.
+    """
+
+    def __init__(self, *, cql: str, probe: bool, space_key: str = "") -> None:
+        self.cql = cql
+        self.probe = probe
+        self.space_key = space_key
+
+    @classmethod
+    def space(cls, space_key: str) -> IngestScope:
+        return cls(
+            cql=ConfluenceCql.space(space_key),
+            probe=True,
+            space_key=space_key,
+        )
+
+    @classmethod
+    def query(cls, cql: str) -> IngestScope:
+        return cls(cql=cql, probe=True)
+
+    @classmethod
+    def page(cls, page_id: str) -> IngestScope:
+        return cls(cql=ConfluenceCql.page(page_id), probe=False)
+
+    def probe_of(self, conn: ConfluenceConnection) -> SourceProbe:
+        if not self.probe:
+            return NoProbe()
+
+        return ConfluenceProbe(conn)
+
+    async def verify(self, conn: ConfluenceConnection) -> None:
+        """Спейс должен существовать; остальные режимы проверять нечем."""
+        if not self.space_key:
+            return
+
+        async with ConfluencePaginator(conn) as paginator:
+            await paginator.get_json(ConfluenceRest.space_path(self.space_key))
+
 
 class ConfluenceIngest:
-    """Сборка Confluence-ingest pipeline — общий хвост для confluence_ingest_*."""
+    """Сборка Confluence-ingest конвейера — общий хвост для confluence_index_*."""
 
     HTML_CONTENT_TYPES: ClassVar[tuple[str, ...]] = ("text/html",)
     """CONTENT_TYPE-значения от ConfluenceJsonDecoder, уходящие в HTML-Reader."""
 
     @staticmethod
-    async def run(  # noqa: PLR0913
+    async def run(  # noqa: PLR0913 — стадии конвейера независимы
         *,
-        request_source: RequestSource[ConfluenceRequest],
+        scope: IngestScope,
         conn: ConfluenceConnection,
         chunk_store: ChunkStore[str],
         collections_store: PostgresCollectionsStore,
+        ledger: SourceLedger,
         embedder: Embedder[str],
         chunker: Chunker[str],
         collection: str,
-        prune_missing: bool,
         workers: int,
+        stamp: str,
         progress: IngestProgress,
-        force_update: bool = False,
         gate: AttachmentGate,
+        grade: ParseGrade,
         routes: Mapping[str, Reader[str]],
-        skip_failed: bool,
     ) -> dict[str, Any]:
-        """Полный Confluence -> kb_chunks pipeline для уже собранного RequestSource."""
+        """Полный Confluence -> kb_chunks конвейер для собранного scope."""
+        await scope.verify(conn)
+
         reader: DispatchReader[str] = DispatchReader(
             by=TransportKeys.CONTENT_TYPE,
             routes=dict(routes),
@@ -180,43 +260,30 @@ class ConfluenceIngest:
             embedder=embedder,
             collection=collection_id,
         )
-        transport = ConfluenceContentTransport.from_connection(
-            conn,
-            progress=progress,
+        transport = ConfluenceSourceTransport.from_connection(conn)
+        source = ConfluenceDiscovery(
+            conn=conn,
+            cql=scope.cql,
             gate=gate,
-            skip_failed=skip_failed,
+            grade=grade,
+            ledger=ledger,
+            progress=progress,
         )
-
-        # prune_missing сносит весь стейл коллекции; force_update без prune — страницы
-        if prune_missing:
-            cleanup: CleanupStrategy = FullCleanup()
-        elif force_update:
-            cleanup = ConfluencePageScopeCleanup()
-        else:
-            cleanup = NoneCleanup()
-
-        config: IndexerConfig[str] = IndexerConfig(
-            cleanup=cleanup,
-            force_update=force_update,
-            workers=workers,
-            skip_failed=skip_failed,
-        )
+        config: IndexerConfig[str] = IndexerConfig(workers=workers, stamp=stamp)
         ConfluenceIngest._widen_thread_pool(workers)
         try:
-            pipeline: Pipeline[ConfluenceRequest, str] = Pipeline(
-                source=request_source,
+            pipeline: Pipeline[Any, str] = Pipeline(
+                source=source,
                 transport=transport,
                 reader=reader,
+                ledger=ledger,
+                probe=scope.probe_of(conn),
             )
             stats = await LoggedIndexRun.drain(
-                pipeline.index(
-                    chunker=chunker,
-                    sink=view,
-                    query=view,
-                    config=config,
-                ),
+                pipeline.index(chunker=chunker, sink=view, config=config),
                 logger,
                 progress,
+                ConfluenceSourceId,
             )
         finally:
             await transport.close()
@@ -225,7 +292,8 @@ class ConfluenceIngest:
             "collection": str(collection_id),
             "indexed": stats.chunks_upserted,
             "skipped_unchanged": stats.sources_skipped_unchanged,
-            "pruned": stats.chunks_deleted,
+            "deleted_sources": stats.sources_deleted,
+            "deleted_chunks": stats.chunks_deleted,
             "failed": stats.sources_failed,
         }
 
@@ -233,7 +301,7 @@ class ConfluenceIngest:
     def _widen_thread_pool(workers: int) -> None:
         """Свой пул под asyncio.to_thread: дефолтный ограничен min(32, cpu+4).
 
-        Слотов на один больше числа страниц — разбор не должен ждать, пока
+        Слотов на один больше числа источников — разбор не должен ждать, пока
         освободится поток, занятый эмбеддингом батча.
         """
         pool = ThreadPoolExecutor(
@@ -243,45 +311,49 @@ class ConfluenceIngest:
         asyncio.get_running_loop().set_default_executor(pool)
 
     @staticmethod
-    async def ingest(  # noqa: PLR0913 — режимы обхода и наблюдение независимы
+    async def ingest(
         cfg: ConfluenceIngestConfig,
-        request_source: RequestSource[ConfluenceRequest],
-        prune_missing: bool,
-        force_update: bool = False,
+        scope: IngestScope,
         *,
-        attachments: str,
+        attachments: bool,
         progress: IngestProgress,
         routes: Mapping[str, Reader[str]],
-        skip_failed: bool,
     ) -> dict[str, Any]:
-        """Собрать stores/embedder/chunker/filter из cfg и вызвать run."""
+        """Собрать stores/ledger/embedder/chunker/gate из cfg и вызвать run."""
         chunk_store = LoggingChunkStore(PostgresChunkStore(cfg=cfg), logger)
         collections_store = PostgresCollectionsStore(cfg=cfg)
+        ledger = LoggingSourceLedger(
+            PostgresSourceLedger(cfg=cfg, collection=CollectionId(cfg.collection)),
+            logger,
+        )
         embedder = LoggingEmbedder(WarmEmbedder.of(cfg.embedding), logger)
         chunker = LoggingChunker(StructuralChunkerFactory.build(cfg), logger, progress)
-        allowed = AttachmentFilter.from_lists(
-            media_types=cfg.attachment_media_types,
-            titles=cfg.attachment_titles,
+        gate = AttachmentGate(
+            allowed=AttachmentFilter.of_masks(cfg.attachments),
+            requested=attachments,
+            ocr=cfg.ocr_enabled,
         )
-        gate = AttachmentGate.of(allowed, attachments, ocr_enabled=cfg.ocr_enabled)
-        logger.info("attachments requested: %r, ocr=%s", attachments, cfg.ocr_enabled)
+        grade = ParseGrade.of(ocr=cfg.ocr_enabled)
+        logger.info(
+            "ingest %s: attachments=%s ocr=%s", scope.cql, attachments, cfg.ocr_enabled
+        )
         conn = ConfluenceConnection(
             profile=cfg.confluence,
             body_format=cfg.body_format,
         )
         return await ConfluenceIngest.run(
-            request_source=request_source,
+            scope=scope,
             conn=conn,
             chunk_store=chunk_store,
             collections_store=collections_store,
+            ledger=ledger,
             embedder=embedder,
             chunker=chunker,
             collection=cfg.collection,
-            prune_missing=prune_missing,
             workers=cfg.page_workers,
+            stamp=IngestStamp.of(cfg, routes),
             progress=progress,
-            force_update=force_update,
             gate=gate,
+            grade=grade,
             routes=routes,
-            skip_failed=skip_failed,
         )

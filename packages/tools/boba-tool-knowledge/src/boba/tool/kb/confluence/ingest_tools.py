@@ -5,13 +5,15 @@
 
 Ошибки:
 PostgresError — до хранилища не достучаться.
+LedgerError — реестр источников недоступен.
 httpx.HTTPError — Confluence недоступен или ответил статусом (чтение вложения).
-TransportError — страницу забрать не удалось, а прогон запущен со skip_failed=false.
+TransportError — список страниц забрать не удалось.
+ConfluencePayloadError — Confluence ответил не тем JSON, который ждали.
 AttachmentNotFoundError — вложения с таким именем на странице нет.
 LiteParseError — вложение скачалось, но не разбирается.
 EmbeddingError — удалённый эмбеддер недоступен или ответил мусором.
-Сбой разбора отдельного документа ingest переживает сам, наружу не выходит;
-сорвавшаяся страница при skip_failed=true уходит в счётчик failed.
+Сбой отдельной страницы или вложения ingest переживает сам: источник уходит
+в счётчик failed, прогон идёт дальше.
 """
 
 from __future__ import annotations
@@ -28,28 +30,23 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from boba.db.postgres import PostgresError
 from boba.indexing import (
+    LedgerError,
     RawDocument,
     Reader,
     ReaderId,
     ReaderKeys,
-    RequestSource,
     Section,
     SectionKeys,
     TransportError,
 )
 from boba.llm.embedding import EmbeddingConfig, EmbeddingError
 from boba.text.document import LiteParseError, LiteParseParams
-from boba.tool.kb.confluence.connection import ConfluenceConnection
 from boba.tool.kb.confluence.ingest_base import (
     ConfluenceIngest,
     ConfluenceIngestConfig,
+    IngestScope,
 )
-from boba.tool.kb.confluence.request_sources import (
-    ConfluenceCqlRequestSource,
-    ConfluencePagesRequestSource,
-    ConfluenceRequest,
-    ConfluenceSpaceRequestSource,
-)
+from boba.tool.kb.confluence.models import ConfluencePayloadError
 from boba.tool.kb.confluence.tools import ConfluenceHttp, ConfluenceToolsConfig
 from boba.tool.kb.indexing_log import IngestProgress, LoggingReader
 from boba.tool.kb.warm import WarmEmbedder
@@ -62,33 +59,15 @@ from boba.toolkit.types import SecretRevealing
 logger = logging.getLogger("boba.tool.kb.confluence.ingest")
 
 _ATTACHMENTS_DESCRIPTION = (
-    "Какие вложения страниц читать. Список масок через запятую. Маска без "
-    "косой черты — имя файла: `*.pdf`, `*.docx`, `отчёт*.xlsx`. Маска с косой "
-    "чертой — тип содержимого: `application/pdf`, `image/*`. "
-    "Пусто (по умолчанию) — вложения не читаются, индексируется только текст "
-    "страниц; так быстрее всего и меньше всего памяти. `*` — все вложения "
-    "страницы. Картинки (`*.png`, `image/*`) читаются только при "
-    "ocr_enabled=true, иначе пропускаются: без распознавания текста в них нет."
+    "Читать ли вложения страниц: true — все вложения, разрешённые "
+    "администратором (документы, таблицы, презентации, текст; картинки только "
+    "при ocr=true); false — только текст страниц. Неизменившиеся вложения не "
+    "скачиваются повторно."
 )
 _OCR_DESCRIPTION = (
-    "OCR вложений: true распознаёт текст по картинкам (сканы, картинковые "
-    "PDF), false — только текстовый слой. OCR дорог: минуты и гигабайты "
-    "памяти на документ."
-)
-_WORKERS_DESCRIPTION = (
-    "Параллелизм OCR, 1..4; ~50-100 MiB памяти на воркер. "
-    "При ocr_enabled=false не влияет."
-)
-_SKIP_FAILED_DESCRIPTION = (
-    "Что делать со страницей, которую Confluence не отдал (5xx, обрыв "
-    "соединения, битое вложение): true — пропустить её, посчитать в `failed` "
-    "и индексировать дальше; false — оборвать весь прогон на первой такой "
-    "странице. Пропускается только сама сорвавшаяся страница, остальные "
-    "индексируются как обычно."
-)
-_LANGUAGE_DESCRIPTION = (
-    "Язык OCR в формате Tesseract: 'rus+eng' для русских документов, "
-    "'eng' для английских."
+    "OCR вложений: true распознаёт текст по картинкам и сканам, false — только "
+    "текстовый слой. OCR дорог: минуты и гигабайты памяти на документ. "
+    "Вложение, уже разобранное с OCR, повторно не разбирается."
 )
 
 
@@ -141,6 +120,7 @@ class LocalConfluenceReader(Reader[str]):
         payload = await value.handle.read()
         if not payload.strip():
             return
+
         html = payload.decode("utf-8", errors="replace")
         title = value.metadata.get(ReaderKeys.PAGE_TITLE) or ""
 
@@ -172,13 +152,15 @@ class LocalConfluenceReader(Reader[str]):
         meta = value.metadata.set(ReaderKeys.DOC_TYPE, cls.DOC_TYPE)
         if row["heading_path"]:
             meta = meta.set(SectionKeys.HEADING_PATH, row["heading_path"])
+
         if row["anchor"]:
             meta = meta.set(SectionKeys.ANCHOR, row["anchor"])
+
         return meta
 
 
 class IngestRun:
-    """Сборка и запуск конвейера индексации по способу обхода."""
+    """Сборка и запуск конвейера индексации по области обхода."""
 
     @staticmethod
     def routes(cfg: IngestToolConfig) -> dict[str, Reader[str]]:
@@ -196,118 +178,75 @@ class IngestRun:
         plain: dict[str, Reader[str]] = {}
         for content_type in ConfluenceIngest.HTML_CONTENT_TYPES:
             plain[content_type] = LocalConfluenceReader()
+
         for media_type in documents.media_types:
             plain[media_type] = documents
+
         for media_type, reader in TextMedia.readers(cfg.text_encodings).items():
             plain[media_type] = reader
 
         routes: dict[str, Reader[str]] = {}
         for media_type, inner in plain.items():
             routes[media_type] = LoggingReader(inner, logger)
+
         return routes
 
     @classmethod
-    async def run(  # noqa: PLR0913 — параметры прогона независимы
+    async def run(
         cls,
         cfg: IngestToolConfig,
-        source: RequestSource[ConfluenceRequest],
-        progress: IngestProgress,
+        scope: IngestScope,
         *,
-        attachments: str,
-        prune_missing: bool,
-        force_update: bool,
-        skip_failed: bool,
+        attachments: bool,
+        ocr: bool,
     ) -> dict[str, Any]:
+        run_cfg = cfg.with_ocr(ocr=ocr)
+        progress = IngestProgress(logger)
         stats = await ConfluenceIngest.ingest(
-            cfg,
-            source,
-            prune_missing,
-            force_update,
+            run_cfg,
+            scope,
             attachments=attachments,
             progress=progress,
-            routes=cls.routes(cfg),
-            skip_failed=skip_failed,
+            routes=cls.routes(run_cfg),
         )
         progress.say()
         return stats
 
-    @staticmethod
-    def connection(cfg: IngestToolConfig) -> ConfluenceConnection:
-        return ConfluenceConnection(profile=cfg.confluence, body_format=cfg.body_format)
-
 
 @tool
-async def confluence_index_page(  # noqa: PLR0913 — фасад LLM, параметры независимы
+async def confluence_index_page(
     page_id: Annotated[
         str,
         Field(
             min_length=1,
             description=(
-                "page_id страницы Confluence для индексации, например \"950276\": "
+                'page_id страницы Confluence для индексации, например "950276": '
                 "строка из URL `viewpage.action?pageId=<id>`."
             ),
         ),
     ],
-    prune_missing: Annotated[
-        bool,
-        Field(
-            description=(
-                "Удалить из коллекции чанки, которых нет среди "
-                "страниц текущего запуска."
-            ),
-        ),
-    ] = False,
-    force_update: Annotated[
-        bool,
-        Field(
-            description=(
-                "Переиндексировать страницы целиком, минуя пропуск неизменившихся."
-            ),
-        ),
-    ] = False,
-    attachments: Annotated[str, Field(description=_ATTACHMENTS_DESCRIPTION)] = "",
-    ocr_enabled: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
-    num_workers: Annotated[
-        int, Field(ge=1, le=4, description=_WORKERS_DESCRIPTION)
-    ] = 1,
-    ocr_language: Annotated[
-        str, Field(min_length=1, description=_LANGUAGE_DESCRIPTION)
-    ] = "rus+eng",
-    skip_failed: Annotated[bool, Field(description=_SKIP_FAILED_DESCRIPTION)] = True,
+    attachments: Annotated[bool, Field(description=_ATTACHMENTS_DESCRIPTION)] = False,
+    ocr: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
     *,
     cfg: Annotated[IngestToolConfig, Injected],
 ) -> TableResult:
-    """Индексирует одну страницу Confluence по page_id."""
-    run_cfg = cfg.with_parser(
-        ocr_enabled=ocr_enabled,
-        num_workers=num_workers,
-        ocr_language=ocr_language,
-    )
+    """Индексирует одну страницу Confluence по page_id.
 
-    conn = IngestRun.connection(run_cfg)
-    progress = IngestProgress(logger)
-    source = ConfluencePagesRequestSource(
-        profile=conn.profile,
-        page_ids=(page_id,),
-        body_format=conn.body_format,
-        progress=progress,
-    )
-
+    Неизменившиеся страница и вложения пропускаются; вложения, удалённые со
+    страницы, уходят из коллекции.
+    """
     stats = await IngestRun.run(
-        run_cfg,
-        source,
-        progress,
+        cfg,
+        IngestScope.page(page_id),
         attachments=attachments,
-        prune_missing=prune_missing,
-        force_update=force_update,
-        skip_failed=skip_failed,
+        ocr=ocr,
     )
 
     return TableResult(rows=[stats], note=f"page_id: {page_id}")
 
 
 @tool
-async def confluence_index_cql(  # noqa: PLR0913 — фасад LLM, параметры независимы
+async def confluence_index_cql(
     cql: Annotated[
         str,
         Field(
@@ -317,51 +256,28 @@ async def confluence_index_cql(  # noqa: PLR0913 — фасад LLM, парам�
             ),
         ),
     ],
-    prune_missing: Annotated[
-        bool,
-        Field(description="Удалить чанки, не попавшие в выборку."),
-    ] = False,
-    attachments: Annotated[str, Field(description=_ATTACHMENTS_DESCRIPTION)] = "",
-    ocr_enabled: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
-    num_workers: Annotated[
-        int, Field(ge=1, le=4, description=_WORKERS_DESCRIPTION)
-    ] = 1,
-    ocr_language: Annotated[
-        str, Field(min_length=1, description=_LANGUAGE_DESCRIPTION)
-    ] = "rus+eng",
-    skip_failed: Annotated[bool, Field(description=_SKIP_FAILED_DESCRIPTION)] = True,
+    attachments: Annotated[bool, Field(description=_ATTACHMENTS_DESCRIPTION)] = False,
+    ocr: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
     *,
     cfg: Annotated[IngestToolConfig, Injected],
 ) -> TableResult:
-    """Индексирует страницы Confluence, найденные CQL-запросом."""
-    run_cfg = cfg.with_parser(
-        ocr_enabled=ocr_enabled, num_workers=num_workers, ocr_language=ocr_language
-    )
+    """Индексирует страницы Confluence, найденные CQL-запросом.
 
-    conn = IngestRun.connection(run_cfg)
-    progress = IngestProgress(logger)
-    source = ConfluenceCqlRequestSource(
-        conn=conn,
-        cql=cql,
-        body_format=conn.body_format,
-        progress=progress,
-    )
-
+    Неизменившиеся страницы и вложения пропускаются; страницы, удалённые в
+    Confluence, уходят из коллекции вместе с вложениями.
+    """
     stats = await IngestRun.run(
-        run_cfg,
-        source,
-        progress,
+        cfg,
+        IngestScope.query(cql),
         attachments=attachments,
-        prune_missing=prune_missing,
-        force_update=False,
-        skip_failed=skip_failed,
+        ocr=ocr,
     )
 
     return TableResult(rows=[stats])
 
 
 @tool
-async def confluence_index_space(  # noqa: PLR0913 — фасад LLM, параметры независимы
+async def confluence_index_space(
     space_key: Annotated[
         str,
         Field(
@@ -369,55 +285,28 @@ async def confluence_index_space(  # noqa: PLR0913 — фасад LLM, пара�
             description='Ключ спейса целиком, например "DQ".',
         ),
     ],
-    prune_missing: Annotated[
-        bool,
-        Field(description="Удалить чанки, не попавшие в выборку."),
-    ] = False,
-    force_update: Annotated[
-        bool,
-        Field(description="Переиндексировать страницы целиком."),
-    ] = False,
-    attachments: Annotated[str, Field(description=_ATTACHMENTS_DESCRIPTION)] = "",
-    ocr_enabled: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
-    num_workers: Annotated[
-        int, Field(ge=1, le=4, description=_WORKERS_DESCRIPTION)
-    ] = 1,
-    ocr_language: Annotated[
-        str, Field(min_length=1, description=_LANGUAGE_DESCRIPTION)
-    ] = "rus+eng",
-    skip_failed: Annotated[bool, Field(description=_SKIP_FAILED_DESCRIPTION)] = True,
+    attachments: Annotated[bool, Field(description=_ATTACHMENTS_DESCRIPTION)] = False,
+    ocr: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
     *,
     cfg: Annotated[IngestToolConfig, Injected],
 ) -> TableResult:
-    """Индексирует спейс Confluence целиком."""
-    run_cfg = cfg.with_parser(
-        ocr_enabled=ocr_enabled, num_workers=num_workers, ocr_language=ocr_language
-    )
+    """Индексирует спейс Confluence целиком.
 
-    conn = IngestRun.connection(run_cfg)
-    progress = IngestProgress(logger)
-    source = ConfluenceSpaceRequestSource(
-        conn=conn,
-        space_key=space_key,
-        body_format=conn.body_format,
-        progress=progress,
-    )
-
+    Неизменившиеся страницы и вложения пропускаются; страницы, удалённые в
+    Confluence, уходят из коллекции вместе с вложениями.
+    """
     stats = await IngestRun.run(
-        run_cfg,
-        source,
-        progress,
+        cfg,
+        IngestScope.space(space_key),
         attachments=attachments,
-        prune_missing=prune_missing,
-        force_update=force_update,
-        skip_failed=skip_failed,
+        ocr=ocr,
     )
 
     return TableResult(rows=[stats], note=f"space_key: {space_key}")
 
 
 @tool
-async def confluence_attachment(  # noqa: PLR0913 — фасад LLM, параметры независимы
+async def confluence_attachment(
     page_id: Annotated[
         str,
         Field(min_length=1, description="ID страницы Confluence."),
@@ -426,20 +315,12 @@ async def confluence_attachment(  # noqa: PLR0913 — фасад LLM, парам
         str,
         Field(min_length=1, description="Имя вложения на странице."),
     ],
-    ocr_enabled: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
-    num_workers: Annotated[
-        int, Field(ge=1, le=4, description=_WORKERS_DESCRIPTION)
-    ] = 1,
-    ocr_language: Annotated[
-        str, Field(min_length=1, description=_LANGUAGE_DESCRIPTION)
-    ] = "rus+eng",
+    ocr: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
     *,
     cfg: Annotated[IngestToolConfig, Injected],
 ) -> MarkdownResult:
     """Читает вложение страницы Confluence и возвращает его текст."""
-    run_cfg = cfg.with_parser(
-        ocr_enabled=ocr_enabled, num_workers=num_workers, ocr_language=ocr_language
-    )
+    run_cfg = cfg.with_ocr(ocr=ocr)
 
     rest_cfg = ConfluenceToolsConfig(
         confluence=run_cfg.confluence, body_format=run_cfg.body_format
@@ -474,15 +355,19 @@ def _attachment_link(data: dict[str, Any], filename: str) -> str:
     children = data.get("children")
     if not isinstance(children, dict):
         return ""
+
     attachments = children.get("attachment")
     if not isinstance(attachments, dict):
         return ""
+
     for item in attachments.get("results") or []:
         if str(item.get("title") or "") != filename:
             continue
+
         links = item.get("_links")
         if isinstance(links, dict):
             return str(links.get("download") or "")
+
     return ""
 
 
@@ -504,8 +389,10 @@ def _attachment_titles(data: dict[str, Any]) -> list[str]:
 
 EXPECTED: Mapping[type[Exception], IngestErrorKind] = {
     PostgresError: IngestErrorKind.DATABASE_UNAVAILABLE,
+    LedgerError: IngestErrorKind.DATABASE_UNAVAILABLE,
     httpx.HTTPError: IngestErrorKind.REQUEST_FAILED,
     TransportError: IngestErrorKind.REQUEST_FAILED,
+    ConfluencePayloadError: IngestErrorKind.REQUEST_FAILED,
     AttachmentNotFoundError: IngestErrorKind.ATTACHMENT_NOT_FOUND,
     LiteParseError: IngestErrorKind.DOCUMENT_UNREADABLE,
     EmbeddingError: IngestErrorKind.EMBEDDING_FAILED,

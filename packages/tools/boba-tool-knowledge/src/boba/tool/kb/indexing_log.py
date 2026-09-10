@@ -31,7 +31,7 @@ from collections.abc import (
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import ClassVar, Generic, TypeVar
+from typing import ClassVar, Generic, Protocol, TypeVar
 
 from boba.indexing import (
     AsyncBinaryStream,
@@ -58,8 +58,11 @@ from boba.indexing import (
     Section,
     Severity,
     SourceFailed,
+    SourceGone,
     SourceId,
     SourceIndexed,
+    SourceLedger,
+    SourceRecord,
     SourceSkippedUnchanged,
     TransportKeys,
 )
@@ -73,6 +76,8 @@ __all__ = [
     "LoggingChunker",
     "LoggingEmbedder",
     "LoggingReader",
+    "LoggingSourceLedger",
+    "SourceKinds",
 ]
 
 T = TypeVar("T")
@@ -88,6 +93,25 @@ class DbOp(StrEnum):
     UPSERT = "upsert"
     UPDATE_METADATA = "update_metadata"
     DELETE = "delete"
+    DELETE_BY_SOURCE = "delete_by_source"
+
+
+class LedgerOp(StrEnum):
+    """Операции реестра источников: каждая — поход в postgres."""
+
+    LOOKUP = "lookup"
+    TOUCH = "touch"
+    RECORD = "record"
+    UNSEEN = "unseen"
+    CHILDREN = "children"
+    FORGET = "forget"
+
+
+class SourceKinds(Protocol):
+    """Как отличить вложение от страницы по source_id: знает только источник."""
+
+    @staticmethod
+    def is_attachment(source_id: SourceId) -> bool: ...
 
 
 @dataclass
@@ -129,6 +153,7 @@ class IngestProgress:
         self._attachments = DiscoveredCount()
         self._chunks = 0
         self._failed = 0
+        self._gone = 0
 
     def spaces_found(self, count: int) -> None:
         """Список space'ов известен целиком до обхода."""
@@ -168,6 +193,9 @@ class IngestProgress:
     def chunks_made(self, count: int) -> None:
         self._chunks += count
 
+    def source_gone(self) -> None:
+        self._gone += 1
+
     def render(self) -> str:
         return (
             f"progress: spaces {self._spaces.render()}"
@@ -175,6 +203,7 @@ class IngestProgress:
             f" | attachments {self._attachments.render()}"
             f" | chunks {self._chunks}"
             f" | failed {self._failed}"
+            f" | gone {self._gone}"
         )
 
     def say(self) -> None:
@@ -195,12 +224,13 @@ class LoggedIndexRun:
         events: AsyncIterable[IndexEvent],
         logger: logging.Logger,
         progress: IngestProgress,
+        kinds: SourceKinds,
     ) -> IndexStats:
         """Потребить поток Pipeline.index(...), пишет каждое событие в logger."""
         stats = IndexStatsBuilder().build()
         async for event in events:
             LoggedIndexRun._emit(logger, event)
-            LoggedIndexRun._count(progress, event)
+            LoggedIndexRun._count(progress, event, kinds)
             if isinstance(event, RunFinished):
                 stats = event.stats
 
@@ -215,20 +245,30 @@ class LoggedIndexRun:
         logger.log(LoggedIndexRun._LEVELS[event.severity()], "%s", message)
 
     @staticmethod
-    def _count(progress: IngestProgress, event: IndexEvent) -> None:
-        """Страница закрыта source-событием: её вложения и чанки уже позади.
+    def _count(progress: IngestProgress, event: IndexEvent, kinds: SourceKinds) -> None:
+        """Источник закрыт своим событием; страница и вложение считаются врозь."""
+        if isinstance(event, SourceGone):
+            progress.source_gone()
+            progress.say()
+            return
 
-        Прочие CompletedItem — про батчи и cleanup, страниц они не закрывают.
-        """
         if isinstance(event, SourceFailed):
-            progress.page_failed()
+            if kinds.is_attachment(event.source_id):
+                progress.attachment_failed()
+            else:
+                progress.page_failed()
+
             progress.say()
             return
 
         if not isinstance(event, (SourceIndexed, SourceSkippedUnchanged)):
             return
 
-        progress.page_done()
+        if kinds.is_attachment(event.source_id):
+            progress.attachment_done()
+        else:
+            progress.page_done()
+
         progress.say()
 
 
@@ -336,6 +376,18 @@ class LoggingChunkStore(ChunkStore[T], Generic[T]):
         with self._step(DbOp.UPDATE_METADATA, collection, len(ids)):
             await self._inner.update_metadata(collection, ids, patch)
 
+    async def delete_by_source(
+        self,
+        collection: CollectionId,
+        source_id: SourceId,
+        *,
+        from_index: int,
+    ) -> int:
+        with self._step(DbOp.DELETE_BY_SOURCE, collection, from_index):
+            return await self._inner.delete_by_source(
+                collection, source_id, from_index=from_index
+            )
+
     async def delete(
         self,
         collection: CollectionId,
@@ -344,6 +396,53 @@ class LoggingChunkStore(ChunkStore[T], Generic[T]):
         ids = list(chunk_ids)
         with self._step(DbOp.DELETE, collection, len(ids)):
             await self._inner.delete(collection, ids)
+
+
+class LoggingSourceLedger(SourceLedger):
+    """Обёртка реестра: каждый поход в postgres виден до и после."""
+
+    def __init__(self, inner: SourceLedger, logger: logging.Logger) -> None:
+        self._inner = inner
+        self._logger = logger
+
+    @contextmanager
+    def _step(self, op: LedgerOp, what: str) -> Generator[None, None, None]:
+        self._logger.info("ledger %s start: %s", op.value, what)
+        elapsed = Elapsed()
+
+        yield
+
+        self._logger.info("ledger %s done: %s in %dms", op.value, what, elapsed.ms())
+
+    async def lookup(self, source_id: SourceId) -> SourceRecord | None:
+        with self._step(LedgerOp.LOOKUP, source_id):
+            return await self._inner.lookup(source_id)
+
+    async def touch(self, source_ids: Sequence[SourceId], *, at: float) -> None:
+        with self._step(LedgerOp.TOUCH, f"{len(source_ids)} sources"):
+            await self._inner.touch(source_ids, at=at)
+
+    async def record(self, record: SourceRecord) -> None:
+        with self._step(LedgerOp.RECORD, record.source_id):
+            await self._inner.record(record)
+
+    async def unseen(self, *, before: float) -> AsyncIterator[SourceRecord]:
+        self._logger.info("ledger %s start", LedgerOp.UNSEEN.value)
+        count = 0
+        async for record in self._inner.unseen(before=before):
+            count += 1
+            yield record
+
+        self._logger.info("ledger %s done: %d sources", LedgerOp.UNSEEN.value, count)
+
+    async def children(self, parent: SourceId) -> AsyncIterator[SourceRecord]:
+        with self._step(LedgerOp.CHILDREN, parent):
+            async for record in self._inner.children(parent):
+                yield record
+
+    async def forget(self, source_id: SourceId) -> None:
+        with self._step(LedgerOp.FORGET, source_id):
+            await self._inner.forget(source_id)
 
 
 class LoggingStream(AsyncBinaryStream):

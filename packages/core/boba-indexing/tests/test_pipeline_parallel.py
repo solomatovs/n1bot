@@ -1,4 +1,4 @@
-"""Pipeline: параллельный обход источников, статистика и изоляция сбоев."""
+"""Pipeline: параллельный обход источников, реестр, статистика и изоляция сбоев."""
 
 from __future__ import annotations
 
@@ -13,9 +13,8 @@ from boba.indexing import (
     Chunker,
     ChunkerId,
     ChunkId,
-    ChunksDeleted,
     ChunkStream,
-    FullCleanup,
+    CleanupStarted,
     IndexerConfig,
     IndexingError,
     Metadata,
@@ -29,18 +28,24 @@ from boba.indexing import (
     RunFinished,
     Section,
     SourceFailed,
+    SourceGone,
     SourceId,
+    SourceLedger,
+    SourceMark,
+    SourceProbe,
+    SourceRecord,
+    SourceSkippedUnchanged,
     Transport,
+    TransportKeys,
 )
-from boba.indexing.chunks import ChunkSummary
-from boba.indexing.filter import Filter
-from boba.indexing.store import IndexQuery, IndexSink
+from boba.indexing.store import IndexSink
 from boba.indexing.values import StringContentHash
 
 pytestmark = pytest.mark.anyio
 
 _FETCH_DELAY_SEC = 0.1
 _PAGES = 8
+_STAMP = "test"
 
 
 @pytest.fixture(scope="module")
@@ -49,23 +54,29 @@ def anyio_backend() -> str:
 
 
 class _Request(Request):
-    """Минимальный Request: только metadata, как требует протокол."""
+    """Минимальный Request: metadata и отметка версии."""
 
-    def __init__(self, page: str) -> None:
+    def __init__(self, page: str, version: int = 1, body: str = "") -> None:
         self.page = page
+        self.version = version
+        self.body = body or page
 
     @property
     def metadata(self) -> Metadata:
         return Metadata.empty()
 
+    @property
+    def mark(self) -> SourceMark:
+        return SourceMark(fingerprint=f"v{self.version}")
+
 
 class _Source(RequestSource[_Request]):
-    def __init__(self, pages: Sequence[str]) -> None:
-        self._pages = list(pages)
+    def __init__(self, requests: Sequence[_Request]) -> None:
+        self._requests = list(requests)
 
     async def requests(self) -> AsyncIterator[_Request]:
-        for page in self._pages:
-            yield _Request(page)
+        for request in self._requests:
+            yield request
 
 
 class _SlowTransport(Transport[_Request]):
@@ -75,6 +86,7 @@ class _SlowTransport(Transport[_Request]):
         self._delay = delay
         self.in_flight = 0
         self.peak = 0
+        self.fetched: list[str] = []
 
     def source_id(self, request: _Request) -> SourceId:
         return SourceId(f"page:{request.page}")
@@ -82,22 +94,29 @@ class _SlowTransport(Transport[_Request]):
     async def fetch(self, request: _Request) -> AsyncIterator[RawDocument]:
         self.in_flight += 1
         self.peak = max(self.peak, self.in_flight)
+        self.fetched.append(request.page)
         try:
             await asyncio.sleep(self._delay)
             yield RawDocument(
-                handle=ChunkStream.of(request.page.encode()),
+                handle=ChunkStream.of(request.body.encode()),
                 source_id=self.source_id(request),
-                metadata=Metadata.empty(),
+                metadata=Metadata.empty().set(
+                    TransportKeys.BODY_HASH, f"hash:{request.body}"
+                ),
             )
         finally:
             self.in_flight -= 1
 
 
 class _Reader(Reader[str]):
+    def __init__(self) -> None:
+        self.read_pages: list[SourceId] = []
+
     def reader_id(self) -> ReaderId:
         return ReaderId("test.reader")
 
     async def read(self, raw: RawDocument) -> AsyncIterator[Section[str]]:
+        self.read_pages.append(raw.source_id)
         yield Section(
             source_id=raw.source_id,
             content=(await raw.handle.read()).decode(),
@@ -125,22 +144,15 @@ class _Chunker(Chunker[str]):
             )
 
 
-class _Sink(IndexSink[str], IndexQuery[str]):
-    """Считает принятые чанки; failing_pages роняет источник как store."""
+class _Sink(IndexSink[str]):
+    """Считает принятые чанки; failing роняет источник как store."""
 
     def __init__(self, failing: frozenset[str] = frozenset()) -> None:
         self.accepted: list[SourceId] = []
-        self.cleaned = 0
+        self.forgotten: list[SourceId] = []
         self._failing = failing
 
-    async def reconcile(
-        self,
-        chunks: AsyncIterable[Chunk[str]],
-        *,
-        time_at_least: float,
-        force: bool = False,
-    ) -> ReconcileSummary:
-        del time_at_least, force
+    async def reconcile(self, chunks: AsyncIterable[Chunk[str]]) -> ReconcileSummary:
         total = 0
         async for chunk in chunks:
             if str(chunk.source_id) in self._failing:
@@ -149,91 +161,187 @@ class _Sink(IndexSink[str], IndexQuery[str]):
             total += 1
         return ReconcileSummary(total=total, upserted=total, unchanged=0)
 
-    async def find(
-        self,
-        *,
-        where: Filter | None = None,
-        limit: int | None = None,
-    ) -> Sequence[ChunkSummary[str]]:
-        del where, limit
-        return []
+    async def forget(self, source_id: SourceId, *, from_index: int) -> int:
+        if from_index > 0:
+            return 0
 
-    async def clean(self, where: Filter) -> int:
-        del where
-        self.cleaned += 1
-        return 3
-
-    def narrow(self, where: Filter) -> IndexQuery[str]:
-        del where
-        return self
+        self.forgotten.append(source_id)
+        return 1
 
 
-def _pipeline(
-    transport: _SlowTransport,
-    pages: Sequence[str],
-) -> Pipeline[_Request, str]:
-    return Pipeline(source=_Source(pages), transport=transport, reader=_Reader())
+class _Ledger(SourceLedger):
+    def __init__(self) -> None:
+        self.records: dict[SourceId, SourceRecord] = {}
+
+    async def lookup(self, source_id: SourceId) -> SourceRecord | None:
+        return self.records.get(source_id)
+
+    async def touch(self, source_ids: Sequence[SourceId], *, at: float) -> None:
+        for source_id in source_ids:
+            record = self.records.get(source_id)
+            if record is None:
+                continue
+
+            self.records[source_id] = SourceRecord(
+                source_id=record.source_id,
+                parent=record.parent,
+                fingerprint=record.fingerprint,
+                content_hash=record.content_hash,
+                grade=record.grade,
+                stamp=record.stamp,
+                seen_at=at,
+                indexed_at=record.indexed_at,
+            )
+
+    async def record(self, record: SourceRecord) -> None:
+        self.records[record.source_id] = record
+
+    async def unseen(self, *, before: float) -> AsyncIterator[SourceRecord]:
+        for record in list(self.records.values()):
+            if record.seen_at < before:
+                yield record
+
+    async def children(self, parent: SourceId) -> AsyncIterator[SourceRecord]:
+        for record in list(self.records.values()):
+            if record.parent == parent:
+                yield record
+
+    async def forget(self, source_id: SourceId) -> None:
+        self.records.pop(source_id, None)
 
 
-async def _run(
-    pipeline: Pipeline[_Request, str],
-    sink: _Sink,
-    workers: int,
-) -> list[object]:
-    config: IndexerConfig[str] = IndexerConfig(
-        workers=workers,
-        cleanup=FullCleanup(),
-    )
-    stream = pipeline.index(chunker=_Chunker(), sink=sink, query=sink, config=config)
-    return [item async for item in stream]
+class _Probe(SourceProbe):
+    """Всё невиденное считается исчезнувшим; помнит, сколько раз спрашивали."""
+
+    def __init__(self) -> None:
+        self.batches: list[int] = []
+
+    async def gone(self, records: Sequence[SourceRecord]) -> Sequence[SourceId]:
+        self.batches.append(len(records))
+        gone: list[SourceId] = []
+        for record in records:
+            gone.append(record.source_id)
+
+        return gone
+
+
+class _Stand:
+    def __init__(
+        self, transport: _SlowTransport, failing: frozenset[str] = frozenset()
+    ):
+        self.transport = transport
+        self.reader = _Reader()
+        self.sink = _Sink(failing)
+        self.ledger = _Ledger()
+        self.probe = _Probe()
+
+    def pipeline(self, requests: Sequence[_Request]) -> Pipeline[_Request, str]:
+        return Pipeline(
+            source=_Source(requests),
+            transport=self.transport,
+            reader=self.reader,
+            ledger=self.ledger,
+            probe=self.probe,
+        )
+
+    async def run(self, requests: Sequence[_Request], *, workers: int) -> list[object]:
+        config: IndexerConfig[str] = IndexerConfig(workers=workers, stamp=_STAMP)
+        stream = self.pipeline(requests).index(
+            chunker=_Chunker(), sink=self.sink, config=config
+        )
+        return [item async for item in stream]
+
+
+def _pages(count: int, version: int = 1, body: str = "") -> list[_Request]:
+    return [_Request(str(i), version, body) for i in range(count)]
 
 
 class TestParallelSources:
     async def test_sources_overlap_in_flight(self) -> None:
         """Обход идёт внахлёст: страницы не ждут друг друга по очереди."""
-        transport = _SlowTransport(_FETCH_DELAY_SEC)
-        pages = [str(i) for i in range(_PAGES)]
-        sink = _Sink()
+        stand = _Stand(_SlowTransport(_FETCH_DELAY_SEC))
 
         started = time.monotonic()
-        await _run(_pipeline(transport, pages), sink, workers=4)
+        await stand.run(_pages(_PAGES), workers=4)
         elapsed = time.monotonic() - started
 
         sequential = _PAGES * _FETCH_DELAY_SEC
         if elapsed >= sequential / 2:
             raise AssertionError("elapsed < sequential / 2")
-        if transport.peak <= 1:
+        if stand.transport.peak <= 1:
             raise AssertionError("transport.peak > 1")
-        if len(sink.accepted) != _PAGES:
+        if len(stand.sink.accepted) != _PAGES:
             raise AssertionError("len(sink.accepted) == _PAGES")
 
     async def test_workers_bound_is_respected(self) -> None:
         """Больше config.workers источников в полёте быть не должно."""
-        transport = _SlowTransport(_FETCH_DELAY_SEC)
-        pages = [str(i) for i in range(_PAGES)]
+        stand = _Stand(_SlowTransport(_FETCH_DELAY_SEC))
 
-        await _run(_pipeline(transport, pages), _Sink(), workers=3)
+        await stand.run(_pages(_PAGES), workers=3)
 
-        if transport.peak > 3:
+        if stand.transport.peak > 3:
             raise AssertionError("transport.peak <= 3")
 
     async def test_serial_run_keeps_one_in_flight(self) -> None:
         """workers=1 — прежнее последовательное поведение."""
-        transport = _SlowTransport(0.0)
-        pages = [str(i) for i in range(4)]
+        stand = _Stand(_SlowTransport(0.0))
 
-        await _run(_pipeline(transport, pages), _Sink(), workers=1)
+        await stand.run(_pages(4), workers=1)
 
-        if transport.peak != 1:
+        if stand.transport.peak != 1:
             raise AssertionError("transport.peak == 1")
+
+
+class TestLedger:
+    async def test_unchanged_fingerprint_skips_fetch(self) -> None:
+        stand = _Stand(_SlowTransport(0.0))
+        await stand.run(_pages(4), workers=2)
+        stand.transport.fetched.clear()
+
+        events = await stand.run(_pages(4), workers=2)
+
+        skipped = [e for e in events if isinstance(e, SourceSkippedUnchanged)]
+        if len(skipped) != 4:
+            raise AssertionError("every source skipped by fingerprint")
+        if stand.transport.fetched:
+            raise AssertionError(f"nothing fetched: {stand.transport.fetched}")
+
+    async def test_new_version_with_same_body_is_not_parsed(self) -> None:
+        stand = _Stand(_SlowTransport(0.0))
+        await stand.run(_pages(2), workers=2)
+        stand.reader.read_pages.clear()
+
+        await stand.run(_pages(2, version=2), workers=2)
+
+        if len(stand.transport.fetched) != 4:
+            raise AssertionError("new version is fetched again")
+        if stand.reader.read_pages:
+            raise AssertionError(
+                f"same body must not be parsed: {stand.reader.read_pages}"
+            )
+        if stand.ledger.records[SourceId("page:0")].fingerprint != "v2":
+            raise AssertionError("fingerprint follows the new version")
+
+    async def test_other_stamp_reindexes(self) -> None:
+        stand = _Stand(_SlowTransport(0.0))
+        await stand.run(_pages(2), workers=2)
+        stand.reader.read_pages.clear()
+
+        config: IndexerConfig[str] = IndexerConfig(workers=2, stamp="other")
+        stream = stand.pipeline(_pages(2)).index(
+            chunker=_Chunker(), sink=stand.sink, config=config
+        )
+        _ = [item async for item in stream]
+
+        if len(stand.reader.read_pages) != 2:
+            raise AssertionError("other stamp must parse everything again")
 
 
 class TestRunOutcome:
     async def test_stats_count_every_source(self) -> None:
-        transport = _SlowTransport(0.0)
-        pages = [str(i) for i in range(_PAGES)]
+        stand = _Stand(_SlowTransport(0.0))
 
-        events = await _run(_pipeline(transport, pages), _Sink(), workers=4)
+        events = await stand.run(_pages(_PAGES), workers=4)
 
         [finished] = [e for e in events if isinstance(e, RunFinished)]
         if finished.stats.sources_processed != _PAGES:
@@ -241,35 +349,57 @@ class TestRunOutcome:
         if finished.stats.chunks_upserted != _PAGES:
             raise AssertionError("finished.stats.chunks_upserted == _PAGES")
 
-    async def test_cleanup_runs_after_all_sources(self) -> None:
-        """Удаление устаревшего — строго последним, после всех источников."""
-        transport = _SlowTransport(0.0)
-        pages = [str(i) for i in range(4)]
-        sink = _Sink()
+    async def test_unseen_roots_are_probed_after_all_sources(self) -> None:
+        """Исчезнувшее снимается строго последним, после всех источников."""
+        stand = _Stand(_SlowTransport(0.0))
+        await stand.run(_pages(4), workers=4)
 
-        events = await _run(_pipeline(transport, pages), sink, workers=4)
+        events = await stand.run(_pages(2), workers=4)
 
-        deleted_at = next(
-            i for i, e in enumerate(events) if isinstance(e, ChunksDeleted)
+        gone = [e for e in events if isinstance(e, SourceGone)]
+        if sorted(str(e.source_id) for e in gone) != ["page:2", "page:3"]:
+            raise AssertionError(f"unseen pages must go: {gone}")
+        if stand.probe.batches != [2]:
+            raise AssertionError(f"one probe batch of two: {stand.probe.batches}")
+
+        cleanup_at = next(
+            i for i, e in enumerate(events) if isinstance(e, CleanupStarted)
         )
-        if sink.cleaned != 1:
-            raise AssertionError("sink.cleaned == 1")
-        if deleted_at != len(events) - 2:
-            raise AssertionError("deleted_at == len(events) - 2")  # перед RunFinished
+        first_gone = next(i for i, e in enumerate(events) if isinstance(e, SourceGone))
+        if first_gone < cleanup_at:
+            raise AssertionError("gone events come after cleanup start")
+        if not isinstance(events[-1], RunFinished):
+            raise AssertionError("run finished last")
+        if sorted(str(s) for s in stand.sink.forgotten) != ["page:2", "page:3"]:
+            raise AssertionError(
+                f"chunks of gone pages forgotten: {stand.sink.forgotten}"
+            )
 
     async def test_failed_source_does_not_stop_others(self) -> None:
-        transport = _SlowTransport(0.0)
-        pages = [str(i) for i in range(4)]
-        sink = _Sink(failing=frozenset({"page:2"}))
+        stand = _Stand(_SlowTransport(0.0), failing=frozenset({"page:2"}))
 
-        events = await _run(_pipeline(transport, pages), sink, workers=4)
+        events = await stand.run(_pages(4), workers=4)
 
         failed = [e for e in events if isinstance(e, SourceFailed)]
         if [str(e.source_id) for e in failed] != ["page:2"]:
             raise AssertionError('[str(e.source_id) for e in failed] == ["page:2"]')
-        if len(sink.accepted) != len(pages) - 1:
-            raise AssertionError("len(sink.accepted) == len(pages) - 1")
+        if len(stand.sink.accepted) != 3:
+            raise AssertionError("len(sink.accepted) == 3")
+
+    async def test_failed_source_is_kept_by_cleanup(self) -> None:
+        stand = _Stand(_SlowTransport(0.0))
+        await stand.run(_pages(3), workers=2)
+        stand.sink = _Sink(failing=frozenset({"page:1"}))
+
+        events = await stand.run(_pages(3, version=2, body="changed"), workers=2)
+
+        failed = [e for e in events if isinstance(e, SourceFailed)]
+        if len(failed) != 1:
+            raise AssertionError(f"one failed source: {failed}")
+        gone = [e for e in events if isinstance(e, SourceGone)]
+        if gone:
+            raise AssertionError(f"failed source must not be treated as gone: {gone}")
 
     async def test_workers_below_one_rejected(self) -> None:
         with pytest.raises(ValueError, match="workers"):
-            IndexerConfig(workers=0)
+            IndexerConfig(workers=0, stamp=_STAMP)

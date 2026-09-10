@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from boba.tool.kb.confluence.request_sources import ConfluenceRest
+from boba.tool.kb.confluence.request_sources import ConfluenceCql, ConfluenceRest
 
 
 class TestConfluencePaths:
@@ -20,10 +20,23 @@ class TestConfluencePaths:
         traversal = ConfluenceRest.page_fetch_path("../space/FOO", body_format="view")
         assert "/rest/api/content/..%2Fspace%2FFOO?" in traversal
 
-    def test_space_pages_path(self) -> None:
-        path = ConfluenceRest.space_pages_path("DOC/S", limit=10)
+    def test_attachments_path(self) -> None:
+        path = ConfluenceRest.attachments_path("12/3", limit=10)
 
-        assert path == "/rest/api/space/DOC%2FS/content?type=page&limit=10&start=0"
+        assert path == (
+            "/rest/api/content/12%2F3/child/attachment?limit=10&start=0&expand=version"
+        )
+
+    def test_page_body_path_has_no_attachments(self) -> None:
+        path = ConfluenceRest.page_body_path("123", body_format="view")
+
+        assert path.startswith("/rest/api/content/123?expand=body.view,version,")
+        assert "children.attachment" not in path
+
+    def test_cql_builders_quote_values(self) -> None:
+        assert ConfluenceCql.space('D"Q') == 'space = "D\\"Q" and type = page'
+        assert ConfluenceCql.page("42") == 'id = "42"'
+        assert ConfluenceCql.ids(["1", "2"]) == 'id in ("1", "2")'
 
     def test_space_list_path(self) -> None:
         assert (

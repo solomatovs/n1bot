@@ -28,4 +28,3 @@ class ConfluenceConnection(BaseModel):
             "auth (PAT/Basic) — там же `auth = { method = 'bearer', token = '...' }`."
         ),
     )
-

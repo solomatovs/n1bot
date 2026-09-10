@@ -32,9 +32,9 @@ class PostgresStoreSchema(BaseModel):
     pg_schema: str = Field(
         default="public",
         description=(
-            "Postgres schema, в которой живут таблицы KB (`chunks_table` и "
-            "`collections_table`) + функция `immutable_unaccent`. Должна "
-            "существовать к моменту запуска bootstrap-CLI (или быть `public`)."
+            "Postgres schema, в которой живут таблицы KB (`chunks_table`, "
+            "`collections_table`, `sources_table`) + функция `immutable_unaccent`. "
+            "Должна существовать к моменту запуска bootstrap-CLI (или быть `public`)."
         ),
     )
     chunks_table: str = Field(
@@ -52,13 +52,20 @@ class PostgresStoreSchema(BaseModel):
             "По дефолту `kb_collections`."
         ),
     )
+    sources_table: str = Field(
+        description=(
+            "Имя таблицы реестра источников: отпечаток версии, хэш тела и "
+            "отметка последнего обхода на каждый проиндексированный источник."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate(self) -> Self:
-        if self.chunks_table == self.collections_table:
+        names = [self.chunks_table, self.collections_table, self.sources_table]
+        if len(set(names)) != len(names):
             msg = (
-                "PostgresStoreSchema.chunks_table == collections_table "
-                f"({self.chunks_table!r}), they must differ"
+                "PostgresStoreSchema: chunks_table, collections_table and "
+                f"sources_table must differ, got {names!r}"
             )
             raise ValueError(msg)
         return self
@@ -68,6 +75,9 @@ class PostgresStoreSchema(BaseModel):
 
     def collections_ident(self) -> sql.Identifier:
         return sql.Identifier(self.pg_schema, self.collections_table)
+
+    def sources_ident(self) -> sql.Identifier:
+        return sql.Identifier(self.pg_schema, self.sources_table)
 
     def schema_ident(self) -> sql.Identifier:
         return sql.Identifier(self.pg_schema)
