@@ -1,4 +1,4 @@
-"""Хранение чанков: порты стора и представлений, scope-вид и стратегии очистки."""
+"""Хранение чанков: порты стора и представлений, scope-вид коллекции."""
 
 from __future__ import annotations
 
@@ -7,33 +7,26 @@ from collections.abc import (
     AsyncIterable,
     AsyncIterator,
     Iterable,
-    Iterator,
     Mapping,
     Sequence,
 )
 from dataclasses import dataclass
-from itertools import islice
-from typing import Any, ClassVar, Generic, TypeVar
+from typing import ClassVar, Generic, TypeVar
 
 from boba.indexing.chunks import Chunk, ChunkId, ChunkSummary, EmbeddedChunk
-from boba.indexing.filter import And, Filter, In, Lt
+from boba.indexing.filter import And, Filter
 from boba.indexing.ports import Embedder
 from boba.indexing.sections import SourceId
 from boba.indexing.values import CollectionId, ContentHash
 
 __all__ = [
     "ChunkStore",
-    "CleanupContext",
-    "CleanupStrategy",
     "CollectionInfo",
     "CollectionScopedView",
     "CollectionsStore",
-    "FullCleanup",
     "HashDiff",
-    "IncrementalCleanup",
     "IndexQuery",
     "IndexSink",
-    "NoneCleanup",
     "ReconcileSummary",
     "TrackingKeys",
 ]
@@ -45,8 +38,8 @@ T = TypeVar("T")
 class HashDiff:
     """План записи после сверки по content_hash: to_upsert / unchanged.
 
-    to_delete отсутствует намеренно — per-run cleanup устаревших чанков делает
-    CleanupStrategy, не per-batch diff.
+    to_delete отсутствует намеренно: хвост чанков реиндексированного источника
+    и чанки исчезнувших источников снимает IndexSink.forget по реестру.
     """
 
     to_upsert: list[ChunkId]
@@ -139,6 +132,17 @@ class ChunkStore(ABC, Generic[T]):
         """Удалить чанки по id из коллекции; несуществующие игнорируются."""
         ...
 
+    @abstractmethod
+    async def delete_by_source(
+        self,
+        collection: CollectionId,
+        source_id: SourceId,
+        *,
+        from_index: int,
+    ) -> int:
+        """Удалить чанки источника с chunk_index >= from_index; вернуть число."""
+        ...
+
 
 class CollectionsStore(ABC):
     """Read-side admin: перечисление и инспекция коллекций."""
@@ -211,14 +215,6 @@ class IndexQuery(ABC, Generic[T]):
         ...
 
     @abstractmethod
-    async def clean(self, where: Filter) -> int:
-        """Удалить чанки scope'а по фильтру, вернуть количество удалённых.
-
-        where обязательный — предохранитель от случайной полной зачистки scope.
-        """
-        ...
-
-    @abstractmethod
     def narrow(self, where: Filter) -> IndexQuery[T]:
         """Новый IndexQuery с добавленным Filter; каскад narrow(a).narrow(b) ≡
         narrow(And([a, b])).
@@ -230,16 +226,13 @@ class IndexSink(ABC, Generic[T]):
     """Запись chunk'ов через reconcile с идемпотентной проверкой по content_hash."""
 
     @abstractmethod
-    async def reconcile(
-        self,
-        chunks: AsyncIterable[Chunk[T]],
-        *,
-        time_at_least: float,
-        force: bool = False,
-    ) -> ReconcileSummary:
-        """Привести Store в соответствие с чанками (unchanged — только refresh
-        updated_at); force=True — все dirty.
-        """
+    async def reconcile(self, chunks: AsyncIterable[Chunk[T]]) -> ReconcileSummary:
+        """Записать изменившиеся чанки; совпавшие по content_hash не трогаются."""
+        ...
+
+    @abstractmethod
+    async def forget(self, source_id: SourceId, *, from_index: int) -> int:
+        """Снять чанки источника начиная с from_index; вернуть число удалённых."""
         ...
 
 
@@ -282,74 +275,58 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
         composed = self._compose_filter(where)
         return await self._store.find(self._collection, where=composed, limit=limit)
 
-    async def clean(self, where: Filter) -> int:
-        full = self._compose_filter(where)
-        deleted = 0
-        summaries = await self._store.find(self._collection, where=full, limit=None)
-        for batch in self._batched(summaries, self._batch_size):
-            ids = [s.chunk_id for s in batch]
-            await self._store.delete(self._collection, ids)
-            deleted += len(ids)
-        return deleted
-
-    async def reconcile(
-        self,
-        chunks: AsyncIterable[Chunk[T]],
-        *,
-        time_at_least: float,
-        force: bool = False,
-    ) -> ReconcileSummary:
-        """Привести Store в соответствие с chunk'ами: diff_by_hash -> embed -> upsert +
-        heartbeat unchanged; force=True — весь батч dirty.
-        """
+    async def reconcile(self, chunks: AsyncIterable[Chunk[T]]) -> ReconcileSummary:
+        """Батчами: diff_by_hash -> embed -> upsert изменившихся."""
         total = 0
         upserted = 0
         unchanged = 0
 
-        refresh_patch: dict[str, str | int | float | bool] = {
-            TrackingKeys.UPDATED_AT: float(time_at_least),
-        }
-
         async for batch in self._abatched(chunks, self._batch_size):
-            if force:
-                changed_ids = [c.chunk_id for c in batch]
-                unchanged_ids: list[ChunkId] = []
-            else:
-                diff = await self._store.diff_by_hash(
-                    self._collection,
-                    [(c.chunk_id, c.content_hash) for c in batch],
-                )
-                changed_ids = diff.to_upsert
-                unchanged_ids = diff.unchanged
+            candidates: list[tuple[ChunkId, ContentHash]] = []
+            for chunk in batch:
+                candidates.append((chunk.chunk_id, chunk.content_hash))
 
-            by_id: dict[ChunkId, Chunk[T]] = {c.chunk_id: c for c in batch}
-            dirty: list[Chunk[T]] = [by_id[i] for i in changed_ids]
+            diff = await self._store.diff_by_hash(self._collection, candidates)
+
+            by_id: dict[ChunkId, Chunk[T]] = {}
+            for chunk in batch:
+                by_id[chunk.chunk_id] = chunk
+
+            dirty: list[Chunk[T]] = []
+            for chunk_id in diff.to_upsert:
+                dirty.append(by_id[chunk_id])
 
             if dirty:
-                documents = [c.format_content for c in dirty]
-                embeddings = await self._embedder.embed_documents(documents)
-                embedded = [
-                    EmbeddedChunk.of(c, tuple(e))
-                    for c, e in zip(dirty, embeddings, strict=True)
-                ]
-                await self._store.upsert(self._collection, embedded)
-
-            # heartbeat только для unchanged — dirty уже получил updated_at в upsert
-            if unchanged_ids:
-                await self._store.update_metadata(
-                    self._collection,
-                    unchanged_ids,
-                    refresh_patch,
-                )
+                await self._upsert(dirty)
 
             total += len(batch)
             upserted += len(dirty)
-            unchanged += len(unchanged_ids)
+            unchanged += len(diff.unchanged)
 
         return ReconcileSummary(
             total=total,
             upserted=upserted,
             unchanged=unchanged,
+        )
+
+    async def _upsert(self, dirty: Sequence[Chunk[T]]) -> None:
+        documents: list[T] = []
+        for chunk in dirty:
+            documents.append(chunk.format_content)
+
+        embeddings = await self._embedder.embed_documents(documents)
+
+        embedded: list[EmbeddedChunk[T]] = []
+        for chunk, vector in zip(dirty, embeddings, strict=True):
+            embedded.append(EmbeddedChunk.of(chunk, tuple(vector)))
+
+        await self._store.upsert(self._collection, embedded)
+
+    async def forget(self, source_id: SourceId, *, from_index: int) -> int:
+        return await self._store.delete_by_source(
+            self._collection,
+            source_id,
+            from_index=from_index,
         )
 
     def narrow(self, where: Filter) -> CollectionScopedView[T]:
@@ -378,18 +355,6 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
         return And(parts)
 
     @staticmethod
-    def _batched(
-        items: Iterable[_E],
-        batch_size: int,
-    ) -> Iterator[list[_E]]:
-        it = iter(items)
-        while True:
-            batch = list(islice(it, batch_size))
-            if not batch:
-                return
-            yield batch
-
-    @staticmethod
     async def _abatched(
         items: AsyncIterable[_E],
         batch_size: int,
@@ -402,60 +367,3 @@ class CollectionScopedView(IndexQuery[T], IndexSink[T]):
                 batch = []
         if batch:
             yield batch
-
-
-@dataclass(frozen=True)
-class CleanupContext:
-    """Снимок состояния одного прогона Indexer.run; query уже привязан к scope'у."""
-
-    query: IndexQuery[Any]
-    run_start: float
-    touched_sources: frozenset[SourceId]
-
-
-class CleanupStrategy(ABC):
-    """Стратегия удаления устаревших записей в конце Indexer.run."""
-
-    @abstractmethod
-    async def execute(self, ctx: CleanupContext) -> int:
-        """Выполнить cleanup; вернуть количество удалённых чанков."""
-        ...
-
-
-class NoneCleanup(CleanupStrategy):
-    """No-op: ничего не удаляет, всегда возвращает 0."""
-
-    async def execute(self, ctx: CleanupContext) -> int:
-        del ctx
-        return 0
-
-
-class IncrementalCleanup(CleanupStrategy):
-    """Удалить stale-записи только для touched source_id; безопасно при частичных
-    прогонах.
-    """
-
-    async def execute(self, ctx: CleanupContext) -> int:
-        if not ctx.touched_sources:
-            return 0
-        where: Filter = And(
-            [
-                Lt(TrackingKeys.UPDATED_AT, ctx.run_start),
-                In(
-                    TrackingKeys.SOURCE_ID,
-                    list(ctx.touched_sources),
-                ),
-            ]
-        )
-        return await ctx.query.clean(where=where)
-
-
-class FullCleanup(CleanupStrategy):
-    """Удалить все stale-записи scope'а.
-
-    Требует full-coverage от RequestSource: при частичном фиде удалит актуальные записи.
-    """
-
-    async def execute(self, ctx: CleanupContext) -> int:
-        where: Filter = Lt(TrackingKeys.UPDATED_AT, ctx.run_start)
-        return await ctx.query.clean(where=where)

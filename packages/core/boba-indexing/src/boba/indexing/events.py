@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import NewType
 from uuid import UUID
@@ -28,6 +28,7 @@ __all__ = [
     "RunStarted",
     "Severity",
     "SourceFailed",
+    "SourceGone",
     "SourceIndexed",
     "SourceSkippedUnchanged",
     "new_run_id",
@@ -142,19 +143,14 @@ class BatchStarted(PhaseTransition):
 
 @dataclass(frozen=True)
 class CleanupStarted(PhaseTransition):
-    """Старт cleanup-фазы (удаление stale записей)."""
-
-    strategy: str
+    """Старт cleanup-фазы: поиск источников, которых обход не видел."""
 
     @classmethod
     def name(cls) -> str:
         return "cleanup.started"
 
     def label(self) -> str:
-        return f"cleanup started ({self.strategy})"
-
-    def details(self) -> Mapping[str, str]:
-        return {"strategy": self.strategy}
+        return "cleanup started"
 
 
 @dataclass(frozen=True)
@@ -180,6 +176,7 @@ class RunFinished(PhaseTransition):
             "sources_processed": str(s.sources_processed),
             "sources_failed": str(s.sources_failed),
             "sources_skipped_unchanged": str(s.sources_skipped_unchanged),
+            "sources_deleted": str(s.sources_deleted),
             "chunks_upserted": str(s.chunks_upserted),
             "chunks_deleted": str(s.chunks_deleted),
         }
@@ -282,8 +279,9 @@ class BatchUpserted(CompletedItem):
 
 @dataclass(frozen=True)
 class ChunksDeleted(CompletedItem):
-    """Stale chunks удалены в cleanup-фазе."""
+    """Хвост чанков реиндексированного источника снят: источник стал короче."""
 
+    source_id: SourceId
     count: int
 
     @classmethod
@@ -291,10 +289,31 @@ class ChunksDeleted(CompletedItem):
         return "chunks.deleted"
 
     def headline(self) -> str:
-        return f"deleted {self.count} stale chunks"
+        return f"deleted {self.count} stale chunks of {self.source_id}"
 
     def details(self) -> Mapping[str, str]:
-        return {"count": str(self.count)}
+        return {"source_id": self.source_id, "count": str(self.count)}
+
+
+@dataclass(frozen=True)
+class SourceGone(CompletedItem):
+    """Источника больше нет в источнике данных: его чанки и запись сняты."""
+
+    source_id: SourceId
+    chunks_deleted: int
+
+    @classmethod
+    def name(cls) -> str:
+        return "source.gone"
+
+    def headline(self) -> str:
+        return f"gone {self.source_id} ({self.chunks_deleted} chunks deleted)"
+
+    def details(self) -> Mapping[str, str]:
+        return {
+            "source_id": self.source_id,
+            "chunks_deleted": str(self.chunks_deleted),
+        }
 
 
 @dataclass(frozen=True)
@@ -304,25 +323,28 @@ class IndexStats:
     sources_processed: int
     sources_failed: int
     sources_skipped_unchanged: int
+    sources_deleted: int
     chunks_upserted: int
     chunks_deleted: int
 
 
 @dataclass
 class IndexStatsBuilder:
-    """Мутабельный аккумулятор IndexStats, обновляемый из event stream'а."""
+    """Мутабельный аккумулятор IndexStats, обновляемый из event stream'а.
+
+    Конвейер даёт ровно одно завершающее событие на источник, поэтому
+    источники считаются счётчиком, без множества увиденных id.
+    """
 
     sources_processed: int = 0
     sources_failed: int = 0
     sources_skipped_unchanged: int = 0
+    sources_deleted: int = 0
     chunks_upserted: int = 0
     chunks_deleted: int = 0
-    _seen_sources: set[SourceId] = field(default_factory=set)
 
-    def source_seen(self, source_id: SourceId) -> None:
-        if source_id not in self._seen_sources:
-            self._seen_sources.add(source_id)
-            self.sources_processed += 1
+    def source_seen(self) -> None:
+        self.sources_processed += 1
 
     def source_failed(self) -> None:
         self.sources_failed += 1
@@ -330,8 +352,11 @@ class IndexStatsBuilder:
     def source_skipped_unchanged(self) -> None:
         self.sources_skipped_unchanged += 1
 
-    def chunk_upserted(self) -> None:
-        self.chunks_upserted += 1
+    def source_deleted(self) -> None:
+        self.sources_deleted += 1
+
+    def chunks_upserted_add(self, n: int) -> None:
+        self.chunks_upserted += n
 
     def chunks_deleted_add(self, n: int) -> None:
         self.chunks_deleted += n
@@ -341,6 +366,7 @@ class IndexStatsBuilder:
             sources_processed=self.sources_processed,
             sources_failed=self.sources_failed,
             sources_skipped_unchanged=self.sources_skipped_unchanged,
+            sources_deleted=self.sources_deleted,
             chunks_upserted=self.chunks_upserted,
             chunks_deleted=self.chunks_deleted,
         )

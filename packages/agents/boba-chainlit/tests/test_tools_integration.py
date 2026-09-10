@@ -385,7 +385,7 @@ async def kb_collection(raw_config):
 
 
 class KbCleanup:
-    """Уборка тестовой коллекции: чанки и запись в реестре коллекций."""
+    """Уборка тестовой коллекции: чанки, реестр источников и запись коллекции."""
 
     @staticmethod
     async def drop(cfg: ConfluenceIngestConfig, collection: str) -> None:
@@ -399,6 +399,14 @@ class KbCleanup:
                     collection = %s
                 """
             ).format(sql.Identifier(cfg.tables.pg_schema, cfg.tables.chunks_table)),
+            sql.SQL(
+                """
+                delete from
+                    {}
+                where
+                    collection = %s
+                """
+            ).format(sql.Identifier(cfg.tables.pg_schema, cfg.tables.sources_table)),
             sql.SQL(
                 """
                 delete from
@@ -1141,8 +1149,7 @@ class TestIngestTools:
         result = await Call.ok(
             ingest_tools["confluence_index_page"],
             page_id=confluence_page["page_id"],
-            prune_missing=False,
-            force_update=True,
+            attachments=True,
         )
         stats = result.rows[0]
         if stats["collection"] != kb_collection:
@@ -1159,7 +1166,6 @@ class TestIngestTools:
         result = await Call.ok(
             ingest_tools["confluence_index_cql"],
             cql=f"id = {confluence_page['page_id']}",
-            prune_missing=False,
         )
         stats = result.rows[0]
         if stats["skipped_unchanged"] != 1:
@@ -1174,8 +1180,6 @@ class TestIngestTools:
         result = await Call.ok(
             ingest_tools["confluence_index_space"],
             space_key=confluence_page["space_key"],
-            prune_missing=False,
-            force_update=False,
         )
         stats = result.rows[0]
         if stats["collection"] != kb_collection:
@@ -1191,8 +1195,6 @@ class TestIngestTools:
             await Call.result(
                 ingest_tools["confluence_index_space"],
                 space_key="NOSUCHSPACE",
-                prune_missing=False,
-                force_update=False,
             )
 
         if failure.value.kind != "ingest_request_failed":
@@ -1221,8 +1223,6 @@ class TestKbTools:
         await Call.ok(
             ingest_tools["confluence_index_page"],
             page_id=confluence_page["page_id"],
-            prune_missing=False,
-            force_update=False,
         )
         result = await Call.ok(
             kb_tools["kb_fts_search"], query=confluence_page["title"], top_k=20
@@ -1243,8 +1243,6 @@ class TestKbTools:
         await Call.ok(
             ingest_tools["confluence_index_page"],
             page_id=confluence_page["page_id"],
-            prune_missing=False,
-            force_update=False,
         )
         result = await Call.ok(
             kb_tools["kb_vector_search"], query=confluence_page["title"], top_k=5

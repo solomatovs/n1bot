@@ -16,8 +16,8 @@ import pytest
 from psycopg import sql
 from pydantic import SecretStr
 
+from boba.access.grants import ConnectionFilter
 from boba.connection_broker.store import ConnectionsConfig, ConnectionStore
-from boba.connections.grants import ConnectionFilter
 from boba.connections.manifest import ConnectionTypes
 from boba.connections.profile import GrantTarget
 from boba.db.postgres import AsyncPostgresPool

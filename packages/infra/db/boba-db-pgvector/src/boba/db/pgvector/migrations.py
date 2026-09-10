@@ -34,6 +34,7 @@ class Migrations:
             schema=schema_cfg.schema_ident(),
             chunks_table=schema_cfg.chunks_ident(),
             collections_table=schema_cfg.collections_ident(),
+            sources_table=schema_cfg.sources_ident(),
             schema_name_lit=schema_cfg.schema_name_literal(),
             chunks_name_lit=schema_cfg.chunks_name_literal(),
             chunks_tsv_gin_name=sql.Identifier(f"{chunks_name}_tsv_gin"),
@@ -46,6 +47,12 @@ class Migrations:
             ),
             chunks_collection_source_chunk_idx_name=sql.Identifier(
                 f"{chunks_name}_collection_source_chunk",
+            ),
+            sources_collection_seen_idx_name=sql.Identifier(
+                f"{schema_cfg.sources_table}_collection_seen",
+            ),
+            sources_collection_parent_idx_name=sql.Identifier(
+                f"{schema_cfg.sources_table}_collection_parent",
             ),
             # drop index требует схему в имени: search_path соединения миграций
             # до схемы KB не расширяется

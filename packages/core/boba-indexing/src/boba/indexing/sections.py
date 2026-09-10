@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import ClassVar, Generic, NewType, Protocol, TypeVar
 
 from boba.indexing.values import (
@@ -26,6 +28,7 @@ __all__ = [
     "Section",
     "SectionKeys",
     "SourceId",
+    "SpooledBody",
 ]
 
 T = TypeVar("T")
@@ -227,6 +230,39 @@ class ChunkStream(AsyncBinaryStream):
             yield payload
 
         return cls(one())
+
+
+class SpooledBody(AsyncBinaryStream):
+    """Тело, которое транспорт уже сложил в файл на диске.
+
+    Ридер, которому нужен файл (нативный парсер), берёт path и не гоняет байты
+    через память; остальные читают как обычный поток. Файл живёт, пока идёт
+    fetch транспорта: он его создал, он и удалит.
+    """
+
+    CHUNK_SIZE: ClassVar[int] = 1 << 20
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def __aiter__(self) -> AsyncIterator[bytes]:
+        return self._chunks()
+
+    async def _chunks(self) -> AsyncIterator[bytes]:
+        with self._path.open("rb") as body:
+            while True:
+                chunk = await asyncio.to_thread(body.read, self.CHUNK_SIZE)
+                if not chunk:
+                    return
+
+                yield chunk
+
+    async def read(self) -> bytes:
+        return await asyncio.to_thread(self._path.read_bytes)
 
 
 @dataclass(frozen=True)

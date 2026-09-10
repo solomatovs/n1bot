@@ -49,7 +49,7 @@ def chainlit_context() -> None:
 
 @pytest.fixture(scope="module")
 def schema_cfg() -> PostgresStoreSchema:
-    return PostgresStoreSchema(pg_schema=SCHEMA)
+    return PostgresStoreSchema(pg_schema=SCHEMA, sources_table="kb_sources")
 
 
 @pytest.fixture(scope="module")

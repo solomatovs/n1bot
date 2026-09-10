@@ -1,4 +1,4 @@
-"""Ingest-функции: настройки OCR из вызова LLM доезжают до конфига прогона."""
+"""Ingest-функции: фасад LLM сведён к цели, attachments и ocr."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ def _config() -> IngestToolConfig:
                 "dbname": "d",
                 "auth": {"method": "trust", "user": "u"},
             },
-            "tables": {},
+            "tables": {"sources_table": "kb_sources"},
             "embedding": {
                 "kind": "local",
                 "model": "intfloat/e5",
@@ -27,7 +27,11 @@ def _config() -> IngestToolConfig:
                 "progress_every": 1,
             },
             "confluence": {"host": "confl.example", "port": 443},
+            "attachments": ["application/pdf", "*.txt"],
+            "text_encodings": ["utf-8"],
             "tessdata_path": "/usr/share/tessdata",
+            "ocr_language": "rus",
+            "num_workers": 3,
             "page_workers": 1,
         }
     )
@@ -46,54 +50,56 @@ class TestIngestOcrParams:
         "confluence_attachment",
     ]
 
+    _INDEX_NAMES: ClassVar[list[str]] = [
+        "confluence_index_page",
+        "confluence_index_cql",
+        "confluence_index_space",
+    ]
+
     def test_module_declares_the_toolset(self) -> None:
         names = [t.name for t in INGEST_TOOLS]
         if names != self._NAMES:
             raise AssertionError("names == self._NAMES")
 
-    def test_llm_params_override_config(self) -> None:
-        run_cfg = _config().with_parser(
-            ocr_enabled=True, num_workers=3, ocr_language="rus"
-        )
+    def test_call_ocr_overrides_config_and_keeps_admin_settings(self) -> None:
+        run_cfg = _config().with_ocr(ocr=True)
 
         if run_cfg.ocr_enabled is not True:
             raise AssertionError("run_cfg.ocr_enabled is True")
         if run_cfg.num_workers != 3:
-            raise AssertionError("run_cfg.num_workers == 3")
+            raise AssertionError("ocr workers come from the config")
         if run_cfg.ocr_language != "rus":
-            raise AssertionError('run_cfg.ocr_language == "rus"')
+            raise AssertionError("ocr language comes from the config")
 
-    def test_config_defaults_stay_without_overrides(self) -> None:
+    def test_config_ocr_is_off_until_the_call_asks(self) -> None:
         cfg = _config()
 
         if cfg.ocr_enabled is not False:
             raise AssertionError("cfg.ocr_enabled is False")
-        if cfg.num_workers != 1:
-            raise AssertionError("cfg.num_workers == 1")
-        if cfg.ocr_language != "rus+eng":
-            raise AssertionError('cfg.ocr_language == "rus+eng"')
 
-    @pytest.mark.parametrize(
-        "name",
-        [
-            "confluence_index_page",
-            "confluence_index_cql",
-            "confluence_index_space",
-            "confluence_attachment",
-        ],
-    )
-    def test_ocr_controls_are_optional_with_defaults(self, name: str) -> None:
+    @pytest.mark.parametrize("name", _INDEX_NAMES)
+    def test_index_tools_take_only_target_attachments_and_ocr(self, name: str) -> None:
         tools: dict[str, Any] = {tool.name: tool for tool in INGEST_TOOLS}
         schema = tools[name].args_schema.model_json_schema()
         props = schema["properties"]
-        if props["ocr_enabled"]["default"] is not False:
-            raise AssertionError('props["ocr_enabled"]["default"] is False')
-        if props["num_workers"]["default"] != 1:
-            raise AssertionError('props["num_workers"]["default"] == 1')
-        if props["num_workers"]["maximum"] != 4:
-            raise AssertionError('props["num_workers"]["maximum"] == 4')
-        if props["ocr_language"]["default"] != "rus+eng":
-            raise AssertionError('props["ocr_language"]["default"] == "rus+eng"')
-        for control in ("ocr_enabled", "num_workers", "ocr_language"):
+
+        optional = {"attachments", "ocr", "cfg"}
+        if set(props) - optional != {"page_id", "cql", "space_key"} & set(props):
+            raise AssertionError(f"unexpected parameters: {sorted(props)}")
+        if props["attachments"]["default"] is not False:
+            raise AssertionError("attachments default to false")
+        if props["ocr"]["default"] is not False:
+            raise AssertionError("ocr defaults to false")
+        for control in ("attachments", "ocr"):
             if control in schema.get("required", []):
-                raise AssertionError('control not in schema.get("required", [])')
+                raise AssertionError(f"{control} must be optional")
+
+    def test_attachment_tool_takes_only_ocr(self) -> None:
+        tools: dict[str, Any] = {tool.name: tool for tool in INGEST_TOOLS}
+        schema = tools["confluence_attachment"].args_schema.model_json_schema()
+        props = schema["properties"]
+
+        if set(props) != {"page_id", "filename", "ocr", "cfg"}:
+            raise AssertionError(f"unexpected parameters: {sorted(props)}")
+        if props["ocr"]["default"] is not False:
+            raise AssertionError("ocr defaults to false")

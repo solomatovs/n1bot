@@ -6,14 +6,15 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from itertools import islice
 from typing import Any, ClassVar, TypeVar
 
+import psycopg
 from psycopg import sql
 
 from boba.db.pgvector.config import PostgresStoreConfig, PostgresStoreSchema
-from boba.db.postgres import AsyncPostgresPool, CancellablePool
+from boba.db.postgres import AsyncPostgresPool, CancellablePool, PostgresError
 from boba.db.postgres.profile import PostgresConfig
 from boba.indexing.chunks import Chunk, ChunkId, ChunkSummary, EmbeddedChunk
 from boba.indexing.filter import (
@@ -34,6 +35,7 @@ from boba.indexing.filter import (
     Or,
     UnsupportedFilterError,
 )
+from boba.indexing.ledger import LedgerError, SourceLedger, SourceRecord
 from boba.indexing.sections import SourceId
 from boba.indexing.store import (
     ChunkStore,
@@ -50,6 +52,7 @@ __all__ = [
     "KbPool",
     "PostgresChunkStore",
     "PostgresCollectionsStore",
+    "PostgresSourceLedger",
     "PostgresStoreConfig",
     "PostgresStoreSchema",
 ]
@@ -369,6 +372,28 @@ class PostgresChunkStore(ChunkStore[str]):
         async with pool.cursor() as cur:
             await cur.execute(query, (str(collection), ids))
 
+    async def delete_by_source(
+        self,
+        collection: CollectionId,
+        source_id: SourceId,
+        *,
+        from_index: int,
+    ) -> int:
+        query = sql.SQL(
+            """
+            delete from
+                {chunks_table}
+            where 1=1
+                and collection = %s
+                and source_id = %s
+                and chunk_index >= %s
+            """,
+        ).format(chunks_table=self._tables.chunks_ident())
+        pool = await self._pool()
+        async with pool.cursor() as cur:
+            await cur.execute(query, (str(collection), str(source_id), from_index))
+            return cur.rowcount
+
     async def update_metadata(
         self,
         collection: CollectionId,
@@ -590,6 +615,265 @@ class PostgresChunkStore(ChunkStore[str]):
             op = sql.SQL("<> all")
 
         return sql.SQL("(") + expr + sql.SQL(" ") + op + sql.SQL("(%s))")
+
+
+class PostgresSourceLedger(SourceLedger):
+    """Реестр источников одной коллекции в таблице sources_table.
+
+    Время хранится timestamptz, наружу и внутрь ходит epoch-float домена.
+    Обход невиденных идёт keyset-пагинацией по source_id: удаление уже
+    отданных строк не сдвигает окно.
+    """
+
+    PAGE: ClassVar[int] = 200
+    """Сколько записей реестра берётся одним запросом при обходе."""
+
+    def __init__(self, *, cfg: PostgresStoreConfig, collection: CollectionId) -> None:
+        self._cfg = cfg
+        self._tables = cfg.tables
+        self._collection = str(collection)
+        self._pool_ref: CancellablePool | None = None
+
+    async def _pool(self) -> CancellablePool:
+        if self._pool_ref is None:
+            self._pool_ref = await KbPool.open(self._cfg.connection)
+        return self._pool_ref
+
+    async def lookup(self, source_id: SourceId) -> SourceRecord | None:
+        query = sql.SQL(
+            """
+            select
+                source_id,
+                parent_id,
+                fingerprint,
+                content_hash,
+                grade,
+                stamp,
+                extract(epoch from seen_at),
+                extract(epoch from indexed_at)
+            from
+                {sources_table}
+            where 1=1
+                and collection = %s
+                and source_id = %s
+            """,
+        ).format(sources_table=self._tables.sources_ident())
+        try:
+            pool = await self._pool()
+            async with pool.cursor() as cur:
+                await cur.execute(query, (self._collection, str(source_id)))
+                row = await cur.fetchone()
+        except (PostgresError, psycopg.Error) as exc:
+            msg = (
+                f"ledger: looking up {source_id} in "
+                f"{self._tables.sources_table} failed: {exc}"
+            )
+            raise LedgerError(msg) from exc
+
+        if row is None:
+            return None
+
+        return self._row_to_record(row)
+
+    async def touch(self, source_ids: Sequence[SourceId], *, at: float) -> None:
+        ids: list[str] = []
+        for source_id in source_ids:
+            ids.append(str(source_id))
+
+        if not ids:
+            return
+
+        query = sql.SQL(
+            """
+            update {sources_table} set
+                seen_at = to_timestamp(%s)
+            where 1=1
+                and collection = %s
+                and source_id = ANY(%s)
+            """,
+        ).format(sources_table=self._tables.sources_ident())
+        try:
+            pool = await self._pool()
+            async with pool.cursor() as cur:
+                await cur.execute(query, (at, self._collection, ids))
+        except (PostgresError, psycopg.Error) as exc:
+            msg = (
+                f"ledger: touching {len(ids)} sources in "
+                f"{self._tables.sources_table} failed: {exc}"
+            )
+            raise LedgerError(msg) from exc
+
+    async def record(self, record: SourceRecord) -> None:
+        parent = ""
+        if record.parent is not None:
+            parent = str(record.parent)
+
+        query = sql.SQL(
+            """
+            insert into {sources_table} (
+                collection,
+                source_id,
+                parent_id,
+                fingerprint,
+                content_hash,
+                grade,
+                stamp,
+                seen_at,
+                indexed_at
+            )
+            values (%s, %s, %s, %s, %s, %s, %s, to_timestamp(%s), to_timestamp(%s))
+            on conflict (collection, source_id) do update set
+                parent_id    = excluded.parent_id,
+                fingerprint  = excluded.fingerprint,
+                content_hash = excluded.content_hash,
+                grade        = excluded.grade,
+                stamp        = excluded.stamp,
+                seen_at      = excluded.seen_at,
+                indexed_at   = excluded.indexed_at
+            """,
+        ).format(sources_table=self._tables.sources_ident())
+        params = (
+            self._collection,
+            str(record.source_id),
+            parent,
+            record.fingerprint,
+            record.content_hash,
+            record.grade,
+            record.stamp,
+            record.seen_at,
+            record.indexed_at,
+        )
+        try:
+            pool = await self._pool()
+            async with pool.cursor() as cur:
+                await cur.execute(query, params)
+        except (PostgresError, psycopg.Error) as exc:
+            msg = (
+                f"ledger: recording {record.source_id} in "
+                f"{self._tables.sources_table} failed: {exc}"
+            )
+            raise LedgerError(msg) from exc
+
+    async def unseen(self, *, before: float) -> AsyncIterator[SourceRecord]:
+        query = sql.SQL(
+            """
+            select
+                source_id,
+                parent_id,
+                fingerprint,
+                content_hash,
+                grade,
+                stamp,
+                extract(epoch from seen_at),
+                extract(epoch from indexed_at)
+            from
+                {sources_table}
+            where 1=1
+                and collection = %s
+                and seen_at < to_timestamp(%s)
+                and source_id > %s
+            order by
+                source_id
+            limit %s
+            """,
+        ).format(sources_table=self._tables.sources_ident())
+        after = ""
+        while True:
+            rows = await self._page(query, (self._collection, before, after, self.PAGE))
+            if not rows:
+                return
+
+            for row in rows:
+                yield self._row_to_record(row)
+
+            after = str(rows[-1][0])
+
+    async def children(self, parent: SourceId) -> AsyncIterator[SourceRecord]:
+        query = sql.SQL(
+            """
+            select
+                source_id,
+                parent_id,
+                fingerprint,
+                content_hash,
+                grade,
+                stamp,
+                extract(epoch from seen_at),
+                extract(epoch from indexed_at)
+            from
+                {sources_table}
+            where 1=1
+                and collection = %s
+                and parent_id = %s
+                and source_id > %s
+            order by
+                source_id
+            limit %s
+            """,
+        ).format(sources_table=self._tables.sources_ident())
+        after = ""
+        while True:
+            params = (self._collection, str(parent), after, self.PAGE)
+            rows = await self._page(query, params)
+            if not rows:
+                return
+
+            for row in rows:
+                yield self._row_to_record(row)
+
+            after = str(rows[-1][0])
+
+    async def forget(self, source_id: SourceId) -> None:
+        query = sql.SQL(
+            """
+            delete from
+                {sources_table}
+            where 1=1
+                and collection = %s
+                and source_id = %s
+            """,
+        ).format(sources_table=self._tables.sources_ident())
+        try:
+            pool = await self._pool()
+            async with pool.cursor() as cur:
+                await cur.execute(query, (self._collection, str(source_id)))
+        except (PostgresError, psycopg.Error) as exc:
+            msg = (
+                f"ledger: forgetting {source_id} in "
+                f"{self._tables.sources_table} failed: {exc}"
+            )
+            raise LedgerError(msg) from exc
+
+    async def _page(
+        self,
+        query: sql.Composed,
+        params: tuple[Any, ...],
+    ) -> Sequence[tuple[Any, ...]]:
+        try:
+            pool = await self._pool()
+            async with pool.cursor() as cur:
+                await cur.execute(query, params)
+                return await cur.fetchall()
+        except (PostgresError, psycopg.Error) as exc:
+            msg = f"ledger: scanning {self._tables.sources_table} failed: {exc}"
+            raise LedgerError(msg) from exc
+
+    @staticmethod
+    def _row_to_record(row: Sequence[Any]) -> SourceRecord:
+        parent: SourceId | None = None
+        if row[1]:
+            parent = SourceId(str(row[1]))
+
+        return SourceRecord(
+            source_id=SourceId(str(row[0])),
+            parent=parent,
+            fingerprint=str(row[2]),
+            content_hash=str(row[3]),
+            grade=int(row[4]),
+            stamp=str(row[5]),
+            seen_at=float(row[6]),
+            indexed_at=float(row[7]),
+        )
 
 
 class PostgresCollectionsStore(CollectionsStore):
