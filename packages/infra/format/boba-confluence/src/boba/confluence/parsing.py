@@ -170,6 +170,9 @@ class ConfluenceJsonDecoder(Decoder):
         if titles := content.ancestor_titles():
             meta = meta.set(ConfluenceKeys.ANCESTORS_TITLES, titles)
 
+        if labels := content.label_names():
+            meta = meta.set(ConfluenceKeys.LABELS, labels)
+
         if content.links.webui:
             url = str(self._profile.url_of(content.links.webui))
             meta = meta.set(ConfluenceKeys.SOURCE_URL, url)

@@ -32,3 +32,5 @@ class SearchHit:
     distance: float
     metadata: Mapping[str, str]
     format_content: str
+    tags: tuple[str, ...] = ()
+    """Теги чанка: метки Confluence и tags kbdoc-документа."""

@@ -30,8 +30,10 @@ from boba.config import bind
 from boba.confluence.models import (
     AttachmentFilter,
     AttachmentGate,
+    ConfluenceMarks,
     ConfluenceSourceId,
     ParseGrade,
+    TableShape,
 )
 from boba.db.pgvector.config import PostgresStoreConfig, PostgresStoreSchema
 from boba.db.pgvector.migrations import Migrations
@@ -213,7 +215,14 @@ class IngestStand:
             TEXT: self.reader,
             PNG: self.reader,
         }
-        params = ChunkerParams(chunk_size=200, chunk_overlap=0)
+        params = ChunkerParams(
+            chunk_size=200,
+            chunk_overlap=0,
+            table_shape=TableShape(
+                row_layout_max_columns=4,
+                row_layout_min_rows=3,
+            ),
+        )
         return await ConfluenceIngest.run(
             scope=scope,
             conn=self.connection(),
@@ -337,7 +346,7 @@ class TestFirstRun:
         page = await stand.record(stand.page_source("101"))
         if page is None:
             raise AssertionError("page 101 must be in the ledger")
-        if page.fingerprint != "v1":
+        if page.fingerprint != ConfluenceMarks.page(1).fingerprint:
             raise AssertionError(f"page fingerprint: {page.fingerprint}")
         if not page.content_hash:
             raise AssertionError("page body hash must be recorded")
@@ -476,7 +485,7 @@ class TestSecondRun:
             raise AssertionError(f"edited page must be indexed: {stats}")
 
         page = await stand.record(stand.page_source("101"))
-        if page is None or page.fingerprint != "v2":
+        if page is None or page.fingerprint != ConfluenceMarks.page(2).fingerprint:
             raise AssertionError(f"page fingerprint after edit: {page}")
 
     async def test_renamed_page_is_reindexed(

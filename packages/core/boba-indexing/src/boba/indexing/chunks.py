@@ -230,6 +230,15 @@ class Splitter(Protocol[T]):
 
     def split(self, value: T) -> Iterable[SplitPiece[T]]: ...
 
+    def budget(self) -> int:
+        """Сколько влезает в один кусок в единицах length_function.
+
+        Нужен чанкеру, который сам набирает куски из неделимых блоков
+        (FormatBlock.is_atomic) и не может отдать их split'у: тот режет по
+        разделителям и разорвал бы блок посередине.
+        """
+        ...
+
 
 @runtime_checkable
 class LengthFunction(Protocol[T_contra]):

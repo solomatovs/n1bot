@@ -505,8 +505,7 @@ class ConfluencePaginator:
             data = json.loads(payload)
         except json.JSONDecodeError as exc:
             msg = (
-                f"GET {url} on confluence: expected JSON, "
-                f"got {payload[:200]!r}: {exc}"
+                f"GET {url} on confluence: expected JSON, got {payload[:200]!r}: {exc}"
             )
             raise ConfluencePayloadError(msg) from exc
 

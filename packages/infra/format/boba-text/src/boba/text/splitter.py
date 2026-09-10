@@ -81,6 +81,10 @@ class OverlapCharSplitter(Splitter[str]):
             length_function if length_function is not None else len
         )
 
+    def budget(self) -> int:
+        """Эффективный размер куска: chunk_size за вычетом extra_overhead."""
+        return self._chunk_size
+
     def split(self, value: str) -> Iterable[SplitPiece[str]]:
         if not value:
             return

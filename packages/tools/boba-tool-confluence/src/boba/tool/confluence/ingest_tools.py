@@ -28,16 +28,30 @@ from typing import Annotated, Any, ClassVar, Final
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.confluence.models import ConfluencePayloadError
+from boba.confluence.models import (
+    ConfluenceKeys,
+    ConfluencePayloadError,
+    PageCardSection,
+    PageParseRequest,
+    PageSection,
+    PageSectionBase,
+    PageSections,
+    PageTableSection,
+    TableShape,
+)
 from boba.db.postgres import PostgresError
 from boba.indexing import (
+    DocumentCardSection,
     LedgerError,
+    Metadata,
+    OutlineEntry,
     RawDocument,
     Reader,
     ReaderId,
     ReaderKeys,
     Section,
     SectionKeys,
+    TableSection,
     TransportError,
 )
 from boba.llm.embedding import EmbeddingConfig, EmbeddingError
@@ -109,10 +123,18 @@ async def warm_embedder(cfg: IngestWarmupConfig) -> None:
 
 
 class LocalConfluenceReader(Reader[str]):
-    """HTML-страница -> секции по заголовкам; bs4 работает прямо здесь."""
+    """HTML-страница -> карточка, секции по заголовкам и таблицы.
+
+    bs4 работает прямо здесь, в теле инструмента; наружу разбор отдаёт
+    wire-формат PageSections, который ридер валидирует обратно в модели и
+    переводит в доменные секции конвейера.
+    """
 
     READER_ID: ClassVar[ReaderId] = ReaderId("ext.confluence")
     DOC_TYPE: ClassVar[str] = "confluence_html"
+
+    def __init__(self, table_shape: TableShape) -> None:
+        self._table_shape = table_shape
 
     def reader_id(self) -> ReaderId:
         return self.READER_ID
@@ -131,32 +153,99 @@ class LocalConfluenceReader(Reader[str]):
 
         logger.info("html parse start: %s, %d bytes", title or "?", len(payload))
         elapsed = Elapsed()
+        request = PageParseRequest(
+            html=html,
+            title=title,
+            table_shape=self._table_shape,
+        )
         answer = await asyncio.to_thread(
             PageOps.confluence_sections,
-            {"html": html, "title": title},
+            request.model_dump(mode="json"),
         )
+        parsed = PageSections.model_validate(answer)
         logger.info(
             "html parse done: %s -> %d sections in %dms",
             title or "?",
-            len(answer["sections"]),
+            len(parsed.sections),
             elapsed.ms(),
         )
-        for row in answer["sections"]:
-            yield Section(
-                source_id=value.source_id,
-                content=row["content"],
-                order=row["order"],
-                metadata=self._meta(value, row),
+        for row in parsed.sections:
+            yield self._section(value, row)
+
+    def _section(self, value: RawDocument, row: PageSection) -> Section[str]:
+        if isinstance(row, PageTableSection):
+            return self._table(value, row)
+
+        if isinstance(row, PageCardSection):
+            return self._card(value, row)
+
+        return Section(
+            source_id=value.source_id,
+            content=row.content,
+            order=row.order,
+            metadata=self._meta(value, row),
+            tags=self._tags(value),
+        )
+
+    def _table(self, value: RawDocument, row: PageTableSection) -> TableSection:
+        return TableSection(
+            source_id=value.source_id,
+            content=row.caption,
+            order=row.order,
+            metadata=self._meta(value, row),
+            tags=self._tags(value),
+            caption=row.caption,
+            columns=row.columns,
+            rows=row.rows,
+            layout=row.layout,
+        )
+
+    def _card(self, value: RawDocument, row: PageCardSection) -> DocumentCardSection:
+        outline: list[OutlineEntry] = []
+        for item in row.outline:
+            outline.append(
+                OutlineEntry(level=item.level, text=item.text, anchor=item.anchor)
             )
 
-    @classmethod
-    def _meta(cls, value: RawDocument, row: dict[str, Any]):
-        meta = value.metadata.set(ReaderKeys.DOC_TYPE, cls.DOC_TYPE)
-        if row["heading_path"]:
-            meta = meta.set(SectionKeys.HEADING_PATH, row["heading_path"])
+        meta = self._meta(value, row)
+        if row.links:
+            meta = meta.set(ConfluenceKeys.LINKS, row.links)
 
-        if row["anchor"]:
-            meta = meta.set(SectionKeys.ANCHOR, row["anchor"])
+        breadcrumb = value.metadata.get(ConfluenceKeys.ANCESTORS_TITLES) or ()
+        return DocumentCardSection(
+            source_id=value.source_id,
+            content=row.title,
+            order=row.order,
+            metadata=meta,
+            tags=self._tags(value),
+            title=row.title,
+            breadcrumb=breadcrumb,
+            outline=tuple(outline),
+            labels=self._labels(value),
+            links=row.links,
+        )
+
+    @staticmethod
+    def _labels(value: RawDocument) -> tuple[str, ...]:
+        return value.metadata.get(ConfluenceKeys.LABELS) or ()
+
+    @classmethod
+    def _tags(cls, value: RawDocument) -> frozenset[str]:
+        """Метки страницы — теги чанка: колонка tags индексируется и умеет
+        фильтры HasTag/HasAnyTag, json-metadata не умеет ни того, ни другого."""
+        return frozenset(cls._labels(value))
+
+    @classmethod
+    def _meta(cls, value: RawDocument, row: PageSectionBase) -> Metadata:
+        """Метки из metadata убираются: они уже уехали в tags, а держать одно
+        и то же в двух колонках каждой строки — лишний вес индекса."""
+        meta = value.metadata.without(ConfluenceKeys.LABELS)
+        meta = meta.set(ReaderKeys.DOC_TYPE, cls.DOC_TYPE)
+        if row.heading_path:
+            meta = meta.set(SectionKeys.HEADING_PATH, row.heading_path)
+
+        if row.anchor:
+            meta = meta.set(SectionKeys.ANCHOR, row.anchor)
 
         return meta
 
@@ -179,7 +268,7 @@ class IngestRun:
         documents = LoggingDocumentReader(cfg)
         plain: dict[str, Reader[str]] = {}
         for content_type in ConfluenceIngest.HTML_CONTENT_TYPES:
-            plain[content_type] = LocalConfluenceReader()
+            plain[content_type] = LocalConfluenceReader(cfg.table_shape)
 
         for media_type in documents.media_types:
             plain[media_type] = documents

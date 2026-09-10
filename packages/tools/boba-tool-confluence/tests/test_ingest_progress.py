@@ -19,6 +19,7 @@ from boba.confluence.models import (
     AttachmentFilter,
     AttachmentGate,
     ParseGrade,
+    TableShape,
 )
 from boba.indexing import (
     CollectionId,
@@ -42,9 +43,9 @@ from boba.tool.confluence.indexing_log import (
 )
 from boba.tool.confluence.pipeline import ConfluenceSourceTransport
 from boba.tool.confluence.request_sources import (
-    SpaceListing,
     ConfluenceDiscovery,
     ConfluenceRequest,
+    SpaceListing,
 )
 from boba.transport.http.profile import HttpConnection, UrlScheme
 
@@ -140,7 +141,14 @@ class IngestStand:
             ledger=ledger,
             probe=NoProbe(),
         )
-        params = ChunkerParams(chunk_size=200, chunk_overlap=0)
+        params = ChunkerParams(
+            chunk_size=200,
+            chunk_overlap=0,
+            table_shape=TableShape(
+                row_layout_max_columns=4,
+                row_layout_min_rows=3,
+            ),
+        )
         chunker = LoggingChunker(
             StructuralChunkerFactory.build(params), LOGGER, self.progress
         )

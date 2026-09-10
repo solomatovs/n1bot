@@ -19,7 +19,7 @@ raw_content каждого чанка собирается из FormatBlock.raw_
 from __future__ import annotations
 
 from bisect import bisect_right
-from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable
+from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable, Iterator
 from typing import Final
 
 from boba.indexing import (
@@ -27,6 +27,7 @@ from boba.indexing import (
     Chunker,
     ChunkerId,
     ChunkIdGenerator,
+    FormatBlock,
     FormatPlan,
     KeyEncoder,
     Section,
@@ -143,9 +144,38 @@ class StructuralChunker(Chunker[str]):
         plan: FormatPlan,
         prefix: str,
     ) -> Iterable[tuple[str, str]]:
-        body, raw_starts, raws = self._build_body(plan)
         overhead = len(prefix) + len(plan.repeat_header) + len(plan.repeat_footer)
         splitter = self._splitter_factory(overhead)
+        for segment in self._segments(plan):
+            if segment[0].is_atomic:
+                yield from self._atomic_chunks(plan, prefix, splitter, segment)
+                continue
+
+            yield from self._split_chunks(plan, prefix, splitter, segment)
+
+    @staticmethod
+    def _segments(plan: FormatPlan) -> Iterator[tuple[FormatBlock, ...]]:
+        """Подряд идущие блоки одного вида: делимые режет splitter, неделимые
+        чанкер набирает сам."""
+        batch: list[FormatBlock] = []
+        for block in plan.blocks:
+            if batch and batch[-1].is_atomic != block.is_atomic:
+                yield tuple(batch)
+                batch = []
+
+            batch.append(block)
+
+        if batch:
+            yield tuple(batch)
+
+    def _split_chunks(
+        self,
+        plan: FormatPlan,
+        prefix: str,
+        splitter: Splitter[str],
+        blocks: tuple[FormatBlock, ...],
+    ) -> Iterator[tuple[str, str]]:
+        body, raw_starts, raws = self._build_body(plan, blocks)
         pieces = list(splitter.split(body))
         if not pieces:
             # Splitter ничего не вернул на непустом body — обернём целиком,
@@ -155,13 +185,60 @@ class StructuralChunker(Chunker[str]):
                 self._join_raws(raws),
             )
             return
+
         for piece in pieces:
             fc = prefix + plan.repeat_header + piece.content + plan.repeat_footer
             rc = self._raw_for_piece(piece, raw_starts, raws)
             yield fc, rc
 
+    def _atomic_chunks(
+        self,
+        plan: FormatPlan,
+        prefix: str,
+        splitter: Splitter[str],
+        blocks: tuple[FormatBlock, ...],
+    ) -> Iterator[tuple[str, str]]:
+        """Неделимые блоки набираются пачками по бюджету splitter'а.
+
+        Блок, который сам в бюджет не влез, уходит чанком целиком: строку
+        таблицы лучше отдать длинной, чем разорванной посередине.
+        """
+        budget = splitter.budget()
+        batch: list[FormatBlock] = []
+        length = 0
+        for block in blocks:
+            size = len(block.format_content)
+            extra = size
+            if batch:
+                extra = size + len(plan.block_glue)
+
+            if batch and length + extra > budget:
+                yield self._wrap(plan, prefix, tuple(batch))
+                batch = []
+                length = 0
+                extra = size
+
+            batch.append(block)
+            length += extra
+
+        if batch:
+            yield self._wrap(plan, prefix, tuple(batch))
+
+    def _wrap(
+        self,
+        plan: FormatPlan,
+        prefix: str,
+        blocks: tuple[FormatBlock, ...],
+    ) -> tuple[str, str]:
+        body, _, raws = self._build_body(plan, blocks)
+        fc = prefix + plan.repeat_header + body + plan.repeat_footer
+        return fc, self._join_raws(raws)
+
     @staticmethod
-    def _build_body(plan: FormatPlan) -> tuple[str, list[int], list[str]]:
+    def _build_body(
+        plan: FormatPlan,
+        blocks: tuple[FormatBlock, ...],
+    ) -> tuple[str, list[int], list[str]]:
         """Склеить body через plan.block_glue; вернуть body, индекс начал
         блоков в body и параллельный список raw_content.
         """
@@ -170,7 +247,7 @@ class StructuralChunker(Chunker[str]):
         raws: list[str] = []
         cursor = 0
         glue = plan.block_glue
-        for i, block in enumerate(plan.blocks):
+        for i, block in enumerate(blocks):
             if i > 0:
                 body_parts.append(glue)
                 cursor += len(glue)

@@ -41,6 +41,12 @@ def anyio_backend() -> str:
 class _IdentitySplitter(Splitter[str]):
     """Один piece на всю секцию — изолируем тест от splitter-логики."""
 
+    BUDGET = 1_000_000
+    """Практически без предела: тест проверяет чанкер, а не набор пачек."""
+
+    def budget(self) -> int:
+        return self.BUDGET
+
     def split(self, value: str) -> Iterable[SplitPiece[str]]:
         yield SplitPiece(content=value, location=ChunkLocation(start=0, end=len(value)))
 

@@ -6,6 +6,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
+from boba.confluence.models import TableShape
 from boba.indexing import (
     ChunkerId,
     FixedDigestPrefix,
@@ -37,6 +38,13 @@ class ChunkerParams(BaseModel):
         description=(
             "Перекрытие между соседними чанками в символах (передаётся в "
             "`OverlapCharSplitter.chunk_overlap`). 0 = без перекрытия."
+        ),
+    )
+    table_shape: TableShape = Field(
+        description=(
+            "Пороги раскладки таблиц: узкая и длинная режется построчно "
+            "записями «колонка: значение», остальные — markdown-сеткой с "
+            "шапкой, повторённой в каждом куске."
         ),
     )
 

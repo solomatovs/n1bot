@@ -41,8 +41,10 @@ class CollectionSearch:
             "distance": hit.distance,
             "format_content": hit.format_content,
         }
+        row["tags"] = ", ".join(hit.tags)
         for field in cls.META_FIELDS:
             row[field.column] = hit.metadata.get(field.key.name, "")
+
         return row
 
 
@@ -62,6 +64,8 @@ class ConfluenceCollection(CollectionSearch):
         MetaField("version", ConfluenceKeys.VERSION),
         MetaField("heading_path", SectionKeys.HEADING_PATH),
         MetaField("space", ConfluenceKeys.SPACE_KEY),
+        MetaField("kind", SectionKeys.KIND),
+        MetaField("table_caption", SectionKeys.TABLE_CAPTION),
     )
 
 
@@ -90,6 +94,7 @@ class KbSearch:
     VECTOR_SQL: ClassVar[LiteralString] = """
 select
     c.metadata,
+    c.tags,
     c.format_content,
     (c.embedding::vector({dim})) <=> %(embedding)s::vector as distance
 from
@@ -131,6 +136,7 @@ with q as (
 )
 select
     c.metadata,
+    c.tags,
     c.format_content,
     ts_rank_cd(c.tsv, q.tsq) as rank
 from

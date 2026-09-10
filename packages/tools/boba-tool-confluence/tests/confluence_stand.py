@@ -16,12 +16,22 @@ from collections import Counter
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import TracebackType
-from typing import Any, ClassVar, Self
+from typing import Any, ClassVar, Self, TypeVar
+
 import httpx
 import uvicorn
 from fastapi import FastAPI, Request, Response
 
-__all__ = ["ConfluenceStub", "LiveServer", "StubAttachment", "StubPage", "StubRoute"]
+__all__ = [
+    "ConfluenceStub",
+    "LiveServer",
+    "StubAttachment",
+    "StubPage",
+    "StubRoute",
+    "Window",
+]
+
+T = TypeVar("T")
 
 
 class StubRoute(StrEnum):
@@ -129,6 +139,23 @@ class StubPage:
         return data
 
 
+@dataclass(frozen=True)
+class Window:
+    """Окно листинга: start/limit запроса и вырезка по ним."""
+
+    start: int
+    limit: int
+
+    def of(self, items: list[T]) -> list[T]:
+        return items[self.start : self.start + self.limit]
+
+    def has_more(self, total: int) -> bool:
+        return self.start + self.limit < total
+
+    def next_start(self) -> int:
+        return self.start + self.limit
+
+
 class ConfluenceStub:
     """Состояние и маршруты заглушки; один экземпляр на тест."""
 
@@ -137,6 +164,12 @@ class ConfluenceStub:
 
     LISTING_LIMIT: ClassVar[int] = 10
     """Размер страницы child/attachment: меньше, чтобы пагинация точно сработала."""
+
+    PAGE_LIMIT: ClassVar[int] = 25
+    """limit по умолчанию у листингов страниц, как у Confluence Server."""
+
+    ATTACHMENT_LIMIT: ClassVar[int] = 50
+    """limit по умолчанию у child/attachment; сверху его режет LISTING_LIMIT."""
 
     SPACE_RE: ClassVar[re.Pattern[str]] = re.compile(r'space\s*=\s*"([^"]+)"')
     ID_RE: ClassVar[re.Pattern[str]] = re.compile(r'id\s*=\s*"([^"]+)"')
@@ -192,36 +225,35 @@ class ConfluenceStub:
 
     def app(self) -> FastAPI:
         app = FastAPI()
+        self._route_search(app)
+        self._route_space(app)
+        self._route_space_content(app)
+        self._route_attachments(app)
+        self._route_body(app)
+        self._route_download(app)
+        return app
 
+    def _route_search(self, app: FastAPI) -> None:
         @app.get("/rest/api/content/search")
         async def search(request: Request) -> Response:
             self.calls[StubRoute.SEARCH] += 1
-            cql = request.query_params.get("cql", "")
-            start = int(request.query_params.get("start", "0"))
-            limit = int(request.query_params.get("limit", "25"))
-            matched = self._match(cql)
-            window = matched[start : start + limit]
+            matched = self._match(request.query_params.get("cql", ""))
+            window = self._window(request, default=self.PAGE_LIMIT)
             results: list[dict[str, Any]] = []
-            for page in window:
+            for page in window.of(matched):
                 results.append(page.summary(expansion_limit=self.EXPANSION_LIMIT))
 
-            data: dict[str, Any] = {
-                "results": results,
-                "start": start,
-                "limit": limit,
-                "size": len(results),
-                "totalSize": len(matched),
-                "_links": {},
-            }
-            if start + limit < len(matched):
-                params = dict(request.query_params)
-                params["start"] = str(start + limit)
-                data["_links"]["next"] = str(
-                    httpx.URL(path="/rest/api/content/search", params=params)
-                )
-
+            data = self._listing(
+                results=results,
+                window=window,
+                total=len(matched),
+                path="/rest/api/content/search",
+                request=request,
+            )
+            data["totalSize"] = len(matched)
             return self._json(data)
 
+    def _route_space(self, app: FastAPI) -> None:
         @app.get("/rest/api/space/{key}")
         async def space(key: str) -> Response:
             self.calls[StubRoute.SPACE] += 1
@@ -237,6 +269,7 @@ class ConfluenceStub:
                 }
             )
 
+    def _route_space_content(self, app: FastAPI) -> None:
         @app.get("/rest/api/space/{key}/content/page")
         async def space_content(key: str, request: Request) -> Response:
             self.calls[StubRoute.SPACE_CONTENT] += 1
@@ -244,31 +277,21 @@ class ConfluenceStub:
                 return Response(status_code=404)
 
             pages = self.pages_of(key)
-            start = int(request.query_params.get("start", "0"))
-            limit = int(request.query_params.get("limit", "25"))
-            window = pages[start : start + limit]
+            window = self._window(request, default=self.PAGE_LIMIT)
             results: list[dict[str, Any]] = []
-            for page in window:
+            for page in window.of(pages):
                 results.append(page.summary(expansion_limit=self.EXPANSION_LIMIT))
 
-            data: dict[str, Any] = {
-                "results": results,
-                "start": start,
-                "limit": limit,
-                "size": len(results),
-                "_links": {},
-            }
-            if start + limit < len(pages):
-                params = dict(request.query_params)
-                params["start"] = str(start + limit)
-                data["_links"]["next"] = str(
-                    httpx.URL(
-                        path=f"/rest/api/space/{key}/content/page", params=params
-                    )
-                )
-
+            data = self._listing(
+                results=results,
+                window=window,
+                total=len(pages),
+                path=f"/rest/api/space/{key}/content/page",
+                request=request,
+            )
             return self._json(data)
 
+    def _route_attachments(self, app: FastAPI) -> None:
         @app.get("/rest/api/content/{page_id}/child/attachment")
         async def attachments(page_id: str, request: Request) -> Response:
             self.calls[StubRoute.ATTACHMENTS] += 1
@@ -276,34 +299,25 @@ class ConfluenceStub:
             if page is None:
                 return Response(status_code=404)
 
-            start = int(request.query_params.get("start", "0"))
-            limit = min(
-                int(request.query_params.get("limit", "50")), self.LISTING_LIMIT
+            window = self._window(
+                request,
+                default=self.ATTACHMENT_LIMIT,
+                cap=self.LISTING_LIMIT,
             )
-            window = page.attachments[start : start + limit]
             results: list[dict[str, Any]] = []
-            for att in window:
+            for att in window.of(page.attachments):
                 results.append(att.json(page_id))
 
-            data: dict[str, Any] = {
-                "results": results,
-                "start": start,
-                "limit": limit,
-                "size": len(results),
-                "_links": {},
-            }
-            if start + limit < len(page.attachments):
-                params = dict(request.query_params)
-                params["start"] = str(start + limit)
-                data["_links"]["next"] = str(
-                    httpx.URL(
-                        path=f"/rest/api/content/{page_id}/child/attachment",
-                        params=params,
-                    )
-                )
-
+            data = self._listing(
+                results=results,
+                window=window,
+                total=len(page.attachments),
+                path=f"/rest/api/content/{page_id}/child/attachment",
+                request=request,
+            )
             return self._json(data)
 
+    def _route_body(self, app: FastAPI) -> None:
         @app.get("/rest/api/content/{page_id}")
         async def body(page_id: str) -> Response:
             self.calls[StubRoute.BODY] += 1
@@ -316,6 +330,7 @@ class ConfluenceStub:
 
             return self._json(page.body())
 
+    def _route_download(self, app: FastAPI) -> None:
         @app.get("/download/attachments/{page_id}/{title}")
         async def download(page_id: str, title: str) -> Response:
             self.calls[StubRoute.DOWNLOAD] += 1
@@ -329,7 +344,40 @@ class ConfluenceStub:
 
             return Response(content=att.content, media_type=att.media_type)
 
-        return app
+    @staticmethod
+    def _window(request: Request, *, default: int, cap: int = 0) -> Window:
+        """Окно из запроса; cap — потолок limit'а, как у Confluence."""
+        start = int(request.query_params.get("start", "0"))
+        limit = int(request.query_params.get("limit", str(default)))
+        if cap:
+            limit = min(limit, cap)
+
+        return Window(start=start, limit=limit)
+
+    @staticmethod
+    def _listing(
+        *,
+        results: list[dict[str, Any]],
+        window: Window,
+        total: int,
+        path: str,
+        request: Request,
+    ) -> dict[str, Any]:
+        """Страница выдачи со ссылкой next — форма, общая у всех листингов."""
+        data: dict[str, Any] = {
+            "results": results,
+            "start": window.start,
+            "limit": window.limit,
+            "size": len(results),
+            "_links": {},
+        }
+        if not window.has_more(total):
+            return data
+
+        params = dict(request.query_params)
+        params["start"] = str(window.next_start())
+        data["_links"]["next"] = str(httpx.URL(path=path, params=params))
+        return data
 
     def _match(self, cql: str) -> list[StubPage]:
         if match := self.IDS_RE.search(cql):
