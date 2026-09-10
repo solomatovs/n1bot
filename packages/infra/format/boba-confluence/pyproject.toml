@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-confluence"
+version = "0.0.19.dev5"
+description = "Boba Confluence format: REST-DTO, ключи metadata и разбор JSON-ответов в RawDocument."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba-indexing==0.0.19.dev5",
+    "boba-transport-http==0.0.19.dev5",
+    "httpx[http2]>=0.28,<1",
+    "pydantic>=2.10,<2.11",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

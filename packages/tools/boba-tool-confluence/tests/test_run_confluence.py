@@ -10,7 +10,7 @@ from typing import ClassVar
 import pytest
 
 from boba.config import bind
-from boba.tool.kb.confluence.tools import (
+from boba.tool.confluence.tools import (
     ConfluenceToolsConfig,
     confluence_fetch,
     confluence_search,

@@ -31,7 +31,7 @@ from boba.runtime.plugins import ToolBridge
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
 from boba.stand.sandbox import section_profile
 from boba.stand.shell import ShellRun
-from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
+from boba.tool.confluence.ingest_base import ConfluenceIngestConfig
 from boba.tool.kb.search import ConfluenceCollection
 from boba.tool.pg.tools import PgToolConfig
 from boba.tool.shell.tools import BashToolConfig
@@ -325,7 +325,7 @@ def confluence_tools(raw_config):
     """confluence-функции новой модели: обёртка запуска + конфиг."""
     from importlib import reload
 
-    import boba.tool.kb.confluence.tools as confluence_module
+    import boba.tool.confluence.tools as confluence_module
 
     module = reload(confluence_module)
 
@@ -434,7 +434,7 @@ def ingest_tools(raw_config, kb_collection: str):
     """ingest-функции новой модели: обёртка запуска + конфиг прогона."""
     from importlib import reload
 
-    import boba.tool.kb.confluence.ingest_tools as ingest_module
+    import boba.tool.confluence.ingest_tools as ingest_module
 
     module = reload(ingest_module)
 

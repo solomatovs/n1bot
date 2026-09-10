@@ -20,9 +20,10 @@ from psycopg import AsyncConnection, sql
 from boba.config import bind
 from boba.db.pgvector.config import PostgresStoreConfig, PostgresStoreSchema
 from boba.db.pgvector.migrations import Migrations
+from boba.db.pgvector.schema import KbSchema
 from boba.db.pgvector.store import KbPool
 from boba.db.postgres import AsyncPostgresPool
-from boba.tool.kb.confluence.ingest_base import ConfluenceIngestConfig
+from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
@@ -35,12 +36,10 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
-
-
 @pytest.fixture(scope="module")
 async def store_cfg(raw_config: DictConfig) -> AsyncIterator[PostgresStoreConfig]:
     """Схема стенда под боевыми миграциями; сносится после модуля."""
-    app_cfg = bind(raw_config, "tool.ingest", ConfluenceIngestConfig)
+    app_cfg = bind(raw_config, "tool.kb", PostgresKnowledgeBaseConfig)
     tables = PostgresStoreSchema(
         pg_schema=SCHEMA,
         chunks_table="kb_chunks",
@@ -89,6 +88,24 @@ async def _roundtrip(pool: Any, value: Sequence[float]) -> Any:
         raise AssertionError("select returns a row")
 
     return row[0]
+
+
+async def test_kb_schema_setup_stays_on_the_shared_pool(
+    store_cfg: PostgresStoreConfig,
+) -> None:
+    """DDL базы знаний идёт общим пулом: своего пула схема не заводит."""
+    shared = await AsyncPostgresPool.get(store_cfg.connection)
+    before = len(AsyncPostgresPool.opened())
+
+    try:
+        await KbSchema(store_cfg, dim=DIM).setup()
+        after = len(AsyncPostgresPool.opened())
+        if after != before:
+            raise AssertionError(
+                f"kb schema setup opens no pool of its own, {before} -> {after}"
+            )
+    finally:
+        await shared.close()
 
 
 async def test_kb_pool_knows_vector_after_a_plain_pool_is_opened(

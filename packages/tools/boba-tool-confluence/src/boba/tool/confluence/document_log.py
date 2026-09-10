@@ -18,7 +18,7 @@ from boba.toolkit.timing import Elapsed
 
 __all__ = ["LoggingDocumentReader"]
 
-logger = logging.getLogger("boba.tool.kb.confluence.ingest_tools")
+logger = logging.getLogger("boba.tool.confluence.ingest_tools")
 
 
 class LoggingDocumentReader(LiteParseReader):

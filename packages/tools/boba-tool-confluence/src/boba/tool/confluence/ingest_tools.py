@@ -28,6 +28,7 @@ from typing import Annotated, Any, ClassVar, Final
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
+from boba.confluence.models import ConfluencePayloadError
 from boba.db.postgres import PostgresError
 from boba.indexing import (
     LedgerError,
@@ -40,24 +41,23 @@ from boba.indexing import (
     TransportError,
 )
 from boba.llm.embedding import EmbeddingConfig, EmbeddingError
+from boba.llm.warm import WarmEmbedder
 from boba.text.document import LiteParseError, LiteParseParams
-from boba.tool.kb.confluence.ingest_base import (
+from boba.tool.confluence.indexing_log import IngestProgress, LoggingReader
+from boba.tool.confluence.ingest_base import (
     ConfluenceIngest,
     ConfluenceIngestConfig,
     IngestReport,
     IngestScope,
 )
-from boba.tool.kb.confluence.models import ConfluencePayloadError
-from boba.tool.kb.confluence.tools import ConfluenceHttp, ConfluenceToolsConfig
-from boba.tool.kb.indexing_log import IngestProgress, LoggingReader
-from boba.tool.kb.warm import WarmEmbedder
+from boba.tool.confluence.tools import ConfluenceHttp, ConfluenceToolsConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool, warmup
 from boba.toolkit.result import MarkdownResult, TableResult
 from boba.toolkit.timing import Elapsed
 from boba.toolkit.types import SecretRevealing
 
-logger = logging.getLogger("boba.tool.kb.confluence.ingest")
+logger = logging.getLogger("boba.tool.confluence.ingest")
 
 _ATTACHMENTS_DESCRIPTION = (
     "Читать ли вложения страниц: true — все вложения, разрешённые "
@@ -126,7 +126,7 @@ class LocalConfluenceReader(Reader[str]):
         title = value.metadata.get(ReaderKeys.PAGE_TITLE) or ""
 
         # bs4 тяжёлый: в процесс приложения модуль инструментов его не тянет
-        from boba.tool.kb.html.payload import PageOps  # noqa: PLC0415
+        from boba.tool.confluence.html import PageOps  # noqa: PLC0415
 
         logger.info("html parse start: %s, %d bytes", title or "?", len(payload))
         elapsed = Elapsed()
@@ -171,7 +171,7 @@ class IngestRun:
         """
         # liteparse тяжёлый: грузится только в процессе прогона
         from boba.text import TextMedia  # noqa: PLC0415
-        from boba.tool.kb.confluence.document_log import (  # noqa: PLC0415
+        from boba.tool.confluence.document_log import (  # noqa: PLC0415
             LoggingDocumentReader,
         )
 

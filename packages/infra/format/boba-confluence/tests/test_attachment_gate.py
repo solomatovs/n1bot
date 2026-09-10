@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from boba.tool.kb.confluence.models import (
+from boba.confluence.models import (
     AttachmentFilter,
     AttachmentGate,
     AttachmentInfo,

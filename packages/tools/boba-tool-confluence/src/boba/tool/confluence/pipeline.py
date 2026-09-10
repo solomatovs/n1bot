@@ -32,6 +32,12 @@ from typing import ClassVar
 
 import httpx
 
+from boba.confluence.models import (
+    ConfluenceKeys,
+    ConfluenceSourceId,
+    HttpKeys,
+)
+from boba.confluence.parsing import BodyDigest, ConfluenceJsonDecoder
 from boba.indexing import (
     AsyncBinaryStream,
     Metadata,
@@ -43,15 +49,9 @@ from boba.indexing import (
     TransportError,
     TransportKeys,
 )
-from boba.tool.kb.confluence.connection import ConfluenceConnection
-from boba.tool.kb.confluence.models import (
-    ConfluenceKeys,
-    ConfluenceSourceId,
-    HttpKeys,
-)
-from boba.tool.kb.confluence.parsing import BodyDigest, ConfluenceJsonDecoder
-from boba.tool.kb.confluence.request_sources import ConfluenceRequest
-from boba.tool.kb.indexing_log import LoggingStream
+from boba.tool.confluence.connection import ConfluenceConnection
+from boba.tool.confluence.indexing_log import LoggingStream
+from boba.tool.confluence.request_sources import ConfluenceRequest
 from boba.toolkit.timing import Elapsed
 from boba.transport.http import (
     CancellableHttpTransport,

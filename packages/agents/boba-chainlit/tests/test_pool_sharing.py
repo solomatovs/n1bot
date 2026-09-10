@@ -71,7 +71,6 @@ def app_container(
     container.eager(runtime.live_locks)
     container.eager(runtime.connection_store)
     container.eager(runtime.workflow_store)
-    container.eager(runtime.kb_schema)
     container.eager(providers.chainlit_data_layer)
 
     return container
@@ -81,7 +80,7 @@ async def test_chainlit_components_share_one_pool(
     app_container: Container,
     stand_config: AppConfig,
 ) -> None:
-    """Шина, блокировки, соединения, workflow, kb и слой данных — на общем пуле."""
+    """Шина, блокировки, соединения, workflow и слой данных — на общем пуле."""
     Container.set_root(app_container)
 
     try:

@@ -18,6 +18,12 @@ from typing import Any, ClassVar
 
 from pydantic import ValidationError
 
+from boba.confluence.models import (
+    ConfluenceContent,
+    ConfluenceKeys,
+    ConfluencePayloadError,
+    HttpKeys,
+)
 from boba.indexing import (
     ChunkStream,
     Decoder,
@@ -25,12 +31,6 @@ from boba.indexing import (
     RawDocument,
     ReaderKeys,
     TransportKeys,
-)
-from boba.tool.kb.confluence.models import (
-    ConfluenceContent,
-    ConfluenceKeys,
-    ConfluencePayloadError,
-    HttpKeys,
 )
 from boba.transport.http.profile import HttpConnection
 

@@ -14,12 +14,12 @@ from boba.sandbox import SandboxToolConfig
 from boba.sandbox.guest import WarmupCall
 from boba.sandbox.zygote import ZygotePolicy, ZygoteRegistry, ZygoteToolCaller
 from boba.stand.sandbox import needs_sandbox, needs_userns, sandbox_profile
-from boba.tool.kb.confluence.ingest_tools import IngestWarmupConfig
+from boba.tool.confluence.ingest_tools import IngestWarmupConfig
 from boba.toolkit.entry import ToolArgv
 from boba.toolkit.launcher import CollectedCall
 from boba.toolkit.protocol import ReplyError, ToolCommand
 
-MODULE = "boba.tool.kb.confluence.ingest_tools"
+MODULE = "boba.tool.confluence.ingest_tools"
 
 ZYGOTE = ZygotePolicy(
     start_timeout_sec=60.0,
@@ -34,7 +34,7 @@ ZYGOTE = ZygotePolicy(
 def _caller(raw_config: DictConfig) -> ZygoteToolCaller:
     """Зигота ingest: прогрев объявлен модулем, конфиг ему даёт вызывающий."""
     sandbox = SandboxToolConfig.model_validate(
-        {"profile": sandbox_profile("boba-tool-knowledge")}
+        {"profile": sandbox_profile("boba-tool-confluence")}
     )
     profile = sandbox.profile
 

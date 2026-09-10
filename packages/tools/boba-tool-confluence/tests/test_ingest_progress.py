@@ -15,6 +15,11 @@ import pytest
 from confluence_stand import ConfluenceStub, LiveServer, StubAttachment, StubPage
 from ingest_stand import MemoryChunkStore, MemorySourceLedger, TextReader, ZeroEmbedder
 
+from boba.confluence.models import (
+    AttachmentFilter,
+    AttachmentGate,
+    ParseGrade,
+)
 from boba.indexing import (
     CollectionId,
     CollectionScopedView,
@@ -25,26 +30,21 @@ from boba.indexing import (
     ReaderId,
     TransportKeys,
 )
-from boba.tool.kb.chunking import ChunkerParams, StructuralChunkerFactory
-from boba.tool.kb.confluence.connection import ConfluenceConnection
-from boba.tool.kb.confluence.models import (
-    AttachmentFilter,
-    AttachmentGate,
-    ParseGrade,
-)
-from boba.tool.kb.confluence.pipeline import ConfluenceSourceTransport
-from boba.tool.kb.confluence.request_sources import (
-    ConfluenceCql,
-    ConfluenceDiscovery,
-    ConfluenceRequest,
-)
-from boba.tool.kb.indexing_log import (
+from boba.tool.confluence.chunking import ChunkerParams, StructuralChunkerFactory
+from boba.tool.confluence.connection import ConfluenceConnection
+from boba.tool.confluence.indexing_log import (
     IngestProgress,
     LoggedIndexRun,
     LoggingChunker,
     LoggingChunkStore,
     LoggingReader,
     LoggingSourceLedger,
+)
+from boba.tool.confluence.pipeline import ConfluenceSourceTransport
+from boba.tool.confluence.request_sources import (
+    ConfluenceCql,
+    ConfluenceDiscovery,
+    ConfluenceRequest,
 )
 from boba.transport.http.profile import HttpConnection, UrlScheme
 

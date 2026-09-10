@@ -3,6 +3,7 @@ testpaths = ["packages"]
 cache_dir = "compose/.pytest_cache"
 python_files = ["test_*.py"]
 pythonpath = [
+    "packages/infra/format/boba-confluence/src",
     "packages/infra/format/boba-kbdoc/src",
     "packages/infra/format/boba-liteparse/src",
     "packages/infra/format/boba-text/src",
@@ -46,6 +47,7 @@ pythonpath = [
     "packages/tools/boba-tool-postgres/src",
     "packages/tools/boba-tool-clickhouse/src",
     "packages/tools/boba-tool-knowledge/src",
+    "packages/tools/boba-tool-confluence/src",
 ]
 addopts = ["--strict-markers", "-m", "not integration and not ui and not load and not run"]
 markers = [
@@ -66,6 +68,7 @@ exclude = [
     "packages/*/*/*/build",
 ]
 extraPaths = [
+    "packages/infra/format/boba-confluence/src",
     "packages/infra/format/boba-kbdoc/src",
     "packages/infra/format/boba-liteparse/src",
     "packages/infra/format/boba-text/src",
@@ -109,6 +112,7 @@ extraPaths = [
     "packages/tools/boba-tool-postgres/src",
     "packages/tools/boba-tool-clickhouse/src",
     "packages/tools/boba-tool-knowledge/src",
+    "packages/tools/boba-tool-confluence/src",
 ]
 venvPath = "."
 venv = ".venv"
@@ -200,6 +204,8 @@ boba-tool-doc       = { workspace = true }
 boba-tool-postgres  = { workspace = true }
 boba-tool-clickhouse = { workspace = true }
 boba-tool-knowledge = { workspace = true }
+boba-tool-confluence = { workspace = true }
+boba-confluence     = { workspace = true }
 boba-kbdoc          = { workspace = true }
 boba-liteparse      = { workspace = true }
 boba-text           = { workspace = true }

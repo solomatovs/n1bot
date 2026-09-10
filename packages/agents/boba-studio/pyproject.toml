@@ -41,6 +41,7 @@ tools = [
     "boba-tool-doc==0.0.19.dev5",
     "boba-tool-postgres==0.0.19.dev5",
     "boba-tool-clickhouse==0.0.19.dev5",
+    "boba-tool-confluence==0.0.19.dev5",
     "boba-tool-knowledge==0.0.19.dev5",
 ]
 dev = [

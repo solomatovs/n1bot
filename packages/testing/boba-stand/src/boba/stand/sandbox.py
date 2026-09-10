@@ -82,7 +82,8 @@ class SandboxLayout:
     """Монтирования и env: код пакетов кладётся поверх собранного site."""
 
     DATA_BINDS: ClassVar[dict[str, tuple[tuple[str, str], ...]]] = {
-        "boba-tool-knowledge": (
+        "boba-tool-knowledge": (("fastembed", "/var/cache/fastembed"),),
+        "boba-tool-confluence": (
             ("fastembed", "/var/cache/fastembed"),
             ("tessdata", "/usr/share/tessdata"),
         ),

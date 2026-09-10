@@ -19,10 +19,10 @@ from typing import Annotated, Any, ClassVar, Final, Literal
 import httpx
 from pydantic import ConfigDict, Field, ValidationError
 
+from boba.confluence.models import ConfluenceSpaceItem
+from boba.confluence.parsing import ConfluenceJson
 from boba.text.grep import GrepLimits, TextGrep
-from boba.tool.kb.confluence.models import ConfluenceSpaceItem
-from boba.tool.kb.confluence.parsing import ConfluenceJson
-from boba.tool.kb.confluence.request_sources import ConfluenceRest
+from boba.tool.confluence.request_sources import ConfluenceRest
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import MarkdownResult, TableResult
@@ -110,14 +110,14 @@ class ConfluencePageText:
         if not as_markdown:
             return html
 
-        from boba.tool.kb.html.payload import PageOps  # noqa: PLC0415
+        from boba.tool.confluence.html import PageOps  # noqa: PLC0415
 
         answer = PageOps.to_markdown({"html": html, "heading_style": cls.HEADING_STYLE})
         return str(answer["markdown"])
 
     @staticmethod
     def excerpt_of(html: str, snippet_chars: int) -> str:
-        from boba.tool.kb.html.payload import PageOps  # noqa: PLC0415
+        from boba.tool.confluence.html import PageOps  # noqa: PLC0415
 
         excerpt = ""
         if html:
