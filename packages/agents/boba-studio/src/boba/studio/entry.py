@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from boba.auth import AuthService
 from boba.cancellation import StopReason
 from boba.chat.profiles import ChatProfiles
+from boba.db.postgres import AsyncPostgresPool
 from boba.identity.run import RunRegistry
 from boba.runtime import providers
 from boba.runtime.config import (
@@ -192,6 +193,7 @@ class StudioHost:
             ZygoteRegistry.stop_all()
             Container.set_root(None)
             await container.aclose()
+            await AsyncPostgresPool.close_all()
 
 
 class StudioEntry:

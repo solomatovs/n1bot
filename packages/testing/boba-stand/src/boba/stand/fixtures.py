@@ -72,10 +72,10 @@ async def pool(
     runtime_config: RuntimeConfig, test_database: str
 ) -> AsyncIterator[AsyncPostgresPool]:
     """Пул в тестовой базе с search_path на схему хранения приложения."""
-    p = AsyncPostgresPool(
-        TestDatabase.config_of(runtime_config.data_layer.postgres, test_database),
-        override_options={"search_path": runtime_config.data_layer.db_schema},
+    postgres = TestDatabase.config_of(
+        runtime_config.data_layer.postgres, test_database
     )
+    p = AsyncPostgresPool(postgres.with_schema(runtime_config.data_layer.db_schema))
     await p.open()
     try:
         yield p

@@ -246,29 +246,27 @@ def local_chat_runtimes(
 
 async def langchain_checkpoint_saver(
     cp: Annotated[CheckpointerConfig, Depends(get_checkpointer_config)],
-) -> AsyncIterator[BaseCheckpointSaver]:
-    pool = AsyncPostgresPool(
-        cp.postgres,
-        override_options={"search_path": cp.db_schema},
-    )
-    await pool.open()
-    try:
-        try:
-            await PostgresSchema.ensure_with(pool, cp.db_schema)
-        except PostgresError as e:
-            raise InternalServiceError(
-                internal_detail=(
-                    f"checkpointer: ensuring postgres schema {cp.db_schema!r} "
-                    f"failed: {e}"
-                ),
-                user_detail="Failed to connect to the internal postgres",
-            ) from e
+) -> BaseCheckpointSaver:
+    """Савер langgraph на пуле со своим search_path: схему в имена он не ставит.
 
-        saver = AsyncPostgresSaver(pool.raw)
-        await saver.setup()
-        yield saver
-    finally:
-        await pool.close()
+    Пул закрывает остановка приложения, а не провайдер: пул общий для всех, кто
+    попросит его с той же схемой.
+    """
+    pool = await AsyncPostgresPool.get(cp.postgres.with_schema(cp.db_schema))
+    try:
+        await PostgresSchema.ensure_with(pool, cp.db_schema)
+    except PostgresError as e:
+        raise InternalServiceError(
+            internal_detail=(
+                f"checkpointer: ensuring postgres schema {cp.db_schema!r} failed: {e}"
+            ),
+            user_detail="Failed to connect to the internal postgres",
+        ) from e
+
+    saver = AsyncPostgresSaver(pool.raw)
+    await saver.setup()
+
+    return saver
 
 
 async def chainlit_data_layer(  # noqa: PLR0913 — слой данных собирается всеми зависимостями сразу
@@ -279,28 +277,23 @@ async def chainlit_data_layer(  # noqa: PLR0913 — слой данных соб
     bus: Annotated[MessageBus, Depends(runtime.message_bus)],
     users: Annotated[UsersTable, Depends(runtime.users_table)],
     sessions: Annotated[SessionSource, Depends(session_source)],
-) -> AsyncIterator[PostgresDataLayer]:
-    pool = AsyncPostgresPool(
-        cfg.postgres,
-        override_options={"search_path": cfg.db_schema},
+) -> PostgresDataLayer:
+    """Слой данных чата на общем пуле процесса: схему таблицы ставят в запрос."""
+    pool = await AsyncPostgresPool.get(cfg.postgres)
+    tables = ChatTables.around(users, cfg.postgres, cfg.db_schema, pool)
+    await tables.setup()
+
+    return PostgresDataLayer(
+        users=tables.users,
+        threads=tables.threads,
+        elements=tables.elements,
+        feedbacks=tables.feedbacks,
+        storage=storage,
+        feed=TranscriptFeed(CheckpointMessages(saver)),
+        links=AttachmentLinks(storage_cfg.public_prefix),
+        sessions=sessions,
+        bus=bus,
     )
-    await pool.open()
-    try:
-        tables = ChatTables.around(users, cfg.postgres, cfg.db_schema, pool)
-        await tables.setup()
-        yield PostgresDataLayer(
-            users=tables.users,
-            threads=tables.threads,
-            elements=tables.elements,
-            feedbacks=tables.feedbacks,
-            storage=storage,
-            feed=TranscriptFeed(CheckpointMessages(saver)),
-            links=AttachmentLinks(storage_cfg.public_prefix),
-            sessions=sessions,
-            bus=bus,
-        )
-    finally:
-        await pool.close()
 
 
 def build_history_view(allowed_tools: frozenset[str], history_messages: int):

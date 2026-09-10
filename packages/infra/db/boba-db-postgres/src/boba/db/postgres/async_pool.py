@@ -9,7 +9,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
+from collections.abc import (
+    AsyncGenerator,
+    Awaitable,
+    Callable,
+    Generator,
+    Sequence,
+)
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any, ClassVar
 
@@ -84,15 +90,17 @@ class AsyncPostgresPool:
     Configure = Callable[[psycopg.AsyncConnection[Any]], Awaitable[None]]
     """Hook на каждое новое соединение пула (регистрация типов pgvector/hstore)."""
 
-    _CacheKey = tuple[str, tuple[tuple[str, str], ...]]
+    _CacheKey = tuple[str, str]
     _CACHE: ClassVar[dict[_CacheKey, AsyncPostgresPool]] = {}
     _CACHE_LOCK: ClassVar[asyncio.Lock] = asyncio.Lock()
+
+    _LIVE: ClassVar[list[AsyncPostgresPool]] = []
+    """Открытые и ещё не закрытые пулы процесса — и учёт, и цель close_all."""
 
     def __init__(
         self,
         cfg: PostgresConfig,
         *,
-        override_options: dict[str, str] | None = None,
         configure: Configure | None = None,
     ) -> None:
         from psycopg_pool import AsyncConnectionPool  # noqa: PLC0415
@@ -100,7 +108,7 @@ class AsyncPostgresPool:
         self._cfg = cfg
         self._pool = AsyncConnectionPool(
             connection_class=self._connection_class(cfg),
-            kwargs=cfg.conn_settings(override_options),
+            kwargs=cfg.conn_settings(),
             **cfg.pool_settings(),
             configure=configure,
             open=False,
@@ -110,9 +118,11 @@ class AsyncPostgresPool:
         self._loop_reported = False
 
         logger.info(
-            "AsyncPostgresPool created db=%s auth=%s min_size=%d max_size=%s",
+            "AsyncPostgresPool created db=%s auth=%s search_path=%s "
+            "min_size=%d max_size=%s",
             cfg.dbname,
             cfg.auth.method,
+            self.search_path,
             cfg.pool.min_size,
             cfg.pool.max_size,
         )
@@ -125,16 +135,31 @@ class AsyncPostgresPool:
 
         return KerberosConnection.bound_to(ClientCredentials.of(cfg.auth))
 
+    @property
+    def search_path(self) -> str:
+        """Схема соединений пула; пустая — таблицы квалифицируются в запросах."""
+        if self._cfg.options.search_path is None:
+            return ""
+
+        return self._cfg.options.search_path
+
+    @classmethod
+    def opened(cls) -> Sequence[AsyncPostgresPool]:
+        """Живые пулы процесса: сколько их и на каких схемах."""
+        return tuple(cls._LIVE)
+
     async def open(self) -> None:
         """Открыть пул (установить фоновые соединения)."""
         self._loop_id = id(asyncio.get_running_loop())
         logger.info(
-            "AsyncPostgresPool open db=%s auth=%s loop=%#x",
+            "AsyncPostgresPool open db=%s auth=%s search_path=%s loop=%#x",
             self._cfg.dbname,
             self._cfg.auth.method,
+            self.search_path,
             self._loop_id,
         )
         await self._pool.open()
+        self._LIVE.append(self)
 
     def _check_loop(self, op: str) -> None:
         """Свериться с loop'ом, в котором пул открыт.
@@ -186,14 +211,14 @@ class AsyncPostgresPool:
         cls,
         cfg: PostgresConfig,
         *,
-        override_options: dict[str, str] | None = None,
         configure: Configure | None = None,
     ) -> AsyncPostgresPool:
-        """Открытый пул-singleton по cfg + override_options; закрытый пересоздаётся.
+        """Открытый пул-singleton по cfg и configure; закрытый пересоздаётся.
 
-        configure применяется при создании, при повторном get игнорируется.
+        Пулы с разным configure — разные пулы: hook применяется к соединению
+        при создании, на чужие соединения его уже не навесить.
         """
-        key = cls._cache_key(cfg, override_options)
+        key = cls._cache_key(cfg, configure)
 
         async with cls._CACHE_LOCK:
             pool = cls._CACHE.get(key)
@@ -212,17 +237,17 @@ class AsyncPostgresPool:
                     )
                 return pool
 
-            pool = cls(cfg, override_options=override_options, configure=configure)
+            pool = cls(cfg, configure=configure)
             await pool.open()
             cls._CACHE[key] = pool
             return pool
 
     @classmethod
     async def close_all(cls) -> None:
-        """Закрывает и забывает все singleton-пулы процесса."""
+        """Закрывает и забывает все живые пулы процесса, не только singleton'ы."""
         async with cls._CACHE_LOCK:
-            pools = list(cls._CACHE.values())
             cls._CACHE.clear()
+            pools = list(cls._LIVE)
 
         for pool in pools:
             await pool.close()
@@ -230,21 +255,25 @@ class AsyncPostgresPool:
     @staticmethod
     def _cache_key(
         cfg: PostgresConfig,
-        override_options: dict[str, str] | None,
+        configure: Configure | None,
     ) -> _CacheKey:
         settings = json.dumps(
             {**cfg.conn_settings(), **cfg.pool_settings()},
             sort_keys=True,
             default=str,
         )
-        return settings, tuple(sorted((override_options or {}).items()))
+        hook = ""
+        if configure is not None:
+            hook = f"{configure.__module__}.{configure.__qualname__}"
+
+        return settings, hook
 
     @classmethod
     async def dedicated(cls, cfg: PostgresConfig) -> psycopg.AsyncConnection[Any]:
         """Отдельное соединение вне пула в autocommit: для LISTEN нужно соединение
         без транзакций, которое никто не забирает под запросы."""
         connection_class = cls._connection_class(cfg)
-        settings = cfg.conn_settings(None)
+        settings = cfg.conn_settings()
         settings["autocommit"] = True
         return await connection_class.connect(**settings)
 
@@ -295,7 +324,11 @@ class AsyncPostgresPool:
         """Закрыть пул. Идемпотентно."""
         if self._closed:
             return
+
         self._closed = True
+        if self in self._LIVE:
+            self._LIVE.remove(self)
+
         await self._pool.close()
         logger.info("AsyncPostgresPool closed")
 

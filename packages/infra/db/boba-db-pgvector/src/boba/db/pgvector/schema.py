@@ -9,7 +9,8 @@ from psycopg import AsyncConnection, sql
 from psycopg.errors import InsufficientPrivilege
 
 from boba.db.pgvector.migrations import Migrations
-from boba.db.pgvector.store import KbPool, PostgresStoreConfig
+from boba.db.pgvector.store import PostgresStoreConfig
+from boba.db.postgres import AsyncPostgresPool
 
 __all__ = ["KbSchema"]
 
@@ -35,8 +36,12 @@ class KbSchema:
         )
 
     async def setup(self) -> None:
-        """Создать схему, применить миграции и векторный индекс под модель."""
-        pool = await KbPool.open(self._cfg.connection)
+        """Создать схему, применить миграции и векторный индекс под модель.
+
+        Здесь только DDL, векторных значений не летает, поэтому берётся общий
+        пул процесса, а не отдельный пул store с адаптером vector.
+        """
+        pool = await AsyncPostgresPool.get(self._cfg.connection)
         async with pool.connection() as conn:
             try:
                 # несколько процессов стартуют разом: DDL под одним advisory-lock,

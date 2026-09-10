@@ -46,6 +46,7 @@ dev = [
     "boba-tool-postgres==0.0.19.dev5",
     "fastapi>=0.115,<1",
     "liteparse>=2,<3",
+    "numpy>=1.26",
     "omegaconf>=2.3,<3",
     "pytest>=8",
     "uvicorn>=0.30",

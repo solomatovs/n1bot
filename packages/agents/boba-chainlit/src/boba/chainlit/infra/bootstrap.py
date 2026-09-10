@@ -33,6 +33,7 @@ from boba.chainlit.infra.session import (
 )
 from boba.chainlit.infra.socket_events import SocketEvents
 from boba.chainlit.infra.stale_action import StaleActionMiddleware
+from boba.db.postgres import AsyncPostgresPool
 from boba.identity.run import RunRegistry
 from boba.runtime import providers as runtime
 from boba.runtime.config import AppName
@@ -126,6 +127,7 @@ async def _run_container(app: FastAPI) -> AsyncGenerator[None, None]:
         await SessionContainers.close_all()
         Container.set_root(None)
         await container.aclose()
+        await AsyncPostgresPool.close_all()
 
 
 def _use_domain_error(app: FastAPI):

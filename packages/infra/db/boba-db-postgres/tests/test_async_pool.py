@@ -83,11 +83,13 @@ def test_pool_passes_cfg_to_connection_pool():
         raise AssertionError('kwargs["timeout"] == 2.0')
 
 
-def test_pool_applies_override_options():
-    AsyncPostgresPool(_cfg(), override_options={"search_path": "chainlit"})
+def test_pool_applies_schema_of_the_profile():
+    pool = AsyncPostgresPool(_cfg().with_schema("chainlit"))
     kwargs = _FakeAsyncConnectionPool.instances[0].kwargs
     if "search_path=chainlit" not in kwargs["kwargs"]["options"]:
         raise AssertionError('"search_path=chainlit" in kwargs["kwargs"]["options"]')
+    if pool.search_path != "chainlit":
+        raise AssertionError('pool.search_path == "chainlit"')
 
 
 def test_open_close():
