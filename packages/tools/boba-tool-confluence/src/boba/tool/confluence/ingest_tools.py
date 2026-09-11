@@ -42,6 +42,7 @@ from boba.confluence.models import (
 from boba.db.postgres import PostgresError
 from boba.indexing import (
     DocumentCardSection,
+    IncompatibleContentError,
     LedgerError,
     Metadata,
     OutlineEntry,
@@ -141,6 +142,18 @@ class LocalConfluenceReader(Reader[str]):
 
     async def read(self, value: RawDocument) -> AsyncIterator[Section[str]]:
         """Разбор HTML уходит в поток: bs4 на большой странице считает секунды."""
+        page_id = value.metadata.get(ConfluenceKeys.PAGE_ID)
+        if page_id is None:
+            raise IncompatibleContentError(
+                reader_id=str(self.READER_ID),
+                canonical_id=str(value.source_id),
+                reason=(
+                    f"parsing confluence page {value.source_id}: expected "
+                    f"{ConfluenceKeys.PAGE_ID.name} in metadata to tell links to "
+                    "the page itself apart, got none"
+                ),
+            )
+
         payload = await value.handle.read()
         if not payload.strip():
             return
@@ -156,6 +169,7 @@ class LocalConfluenceReader(Reader[str]):
         request = PageParseRequest(
             html=html,
             title=title,
+            page_id=page_id,
             table_shape=self._table_shape,
         )
         answer = await asyncio.to_thread(

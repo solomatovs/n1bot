@@ -21,7 +21,9 @@ from boba.indexing.values import (
 
 __all__ = [
     "AsyncBinaryStream",
+    "AtomicBlocks",
     "CardField",
+    "CardToken",
     "ChunkStream",
     "Decoder",
     "DecoderId",
@@ -308,6 +310,32 @@ class MarkdownTable:
         return flat.replace(MarkdownToken.PIPE, MarkdownToken.ESCAPED_PIPE)
 
 
+class AtomicBlocks:
+    """Строки в неделимые FormatBlock со смещениями в склеенном теле.
+
+    Зовут её секции, чьи строки нельзя резать посередине: TableSection
+    (строка таблицы) и DocumentCardSection (шапка и ссылки карточки).
+    """
+
+    @staticmethod
+    def of(lines: Sequence[str], glue: str) -> tuple[FormatBlock, ...]:
+        blocks: list[FormatBlock] = []
+        cursor = 0
+        for line in lines:
+            end = cursor + len(line)
+            blocks.append(
+                FormatBlock(
+                    format_content=line,
+                    raw_content=line,
+                    location=ChunkLocation(start=cursor, end=end),
+                    is_atomic=True,
+                )
+            )
+            cursor = end + len(glue)
+
+        return tuple(blocks)
+
+
 class TableToken(StrEnum):
     """Разметка таблицы в индексируемом тексте: подпись и склейка полей."""
 
@@ -370,7 +398,7 @@ class TableSection(Section[str]):
             lines.append(MarkdownTable.row(row))
 
         return FormatPlan(
-            blocks=self._blocks(lines, self.GRID_GLUE),
+            blocks=AtomicBlocks.of(lines, self.GRID_GLUE),
             repeat_header=self._grid_header(),
             block_glue=self.GRID_GLUE,
         )
@@ -381,7 +409,7 @@ class TableSection(Section[str]):
             lines.append(self._named_row(row))
 
         return FormatPlan(
-            blocks=self._blocks(lines, self.ROWS_GLUE),
+            blocks=AtomicBlocks.of(lines, self.ROWS_GLUE),
             repeat_header=self._caption_header(),
             block_glue=self.ROWS_GLUE,
         )
@@ -392,7 +420,7 @@ class TableSection(Section[str]):
         if not header:
             return FormatPlan()
 
-        return FormatPlan(blocks=self._blocks([header], self.GRID_GLUE))
+        return FormatPlan(blocks=AtomicBlocks.of([header], self.GRID_GLUE))
 
     def _grid_header(self) -> str:
         parts: list[str] = []
@@ -434,24 +462,6 @@ class TableSection(Section[str]):
 
         return f"{name}{TableToken.VALUE_SEPARATOR}{cell}"
 
-    @staticmethod
-    def _blocks(lines: Sequence[str], glue: str) -> tuple[FormatBlock, ...]:
-        blocks: list[FormatBlock] = []
-        cursor = 0
-        for line in lines:
-            end = cursor + len(line)
-            blocks.append(
-                FormatBlock(
-                    format_content=line,
-                    raw_content=line,
-                    location=ChunkLocation(start=cursor, end=end),
-                    is_atomic=True,
-                )
-            )
-            cursor = end + len(glue)
-
-        return tuple(blocks)
-
 
 @dataclass(frozen=True)
 class OutlineEntry:
@@ -472,6 +482,16 @@ class CardField(StrEnum):
     LINKS = "Links"
 
 
+class CardToken(StrEnum):
+    """Разметка карточки в индексируемом тексте: склейка строк, списков, полей."""
+
+    LINE_GLUE = "\n"
+    ITEM_GLUE = ", "
+    BULLET = "- "
+    INDENT = "  "
+    FIELD_SEPARATOR = ": "
+
+
 @dataclass(frozen=True)
 class DocumentCardSection(Section[str]):
     """Карточка документа: о чём он, где лежит, из чего состоит, с чем связан.
@@ -482,16 +502,17 @@ class DocumentCardSection(Section[str]):
     структуры документа, а не из его пересказа, поэтому выдумать ничего не
     может.
 
+    Шапка — расположение, метки, оглавление — один неделимый блок и идёт
+    первой: эмбеддер видит только начало чанка, и оглавление обязано в него
+    попасть. Ссылки идут последними, по блоку на ссылку: длинный список
+    чанкер переносит в следующие чанки карточки, каждый из которых
+    начинается строкой «Page: …» (repeat_header).
+
     Идёт первой секцией документа; в metadata помечена SectionKind.CARD,
     чтобы поиск мог отобрать или исключить карточки.
     """
 
     SECTION_TYPE: ClassVar[SectionKind] = SectionKind.CARD
-
-    LINE_GLUE: ClassVar[str] = "\n"
-    ITEM_GLUE: ClassVar[str] = ", "
-    OUTLINE_BULLET: ClassVar[str] = "- "
-    OUTLINE_INDENT: ClassVar[str] = "  "
 
     title: str = ""
     breadcrumb: tuple[str, ...] = ()
@@ -500,48 +521,81 @@ class DocumentCardSection(Section[str]):
     links: tuple[str, ...] = ()
 
     def to_format_plan(self) -> FormatPlan:
-        lines: list[str] = []
-        if self.title:
-            lines.append(self._field(CardField.TITLE, self.title))
+        page = self._page_line()
+        head = self._head()
+        links = self._link_lines()
+        if not head and not links:
+            return self._page_only_plan(page)
 
+        lines: list[str] = []
+        if head:
+            lines.append(head)
+
+        for line in links:
+            lines.append(line)
+
+        return FormatPlan(
+            blocks=AtomicBlocks.of(lines, CardToken.LINE_GLUE),
+            repeat_header=self._repeat_header(page),
+            block_glue=str(CardToken.LINE_GLUE),
+        )
+
+    def _page_only_plan(self, page: str) -> FormatPlan:
+        """Карточка из одного заголовка: без шапки и ссылок повторять нечего."""
+        if not page:
+            return FormatPlan()
+
+        return FormatPlan(blocks=AtomicBlocks.of([page], CardToken.LINE_GLUE))
+
+    def _page_line(self) -> str:
+        if not self.title:
+            return ""
+
+        return self._field(CardField.TITLE, self.title)
+
+    @staticmethod
+    def _repeat_header(page: str) -> str:
+        if not page:
+            return ""
+
+        return f"{page}{CardToken.LINE_GLUE}"
+
+    def _head(self) -> str:
+        """Расположение, метки, оглавление — то, что обязано попасть в вектор."""
+        lines: list[str] = []
         if self.breadcrumb:
-            path = self.ITEM_GLUE.join(self.breadcrumb)
+            path = str(CardToken.ITEM_GLUE).join(self.breadcrumb)
             lines.append(self._field(CardField.BREADCRUMB, path))
 
         if self.labels:
-            marks = self.ITEM_GLUE.join(self.labels)
+            marks = str(CardToken.ITEM_GLUE).join(self.labels)
             lines.append(self._field(CardField.LABELS, marks))
-
-        if self.links:
-            lines.append(self._field(CardField.LINKS, self.ITEM_GLUE.join(self.links)))
 
         if self.outline:
             lines.append(self._outline_block())
 
-        if not lines:
-            return FormatPlan()
+        return str(CardToken.LINE_GLUE).join(lines)
 
-        body = self.LINE_GLUE.join(lines)
-        return FormatPlan(
-            blocks=(
-                FormatBlock(
-                    format_content=body,
-                    raw_content=body,
-                    location=ChunkLocation(start=0, end=len(body)),
-                    is_atomic=True,
-                ),
-            ),
-        )
+    def _link_lines(self) -> list[str]:
+        """Ссылка — отдельная строка; первая несёт подпись поля."""
+        lines: list[str] = []
+        for link in self.links:
+            lines.append(f"{CardToken.BULLET}{link}")
+
+        if lines:
+            lines[0] = f"{CardField.LINKS}:{CardToken.LINE_GLUE}{lines[0]}"
+
+        return lines
 
     def _outline_block(self) -> str:
         base = self._base_level()
         lines: list[str] = [f"{CardField.OUTLINE}:"]
         for entry in self.outline:
             depth = max(0, entry.level - base)
-            indent = self.OUTLINE_INDENT * depth
-            lines.append(f"{indent}{self.OUTLINE_BULLET}{entry.text}")
+            indent = str(CardToken.INDENT) * depth
+            lines.append(f"{indent}{CardToken.BULLET}{entry.text}")
 
-        return self.LINE_GLUE.join(lines)
+        return str(CardToken.LINE_GLUE).join(lines)
 
     def _base_level(self) -> int:
         levels: list[int] = []
@@ -552,7 +606,7 @@ class DocumentCardSection(Section[str]):
 
     @staticmethod
     def _field(field_name: CardField, value: str) -> str:
-        return f"{field_name}: {value}"
+        return f"{field_name}{CardToken.FIELD_SEPARATOR}{value}"
 
 
 class AsyncBinaryStream(Protocol):
