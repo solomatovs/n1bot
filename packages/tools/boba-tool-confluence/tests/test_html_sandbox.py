@@ -10,9 +10,11 @@ import pytest
 
 from boba.confluence.models import (
     PageCardSection,
+    PageHref,
     PageParseRequest,
     PageSections,
     PageTableSection,
+    PageTarget,
     PageTextSection,
     TableShape,
 )
@@ -78,8 +80,13 @@ _TABLE_HTML = (
 )
 
 
-def _parse(html: str, title: str) -> PageSections:
-    request = PageParseRequest(html=html, title=title, table_shape=_SHAPE)
+def _parse(html: str, title: str, page_id: str = "42") -> PageSections:
+    request = PageParseRequest(
+        html=html,
+        title=title,
+        page_id=page_id,
+        table_shape=_SHAPE,
+    )
     answer = PageOps.confluence_sections(request.model_dump(mode="json"))
     return PageSections.model_validate(answer)
 
@@ -255,3 +262,95 @@ class TestPlainText:
             raise AssertionError('"Заголовок" in text')
         if "<b>" in text:
             raise AssertionError('"<b>" not in text')
+
+
+class TestPageHref:
+    """Формы адресов страниц, встречающиеся на реальном Confluence."""
+
+    def test_spaces_pages_form_carries_id_and_title(self) -> None:
+        href = (
+            "https://cwiki.apache.org/confluence/spaces/FLINK/pages/199527106/"
+            "DRAFT+FLIP-202+Introduce+ClickHouse+Connector"
+        )
+        expected = PageTarget(
+            page_id="199527106",
+            title="DRAFT FLIP-202 Introduce ClickHouse Connector",
+        )
+        if PageHref.parse(href) != expected:
+            raise AssertionError(f"{PageHref.parse(href)!r} != {expected!r}")
+
+    def test_spaces_pages_form_without_title(self) -> None:
+        target = PageHref.parse("/confluence/spaces/FLINK/pages/199527106")
+        if target != PageTarget(page_id="199527106"):
+            raise AssertionError(f"{target!r}")
+
+    def test_display_form_carries_decoded_title(self) -> None:
+        target = PageHref.parse("/confluence/display/AIRFLOW/AIP-98%3A+Add+async")
+        if target != PageTarget(title="AIP-98: Add async"):
+            raise AssertionError(f"{target!r}")
+
+    def test_viewpage_form_carries_id(self) -> None:
+        href = "/confluence/pages/viewpage.action?pageId=451969699"
+        if PageHref.parse(href) != PageTarget(page_id="451969699"):
+            raise AssertionError(f"{PageHref.parse(href)!r}")
+
+    def test_tiny_link_is_a_page_without_identity(self) -> None:
+        if PageHref.parse("/confluence/x/54EmGQ") != PageTarget():
+            raise AssertionError("короткая ссылка /x/ — страница без id и заголовка")
+
+    @pytest.mark.parametrize(
+        "href",
+        [
+            "/confluence/display/~marcus",
+            "#Section-anchor",
+            "https://meet.google.com/pzy-haeg-auf",
+            "/confluence/download/attachments/446071769/readiness.html?version=11",
+            "/confluence/pages/resumedraft.action?draftId=152112052",
+            "/confluence/pages/viewpage.action",
+            "",
+        ],
+    )
+    def test_not_a_page(self, href: str) -> None:
+        if PageHref.parse(href) is not None:
+            raise AssertionError(f"{href!r} не должен считаться страницей")
+
+
+class TestLinkCollection:
+    """Ссылки карточки: другие страницы, без себя, профилей и внешних адресов."""
+
+    def test_modern_spaces_form_is_collected(self) -> None:
+        html = (
+            "<html><body><h1>Обзор</h1>"
+            '<a href="/confluence/spaces/FLINK/pages/7/FLIP-7">FLIP-7: Scala</a>'
+            "</body></html>"
+        )
+        card = _card(_parse(html, "Страница"))
+        if card.links != ("FLIP-7: Scala",):
+            raise AssertionError(f"card.links == {card.links!r}")
+
+    def test_links_to_the_page_itself_are_dropped(self) -> None:
+        html = (
+            "<html><body><h1>Обзор</h1>"
+            '<a href="#Obzor-razdel">к разделу</a> '
+            '<a href="/confluence/spaces/S/pages/42/Страница">сама по id</a> '
+            '<a href="/confluence/display/S/Страница#x">сама по заголовку</a> '
+            '<a href="/confluence/pages/viewpage.action?pageId=42">сама старой</a> '
+            '<ac:link><ri:page ri:content-title="Страница"/></ac:link>'
+            '<a href="/confluence/spaces/S/pages/7/Другая">Другая</a>'
+            "</body></html>"
+        )
+        card = _card(_parse(html, "Страница", page_id="42"))
+        if card.links != ("Другая",):
+            raise AssertionError(f"card.links == {card.links!r}")
+
+    def test_user_profiles_and_external_links_are_not_pages(self) -> None:
+        html = (
+            "<html><body><h1>Обзор</h1>"
+            '<a href="/confluence/display/~marcus">Marcus</a> '
+            '<a href="https://issues.apache.org/jira/browse/FLINK-1">FLINK-1</a> '
+            '<a href="/confluence/download/attachments/1/a.pdf">a.pdf</a>'
+            "</body></html>"
+        )
+        card = _card(_parse(html, "Страница"))
+        if card.links:
+            raise AssertionError(f"card.links == {card.links!r}")

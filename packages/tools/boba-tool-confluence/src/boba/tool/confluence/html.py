@@ -12,7 +12,6 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from enum import StrEnum
 from typing import Any, ClassVar
-from urllib.parse import unquote
 
 import markdownify
 from bs4 import BeautifulSoup
@@ -20,6 +19,7 @@ from bs4.element import NavigableString, Tag
 
 from boba.confluence.models import (
     PageCardSection,
+    PageHref,
     PageOutlineItem,
     PageParseRequest,
     PageSection,
@@ -47,13 +47,6 @@ class HtmlAttr(StrEnum):
 
     HREF = "href"
     CONTENT_TITLE = "ri:content-title"
-
-
-class PageLinkMark(StrEnum):
-    """Признаки того, что href ведёт на страницу Confluence, а не наружу."""
-
-    DISPLAY = "/display/"
-    VIEWPAGE = "/pages/viewpage.action"
 
 
 class ConfluenceHtml:
@@ -181,54 +174,54 @@ class ConfluenceHtml:
         return False
 
     @classmethod
-    def collect_links(cls, soup: BeautifulSoup) -> tuple[str, ...]:
-        """Заголовки страниц, на которые ссылается эта; повторы отброшены.
+    def collect_links(
+        cls,
+        soup: BeautifulSoup,
+        *,
+        page_id: str,
+        title: str,
+    ) -> tuple[str, ...]:
+        """Заголовки других страниц, на которые ссылается эта.
 
-        Storage-формат даёт ссылку макросом `ri:page`, view-формат — обычным
-        `a href`, поэтому берутся оба источника.
+        Storage-формат даёт ссылку макросом `ri:page`, view-формат — `a href`
+        в одной из форм PageHref. Повторы и ссылки на саму страницу (её id,
+        заголовок, фрагменты) отброшены.
         """
         titles: list[str] = []
         for node in soup.find_all(str(HtmlTag.PAGE_REF)):
             if not isinstance(node, Tag):
                 continue
 
-            cls._append_unique(titles, cls._attr(node, HtmlAttr.CONTENT_TITLE))
+            target = cls._attr(node, HtmlAttr.CONTENT_TITLE)
+            if target == title:
+                continue
+
+            cls._append_unique(titles, target)
 
         for node in soup.find_all(str(HtmlTag.ANCHOR)):
             if not isinstance(node, Tag):
                 continue
 
-            cls._append_unique(titles, cls._page_link_title(node))
+            label = cls._link_label(node, page_id=page_id, title=title)
+            cls._append_unique(titles, label)
 
         return tuple(titles)
 
     @classmethod
-    def _page_link_title(cls, node: Tag) -> str:
-        href = cls._attr(node, HtmlAttr.HREF)
-        if not href:
+    def _link_label(cls, node: Tag, *, page_id: str, title: str) -> str:
+        """Подпись ссылки на другую страницу или пустая строка."""
+        target = PageHref.parse(cls._attr(node, HtmlAttr.HREF))
+        if target is None:
             return ""
 
-        if not cls._is_page_href(href):
+        if target.is_page(page_id=page_id, title=title):
             return ""
 
         text = cls.plain_text(node)
         if text:
             return text
 
-        return cls._title_from_href(href)
-
-    @staticmethod
-    def _is_page_href(href: str) -> bool:
-        for mark in PageLinkMark:  # noqa: SIM110
-            if mark in href:
-                return True
-
-        return False
-
-    @staticmethod
-    def _title_from_href(href: str) -> str:
-        tail = href.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
-        return unquote(tail).replace("+", " ").strip()
+        return target.title
 
     @staticmethod
     def _attr(node: Tag, name: HtmlAttr) -> str:
@@ -408,7 +401,11 @@ class PageOps:
         parsed: PageParseRequest,
     ) -> Iterator[PageSection]:
         headings = cls._headings(soup)
-        links = ConfluenceHtml.collect_links(soup)
+        links = ConfluenceHtml.collect_links(
+            soup,
+            page_id=parsed.page_id,
+            title=parsed.title,
+        )
         card = cls._card(parsed.title, headings, links)
         if card is not None:
             yield card

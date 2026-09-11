@@ -24,6 +24,7 @@ from dataclasses import asdict, dataclass
 from enum import IntEnum, StrEnum
 from fnmatch import fnmatchcase
 from typing import Annotated, Any, ClassVar, Literal
+from urllib.parse import SplitResult, parse_qs, unquote, urlsplit
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
@@ -51,6 +52,7 @@ __all__ = [
     "ConfluenceSpaceItem",
     "HttpKeys",
     "PageCardSection",
+    "PageHref",
     "PageOutlineItem",
     "PageParseRequest",
     "PageSection",
@@ -58,6 +60,7 @@ __all__ = [
     "PageSectionKind",
     "PageSections",
     "PageTableSection",
+    "PageTarget",
     "PageTextSection",
     "ParseGrade",
     "TableShape",
@@ -514,7 +517,110 @@ class PageParseRequest(BaseModel):
 
     html: str
     title: str = ""
+    page_id: str = Field(min_length=1)
     table_shape: TableShape
+
+
+class PageTarget(BaseModel):
+    """Страница, на которую ведёт ссылка: id и/или заголовок из адреса.
+
+    Короткая ссылка /x/<код> не несёт ни того, ни другого — для неё оба
+    поля пусты, и подпись берётся из текста ссылки.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    page_id: str = ""
+    title: str = ""
+
+    def is_page(self, *, page_id: str, title: str) -> bool:
+        """Ссылка ведёт на страницу с этим id или заголовком."""
+        if self.page_id and self.page_id == page_id:
+            return True
+
+        if self.title and self.title == title:  # noqa: SIM103
+            return True
+
+        return False
+
+
+class PageHref:
+    """Разбор href в страницу Confluence — одна точка, где живут формы адресов.
+
+    Страницей считаются /spaces/<KEY>/pages/<id>/<Title>, /display/<SPACE>/<Title>,
+    /pages/viewpage.action?pageId=<id> и короткие /x/<код>. Профили
+    (/display/~user), вложения, черновики, фрагменты своей страницы и внешние
+    адреса страницами не являются. Зовёт его разбор HTML при сборе ссылок
+    карточки.
+    """
+
+    SPACES_RE: ClassVar[re.Pattern[str]] = re.compile(
+        r"/spaces/[^/]+/pages/(\d+)(?:/([^/]*))?/?$"
+    )
+    DISPLAY_RE: ClassVar[re.Pattern[str]] = re.compile(
+        r"/display/[^/~][^/]*/([^/]+)/?$"
+    )
+    VIEWPAGE_RE: ClassVar[re.Pattern[str]] = re.compile(r"/pages/viewpage\.action$")
+    TINY_RE: ClassVar[re.Pattern[str]] = re.compile(r"/x/[^/]+/?$")
+    PAGE_ID_PARAM: ClassVar[str] = "pageId"
+
+    @classmethod
+    def parse(cls, href: str) -> PageTarget | None:
+        """Цель ссылки или None, если это не другая страница Confluence."""
+        parts = urlsplit(href)
+        if not parts.path:
+            return None
+
+        probes = (cls._spaces, cls._viewpage, cls._display, cls._tiny)
+        for probe in probes:
+            target = probe(parts)
+            if target is not None:
+                return target
+
+        return None
+
+    @classmethod
+    def _spaces(cls, parts: SplitResult) -> PageTarget | None:
+        match = cls.SPACES_RE.search(parts.path)
+        if match is None:
+            return None
+
+        segment = match.group(2)
+        if segment is None:
+            segment = ""
+
+        return PageTarget(page_id=match.group(1), title=cls._title(segment))
+
+    @classmethod
+    def _viewpage(cls, parts: SplitResult) -> PageTarget | None:
+        if not cls.VIEWPAGE_RE.search(parts.path):
+            return None
+
+        ids = parse_qs(parts.query).get(cls.PAGE_ID_PARAM)
+        if not ids:
+            return None
+
+        return PageTarget(page_id=ids[0])
+
+    @classmethod
+    def _display(cls, parts: SplitResult) -> PageTarget | None:
+        match = cls.DISPLAY_RE.search(parts.path)
+        if match is None:
+            return None
+
+        return PageTarget(title=cls._title(match.group(1)))
+
+    @classmethod
+    def _tiny(cls, parts: SplitResult) -> PageTarget | None:
+        if not cls.TINY_RE.search(parts.path):
+            return None
+
+        return PageTarget()
+
+    @staticmethod
+    def _title(segment: str) -> str:
+        """Сегмент адреса в заголовок: `+` — пробел, `%2B` — сам плюс."""
+        return unquote(segment.replace("+", " ")).strip()
 
 
 class PageOutlineItem(BaseModel):

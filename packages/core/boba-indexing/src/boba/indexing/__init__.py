@@ -89,7 +89,9 @@ from boba.indexing.ports import (
 )
 from boba.indexing.sections import (
     AsyncBinaryStream,
+    AtomicBlocks,
     CardField,
+    CardToken,
     ChunkStream,
     Decoder,
     DecoderId,
@@ -140,11 +142,13 @@ from boba.indexing.values import (
 __all__ = [
     "And",
     "AsyncBinaryStream",
+    "AtomicBlocks",
     "BaseIndexEvent",
     "BatchStarted",
     "BatchUpserted",
     "BytesContentHash",
     "CardField",
+    "CardToken",
     "ChangePolicy",
     "Chunk",
     "ChunkId",

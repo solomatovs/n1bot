@@ -47,26 +47,27 @@ def chainlit_context() -> None:
     pass
 
 
-def _document() -> RawDocument:
+def _document(html: str) -> RawDocument:
     meta = Metadata.empty()
     meta = meta.set(ReaderKeys.PAGE_TITLE, "Клиент")
+    meta = meta.set(ConfluenceKeys.PAGE_ID, "1")
     meta = meta.set(ConfluenceKeys.LABELS, ("infra", "howto"))
     meta = meta.set(ConfluenceKeys.ANCESTORS_TITLES, ("База знаний", "Сервисы"))
     return RawDocument(
-        handle=ChunkStream.of(_HTML.encode("utf-8")),
+        handle=ChunkStream.of(html.encode("utf-8")),
         source_id=SourceId("https://confluence/rest/api/content/1"),
         metadata=meta,
     )
 
 
-async def _sections() -> AsyncIterator[Section[str]]:
+async def _sections(html: str) -> AsyncIterator[Section[str]]:
     shape = TableShape(row_layout_max_columns=4, row_layout_min_rows=3)
     reader = LocalConfluenceReader(shape)
-    async for section in reader.read(_document()):
+    async for section in reader.read(_document(html)):
         yield section
 
 
-async def _chunks(chunk_size: int = 4000) -> list[Chunk[str]]:
+async def _chunks(chunk_size: int = 4000, html: str = _HTML) -> list[Chunk[str]]:
     params = ChunkerParams(
         chunk_size=chunk_size,
         chunk_overlap=0,
@@ -74,7 +75,7 @@ async def _chunks(chunk_size: int = 4000) -> list[Chunk[str]]:
     )
     chunker = StructuralChunkerFactory.build(params)
     rows: list[Chunk[str]] = []
-    async for chunk in chunker.chunk(_sections()):
+    async for chunk in chunker.chunk(_sections(html)):
         rows.append(chunk)
 
     return rows
@@ -172,3 +173,63 @@ class TestPageChunks:
 
             if not chunk.metadata.get(SectionKeys.HEADING_PATH):
                 raise AssertionError("текстовый чанк без хлебных крошек")
+
+
+_LINK_TITLES = tuple(
+    f"Linked page number {index} with a fairly long title" for index in range(60)
+)
+
+
+def _linked_html() -> str:
+    """Страница-индекс: пара разделов и шестьдесят ссылок на другие страницы."""
+    anchors: list[str] = []
+    for index, title in enumerate(_LINK_TITLES):
+        href = f"/confluence/spaces/S/pages/{100 + index}/Page+{index}"
+        anchors.append(f'<li><a href="{href}">{title}</a></li>')
+
+    items = "".join(anchors)
+    return (
+        "<html><body>"
+        "<h1>Назначение</h1><p>Индекс предложений.</p>"
+        "<h2>Список</h2>"
+        f"<ul>{items}</ul>"
+        "</body></html>"
+    )
+
+
+class TestCardLinks:
+    """Длинный список ссылок не раздувает первый чанк карточки и не рвётся."""
+
+    async def test_long_link_list_spills_into_more_card_chunks(self) -> None:
+        chunks = await _chunks(chunk_size=1000, html=_linked_html())
+        cards = _of_kind(chunks, SectionKind.CARD)
+        if len(cards) < 2:
+            raise AssertionError(
+                f"ждал несколько чанков карточки, получил {len(cards)}"
+            )
+
+        for card in cards:
+            if not card.format_content.startswith("Page: Клиент\n"):
+                raise AssertionError(f"чанк карточки без строки Page: {card!r}")
+
+            if len(card.format_content) > 1000:
+                raise AssertionError(f"чанк карточки сверх бюджета: {card!r}")
+
+    async def test_outline_comes_before_links_in_the_first_chunk(self) -> None:
+        chunks = await _chunks(chunk_size=1000, html=_linked_html())
+        first = _of_kind(chunks, SectionKind.CARD)[0].format_content
+        for expected in ("Location: База знаний", "Sections:", "- Список"):
+            if expected not in first:
+                raise AssertionError(f"шапка без {expected!r}: {first!r}")
+
+        if "Links:" in first and first.index("Sections:") > first.index("Links:"):
+            raise AssertionError(f"ссылки встали перед оглавлением: {first!r}")
+
+    async def test_every_link_title_survives_whole(self) -> None:
+        chunks = await _chunks(chunk_size=1000, html=_linked_html())
+        joined = "\n".join(
+            card.format_content for card in _of_kind(chunks, SectionKind.CARD)
+        )
+        for title in _LINK_TITLES:
+            if f"- {title}\n" not in f"{joined}\n":
+                raise AssertionError(f"название ссылки порвано или потеряно: {title!r}")
