@@ -4,17 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-knowledge"
-version = "0.0.19.dev7"
+version = "0.0.19.dev8"
 description = "База знаний: векторный и полнотекстовый поиск по коллекциям чанков в песочнице."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-toolkit==0.0.19.dev7",
-    "boba-confluence==0.0.19.dev7",
-    "boba-db-postgres==0.0.19.dev7",
-    "boba-db-pgvector==0.0.19.dev7",
-    "boba-indexing==0.0.19.dev7",
-    "boba-kbdoc==0.0.19.dev7",
-    "boba-llm==0.0.19.dev7",
+    "boba-toolkit==0.0.19.dev8",
+    "boba-confluence==0.0.19.dev8",
+    "boba-db-postgres==0.0.19.dev8",
+    "boba-db-pgvector==0.0.19.dev8",
+    "boba-indexing==0.0.19.dev8",
+    "boba-kbdoc==0.0.19.dev8",
+    "boba-llm==0.0.19.dev8",
     "psycopg[binary,pool]>=3.2",
     "pydantic>=2.10,<2.11",
 ]
@@ -26,14 +26,14 @@ kb = "boba.tool.kb.plugin:KB"
 
 [project.optional-dependencies]
 payload = [
-    "boba-llm[payload]==0.0.19.dev7",
+    "boba-llm[payload]==0.0.19.dev8",
 ]
 dev = [
-    "boba-runtime==0.0.19.dev7",
-    "boba-sandbox==0.0.19.dev7",
-    "boba-config==0.0.19.dev7",
-    "boba-stand==0.0.19.dev7",
-    "boba-tool-postgres==0.0.19.dev7",
+    "boba-runtime==0.0.19.dev8",
+    "boba-sandbox==0.0.19.dev8",
+    "boba-config==0.0.19.dev8",
+    "boba-stand==0.0.19.dev8",
+    "boba-tool-postgres==0.0.19.dev8",
     "numpy>=1.26",
     "omegaconf>=2.3,<3",
     "pytest>=8",
