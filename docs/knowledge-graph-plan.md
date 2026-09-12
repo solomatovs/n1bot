@@ -29,11 +29,17 @@
   СУБД — другой пакет с теми же портами:
   DDL graph tables, обход, слияние поиска по индексам, два бэкенда
   графа;
-- **корпуса** — по пакету на источник, симметричные и независимые:
-  `boba-corpus-confluence` сейчас, `boba-corpus-warehouse` следующим. В
-  каждом — виды узлов, текстов и связей, ридер, content tables с их DDL и
-  индексами поиска, явные рёбра, резолвер, инструменты индексации
-  своего корпуса;
+- **слои источников** — без новых пакетов: слой живёт в пакете, который
+  источник и так умеет читать, чтобы драйвер, транспорт и разбор
+  переиспользовались. Confluence — `boba-confluence`: виды узлов и адреса,
+  content tables с их DDL, способы поиска, ридер 2.0, явные рёбра,
+  документ узла; часть, которой нужен Postgres, — подмодулем
+  `boba.confluence.graph` за extra `graph`, чтобы разбор HTML не тянул
+  psycopg. Инструменты индексации 2.0 — в `boba-tool-confluence` рядом с
+  индексатором 1.0, он же регистрирует корпус в реестре. Хранилище данных
+  — следующим планом над тем, что уже есть: модель отношений в
+  `boba-catalog`, интроспекция в `boba-db-postgres` и `boba-db-clickhouse`,
+  инструменты в `boba-tool-postgres` и `boba-tool-clickhouse`;
 - **инструменты над графом** (`boba-tool-graph`) — поиск, обход, глобальная
   стадия, установка схемы; работают с любым корпусом через реестр и о
   Confluence или хранилище не знают.
@@ -42,13 +48,13 @@
 `warehouse`, стендовые `confluence_test`, `warehouse_test`. Внутри схемы:
 
 - **graph tables** — только то, что ядро обрабатывает одинаково для
-  любого корпуса: идентичность узлов, учёт обхода, рёбра, сущности,
-  метрики, реестр моделей эмбеддинга. Их структура — реализация портов
-  ядра в Postgres; DDL живёт в `boba-db-pggraph`, а не в ядре;
+  любого корпуса: идентичность узлов, учёт обхода, рёбра, метрики. Их
+  структура — реализация портов ядра в Postgres; DDL живёт в
+  `boba-db-pggraph`, а не в ядре;
 - **content tables** — всё остальное, включая тексты и векторы: у Confluence
   страницы, вложения, разделы, таблицы страниц, саммари; у хранилища
   отношения, колонки, ограничения, индексы, процедуры, профили, DDL,
-  комментарии. Текст и его индексы лежат там, где лежит объект, которому
+  комментарии; у слоя сущностей — имя, форма показа и тип сущности. Текст и его индексы лежат там, где лежит объект, которому
   они принадлежат, со своей структурой, а не сплющенными в общую строку.
 
 Graph tables отвечают на вопросы «что это», «с чем связано» и «где
@@ -66,9 +72,9 @@ content tables; ядро добирается до него через инде�
 Граф хранится в Postgres в одном из двух бэкендов на выбор конфига:
 реляционном (таблица рёбер и рекурсивный SQL) или Apache AGE (вершины,
 рёбра и обход на openCypher). Какой доступен на базе — тот и используется;
-ядро пишется под оба через один порт (раздел 3.7).
+ядро пишется под оба через один порт (раздел 2.6).
 
-## 2. Корпус — полиморфный компонент, а не набор значений `kind`
+## 2. Ядро
 
 Ядро не знает, что такое страница, таблица или индекс. Каждая колонка
 `kind` в схеме — строка, которую ядро хранит, сравнивает на равенство и
@@ -84,15 +90,17 @@ content tables; ядро добирается до него через инде�
 само — по общим сущностям и по близости векторов, — оно называет именами,
 которые ему даёт корпус.
 
+### 2.1 Модели
+
 **Узел ядра и узел корпуса.** Виды узлов и модели адресов объявляет
 пакет источника, который и так знает его объекты: `boba-confluence` —
 `ConfluenceNodeKind` и адреса страниц, `boba-db-postgres` — `PgNodeKind`
-и адреса объектов PostgreSQL, `boba-db-clickhouse` — `ChNodeKind` (2.1).
+и адреса объектов PostgreSQL, `boba-db-clickhouse` — `ChNodeKind` (3.1, 4.1).
 Там же — union узлов источника по `kind` (`ConfluenceNode`, `PgNode`,
 `ChNode`), которым строка ядра разбирается в типизированную модель.
 Корпус этих моделей не дублирует и не оборачивает; его собственное —
 виды содержимого и рёбер (`ConfluenceContentKind`, `ConfluenceEdgeKind`,
-`WarehouseContentKind`, `WarehouseEdgeKind` — разделы 3.4, 4.1, 4.2),
+`WarehouseContentKind`, `WarehouseEdgeKind` — разделы 3, 4),
 потому что это его таблицы и его связи. Ядро в SQL и в коде
 оперирует `kind: str` и никогда по нему не ветвится.
 Инструменты поиска принимают имя корпуса и получают его реализацию из
@@ -125,26 +133,32 @@ ClickHouse адресуются по-разному и хранятся в ра�
 ```python
 # boba-graph: ядро.
 # Ошибки наружу:
-# AddressError — строка адреса не по грамматике схемы или не по канону 3.6: без порта, с учётными данными,
+# AddressError — строка адреса не по грамматике схемы или не по канону 2.2.5: без порта, с учётными данными,
 #   с чужими ролями; кидают split()/parse() адресов.
-class AddressError(Exception): ...
+class AddressError(Exception):
+    """Строка адреса не разбирается по грамматике своей схемы или нарушает канон (2.2.5)."""
 
 class Node(BaseModel):
+    """Узел графа: объект источника, как его видит ядро, — номер, вид и адрес, ничего больше.
+
+    Содержимое узла лежит в content tables его слоя, связи — в edges. Ядро
+    по kind не ветвится, адрес хранит частями и сравнивает как есть.
+    """
+
     id: int
     kind: str
     address: Mapping[str, str | int]   # включая scheme
 
 class Address(BaseModel, ABC):
-    """База адреса узла: части для nodes.address и каноническая строка.
+    """Адрес узла — его идентичность: то, по чему один и тот же объект источника узнаётся при каждой индексации.
 
-    Наследуют модели адресов пакетов источников (ConfluenceAddress,
-    PgAddress, ChAddress). parts() — в jsonb при записи, типы частей
-    канонизирует наследник (port: int); render() — строка по грамматике
-    схемы (3.6), её знает только наследник. Обратные направления — из
-    jsonb через model_validate, из строки через parse() наследника; ядру
-    они не нужны: узел оно ищет по parts(). Лишних частей нет: параметр
-    подключения или неизвестная роль — ошибка валидации, не часть адреса.
-    Грамматику строки ядро не знает — ни web, ни баз.
+    Хранится частями (nodes.address), потому что по частям сравнивают и
+    ищут («всё на этом хосте»); показывается и вводится строкой по
+    грамматике своей схемы. Наследники — модели адресов источников (3.1,
+    4.1) и адрес сущности (5.1): они знают состав частей, их типы
+    (port: int) и грамматику строки; ядро зовёт только parts() — для
+    записи и поиска узла. Лишних частей нет: параметр подключения или
+    неизвестная роль — ошибка валидации, не часть адреса.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -158,1437 +172,44 @@ class Address(BaseModel, ABC):
     def render(self) -> str: ...
 
 class Evidence(BaseModel):
-    """База обоснования ребра — то, что лежит в edges.evidence.
+    """Обоснование ребра: факты, по которым связь посчитана, и параметры, при которых она построена.
 
-    Наследует модель каждого вида ребра (3.4); ядро зовёт только dump()
-    при записи, обратно jsonb читает тот, кто знает вид: инструмент показа
-    отдаёт как есть, kb_graph_check сверяет параметры расчёта по ключам.
+    Нужно, чтобы связи можно было проверять, а не только верить весу:
+    человек и модель видят, почему узлы связаны («see FLIP-458», косинус
+    0.87), kb_graph_check находит рёбра, построенные при других порогах, а
+    стадия edges пересчитывает только их. У каждого вида ребра своя модель
+    (3.3, 4.4, 5.3); ядро кладёт dump() в edges.evidence, не разбирая.
     """
 
     def dump(self) -> Mapping[str, object]:
         return self.model_dump()
-
-class EntityAddress(Address):
-    """Адрес сущности — единственного вида Node, который производит само ядро (3.3).
-
-    У сущности нет источника: ClickHouse — один и тот же, где бы о нём ни
-    писали, поэтому в адресе только имя, без корпуса и без вида:
-    entity://clickhouse. Имя — нормализованная форма, кодируется как
-    reg-name по RFC 3986: entity://arenadata%20quickmarts. Одинаковый адрес
-    в схемах разных корпусов — будущий мост между ними.
-    """
-
-    scheme: Literal["entity"]
-    name: str
-
-    def render(self) -> str:
-        return urlunsplit(SplitResult(scheme=self.scheme, netloc=quote(self.name, safe=""), path="", query="", fragment=""))
-
-    @classmethod
-    def parse(cls, text: str) -> Self:
-        url = urlsplit(text)
-        if url.scheme != "entity":
-            raise AddressError(f"entity address {text!r}: expected scheme entity, got {url.scheme!r}")
-
-        if not url.netloc:
-            raise AddressError(f"entity address {text!r}: name is required")
-
-        return cls(scheme="entity", name=unquote(url.netloc))
 ```
 
-### 2.1 Модели источников — в пакетах источников
-
-Вид узла и его адрес — знание об объектах источника, и оно лежит там, где
-уже лежит остальное знание о нём: модели страниц Confluence — в
-`boba-confluence`, каталог PostgreSQL — в `boba-db-postgres`, ClickHouse —
-в `boba-db-clickhouse`. Пакет источника о графе и корпусе не знает;
-единственная его зависимость на `boba-graph` — база `Address`, и
-направление слоёв (core ← infra) соблюдено. Строку адреса собирает и разбирает база адресов пакета: `PgAddress` и
-`ChAddress` — на `urllib.parse`, `ConfluenceAddress` — на `httpx.URL`,
-где `httpx` уже есть. Ядро грамматик не знает. Движки, у
-которых пакета ещё нет (MSSQL, Oracle, MySQL), придут со своими
-`boba-db-*` и своими перечислениями; общего «перечисления всех движков»
-не будет ни в одном пакете.
-
-```python
-# boba-confluence: boba/confluence/nodes.py
-class ConfluenceNodeKind(StrEnum):
-    SPACE = "confluence_space"
-    PAGE = "confluence_page"
-    ATTACHMENT = "confluence_attachment"
-
-class WebScheme(StrEnum):
-    HTTP = "http"
-    HTTPS = "https"
-
-    def default_port(self) -> int:
-        if self is WebScheme.HTTP:
-            return 80
-
-        return 443
-
-class ConfluenceAddress(Address):
-    """Адрес объекта Confluence: REST-путь на сервере.
-
-    Части — схема, хост, порт, путь; query, фрагмент и учётные данные в
-    адрес не входят (как у SourceId ридера). Порт в частях всегда, в строке
-    httpx опускает порт по умолчанию схемы: https://host/path. Сборка и
-    разбор — httpx.URL, единственное место для адресов Confluence.
-    """
-
-    scheme: WebScheme
-    host: str
-    port: int
-    path: str
-
-    def render(self) -> str:
-        url = httpx.URL(scheme=self.scheme.value, host=self.host, port=self.port, path=self.path)
-        return str(url)
-
-    @classmethod
-    def parse(cls, text: str) -> Self:
-        try:
-            url = httpx.URL(text)
-        except httpx.InvalidURL as exc:
-            raise AddressError(f"confluence address {text!r}: {exc}") from exc
-
-        if url.userinfo:
-            raise AddressError(f"confluence address {text!r}: credentials are not part of an address")
-
-        if url.query:
-            raise AddressError(f"confluence address {text!r}: query is not part of an address")
-
-        if url.fragment:
-            raise AddressError(f"confluence address {text!r}: fragment is not part of an address")
-
-        if not url.host:
-            raise AddressError(f"confluence address {text!r}: host is required")
-
-        try:
-            scheme = WebScheme(url.scheme)
-        except ValueError as exc:
-            raise AddressError(f"confluence address {text!r}: expected scheme http or https, got {url.scheme!r}") from exc
-
-        port = url.port
-        if port is None:
-            port = scheme.default_port()
-
-        try:
-            return cls(scheme=scheme, host=url.host, port=port, path=url.path)
-        except ValidationError as exc:
-            raise AddressError(f"{cls.__name__}: address {text!r} is not valid: {exc}") from exc
-
-class SpaceAddress(ConfluenceAddress):
-    PATH_RE: ClassVar[re.Pattern[str]] = re.compile(r"/rest/api/space/[^/?#]+$")
-
-    @field_validator("path")
-    @classmethod
-    def _space_path(cls, value: str) -> str:
-        if cls.PATH_RE.search(value) is None:
-            raise ValueError(f"confluence space address expects /rest/api/space/<key>, got {value!r}")
-
-        return value
-
-class PageAddress(ConfluenceAddress):
-    PATH_RE: ClassVar[re.Pattern[str]] = re.compile(r"/rest/api/content/[^/?#]+$")   # тот же шаблон, что у SourceId.page_id_of
-
-    @field_validator("path")
-    @classmethod
-    def _content_path(cls, value: str) -> str:
-        if cls.PATH_RE.search(value) is None:
-            raise ValueError(f"confluence page address expects /rest/api/content/<id>, got {value!r}")
-
-        return value
-
-class AttachmentAddress(ConfluenceAddress):
-    PATH_RE: ClassVar[re.Pattern[str]] = re.compile(r"/download/attachments/[^/?#]+/[^/?#]+$")
-
-    @field_validator("path")
-    @classmethod
-    def _download_path(cls, value: str) -> str:
-        if cls.PATH_RE.search(value) is None:
-            raise ValueError(f"confluence attachment address expects /download/attachments/<page>/<file>, got {value!r}")
-
-        return value
-
-class SpaceNode(BaseModel):
-    kind: Literal[ConfluenceNodeKind.SPACE]
-    address: SpaceAddress
-
-class PageNode(BaseModel):
-    kind: Literal[ConfluenceNodeKind.PAGE]
-    address: PageAddress
-
-class AttachmentNode(BaseModel):
-    kind: Literal[ConfluenceNodeKind.ATTACHMENT]
-    address: AttachmentAddress
-
-ConfluenceNode = Annotated[SpaceNode | PageNode | AttachmentNode, Field(discriminator="kind")]
-```
-
-```python
-# boba-db-postgres: boba/db/postgres/nodes.py
-class PgNodeKind(StrEnum):
-    DATABASE = "pg_database"
-    SCHEMA = "pg_schema"
-    TABLE = "pg_table"
-    VIEW = "pg_view"
-    MATVIEW = "pg_matview"
-    COLUMN = "pg_column"
-    INDEX = "pg_index"
-    CONSTRAINT = "pg_constraint"
-    FUNCTION = "pg_function"
-    PROCEDURE = "pg_procedure"
-    TRIGGER = "pg_trigger"
-    SEQUENCE = "pg_sequence"
-
-class PgAddress(Address):
-    """База адресов объектов PostgreSQL: postgresql://host:port/database?роль=имя&… (3.6).
-
-    Часть подключения — libpq URI, объект внутри базы — query-параметры
-    с ролью в имени в порядке объявления полей наследника; один класс на
-    строку списка 3.6. Сборка и разбор — urllib.parse, здесь и только здесь.
-    """
-
-    BASE_FIELDS: ClassVar[frozenset[str]] = frozenset({"scheme", "host", "port", "database"})
-
-    scheme: Literal["postgresql"]
-    host: str
-    port: int
-    database: str
-
-    @classmethod
-    def roles(cls) -> Sequence[str]:
-        """Роли объекта — поля наследника после полей подключения, в порядке объявления, по alias."""
-        names: list[str] = []
-        for name, field in cls.model_fields.items():
-            if name in cls.BASE_FIELDS:
-                continue
-
-            alias = field.alias
-            if alias is None:
-                alias = name
-
-            names.append(alias)
-
-        return names
-
-    def render(self) -> str:
-        query = urlencode(self.model_dump(by_alias=True, exclude=self.BASE_FIELDS), quote_via=quote)
-        split = SplitResult(
-            scheme=self.scheme,
-            netloc=self._netloc(),
-            path="/" + quote(self.database, safe=""),
-            query=query,
-            fragment="",
-        )
-        return urlunsplit(split)
-
-    def _netloc(self) -> str:
-        host = self.host
-        if ":" in host:                      # IPv6 — в скобках, RFC 3986 §3.2.2
-            host = f"[{host}]"
-
-        return f"{host}:{self.port}"
-
-    @classmethod
-    def parse(cls, text: str) -> Self:
-        """Строка → адрес этого класса; канон 3.6: без учётных данных, с портом, path = /database, роли по составу и порядку."""
-        url = urlsplit(text)
-        if url.scheme != "postgresql":
-            raise AddressError(f"postgresql address {text!r}: expected scheme postgresql, got {url.scheme!r}")
-
-        if url.username is not None:
-            raise AddressError(f"postgresql address {text!r}: credentials are not part of an address")
-
-        if url.fragment:
-            raise AddressError(f"postgresql address {text!r}: fragment is not part of an address")
-
-        host = url.hostname
-        if host is None:
-            raise AddressError(f"postgresql address {text!r}: host is required")
-
-        try:
-            port = url.port
-        except ValueError as exc:
-            raise AddressError(f"postgresql address {text!r}: port is not a number: {exc}") from exc
-
-        if port is None:
-            raise AddressError(f"postgresql address {text!r}: port is required")
-
-        database = unquote(url.path.removeprefix("/"))
-        if not database:
-            raise AddressError(f"postgresql address {text!r}: path must be /<database>, got {url.path!r}")
-
-        if "/" in database:
-            raise AddressError(f"postgresql address {text!r}: path must be a single segment /<database>, got {url.path!r}")
-
-        roles = parse_qsl(url.query, keep_blank_values=True)
-        given: list[str] = []
-        for name, _ in roles:
-            given.append(name)
-
-        expected = list(cls.roles())
-        if given != expected:
-            raise AddressError(f"{cls.__name__}: address {text!r} expects roles {expected}, got {given}")
-
-        parts: dict[str, str | int] = {"scheme": url.scheme, "host": host, "port": port, "database": database}
-        parts.update(roles)
-        try:
-            return cls.model_validate(parts)
-        except ValidationError as exc:
-            raise AddressError(f"{cls.__name__}: address {text!r} is not valid: {exc}") from exc
-
-class PgDatabaseAddress(PgAddress): ...
-
-class PgSchemaAddress(PgAddress):
-    schema_name: str = Field(alias="schema")
-
-class PgTableAddress(PgAddress):
-    schema_name: str = Field(alias="schema")
-    table: str
-
-class PgTableColumnAddress(PgAddress):
-    schema_name: str = Field(alias="schema")
-    table: str
-    column: str
-
-class PgViewColumnAddress(PgAddress):
-    schema_name: str = Field(alias="schema")
-    view: str
-    column: str
-
-class PgIndexAddress(PgAddress):
-    schema_name: str = Field(alias="schema")
-    index: str
-
-class PgFunctionAddress(PgAddress):
-    schema_name: str = Field(alias="schema")
-    function: str
-    args: str                                  # pg_get_function_identity_arguments; пустая строка обязательна
-
-class PgConstraintAddress(PgAddress):
-    schema_name: str = Field(alias="schema")
-    table: str
-    constraint: str
-
-# … view, matview и его колонка, sequence, procedure, trigger — по строке 3.6 каждый
-
-class PgAddresses:
-    """Строка → адрес конкретного объекта PostgreSQL: класс выбирается по составу ролей в query."""
-
-    MODELS: ClassVar[Sequence[type[PgAddress]]] = (
-        PgDatabaseAddress, PgSchemaAddress, PgTableAddress, PgTableColumnAddress, PgViewColumnAddress,
-        PgIndexAddress, PgFunctionAddress, PgConstraintAddress,
-    )
-
-    @classmethod
-    def parse(cls, text: str) -> PgAddress:
-        given: list[str] = []
-        for name, _ in parse_qsl(urlsplit(text).query, keep_blank_values=True):
-            given.append(name)
-
-        for model in cls.MODELS:
-            if list(model.roles()) == given:
-                return model.parse(text)
-
-        raise AddressError(f"postgresql address {text!r}: no object has roles {given}")
-
-class PgTableNode(BaseModel):
-    kind: Literal[PgNodeKind.TABLE]
-    address: PgTableAddress
-
-class PgColumnNode(BaseModel):
-    kind: Literal[PgNodeKind.COLUMN]
-    address: PgTableColumnAddress | PgViewColumnAddress | PgMatviewColumnAddress   # колонка чьей-то реляции; pydantic различит по ролям
-
-PgNode = Annotated[PgDatabaseNode | PgSchemaNode | PgTableNode | PgColumnNode | ..., Field(discriminator="kind")]
-```
-
-```python
-# boba-db-clickhouse: boba/db/clickhouse/nodes.py
-class ChNodeKind(StrEnum):
-    DATABASE = "ch_database"
-    TABLE = "ch_table"
-    VIEW = "ch_view"
-    MATVIEW = "ch_matview"
-    COLUMN = "ch_column"
-    INDEX = "ch_index"          # skip-индекс, внутри таблицы
-    PROJECTION = "ch_projection"
-    DICTIONARY = "ch_dictionary"
-    FUNCTION = "ch_function"
-
-class ChAddress(Address):
-    """База адресов объектов ClickHouse: clickhouse://host:port/database?роль=имя&… (3.6).
-
-    Схем нет, объекты сразу в базе; грамматика та же, что у PgAddress, со
-    своей схемой. Сборка и разбор — urllib.parse, здесь и только здесь.
-    """
-
-    BASE_FIELDS: ClassVar[frozenset[str]] = frozenset({"scheme", "host", "port", "database"})
-
-    scheme: Literal["clickhouse"]
-    host: str
-    port: int
-    database: str
-
-    @classmethod
-    def roles(cls) -> Sequence[str]:
-        """Роли объекта — поля наследника после полей подключения, в порядке объявления, по alias."""
-        names: list[str] = []
-        for name, field in cls.model_fields.items():
-            if name in cls.BASE_FIELDS:
-                continue
-
-            alias = field.alias
-            if alias is None:
-                alias = name
-
-            names.append(alias)
-
-        return names
-
-    def render(self) -> str:
-        query = urlencode(self.model_dump(by_alias=True, exclude=self.BASE_FIELDS), quote_via=quote)
-        split = SplitResult(
-            scheme=self.scheme,
-            netloc=self._netloc(),
-            path="/" + quote(self.database, safe=""),
-            query=query,
-            fragment="",
-        )
-        return urlunsplit(split)
-
-    def _netloc(self) -> str:
-        host = self.host
-        if ":" in host:                      # IPv6 — в скобках, RFC 3986 §3.2.2
-            host = f"[{host}]"
-
-        return f"{host}:{self.port}"
-
-    @classmethod
-    def parse(cls, text: str) -> Self:
-        """Строка → адрес этого класса; канон 3.6: без учётных данных, с портом, path = /database, роли по составу и порядку."""
-        url = urlsplit(text)
-        if url.scheme != "clickhouse":
-            raise AddressError(f"clickhouse address {text!r}: expected scheme clickhouse, got {url.scheme!r}")
-
-        if url.username is not None:
-            raise AddressError(f"clickhouse address {text!r}: credentials are not part of an address")
-
-        if url.fragment:
-            raise AddressError(f"clickhouse address {text!r}: fragment is not part of an address")
-
-        host = url.hostname
-        if host is None:
-            raise AddressError(f"clickhouse address {text!r}: host is required")
-
-        try:
-            port = url.port
-        except ValueError as exc:
-            raise AddressError(f"clickhouse address {text!r}: port is not a number: {exc}") from exc
-
-        if port is None:
-            raise AddressError(f"clickhouse address {text!r}: port is required")
-
-        database = unquote(url.path.removeprefix("/"))
-        if not database:
-            raise AddressError(f"clickhouse address {text!r}: path must be /<database>, got {url.path!r}")
-
-        if "/" in database:
-            raise AddressError(f"clickhouse address {text!r}: path must be a single segment /<database>, got {url.path!r}")
-
-        roles = parse_qsl(url.query, keep_blank_values=True)
-        given: list[str] = []
-        for name, _ in roles:
-            given.append(name)
-
-        expected = list(cls.roles())
-        if given != expected:
-            raise AddressError(f"{cls.__name__}: address {text!r} expects roles {expected}, got {given}")
-
-        parts: dict[str, str | int] = {"scheme": url.scheme, "host": host, "port": port, "database": database}
-        parts.update(roles)
-        try:
-            return cls.model_validate(parts)
-        except ValidationError as exc:
-            raise AddressError(f"{cls.__name__}: address {text!r} is not valid: {exc}") from exc
-
-class ChDatabaseAddress(ChAddress): ...
-
-class ChTableAddress(ChAddress):
-    table: str
-
-class ChTableColumnAddress(ChAddress):
-    table: str
-    column: str
-
-class ChIndexAddress(ChAddress):               # skip-индекс уникален внутри таблицы — после table
-    table: str
-    index: str
-
-class ChDictionaryAddress(ChAddress):
-    dictionary: str
-
-class ChFunctionAddress(ChAddress):            # перегрузок нет — args не нужен
-    function: str
-
-# … view, matview и их колонки, projection — по строке 3.6 каждый
-
-class ChAddresses:
-    """Строка → адрес конкретного объекта ClickHouse: класс по составу ролей, как PgAddresses."""
-
-    MODELS: ClassVar[Sequence[type[ChAddress]]] = (
-        ChDatabaseAddress, ChTableAddress, ChTableColumnAddress, ChIndexAddress, ChDictionaryAddress, ChFunctionAddress,
-    )
-
-    @classmethod
-    def parse(cls, text: str) -> ChAddress:
-        given: list[str] = []
-        for name, _ in parse_qsl(urlsplit(text).query, keep_blank_values=True):
-            given.append(name)
-
-        for model in cls.MODELS:
-            if list(model.roles()) == given:
-                return model.parse(text)
-
-        raise AddressError(f"clickhouse address {text!r}: no object has roles {given}")
-
-class ChColumnNode(BaseModel):
-    kind: Literal[ChNodeKind.COLUMN]
-    address: ChTableColumnAddress | ChViewColumnAddress | ChMatviewColumnAddress
-
-ChNode = Annotated[ChDatabaseNode | ChTableNode | ChColumnNode | ..., Field(discriminator="kind")]
-```
+Виды узлов и модели адресов конкретного источника ядро не объявляет: они
+лежат в пакете, который и так знает его объекты, — `boba-confluence` для
+страниц, `boba-db-postgres` и `boba-db-clickhouse` для объектов каталога, и
+описаны в разделах своих слоёв (3.1, 4.1). Моделям от `boba-graph` нужна
+только база `Address`; сам корпус того же пакета зависит ещё и на
+реализации `boba-db-pggraph` и потому вынесен в подмодуль за extra
+(раздел 7). Направление слоёв (core ← infra) соблюдено. Слой сущностей
+объявляет ядро само (5.1), потому что он одинаков для любого корпуса.
 
 Граница — на входе методов корпуса: `Node` ядра разбирается union'ом
 источника (`ConfluenceNode`, `PgNode`, `ChNode`) в типизированную модель,
 на выходе собирается обратно. Наследник `Address` канонизирует типы
-частей (`port: int`) и один знает грамматику своей строки (3.6). Строку, о которой не
+частей (`port: int`) и один знает грамматику своей строки (2.2.5). Строку, о которой не
 известно, какой объект она называет (ввод `kb_node`), разбирают
 `PgAddresses.parse` и `ChAddresses.parse`: класс адреса выбирается по
 составу ролей в query, и это единственная точка такого разбора в пакете.
 
-### 2.2 Способы поиска
-
-Способ поиска — и объявление, и исполнитель: он знает свои таблицу и
-колонки и сам собирает по ним запрос. У способа две координаты, и они
-независимы: **что** ищем — вид содержимого узла (заголовок, раздел,
-саммари, DDL, картинка), это перечисление корпуса; **чем** ищем —
-полнотекст, BM25, триграммы, точное совпадение, плотный или разреженный
-вектор, это перечисление ядра, общее для всех корпусов. Пара даёт подпись
-способа (`title/exact`, `section/vector`), она же ключ веса в конфиге и
-она же в выдаче отвечает, чем узел найден.
-
-Ищут всегда текстом: его печатает пользователь, а служебные поиски ядра
-берут текст узла — заголовок для ребра упоминания, саммари для ребра
-похожести. Во что превратить текст, решает сам способ: полнотекстовому
-нужна строка, векторному — вектор, и энкодер он получил при создании от
-корпуса. Поэтому наружу торчит один метод, ни модели, ни вектора в
-протоколе нет. Ядро объявляет протокол без привязки к драйверу: готовый
-запрос — параметр типа, ничего постгресового в нём нет; реализации для
-Postgres живут в `boba-db-pggraph` (2.4), корпус создаёт их при старте из
-своего конфига (`[storage] pg_schema`) и отдаёт одним списком (2.3).
-
-```python
-# boba-graph — ядро: зонды и векторы — общие модели данных, SQL нет
-class Vector(BaseModel):
-    """Общее у любого вектора: какой моделью он посчитан. Подклассы — форма чисел."""
-
-    model: str                              # имя из embedding_models; ставит энкодер или строка таблицы
-
-class DenseVector(Vector):
-    """Плотный вектор: число на каждую координату пространства модели.
-
-    Столько координат, сколько у модели размерность (embedding_models.dim):
-    у e5-large — 1024 числа, у text-embedding-3-large — 3072. Сравнивается
-    косинусом или скалярным произведением; в базе — pgvector vector(dim).
-    """
-
-    values: Sequence[float]                 # координаты по порядку, len(values) == dim модели
-
-class SparseVector(Vector):
-    """Разреженный вектор: почти все координаты — нули, хранятся только ненулевые.
-
-    Координата — слово (токен) словаря модели, значение — его вес в тексте;
-    словарь SPLADE — десятки тысяч токенов, в тексте ненулевых — десятки.
-    Поэтому хранятся пары «номер координаты — вес», а не весь ряд нулей;
-    в базе — pgvector sparsevec, текстовая форма {i1:v1,i2:v2,…}/dim.
-    """
-
-    indices: Sequence[int]                  # номера ненулевых координат по возрастанию: id токенов словаря модели
-    values: Sequence[float]                 # веса тех же координат, len(values) == len(indices)
-    dim: int                                # полная размерность пространства — размер словаря модели; нужна sparsevec
-
-V = TypeVar("V", bound=Vector)                          # обобщённые функции и dataclass'ы
-V_co = TypeVar("V_co", bound=Vector, covariant=True)    # протоколы: вектор только на выходе — pyright требует covariant
-
-class Probe(BaseModel):
-    """Зонд — то, чем ищут, вместе с рамками запроса.
-
-    text — текст пользователя или текст узла для служебных поисков ядра;
-    во что его превратить, решает способ. limit — кандидатов с одного
-    способа до слияния, не итоговый top_k инструмента. Порог по счёту,
-    смещение, фильтр по виду узла добавятся полями сюда, не меняя
-    сигнатуру statement у реализаций.
-    """
-
-    text: str
-    limit: int = Field(gt=0)
-
-class VectorEncoder(Protocol[V_co]):
-    """Текст пользователя -> вектор; один метод, назначение — в классе реализации."""
-    async def encode(self, text: str) -> V_co: ...
-
-class VectorEncoderRegistry(Protocol):
-    """Энкодер по имени модели из embedding_models; форму вектора выбирает метод.
-
-    Собирается при старте из строк embedding_models и [encoders]; dense и
-    sparse сверяют modality строки с запрошенной формой: рассогласование —
-    ошибка конфига с именем модели, а не пустая выдача в запросе.
-    """
-
-    def dense(self, model: str) -> VectorEncoder[DenseVector]: ...
-    def sparse(self, model: str) -> VectorEncoder[SparseVector]: ...
-
-class LookupRow(BaseModel):
-    """Строка одного способа поиска, когда его запрос исполняется сам по себе.
-
-    В kb_search строки способов до Python не доходят — их сливает один
-    SQL (раздел 8). Сюда они приходят из служебных поисков ядра: ребро
-    similar берёт score как косинус для обоснования, ребро mention — node_id
-    найденного по имени узла.
-    """
-
-    node_id: int
-    row_id: int
-    snippet: str
-    score: float
-
-S = TypeVar("S")                              # готовый запрос драйвера целиком: у psycopg — PgStatement (sql.Composed + параметры)
-S_co = TypeVar("S_co", covariant=True)        # протоколы: запрос только на выходе
-
-class LookupMethod(StrEnum):
-    """Чем ищем — ось, общая для всех корпусов; что ищем — ось корпуса.
-
-    Здесь же собирается подпись способа, чтобы пара «вид содержимого/способ»
-    складывалась в одном месте: подпись идёт в выдачу (found_by), в
-    обоснование ребра similar и служит ключом в [search.weights].
-    """
-
-    FTS = "fts"
-    BM25 = "bm25"
-    TRIGRAM = "trigram"
-    EXACT = "exact"
-    VECTOR = "vector"
-    SPARSE = "sparse"
-
-    @classmethod
-    def label_of(cls, content_kind: str, method: "LookupMethod") -> str:
-        return f"{content_kind}/{method.value}"
-
-class LookupRole(StrEnum):
-    """Служебные поиски ядра: способ для них выбирает корпус (Corpus.role_lookups)."""
-
-    NAMING = "naming"          # найти узел по его имени: ребро mention
-    SIMILARITY = "similarity"  # найти похожие узлы: ребро similar
-
-class IndexLookup(Protocol[S_co]):
-    """Один способ искать: вид содержимого плюс способ поиска по нему.
-
-    content_kind — что ищем: заголовок, раздел, саммари, DDL, картинка;
-    значение перечисления корпуса, ядро его не толкует. method — чем ищем.
-    statement — подзапрос по зонду, который SearchStore вкладывает в один
-    общий запрос поиска (раздел 8): колонки node_id, row_id, snippet,
-    score, где score больше — лучше, не больше probe.limit строк, лучшие
-    первыми. Во что превратить текст, знает только реализация, и энкодер
-    она получила при создании, поэтому метод асинхронный, а модели снаружи
-    не видно.
-
-    Что такое готовый запрос (S) — знает только SearchStore того же
-    драйвера: ядро его не разбирает, поэтому протокола запроса в ядре нет.
-    """
-
-    def content_kind(self) -> str: ...
-    def method(self) -> LookupMethod: ...
-    async def statement(self, probe: Probe) -> S_co: ...
-```
-
-### 2.3 Протокол корпуса
-
-Протокол корпуса и то, что через него ходит. Ребро от корпуса приходит
-черновиком с адресом цели (наследник `Address`, 2.1) и обоснованием
-(наследник `Evidence`, 3.4): id цели ядро находит само по `parts()`.
-Исходник узла корпус отдаёт в виде для большой модели (раздел 5):
-
-```python
-class EdgeDraft(BaseModel):
-    """Ребро до записи: цель адресом, id цели ядро найдёт по target.parts()."""
-
-    target: Address
-    kind: str
-    weight: float
-    evidence: Evidence
-
-class Snippet(BaseModel):
-    """Фрагмент, которым узел найден: чем найден, какое это содержимое, текст для цитаты."""
-
-    lookup: str                 # подпись способа: "section/fts"
-    content_kind: str           # по нему потребитель решает, текст это или картинка
-    row_id: int                 # строка content tables, по ней берётся оригинал куска
-    text: str
-
-class Hop(BaseModel):
-    """Шаг пути по графу: по ребру какого вида и от какого узла пришли."""
-
-    kind: str
-    from_node_id: int
-
-class Candidate(BaseModel):
-    """Узел из одного из двух запросов поиска (раздел 8), ещё без итогового счёта.
-
-    Из запроса кандидатов приходит с s_base и фрагментами, из обхода графа
-    — с s_graph и путём; ядро складывает их по node_id. kind, address и
-    метрики берутся тем же запросом из nodes и ranks.
-    """
-
-    node_id: int
-    kind: str
-    address: Mapping[str, str | int]
-    s_base: float = 0.0
-    s_graph: float = 0.0
-    distance: int = 0
-    snippets: Sequence[Snippet] = ()
-    path: Sequence[Hop] = ()
-    metrics: Mapping[str, float] = {}
-
-class Match(BaseModel):
-    """Строка выдачи kb_search: кандидат с итоговым счётом и заголовком.
-
-    Рендерится двумя способами из одних полей: большой модели — заголовок,
-    kind, адрес строкой и фрагменты; человеку — заголовок ссылкой и
-    фрагменты, где фрагмент по картинке показывается картинкой.
-    """
-
-    node_id: int
-    kind: str
-    address: Mapping[str, str | int]
-    title: str
-    score: float
-    s_base: float
-    s_graph: float
-    snippets: Sequence[Snippet]
-    path: Sequence[Hop]
-
-class TextPart(BaseModel):
-    """Кусок документа текстом: markdown раздела, DDL, профиль колонки."""
-
-    content_kind: str
-    text: str
-
-class NodePart(BaseModel):
-    """Кусок документа, который сам является узлом: картинка, pdf, дочерняя страница.
-
-    Рендерер решает по kind: пользователю показать картинку по адресу,
-    большой модели — строку «[image: schema.png — диаграмма потоков]».
-    """
-
-    content_kind: str
-    node_id: int
-    kind: str
-    address: Mapping[str, str | int]
-    title: str
-
-class NodeDocument(BaseModel):
-    """Узел целиком для kb_node: собирается из content tables, в источник не ходим.
-
-    truncated говорит, что части обрезаны лимитом: модель узнаёт, что видит
-    не всё, и может попросить остальное.
-    """
-
-    node_id: int
-    kind: str
-    address: Mapping[str, str | int]
-    title: str
-    parts: Sequence[TextPart | NodePart]
-    truncated: bool = False
-
-class ComputedEdge(StrEnum):
-    """Рёбра, которые ядро строит за корпус; как их назвать, говорит корпус."""
-
-    ENTITY = "entity"          # узел → сущность, которую упоминает
-    SIMILAR = "similar"        # по близости векторов
-
-class Corpus(Protocol[S_co]):
-    """Адаптер источника к ядру графа: ответы на то, чего ядро о нём не знает.
-
-    Ядро хранит узлы, ищет, строит два вида рёбер и ранжирует, но не знает,
-    что такое страница или таблица. Методы ниже — шесть вопросов, которые
-    оно задаёт корпусу, в том же порядке: где искать и сколько это весит,
-    каким способом искать за ядро, как назвать построенное, что взять из
-    узла, что источник знает о связях сам, как показать узел — коротко
-    (заголовок) и целиком (документ).
-
-    S — готовый запрос драйвера хранилища, которым корпус пользуется:
-    ConfluenceCorpus(Corpus[PgStatement]).
-    """
-
-    node_kinds: type[StrEnum]      # разбор строки ядра в модель источника (2.1)
-    content_kinds: type[StrEnum]   # левая ось подписи способа и таблицы content tables (раздел 4)
-    edge_kinds: type[StrEnum]      # ключи [search.expand.factors] (раздел 8)
-
-    def lookups(self) -> Sequence[IndexLookup[S_co]]: ...
-    def search_weights(self) -> Mapping[str, float]: ...                    # подпись способа -> вес в RRF, из [search.weights]
-
-    def role_lookups(self) -> Mapping[LookupRole, IndexLookup[S_co]]: ...   # каким способом ядро ищет имена и похожие
-    def computed_edge_kinds(self) -> Mapping[ComputedEdge, str]: ...        # как корпус зовёт рёбра, которые ядро строит
-
-    def entity_texts(self, node_id: int) -> Sequence[str]: ...              # из чего извлекать сущности
-    def similar_text(self, node_id: int) -> str: ...                        # чем узел представлен в поиске похожих
-
-    def explicit_edges(self, node: Node) -> Iterable[EdgeDraft]: ...        # связи, видные в самом источнике
-    def titles(self, node_ids: Sequence[int]) -> Mapping[int, str]: ...     # заголовки для выдачи, одним запросом
-    def document(self, node_id: int, limit: int) -> NodeDocument: ...       # узел целиком для kb_node
-
-S_contra = TypeVar("S_contra", contravariant=True)   # протоколы: запрос корпуса только на входе
-
-class SearchStore(Protocol[S_contra]):
-    """Хранилище поиска: один запрос кандидатов на все способы корпуса и исполнение одного способа.
-
-    candidates — запрос 1 алгоритма поиска (раздел 8): подзапросы всех
-    способов, слияние RRF, фрагменты, kind, адрес и метрики — одним SQL.
-    rows — исполнить подзапрос одного способа отдельно: для служебных
-    поисков ядра (рёбра similar и mention). Реализация — у драйвера
-    (PgSearchStore, 2.6). Corpus[S] стоит в позиции аргумента, поэтому S
-    здесь контравариантен.
-    """
-
-    async def candidates(self, corpus: Corpus[S_contra], query: str) -> Sequence[Candidate]: ...
-    async def rows(self, statement: S_contra) -> Sequence[LookupRow]: ...
-
-class Edge(BaseModel):
-    """Ребро как оно лежит в edges: обоснование — jsonb как есть, читает его тот, кто знает вид."""
-
-    source_id: int
-    target_id: int
-    kind: str
-    weight: float
-    evidence: Mapping[str, object]
-
-class GraphStore(Protocol):
-    """Хранилище графа: рёбра, соседи, расширение от опорных узлов; две реализации (3.7).
-
-    replace_edges — стадия edges заменяет рёбра узла указанных видов
-    целиком; neighbors — соседи для kb_related; expand — шаг 2 поиска
-    (8.2): от опорных узлов с их s_base по видам рёбер из
-    [search.expand.factors] на depth шагов, наружу Candidate с s_graph,
-    distance и путём; export — весь граф для глобальной стадии (NetworkX);
-    drop_node — узел из графа вместе с рёбрами.
-    """
-
-    async def replace_edges(self, node_id: int, kinds: Sequence[str], edges: Sequence[EdgeDraft]) -> None: ...
-    async def neighbors(self, node_id: int, kinds: Sequence[str]) -> Sequence[Edge]: ...
-    async def expand(self, seeds: Mapping[int, float], depth: int) -> Sequence[Candidate]: ...
-    async def export(self) -> Sequence[Edge]: ...
-    async def drop_node(self, node_id: int) -> None: ...
-```
-
-### 2.4 Индексы в Postgres
-
-```python
-# boba-db-pggraph — реализации Pg*Lookup: S = PgStatement, схема Postgres —
-# поле schema каждой реализации, способ и шаблон — свойства класса, остальные поля — экземпляра.
-# Объявления — frozen dataclass с явным наследованием протокола (правило §14:
-# pydantic-модель протокол наследовать не может).
-# Ошибки пакета наружу:
-# SearchIndexError — у способа нет веса в конфиге или его таблица не найдена.
-# EncoderConfigError — модели нет в embedding_models или её modality не сходится с запросом.
-# SearchStoreError — запрос упал в Postgres; текст — подпись способа, таблица, ошибка psycopg.
-
-@dataclass(frozen=True)
-class PgStatement:
-    """Готовый запрос psycopg: подзапрос, его параметры и подготовка сессии.
-
-    Собирают Pg*Lookup.statement(), исполняет PgSearchStore; ядро видит
-    его только как параметр типа S. setup — команды, которые надо выполнить
-    в той же транзакции до запроса (set local …): их знает только способ,
-    хранилище исполняет, не разбирая.
-    """
-
-    query: sql.Composed
-    params: Mapping[str, object]
-    setup: Sequence[sql.Composed] = ()
-
-@dataclass(frozen=True)
-class PgFtsLookup(IndexLookup[PgStatement]):      # tsvector + GIN, ts_rank_cd
-    METHOD: ClassVar[LookupMethod] = LookupMethod.FTS
-
-    content: str                          # вид содержимого корпуса: title, section, summary — левая половина подписи
-    schema: str                           # схема корпуса из [storage]: confluence | confluence_test — деталь реализации
-    table: str                            # таблица content tables: page_sections
-    node_column: str                      # колонка со ссылкой на nodes.id
-    row_column: str                       # ключ строки: id у page_sections, node_id у pages
-    text_column: str                      # колонка текста, отдаваемого в выдачу
-    tsv_column: str
-
-    def content_kind(self) -> str:
-        return self.content
-
-    def method(self) -> LookupMethod:
-        return self.METHOD
-
-    TEMPLATE: ClassVar[LiteralString] = """
-        with q as (
-            select
-                websearch_to_tsquery('russian', unaccent(%(text)s))
-                || websearch_to_tsquery('english', unaccent(%(text)s)) as tsq
-        )
-        select
-            t.{node} as node_id,
-            t.{row} as row_id,
-            t.{text} as snippet,
-            ts_rank_cd(t.{tsv}, q.tsq) as score
-        from
-            {schema}.{table} t,
-            q
-        where
-            t.{tsv} @@ q.tsq
-        order by
-            score desc
-        limit %(limit)s
-    """
-
-    async def statement(self, probe: Probe) -> PgStatement:
-        composed = sql.SQL(self.TEMPLATE).format(
-            schema=sql.Identifier(self.schema), table=sql.Identifier(self.table),
-            node=sql.Identifier(self.node_column), row=sql.Identifier(self.row_column),
-            text=sql.Identifier(self.text_column), tsv=sql.Identifier(self.tsv_column),
-        )
-        return PgStatement(query=composed, params={"text": probe.text, "limit": probe.limit})
-
-class VectorText:
-    """Текстовые формы pgvector: одна точка сборки литералов вектора для запросов."""
-
-    @classmethod
-    def dense(cls, vector: DenseVector) -> str:
-        """'[v1,v2,…]' — форма vector."""
-        ...
-
-    @classmethod
-    def sparse(cls, vector: SparseVector) -> str:
-        """'{i1:v1,i2:v2,…}/dim' — форма sparsevec."""
-        ...
-
-@dataclass(frozen=True)
-class PgVectorLookup(IndexLookup[PgStatement]):   # pgvector + HNSW; таблица векторов — на одну модель, фильтра по модели в запросе нет
-    """Плотный вектор: текст зонда кодируется энкодером той модели, которой посчитана таблица.
-
-    Им же ищутся картинки: у SigLIP текст и картинка живут в одном
-    пространстве, поэтому отличие только в энкодере и в том, что в выдачу
-    идёт имя файла, а не текст. Отдельного класса под картинки нет.
-    """
-
-    METHOD: ClassVar[LookupMethod] = LookupMethod.VECTOR
-
-    content: str
-    schema: str
-    table: str
-    node_column: str
-    row_column: str
-    text_column: str                      # что показать как цитату: текст раздела, имя файла у картинки
-    vector_table: str                     # таблица векторов этого содержимого и этой модели: page_section_vectors__e5
-    ref_column: str                       # ссылка на row_column
-    encoder: VectorEncoder[DenseVector]   # энкодер модели этой таблицы; корпус взял его из реестра при старте
-
-    def content_kind(self) -> str:
-        return self.content
-
-    def method(self) -> LookupMethod:
-        return self.METHOD
-
-    TEMPLATE: ClassVar[LiteralString] = """
-        select
-            t.{node} as node_id,
-            t.{row} as row_id,
-            t.{text} as snippet,
-            1 - (v.embedding <=> {vector}::vector) as score   -- косинусная близость: больше — лучше
-        from
-            {schema}.{vectors} v
-            join {schema}.{table} t on
-                t.{row} = v.{ref}
-        order by
-            v.embedding <=> {vector}::vector
-        limit %(limit)s
-    """
-
-    async def statement(self, probe: Probe) -> PgStatement:
-        vector = await self.encoder.encode(probe.text)
-        composed = sql.SQL(self.TEMPLATE).format(
-            schema=sql.Identifier(self.schema), vectors=sql.Identifier(self.vector_table),
-            table=sql.Identifier(self.table), node=sql.Identifier(self.node_column),
-            row=sql.Identifier(self.row_column), text=sql.Identifier(self.text_column),
-            ref=sql.Identifier(self.ref_column), vector=sql.Literal(VectorText.dense(vector)),
-        )
-        return PgStatement(query=composed, params={"limit": probe.limit}, setup=(self._ef_search(probe.limit),))
-        # вектор — литерал, а не параметр: ветки разных моделей в одном запросе (8.1) не делят имя параметра
-
-    EF_SEARCH_DEFAULT: ClassVar[int] = 40    # HNSW отдаёт не больше ef_search строк за скан; дефолт pgvector
-
-    def _ef_search(self, limit: int) -> sql.Composed:
-        """Иначе limit 50 молча вернёт 40 строк."""
-        return sql.SQL("set local hnsw.ef_search = {ef}").format(ef=sql.Literal(max(limit, self.EF_SEARCH_DEFAULT)))
-
-@dataclass(frozen=True)
-class PgTrigramLookup(IndexLookup[PgStatement]):   # pg_trgm + GiST (gist_trgm_ops): опечатки, склонения, части имён.
-                                                             # GiST, а не GIN: только он даёт top-N по <-> прямо из индекса (KNN);
-                                                             # % отсекает мусор по pg_trgm.similarity_threshold; %% — экранированный %
-    METHOD: ClassVar[LookupMethod] = LookupMethod.TRIGRAM
-
-    content: str
-    schema: str
-    table: str
-    node_column: str
-    row_column: str
-    text_column: str
-
-    def content_kind(self) -> str:
-        return self.content
-
-    def method(self) -> LookupMethod:
-        return self.METHOD
-
-    TEMPLATE: ClassVar[LiteralString] = """
-        select
-            t.{node} as node_id,
-            t.{row} as row_id,
-            t.{text} as snippet,
-            1 - (t.{text} <-> %(text)s) as score
-        from
-            {schema}.{table} t
-        where
-            t.{text} %% %(text)s
-        order by
-            t.{text} <-> %(text)s
-        limit %(limit)s
-    """
-
-    async def statement(self, probe: Probe) -> PgStatement:
-        composed = sql.SQL(self.TEMPLATE).format(
-            schema=sql.Identifier(self.schema), table=sql.Identifier(self.table),
-            node=sql.Identifier(self.node_column), row=sql.Identifier(self.row_column),
-            text=sql.Identifier(self.text_column),
-        )
-        return PgStatement(query=composed, params={"text": probe.text, "limit": probe.limit})
-
-@dataclass(frozen=True)
-class PgExactLookup(IndexLookup[PgStatement]):     # btree по lower(text): MENTION, NAMING, коды вида FLIP-457
-    METHOD: ClassVar[LookupMethod] = LookupMethod.EXACT
-
-    content: str
-    schema: str
-    table: str
-    node_column: str
-    row_column: str
-    text_column: str
-
-    def content_kind(self) -> str:
-        return self.content
-
-    def method(self) -> LookupMethod:
-        return self.METHOD
-
-    TEMPLATE: ClassVar[LiteralString] = """
-        select
-            t.{node} as node_id,
-            t.{row} as row_id,
-            t.{text} as snippet,
-            1.0 as score
-        from
-            {schema}.{table} t
-        where
-            lower(t.{text}) = lower(%(text)s)
-        limit %(limit)s
-    """
-
-    async def statement(self, probe: Probe) -> PgStatement:
-        composed = sql.SQL(self.TEMPLATE).format(
-            schema=sql.Identifier(self.schema), table=sql.Identifier(self.table),
-            node=sql.Identifier(self.node_column), row=sql.Identifier(self.row_column),
-            text=sql.Identifier(self.text_column),
-        )
-        return PgStatement(query=composed, params={"text": probe.text, "limit": probe.limit})
-
-@dataclass(frozen=True)
-class PgBm25Lookup(IndexLookup[PgStatement]):      # pg_search (ParadeDB): BM25 с нормировкой по длине; только если расширение стоит
-    METHOD: ClassVar[LookupMethod] = LookupMethod.BM25
-
-    content: str
-    schema: str
-    table: str
-    node_column: str
-    row_column: str
-    text_column: str
-    index_name: str                        # индекс bm25 над таблицей; нужен установке, запрос идёт через оператор @@@
-
-    def content_kind(self) -> str:
-        return self.content
-
-    def method(self) -> LookupMethod:
-        return self.METHOD
-
-    TEMPLATE: ClassVar[LiteralString] = """
-        select
-            t.{node} as node_id,
-            t.{row} as row_id,
-            t.{text} as snippet,
-            paradedb.score(t.{row}) as score
-        from
-            {schema}.{table} t
-        where
-            t.{text} @@@ %(text)s
-        order by
-            score desc
-        limit %(limit)s
-    """
-
-    async def statement(self, probe: Probe) -> PgStatement:
-        composed = sql.SQL(self.TEMPLATE).format(
-            schema=sql.Identifier(self.schema), table=sql.Identifier(self.table),
-            node=sql.Identifier(self.node_column), row=sql.Identifier(self.row_column),
-            text=sql.Identifier(self.text_column),
-        )
-        return PgStatement(query=composed, params={"text": probe.text, "limit": probe.limit})
-
-@dataclass(frozen=True)
-class PgSparseLookup(IndexLookup[PgStatement]):   # pgvector sparsevec + HNSW (sparsevec_ip_ops): SPLADE / BM42; таблица на модель;
-                                                  # <#> — отрицательное скалярное произведение: меньше — ближе
-    METHOD: ClassVar[LookupMethod] = LookupMethod.SPARSE
-
-    content: str
-    schema: str
-    table: str
-    node_column: str
-    row_column: str
-    text_column: str
-    vector_table: str
-    ref_column: str
-    encoder: VectorEncoder[SparseVector]
-
-    def content_kind(self) -> str:
-        return self.content
-
-    def method(self) -> LookupMethod:
-        return self.METHOD
-
-    TEMPLATE: ClassVar[LiteralString] = """
-        select
-            t.{node} as node_id,
-            t.{row} as row_id,
-            t.{text} as snippet,
-            -(v.embedding <#> {vector}::sparsevec) as score    -- <#> отрицательно: минус даёт «больше — лучше»
-        from
-            {schema}.{vectors} v
-            join {schema}.{table} t on
-                t.{row} = v.{ref}
-        order by
-            v.embedding <#> {vector}::sparsevec
-        limit %(limit)s
-    """
-
-    async def statement(self, probe: Probe) -> PgStatement:
-        vector = await self.encoder.encode(probe.text)
-        composed = sql.SQL(self.TEMPLATE).format(
-            schema=sql.Identifier(self.schema), vectors=sql.Identifier(self.vector_table),
-            table=sql.Identifier(self.table), node=sql.Identifier(self.node_column),
-            row=sql.Identifier(self.row_column), text=sql.Identifier(self.text_column),
-            ref=sql.Identifier(self.ref_column), vector=sql.Literal(VectorText.sparse(vector)),
-        )
-        return PgStatement(query=composed, params={"limit": probe.limit}, setup=(self._ef_search(probe.limit),))
-
-    EF_SEARCH_DEFAULT: ClassVar[int] = 40
-
-    def _ef_search(self, limit: int) -> sql.Composed:
-        return sql.SQL("set local hnsw.ef_search = {ef}").format(ef=sql.Literal(max(limit, self.EF_SEARCH_DEFAULT)))
-```
-
-Слой сущностей (3.3) ищется теми же классами, но объявляет их не корпус, а
-ядро: таблица `entities` и её колонки одинаковы в любой схеме. Корпус
-включает их в свой список и назначает вес в `[search.weights]`:
-
-```python
-class PgEntityLookups:
-    """Способы поиска по слою сущностей: точное имя и триграммы над entities; одинаковы для любого корпуса."""
-
-    CONTENT: ClassVar[str] = "entity"          # вид содержимого слоя сущностей: подписи entity/exact, entity/trigram
-
-    @classmethod
-    def of(cls, schema: str) -> Sequence[IndexLookup[PgStatement]]:
-        return (
-            PgExactLookup(content=cls.CONTENT, schema=schema, table="entities",
-                          node_column="node_id", row_column="node_id", text_column="name"),
-            PgTrigramLookup(content=cls.CONTENT, schema=schema, table="entities",
-                            node_column="node_id", row_column="node_id", text_column="display"),
-        )
-```
-
-Имена таблиц и колонок подставляются как `sql.Identifier`, значения — как
-параметры: инъекции через объявление нет по построению, а `LiteralString`
-в `ClassVar` не даёт собрать шаблон из строк на лету. Один класс
-обслуживает любое содержимое: `PgFtsLookup` для `pages.title_tsv` и для
-`page_sections.tsv` — два экземпляра с разным `content`. Новый способ
-поиска — новый класс с полями и `TEMPLATE`; ни ядро, ни `SearchStore` не
-меняются. Общего класса местоположения нет: у полнотекстового способа своя
-колонка `tsvector`, у векторного — своя таблица векторов и энкодер, и
-каждый объявляет свои поля сам.
-
-### 2.5 Энкодеры
-
-Энкодеры живут в `boba-llm` и одинаково служат индексации (вектор
-документа) и поиску (вектор запроса). Строка `embedding_models` описывает
-модель — что она такое; конфиг корпуса описывает, где её веса и как к ней
-подключаться; реестр соединяет их по имени:
-
-```python
-class EmbeddingModel(BaseModel):            # строка embedding_models
-    id: int
-    name: str
-    slug: str                               # суффикс имён таблиц векторов: e5
-    provider: str                           # local | openai
-    modality: str                           # text | image | sparse
-    revision: str
-    dim: int
-    index_distance: str
-    normalize: bool
-    max_tokens: int
-    query_prefix: str
-    passage_prefix: str
-
-class TextEmbedder(VectorEncoder[DenseVector]):
-    """e5, bge: префикс запроса, обрезка по max_tokens, нормировка — из строки модели;
-    сам расчёт — существующий порт boba.llm.embedding (fastembed локально или openai)."""
-
-    def __init__(self, spec: EmbeddingModel, backend: Embedder[str]) -> None: ...
-
-    async def encode(self, text: str) -> DenseVector:
-        prefixed = self._spec.query_prefix + self._truncate(text)
-        values = await self._backend.embed_query(prefixed)
-        if self._spec.normalize:
-            values = self._normalized(values)
-        return DenseVector(values=values)
-
-class ClipTextEncoder(VectorEncoder[DenseVector]):
-    """SigLIP/CLIP, текстовая башня на onnxruntime: вектор в общем с картинками пространстве.
-    Парный ImageEncoder(bytes) -> DenseVector той же моделью зовёт стадия индексации вложений."""
-
-    def __init__(self, spec: EmbeddingModel, session: OnnxSession, tokenizer: Tokenizer) -> None: ...
-
-    async def encode(self, text: str) -> DenseVector: ...
-
-class SparseEncoder(VectorEncoder[SparseVector]):
-    """SPLADE / BM42 на onnxruntime: веса термов по словарю модели -> sparsevec."""
-
-    def __init__(self, spec: EmbeddingModel, session: OnnxSession, tokenizer: Tokenizer) -> None: ...
-
-    async def encode(self, text: str) -> SparseVector: ...
-
-class PgVectorEncoderRegistry(VectorEncoderRegistry):
-    """Собирается при старте из строк embedding_models и секции [encoders] конфига;
-    экземпляры прогреваются один раз и живут весь прогон."""
-
-    def dense(self, model: str) -> VectorEncoder[DenseVector]:
-        if model not in self._dense:                    # собраны при старте по (modality, provider) строки
-            raise EncoderConfigError(f"embedding_models: dense model {model!r} is not registered: known {sorted(self._dense)}")
-
-        return self._dense[model]
-
-    def sparse(self, model: str) -> VectorEncoder[SparseVector]:
-        if model not in self._sparse:
-            raise EncoderConfigError(f"embedding_models: sparse model {model!r} is not registered: known {sorted(self._sparse)}")
-
-        return self._sparse[model]
-```
-
-Что берётся откуда: `modality` и `provider` выбирают класс (`text`+`local`
-→ `TextEmbedder` над fastembed, `text`+`openai` → `TextEmbedder` над
-HTTP, `image` → `ClipTextEncoder`, `sparse` → `SparseEncoder`);
-`query_prefix`, `max_tokens`, `normalize`, `dim` — из строки; каталог
-весов или endpoint и ключ — из конфига:
-
-```toml
-[encoders.models."multilingual-e5-large"]
-    model_dir = "${env.models}/fastembed/multilingual-e5-large"
-[encoders.models."siglip-so400m"]
-    model_dir = "${env.models}/onnx/siglip-so400m"
-[encoders.models."text-embedding-3-large"]
-    http      = "${http}"
-    base_url  = "${site.llm_url}"
-    api_key   = "${site.llm_token}"
-```
-
-Модель, объявленная в конфиге, но отсутствующая в `embedding_models`, и
-наоборот — ошибка старта с именем модели: реестр не угадывает.
-
-### 2.6 Хранилище поиска
-
-Реализация `SearchStore` над psycopg. Главное в ней — `candidates`: не
-двенадцать запросов и слияние в Python, а один SQL, в который подзапросы
-способов вложены ветками `union all`, а слияние RRF, отбор фрагментов,
-`kind`, адрес и метрики считаются в базе. В Python приходят только строки,
-которые пойдут в выдачу. Сам алгоритм и полный текст запроса — в разделе 8;
-здесь то, как хранилище его собирает.
-
-```python
-class ExpandConfig(BaseModel):              # секция [search.expand]: расширение по графу (8.2)
-    depth: int = Field(gt=0)                # шагов от опорных узлов
-    weight: float = Field(ge=0)             # вклад s_graph в итоговый счёт
-    factors: Mapping[str, float]            # вид ребра -> множитель; вид без множителя в обходе не участвует
-
-class SearchConfig(BaseModel):              # секция [search] конфига корпуса
-    candidates: int = Field(gt=0)           # кандидатов с одного способа
-    seed_k: int = Field(gt=0)               # опорных узлов после RRF
-    snippets_per_node: int = Field(gt=0)    # фрагментов на узел в выдаче
-    rrf_k: int = Field(gt=0)                # константа RRF, 60
-    metrics: Mapping[str, float]            # [search.metrics]: имя метрики из ranks -> её вес в счёте
-    weights: Mapping[str, float]            # [search.weights]: подпись способа -> вес в RRF
-    expand: ExpandConfig                    # [search.expand]: раздел 8
-
-class PgSearchStore(SearchStore[PgStatement]):
-    """Реализация SearchStore над psycopg: один запрос кандидатов на все способы корпуса.
-
-    Одно хранилище на корпус: схема и параметры поиска — из его конфига.
-    Пул — общий пул приложения.
-    """
-
-    BRANCH: ClassVar[LiteralString] = """
-        select
-            {label} as lookup,
-            {content} as content_kind,
-            {weight}::real as weight,
-            q.node_id,
-            q.row_id,
-            q.snippet,
-            row_number() over (order by q.score desc) as rank
-        from
-            ({body}) q
-    """
-
-    def __init__(self, pool: AsyncConnectionPool, schema: str, cfg: SearchConfig) -> None:
-        self._pool = pool
-        self._schema = schema
-        self._cfg = cfg
-
-    async def candidates(self, corpus: Corpus[PgStatement], query: str) -> Sequence[Candidate]:
-        """Запрос 1 алгоритма поиска: ветки способов -> RRF -> фрагменты -> nodes, ranks.
-
-        Подзапросы способов собираются параллельно: векторные считают
-        вектор своим энкодером здесь. Параметры text и limit у всех веток
-        общие — зонд один; вектор способ подставляет литералом, поэтому
-        имена параметров между ветками не сталкиваются. Подготовку сессии
-        (setup) веток хранилище исполняет в той же транзакции до запроса.
-        """
-        weights = corpus.search_weights()
-        probe = Probe(text=query, limit=self._cfg.candidates)
-        lookups = corpus.lookups()
-
-        builds: list[Awaitable[PgStatement]] = []
-        for lookup in lookups:
-            builds.append(lookup.statement(probe))
-
-        statements = await asyncio.gather(*builds)
-        branches: list[sql.Composed] = []
-        params: dict[str, object] = {
-            "rrf_k": self._cfg.rrf_k,
-            "seed_k": self._cfg.seed_k,
-            "per_node": self._cfg.snippets_per_node,
-            "metrics": list(self._cfg.metrics),
-        }
-        for lookup, statement in zip(lookups, statements, strict=True):
-            label = self._label(lookup, weights)
-            branches.append(
-                sql.SQL(self.BRANCH).format(
-                    label=sql.Literal(label),
-                    content=sql.Literal(lookup.content_kind()),
-                    weight=sql.Literal(weights[label]),
-                    body=statement.query,
-                )
-            )
-            params.update(statement.params)
-
-        composed = sql.SQL(CandidatesQuery.TEMPLATE).format(
-            schema=sql.Identifier(self._schema),
-            branches=sql.SQL("\n        union all\n").join(branches),
-        )
-        setup: list[sql.Composed] = []
-        for statement in statements:
-            setup.extend(statement.setup)
-
-        async with self._pool.connection() as conn, conn.transaction():
-            for command in setup:                    # подготовка сессии от способов: что в ней, хранилище не знает
-                await conn.execute(command)
-
-            cursor = await conn.execute(composed, params)
-            rows = await cursor.fetchall()
-
-        found: list[Candidate] = []
-        for row in rows:
-            found.append(Candidate.model_validate(row))
-
-        return found
-
-    def _label(self, lookup: IndexLookup[PgStatement], weights: Mapping[str, float]) -> str:
-        """Подпись способа; заодно проверка, что вес для неё объявлен — пропуск в конфиге молча обнулил бы ветку."""
-        label = LookupMethod.label_of(lookup.content_kind(), lookup.method())
-        if label not in weights:
-            raise SearchIndexError(
-                f"lookup {label!r}: no weight in [search.weights]: known {sorted(weights)}"
-            )
-
-        return label
-
-    async def rows(self, statement: PgStatement) -> Sequence[LookupRow]:
-        """Один способ сам по себе: для рёбер similar и mention, которые строит ядро."""
-        async with self._pool.connection() as conn, conn.transaction():
-            for command in statement.setup:
-                await conn.execute(command)
-
-            cursor = await conn.execute(statement.query, statement.params)
-            rows = await cursor.fetchall()
-
-        found: list[LookupRow] = []
-        for row in rows:
-            found.append(LookupRow.model_validate(row))
-
-        return found
-
-# ребро similar: тем способом, который корпус назначил роли, по тексту самого узла; score строки — косинус для обоснования
-roles = corpus.role_lookups()
-statement = await roles[LookupRole.SIMILARITY].statement(Probe(text=corpus.similar_text(node_id), limit=similar_top_k))
-neighbours = await store.rows(statement)
-
-# ребро mention: заголовок другого узла, точное совпадение
-statement = await roles[LookupRole.NAMING].statement(Probe(text=title, limit=1))
-named = await store.rows(statement)
-```
-
-`row_number()` в ветке нумерует строки способа по его `score`, поэтому
-способ отдаёт `score` в одном направлении «больше — лучше»: полнотекст —
-`ts_rank_cd`, вектор — `1 - расстояние`, разреженный — минус скалярное
-произведение, точное совпадение — константа. Порядок внутри подзапроса
-способа всё равно нужен: HNSW и GiST отдают top-N только через `order by`
-по своему оператору. Подготовка сессии — тоже знание способа: HNSW
-отдаёт не больше `hnsw.ef_search` строк за скан (по умолчанию 40), и
-векторный способ кладёт в `setup` своего `PgStatement`
-`set local hnsw.ef_search = max(limit, 40)`; хранилище исполняет
-подготовку всех веток в транзакции запроса, не зная, что в ней.
-
-## 3. Graph tables
+### 2.2 Graph tables
 
 Ниже — реализация портов ядра в Postgres: то, что `boba-db-pggraph` создаёт
-в схеме корпуса. Здесь нет ни текста, ни векторов: они в content tables (раздел
-4), ядро добирается до них через объявленные корпусом способы поиска.
+в схеме корпуса. Здесь нет ни текста, ни векторов: они в content tables (разделы
+3–5), ядро добирается до них через объявленные корпусом способы поиска.
 
 Все узлы и связи ходят по суррогатному `bigint` внутри схемы. Внешняя
-идентичность узла — адрес частями (раздел 3.6), схема — одна из частей;
+идентичность узла — адрес частями (раздел 2.2.5), схема — одна из частей;
 уникальность держится на нём. Строка адреса — представление, а не хранимое
 поле: ядро собирает её из частей по одному правилу и разбирает обратно.
 
@@ -1596,26 +217,24 @@ named = await store.rows(statement)
 |---|---|
 | `nodes` | узел: только идентичность |
 | `sync` | учёт обхода: что качать, что разбирать, что забыть |
-| `entities` | содержимое узлов-сущностей: имя, форма показа, преобладающий тип (3.3) |
 | `edges` | рёбра по виду связи, с весом и обоснованием |
 | `ranks` | метрики узла по алгоритмам |
-| `embedding_models` | модели эмбеддинга и их атрибуты |
 
 Об узле хранится информация трёх уровней:
 
 | уровень | где | страница FLIP-457 | таблица `dm.fact_orders` |
 |---|---|---|---|
 | 1 идентичность и учёт | `nodes`, `sync` | `kind = confluence_page`, адрес из `scheme`, `host`, `port`, `path` | `kind = pg_table`, адрес из `scheme`, `host`, `port`, `database`, `schema`, `table` |
-| 2 связи и производные ядра | `edges`, `entities`, `ranks` | `link`, `mention`, `entity`, `similar`; `pagerank` | `contains`, `foreign_key`, `inferred_key`; `pagerank` |
-| 3 всё содержимое | content tables | `pages`: заголовок, метки, оглавление, версия<br>`page_sections`: оригинал, markdown, `tsv`, векторы<br>`page_summaries`: саммари, `tsv`, векторы | `relations`: определение, комментарий, оценка строк<br>`relation_ddl`, `relation_profiles`, `relation_samples`: `tsv`, векторы<br>`columns`, `column_profiles` |
+| 2 связи и производные ядра | `edges`, `ranks` | `link`, `mention`, `entity`, `similar`; `pagerank` | `contains`, `foreign_key`, `inferred_key`; `pagerank` |
+| 3 всё содержимое | content tables слоёв (разделы 3–5) | `pages`: заголовок, метки, оглавление, версия<br>`page_sections`: оригинал, markdown, `tsv`, векторы<br>`page_summaries`: саммари, `tsv`, векторы<br>`entities`: сущности, которые страница упоминает | `relations`: определение, комментарий, оценка строк<br>`relation_ddl`, `relation_profiles`, `relation_samples`: `tsv`, векторы<br>`columns`, `column_profiles`<br>`entities`: сущности из комментариев и имён |
 
-### 3.1 Узлы
+#### 2.2.1 Узлы
 
 ```sql
 create table nodes (
     id            bigserial   primary key,
     kind          text        not null,   -- полный дискриминатор: confluence_page | pg_table | ch_column — перечисление корпуса, раздел 2
-    address       jsonb       not null,   -- адрес по ролям, включая scheme, раздел 3.6; идентичность узла
+    address       jsonb       not null,   -- адрес по ролям, включая scheme, раздел 2.2.5; идентичность узла
     created_at    timestamptz not null default now(),
     updated_at    timestamptz not null default now()
 );
@@ -1629,7 +248,7 @@ create index on nodes using gin (address jsonb_path_ops);
 связи между узлами, включая вложенность (страница → вложение, таблица →
 колонка), — только в `edges`. Жизненный цикл узла от других узлов не зависит: колонка исчезнувшей таблицы
 удаляется не каскадом от таблицы, а потому, что её самой больше нет в
-списке обхода (3.2).
+списке обхода (2.2.2).
 
 | id | kind | address |
 |---|---|---|
@@ -1649,7 +268,7 @@ create index on nodes using gin (address jsonb_path_ops);
 Что 18 лежит в 17, а 42 — в 41, говорят рёбра `(17, 18, has_attachment)` и
 `(41, 42, contains)`.
 
-### 3.2 Учёт обхода
+#### 2.2.2 Учёт обхода
 
 Индексация — не разовая загрузка, а повторяющийся обход источника.
 Каждый прогон должен качать и разбирать только то, что изменилось, и
@@ -1811,7 +430,7 @@ class ConfluenceParseMethod(StrEnum):
 | 18 | `{text, ocr}` | `{text, caption}` | нет `caption` — описать картинку моделью зрения; `ocr` остаётся |
 
 **`pipeline_stamp`** — отпечаток настроек, которыми узел разобран. Конвейер
-— цепочка стадий индексации (раздел 7); у каждой стадии есть параметры, от
+— цепочка стадий индексации (раздел 8); у каждой стадии есть параметры, от
 которых зависит результат, и штамп — их сводка одной строкой:
 
 ```
@@ -1866,133 +485,7 @@ reader=confluence:3;chunk=4000/0;embed=multilingual-e5-large;ner=gliner_multi-v2
 | 41 | `{structure: 3f9a1c…, data: ins=12401233;upd=88102;…}` | `{structure: 8c02d7…, data: e1b4…}` | `{text, profile, entities}` | `reader=postgres:1;chunk=4000/0;embed=e5` | `schema:dm` | `run-0912b` | |
 | 50 | `{structure: 2026-09-11T22:40:03, data: …;rows=9812…}` | `{structure: e77b…, data: 40c1…}` | `{text, profile}` | `reader=clickhouse:1;chunk=4000/0;embed=e5` | `database:logs` | `run-0912b` | |
 
-### 3.3 Сущности
-
-`Entity` — именованная вещь, о которой говорят тексты: продукт, технология,
-организация, версия, термин предметной области, метка. `KRaft`, `ClickHouse`,
-`Gazprom-Neft`, «качество данных». Она не лежит ни в каком источнике как
-объект: её нельзя скачать, у неё нет страницы и нет таблицы, она
-производная от текста. Но с ней делают всё то же, что с `Node`: ищут по
-имени, показывают в выдаче, ходят от неё к тому, что о ней написано, и
-считают её место в графе. Поэтому `Entity` — это `Node` с видом `entity`,
-и слой сущностей устроен так же, как слой страниц или слой таблиц: свой
-вид узла, свой адрес, своя content table, свои способы поиска, свой вид
-рёбер. Разница в одном: его никто не скачивает — он появляется при
-индексации других слоёв и живёт во времени. Объявляет его ядро, потому
-что он одинаков для любого корпуса.
-
-**Адрес чистый, без источника.** ClickHouse один и тот же, где бы о нём
-ни писали, поэтому адрес — `entity://clickhouse`: схема `entity` и
-нормализованное имя, без корпуса и без вида (`EntityAddress`, раздел 2).
-Вид сущности — продукт, технология, термин — атрибут, а не часть
-идентичности: NER может назвать `kraft` продуктом на одной странице и
-технологией на другой, а сущность одна, и вид у неё — преобладающий.
-Каждая схема корпуса держит свои узлы-сущности, потому что нумерация
-узлов на схему; одинаковый адрес `entity://kraft` в `confluence` и в
-`warehouse` — это и есть мост между корпусами, когда он понадобится.
-
-**Откуда берутся.** Стадия `entities` конвейера (раздел 7) берёт у
-корпуса тексты узла (`Corpus.entity_texts`) и извлекает из них имена
-четырьмя способами, все проверены на пробе (7.1):
-
-- NER моделью GLiNER: ей даётся текст и список типов (`software product`,
-  `technology`, `version`, `organization`), она размечает отрезки этих
-  типов. Модель не знает списка продуктов заранее и узнаёт их по
-  контексту — так находятся и `KRaft`, и `Arenadata QuickMarts`.
-- Ключевые фразы YAKE: статистика по тексту без модели, даёт термины
-  предметной области вроде «качество данных», вид `term`.
-- Метки страницы Confluence как есть, вид `label`.
-- В хранилище — токены имён колонок и таблиц: `customer_id` и
-  `customer_region` дают `customer`, вид `field`.
-
-Найденное приводится к одной форме — нижний регистр, один пробел, без
-диакритики, — и это имя становится адресом. Узел-сущность создаётся
-upsert'ом по адресу, как любой `Node`; его содержимое — одна строка
-content table ядра:
-
-```sql
-create table entities (
-    node_id       bigint      primary key references nodes on delete cascade,
-    name          text        not null unique,   -- нормализованная форма, она же в адресе
-    display       text        not null,          -- форма, в которой встретилась первой
-    type          text        not null,          -- преобладающий тип: product | technology | organization | version | term | label | field
-    tsv           tsvector    generated always as (to_tsvector('simple', name)) stored
-);
-create index on entities using gist (name gist_trgm_ops);   -- entity/trigram
-```
-
-**Связь узла с сущностью — ребро `entity`** от `Node` к `Entity` в
-`edges`, как любая другая связь: вес — tf-idf, обоснование — сколько раз
-встретилась и каким типом её назвали (`EntityEvidence`, 3.4). Отдельной
-таблицы привязок нет.
-
-```
-tf(n, e)  = count(n, e) / Σ count(n, ·)
-idf(e)    = ln((N + 1) / (df(e) + 1)) + 1        N — узлов с сущностями, df — узлов, упоминающих e
-weight    = tf · idf / max по узлу n            в [0, 1], 1 у самой характерной сущности узла
-```
-
-`count` считает стадия для одного узла; `idf` зависит от всего корпуса и
-пересчитывается глобальной стадией `kb_graph_rebuild`, которая обновляет
-веса всех рёбер `entity`. Сущность на половине корпуса (`cassandra` в
-пространстве Cassandra) получает малый `idf` и не связывает всё со всем;
-сущность на 2–5 узлах связывает их сильно.
-
-Так выглядят страница FLIP-457 и таблица `dm.fact_orders` со своими
-сущностями. `nodes`:
-
-| id | kind | address |
-|---|---|---|
-| 17 | `confluence_page` | `{"scheme": "https", "host": "cwiki.apache.org", "port": 443, "path": "/confluence/rest/api/content/307136992"}` |
-| 60 | `entity` | `{"scheme": "entity", "name": "kubernetes"}` |
-| 61 | `entity` | `{"scheme": "entity", "name": "kraft"}` |
-| 62 | `entity` | `{"scheme": "entity", "name": "accepted"}` |
-| 63 | `entity` | `{"scheme": "entity", "name": "customer"}` |
-| 64 | `entity` | `{"scheme": "entity", "name": "oms"}` |
-
-`entities`:
-
-| node_id | name | display | type |
-|---|---|---|---|
-| 60 | `kubernetes` | Kubernetes | technology |
-| 61 | `kraft` | KRaft | product |
-| 62 | `accepted` | accepted | label |
-| 63 | `customer` | customer | field |
-| 64 | `oms` | OMS | term |
-
-`edges` вида `entity`:
-
-| source_id | target_id | kind | weight | evidence | почему такой вес |
-|---|---|---|---|---|---|
-| 17 | 60 | `entity` | 0.61 | `{"count": 4, "type": "technology"}` | страница FLIP-457 упоминает Kubernetes 4 раза |
-| 17 | 62 | `entity` | 0.20 | `{"count": 1, "type": "label"}` | метка `accepted` — на 40% страниц пространства, `idf` мал |
-| 41 | 63 | `entity` | 0.83 | `{"count": 2, "type": "field"}` | колонки `customer_id`, `customer_region` |
-| 41 | 64 | `entity` | 0.95 | `{"count": 3, "type": "term"}` | OMS в комментариях таблицы |
-
-**Что это даёт.** Две страницы, обе упоминающие `kraft`, связаны путём в
-два шага через узел `entity://kraft`, и расширение по графу (8.2) находит
-этот путь само; вычислять и хранить отдельное ребро «общие сущности»
-между страницами не нужно. Через частую сущность активация растекается
-слабо, потому что вес каждого её ребра мал. На запрос «kraft» способы
-`entity/exact` и `entity/trigram` находят сам узел-сущность, и в выдаче
-он стоит первым, а страницы о нём приходят как его соседи; `kb_node` по
-адресу `entity://kraft` показывает, где она встречается и с каким весом.
-Глобальные метрики (3.5) считаются и для сущностей: PageRank сущности —
-насколько термин центральный для корпуса.
-
-**Жизнь во времени.** У сущности нет области обхода и версии в
-источнике: она возникает, когда её впервые упомянул какой-то `Node`, и
-дальше укрепляется или слабеет вместе с корпусом. Каждая новая страница о
-`KRaft` добавляет ей входящее ребро — растут `degree_in` и PageRank, она
-становится центральнее; но каждое ребро при этом чуть слабее, потому что
-`idf` падает: сущность, о которой пишут все, перестаёт отличать одну
-страницу от другой. Страницу удалили — её ребро ушло вместе с ней. Стадия
-`entities` отмечает `last_seen_run` у каждой встреченной сущности, а
-глобальная стадия пересчитывает `idf` и удаляет узлы-сущности, у которых
-не осталось входящих рёбер `entity`, — вместе с ними уходит и строка
-`entities`.
-
-### 3.4 Рёбра
+#### 2.2.3 Рёбра
 
 ```sql
 create table edges (
@@ -2010,7 +503,7 @@ create index on edges (target_id, source_id, kind) include (weight);   -- обр
 Один вид — одно ребро. Симметричные виды (`similar`, `same_column`,
 `co_queried`) хранятся один раз, `source_id < target_id`.
 Обход идёт по представлению `adjacency`, где каждое ребро развёрнуто в обе
-стороны: расширение по графу (раздел 8) направления не различает —
+стороны: расширение по графу (раздел 9) направления не различает —
 страница, на которую ссылаются найденные, не менее важна, чем та, на
 которую ссылаются они.
 
@@ -2021,46 +514,18 @@ create view adjacency as
     select target_id, source_id, kind, weight from edges;
 ```
 
-Ядро само считает два вида для любого корпуса — по общим сущностям и по
-близости векторов тем способом, который корпус назначил роли
-`similarity`; имена этим рёбрам корпус даёт таблицей
-`computed_edge_kinds()`. Всё остальное, включая
+Ядро само считает два вида для любого корпуса — от узла к сущностям,
+которые упоминает его текст (раздел 5), и по близости векторов тем
+способом, который корпус назначил роли `similarity` (2.4); имена этим
+рёбрам корпус даёт таблицей `computed_edge_kinds()`. Всё остальное, включая
 вложенность, объявляет и считает корпус. Ни один список ниже не закрыт:
 новый признак связи — новый член перечисления корпуса и его вычислитель,
 ядро не меняется. Множители веса при обходе — по `kind` в конфиге
-корпуса (раздел 8).
+корпуса (раздел 9).
 
-```python
-class ConfluenceEdgeKind(StrEnum):
-    IN_SPACE = "in_space"              # пространство → страница
-    CHILD_PAGE = "child_page"          # страница → дочерняя страница в дереве пространства
-    HAS_ATTACHMENT = "has_attachment"  # страница → вложение
-    LINK = "link"                      # ссылка на страницу в теле
-    ATTACHMENT_REF = "attachment_ref"  # ссылка на вложение другой страницы
-    MENTION = "mention"                # заголовок другой страницы встретился в тексте
-    SERIES = "series"                  # общий код серии в заголовках: FLIP-457 и FLIP-458
-    ENTITY = "entity"                  # страница → сущность, которую упоминает   (считает ядро)
-    SIMILAR = "similar"                # близость векторов                     (считает ядро)
-    SAME_AUTHOR = "same_author"        # один автор последней правки
-
-class WarehouseEdgeKind(StrEnum):
-    CONTAINS = "contains"              # база → схема → таблица; таблица → колонка, индекс, ограничение, триггер
-    FOREIGN_KEY = "foreign_key"        # объявленный внешний ключ; редок, но надёжен
-    VIEW_SOURCE = "view_source"        # представление читает таблицу — из его определения
-    ROUTINE_USES = "routine_uses"      # процедура читает или пишет таблицу
-    INFERRED_KEY = "inferred_key"      # значения колонки A содержатся в значениях колонки B: кандидат в ключ
-    SAME_COLUMN = "same_column"        # колонка с тем же именем и типом в двух таблицах
-    NAME_PATTERN = "name_pattern"      # общий префикс или суффикс имён: fact_*, *_hist, stg_orders/dm_orders
-    CO_QUERIED = "co_queried"          # таблицы вместе в одних запросах: pg_stat_statements, system.query_log
-    MENTION = "mention"                # имя таблицы в комментарии другой
-    ENTITY = "entity"                  # отношение → сущность, которую упоминает (считает ядро)
-    SIMILAR = "similar"                # близость векторов                     (считает ядро)
-```
-
-Для хранилища именно косвенные виды — `inferred_key`, `same_column`,
-`name_pattern`, `co_queried` — описывают хаос, где внешних ключей нет:
-`fact_orders.customer_id ⊆ dim_customer.customer_id` при 99,8% покрытия
-значений — почти наверняка ключ, хоть он и не объявлен.
+Виды рёбер объявляет слой: перечисления `ConfluenceEdgeKind` и
+`WarehouseEdgeKind` — в разделах 3.3 и 4.4, ребро `entity` — в 5.3. Ядро
+знает только строку `kind`.
 
 **Обоснование ребра.** `weight` — число для обхода, `evidence` — почему
 оно такое: факты, по которым ребро посчитано, и параметры расчёта, при
@@ -2072,76 +537,26 @@ class WarehouseEdgeKind(StrEnum):
 ```python
 # boba-graph: обоснования рёбер, которые считает ядро
 class FactEvidence(Evidence):
-    """Ребро — факт метаданных источника (in_space, has_attachment, contains): обосновывать нечего, dump() даёт {}."""
-
-class EntityEvidence(Evidence):
-    """Узел упоминает сущность: сколько раз и каким типом её назвал экстрактор в этом узле."""
-
-    count: int
-    type: str                           # product | technology | … — тип в этом узле; у сущности хранится преобладающий
+    """Обоснование ребра, которое есть факт метаданных источника (in_space, has_attachment, contains): проверять нечего, dump() пуст."""
 
 class SimilarEvidence(Evidence):
-    """Близость векторов: косинус, чей вектор и при каком пороге."""
+    """Обоснование ребра similar: почему узлы сочтены похожими — косинус, каким способом сравнивали и при каком пороге."""
 
     cosine: float
     lookup: str                         # подпись способа роли similarity: "summary/vector"
-    model: str                          # embedding_models.name
+    model: str                          # имя модели из [encoders.models]
     min_cos: float                      # порог из [graph] на момент расчёта
-
-# boba-corpus-confluence: обоснования явных рёбер
-class LinkEvidence(Evidence):
-    """Ссылка в теле страницы: якорь и фраза вокруг, из какого раздела."""
-
-    anchor: str
-    phrase: str
-    section_id: int
-
-class MentionEvidence(Evidence):
-    """Заголовок другого узла найден в тексте способом роли naming, точным совпадением."""
-
-    title: str
-    occurrences: int
-    section_id: int
-    min_words: int                      # mention_min_words на момент расчёта
-
-class SeriesEvidence(Evidence):
-    """Общий код серии в заголовках: FLIP-457 и FLIP-458."""
-
-    prefix: str
-    numbers: Sequence[int]
-
-class SameAuthorEvidence(Evidence):
-    author: str
 ```
 
-Как считается каждое, по видам:
+Обоснования явных рёбер слоёв — рядом с их перечислениями (3.3, 4.4, 5.3).
+Как считаются рёбра ядра:
 
-- `link`, `attachment_ref` — корпус, из разобранной страницы: каждая
-  ссылка в теле даёт якорь и фразу вокруг него; адрес цели разрешается в
-  узел, а если цели ещё нет, ссылка ждёт в `pending_links` и ребро
-  строится при её появлении.
-- `mention` — корпус: заголовки других узлов ищутся в тексте страницы
-  способом роли `naming`, точным совпадением; заголовок короче
-  `mention_min_words` не считается.
-- `series` — корпус: код серии из заголовка регулярным выражением; общий
-  префикс у двух страниц.
-- `in_space`, `child_page`, `has_attachment`, `contains` — факт из
-  метаданных источника, `FactEvidence`; `same_author` — логин автора.
-- `entity` — ядро, стадия `entities`: от узла к каждой сущности, которую
-  извлёк из его текстов `EntityExtractor`; вес tf-idf (3.3), `idf` —
-  глобальной стадией.
 - `similar` — ядро: способом роли `similarity` ищет похожие на текст
-  самого узла (`Corpus.similar_text`), верх `similar_top_k`, косинус не
+  самого узла (`Corpus.similar_text`, 2.4), верх `similar_top_k`, косинус не
   ниже `similar_min_cos`; сам узел из выдачи отбрасывается.
-- Хранилище, следующий план: `inferred_key` — включение значений колонки
-  A в значения B на выборке, в обосновании покрытие и размер выборки;
-  `same_column` — совпадение имени и типа; `name_pattern` — общий префикс
-  или суффикс; `co_queried` — число совместных запросов за окно из
-  `pg_stat_statements` или `system.query_log`; `view_source`,
-  `routine_uses` — разбор определения, в обосновании имя объекта.
 
 Три потребителя обоснования, и ранжирование среди них не значится: обход
-(раздел 8) берёт только `weight` и множитель по `kind`.
+(раздел 9) берёт только `weight` и множитель по `kind`.
 
 1. **Показ.** `kb_node` и `kb_related` отдают рёбра узла с `evidence`
    как есть: по нему модель судит, насколько доверять связи — ссылка с
@@ -2152,6 +567,8 @@ class SameAuthorEvidence(Evidence):
 3. **Частичный пересчёт.** После смены порога стадия `edges` перестраивает
    только виды рёбер, чьи параметры в обосновании разошлись с конфигом,
    а не весь граф.
+
+Пример рёбер разных слоёв в одной таблице `edges`:
 
 | source_id | target_id | kind | weight | evidence |
 |---|---|---|---|---|
@@ -2166,7 +583,7 @@ class SameAuthorEvidence(Evidence):
 | 41 | 52 | `view_source` | 1.00 | `{"view": "dm.v_orders_daily"}` |
 | 41 | 45 | `co_queried` | 0.63 | `{"queries": 118, "window": "30d"}` |
 
-### 3.5 Метрики
+#### 2.2.4 Метрики
 
 Метрика — число про один `Node`, которое нельзя узнать, глядя на него
 одного: оно зависит от всего графа. PageRank говорит, насколько на узел
@@ -2176,7 +593,7 @@ class SameAuthorEvidence(Evidence):
 номер плотной группы, в которую он попал. Это не связи и не содержимое,
 а третья вещь: производное свойство узла, которое считает глобальная
 стадия по всему графу сразу (NetworkX) и которое поиск добавляет к счёту
-(раздел 8), чтобы среди равных по тексту поднять центральный.
+(раздел 9), чтобы среди равных по тексту поднять центральный.
 
 Таблица в длинном формате — одна строка на пару «узел, метрика», — потому
 что метрик много, набор открыт, и колонка в `nodes` на каждый алгоритм
@@ -2196,7 +613,7 @@ create index on ranks (metric, value desc);
 
 Глобальная стадия считает набор метрик из конфига; добавление алгоритма —
 новая функция NetworkX и новое имя метрики, схема не меняется. Ранжирование
-использует те метрики, что названы в его конфиге (раздел 8).
+использует те метрики, что названы в его конфиге (раздел 9).
 
 | node_id | metric | value | computed_at | run_id | |
 |---|---|---|---|---|---|
@@ -2207,7 +624,7 @@ create index on ranks (metric, value desc);
 | 41 | `pagerank` | 0.0301 | 2026-09-12 | `graph-0912` | таблица, на которую ссылаются многие |
 | 41 | `community` | 2 | 2026-09-12 | `graph-0912` | |
 
-### 3.6 Адрес узла
+#### 2.2.5 Адрес узла
 
 Адрес хранится частями в `nodes.address` — jsonb-объект «роль → значение».
 Роли объявляет корпус, ядро их не толкует: хранит, сравнивает, собирает
@@ -2289,64 +706,11 @@ s3://s3.eu-central-1.amazonaws.com/company-raw/orders/2026-09-01.parquet?column=
 внутри файла — лист таблицы, партицию каталога, колонку parquet — той же
 ролью в query, что и объект внутри базы.
 
-Полный набор объектов PostgreSQL. Роли идут в порядке вложенности:
-`schema`, затем объект, затем то, что внутри объекта.
-
-| объект | адрес |
-|---|---|
-| база | `postgresql://dwh.local:5432/dwh` |
-| схема | `postgresql://dwh.local:5432/dwh?schema=dm` |
-| таблица | `postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders` |
-| колонка таблицы | `postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders&column=amount` |
-| представление | `postgresql://dwh.local:5432/dwh?schema=dm&view=v_orders_daily` |
-| колонка представления | `postgresql://dwh.local:5432/dwh?schema=dm&view=v_orders_daily&column=day` |
-| материализованное представление | `postgresql://dwh.local:5432/dwh?schema=dm&matview=mv_orders_month` |
-| колонка matview | `postgresql://dwh.local:5432/dwh?schema=dm&matview=mv_orders_month&column=total` |
-| индекс, имя уникально в схеме | `postgresql://dwh.local:5432/dwh?schema=dm&index=fact_orders_customer_idx` |
-| последовательность | `postgresql://dwh.local:5432/dwh?schema=dm&sequence=fact_orders_order_id_seq` |
-| функция | `postgresql://dwh.local:5432/dwh?schema=dm&function=calc_total&args=bigint%2Cnumeric` |
-| перегрузка той же функции — другой узел | `postgresql://dwh.local:5432/dwh?schema=dm&function=calc_total&args=bigint` |
-| функция без аргументов: `args` пуст, но присутствует | `postgresql://dwh.local:5432/dwh?schema=dm&function=now_utc&args=` |
-| процедура | `postgresql://dwh.local:5432/dwh?schema=dm&procedure=close_orders&args=date%2Ctext` |
-| ограничение | `postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders&constraint=fact_orders_customer_fkey` |
-| триггер | `postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders&trigger=trg_orders_audit` |
-
-Функции и процедуры уникальны сигнатурой, а не именем: `args` — типы
-аргументов в форме `pg_get_function_identity_arguments` (имена типов
-каноничны, `integer`, а не `int4`), через запятую, запятая кодируется.
-Роль `args` у функций и процедур обязательна даже пустой, чтобы адрес
-без аргументов не спутать с адресом, где аргументы забыли. Индексы и
-последовательности в PostgreSQL уникальны в схеме и от таблицы не зависят,
-поэтому `table` в их адрес не входит — принадлежность таблице выражает
-ребро `contains`; ограничения и триггеры уникальны внутри таблицы, поэтому идут
-после `table`.
-
-Набор ClickHouse. Схем нет: база сразу содержит объекты; представления и
-материализованные представления — отдельные роли, хотя в
-`system.tables` они лежат рядом с таблицами и различаются полем `engine`.
-
-| объект | адрес |
-|---|---|
-| база | `clickhouse://ch1:9000/logs` |
-| таблица | `clickhouse://ch1:9000/logs?table=events` |
-| колонка | `clickhouse://ch1:9000/logs?table=events&column=user_id` |
-| представление | `clickhouse://ch1:9000/logs?view=v_events_hourly` |
-| колонка представления | `clickhouse://ch1:9000/logs?view=v_events_hourly&column=hour` |
-| материализованное представление | `clickhouse://ch1:9000/logs?matview=mv_events_daily` |
-| колонка matview | `clickhouse://ch1:9000/logs?matview=mv_events_daily&column=day` |
-| skip-индекс, уникален внутри таблицы | `clickhouse://ch1:9000/logs?table=events&index=events_ts_minmax` |
-| проекция | `clickhouse://ch1:9000/logs?table=events&projection=events_by_user` |
-| словарь | `clickhouse://ch1:9000/logs?dictionary=dict_users` |
-| UDF: перегрузок нет, `args` не нужен | `clickhouse://ch1:9000/logs?function=to_rub` |
-
-У ClickHouse skip-индекс и проекция принадлежат таблице и уникальны только
-внутри неё, поэтому идут после `table` — в отличие от PostgreSQL, где
-индекс уникален в схеме. Это ровно та разница между движками, ради которой
-роли объявляет корпус, а не ядро: порядок и состав ролей — часть
-`Introspector` движка (раздел 4.2).
+Полные наборы адресов объектов PostgreSQL и ClickHouse — в разделе 4.2,
+адрес сущности — в 5.1.
 
 Правила канона, обязательные для `render()` и `parse()` каждой модели
-адреса (2.1): учётных данных в строке адреса нет никогда; параметры
+адреса (3.1, 4.1): учётных данных в строке адреса нет никогда; параметры
 подключения (`sslmode`, `application_name`) — не часть идентичности; хост
 в нижнем регистре; порт в частях обязателен, в строке web-адреса порт по
 умолчанию схемы опускается (так делает `httpx.URL`); порядок
@@ -2361,50 +725,1025 @@ query-параметров — порядок объявления ролей в
 ставит корпус по данным источника. Индекс PostgreSQL адресуется в схеме, а
 ребром привязан к таблице — адрес и связь независимы.
 
-### 3.7 Модели эмбеддинга и два бэкенда графа
+### 2.3 Способы поиска
 
-Векторы лежат в content tables, но модель, которой они посчитаны, описана один
-раз в graph tables — на неё ссылаются все векторные таблицы content tables:
+Способ поиска — и объявление, и исполнитель: он знает свои таблицу и
+колонки и сам собирает по ним запрос. У способа две координаты, и они
+независимы: **что** ищем — вид содержимого узла (заголовок, раздел,
+саммари, DDL, картинка), это перечисление корпуса; **чем** ищем —
+полнотекст, BM25, триграммы, точное совпадение, плотный или разреженный
+вектор, это перечисление ядра, общее для всех корпусов. Пара даёт подпись
+способа (`title/exact`, `section/vector`), она же ключ веса в конфиге и
+она же в выдаче отвечает, чем узел найден.
 
-```sql
-create table embedding_models (
-    id             smallserial primary key,
-    name           text        not null unique,   -- multilingual-e5-large
-    slug           text        not null unique,   -- e5: суффикс имени таблицы векторов page_section_vectors__e5
-    provider       text        not null,   -- local | openai
-    modality       text        not null,   -- text | image | sparse — какой VectorEncoder строит реестр для этой модели
-    revision       text        not null default '',   -- версия весов: то же имя с другими весами — другая строка
-    dim            int         not null,   -- размерность; у HNSW-индекса фиксирована
-    index_distance text        not null,   -- cosine | dot | l2 — метрика, под которую построен индекс, и оператор по умолчанию
-    normalize      bool        not null,
-    max_tokens     int         not null,   -- где резать вход
-    query_prefix   text        not null default '',   -- e5: 'query: '
-    passage_prefix text        not null default '',   -- e5: 'passage: '
-    created_at     timestamptz not null default now()
-);
+Ищут всегда текстом: его печатает пользователь, а служебные поиски ядра
+берут текст узла — заголовок для ребра упоминания, саммари для ребра
+похожести. Во что превратить текст, решает сам способ: полнотекстовому
+нужна строка, векторному — вектор, и энкодер он получил при создании от
+корпуса. Поэтому наружу торчит один метод, ни модели, ни вектора в
+протоколе нет. Ядро объявляет протокол без привязки к драйверу: готовый
+запрос — параметр типа, ничего постгресового в нём нет; реализации для
+Postgres живут в `boba-db-pggraph` (2.6), корпус создаёт их при старте из
+своего конфига (`[storage] pg_schema`) и отдаёт одним списком (2.4).
+
+```python
+# boba-graph — ядро: зонды и векторы — общие модели данных, SQL нет
+class Vector(BaseModel):
+    """Числовое представление текста или картинки, по которому сравнивают смысл, а не слова.
+
+    Считается моделью эмбеддинга, и сравнимы только векторы одной модели,
+    поэтому имя модели идёт вместе с числами. Подклассы — форма чисел:
+    плотный и разреженный.
+    """
+
+    model: str                              # имя модели из [encoders.models]; ставит энкодер
+
+class DenseVector(Vector):
+    """Плотный вектор: число на каждую координату пространства модели.
+
+    Столько координат, сколько у модели размерность (dim в её конфиге):
+    у e5-large — 1024 числа, у text-embedding-3-large — 3072. Сравнивается
+    косинусом или скалярным произведением; в базе — pgvector vector(dim).
+    """
+
+    values: Sequence[float]                 # координаты по порядку, len(values) == dim модели
+
+class SparseVector(Vector):
+    """Разреженный вектор: почти все координаты — нули, хранятся только ненулевые.
+
+    Координата — слово (токен) словаря модели, значение — его вес в тексте;
+    словарь SPLADE — десятки тысяч токенов, в тексте ненулевых — десятки.
+    Поэтому хранятся пары «номер координаты — вес», а не весь ряд нулей;
+    в базе — pgvector sparsevec, текстовая форма {i1:v1,i2:v2,…}/dim.
+    """
+
+    indices: Sequence[int]                  # номера ненулевых координат по возрастанию: id токенов словаря модели
+    values: Sequence[float]                 # веса тех же координат, len(values) == len(indices)
+    dim: int                                # полная размерность пространства — размер словаря модели; нужна sparsevec
+
+V = TypeVar("V", bound=Vector)                          # обобщённые функции и dataclass'ы
+V_co = TypeVar("V_co", bound=Vector, covariant=True)    # протоколы: вектор только на выходе — pyright требует covariant
+
+class Probe(BaseModel):
+    """Зонд — то, чем ищут, вместе с рамками запроса.
+
+    text — текст пользователя или текст узла для служебных поисков ядра;
+    во что его превратить, решает способ. limit — кандидатов с одного
+    способа до слияния, не итоговый top_k инструмента. Порог по счёту,
+    смещение, фильтр по виду узла добавятся полями сюда, не меняя
+    сигнатуру statement у реализаций.
+    """
+
+    text: str
+    limit: int = Field(gt=0)
+
+class VectorEncoder(Protocol[V_co]):
+    """Порт к модели эмбеддинга: текст в вектор.
+
+    Один контракт для двух потребителей: стадия embed считает векторы
+    содержимого при индексации, векторный способ поиска — вектор запроса,
+    и так оба заведомо считают одной моделью. Реализации — по виду модели
+    (2.5).
+    """
+    async def encode(self, text: str) -> V_co: ...
+
+class VectorEncoderRegistry(Protocol):
+    """Реестр энкодеров: VectorEncoder по имени модели из [encoders.models].
+
+    Нужен, чтобы корпус при старте получил энкодер для каждой своей таблицы
+    векторов, не зная, локальная это модель или HTTP. dense и sparse
+    сверяют modality строки с запрошенной формой: рассогласование — ошибка
+    конфига с именем модели, а не пустая выдача в запросе.
+    """
+
+    def dense(self, model: str) -> VectorEncoder[DenseVector]: ...
+    def sparse(self, model: str) -> VectorEncoder[SparseVector]: ...
+
+class LookupRow(BaseModel):
+    """Строка одного способа поиска, когда его запрос исполняется сам по себе.
+
+    В kb_search строки способов до Python не доходят — их сливает один
+    SQL (раздел 9). Сюда они приходят из служебных поисков ядра: ребро
+    similar берёт score как косинус для обоснования, ребро mention — node_id
+    найденного по имени узла.
+    """
+
+    node_id: int
+    row_id: int
+    snippet: str
+    score: float
+
+S = TypeVar("S")                              # готовый запрос драйвера целиком: у psycopg — PgStatement (sql.Composed + параметры)
+S_co = TypeVar("S_co", covariant=True)        # протоколы: запрос только на выходе
+
+class LookupMethod(StrEnum):
+    """Способ поиска — чем ищем: полнотекст, BM25, триграммы, точное совпадение, плотный или разреженный вектор.
+
+    Ось, общая для всех корпусов; вторая ось — вид содержимого — у корпуса.
+    Пара даёт подпись способа («title/exact»), и собирается она здесь, в
+    одном месте: подпись идёт в выдачу, в обоснование ребра similar и служит
+    ключом веса в [search.weights].
+    """
+
+    FTS = "fts"
+    BM25 = "bm25"
+    TRIGRAM = "trigram"
+    EXACT = "exact"
+    VECTOR = "vector"
+    SPARSE = "sparse"
+
+    @classmethod
+    def label_of(cls, content_kind: str, method: "LookupMethod") -> str:
+        return f"{content_kind}/{method.value}"
+
+class LookupRole(StrEnum):
+    """Служебные поиски, которые ядро делает само при построении рёбер: найти узел по имени, найти похожие.
+
+    Каким из своих способов их выполнять, назначает корпус
+    (Corpus.role_lookups, 2.4).
+    """
+
+    NAMING = "naming"          # найти узел по его имени: ребро mention
+    SIMILARITY = "similarity"  # найти похожие узлы: ребро similar
+
+class IndexLookup(Protocol[S_co]):
+    """Один способ искать: вид содержимого плюс способ поиска по нему.
+
+    content_kind — что ищем: заголовок, раздел, саммари, DDL, картинка;
+    значение перечисления корпуса, ядро его не толкует. method — чем ищем.
+    statement — подзапрос по зонду, который SearchStore вкладывает в один
+    общий запрос поиска (раздел 9): колонки node_id, row_id, snippet,
+    score, где score больше — лучше, не больше probe.limit строк, лучшие
+    первыми. Во что превратить текст, знает только реализация, и энкодер
+    она получила при создании, поэтому метод асинхронный, а модели снаружи
+    не видно.
+
+    Что такое готовый запрос (S) — знает только SearchStore того же
+    драйвера: ядро его не разбирает, поэтому протокола запроса в ядре нет.
+    """
+
+    def content_kind(self) -> str: ...
+    def method(self) -> LookupMethod: ...
+    async def statement(self, probe: Probe) -> S_co: ...
+```
+
+### 2.4 Протокол корпуса и порты
+
+Протокол корпуса и то, что через него ходит. Ребро от корпуса приходит
+черновиком с адресом цели (наследник `Address`, 3.1, 4.1) и обоснованием
+(наследник `Evidence`, 2.2.3): id цели ядро находит само по `parts()`.
+Исходник узла корпус отдаёт в виде для большой модели (раздел 6):
+
+```python
+class EdgeDraft(BaseModel):
+    """Связь, найденная корпусом или стадией и отданная ядру на запись.
+
+    Цель — адресом, а не номером: тот, кто нашёл связь, знает объект
+    источника, а номер узла в графе знает только ядро; оно и разрешит адрес
+    в id или отложит связь в pending_links, если цели ещё нет.
+    """
+
+    target: Address
+    kind: str
+    weight: float
+    evidence: Evidence
+
+class Snippet(BaseModel):
+    """Фрагмент, которым узел найден: чем найден, какое это содержимое, текст для цитаты."""
+
+    lookup: str                 # подпись способа: "section/fts"
+    content_kind: str           # по нему потребитель решает, текст это или картинка
+    row_id: int                 # строка content tables, по ней берётся оригинал куска
+    text: str
+
+class Hop(BaseModel):
+    """Шаг пути по графу: по ребру какого вида и от какого узла пришли."""
+
+    kind: str
+    from_node_id: int
+
+class Candidate(BaseModel):
+    """Узел из одного из двух запросов поиска (раздел 9), ещё без итогового счёта.
+
+    Из запроса кандидатов приходит с s_base и фрагментами, из обхода графа
+    — с s_graph и путём; ядро складывает их по node_id. kind, address и
+    метрики берутся тем же запросом из nodes и ranks.
+    """
+
+    node_id: int
+    kind: str
+    address: Mapping[str, str | int]
+    s_base: float = 0.0
+    s_graph: float = 0.0
+    distance: int = 0
+    snippets: Sequence[Snippet] = ()
+    path: Sequence[Hop] = ()
+    metrics: Mapping[str, float] = {}
+
+class Match(BaseModel):
+    """Строка выдачи kb_search: кандидат с итоговым счётом и заголовком.
+
+    Рендерится двумя способами из одних полей: большой модели — заголовок,
+    kind, адрес строкой и фрагменты; человеку — заголовок ссылкой и
+    фрагменты, где фрагмент по картинке показывается картинкой.
+    """
+
+    node_id: int
+    kind: str
+    address: Mapping[str, str | int]
+    title: str
+    score: float
+    s_base: float
+    s_graph: float
+    snippets: Sequence[Snippet]
+    path: Sequence[Hop]
+
+class TextPart(BaseModel):
+    """Кусок документа текстом: markdown раздела, DDL, профиль колонки."""
+
+    content_kind: str
+    text: str
+
+class NodePart(BaseModel):
+    """Кусок документа, который сам является узлом: картинка, pdf, дочерняя страница.
+
+    Рендерер решает по kind: пользователю показать картинку по адресу,
+    большой модели — строку «[image: schema.png — диаграмма потоков]».
+    """
+
+    content_kind: str
+    node_id: int
+    kind: str
+    address: Mapping[str, str | int]
+    title: str
+
+class NodeDocument(BaseModel):
+    """Узел целиком для kb_node: собирается из content tables, в источник не ходим.
+
+    truncated говорит, что части обрезаны лимитом: модель узнаёт, что видит
+    не всё, и может попросить остальное.
+    """
+
+    node_id: int
+    kind: str
+    address: Mapping[str, str | int]
+    title: str
+    parts: Sequence[TextPart | NodePart]
+    truncated: bool = False
+
+class ComputedEdge(StrEnum):
+    """Рёбра, которые ядро строит за корпус; как их назвать, говорит корпус."""
+
+    ENTITY = "entity"          # узел → сущность, которую упоминает
+    SIMILAR = "similar"        # по близости векторов
+
+class Corpus(Protocol[S_co]):
+    """Адаптер источника к ядру графа: ответы на то, чего ядро о нём не знает.
+
+    Ядро хранит узлы, ищет, строит два вида рёбер и ранжирует, но не знает,
+    что такое страница или таблица. Методы ниже — шесть вопросов, которые
+    оно задаёт корпусу, в том же порядке: где искать и сколько это весит,
+    каким способом искать за ядро, как назвать построенное, что взять из
+    узла, что источник знает о связях сам, как показать узел — коротко
+    (заголовок) и целиком (документ).
+
+    S — готовый запрос драйвера хранилища, которым корпус пользуется:
+    ConfluenceCorpus(Corpus[PgStatement]).
+    """
+
+    node_kinds: type[StrEnum]      # разбор строки ядра в модель источника (3.1, 4.1)
+    content_kinds: type[StrEnum]   # левая ось подписи способа и таблицы content tables (разделы 3–5)
+    edge_kinds: type[StrEnum]      # ключи [search.expand.factors] (раздел 9)
+
+    def lookups(self) -> Sequence[IndexLookup[S_co]]: ...
+    def search_weights(self) -> Mapping[str, float]: ...                    # подпись способа -> вес в RRF, из [search.weights]
+
+    def role_lookups(self) -> Mapping[LookupRole, IndexLookup[S_co]]: ...   # каким способом ядро ищет имена и похожие
+    def computed_edge_kinds(self) -> Mapping[ComputedEdge, str]: ...        # как корпус зовёт рёбра, которые ядро строит
+
+    def entity_texts(self, node_id: int) -> Sequence[str]: ...              # из чего извлекать сущности
+    def similar_text(self, node_id: int) -> str: ...                        # чем узел представлен в поиске похожих
+
+    def explicit_edges(self, node: Node) -> Iterable[EdgeDraft]: ...        # связи, видные в самом источнике
+    def titles(self, node_ids: Sequence[int]) -> Mapping[int, str]: ...     # заголовки для выдачи, одним запросом
+    def document(self, node_id: int, limit: int) -> NodeDocument: ...       # узел целиком для kb_node
+
+S_contra = TypeVar("S_contra", contravariant=True)   # протоколы: запрос корпуса только на входе
+
+class SearchStore(Protocol[S_contra]):
+    """Хранилище поиска: один запрос кандидатов на все способы корпуса и исполнение одного способа.
+
+    candidates — запрос 1 алгоритма поиска (раздел 9): подзапросы всех
+    способов, слияние RRF, фрагменты, kind, адрес и метрики — одним SQL.
+    rows — исполнить подзапрос одного способа отдельно: для служебных
+    поисков ядра (рёбра similar и mention). Реализация — у драйвера
+    (PgSearchStore, 2.6). Corpus[S] стоит в позиции аргумента, поэтому S
+    здесь контравариантен.
+    """
+
+    async def candidates(self, corpus: Corpus[S_contra], query: str) -> Sequence[Candidate]: ...
+    async def rows(self, statement: S_contra) -> Sequence[LookupRow]: ...
+
+class Edge(BaseModel):
+    """Связь между двумя узлами, прочитанная из графа: вид, вес, обоснование.
+
+    Выходит наружу через kb_related и kb_node, в глобальную стадию — через
+    export(); обоснование — jsonb как есть, разбирает его тот, кто знает вид.
+    """
+
+    source_id: int
+    target_id: int
+    kind: str
+    weight: float
+    evidence: Mapping[str, object]
+
+class GraphStore(Protocol):
+    """Хранилище графа: рёбра, соседи, расширение от опорных узлов; две реализации (2.6).
+
+    replace_edges — стадия edges заменяет рёбра узла указанных видов
+    целиком; neighbors — соседи для kb_related; expand — шаг 2 поиска
+    (9.2): от опорных узлов с их s_base по видам рёбер из
+    [search.expand.factors] на depth шагов, наружу Candidate с s_graph,
+    distance и путём; export — весь граф для глобальной стадии (NetworkX);
+    drop_node — узел из графа вместе с рёбрами.
+    """
+
+    async def replace_edges(self, node_id: int, kinds: Sequence[str], edges: Sequence[EdgeDraft]) -> None: ...
+    async def neighbors(self, node_id: int, kinds: Sequence[str]) -> Sequence[Edge]: ...
+    async def expand(self, seeds: Mapping[int, float], depth: int) -> Sequence[Candidate]: ...
+    async def export(self) -> Sequence[Edge]: ...
+    async def drop_node(self, node_id: int) -> None: ...
+```
+
+### 2.5 Энкодеры
+
+Энкодеры живут в `boba-llm` и одинаково служат индексации (вектор
+документа) и поиску (вектор запроса). Модель эмбеддинга целиком описана
+конфигом корпуса, секцией `[encoders.models."<имя>"]`: что она такое и где
+её веса или endpoint. Таблицы для этого нет: моделей единицы, все их
+настройки и так в конфиге, а ни одна таблица не ссылается на модель иначе
+как по имени. Что при этом держит базу и конфиг согласованными: таблицы
+векторов создаются установкой по этим секциям, по таблице на модель, и
+размерность фиксирована typmod `vector(dim)`; `pipeline_stamp` узла
+хранит имя и ревизию модели, поэтому смена модели в конфиге ведёт к
+переиндексации, а не к смешению векторов; `kb_graph_check` сверяет typmod
+таблиц с `dim` в конфиге.
+
+```python
+class EmbeddingModel(BaseModel):
+    """Секция [encoders.models."<имя>"]: что за модель и где она — провайдер, форма вектора, размерность, префиксы, веса или endpoint.
+
+    Из неё реестр строит энкодер, установка — таблицы векторов, конвейер —
+    штамп; имя секции — имя модели, которым на неё ссылаются способы
+    поиска, обоснования и штампы.
+    """
+
+    slug: str                               # суффикс имён таблиц векторов: e5
+    provider: str                           # local | openai
+    modality: str                           # text | image | sparse — какой VectorEncoder строит реестр
+    revision: str                           # версия весов: то же имя с другими весами — другой штамп и пересчёт
+    dim: int                                # размерность; typmod таблиц векторов и HNSW
+    index_distance: str                     # cosine | dot | l2 — класс операторов индекса и оператор запроса
+    normalize: bool
+    max_tokens: int                         # где резать вход
+    query_prefix: str                       # e5: 'query: '
+    passage_prefix: str                     # e5: 'passage: '
+
+class TextEmbedder(VectorEncoder[DenseVector]):
+    """Реализация VectorEncoder для текстовых моделей: e5, bge, text-embedding-3.
+
+    Префикс запроса, обрезка по max_tokens и нормировка — из секции модели
+    в конфиге; сам расчёт — существующий порт boba.llm.embedding
+    (fastembed локально или openai по HTTP).
+    """
+
+    def __init__(self, spec: EmbeddingModel, backend: Embedder[str]) -> None: ...
+
+    async def encode(self, text: str) -> DenseVector:
+        prefixed = self._spec.query_prefix + self._truncate(text)
+        values = await self._backend.embed_query(prefixed)
+        if self._spec.normalize:
+            values = self._normalized(values)
+        return DenseVector(values=values)
+
+class ClipTextEncoder(VectorEncoder[DenseVector]):
+    """Реализация VectorEncoder для моделей картинок (SigLIP, CLIP): текст в пространство картинок.
+
+    Нужен, чтобы искать картинки словами: текстовая башня модели на
+    onnxruntime даёт вектор, сравнимый с векторами картинок, которые стадия
+    индексации вложений считает парным ImageEncoder той же модели.
+    """
+
+    def __init__(self, spec: EmbeddingModel, session: OnnxSession, tokenizer: Tokenizer) -> None: ...
+
+    async def encode(self, text: str) -> DenseVector: ...
+
+class SparseEncoder(VectorEncoder[SparseVector]):
+    """Реализация VectorEncoder для разреженных моделей (SPLADE, BM42): текст в веса термов словаря модели, форма sparsevec."""
+
+    def __init__(self, spec: EmbeddingModel, session: OnnxSession, tokenizer: Tokenizer) -> None: ...
+
+    async def encode(self, text: str) -> SparseVector: ...
+
+class PgVectorEncoderRegistry(VectorEncoderRegistry):
+    """Реализация VectorEncoderRegistry: энкодеры по секциям [encoders.models] конфига корпуса.
+
+    Собирается при старте, чтобы ошибка конфига вылезла сразу, а модели
+    прогрелись один раз и жили весь прогон.
+    """
+
+    def dense(self, model: str) -> VectorEncoder[DenseVector]:
+        if model not in self._dense:                    # собраны при старте по (modality, provider) строки
+            raise EncoderConfigError(f"[encoders.models]: dense model {model!r} is not declared: known {sorted(self._dense)}")
+
+        return self._dense[model]
+
+    def sparse(self, model: str) -> VectorEncoder[SparseVector]:
+        if model not in self._sparse:
+            raise EncoderConfigError(f"[encoders.models]: sparse model {model!r} is not declared: known {sorted(self._sparse)}")
+
+        return self._sparse[model]
+```
+
+Что берётся откуда: `modality` и `provider` выбирают класс (`text`+`local`
+→ `TextEmbedder` над fastembed, `text`+`openai` → `TextEmbedder` над
+HTTP, `image` → `ClipTextEncoder`, `sparse` → `SparseEncoder`);
+`query_prefix`, `max_tokens`, `normalize`, `dim` — из строки; каталог
+весов или endpoint и ключ — из конфига:
+
+```toml
+[encoders.models."multilingual-e5-large"]
+    slug           = "e5"
+    provider       = "local"
+    modality       = "text"
+    revision       = "2024-02"
+    dim            = 1024
+    index_distance = "cosine"
+    normalize      = true
+    max_tokens     = 512
+    query_prefix   = "query: "
+    passage_prefix = "passage: "
+    model_dir      = "${env.models}/fastembed/multilingual-e5-large"
+[encoders.models."siglip-so400m"]
+    slug           = "siglip"
+    provider       = "local"
+    modality       = "image"
+    revision       = "2024-01"
+    dim            = 1152
+    index_distance = "cosine"
+    normalize      = true
+    max_tokens     = 64
+    model_dir      = "${env.models}/onnx/siglip-so400m"
+[encoders.models."text-embedding-3-large"]
+    slug           = "oai3large"
+    provider       = "openai"
+    modality       = "text"
+    dim            = 3072
+    index_distance = "cosine"
+    normalize      = true
+    max_tokens     = 8191
+    http           = "${http}"
+    base_url       = "${site.llm_url}"
+    api_key        = "${site.llm_token}"
 ```
 
 Векторы одной поверхности и одной модели лежат в своей таблице —
 `page_section_vectors__e5`, `page_section_vectors__bge` — с колонкой
 `vector(dim)` фиксированной размерности и обычным HNSW. Общая таблица с
-`model_id` и частичными индексами не работает: HNSW требует typmod, у
-моделей он разный, а частичный индекс планировщик берёт лишь при
-буквальном совпадении предиката, чего ни join по имени, ни параметр в
-generic-плане psycopg не дают. Таблица на модель делает запрос чистым
+именем модели в колонке и частичными индексами не работает: HNSW требует
+typmod, у моделей он разный, а частичный индекс планировщик берёт лишь
+при буквальном совпадении предиката, чего ни join по имени, ни параметр
+в generic-плане psycopg не дают. Таблица на модель делает запрос чистым
 index scan без фильтров. По `index_distance` выбирается класс операторов
 индекса (`vector_cosine_ops`, `vector_ip_ops`, `vector_l2_ops`) и
-оператор запроса; другой оператор в запросе индекс не использует. `query_prefix`/`passage_prefix` — e5 требует разные префиксы для
-запроса и документа, без них качество падает молча. `revision` отделяет
-те же имена с другими весами: пересчёт — новая строка и новая таблица
-векторов, старая живёт до его конца. Таблицы векторов создаёт установка по
-моделям из конфига корпуса, размерность — из строки модели.
+оператор запроса; другой оператор в запросе индекс не использует.
+`query_prefix`/`passage_prefix` — e5 требует разные префиксы для запроса
+и документа, без них качество падает молча. `revision` входит в штамп:
+пересчёт с новыми весами — новая ревизия, и узлы со старым штампом
+переиндексируются.
 
-| id | name | slug | provider | modality | revision | dim | index_distance | normalize | max_tokens | query_prefix | passage_prefix |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| 1 | `multilingual-e5-large` | `e5` | local | text | 2024-02 | 1024 | cosine | true | 512 | `query: ` | `passage: ` |
-| 2 | `bge-m3` | `bge` | local | text | 2024-06 | 1024 | cosine | true | 8192 | | |
-| 3 | `text-embedding-3-large` | `oai3large` | openai | text | | 3072 | cosine | true | 8191 | | |
-| 4 | `siglip-so400m` | `siglip` | local | image | 2024-01 | 1152 | cosine | true | 64 | | |
+Способ поиска или стадия `embed`, ссылающиеся на модель, которой нет в
+`[encoders.models]`, — ошибка старта с именем модели: реестр не угадывает.
+
+### 2.6 Реализации в Postgres
+
+```python
+# boba-db-pggraph — реализации Pg*Lookup: S = PgStatement, схема Postgres —
+# поле schema каждой реализации, способ и шаблон — свойства класса, остальные поля — экземпляра.
+# Объявления — frozen dataclass с явным наследованием протокола (правило §14:
+# pydantic-модель протокол наследовать не может).
+# Ошибки пакета наружу:
+# SearchIndexError — у способа нет веса в конфиге или его таблица не найдена.
+# EncoderConfigError — модели нет в [encoders.models] или её modality не сходится с запросом.
+# SearchStoreError — запрос упал в Postgres; текст — подпись способа, таблица, ошибка psycopg.
+
+@dataclass(frozen=True)
+class PgStatement:
+    """Готовый запрос psycopg: подзапрос, его параметры и подготовка сессии.
+
+    Собирают Pg*Lookup.statement(), исполняет PgSearchStore; ядро видит
+    его только как параметр типа S. setup — команды, которые надо выполнить
+    в той же транзакции до запроса (set local …): их знает только способ,
+    хранилище исполняет, не разбирая.
+    """
+
+    query: sql.Composed
+    params: Mapping[str, object]
+    setup: Sequence[sql.Composed] = ()
+
+@dataclass(frozen=True)
+class PgFtsLookup(IndexLookup[PgStatement]):
+    """Способ поиска полнотекстом: tsvector с GIN, ранг ts_rank_cd, запрос на двух языках через websearch_to_tsquery."""
+
+    METHOD: ClassVar[LookupMethod] = LookupMethod.FTS
+
+    content: str                          # вид содержимого корпуса: title, section, summary — левая половина подписи
+    schema: str                           # схема корпуса из [storage]: confluence | confluence_test — деталь реализации
+    table: str                            # таблица content tables: page_sections
+    node_column: str                      # колонка со ссылкой на nodes.id
+    row_column: str                       # ключ строки: id у page_sections, node_id у pages
+    text_column: str                      # колонка текста, отдаваемого в выдачу
+    tsv_column: str
+
+    def content_kind(self) -> str:
+        return self.content
+
+    def method(self) -> LookupMethod:
+        return self.METHOD
+
+    TEMPLATE: ClassVar[LiteralString] = """
+        with q as (
+            select
+                websearch_to_tsquery('russian', unaccent(%(text)s))
+                || websearch_to_tsquery('english', unaccent(%(text)s)) as tsq
+        )
+        select
+            t.{node} as node_id,
+            t.{row} as row_id,
+            t.{text} as snippet,
+            ts_rank_cd(t.{tsv}, q.tsq) as score
+        from
+            {schema}.{table} t,
+            q
+        where
+            t.{tsv} @@ q.tsq
+        order by
+            score desc
+        limit %(limit)s
+    """
+
+    async def statement(self, probe: Probe) -> PgStatement:
+        composed = sql.SQL(self.TEMPLATE).format(
+            schema=sql.Identifier(self.schema), table=sql.Identifier(self.table),
+            node=sql.Identifier(self.node_column), row=sql.Identifier(self.row_column),
+            text=sql.Identifier(self.text_column), tsv=sql.Identifier(self.tsv_column),
+        )
+        return PgStatement(query=composed, params={"text": probe.text, "limit": probe.limit})
+
+class VectorText:
+    """Текстовые формы pgvector: одна точка сборки литералов вектора для запросов."""
+
+    @classmethod
+    def dense(cls, vector: DenseVector) -> str:
+        """'[v1,v2,…]' — форма vector."""
+        ...
+
+    @classmethod
+    def sparse(cls, vector: SparseVector) -> str:
+        """'{i1:v1,i2:v2,…}/dim' — форма sparsevec."""
+        ...
+
+@dataclass(frozen=True)
+class PgVectorLookup(IndexLookup[PgStatement]):
+    """Способ поиска по близости смысла: текст запроса кодируется энкодером модели таблицы, ближайшие векторы — через HNSW.
+
+    Таблица векторов — на одну модель, поэтому фильтра по модели в запросе
+    нет. Им же ищутся картинки: у SigLIP текст и картинка живут в одном
+    пространстве, отличие только в энкодере и в том, что в выдачу идёт имя
+    файла, а не текст. Отдельного класса под картинки нет.
+    """
+
+    METHOD: ClassVar[LookupMethod] = LookupMethod.VECTOR
+
+    content: str
+    schema: str
+    table: str
+    node_column: str
+    row_column: str
+    text_column: str                      # что показать как цитату: текст раздела, имя файла у картинки
+    vector_table: str                     # таблица векторов этого содержимого и этой модели: page_section_vectors__e5
+    ref_column: str                       # ссылка на row_column
+    encoder: VectorEncoder[DenseVector]   # энкодер модели этой таблицы; корпус взял его из реестра при старте
+
+    def content_kind(self) -> str:
+        return self.content
+
+    def method(self) -> LookupMethod:
+        return self.METHOD
+
+    TEMPLATE: ClassVar[LiteralString] = """
+        select
+            t.{node} as node_id,
+            t.{row} as row_id,
+            t.{text} as snippet,
+            1 - (v.embedding <=> {vector}::vector) as score   -- косинусная близость: больше — лучше
+        from
+            {schema}.{vectors} v
+            join {schema}.{table} t on
+                t.{row} = v.{ref}
+        order by
+            v.embedding <=> {vector}::vector
+        limit %(limit)s
+    """
+
+    async def statement(self, probe: Probe) -> PgStatement:
+        vector = await self.encoder.encode(probe.text)
+        composed = sql.SQL(self.TEMPLATE).format(
+            schema=sql.Identifier(self.schema), vectors=sql.Identifier(self.vector_table),
+            table=sql.Identifier(self.table), node=sql.Identifier(self.node_column),
+            row=sql.Identifier(self.row_column), text=sql.Identifier(self.text_column),
+            ref=sql.Identifier(self.ref_column), vector=sql.Literal(VectorText.dense(vector)),
+        )
+        return PgStatement(query=composed, params={"limit": probe.limit}, setup=(self._ef_search(probe.limit),))
+        # вектор — литерал, а не параметр: ветки разных моделей в одном запросе (9.1) не делят имя параметра
+
+    EF_SEARCH_DEFAULT: ClassVar[int] = 40    # HNSW отдаёт не больше ef_search строк за скан; дефолт pgvector
+
+    def _ef_search(self, limit: int) -> sql.Composed:
+        """Иначе limit 50 молча вернёт 40 строк."""
+        return sql.SQL("set local hnsw.ef_search = {ef}").format(ef=sql.Literal(max(limit, self.EF_SEARCH_DEFAULT)))
+
+@dataclass(frozen=True)
+class PgTrigramLookup(IndexLookup[PgStatement]):
+    """Способ поиска по триграммам (pg_trgm, GiST): опечатки, склонения, части имён.
+
+    GiST, а не GIN: только он отдаёт top-N по оператору <-> прямо из
+    индекса; оператор % отсекает мусор по pg_trgm.similarity_threshold
+    (%% в шаблоне — экранированный %).
+    """
+
+    METHOD: ClassVar[LookupMethod] = LookupMethod.TRIGRAM
+
+    content: str
+    schema: str
+    table: str
+    node_column: str
+    row_column: str
+    text_column: str
+
+    def content_kind(self) -> str:
+        return self.content
+
+    def method(self) -> LookupMethod:
+        return self.METHOD
+
+    TEMPLATE: ClassVar[LiteralString] = """
+        select
+            t.{node} as node_id,
+            t.{row} as row_id,
+            t.{text} as snippet,
+            1 - (t.{text} <-> %(text)s) as score
+        from
+            {schema}.{table} t
+        where
+            t.{text} %% %(text)s
+        order by
+            t.{text} <-> %(text)s
+        limit %(limit)s
+    """
+
+    async def statement(self, probe: Probe) -> PgStatement:
+        composed = sql.SQL(self.TEMPLATE).format(
+            schema=sql.Identifier(self.schema), table=sql.Identifier(self.table),
+            node=sql.Identifier(self.node_column), row=sql.Identifier(self.row_column),
+            text=sql.Identifier(self.text_column),
+        )
+        return PgStatement(query=composed, params={"text": probe.text, "limit": probe.limit})
+
+@dataclass(frozen=True)
+class PgExactLookup(IndexLookup[PgStatement]):
+    """Способ поиска точным совпадением по lower(text) через btree: имена узлов для роли naming, коды вида FLIP-457."""
+
+    METHOD: ClassVar[LookupMethod] = LookupMethod.EXACT
+
+    content: str
+    schema: str
+    table: str
+    node_column: str
+    row_column: str
+    text_column: str
+
+    def content_kind(self) -> str:
+        return self.content
+
+    def method(self) -> LookupMethod:
+        return self.METHOD
+
+    TEMPLATE: ClassVar[LiteralString] = """
+        select
+            t.{node} as node_id,
+            t.{row} as row_id,
+            t.{text} as snippet,
+            1.0 as score
+        from
+            {schema}.{table} t
+        where
+            lower(t.{text}) = lower(%(text)s)
+        limit %(limit)s
+    """
+
+    async def statement(self, probe: Probe) -> PgStatement:
+        composed = sql.SQL(self.TEMPLATE).format(
+            schema=sql.Identifier(self.schema), table=sql.Identifier(self.table),
+            node=sql.Identifier(self.node_column), row=sql.Identifier(self.row_column),
+            text=sql.Identifier(self.text_column),
+        )
+        return PgStatement(query=composed, params={"text": probe.text, "limit": probe.limit})
+
+@dataclass(frozen=True)
+class PgBm25Lookup(IndexLookup[PgStatement]):
+    """Способ поиска BM25 через pg_search (ParadeDB): полнотекст с нормировкой по длине; объявляется, только если расширение стоит."""
+
+    METHOD: ClassVar[LookupMethod] = LookupMethod.BM25
+
+    content: str
+    schema: str
+    table: str
+    node_column: str
+    row_column: str
+    text_column: str
+    index_name: str                        # индекс bm25 над таблицей; нужен установке, запрос идёт через оператор @@@
+
+    def content_kind(self) -> str:
+        return self.content
+
+    def method(self) -> LookupMethod:
+        return self.METHOD
+
+    TEMPLATE: ClassVar[LiteralString] = """
+        select
+            t.{node} as node_id,
+            t.{row} as row_id,
+            t.{text} as snippet,
+            paradedb.score(t.{row}) as score
+        from
+            {schema}.{table} t
+        where
+            t.{text} @@@ %(text)s
+        order by
+            score desc
+        limit %(limit)s
+    """
+
+    async def statement(self, probe: Probe) -> PgStatement:
+        composed = sql.SQL(self.TEMPLATE).format(
+            schema=sql.Identifier(self.schema), table=sql.Identifier(self.table),
+            node=sql.Identifier(self.node_column), row=sql.Identifier(self.row_column),
+            text=sql.Identifier(self.text_column),
+        )
+        return PgStatement(query=composed, params={"text": probe.text, "limit": probe.limit})
+
+@dataclass(frozen=True)
+class PgSparseLookup(IndexLookup[PgStatement]):
+    """Способ поиска разреженным вектором (SPLADE, BM42): pgvector sparsevec с HNSW, таблица на модель.
+
+    Оператор <#> — отрицательное скалярное произведение: меньше — ближе,
+    поэтому score берётся с минусом.
+    """
+
+    METHOD: ClassVar[LookupMethod] = LookupMethod.SPARSE
+
+    content: str
+    schema: str
+    table: str
+    node_column: str
+    row_column: str
+    text_column: str
+    vector_table: str
+    ref_column: str
+    encoder: VectorEncoder[SparseVector]
+
+    def content_kind(self) -> str:
+        return self.content
+
+    def method(self) -> LookupMethod:
+        return self.METHOD
+
+    TEMPLATE: ClassVar[LiteralString] = """
+        select
+            t.{node} as node_id,
+            t.{row} as row_id,
+            t.{text} as snippet,
+            -(v.embedding <#> {vector}::sparsevec) as score    -- <#> отрицательно: минус даёт «больше — лучше»
+        from
+            {schema}.{vectors} v
+            join {schema}.{table} t on
+                t.{row} = v.{ref}
+        order by
+            v.embedding <#> {vector}::sparsevec
+        limit %(limit)s
+    """
+
+    async def statement(self, probe: Probe) -> PgStatement:
+        vector = await self.encoder.encode(probe.text)
+        composed = sql.SQL(self.TEMPLATE).format(
+            schema=sql.Identifier(self.schema), vectors=sql.Identifier(self.vector_table),
+            table=sql.Identifier(self.table), node=sql.Identifier(self.node_column),
+            row=sql.Identifier(self.row_column), text=sql.Identifier(self.text_column),
+            ref=sql.Identifier(self.ref_column), vector=sql.Literal(VectorText.sparse(vector)),
+        )
+        return PgStatement(query=composed, params={"limit": probe.limit}, setup=(self._ef_search(probe.limit),))
+
+    EF_SEARCH_DEFAULT: ClassVar[int] = 40
+
+    def _ef_search(self, limit: int) -> sql.Composed:
+        return sql.SQL("set local hnsw.ef_search = {ef}").format(ef=sql.Literal(max(limit, self.EF_SEARCH_DEFAULT)))
+```
+
+Слой сущностей (раздел 5) ищется теми же классами, но объявляет их ядро,
+потому что таблица `entities` одинакова в любой схеме; корпус включает их в
+свой список:
+
+```python
+class PgEntityLookups:
+    """Способы поиска по слою сущностей: точное имя и триграммы над entities; одинаковы для любого корпуса."""
+
+    CONTENT: ClassVar[str] = "entity"          # вид содержимого слоя сущностей: подписи entity/exact, entity/trigram
+
+    @classmethod
+    def of(cls, schema: str) -> Sequence[IndexLookup[PgStatement]]:
+        return (
+            PgExactLookup(content=cls.CONTENT, schema=schema, table="entities",
+                          node_column="node_id", row_column="node_id", text_column="name"),
+            PgTrigramLookup(content=cls.CONTENT, schema=schema, table="entities",
+                            node_column="node_id", row_column="node_id", text_column="display"),
+        )
+```
+
+Имена таблиц и колонок подставляются как `sql.Identifier`, значения — как
+параметры: инъекции через объявление нет по построению, а `LiteralString`
+в `ClassVar` не даёт собрать шаблон из строк на лету. Один класс
+обслуживает любое содержимое: `PgFtsLookup` для `pages.title_tsv` и для
+`page_sections.tsv` — два экземпляра с разным `content`. Новый способ
+поиска — новый класс с полями и `TEMPLATE`; ни ядро, ни `SearchStore` не
+меняются. Общего класса местоположения нет: у полнотекстового способа своя
+колонка `tsvector`, у векторного — своя таблица векторов и энкодер, и
+каждый объявляет свои поля сам.
+
+**Хранилище поиска.** Реализация `SearchStore` над psycopg. Главное в ней — `candidates`: не
+двенадцать запросов и слияние в Python, а один SQL, в который подзапросы
+способов вложены ветками `union all`, а слияние RRF, отбор фрагментов,
+`kind`, адрес и метрики считаются в базе. В Python приходят только строки,
+которые пойдут в выдачу. Сам алгоритм и полный текст запроса — в разделе 9;
+здесь то, как хранилище его собирает.
+
+```python
+class ExpandConfig(BaseModel):
+    """Секция [search.expand]: расширение выдачи по графу (9.2) — сколько шагов, вклад в счёт, множители по видам рёбер."""
+
+    depth: int = Field(gt=0)                # шагов от опорных узлов
+    weight: float = Field(ge=0)             # вклад s_graph в итоговый счёт
+    factors: Mapping[str, float]            # вид ребра -> множитель; вид без множителя в обходе не участвует
+
+class SearchConfig(BaseModel):
+    """Секция [search] конфига корпуса: размеры выборок, веса способов и метрик, расширение по графу."""
+
+    candidates: int = Field(gt=0)           # кандидатов с одного способа
+    seed_k: int = Field(gt=0)               # опорных узлов после RRF
+    snippets_per_node: int = Field(gt=0)    # фрагментов на узел в выдаче
+    rrf_k: int = Field(gt=0)                # константа RRF, 60
+    metrics: Mapping[str, float]            # [search.metrics]: имя метрики из ranks -> её вес в счёте
+    weights: Mapping[str, float]            # [search.weights]: подпись способа -> вес в RRF
+    expand: ExpandConfig                    # [search.expand]: раздел 9
+
+class PgSearchStore(SearchStore[PgStatement]):
+    """Реализация SearchStore над psycopg: один запрос кандидатов на все способы корпуса.
+
+    Одно хранилище на корпус: схема и параметры поиска — из его конфига.
+    Пул — общий пул приложения.
+    """
+
+    BRANCH: ClassVar[LiteralString] = """
+        select
+            {label} as lookup,
+            {content} as content_kind,
+            {weight}::real as weight,
+            q.node_id,
+            q.row_id,
+            q.snippet,
+            row_number() over (order by q.score desc) as rank
+        from
+            ({body}) q
+    """
+
+    def __init__(self, pool: AsyncConnectionPool, schema: str, cfg: SearchConfig) -> None:
+        self._pool = pool
+        self._schema = schema
+        self._cfg = cfg
+
+    async def candidates(self, corpus: Corpus[PgStatement], query: str) -> Sequence[Candidate]:
+        """Запрос 1 алгоритма поиска: ветки способов -> RRF -> фрагменты -> nodes, ranks.
+
+        Подзапросы способов собираются параллельно: векторные считают
+        вектор своим энкодером здесь. Параметры text и limit у всех веток
+        общие — зонд один; вектор способ подставляет литералом, поэтому
+        имена параметров между ветками не сталкиваются. Подготовку сессии
+        (setup) веток хранилище исполняет в той же транзакции до запроса.
+        """
+        weights = corpus.search_weights()
+        probe = Probe(text=query, limit=self._cfg.candidates)
+        lookups = corpus.lookups()
+
+        builds: list[Awaitable[PgStatement]] = []
+        for lookup in lookups:
+            builds.append(lookup.statement(probe))
+
+        statements = await asyncio.gather(*builds)
+        branches: list[sql.Composed] = []
+        params: dict[str, object] = {
+            "rrf_k": self._cfg.rrf_k,
+            "seed_k": self._cfg.seed_k,
+            "per_node": self._cfg.snippets_per_node,
+            "metrics": list(self._cfg.metrics),
+        }
+        for lookup, statement in zip(lookups, statements, strict=True):
+            label = self._label(lookup, weights)
+            branches.append(
+                sql.SQL(self.BRANCH).format(
+                    label=sql.Literal(label),
+                    content=sql.Literal(lookup.content_kind()),
+                    weight=sql.Literal(weights[label]),
+                    body=statement.query,
+                )
+            )
+            params.update(statement.params)
+
+        composed = sql.SQL(CandidatesQuery.TEMPLATE).format(
+            schema=sql.Identifier(self._schema),
+            branches=sql.SQL("\n        union all\n").join(branches),
+        )
+        setup: list[sql.Composed] = []
+        for statement in statements:
+            setup.extend(statement.setup)
+
+        async with self._pool.connection() as conn, conn.transaction():
+            for command in setup:                    # подготовка сессии от способов: что в ней, хранилище не знает
+                await conn.execute(command)
+
+            cursor = await conn.execute(composed, params)
+            rows = await cursor.fetchall()
+
+        found: list[Candidate] = []
+        for row in rows:
+            found.append(Candidate.model_validate(row))
+
+        return found
+
+    def _label(self, lookup: IndexLookup[PgStatement], weights: Mapping[str, float]) -> str:
+        """Подпись способа; заодно проверка, что вес для неё объявлен — пропуск в конфиге молча обнулил бы ветку."""
+        label = LookupMethod.label_of(lookup.content_kind(), lookup.method())
+        if label not in weights:
+            raise SearchIndexError(
+                f"lookup {label!r}: no weight in [search.weights]: known {sorted(weights)}"
+            )
+
+        return label
+
+    async def rows(self, statement: PgStatement) -> Sequence[LookupRow]:
+        """Один способ сам по себе: для рёбер similar и mention, которые строит ядро."""
+        async with self._pool.connection() as conn, conn.transaction():
+            for command in statement.setup:
+                await conn.execute(command)
+
+            cursor = await conn.execute(statement.query, statement.params)
+            rows = await cursor.fetchall()
+
+        found: list[LookupRow] = []
+        for row in rows:
+            found.append(LookupRow.model_validate(row))
+
+        return found
+
+# ребро similar: тем способом, который корпус назначил роли, по тексту самого узла; score строки — косинус для обоснования
+roles = corpus.role_lookups()
+statement = await roles[LookupRole.SIMILARITY].statement(Probe(text=corpus.similar_text(node_id), limit=similar_top_k))
+neighbours = await store.rows(statement)
+
+# ребро mention: заголовок другого узла, точное совпадение
+statement = await roles[LookupRole.NAMING].statement(Probe(text=title, limit=1))
+named = await store.rows(statement)
+```
+
+`row_number()` в ветке нумерует строки способа по его `score`, поэтому
+способ отдаёт `score` в одном направлении «больше — лучше»: полнотекст —
+`ts_rank_cd`, вектор — `1 - расстояние`, разреженный — минус скалярное
+произведение, точное совпадение — константа. Порядок внутри подзапроса
+способа всё равно нужен: HNSW и GiST отдают top-N только через `order by`
+по своему оператору. Подготовка сессии — тоже знание способа: HNSW
+отдаёт не больше `hnsw.ef_search` строк за скан (по умолчанию 40), и
+векторный способ кладёт в `setup` своего `PgStatement`
+`set local hnsw.ef_search = max(limit, 40)`; хранилище исполняет
+подготовку всех веток в транзакции запроса, не зная, что в ней.
 
 **Бэкенды графа.** Всё, кроме рёбер, всегда реляционное. Бэкенд выбирает
 только, где живут рёбра и как выполняется обход. Порт ядра:
@@ -2413,12 +1752,12 @@ index scan без фильтров. По `index_distance` выбирается �
 |---|---|
 | `replace_edges(node_id, kinds, edges)` | рёбра узла указанных видов заменить целиком |
 | `neighbors(node_id, kinds) -> edges` | соседи с весом и обоснованием |
-| `expand(seeds, depth) -> candidates` | расширение от опорных узлов по видам рёбер из `[search.expand.factors]`: `Candidate` с `s_graph`, `distance`, `path` (раздел 8) |
+| `expand(seeds, depth) -> candidates` | расширение от опорных узлов по видам рёбер из `[search.expand.factors]`: `Candidate` с `s_graph`, `distance`, `path` (раздел 9) |
 | `export() -> edges` | весь граф для глобальной стадии (NetworkX) |
 | `drop_node(node_id)` | убрать узел из графа (AGE: вершину и её рёбра) |
 
-**Реляционный бэкенд** — таблица `edges` (3.4), представление `adjacency`,
-рекурсивный CTE (раздел 8). Целостность — внешними ключами.
+**Реляционный бэкенд** — таблица `edges` (2.2.3), представление `adjacency`,
+рекурсивный CTE (раздел 9). Целостность — внешними ключами.
 
 **Бэкенд AGE.** Граф AGE физически — отдельная схема Postgres с именем
 графа, поэтому граф зовётся `<схема>_graph`: `confluence_graph` рядом с
@@ -2444,7 +1783,7 @@ index scan без фильтров. По `index_distance` выбирается �
   согласованность отвечает `GraphStore.age`, а инструмент `kb_graph_check`
   сверяет число узлов и вершин и чинит расхождение;
 - обход — `cypher()` внутри того же SQL, что и pgvector; текст запроса
-  расширения для обоих бэкендов — в разделе 8.
+  расширения для обоих бэкендов — в разделе 9.
 
 Что даёт AGE сверх реляционного: обход переменной длины и паттерны путей
 («таблицы, к которым от этой ведёт цепочка `view_source` любой длины»)
@@ -2456,9 +1795,9 @@ index scan без фильтров. По `index_distance` выбирается �
 Выбор — `[graph] backend = "relational" | "age"`; установка проверяет
 наличие расширения и падает с внятной ошибкой, если выбранного нет.
 
-## 4. Content tables
+## 3. Слой Confluence
 
-Content tables — таблицы корпуса в той же схеме. Здесь лежит всё содержимое узла:
+Content tables — таблицы слоя в той же схеме; ниже слой Confluence, затем хранилище (раздел 4) и сущности (раздел 5). Здесь лежит всё содержимое узла:
 структурные атрибуты, тексты со своими полнотекстовыми индексами и
 векторные таблицы к ним. Каждая текстовая таблица — со своей структурой:
 у раздела страницы — оригинал и markdown, у саммари — модель и промпт, у
@@ -2469,15 +1808,139 @@ Content tables — таблицы корпуса в той же схеме. Зд
 `IndexLookup` в ядре, реализации в `boba-db-pggraph`), которые корпус
 создаёт при старте и отдаёт одним списком: каждый знает свою таблицу,
 колонки и то, каким индексом Postgres он покрыт. Векторные таблицы content
-tables ссылаются на `embedding_models` из graph tables.
+tables создаются по моделям из `[encoders.models]` (2.5), по таблице на модель.
 
-### 4.1 Confluence
+### 3.1 Модели
 
-Виды узлов и адреса — `ConfluenceNodeKind` из `boba-confluence` (2.1);
+Виды узлов, адреса и узлы страниц — в `boba-confluence`, рядом с остальным
+знанием о Confluence; протокол `Address` ядра (2.1) они наследуют явно,
+сборка и разбор строки — `httpx.URL`, который в пакете уже есть.
+
+```python
+# boba-confluence: boba/confluence/nodes.py
+class ConfluenceNodeKind(StrEnum):
+    SPACE = "confluence_space"
+    PAGE = "confluence_page"
+    ATTACHMENT = "confluence_attachment"
+
+class WebScheme(StrEnum):
+    """Схемы web-адресов Confluence; у каждой свой порт по умолчанию, который в строке опускается."""
+
+    HTTP = "http"
+    HTTPS = "https"
+
+    def default_port(self) -> int:
+        if self is WebScheme.HTTP:
+            return 80
+
+        return 443
+
+class ConfluenceAddress(Address):
+    """Адрес объекта Confluence: REST-путь на сервере.
+
+    Части — схема, хост, порт, путь; query, фрагмент и учётные данные в
+    адрес не входят (как у SourceId ридера). Порт в частях всегда, в строке
+    httpx опускает порт по умолчанию схемы: https://host/path. Сборка и
+    разбор — httpx.URL, единственное место для адресов Confluence.
+    """
+
+    scheme: WebScheme
+    host: str
+    port: int
+    path: str
+
+    def render(self) -> str:
+        url = httpx.URL(scheme=self.scheme.value, host=self.host, port=self.port, path=self.path)
+        return str(url)
+
+    @classmethod
+    def parse(cls, text: str) -> Self:
+        try:
+            url = httpx.URL(text)
+        except httpx.InvalidURL as exc:
+            raise AddressError(f"confluence address {text!r}: {exc}") from exc
+
+        if url.userinfo:
+            raise AddressError(f"confluence address {text!r}: credentials are not part of an address")
+
+        if url.query:
+            raise AddressError(f"confluence address {text!r}: query is not part of an address")
+
+        if url.fragment:
+            raise AddressError(f"confluence address {text!r}: fragment is not part of an address")
+
+        if not url.host:
+            raise AddressError(f"confluence address {text!r}: host is required")
+
+        try:
+            scheme = WebScheme(url.scheme)
+        except ValueError as exc:
+            raise AddressError(f"confluence address {text!r}: expected scheme http or https, got {url.scheme!r}") from exc
+
+        port = url.port
+        if port is None:
+            port = scheme.default_port()
+
+        try:
+            return cls(scheme=scheme, host=url.host, port=port, path=url.path)
+        except ValidationError as exc:
+            raise AddressError(f"{cls.__name__}: address {text!r} is not valid: {exc}") from exc
+
+class SpaceAddress(ConfluenceAddress):
+    PATH_RE: ClassVar[re.Pattern[str]] = re.compile(r"/rest/api/space/[^/?#]+$")
+
+    @field_validator("path")
+    @classmethod
+    def _space_path(cls, value: str) -> str:
+        if cls.PATH_RE.search(value) is None:
+            raise ValueError(f"confluence space address expects /rest/api/space/<key>, got {value!r}")
+
+        return value
+
+class PageAddress(ConfluenceAddress):
+    PATH_RE: ClassVar[re.Pattern[str]] = re.compile(r"/rest/api/content/[^/?#]+$")   # тот же шаблон, что у SourceId.page_id_of
+
+    @field_validator("path")
+    @classmethod
+    def _content_path(cls, value: str) -> str:
+        if cls.PATH_RE.search(value) is None:
+            raise ValueError(f"confluence page address expects /rest/api/content/<id>, got {value!r}")
+
+        return value
+
+class AttachmentAddress(ConfluenceAddress):
+    PATH_RE: ClassVar[re.Pattern[str]] = re.compile(r"/download/attachments/[^/?#]+/[^/?#]+$")
+
+    @field_validator("path")
+    @classmethod
+    def _download_path(cls, value: str) -> str:
+        if cls.PATH_RE.search(value) is None:
+            raise ValueError(f"confluence attachment address expects /download/attachments/<page>/<file>, got {value!r}")
+
+        return value
+
+class SpaceNode(BaseModel):
+    kind: Literal[ConfluenceNodeKind.SPACE]
+    address: SpaceAddress
+
+class PageNode(BaseModel):
+    kind: Literal[ConfluenceNodeKind.PAGE]
+    address: PageAddress
+
+class AttachmentNode(BaseModel):
+    kind: Literal[ConfluenceNodeKind.ATTACHMENT]
+    address: AttachmentAddress
+
+ConfluenceNode = Annotated[SpaceNode | PageNode | AttachmentNode, Field(discriminator="kind")]
+```
+
+### 3.2 Content tables
+
+Виды узлов и адреса — `ConfluenceNodeKind` из `boba-confluence` (3.1);
 корпус объявляет виды своих текстов, по таблице на вид:
 
 ```python
-# boba-corpus-confluence
+# boba-confluence: boba/confluence/graph.py — подмодуль за extra graph
 class ConfluenceContentKind(StrEnum):
     TITLE = "title"
     OUTLINE = "outline"
@@ -2526,7 +1989,7 @@ create table page_sections (                   -- текст страницы п
     unique (node_id, ordinal)
 );
 create index on page_sections using gin (tsv);
-create table page_section_vectors__e5 (        -- на модель: имя = поверхность + "__" + embedding_models.slug, dim из embedding_models
+create table page_section_vectors__e5 (        -- на модель: имя = поверхность + "__" + slug модели, dim — из её конфига
     section_id    bigint      primary key references page_sections on delete cascade,
     embedding     vector(1024) not null
 );
@@ -2613,12 +2076,14 @@ create table pending_links (
 
 ```python
 class ConfluenceCorpus(Corpus[PgStatement]):
+    """Реализация Corpus для Confluence: способы поиска над своими content tables, роли, веса, имена рёбер, тексты узла, документ."""
+
     def __init__(self, cfg: ConfluenceCorpusConfig, encoders: VectorEncoderRegistry) -> None:
         self._cfg = cfg
         schema = cfg.storage.pg_schema
-        e5 = encoders.dense(cfg.embedding.model)          # нет модели в embedding_models — падение на старте
+        e5 = encoders.dense(cfg.embedding.model)          # нет модели в [encoders.models] — падение на старте
         siglip = encoders.dense(cfg.embedding.image_model)
-        # имена таблиц векторов — содержимое плюс slug модели из её строки embedding_models
+        # имена таблиц векторов — содержимое плюс slug модели из её конфига
 
         title_exact = PgExactLookup(content=ConfluenceContentKind.TITLE, schema=schema, table="pages",
                                     node_column="node_id", row_column="node_id", text_column="title")
@@ -2698,7 +2163,7 @@ class ConfluenceCorpus(Corpus[PgStatement]):
 `attachment_images`, зовёт `ImageEncoder` той же модели
 (`encode(image: bytes) -> DenseVector`) и пишет в `attachment_image_vectors`;
 поиск считает зонд из текста `ClipTextEncoder`. Одна модель, два энкодера,
-одна строка `embedding_models`.
+одна секция конфига.
 
 Повторы `table`/`node_column`/`row_column` в объявлениях — намеренные:
 каждый индекс читается сам по себе, без поиска общего определения. 
@@ -2706,7 +2171,7 @@ class ConfluenceCorpus(Corpus[PgStatement]):
 `SearchStore` способов поиска не знает: подзапрос и подпись — у способа
 (раздел 2), вес подписи — в `search_weights()` корпуса; хранилище лишь
 вкладывает подзапросы ветками в один запрос и сливает ранги RRF в базе
-(раздел 8).
+(раздел 9).
 
 Два способа над `page_sections` дают две ветки:
 
@@ -2768,7 +2233,474 @@ limit %(limit)s;
 |---|---|---|---|---|
 | 17 | FLIP-457 пересматривает опции table/SQL к выходу Flink 2.0… | `{flink, configuration, sql}` | `qwen3-4b-int4` | `5d41…` |
 
-### 4.2 Хранилище данных
+### 3.3 Рёбра
+
+Виды связей, которые корпус Confluence видит в источнике или считает сам,
+и обоснования к ним:
+
+```python
+class ConfluenceEdgeKind(StrEnum):
+    IN_SPACE = "in_space"              # пространство → страница
+    CHILD_PAGE = "child_page"          # страница → дочерняя страница в дереве пространства
+    HAS_ATTACHMENT = "has_attachment"  # страница → вложение
+    LINK = "link"                      # ссылка на страницу в теле
+    ATTACHMENT_REF = "attachment_ref"  # ссылка на вложение другой страницы
+    MENTION = "mention"                # заголовок другой страницы встретился в тексте
+    SERIES = "series"                  # общий код серии в заголовках: FLIP-457 и FLIP-458
+    ENTITY = "entity"                  # страница → сущность, которую упоминает   (считает ядро)
+    SIMILAR = "similar"                # близость векторов                     (считает ядро)
+    SAME_AUTHOR = "same_author"        # один автор последней правки
+
+# boba-confluence, подмодуль graph: обоснования явных рёбер
+class LinkEvidence(Evidence):
+    """Обоснование ребра link: ссылка в теле страницы — её якорь, фраза вокруг и раздел, где она стоит."""
+
+    anchor: str
+    phrase: str
+    section_id: int
+
+class MentionEvidence(Evidence):
+    """Обоснование ребра mention: заголовок другого узла встретился в тексте — сколько раз, в каком разделе, при каком пороге длины."""
+
+    title: str
+    occurrences: int
+    section_id: int
+    min_words: int                      # mention_min_words на момент расчёта
+
+class SeriesEvidence(Evidence):
+    """Обоснование ребра series: общий код серии в заголовках (FLIP-457 и FLIP-458) — префикс и номера."""
+
+    prefix: str
+    numbers: Sequence[int]
+
+class SameAuthorEvidence(Evidence):
+    """Обоснование ребра same_author: логин автора последней правки, общий у двух страниц."""
+
+    author: str
+```
+
+Как считается каждое:
+
+- `link`, `attachment_ref` — корпус, из разобранной страницы: каждая
+  ссылка в теле даёт якорь и фразу вокруг него; адрес цели разрешается в
+  узел, а если цели ещё нет, ссылка ждёт в `pending_links` и ребро
+  строится при её появлении.
+- `mention` — корпус: заголовки других узлов ищутся в тексте страницы
+  способом роли `naming`, точным совпадением; заголовок короче
+  `mention_min_words` не считается.
+- `series` — корпус: код серии из заголовка регулярным выражением; общий
+  префикс у двух страниц.
+- `in_space`, `child_page`, `has_attachment`, `contains` — факт из
+  метаданных источника, `FactEvidence`; `same_author` — логин автора.
+
+## 4. Слой хранилища
+
+### 4.1 Модели
+
+Виды узлов и адреса объектов каталога — в пакетах движков: `boba-db-postgres`
+и `boba-db-clickhouse`; движки без пакета (MSSQL, Oracle, MySQL) придут со
+своими `boba-db-*` и своими перечислениями, общего перечисления всех
+движков не будет ни в одном пакете. Грамматика строки адреса — у базы
+адресов пакета, на `urllib.parse`; строку без знания объекта разбирают
+`PgAddresses.parse` и `ChAddresses.parse` по составу ролей.
+
+```python
+# boba-db-postgres: boba/db/postgres/nodes.py
+class PgNodeKind(StrEnum):
+    DATABASE = "pg_database"
+    SCHEMA = "pg_schema"
+    TABLE = "pg_table"
+    VIEW = "pg_view"
+    MATVIEW = "pg_matview"
+    COLUMN = "pg_column"
+    INDEX = "pg_index"
+    CONSTRAINT = "pg_constraint"
+    FUNCTION = "pg_function"
+    PROCEDURE = "pg_procedure"
+    TRIGGER = "pg_trigger"
+    SEQUENCE = "pg_sequence"
+
+class PgAddress(Address):
+    """Адрес объекта каталога PostgreSQL: подключение плюс роли объекта внутри базы.
+
+    Часть подключения — libpq URI, объект — query-параметры с ролью в имени
+    в порядке объявления полей наследника:
+    postgresql://host:port/database?schema=dm&table=fact_orders. Один
+    наследник на строку списка 4.2; сборка и разбор строки по канону 2.2.5
+    — здесь и только здесь, на urllib.parse.
+    """
+
+    BASE_FIELDS: ClassVar[frozenset[str]] = frozenset({"scheme", "host", "port", "database"})
+
+    scheme: Literal["postgresql"]
+    host: str
+    port: int
+    database: str
+
+    @classmethod
+    def roles(cls) -> Sequence[str]:
+        """Роли объекта — поля наследника после полей подключения, в порядке объявления, по alias."""
+        names: list[str] = []
+        for name, field in cls.model_fields.items():
+            if name in cls.BASE_FIELDS:
+                continue
+
+            alias = field.alias
+            if alias is None:
+                alias = name
+
+            names.append(alias)
+
+        return names
+
+    def render(self) -> str:
+        query = urlencode(self.model_dump(by_alias=True, exclude=self.BASE_FIELDS), quote_via=quote)
+        split = SplitResult(
+            scheme=self.scheme,
+            netloc=self._netloc(),
+            path="/" + quote(self.database, safe=""),
+            query=query,
+            fragment="",
+        )
+        return urlunsplit(split)
+
+    def _netloc(self) -> str:
+        host = self.host
+        if ":" in host:                      # IPv6 — в скобках, RFC 3986 §3.2.2
+            host = f"[{host}]"
+
+        return f"{host}:{self.port}"
+
+    @classmethod
+    def parse(cls, text: str) -> Self:
+        """Строка → адрес этого класса; канон 2.2.5: без учётных данных, с портом, path = /database, роли по составу и порядку."""
+        url = urlsplit(text)
+        if url.scheme != "postgresql":
+            raise AddressError(f"postgresql address {text!r}: expected scheme postgresql, got {url.scheme!r}")
+
+        if url.username is not None:
+            raise AddressError(f"postgresql address {text!r}: credentials are not part of an address")
+
+        if url.fragment:
+            raise AddressError(f"postgresql address {text!r}: fragment is not part of an address")
+
+        host = url.hostname
+        if host is None:
+            raise AddressError(f"postgresql address {text!r}: host is required")
+
+        try:
+            port = url.port
+        except ValueError as exc:
+            raise AddressError(f"postgresql address {text!r}: port is not a number: {exc}") from exc
+
+        if port is None:
+            raise AddressError(f"postgresql address {text!r}: port is required")
+
+        database = unquote(url.path.removeprefix("/"))
+        if not database:
+            raise AddressError(f"postgresql address {text!r}: path must be /<database>, got {url.path!r}")
+
+        if "/" in database:
+            raise AddressError(f"postgresql address {text!r}: path must be a single segment /<database>, got {url.path!r}")
+
+        roles = parse_qsl(url.query, keep_blank_values=True)
+        given: list[str] = []
+        for name, _ in roles:
+            given.append(name)
+
+        expected = list(cls.roles())
+        if given != expected:
+            raise AddressError(f"{cls.__name__}: address {text!r} expects roles {expected}, got {given}")
+
+        parts: dict[str, str | int] = {"scheme": url.scheme, "host": host, "port": port, "database": database}
+        parts.update(roles)
+        try:
+            return cls.model_validate(parts)
+        except ValidationError as exc:
+            raise AddressError(f"{cls.__name__}: address {text!r} is not valid: {exc}") from exc
+
+class PgDatabaseAddress(PgAddress): ...
+
+class PgSchemaAddress(PgAddress):
+    schema_name: str = Field(alias="schema")
+
+class PgTableAddress(PgAddress):
+    schema_name: str = Field(alias="schema")
+    table: str
+
+class PgTableColumnAddress(PgAddress):
+    schema_name: str = Field(alias="schema")
+    table: str
+    column: str
+
+class PgViewColumnAddress(PgAddress):
+    schema_name: str = Field(alias="schema")
+    view: str
+    column: str
+
+class PgIndexAddress(PgAddress):
+    schema_name: str = Field(alias="schema")
+    index: str
+
+class PgFunctionAddress(PgAddress):
+    schema_name: str = Field(alias="schema")
+    function: str
+    args: str                                  # pg_get_function_identity_arguments; пустая строка обязательна
+
+class PgConstraintAddress(PgAddress):
+    schema_name: str = Field(alias="schema")
+    table: str
+    constraint: str
+
+# … view, matview и его колонка, sequence, procedure, trigger — по строке списка 4.2 каждый
+
+class PgAddresses:
+    """Строка → адрес конкретного объекта PostgreSQL: класс выбирается по составу ролей в query."""
+
+    MODELS: ClassVar[Sequence[type[PgAddress]]] = (
+        PgDatabaseAddress, PgSchemaAddress, PgTableAddress, PgTableColumnAddress, PgViewColumnAddress,
+        PgIndexAddress, PgFunctionAddress, PgConstraintAddress,
+    )
+
+    @classmethod
+    def parse(cls, text: str) -> PgAddress:
+        given: list[str] = []
+        for name, _ in parse_qsl(urlsplit(text).query, keep_blank_values=True):
+            given.append(name)
+
+        for model in cls.MODELS:
+            if list(model.roles()) == given:
+                return model.parse(text)
+
+        raise AddressError(f"postgresql address {text!r}: no object has roles {given}")
+
+class PgTableNode(BaseModel):
+    kind: Literal[PgNodeKind.TABLE]
+    address: PgTableAddress
+
+class PgColumnNode(BaseModel):
+    kind: Literal[PgNodeKind.COLUMN]
+    address: PgTableColumnAddress | PgViewColumnAddress | PgMatviewColumnAddress   # колонка чьей-то реляции; pydantic различит по ролям
+
+PgNode = Annotated[PgDatabaseNode | PgSchemaNode | PgTableNode | PgColumnNode | ..., Field(discriminator="kind")]
+```
+
+```python
+# boba-db-clickhouse: boba/db/clickhouse/nodes.py
+class ChNodeKind(StrEnum):
+    DATABASE = "ch_database"
+    TABLE = "ch_table"
+    VIEW = "ch_view"
+    MATVIEW = "ch_matview"
+    COLUMN = "ch_column"
+    INDEX = "ch_index"          # skip-индекс, внутри таблицы
+    PROJECTION = "ch_projection"
+    DICTIONARY = "ch_dictionary"
+    FUNCTION = "ch_function"
+
+class ChAddress(Address):
+    """Адрес объекта ClickHouse: подключение плюс роли объекта; схем нет, объекты сразу в базе.
+
+    Грамматика та же, что у PgAddress, со своей схемой:
+    clickhouse://host:port/database?table=events&column=ts. Один наследник
+    на строку списка 4.2; сборка и разбор — здесь и только здесь.
+    """
+
+    BASE_FIELDS: ClassVar[frozenset[str]] = frozenset({"scheme", "host", "port", "database"})
+
+    scheme: Literal["clickhouse"]
+    host: str
+    port: int
+    database: str
+
+    @classmethod
+    def roles(cls) -> Sequence[str]:
+        """Роли объекта — поля наследника после полей подключения, в порядке объявления, по alias."""
+        names: list[str] = []
+        for name, field in cls.model_fields.items():
+            if name in cls.BASE_FIELDS:
+                continue
+
+            alias = field.alias
+            if alias is None:
+                alias = name
+
+            names.append(alias)
+
+        return names
+
+    def render(self) -> str:
+        query = urlencode(self.model_dump(by_alias=True, exclude=self.BASE_FIELDS), quote_via=quote)
+        split = SplitResult(
+            scheme=self.scheme,
+            netloc=self._netloc(),
+            path="/" + quote(self.database, safe=""),
+            query=query,
+            fragment="",
+        )
+        return urlunsplit(split)
+
+    def _netloc(self) -> str:
+        host = self.host
+        if ":" in host:                      # IPv6 — в скобках, RFC 3986 §3.2.2
+            host = f"[{host}]"
+
+        return f"{host}:{self.port}"
+
+    @classmethod
+    def parse(cls, text: str) -> Self:
+        """Строка → адрес этого класса; канон 2.2.5: без учётных данных, с портом, path = /database, роли по составу и порядку."""
+        url = urlsplit(text)
+        if url.scheme != "clickhouse":
+            raise AddressError(f"clickhouse address {text!r}: expected scheme clickhouse, got {url.scheme!r}")
+
+        if url.username is not None:
+            raise AddressError(f"clickhouse address {text!r}: credentials are not part of an address")
+
+        if url.fragment:
+            raise AddressError(f"clickhouse address {text!r}: fragment is not part of an address")
+
+        host = url.hostname
+        if host is None:
+            raise AddressError(f"clickhouse address {text!r}: host is required")
+
+        try:
+            port = url.port
+        except ValueError as exc:
+            raise AddressError(f"clickhouse address {text!r}: port is not a number: {exc}") from exc
+
+        if port is None:
+            raise AddressError(f"clickhouse address {text!r}: port is required")
+
+        database = unquote(url.path.removeprefix("/"))
+        if not database:
+            raise AddressError(f"clickhouse address {text!r}: path must be /<database>, got {url.path!r}")
+
+        if "/" in database:
+            raise AddressError(f"clickhouse address {text!r}: path must be a single segment /<database>, got {url.path!r}")
+
+        roles = parse_qsl(url.query, keep_blank_values=True)
+        given: list[str] = []
+        for name, _ in roles:
+            given.append(name)
+
+        expected = list(cls.roles())
+        if given != expected:
+            raise AddressError(f"{cls.__name__}: address {text!r} expects roles {expected}, got {given}")
+
+        parts: dict[str, str | int] = {"scheme": url.scheme, "host": host, "port": port, "database": database}
+        parts.update(roles)
+        try:
+            return cls.model_validate(parts)
+        except ValidationError as exc:
+            raise AddressError(f"{cls.__name__}: address {text!r} is not valid: {exc}") from exc
+
+class ChDatabaseAddress(ChAddress): ...
+
+class ChTableAddress(ChAddress):
+    table: str
+
+class ChTableColumnAddress(ChAddress):
+    table: str
+    column: str
+
+class ChIndexAddress(ChAddress):               # skip-индекс уникален внутри таблицы — после table
+    table: str
+    index: str
+
+class ChDictionaryAddress(ChAddress):
+    dictionary: str
+
+class ChFunctionAddress(ChAddress):            # перегрузок нет — args не нужен
+    function: str
+
+# … view, matview и их колонки, projection — по строке списка 4.2 каждый
+
+class ChAddresses:
+    """Строка → адрес конкретного объекта ClickHouse: класс по составу ролей, как PgAddresses."""
+
+    MODELS: ClassVar[Sequence[type[ChAddress]]] = (
+        ChDatabaseAddress, ChTableAddress, ChTableColumnAddress, ChIndexAddress, ChDictionaryAddress, ChFunctionAddress,
+    )
+
+    @classmethod
+    def parse(cls, text: str) -> ChAddress:
+        given: list[str] = []
+        for name, _ in parse_qsl(urlsplit(text).query, keep_blank_values=True):
+            given.append(name)
+
+        for model in cls.MODELS:
+            if list(model.roles()) == given:
+                return model.parse(text)
+
+        raise AddressError(f"clickhouse address {text!r}: no object has roles {given}")
+
+class ChColumnNode(BaseModel):
+    kind: Literal[ChNodeKind.COLUMN]
+    address: ChTableColumnAddress | ChViewColumnAddress | ChMatviewColumnAddress
+
+ChNode = Annotated[ChDatabaseNode | ChTableNode | ChColumnNode | ..., Field(discriminator="kind")]
+```
+
+### 4.2 Адреса объектов
+
+Полный набор объектов PostgreSQL. Роли идут в порядке вложенности:
+`schema`, затем объект, затем то, что внутри объекта.
+
+| объект | адрес |
+|---|---|
+| база | `postgresql://dwh.local:5432/dwh` |
+| схема | `postgresql://dwh.local:5432/dwh?schema=dm` |
+| таблица | `postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders` |
+| колонка таблицы | `postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders&column=amount` |
+| представление | `postgresql://dwh.local:5432/dwh?schema=dm&view=v_orders_daily` |
+| колонка представления | `postgresql://dwh.local:5432/dwh?schema=dm&view=v_orders_daily&column=day` |
+| материализованное представление | `postgresql://dwh.local:5432/dwh?schema=dm&matview=mv_orders_month` |
+| колонка matview | `postgresql://dwh.local:5432/dwh?schema=dm&matview=mv_orders_month&column=total` |
+| индекс, имя уникально в схеме | `postgresql://dwh.local:5432/dwh?schema=dm&index=fact_orders_customer_idx` |
+| последовательность | `postgresql://dwh.local:5432/dwh?schema=dm&sequence=fact_orders_order_id_seq` |
+| функция | `postgresql://dwh.local:5432/dwh?schema=dm&function=calc_total&args=bigint%2Cnumeric` |
+| перегрузка той же функции — другой узел | `postgresql://dwh.local:5432/dwh?schema=dm&function=calc_total&args=bigint` |
+| функция без аргументов: `args` пуст, но присутствует | `postgresql://dwh.local:5432/dwh?schema=dm&function=now_utc&args=` |
+| процедура | `postgresql://dwh.local:5432/dwh?schema=dm&procedure=close_orders&args=date%2Ctext` |
+| ограничение | `postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders&constraint=fact_orders_customer_fkey` |
+| триггер | `postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders&trigger=trg_orders_audit` |
+
+Функции и процедуры уникальны сигнатурой, а не именем: `args` — типы
+аргументов в форме `pg_get_function_identity_arguments` (имена типов
+каноничны, `integer`, а не `int4`), через запятую, запятая кодируется.
+Роль `args` у функций и процедур обязательна даже пустой, чтобы адрес
+без аргументов не спутать с адресом, где аргументы забыли. Индексы и
+последовательности в PostgreSQL уникальны в схеме и от таблицы не зависят,
+поэтому `table` в их адрес не входит — принадлежность таблице выражает
+ребро `contains`; ограничения и триггеры уникальны внутри таблицы, поэтому идут
+после `table`.
+
+Набор ClickHouse. Схем нет: база сразу содержит объекты; представления и
+материализованные представления — отдельные роли, хотя в
+`system.tables` они лежат рядом с таблицами и различаются полем `engine`.
+
+| объект | адрес |
+|---|---|
+| база | `clickhouse://ch1:9000/logs` |
+| таблица | `clickhouse://ch1:9000/logs?table=events` |
+| колонка | `clickhouse://ch1:9000/logs?table=events&column=user_id` |
+| представление | `clickhouse://ch1:9000/logs?view=v_events_hourly` |
+| колонка представления | `clickhouse://ch1:9000/logs?view=v_events_hourly&column=hour` |
+| материализованное представление | `clickhouse://ch1:9000/logs?matview=mv_events_daily` |
+| колонка matview | `clickhouse://ch1:9000/logs?matview=mv_events_daily&column=day` |
+| skip-индекс, уникален внутри таблицы | `clickhouse://ch1:9000/logs?table=events&index=events_ts_minmax` |
+| проекция | `clickhouse://ch1:9000/logs?table=events&projection=events_by_user` |
+| словарь | `clickhouse://ch1:9000/logs?dictionary=dict_users` |
+| UDF: перегрузок нет, `args` не нужен | `clickhouse://ch1:9000/logs?function=to_rub` |
+
+У ClickHouse skip-индекс и проекция принадлежат таблице и уникальны только
+внутри неё, поэтому идут после `table` — в отличие от PostgreSQL, где
+индекс уникален в схеме. Это ровно та разница между движками, ради которой
+роли объявляет корпус, а не ядро: порядок и состав ролей — часть
+`Introspector` движка (раздел 4.3).
+
+### 4.3 Content tables
 
 Индексатор хранилища получает подключение и обходит системный каталог
 движка: `pg_catalog` в PostgreSQL, `sys.*` в MSSQL, `system.tables` /
@@ -2779,7 +2711,7 @@ MySQL. У движков разные наборы объектов и разн�
 разбор каталога отвечает интроспектор движка — по классу на движок.
 
 ```python
-# виды узлов — перечисления пакетов движков (2.1): PgNodeKind в boba-db-postgres,
+# виды узлов — перечисления пакетов движков (4.1): PgNodeKind в boba-db-postgres,
 # ChNodeKind в boba-db-clickhouse; MssqlNodeKind, OracleNodeKind, MysqlNodeKind придут
 # со своими пакетами boba-db-*; у каждого свой набор объектов:
 #   pg:     database, schema, table, view, matview, column, index, constraint, function, procedure, trigger, sequence
@@ -2798,7 +2730,11 @@ class WarehouseContentKind(StrEnum):
     SUMMARY = "summary"
 
 class Introspector(Protocol):
-    """Каталог одного движка -> узлы и строки content tables; реализация на движок."""
+    """Порт чтения системного каталога одного движка: объекты и их описания для узлов и content tables хранилища.
+
+    Реализация на движок (pg_catalog, system.tables, sys.*), потому что у
+    движков разные наборы объектов и разные слова для одного и того же.
+    """
     def objects(self, database: str) -> AsyncIterator[WarehouseObject]: ...
     def profile(self, table: WarehouseObject, sample: int) -> ColumnProfiles: ...
 ```
@@ -2985,11 +2921,244 @@ create table column_profiles (         -- профиль данных: выбо�
 профилей, `co_queried` из журнала запросов движка (`pg_stat_statements`,
 `system.query_log`) — отдельным читателем, если журнал доступен.
 
-## 5. Документ узла
+### 4.4 Рёбра
+
+```python
+class WarehouseEdgeKind(StrEnum):
+    CONTAINS = "contains"              # база → схема → таблица; таблица → колонка, индекс, ограничение, триггер
+    FOREIGN_KEY = "foreign_key"        # объявленный внешний ключ; редок, но надёжен
+    VIEW_SOURCE = "view_source"        # представление читает таблицу — из его определения
+    ROUTINE_USES = "routine_uses"      # процедура читает или пишет таблицу
+    INFERRED_KEY = "inferred_key"      # значения колонки A содержатся в значениях колонки B: кандидат в ключ
+    SAME_COLUMN = "same_column"        # колонка с тем же именем и типом в двух таблицах
+    NAME_PATTERN = "name_pattern"      # общий префикс или суффикс имён: fact_*, *_hist, stg_orders/dm_orders
+    CO_QUERIED = "co_queried"          # таблицы вместе в одних запросах: pg_stat_statements, system.query_log
+    MENTION = "mention"                # имя таблицы в комментарии другой
+    ENTITY = "entity"                  # отношение → сущность, которую упоминает (считает ядро)
+    SIMILAR = "similar"                # близость векторов                     (считает ядро)
+```
+
+Для хранилища именно косвенные виды — `inferred_key`, `same_column`,
+`name_pattern`, `co_queried` — описывают хаос, где внешних ключей нет:
+`fact_orders.customer_id ⊆ dim_customer.customer_id` при 99,8% покрытия
+значений — почти наверняка ключ, хоть он и не объявлен.
+
+Как считаются, следующим планом:
+
+- `inferred_key` — включение значений колонки
+  A в значения B на выборке, в обосновании покрытие и размер выборки;
+  `same_column` — совпадение имени и типа; `name_pattern` — общий префикс
+  или суффикс; `co_queried` — число совместных запросов за окно из
+  `pg_stat_statements` или `system.query_log`; `view_source`,
+  `routine_uses` — разбор определения, в обосновании имя объекта.
+
+## 5. Слой сущностей
+
+`Entity` — именованная вещь, о которой говорят тексты: продукт, технология,
+организация, версия, термин предметной области, метка. `KRaft`, `ClickHouse`,
+`Gazprom-Neft`, «качество данных». Она не лежит ни в каком источнике как
+объект: её нельзя скачать, у неё нет страницы и нет таблицы, она
+производная от текста. Но с ней делают всё то же, что с `Node`: ищут по
+имени, показывают в выдаче, ходят от неё к тому, что о ней написано, и
+считают её место в графе. Поэтому `Entity` — это `Node` с видом `entity`,
+и слой сущностей устроен так же, как слой страниц или слой таблиц: свой
+вид узла, свой адрес, своя content table, свои способы поиска, свой вид
+рёбер. Разница в одном: его никто не скачивает — он появляется при
+индексации других слоёв и живёт во времени. Объявляет его ядро, потому
+что он одинаков для любого корпуса.
+
+### 5.1 Адрес
+
+**Адрес чистый, без источника.** ClickHouse один и тот же, где бы о нём
+ни писали, поэтому адрес — `entity://clickhouse`: схема `entity` и
+нормализованное имя, без корпуса и без вида (`EntityAddress`):
+Вид сущности — продукт, технология, термин — атрибут, а не часть
+идентичности: NER может назвать `kraft` продуктом на одной странице и
+технологией на другой, а сущность одна, и вид у неё — преобладающий.
+Каждая схема корпуса держит свои узлы-сущности, потому что нумерация
+узлов на схему; одинаковый адрес `entity://kraft` в `confluence` и в
+`warehouse` — это и есть мост между корпусами, когда он понадобится.
+
+```python
+# boba-graph: адрес сущности — единственный адрес, который объявляет ядро
+class EntityAddress(Address):
+    """Адрес сущности — единственного вида Node, который производит само ядро (5).
+
+    У сущности нет источника: ClickHouse — один и тот же, где бы о нём ни
+    писали, поэтому в адресе только имя, без корпуса и без вида:
+    entity://clickhouse. Имя — нормализованная форма, кодируется как
+    reg-name по RFC 3986: entity://arenadata%20quickmarts. Одинаковый адрес
+    в схемах разных корпусов — будущий мост между ними.
+    """
+
+    scheme: Literal["entity"]
+    name: str
+
+    def render(self) -> str:
+        return urlunsplit(SplitResult(scheme=self.scheme, netloc=quote(self.name, safe=""), path="", query="", fragment=""))
+
+    @classmethod
+    def parse(cls, text: str) -> Self:
+        url = urlsplit(text)
+        if url.scheme != "entity":
+            raise AddressError(f"entity address {text!r}: expected scheme entity, got {url.scheme!r}")
+
+        if not url.netloc:
+            raise AddressError(f"entity address {text!r}: name is required")
+
+        return cls(scheme="entity", name=unquote(url.netloc))
+```
+
+### 5.2 Content table и извлечение
+
+**Откуда берутся.** Стадия `entities` конвейера (раздел 8) берёт у
+корпуса тексты узла (`Corpus.entity_texts`) и извлекает из них имена
+четырьмя способами, все проверены на пробе (5.5):
+
+- NER моделью GLiNER: ей даётся текст и список типов (`software product`,
+  `technology`, `version`, `organization`), она размечает отрезки этих
+  типов. Модель не знает списка продуктов заранее и узнаёт их по
+  контексту — так находятся и `KRaft`, и `Arenadata QuickMarts`.
+- Ключевые фразы YAKE: статистика по тексту без модели, даёт термины
+  предметной области вроде «качество данных», вид `term`.
+- Метки страницы Confluence как есть, вид `label`.
+- В хранилище — токены имён колонок и таблиц: `customer_id` и
+  `customer_region` дают `customer`, вид `field`.
+
+Найденное приводится к одной форме — нижний регистр, один пробел, без
+диакритики, — и это имя становится адресом. Узел-сущность создаётся
+upsert'ом по адресу, как любой `Node`; его содержимое — одна строка
+content table слоя сущностей (DDL, как и весь слой, у ядра):
+
+```sql
+create table entities (
+    node_id       bigint      primary key references nodes on delete cascade,
+    name          text        not null unique,   -- нормализованная форма, она же в адресе
+    display       text        not null,          -- форма, в которой встретилась первой
+    type          text        not null,          -- преобладающий тип: product | technology | organization | version | term | label | field
+    tsv           tsvector    generated always as (to_tsvector('simple', name)) stored
+);
+create index on entities using gist (name gist_trgm_ops);   -- entity/trigram
+```
+
+### 5.3 Ребро entity
+
+**Связь узла с сущностью — ребро `entity`** от `Node` к `Entity` в
+`edges`, как любая другая связь: вес — tf-idf, обоснование — сколько раз
+встретилась и каким типом её назвали. Отдельной таблицы привязок нет.
+
+```python
+# boba-graph
+class EntityEvidence(Evidence):
+    """Узел упоминает сущность: сколько раз и каким типом её назвал экстрактор в этом узле."""
+
+    count: int
+    type: str                           # product | technology | … — тип в этом узле; у сущности хранится преобладающий
+```
+
+- `entity` — ядро, стадия `entities`: от узла к каждой сущности, которую
+  извлёк из его текстов `EntityExtractor`; вес tf-idf (5.3), `idf` —
+  глобальной стадией.
+
+```
+tf(n, e)  = count(n, e) / Σ count(n, ·)
+idf(e)    = ln((N + 1) / (df(e) + 1)) + 1        N — узлов с сущностями, df — узлов, упоминающих e
+weight    = tf · idf / max по узлу n            в [0, 1], 1 у самой характерной сущности узла
+```
+
+`count` считает стадия для одного узла; `idf` зависит от всего корпуса и
+пересчитывается глобальной стадией `kb_graph_rebuild`, которая обновляет
+веса всех рёбер `entity`. Сущность на половине корпуса (`cassandra` в
+пространстве Cassandra) получает малый `idf` и не связывает всё со всем;
+сущность на 2–5 узлах связывает их сильно.
+
+Так выглядят страница FLIP-457 и таблица `dm.fact_orders` со своими
+сущностями. `nodes`:
+
+| id | kind | address |
+|---|---|---|
+| 17 | `confluence_page` | `{"scheme": "https", "host": "cwiki.apache.org", "port": 443, "path": "/confluence/rest/api/content/307136992"}` |
+| 60 | `entity` | `{"scheme": "entity", "name": "kubernetes"}` |
+| 61 | `entity` | `{"scheme": "entity", "name": "kraft"}` |
+| 62 | `entity` | `{"scheme": "entity", "name": "accepted"}` |
+| 63 | `entity` | `{"scheme": "entity", "name": "customer"}` |
+| 64 | `entity` | `{"scheme": "entity", "name": "oms"}` |
+
+`entities`:
+
+| node_id | name | display | type |
+|---|---|---|---|
+| 60 | `kubernetes` | Kubernetes | technology |
+| 61 | `kraft` | KRaft | product |
+| 62 | `accepted` | accepted | label |
+| 63 | `customer` | customer | field |
+| 64 | `oms` | OMS | term |
+
+`edges` вида `entity`:
+
+| source_id | target_id | kind | weight | evidence | почему такой вес |
+|---|---|---|---|---|---|
+| 17 | 60 | `entity` | 0.61 | `{"count": 4, "type": "technology"}` | страница FLIP-457 упоминает Kubernetes 4 раза |
+| 17 | 62 | `entity` | 0.20 | `{"count": 1, "type": "label"}` | метка `accepted` — на 40% страниц пространства, `idf` мал |
+| 41 | 63 | `entity` | 0.83 | `{"count": 2, "type": "field"}` | колонки `customer_id`, `customer_region` |
+| 41 | 64 | `entity` | 0.95 | `{"count": 3, "type": "term"}` | OMS в комментариях таблицы |
+
+**Что это даёт.** Две страницы, обе упоминающие `kraft`, связаны путём в
+два шага через узел `entity://kraft`, и расширение по графу (9.2) находит
+этот путь само; вычислять и хранить отдельное ребро «общие сущности»
+между страницами не нужно. Через частую сущность активация растекается
+слабо, потому что вес каждого её ребра мал. На запрос «kraft» способы
+`entity/exact` и `entity/trigram` находят сам узел-сущность, и в выдаче
+он стоит первым, а страницы о нём приходят как его соседи; `kb_node` по
+адресу `entity://kraft` показывает, где она встречается и с каким весом.
+Глобальные метрики (2.2.4) считаются и для сущностей: PageRank сущности —
+насколько термин центральный для корпуса.
+
+**Жизнь во времени.** У сущности нет области обхода и версии в
+источнике: она возникает, когда её впервые упомянул какой-то `Node`, и
+дальше укрепляется или слабеет вместе с корпусом. Каждая новая страница о
+`KRaft` добавляет ей входящее ребро — растут `degree_in` и PageRank, она
+становится центральнее; но каждое ребро при этом чуть слабее, потому что
+`idf` падает: сущность, о которой пишут все, перестаёт отличать одну
+страницу от другой. Страницу удалили — её ребро ушло вместе с ней. Стадия
+`entities` отмечает `last_seen_run` у каждой встреченной сущности, а
+глобальная стадия пересчитывает `idf` и удаляет узлы-сущности, у которых
+не осталось входящих рёбер `entity`, — вместе с ними уходит и строка
+`entities`.
+
+### 5.4 Способы поиска
+
+Слой сущностей ищется теми же классами, что и остальные, но объявляет их
+не корпус, а ядро: таблица `entities` и её колонки одинаковы в любой
+схеме. Реализация — `PgEntityLookups` в `boba-db-pggraph` (2.6); корпус
+включает её в свой список одной строкой и назначает вес подписям
+`entity/exact` и `entity/trigram` в `[search.weights]`.
+
+### 5.5 Проба извлечения
+
+GLiNER `multi-v2.1` в песочнице плагина вместе с torch CPU: по пробе на
+50 страницах cwiki — 4 с на страницу в 13,6 тыс. символов на 8 потоках,
+продукты и технологии извлекаются надёжно, мусор предсказуем и режется
+стоп-листом и tf-idf. Метки — из конфига, объединение по имени без учёта
+типа, тип — преобладающий. Термины — YAKE, вид `term`.
+
+Русская проба — 17 страниц внутреннего Confluence (PHDD2, TMETA, PIXBI,
+DQ; 77 тыс. символов): 1,5 с на страницу, плотность сущностей та же, что
+на английском (9,7 на 10 тыс. символов против 8,3). Продукты и организации
+извлекаются: `PIX BI`, `ADQM`, `Arenadata QuickMarts`, `PostgresPro`,
+`Oracle`, `Airflow`, `Gazprom-Neft`, `EDM`; предметные термины тоже —
+«продуктивный ландшафт», «качество данных», «lineage». Мусор того же
+рода, что в английском, плюс склонённые формы («версию», «следующих
+версиях»), которые режутся тем же стоп-листом и порогом на вид `version`.
+YAKE на русском без лемматизации слаб («Рисунок», «Вкладка», «данных»):
+термины берутся только из двух и более слов и с меньшим весом, замена на
+извлечение ключевых фраз через эмбеддер e5 — отдельная проба позже.
+
+## 6. Документ узла
 
 Поиск отдаёт узлы фрагментами; когда модели нужен узел целиком, инструмент
 `kb_node` зовёт `Corpus.document(node_id, limit)` и получает
-`NodeDocument` (2.3): заголовок, адрес и части по порядку. Документ
+`NodeDocument` (2.4): заголовок, адрес и части по порядку. Документ
 собирается из content tables, а не из источника: в Confluence за страницей
 не ходим, отдаём то, что проиндексировано, — версия на момент индексации.
 Часть — либо текст (`TextPart`: markdown раздела, DDL, профиль колонки),
@@ -3000,33 +3169,36 @@ Confluence — страница как разделы по порядку с в�
 DDL, комментарии, профиль и пример строк отношения; колонка — профиль и
 ссылка на таблицу. `limit` режет части, `truncated` говорит, что порезано.
 
-## 6. Код
+## 7. Код
 
-Четыре новых пакета по слоям проекта, пятый — следующим планом:
+Новых пакетов три — ядро, его реализация на Postgres и инструменты над
+графом; всё, что относится к источнику, живёт в существующих пакетах
+этого источника:
 
 | пакет | что внутри |
 |---|---|
-| `packages/core/boba-graph` | домен: `Node`, `Edge`, `Address`, `EntityAddress`, `Evidence`, `Probe`, `IndexLookup[S]`, `LookupMethod`, `VectorEncoder[V]`, `Corpus`; порты хранения и сервисов стадий; конвейер 2.0 |
-| `packages/infra/db/boba-db-pggraph` | postgres: DDL graph tables, реализации портов для relational и age, слияние поиска по индексам, обход, глобальный экспорт |
-| `packages/tools/boba-tool-graph` | инструменты над любым корпусом: `kb_search`, `kb_related`, `kb_node`, `kb_graph_rebuild`, `kb_graph_check`, установка схемы |
-| `packages/tools/boba-corpus-confluence` | корпус Confluence: виды текстов и рёбер, content tables и их DDL, индексы поиска, транспорт и ридер 2.0, явные рёбра, резолвер, инструменты индексации `confluence_graph_index_*` |
-| `packages/tools/boba-corpus-warehouse` | корпус хранилища (следующий план): виды текстов и рёбер, content tables, интроспекторы движков, профили, косвенные рёбра, резолвер |
+| `packages/core/boba-graph` | новый. Домен: `Node`, `Edge`, `Address`, `EntityAddress`, `Evidence`, `Probe`, `IndexLookup[S]`, `LookupMethod`, `VectorEncoder[V]`, `Corpus`; порты хранения и сервисов стадий; конвейер 2.0 |
+| `packages/infra/db/boba-db-pggraph` | новый. Postgres: DDL graph tables, реализации портов для relational и age, слияние поиска по способам, обход, глобальный экспорт; пул и курсоры — из `boba-db-postgres` |
+| `packages/tools/boba-tool-graph` | новый. Инструменты над любым корпусом: `kb_search`, `kb_related`, `kb_node`, `kb_graph_rebuild`, `kb_graph_check`, установка схемы |
+| `packages/infra/format/boba-confluence` | модели узлов и адресов (3.1) — рядом с `models.py`; подмодуль `boba.confluence.graph` за extra `graph`: `ConfluenceContentKind`, content tables и их DDL, `ConfluenceCorpus`, ридер 2.0, явные рёбра, документ узла (раздел 3) |
+| `packages/tools/boba-tool-confluence` | инструменты индексации 2.0 `confluence_graph_index_*` рядом с индексатором 1.0; манифест плагина регистрирует корпус в реестре |
+| `packages/infra/db/boba-db-postgres` | `PgNodeKind`, адреса и узлы объектов каталога, `PgNode` (4.1); интроспекция PostgreSQL для хранилища — там, где уже лежит `catalog.py` (следующий план) |
+| `packages/infra/db/boba-db-clickhouse` | `ChNodeKind`, адреса и узлы объектов, `ChNode` (4.1); интроспекция ClickHouse (следующий план) |
+| `packages/core/boba-catalog` и `boba-tool-postgres`, `boba-tool-clickhouse` | слой хранилища (следующий план): content tables 4.3 сверяются с моделью отношений каталога и сводятся к ней, где совпадают; инструменты индексации — в инструментах движков |
 
-Модели самих источников — в уже существующих пакетах источников (2.1);
-единственная новая зависимость у них — база `Address` из `boba-graph`
-(core ← infra, направление соблюдено):
+Extra `graph` у `boba-confluence` — тот же механизм `[tool.boba.extras]`,
+что у `boba-krb`: подмодуль объявляет свои зависимости (`boba-graph`,
+`boba-db-pggraph`), остальной пакет их не получает, и `DepsAudit` это
+проверяет. Где именно окажется `WarehouseCorpus`, решает следующий план:
+модель отношений уже в `boba-catalog` (core), интроспекторы в `boba-db-*`,
+а самому корпусу нужен `boba-db-pggraph`, значит его место в сервисе
+каталога или в инструменте, но не в новом пакете.
 
-| пакет источника | что в нём появляется |
-|---|---|
-| `packages/infra/format/boba-confluence` | `ConfluenceNodeKind`, адреса и узлы страниц, спейсов, вложений, `ConfluenceNode` |
-| `packages/infra/db/boba-db-postgres` | `PgNodeKind`, адреса и узлы объектов каталога, `PgNode` |
-| `packages/infra/db/boba-db-clickhouse` | `ChNodeKind`, адреса и узлы объектов, `ChNode` |
-
-Корпус регистрируется как плагин `boba.tools` и попадает в реестр
-корпусов по имени схемы; `boba-tool-graph` получает реализацию `Corpus`
-из реестра и никогда не импортирует пакеты корпусов напрямую. Добавление
-корпуса хранилища не меняет ни ядро, ни `boba-db-pggraph`, ни
-`boba-tool-graph`.
+Корпус попадает в реестр корпусов по имени схемы через манифест плагина
+`boba.tools` своего источника (`boba-tool-confluence`); `boba-tool-graph`
+получает реализацию `Corpus` из реестра и никогда не импортирует пакеты
+источников напрямую. Добавление корпуса хранилища не меняет ни ядро, ни
+`boba-db-pggraph`, ни `boba-tool-graph`.
 
 Порты ядра в `boba-graph`:
 
@@ -3035,11 +3207,10 @@ DDL, комментарии, профиль и пример строк отно�
 | `NodeStore` | upsert узла по адресу, чтение по адресу и id, удаление | хранилище |
 | `SyncLedger` | реестр обхода над таблицей `sync` | хранилище |
 | `EntityStore` | узлы-сущности по адресу, их строки `entities`, пересчёт `idf` по рёбрам `entity`, удаление осиротевших | хранилище |
-| `GraphStore` | рёбра, соседи, расширение от опорных узлов — две реализации (3.7, раздел 8) | хранилище |
+| `GraphStore` | рёбра, соседи, расширение от опорных узлов — две реализации (2.6, раздел 9) | хранилище |
 | `RankStore` | метрики | хранилище |
-| `ModelRegistry` | `embedding_models` | хранилище |
-| `SearchStore` | `candidates(corpus, query)`: один запрос по всем способам с RRF в базе; `rows(statement)`: один способ отдельно (2.6, раздел 8) | хранилище |
-| `VectorEncoderRegistry` | `VectorEncoder` по имени модели и форме вектора; собран из `embedding_models` и `[encoders]` | `boba-llm` |
+| `SearchStore` | `candidates(corpus, query)`: один запрос по всем способам с RRF в базе; `rows(statement)`: один способ отдельно (2.6, раздел 9) | хранилище |
+| `VectorEncoderRegistry` | `VectorEncoder` по имени модели и форме вектора; собран из `[encoders.models]` | `boba-llm` |
 | `VectorEncoder` | текст в вектор одним методом; реализации по `modality` модели | `boba-llm`, зовут стадии корпуса и индексы |
 | `Generator` | сервис генерации по схеме: саммари, описания картинок | сервис, зовут стадии корпуса |
 | `EntityExtractor` | сервис извлечения сущностей из текста | сервис, зовёт ядро |
@@ -3122,7 +3293,7 @@ DDL, комментарии, профиль и пример строк отно�
         system_prompt = "..."
 ```
 
-## 7. Индексация
+## 8. Индексация
 
 Стадии на узел. Ядро задаёт каркас — учёт, сущности, рёбра ядра,
 глобальную стадию — и даёт сервисы; что писать в content tables, решает корпус:
@@ -3148,30 +3319,10 @@ DDL, комментарии, профиль и пример строк отно�
 На корпусе в 1,4 тыс. узлов — секунды; NetworkX держит десятки тысяч узлов
 и миллионы рёбер в памяти.
 
-### 7.1 Извлечение сущностей
-
-GLiNER `multi-v2.1` в песочнице плагина вместе с torch CPU: по пробе на
-50 страницах cwiki — 4 с на страницу в 13,6 тыс. символов на 8 потоках,
-продукты и технологии извлекаются надёжно, мусор предсказуем и режется
-стоп-листом и tf-idf. Метки — из конфига, объединение по имени без учёта
-типа, тип — преобладающий. Термины — YAKE, вид `term`.
-
-Русская проба — 17 страниц внутреннего Confluence (PHDD2, TMETA, PIXBI,
-DQ; 77 тыс. символов): 1,5 с на страницу, плотность сущностей та же, что
-на английском (9,7 на 10 тыс. символов против 8,3). Продукты и организации
-извлекаются: `PIX BI`, `ADQM`, `Arenadata QuickMarts`, `PostgresPro`,
-`Oracle`, `Airflow`, `Gazprom-Neft`, `EDM`; предметные термины тоже —
-«продуктивный ландшафт», «качество данных», «lineage». Мусор того же
-рода, что в английском, плюс склонённые формы («версию», «следующих
-версиях»), которые режутся тем же стоп-листом и порогом на вид `version`.
-YAKE на русском без лемматизации слаб («Рисунок», «Вкладка», «данных»):
-термины берутся только из двух и более слов и с меньшим весом, замена на
-извлечение ключевых фраз через эмбеддер e5 — отдельная проба позже.
-
-## 8. Поиск и ранжирование
+## 9. Поиск и ранжирование
 
 Инструмент `kb_search(corpus, query, top_k, expand)`. Вход — текст
-пользователя; выход — до `top_k` строк `Match` (2.3): узел с `kind` и
+пользователя; выход — до `top_k` строк `Match` (2.4): узел с `kind` и
 адресом, заголовок, счёт, фрагменты, которыми он найден, и путь по графу,
 если пришёл через граф. Алгоритм — три запроса к базе и одно сложение в
 ядре; ни строки способов, ни фрагменты, которые не попадут в выдачу, до
@@ -3184,7 +3335,7 @@ Python не доходят.
 | 3 счёт | `NodeSearch` в ядре | сложить `s_base`, `s_graph` и метрики, отрезать `top_k` | 0 |
 | 4 заголовки | `Corpus.titles` | заголовки итоговых узлов из content tables | 1 |
 
-### 8.1 Кандидаты: один запрос на все способы
+### 9.1 Кандидаты: один запрос на все способы
 
 Каждый способ (`IndexLookup`) даёт подзапрос с колонками `node_id`,
 `row_id`, `snippet`, `score`, не длиннее `candidates` строк. Хранилище
@@ -3328,7 +3479,7 @@ order by
 ни базы. Колонка остаётся узлом для графа и lineage; кому нужны колонки
 таблицы, тот берёт `kb_node`.
 
-### 8.2 Расширение: узлы, которых текст не нашёл
+### 9.2 Расширение: узлы, которых текст не нашёл
 
 Текстовый поиск находит узлы, где встретились слова запроса. Нужный
 ответ часто лежит в соседнем узле, где этих слов нет: страница, на
@@ -3366,12 +3517,12 @@ s_graph(n) = Σ по путям от опорных к n длиной ≤ depth:
 ```
 
 Порт один, `GraphStore.expand(seeds, depth)`, реализации две. Реляционная —
-рекурсивный CTE по `adjacency` (3.4):
+рекурсивный CTE по `adjacency` (2.2.3):
 
 ```sql
 with recursive
     seed(node_id, s_base) as (
-        values (17, 0.0482), (21, 0.0311)                     -- опорные узлы из 8.1, параметр запроса
+        values (17, 0.0482), (21, 0.0311)                     -- опорные узлы из 9.1, параметр запроса
     ),
     factor(kind, value) as (
         values ('link', 1.0), ('mention', 0.8), ('similar', 0.7), ('entity', 0.7)   -- [search.expand.factors]
@@ -3455,18 +3606,19 @@ from
     $$, $params) as w(node_id agtype, s_graph agtype, distance agtype)
 ```
 
-### 8.3 Счёт и выдача
+### 9.3 Счёт и выдача
 
 Сложение делает ядро: строк здесь не больше `seed_k` плюс достигнутые,
 это десятки, а не сотни, и они уже с `kind`, адресом и метриками.
 
 ```python
 class NodeSearch:
-    """Сервис поиска ядра: три порта, один итог.
+    """Сервис поиска ядра: из текста запроса — список узлов со счётом, фрагментами и путём по графу.
 
-    Зовёт SearchStore.candidates, при expand — GraphStore.expand, складывает
-    кандидатов по node_id, считает счёт, берёт заголовки у корпуса и
-    отдаёт Match. Способов поиска, SQL и бэкенда графа не знает.
+    Единственное место, где сходятся три порта: SearchStore.candidates, при
+    expand — GraphStore.expand, заголовки — у корпуса; складывает
+    кандидатов по node_id, считает счёт, отдаёт Match. Способов поиска, SQL
+    и бэкенда графа не знает.
     """
 
     def __init__(self, store: SearchStore[S], graph: GraphStore, cfg: SearchConfig) -> None: ...
@@ -3516,7 +3668,7 @@ class NodeSearch:
 
 Счёт: `score = s_base + weight · s_graph + Σ μ_m · metric_m`, где `weight`
 из `[search.expand]`, `μ_m` из `[search.metrics]`, метрики — глобальные
-величины из `ranks` (3.5). Реранк кросс-энкодером первых N — стадия
+величины из `ranks` (2.2.4). Реранк кросс-энкодером первых N — стадия
 поверх этого счёта, не способ поиска; добавляется отдельно, когда
 понадобится.
 
@@ -3537,7 +3689,7 @@ class NodeSearch:
 нет, но в выдаче она третья, с путём «`link` от libpq, `mention` от
 Настроек драйвера».
 
-### 8.4 Ход по графу руками: kb_node и kb_related
+### 9.4 Ход по графу руками: kb_node и kb_related
 
 Расширение внутри `kb_search` одинаково для всех запросов: множители
 заданы конфигом и смысла запроса не знают. Когда модели нужно идти по
@@ -3546,7 +3698,7 @@ class NodeSearch:
 
 - `kb_node(corpus, address)` — узел целиком: адрес строкой разбирает
   `parse()` модели адреса корпуса, документ собирает
-  `Corpus.document` (раздел 5); рёбра узла с обоснованием, включая
+  `Corpus.document` (раздел 6); рёбра узла с обоснованием, включая
   `entity` к его сущностям, — из `edges`. Для узла-сущности документ —
   кто её упоминает и с каким весом.
 - `kb_related(corpus, address, kinds)` — соседи узла по видам рёбер
@@ -3558,7 +3710,7 @@ class NodeSearch:
 схемы своя нумерация узлов, мост — отдельная таблица без внешних ключей.
 Проектируется с появлением второго корпуса.
 
-## 9. Этапы
+## 10. Этапы
 
 1. **Проба NER** — сделана на английском; русская проба на внутреннем
    Confluence — результат в 7.1.
@@ -3569,20 +3721,22 @@ class NodeSearch:
    `confluence_test`.
 2a. **AGE.** Второй `GraphStore`, граф `confluence_graph`, те же тесты на
    обоих бэкендах; `kb_graph_check`.
-3. **Корпус Confluence.** Модели узлов в `boba-confluence`;
-   `boba-corpus-confluence`: виды текстов и рёбер, content
-   tables и их DDL, индексы, транспорт и ридер 2.0; конвейер пишет `nodes`,
-   `sync`, `pages`, `page_sections`, `attachments`, `attachment_texts`.
+3. **Корпус Confluence.** В `boba-confluence`: модели узлов рядом с
+   `models.py`, подмодуль `graph` за extra — виды содержимого и рёбер,
+   content tables и их DDL, способы поиска, ридер 2.0; инструменты
+   индексации в `boba-tool-confluence`; конвейер пишет `nodes`, `sync`,
+   `pages`, `page_sections`, `attachments`, `attachment_texts`.
 4. **Явные рёбра.** `in_space`, `child_page`, `has_attachment`, `link`,
    `attachment_ref`, `mention`, `series`, `pending_links`.
 5. **Сущности** как узлы `entity` и рёбра `entity` к ним, tf-idf.
 6. **Семантика.** Векторные индексы, рёбра `similar`.
 7. **Саммари.** `page_summaries`, генератор по схеме, способ `summary` в `applied_methods`.
 8. **Глобальная стадия.** `kb_graph_rebuild`, `ranks`.
-9. **Поиск.** `boba-tool-graph`: `kb_search` по алгоритму раздела 8
+9. **Поиск.** `boba-tool-graph`: `kb_search` по алгоритму раздела 9
    (сначала без расширения, затем расширение по флагу), `kb_related`,
    `kb_node`; документ узла — в корпусе.
 
 Текущий индексатор всё это время не трогается; его судьба решается
 отдельно, когда 2.0 принят. Корпус хранилища — следующий план поверх
 этого: интроспекторы движков, профили, косвенные рёбра.
+
