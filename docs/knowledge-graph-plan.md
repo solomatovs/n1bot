@@ -740,37 +740,35 @@ S = TypeVar("S")                              # готовый запрос др
 S_co = TypeVar("S_co", covariant=True)        # протоколы: запрос только на выходе
 
 class SqlIndex(Protocol[P_contra, S_co]):
-    """Индекс поиска: сборка своего запроса плюс то, что нужно слиянию и выдаче.
+    """Индекс поиска: сборка своего запроса по зонду.
 
-    Протокол требует ровно то, чем пользуется обобщённый код, и только
-    методами. statement — запрос, который SearchStore исполняет. weight —
-    насколько попадание из этого индекса весомее попаданий из других при
-    слиянии списков: точное совпадение заголовка значит больше, чем
-    совпадение по абзацу раздела (раздел 8, RRF). label — чем узел найден,
-    для выдачи и логов: «title/exact», «summary/vector» — по этому
-    пользователь и модель судят, насколько доверять попаданию. Откуда
-    реализация берёт вес и подпись — из своих полей, из конфига, из
-    констант класса — её дело. Что индекс ищет, по какой таблице, каким
-    способом — тоже знает только она. Что такое готовый запрос (S) — знает
-    только SearchStore того же драйвера: ядро его не разбирает, поэтому
-    протокола запроса в ядре нет.
+    statement — весь смысл индекса: запрос, который исполняет SearchStore.
+    label — подпись индекса, его имя для двух потребителей вне поиска:
+    found_by в выдаче («title/exact», «summary/vector» — по ним модель
+    судит, насколько доверять попаданию) и поле index в обосновании ребра
+    similar. Подпись же — ключ веса в [search.weights] корпуса, но сам вес
+    индекс не держит: он свойство ранжирования, а не таблицы с колонкой, и
+    при вызове statement для рёбер similar и mention смысла не имеет.
+
+    Что индекс ищет, по какой таблице, каким способом — знает только
+    реализация. Что такое готовый запрос (S) — знает только SearchStore
+    того же драйвера: ядро его не разбирает, поэтому протокола запроса в
+    ядре нет.
     """
 
     def statement(self, probe: P_contra) -> S_co: ...
-    def weight(self) -> float: ...     # вес попаданий этого индекса при слиянии списков
     def label(self) -> str: ...        # чем найдено: "title/exact", "summary/vector"
 
-class VectorSqlIndex(SqlIndex[DenseProbe, S_co], Protocol[S_co]):
-    """Индекс над таблицей плотных векторов одной модели.
+class ModelIndex(SqlIndex[P_contra, S_co], Protocol[P_contra, S_co]):
+    """Индекс над таблицей векторов одной модели: ModelIndex[DenseProbe, S], ModelIndex[SparseProbe, S].
 
-    model — имя этой модели в embedding_models: ею же SearchStore считает
-    зонд из текста (VectorEncoderRegistry.dense), один раз на модель для
-    всех индексов, что её делят.
+    model — имя модели в embedding_models, которой посчитаны векторы
+    таблицы: ею же SearchStore считает зонд из текста
+    (VectorEncoderRegistry), один раз на модель для всех индексов, что её
+    делят. Это не настройка, а факт о таблице: запрос с вектором другой
+    модели даёт мусор, поэтому реализация ещё и проверяет зонд.
     """
 
-    def model(self) -> str: ...
-
-class SparseSqlIndex(SqlIndex[SparseProbe, S_co], Protocol[S_co]):
     def model(self) -> str: ...
 ```
 
@@ -818,7 +816,9 @@ class Corpus(Protocol[S_co]):
     группами по типу зонда: P у SqlIndex стоит в позиции аргумента и
     контравариантен, поэтому один список индексов с разными зондами не
     типизируется без Any; три группы типизируются точно, и у каждой свой
-    сборщик зондов в SearchStore.
+    сборщик зондов в SearchStore. Векторные группы — ModelIndex с тем же
+    зондом в параметре: отдельных имён под плотный и разреженный индекс
+    нет, разница между ними и есть тип зонда.
     """
 
     node_kinds: type[StrEnum]
@@ -826,10 +826,11 @@ class Corpus(Protocol[S_co]):
     edge_kinds: type[StrEnum]
 
     def text_indexes(self) -> Sequence[SqlIndex[TextProbe, S_co]]: ...   # fts, trigram, exact, bm25
-    def dense_indexes(self) -> Sequence[VectorSqlIndex[S_co]]: ...       # vector, image_vector
-    def sparse_indexes(self) -> Sequence[SparseSqlIndex[S_co]]: ...      # sparse
+    def dense_indexes(self) -> Sequence[ModelIndex[DenseProbe, S_co]]: ...    # vector, image_vector
+    def sparse_indexes(self) -> Sequence[ModelIndex[SparseProbe, S_co]]: ...  # sparse
     def title_index(self) -> SqlIndex[TextProbe, S_co]: ...              # имена узлов: MENTION и NAMING
-    def similarity_index(self) -> VectorSqlIndex[S_co]: ...              # чей вектор берёт similar
+    def similarity_index(self) -> ModelIndex[DenseProbe, S_co]: ...          # чей вектор берёт similar
+    def search_weights(self) -> Mapping[str, float]: ...                 # label() индекса -> вес в RRF, из [search.weights]
     def entity_edge_kind(self) -> str: ...               # как корпус называет ребро по общим сущностям
     def similar_edge_kind(self) -> str: ...              # как корпус называет ребро по близости векторов
     def entity_texts(self, node_id: int) -> Sequence[str]: ...   # из чего извлекать сущности
@@ -878,17 +879,13 @@ class PgStatement:
 
 @dataclass(frozen=True)
 class PgFtsIndex(SqlIndex[TextProbe, PgStatement]):      # tsvector + GIN, ts_rank_cd
-    name: str                             # "section/fts": подпись для выдачи и ключ веса в [search.weights]
-    rrf_weight: float                     # из [search.weights] корпуса по name
+    name: str                             # "section/fts": подпись индекса и ключ веса в [search.weights]
     schema: str                           # схема корпуса из [storage]: confluence | confluence_test — деталь реализации
     table: str                            # таблица content tables: page_sections
     node_column: str                      # колонка со ссылкой на nodes.id
     row_column: str                       # ключ строки: id у page_sections, node_id у pages
     text_column: str                      # колонка текста, отдаваемого в выдачу
     tsv_column: str
-
-    def weight(self) -> float:
-        return self.rrf_weight
 
     def label(self) -> str:
         return self.name
@@ -936,7 +933,12 @@ class PgModelIndex:
         return self.model_name
 
     def expect(self, vector: Vector, index: str, table: str) -> None:
-        """Вектор другой модели — ошибка вызова, не пустая выдача."""
+        """Вектор другой модели — ошибка вызова, не пустая выдача.
+
+        Для kb_search проверка тавтологична: зонд считал сам SearchStore по
+        model(). Она для рёбер similar, где вектор приходит из таблицы
+        соседнего узла и моделью ошибиться можно.
+        """
         if vector.model == self.model_name:
             return
 
@@ -946,9 +948,8 @@ class PgModelIndex:
         )
 
 @dataclass(frozen=True)
-class PgVectorIndex(PgModelIndex, VectorSqlIndex[PgStatement]):   # pgvector + HNSW; таблица векторов — на одну модель, фильтра по модели в запросе нет
+class PgVectorIndex(PgModelIndex, ModelIndex[DenseProbe, PgStatement]):   # pgvector + HNSW; таблица векторов — на одну модель, фильтра по модели в запросе нет
     name: str
-    rrf_weight: float
     schema: str
     table: str
     node_column: str
@@ -956,9 +957,6 @@ class PgVectorIndex(PgModelIndex, VectorSqlIndex[PgStatement]):   # pgvector + H
     text_column: str
     vector_table: str                     # таблица векторов этой поверхности и этой модели: page_section_vectors__e5
     ref_column: str                       # ссылка на row_column
-
-    def weight(self) -> float:
-        return self.rrf_weight
 
     def label(self) -> str:
         return self.name
@@ -995,15 +993,11 @@ class PgTrigramIndex(SqlIndex[TextProbe, PgStatement]):   # pg_trgm + GiST (gist
                                                              # GiST, а не GIN: только он даёт top-N по <-> прямо из индекса (KNN);
                                                              # % отсекает мусор по pg_trgm.similarity_threshold; %% — экранированный %
     name: str
-    rrf_weight: float
     schema: str
     table: str
     node_column: str
     row_column: str
     text_column: str
-
-    def weight(self) -> float:
-        return self.rrf_weight
 
     def label(self) -> str:
         return self.name
@@ -1034,15 +1028,11 @@ class PgTrigramIndex(SqlIndex[TextProbe, PgStatement]):   # pg_trgm + GiST (gist
 @dataclass(frozen=True)
 class PgExactIndex(SqlIndex[TextProbe, PgStatement]):     # btree по lower(text): MENTION, NAMING, коды вида FLIP-457
     name: str
-    rrf_weight: float
     schema: str
     table: str
     node_column: str
     row_column: str
     text_column: str
-
-    def weight(self) -> float:
-        return self.rrf_weight
 
     def label(self) -> str:
         return self.name
@@ -1071,16 +1061,12 @@ class PgExactIndex(SqlIndex[TextProbe, PgStatement]):     # btree по lower(tex
 @dataclass(frozen=True)
 class PgBm25Index(SqlIndex[TextProbe, PgStatement]):      # pg_search (ParadeDB): BM25 с нормировкой по длине; только если расширение стоит
     name: str
-    rrf_weight: float
     schema: str
     table: str
     node_column: str
     row_column: str
     text_column: str
     index_name: str                        # индекс bm25 над таблицей; нужен установке, запрос идёт через оператор @@@
-
-    def weight(self) -> float:
-        return self.rrf_weight
 
     def label(self) -> str:
         return self.name
@@ -1109,10 +1095,9 @@ class PgBm25Index(SqlIndex[TextProbe, PgStatement]):      # pg_search (ParadeDB)
         return PgStatement(query=composed, params={"text": probe.text, "limit": probe.limit})
 
 @dataclass(frozen=True)
-class PgSparseIndex(PgModelIndex, SparseSqlIndex[PgStatement]):   # pgvector sparsevec + HNSW (sparsevec_ip_ops): SPLADE / BM42; таблица на модель;
+class PgSparseIndex(PgModelIndex, ModelIndex[SparseProbe, PgStatement]):   # pgvector sparsevec + HNSW (sparsevec_ip_ops): SPLADE / BM42; таблица на модель;
                                                        # <#> — отрицательное скалярное произведение: меньше — ближе
     name: str
-    rrf_weight: float
     schema: str
     table: str
     node_column: str
@@ -1120,9 +1105,6 @@ class PgSparseIndex(PgModelIndex, SparseSqlIndex[PgStatement]):   # pgvector spa
     text_column: str
     vector_table: str
     ref_column: str
-
-    def weight(self) -> float:
-        return self.rrf_weight
 
     def label(self) -> str:
         return self.name
@@ -1156,7 +1138,7 @@ class PgSparseIndex(PgModelIndex, SparseSqlIndex[PgStatement]):   # pgvector spa
         # SparseVectorText.render: '{i1:v1,i2:v2,…}/dim' — текстовая форма sparsevec; одна точка сборки
 
 @dataclass(frozen=True)
-class PgImageVectorIndex(PgModelIndex, VectorSqlIndex[PgStatement]):
+class PgImageVectorIndex(PgModelIndex, ModelIndex[DenseProbe, PgStatement]):
     """Поиск картинок вложений по смыслу: текст запроса → вектор в пространстве
     картинок (SigLIP/CLIP), ближайшие векторы картинок в pgvector.
 
@@ -1166,7 +1148,6 @@ class PgImageVectorIndex(PgModelIndex, VectorSqlIndex[PgStatement]):
     """
 
     name: str                              # "image/image_vector": подпись выдачи и ключ веса в [search.weights]
-    rrf_weight: float                      # вес попаданий этого индекса при слиянии, из конфига по name
     schema: str                            # схема Postgres корпуса: confluence | confluence_test
     table: str                             # attachment_images
     node_column: str                       # ссылка на nodes.id
@@ -1190,9 +1171,6 @@ class PgImageVectorIndex(PgModelIndex, VectorSqlIndex[PgStatement]):
             v.embedding <=> %(vector)s::vector
         limit %(limit)s
     """
-
-    def weight(self) -> float:
-        return self.rrf_weight
 
     def label(self) -> str:
         return self.name
@@ -1354,23 +1332,20 @@ class PgSearchStore(SearchStore[PgStatement]):
         dense_probes = await self._dense_probes(dense_indexes, query)
         sparse_probes = await self._sparse_probes(sparse_indexes, query)
 
+        weights = corpus.search_weights()
         statements: list[PgStatement] = []
         labels: list[str] = []
-        weights: list[float] = []
         for index in text_indexes:
             statements.append(index.statement(text_probe))
-            labels.append(index.label())
-            weights.append(index.weight())
+            labels.append(self._label(index, weights))
 
         for index, probe in zip(dense_indexes, dense_probes, strict=True):
             statements.append(index.statement(probe))
-            labels.append(index.label())
-            weights.append(index.weight())
+            labels.append(self._label(index, weights))
 
         for index, probe in zip(sparse_indexes, sparse_probes, strict=True):
             statements.append(index.statement(probe))
-            labels.append(index.label())
-            weights.append(index.weight())
+            labels.append(self._label(index, weights))
 
         runs: list[Awaitable[Sequence[SearchHit]]] = []
         for statement in statements:
@@ -1380,10 +1355,20 @@ class PgSearchStore(SearchStore[PgStatement]):
         merged = self._rrf(lists, labels, weights)
         return merged[:top_k]
 
+    def _label(self, index: SqlIndex[Probe, PgStatement], weights: Mapping[str, float]) -> str:
+        """Подпись индекса; заодно проверка, что вес для неё объявлен — пропуск в конфиге молча обнулил бы список."""
+        label = index.label()
+        if label not in weights:
+            raise SearchIndexError(
+                f"index {label!r}: no weight in [search.weights]: known {sorted(weights)}"
+            )
+
+        return label
+
     async def _dense_probes(
-        self, indexes: Sequence[VectorSqlIndex[PgStatement]], query: str
+        self, indexes: Sequence[ModelIndex[DenseProbe, PgStatement]], query: str
     ) -> Sequence[DenseProbe]:
-        vectors = await self._encode(indexes, self._encoders.dense, query)
+        vectors = await self._encode(self._models(indexes), self._encoders.dense, query)
         probes: list[DenseProbe] = []
         for index in indexes:
             probes.append(DenseProbe(vector=vectors[index.model()], limit=self._candidates))
@@ -1391,29 +1376,33 @@ class PgSearchStore(SearchStore[PgStatement]):
         return probes
 
     async def _sparse_probes(
-        self, indexes: Sequence[SparseSqlIndex[PgStatement]], query: str
+        self, indexes: Sequence[ModelIndex[SparseProbe, PgStatement]], query: str
     ) -> Sequence[SparseProbe]:
-        vectors = await self._encode(indexes, self._encoders.sparse, query)
+        vectors = await self._encode(self._models(indexes), self._encoders.sparse, query)
         probes: list[SparseProbe] = []
         for index in indexes:
             probes.append(SparseProbe(vector=vectors[index.model()], limit=self._candidates))
 
         return probes
 
+    def _models(self, indexes: Sequence[ModelIndex[P, PgStatement]]) -> Sequence[str]:
+        names: list[str] = []
+        for index in indexes:
+            names.append(index.model())
+
+        return names
+
     async def _encode(
-        self,
-        indexes: Sequence[VectorSqlIndex[PgStatement] | SparseSqlIndex[PgStatement]],
-        encoder_of: Callable[[str], VectorEncoder[V]],
-        query: str,
+        self, models: Sequence[str], encoder_of: Callable[[str], VectorEncoder[V]], query: str
     ) -> Mapping[str, V]:
         """Вектор запроса считается один раз на модель, сколько бы индексов её ни делили."""
         vectors: dict[str, V] = {}
-        for index in indexes:
-            if index.model() in vectors:
+        for model in models:
+            if model in vectors:
                 continue
 
-            encoder = encoder_of(index.model())
-            vectors[index.model()] = await encoder.encode(query)
+            encoder = encoder_of(model)
+            vectors[model] = await encoder.encode(query)
 
         return vectors
 
@@ -1441,8 +1430,9 @@ statement = corpus.title_index().statement(TextProbe(text=title, limit=1))
 скан (по умолчанию 40), поэтому `SearchStore` перед векторными запросами
 ставит `set local hnsw.ef_search = max(limit, 40)` на транзакцию поиска —
 иначе `limit 50` молча вернёт 40. Веса списков — `[search.weights]` корпуса, ключ
-«вид/способ»; корпус ставит их в `rrf_weight` индекса при создании, индекс
-без веса в конфиге — ошибка старта; наружу вес отдаёт метод `weight()`. Вектор
+«вид/способ» совпадает с `label()` индекса; корпус отдаёт их таблицей
+`search_weights()`, а индекс веса не держит: индекс без веса в конфиге —
+ошибка запроса с именем индекса. Вектор
 считается только у индексов, которым он нужен, и один раз на индекс.
 
 ## 3. Graph tables
@@ -2426,68 +2416,72 @@ create table pending_links (
 ```python
 class ConfluenceCorpus(Corpus[PgStatement]):
     def __init__(self, cfg: ConfluenceCorpusConfig) -> None:
+        self._cfg = cfg
         schema = cfg.storage.pg_schema
-        w = cfg.search.weights                      # [search.weights] "title/exact" = 3.0 …
         e5 = cfg.embedding.model                    # имя модели; slug для имён таблиц векторов — из её строки embedding_models
         self._text: Sequence[SqlIndex[TextProbe, PgStatement]] = (
-            PgFtsIndex(name="title/fts", rrf_weight=w["title/fts"], schema=schema, table="pages",
+            PgFtsIndex(name="title/fts", schema=schema, table="pages",
                        node_column="node_id", row_column="node_id", text_column="title", tsv_column="title_tsv"),
-            PgTrigramIndex(name="title/trigram", rrf_weight=w["title/trigram"], schema=schema, table="pages",
+            PgTrigramIndex(name="title/trigram", schema=schema, table="pages",
                            node_column="node_id", row_column="node_id", text_column="title"),
-            PgExactIndex(name="title/exact", rrf_weight=w["title/exact"], schema=schema, table="pages",
+            PgExactIndex(name="title/exact", schema=schema, table="pages",
                          node_column="node_id", row_column="node_id", text_column="title"),          # title_index
-            PgFtsIndex(name="outline/fts", rrf_weight=w["outline/fts"], schema=schema, table="pages",
+            PgFtsIndex(name="outline/fts", schema=schema, table="pages",
                        node_column="node_id", row_column="node_id", text_column="outline_text", tsv_column="outline_tsv"),
-            PgFtsIndex(name="section/fts", rrf_weight=w["section/fts"], schema=schema, table="page_sections",
+            PgFtsIndex(name="section/fts", schema=schema, table="page_sections",
                        node_column="node_id", row_column="id", text_column="format_content", tsv_column="tsv"),
-            PgFtsIndex(name="summary/fts", rrf_weight=w["summary/fts"], schema=schema, table="page_summaries",
+            PgFtsIndex(name="summary/fts", schema=schema, table="page_summaries",
                        node_column="node_id", row_column="node_id", text_column="summary", tsv_column="tsv"),
-            PgFtsIndex(name="attachment_text/fts", rrf_weight=w["attachment_text/fts"], schema=schema, table="attachment_texts",
+            PgFtsIndex(name="attachment_text/fts", schema=schema, table="attachment_texts",
                        node_column="node_id", row_column="id", text_column="content", tsv_column="tsv"),
-            PgFtsIndex(name="caption/fts", rrf_weight=w["caption/fts"], schema=schema, table="attachment_captions",
+            PgFtsIndex(name="caption/fts", schema=schema, table="attachment_captions",
                        node_column="node_id", row_column="node_id", text_column="caption", tsv_column="tsv"),
         )
-        self._dense: Sequence[VectorSqlIndex[PgStatement]] = (
-            PgVectorIndex(name="section/vector", rrf_weight=w["section/vector"], schema=schema, table="page_sections",
+        self._dense: Sequence[ModelIndex[DenseProbe, PgStatement]] = (
+            PgVectorIndex(name="section/vector", schema=schema, table="page_sections",
                           node_column="node_id", row_column="id", text_column="format_content",
                           vector_table="page_section_vectors__e5", ref_column="section_id", model_name=e5),
-            PgVectorIndex(name="summary/vector", rrf_weight=w["summary/vector"], schema=schema, table="page_summaries",
+            PgVectorIndex(name="summary/vector", schema=schema, table="page_summaries",
                           node_column="node_id", row_column="node_id", text_column="summary",
                           vector_table="page_summary_vectors__e5", ref_column="node_id", model_name=e5),   # similarity_index
-            PgVectorIndex(name="attachment_text/vector", rrf_weight=w["attachment_text/vector"], schema=schema,
+            PgVectorIndex(name="attachment_text/vector", schema=schema,
                           table="attachment_texts", node_column="node_id", row_column="id", text_column="content",
                           vector_table="attachment_text_vectors__e5", ref_column="text_id", model_name=e5),
-            PgVectorIndex(name="caption/vector", rrf_weight=w["caption/vector"], schema=schema, table="attachment_captions",
+            PgVectorIndex(name="caption/vector", schema=schema, table="attachment_captions",
                           node_column="node_id", row_column="node_id", text_column="caption",
                           vector_table="attachment_caption_vectors__e5", ref_column="node_id", model_name=e5),
         )
-        self._sparse: Sequence[SparseSqlIndex[PgStatement]] = ()
+        self._sparse: Sequence[ModelIndex[SparseProbe, PgStatement]] = ()
 
     def text_indexes(self) -> Sequence[SqlIndex[TextProbe, PgStatement]]:
         return self._text
 
-    def dense_indexes(self) -> Sequence[VectorSqlIndex[PgStatement]]:
+    def dense_indexes(self) -> Sequence[ModelIndex[DenseProbe, PgStatement]]:
         return self._dense
 
-    def sparse_indexes(self) -> Sequence[SparseSqlIndex[PgStatement]]:
+    def sparse_indexes(self) -> Sequence[ModelIndex[SparseProbe, PgStatement]]:
         return self._sparse
 
     def title_index(self) -> SqlIndex[TextProbe, PgStatement]:
         return self._text[2]
 
-    def similarity_index(self) -> VectorSqlIndex[PgStatement]:
+    def similarity_index(self) -> ModelIndex[DenseProbe, PgStatement]:
         return self._dense[1]
+
+    def search_weights(self) -> Mapping[str, float]:
+        return self._cfg.search.weights               # [search.weights] "title/exact" = 3.0 …
 ```
 
-Индексы создаются корпусом при старте, а не константами модуля: схема,
-модели и веса приходят из конфига корпуса, объявление их не знает. Три
+Индексы создаются корпусом при старте, а не константами модуля: схема и
+модели приходят из конфига корпуса, объявление их не знает; веса при
+индексах не лежат — их отдаёт `search_weights()` по подписи. Три
 группы — по типу зонда: так каждая типизирована точно, без `Any`.
 Индекс по картинкам объявляется так же, с моделью `modality = image`:
 
 ```python
 siglip = "siglip-so400m"
 PgImageVectorIndex(
-    name="image/image_vector", rrf_weight=w["image/image_vector"], schema=schema,
+    name="image/image_vector", schema=schema,
     table="attachment_images", node_column="node_id", row_column="id",
     title_column="title", content_column="content",
     vector_table="attachment_image_vectors__siglip", ref_column="image_id", model_name=siglip,
@@ -2503,10 +2497,10 @@ PgImageVectorIndex(
 Повторы `table`/`node_column`/`row_column` в объявлениях — намеренные:
 каждый индекс читается сам по себе, без поиска общего определения. 
 
-`SearchStore` способов поиска не знает: `statement` — у индекса (раздел 2),
-вес списка и подпись попадания — тоже у индекса (`weight()`, `label()`), зонд
-из текста он строит по типу зонда, он лишь запускает их параллельно и сливает ранги RRF с
-весом на пару `(kind, method)` из конфига.
+`SearchStore` способов поиска не знает: `statement` и подпись попадания —
+у индекса (раздел 2), вес подписи — в `search_weights()` корпуса, зонд из
+текста он строит по типу зонда; он лишь запускает запросы параллельно и
+сливает ранги RRF.
 
 Два индекса над `page_sections` дают два запроса:
 
@@ -2972,8 +2966,8 @@ YAKE на русском без лемматизации слаб («Рисун�
    `2/61`; узел на первом месте только по заголовку с весом 3.0 — `3/61`;
    на десятом месте по разделу с весом 1.0 — `1/70`. Ранги, а не счета,
    потому что `ts_rank` и косинус несопоставимы, а место в списке —
-   сопоставимо. Вес — `index.weight()`, корпус берёт его из
-   `[search.weights]` по паре «вид текста/способ»; в выдаче у узла
+   сопоставимо. Вес — из `corpus.search_weights()` по
+   `index.label()`, ключ — пара «вид текста/способ»; в выдаче у узла
    перечисляются `index.label()` всех индексов, где он встретился: `title/exact 3.0, title/fts 2.0,
    summary/vector 1.5, section/vector 1.0, section/fts 1.0, sample/fts
    0.5`. RRF работает по рангам, а не по счётам, поэтому несопоставимые
