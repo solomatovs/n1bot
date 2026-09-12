@@ -125,7 +125,8 @@ ClickHouse адресуются по-разному и хранятся в ра�
 ```python
 # boba-graph: ядро.
 # Ошибки наружу:
-# AddressError — строка адреса не по грамматике схемы; кидает parse() наследника Address.
+# AddressError — строка адреса не по грамматике схемы или не по канону 3.6: без порта, с учётными данными,
+#   с чужими ролями; кидают split()/parse() адресов.
 class AddressError(Exception): ...
 
 class Node(BaseModel):
@@ -141,8 +142,12 @@ class Address(BaseModel, ABC):
     канонизирует наследник (port: int); render() — строка по грамматике
     схемы (3.6), её знает только наследник. Обратные направления — из
     jsonb через model_validate, из строки через parse() наследника; ядру
-    они не нужны: узел оно ищет по parts().
+    они не нужны: узел оно ищет по parts(). Лишних частей нет: параметр
+    подключения или неизвестная роль — ошибка валидации, не часть адреса.
+    Грамматику строки ядро не знает — ни web, ни баз.
     """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     scheme: str
 
@@ -171,9 +176,9 @@ class Evidence(BaseModel):
 `boba-confluence`, каталог PostgreSQL — в `boba-db-postgres`, ClickHouse —
 в `boba-db-clickhouse`. Пакет источника о графе и корпусе не знает;
 единственная его зависимость на `boba-graph` — база `Address`, и
-направление слоёв (core ← infra) соблюдено. Наследник добавляет
-`render()` в строку и `parse()` из неё, и оба живут в одной модели: одна
-грамматика — один класс. Движки, у
+направление слоёв (core ← infra) соблюдено. Строку адреса собирает и разбирает база адресов пакета: `PgAddress` и
+`ChAddress` — на `urllib.parse`, `ConfluenceAddress` — на `httpx.URL`,
+где `httpx` уже есть. Ядро грамматик не знает. Движки, у
 которых пакета ещё нет (MSSQL, Oracle, MySQL), придут со своими
 `boba-db-*` и своими перечислениями; общего «перечисления всех движков»
 не будет ни в одном пакете.
@@ -185,33 +190,99 @@ class ConfluenceNodeKind(StrEnum):
     PAGE = "confluence_page"
     ATTACHMENT = "confluence_attachment"
 
-class ConfluenceAddress(Address):
-    """Адрес объекта Confluence: REST-путь.
+class WebScheme(StrEnum):
+    HTTP = "http"
+    HTTPS = "https"
 
-    Грамматика — RFC 3986: https://host/path. Разбор строки — parse(),
-    единственное место сборки и разбора адресов Confluence.
+    def default_port(self) -> int:
+        if self is WebScheme.HTTP:
+            return 80
+
+        return 443
+
+class ConfluenceAddress(Address):
+    """Адрес объекта Confluence: REST-путь на сервере.
+
+    Части — схема, хост, порт, путь; query, фрагмент и учётные данные в
+    адрес не входят (как у SourceId ридера). Порт в частях всегда, в строке
+    httpx опускает порт по умолчанию схемы: https://host/path. Сборка и
+    разбор — httpx.URL, единственное место для адресов Confluence.
     """
 
-    scheme: Literal["https"]
+    scheme: WebScheme
     host: str
+    port: int
     path: str
 
     def render(self) -> str:
-        return f"{self.scheme}://{self.host}{self.path}"
+        url = httpx.URL(scheme=self.scheme.value, host=self.host, port=self.port, path=self.path)
+        return str(url)
 
     @classmethod
     def parse(cls, text: str) -> Self:
-        url = urlsplit(text)
-        if url.scheme != "https":
-            raise AddressError(f"confluence address {text!r}: expected scheme https, got {url.scheme!r}")
+        try:
+            url = httpx.URL(text)
+        except httpx.InvalidURL as exc:
+            raise AddressError(f"confluence address {text!r}: {exc}") from exc
 
-        return cls.model_validate({"scheme": url.scheme, "host": url.hostname, "path": url.path})
+        if url.userinfo:
+            raise AddressError(f"confluence address {text!r}: credentials are not part of an address")
 
-class SpaceAddress(ConfluenceAddress): ...      # /confluence/rest/api/space/FLINK
+        if url.query:
+            raise AddressError(f"confluence address {text!r}: query is not part of an address")
 
-class PageAddress(ConfluenceAddress): ...       # /confluence/rest/api/content/307136992
+        if url.fragment:
+            raise AddressError(f"confluence address {text!r}: fragment is not part of an address")
 
-class AttachmentAddress(ConfluenceAddress): ... # /confluence/download/attachments/307136992/design.pdf
+        if not url.host:
+            raise AddressError(f"confluence address {text!r}: host is required")
+
+        try:
+            scheme = WebScheme(url.scheme)
+        except ValueError as exc:
+            raise AddressError(f"confluence address {text!r}: expected scheme http or https, got {url.scheme!r}") from exc
+
+        port = url.port
+        if port is None:
+            port = scheme.default_port()
+
+        try:
+            return cls(scheme=scheme, host=url.host, port=port, path=url.path)
+        except ValidationError as exc:
+            raise AddressError(f"{cls.__name__}: address {text!r} is not valid: {exc}") from exc
+
+class SpaceAddress(ConfluenceAddress):
+    PATH_RE: ClassVar[re.Pattern[str]] = re.compile(r"/rest/api/space/[^/?#]+$")
+
+    @field_validator("path")
+    @classmethod
+    def _space_path(cls, value: str) -> str:
+        if cls.PATH_RE.search(value) is None:
+            raise ValueError(f"confluence space address expects /rest/api/space/<key>, got {value!r}")
+
+        return value
+
+class PageAddress(ConfluenceAddress):
+    PATH_RE: ClassVar[re.Pattern[str]] = re.compile(r"/rest/api/content/[^/?#]+$")   # тот же шаблон, что у SourceId.page_id_of
+
+    @field_validator("path")
+    @classmethod
+    def _content_path(cls, value: str) -> str:
+        if cls.PATH_RE.search(value) is None:
+            raise ValueError(f"confluence page address expects /rest/api/content/<id>, got {value!r}")
+
+        return value
+
+class AttachmentAddress(ConfluenceAddress):
+    PATH_RE: ClassVar[re.Pattern[str]] = re.compile(r"/download/attachments/[^/?#]+/[^/?#]+$")
+
+    @field_validator("path")
+    @classmethod
+    def _download_path(cls, value: str) -> str:
+        if cls.PATH_RE.search(value) is None:
+            raise ValueError(f"confluence attachment address expects /download/attachments/<page>/<file>, got {value!r}")
+
+        return value
 
 class SpaceNode(BaseModel):
     kind: Literal[ConfluenceNodeKind.SPACE]
@@ -245,44 +316,156 @@ class PgNodeKind(StrEnum):
     SEQUENCE = "pg_sequence"
 
 class PgAddress(Address):
-    """База адресов объектов PostgreSQL; наследуют адреса объектов каталога.
+    """База адресов объектов PostgreSQL: postgresql://host:port/database?роль=имя&… (3.6).
 
-    Грамматика — libpq URL: postgresql://host:port/database?schema=dm&table=fact_orders;
-    роли объекта — query-параметры в порядке объявления полей подкласса.
-    Разбор строки — parse(), единственное место сборки и разбора адресов PostgreSQL.
+    Часть подключения — libpq URI, объект внутри базы — query-параметры
+    с ролью в имени в порядке объявления полей наследника; один класс на
+    строку списка 3.6. Сборка и разбор — urllib.parse, здесь и только здесь.
     """
+
+    BASE_FIELDS: ClassVar[frozenset[str]] = frozenset({"scheme", "host", "port", "database"})
 
     scheme: Literal["postgresql"]
     host: str
     port: int
     database: str
 
+    @classmethod
+    def roles(cls) -> Sequence[str]:
+        """Роли объекта — поля наследника после полей подключения, в порядке объявления, по alias."""
+        names: list[str] = []
+        for name, field in cls.model_fields.items():
+            if name in cls.BASE_FIELDS:
+                continue
+
+            alias = field.alias
+            if alias is None:
+                alias = name
+
+            names.append(alias)
+
+        return names
+
     def render(self) -> str:
-        roles = self.model_dump(by_alias=True, exclude={"scheme", "host", "port", "database"})
-        query = urlencode(roles)
-        return f"{self.scheme}://{self.host}:{self.port}/{self.database}?{query}"
+        query = urlencode(self.model_dump(by_alias=True, exclude=self.BASE_FIELDS), quote_via=quote)
+        split = SplitResult(
+            scheme=self.scheme,
+            netloc=self._netloc(),
+            path="/" + quote(self.database, safe=""),
+            query=query,
+            fragment="",
+        )
+        return urlunsplit(split)
+
+    def _netloc(self) -> str:
+        host = self.host
+        if ":" in host:                      # IPv6 — в скобках, RFC 3986 §3.2.2
+            host = f"[{host}]"
+
+        return f"{host}:{self.port}"
 
     @classmethod
     def parse(cls, text: str) -> Self:
+        """Строка → адрес этого класса; канон 3.6: без учётных данных, с портом, path = /database, роли по составу и порядку."""
         url = urlsplit(text)
         if url.scheme != "postgresql":
             raise AddressError(f"postgresql address {text!r}: expected scheme postgresql, got {url.scheme!r}")
 
-        if url.port is None:
+        if url.username is not None:
+            raise AddressError(f"postgresql address {text!r}: credentials are not part of an address")
+
+        if url.fragment:
+            raise AddressError(f"postgresql address {text!r}: fragment is not part of an address")
+
+        host = url.hostname
+        if host is None:
+            raise AddressError(f"postgresql address {text!r}: host is required")
+
+        try:
+            port = url.port
+        except ValueError as exc:
+            raise AddressError(f"postgresql address {text!r}: port is not a number: {exc}") from exc
+
+        if port is None:
             raise AddressError(f"postgresql address {text!r}: port is required")
 
-        parts: dict[str, str | int] = {"scheme": url.scheme, "host": url.hostname, "port": url.port, "database": url.path.lstrip("/")}
-        parts.update(parse_qsl(url.query))
-        return cls.model_validate(parts)
+        database = unquote(url.path.removeprefix("/"))
+        if not database:
+            raise AddressError(f"postgresql address {text!r}: path must be /<database>, got {url.path!r}")
+
+        if "/" in database:
+            raise AddressError(f"postgresql address {text!r}: path must be a single segment /<database>, got {url.path!r}")
+
+        roles = parse_qsl(url.query, keep_blank_values=True)
+        given: list[str] = []
+        for name, _ in roles:
+            given.append(name)
+
+        expected = list(cls.roles())
+        if given != expected:
+            raise AddressError(f"{cls.__name__}: address {text!r} expects roles {expected}, got {given}")
+
+        parts: dict[str, str | int] = {"scheme": url.scheme, "host": host, "port": port, "database": database}
+        parts.update(roles)
+        try:
+            return cls.model_validate(parts)
+        except ValidationError as exc:
+            raise AddressError(f"{cls.__name__}: address {text!r} is not valid: {exc}") from exc
+
+class PgDatabaseAddress(PgAddress): ...
+
+class PgSchemaAddress(PgAddress):
+    schema_name: str = Field(alias="schema")
 
 class PgTableAddress(PgAddress):
     schema_name: str = Field(alias="schema")
     table: str
 
-class PgColumnAddress(PgAddress):
+class PgTableColumnAddress(PgAddress):
     schema_name: str = Field(alias="schema")
     table: str
     column: str
+
+class PgViewColumnAddress(PgAddress):
+    schema_name: str = Field(alias="schema")
+    view: str
+    column: str
+
+class PgIndexAddress(PgAddress):
+    schema_name: str = Field(alias="schema")
+    index: str
+
+class PgFunctionAddress(PgAddress):
+    schema_name: str = Field(alias="schema")
+    function: str
+    args: str                                  # pg_get_function_identity_arguments; пустая строка обязательна
+
+class PgConstraintAddress(PgAddress):
+    schema_name: str = Field(alias="schema")
+    table: str
+    constraint: str
+
+# … view, matview и его колонка, sequence, procedure, trigger — по строке 3.6 каждый
+
+class PgAddresses:
+    """Строка → адрес конкретного объекта PostgreSQL: класс выбирается по составу ролей в query."""
+
+    MODELS: ClassVar[Sequence[type[PgAddress]]] = (
+        PgDatabaseAddress, PgSchemaAddress, PgTableAddress, PgTableColumnAddress, PgViewColumnAddress,
+        PgIndexAddress, PgFunctionAddress, PgConstraintAddress,
+    )
+
+    @classmethod
+    def parse(cls, text: str) -> PgAddress:
+        given: list[str] = []
+        for name, _ in parse_qsl(urlsplit(text).query, keep_blank_values=True):
+            given.append(name)
+
+        for model in cls.MODELS:
+            if list(model.roles()) == given:
+                return model.parse(text)
+
+        raise AddressError(f"postgresql address {text!r}: no object has roles {given}")
 
 class PgTableNode(BaseModel):
     kind: Literal[PgNodeKind.TABLE]
@@ -290,7 +473,7 @@ class PgTableNode(BaseModel):
 
 class PgColumnNode(BaseModel):
     kind: Literal[PgNodeKind.COLUMN]
-    address: PgColumnAddress
+    address: PgTableColumnAddress | PgViewColumnAddress | PgMatviewColumnAddress   # колонка чьей-то реляции; pydantic различит по ролям
 
 PgNode = Annotated[PgDatabaseNode | PgSchemaNode | PgTableNode | PgColumnNode | ..., Field(discriminator="kind")]
 ```
@@ -309,29 +492,144 @@ class ChNodeKind(StrEnum):
     FUNCTION = "ch_function"
 
 class ChAddress(Address):
-    """База адресов объектов ClickHouse; наследуют адреса объектов.
+    """База адресов объектов ClickHouse: clickhouse://host:port/database?роль=имя&… (3.6).
 
-    Грамматика та же, что у PgAddress, со схемой clickhouse и без schema
-    среди ролей: clickhouse://host:port/database?table=events&column=ts.
+    Схем нет, объекты сразу в базе; грамматика та же, что у PgAddress, со
+    своей схемой. Сборка и разбор — urllib.parse, здесь и только здесь.
     """
+
+    BASE_FIELDS: ClassVar[frozenset[str]] = frozenset({"scheme", "host", "port", "database"})
 
     scheme: Literal["clickhouse"]
     host: str
     port: int
     database: str
 
-    def render(self) -> str: ...
+    @classmethod
+    def roles(cls) -> Sequence[str]:
+        """Роли объекта — поля наследника после полей подключения, в порядке объявления, по alias."""
+        names: list[str] = []
+        for name, field in cls.model_fields.items():
+            if name in cls.BASE_FIELDS:
+                continue
+
+            alias = field.alias
+            if alias is None:
+                alias = name
+
+            names.append(alias)
+
+        return names
+
+    def render(self) -> str:
+        query = urlencode(self.model_dump(by_alias=True, exclude=self.BASE_FIELDS), quote_via=quote)
+        split = SplitResult(
+            scheme=self.scheme,
+            netloc=self._netloc(),
+            path="/" + quote(self.database, safe=""),
+            query=query,
+            fragment="",
+        )
+        return urlunsplit(split)
+
+    def _netloc(self) -> str:
+        host = self.host
+        if ":" in host:                      # IPv6 — в скобках, RFC 3986 §3.2.2
+            host = f"[{host}]"
+
+        return f"{host}:{self.port}"
 
     @classmethod
-    def parse(cls, text: str) -> Self: ...
+    def parse(cls, text: str) -> Self:
+        """Строка → адрес этого класса; канон 3.6: без учётных данных, с портом, path = /database, роли по составу и порядку."""
+        url = urlsplit(text)
+        if url.scheme != "clickhouse":
+            raise AddressError(f"clickhouse address {text!r}: expected scheme clickhouse, got {url.scheme!r}")
 
-class ChColumnAddress(ChAddress):   # схемы нет: колонка сразу в базе
+        if url.username is not None:
+            raise AddressError(f"clickhouse address {text!r}: credentials are not part of an address")
+
+        if url.fragment:
+            raise AddressError(f"clickhouse address {text!r}: fragment is not part of an address")
+
+        host = url.hostname
+        if host is None:
+            raise AddressError(f"clickhouse address {text!r}: host is required")
+
+        try:
+            port = url.port
+        except ValueError as exc:
+            raise AddressError(f"clickhouse address {text!r}: port is not a number: {exc}") from exc
+
+        if port is None:
+            raise AddressError(f"clickhouse address {text!r}: port is required")
+
+        database = unquote(url.path.removeprefix("/"))
+        if not database:
+            raise AddressError(f"clickhouse address {text!r}: path must be /<database>, got {url.path!r}")
+
+        if "/" in database:
+            raise AddressError(f"clickhouse address {text!r}: path must be a single segment /<database>, got {url.path!r}")
+
+        roles = parse_qsl(url.query, keep_blank_values=True)
+        given: list[str] = []
+        for name, _ in roles:
+            given.append(name)
+
+        expected = list(cls.roles())
+        if given != expected:
+            raise AddressError(f"{cls.__name__}: address {text!r} expects roles {expected}, got {given}")
+
+        parts: dict[str, str | int] = {"scheme": url.scheme, "host": host, "port": port, "database": database}
+        parts.update(roles)
+        try:
+            return cls.model_validate(parts)
+        except ValidationError as exc:
+            raise AddressError(f"{cls.__name__}: address {text!r} is not valid: {exc}") from exc
+
+class ChDatabaseAddress(ChAddress): ...
+
+class ChTableAddress(ChAddress):
+    table: str
+
+class ChTableColumnAddress(ChAddress):
     table: str
     column: str
 
+class ChIndexAddress(ChAddress):               # skip-индекс уникален внутри таблицы — после table
+    table: str
+    index: str
+
+class ChDictionaryAddress(ChAddress):
+    dictionary: str
+
+class ChFunctionAddress(ChAddress):            # перегрузок нет — args не нужен
+    function: str
+
+# … view, matview и их колонки, projection — по строке 3.6 каждый
+
+class ChAddresses:
+    """Строка → адрес конкретного объекта ClickHouse: класс по составу ролей, как PgAddresses."""
+
+    MODELS: ClassVar[Sequence[type[ChAddress]]] = (
+        ChDatabaseAddress, ChTableAddress, ChTableColumnAddress, ChIndexAddress, ChDictionaryAddress, ChFunctionAddress,
+    )
+
+    @classmethod
+    def parse(cls, text: str) -> ChAddress:
+        given: list[str] = []
+        for name, _ in parse_qsl(urlsplit(text).query, keep_blank_values=True):
+            given.append(name)
+
+        for model in cls.MODELS:
+            if list(model.roles()) == given:
+                return model.parse(text)
+
+        raise AddressError(f"clickhouse address {text!r}: no object has roles {given}")
+
 class ChColumnNode(BaseModel):
     kind: Literal[ChNodeKind.COLUMN]
-    address: ChColumnAddress
+    address: ChTableColumnAddress | ChViewColumnAddress | ChMatviewColumnAddress
 
 ChNode = Annotated[ChDatabaseNode | ChTableNode | ChColumnNode | ..., Field(discriminator="kind")]
 ```
@@ -339,8 +637,10 @@ ChNode = Annotated[ChDatabaseNode | ChTableNode | ChColumnNode | ..., Field(disc
 Граница — на входе методов корпуса: `Node` ядра разбирается union'ом
 источника (`ConfluenceNode`, `PgNode`, `ChNode`) в типизированную модель,
 на выходе собирается обратно. Наследник `Address` канонизирует типы
-частей (`port: int`) и один знает грамматику своей строки (3.6); ядро
-строк адресов не собирает и не разбирает.
+частей (`port: int`) и один знает грамматику своей строки (3.6). Строку, о которой не
+известно, какой объект она называет (ввод `kb_node`), разбирают
+`PgAddresses.parse` и `ChAddresses.parse`: класс адреса выбирается по
+составу ролей в query, и это единственная точка такого разбора в пакете.
 
 ### 2.2 Индексы поиска
 
@@ -1203,9 +1503,9 @@ create index on nodes using gin (address jsonb_path_ops);
 ```
 id   kind                   address
 --   ---------------------  ------------------------------------------------------
-3    confluence_space       {"scheme": "https", "host": "cwiki.apache.org", "path": "/confluence/rest/api/space/FLINK"}
-17   confluence_page        {"scheme": "https", "host": "cwiki.apache.org", "path": "/confluence/rest/api/content/307136992"}
-18   confluence_attachment  {"scheme": "https", "host": "cwiki.apache.org", "path": "/confluence/download/attachments/307136992/design.pdf"}
+3    confluence_space       {"scheme": "https", "host": "cwiki.apache.org", "port": 443, "path": "/confluence/rest/api/space/FLINK"}
+17   confluence_page        {"scheme": "https", "host": "cwiki.apache.org", "port": 443, "path": "/confluence/rest/api/content/307136992"}
+18   confluence_attachment  {"scheme": "https", "host": "cwiki.apache.org", "port": 443, "path": "/confluence/download/attachments/307136992/design.pdf"}
 40   pg_schema              {"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm"}
 41   pg_table               {"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm", "table": "fact_orders"}
 42   pg_column              {"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm", "table": "fact_orders", "column": "amount"}
@@ -1729,7 +2029,7 @@ jsonb хранится нормализованно, порядок ключей
 {"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm", "table": "fact_orders", "column": "amount"}
 {"scheme": "clickhouse", "host": "ch1", "port": 9000, "database": "logs", "table": "events", "index": "events_ts_minmax"}
 {"scheme": "mssql", "host": "sql01.corp", "port": 1433, "instance": "ERP", "database": "erp", "schema": "dbo", "table": "Orders"}
-{"scheme": "https", "host": "cwiki.apache.org", "path": "/confluence/rest/api/content/307136992"}
+{"scheme": "https", "host": "cwiki.apache.org", "port": 443, "path": "/confluence/rest/api/content/307136992"}
 {"scheme": "smb", "host": "fs01.corp", "share": "reports", "path": "/2026/q1.xlsx", "sheet": "Summary"}
 {"scheme": "s3", "host": "minio.corp", "port": 9000, "bucket": "raw", "key": "orders/2026-09-01.parquet"}
 ```
@@ -1853,10 +2153,12 @@ clickhouse://ch1:9000/logs?function=to_rub                                      
 Правила канона, обязательные для `render()` и `parse()` каждой модели
 адреса (2.1): учётных данных в строке адреса нет никогда; параметры
 подключения (`sslmode`, `application_name`) — не часть идентичности; хост
-в нижнем регистре; порт обязателен; порядок query-параметров — порядок
-объявления ролей в модели; значения кодируются по RFC 3986. Обе стороны
-одной грамматики — один класс в пакете источника, других мест сборки и
-разбора нет; ядро строки не знает.
+в нижнем регистре; порт в частях обязателен, в строке web-адреса порт по
+умолчанию схемы опускается (так делает `httpx.URL`); порядок
+query-параметров — порядок объявления ролей в модели; значения кодируются по RFC 3986. Обе стороны
+одной грамматики — один класс в пакете источника (`PgAddress`,
+`ChAddress`, `ConfluenceAddress`); других мест сборки и разбора нет, ядро
+строки не знает.
 
 `url` для человека и модели живёт в content tables: Confluence отдаёт
 `…/pages/viewpage.action?pageId=…` через `httpx.URL`; `httpx` в ядре нет.
