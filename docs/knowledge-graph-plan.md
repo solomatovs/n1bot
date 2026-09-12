@@ -778,15 +778,14 @@ class SparseSqlIndex(SqlIndex[SparseProbe, S_co], Protocol[S_co]):
 `Pg*Index` — 2.4, `similarity_index()` и `title_index()` — методы
 `Corpus`, 2.3):
 
-```
-вызов                          индекс                                                 зонд
-kb_search, текст пользователя  PgFtsIndex, PgTrigramIndex, PgExactIndex, PgBm25Index  TextProbe(строка запроса)
-kb_search                      PgVectorIndex, PgSparseIndex                           DenseProbe / SparseProbe: вектор из строки моделью индекса
-kb_search                      PgImageVectorIndex                                     DenseProbe: вектор из строки текстовым энкодером CLIP
-ребро similar (ядро)           similarity_index()                                     DenseProbe(готовый вектор соседнего узла)
-ребро mention (ядро)           title_index()                                          TextProbe(заголовок другого узла, limit=1)
-ребро same_column (корпус)     PgExactIndex над columns.title                         TextProbe(имя колонки)
-```
+| вызов | индекс | зонд |
+|---|---|---|
+| `kb_search`, текст пользователя | `PgFtsIndex`, `PgTrigramIndex`, `PgExactIndex`, `PgBm25Index` | `TextProbe` со строкой запроса |
+| `kb_search` | `PgVectorIndex`, `PgSparseIndex` | `DenseProbe` / `SparseProbe`: вектор из строки моделью индекса |
+| `kb_search` | `PgImageVectorIndex` | `DenseProbe`: вектор из строки текстовым энкодером CLIP |
+| ребро `similar` (ядро) | `similarity_index()` | `DenseProbe` с готовым вектором соседнего узла |
+| ребро `mention` (ядро) | `title_index()` | `TextProbe` с заголовком другого узла, `limit = 1` |
+| ребро `same_column` (корпус) | `PgExactIndex` над `columns.title` | `TextProbe` с именем колонки |
 
 ### 2.3 Протокол корпуса
 
@@ -1457,26 +1456,23 @@ statement = corpus.title_index().statement(TextProbe(text=title, limit=1))
 уникальность держится на нём. Строка адреса — представление, а не хранимое
 поле: ядро собирает её из частей по одному правилу и разбирает обратно.
 
-```
-nodes             узел: только идентичность
-sync              учёт обхода: что качать, что разбирать, что забыть
-entities          словарь сущностей корпуса
-node_entities     сущности узла с числом упоминаний и весом
-edges             рёбра по виду связи, с весом и обоснованием
-ranks             метрики узла по алгоритмам
-embedding_models  модели эмбеддинга и их атрибуты
-```
+| таблица | что хранит |
+|---|---|
+| `nodes` | узел: только идентичность |
+| `sync` | учёт обхода: что качать, что разбирать, что забыть |
+| `entities` | словарь сущностей корпуса |
+| `node_entities` | сущности узла с числом упоминаний и весом |
+| `edges` | рёбра по виду связи, с весом и обоснованием |
+| `ranks` | метрики узла по алгоритмам |
+| `embedding_models` | модели эмбеддинга и их атрибуты |
 
 Об узле хранится информация трёх уровней:
 
-```
-уровень                       где                          страница FLIP-457                             таблица dm.fact_orders
-1 идентичность и учёт         nodes, sync                  kind=confluence_page, address={scheme, host, path}   kind=pg_table, address={scheme, host, port, database, schema, table}
-2 связи и производные ядра    edges, node_entities, ranks  link, mention, entity, similar; pagerank      contains, foreign_key, inferred_key; pagerank
-3 всё содержимое              content tables                  pages: title, labels, outline, version        relations: definition, comment, row_estimate
-                                                           page_sections: raw, markdown, tsv, векторы    relation_ddl, relation_profiles, relation_samples: tsv, векторы
-                                                           page_summaries: summary, tsv, векторы         columns, column_profiles
-```
+| уровень | где | страница FLIP-457 | таблица `dm.fact_orders` |
+|---|---|---|---|
+| 1 идентичность и учёт | `nodes`, `sync` | `kind = confluence_page`, адрес из `scheme`, `host`, `port`, `path` | `kind = pg_table`, адрес из `scheme`, `host`, `port`, `database`, `schema`, `table` |
+| 2 связи и производные ядра | `edges`, `node_entities`, `ranks` | `link`, `mention`, `entity`, `similar`; `pagerank` | `contains`, `foreign_key`, `inferred_key`; `pagerank` |
+| 3 всё содержимое | content tables | `pages`: заголовок, метки, оглавление, версия<br>`page_sections`: оригинал, markdown, `tsv`, векторы<br>`page_summaries`: саммари, `tsv`, векторы | `relations`: определение, комментарий, оценка строк<br>`relation_ddl`, `relation_profiles`, `relation_samples`: `tsv`, векторы<br>`columns`, `column_profiles` |
 
 ### 3.1 Узлы
 
@@ -1500,17 +1496,15 @@ create index on nodes using gin (address jsonb_path_ops);
 удаляется не каскадом от таблицы, а потому, что её самой больше нет в
 списке обхода (3.2).
 
-```
-id   kind                   address
---   ---------------------  ------------------------------------------------------
-3    confluence_space       {"scheme": "https", "host": "cwiki.apache.org", "port": 443, "path": "/confluence/rest/api/space/FLINK"}
-17   confluence_page        {"scheme": "https", "host": "cwiki.apache.org", "port": 443, "path": "/confluence/rest/api/content/307136992"}
-18   confluence_attachment  {"scheme": "https", "host": "cwiki.apache.org", "port": 443, "path": "/confluence/download/attachments/307136992/design.pdf"}
-40   pg_schema              {"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm"}
-41   pg_table               {"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm", "table": "fact_orders"}
-42   pg_column              {"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm", "table": "fact_orders", "column": "amount"}
-43   ch_index               {"scheme": "clickhouse", "host": "ch1", "port": 9000, "database": "logs", "table": "events", "index": "events_ts_minmax"}
-```
+| id | kind | address |
+|---|---|---|
+| 3 | `confluence_space` | `{"scheme": "https", "host": "cwiki.apache.org", "port": 443, "path": "/confluence/rest/api/space/FLINK"}` |
+| 17 | `confluence_page` | `{"scheme": "https", "host": "cwiki.apache.org", "port": 443, "path": "/confluence/rest/api/content/307136992"}` |
+| 18 | `confluence_attachment` | `{"scheme": "https", "host": "cwiki.apache.org", "port": 443, "path": "/confluence/download/attachments/307136992/design.pdf"}` |
+| 40 | `pg_schema` | `{"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm"}` |
+| 41 | `pg_table` | `{"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm", "table": "fact_orders"}` |
+| 42 | `pg_column` | `{"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm", "table": "fact_orders", "column": "amount"}` |
+| 43 | `ch_index` | `{"scheme": "clickhouse", "host": "ch1", "port": 9000, "database": "logs", "table": "events", "index": "events_ts_minmax"}` |
 
 Строка `postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders` в
 таблице не хранится: её даёт `render()` модели адреса при выдаче, а
@@ -1601,22 +1595,24 @@ class WarehouseAspect(StrEnum):
 вместе с заголовком или байты вложения; `structure` — нормализованный
 DDL с комментариями; `data` — профиль колонок и пример строк.
 
-```
-страница, аспект content
-прогон  source_versions   body_hashes       что случилось в источнике        что делает прогон
-1       {content: v10}    {content: cc4f…}  первая индексация                качать, разбирать, писать
-2       {content: v10}    {content: cc4f…}  ничего                           список совпал — не качать
-3       {content: v11}    {content: cc4f…}  пересохранили без правок         версия новая — качать; хэш совпал — не разбирать, обновить версию
-4       {content: v12}    {content: 9b1e…}  текст изменили                   качать, разбирать, писать
-5       {content: v13}    {content: 7a20…}  переименовали, текст прежний     хэш считается с заголовком — разбирать: заголовок в content tables и в связях
+Страница, аспект `content`:
 
-таблица, аспекты structure и data
-прогон  source_versions                         что случилось                          что делает прогон
-1       {structure: 3f9a…, data: ins=12.40M…}   первая индексация                      обе группы стадий
-2       {structure: 3f9a…, data: ins=12.41M…}   ночная загрузка, структура прежняя     только data: профили, sample, inferred_key
-3       {structure: 7b21…, data: ins=12.41M…}   добавили колонку                       только structure: DDL, columns, явные рёбра
-4       {structure: 7b21…, data: ins=12.41M…}   ничего                                 ничего
-```
+| прогон | `source_versions` | `body_hashes` | что случилось в источнике | что делает прогон |
+|---|---|---|---|---|
+| 1 | `{content: v10}` | `{content: cc4f…}` | первая индексация | качать, разбирать, писать |
+| 2 | `{content: v10}` | `{content: cc4f…}` | ничего | список совпал — не качать |
+| 3 | `{content: v11}` | `{content: cc4f…}` | пересохранили без правок | версия новая — качать; хэш совпал — не разбирать, обновить версию |
+| 4 | `{content: v12}` | `{content: 9b1e…}` | текст изменили | качать, разбирать, писать |
+| 5 | `{content: v13}` | `{content: 7a20…}` | переименовали, текст прежний | хэш считается с заголовком — разбирать: заголовок в content tables и в связях |
+
+Таблица, аспекты `structure` и `data`:
+
+| прогон | `source_versions` | что случилось | что делает прогон |
+|---|---|---|---|
+| 1 | `{structure: 3f9a…, data: ins=12.40M…}` | первая индексация | обе группы стадий |
+| 2 | `{structure: 3f9a…, data: ins=12.41M…}` | ночная загрузка, структура прежняя | только `data`: профили, `sample`, `inferred_key` |
+| 3 | `{structure: 7b21…, data: ins=12.41M…}` | добавили колонку | только `structure`: DDL, `columns`, явные рёбра |
+| 4 | `{structure: 7b21…, data: ins=12.41M…}` | ничего | ничего |
 
 Случай 3 у страницы — самый частый в Confluence (сохранение без
 изменений, правка метки, перестановка в дереве) и самый дорогой без
@@ -1673,12 +1669,11 @@ class ConfluenceParseMethod(StrEnum):
 не стирает распознанное. Способ дописывается после успеха стадии; сбой
 стадии его не дописывает, и следующий прогон повторит её.
 
-```
-узел  applied_methods            запрошено                   что делает прогон
-17    {text}                     {text, summary}             саммари не применялось — считать, дописать summary
-17    {text, summary}            {text}                      всё запрошенное есть — ничего
-18    {text, ocr}                {text, caption}             нет caption — описать картинку моделью зрения; ocr остаётся
-```
+| узел | `applied_methods` | запрошено | что делает прогон |
+|---|---|---|---|
+| 17 | `{text}` | `{text, summary}` | саммари не применялось — считать, дописать `summary` |
+| 17 | `{text, summary}` | `{text}` | всё запрошенное есть — ничего |
+| 18 | `{text, ocr}` | `{text, caption}` | нет `caption` — описать картинку моделью зрения; `ocr` остаётся |
 
 **`pipeline_stamp`** — отпечаток настроек, которыми узел разобран. Конвейер
 — цепочка стадий индексации (раздел 7); у каждой стадии есть параметры, от
@@ -1712,30 +1707,29 @@ reader=confluence:3;chunk=4000/0;embed=multilingual-e5-large;ner=gliner_multi-v2
 других; идентификатор прогона, а не время, — чтобы очистка опиралась на
 факт «этот обход завершился», а не на давность.
 
-```
-прогон run-0912a по space:FLINK: в списке страницы 17, 21 и вложение 18; страница 19 и её вложение 20 удалены неделю назад
+Прогон `run-0912a` по `space:FLINK`: в списке страницы 17, 21 и вложение 18;
+страница 19 и её вложение 20 удалены неделю назад.
 
-node_id  kind                   crawl_scope   last_seen_run   после списка          после очистки
-17       confluence_page        space:FLINK   run-0912a       в списке              остаётся
-18       confluence_attachment  space:FLINK   run-0912a       в списке              остаётся
-21       confluence_page        space:FLINK   run-0912a       в списке              остаётся
-19       confluence_page        space:FLINK   run-0905c       не в списке           удаляется
-20       confluence_attachment  space:FLINK   run-0905c       не в списке           удаляется — сама, не «вслед за 19»
-33       confluence_page        space:KAFKA   run-0905c       область не листалась  остаётся
-```
+| node_id | kind | `crawl_scope` | `last_seen_run` | после списка | после очистки |
+|---|---|---|---|---|---|
+| 17 | `confluence_page` | `space:FLINK` | `run-0912a` | в списке | остаётся |
+| 18 | `confluence_attachment` | `space:FLINK` | `run-0912a` | в списке | остаётся |
+| 21 | `confluence_page` | `space:FLINK` | `run-0912a` | в списке | остаётся |
+| 19 | `confluence_page` | `space:FLINK` | `run-0905c` | не в списке | удаляется |
+| 20 | `confluence_attachment` | `space:FLINK` | `run-0905c` | не в списке | удаляется сама, не «вслед за 19» |
+| 33 | `confluence_page` | `space:KAFKA` | `run-0905c` | область не листалась | остаётся |
 
 **`skip_reason`** — узел есть в источнике, но правила его не индексируют:
 вложение вне allowlist, страница-черновик. Он отмечается увиденным, иначе
 очистка приняла бы его за исчезнувший.
 
-```
-node_id  source_versions                                        body_hashes                          applied_methods          pipeline_stamp                              crawl_scope    last_seen_run  skip_reason
-17       {content: v10}                                         {content: cc4fe8ea…}                 {text,summary,entities}  reader=confluence:3;chunk=4000/0;embed=e5   space:FLINK    run-0912a
-18       {content: v3:2026-05-01T09:12:00Z:184320:…/pdf}        {content: 9b1e02…}                   {text,ocr}               reader=confluence:3;chunk=4000/0;embed=e5   space:FLINK    run-0912a
-19       {content: v1:2026-04-02T10:00:00Z:20480:image/png}     {}                                   {}                       ''                                          space:FLINK    run-0912a      image/png not in allowlist
-41       {structure: 3f9a1c…, data: ins=12401233;upd=88102;…}   {structure: 8c02d7…, data: e1b4…}    {text,profile,entities}  reader=postgres:1;chunk=4000/0;embed=e5     schema:dm      run-0912b
-50       {structure: 2026-09-11T22:40:03, data: …;rows=9812…}   {structure: e77b…, data: 40c1…}      {text,profile}           reader=clickhouse:1;chunk=4000/0;embed=e5   database:logs  run-0912b
-```
+| node_id | `source_versions` | `body_hashes` | `applied_methods` | `pipeline_stamp` | `crawl_scope` | `last_seen_run` | `skip_reason` |
+|---|---|---|---|---|---|---|---|
+| 17 | `{content: v10}` | `{content: cc4fe8ea…}` | `{text, summary, entities}` | `reader=confluence:3;chunk=4000/0;embed=e5` | `space:FLINK` | `run-0912a` | |
+| 18 | `{content: v3:2026-05-01T09:12:00Z:184320:…/pdf}` | `{content: 9b1e02…}` | `{text, ocr}` | `reader=confluence:3;chunk=4000/0;embed=e5` | `space:FLINK` | `run-0912a` | |
+| 19 | `{content: v1:2026-04-02T10:00:00Z:20480:image/png}` | `{}` | `{}` | | `space:FLINK` | `run-0912a` | `image/png not in allowlist` |
+| 41 | `{structure: 3f9a1c…, data: ins=12401233;upd=88102;…}` | `{structure: 8c02d7…, data: e1b4…}` | `{text, profile, entities}` | `reader=postgres:1;chunk=4000/0;embed=e5` | `schema:dm` | `run-0912b` | |
+| 50 | `{structure: 2026-09-11T22:40:03, data: …;rows=9812…}` | `{structure: e77b…, data: 40c1…}` | `{text, profile}` | `reader=clickhouse:1;chunk=4000/0;embed=e5` | `database:logs` | `run-0912b` | |
 
 ### 3.3 Сущности
 
@@ -1773,25 +1767,27 @@ create index on node_entities (entity_id, node_id) include (weight);   -- entity
   из комментариев, токены имён колонок и таблиц (вид `field`:
   `customer_id` → `customer`), теги/владельцы из метаданных (вид `label`).
 
-```
-entities
-id   name           kind              display
-1    cassandra      software product  Cassandra
-2    kraft          software product  KRaft
-3    kubernetes     technology        Kubernetes
-4    accepted       label             accepted
-5    customer       field             customer
-6    оms            term              OMS
-7    заказ          term              заказ
+`entities`:
 
-node_entities
-node_id  entity_id  count  weight
-17       3          4      0.61     страница FLIP-457 упоминает Kubernetes 4 раза
-17       4          1      0.20     метка accepted — на 40% страниц пространства, вес низкий
-41       5          2      0.83     колонки customer_id, customer_region дают field=customer
-41       6          3      0.95     OMS в комментариях таблицы
-41       7          5      0.71
-```
+| id | name | kind | display |
+|---|---|---|---|
+| 1 | `cassandra` | software product | Cassandra |
+| 2 | `kraft` | software product | KRaft |
+| 3 | `kubernetes` | technology | Kubernetes |
+| 4 | `accepted` | label | accepted |
+| 5 | `customer` | field | customer |
+| 6 | `oms` | term | OMS |
+| 7 | `заказ` | term | заказ |
+
+`node_entities`:
+
+| node_id | entity_id | count | weight | почему такой вес |
+|---|---|---|---|---|
+| 17 | 3 | 4 | 0.61 | страница FLIP-457 упоминает Kubernetes 4 раза |
+| 17 | 4 | 1 | 0.20 | метка `accepted` — на 40% страниц пространства, вес низкий |
+| 41 | 5 | 2 | 0.83 | колонки `customer_id`, `customer_region` дают `field = customer` |
+| 41 | 6 | 3 | 0.95 | OMS в комментариях таблицы |
+| 41 | 7 | 5 | 0.71 | |
 
 `count` — число вхождений: совпадения NER по окнам плюс точные совпадения
 имени сущности в тексте узла. `weight` — tf-idf, считается глобальной
@@ -1966,19 +1962,18 @@ class SameAuthorEvidence(Evidence):
    только виды рёбер, чьи параметры в обосновании разошлись с конфигом,
    а не весь граф.
 
-```
-source_id  target_id  kind          weight  evidence
-17         18         has_attachment 1.00   {}
-41         42         contains      1.00    {}
-17         21         link          1.00    {"anchor": "FLIP-458", "phrase": "see FLIP-458 for the API", "section_id": 905}
-17         21         series        0.50    {"prefix": "FLIP", "numbers": [457, 458]}
-17         33         entity        0.42    {"shared": [{"name": "kraft", "weight": 0.6}, {"name": "kubernetes", "weight": 0.3}], "jaccard": 0.42, "min_jaccard": 0.10, "min_shared": 2}
-17         33         similar       0.87    {"cosine": 0.87, "index": "summary/vector", "model": "multilingual-e5-large", "min_cos": 0.80}
-41         44         inferred_key  0.99    {"column": "customer_id", "target_column": "dim_customer.customer_id", "coverage": 0.998, "sample": 100000}
-41         44         same_column   0.70    {"column": "customer_id", "type": "bigint"}
-41         52         view_source   1.00    {"view": "dm.v_orders_daily"}
-41         45         co_queried    0.63    {"queries": 118, "window": "30d"}
-```
+| source_id | target_id | kind | weight | evidence |
+|---|---|---|---|---|
+| 17 | 18 | `has_attachment` | 1.00 | `{}` |
+| 41 | 42 | `contains` | 1.00 | `{}` |
+| 17 | 21 | `link` | 1.00 | `{"anchor": "FLIP-458", "phrase": "see FLIP-458 for the API", "section_id": 905}` |
+| 17 | 21 | `series` | 0.50 | `{"prefix": "FLIP", "numbers": [457, 458]}` |
+| 17 | 33 | `entity` | 0.42 | `{"shared": [{"name": "kraft", "weight": 0.6}, {"name": "kubernetes", "weight": 0.3}], "jaccard": 0.42, "min_jaccard": 0.10, "min_shared": 2}` |
+| 17 | 33 | `similar` | 0.87 | `{"cosine": 0.87, "index": "summary/vector", "model": "multilingual-e5-large", "min_cos": 0.80}` |
+| 41 | 44 | `inferred_key` | 0.99 | `{"column": "customer_id", "target_column": "dim_customer.customer_id", "coverage": 0.998, "sample": 100000}` |
+| 41 | 44 | `same_column` | 0.70 | `{"column": "customer_id", "type": "bigint"}` |
+| 41 | 52 | `view_source` | 1.00 | `{"view": "dm.v_orders_daily"}` |
+| 41 | 45 | `co_queried` | 0.63 | `{"queries": 118, "window": "30d"}` |
 
 ### 3.5 Метрики
 
@@ -2002,15 +1997,14 @@ create index on ranks (metric, value desc);
 новая функция NetworkX и новое имя метрики, схема не меняется. Ранжирование
 использует те метрики, что названы в его конфиге (раздел 8).
 
-```
-node_id  metric        value      computed_at  run_id
-17       pagerank      0.00412    2026-09-12   graph-0912
-17       betweenness   0.0187     2026-09-12   graph-0912
-17       degree_in     14         2026-09-12   graph-0912
-17       community     7          2026-09-12   graph-0912
-41       pagerank      0.0301     2026-09-12   graph-0912     dim/fact-таблица, на которую ссылаются многие
-41       community     2          2026-09-12   graph-0912
-```
+| node_id | metric | value | computed_at | run_id | |
+|---|---|---|---|---|---|
+| 17 | `pagerank` | 0.00412 | 2026-09-12 | `graph-0912` | |
+| 17 | `betweenness` | 0.0187 | 2026-09-12 | `graph-0912` | |
+| 17 | `degree_in` | 14 | 2026-09-12 | `graph-0912` | |
+| 17 | `community` | 7 | 2026-09-12 | `graph-0912` | |
+| 41 | `pagerank` | 0.0301 | 2026-09-12 | `graph-0912` | таблица, на которую ссылаются многие |
+| 41 | `community` | 2 | 2026-09-12 | `graph-0912` | |
 
 ### 3.6 Адрес узла
 
@@ -2097,24 +2091,24 @@ s3://s3.eu-central-1.amazonaws.com/company-raw/orders/2026-09-01.parquet?column=
 Полный набор объектов PostgreSQL. Роли идут в порядке вложенности:
 `schema`, затем объект, затем то, что внутри объекта.
 
-```
-postgresql://dwh.local:5432/dwh                                                  база
-postgresql://dwh.local:5432/dwh?schema=dm                                        схема
-postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders                      таблица
-postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders&column=amount        колонка таблицы
-postgresql://dwh.local:5432/dwh?schema=dm&view=v_orders_daily                    представление
-postgresql://dwh.local:5432/dwh?schema=dm&view=v_orders_daily&column=day         колонка представления
-postgresql://dwh.local:5432/dwh?schema=dm&matview=mv_orders_month                материализованное представление
-postgresql://dwh.local:5432/dwh?schema=dm&matview=mv_orders_month&column=total   колонка matview
-postgresql://dwh.local:5432/dwh?schema=dm&index=fact_orders_customer_idx         индекс (имя уникально в схеме)
-postgresql://dwh.local:5432/dwh?schema=dm&sequence=fact_orders_order_id_seq      последовательность
-postgresql://dwh.local:5432/dwh?schema=dm&function=calc_total&args=bigint%2Cnumeric      функция
-postgresql://dwh.local:5432/dwh?schema=dm&function=calc_total&args=bigint                перегрузка той же функции — другой узел
-postgresql://dwh.local:5432/dwh?schema=dm&function=now_utc&args=                         функция без аргументов: args пуст, но присутствует
-postgresql://dwh.local:5432/dwh?schema=dm&procedure=close_orders&args=date%2Ctext        процедура
-postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders&constraint=fact_orders_customer_fkey   ограничение
-postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders&trigger=trg_orders_audit              триггер
-```
+| объект | адрес |
+|---|---|
+| база | `postgresql://dwh.local:5432/dwh` |
+| схема | `postgresql://dwh.local:5432/dwh?schema=dm` |
+| таблица | `postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders` |
+| колонка таблицы | `postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders&column=amount` |
+| представление | `postgresql://dwh.local:5432/dwh?schema=dm&view=v_orders_daily` |
+| колонка представления | `postgresql://dwh.local:5432/dwh?schema=dm&view=v_orders_daily&column=day` |
+| материализованное представление | `postgresql://dwh.local:5432/dwh?schema=dm&matview=mv_orders_month` |
+| колонка matview | `postgresql://dwh.local:5432/dwh?schema=dm&matview=mv_orders_month&column=total` |
+| индекс, имя уникально в схеме | `postgresql://dwh.local:5432/dwh?schema=dm&index=fact_orders_customer_idx` |
+| последовательность | `postgresql://dwh.local:5432/dwh?schema=dm&sequence=fact_orders_order_id_seq` |
+| функция | `postgresql://dwh.local:5432/dwh?schema=dm&function=calc_total&args=bigint%2Cnumeric` |
+| перегрузка той же функции — другой узел | `postgresql://dwh.local:5432/dwh?schema=dm&function=calc_total&args=bigint` |
+| функция без аргументов: `args` пуст, но присутствует | `postgresql://dwh.local:5432/dwh?schema=dm&function=now_utc&args=` |
+| процедура | `postgresql://dwh.local:5432/dwh?schema=dm&procedure=close_orders&args=date%2Ctext` |
+| ограничение | `postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders&constraint=fact_orders_customer_fkey` |
+| триггер | `postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders&trigger=trg_orders_audit` |
 
 Функции и процедуры уникальны сигнатурой, а не именем: `args` — типы
 аргументов в форме `pg_get_function_identity_arguments` (имена типов
@@ -2130,19 +2124,19 @@ postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders&trigger=trg_orders_a
 материализованные представления — отдельные роли, хотя в
 `system.tables` они лежат рядом с таблицами и различаются полем `engine`.
 
-```
-clickhouse://ch1:9000/logs                                                       база
-clickhouse://ch1:9000/logs?table=events                                          таблица
-clickhouse://ch1:9000/logs?table=events&column=user_id                           колонка
-clickhouse://ch1:9000/logs?view=v_events_hourly                                  представление
-clickhouse://ch1:9000/logs?view=v_events_hourly&column=hour                      колонка представления
-clickhouse://ch1:9000/logs?matview=mv_events_daily                               материализованное представление
-clickhouse://ch1:9000/logs?matview=mv_events_daily&column=day                    колонка matview
-clickhouse://ch1:9000/logs?table=events&index=events_ts_minmax                   skip-индекс: уникален внутри таблицы
-clickhouse://ch1:9000/logs?table=events&projection=events_by_user                проекция
-clickhouse://ch1:9000/logs?dictionary=dict_users                                 словарь
-clickhouse://ch1:9000/logs?function=to_rub                                       UDF: перегрузок нет, args не нужен
-```
+| объект | адрес |
+|---|---|
+| база | `clickhouse://ch1:9000/logs` |
+| таблица | `clickhouse://ch1:9000/logs?table=events` |
+| колонка | `clickhouse://ch1:9000/logs?table=events&column=user_id` |
+| представление | `clickhouse://ch1:9000/logs?view=v_events_hourly` |
+| колонка представления | `clickhouse://ch1:9000/logs?view=v_events_hourly&column=hour` |
+| материализованное представление | `clickhouse://ch1:9000/logs?matview=mv_events_daily` |
+| колонка matview | `clickhouse://ch1:9000/logs?matview=mv_events_daily&column=day` |
+| skip-индекс, уникален внутри таблицы | `clickhouse://ch1:9000/logs?table=events&index=events_ts_minmax` |
+| проекция | `clickhouse://ch1:9000/logs?table=events&projection=events_by_user` |
+| словарь | `clickhouse://ch1:9000/logs?dictionary=dict_users` |
+| UDF: перегрузок нет, `args` не нужен | `clickhouse://ch1:9000/logs?function=to_rub` |
 
 У ClickHouse skip-индекс и проекция принадлежат таблице и уникальны только
 внутри неё, поэтому идут после `table` — в отличие от PostgreSQL, где
@@ -2204,25 +2198,23 @@ index scan без фильтров. По `index_distance` выбирается �
 векторов, старая живёт до его конца. Таблицы векторов создаёт установка по
 моделям из конфига корпуса, размерность — из строки модели.
 
-```
-id  name                    provider  modality  revision  dim   index_distance  normalize  max_tokens  query_prefix  passage_prefix
-1   multilingual-e5-large   local     text      2024-02   1024  cosine          true       512         'query: '     'passage: '
-2   bge-m3                  local     text      2024-06   1024  cosine          true       8192        ''            ''
-3   text-embedding-3-large  openai    text      ''        3072  cosine          true       8191        ''            ''
-4   siglip-so400m           local     image     2024-01   1152  cosine          true       64          ''            ''
-```
+| id | name | slug | provider | modality | revision | dim | index_distance | normalize | max_tokens | query_prefix | passage_prefix |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | `multilingual-e5-large` | `e5` | local | text | 2024-02 | 1024 | cosine | true | 512 | `query: ` | `passage: ` |
+| 2 | `bge-m3` | `bge` | local | text | 2024-06 | 1024 | cosine | true | 8192 | | |
+| 3 | `text-embedding-3-large` | `oai3large` | openai | text | | 3072 | cosine | true | 8191 | | |
+| 4 | `siglip-so400m` | `siglip` | local | image | 2024-01 | 1152 | cosine | true | 64 | | |
 
 **Бэкенды графа.** Всё, кроме рёбер, всегда реляционное. Бэкенд выбирает
 только, где живут рёбра и как выполняется обход. Порт ядра:
 
-```
-GraphStore
-  replace_edges(node_id, kinds, edges)     рёбра узла указанных видов заменить целиком
-  neighbors(node_id, kinds) -> edges       соседи с весом и обоснованием
-  expand(seeds, depth, decay) -> scores    обход от опорных: node_id, s_graph, distance, path
-  export() -> edges                        весь граф для глобальной стадии (NetworkX)
-  drop_node(node_id)                       убрать узел из графа (AGE: вершину и её рёбра)
-```
+| метод `GraphStore` | что делает |
+|---|---|
+| `replace_edges(node_id, kinds, edges)` | рёбра узла указанных видов заменить целиком |
+| `neighbors(node_id, kinds) -> edges` | соседи с весом и обоснованием |
+| `expand(seeds, depth, decay) -> scores` | обход от опорных: `node_id`, `s_graph`, `distance`, `path` |
+| `export() -> edges` | весь граф для глобальной стадии (NetworkX) |
+| `drop_node(node_id)` | убрать узел из графа (AGE: вершину и её рёбра) |
 
 **Реляционный бэкенд** — таблица `edges` (3.4), представление `adjacency`,
 рекурсивный CTE (раздел 8). Целостность — внешними ключами.
@@ -2231,13 +2223,13 @@ GraphStore
 графа, поэтому граф зовётся `<схема>_graph`: `confluence_graph` рядом с
 `confluence`. Внутри AGE создаёт по таблице на метку:
 
-```
-confluence_graph._ag_label_vertex        все вершины
-confluence_graph._ag_label_edge          все рёбра
-confluence_graph.node                    вершины метки node:  id graphid, properties agtype
-confluence_graph.link                    рёбра метки link:    id, start_id, end_id, properties agtype
-confluence_graph.mention                 …по таблице на вид ребра корпуса
-```
+| таблица AGE | что в ней |
+|---|---|
+| `confluence_graph._ag_label_vertex` | все вершины |
+| `confluence_graph._ag_label_edge` | все рёбра |
+| `confluence_graph.node` | вершины метки `node`: `id graphid`, `properties agtype` |
+| `confluence_graph.link` | рёбра метки `link`: `id`, `start_id`, `end_id`, `properties agtype` |
+| `confluence_graph.mention` | по таблице на каждый вид ребра корпуса |
 
 Раскладка ядра на AGE:
 
@@ -2557,20 +2549,24 @@ limit %(limit)s;
 `pending_links` — ссылки на страницы, которых в корпусе ещё нет; когда
 цель индексируется, они становятся рёбрами `link`.
 
-```
-pages
-node_id  page_id     title                                   labels      outline_text
-17       307136992   FLIP-457: Improve Table/SQL Config…     {accepted}  Apache Flink Home › Flink Improvement Proposals. Labels: accepted. Sections: Status; Motivation; …
+`pages`:
 
-page_sections
-id   node_id  ordinal  kind     heading_path                        format_content (начало)
-201  17       0        section  FLIP-457… › Motivation              Motivation\n\nAs Flink moves toward 2.0, we have revisited…
-204  17       3        table    FLIP-457… › Public Interfaces…      | Module | Configuration Options | Class | … |\n| --- |…
+| node_id | page_id | title | labels | outline_text |
+|---|---|---|---|---|
+| 17 | 307136992 | FLIP-457: Improve Table/SQL Config… | `{accepted}` | Apache Flink Home › Flink Improvement Proposals. Labels: accepted. Sections: Status; Motivation; … |
 
-page_summaries
-node_id  summary                                                     topics                        model          system_prompt_hash
-17       FLIP-457 пересматривает опции table/SQL к выходу Flink 2.0… {flink, configuration, sql}   qwen3-4b-int4  5d41…
-```
+`page_sections`:
+
+| id | node_id | ordinal | kind | heading_path | format_content, начало |
+|---|---|---|---|---|---|
+| 201 | 17 | 0 | `section` | FLIP-457… › Motivation | Motivation\n\nAs Flink moves toward 2.0, we have revisited… |
+| 204 | 17 | 3 | `table` | FLIP-457… › Public Interfaces… | markdown-таблица модулей и опций: `\| Module \| Configuration Options \| Class \|…` |
+
+`page_summaries`:
+
+| node_id | summary | topics | model | system_prompt_hash |
+|---|---|---|---|---|
+| 17 | FLIP-457 пересматривает опции table/SQL к выходу Flink 2.0… | `{flink, configuration, sql}` | `qwen3-4b-int4` | `5d41…` |
 
 ### 4.2 Хранилище данных
 
@@ -2733,18 +2729,17 @@ create table column_profiles (         -- профиль данных: выбо�
 
 Индексы хранилища:
 
-```
-kind      table, row_column, text_column            индексы
-title     relations, node_id, title                 fts(title_tsv), trigram, exact                          (title_index)
-title     columns, node_id, title                   trigram, exact                                          (same_column, name_pattern)
-comment   relations, node_id, comment               fts(comment_tsv)
-comment   columns, node_id, comment                 fts(comment_tsv), vector(column_comment_vectors.node_id)
-ddl       relation_ddl, node_id, ddl                fts(tsv), vector(relation_ddl_vectors__e5.node_id)
-columns   relation_column_lists, node_id, content   fts(tsv), vector(relation_column_list_vectors__e5.node_id)
-profile   relation_profiles, node_id, content       fts(tsv), vector(relation_profile_vectors__e5.node_id)
-sample    relation_samples, node_id, content        fts(tsv), vector(relation_sample_vectors__e5.node_id)
-summary   relation_summaries, node_id, summary      fts(tsv), vector(relation_summary_vectors__e5.node_id)      (similarity_index)
-```
+| вид текста | таблица, ключ строки, колонка текста | индексы |
+|---|---|---|
+| `title` | `relations`, `node_id`, `title` | `fts(title_tsv)`, `trigram`, `exact` — это `title_index()` |
+| `title` | `columns`, `node_id`, `title` | `trigram`, `exact` — для `same_column`, `name_pattern` |
+| `comment` | `relations`, `node_id`, `comment` | `fts(comment_tsv)` |
+| `comment` | `columns`, `node_id`, `comment` | `fts(comment_tsv)`, `vector(column_comment_vectors.node_id)` |
+| `ddl` | `relation_ddl`, `node_id`, `ddl` | `fts(tsv)`, `vector(relation_ddl_vectors__e5.node_id)` |
+| `columns` | `relation_column_lists`, `node_id`, `content` | `fts(tsv)`, `vector(relation_column_list_vectors__e5.node_id)` |
+| `profile` | `relation_profiles`, `node_id`, `content` | `fts(tsv)`, `vector(relation_profile_vectors__e5.node_id)` |
+| `sample` | `relation_samples`, `node_id`, `content` | `fts(tsv)`, `vector(relation_sample_vectors__e5.node_id)` |
+| `summary` | `relation_summaries`, `node_id`, `summary` | `fts(tsv)`, `vector(relation_summary_vectors__e5.node_id)` — это `similarity_index()` |
 
 Четыре вида текста отношения — четыре таблицы, а не одна с колонкой
 вида: у каждой своя структура (у профиля — время выборки, у примера —
@@ -2755,26 +2750,34 @@ summary   relation_summaries, node_id, summary      fts(tsv), vector(relation_su
 `values_minhash` корпус оценивает пересечение значений двух колонок без
 соединения таблиц и ставит ребро `inferred_key`.
 
-```
-relations
-node_id  engine      relation_kind  title        definition (начало)                comment                          row_estimate  properties
-41       postgresql  pg_table       fact_orders  create table dm.fact_orders (…)    Фактовые строки заказов из OMS   12401233      {"partitioned": true, "partition_key": "created_at"}
-50       clickhouse  ch_table       events       CREATE TABLE logs.events (…)…      ''                               9812004411    {"engine": "MergeTree", "order_by": ["ts","user_id"]}
+`relations`:
 
-relation_ddl            41  create table dm.fact_orders (order_id bigint not null, customer_id bigint, amount numeric(18,2), …
-relation_column_lists   41  order_id bigint pk; customer_id bigint; amount numeric(18,2) — сумма заказа в рублях с НДС; status text — NEW | PAID | CANCELLED; …
-relation_profiles       41  order_id: 0% null, 12.4M distinct, 1..12401233\nstatus: 0% null, 3 distinct: PAID 71%, NEW 22%, CANCELLED 7%\n…
-relation_samples        41  | order_id | customer_id | amount | status | created_at |\n| 1001 | 77 | 1290.00 | PAID | 2026-08-01 |…
+| node_id | engine | relation_kind | title | definition, начало | comment | row_estimate | properties |
+|---|---|---|---|---|---|---|---|
+| 41 | postgresql | `pg_table` | `fact_orders` | `create table dm.fact_orders (…)` | Фактовые строки заказов из OMS | 12401233 | `{"partitioned": true, "partition_key": "created_at"}` |
+| 50 | clickhouse | `ch_table` | `events` | `CREATE TABLE logs.events (…)` | | 9812004411 | `{"engine": "MergeTree", "order_by": ["ts","user_id"]}` |
 
-columns
-node_id  relation_id  position  title        native_type    canonical_type  nullable  comment
-42       41           3         amount       numeric(18,2)  decimal         false     сумма заказа в рублях с НДС
+Тексты той же таблицы 41, по строке на вид:
 
-column_profiles
-node_id  sample_rows  null_frac  distinct_est  min_value  max_value   top_values                                 value_pattern
-42       100000       0.0        87211         0.01       1288400.00  []                                         ''
-57       100000       0.0        3             CANCELLED  PAID        [{"v":"PAID","share":0.71},…]              code:^[A-Z]+$
-```
+| таблица | content |
+|---|---|
+| `relation_ddl` | `create table dm.fact_orders (order_id bigint not null, customer_id bigint, amount numeric(18,2), …` |
+| `relation_column_lists` | `order_id bigint pk; customer_id bigint; amount numeric(18,2) — сумма заказа в рублях с НДС; status text — NEW \| PAID \| CANCELLED; …` |
+| `relation_profiles` | `order_id: 0% null, 12.4M distinct, 1..12401233` / `status: 0% null, 3 distinct: PAID 71%, NEW 22%, CANCELLED 7%` / … |
+| `relation_samples` | markdown-таблица строк: `\| order_id \| customer_id \| amount \| status \| created_at \|`, `\| 1001 \| 77 \| 1290.00 \| PAID \| 2026-08-01 \|`… |
+
+`columns`:
+
+| node_id | relation_id | position | title | native_type | canonical_type | nullable | comment |
+|---|---|---|---|---|---|---|---|
+| 42 | 41 | 3 | `amount` | `numeric(18,2)` | `decimal` | false | сумма заказа в рублях с НДС |
+
+`column_profiles`:
+
+| node_id | sample_rows | null_frac | distinct_est | min_value | max_value | top_values | value_pattern |
+|---|---|---|---|---|---|---|---|
+| 42 | 100000 | 0.0 | 87211 | 0.01 | 1288400.00 | `[]` | |
+| 57 | 100000 | 0.0 | 3 | CANCELLED | PAID | `[{"v":"PAID","share":0.71},…]` | `code:^[A-Z]+$` |
 
 Что откуда: явные рёбра — `contains` из каталога, `foreign_key` из
 `constraints`, `view_source` и `routine_uses` из разбора определений;
@@ -2795,29 +2798,23 @@ markdown, вложение — разобранным текстом. Храни
 
 Четыре новых пакета по слоям проекта, пятый — следующим планом:
 
-```
-packages/core/boba-graph                  домен: Node, Edge, Entity, Address, Evidence, Probe, SqlIndex[P, S], VectorEncoder[V], Corpus;
-                                          порты хранения и сервисов стадий; конвейер 2.0
-packages/infra/db/boba-db-pggraph         postgres: DDL graph tables, реализации портов для relational и age,
-                                          слияние поиска по индексам, обход, глобальный экспорт
-packages/tools/boba-tool-graph            инструменты над любым корпусом: kb_search, kb_related, kb_entity,
-                                          kb_node, kb_graph_rebuild, kb_graph_check, установка схемы
-packages/tools/boba-corpus-confluence     корпус Confluence: виды текстов и рёбер, content tables и их DDL,
-                                          индексы поиска, транспорт и ридер 2.0, явные рёбра, резолвер,
-                                          инструменты индексации confluence_graph_index_*
-packages/tools/boba-corpus-warehouse      корпус хранилища (следующий план): виды текстов и рёбер, content tables,
-                                          интроспекторы движков, профили, косвенные рёбра, резолвер
-```
+| пакет | что внутри |
+|---|---|
+| `packages/core/boba-graph` | домен: `Node`, `Edge`, `Entity`, `Address`, `Evidence`, `Probe`, `SqlIndex[P, S]`, `VectorEncoder[V]`, `Corpus`; порты хранения и сервисов стадий; конвейер 2.0 |
+| `packages/infra/db/boba-db-pggraph` | postgres: DDL graph tables, реализации портов для relational и age, слияние поиска по индексам, обход, глобальный экспорт |
+| `packages/tools/boba-tool-graph` | инструменты над любым корпусом: `kb_search`, `kb_related`, `kb_entity`, `kb_node`, `kb_graph_rebuild`, `kb_graph_check`, установка схемы |
+| `packages/tools/boba-corpus-confluence` | корпус Confluence: виды текстов и рёбер, content tables и их DDL, индексы поиска, транспорт и ридер 2.0, явные рёбра, резолвер, инструменты индексации `confluence_graph_index_*` |
+| `packages/tools/boba-corpus-warehouse` | корпус хранилища (следующий план): виды текстов и рёбер, content tables, интроспекторы движков, профили, косвенные рёбра, резолвер |
 
 Модели самих источников — в уже существующих пакетах источников (2.1);
 единственная новая зависимость у них — база `Address` из `boba-graph`
 (core ← infra, направление соблюдено):
 
-```
-packages/infra/format/boba-confluence     ConfluenceNodeKind, адреса и узлы страниц, спейсов, вложений, ConfluenceNode
-packages/infra/db/boba-db-postgres        PgNodeKind, адреса и узлы объектов каталога, PgNode
-packages/infra/db/boba-db-clickhouse      ChNodeKind, адреса и узлы объектов, ChNode
-```
+| пакет источника | что в нём появляется |
+|---|---|
+| `packages/infra/format/boba-confluence` | `ConfluenceNodeKind`, адреса и узлы страниц, спейсов, вложений, `ConfluenceNode` |
+| `packages/infra/db/boba-db-postgres` | `PgNodeKind`, адреса и узлы объектов каталога, `PgNode` |
+| `packages/infra/db/boba-db-clickhouse` | `ChNodeKind`, адреса и узлы объектов, `ChNode` |
 
 Корпус регистрируется как плагин `boba.tools` и попадает в реестр
 корпусов по имени схемы; `boba-tool-graph` получает реализацию `Corpus`
@@ -2827,20 +2824,20 @@ packages/infra/db/boba-db-clickhouse      ChNodeKind, адреса и узлы �
 
 Порты ядра в `boba-graph`:
 
-```
-NodeStore        upsert узла по адресу, чтение по адресу и id, удаление
-SyncLedger       реестр обхода над таблицей sync
-EntityStore      словарь, привязки, пересчёт idf
-GraphStore       рёбра и обход — две реализации (3.7)
-RankStore        метрики
-ModelRegistry    embedding_models
-SearchStore      seeds(corpus, query, top_k): зонды по группам индексов, statement параллельно, RRF (раздел 2)
-VectorEncoderRegistry  VectorEncoder по имени модели и типу выхода; собран из embedding_models и [encoders]
-VectorEncoder          текст -> вектор одним методом; реализации по modality модели  (зовут стадии корпуса и индексы)
-Generator        сервис генерации по схеме: саммари, описания картинок         (зовут стадии корпуса)
-EntityExtractor  сервис извлечения сущностей из текста                         (ядро)
-Corpus           перечисления, content tables, индексы, явные рёбра, резолвер       (реализует корпус)
-```
+| порт | что делает | кто реализует |
+|---|---|---|
+| `NodeStore` | upsert узла по адресу, чтение по адресу и id, удаление | хранилище |
+| `SyncLedger` | реестр обхода над таблицей `sync` | хранилище |
+| `EntityStore` | словарь, привязки, пересчёт idf | хранилище |
+| `GraphStore` | рёбра и обход — две реализации (3.7) | хранилище |
+| `RankStore` | метрики | хранилище |
+| `ModelRegistry` | `embedding_models` | хранилище |
+| `SearchStore` | `seeds(corpus, query, top_k)`: зонды по группам индексов, `statement` параллельно, RRF (раздел 2) | хранилище |
+| `VectorEncoderRegistry` | `VectorEncoder` по имени модели и форме вектора; собран из `embedding_models` и `[encoders]` | `boba-llm` |
+| `VectorEncoder` | текст в вектор одним методом; реализации по `modality` модели | `boba-llm`, зовут стадии корпуса и индексы |
+| `Generator` | сервис генерации по схеме: саммари, описания картинок | сервис, зовут стадии корпуса |
+| `EntityExtractor` | сервис извлечения сущностей из текста | сервис, зовёт ядро |
+| `Corpus` | перечисления, content tables, индексы, явные рёбра, резолвер | корпус |
 
 `boba-graph` зависит от `boba-indexing` только ради `Reader`, `Section`,
 `Chunker`, `Embedder`, `RawDocument`. Схема создаётся установкой:
@@ -2918,14 +2915,14 @@ Corpus           перечисления, content tables, индексы, яв�
 Стадии на узел. Ядро задаёт каркас — учёт, сущности, рёбра ядра,
 глобальную стадию — и даёт сервисы; что писать в content tables, решает корпус:
 
-```
-fetch        транспорт корпуса                             Confluence: как сейчас
-parse        ридер корпуса -> строки content tables                страницы, разделы, таблицы, ссылки / объекты, колонки, определения
-embed        корпус зовёт VectorEncoder для своих PgVectorIndex  page_section_vectors, page_summary_vectors / relation_ddl_vectors, …
-summary      корпус зовёт Generator, если запрошено        page_summaries / relation_summaries
-entities     ядро: EntityExtractor по Corpus.entity_texts  entities, node_entities
-edges        Corpus.explicit_edges + entity + similar      GraphStore
-```
+| стадия | кто делает | что пишет |
+|---|---|---|
+| `fetch` | транспорт корпуса | Confluence: как сейчас |
+| `parse` | ридер корпуса в строки content tables | страницы, разделы, таблицы, ссылки / объекты, колонки, определения |
+| `embed` | корпус зовёт `VectorEncoder` для своих векторных индексов | `page_section_vectors`, `page_summary_vectors` / `relation_ddl_vectors`, … |
+| `summary` | корпус зовёт `Generator`, если запрошено | `page_summaries` / `relation_summaries` |
+| `entities` | ядро: `EntityExtractor` по `Corpus.entity_texts` | `entities`, `node_entities` |
+| `edges` | `Corpus.explicit_edges` + `entity` + `similar` | `GraphStore` |
 
 Стадия `edges` инкрементальна: рёбра индексируемого узла удаляются в обе
 стороны и строятся заново. `entity` — SQL по `node_entities` с взвешенным
