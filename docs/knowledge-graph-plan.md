@@ -91,9 +91,9 @@ content tables; ядро добирается до него через инде�
 Там же — union узлов источника по `kind` (`ConfluenceNode`, `PgNode`,
 `ChNode`), которым строка ядра разбирается в типизированную модель.
 Корпус этих моделей не дублирует и не оборачивает; его собственное —
-виды текстов и рёбер (`ConfluenceTextKind`, `ConfluenceEdgeKind`,
-`WarehouseTextKind`, `WarehouseEdgeKind` — разделы 3.4, 4.1, 4.2), потому
-что это его таблицы и его связи. Ядро в SQL и в коде
+виды содержимого и рёбер (`ConfluenceContentKind`, `ConfluenceEdgeKind`,
+`WarehouseContentKind`, `WarehouseEdgeKind` — разделы 3.4, 4.1, 4.2),
+потому что это его таблицы и его связи. Ядро в SQL и в коде
 оперирует `kind: str` и никогда по нему не ветвится.
 Инструменты поиска принимают имя корпуса и получают его реализацию из
 реестра; общих `if kind == "page"` в ядре быть не может по построению.
@@ -642,22 +642,26 @@ ChNode = Annotated[ChDatabaseNode | ChTableNode | ChColumnNode | ..., Field(disc
 `PgAddresses.parse` и `ChAddresses.parse`: класс адреса выбирается по
 составу ролей в query, и это единственная точка такого разбора в пакете.
 
-### 2.2 Индексы поиска
+### 2.2 Способы поиска
 
-Индекс поиска — и объявление, и исполнитель: он знает свои таблицу и
-колонки и сам собирает по ним запрос. Ядро объявляет протокол индекса без
-привязки к драйверу: готовый запрос драйвера — параметр типа, ядро его не
-разбирает, ничего постгресового в протоколе нет. Реализации для Postgres
-живут в `boba-db-pggraph` (2.4) и держат схему своим полем; корпус создаёт
-их экземпляры при старте из своего конфига (`[storage] pg_schema`) и
-отдаёт тремя группами по типу зонда (2.3).
+Способ поиска — и объявление, и исполнитель: он знает свои таблицу и
+колонки и сам собирает по ним запрос. У способа две координаты, и они
+независимы: **что** ищем — вид содержимого узла (заголовок, раздел,
+саммари, DDL, картинка), это перечисление корпуса; **чем** ищем —
+полнотекст, BM25, триграммы, точное совпадение, плотный или разреженный
+вектор, это перечисление ядра, общее для всех корпусов. Пара даёт подпись
+способа (`title/exact`, `section/vector`), она же ключ веса в конфиге и
+она же в выдаче отвечает, чем узел найден.
 
-К индексу приходят с разным входом: пользователь печатает текст, а
-ребро близости приносит готовый вектор соседнего узла, ребро упоминания —
-его заголовок. Поэтому у индекса свой **зонд** — то, чем он ищет в своей
-таблице: у полнотекстового и точного это строка, у векторного — вектор.
-Индекс отвечает только за запрос по зонду; кто делает зонд — зависит от
-вызова, и это видно в таблице после объявлений.
+Ищут всегда текстом: его печатает пользователь, а служебные поиски ядра
+берут текст узла — заголовок для ребра упоминания, саммари для ребра
+похожести. Во что превратить текст, решает сам способ: полнотекстовому
+нужна строка, векторному — вектор, и энкодер он получил при создании от
+корпуса. Поэтому наружу торчит один метод, ни модели, ни вектора в
+протоколе нет. Ядро объявляет протокол без привязки к драйверу: готовый
+запрос — параметр типа, ничего постгресового в нём нет; реализации для
+Postgres живут в `boba-db-pggraph` (2.4), корпус создаёт их при старте из
+своего конфига (`[storage] pg_schema`) и отдаёт одним списком (2.3).
 
 ```python
 # boba-graph — ядро: зонды и векторы — общие модели данных, SQL нет
@@ -693,27 +697,17 @@ V = TypeVar("V", bound=Vector)                          # обобщённые �
 V_co = TypeVar("V_co", bound=Vector, covariant=True)    # протоколы: вектор только на выходе — pyright требует covariant
 
 class Probe(BaseModel):
-    """Зонд — то, чем индекс ищет, вместе с рамками запроса.
+    """Зонд — то, чем ищут, вместе с рамками запроса.
 
-    Базовый класс держит общее: лимит кандидатов с этого индекса до
-    слияния (не итоговый top_k инструмента). Порог по счёту, смещение,
-    фильтр по виду узла добавятся полями сюда, не меняя сигнатуру
-    statement у реализаций. Подклассы добавляют сам зонд.
+    text — текст пользователя или текст узла для служебных поисков ядра;
+    во что его превратить, решает способ. limit — кандидатов с одного
+    способа до слияния, не итоговый top_k инструмента. Порог по счёту,
+    смещение, фильтр по виду узла добавятся полями сюда, не меняя
+    сигнатуру statement у реализаций.
     """
 
-    limit: int = Field(gt=0)
-
-class TextProbe(Probe):
     text: str
-
-class DenseProbe(Probe):
-    vector: DenseVector
-
-class SparseProbe(Probe):
-    vector: SparseVector
-
-P = TypeVar("P", bound=Probe)                                   # реализация типизирована своим зондом: statement(probe: TextProbe)
-P_contra = TypeVar("P_contra", bound=Probe, contravariant=True)  # протоколы: зонд только на входе
+    limit: int = Field(gt=0)
 
 class VectorEncoder(Protocol[V_co]):
     """Текст пользователя -> вектор; один метод, назначение — в классе реализации."""
@@ -734,56 +728,53 @@ class SearchHit(BaseModel):
     node_id: int
     row_id: int
     text: str          # что показать как цитату
-    rank: int          # позиция в списке своего индекса; счёт между индексами не переносится
+    rank: int          # позиция в списке своего способа; счёт между способами не переносится
 
 S = TypeVar("S")                              # готовый запрос драйвера целиком: у psycopg — PgStatement (sql.Composed + параметры)
 S_co = TypeVar("S_co", covariant=True)        # протоколы: запрос только на выходе
 
-class SqlIndex(Protocol[P_contra, S_co]):
-    """Индекс поиска: сборка своего запроса по зонду.
+class LookupMethod(StrEnum):
+    """Чем ищем — ось, общая для всех корпусов; что ищем — ось корпуса.
 
-    statement — весь смысл индекса: запрос, который исполняет SearchStore.
-    label — подпись индекса, его имя для двух потребителей вне поиска:
-    found_by в выдаче («title/exact», «summary/vector» — по ним модель
-    судит, насколько доверять попаданию) и поле index в обосновании ребра
-    similar. Подпись же — ключ веса в [search.weights] корпуса, но сам вес
-    индекс не держит: он свойство ранжирования, а не таблицы с колонкой, и
-    при вызове statement для рёбер similar и mention смысла не имеет.
-
-    Что индекс ищет, по какой таблице, каким способом — знает только
-    реализация. Что такое готовый запрос (S) — знает только SearchStore
-    того же драйвера: ядро его не разбирает, поэтому протокола запроса в
-    ядре нет.
+    Здесь же собирается подпись способа, чтобы пара «вид содержимого/способ»
+    складывалась в одном месте: подпись идёт в выдачу (found_by), в
+    обоснование ребра similar и служит ключом в [search.weights].
     """
 
-    def statement(self, probe: P_contra) -> S_co: ...
-    def label(self) -> str: ...        # чем найдено: "title/exact", "summary/vector"
+    FTS = "fts"
+    BM25 = "bm25"
+    TRIGRAM = "trigram"
+    EXACT = "exact"
+    VECTOR = "vector"
+    SPARSE = "sparse"
 
-class ModelIndex(SqlIndex[P_contra, S_co], Protocol[P_contra, S_co]):
-    """Индекс над таблицей векторов одной модели: ModelIndex[DenseProbe, S], ModelIndex[SparseProbe, S].
+    @classmethod
+    def label_of(cls, content_kind: str, method: "LookupMethod") -> str:
+        return f"{content_kind}/{method.value}"
 
-    model — имя модели в embedding_models, которой посчитаны векторы
-    таблицы: ею же SearchStore считает зонд из текста
-    (VectorEncoderRegistry), один раз на модель для всех индексов, что её
-    делят. Это не настройка, а факт о таблице: запрос с вектором другой
-    модели даёт мусор, поэтому реализация ещё и проверяет зонд.
+class LookupRole(StrEnum):
+    """Служебные поиски ядра: способ для них выбирает корпус (Corpus.role_lookups)."""
+
+    NAMING = "naming"          # найти узел по его имени: ребро mention
+    SIMILARITY = "similarity"  # найти похожие узлы: ребро similar
+
+class IndexLookup(Protocol[S_co]):
+    """Один способ искать: вид содержимого плюс способ поиска по нему.
+
+    content_kind — что ищем: заголовок, раздел, саммари, DDL, картинка;
+    значение перечисления корпуса, ядро его не толкует. method — чем ищем.
+    statement — запрос по зонду; во что превратить текст, знает только
+    реализация, и энкодер она получила при создании, поэтому метод
+    асинхронный, а модели снаружи не видно.
+
+    Что такое готовый запрос (S) — знает только SearchStore того же
+    драйвера: ядро его не разбирает, поэтому протокола запроса в ядре нет.
     """
 
-    def model(self) -> str: ...
+    def content_kind(self) -> str: ...
+    def method(self) -> LookupMethod: ...
+    async def statement(self, probe: Probe) -> S_co: ...
 ```
-
-Кто с чем приходит к индексу, по объявленным выше типам (реализации
-`Pg*Index` — 2.4, `similarity_index()` и `title_index()` — методы
-`Corpus`, 2.3):
-
-| вызов | индекс | зонд |
-|---|---|---|
-| `kb_search`, текст пользователя | `PgFtsIndex`, `PgTrigramIndex`, `PgExactIndex`, `PgBm25Index` | `TextProbe` со строкой запроса |
-| `kb_search` | `PgVectorIndex`, `PgSparseIndex` | `DenseProbe` / `SparseProbe`: вектор из строки моделью индекса |
-| `kb_search` | `PgImageVectorIndex` | `DenseProbe`: вектор из строки текстовым энкодером CLIP |
-| ребро `similar` (ядро) | `similarity_index()` | `DenseProbe` с готовым вектором соседнего узла |
-| ребро `mention` (ядро) | `title_index()` | `TextProbe` с заголовком другого узла, `limit = 1` |
-| ребро `same_column` (корпус) | `PgExactIndex` над `columns.title` | `TextProbe` с именем колонки |
 
 ### 2.3 Протокол корпуса
 
@@ -808,34 +799,40 @@ class SourceView(BaseModel):
     text: str
     url: str
 
+class ComputedEdge(StrEnum):
+    """Рёбра, которые ядро строит за корпус; как их назвать, говорит корпус."""
+
+    ENTITY = "entity"          # по общим сущностям
+    SIMILAR = "similar"        # по близости векторов
+
 class Corpus(Protocol[S_co]):
-    """Всё, что ядро спрашивает у корпуса; реализация — пакет корпуса.
+    """Адаптер источника к ядру графа: ответы на то, чего ядро о нём не знает.
+
+    Ядро хранит узлы, ищет, строит два вида рёбер и ранжирует, но не знает,
+    что такое страница или таблица. Методы ниже — шесть вопросов, которые
+    оно задаёт корпусу, в том же порядке: где искать и сколько это весит,
+    каким способом искать за ядро, как назвать построенное, что взять из
+    узла, что источник знает о связях сам, как показать узел.
 
     S — готовый запрос драйвера хранилища, которым корпус пользуется:
-    ConfluenceCorpus(Corpus[PgStatement]). Индексы отдаются
-    группами по типу зонда: P у SqlIndex стоит в позиции аргумента и
-    контравариантен, поэтому один список индексов с разными зондами не
-    типизируется без Any; три группы типизируются точно, и у каждой свой
-    сборщик зондов в SearchStore. Векторные группы — ModelIndex с тем же
-    зондом в параметре: отдельных имён под плотный и разреженный индекс
-    нет, разница между ними и есть тип зонда.
+    ConfluenceCorpus(Corpus[PgStatement]).
     """
 
-    node_kinds: type[StrEnum]
-    text_kinds: type[StrEnum]
-    edge_kinds: type[StrEnum]
+    node_kinds: type[StrEnum]      # разбор строки ядра в модель источника (2.1)
+    content_kinds: type[StrEnum]   # левая ось подписи способа и таблицы content tables (раздел 4)
+    edge_kinds: type[StrEnum]      # ключи [graph.edge_factors] (раздел 8)
 
-    def text_indexes(self) -> Sequence[SqlIndex[TextProbe, S_co]]: ...   # fts, trigram, exact, bm25
-    def dense_indexes(self) -> Sequence[ModelIndex[DenseProbe, S_co]]: ...    # vector, image_vector
-    def sparse_indexes(self) -> Sequence[ModelIndex[SparseProbe, S_co]]: ...  # sparse
-    def title_index(self) -> SqlIndex[TextProbe, S_co]: ...              # имена узлов: MENTION и NAMING
-    def similarity_index(self) -> ModelIndex[DenseProbe, S_co]: ...          # чей вектор берёт similar
-    def search_weights(self) -> Mapping[str, float]: ...                 # label() индекса -> вес в RRF, из [search.weights]
-    def entity_edge_kind(self) -> str: ...               # как корпус называет ребро по общим сущностям
-    def similar_edge_kind(self) -> str: ...              # как корпус называет ребро по близости векторов
-    def entity_texts(self, node_id: int) -> Sequence[str]: ...   # из чего извлекать сущности
-    def explicit_edges(self, node: Node) -> Iterable[EdgeDraft]: ...
-    def resolve(self, node: Node) -> SourceView: ...
+    def lookups(self) -> Sequence[IndexLookup[S_co]]: ...
+    def search_weights(self) -> Mapping[str, float]: ...                    # подпись способа -> вес в RRF, из [search.weights]
+
+    def role_lookups(self) -> Mapping[LookupRole, IndexLookup[S_co]]: ...   # каким способом ядро ищет имена и похожие
+    def computed_edge_kinds(self) -> Mapping[ComputedEdge, str]: ...        # как корпус зовёт рёбра, которые ядро строит
+
+    def entity_texts(self, node_id: int) -> Sequence[str]: ...              # из чего извлекать сущности
+    def similar_text(self, node_id: int) -> str: ...                        # чем узел представлен в поиске похожих
+
+    def explicit_edges(self, node: Node) -> Iterable[EdgeDraft]: ...        # связи, видные в самом источнике
+    def resolve(self, node: Node) -> SourceView: ...                        # оригинал узла для большой модели
 
 S_contra = TypeVar("S_contra", contravariant=True)   # протоколы: запрос корпуса только на входе
 
@@ -843,7 +840,7 @@ class Seed(BaseModel):
     node_id: int
     score: float                 # s_base после RRF
     best: SearchHit              # лучшее попадание: будущая цитата
-    found_by: Sequence[str]      # label() индексов, где узел встретился
+    found_by: Sequence[str]      # подписи способов, где узел встретился
 
 class SearchStore(Protocol[S_contra]):
     """Опорные узлы по тексту запроса; реализация — у драйвера (PgSearchStore).
@@ -857,20 +854,20 @@ class SearchStore(Protocol[S_contra]):
 ### 2.4 Индексы в Postgres
 
 ```python
-# boba-db-pggraph — реализации Pg*Index: S = PgStatement, схема Postgres —
-# поле schema каждой реализации, шаблон — свойство класса, остальные поля — экземпляра.
+# boba-db-pggraph — реализации Pg*Lookup: S = PgStatement, схема Postgres —
+# поле schema каждой реализации, способ и шаблон — свойства класса, остальные поля — экземпляра.
 # Объявления — frozen dataclass с явным наследованием протокола (правило §14:
 # pydantic-модель протокол наследовать не может).
 # Ошибки пакета наружу:
-# SearchIndexError — индексу дали зонд не той модели или таблица индекса не найдена.
+# SearchIndexError — у способа нет веса в конфиге или его таблица не найдена.
 # EncoderConfigError — модели нет в embedding_models или её modality не сходится с запросом.
-# SearchStoreError — запрос индекса упал в Postgres; текст — имя индекса, таблица, ошибка psycopg.
+# SearchStoreError — запрос упал в Postgres; текст — подпись способа, таблица, ошибка psycopg.
 
 @dataclass(frozen=True)
 class PgStatement:
     """Готовый запрос psycopg: собранный sql.Composed и его именованные параметры.
 
-    Собирают Pg*Index.statement(), исполняет PgSearchStore._run(); ядро
+    Собирают Pg*Lookup.statement(), исполняет PgSearchStore._run(); ядро
     видит его только как параметр типа S.
     """
 
@@ -878,8 +875,10 @@ class PgStatement:
     params: Mapping[str, object]
 
 @dataclass(frozen=True)
-class PgFtsIndex(SqlIndex[TextProbe, PgStatement]):      # tsvector + GIN, ts_rank_cd
-    name: str                             # "section/fts": подпись индекса и ключ веса в [search.weights]
+class PgFtsLookup(IndexLookup[PgStatement]):      # tsvector + GIN, ts_rank_cd
+    METHOD: ClassVar[LookupMethod] = LookupMethod.FTS
+
+    content: str                          # вид содержимого корпуса: title, section, summary — левая половина подписи
     schema: str                           # схема корпуса из [storage]: confluence | confluence_test — деталь реализации
     table: str                            # таблица content tables: page_sections
     node_column: str                      # колонка со ссылкой на nodes.id
@@ -887,8 +886,11 @@ class PgFtsIndex(SqlIndex[TextProbe, PgStatement]):      # tsvector + GIN, ts_ra
     text_column: str                      # колонка текста, отдаваемого в выдачу
     tsv_column: str
 
-    def label(self) -> str:
-        return self.name
+    def content_kind(self) -> str:
+        return self.content
+
+    def method(self) -> LookupMethod:
+        return self.METHOD
 
     TEMPLATE: ClassVar[LiteralString] = """
         with q as (
@@ -911,7 +913,7 @@ class PgFtsIndex(SqlIndex[TextProbe, PgStatement]):      # tsvector + GIN, ts_ra
         limit %(limit)s
     """
 
-    def statement(self, probe: TextProbe) -> PgStatement:
+    async def statement(self, probe: Probe) -> PgStatement:
         composed = sql.SQL(self.TEMPLATE).format(
             schema=sql.Identifier(self.schema), table=sql.Identifier(self.table),
             node=sql.Identifier(self.node_column), row=sql.Identifier(self.row_column),
@@ -920,46 +922,31 @@ class PgFtsIndex(SqlIndex[TextProbe, PgStatement]):      # tsvector + GIN, ts_ra
         return PgStatement(query=composed, params={"text": probe.text, "limit": probe.limit})
 
 @dataclass(frozen=True)
-class PgModelIndex:
-    """База индексов над таблицей векторов: имя модели таблицы и проверка зонда.
+class PgVectorLookup(IndexLookup[PgStatement]):   # pgvector + HNSW; таблица векторов — на одну модель, фильтра по модели в запросе нет
+    """Плотный вектор: текст зонда кодируется энкодером той модели, которой посчитана таблица.
 
-    Наследуют PgVectorIndex, PgSparseIndex, PgImageVectorIndex; имя модели
-    приходит из конфига корпуса.
+    Им же ищутся картинки: у SigLIP текст и картинка живут в одном
+    пространстве, поэтому отличие только в энкодере и в том, что в выдачу
+    идёт имя файла, а не текст. Отдельного класса под картинки нет.
     """
 
-    model_name: str
+    METHOD: ClassVar[LookupMethod] = LookupMethod.VECTOR
 
-    def model(self) -> str:
-        return self.model_name
-
-    def expect(self, vector: Vector, index: str, table: str) -> None:
-        """Вектор другой модели — ошибка вызова, не пустая выдача.
-
-        Для kb_search проверка тавтологична: зонд считал сам SearchStore по
-        model(). Она для рёбер similar, где вектор приходит из таблицы
-        соседнего узла и моделью ошибиться можно.
-        """
-        if vector.model == self.model_name:
-            return
-
-        raise SearchIndexError(
-            f"index {index} on {table} expects vectors of "
-            f"model {self.model_name!r}, got {vector.model!r}"
-        )
-
-@dataclass(frozen=True)
-class PgVectorIndex(PgModelIndex, ModelIndex[DenseProbe, PgStatement]):   # pgvector + HNSW; таблица векторов — на одну модель, фильтра по модели в запросе нет
-    name: str
+    content: str
     schema: str
     table: str
     node_column: str
     row_column: str
-    text_column: str
-    vector_table: str                     # таблица векторов этой поверхности и этой модели: page_section_vectors__e5
+    text_column: str                      # что показать как цитату: текст раздела, имя файла у картинки
+    vector_table: str                     # таблица векторов этого содержимого и этой модели: page_section_vectors__e5
     ref_column: str                       # ссылка на row_column
+    encoder: VectorEncoder[DenseVector]   # энкодер модели этой таблицы; корпус взял его из реестра при старте
 
-    def label(self) -> str:
-        return self.name
+    def content_kind(self) -> str:
+        return self.content
+
+    def method(self) -> LookupMethod:
+        return self.METHOD
 
     TEMPLATE: ClassVar[LiteralString] = """
         select
@@ -976,31 +963,35 @@ class PgVectorIndex(PgModelIndex, ModelIndex[DenseProbe, PgStatement]):   # pgve
         limit %(limit)s
     """
 
-    def statement(self, probe: DenseProbe) -> PgStatement:
-        self.expect(probe.vector, self.name, self.table)
-
+    async def statement(self, probe: Probe) -> PgStatement:
+        vector = await self.encoder.encode(probe.text)
         composed = sql.SQL(self.TEMPLATE).format(
             schema=sql.Identifier(self.schema), vectors=sql.Identifier(self.vector_table),
             table=sql.Identifier(self.table), node=sql.Identifier(self.node_column),
             row=sql.Identifier(self.row_column), text=sql.Identifier(self.text_column),
             ref=sql.Identifier(self.ref_column),
         )
-        params = {"vector": list(probe.vector.values), "limit": probe.limit}
+        params = {"vector": list(vector.values), "limit": probe.limit}
         return PgStatement(query=composed, params=params)
 
 @dataclass(frozen=True)
-class PgTrigramIndex(SqlIndex[TextProbe, PgStatement]):   # pg_trgm + GiST (gist_trgm_ops): опечатки, склонения, части имён.
+class PgTrigramLookup(IndexLookup[PgStatement]):   # pg_trgm + GiST (gist_trgm_ops): опечатки, склонения, части имён.
                                                              # GiST, а не GIN: только он даёт top-N по <-> прямо из индекса (KNN);
                                                              # % отсекает мусор по pg_trgm.similarity_threshold; %% — экранированный %
-    name: str
+    METHOD: ClassVar[LookupMethod] = LookupMethod.TRIGRAM
+
+    content: str
     schema: str
     table: str
     node_column: str
     row_column: str
     text_column: str
 
-    def label(self) -> str:
-        return self.name
+    def content_kind(self) -> str:
+        return self.content
+
+    def method(self) -> LookupMethod:
+        return self.METHOD
 
     TEMPLATE: ClassVar[LiteralString] = """
         select
@@ -1017,7 +1008,7 @@ class PgTrigramIndex(SqlIndex[TextProbe, PgStatement]):   # pg_trgm + GiST (gist
         limit %(limit)s
     """
 
-    def statement(self, probe: TextProbe) -> PgStatement:
+    async def statement(self, probe: Probe) -> PgStatement:
         composed = sql.SQL(self.TEMPLATE).format(
             schema=sql.Identifier(self.schema), table=sql.Identifier(self.table),
             node=sql.Identifier(self.node_column), row=sql.Identifier(self.row_column),
@@ -1026,16 +1017,21 @@ class PgTrigramIndex(SqlIndex[TextProbe, PgStatement]):   # pg_trgm + GiST (gist
         return PgStatement(query=composed, params={"text": probe.text, "limit": probe.limit})
 
 @dataclass(frozen=True)
-class PgExactIndex(SqlIndex[TextProbe, PgStatement]):     # btree по lower(text): MENTION, NAMING, коды вида FLIP-457
-    name: str
+class PgExactLookup(IndexLookup[PgStatement]):     # btree по lower(text): MENTION, NAMING, коды вида FLIP-457
+    METHOD: ClassVar[LookupMethod] = LookupMethod.EXACT
+
+    content: str
     schema: str
     table: str
     node_column: str
     row_column: str
     text_column: str
 
-    def label(self) -> str:
-        return self.name
+    def content_kind(self) -> str:
+        return self.content
+
+    def method(self) -> LookupMethod:
+        return self.METHOD
 
     TEMPLATE: ClassVar[LiteralString] = """
         select
@@ -1050,7 +1046,7 @@ class PgExactIndex(SqlIndex[TextProbe, PgStatement]):     # btree по lower(tex
         limit %(limit)s
     """
 
-    def statement(self, probe: TextProbe) -> PgStatement:
+    async def statement(self, probe: Probe) -> PgStatement:
         composed = sql.SQL(self.TEMPLATE).format(
             schema=sql.Identifier(self.schema), table=sql.Identifier(self.table),
             node=sql.Identifier(self.node_column), row=sql.Identifier(self.row_column),
@@ -1059,8 +1055,10 @@ class PgExactIndex(SqlIndex[TextProbe, PgStatement]):     # btree по lower(tex
         return PgStatement(query=composed, params={"text": probe.text, "limit": probe.limit})
 
 @dataclass(frozen=True)
-class PgBm25Index(SqlIndex[TextProbe, PgStatement]):      # pg_search (ParadeDB): BM25 с нормировкой по длине; только если расширение стоит
-    name: str
+class PgBm25Lookup(IndexLookup[PgStatement]):      # pg_search (ParadeDB): BM25 с нормировкой по длине; только если расширение стоит
+    METHOD: ClassVar[LookupMethod] = LookupMethod.BM25
+
+    content: str
     schema: str
     table: str
     node_column: str
@@ -1068,8 +1066,11 @@ class PgBm25Index(SqlIndex[TextProbe, PgStatement]):      # pg_search (ParadeDB)
     text_column: str
     index_name: str                        # индекс bm25 над таблицей; нужен установке, запрос идёт через оператор @@@
 
-    def label(self) -> str:
-        return self.name
+    def content_kind(self) -> str:
+        return self.content
+
+    def method(self) -> LookupMethod:
+        return self.METHOD
 
     TEMPLATE: ClassVar[LiteralString] = """
         select
@@ -1086,7 +1087,7 @@ class PgBm25Index(SqlIndex[TextProbe, PgStatement]):      # pg_search (ParadeDB)
         limit %(limit)s
     """
 
-    def statement(self, probe: TextProbe) -> PgStatement:
+    async def statement(self, probe: Probe) -> PgStatement:
         composed = sql.SQL(self.TEMPLATE).format(
             schema=sql.Identifier(self.schema), table=sql.Identifier(self.table),
             node=sql.Identifier(self.node_column), row=sql.Identifier(self.row_column),
@@ -1095,9 +1096,11 @@ class PgBm25Index(SqlIndex[TextProbe, PgStatement]):      # pg_search (ParadeDB)
         return PgStatement(query=composed, params={"text": probe.text, "limit": probe.limit})
 
 @dataclass(frozen=True)
-class PgSparseIndex(PgModelIndex, ModelIndex[SparseProbe, PgStatement]):   # pgvector sparsevec + HNSW (sparsevec_ip_ops): SPLADE / BM42; таблица на модель;
-                                                       # <#> — отрицательное скалярное произведение: меньше — ближе
-    name: str
+class PgSparseLookup(IndexLookup[PgStatement]):   # pgvector sparsevec + HNSW (sparsevec_ip_ops): SPLADE / BM42; таблица на модель;
+                                                  # <#> — отрицательное скалярное произведение: меньше — ближе
+    METHOD: ClassVar[LookupMethod] = LookupMethod.SPARSE
+
+    content: str
     schema: str
     table: str
     node_column: str
@@ -1105,9 +1108,13 @@ class PgSparseIndex(PgModelIndex, ModelIndex[SparseProbe, PgStatement]):   # pgv
     text_column: str
     vector_table: str
     ref_column: str
+    encoder: VectorEncoder[SparseVector]
 
-    def label(self) -> str:
-        return self.name
+    def content_kind(self) -> str:
+        return self.content
+
+    def method(self) -> LookupMethod:
+        return self.METHOD
 
     TEMPLATE: ClassVar[LiteralString] = """
         select
@@ -1124,79 +1131,28 @@ class PgSparseIndex(PgModelIndex, ModelIndex[SparseProbe, PgStatement]):   # pgv
         limit %(limit)s
     """
 
-    def statement(self, probe: SparseProbe) -> PgStatement:
-        self.expect(probe.vector, self.name, self.table)
-
+    async def statement(self, probe: Probe) -> PgStatement:
+        vector = await self.encoder.encode(probe.text)
         composed = sql.SQL(self.TEMPLATE).format(
             schema=sql.Identifier(self.schema), vectors=sql.Identifier(self.vector_table),
             table=sql.Identifier(self.table), node=sql.Identifier(self.node_column),
             row=sql.Identifier(self.row_column), text=sql.Identifier(self.text_column),
             ref=sql.Identifier(self.ref_column),
         )
-        params = {"vector": SparseVectorText.render(probe.vector), "limit": probe.limit}
+        params = {"vector": SparseVectorText.render(vector), "limit": probe.limit}
         return PgStatement(query=composed, params=params)
         # SparseVectorText.render: '{i1:v1,i2:v2,…}/dim' — текстовая форма sparsevec; одна точка сборки
-
-@dataclass(frozen=True)
-class PgImageVectorIndex(PgModelIndex, ModelIndex[DenseProbe, PgStatement]):
-    """Поиск картинок вложений по смыслу: текст запроса → вектор в пространстве
-    картинок (SigLIP/CLIP), ближайшие векторы картинок в pgvector.
-
-    Текста у картинки нет, поэтому в выдачу идёт title_column — имя файла;
-    content_column с байтами в запросе не участвует, он нужен стадии
-    индексации, которая считает вектор картинки ImageEncoder той же модели.
-    """
-
-    name: str                              # "image/image_vector": подпись выдачи и ключ веса в [search.weights]
-    schema: str                            # схема Postgres корпуса: confluence | confluence_test
-    table: str                             # attachment_images
-    node_column: str                       # ссылка на nodes.id
-    row_column: str                        # ключ строки картинки
-    title_column: str                      # что показать в выдаче: имя файла
-    content_column: str                    # bytea картинки; в запросе не участвует
-    vector_table: str                      # attachment_image_vectors__siglip: таблица на модель
-    ref_column: str                        # колонка векторной таблицы, ссылающаяся на row_column
-
-    TEMPLATE: ClassVar[LiteralString] = """
-        select
-            t.{node} as node_id,
-            t.{row} as row_id,
-            t.{title} as text,
-            v.embedding <=> %(vector)s::vector as score
-        from
-            {schema}.{vectors} v
-            join {schema}.{table} t on
-                t.{row} = v.{ref}
-        order by
-            v.embedding <=> %(vector)s::vector
-        limit %(limit)s
-    """
-
-    def label(self) -> str:
-        return self.name
-
-    def statement(self, probe: DenseProbe) -> PgStatement:
-        self.expect(probe.vector, self.name, self.table)
-
-        composed = sql.SQL(self.TEMPLATE).format(
-            schema=sql.Identifier(self.schema), vectors=sql.Identifier(self.vector_table),
-            table=sql.Identifier(self.table), node=sql.Identifier(self.node_column),
-            row=sql.Identifier(self.row_column), title=sql.Identifier(self.title_column),
-            ref=sql.Identifier(self.ref_column),
-        )
-        params = {"vector": list(probe.vector.values), "limit": probe.limit}
-        return PgStatement(query=composed, params=params)
 ```
 
 Имена таблиц и колонок подставляются как `sql.Identifier`, значения — как
 параметры: инъекции через объявление нет по построению, а `LiteralString`
 в `ClassVar` не даёт собрать шаблон из строк на лету. Один класс
-обслуживает любую таблицу: `PgFtsIndex` для `pages.title_tsv` и для
-`page_sections.tsv` — два экземпляра. Новый способ поиска — новый класс с
-полями и `TEMPLATE`; ни ядро, ни `SearchStore` не меняются. Исходные
-данные не всегда текст: у `PgImageVectorIndex` колонка байтов, а не текста,
-поэтому общего класса местоположения нет — каждый индекс объявляет свои
-поля.
+обслуживает любое содержимое: `PgFtsLookup` для `pages.title_tsv` и для
+`page_sections.tsv` — два экземпляра с разным `content`. Новый способ
+поиска — новый класс с полями и `TEMPLATE`; ни ядро, ни `SearchStore` не
+меняются. Общего класса местоположения нет: у полнотекстового способа своя
+колонка `tsvector`, у векторного — своя таблица векторов и энкодер, и
+каждый объявляет свои поля сам.
 
 ### 2.5 Энкодеры
 
@@ -1288,14 +1244,14 @@ HTTP, `image` → `ClipTextEncoder`, `sparse` → `SparseEncoder`);
 ### 2.6 Опорные узлы
 
 Что делает `seeds` и как считается счёт, описано в его
-docstring; три потребителя индексов, и ни один не получает лишнего:
+docstring:
 
 ```python
 class PgSearchStore(SearchStore[PgStatement]):
-    """Реализация SearchStore над psycopg: исполняет PgStatement индексов корпуса и сливает списки RRF.
+    """Реализация SearchStore над psycopg: исполняет PgStatement способов корпуса и сливает списки RRF.
 
     Пул — общий пул приложения; энкодеры — PgVectorEncoderRegistry;
-    candidates — [search] candidates корпуса: лимит кандидатов с индекса.
+    candidates — [search] candidates корпуса: лимит кандидатов с одного способа.
     """
 
     def __init__(self, pool: AsyncConnectionPool, encoders: VectorEncoderRegistry, candidates: int) -> None:
@@ -1307,15 +1263,14 @@ class PgSearchStore(SearchStore[PgStatement]):
         """Опорные узлы: первый шаг поиска, узлы похожие на запрос ещё без графа.
 
         От опорных узлов вторым шагом GraphStore.expand пойдёт обход рёбер.
-        Индексы корпуса берутся тремя группами по типу зонда: текстовым — одна
-        строка запроса на всех, векторным — вектор запроса энкодером модели
-        индекса, один раз на модель. Каждый индекс собирает свой запрос
-        (statement), запросы выполняются параллельно, каждый отдаёт свой
+        Зонд один на все способы — текст пользователя; во что его превратить,
+        решает сам способ, векторный считает вектор своим энкодером. Сборка
+        запросов идёт параллельно, исполнение тоже, каждый способ отдаёт свой
         ранжированный список узлов с текстом попадания. Списки сливаются по
-        обратному рангу с весами индексов (RRF): узел получает
+        обратному рангу с весами способов (RRF): узел получает
         sum(weight / (60 + rank)) по спискам, где встретился, — найденный
-        несколькими индексами поднимается. У узла остаётся счёт s_base, лучшее
-        попадание (будущая цитата) и подписи индексов; список режется до top_k.
+        несколькими способами поднимается. У узла остаётся счёт s_base, лучшее
+        попадание (будущая цитата) и подписи способов; список режется до top_k.
 
         Пример. Запрос «таймауты подключения к postgres»: section/fts находит
         страницу про libpq третьей, summary/vector — её же первой, title/trigram —
@@ -1324,29 +1279,16 @@ class PgSearchStore(SearchStore[PgStatement]):
         обе становятся опорными, expand подтянет их соседей по link, mention,
         similar.
         """
-        text_indexes = corpus.text_indexes()
-        dense_indexes = corpus.dense_indexes()
-        sparse_indexes = corpus.sparse_indexes()
-
-        text_probe = TextProbe(text=query, limit=self._candidates)
-        dense_probes = await self._dense_probes(dense_indexes, query)
-        sparse_probes = await self._sparse_probes(sparse_indexes, query)
-
         weights = corpus.search_weights()
-        statements: list[PgStatement] = []
+        probe = Probe(text=query, limit=self._candidates)
+
         labels: list[str] = []
-        for index in text_indexes:
-            statements.append(index.statement(text_probe))
-            labels.append(self._label(index, weights))
+        builds: list[Awaitable[PgStatement]] = []
+        for lookup in corpus.lookups():
+            labels.append(self._label(lookup, weights))
+            builds.append(lookup.statement(probe))
 
-        for index, probe in zip(dense_indexes, dense_probes, strict=True):
-            statements.append(index.statement(probe))
-            labels.append(self._label(index, weights))
-
-        for index, probe in zip(sparse_indexes, sparse_probes, strict=True):
-            statements.append(index.statement(probe))
-            labels.append(self._label(index, weights))
-
+        statements = await asyncio.gather(*builds)      # векторные способы считают вектор здесь, параллельно
         runs: list[Awaitable[Sequence[SearchHit]]] = []
         for statement in statements:
             runs.append(self._run(statement))
@@ -1355,56 +1297,15 @@ class PgSearchStore(SearchStore[PgStatement]):
         merged = self._rrf(lists, labels, weights)
         return merged[:top_k]
 
-    def _label(self, index: SqlIndex[Probe, PgStatement], weights: Mapping[str, float]) -> str:
-        """Подпись индекса; заодно проверка, что вес для неё объявлен — пропуск в конфиге молча обнулил бы список."""
-        label = index.label()
+    def _label(self, lookup: IndexLookup[PgStatement], weights: Mapping[str, float]) -> str:
+        """Подпись способа; заодно проверка, что вес для неё объявлен — пропуск в конфиге молча обнулил бы список."""
+        label = LookupMethod.label_of(lookup.content_kind(), lookup.method())
         if label not in weights:
             raise SearchIndexError(
-                f"index {label!r}: no weight in [search.weights]: known {sorted(weights)}"
+                f"lookup {label!r}: no weight in [search.weights]: known {sorted(weights)}"
             )
 
         return label
-
-    async def _dense_probes(
-        self, indexes: Sequence[ModelIndex[DenseProbe, PgStatement]], query: str
-    ) -> Sequence[DenseProbe]:
-        vectors = await self._encode(self._models(indexes), self._encoders.dense, query)
-        probes: list[DenseProbe] = []
-        for index in indexes:
-            probes.append(DenseProbe(vector=vectors[index.model()], limit=self._candidates))
-
-        return probes
-
-    async def _sparse_probes(
-        self, indexes: Sequence[ModelIndex[SparseProbe, PgStatement]], query: str
-    ) -> Sequence[SparseProbe]:
-        vectors = await self._encode(self._models(indexes), self._encoders.sparse, query)
-        probes: list[SparseProbe] = []
-        for index in indexes:
-            probes.append(SparseProbe(vector=vectors[index.model()], limit=self._candidates))
-
-        return probes
-
-    def _models(self, indexes: Sequence[ModelIndex[P, PgStatement]]) -> Sequence[str]:
-        names: list[str] = []
-        for index in indexes:
-            names.append(index.model())
-
-        return names
-
-    async def _encode(
-        self, models: Sequence[str], encoder_of: Callable[[str], VectorEncoder[V]], query: str
-    ) -> Mapping[str, V]:
-        """Вектор запроса считается один раз на модель, сколько бы индексов её ни делили."""
-        vectors: dict[str, V] = {}
-        for model in models:
-            if model in vectors:
-                continue
-
-            encoder = encoder_of(model)
-            vectors[model] = await encoder.encode(query)
-
-        return vectors
 
     async def _run(self, statement: PgStatement) -> Sequence[SearchHit]:
         async with self._pool.connection() as conn:
@@ -1417,29 +1318,30 @@ class PgSearchStore(SearchStore[PgStatement]):
 
         return hits
 
-# ребро similar: вектор узла уже есть, encode не нужен
-statement = corpus.similarity_index().statement(DenseProbe(vector=node_vector, limit=top_k))          # node_vector: DenseVector из vectors-таблицы
+# ребро similar: тем способом, который корпус назначил роли, по тексту самого узла
+roles = corpus.role_lookups()
+statement = await roles[LookupRole.SIMILARITY].statement(Probe(text=corpus.similar_text(node_id), limit=similar_top_k))
 
 # ребро mention: заголовок другого узла, точное совпадение
-statement = corpus.title_index().statement(TextProbe(text=title, limit=1))
+statement = await roles[LookupRole.NAMING].statement(Probe(text=title, limit=1))
 ```
 
 `Probe.limit` для `kb_search` — `candidates` из конфига поиска: сколько
-кандидатов берётся с одного индекса до слияния; `top_k` — сколько отдаёт
+кандидатов берётся с одного способа до слияния; `top_k` — сколько отдаёт
 инструмент после RRF. HNSW отдаёт не больше `hnsw.ef_search` строк за
 скан (по умолчанию 40), поэтому `SearchStore` перед векторными запросами
 ставит `set local hnsw.ef_search = max(limit, 40)` на транзакцию поиска —
 иначе `limit 50` молча вернёт 40. Веса списков — `[search.weights]` корпуса, ключ
-«вид/способ» совпадает с `label()` индекса; корпус отдаёт их таблицей
-`search_weights()`, а индекс веса не держит: индекс без веса в конфиге —
-ошибка запроса с именем индекса. Вектор
-считается только у индексов, которым он нужен, и один раз на индекс.
+«содержимое/способ» — это и есть подпись способа; корпус отдаёт веса
+таблицей `search_weights()`, а сам способ веса не держит: способ без веса
+в конфиге — ошибка запроса с его подписью. Вектор считает только тот
+способ, которому он нужен, своим энкодером.
 
 ## 3. Graph tables
 
 Ниже — реализация портов ядра в Postgres: то, что `boba-db-pggraph` создаёт
 в схеме корпуса. Здесь нет ни текста, ни векторов: они в content tables (раздел
-4), ядро добирается до них через объявленные корпусом индексы.
+4), ядро добирается до них через объявленные корпусом способы поиска.
 
 Все узлы и связи ходят по суррогатному `bigint` внутри схемы. Внешняя
 идентичность узла — адрес частями (раздел 3.6), схема — одна из частей;
@@ -1815,8 +1717,9 @@ create index on edges (target_id, source_id, kind) include (weight);   -- обр
 обе стороны для симметричных видов.
 
 Ядро само считает два вида для любого корпуса — по общим сущностям и по
-близости векторов `similarity_index`; имена этим рёбрам даёт корпус
-(`entity_edge_kind`, `similar_edge_kind`). Всё остальное, включая
+близости векторов тем способом, который корпус назначил роли
+`similarity`; имена этим рёбрам корпус даёт таблицей
+`computed_edge_kinds()`. Всё остальное, включая
 вложенность, объявляет и считает корпус. Ни один список ниже не закрыт:
 новый признак связи — новый член перечисления корпуса и его вычислитель,
 ядро не меняется. Множители веса при обходе — по `kind` в конфиге
@@ -1882,7 +1785,7 @@ class SimilarEvidence(Evidence):
     """Близость векторов: косинус, чей вектор и при каком пороге."""
 
     cosine: float
-    index: str                          # label() similarity_index: "summary/vector"
+    lookup: str                         # подпись способа роли similarity: "summary/vector"
     model: str                          # embedding_models.name
     min_cos: float                      # порог из [graph] на момент расчёта
 
@@ -1895,7 +1798,7 @@ class LinkEvidence(Evidence):
     section_id: int
 
 class MentionEvidence(Evidence):
-    """Заголовок другого узла найден в тексте точным совпадением по title_index."""
+    """Заголовок другого узла найден в тексте способом роли naming, точным совпадением."""
 
     title: str
     occurrences: int
@@ -1919,7 +1822,7 @@ class SameAuthorEvidence(Evidence):
   узел, а если цели ещё нет, ссылка ждёт в `pending_links` и ребро
   строится при её появлении.
 - `mention` — корпус: заголовки других узлов ищутся в тексте страницы
-  через `title_index` точным совпадением; заголовок короче
+  способом роли `naming`, точным совпадением; заголовок короче
   `mention_min_words` не считается.
 - `series` — корпус: код серии из заголовка регулярным выражением; общий
   префикс у двух страниц.
@@ -1930,8 +1833,9 @@ class SameAuthorEvidence(Evidence):
   двух, Jaccard — сумма минимумов к сумме максимумов по объединению;
   ребро при `entity_min_shared` общих и Jaccard не ниже
   `entity_min_jaccard`.
-- `similar` — ядро: kNN по векторной таблице `similarity_index` через
-  HNSW, верх `similar_top_k`, косинус не ниже `similar_min_cos`.
+- `similar` — ядро: способом роли `similarity` ищет похожие на текст
+  самого узла (`Corpus.similar_text`), верх `similar_top_k`, косинус не
+  ниже `similar_min_cos`; сам узел из выдачи отбрасывается.
 - Хранилище, следующий план: `inferred_key` — включение значений колонки
   A в значения B на выборке, в обосновании покрытие и размер выборки;
   `same_column` — совпадение имени и типа; `name_pattern` — общий префикс
@@ -1959,7 +1863,7 @@ class SameAuthorEvidence(Evidence):
 | 17 | 21 | `link` | 1.00 | `{"anchor": "FLIP-458", "phrase": "see FLIP-458 for the API", "section_id": 905}` |
 | 17 | 21 | `series` | 0.50 | `{"prefix": "FLIP", "numbers": [457, 458]}` |
 | 17 | 33 | `entity` | 0.42 | `{"shared": [{"name": "kraft", "weight": 0.6}, {"name": "kubernetes", "weight": 0.3}], "jaccard": 0.42, "min_jaccard": 0.10, "min_shared": 2}` |
-| 17 | 33 | `similar` | 0.87 | `{"cosine": 0.87, "index": "summary/vector", "model": "multilingual-e5-large", "min_cos": 0.80}` |
+| 17 | 33 | `similar` | 0.87 | `{"cosine": 0.87, "lookup": "summary/vector", "model": "multilingual-e5-large", "min_cos": 0.80}` |
 | 41 | 44 | `inferred_key` | 0.99 | `{"column": "customer_id", "target_column": "dim_customer.customer_id", "coverage": 0.998, "sample": 100000}` |
 | 41 | 44 | `same_column` | 0.70 | `{"column": "customer_id", "type": "bigint"}` |
 | 41 | 52 | `view_source` | 1.00 | `{"view": "dm.v_orders_daily"}` |
@@ -2268,11 +2172,11 @@ Content tables — таблицы корпуса в той же схеме. Зд
 комментария колонки — тип и позиция; ничего не сплющивается в общую
 строку. Строки content tables ссылаются на `nodes.id` с каскадом.
 
-Поиск добирается до текстов через индексы (протокол `SqlIndex` в ядре,
-реализации в `boba-db-pggraph`), которые корпус создаёт при старте и
-отдаёт тремя группами по типу зонда: каждый знает таблицу и колонки текста
-и чем он покрыт. Векторные таблицы content tables ссылаются на
-`embedding_models` из graph tables.
+Поиск добирается до содержимого через способы поиска (протокол
+`IndexLookup` в ядре, реализации в `boba-db-pggraph`), которые корпус
+создаёт при старте и отдаёт одним списком: каждый знает свою таблицу,
+колонки и то, каким индексом Postgres он покрыт. Векторные таблицы content
+tables ссылаются на `embedding_models` из graph tables.
 
 ### 4.1 Confluence
 
@@ -2281,12 +2185,13 @@ Content tables — таблицы корпуса в той же схеме. Зд
 
 ```python
 # boba-corpus-confluence
-class ConfluenceTextKind(StrEnum):
+class ConfluenceContentKind(StrEnum):
     TITLE = "title"
     OUTLINE = "outline"
     SECTION = "section"
     ATTACHMENT_TEXT = "attachment_text"   # текстовый слой и OCR
     CAPTION = "caption"                   # описание картинки моделью зрения
+    IMAGE = "image"                       # сама картинка: вектор SigLIP, текста нет
     SUMMARY = "summary"
 ```
 
@@ -2308,9 +2213,9 @@ create table pages (
     title_tsv     tsvector    generated always as (to_tsvector('simple', unaccent(title))) stored,
     outline_tsv   tsvector    generated always as (to_tsvector('russian', unaccent(outline_text)) || to_tsvector('english', unaccent(outline_text))) stored
 );
-create index on pages (lower(title));                         -- PgExactIndex: lower(title) = lower(q)
-create index on pages using gist (title gist_trgm_ops);        -- PgTrigramIndex: title <-> q, top-N из индекса
-create index on pages using gin (title_tsv);                   -- PgFtsIndex
+create index on pages (lower(title));                         -- PgExactLookup: lower(title) = lower(q)
+create index on pages using gist (title gist_trgm_ops);        -- PgTrigramLookup: title <-> q, top-N из индекса
+create index on pages using gin (title_tsv);                   -- PgFtsLookup
 create index on pages using gin (outline_tsv);
 
 create table page_sections (                   -- текст страницы по разделам и таблицам
@@ -2415,78 +2320,85 @@ create table pending_links (
 
 ```python
 class ConfluenceCorpus(Corpus[PgStatement]):
-    def __init__(self, cfg: ConfluenceCorpusConfig) -> None:
+    def __init__(self, cfg: ConfluenceCorpusConfig, encoders: VectorEncoderRegistry) -> None:
         self._cfg = cfg
         schema = cfg.storage.pg_schema
-        e5 = cfg.embedding.model                    # имя модели; slug для имён таблиц векторов — из её строки embedding_models
-        self._text: Sequence[SqlIndex[TextProbe, PgStatement]] = (
-            PgFtsIndex(name="title/fts", schema=schema, table="pages",
-                       node_column="node_id", row_column="node_id", text_column="title", tsv_column="title_tsv"),
-            PgTrigramIndex(name="title/trigram", schema=schema, table="pages",
-                           node_column="node_id", row_column="node_id", text_column="title"),
-            PgExactIndex(name="title/exact", schema=schema, table="pages",
-                         node_column="node_id", row_column="node_id", text_column="title"),          # title_index
-            PgFtsIndex(name="outline/fts", schema=schema, table="pages",
-                       node_column="node_id", row_column="node_id", text_column="outline_text", tsv_column="outline_tsv"),
-            PgFtsIndex(name="section/fts", schema=schema, table="page_sections",
-                       node_column="node_id", row_column="id", text_column="format_content", tsv_column="tsv"),
-            PgFtsIndex(name="summary/fts", schema=schema, table="page_summaries",
-                       node_column="node_id", row_column="node_id", text_column="summary", tsv_column="tsv"),
-            PgFtsIndex(name="attachment_text/fts", schema=schema, table="attachment_texts",
-                       node_column="node_id", row_column="id", text_column="content", tsv_column="tsv"),
-            PgFtsIndex(name="caption/fts", schema=schema, table="attachment_captions",
-                       node_column="node_id", row_column="node_id", text_column="caption", tsv_column="tsv"),
+        e5 = encoders.dense(cfg.embedding.model)          # нет модели в embedding_models — падение на старте
+        siglip = encoders.dense(cfg.embedding.image_model)
+        # имена таблиц векторов — содержимое плюс slug модели из её строки embedding_models
+
+        title_exact = PgExactLookup(content=ConfluenceContentKind.TITLE, schema=schema, table="pages",
+                                    node_column="node_id", row_column="node_id", text_column="title")
+        summary_vector = PgVectorLookup(content=ConfluenceContentKind.SUMMARY, schema=schema, table="page_summaries",
+                                        node_column="node_id", row_column="node_id", text_column="summary",
+                                        vector_table="page_summary_vectors__e5", ref_column="node_id", encoder=e5)
+
+        self._lookups: Sequence[IndexLookup[PgStatement]] = (
+            PgFtsLookup(content=ConfluenceContentKind.TITLE, schema=schema, table="pages",
+                        node_column="node_id", row_column="node_id", text_column="title", tsv_column="title_tsv"),
+            PgTrigramLookup(content=ConfluenceContentKind.TITLE, schema=schema, table="pages",
+                            node_column="node_id", row_column="node_id", text_column="title"),
+            title_exact,
+            PgFtsLookup(content=ConfluenceContentKind.OUTLINE, schema=schema, table="pages",
+                        node_column="node_id", row_column="node_id", text_column="outline_text", tsv_column="outline_tsv"),
+            PgFtsLookup(content=ConfluenceContentKind.SECTION, schema=schema, table="page_sections",
+                        node_column="node_id", row_column="id", text_column="format_content", tsv_column="tsv"),
+            PgVectorLookup(content=ConfluenceContentKind.SECTION, schema=schema, table="page_sections",
+                           node_column="node_id", row_column="id", text_column="format_content",
+                           vector_table="page_section_vectors__e5", ref_column="section_id", encoder=e5),
+            PgFtsLookup(content=ConfluenceContentKind.SUMMARY, schema=schema, table="page_summaries",
+                        node_column="node_id", row_column="node_id", text_column="summary", tsv_column="tsv"),
+            summary_vector,
+            PgFtsLookup(content=ConfluenceContentKind.ATTACHMENT_TEXT, schema=schema, table="attachment_texts",
+                        node_column="node_id", row_column="id", text_column="content", tsv_column="tsv"),
+            PgVectorLookup(content=ConfluenceContentKind.ATTACHMENT_TEXT, schema=schema, table="attachment_texts",
+                           node_column="node_id", row_column="id", text_column="content",
+                           vector_table="attachment_text_vectors__e5", ref_column="text_id", encoder=e5),
+            PgFtsLookup(content=ConfluenceContentKind.CAPTION, schema=schema, table="attachment_captions",
+                        node_column="node_id", row_column="node_id", text_column="caption", tsv_column="tsv"),
+            PgVectorLookup(content=ConfluenceContentKind.CAPTION, schema=schema, table="attachment_captions",
+                           node_column="node_id", row_column="node_id", text_column="caption",
+                           vector_table="attachment_caption_vectors__e5", ref_column="node_id", encoder=e5),
+            PgVectorLookup(content=ConfluenceContentKind.IMAGE, schema=schema, table="attachment_images",
+                           node_column="node_id", row_column="id", text_column="title",
+                           vector_table="attachment_image_vectors__siglip", ref_column="image_id", encoder=siglip),
         )
-        self._dense: Sequence[ModelIndex[DenseProbe, PgStatement]] = (
-            PgVectorIndex(name="section/vector", schema=schema, table="page_sections",
-                          node_column="node_id", row_column="id", text_column="format_content",
-                          vector_table="page_section_vectors__e5", ref_column="section_id", model_name=e5),
-            PgVectorIndex(name="summary/vector", schema=schema, table="page_summaries",
-                          node_column="node_id", row_column="node_id", text_column="summary",
-                          vector_table="page_summary_vectors__e5", ref_column="node_id", model_name=e5),   # similarity_index
-            PgVectorIndex(name="attachment_text/vector", schema=schema,
-                          table="attachment_texts", node_column="node_id", row_column="id", text_column="content",
-                          vector_table="attachment_text_vectors__e5", ref_column="text_id", model_name=e5),
-            PgVectorIndex(name="caption/vector", schema=schema, table="attachment_captions",
-                          node_column="node_id", row_column="node_id", text_column="caption",
-                          vector_table="attachment_caption_vectors__e5", ref_column="node_id", model_name=e5),
-        )
-        self._sparse: Sequence[ModelIndex[SparseProbe, PgStatement]] = ()
+        self._roles: Mapping[LookupRole, IndexLookup[PgStatement]] = {
+            LookupRole.NAMING: title_exact,
+            LookupRole.SIMILARITY: summary_vector,
+        }
 
-    def text_indexes(self) -> Sequence[SqlIndex[TextProbe, PgStatement]]:
-        return self._text
+    def lookups(self) -> Sequence[IndexLookup[PgStatement]]:
+        return self._lookups
 
-    def dense_indexes(self) -> Sequence[ModelIndex[DenseProbe, PgStatement]]:
-        return self._dense
+    def role_lookups(self) -> Mapping[LookupRole, IndexLookup[PgStatement]]:
+        return self._roles
 
-    def sparse_indexes(self) -> Sequence[ModelIndex[SparseProbe, PgStatement]]:
-        return self._sparse
-
-    def title_index(self) -> SqlIndex[TextProbe, PgStatement]:
-        return self._text[2]
-
-    def similarity_index(self) -> ModelIndex[DenseProbe, PgStatement]:
-        return self._dense[1]
+    def computed_edge_kinds(self) -> Mapping[ComputedEdge, str]:
+        return {
+            ComputedEdge.ENTITY: ConfluenceEdgeKind.ENTITY,
+            ComputedEdge.SIMILAR: ConfluenceEdgeKind.SIMILAR,
+        }
 
     def search_weights(self) -> Mapping[str, float]:
         return self._cfg.search.weights               # [search.weights] "title/exact" = 3.0 …
 ```
 
-Индексы создаются корпусом при старте, а не константами модуля: схема и
-модели приходят из конфига корпуса, объявление их не знает; веса при
-индексах не лежат — их отдаёт `search_weights()` по подписи. Три
-группы — по типу зонда: так каждая типизирована точно, без `Any`.
-Индекс по картинкам объявляется так же, с моделью `modality = image`:
+Способы создаются корпусом при старте, а не константами модуля: схема и
+энкодеры приходят из конфига, объявление их не знает; веса при способах не
+лежат, их отдаёт `search_weights()` по подписи. Подпись каждого способа
+собирается из пары «содержимое/способ», поэтому `title` встречается трижды
+с разными методами, а `section` дважды, и ключи `[search.weights]` в
+точности повторяют эти пары.
 
-```python
-siglip = "siglip-so400m"
-PgImageVectorIndex(
-    name="image/image_vector", schema=schema,
-    table="attachment_images", node_column="node_id", row_column="id",
-    title_column="title", content_column="content",
-    vector_table="attachment_image_vectors__siglip", ref_column="image_id", model_name=siglip,
-)
-```
+Роли — это те же объекты из списка, отмеченные по назначению: ядро ищет
+имя узла точным совпадением по заголовку, а похожие узлы — вектором
+саммари. Меняется назначение — меняется одна строка таблицы ролей, список
+способов остаётся прежним.
+
+Картинки ищутся тем же `PgVectorLookup`: у SigLIP текст запроса и
+картинка лежат в одном пространстве, поэтому отличаются только энкодер и
+колонка, которая идёт в выдачу. Отдельного класса под картинки нет.
 
 Индексация зеркальна поиску: стадия `embed` берёт `content` из
 `attachment_images`, зовёт `ImageEncoder` той же модели
@@ -2505,7 +2417,7 @@ PgImageVectorIndex(
 Два индекса над `page_sections` дают два запроса:
 
 ```sql
--- PgFtsIndex над SECTION
+-- PgFtsLookup над SECTION
 with q as (
     select
         websearch_to_tsquery('russian', unaccent(%(text)s))
@@ -2525,7 +2437,7 @@ order by
     score desc
 limit %(limit)s;
 
--- PgVectorIndex над SECTION
+-- PgVectorLookup над SECTION
 select
     t.node_id,
     t.id as row_id,
@@ -2582,7 +2494,7 @@ MySQL. У движков разные наборы объектов и разн�
 #   oracle: schema, table, view, matview, column, index, constraint, function, procedure, trigger, sequence, partition
 #   mysql:  database, table, view, column, index, constraint, procedure, function, trigger
 
-class WarehouseTextKind(StrEnum):
+class WarehouseContentKind(StrEnum):
     TITLE = "title"
     COMMENT = "comment"
     DDL = "ddl"
@@ -2615,8 +2527,8 @@ create table relations (               -- table | view | materialized_view | dic
     title_tsv     tsvector    generated always as (to_tsvector('simple', title)) stored,
     comment_tsv   tsvector    generated always as (...comment...) stored
 );
-create index on relations (lower(title));                     -- PgExactIndex
-create index on relations using gist (title gist_trgm_ops);    -- PgTrigramIndex
+create index on relations (lower(title));                     -- PgExactLookup
+create index on relations using gist (title gist_trgm_ops);    -- PgTrigramLookup
 create index on relations using gin (title_tsv);
 create index on relations using gin (comment_tsv);
 -- что модель читает вместо базы: по таблице на вид текста, у каждой своя структура
@@ -2723,9 +2635,9 @@ create table column_profiles (         -- профиль данных: выбо�
 
 Индексы хранилища:
 
-| вид текста | таблица, ключ строки, колонка текста | индексы |
+| вид содержимого | таблица, ключ строки, колонка | индексы Postgres |
 |---|---|---|
-| `title` | `relations`, `node_id`, `title` | `fts(title_tsv)`, `trigram`, `exact` — это `title_index()` |
+| `title` | `relations`, `node_id`, `title` | `fts(title_tsv)`, `trigram`, `exact` — `exact` назначен роли `naming` |
 | `title` | `columns`, `node_id`, `title` | `trigram`, `exact` — для `same_column`, `name_pattern` |
 | `comment` | `relations`, `node_id`, `comment` | `fts(comment_tsv)` |
 | `comment` | `columns`, `node_id`, `comment` | `fts(comment_tsv)`, `vector(column_comment_vectors.node_id)` |
@@ -2733,9 +2645,9 @@ create table column_profiles (         -- профиль данных: выбо�
 | `columns` | `relation_column_lists`, `node_id`, `content` | `fts(tsv)`, `vector(relation_column_list_vectors__e5.node_id)` |
 | `profile` | `relation_profiles`, `node_id`, `content` | `fts(tsv)`, `vector(relation_profile_vectors__e5.node_id)` |
 | `sample` | `relation_samples`, `node_id`, `content` | `fts(tsv)`, `vector(relation_sample_vectors__e5.node_id)` |
-| `summary` | `relation_summaries`, `node_id`, `summary` | `fts(tsv)`, `vector(relation_summary_vectors__e5.node_id)` — это `similarity_index()` |
+| `summary` | `relation_summaries`, `node_id`, `summary` | `fts(tsv)`, `vector(relation_summary_vectors__e5.node_id)` — `vector` назначен роли `similarity` |
 
-Четыре вида текста отношения — четыре таблицы, а не одна с колонкой
+Четыре вида содержимого отношения — четыре таблицы, а не одна с колонкой
 вида: у каждой своя структура (у профиля — время выборки, у примера —
 число строк), свой вес в RRF и свои индексы без фильтров.
 
@@ -2794,7 +2706,7 @@ markdown, вложение — разобранным текстом. Храни
 
 | пакет | что внутри |
 |---|---|
-| `packages/core/boba-graph` | домен: `Node`, `Edge`, `Entity`, `Address`, `Evidence`, `Probe`, `SqlIndex[P, S]`, `VectorEncoder[V]`, `Corpus`; порты хранения и сервисов стадий; конвейер 2.0 |
+| `packages/core/boba-graph` | домен: `Node`, `Edge`, `Entity`, `Address`, `Evidence`, `Probe`, `IndexLookup[S]`, `LookupMethod`, `VectorEncoder[V]`, `Corpus`; порты хранения и сервисов стадий; конвейер 2.0 |
 | `packages/infra/db/boba-db-pggraph` | postgres: DDL graph tables, реализации портов для relational и age, слияние поиска по индексам, обход, глобальный экспорт |
 | `packages/tools/boba-tool-graph` | инструменты над любым корпусом: `kb_search`, `kb_related`, `kb_entity`, `kb_node`, `kb_graph_rebuild`, `kb_graph_check`, установка схемы |
 | `packages/tools/boba-corpus-confluence` | корпус Confluence: виды текстов и рёбер, content tables и их DDL, индексы поиска, транспорт и ридер 2.0, явные рёбра, резолвер, инструменты индексации `confluence_graph_index_*` |
@@ -2913,15 +2825,15 @@ markdown, вложение — разобранным текстом. Храни
 |---|---|---|
 | `fetch` | транспорт корпуса | Confluence: как сейчас |
 | `parse` | ридер корпуса в строки content tables | страницы, разделы, таблицы, ссылки / объекты, колонки, определения |
-| `embed` | корпус зовёт `VectorEncoder` для своих векторных индексов | `page_section_vectors`, `page_summary_vectors` / `relation_ddl_vectors`, … |
+| `embed` | корпус зовёт `VectorEncoder` тех же моделей, что и его векторные способы поиска | `page_section_vectors`, `page_summary_vectors` / `relation_ddl_vectors`, … |
 | `summary` | корпус зовёт `Generator`, если запрошено | `page_summaries` / `relation_summaries` |
 | `entities` | ядро: `EntityExtractor` по `Corpus.entity_texts` | `entities`, `node_entities` |
-| `edges` | `Corpus.explicit_edges` + `entity` + `similar` | `GraphStore` |
+| `edges` | `Corpus.explicit_edges` + `entity` + `similar` по `Corpus.similar_text` | `GraphStore` |
 
 Стадия `edges` инкрементальна: рёбра индексируемого узла удаляются в обе
 стороны и строятся заново. `entity` — SQL по `node_entities` с взвешенным
-Jaccard, `similar` — kNN по векторной таблице `similarity_index` через
-HNSW с порогом.
+Jaccard, `similar` — способом роли `similarity`: текст узла кодируется и
+ищется kNN по векторной таблице через HNSW с порогом.
 
 Глобальная стадия — инструмент `kb_graph_rebuild(corpus)`: пересчёт idf и
 весов сущностей, экспорт рёбер в NetworkX, метрики из конфига → `ranks`.
@@ -2973,7 +2885,7 @@ YAKE на русском без лемматизации слаб («Рисун�
    0.5`. RRF работает по рангам, а не по счётам, поэтому несопоставимые
    `ts_rank`, косинус и `similarity()` сливаются без нормировки. Итог —
    `seed_k` узлов с базовым счётом `s_base` и лучшим попаданием (цитатой).
-   Реранк кросс-энкодером первых N — стадия поверх RRF, не индекс;
+   Реранк кросс-энкодером первых N — стадия поверх RRF, не способ поиска;
    добавляется отдельно, когда понадобится.
 2. **Расширение.** `GraphStore.expand` от опорных на глубину до 2 с
    затуханием; вес ребра берётся с множителем по его `kind` из конфига
@@ -2986,7 +2898,7 @@ YAKE на русском без лемматизации слаб («Рисун�
    `s_graph(n) = Σ s_base(seed) · Π weight·factor`.
 3. **Счёт.** `score = s_base + λ·s_graph + Σ μ_m·rank_m` по метрикам из
    конфига; λ и μ — параметры инструмента с дефолтами в конфиге.
-4. **Выдача.** Узел: `kind`, адрес, `url`, заголовок из `title_index`,
+4. **Выдача.** Узел: `kind`, адрес, `url`, заголовок,
    саммари, цитата, `why` — по какому ребру пришёл: «ссылается на
    FLIP-458», «customer_id покрывает dim_customer на 99,8%».
 
