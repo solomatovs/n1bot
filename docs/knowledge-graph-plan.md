@@ -167,6 +167,33 @@ class Evidence(BaseModel):
 
     def dump(self) -> Mapping[str, object]:
         return self.model_dump()
+
+class EntityAddress(Address):
+    """Адрес сущности — единственного вида Node, который производит само ядро (3.3).
+
+    У сущности нет источника: ClickHouse — один и тот же, где бы о нём ни
+    писали, поэтому в адресе только имя, без корпуса и без вида:
+    entity://clickhouse. Имя — нормализованная форма, кодируется как
+    reg-name по RFC 3986: entity://arenadata%20quickmarts. Одинаковый адрес
+    в схемах разных корпусов — будущий мост между ними.
+    """
+
+    scheme: Literal["entity"]
+    name: str
+
+    def render(self) -> str:
+        return urlunsplit(SplitResult(scheme=self.scheme, netloc=quote(self.name, safe=""), path="", query="", fragment=""))
+
+    @classmethod
+    def parse(cls, text: str) -> Self:
+        url = urlsplit(text)
+        if url.scheme != "entity":
+            raise AddressError(f"entity address {text!r}: expected scheme entity, got {url.scheme!r}")
+
+        if not url.netloc:
+            raise AddressError(f"entity address {text!r}: name is required")
+
+        return cls(scheme="entity", name=unquote(url.netloc))
 ```
 
 ### 2.1 Модели источников — в пакетах источников
@@ -724,11 +751,19 @@ class VectorEncoderRegistry(Protocol):
     def dense(self, model: str) -> VectorEncoder[DenseVector]: ...
     def sparse(self, model: str) -> VectorEncoder[SparseVector]: ...
 
-class SearchHit(BaseModel):
+class LookupRow(BaseModel):
+    """Строка одного способа поиска, когда его запрос исполняется сам по себе.
+
+    В kb_search строки способов до Python не доходят — их сливает один
+    SQL (раздел 8). Сюда они приходят из служебных поисков ядра: ребро
+    similar берёт score как косинус для обоснования, ребро mention — node_id
+    найденного по имени узла.
+    """
+
     node_id: int
     row_id: int
-    text: str          # что показать как цитату
-    rank: int          # позиция в списке своего способа; счёт между способами не переносится
+    snippet: str
+    score: float
 
 S = TypeVar("S")                              # готовый запрос драйвера целиком: у psycopg — PgStatement (sql.Composed + параметры)
 S_co = TypeVar("S_co", covariant=True)        # протоколы: запрос только на выходе
@@ -763,9 +798,12 @@ class IndexLookup(Protocol[S_co]):
 
     content_kind — что ищем: заголовок, раздел, саммари, DDL, картинка;
     значение перечисления корпуса, ядро его не толкует. method — чем ищем.
-    statement — запрос по зонду; во что превратить текст, знает только
-    реализация, и энкодер она получила при создании, поэтому метод
-    асинхронный, а модели снаружи не видно.
+    statement — подзапрос по зонду, который SearchStore вкладывает в один
+    общий запрос поиска (раздел 8): колонки node_id, row_id, snippet,
+    score, где score больше — лучше, не больше probe.limit строк, лучшие
+    первыми. Во что превратить текст, знает только реализация, и энкодер
+    она получила при создании, поэтому метод асинхронный, а модели снаружи
+    не видно.
 
     Что такое готовый запрос (S) — знает только SearchStore того же
     драйвера: ядро его не разбирает, поэтому протокола запроса в ядре нет.
@@ -792,17 +830,93 @@ class EdgeDraft(BaseModel):
     weight: float
     evidence: Evidence
 
-class SourceView(BaseModel):
-    """Исходник узла в виде для большой модели: заголовок, текст в markdown, ссылка на источник."""
+class Snippet(BaseModel):
+    """Фрагмент, которым узел найден: чем найден, какое это содержимое, текст для цитаты."""
 
-    title: str
+    lookup: str                 # подпись способа: "section/fts"
+    content_kind: str           # по нему потребитель решает, текст это или картинка
+    row_id: int                 # строка content tables, по ней берётся оригинал куска
     text: str
-    url: str
+
+class Hop(BaseModel):
+    """Шаг пути по графу: по ребру какого вида и от какого узла пришли."""
+
+    kind: str
+    from_node_id: int
+
+class Candidate(BaseModel):
+    """Узел из одного из двух запросов поиска (раздел 8), ещё без итогового счёта.
+
+    Из запроса кандидатов приходит с s_base и фрагментами, из обхода графа
+    — с s_graph и путём; ядро складывает их по node_id. kind, address и
+    метрики берутся тем же запросом из nodes и ranks.
+    """
+
+    node_id: int
+    kind: str
+    address: Mapping[str, str | int]
+    s_base: float = 0.0
+    s_graph: float = 0.0
+    distance: int = 0
+    snippets: Sequence[Snippet] = ()
+    path: Sequence[Hop] = ()
+    metrics: Mapping[str, float] = {}
+
+class Match(BaseModel):
+    """Строка выдачи kb_search: кандидат с итоговым счётом и заголовком.
+
+    Рендерится двумя способами из одних полей: большой модели — заголовок,
+    kind, адрес строкой и фрагменты; человеку — заголовок ссылкой и
+    фрагменты, где фрагмент по картинке показывается картинкой.
+    """
+
+    node_id: int
+    kind: str
+    address: Mapping[str, str | int]
+    title: str
+    score: float
+    s_base: float
+    s_graph: float
+    snippets: Sequence[Snippet]
+    path: Sequence[Hop]
+
+class TextPart(BaseModel):
+    """Кусок документа текстом: markdown раздела, DDL, профиль колонки."""
+
+    content_kind: str
+    text: str
+
+class NodePart(BaseModel):
+    """Кусок документа, который сам является узлом: картинка, pdf, дочерняя страница.
+
+    Рендерер решает по kind: пользователю показать картинку по адресу,
+    большой модели — строку «[image: schema.png — диаграмма потоков]».
+    """
+
+    content_kind: str
+    node_id: int
+    kind: str
+    address: Mapping[str, str | int]
+    title: str
+
+class NodeDocument(BaseModel):
+    """Узел целиком для kb_node: собирается из content tables, в источник не ходим.
+
+    truncated говорит, что части обрезаны лимитом: модель узнаёт, что видит
+    не всё, и может попросить остальное.
+    """
+
+    node_id: int
+    kind: str
+    address: Mapping[str, str | int]
+    title: str
+    parts: Sequence[TextPart | NodePart]
+    truncated: bool = False
 
 class ComputedEdge(StrEnum):
     """Рёбра, которые ядро строит за корпус; как их назвать, говорит корпус."""
 
-    ENTITY = "entity"          # по общим сущностям
+    ENTITY = "entity"          # узел → сущность, которую упоминает
     SIMILAR = "similar"        # по близости векторов
 
 class Corpus(Protocol[S_co]):
@@ -812,7 +926,8 @@ class Corpus(Protocol[S_co]):
     что такое страница или таблица. Методы ниже — шесть вопросов, которые
     оно задаёт корпусу, в том же порядке: где искать и сколько это весит,
     каким способом искать за ядро, как назвать построенное, что взять из
-    узла, что источник знает о связях сам, как показать узел.
+    узла, что источник знает о связях сам, как показать узел — коротко
+    (заголовок) и целиком (документ).
 
     S — готовый запрос драйвера хранилища, которым корпус пользуется:
     ConfluenceCorpus(Corpus[PgStatement]).
@@ -820,7 +935,7 @@ class Corpus(Protocol[S_co]):
 
     node_kinds: type[StrEnum]      # разбор строки ядра в модель источника (2.1)
     content_kinds: type[StrEnum]   # левая ось подписи способа и таблицы content tables (раздел 4)
-    edge_kinds: type[StrEnum]      # ключи [graph.edge_factors] (раздел 8)
+    edge_kinds: type[StrEnum]      # ключи [search.expand.factors] (раздел 8)
 
     def lookups(self) -> Sequence[IndexLookup[S_co]]: ...
     def search_weights(self) -> Mapping[str, float]: ...                    # подпись способа -> вес в RRF, из [search.weights]
@@ -832,23 +947,50 @@ class Corpus(Protocol[S_co]):
     def similar_text(self, node_id: int) -> str: ...                        # чем узел представлен в поиске похожих
 
     def explicit_edges(self, node: Node) -> Iterable[EdgeDraft]: ...        # связи, видные в самом источнике
-    def resolve(self, node: Node) -> SourceView: ...                        # оригинал узла для большой модели
+    def titles(self, node_ids: Sequence[int]) -> Mapping[int, str]: ...     # заголовки для выдачи, одним запросом
+    def document(self, node_id: int, limit: int) -> NodeDocument: ...       # узел целиком для kb_node
 
 S_contra = TypeVar("S_contra", contravariant=True)   # протоколы: запрос корпуса только на входе
 
-class Seed(BaseModel):
-    node_id: int
-    score: float                 # s_base после RRF
-    best: SearchHit              # лучшее попадание: будущая цитата
-    found_by: Sequence[str]      # подписи способов, где узел встретился
-
 class SearchStore(Protocol[S_contra]):
-    """Опорные узлы по тексту запроса; реализация — у драйвера (PgSearchStore).
+    """Хранилище поиска: один запрос кандидатов на все способы корпуса и исполнение одного способа.
 
-    Corpus[S] стоит в позиции аргумента, поэтому S здесь контравариантен.
+    candidates — запрос 1 алгоритма поиска (раздел 8): подзапросы всех
+    способов, слияние RRF, фрагменты, kind, адрес и метрики — одним SQL.
+    rows — исполнить подзапрос одного способа отдельно: для служебных
+    поисков ядра (рёбра similar и mention). Реализация — у драйвера
+    (PgSearchStore, 2.6). Corpus[S] стоит в позиции аргумента, поэтому S
+    здесь контравариантен.
     """
 
-    async def seeds(self, corpus: Corpus[S_contra], query: str, top_k: int) -> Sequence[Seed]: ...
+    async def candidates(self, corpus: Corpus[S_contra], query: str) -> Sequence[Candidate]: ...
+    async def rows(self, statement: S_contra) -> Sequence[LookupRow]: ...
+
+class Edge(BaseModel):
+    """Ребро как оно лежит в edges: обоснование — jsonb как есть, читает его тот, кто знает вид."""
+
+    source_id: int
+    target_id: int
+    kind: str
+    weight: float
+    evidence: Mapping[str, object]
+
+class GraphStore(Protocol):
+    """Хранилище графа: рёбра, соседи, расширение от опорных узлов; две реализации (3.7).
+
+    replace_edges — стадия edges заменяет рёбра узла указанных видов
+    целиком; neighbors — соседи для kb_related; expand — шаг 2 поиска
+    (8.2): от опорных узлов с их s_base по видам рёбер из
+    [search.expand.factors] на depth шагов, наружу Candidate с s_graph,
+    distance и путём; export — весь граф для глобальной стадии (NetworkX);
+    drop_node — узел из графа вместе с рёбрами.
+    """
+
+    async def replace_edges(self, node_id: int, kinds: Sequence[str], edges: Sequence[EdgeDraft]) -> None: ...
+    async def neighbors(self, node_id: int, kinds: Sequence[str]) -> Sequence[Edge]: ...
+    async def expand(self, seeds: Mapping[int, float], depth: int) -> Sequence[Candidate]: ...
+    async def export(self) -> Sequence[Edge]: ...
+    async def drop_node(self, node_id: int) -> None: ...
 ```
 
 ### 2.4 Индексы в Postgres
@@ -865,14 +1007,17 @@ class SearchStore(Protocol[S_contra]):
 
 @dataclass(frozen=True)
 class PgStatement:
-    """Готовый запрос psycopg: собранный sql.Composed и его именованные параметры.
+    """Готовый запрос psycopg: подзапрос, его параметры и подготовка сессии.
 
-    Собирают Pg*Lookup.statement(), исполняет PgSearchStore._run(); ядро
-    видит его только как параметр типа S.
+    Собирают Pg*Lookup.statement(), исполняет PgSearchStore; ядро видит
+    его только как параметр типа S. setup — команды, которые надо выполнить
+    в той же транзакции до запроса (set local …): их знает только способ,
+    хранилище исполняет, не разбирая.
     """
 
     query: sql.Composed
     params: Mapping[str, object]
+    setup: Sequence[sql.Composed] = ()
 
 @dataclass(frozen=True)
 class PgFtsLookup(IndexLookup[PgStatement]):      # tsvector + GIN, ts_rank_cd
@@ -901,7 +1046,7 @@ class PgFtsLookup(IndexLookup[PgStatement]):      # tsvector + GIN, ts_rank_cd
         select
             t.{node} as node_id,
             t.{row} as row_id,
-            t.{text} as text,
+            t.{text} as snippet,
             ts_rank_cd(t.{tsv}, q.tsq) as score
         from
             {schema}.{table} t,
@@ -920,6 +1065,19 @@ class PgFtsLookup(IndexLookup[PgStatement]):      # tsvector + GIN, ts_rank_cd
             text=sql.Identifier(self.text_column), tsv=sql.Identifier(self.tsv_column),
         )
         return PgStatement(query=composed, params={"text": probe.text, "limit": probe.limit})
+
+class VectorText:
+    """Текстовые формы pgvector: одна точка сборки литералов вектора для запросов."""
+
+    @classmethod
+    def dense(cls, vector: DenseVector) -> str:
+        """'[v1,v2,…]' — форма vector."""
+        ...
+
+    @classmethod
+    def sparse(cls, vector: SparseVector) -> str:
+        """'{i1:v1,i2:v2,…}/dim' — форма sparsevec."""
+        ...
 
 @dataclass(frozen=True)
 class PgVectorLookup(IndexLookup[PgStatement]):   # pgvector + HNSW; таблица векторов — на одну модель, фильтра по модели в запросе нет
@@ -952,14 +1110,14 @@ class PgVectorLookup(IndexLookup[PgStatement]):   # pgvector + HNSW; табли�
         select
             t.{node} as node_id,
             t.{row} as row_id,
-            t.{text} as text,
-            v.embedding <=> %(vector)s::vector as score
+            t.{text} as snippet,
+            1 - (v.embedding <=> {vector}::vector) as score   -- косинусная близость: больше — лучше
         from
             {schema}.{vectors} v
             join {schema}.{table} t on
                 t.{row} = v.{ref}
         order by
-            v.embedding <=> %(vector)s::vector
+            v.embedding <=> {vector}::vector
         limit %(limit)s
     """
 
@@ -969,10 +1127,16 @@ class PgVectorLookup(IndexLookup[PgStatement]):   # pgvector + HNSW; табли�
             schema=sql.Identifier(self.schema), vectors=sql.Identifier(self.vector_table),
             table=sql.Identifier(self.table), node=sql.Identifier(self.node_column),
             row=sql.Identifier(self.row_column), text=sql.Identifier(self.text_column),
-            ref=sql.Identifier(self.ref_column),
+            ref=sql.Identifier(self.ref_column), vector=sql.Literal(VectorText.dense(vector)),
         )
-        params = {"vector": list(vector.values), "limit": probe.limit}
-        return PgStatement(query=composed, params=params)
+        return PgStatement(query=composed, params={"limit": probe.limit}, setup=(self._ef_search(probe.limit),))
+        # вектор — литерал, а не параметр: ветки разных моделей в одном запросе (8.1) не делят имя параметра
+
+    EF_SEARCH_DEFAULT: ClassVar[int] = 40    # HNSW отдаёт не больше ef_search строк за скан; дефолт pgvector
+
+    def _ef_search(self, limit: int) -> sql.Composed:
+        """Иначе limit 50 молча вернёт 40 строк."""
+        return sql.SQL("set local hnsw.ef_search = {ef}").format(ef=sql.Literal(max(limit, self.EF_SEARCH_DEFAULT)))
 
 @dataclass(frozen=True)
 class PgTrigramLookup(IndexLookup[PgStatement]):   # pg_trgm + GiST (gist_trgm_ops): опечатки, склонения, части имён.
@@ -997,7 +1161,7 @@ class PgTrigramLookup(IndexLookup[PgStatement]):   # pg_trgm + GiST (gist_trgm_o
         select
             t.{node} as node_id,
             t.{row} as row_id,
-            t.{text} as text,
+            t.{text} as snippet,
             1 - (t.{text} <-> %(text)s) as score
         from
             {schema}.{table} t
@@ -1037,7 +1201,7 @@ class PgExactLookup(IndexLookup[PgStatement]):     # btree по lower(text): MEN
         select
             t.{node} as node_id,
             t.{row} as row_id,
-            t.{text} as text,
+            t.{text} as snippet,
             1.0 as score
         from
             {schema}.{table} t
@@ -1076,7 +1240,7 @@ class PgBm25Lookup(IndexLookup[PgStatement]):      # pg_search (ParadeDB): BM25 
         select
             t.{node} as node_id,
             t.{row} as row_id,
-            t.{text} as text,
+            t.{text} as snippet,
             paradedb.score(t.{row}) as score
         from
             {schema}.{table} t
@@ -1120,14 +1284,14 @@ class PgSparseLookup(IndexLookup[PgStatement]):   # pgvector sparsevec + HNSW (s
         select
             t.{node} as node_id,
             t.{row} as row_id,
-            t.{text} as text,
-            v.embedding <#> %(vector)s::sparsevec as score
+            t.{text} as snippet,
+            -(v.embedding <#> {vector}::sparsevec) as score    -- <#> отрицательно: минус даёт «больше — лучше»
         from
             {schema}.{vectors} v
             join {schema}.{table} t on
                 t.{row} = v.{ref}
         order by
-            v.embedding <#> %(vector)s::sparsevec
+            v.embedding <#> {vector}::sparsevec
         limit %(limit)s
     """
 
@@ -1137,11 +1301,34 @@ class PgSparseLookup(IndexLookup[PgStatement]):   # pgvector sparsevec + HNSW (s
             schema=sql.Identifier(self.schema), vectors=sql.Identifier(self.vector_table),
             table=sql.Identifier(self.table), node=sql.Identifier(self.node_column),
             row=sql.Identifier(self.row_column), text=sql.Identifier(self.text_column),
-            ref=sql.Identifier(self.ref_column),
+            ref=sql.Identifier(self.ref_column), vector=sql.Literal(VectorText.sparse(vector)),
         )
-        params = {"vector": SparseVectorText.render(vector), "limit": probe.limit}
-        return PgStatement(query=composed, params=params)
-        # SparseVectorText.render: '{i1:v1,i2:v2,…}/dim' — текстовая форма sparsevec; одна точка сборки
+        return PgStatement(query=composed, params={"limit": probe.limit}, setup=(self._ef_search(probe.limit),))
+
+    EF_SEARCH_DEFAULT: ClassVar[int] = 40
+
+    def _ef_search(self, limit: int) -> sql.Composed:
+        return sql.SQL("set local hnsw.ef_search = {ef}").format(ef=sql.Literal(max(limit, self.EF_SEARCH_DEFAULT)))
+```
+
+Слой сущностей (3.3) ищется теми же классами, но объявляет их не корпус, а
+ядро: таблица `entities` и её колонки одинаковы в любой схеме. Корпус
+включает их в свой список и назначает вес в `[search.weights]`:
+
+```python
+class PgEntityLookups:
+    """Способы поиска по слою сущностей: точное имя и триграммы над entities; одинаковы для любого корпуса."""
+
+    CONTENT: ClassVar[str] = "entity"          # вид содержимого слоя сущностей: подписи entity/exact, entity/trigram
+
+    @classmethod
+    def of(cls, schema: str) -> Sequence[IndexLookup[PgStatement]]:
+        return (
+            PgExactLookup(content=cls.CONTENT, schema=schema, table="entities",
+                          node_column="node_id", row_column="node_id", text_column="name"),
+            PgTrigramLookup(content=cls.CONTENT, schema=schema, table="entities",
+                            node_column="node_id", row_column="node_id", text_column="display"),
+        )
 ```
 
 Имена таблиц и колонок подставляются как `sql.Identifier`, значения — как
@@ -1241,64 +1428,115 @@ HTTP, `image` → `ClipTextEncoder`, `sparse` → `SparseEncoder`);
 Модель, объявленная в конфиге, но отсутствующая в `embedding_models`, и
 наоборот — ошибка старта с именем модели: реестр не угадывает.
 
-### 2.6 Опорные узлы
+### 2.6 Хранилище поиска
 
-Что делает `seeds` и как считается счёт, описано в его
-docstring:
+Реализация `SearchStore` над psycopg. Главное в ней — `candidates`: не
+двенадцать запросов и слияние в Python, а один SQL, в который подзапросы
+способов вложены ветками `union all`, а слияние RRF, отбор фрагментов,
+`kind`, адрес и метрики считаются в базе. В Python приходят только строки,
+которые пойдут в выдачу. Сам алгоритм и полный текст запроса — в разделе 8;
+здесь то, как хранилище его собирает.
 
 ```python
-class PgSearchStore(SearchStore[PgStatement]):
-    """Реализация SearchStore над psycopg: исполняет PgStatement способов корпуса и сливает списки RRF.
+class ExpandConfig(BaseModel):              # секция [search.expand]: расширение по графу (8.2)
+    depth: int = Field(gt=0)                # шагов от опорных узлов
+    weight: float = Field(ge=0)             # вклад s_graph в итоговый счёт
+    factors: Mapping[str, float]            # вид ребра -> множитель; вид без множителя в обходе не участвует
 
-    Пул — общий пул приложения; энкодеры — PgVectorEncoderRegistry;
-    candidates — [search] candidates корпуса: лимит кандидатов с одного способа.
+class SearchConfig(BaseModel):              # секция [search] конфига корпуса
+    candidates: int = Field(gt=0)           # кандидатов с одного способа
+    seed_k: int = Field(gt=0)               # опорных узлов после RRF
+    snippets_per_node: int = Field(gt=0)    # фрагментов на узел в выдаче
+    rrf_k: int = Field(gt=0)                # константа RRF, 60
+    metrics: Mapping[str, float]            # [search.metrics]: имя метрики из ranks -> её вес в счёте
+    weights: Mapping[str, float]            # [search.weights]: подпись способа -> вес в RRF
+    expand: ExpandConfig                    # [search.expand]: раздел 8
+
+class PgSearchStore(SearchStore[PgStatement]):
+    """Реализация SearchStore над psycopg: один запрос кандидатов на все способы корпуса.
+
+    Одно хранилище на корпус: схема и параметры поиска — из его конфига.
+    Пул — общий пул приложения.
     """
 
-    def __init__(self, pool: AsyncConnectionPool, encoders: VectorEncoderRegistry, candidates: int) -> None:
+    BRANCH: ClassVar[LiteralString] = """
+        select
+            {label} as lookup,
+            {content} as content_kind,
+            {weight}::real as weight,
+            q.node_id,
+            q.row_id,
+            q.snippet,
+            row_number() over (order by q.score desc) as rank
+        from
+            ({body}) q
+    """
+
+    def __init__(self, pool: AsyncConnectionPool, schema: str, cfg: SearchConfig) -> None:
         self._pool = pool
-        self._encoders = encoders
-        self._candidates = candidates
+        self._schema = schema
+        self._cfg = cfg
 
-    async def seeds(self, corpus: Corpus[PgStatement], query: str, top_k: int) -> Sequence[Seed]:
-        """Опорные узлы: первый шаг поиска, узлы похожие на запрос ещё без графа.
+    async def candidates(self, corpus: Corpus[PgStatement], query: str) -> Sequence[Candidate]:
+        """Запрос 1 алгоритма поиска: ветки способов -> RRF -> фрагменты -> nodes, ranks.
 
-        От опорных узлов вторым шагом GraphStore.expand пойдёт обход рёбер.
-        Зонд один на все способы — текст пользователя; во что его превратить,
-        решает сам способ, векторный считает вектор своим энкодером. Сборка
-        запросов идёт параллельно, исполнение тоже, каждый способ отдаёт свой
-        ранжированный список узлов с текстом попадания. Списки сливаются по
-        обратному рангу с весами способов (RRF): узел получает
-        sum(weight / (60 + rank)) по спискам, где встретился, — найденный
-        несколькими способами поднимается. У узла остаётся счёт s_base, лучшее
-        попадание (будущая цитата) и подписи способов; список режется до top_k.
-
-        Пример. Запрос «таймауты подключения к postgres»: section/fts находит
-        страницу про libpq третьей, summary/vector — её же первой, title/trigram —
-        «Настройки драйвера Postgres» первой. Страница про libpq набирает
-        w/63 + w/61 и выходит выше; «Настройки драйвера» — w_title/61 — рядом;
-        обе становятся опорными, expand подтянет их соседей по link, mention,
-        similar.
+        Подзапросы способов собираются параллельно: векторные считают
+        вектор своим энкодером здесь. Параметры text и limit у всех веток
+        общие — зонд один; вектор способ подставляет литералом, поэтому
+        имена параметров между ветками не сталкиваются. Подготовку сессии
+        (setup) веток хранилище исполняет в той же транзакции до запроса.
         """
         weights = corpus.search_weights()
-        probe = Probe(text=query, limit=self._candidates)
+        probe = Probe(text=query, limit=self._cfg.candidates)
+        lookups = corpus.lookups()
 
-        labels: list[str] = []
         builds: list[Awaitable[PgStatement]] = []
-        for lookup in corpus.lookups():
-            labels.append(self._label(lookup, weights))
+        for lookup in lookups:
             builds.append(lookup.statement(probe))
 
-        statements = await asyncio.gather(*builds)      # векторные способы считают вектор здесь, параллельно
-        runs: list[Awaitable[Sequence[SearchHit]]] = []
-        for statement in statements:
-            runs.append(self._run(statement))
+        statements = await asyncio.gather(*builds)
+        branches: list[sql.Composed] = []
+        params: dict[str, object] = {
+            "rrf_k": self._cfg.rrf_k,
+            "seed_k": self._cfg.seed_k,
+            "per_node": self._cfg.snippets_per_node,
+            "metrics": list(self._cfg.metrics),
+        }
+        for lookup, statement in zip(lookups, statements, strict=True):
+            label = self._label(lookup, weights)
+            branches.append(
+                sql.SQL(self.BRANCH).format(
+                    label=sql.Literal(label),
+                    content=sql.Literal(lookup.content_kind()),
+                    weight=sql.Literal(weights[label]),
+                    body=statement.query,
+                )
+            )
+            params.update(statement.params)
 
-        lists = await asyncio.gather(*runs)
-        merged = self._rrf(lists, labels, weights)
-        return merged[:top_k]
+        composed = sql.SQL(CandidatesQuery.TEMPLATE).format(
+            schema=sql.Identifier(self._schema),
+            branches=sql.SQL("\n        union all\n").join(branches),
+        )
+        setup: list[sql.Composed] = []
+        for statement in statements:
+            setup.extend(statement.setup)
+
+        async with self._pool.connection() as conn, conn.transaction():
+            for command in setup:                    # подготовка сессии от способов: что в ней, хранилище не знает
+                await conn.execute(command)
+
+            cursor = await conn.execute(composed, params)
+            rows = await cursor.fetchall()
+
+        found: list[Candidate] = []
+        for row in rows:
+            found.append(Candidate.model_validate(row))
+
+        return found
 
     def _label(self, lookup: IndexLookup[PgStatement], weights: Mapping[str, float]) -> str:
-        """Подпись способа; заодно проверка, что вес для неё объявлен — пропуск в конфиге молча обнулил бы список."""
+        """Подпись способа; заодно проверка, что вес для неё объявлен — пропуск в конфиге молча обнулил бы ветку."""
         label = LookupMethod.label_of(lookup.content_kind(), lookup.method())
         if label not in weights:
             raise SearchIndexError(
@@ -1307,35 +1545,41 @@ class PgSearchStore(SearchStore[PgStatement]):
 
         return label
 
-    async def _run(self, statement: PgStatement) -> Sequence[SearchHit]:
-        async with self._pool.connection() as conn:
+    async def rows(self, statement: PgStatement) -> Sequence[LookupRow]:
+        """Один способ сам по себе: для рёбер similar и mention, которые строит ядро."""
+        async with self._pool.connection() as conn, conn.transaction():
+            for command in statement.setup:
+                await conn.execute(command)
+
             cursor = await conn.execute(statement.query, statement.params)
             rows = await cursor.fetchall()
 
-        hits: list[SearchHit] = []
-        for rank, row in enumerate(rows, start=1):
-            hits.append(SearchHit(node_id=row.node_id, row_id=row.row_id, text=row.text, rank=rank))
+        found: list[LookupRow] = []
+        for row in rows:
+            found.append(LookupRow.model_validate(row))
 
-        return hits
+        return found
 
-# ребро similar: тем способом, который корпус назначил роли, по тексту самого узла
+# ребро similar: тем способом, который корпус назначил роли, по тексту самого узла; score строки — косинус для обоснования
 roles = corpus.role_lookups()
 statement = await roles[LookupRole.SIMILARITY].statement(Probe(text=corpus.similar_text(node_id), limit=similar_top_k))
+neighbours = await store.rows(statement)
 
 # ребро mention: заголовок другого узла, точное совпадение
 statement = await roles[LookupRole.NAMING].statement(Probe(text=title, limit=1))
+named = await store.rows(statement)
 ```
 
-`Probe.limit` для `kb_search` — `candidates` из конфига поиска: сколько
-кандидатов берётся с одного способа до слияния; `top_k` — сколько отдаёт
-инструмент после RRF. HNSW отдаёт не больше `hnsw.ef_search` строк за
-скан (по умолчанию 40), поэтому `SearchStore` перед векторными запросами
-ставит `set local hnsw.ef_search = max(limit, 40)` на транзакцию поиска —
-иначе `limit 50` молча вернёт 40. Веса списков — `[search.weights]` корпуса, ключ
-«содержимое/способ» — это и есть подпись способа; корпус отдаёт веса
-таблицей `search_weights()`, а сам способ веса не держит: способ без веса
-в конфиге — ошибка запроса с его подписью. Вектор считает только тот
-способ, которому он нужен, своим энкодером.
+`row_number()` в ветке нумерует строки способа по его `score`, поэтому
+способ отдаёт `score` в одном направлении «больше — лучше»: полнотекст —
+`ts_rank_cd`, вектор — `1 - расстояние`, разреженный — минус скалярное
+произведение, точное совпадение — константа. Порядок внутри подзапроса
+способа всё равно нужен: HNSW и GiST отдают top-N только через `order by`
+по своему оператору. Подготовка сессии — тоже знание способа: HNSW
+отдаёт не больше `hnsw.ef_search` строк за скан (по умолчанию 40), и
+векторный способ кладёт в `setup` своего `PgStatement`
+`set local hnsw.ef_search = max(limit, 40)`; хранилище исполняет
+подготовку всех веток в транзакции запроса, не зная, что в ней.
 
 ## 3. Graph tables
 
@@ -1352,8 +1596,7 @@ statement = await roles[LookupRole.NAMING].statement(Probe(text=title, limit=1))
 |---|---|
 | `nodes` | узел: только идентичность |
 | `sync` | учёт обхода: что качать, что разбирать, что забыть |
-| `entities` | словарь сущностей корпуса |
-| `node_entities` | сущности узла с числом упоминаний и весом |
+| `entities` | содержимое узлов-сущностей: имя, форма показа, преобладающий тип (3.3) |
 | `edges` | рёбра по виду связи, с весом и обоснованием |
 | `ranks` | метрики узла по алгоритмам |
 | `embedding_models` | модели эмбеддинга и их атрибуты |
@@ -1363,7 +1606,7 @@ statement = await roles[LookupRole.NAMING].statement(Probe(text=title, limit=1))
 | уровень | где | страница FLIP-457 | таблица `dm.fact_orders` |
 |---|---|---|---|
 | 1 идентичность и учёт | `nodes`, `sync` | `kind = confluence_page`, адрес из `scheme`, `host`, `port`, `path` | `kind = pg_table`, адрес из `scheme`, `host`, `port`, `database`, `schema`, `table` |
-| 2 связи и производные ядра | `edges`, `node_entities`, `ranks` | `link`, `mention`, `entity`, `similar`; `pagerank` | `contains`, `foreign_key`, `inferred_key`; `pagerank` |
+| 2 связи и производные ядра | `edges`, `entities`, `ranks` | `link`, `mention`, `entity`, `similar`; `pagerank` | `contains`, `foreign_key`, `inferred_key`; `pagerank` |
 | 3 всё содержимое | content tables | `pages`: заголовок, метки, оглавление, версия<br>`page_sections`: оригинал, markdown, `tsv`, векторы<br>`page_summaries`: саммари, `tsv`, векторы | `relations`: определение, комментарий, оценка строк<br>`relation_ddl`, `relation_profiles`, `relation_samples`: `tsv`, векторы<br>`columns`, `column_profiles` |
 
 ### 3.1 Узлы
@@ -1625,76 +1868,129 @@ reader=confluence:3;chunk=4000/0;embed=multilingual-e5-large;ner=gliner_multi-v2
 
 ### 3.3 Сущности
 
-Сущность — именованная вещь, которая встречается в тексте узлов и может
-быть общей у нескольких: технология, продукт, версия, организация, термин
-предметной области, метка. Ядро извлекает их одинаково для любого корпуса
-из текстов, которые корпус назовёт (`Corpus.entity_texts`), и одинаково
-считает по ним рёбра — поэтому это graph tables. Вид сущности — из
-перечисления корпуса.
+`Entity` — именованная вещь, о которой говорят тексты: продукт, технология,
+организация, версия, термин предметной области, метка. `KRaft`, `ClickHouse`,
+`Gazprom-Neft`, «качество данных». Она не лежит ни в каком источнике как
+объект: её нельзя скачать, у неё нет страницы и нет таблицы, она
+производная от текста. Но с ней делают всё то же, что с `Node`: ищут по
+имени, показывают в выдаче, ходят от неё к тому, что о ней написано, и
+считают её место в графе. Поэтому `Entity` — это `Node` с видом `entity`,
+и слой сущностей устроен так же, как слой страниц или слой таблиц: свой
+вид узла, свой адрес, своя content table, свои способы поиска, свой вид
+рёбер. Разница в одном: его никто не скачивает — он появляется при
+индексации других слоёв и живёт во времени. Объявляет его ядро, потому
+что он одинаков для любого корпуса.
+
+**Адрес чистый, без источника.** ClickHouse один и тот же, где бы о нём
+ни писали, поэтому адрес — `entity://clickhouse`: схема `entity` и
+нормализованное имя, без корпуса и без вида (`EntityAddress`, раздел 2).
+Вид сущности — продукт, технология, термин — атрибут, а не часть
+идентичности: NER может назвать `kraft` продуктом на одной странице и
+технологией на другой, а сущность одна, и вид у неё — преобладающий.
+Каждая схема корпуса держит свои узлы-сущности, потому что нумерация
+узлов на схему; одинаковый адрес `entity://kraft` в `confluence` и в
+`warehouse` — это и есть мост между корпусами, когда он понадобится.
+
+**Откуда берутся.** Стадия `entities` конвейера (раздел 7) берёт у
+корпуса тексты узла (`Corpus.entity_texts`) и извлекает из них имена
+четырьмя способами, все проверены на пробе (7.1):
+
+- NER моделью GLiNER: ей даётся текст и список типов (`software product`,
+  `technology`, `version`, `organization`), она размечает отрезки этих
+  типов. Модель не знает списка продуктов заранее и узнаёт их по
+  контексту — так находятся и `KRaft`, и `Arenadata QuickMarts`.
+- Ключевые фразы YAKE: статистика по тексту без модели, даёт термины
+  предметной области вроде «качество данных», вид `term`.
+- Метки страницы Confluence как есть, вид `label`.
+- В хранилище — токены имён колонок и таблиц: `customer_id` и
+  `customer_region` дают `customer`, вид `field`.
+
+Найденное приводится к одной форме — нижний регистр, один пробел, без
+диакритики, — и это имя становится адресом. Узел-сущность создаётся
+upsert'ом по адресу, как любой `Node`; его содержимое — одна строка
+content table ядра:
 
 ```sql
 create table entities (
-    id            bigserial   primary key,
-    name          text        not null,   -- нормализованная форма: нижний регистр, один пробел, без диакритики
-    kind          text        not null,   -- вид сущности из перечисления корпуса
-    display       text        not null,   -- форма, в которой встретилась первой
-    unique (name, kind)
+    node_id       bigint      primary key references nodes on delete cascade,
+    name          text        not null unique,   -- нормализованная форма, она же в адресе
+    display       text        not null,          -- форма, в которой встретилась первой
+    type          text        not null,          -- преобладающий тип: product | technology | organization | version | term | label | field
+    tsv           tsvector    generated always as (to_tsvector('simple', name)) stored
 );
-create table node_entities (
-    node_id       bigint      not null references nodes on delete cascade,
-    entity_id     bigint      not null references entities on delete cascade,
-    count         int         not null,   -- сколько раз сущность встретилась в тексте узла
-    weight        real        not null,   -- tf-idf, нормирован в [0, 1] внутри узла
-    primary key (node_id, entity_id)
-);
-create index on node_entities (entity_id, node_id) include (weight);   -- entity-рёбра: узлы с общей сущностью без heap
+create index on entities using gist (name gist_trgm_ops);   -- entity/trigram
 ```
 
-Откуда сущности берутся:
-
-- Confluence — NER по тексту страницы (GLiNER: `software product`,
-  `technology`, `version`, `organization`), ключевые термины (YAKE, вид
-  `term`), метки страницы (вид `label`).
-- Хранилище — NER по комментариям и описаниям, термины предметной области
-  из комментариев, токены имён колонок и таблиц (вид `field`:
-  `customer_id` → `customer`), теги/владельцы из метаданных (вид `label`).
-
-`entities`:
-
-| id | name | kind | display |
-|---|---|---|---|
-| 1 | `cassandra` | software product | Cassandra |
-| 2 | `kraft` | software product | KRaft |
-| 3 | `kubernetes` | technology | Kubernetes |
-| 4 | `accepted` | label | accepted |
-| 5 | `customer` | field | customer |
-| 6 | `oms` | term | OMS |
-| 7 | `заказ` | term | заказ |
-
-`node_entities`:
-
-| node_id | entity_id | count | weight | почему такой вес |
-|---|---|---|---|---|
-| 17 | 3 | 4 | 0.61 | страница FLIP-457 упоминает Kubernetes 4 раза |
-| 17 | 4 | 1 | 0.20 | метка `accepted` — на 40% страниц пространства, вес низкий |
-| 41 | 5 | 2 | 0.83 | колонки `customer_id`, `customer_region` дают `field = customer` |
-| 41 | 6 | 3 | 0.95 | OMS в комментариях таблицы |
-| 41 | 7 | 5 | 0.71 | |
-
-`count` — число вхождений: совпадения NER по окнам плюс точные совпадения
-имени сущности в тексте узла. `weight` — tf-idf, считается глобальной
-стадией по всему корпусу:
+**Связь узла с сущностью — ребро `entity`** от `Node` к `Entity` в
+`edges`, как любая другая связь: вес — tf-idf, обоснование — сколько раз
+встретилась и каким типом её назвали (`EntityEvidence`, 3.4). Отдельной
+таблицы привязок нет.
 
 ```
 tf(n, e)  = count(n, e) / Σ count(n, ·)
-idf(e)    = ln((N + 1) / (df(e) + 1)) + 1        N — узлов с сущностями, df — узлов с e
+idf(e)    = ln((N + 1) / (df(e) + 1)) + 1        N — узлов с сущностями, df — узлов, упоминающих e
 weight    = tf · idf / max по узлу n            в [0, 1], 1 у самой характерной сущности узла
 ```
 
-Сущность на половине корпуса (`cassandra` в пространстве Cassandra) получает
-малый `idf` и не связывает всё со всем; сущность на 2–5 узлах связывает их
-сильно. Вес ребра `entity` между узлами a и b — взвешенный Jaccard:
-`Σ min(w_a, w_b) / Σ max(w_a, w_b)` по объединению их сущностей.
+`count` считает стадия для одного узла; `idf` зависит от всего корпуса и
+пересчитывается глобальной стадией `kb_graph_rebuild`, которая обновляет
+веса всех рёбер `entity`. Сущность на половине корпуса (`cassandra` в
+пространстве Cassandra) получает малый `idf` и не связывает всё со всем;
+сущность на 2–5 узлах связывает их сильно.
+
+Так выглядят страница FLIP-457 и таблица `dm.fact_orders` со своими
+сущностями. `nodes`:
+
+| id | kind | address |
+|---|---|---|
+| 17 | `confluence_page` | `{"scheme": "https", "host": "cwiki.apache.org", "port": 443, "path": "/confluence/rest/api/content/307136992"}` |
+| 60 | `entity` | `{"scheme": "entity", "name": "kubernetes"}` |
+| 61 | `entity` | `{"scheme": "entity", "name": "kraft"}` |
+| 62 | `entity` | `{"scheme": "entity", "name": "accepted"}` |
+| 63 | `entity` | `{"scheme": "entity", "name": "customer"}` |
+| 64 | `entity` | `{"scheme": "entity", "name": "oms"}` |
+
+`entities`:
+
+| node_id | name | display | type |
+|---|---|---|---|
+| 60 | `kubernetes` | Kubernetes | technology |
+| 61 | `kraft` | KRaft | product |
+| 62 | `accepted` | accepted | label |
+| 63 | `customer` | customer | field |
+| 64 | `oms` | OMS | term |
+
+`edges` вида `entity`:
+
+| source_id | target_id | kind | weight | evidence | почему такой вес |
+|---|---|---|---|---|---|
+| 17 | 60 | `entity` | 0.61 | `{"count": 4, "type": "technology"}` | страница FLIP-457 упоминает Kubernetes 4 раза |
+| 17 | 62 | `entity` | 0.20 | `{"count": 1, "type": "label"}` | метка `accepted` — на 40% страниц пространства, `idf` мал |
+| 41 | 63 | `entity` | 0.83 | `{"count": 2, "type": "field"}` | колонки `customer_id`, `customer_region` |
+| 41 | 64 | `entity` | 0.95 | `{"count": 3, "type": "term"}` | OMS в комментариях таблицы |
+
+**Что это даёт.** Две страницы, обе упоминающие `kraft`, связаны путём в
+два шага через узел `entity://kraft`, и расширение по графу (8.2) находит
+этот путь само; вычислять и хранить отдельное ребро «общие сущности»
+между страницами не нужно. Через частую сущность активация растекается
+слабо, потому что вес каждого её ребра мал. На запрос «kraft» способы
+`entity/exact` и `entity/trigram` находят сам узел-сущность, и в выдаче
+он стоит первым, а страницы о нём приходят как его соседи; `kb_node` по
+адресу `entity://kraft` показывает, где она встречается и с каким весом.
+Глобальные метрики (3.5) считаются и для сущностей: PageRank сущности —
+насколько термин центральный для корпуса.
+
+**Жизнь во времени.** У сущности нет области обхода и версии в
+источнике: она возникает, когда её впервые упомянул какой-то `Node`, и
+дальше укрепляется или слабеет вместе с корпусом. Каждая новая страница о
+`KRaft` добавляет ей входящее ребро — растут `degree_in` и PageRank, она
+становится центральнее; но каждое ребро при этом чуть слабее, потому что
+`idf` падает: сущность, о которой пишут все, перестаёт отличать одну
+страницу от другой. Страницу удалили — её ребро ушло вместе с ней. Стадия
+`entities` отмечает `last_seen_run` у каждой встреченной сущности, а
+глобальная стадия пересчитывает `idf` и удаляет узлы-сущности, у которых
+не осталось входящих рёбер `entity`, — вместе с ними уходит и строка
+`entities`.
 
 ### 3.4 Рёбра
 
@@ -1711,10 +2007,19 @@ create table edges (
 create index on edges (target_id, source_id, kind) include (weight);   -- обратный обход adjacency: index-only
 ```
 
-Один вид — одно ребро; вес пары агрегируется в запросе по классам
-(раздел 8). Симметричные виды хранятся один раз, `source_id < target_id`.
-Обход идёт по представлению `adjacency`: рёбра из `edges`, развёрнутые в
-обе стороны для симметричных видов.
+Один вид — одно ребро. Симметричные виды (`similar`, `same_column`,
+`co_queried`) хранятся один раз, `source_id < target_id`.
+Обход идёт по представлению `adjacency`, где каждое ребро развёрнуто в обе
+стороны: расширение по графу (раздел 8) направления не различает —
+страница, на которую ссылаются найденные, не менее важна, чем та, на
+которую ссылаются они.
+
+```sql
+create view adjacency as
+    select source_id, target_id, kind, weight from edges
+    union all
+    select target_id, source_id, kind, weight from edges;
+```
 
 Ядро само считает два вида для любого корпуса — по общим сущностям и по
 близости векторов тем способом, который корпус назначил роли
@@ -1734,7 +2039,7 @@ class ConfluenceEdgeKind(StrEnum):
     ATTACHMENT_REF = "attachment_ref"  # ссылка на вложение другой страницы
     MENTION = "mention"                # заголовок другой страницы встретился в тексте
     SERIES = "series"                  # общий код серии в заголовках: FLIP-457 и FLIP-458
-    ENTITY = "entity"                  # общие сущности                        (считает ядро)
+    ENTITY = "entity"                  # страница → сущность, которую упоминает   (считает ядро)
     SIMILAR = "similar"                # близость векторов                     (считает ядро)
     SAME_AUTHOR = "same_author"        # один автор последней правки
 
@@ -1748,7 +2053,7 @@ class WarehouseEdgeKind(StrEnum):
     NAME_PATTERN = "name_pattern"      # общий префикс или суффикс имён: fact_*, *_hist, stg_orders/dm_orders
     CO_QUERIED = "co_queried"          # таблицы вместе в одних запросах: pg_stat_statements, system.query_log
     MENTION = "mention"                # имя таблицы в комментарии другой
-    ENTITY = "entity"                  # общие сущности                        (считает ядро)
+    ENTITY = "entity"                  # отношение → сущность, которую упоминает (считает ядро)
     SIMILAR = "similar"                # близость векторов                     (считает ядро)
 ```
 
@@ -1769,17 +2074,11 @@ class WarehouseEdgeKind(StrEnum):
 class FactEvidence(Evidence):
     """Ребро — факт метаданных источника (in_space, has_attachment, contains): обосновывать нечего, dump() даёт {}."""
 
-class SharedEntity(BaseModel):
-    name: str
-    weight: float                       # min(w в узле A, w в узле B)
-
 class EntityEvidence(Evidence):
-    """Общие сущности двух узлов и взвешенный Jaccard, по которому построено ребро."""
+    """Узел упоминает сущность: сколько раз и каким типом её назвал экстрактор в этом узле."""
 
-    shared: Sequence[SharedEntity]      # верх по весу, не длиннее entity_top_shared
-    jaccard: float                      # Σ min(w_a, w_b) / Σ max(w_a, w_b) по объединению сущностей
-    min_jaccard: float                  # порог из [graph] на момент расчёта
-    min_shared: int
+    count: int
+    type: str                           # product | technology | … — тип в этом узле; у сущности хранится преобладающий
 
 class SimilarEvidence(Evidence):
     """Близость векторов: косинус, чей вектор и при каком пороге."""
@@ -1828,11 +2127,9 @@ class SameAuthorEvidence(Evidence):
   префикс у двух страниц.
 - `in_space`, `child_page`, `has_attachment`, `contains` — факт из
   метаданных источника, `FactEvidence`; `same_author` — логин автора.
-- `entity` — ядро, после стадии `entities`: SQL по `node_entities`
-  соединяет узлы по общим сущностям, вес общей сущности — меньший из
-  двух, Jaccard — сумма минимумов к сумме максимумов по объединению;
-  ребро при `entity_min_shared` общих и Jaccard не ниже
-  `entity_min_jaccard`.
+- `entity` — ядро, стадия `entities`: от узла к каждой сущности, которую
+  извлёк из его текстов `EntityExtractor`; вес tf-idf (3.3), `idf` —
+  глобальной стадией.
 - `similar` — ядро: способом роли `similarity` ищет похожие на текст
   самого узла (`Corpus.similar_text`), верх `similar_top_k`, косинус не
   ниже `similar_min_cos`; сам узел из выдачи отбрасывается.
@@ -1862,7 +2159,7 @@ class SameAuthorEvidence(Evidence):
 | 41 | 42 | `contains` | 1.00 | `{}` |
 | 17 | 21 | `link` | 1.00 | `{"anchor": "FLIP-458", "phrase": "see FLIP-458 for the API", "section_id": 905}` |
 | 17 | 21 | `series` | 0.50 | `{"prefix": "FLIP", "numbers": [457, 458]}` |
-| 17 | 33 | `entity` | 0.42 | `{"shared": [{"name": "kraft", "weight": 0.6}, {"name": "kubernetes", "weight": 0.3}], "jaccard": 0.42, "min_jaccard": 0.10, "min_shared": 2}` |
+| 17 | 61 | `entity` | 0.60 | `{"count": 3, "type": "product"}` |
 | 17 | 33 | `similar` | 0.87 | `{"cosine": 0.87, "lookup": "summary/vector", "model": "multilingual-e5-large", "min_cos": 0.80}` |
 | 41 | 44 | `inferred_key` | 0.99 | `{"column": "customer_id", "target_column": "dim_customer.customer_id", "coverage": 0.998, "sample": 100000}` |
 | 41 | 44 | `same_column` | 0.70 | `{"column": "customer_id", "type": "bigint"}` |
@@ -1871,9 +2168,19 @@ class SameAuthorEvidence(Evidence):
 
 ### 3.5 Метрики
 
-Метрики — глобальные величины по всему графу, каждая от своего алгоритма.
-Таблица в длинном формате: одна строка на узел и метрику, набор метрик
-открыт.
+Метрика — число про один `Node`, которое нельзя узнать, глядя на него
+одного: оно зависит от всего графа. PageRank говорит, насколько на узел
+ссылаются те, на кого ссылаются сами; `betweenness` — как часто узел
+лежит на кратчайших путях между другими, то есть связывает ли он разные
+части корпуса; `degree_in` — сколько связей в него входит; `community` —
+номер плотной группы, в которую он попал. Это не связи и не содержимое,
+а третья вещь: производное свойство узла, которое считает глобальная
+стадия по всему графу сразу (NetworkX) и которое поиск добавляет к счёту
+(раздел 8), чтобы среди равных по тексту поднять центральный.
+
+Таблица в длинном формате — одна строка на пару «узел, метрика», — потому
+что метрик много, набор открыт, и колонка в `nodes` на каждый алгоритм
+меняла бы схему при каждом новом.
 
 ```sql
 create table ranks (
@@ -2106,7 +2413,7 @@ index scan без фильтров. По `index_distance` выбирается �
 |---|---|
 | `replace_edges(node_id, kinds, edges)` | рёбра узла указанных видов заменить целиком |
 | `neighbors(node_id, kinds) -> edges` | соседи с весом и обоснованием |
-| `expand(seeds, depth, decay) -> scores` | обход от опорных: `node_id`, `s_graph`, `distance`, `path` |
+| `expand(seeds, depth) -> candidates` | расширение от опорных узлов по видам рёбер из `[search.expand.factors]`: `Candidate` с `s_graph`, `distance`, `path` (раздел 8) |
 | `export() -> edges` | весь граф для глобальной стадии (NetworkX) |
 | `drop_node(node_id)` | убрать узел из графа (AGE: вершину и её рёбра) |
 
@@ -2136,22 +2443,8 @@ index scan без фильтров. По `index_distance` выбирается �
   удалении узла — внешних ключей между `nodes` и вершинами нет, за
   согласованность отвечает `GraphStore.age`, а инструмент `kb_graph_check`
   сверяет число узлов и вершин и чинит расхождение;
-- обход — `cypher()` внутри того же SQL, что и pgvector:
-
-```sql
-select
-    n.id,
-    w.s_graph,
-    w.depth
-from
-    cypher('confluence_graph', $$
-        match (s:node)-[e*1..2]-(t:node)
-        where s.node_id in $seeds
-        return t.node_id, reduce(w = 1.0, r in e | w * r.weight), length(e)
-    $$, $params) as w(node_id agtype, s_graph agtype, depth agtype)
-    join nodes n on
-        n.id = w.node_id::bigint
-```
+- обход — `cypher()` внутри того же SQL, что и pgvector; текст запроса
+  расширения для обоих бэкендов — в разделе 8.
 
 Что даёт AGE сверх реляционного: обход переменной длины и паттерны путей
 («таблицы, к которым от этой ведёт цепочка `view_source` любой длины»)
@@ -2362,6 +2655,7 @@ class ConfluenceCorpus(Corpus[PgStatement]):
             PgVectorLookup(content=ConfluenceContentKind.IMAGE, schema=schema, table="attachment_images",
                            node_column="node_id", row_column="id", text_column="title",
                            vector_table="attachment_image_vectors__siglip", ref_column="image_id", encoder=siglip),
+            *PgEntityLookups.of(schema),                      # слой сущностей: entity/exact, entity/trigram
         )
         self._roles: Mapping[LookupRole, IndexLookup[PgStatement]] = {
             LookupRole.NAMING: title_exact,
@@ -2409,12 +2703,12 @@ class ConfluenceCorpus(Corpus[PgStatement]):
 Повторы `table`/`node_column`/`row_column` в объявлениях — намеренные:
 каждый индекс читается сам по себе, без поиска общего определения. 
 
-`SearchStore` способов поиска не знает: `statement` и подпись попадания —
-у индекса (раздел 2), вес подписи — в `search_weights()` корпуса, зонд из
-текста он строит по типу зонда; он лишь запускает запросы параллельно и
-сливает ранги RRF.
+`SearchStore` способов поиска не знает: подзапрос и подпись — у способа
+(раздел 2), вес подписи — в `search_weights()` корпуса; хранилище лишь
+вкладывает подзапросы ветками в один запрос и сливает ранги RRF в базе
+(раздел 8).
 
-Два индекса над `page_sections` дают два запроса:
+Два способа над `page_sections` дают две ветки:
 
 ```sql
 -- PgFtsLookup над SECTION
@@ -2426,7 +2720,7 @@ with q as (
 select
     t.node_id,
     t.id as row_id,
-    t.format_content as text,
+    t.format_content as snippet,
     ts_rank_cd(t.tsv, q.tsq) as score
 from
     confluence.page_sections t,
@@ -2441,14 +2735,14 @@ limit %(limit)s;
 select
     t.node_id,
     t.id as row_id,
-    t.format_content as text,
-    v.embedding <=> %(vector)s::vector as score
+    t.format_content as snippet,
+    1 - (v.embedding <=> '[…]'::vector) as score
 from
     confluence.page_section_vectors__e5 v
     join confluence.page_sections t on
         t.id = v.section_id
 order by
-    v.embedding <=> %(vector)s::vector      -- то же выражение, что в select: HNSW отдаёт top-N по нему
+    v.embedding <=> '[…]'::vector           -- то же выражение, что в select: HNSW отдаёт top-N по нему
 limit %(limit)s;
 ```
 
@@ -2640,7 +2934,7 @@ create table column_profiles (         -- профиль данных: выбо�
 | `title` | `relations`, `node_id`, `title` | `fts(title_tsv)`, `trigram`, `exact` — `exact` назначен роли `naming` |
 | `title` | `columns`, `node_id`, `title` | `trigram`, `exact` — для `same_column`, `name_pattern` |
 | `comment` | `relations`, `node_id`, `comment` | `fts(comment_tsv)` |
-| `comment` | `columns`, `node_id`, `comment` | `fts(comment_tsv)`, `vector(column_comment_vectors.node_id)` |
+| `comment` | `columns`, `relation_id`, `comment` | `fts(comment_tsv)`, `vector(column_comment_vectors.node_id)` — узел выдачи: таблица, колонка идёт фрагментом |
 | `ddl` | `relation_ddl`, `node_id`, `ddl` | `fts(tsv)`, `vector(relation_ddl_vectors__e5.node_id)` |
 | `columns` | `relation_column_lists`, `node_id`, `content` | `fts(tsv)`, `vector(relation_column_list_vectors__e5.node_id)` |
 | `profile` | `relation_profiles`, `node_id`, `content` | `fts(tsv)`, `vector(relation_profile_vectors__e5.node_id)` |
@@ -2691,14 +2985,20 @@ create table column_profiles (         -- профиль данных: выбо�
 профилей, `co_queried` из журнала запросов движка (`pg_stat_statements`,
 `system.query_log`) — отдельным читателем, если журнал доступен.
 
-## 5. Чтение исходника
+## 5. Документ узла
 
-Поиск отдаёт `kind`, адрес частями и строкой, `url` из content tables; за ними стоит
-`Corpus.resolve`: по узлу вернуть оригинал в виде, который читает большая
-модель. Confluence — страница целиком в
-markdown, вложение — разобранным текстом. Хранилище — DDL, комментарии,
-профиль и пример строк отношения, для колонки — её профиль и таблица.
-Резолвер — часть корпуса, ядро знает только части адреса.
+Поиск отдаёт узлы фрагментами; когда модели нужен узел целиком, инструмент
+`kb_node` зовёт `Corpus.document(node_id, limit)` и получает
+`NodeDocument` (2.3): заголовок, адрес и части по порядку. Документ
+собирается из content tables, а не из источника: в Confluence за страницей
+не ходим, отдаём то, что проиндексировано, — версия на момент индексации.
+Часть — либо текст (`TextPart`: markdown раздела, DDL, профиль колонки),
+либо другой узел (`NodePart`: картинка, pdf, дочерняя страница), и рендерер
+решает по `kind`, что показать человеку картинкой, а модели строкой.
+Confluence — страница как разделы по порядку с вложениями на своих
+местах, вложение — разобранным текстом или подписью картинки. Хранилище —
+DDL, комментарии, профиль и пример строк отношения; колонка — профиль и
+ссылка на таблицу. `limit` режет части, `truncated` говорит, что порезано.
 
 ## 6. Код
 
@@ -2706,9 +3006,9 @@ markdown, вложение — разобранным текстом. Храни
 
 | пакет | что внутри |
 |---|---|
-| `packages/core/boba-graph` | домен: `Node`, `Edge`, `Entity`, `Address`, `Evidence`, `Probe`, `IndexLookup[S]`, `LookupMethod`, `VectorEncoder[V]`, `Corpus`; порты хранения и сервисов стадий; конвейер 2.0 |
+| `packages/core/boba-graph` | домен: `Node`, `Edge`, `Address`, `EntityAddress`, `Evidence`, `Probe`, `IndexLookup[S]`, `LookupMethod`, `VectorEncoder[V]`, `Corpus`; порты хранения и сервисов стадий; конвейер 2.0 |
 | `packages/infra/db/boba-db-pggraph` | postgres: DDL graph tables, реализации портов для relational и age, слияние поиска по индексам, обход, глобальный экспорт |
-| `packages/tools/boba-tool-graph` | инструменты над любым корпусом: `kb_search`, `kb_related`, `kb_entity`, `kb_node`, `kb_graph_rebuild`, `kb_graph_check`, установка схемы |
+| `packages/tools/boba-tool-graph` | инструменты над любым корпусом: `kb_search`, `kb_related`, `kb_node`, `kb_graph_rebuild`, `kb_graph_check`, установка схемы |
 | `packages/tools/boba-corpus-confluence` | корпус Confluence: виды текстов и рёбер, content tables и их DDL, индексы поиска, транспорт и ридер 2.0, явные рёбра, резолвер, инструменты индексации `confluence_graph_index_*` |
 | `packages/tools/boba-corpus-warehouse` | корпус хранилища (следующий план): виды текстов и рёбер, content tables, интроспекторы движков, профили, косвенные рёбра, резолвер |
 
@@ -2734,11 +3034,11 @@ markdown, вложение — разобранным текстом. Храни
 |---|---|---|
 | `NodeStore` | upsert узла по адресу, чтение по адресу и id, удаление | хранилище |
 | `SyncLedger` | реестр обхода над таблицей `sync` | хранилище |
-| `EntityStore` | словарь, привязки, пересчёт idf | хранилище |
-| `GraphStore` | рёбра и обход — две реализации (3.7) | хранилище |
+| `EntityStore` | узлы-сущности по адресу, их строки `entities`, пересчёт `idf` по рёбрам `entity`, удаление осиротевших | хранилище |
+| `GraphStore` | рёбра, соседи, расширение от опорных узлов — две реализации (3.7, раздел 8) | хранилище |
 | `RankStore` | метрики | хранилище |
 | `ModelRegistry` | `embedding_models` | хранилище |
-| `SearchStore` | `seeds(corpus, query, top_k)`: зонды по группам индексов, `statement` параллельно, RRF (раздел 2) | хранилище |
+| `SearchStore` | `candidates(corpus, query)`: один запрос по всем способам с RRF в базе; `rows(statement)`: один способ отдельно (2.6, раздел 8) | хранилище |
 | `VectorEncoderRegistry` | `VectorEncoder` по имени модели и форме вектора; собран из `embedding_models` и `[encoders]` | `boba-llm` |
 | `VectorEncoder` | текст в вектор одним методом; реализации по `modality` модели | `boba-llm`, зовут стадии корпуса и индексы |
 | `Generator` | сервис генерации по схеме: саммари, описания картинок | сервис, зовут стадии корпуса |
@@ -2765,25 +3065,28 @@ markdown, вложение — разобранным текстом. Храни
     backend             = "relational"
     similar_top_k       = 10
     similar_min_cos     = 0.80
-    entity_min_shared   = 2
-    entity_min_jaccard  = 0.10
-    entity_top_shared   = 10
     mention_min_words   = 2
     metrics             = ["pagerank", "betweenness", "degree_in", "community"]
-    [graph.edge_factors]
-        link           = 1.0
-        attachment_ref = 0.9
-        mention        = 0.8
-        similar        = 0.7
-        entity         = 0.7
-        child_page     = 0.6
-        has_attachment = 0.6
-        series         = 0.4
-        in_space       = 0.3
-        same_author    = 0.3
 
 [search]
-    candidates = 50
+    candidates        = 50
+    seed_k            = 20
+    snippets_per_node = 3
+    rrf_k             = 60
+    [search.metrics]
+        pagerank  = 0.5
+        degree_in = 0.1
+    [search.expand]
+        depth  = 2
+        weight = 0.5
+        [search.expand.factors]
+            link           = 1.0
+            attachment_ref = 0.9
+            mention        = 0.8
+            similar        = 0.7
+            entity         = 0.7
+            series         = 0.4
+            same_author    = 0.3
     [search.weights]
         "title/exact"      = 3.0
         "title/fts"        = 2.0
@@ -2797,6 +3100,9 @@ markdown, вложение — разобранным текстом. Храни
         "attachment_text/vector" = 0.8
         "caption/fts"      = 0.6
         "caption/vector"   = 0.6
+        "image/vector"     = 0.5
+        "entity/exact"     = 2.5
+        "entity/trigram"   = 1.0
 
 [entities]
     kind      = "gliner"
@@ -2827,16 +3133,18 @@ markdown, вложение — разобранным текстом. Храни
 | `parse` | ридер корпуса в строки content tables | страницы, разделы, таблицы, ссылки / объекты, колонки, определения |
 | `embed` | корпус зовёт `VectorEncoder` тех же моделей, что и его векторные способы поиска | `page_section_vectors`, `page_summary_vectors` / `relation_ddl_vectors`, … |
 | `summary` | корпус зовёт `Generator`, если запрошено | `page_summaries` / `relation_summaries` |
-| `entities` | ядро: `EntityExtractor` по `Corpus.entity_texts` | `entities`, `node_entities` |
-| `edges` | `Corpus.explicit_edges` + `entity` + `similar` по `Corpus.similar_text` | `GraphStore` |
+| `entities` | ядро: `EntityExtractor` по `Corpus.entity_texts` | узлы `entity` в `nodes` и `entities`, рёбра `entity` от узла к ним |
+| `edges` | `Corpus.explicit_edges` + `similar` по `Corpus.similar_text` | `GraphStore` |
 
-Стадия `edges` инкрементальна: рёбра индексируемого узла удаляются в обе
-стороны и строятся заново. `entity` — SQL по `node_entities` с взвешенным
-Jaccard, `similar` — способом роли `similarity`: текст узла кодируется и
-ищется kNN по векторной таблице через HNSW с порогом.
+Стадии `entities` и `edges` инкрементальны: рёбра индексируемого узла
+удаляются в обе стороны и строятся заново. `entity` — от узла к
+сущностям, которые экстрактор нашёл в его текстах, с upsert'ом самих
+узлов-сущностей по адресу; `similar` — способом роли `similarity`: текст
+узла кодируется и ищется kNN по векторной таблице через HNSW с порогом.
 
-Глобальная стадия — инструмент `kb_graph_rebuild(corpus)`: пересчёт idf и
-весов сущностей, экспорт рёбер в NetworkX, метрики из конфига → `ranks`.
+Глобальная стадия — инструмент `kb_graph_rebuild(corpus)`: пересчёт `idf`
+и весов рёбер `entity`, удаление сущностей без упоминаний, экспорт рёбер
+в NetworkX, метрики из конфига → `ranks`.
 На корпусе в 1,4 тыс. узлов — секунды; NetworkX держит десятки тысяч узлов
 и миллионы рёбер в памяти.
 
@@ -2862,88 +3170,389 @@ YAKE на русском без лемматизации слаб («Рисун�
 
 ## 8. Поиск и ранжирование
 
-Инструмент `kb_search(corpus, query, …)`; `corpus` выбирает схему и
-реализацию `Corpus`, SQL один и тот же:
+Инструмент `kb_search(corpus, query, top_k, expand)`. Вход — текст
+пользователя; выход — до `top_k` строк `Match` (2.3): узел с `kind` и
+адресом, заголовок, счёт, фрагменты, которыми он найден, и путь по графу,
+если пришёл через граф. Алгоритм — три запроса к базе и одно сложение в
+ядре; ни строки способов, ни фрагменты, которые не попадут в выдачу, до
+Python не доходят.
 
-1. **Опорные узлы** — `SearchStore.seeds(corpus, query, top_k)` (раздел
-   2): узлы, похожие на запрос, ещё без графа. `SearchStore` строит зонды
-   по группам индексов — текстовой одну строку, векторным вектор на модель, —
-   индекс собирает свой запрос (`statement`), запросы идут параллельно: `fts`, `vector`, `trigram`, `exact`,
-   `sparse`, `bm25` — что объявлено; каждый индекс возвращает
-   ранжированный список `(node_id, текст, ранг)`. Ещё один список даёт
-   сущностный поиск: запрос → `entities` → узлы через `node_entities`.
-   Списки сливаются по обратному рангу (RRF): узел получает по слагаемому
-   за каждый список, где встретился, — `weight / (k + место в списке)`,
-   `k = 60`. Узел на первом месте в двух списках с весами 1.0 набирает
-   `2/61`; узел на первом месте только по заголовку с весом 3.0 — `3/61`;
-   на десятом месте по разделу с весом 1.0 — `1/70`. Ранги, а не счета,
-   потому что `ts_rank` и косинус несопоставимы, а место в списке —
-   сопоставимо. Вес — из `corpus.search_weights()` по
-   `index.label()`, ключ — пара «вид текста/способ»; в выдаче у узла
-   перечисляются `index.label()` всех индексов, где он встретился: `title/exact 3.0, title/fts 2.0,
-   summary/vector 1.5, section/vector 1.0, section/fts 1.0, sample/fts
-   0.5`. RRF работает по рангам, а не по счётам, поэтому несопоставимые
-   `ts_rank`, косинус и `similarity()` сливаются без нормировки. Итог —
-   `seed_k` узлов с базовым счётом `s_base` и лучшим попаданием (цитатой).
-   Реранк кросс-энкодером первых N — стадия поверх RRF, не способ поиска;
-   добавляется отдельно, когда понадобится.
-2. **Расширение.** `GraphStore.expand` от опорных на глубину до 2 с
-   затуханием; вес ребра берётся с множителем по его `kind` из конфига
-   корпуса — `[graph.edge_factors]`: у Confluence `link 1.0, mention 0.8,
-   similar 0.7, entity 0.7, child_page 0.6, has_attachment 0.6, series
-   0.4, same_author 0.3`; у хранилища `foreign_key 1.0, view_source 1.0,
-   inferred_key 0.9, mention 0.8, similar 0.7, contains 0.6, co_queried
-   0.5, same_column 0.4, name_pattern 0.3`. Ядро множители не толкует —
-   вид ребра без множителя в конфиге считается ошибкой конфига.
-   `s_graph(n) = Σ s_base(seed) · Π weight·factor`.
-3. **Счёт.** `score = s_base + λ·s_graph + Σ μ_m·rank_m` по метрикам из
-   конфига; λ и μ — параметры инструмента с дефолтами в конфиге.
-4. **Выдача.** Узел: `kind`, адрес, `url`, заголовок,
-   саммари, цитата, `why` — по какому ребру пришёл: «ссылается на
-   FLIP-458», «customer_id покрывает dim_customer на 99,8%».
+| шаг | кто | что делает | запросов |
+|---|---|---|---|
+| 1 кандидаты | `SearchStore.candidates` | все способы корпуса одним SQL, RRF, фрагменты, `kind`, адрес, метрики | 1 |
+| 2 расширение | `GraphStore.expand` | от опорных узлов по ссылочным и семантическим рёбрам; только если `expand` | 0 или 1 |
+| 3 счёт | `NodeSearch` в ядре | сложить `s_base`, `s_graph` и метрики, отрезать `top_k` | 0 |
+| 4 заголовки | `Corpus.titles` | заголовки итоговых узлов из content tables | 1 |
 
-Обход в реляционном бэкенде:
+### 8.1 Кандидаты: один запрос на все способы
+
+Каждый способ (`IndexLookup`) даёт подзапрос с колонками `node_id`,
+`row_id`, `snippet`, `score`, не длиннее `candidates` строк. Хранилище
+вкладывает их ветками в один запрос, и дальше всё считает база. Пример с
+двумя ветками из двенадцати:
 
 ```sql
-with recursive walk as (
-    select
-        seed.id as node_id,
-        0 as depth,
-        seed.score as weight,
-        array[seed.id] as path
-    from
-        seeds seed
-    union all
-    select
-        a.target_id,
-        w.depth + 1,
-        w.weight * a.weight * c.factor,
-        w.path || a.target_id
-    from
-        walk w
-        join adjacency a on
-            a.source_id = w.node_id
-        join edge_factor c on          -- множители из конфига корпуса
-            c.kind = a.kind
-    where 1=1
-        and w.depth < 2
-        and not a.target_id = any(w.path)
-)
+with
+    hits as (                                                  -- по ветке на способ корпуса
+        select
+            'title/exact' as lookup, 'title' as content_kind, 3.0::real as weight,
+            q.node_id, q.row_id, q.snippet,
+            row_number() over (order by q.score desc) as rank
+        from (
+            select
+                t.node_id as node_id,
+                t.node_id as row_id,
+                t.title as snippet,
+                1.0 as score
+            from
+                confluence.pages t
+            where
+                lower(t.title) = lower(%(text)s)
+            limit %(limit)s
+        ) q
+        union all
+        select
+            'section/vector', 'section', 1.0::real,
+            q.node_id, q.row_id, q.snippet,
+            row_number() over (order by q.score desc)
+        from (
+            select
+                t.node_id,
+                t.id,
+                t.format_content,
+                1 - (v.embedding <=> '[…]'::vector)                -- вектор запроса литералом от энкодера способа
+            from
+                confluence.page_section_vectors__e5 v
+                join confluence.page_sections t on
+                    t.id = v.section_id
+            order by
+                v.embedding <=> '[…]'::vector
+            limit %(limit)s
+        ) q
+    ),
+    seeds as (                                                 -- слияние RRF: сумма weight / (k + rank) по веткам
+        select
+            node_id,
+            sum(weight / (%(rrf_k)s + rank)) as s_base
+        from
+            hits
+        group by
+            node_id
+        order by
+            s_base desc
+        limit %(seed_k)s
+    ),
+    picked as (                                                -- фрагменты опорных узлов по вкладу в счёт
+        select
+            h.*,
+            row_number() over (
+                partition by h.node_id
+                order by h.weight / (%(rrf_k)s + h.rank) desc
+            ) as n
+        from
+            hits h
+            join seeds s on
+                s.node_id = h.node_id
+    ),
+    snippets as (
+        select
+            node_id,
+            json_agg(
+                json_build_object('lookup', lookup, 'content_kind', content_kind, 'row_id', row_id, 'text', snippet)
+                order by n
+            ) as items
+        from
+            picked
+        where
+            n <= %(per_node)s
+        group by
+            node_id
+    ),
+    metrics as (                                               -- глобальные метрики из ranks, только названные в [search.metrics]
+        select
+            node_id,
+            json_object_agg(metric, value) as values
+        from
+            confluence.ranks
+        where
+            node_id in (select node_id from seeds)
+            and metric = any(%(metrics)s)
+        group by
+            node_id
+    )
 select
-    node_id,
-    sum(weight) as s_graph,
-    min(depth) as distance
+    s.node_id,
+    n.kind,
+    n.address,
+    s.s_base,
+    sn.items as snippets,
+    coalesce(m.values, '{}'::json) as metrics
 from
-    walk
-group by
-    node_id
+    seeds s
+    join confluence.nodes n on
+        n.id = s.node_id
+    join snippets sn on
+        sn.node_id = s.node_id
+    left join metrics m on
+        m.node_id = s.node_id
+order by
+    s.s_base desc
 ```
 
-Дополнительно: `kb_related(corpus, address)`, `kb_entity(corpus, term)`,
-`kb_node(corpus, address)` — адрес строкой, корпус разбирает её `parse()`
-своей модели адреса по схеме;
-заголовок, саммари, сущности, рёбра и оригинал через
-резолвер.
+**Слияние по обратному рангу.** Узел, стоящий в списке способа на месте
+`rank`, получает от этого списка `weight / (k + rank)`, `k = 60`;
+слагаемые по всем спискам складываются. Узел на первом месте в двух
+списках с весами 1.0 набирает `2/61`; узел на первом месте только по
+заголовку с весом 3.0 — `3/61`; на десятом месте по разделу с весом 1.0 —
+`1/70`. Складываются места, а не счета, потому что `ts_rank`, косинус и
+`similarity()` несопоставимы, а место в списке сопоставимо; поэтому
+нормировать их не нужно. Вес — из `[search.weights]` по подписи способа
+«содержимое/способ»: точное совпадение заголовка значит больше, чем
+совпадение по абзацу раздела. Константа 60 сглаживает разницу между
+первым и вторым местом, чтобы одно попадание на первом месте не
+перебивало три попадания на пятых.
+
+**Фрагменты.** У узла остаются `snippets_per_node` фрагментов с
+наибольшим вкладом в его счёт, из разных способов: раздел, найденный
+полнотекстом, и саммари, найденное вектором, — два разных ракурса.
+Фрагмент несёт подпись способа и вид содержимого: по ним рендер отличает
+текст от картинки, а `row_id` позволяет взять оригинал куска.
+
+**Единица выдачи.** На каком уровне узел попадает в выдачу, решает
+способ полем `node_column`, а не обход графа. У `page_sections` там
+страница, и раздел приходит фрагментом страницы. У `columns` для
+комментария там `relation_id`: запрос «отгрузка нефтепродуктов» находит
+комментарии колонок `shipment_volume` и `product_type`, а в выдаче
+оказывается таблица `dm.fact_shipments` с двумя фрагментами-колонками.
+Подниматься по `contains` не нужно, и в выдаче нет ни колонок, ни схемы,
+ни базы. Колонка остаётся узлом для графа и lineage; кому нужны колонки
+таблицы, тот берёт `kb_node`.
+
+### 8.2 Расширение: узлы, которых текст не нашёл
+
+Текстовый поиск находит узлы, где встретились слова запроса. Нужный
+ответ часто лежит в соседнем узле, где этих слов нет: страница, на
+которую ссылаются три найденные; таблица, чей ключ покрывает найденную.
+Расширение переходит от опорных узлов по рёбрам и поднимает то, куда
+сходятся связи от нескольких найденных.
+
+**По каким рёбрам.** Только по перечисленным в `[search.expand.factors]`
+— ссылочным (`link`, `mention`, `attachment_ref`, `foreign_key`,
+`view_source`, `routine_uses`) и семантическим (`similar`, `entity`,
+`same_column`, `co_queried`, `series`). Ребро `entity` ведёт к
+узлу-сущности, поэтому две страницы об одном продукте соединяются за два
+шага через него — это и есть «общие сущности», без отдельного ребра. Структурных (`contains`,
+`child_page`, `in_space`, `has_attachment`) в списке нет, и это не
+пропуск: через контейнер схема `dm` связана с каждой своей таблицей, и по
+`contains` активация от любой найденной таблицы дотекла бы до всех
+таблиц схемы; от найденной таблицы `contains` вниз размазал бы её счёт
+по сорока колонкам. Работа структурных рёбер сделана раньше, единицей
+выдачи в 8.1. Вид ребра без множителя в конфиге в обходе не участвует.
+
+**Как считается.** Активация распространяется от каждого опорного узла:
+сосед получает `s_base` опорного, умноженный на вес ребра и на множитель
+его вида, сосед соседа — ещё раз умноженный, и так `depth` шагов. Вклады
+с разных сторон складываются: узел, к которому ведут два опорных,
+поднимается выше того, к которому ведёт один. Это распространение
+активации; его обобщение на любое число шагов — персонализированный
+PageRank с рестартом от опорных узлов, который считают HippoRAG и
+локальный поиск GraphRAG. Два шага — практический предел для запроса в
+базе; PageRank до сходимости требует графа в памяти и остаётся следующим
+этапом, если стенд покажет, что двух шагов мало.
+
+```
+s_graph(n) = Σ по путям от опорных к n длиной ≤ depth:
+             s_base(seed) · Π по рёбрам пути (weight · factor[kind])
+```
+
+Порт один, `GraphStore.expand(seeds, depth)`, реализации две. Реляционная —
+рекурсивный CTE по `adjacency` (3.4):
+
+```sql
+with recursive
+    seed(node_id, s_base) as (
+        values (17, 0.0482), (21, 0.0311)                     -- опорные узлы из 8.1, параметр запроса
+    ),
+    factor(kind, value) as (
+        values ('link', 1.0), ('mention', 0.8), ('similar', 0.7), ('entity', 0.7)   -- [search.expand.factors]
+    ),
+    walk as (
+        select
+            s.node_id,
+            0 as depth,
+            s.s_base as activation,
+            array[s.node_id] as path,
+            array[]::text[] as kinds
+        from
+            seed s
+        union all
+        select
+            a.target_id,
+            w.depth + 1,
+            w.activation * a.weight * f.value,
+            w.path || a.target_id,
+            w.kinds || a.kind
+        from
+            walk w
+            join confluence.adjacency a on
+                a.source_id = w.node_id
+            join factor f on                                   -- вид без множителя — не идём
+                f.kind = a.kind
+        where
+            w.depth < %(depth)s
+            and not a.target_id = any(w.path)                  -- без циклов
+    ),
+    reached as (
+        select
+            node_id,
+            sum(activation) as s_graph,
+            min(depth) as distance,
+            (array_agg(path order by activation desc))[1] as path,    -- путь с наибольшим вкладом: для «почему пришёл»
+            (array_agg(kinds order by activation desc))[1] as kinds
+        from
+            walk
+        where
+            depth > 0
+        group by
+            node_id
+    )
+select
+    r.node_id,
+    n.kind,
+    n.address,
+    r.s_graph,
+    r.distance,
+    r.path,
+    r.kinds
+from
+    reached r
+    join confluence.nodes n on
+        n.id = r.node_id
+order by
+    r.s_graph desc
+limit %(limit)s
+```
+
+Опорный узел, до которого дотекла активация от другого опорного, тоже
+попадает в `reached`: два найденных узла, ссылающиеся друг на друга,
+подтверждают друг друга, и ядро сложит `s_graph` к их `s_base`.
+
+Бэкенд AGE делает то же одним Cypher: рёбра там помечены видом, и
+переменная длина пути с фильтром по метке пишется одной строкой:
+
+```sql
+select
+    w.node_id::bigint,
+    w.s_graph::float,
+    w.distance::int
+from
+    cypher('confluence_graph', $$
+        unwind $seeds as s
+        match p = (a:node {node_id: s.node_id})-[e*1..2]-(b:node)
+        where all(r in e where label(r) in keys($factors))
+        with b, s.s_base * reduce(w = 1.0, r in e | w * r.weight * $factors[label(r)]) as activation, length(p) as depth
+        return b.node_id, sum(activation), min(depth)
+    $$, $params) as w(node_id agtype, s_graph agtype, distance agtype)
+```
+
+### 8.3 Счёт и выдача
+
+Сложение делает ядро: строк здесь не больше `seed_k` плюс достигнутые,
+это десятки, а не сотни, и они уже с `kind`, адресом и метриками.
+
+```python
+class NodeSearch:
+    """Сервис поиска ядра: три порта, один итог.
+
+    Зовёт SearchStore.candidates, при expand — GraphStore.expand, складывает
+    кандидатов по node_id, считает счёт, берёт заголовки у корпуса и
+    отдаёт Match. Способов поиска, SQL и бэкенда графа не знает.
+    """
+
+    def __init__(self, store: SearchStore[S], graph: GraphStore, cfg: SearchConfig) -> None: ...
+
+    async def run(self, corpus: Corpus[S], query: str, top_k: int, expand: bool) -> Sequence[Match]:
+        found = await self._store.candidates(corpus, query)
+        by_id: dict[int, Candidate] = {}
+        for candidate in found:
+            by_id[candidate.node_id] = candidate
+
+        if expand:
+            seeds: dict[int, float] = {}
+            for candidate in found:
+                seeds[candidate.node_id] = candidate.s_base
+
+            for reached in await self._graph.expand(seeds, self._cfg.expand.depth):
+                by_id[reached.node_id] = self._merged(by_id, reached)
+
+        titles = corpus.titles(list(by_id))
+        matches: list[Match] = []
+        for candidate in by_id.values():
+            matches.append(self._match(candidate, titles[candidate.node_id]))
+
+        matches.sort(key=self._score, reverse=True)
+        return matches[:top_k]
+
+    def _merged(self, by_id: Mapping[int, Candidate], reached: Candidate) -> Candidate:
+        """Узел из обхода: если он же был кандидатом, s_graph и путь ложатся к его s_base и фрагментам."""
+        known = by_id.get(reached.node_id)
+        if known is None:
+            return reached
+
+        return known.model_copy(update={"s_graph": reached.s_graph, "distance": reached.distance, "path": reached.path})
+
+    def _match(self, candidate: Candidate, title: str) -> Match:
+        ranked = 0.0
+        for metric, weight in self._cfg.metrics.items():
+            ranked += weight * candidate.metrics.get(metric, 0.0)
+
+        score = candidate.s_base + self._cfg.expand.weight * candidate.s_graph + ranked
+        return Match(
+            node_id=candidate.node_id, kind=candidate.kind, address=candidate.address, title=title,
+            score=score, s_base=candidate.s_base, s_graph=candidate.s_graph,
+            snippets=candidate.snippets, path=candidate.path,
+        )
+```
+
+Счёт: `score = s_base + weight · s_graph + Σ μ_m · metric_m`, где `weight`
+из `[search.expand]`, `μ_m` из `[search.metrics]`, метрики — глобальные
+величины из `ranks` (3.5). Реранк кросс-энкодером первых N — стадия
+поверх этого счёта, не способ поиска; добавляется отдельно, когда
+понадобится.
+
+**Выдача.** Каждый `Match` рендерится двумя способами из одних полей.
+Большой модели — заголовок, `kind`, адрес строкой (`render()` модели
+адреса корпуса, чтобы следующим вызовом попросить именно этот узел),
+фрагменты с подписями способов и путь: «пришёл по `link` от FLIP-457».
+Человеку в чат — заголовок ссылкой, фрагменты, где фрагмент с
+`content_kind = image` показывается картинкой, а путь — словами: «на неё
+ссылаются две найденные страницы».
+
+**Пример.** Запрос «таймауты подключения к postgres». `section/fts`
+находит страницу про libpq третьей, `summary/vector` — её же первой,
+`title/trigram` — страницу «Настройки драйвера Postgres» первой. Страница
+про libpq набирает `1/63 + 1.5/61`, «Настройки драйвера» — `1.5/61`;
+обе опорные. С `expand` от них по `link` и `mention` приходит страница
+«Пул соединений в сервисах», на которую ссылаются обе; слов запроса в ней
+нет, но в выдаче она третья, с путём «`link` от libpq, `mention` от
+Настроек драйвера».
+
+### 8.4 Ход по графу руками: kb_node и kb_related
+
+Расширение внутри `kb_search` одинаково для всех запросов: множители
+заданы конфигом и смысла запроса не знают. Когда модели нужно идти по
+графу осмысленно, у неё есть отдельные инструменты, и каждый шаг там
+стоит вызова модели, зато решение принимает она.
+
+- `kb_node(corpus, address)` — узел целиком: адрес строкой разбирает
+  `parse()` модели адреса корпуса, документ собирает
+  `Corpus.document` (раздел 5); рёбра узла с обоснованием, включая
+  `entity` к его сущностям, — из `edges`. Для узла-сущности документ —
+  кто её упоминает и с каким весом.
+- `kb_related(corpus, address, kinds)` — соседи узла по видам рёбер
+  через `GraphStore.neighbors`, с весом и обоснованием, заголовки от
+  корпуса. Здесь структурные рёбра как раз нужны: «покажи колонки этой
+  таблицы», «покажи вложения этой страницы».
 
 Связи между корпусами (страница описывает таблицу) — вне плана: у каждой
 схемы своя нумерация узлов, мост — отдельная таблица без внешних ключей.
@@ -2966,12 +3575,13 @@ group by
    `sync`, `pages`, `page_sections`, `attachments`, `attachment_texts`.
 4. **Явные рёбра.** `in_space`, `child_page`, `has_attachment`, `link`,
    `attachment_ref`, `mention`, `series`, `pending_links`.
-5. **Сущности** и рёбра `entity`, tf-idf.
+5. **Сущности** как узлы `entity` и рёбра `entity` к ним, tf-idf.
 6. **Семантика.** Векторные индексы, рёбра `similar`.
 7. **Саммари.** `page_summaries`, генератор по схеме, способ `summary` в `applied_methods`.
 8. **Глобальная стадия.** `kb_graph_rebuild`, `ranks`.
-9. **Поиск.** `boba-tool-graph`: `kb_search`, `kb_related`, `kb_entity`,
-   `kb_node`; резолвер — в корпусе.
+9. **Поиск.** `boba-tool-graph`: `kb_search` по алгоритму раздела 8
+   (сначала без расширения, затем расширение по флагу), `kb_related`,
+   `kb_node`; документ узла — в корпусе.
 
 Текущий индексатор всё это время не трогается; его судьба решается
 отдельно, когда 2.0 принят. Корпус хранилища — следующий план поверх
