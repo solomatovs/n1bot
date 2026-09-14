@@ -2,21 +2,29 @@
 
 ## 1. Цель и границы
 
-Появляется общий слой хранения для индексаторов разных корпусов. Первый
-корпус — Confluence: страницы и вложения. Второй — хранилище данных: базы,
-схемы, таблицы, представления, колонки, индексы, процедуры разных движков
-(PostgreSQL, ClickHouse, Oracle, MySQL). Оба индексатора решают одну задачу:
-найти взаимосвязи между единицами корпуса и описать их так, чтобы поиск
-находил опорные единицы полнотекстом и вектором, расширял выдачу по графу и
-возвращал адрес исходника для чтения оригинала большой моделью.
+Создать поисковую систему на базе графовых связей, создать индексатор, которые способны индексировать разнородные данные: web (confluence), базы данных (PostgreSQL, ClickHouse, Oracle, MySQL).
+Текущий индексатор `boba-indexing` остается как есть, не трогается. Вся разработка ведется с нуля и не затрагивает уже созданные компоненты в части изменений
 
-В хранилище данных явных связей почти нет: внешние ключи объявлены редко,
-комментарии пусты, имена таблиц — история миграций. Индексатор хранилища
-строит связи из косвенных признаков: определений представлений, совпадающих
-имён и типов колонок, пересечения значений, совместного использования в
-запросах, упоминаний в комментариях. В Confluence те же роли играют ссылки,
-оглавления, упоминания заголовков и метки. Поэтому ядро одно, а признаки —
-свои у каждого корпуса.
+## 2. Ядро (boba-graph)
+
+Ядро системы описывает всего несколько таблиц, которые хранят связи между остальными компонентами системы в виде графа (nodes, edges)
+Ядро не знает что за сущности (entities) в нем храняться, но знает их уникальный адрес и то, как эти сущности связаны.
+Также в ядро входят метрики узлов графа (ranks) и общая таблица синхронизации (sync), помогающая определить актуальность данных в графе.
+
+Ядро не знает, что такое страница, таблица или индекс. Каждая строка в системе графа ядро просто хранит и никогда не толкует смысл сохраненного.
+
+Смысл каждой записи, хранимой в nodes разнесен по отдельным таблицам за пределы ядра системы. Это позволяет проектировать индексацию любого объекта, который может потребоваться. Структуры хранящие смысл называются - корпус.
+
+Каждый корпус имеет свой собственный список видов данных (`kind`).
+Корпус определяет этот список самостоятельно и ядро ничего не знает об этих видах.
+У каждого вида данных свой
+- addres
+- reader
+- content
+
+Общего перечисления видов данных не существует, каждый корпус вводит собственные виды данных, иначе Confluence, Warehouse корпуса нельзя было бы развести по отдельным пакетам
+
+Ядро задает спецификацию общения между компонентами системы (protocol class, generic, models), но не хранит их специфику. Вся специфика разведена по корпусам
 
 Слои по коду:
 
@@ -24,141 +32,146 @@
   порты хранения; конвейер. О СУБД, DDL и SQL оно не знает: хранение
   приходит реализацией портов;
 - **реализация хранения** (`boba-db-pggraph`) — порты ядра на Postgres,
-  и только на нём: pgvector, `tsvector`, `pg_trgm`, AGE. Имя называет
-  движок, как у соседей `boba-db-postgres` и `boba-db-pgvector`; другая
-  СУБД — другой пакет с теми же портами:
-  DDL graph tables, обход, слияние поиска по индексам, два бэкенда
-  графа;
-- **слои источников** — без новых пакетов: слой живёт в пакете, который
-  источник и так умеет читать, чтобы драйвер, транспорт и разбор
-  переиспользовались. Confluence — `boba-confluence`: виды узлов и адреса,
-  content tables с их DDL, способы поиска, ридер 2.0, явные рёбра,
-  документ узла; часть, которой нужен Postgres, — подмодулем
-  `boba.confluence.graph` за extra `graph`, чтобы разбор HTML не тянул
-  psycopg. Инструменты индексации 2.0 — в `boba-tool-confluence` рядом с
-  индексатором 1.0, он же регистрирует корпус в реестре. Хранилище данных
-  — следующим планом над тем, что уже есть: модель отношений в
-  `boba-catalog`, интроспекция в `boba-db-postgres` и `boba-db-clickhouse`,
-  инструменты в `boba-tool-postgres` и `boba-tool-clickhouse`;
-- **инструменты над графом** (`boba-tool-graph`) — поиск, обход, глобальная
-  стадия, установка схемы; работают с любым корпусом через реестр и о
-  Confluence или хранилище не знают.
+  sql схема хранения ядра, модели на python, классы протоколы
+- **слой корпусов** — Каждый корпус размещается в пакетах, где уже реализованы классы для работы с источником. К примеру
+- `boba-db-postgres` размещает корпус для хранения postgres данных
+- `boba-db-clickhouse` размещает корпус хранения данных clickhouse
+- `boba-transport-http` размещает корпус для хранения confluence
+Новые пакеты делаем только в случае если негде разместить корпус, к примеру когда захочется сделать oracle корпус
+- **инструменты для работы с графом** (`boba-tool-graph`) — поиск, обход, глобальная стадия, установка схемы;
+- работают с любым корпусом через реестр и о конкретных корпсах ничего не знает
 
-Слои по данным — каждый корпус в своей схеме Postgres: `confluence`,
-`warehouse`, стендовые `confluence_test`, `warehouse_test`. Внутри схемы:
+Каждый корпус будем хранить в отдельных схемах, к примеру:
+- `corpus_confluence` - здесь размещаем корпусные данные по confluence
+- `corpus_postgres` - здесь размещаем корпусные данные заиндексированных postgres баз
+- `corpus_clickhouse` - здесь размещаем корпусные данные заиндексированных clickhouse баз
+- `corpus_entity` - здесь размещаем корпус данных, которые будут называться `entity` (сущности). Это некий абстрактный набор данных, который выявляет LLM в процессе индексации. К примеру есть сущность `oil`, `soft`, `gaz` или что-то другое. Эти объекты также будут храниться в графе и будут связываться с индексируемыми объектами, что позволит усиливать/ослабевать связь между индексируемыми объектами
 
-- **graph tables** — только то, что ядро обрабатывает одинаково для
-  любого корпуса: идентичность узлов, учёт обхода, рёбра, метрики. Их
-  структура — реализация портов ядра в Postgres; DDL живёт в
-  `boba-db-pggraph`, а не в ядре;
-- **content tables** — всё остальное, включая тексты и векторы: у Confluence
-  страницы, вложения, разделы, таблицы страниц, саммари; у хранилища
-  отношения, колонки, ограничения, индексы, процедуры, профили, DDL,
-  комментарии; у слоя сущностей — имя, форма показа и тип сущности. Текст и его индексы лежат там, где лежит объект, которому
-  они принадлежат, со своей структурой, а не сплющенными в общую строку.
+### 2.1 Обзор
 
-Graph tables отвечают на вопросы «что это», «с чем связано» и «где
-исходник» одинаково для любого корпуса. Всё содержимое — «о чём» — у
-content tables; ядро добирается до него через индексы поиска, которые корпус
-объявляет (раздел 2).
+Ядро - это система из 4-х таблиц которые описывают граф, синхронизатор и ранжировани.
 
-Это индексатор 2.0: свои пакеты, своя схема, свой конвейер, свои
-инструменты. Текущий индексатор (`kb_*`, `boba-db-pgvector`,
-`boba-tool-confluence`, `boba-tool-knowledge`) не меняется и работает
-рядом; ничего из него не мигрируется, схема 2.0 создаётся установкой с
-нуля. Ридеры форматов, секции, чанкер и эмбеддер из
-`boba-indexing`/`boba-text` используются как библиотеки, без правок.
+Все узлы и связи ходят по суррогатному `bigint`
 
-Граф хранится в Postgres в одном из двух бэкендов на выбор конфига:
-реляционном (таблица рёбер и рекурсивный SQL) или Apache AGE (вершины,
-рёбра и обход на openCypher). Какой доступен на базе — тот и используется;
-ядро пишется под оба через один порт (раздел 2.6).
+| таблица | что хранит
+|---|---|
+| `nodes` | узел: только идентичность — знает только вид и адрес объекта
+| `sync` | учёт обхода: что качать, что разбирать, что удалить
+| `edges` | рёбра графа. указано как направление от node до node, так и вид связи, вес, обоснование связи (простая llm text summary)
+| `ranks` | метрики узла по алгоритмам типа pagerank
 
-## 2. Ядро
+#### 2.2.1 Sql core
 
-Ядро не знает, что такое страница, таблица или индекс. Каждая колонка
-`kind` в схеме — строка, которую ядро хранит, сравнивает на равенство и
-никогда не толкует. Смысл строке даёт корпус: у каждого свои перечисления
-видов узлов, нарезок и рёбер, свой ридер, своё описание узла, свой
-резолвер исходника. Общего перечисления «все виды всех корпусов» нет ни в
-коде, ни в базе, ни в документации — иначе код Confluence и хранилища
-нельзя развести по пакетам.
+```sql
+-- узел графа (node)
+create table nodes (
+    id            bigserial primary key,
+    kind          varchar not null,   -- полный дискриминатор: confluence_page | pg_table | ch_column — перечисление корпуса, раздел 2
+    address       jsonb       not null,   -- адрес по ролям, включая scheme, раздел 2.2.1; идентичность узла
+    created_at    timestamptz not null default now(),
+    updated_at    timestamptz not null default now()
+);
+create unique index on nodes (address);   -- идентичность: одна строка на адрес
+create index on nodes (kind);
+create index on nodes using gin (address jsonb_path_ops);
 
-Ядро задаёт протокол корпуса и работает только через него. Никакой
-классификации связей у ядра нет: обход умножает вес ребра на множитель
-по его `kind` из конфига корпуса, а два вида рёбер, которые ядро пишет
-само — по общим сущностям и по близости векторов, — оно называет именами,
-которые ему даёт корпус.
+-- ребра графа (edges)
+create table edges (
+    source_id     bigint      not null references nodes on delete cascade,
+    target_id     bigint      not null references nodes on delete cascade,
+    kind          varchar     not null,   -- вид связи из перечисления корпуса
+    weight        real        not null,   -- 0..1
+    evidence      jsonb       not null default '{}',   -- Evidence.dump() модели вида ребра: факты и параметры расчёта
+    computed_at   timestamptz not null default now(),
+    primary key (source_id, target_id, kind)          -- прямой обход: index-only по (source_id, …)
+);
+create index on edges (target_id, source_id, kind) include (weight);   -- обратный обход adjacency: index-only
 
-### 2.1 Модели
+-- глобальные метрики node'ов (rank)
+create table ranks (
+    node_id       bigint      not null references nodes on delete cascade,
+    metric        text        not null,   -- имя метрики: pagerank | betweenness | closeness | degree_in | degree_out | community | hits_hub | hits_authority
+    value         double precision not null,   -- значение; у community — номер сообщества
+    computed_at   timestamptz not null,
+    run_id        text        not null,   -- прогон глобальной стадии, давший значение
+    primary key (node_id, metric)
+);
+create index on ranks (metric, value desc);
 
-**Узел ядра и узел корпуса.** Виды узлов и модели адресов объявляет
-пакет источника, который и так знает его объекты: `boba-confluence` —
-`ConfluenceNodeKind` и адреса страниц, `boba-db-postgres` — `PgNodeKind`
-и адреса объектов PostgreSQL, `boba-db-clickhouse` — `ChNodeKind` (3.1, 4.1).
-Там же — union узлов источника по `kind` (`ConfluenceNode`, `PgNode`,
-`ChNode`), которым строка ядра разбирается в типизированную модель.
-Корпус этих моделей не дублирует и не оборачивает; его собственное —
-виды содержимого и рёбер (`ConfluenceContentKind`, `ConfluenceEdgeKind`,
-`WarehouseContentKind`, `WarehouseEdgeKind` — разделы 3, 4),
-потому что это его таблицы и его связи. Ядро в SQL и в коде
-оперирует `kind: str` и никогда по нему не ветвится.
-Инструменты поиска принимают имя корпуса и получают его реализацию из
-реестра; общих `if kind == "page"` в ядре быть не может по построению.
+-- рабочий журнал синхронизации (sync)
+create table sync (
+    node_id           bigint      primary key references nodes on delete cascade,
+    -- version
+    hk uuid not null,
+    -- хэш исходного объекта (node_id)
+    -- позволяет не анализировать объект если его хеш не менялся с предыдущего раза
+    cs uuid not null,
+    -- способы обработки, которыми был разобран объект
+    -- один и тот же элемент может быть разобран несколькими методами:
+    -- картинка может быть разобрана по смыслу содержания, по написанному на ней тексту, по размеру или еще какими-то параметрами
+    applied_methods   text[]      not null default '{}',
+    -- hash настроек, с помощью которых был разобран node.
+    -- к примеру embedding модели имеют разную размерность и при смене модели
+    -- нужно проводить реиндексацию. Соответственно меняется штамп
+    pipeline_stamp    text        not null default '',
+    -- crawl_scope и last_seen_run — нужны для обнаружения удалений
+    -- к примеру confluence страница исчезла, или была удалена таблица с колонками, как понять что произошло удаление?
+    crawl_scope       text        not null default '',
+    -- прогон, в списке которого узел был в последний раз
+    last_seen_run     text        not null default '',
+    last_seen_at      timestamptz,
+    last_indexed_at   timestamptz,
+    -- почему узел не индексируется правилами; пусто — индексируется
+    skip_reason       text        not null default ''
+);
+create index on sync (crawl_scope, last_seen_run);
+```
 
-`kind` — полный дискриминатор узла: он один определяет, какой класс
-натягивается на строку, какая модель адреса её разбирает и в каких
-content tables лежит содержимое. Поэтому значение называет и источник, и
-объект: `confluence_page`, `pg_table`, `ch_column`, `oracle_view`, а не
-`table` с уточнением через `scheme` — таблица PostgreSQL и таблица
-ClickHouse адресуются по-разному и хранятся в разных полях. «Все таблицы
-любого движка» при этом выбираются по адресу: `address ? 'table'`.
-`scheme` в адресе остаётся, хотя выводим из `kind`: он нужен грамматике
-строки и держит адрес самодостаточным.
-
-`kind` — отдельная колонка и отдельное поле модели, а не ключ внутри
-`address`: в базе по нему фильтруют и индексируют без разбора JSON, в
-коде он — дискриминатор pydantic-union, а дискриминатор живёт на верхнем
-уровне модели. Идентичность узла от этого не зависит: одинаковый адрес с
-разными видами невозможен, поэтому `kind` в ключ уникальности не входит.
-
-Узел ядра непрозрачен, а два jsonb-поля graph tables — адрес узла и
-обоснование ребра — имеют типизированную модель на стороне того, кто их
-пишет. Ядро задаёт им базовые классы: pydantic-модель не может наследовать
-`Protocol` (конфликт метаклассов), а наследование должно быть явным
-(правило §14), поэтому база — сама pydantic-модель с абстрактными
-методами. Пакет источника наследует `Address`, вычислитель ребра —
-`Evidence`:
+#### 2.2.2 Python core
 
 ```python
-# boba-graph: ядро.
-# Ошибки наружу:
-# AddressError — строка адреса не по грамматике схемы или не по канону 2.2.5: без порта, с учётными данными,
-#   с чужими ролями; кидают split()/parse() адресов.
-class AddressError(Exception):
-    """Строка адреса не разбирается по грамматике своей схемы или нарушает канон (2.2.5)."""
-
+# boba-graph
 class Node(BaseModel):
-    """Узел графа: объект источника, как его видит ядро, — номер, вид и адрес, ничего больше.
+    """Узел графа: абстрактный объект в системе связей (документа, чанк, картинка, часть картинки, foreain_key, название таблицы, да все что угодно)
+    
+    Все это добро храниться в виде:
+    - id: equence номер объекта в этой таблице
+    - kind: вид объекта в этой таблице (pg_table, ch_column, confluence_page, page_section, foreign_key, ...)
+    - address: json поле определяющее уникальный адрес, по которому можно добраться до объекта (самая креативная часть системы)
 
-    Содержимое узла лежит в content tables его слоя, связи — в edges. Ядро
-    по kind не ветвится, адрес хранит частями и сравнивает как есть.
+    Ничего лишнего здесь не храниться, только адрес и вид
+    а где храниться контент, на который указывает node?
+    В отдельных contant tables, которые описывают все атрибуты привязанные к этому адресу
+    Таким образом для разных индексируемых объектов, создается своя собственная
+    система хранения с атрибутами, контентом, индексами и прочим
+    А связь между node (core слой) и content (слой хранения) идет через node_id
     """
 
     id: int
     kind: str
-    address: Mapping[str, str | int]   # включая scheme
+    address: Mapping[str, str | int]
+
+class Edge(BaseModel):
+    """Связь между двумя узлами, прочитанная из графа: вид, вес, обоснование.
+
+    Выходит наружу через kb_related и kb_node, в глобальную стадию — через
+    export(); обоснование — jsonb как есть, разбирает его тот, кто знает вид.
+    """
+
+    source_id: int
+    target_id: int
+    kind: str
+    weight: float
+    evidence: Mapping[str, object]
 
 class Address(BaseModel, ABC):
-    """Адрес узла — его идентичность: то, по чему один и тот же объект источника узнаётся при каждой индексации.
+    """Адрес node'ы — определяет уникальный адрес элемента в системе
+    По адресу индексатор определяет, был ли ранее заиндексирован объект
+    По адресу происходит обращение к найденным элементам
 
-    Хранится частями (nodes.address), потому что по частям сравнивают и
-    ищут («всё на этом хосте»); показывается и вводится строкой по
-    грамматике своей схемы. Наследники — модели адресов источников (3.1,
-    4.1) и адрес сущности (5.1): они знают состав частей, их типы
-    (port: int) и грамматику строки; ядро зовёт только parts() — для
-    записи и поиска узла. Лишних частей нет: параметр подключения или
-    неизвестная роль — ошибка валидации, не часть адреса.
+    Адрес харинться в виде json поля для удобства манипутяции внутри sql запросов
+    По задумке любой адрес можно преобразовать в URL вид и обратно в json
+    Все конвертеры адресов будут храниться в content части, отдельно от core слоя приложения
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -171,6 +184,7 @@ class Address(BaseModel, ABC):
     @abstractmethod
     def render(self) -> str: ...
 
+# обоснование ребра - почему вообще считается, что эта связь существует?
 class Evidence(BaseModel):
     """Обоснование ребра: факты, по которым связь посчитана, и параметры, при которых она построена.
 
@@ -178,152 +192,167 @@ class Evidence(BaseModel):
     человек и модель видят, почему узлы связаны («see FLIP-458», косинус
     0.87), kb_graph_check находит рёбра, построенные при других порогах, а
     стадия edges пересчитывает только их. У каждого вида ребра своя модель
-    (3.3, 4.4, 5.3); ядро кладёт dump() в edges.evidence, не разбирая.
+    (3.5, 4.6, 5.4); ядро кладёт dump() в edges.evidence, не разбирая.
     """
 
     def dump(self) -> Mapping[str, object]:
         return self.model_dump()
+
+# базовые классы для хранения векторов
+class Vector(BaseModel):
+    """Числовое представление текста или картинки, по которому сравнивают смысл, а не слова.
+
+    Считается моделью эмбеддинга, и сравнимы только векторы одной модели,
+    поэтому имя модели идёт вместе с числами. Подклассы — форма чисел:
+    плотный и разреженный.
+    """
+
+    model: str                              # имя модели из [encoders.models]; ставит энкодер
+
+class DenseVector(Vector):
+    """Плотный вектор: число на каждую координату пространства модели.
+
+    Столько координат, сколько у модели размерность (dim в её конфиге):
+    у e5-large — 1024 числа, у text-embedding-3-large — 3072. Сравнивается
+    косинусом или скалярным произведением; в базе — pgvector vector(dim).
+    """
+
+    values: Sequence[float]                 # координаты по порядку, len(values) == dim модели
+
+class SparseVector(Vector):
+    """Разреженный вектор: почти все координаты — нули, хранятся только ненулевые.
+
+    Координата — слово (токен) словаря модели, значение — его вес в тексте;
+    словарь SPLADE — десятки тысяч токенов, в тексте ненулевых — десятки.
+    Поэтому хранятся пары «номер координаты — вес», а не весь ряд нулей;
+    в базе — pgvector sparsevec, текстовая форма {i1:v1,i2:v2,…}/dim.
+    """
+
+    indices: Sequence[int]                  # номера ненулевых координат по возрастанию: id токенов словаря модели
+    values: Sequence[float]                 # веса тех же координат, len(values) == len(indices)
+    dim: int                                # полная размерность пространства — размер словаря модели; нужна sparsevec
+
+# generic'и для Vector
+V = TypeVar("V", bound=Vector)
+V_co = TypeVar("V_co", bound=Vector, covariant=True)
+
+class VectorEncoder(Protocol[V_co]):
+    """Порт к модели эмбеддинга: текст в вектор.
+    """
+    async def encode(self, text: str) -> V_co: ...
+
+class VectorEncoderRegistry(Protocol):
+    """Реестр энкодеров: VectorEncoder по имени модели из [encoders.models].
+    """
+
+    def dense(self, model: str) -> VectorEncoder[DenseVector]: ...
+    def sparse(self, model: str) -> VectorEncoder[SparseVector]: ...
 ```
 
-Виды узлов и модели адресов конкретного источника ядро не объявляет: они
-лежат в пакете, который и так знает его объекты, — `boba-confluence` для
-страниц, `boba-db-postgres` и `boba-db-clickhouse` для объектов каталога, и
-описаны в разделах своих слоёв (3.1, 4.1). Моделям от `boba-graph` нужна
-только база `Address`; сам корпус того же пакета зависит ещё и на
-реализации `boba-db-pggraph` и потому вынесен в подмодуль за extra
-(раздел 7). Направление слоёв (core ← infra) соблюдено. Слой сущностей
-объявляет ядро само (5.1), потому что он одинаков для любого корпуса.
+#### 2.2.3 Примеры адресации разных источников
 
-Граница — на входе методов корпуса: `Node` ядра разбирается union'ом
-источника (`ConfluenceNode`, `PgNode`, `ChNode`) в типизированную модель,
-на выходе собирается обратно. Наследник `Address` канонизирует типы
-частей (`port: int`) и один знает грамматику своей строки (2.2.5). Строку, о которой не
-известно, какой объект она называет (ввод `kb_node`), разбирают
-`PgAddresses.parse` и `ChAddresses.parse`: класс адреса выбирается по
-составу ролей в query, и это единственная точка такого разбора в пакете.
-
-### 2.2 Graph tables
-
-Ниже — реализация портов ядра в Postgres: то, что `boba-db-pggraph` создаёт
-в схеме корпуса. Здесь нет ни текста, ни векторов: они в content tables (разделы
-3–5), ядро добирается до них через объявленные корпусом способы поиска.
-
-Все узлы и связи ходят по суррогатному `bigint` внутри схемы. Внешняя
-идентичность узла — адрес частями (раздел 2.2.5), схема — одна из частей;
-уникальность держится на нём. Строка адреса — представление, а не хранимое
-поле: ядро собирает её из частей по одному правилу и разбирает обратно.
-
-| таблица | что хранит |
-|---|---|
-| `nodes` | узел: только идентичность |
-| `sync` | учёт обхода: что качать, что разбирать, что забыть |
-| `edges` | рёбра по виду связи, с весом и обоснованием |
-| `ranks` | метрики узла по алгоритмам |
-
-Об узле хранится информация трёх уровней:
-
-| уровень | где | страница FLIP-457 | таблица `dm.fact_orders` |
-|---|---|---|---|
-| 1 идентичность и учёт | `nodes`, `sync` | `kind = confluence_page`, адрес из `scheme`, `host`, `port`, `path` | `kind = pg_table`, адрес из `scheme`, `host`, `port`, `database`, `schema`, `table` |
-| 2 связи и производные ядра | `edges`, `ranks` | `link`, `mention`, `entity`, `similar`; `pagerank` | `contains`, `foreign_key`, `inferred_key`; `pagerank` |
-| 3 всё содержимое | content tables слоёв (разделы 3–5) | `pages`: заголовок, метки, оглавление, версия<br>`page_sections`: оригинал, markdown, `tsv`, векторы<br>`page_summaries`: саммари, `tsv`, векторы<br>`entities`: сущности, которые страница упоминает | `relations`: определение, комментарий, оценка строк<br>`relation_ddl`, `relation_profiles`, `relation_samples`: `tsv`, векторы<br>`columns`, `column_profiles`<br>`entities`: сущности из комментариев и имён |
-
-#### 2.2.1 Узлы
-
-```sql
-create table nodes (
-    id            bigserial   primary key,
-    kind          text        not null,   -- полный дискриминатор: confluence_page | pg_table | ch_column — перечисление корпуса, раздел 2
-    address       jsonb       not null,   -- адрес по ролям, включая scheme, раздел 2.2.5; идентичность узла
-    created_at    timestamptz not null default now(),
-    updated_at    timestamptz not null default now()
-);
-create unique index on nodes (address);   -- идентичность: одна строка на адрес
-create index on nodes (kind);
-create index on nodes using gin (address jsonb_path_ops);
-```
-
-В `nodes` нет ни текста, ни имени, ни вектора, ни ссылок на другие узлы:
-узел — это только «что это и где». Имя, тексты и векторы — в content tables; все
-связи между узлами, включая вложенность (страница → вложение, таблица →
-колонка), — только в `edges`. Жизненный цикл узла от других узлов не зависит: колонка исчезнувшей таблицы
-удаляется не каскадом от таблицы, а потому, что её самой больше нет в
-списке обхода (2.2.2).
-
-| id | kind | address |
+| kind | `address` (jsonb) | строка |
 |---|---|---|
-| 3 | `confluence_space` | `{"scheme": "https", "host": "cwiki.apache.org", "port": 443, "path": "/confluence/rest/api/space/FLINK"}` |
-| 17 | `confluence_page` | `{"scheme": "https", "host": "cwiki.apache.org", "port": 443, "path": "/confluence/rest/api/content/307136992"}` |
-| 18 | `confluence_attachment` | `{"scheme": "https", "host": "cwiki.apache.org", "port": 443, "path": "/confluence/download/attachments/307136992/design.pdf"}` |
-| 40 | `pg_schema` | `{"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm"}` |
-| 41 | `pg_table` | `{"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm", "table": "fact_orders"}` |
-| 42 | `pg_column` | `{"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm", "table": "fact_orders", "column": "amount"}` |
-| 43 | `ch_index` | `{"scheme": "clickhouse", "host": "ch1", "port": 9000, "database": "logs", "table": "events", "index": "events_ts_minmax"}` |
+| `confluence_space` | `{"scheme": "https", "host": "cwiki.apache.org", "port": 443, "path": "/confluence/rest/api/space/FLINK"}` | `https://cwiki.apache.org/confluence/rest/api/space/FLINK` |
+| `confluence_page` | `{"scheme": "https", "host": "cwiki.apache.org", "port": 443, "path": "/confluence/rest/api/content/307136992"}` | `https://cwiki.apache.org/confluence/rest/api/content/307136992` |
+| `confluence_attachment` | `{"scheme": "https", "host": "cwiki.apache.org", "port": 443, "path": "/confluence/download/attachments/307136992/design.pdf"}` | `https://cwiki.apache.org/confluence/download/attachments/307136992/design.pdf` |
+| `pg_database` | `{"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh"}` | `postgresql://dwh.local:5432/dwh` |
+| `pg_schema` | `{"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm"}` | `postgresql://dwh.local:5432/dwh?schema=dm` |
+| `pg_table` | `{"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm", "table": "fact_orders"}` | `postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders` |
+| `pg_column` таблицы | `{"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm", "table": "fact_orders", "column": "amount"}` | `postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders&column=amount` |
+| `pg_view` | `{"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm", "view": "v_orders_daily"}` | `postgresql://dwh.local:5432/dwh?schema=dm&view=v_orders_daily` |
+| `pg_column` представления | `{"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm", "view": "v_orders_daily", "column": "day"}` | `postgresql://dwh.local:5432/dwh?schema=dm&view=v_orders_daily&column=day` |
+| `pg_matview` | `{"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm", "matview": "mv_orders_month"}` | `postgresql://dwh.local:5432/dwh?schema=dm&matview=mv_orders_month` |
+| `pg_index` — уникален в схеме, без `table` | `{"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm", "index": "fact_orders_customer_idx"}` | `postgresql://dwh.local:5432/dwh?schema=dm&index=fact_orders_customer_idx` |
+| `pg_sequence` | `{"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm", "sequence": "fact_orders_order_id_seq"}` | `postgresql://dwh.local:5432/dwh?schema=dm&sequence=fact_orders_order_id_seq` |
+| `pg_function` — сигнатура в `args` | `{"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm", "function": "calc_total", "args": "bigint,numeric"}` | `postgresql://dwh.local:5432/dwh?schema=dm&function=calc_total&args=bigint%2Cnumeric` |
+| `pg_function` — перегрузка, другой узел | `{"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm", "function": "calc_total", "args": "bigint"}` | `postgresql://dwh.local:5432/dwh?schema=dm&function=calc_total&args=bigint` |
+| `pg_function` — без аргументов, `args` пуст | `{"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm", "function": "now_utc", "args": ""}` | `postgresql://dwh.local:5432/dwh?schema=dm&function=now_utc&args=` |
+| `pg_procedure` | `{"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm", "procedure": "close_orders", "args": "date,text"}` | `postgresql://dwh.local:5432/dwh?schema=dm&procedure=close_orders&args=date%2Ctext` |
+| `pg_constraint` — внутри таблицы | `{"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm", "table": "fact_orders", "constraint": "fact_orders_customer_fkey"}` | `postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders&constraint=fact_orders_customer_fkey` |
+| `pg_trigger` — внутри таблицы | `{"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm", "table": "fact_orders", "trigger": "trg_orders_audit"}` | `postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders&trigger=trg_orders_audit` |
+| `ch_database` — схем нет | `{"scheme": "clickhouse", "host": "ch1", "port": 9000, "database": "logs"}` | `clickhouse://ch1:9000/logs` |
+| `ch_table` | `{"scheme": "clickhouse", "host": "ch1", "port": 9000, "database": "logs", "table": "events"}` | `clickhouse://ch1:9000/logs?table=events` |
+| `ch_column` | `{"scheme": "clickhouse", "host": "ch1", "port": 9000, "database": "logs", "table": "events", "column": "user_id"}` | `clickhouse://ch1:9000/logs?table=events&column=user_id` |
+| `ch_view` | `{"scheme": "clickhouse", "host": "ch1", "port": 9000, "database": "logs", "view": "v_events_hourly"}` | `clickhouse://ch1:9000/logs?view=v_events_hourly` |
+| `ch_matview` | `{"scheme": "clickhouse", "host": "ch1", "port": 9000, "database": "logs", "matview": "mv_events_daily"}` | `clickhouse://ch1:9000/logs?matview=mv_events_daily` |
+| `ch_index` — skip-индекс, внутри таблицы | `{"scheme": "clickhouse", "host": "ch1", "port": 9000, "database": "logs", "table": "events", "index": "events_ts_minmax"}` | `clickhouse://ch1:9000/logs?table=events&index=events_ts_minmax` |
+| `ch_projection` — внутри таблицы | `{"scheme": "clickhouse", "host": "ch1", "port": 9000, "database": "logs", "table": "events", "projection": "events_by_user"}` | `clickhouse://ch1:9000/logs?table=events&projection=events_by_user` |
+| `ch_dictionary` | `{"scheme": "clickhouse", "host": "ch1", "port": 9000, "database": "logs", "dictionary": "dict_users"}` | `clickhouse://ch1:9000/logs?dictionary=dict_users` |
+| `ch_function` — перегрузок нет, без `args` | `{"scheme": "clickhouse", "host": "ch1", "port": 9000, "database": "logs", "function": "to_rub"}` | `clickhouse://ch1:9000/logs?function=to_rub` |
+| `mssql_table` — именованный инстанс ролью | `{"scheme": "mssql", "host": "sql01.corp", "port": 1433, "database": "erp", "instance": "ERP", "schema": "dbo", "table": "Orders"}` | `mssql://sql01.corp:1433/erp?instance=ERP&schema=dbo&table=Orders` |
+| `mssql_procedure` | `{"scheme": "mssql", "host": "sql01.corp", "port": 1433, "database": "erp", "schema": "dbo", "procedure": "usp_CloseOrder"}` | `mssql://sql01.corp:1433/erp?schema=dbo&procedure=usp_CloseOrder` |
+| `oracle_table` — сервис вместо базы | `{"scheme": "oracle", "host": "ora1", "port": 1521, "database": "ORCL", "schema": "SALES", "table": "ORDERS"}` | `oracle://ora1:1521/ORCL?schema=SALES&table=ORDERS` |
+| `mysql_table` — схем нет | `{"scheme": "mysql", "host": "db1", "port": 3306, "database": "shop", "table": "orders"}` | `mysql://db1:3306/shop?table=orders` |
+| `entity` | `{"scheme": "entity", "name": "kraft"}` | `entity://kraft` |
+| `entity` — имя с пробелом, reg-name | `{"scheme": "entity", "name": "arenadata quickmarts"}` | `entity://arenadata%20quickmarts` |
 
-Строка `postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders` в
-таблице не хранится: её даёт `render()` модели адреса при выдаче, а
-входящую строку `parse()` той же модели разбирает в части, и поиск узла
-идёт по `address`.
+**Адрес** — это идентификатор node'ы: то, по чему один и тот же объект источника узнаётся при каждой индексации, находится в графе и называется наружу.
+Ядро о составе адреса не знает ничего: роли объявляет модель адреса
+корпуса (`PgAddress`, `ChAddress`, `ConfluenceAddress`, `EntityAddress`),
+ядро только хранит части, сравнивает их и ищет по ним.
 
-Что 18 лежит в 17, а 42 — в 41, говорят рёбра `(17, 18, has_attachment)` и
-`(41, 42, contains)`.
+**Хранение** Адрес лежит в `nodes.address` как jsonb-объект: `{ "роль": значение }`.
+Схема адреса (pg_table, pg_column, ch_database, confluence_page и прочие) лежит внутри jsonb-объекта. Через схему строиться целевой плоский адрес в URL виде (к примеру `clickhouse://ch1:9000/logs?function=to_rub`)
 
-#### 2.2.2 Учёт обхода
+**Идентичность** Уникальный индекс стоит на `address` целиком. 
+Ключи внутри jsob поля имеют типы, которые задаются моделями в корпусе, а не в core слое. Каждая модель в корпусе должно типизировать свои значения и проверять эти значения в процессе сериализации/десериализации, никаких "общих" проверок со стороны core не должно быть. core не знает о том, как записываются адреса, он лишь умеет воспользоваться реестром типов для сериализации/десериализации.
 
-Индексация — не разовая загрузка, а повторяющийся обход источника.
-Каждый прогон должен качать и разбирать только то, что изменилось, и
-убирать из индекса то, что в источнике исчезло.
+**Поиск по частям** По `address` стоит GIN-индекс с `jsonb_path_ops`. Поэтому поиск по параметрам внутри будет выполняться через оператор вхождения: `@>`, например:
+- дай все адреса PostgreSQL: `address @> '{"scheme": "postgresql"}'`
+- дай все адреса на хосте: `address @> '{"host": "dwh.local"}'`
+- дай все адреса схемы:
+`address @> '{"schema": "dm"}'`.
+Так можно проверить наличие параметрам: `?`:
+Так можно проверить все адреса, где есть table: `address ? 'table'`.
 
-```sql
-create table sync (
-    node_id           bigint      primary key references nodes on delete cascade,
-    source_versions   jsonb       not null default '{}',
-        -- аспект → версия по данным списка или каталога, без скачивания.
-        -- аспекты объявляет корпус: у страницы один (content), у таблицы два (structure, data)
-    body_hashes       jsonb       not null default '{}',
-        -- аспект → sha256 скачанного по этому аспекту: тело страницы, DDL, профиль
-    applied_methods   text[]      not null default '{}',
-        -- способы обработки, которыми узел уже разобран: перечисление корпуса
-    pipeline_stamp    text        not null default '',
-        -- отпечаток настроек конвейера, которыми узел разобран
-    crawl_scope       text        not null default '',
-        -- область обхода, в которой узел найден
-    last_seen_run     text        not null default '',
-        -- прогон, в списке которого узел был в последний раз
-    last_seen_at      timestamptz,
-    last_indexed_at   timestamptz,
-    skip_reason       text        not null default ''
-        -- почему узел не индексируется правилами; пусто — индексируется
-);
-create index on sync (crawl_scope, last_seen_run);
-```
+**Строка адреса.** Нужна человеку, модели и параметрам инструментов для простой адресации к объекту, они будут передавать node строкой. Часть address строится по стандарту:
+- libpq URI для PostgreSQL
+- JDBC для MSSQL, Oracle и MySQL
+- clickhouse-connect для ClickHouse
+- RFC 3986 для web.
+Стандарты заканчиваются на базе данных — адреса таблицы. А вот что не описывают стандарты дак это колонки, индексы, sequence'ы и прочие объекты внутри базы данных, поэтому такие объект внутри
+базы задаётся query-параметрами, в порядке объявления параметров в модели: `…/dwh?schema=dm&table=fact_orders&column=amount`. Роль
+в имени снимает позиционную неоднозначность (`table=daily` и `view=daily`), а строка остаётся валидным URL, который разбирает
+`urllib.parse` из stdlib.
+Примеры всех вариантов — в таблице выше.
 
-Строка `sync` есть у каждого узла. У страницы, вложения, таблицы она
-отвечает на все вопросы ниже; у колонки, индекса, ограничения — только на
-вопрос об исчезновении: они приходят в списке вместе с таблицей, версии и
-хэши у них пусты, а `last_seen_run` проставляется так же, как у всех.
-Поэтому исчезновение любого узла — от пространства до колонки —
-определяется одним правилом.
+**Канон строки** — правила, которым подчиняются `render()` и `parse()`
+каждой модели адреса (3.2, 4.2, 5.2):
 
-**Аспекты.** У узла может быть несколько независимых сторон, которые
-меняются порознь и требуют разной работы. У таблицы их две: структура —
-DDL, колонки, ограничения, индексы, комментарии — и данные — содержимое:
-профили колонок, пример строк, число строк. Изменилась структура —
-перечитать каталог, пересобрать тексты `ddl` и `columns`, явные рёбра;
-изменились данные — перепрофилировать, обновить пример, пересчитать
-`inferred_key`. Аспекты объявляет корпус и привязывает к ним стадии:
+- учётных данных в строке нет никогда;
+- параметры подключения (`sslmode`, `application_name`) — не часть
+  идентичности и в адрес не попадают;
+- порт в частях обязателен; в строке web-адреса порт по умолчанию схемы
+  опускается, как делает `httpx.URL`;
+- порядок query-параметров — порядок объявления ролей в модели, значения
+  кодируются по RFC 3986;
+- обе стороны одной грамматики — один класс в пакете источника; других
+  мест сборки и разбора нет, ядро строки не знает. Строку, о которой
+  неизвестно, какой объект она называет, разбирают `PgAddresses.parse` и
+  `ChAddresses.parse` по составу ролей в query.
 
-```python
-class ConfluenceAspect(StrEnum):
-    CONTENT = "content"        # тело страницы или вложения — единственный аспект
+### 2.3 Учёт обхода: таблица `sync`
 
-class WarehouseAspect(StrEnum):
-    STRUCTURE = "structure"    # parse, ddl, columns, явные рёбра
-    DATA = "data"              # column_profiles, relation_samples, inferred_key
-```
+Индексация — не разовая загрузка, а повторяющийся обход источника. по сути, это периодически запускаемый процесс, каждый прогон которого должен разбирать только то, что изменилось, и убирать из индекса то, что в источнике исчезло.
 
-Прогон сравнивает версии по каждому аспекту отдельно и запускает только
-стадии изменившегося; у Confluence аспект один.
+Запуск процесса будет происходить из разных инициаторов, с разным набором фильтраций, но это не меняет общий корень программы. Нам даже не особо важно кто стартанул программу на индексацию. Это может быть:
+- запуск через специальный tools. Я не уверен здесь, но вероятно для разных корпусов, будут разные tools на запуск (сейчас требуется именно этот вариант)
+- запуск через scheduler внешней системой. Может быть даже rest api на запуск сделать (сейчас не требуется)
+- запуск через cli (сейчас не требуется)
+
+Строка `sync` есть у каждой node'ы, а так как node'а это любой объект: страница, параграф, чанк текста, вложение, имя таблицы, ddl , колонки, sequence, view, ... 
+Соответственно sync описывает некую метаинформацию о синхронизации любого элемента, который используется в графе
+
+**Аспекты.** Node'ы указывают на 
+У одной и той-же node'ы может быть несколько независимых сторон изменения. К примеру таблицы, там две стороны изменения:
+- структура DDL, колонки, ограничения, индексы, комментарии
+- содержимое таблиц (пример строк), число строк.
+Если изменилась структура то надо перечитать метаданные, пересобрать тексты `ddl` и `columns`
+Если изменились данные то необходимо перепрофилировать, обновить пример.
+
+Аспекты изменения node ядро не знает, их знает только корпус, именно в нем заложена логика обновления.
+Прогон сравнивает версии по каждому аспекту отдельно и запускает обновление только по изменившимся аспектам. К пирмеру ddl изменился, значит нужно обновить метаданные всей таблицы
 
 **`source_versions` и `body_hashes` — два разных вопроса.** Первый: «надо
 ли качать?» — отвечается по списку или каталогу, до скачивания. Второй:
@@ -371,7 +400,7 @@ DDL с комментариями; `data` — профиль колонок и �
 Случай 3 у страницы — самый частый в Confluence (сохранение без
 изменений, правка метки, перестановка в дереве) и самый дорогой без
 хэшей: без `body_hashes` каждая такая версия шла бы в OCR вложений и в
-модель саммари заново. Случай 2 у таблицы — самый частый в хранилище:
+модель саммари заново. Случай 2 у таблицы — самый частый в Warehouse:
 ежедневная загрузка меняет данные, но не структуру, и перечитывать
 каталог с пересборкой рёбер незачем.
 
@@ -430,7 +459,7 @@ class ConfluenceParseMethod(StrEnum):
 | 18 | `{text, ocr}` | `{text, caption}` | нет `caption` — описать картинку моделью зрения; `ocr` остаётся |
 
 **`pipeline_stamp`** — отпечаток настроек, которыми узел разобран. Конвейер
-— цепочка стадий индексации (раздел 8); у каждой стадии есть параметры, от
+— цепочка стадий индексации (раздел 7); у каждой стадии есть параметры, от
 которых зависит результат, и штамп — их сводка одной строкой:
 
 ```
@@ -477,15 +506,7 @@ reader=confluence:3;chunk=4000/0;embed=multilingual-e5-large;ner=gliner_multi-v2
 вложение вне allowlist, страница-черновик. Он отмечается увиденным, иначе
 очистка приняла бы его за исчезнувший.
 
-| node_id | `source_versions` | `body_hashes` | `applied_methods` | `pipeline_stamp` | `crawl_scope` | `last_seen_run` | `skip_reason` |
-|---|---|---|---|---|---|---|---|
-| 17 | `{content: v10}` | `{content: cc4fe8ea…}` | `{text, summary, entities}` | `reader=confluence:3;chunk=4000/0;embed=e5` | `space:FLINK` | `run-0912a` | |
-| 18 | `{content: v3:2026-05-01T09:12:00Z:184320:…/pdf}` | `{content: 9b1e02…}` | `{text, ocr}` | `reader=confluence:3;chunk=4000/0;embed=e5` | `space:FLINK` | `run-0912a` | |
-| 19 | `{content: v1:2026-04-02T10:00:00Z:20480:image/png}` | `{}` | `{}` | | `space:FLINK` | `run-0912a` | `image/png not in allowlist` |
-| 41 | `{structure: 3f9a1c…, data: ins=12401233;upd=88102;…}` | `{structure: 8c02d7…, data: e1b4…}` | `{text, profile, entities}` | `reader=postgres:1;chunk=4000/0;embed=e5` | `schema:dm` | `run-0912b` | |
-| 50 | `{structure: 2026-09-11T22:40:03, data: …;rows=9812…}` | `{structure: e77b…, data: 40c1…}` | `{text, profile}` | `reader=clickhouse:1;chunk=4000/0;embed=e5` | `database:logs` | `run-0912b` | |
-
-#### 2.2.3 Рёбра
+### 2.4 Рёбра: таблица `edges`
 
 ```sql
 create table edges (
@@ -503,7 +524,7 @@ create index on edges (target_id, source_id, kind) include (weight);   -- обр
 Один вид — одно ребро. Симметричные виды (`similar`, `same_column`,
 `co_queried`) хранятся один раз, `source_id < target_id`.
 Обход идёт по представлению `adjacency`, где каждое ребро развёрнуто в обе
-стороны: расширение по графу (раздел 9) направления не различает —
+стороны: расширение по графу (раздел 8) направления не различает —
 страница, на которую ссылаются найденные, не менее важна, чем та, на
 которую ссылаются они.
 
@@ -516,15 +537,15 @@ create view adjacency as
 
 Ядро само считает два вида для любого корпуса — от узла к сущностям,
 которые упоминает его текст (раздел 5), и по близости векторов тем
-способом, который корпус назначил роли `similarity` (2.4); имена этим
+способом, который корпус назначил роли `similarity` (2.8); имена этим
 рёбрам корпус даёт таблицей `computed_edge_kinds()`. Всё остальное, включая
 вложенность, объявляет и считает корпус. Ни один список ниже не закрыт:
 новый признак связи — новый член перечисления корпуса и его вычислитель,
 ядро не меняется. Множители веса при обходе — по `kind` в конфиге
-корпуса (раздел 9).
+корпуса (раздел 8).
 
 Виды рёбер объявляет слой: перечисления `ConfluenceEdgeKind` и
-`WarehouseEdgeKind` — в разделах 3.3 и 4.4, ребро `entity` — в 5.3. Ядро
+`WarehouseEdgeKind` — в разделах 3.5 и 4.6, ребро `entity` — в 5.4. Ядро
 знает только строку `kind`.
 
 **Обоснование ребра.** `weight` — число для обхода, `evidence` — почему
@@ -532,41 +553,17 @@ create view adjacency as
 которых оно построено. Пишется вместе с ребром стадией `edges`; при
 переиндексации узла его рёбра удаляются в обе стороны и строятся заново
 вместе с обоснованием. У каждого вида ребра своя модель — наследник
-`Evidence` ядра (раздел 2); словаря общего вида нет.
+`Evidence` ядра; словаря общего вида нет.
 
-```python
-# boba-graph: обоснования рёбер, которые считает ядро
-class FactEvidence(Evidence):
-    """Обоснование ребра, которое есть факт метаданных источника (in_space, has_attachment, contains): проверять нечего, dump() пуст."""
-
-class SimilarEvidence(Evidence):
-    """Обоснование ребра similar: почему узлы сочтены похожими — косинус, каким способом сравнивали и при каком пороге."""
-
-    cosine: float
-    lookup: str                         # подпись способа роли similarity: "summary/vector"
-    model: str                          # имя модели из [encoders.models]
-    min_cos: float                      # порог из [graph] на момент расчёта
-```
-
-Обоснования явных рёбер слоёв — рядом с их перечислениями (3.3, 4.4, 5.3).
+Обоснования явных рёбер слоёв — рядом с их перечислениями (3.5, 4.6, 5.4).
 Как считаются рёбра ядра:
 
 - `similar` — ядро: способом роли `similarity` ищет похожие на текст
-  самого узла (`Corpus.similar_text`, 2.4), верх `similar_top_k`, косинус не
+  самого узла (`Corpus.similar_text`, 2.8), верх `similar_top_k`, косинус не
   ниже `similar_min_cos`; сам узел из выдачи отбрасывается.
 
-Три потребителя обоснования, и ранжирование среди них не значится: обход
-(раздел 9) берёт только `weight` и множитель по `kind`.
-
-1. **Показ.** `kb_node` и `kb_related` отдают рёбра узла с `evidence`
-   как есть: по нему модель судит, насколько доверять связи — ссылка с
-   якорем «see FLIP-458» весомее, чем `similar 0.81`.
-2. **Проверка.** `kb_graph_check` сверяет параметры расчёта в обосновании
-   с текущим конфигом: `evidence->>'min_cos'`, `'min_jaccard'`,
-   `'min_words'` — и перечисляет рёбра, построенные при других порогах.
-3. **Частичный пересчёт.** После смены порога стадия `edges` перестраивает
-   только виды рёбер, чьи параметры в обосновании разошлись с конфигом,
-   а не весь граф.
+Обход (раздел 8) берёт из ребра только `weight` и множитель по `kind`;
+три потребителя обоснования названы в docstring `Evidence`.
 
 Пример рёбер разных слоёв в одной таблице `edges`:
 
@@ -583,7 +580,11 @@ class SimilarEvidence(Evidence):
 | 41 | 52 | `view_source` | 1.00 | `{"view": "dm.v_orders_daily"}` |
 | 41 | 45 | `co_queried` | 0.63 | `{"queries": 118, "window": "30d"}` |
 
-#### 2.2.4 Метрики
+Ребро от корпуса приходит черновиком с адресом цели, из графа читается
+моделью `Edge`; виды, которые ядро строит само, — `ComputedEdge`, имена
+им даёт корпус (2.8). Порт — `GraphStore`, реализации — 2.9.3.
+
+### 2.5 Метрики: таблица `ranks`
 
 Метрика — число про один `Node`, которое нельзя узнать, глядя на него
 одного: оно зависит от всего графа. PageRank говорит, насколько на узел
@@ -593,7 +594,7 @@ class SimilarEvidence(Evidence):
 номер плотной группы, в которую он попал. Это не связи и не содержимое,
 а третья вещь: производное свойство узла, которое считает глобальная
 стадия по всему графу сразу (NetworkX) и которое поиск добавляет к счёту
-(раздел 9), чтобы среди равных по тексту поднять центральный.
+(раздел 8), чтобы среди равных по тексту поднять центральный.
 
 Таблица в длинном формате — одна строка на пару «узел, метрика», — потому
 что метрик много, набор открыт, и колонка в `nodes` на каждый алгоритм
@@ -613,119 +614,9 @@ create index on ranks (metric, value desc);
 
 Глобальная стадия считает набор метрик из конфига; добавление алгоритма —
 новая функция NetworkX и новое имя метрики, схема не меняется. Ранжирование
-использует те метрики, что названы в его конфиге (раздел 9).
+использует те метрики, что названы в его конфиге (раздел 8).
 
-| node_id | metric | value | computed_at | run_id | |
-|---|---|---|---|---|---|
-| 17 | `pagerank` | 0.00412 | 2026-09-12 | `graph-0912` | |
-| 17 | `betweenness` | 0.0187 | 2026-09-12 | `graph-0912` | |
-| 17 | `degree_in` | 14 | 2026-09-12 | `graph-0912` | |
-| 17 | `community` | 7 | 2026-09-12 | `graph-0912` | |
-| 41 | `pagerank` | 0.0301 | 2026-09-12 | `graph-0912` | таблица, на которую ссылаются многие |
-| 41 | `community` | 2 | 2026-09-12 | `graph-0912` | |
-
-#### 2.2.5 Адрес узла
-
-Адрес хранится частями в `nodes.address` — jsonb-объект «роль → значение».
-Роли объявляет корпус, ядро их не толкует: хранит, сравнивает, собирает
-строку и разбирает обратно. Схема — первая часть адреса, как в RFC 3986, а не
-отдельное поле: она выбирает грамматику строки, но это свойство самого
-адреса. Идентичность узла — `address` целиком, на нём уникальный индекс:
-jsonb хранится нормализованно, порядок ключей на равенство не влияет. Чтобы равенство было честным, типы значений
-канонизирует модель адреса корпуса (`port: int`, остальные части —
-строки, раздел 2); иначе `5432` и `"5432"` — разные адреса. Запросы по частям — «всё на хосте
-`dwh.local`», «все колонки схемы `dm`» — идут GIN-индексом через
-`address @> '{"host": ...}'`.
-
-```json
-{"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm", "table": "fact_orders", "column": "amount"}
-{"scheme": "clickhouse", "host": "ch1", "port": 9000, "database": "logs", "table": "events", "index": "events_ts_minmax"}
-{"scheme": "mssql", "host": "sql01.corp", "port": 1433, "instance": "ERP", "database": "erp", "schema": "dbo", "table": "Orders"}
-{"scheme": "https", "host": "cwiki.apache.org", "port": 443, "path": "/confluence/rest/api/content/307136992"}
-{"scheme": "smb", "host": "fs01.corp", "share": "reports", "path": "/2026/q1.xlsx", "sheet": "Summary"}
-{"scheme": "s3", "host": "minio.corp", "port": 9000, "bucket": "raw", "key": "orders/2026-09-01.parquet"}
-```
-
-Запрос «всё в PostgreSQL» — тот же GIN: `address @> '{"scheme": "postgresql"}'`.
-
-Строка адреса — представление частей для человека, модели и параметров
-инструментов; в таблице она не хранится. Строится по стандартным
-грамматикам адресов — там, где стандарт есть:
-
-| scheme       | стандарт части подключения                  | пример подключения                       |
-|--------------|---------------------------------------------|------------------------------------------|
-| `postgresql` | libpq Connection URI                        | `postgresql://dwh.local:5432/dwh`        |
-| `mssql`      | JDBC `sqlserver://host:port;databaseName=…` | `mssql://sql01.corp:1433/erp`            |
-| `mysql`      | MySQL / JDBC URI                            | `mysql://db1:3306/shop`                  |
-| `clickhouse` | JDBC / clickhouse-connect URI               | `clickhouse://ch1:9000/logs`             |
-| `oracle`     | JDBC thin `//host:port/service`             | `oracle://ora1:1521/ORCL`                |
-| `https`      | RFC 3986                                    | `https://cwiki.apache.org/confluence/...`|
-| `file`       | RFC 8089                                    | `file:///share/reports/2026/q1.xlsx`     |
-| `smb`        | URI `smb://host/share/path` (Samba, IANA)   | `smb://fs01.corp/reports`                |
-| `hdfs`       | Hadoop URI `hdfs://namenode:port/path`      | `hdfs://nn1.corp:8020`                   |
-| `s3`         | `s3://bucket/key` (AWS CLI, Hadoop)         | `s3://minio.corp:9000/raw`               |
-
-Две оговорки к стандартам. У MSSQL именованный инстанс `host\ERP` в
-JDBC пишется `instanceName=ERP`; в каноне это роль `instance` в query, а
-не обратный слеш в хосте. У S3 стандарт ставит бакет в authority, endpoint
-в адресе не участвует — для AWS это допустимо, для своих MinIO нет: два
-хранилища с одинаковыми именами бакетов неразличимы. Поэтому в каноне
-authority — endpoint, бакет — первый сегмент пути; для AWS endpoint —
-`s3.<region>.amazonaws.com`.
-
-Все они описывают подключение и заканчиваются на базе данных: стандарта на
-адрес таблицы, колонки или индекса внутри базы нет ни у libpq, ни у JDBC.
-Поэтому объект внутри базы задаётся query-параметрами с ролью в имени, в
-фиксированном порядке ролей корпуса: строка остаётся валидным URL по
-RFC 3986, её разбирает `urllib.parse` из stdlib, а роль в имени параметра
-снимает позиционную неоднозначность — `table=daily` и `view=daily` не
-спутать.
-
-```
-postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders
-postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders&column=amount
-postgresql://dwh.local:5432/dwh?schema=dm&index=fact_orders_pk
-mssql://sql01.corp:1433/erp?schema=dbo&table=Orders
-mssql://sql01.corp:1433/erp?instance=ERP&schema=dbo&table=Orders&column=OrderID
-mssql://sql01.corp:1433/erp?schema=dbo&procedure=usp_CloseOrder
-clickhouse://ch1:9000/logs?table=events&index=events_ts_minmax
-oracle://ora1:1521/ORCL?schema=SALES&table=ORDERS
-https://cwiki.apache.org/confluence/rest/api/content/307136992
-https://cwiki.apache.org/confluence/download/attachments/307136992/design.pdf
-file:///share/reports/2026/q1.xlsx?sheet=Summary
-smb://fs01.corp/reports/2026/q1.xlsx
-smb://fs01.corp/reports/2026/q1.xlsx?sheet=Summary
-hdfs://nn1.corp:8020/data/raw/orders/2026-09-01.parquet
-hdfs://nn1.corp:8020/data/raw/orders?partition=dt%3D2026-09-01
-hdfs://nn1.corp:8020/data/raw/orders/2026-09-01.parquet?column=amount
-s3://minio.corp:9000/raw/orders/2026-09-01.parquet
-s3://s3.eu-central-1.amazonaws.com/company-raw/orders/2026-09-01.parquet?column=amount
-```
-
-Файловые схемы (`file`, `smb`, `hdfs`, `s3`) адресуют файл путём, а объект
-внутри файла — лист таблицы, партицию каталога, колонку parquet — той же
-ролью в query, что и объект внутри базы.
-
-Полные наборы адресов объектов PostgreSQL и ClickHouse — в разделе 4.2,
-адрес сущности — в 5.1.
-
-Правила канона, обязательные для `render()` и `parse()` каждой модели
-адреса (3.1, 4.1): учётных данных в строке адреса нет никогда; параметры
-подключения (`sslmode`, `application_name`) — не часть идентичности; хост
-в нижнем регистре; порт в частях обязателен, в строке web-адреса порт по
-умолчанию схемы опускается (так делает `httpx.URL`); порядок
-query-параметров — порядок объявления ролей в модели; значения кодируются по RFC 3986. Обе стороны
-одной грамматики — один класс в пакете источника (`PgAddress`,
-`ChAddress`, `ConfluenceAddress`); других мест сборки и разбора нет, ядро
-строки не знает.
-
-`url` для человека и модели живёт в content tables: Confluence отдаёт
-`…/pages/viewpage.action?pageId=…` через `httpx.URL`; `httpx` в ядре нет.
-Вложенность из адреса не выводится: ребро `contains` или `has_attachment`
-ставит корпус по данным источника. Индекс PostgreSQL адресуется в схеме, а
-ребром привязан к таблице — адрес и связь независимы.
-
-### 2.3 Способы поиска
+### 2.6 Способы поиска
 
 Способ поиска — и объявление, и исполнитель: он знает свои таблицу и
 колонки и сам собирает по ним запрос. У способа две координаты, и они
@@ -738,344 +629,12 @@ query-параметров — порядок объявления ролей в
 
 Ищут всегда текстом: его печатает пользователь, а служебные поиски ядра
 берут текст узла — заголовок для ребра упоминания, саммари для ребра
-похожести. Во что превратить текст, решает сам способ: полнотекстовому
-нужна строка, векторному — вектор, и энкодер он получил при создании от
-корпуса. Поэтому наружу торчит один метод, ни модели, ни вектора в
-протоколе нет. Ядро объявляет протокол без привязки к драйверу: готовый
+похожести. Ядро объявляет протокол без привязки к драйверу: готовый
 запрос — параметр типа, ничего постгресового в нём нет; реализации для
-Postgres живут в `boba-db-pggraph` (2.6), корпус создаёт их при старте из
-своего конфига (`[storage] pg_schema`) и отдаёт одним списком (2.4).
+Postgres живут в `boba-db-pggraph` (2.9.1), корпус создаёт их при старте из
+своего конфига (`[storage] pg_schema`) и отдаёт одним списком (2.8).
 
-```python
-# boba-graph — ядро: зонды и векторы — общие модели данных, SQL нет
-class Vector(BaseModel):
-    """Числовое представление текста или картинки, по которому сравнивают смысл, а не слова.
-
-    Считается моделью эмбеддинга, и сравнимы только векторы одной модели,
-    поэтому имя модели идёт вместе с числами. Подклассы — форма чисел:
-    плотный и разреженный.
-    """
-
-    model: str                              # имя модели из [encoders.models]; ставит энкодер
-
-class DenseVector(Vector):
-    """Плотный вектор: число на каждую координату пространства модели.
-
-    Столько координат, сколько у модели размерность (dim в её конфиге):
-    у e5-large — 1024 числа, у text-embedding-3-large — 3072. Сравнивается
-    косинусом или скалярным произведением; в базе — pgvector vector(dim).
-    """
-
-    values: Sequence[float]                 # координаты по порядку, len(values) == dim модели
-
-class SparseVector(Vector):
-    """Разреженный вектор: почти все координаты — нули, хранятся только ненулевые.
-
-    Координата — слово (токен) словаря модели, значение — его вес в тексте;
-    словарь SPLADE — десятки тысяч токенов, в тексте ненулевых — десятки.
-    Поэтому хранятся пары «номер координаты — вес», а не весь ряд нулей;
-    в базе — pgvector sparsevec, текстовая форма {i1:v1,i2:v2,…}/dim.
-    """
-
-    indices: Sequence[int]                  # номера ненулевых координат по возрастанию: id токенов словаря модели
-    values: Sequence[float]                 # веса тех же координат, len(values) == len(indices)
-    dim: int                                # полная размерность пространства — размер словаря модели; нужна sparsevec
-
-V = TypeVar("V", bound=Vector)                          # обобщённые функции и dataclass'ы
-V_co = TypeVar("V_co", bound=Vector, covariant=True)    # протоколы: вектор только на выходе — pyright требует covariant
-
-class Probe(BaseModel):
-    """Зонд — то, чем ищут, вместе с рамками запроса.
-
-    text — текст пользователя или текст узла для служебных поисков ядра;
-    во что его превратить, решает способ. limit — кандидатов с одного
-    способа до слияния, не итоговый top_k инструмента. Порог по счёту,
-    смещение, фильтр по виду узла добавятся полями сюда, не меняя
-    сигнатуру statement у реализаций.
-    """
-
-    text: str
-    limit: int = Field(gt=0)
-
-class VectorEncoder(Protocol[V_co]):
-    """Порт к модели эмбеддинга: текст в вектор.
-
-    Один контракт для двух потребителей: стадия embed считает векторы
-    содержимого при индексации, векторный способ поиска — вектор запроса,
-    и так оба заведомо считают одной моделью. Реализации — по виду модели
-    (2.5).
-    """
-    async def encode(self, text: str) -> V_co: ...
-
-class VectorEncoderRegistry(Protocol):
-    """Реестр энкодеров: VectorEncoder по имени модели из [encoders.models].
-
-    Нужен, чтобы корпус при старте получил энкодер для каждой своей таблицы
-    векторов, не зная, локальная это модель или HTTP. dense и sparse
-    сверяют modality строки с запрошенной формой: рассогласование — ошибка
-    конфига с именем модели, а не пустая выдача в запросе.
-    """
-
-    def dense(self, model: str) -> VectorEncoder[DenseVector]: ...
-    def sparse(self, model: str) -> VectorEncoder[SparseVector]: ...
-
-class LookupRow(BaseModel):
-    """Строка одного способа поиска, когда его запрос исполняется сам по себе.
-
-    В kb_search строки способов до Python не доходят — их сливает один
-    SQL (раздел 9). Сюда они приходят из служебных поисков ядра: ребро
-    similar берёт score как косинус для обоснования, ребро mention — node_id
-    найденного по имени узла.
-    """
-
-    node_id: int
-    row_id: int
-    snippet: str
-    score: float
-
-S = TypeVar("S")                              # готовый запрос драйвера целиком: у psycopg — PgStatement (sql.Composed + параметры)
-S_co = TypeVar("S_co", covariant=True)        # протоколы: запрос только на выходе
-
-class LookupMethod(StrEnum):
-    """Способ поиска — чем ищем: полнотекст, BM25, триграммы, точное совпадение, плотный или разреженный вектор.
-
-    Ось, общая для всех корпусов; вторая ось — вид содержимого — у корпуса.
-    Пара даёт подпись способа («title/exact»), и собирается она здесь, в
-    одном месте: подпись идёт в выдачу, в обоснование ребра similar и служит
-    ключом веса в [search.weights].
-    """
-
-    FTS = "fts"
-    BM25 = "bm25"
-    TRIGRAM = "trigram"
-    EXACT = "exact"
-    VECTOR = "vector"
-    SPARSE = "sparse"
-
-    @classmethod
-    def label_of(cls, content_kind: str, method: "LookupMethod") -> str:
-        return f"{content_kind}/{method.value}"
-
-class LookupRole(StrEnum):
-    """Служебные поиски, которые ядро делает само при построении рёбер: найти узел по имени, найти похожие.
-
-    Каким из своих способов их выполнять, назначает корпус
-    (Corpus.role_lookups, 2.4).
-    """
-
-    NAMING = "naming"          # найти узел по его имени: ребро mention
-    SIMILARITY = "similarity"  # найти похожие узлы: ребро similar
-
-class IndexLookup(Protocol[S_co]):
-    """Один способ искать: вид содержимого плюс способ поиска по нему.
-
-    content_kind — что ищем: заголовок, раздел, саммари, DDL, картинка;
-    значение перечисления корпуса, ядро его не толкует. method — чем ищем.
-    statement — подзапрос по зонду, который SearchStore вкладывает в один
-    общий запрос поиска (раздел 9): колонки node_id, row_id, snippet,
-    score, где score больше — лучше, не больше probe.limit строк, лучшие
-    первыми. Во что превратить текст, знает только реализация, и энкодер
-    она получила при создании, поэтому метод асинхронный, а модели снаружи
-    не видно.
-
-    Что такое готовый запрос (S) — знает только SearchStore того же
-    драйвера: ядро его не разбирает, поэтому протокола запроса в ядре нет.
-    """
-
-    def content_kind(self) -> str: ...
-    def method(self) -> LookupMethod: ...
-    async def statement(self, probe: Probe) -> S_co: ...
-```
-
-### 2.4 Протокол корпуса и порты
-
-Протокол корпуса и то, что через него ходит. Ребро от корпуса приходит
-черновиком с адресом цели (наследник `Address`, 3.1, 4.1) и обоснованием
-(наследник `Evidence`, 2.2.3): id цели ядро находит само по `parts()`.
-Исходник узла корпус отдаёт в виде для большой модели (раздел 6):
-
-```python
-class EdgeDraft(BaseModel):
-    """Связь, найденная корпусом или стадией и отданная ядру на запись.
-
-    Цель — адресом, а не номером: тот, кто нашёл связь, знает объект
-    источника, а номер узла в графе знает только ядро; оно и разрешит адрес
-    в id или отложит связь в pending_links, если цели ещё нет.
-    """
-
-    target: Address
-    kind: str
-    weight: float
-    evidence: Evidence
-
-class Snippet(BaseModel):
-    """Фрагмент, которым узел найден: чем найден, какое это содержимое, текст для цитаты."""
-
-    lookup: str                 # подпись способа: "section/fts"
-    content_kind: str           # по нему потребитель решает, текст это или картинка
-    row_id: int                 # строка content tables, по ней берётся оригинал куска
-    text: str
-
-class Hop(BaseModel):
-    """Шаг пути по графу: по ребру какого вида и от какого узла пришли."""
-
-    kind: str
-    from_node_id: int
-
-class Candidate(BaseModel):
-    """Узел из одного из двух запросов поиска (раздел 9), ещё без итогового счёта.
-
-    Из запроса кандидатов приходит с s_base и фрагментами, из обхода графа
-    — с s_graph и путём; ядро складывает их по node_id. kind, address и
-    метрики берутся тем же запросом из nodes и ranks.
-    """
-
-    node_id: int
-    kind: str
-    address: Mapping[str, str | int]
-    s_base: float = 0.0
-    s_graph: float = 0.0
-    distance: int = 0
-    snippets: Sequence[Snippet] = ()
-    path: Sequence[Hop] = ()
-    metrics: Mapping[str, float] = {}
-
-class Match(BaseModel):
-    """Строка выдачи kb_search: кандидат с итоговым счётом и заголовком.
-
-    Рендерится двумя способами из одних полей: большой модели — заголовок,
-    kind, адрес строкой и фрагменты; человеку — заголовок ссылкой и
-    фрагменты, где фрагмент по картинке показывается картинкой.
-    """
-
-    node_id: int
-    kind: str
-    address: Mapping[str, str | int]
-    title: str
-    score: float
-    s_base: float
-    s_graph: float
-    snippets: Sequence[Snippet]
-    path: Sequence[Hop]
-
-class TextPart(BaseModel):
-    """Кусок документа текстом: markdown раздела, DDL, профиль колонки."""
-
-    content_kind: str
-    text: str
-
-class NodePart(BaseModel):
-    """Кусок документа, который сам является узлом: картинка, pdf, дочерняя страница.
-
-    Рендерер решает по kind: пользователю показать картинку по адресу,
-    большой модели — строку «[image: schema.png — диаграмма потоков]».
-    """
-
-    content_kind: str
-    node_id: int
-    kind: str
-    address: Mapping[str, str | int]
-    title: str
-
-class NodeDocument(BaseModel):
-    """Узел целиком для kb_node: собирается из content tables, в источник не ходим.
-
-    truncated говорит, что части обрезаны лимитом: модель узнаёт, что видит
-    не всё, и может попросить остальное.
-    """
-
-    node_id: int
-    kind: str
-    address: Mapping[str, str | int]
-    title: str
-    parts: Sequence[TextPart | NodePart]
-    truncated: bool = False
-
-class ComputedEdge(StrEnum):
-    """Рёбра, которые ядро строит за корпус; как их назвать, говорит корпус."""
-
-    ENTITY = "entity"          # узел → сущность, которую упоминает
-    SIMILAR = "similar"        # по близости векторов
-
-class Corpus(Protocol[S_co]):
-    """Адаптер источника к ядру графа: ответы на то, чего ядро о нём не знает.
-
-    Ядро хранит узлы, ищет, строит два вида рёбер и ранжирует, но не знает,
-    что такое страница или таблица. Методы ниже — шесть вопросов, которые
-    оно задаёт корпусу, в том же порядке: где искать и сколько это весит,
-    каким способом искать за ядро, как назвать построенное, что взять из
-    узла, что источник знает о связях сам, как показать узел — коротко
-    (заголовок) и целиком (документ).
-
-    S — готовый запрос драйвера хранилища, которым корпус пользуется:
-    ConfluenceCorpus(Corpus[PgStatement]).
-    """
-
-    node_kinds: type[StrEnum]      # разбор строки ядра в модель источника (3.1, 4.1)
-    content_kinds: type[StrEnum]   # левая ось подписи способа и таблицы content tables (разделы 3–5)
-    edge_kinds: type[StrEnum]      # ключи [search.expand.factors] (раздел 9)
-
-    def lookups(self) -> Sequence[IndexLookup[S_co]]: ...
-    def search_weights(self) -> Mapping[str, float]: ...                    # подпись способа -> вес в RRF, из [search.weights]
-
-    def role_lookups(self) -> Mapping[LookupRole, IndexLookup[S_co]]: ...   # каким способом ядро ищет имена и похожие
-    def computed_edge_kinds(self) -> Mapping[ComputedEdge, str]: ...        # как корпус зовёт рёбра, которые ядро строит
-
-    def entity_texts(self, node_id: int) -> Sequence[str]: ...              # из чего извлекать сущности
-    def similar_text(self, node_id: int) -> str: ...                        # чем узел представлен в поиске похожих
-
-    def explicit_edges(self, node: Node) -> Iterable[EdgeDraft]: ...        # связи, видные в самом источнике
-    def titles(self, node_ids: Sequence[int]) -> Mapping[int, str]: ...     # заголовки для выдачи, одним запросом
-    def document(self, node_id: int, limit: int) -> NodeDocument: ...       # узел целиком для kb_node
-
-S_contra = TypeVar("S_contra", contravariant=True)   # протоколы: запрос корпуса только на входе
-
-class SearchStore(Protocol[S_contra]):
-    """Хранилище поиска: один запрос кандидатов на все способы корпуса и исполнение одного способа.
-
-    candidates — запрос 1 алгоритма поиска (раздел 9): подзапросы всех
-    способов, слияние RRF, фрагменты, kind, адрес и метрики — одним SQL.
-    rows — исполнить подзапрос одного способа отдельно: для служебных
-    поисков ядра (рёбра similar и mention). Реализация — у драйвера
-    (PgSearchStore, 2.6). Corpus[S] стоит в позиции аргумента, поэтому S
-    здесь контравариантен.
-    """
-
-    async def candidates(self, corpus: Corpus[S_contra], query: str) -> Sequence[Candidate]: ...
-    async def rows(self, statement: S_contra) -> Sequence[LookupRow]: ...
-
-class Edge(BaseModel):
-    """Связь между двумя узлами, прочитанная из графа: вид, вес, обоснование.
-
-    Выходит наружу через kb_related и kb_node, в глобальную стадию — через
-    export(); обоснование — jsonb как есть, разбирает его тот, кто знает вид.
-    """
-
-    source_id: int
-    target_id: int
-    kind: str
-    weight: float
-    evidence: Mapping[str, object]
-
-class GraphStore(Protocol):
-    """Хранилище графа: рёбра, соседи, расширение от опорных узлов; две реализации (2.6).
-
-    replace_edges — стадия edges заменяет рёбра узла указанных видов
-    целиком; neighbors — соседи для kb_related; expand — шаг 2 поиска
-    (9.2): от опорных узлов с их s_base по видам рёбер из
-    [search.expand.factors] на depth шагов, наружу Candidate с s_graph,
-    distance и путём; export — весь граф для глобальной стадии (NetworkX);
-    drop_node — узел из графа вместе с рёбрами.
-    """
-
-    async def replace_edges(self, node_id: int, kinds: Sequence[str], edges: Sequence[EdgeDraft]) -> None: ...
-    async def neighbors(self, node_id: int, kinds: Sequence[str]) -> Sequence[Edge]: ...
-    async def expand(self, seeds: Mapping[int, float], depth: int) -> Sequence[Candidate]: ...
-    async def export(self) -> Sequence[Edge]: ...
-    async def drop_node(self, node_id: int) -> None: ...
-```
-
-### 2.5 Энкодеры
+### 2.7 Энкодеры
 
 Энкодеры живут в `boba-llm` и одинаково служат индексации (вектор
 документа) и поиску (вектор запроса). Модель эмбеддинга целиком описана
@@ -1165,11 +724,7 @@ class PgVectorEncoderRegistry(VectorEncoderRegistry):
         return self._sparse[model]
 ```
 
-Что берётся откуда: `modality` и `provider` выбирают класс (`text`+`local`
-→ `TextEmbedder` над fastembed, `text`+`openai` → `TextEmbedder` над
-HTTP, `image` → `ClipTextEncoder`, `sparse` → `SparseEncoder`);
-`query_prefix`, `max_tokens`, `normalize`, `dim` — из строки; каталог
-весов или endpoint и ключ — из конфига:
+Три модели в конфиге — локальная текстовая, картиночная и HTTP:
 
 ```toml
 [encoders.models."multilingual-e5-large"]
@@ -1214,18 +769,31 @@ HTTP, `image` → `ClipTextEncoder`, `sparse` → `SparseEncoder`);
 typmod, у моделей он разный, а частичный индекс планировщик берёт лишь
 при буквальном совпадении предиката, чего ни join по имени, ни параметр
 в generic-плане psycopg не дают. Таблица на модель делает запрос чистым
-index scan без фильтров. По `index_distance` выбирается класс операторов
-индекса (`vector_cosine_ops`, `vector_ip_ops`, `vector_l2_ops`) и
-оператор запроса; другой оператор в запросе индекс не использует.
-`query_prefix`/`passage_prefix` — e5 требует разные префиксы для запроса
-и документа, без них качество падает молча. `revision` входит в штамп:
-пересчёт с новыми весами — новая ревизия, и узлы со старым штампом
-переиндексируются.
+index scan без фильтров.
 
 Способ поиска или стадия `embed`, ссылающиеся на модель, которой нет в
 `[encoders.models]`, — ошибка старта с именем модели: реестр не угадывает.
 
-### 2.6 Реализации в Postgres
+### 2.8 Протокол корпуса и документ узла
+
+Протокол корпуса — вопросы, которые ядро задаёт источнику, и модели,
+которыми источник отвечает. Ребро приходит черновиком `EdgeDraft` (2.4)
+с адресом цели (наследник `Address`, 3.2, 4.2) и обоснованием
+(наследник `Evidence`): id цели ядро находит само по `parts()`. Узел
+целиком корпус отдаёт документом в виде для большой модели:
+целиком корпус отдаёт документом в виде для большой модели (`NodeDocument`, 2.2.2).
+
+**Документ узла.** Инструмент `kb_node` зовёт `Corpus.document(node_id, limit)`;
+документ собирается из content tables, а не из источника — версия на
+момент индексации. Что в него входит у каждого слоя — 3.6 и 4.7.
+
+### 2.9 Реализация в Postgres
+
+Пакет `boba-db-pggraph` — порты ядра на Postgres: DDL graph tables
+(2.2–2.5), способы поиска, хранилище поиска и два бэкенда графа.
+Пул и курсоры — из `boba-db-postgres`.
+
+#### 2.9.1 Способы поиска
 
 ```python
 # boba-db-pggraph — реализации Pg*Lookup: S = PgStatement, схема Postgres —
@@ -1365,7 +933,7 @@ class PgVectorLookup(IndexLookup[PgStatement]):
             ref=sql.Identifier(self.ref_column), vector=sql.Literal(VectorText.dense(vector)),
         )
         return PgStatement(query=composed, params={"limit": probe.limit}, setup=(self._ef_search(probe.limit),))
-        # вектор — литерал, а не параметр: ветки разных моделей в одном запросе (9.1) не делят имя параметра
+        # вектор — литерал, а не параметр: ветки разных моделей в одном запросе (8.1) не делят имя параметра
 
     EF_SEARCH_DEFAULT: ClassVar[int] = 40    # HNSW отдаёт не больше ef_search строк за скан; дефолт pgvector
 
@@ -1560,26 +1128,6 @@ class PgSparseLookup(IndexLookup[PgStatement]):
         return sql.SQL("set local hnsw.ef_search = {ef}").format(ef=sql.Literal(max(limit, self.EF_SEARCH_DEFAULT)))
 ```
 
-Слой сущностей (раздел 5) ищется теми же классами, но объявляет их ядро,
-потому что таблица `entities` одинакова в любой схеме; корпус включает их в
-свой список:
-
-```python
-class PgEntityLookups:
-    """Способы поиска по слою сущностей: точное имя и триграммы над entities; одинаковы для любого корпуса."""
-
-    CONTENT: ClassVar[str] = "entity"          # вид содержимого слоя сущностей: подписи entity/exact, entity/trigram
-
-    @classmethod
-    def of(cls, schema: str) -> Sequence[IndexLookup[PgStatement]]:
-        return (
-            PgExactLookup(content=cls.CONTENT, schema=schema, table="entities",
-                          node_column="node_id", row_column="node_id", text_column="name"),
-            PgTrigramLookup(content=cls.CONTENT, schema=schema, table="entities",
-                            node_column="node_id", row_column="node_id", text_column="display"),
-        )
-```
-
 Имена таблиц и колонок подставляются как `sql.Identifier`, значения — как
 параметры: инъекции через объявление нет по построению, а `LiteralString`
 в `ClassVar` не даёт собрать шаблон из строк на лету. Один класс
@@ -1590,32 +1138,16 @@ class PgEntityLookups:
 колонка `tsvector`, у векторного — своя таблица векторов и энкодер, и
 каждый объявляет свои поля сам.
 
-**Хранилище поиска.** Реализация `SearchStore` над psycopg. Главное в ней — `candidates`: не
+#### 2.9.2 Хранилище поиска
+
+Реализация `SearchStore` над psycopg. Главное в ней — `candidates`: не
 двенадцать запросов и слияние в Python, а один SQL, в который подзапросы
 способов вложены ветками `union all`, а слияние RRF, отбор фрагментов,
 `kind`, адрес и метрики считаются в базе. В Python приходят только строки,
-которые пойдут в выдачу. Сам алгоритм и полный текст запроса — в разделе 9;
+которые пойдут в выдачу. Сам алгоритм и полный текст запроса — в разделе 8;
 здесь то, как хранилище его собирает.
 
 ```python
-class ExpandConfig(BaseModel):
-    """Секция [search.expand]: расширение выдачи по графу (9.2) — сколько шагов, вклад в счёт, множители по видам рёбер."""
-
-    depth: int = Field(gt=0)                # шагов от опорных узлов
-    weight: float = Field(ge=0)             # вклад s_graph в итоговый счёт
-    factors: Mapping[str, float]            # вид ребра -> множитель; вид без множителя в обходе не участвует
-
-class SearchConfig(BaseModel):
-    """Секция [search] конфига корпуса: размеры выборок, веса способов и метрик, расширение по графу."""
-
-    candidates: int = Field(gt=0)           # кандидатов с одного способа
-    seed_k: int = Field(gt=0)               # опорных узлов после RRF
-    snippets_per_node: int = Field(gt=0)    # фрагментов на узел в выдаче
-    rrf_k: int = Field(gt=0)                # константа RRF, 60
-    metrics: Mapping[str, float]            # [search.metrics]: имя метрики из ranks -> её вес в счёте
-    weights: Mapping[str, float]            # [search.weights]: подпись способа -> вес в RRF
-    expand: ExpandConfig                    # [search.expand]: раздел 9
-
 class PgSearchStore(SearchStore[PgStatement]):
     """Реализация SearchStore над psycopg: один запрос кандидатов на все способы корпуса.
 
@@ -1734,30 +1266,13 @@ statement = await roles[LookupRole.NAMING].statement(Probe(text=title, limit=1))
 named = await store.rows(statement)
 ```
 
-`row_number()` в ветке нумерует строки способа по его `score`, поэтому
-способ отдаёт `score` в одном направлении «больше — лучше»: полнотекст —
-`ts_rank_cd`, вектор — `1 - расстояние`, разреженный — минус скалярное
-произведение, точное совпадение — константа. Порядок внутри подзапроса
-способа всё равно нужен: HNSW и GiST отдают top-N только через `order by`
-по своему оператору. Подготовка сессии — тоже знание способа: HNSW
-отдаёт не больше `hnsw.ef_search` строк за скан (по умолчанию 40), и
-векторный способ кладёт в `setup` своего `PgStatement`
-`set local hnsw.ef_search = max(limit, 40)`; хранилище исполняет
-подготовку всех веток в транзакции запроса, не зная, что в ней.
+#### 2.9.3 Бэкенды графа
 
-**Бэкенды графа.** Всё, кроме рёбер, всегда реляционное. Бэкенд выбирает
-только, где живут рёбра и как выполняется обход. Порт ядра:
+Всё, кроме рёбер, всегда реляционное. Бэкенд выбирает
+только, где живут рёбра и как выполняется обход; порт — `GraphStore` (2.4).
 
-| метод `GraphStore` | что делает |
-|---|---|
-| `replace_edges(node_id, kinds, edges)` | рёбра узла указанных видов заменить целиком |
-| `neighbors(node_id, kinds) -> edges` | соседи с весом и обоснованием |
-| `expand(seeds, depth) -> candidates` | расширение от опорных узлов по видам рёбер из `[search.expand.factors]`: `Candidate` с `s_graph`, `distance`, `path` (раздел 9) |
-| `export() -> edges` | весь граф для глобальной стадии (NetworkX) |
-| `drop_node(node_id)` | убрать узел из графа (AGE: вершину и её рёбра) |
-
-**Реляционный бэкенд** — таблица `edges` (2.2.3), представление `adjacency`,
-рекурсивный CTE (раздел 9). Целостность — внешними ключами.
+**Реляционный бэкенд** — таблица `edges` (2.4), представление `adjacency`,
+рекурсивный CTE (раздел 8). Целостность — внешними ключами.
 
 **Бэкенд AGE.** Граф AGE физически — отдельная схема Postgres с именем
 графа, поэтому граф зовётся `<схема>_graph`: `confluence_graph` рядом с
@@ -1797,23 +1312,35 @@ named = await store.rows(statement)
 
 ## 3. Слой Confluence
 
-Content tables — таблицы слоя в той же схеме; ниже слой Confluence, затем хранилище (раздел 4) и сущности (раздел 5). Здесь лежит всё содержимое узла:
+Content tables — таблицы слоя в той же схеме; ниже слой Confluence, затем Warehouse (раздел 4) и Entity (раздел 5). Здесь лежит всё содержимое узла:
 структурные атрибуты, тексты со своими полнотекстовыми индексами и
 векторные таблицы к ним. Каждая текстовая таблица — со своей структурой:
 у раздела страницы — оригинал и markdown, у саммари — модель и промпт, у
 комментария колонки — тип и позиция; ничего не сплющивается в общую
 строку. Строки content tables ссылаются на `nodes.id` с каскадом.
 
-Поиск добирается до содержимого через способы поиска (протокол
-`IndexLookup` в ядре, реализации в `boba-db-pggraph`), которые корпус
-создаёт при старте и отдаёт одним списком: каждый знает свою таблицу,
-колонки и то, каким индексом Postgres он покрыт. Векторные таблицы content
-tables создаются по моделям из `[encoders.models]` (2.5), по таблице на модель.
+### 3.1 Обзор
 
-### 3.1 Модели
+Узлы слоя — пространство, страница, вложение. Таблицы слоя:
+
+| таблица | что хранит |
+|---|---|
+| `pages` | страница: заголовок, версия, автор, крошки, метки, оглавление |
+| `page_sections`, `page_section_vectors__<slug>` | разделы и таблицы страницы: оригинал, markdown, векторы |
+| `page_summaries`, `page_summary_vectors__<slug>` | саммари страницы языковой моделью |
+| `attachments` | вложение: файл, тип, размер, версия |
+| `attachment_texts`, `attachment_text_vectors__<slug>` | текстовый слой или OCR вложения по страницам документа |
+| `attachment_captions`, `attachment_caption_vectors__<slug>` | описание картинки моделью зрения |
+| `attachment_images`, `attachment_image_vectors__<slug>` | картинка вложения и её вектор SigLIP |
+| `pending_links` | ссылки на страницы, которых в корпусе ещё нет |
+
+Модели слоя — в `boba-confluence`: узлы и адреса (3.2), виды содержимого
+(3.3), корпус (3.4), рёбра (3.5); аспекты и способы обработки — 2.3.
+
+### 3.2 Модели узлов и адресов
 
 Виды узлов, адреса и узлы страниц — в `boba-confluence`, рядом с остальным
-знанием о Confluence; протокол `Address` ядра (2.1) они наследуют явно,
+знанием о Confluence; протокол `Address` ядра (2.2) они наследуют явно,
 сборка и разбор строки — `httpx.URL`, который в пакете уже есть.
 
 ```python
@@ -1934,9 +1461,9 @@ class AttachmentNode(BaseModel):
 ConfluenceNode = Annotated[SpaceNode | PageNode | AttachmentNode, Field(discriminator="kind")]
 ```
 
-### 3.2 Content tables
+### 3.3 Content tables
 
-Виды узлов и адреса — `ConfluenceNodeKind` из `boba-confluence` (3.1);
+Виды узлов и адреса — `ConfluenceNodeKind` из `boba-confluence` (3.2);
 корпус объявляет виды своих текстов, по таблице на вид:
 
 ```python
@@ -1950,6 +1477,8 @@ class ConfluenceContentKind(StrEnum):
     IMAGE = "image"                       # сама картинка: вектор SigLIP, текста нет
     SUMMARY = "summary"
 ```
+
+#### 3.3.1 `pages`
 
 ```sql
 create table pages (
@@ -1973,7 +1502,11 @@ create index on pages (lower(title));                         -- PgExactLookup: 
 create index on pages using gist (title gist_trgm_ops);        -- PgTrigramLookup: title <-> q, top-N из индекса
 create index on pages using gin (title_tsv);                   -- PgFtsLookup
 create index on pages using gin (outline_tsv);
+```
 
+#### 3.3.2 `page_sections`
+
+```sql
 create table page_sections (                   -- текст страницы по разделам и таблицам
     id            bigserial   primary key,
     node_id       bigint      not null references nodes on delete cascade,
@@ -1994,7 +1527,14 @@ create table page_section_vectors__e5 (        -- на модель: имя = п
     embedding     vector(1024) not null
 );
 create index on page_section_vectors__e5 using hnsw (embedding vector_cosine_ops);
+```
 
+#### 3.3.3 `page_summaries`
+
+Саммари страницы языковой моделью, с именем модели и хэшем промпта,
+чтобы смена того или другого была видна.
+
+```sql
 create table page_summaries (
     node_id            bigint  primary key references nodes on delete cascade,
     summary            text    not null,
@@ -2010,7 +1550,16 @@ create table page_summary_vectors__e5 (
     embedding     vector(1024) not null
 );
 create index on page_summary_vectors__e5 using hnsw (embedding vector_cosine_ops);
+```
 
+#### 3.3.4 Вложения: `attachments`, `attachment_texts`, `attachment_captions`, `attachment_images`
+
+Вложение — отдельный узел. Его файл описан в `attachments`, а
+содержимое — тремя таблицами разной природы: текст (текстовый слой или
+OCR) по страницам документа, описание картинки моделью зрения и сама
+картинка с вектором SigLIP.
+
+```sql
 create table attachments (
     node_id       bigint      primary key references nodes on delete cascade,
     attachment_id text        not null unique,
@@ -2062,7 +1611,20 @@ create table attachment_image_vectors__siglip (   -- модель modality = ima
     embedding     vector(1152) not null
 );
 create index on attachment_image_vectors__siglip using hnsw (embedding vector_cosine_ops);
+```
 
+Индексация зеркальна поиску: стадия `embed` берёт `content` из
+`attachment_images`, зовёт `ImageEncoder` той же модели
+(`encode(image: bytes) -> DenseVector`) и пишет в `attachment_image_vectors`;
+поиск считает зонд из текста `ClipTextEncoder`. Одна модель, два энкодера,
+одна секция конфига.
+
+#### 3.3.5 `pending_links`
+
+`pending_links` — ссылки на страницы, которых в корпусе ещё нет; когда
+цель индексируется, они становятся рёбрами `link`.
+
+```sql
 create table pending_links (
     node_id        bigint     not null references nodes on delete cascade,
     target_title   text       not null,
@@ -2071,6 +1633,8 @@ create table pending_links (
     primary key (node_id, target_title)
 );
 ```
+
+### 3.4 Способы поиска
 
 Индексы, которые корпус объявляет ядру:
 
@@ -2155,85 +1719,10 @@ class ConfluenceCorpus(Corpus[PgStatement]):
 саммари. Меняется назначение — меняется одна строка таблицы ролей, список
 способов остаётся прежним.
 
-Картинки ищутся тем же `PgVectorLookup`: у SigLIP текст запроса и
-картинка лежат в одном пространстве, поэтому отличаются только энкодер и
-колонка, которая идёт в выдачу. Отдельного класса под картинки нет.
-
-Индексация зеркальна поиску: стадия `embed` берёт `content` из
-`attachment_images`, зовёт `ImageEncoder` той же модели
-(`encode(image: bytes) -> DenseVector`) и пишет в `attachment_image_vectors`;
-поиск считает зонд из текста `ClipTextEncoder`. Одна модель, два энкодера,
-одна секция конфига.
-
 Повторы `table`/`node_column`/`row_column` в объявлениях — намеренные:
 каждый индекс читается сам по себе, без поиска общего определения. 
 
-`SearchStore` способов поиска не знает: подзапрос и подпись — у способа
-(раздел 2), вес подписи — в `search_weights()` корпуса; хранилище лишь
-вкладывает подзапросы ветками в один запрос и сливает ранги RRF в базе
-(раздел 9).
-
-Два способа над `page_sections` дают две ветки:
-
-```sql
--- PgFtsLookup над SECTION
-with q as (
-    select
-        websearch_to_tsquery('russian', unaccent(%(text)s))
-        || websearch_to_tsquery('english', unaccent(%(text)s)) as tsq
-)
-select
-    t.node_id,
-    t.id as row_id,
-    t.format_content as snippet,
-    ts_rank_cd(t.tsv, q.tsq) as score
-from
-    confluence.page_sections t,
-    q
-where
-    t.tsv @@ q.tsq
-order by
-    score desc
-limit %(limit)s;
-
--- PgVectorLookup над SECTION
-select
-    t.node_id,
-    t.id as row_id,
-    t.format_content as snippet,
-    1 - (v.embedding <=> '[…]'::vector) as score
-from
-    confluence.page_section_vectors__e5 v
-    join confluence.page_sections t on
-        t.id = v.section_id
-order by
-    v.embedding <=> '[…]'::vector           -- то же выражение, что в select: HNSW отдаёт top-N по нему
-limit %(limit)s;
-```
-
-`pending_links` — ссылки на страницы, которых в корпусе ещё нет; когда
-цель индексируется, они становятся рёбрами `link`.
-
-`pages`:
-
-| node_id | page_id | title | labels | outline_text |
-|---|---|---|---|---|
-| 17 | 307136992 | FLIP-457: Improve Table/SQL Config… | `{accepted}` | Apache Flink Home › Flink Improvement Proposals. Labels: accepted. Sections: Status; Motivation; … |
-
-`page_sections`:
-
-| id | node_id | ordinal | kind | heading_path | format_content, начало |
-|---|---|---|---|---|---|
-| 201 | 17 | 0 | `section` | FLIP-457… › Motivation | Motivation\n\nAs Flink moves toward 2.0, we have revisited… |
-| 204 | 17 | 3 | `table` | FLIP-457… › Public Interfaces… | markdown-таблица модулей и опций: `\| Module \| Configuration Options \| Class \|…` |
-
-`page_summaries`:
-
-| node_id | summary | topics | model | system_prompt_hash |
-|---|---|---|---|---|
-| 17 | FLIP-457 пересматривает опции table/SQL к выходу Flink 2.0… | `{flink, configuration, sql}` | `qwen3-4b-int4` | `5d41…` |
-
-### 3.3 Рёбра
+### 3.5 Рёбра
 
 Виды связей, которые корпус Confluence видит в источнике или считает сам,
 и обоснования к ним:
@@ -2293,9 +1782,41 @@ class SameAuthorEvidence(Evidence):
 - `in_space`, `child_page`, `has_attachment`, `contains` — факт из
   метаданных источника, `FactEvidence`; `same_author` — логин автора.
 
-## 4. Слой хранилища
+### 3.6 Документ узла
 
-### 4.1 Модели
+Страница — разделы по порядку с вложениями на своих местах
+(`NodePart`); вложение — разобранным текстом или подписью картинки.
+Собирается из `pages`, `page_sections`, `attachments` и текстов вложений
+(2.8).
+
+## 4. Слой Warehouse
+
+### 4.1 Обзор
+
+Индексатор Warehouse получает подключение и обходит системный каталог
+движка: `pg_catalog` в PostgreSQL, `sys.*` в MSSQL, `system.tables` /
+`system.columns` в ClickHouse, `ALL_*` в Oracle, `information_schema` в
+MySQL. У движков разные наборы объектов и разные слова для одного и того
+же, поэтому content tables описывают объекты в терминах общей модели отношения, а
+всё, чему нет места в общей модели, кладёт в `properties` движка. За
+разбор каталога отвечает интроспектор движка — по классу на движок.
+
+Таблицы слоя:
+
+| таблица | что хранит |
+|---|---|
+| `relations` | отношение любого движка: таблица, представление, matview, словарь — определение, комментарий, оценка строк, свойства движка |
+| `relation_ddl`, `relation_column_lists`, `relation_profiles`, `relation_samples`, `relation_summaries` и их `*_vectors__<slug>` | тексты отношения по виду: DDL, состав колонок, профиль, пример строк, саммари |
+| `columns`, `column_comment_vectors__<slug>` | колонка: тип в движке и канонический, комментарий |
+| `column_profiles` | профиль данных колонки по выборке: доли, границы, частые значения, minhash |
+| `constraints` | ограничения: ключи, уникальность, check |
+| `indexes` | индексы отношения |
+| `routines` | функции и процедуры: сигнатура, тело, что читают и пишут |
+
+Модели: узлы и адреса — в пакетах движков (4.2), виды содержимого и порт
+каталога — 4.4, рёбра — 4.6, аспекты — 2.3.
+
+### 4.2 Модели узлов и адресов
 
 Виды узлов и адреса объектов каталога — в пакетах движков: `boba-db-postgres`
 и `boba-db-clickhouse`; движки без пакета (MSSQL, Oracle, MySQL) придут со
@@ -2326,7 +1847,7 @@ class PgAddress(Address):
     Часть подключения — libpq URI, объект — query-параметры с ролью в имени
     в порядке объявления полей наследника:
     postgresql://host:port/database?schema=dm&table=fact_orders. Один
-    наследник на строку списка 4.2; сборка и разбор строки по канону 2.2.5
+    наследник на строку списка 4.3; сборка и разбор строки по канону 2.2.1
     — здесь и только здесь, на urllib.parse.
     """
 
@@ -2373,7 +1894,7 @@ class PgAddress(Address):
 
     @classmethod
     def parse(cls, text: str) -> Self:
-        """Строка → адрес этого класса; канон 2.2.5: без учётных данных, с портом, path = /database, роли по составу и порядку."""
+        """Строка → адрес этого класса; канон 2.2.1: без учётных данных, с портом, path = /database, роли по составу и порядку."""
         url = urlsplit(text)
         if url.scheme != "postgresql":
             raise AddressError(f"postgresql address {text!r}: expected scheme postgresql, got {url.scheme!r}")
@@ -2452,7 +1973,7 @@ class PgConstraintAddress(PgAddress):
     table: str
     constraint: str
 
-# … view, matview и его колонка, sequence, procedure, trigger — по строке списка 4.2 каждый
+# … view, matview и его колонка, sequence, procedure, trigger — по строке списка 4.3 каждый
 
 class PgAddresses:
     """Строка → адрес конкретного объекта PostgreSQL: класс выбирается по составу ролей в query."""
@@ -2503,7 +2024,7 @@ class ChAddress(Address):
 
     Грамматика та же, что у PgAddress, со своей схемой:
     clickhouse://host:port/database?table=events&column=ts. Один наследник
-    на строку списка 4.2; сборка и разбор — здесь и только здесь.
+    на строку списка 4.3; сборка и разбор — здесь и только здесь.
     """
 
     BASE_FIELDS: ClassVar[frozenset[str]] = frozenset({"scheme", "host", "port", "database"})
@@ -2549,7 +2070,7 @@ class ChAddress(Address):
 
     @classmethod
     def parse(cls, text: str) -> Self:
-        """Строка → адрес этого класса; канон 2.2.5: без учётных данных, с портом, path = /database, роли по составу и порядку."""
+        """Строка → адрес этого класса; канон 2.2.1: без учётных данных, с портом, path = /database, роли по составу и порядку."""
         url = urlsplit(text)
         if url.scheme != "clickhouse":
             raise AddressError(f"clickhouse address {text!r}: expected scheme clickhouse, got {url.scheme!r}")
@@ -2614,7 +2135,7 @@ class ChDictionaryAddress(ChAddress):
 class ChFunctionAddress(ChAddress):            # перегрузок нет — args не нужен
     function: str
 
-# … view, matview и их колонки, projection — по строке списка 4.2 каждый
+# … view, matview и их колонки, projection — по строке списка 4.3 каждый
 
 class ChAddresses:
     """Строка → адрес конкретного объекта ClickHouse: класс по составу ролей, как PgAddresses."""
@@ -2642,29 +2163,9 @@ class ChColumnNode(BaseModel):
 ChNode = Annotated[ChDatabaseNode | ChTableNode | ChColumnNode | ..., Field(discriminator="kind")]
 ```
 
-### 4.2 Адреса объектов
+### 4.3 Адреса объектов
 
-Полный набор объектов PostgreSQL. Роли идут в порядке вложенности:
-`schema`, затем объект, затем то, что внутри объекта.
-
-| объект | адрес |
-|---|---|
-| база | `postgresql://dwh.local:5432/dwh` |
-| схема | `postgresql://dwh.local:5432/dwh?schema=dm` |
-| таблица | `postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders` |
-| колонка таблицы | `postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders&column=amount` |
-| представление | `postgresql://dwh.local:5432/dwh?schema=dm&view=v_orders_daily` |
-| колонка представления | `postgresql://dwh.local:5432/dwh?schema=dm&view=v_orders_daily&column=day` |
-| материализованное представление | `postgresql://dwh.local:5432/dwh?schema=dm&matview=mv_orders_month` |
-| колонка matview | `postgresql://dwh.local:5432/dwh?schema=dm&matview=mv_orders_month&column=total` |
-| индекс, имя уникально в схеме | `postgresql://dwh.local:5432/dwh?schema=dm&index=fact_orders_customer_idx` |
-| последовательность | `postgresql://dwh.local:5432/dwh?schema=dm&sequence=fact_orders_order_id_seq` |
-| функция | `postgresql://dwh.local:5432/dwh?schema=dm&function=calc_total&args=bigint%2Cnumeric` |
-| перегрузка той же функции — другой узел | `postgresql://dwh.local:5432/dwh?schema=dm&function=calc_total&args=bigint` |
-| функция без аргументов: `args` пуст, но присутствует | `postgresql://dwh.local:5432/dwh?schema=dm&function=now_utc&args=` |
-| процедура | `postgresql://dwh.local:5432/dwh?schema=dm&procedure=close_orders&args=date%2Ctext` |
-| ограничение | `postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders&constraint=fact_orders_customer_fkey` |
-| триггер | `postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders&trigger=trg_orders_audit` |
+Примеры адресов всех объектов — 2.2.3; здесь правила состава и порядка ролей.
 
 Функции и процедуры уникальны сигнатурой, а не именем: `args` — типы
 аргументов в форме `pg_get_function_identity_arguments` (имена типов
@@ -2680,38 +2181,19 @@ ChNode = Annotated[ChDatabaseNode | ChTableNode | ChColumnNode | ..., Field(disc
 материализованные представления — отдельные роли, хотя в
 `system.tables` они лежат рядом с таблицами и различаются полем `engine`.
 
-| объект | адрес |
-|---|---|
-| база | `clickhouse://ch1:9000/logs` |
-| таблица | `clickhouse://ch1:9000/logs?table=events` |
-| колонка | `clickhouse://ch1:9000/logs?table=events&column=user_id` |
-| представление | `clickhouse://ch1:9000/logs?view=v_events_hourly` |
-| колонка представления | `clickhouse://ch1:9000/logs?view=v_events_hourly&column=hour` |
-| материализованное представление | `clickhouse://ch1:9000/logs?matview=mv_events_daily` |
-| колонка matview | `clickhouse://ch1:9000/logs?matview=mv_events_daily&column=day` |
-| skip-индекс, уникален внутри таблицы | `clickhouse://ch1:9000/logs?table=events&index=events_ts_minmax` |
-| проекция | `clickhouse://ch1:9000/logs?table=events&projection=events_by_user` |
-| словарь | `clickhouse://ch1:9000/logs?dictionary=dict_users` |
-| UDF: перегрузок нет, `args` не нужен | `clickhouse://ch1:9000/logs?function=to_rub` |
-
 У ClickHouse skip-индекс и проекция принадлежат таблице и уникальны только
 внутри неё, поэтому идут после `table` — в отличие от PostgreSQL, где
 индекс уникален в схеме. Это ровно та разница между движками, ради которой
 роли объявляет корпус, а не ядро: порядок и состав ролей — часть
-`Introspector` движка (раздел 4.3).
+`Introspector` движка (раздел 4.4).
 
-### 4.3 Content tables
+### 4.4 Content tables
 
-Индексатор хранилища получает подключение и обходит системный каталог
-движка: `pg_catalog` в PostgreSQL, `sys.*` в MSSQL, `system.tables` /
-`system.columns` в ClickHouse, `ALL_*` в Oracle, `information_schema` в
-MySQL. У движков разные наборы объектов и разные слова для одного и того
-же, поэтому content tables описывают объекты в терминах общей модели отношения, а
-всё, чему нет места в общей модели, кладёт в `properties` движка. За
-разбор каталога отвечает интроспектор движка — по классу на движок.
+Виды содержимого корпуса и порт чтения каталога движка; виды узлов — в
+пакетах движков (4.2):
 
 ```python
-# виды узлов — перечисления пакетов движков (4.1): PgNodeKind в boba-db-postgres,
+# виды узлов — перечисления пакетов движков (4.2): PgNodeKind в boba-db-postgres,
 # ChNodeKind в boba-db-clickhouse; MssqlNodeKind, OracleNodeKind, MysqlNodeKind придут
 # со своими пакетами boba-db-*; у каждого свой набор объектов:
 #   pg:     database, schema, table, view, matview, column, index, constraint, function, procedure, trigger, sequence
@@ -2739,6 +2221,8 @@ class Introspector(Protocol):
     def profile(self, table: WarehouseObject, sample: int) -> ColumnProfiles: ...
 ```
 
+#### 4.4.1 `relations`
+
 ```sql
 create table relations (               -- table | view | materialized_view | dictionary
     node_id       bigint      primary key references nodes on delete cascade,
@@ -2761,7 +2245,14 @@ create index on relations (lower(title));                     -- PgExactLookup
 create index on relations using gist (title gist_trgm_ops);    -- PgTrigramLookup
 create index on relations using gin (title_tsv);
 create index on relations using gin (comment_tsv);
--- что модель читает вместо базы: по таблице на вид текста, у каждой своя структура
+```
+
+#### 4.4.2 Тексты отношения: `relation_ddl`, `relation_column_lists`, `relation_profiles`, `relation_samples`, `relation_summaries`
+
+Что модель читает вместо базы: по таблице на вид текста, у каждой своя
+структура, свой GIN по `tsv` и своя таблица векторов на модель.
+
+```sql
 create table relation_ddl (
     node_id       bigint      primary key references nodes on delete cascade,
     ddl           text        not null,   -- create table … / create view … as …, нормализованный вывод движка
@@ -2800,6 +2291,15 @@ create table relation_summary_vectors__e5 (
     embedding vector(1024) not null
 );
 create index on relation_summary_vectors__e5 using hnsw (embedding vector_cosine_ops);
+```
+
+Четыре вида содержимого отношения — четыре таблицы, а не одна с колонкой
+вида: у каждой своя структура (у профиля — время выборки, у примера —
+число строк), свой вес в RRF и свои индексы без фильтров.
+
+#### 4.4.3 `columns` и `column_profiles`
+
+```sql
 create table columns (
     node_id       bigint      primary key references nodes on delete cascade,
     relation_id   bigint      not null references nodes on delete cascade,
@@ -2821,6 +2321,31 @@ create table column_comment_vectors__e5 (
     embedding vector(1024) not null
 );
 create index on column_comment_vectors__e5 using hnsw (embedding vector_cosine_ops);
+create table column_profiles (         -- профиль данных: выборкой, не полным сканом
+    node_id       bigint      primary key references nodes on delete cascade,   -- узел колонки
+    sampled_at    timestamptz not null,
+    sample_rows   bigint      not null,
+    null_frac     real        not null,
+    distinct_est  bigint      not null,
+    min_value     text        not null default '',
+    max_value     text        not null default '',
+    top_values    jsonb       not null default '[]',   -- [{"v": "PAID", "share": 0.71}, …]
+    value_pattern text        not null default '',    -- e-mail | uuid | phone | date-as-text | code:^[A-Z]{2}\d{6}$
+    values_minhash bytea                               -- minhash-скетч значений: пересечение с другой колонкой без соединения таблиц
+);
+```
+
+Профиль — то, что делает хаос описуемым: по нему модель понимает, что в
+колонке `status` три значения, а `ext_ref` — на самом деле e-mail; по
+`values_minhash` корпус оценивает пересечение значений двух колонок без
+соединения таблиц и ставит ребро `inferred_key`.
+
+#### 4.4.4 `constraints`, `indexes`, `routines`
+
+Объекты, которые сами не ищутся, но дают явные рёбра: внешний ключ —
+`foreign_key`, тело процедуры — `routine_uses`.
+
+```sql
 create table constraints (
     node_id         bigint    primary key references nodes on delete cascade,
     relation_id     bigint    not null references nodes on delete cascade,
@@ -2849,21 +2374,17 @@ create table routines (
     reads         text[]      not null default '{}',   -- отношения из тела, разбор по движку
     writes        text[]      not null default '{}'
 );
-create table column_profiles (         -- профиль данных: выборкой, не полным сканом
-    node_id       bigint      primary key references nodes on delete cascade,   -- узел колонки
-    sampled_at    timestamptz not null,
-    sample_rows   bigint      not null,
-    null_frac     real        not null,
-    distinct_est  bigint      not null,
-    min_value     text        not null default '',
-    max_value     text        not null default '',
-    top_values    jsonb       not null default '[]',   -- [{"v": "PAID", "share": 0.71}, …]
-    value_pattern text        not null default '',    -- e-mail | uuid | phone | date-as-text | code:^[A-Z]{2}\d{6}$
-    values_minhash bytea                               -- minhash-скетч значений: пересечение с другой колонкой без соединения таблиц
-);
 ```
 
-Индексы хранилища:
+Что откуда: явные рёбра — `contains` из каталога, `foreign_key` из
+`constraints`, `view_source` и `routine_uses` из разбора определений;
+косвенные — `same_column` и `name_pattern` из имён, `inferred_key` из
+профилей, `co_queried` из журнала запросов движка (`pg_stat_statements`,
+`system.query_log`) — отдельным читателем, если журнал доступен.
+
+### 4.5 Способы поиска
+
+Индексы Warehouse, объявляются корпусом как у Confluence (3.4):
 
 | вид содержимого | таблица, ключ строки, колонка | индексы Postgres |
 |---|---|---|
@@ -2877,51 +2398,7 @@ create table column_profiles (         -- профиль данных: выбо�
 | `sample` | `relation_samples`, `node_id`, `content` | `fts(tsv)`, `vector(relation_sample_vectors__e5.node_id)` |
 | `summary` | `relation_summaries`, `node_id`, `summary` | `fts(tsv)`, `vector(relation_summary_vectors__e5.node_id)` — `vector` назначен роли `similarity` |
 
-Четыре вида содержимого отношения — четыре таблицы, а не одна с колонкой
-вида: у каждой своя структура (у профиля — время выборки, у примера —
-число строк), свой вес в RRF и свои индексы без фильтров.
-
-Профиль — то, что делает хаос описуемым: по нему модель понимает, что в
-колонке `status` три значения, а `ext_ref` — на самом деле e-mail; по
-`values_minhash` корпус оценивает пересечение значений двух колонок без
-соединения таблиц и ставит ребро `inferred_key`.
-
-`relations`:
-
-| node_id | engine | relation_kind | title | definition, начало | comment | row_estimate | properties |
-|---|---|---|---|---|---|---|---|
-| 41 | postgresql | `pg_table` | `fact_orders` | `create table dm.fact_orders (…)` | Фактовые строки заказов из OMS | 12401233 | `{"partitioned": true, "partition_key": "created_at"}` |
-| 50 | clickhouse | `ch_table` | `events` | `CREATE TABLE logs.events (…)` | | 9812004411 | `{"engine": "MergeTree", "order_by": ["ts","user_id"]}` |
-
-Тексты той же таблицы 41, по строке на вид:
-
-| таблица | content |
-|---|---|
-| `relation_ddl` | `create table dm.fact_orders (order_id bigint not null, customer_id bigint, amount numeric(18,2), …` |
-| `relation_column_lists` | `order_id bigint pk; customer_id bigint; amount numeric(18,2) — сумма заказа в рублях с НДС; status text — NEW \| PAID \| CANCELLED; …` |
-| `relation_profiles` | `order_id: 0% null, 12.4M distinct, 1..12401233` / `status: 0% null, 3 distinct: PAID 71%, NEW 22%, CANCELLED 7%` / … |
-| `relation_samples` | markdown-таблица строк: `\| order_id \| customer_id \| amount \| status \| created_at \|`, `\| 1001 \| 77 \| 1290.00 \| PAID \| 2026-08-01 \|`… |
-
-`columns`:
-
-| node_id | relation_id | position | title | native_type | canonical_type | nullable | comment |
-|---|---|---|---|---|---|---|---|
-| 42 | 41 | 3 | `amount` | `numeric(18,2)` | `decimal` | false | сумма заказа в рублях с НДС |
-
-`column_profiles`:
-
-| node_id | sample_rows | null_frac | distinct_est | min_value | max_value | top_values | value_pattern |
-|---|---|---|---|---|---|---|---|
-| 42 | 100000 | 0.0 | 87211 | 0.01 | 1288400.00 | `[]` | |
-| 57 | 100000 | 0.0 | 3 | CANCELLED | PAID | `[{"v":"PAID","share":0.71},…]` | `code:^[A-Z]+$` |
-
-Что откуда: явные рёбра — `contains` из каталога, `foreign_key` из
-`constraints`, `view_source` и `routine_uses` из разбора определений;
-косвенные — `same_column` и `name_pattern` из имён, `inferred_key` из
-профилей, `co_queried` из журнала запросов движка (`pg_stat_statements`,
-`system.query_log`) — отдельным читателем, если журнал доступен.
-
-### 4.4 Рёбра
+### 4.6 Рёбра
 
 ```python
 class WarehouseEdgeKind(StrEnum):
@@ -2938,7 +2415,7 @@ class WarehouseEdgeKind(StrEnum):
     SIMILAR = "similar"                # близость векторов                     (считает ядро)
 ```
 
-Для хранилища именно косвенные виды — `inferred_key`, `same_column`,
+Для Warehouse именно косвенные виды — `inferred_key`, `same_column`,
 `name_pattern`, `co_queried` — описывают хаос, где внешних ключей нет:
 `fact_orders.customer_id ⊆ dim_customer.customer_id` при 99,8% покрытия
 значений — почти наверняка ключ, хоть он и не объявлен.
@@ -2952,7 +2429,14 @@ class WarehouseEdgeKind(StrEnum):
   `pg_stat_statements` или `system.query_log`; `view_source`,
   `routine_uses` — разбор определения, в обосновании имя объекта.
 
-## 5. Слой сущностей
+### 4.7 Документ узла
+
+Отношение — DDL, комментарии, профиль и пример строк; колонка — профиль
+и ссылка на таблицу (2.8).
+
+## 5. Слой Entity
+
+### 5.1 Обзор
 
 `Entity` — именованная вещь, о которой говорят тексты: продукт, технология,
 организация, версия, термин предметной области, метка. `KRaft`, `ClickHouse`,
@@ -2961,13 +2445,13 @@ class WarehouseEdgeKind(StrEnum):
 производная от текста. Но с ней делают всё то же, что с `Node`: ищут по
 имени, показывают в выдаче, ходят от неё к тому, что о ней написано, и
 считают её место в графе. Поэтому `Entity` — это `Node` с видом `entity`,
-и слой сущностей устроен так же, как слой страниц или слой таблиц: свой
+и слой Entity устроен так же, как слой страниц или слой таблиц: свой
 вид узла, свой адрес, своя content table, свои способы поиска, свой вид
 рёбер. Разница в одном: его никто не скачивает — он появляется при
 индексации других слоёв и живёт во времени. Объявляет его ядро, потому
 что он одинаков для любого корпуса.
 
-### 5.1 Адрес
+### 5.2 Адрес
 
 **Адрес чистый, без источника.** ClickHouse один и тот же, где бы о нём
 ни писали, поэтому адрес — `entity://clickhouse`: схема `entity` и
@@ -2979,41 +2463,11 @@ class WarehouseEdgeKind(StrEnum):
 узлов на схему; одинаковый адрес `entity://kraft` в `confluence` и в
 `warehouse` — это и есть мост между корпусами, когда он понадобится.
 
-```python
-# boba-graph: адрес сущности — единственный адрес, который объявляет ядро
-class EntityAddress(Address):
-    """Адрес сущности — единственного вида Node, который производит само ядро (5).
+### 5.3 Таблица `entities` и извлечение
 
-    У сущности нет источника: ClickHouse — один и тот же, где бы о нём ни
-    писали, поэтому в адресе только имя, без корпуса и без вида:
-    entity://clickhouse. Имя — нормализованная форма, кодируется как
-    reg-name по RFC 3986: entity://arenadata%20quickmarts. Одинаковый адрес
-    в схемах разных корпусов — будущий мост между ними.
-    """
-
-    scheme: Literal["entity"]
-    name: str
-
-    def render(self) -> str:
-        return urlunsplit(SplitResult(scheme=self.scheme, netloc=quote(self.name, safe=""), path="", query="", fragment=""))
-
-    @classmethod
-    def parse(cls, text: str) -> Self:
-        url = urlsplit(text)
-        if url.scheme != "entity":
-            raise AddressError(f"entity address {text!r}: expected scheme entity, got {url.scheme!r}")
-
-        if not url.netloc:
-            raise AddressError(f"entity address {text!r}: name is required")
-
-        return cls(scheme="entity", name=unquote(url.netloc))
-```
-
-### 5.2 Content table и извлечение
-
-**Откуда берутся.** Стадия `entities` конвейера (раздел 8) берёт у
+**Откуда берутся.** Стадия `entities` конвейера (раздел 7) берёт у
 корпуса тексты узла (`Corpus.entity_texts`) и извлекает из них имена
-четырьмя способами, все проверены на пробе (5.5):
+четырьмя способами, все проверены на пробе (5.6):
 
 - NER моделью GLiNER: ей даётся текст и список типов (`software product`,
   `technology`, `version`, `organization`), она размечает отрезки этих
@@ -3022,13 +2476,13 @@ class EntityAddress(Address):
 - Ключевые фразы YAKE: статистика по тексту без модели, даёт термины
   предметной области вроде «качество данных», вид `term`.
 - Метки страницы Confluence как есть, вид `label`.
-- В хранилище — токены имён колонок и таблиц: `customer_id` и
+- В Warehouse — токены имён колонок и таблиц: `customer_id` и
   `customer_region` дают `customer`, вид `field`.
 
 Найденное приводится к одной форме — нижний регистр, один пробел, без
 диакритики, — и это имя становится адресом. Узел-сущность создаётся
 upsert'ом по адресу, как любой `Node`; его содержимое — одна строка
-content table слоя сущностей (DDL, как и весь слой, у ядра):
+content table слоя Entity (DDL, как и весь слой, у ядра):
 
 ```sql
 create table entities (
@@ -3041,23 +2495,14 @@ create table entities (
 create index on entities using gist (name gist_trgm_ops);   -- entity/trigram
 ```
 
-### 5.3 Ребро entity
+### 5.4 Ребро `entity`
 
 **Связь узла с сущностью — ребро `entity`** от `Node` к `Entity` в
 `edges`, как любая другая связь: вес — tf-idf, обоснование — сколько раз
 встретилась и каким типом её назвали. Отдельной таблицы привязок нет.
 
-```python
-# boba-graph
-class EntityEvidence(Evidence):
-    """Узел упоминает сущность: сколько раз и каким типом её назвал экстрактор в этом узле."""
-
-    count: int
-    type: str                           # product | technology | … — тип в этом узле; у сущности хранится преобладающий
-```
-
 - `entity` — ядро, стадия `entities`: от узла к каждой сущности, которую
-  извлёк из его текстов `EntityExtractor`; вес tf-idf (5.3), `idf` —
+  извлёк из его текстов `EntityExtractor`; вес tf-idf (5.4), `idf` —
   глобальной стадией.
 
 ```
@@ -3072,29 +2517,7 @@ weight    = tf · idf / max по узлу n            в [0, 1], 1 у само�
 пространстве Cassandra) получает малый `idf` и не связывает всё со всем;
 сущность на 2–5 узлах связывает их сильно.
 
-Так выглядят страница FLIP-457 и таблица `dm.fact_orders` со своими
-сущностями. `nodes`:
-
-| id | kind | address |
-|---|---|---|
-| 17 | `confluence_page` | `{"scheme": "https", "host": "cwiki.apache.org", "port": 443, "path": "/confluence/rest/api/content/307136992"}` |
-| 60 | `entity` | `{"scheme": "entity", "name": "kubernetes"}` |
-| 61 | `entity` | `{"scheme": "entity", "name": "kraft"}` |
-| 62 | `entity` | `{"scheme": "entity", "name": "accepted"}` |
-| 63 | `entity` | `{"scheme": "entity", "name": "customer"}` |
-| 64 | `entity` | `{"scheme": "entity", "name": "oms"}` |
-
-`entities`:
-
-| node_id | name | display | type |
-|---|---|---|---|
-| 60 | `kubernetes` | Kubernetes | technology |
-| 61 | `kraft` | KRaft | product |
-| 62 | `accepted` | accepted | label |
-| 63 | `customer` | customer | field |
-| 64 | `oms` | OMS | term |
-
-`edges` вида `entity`:
+Рёбра `entity` страницы FLIP-457 (узел 17) и таблицы `dm.fact_orders` (41):
 
 | source_id | target_id | kind | weight | evidence | почему такой вес |
 |---|---|---|---|---|---|
@@ -3104,14 +2527,14 @@ weight    = tf · idf / max по узлу n            в [0, 1], 1 у само�
 | 41 | 64 | `entity` | 0.95 | `{"count": 3, "type": "term"}` | OMS в комментариях таблицы |
 
 **Что это даёт.** Две страницы, обе упоминающие `kraft`, связаны путём в
-два шага через узел `entity://kraft`, и расширение по графу (9.2) находит
+два шага через узел `entity://kraft`, и расширение по графу (8.2) находит
 этот путь само; вычислять и хранить отдельное ребро «общие сущности»
 между страницами не нужно. Через частую сущность активация растекается
 слабо, потому что вес каждого её ребра мал. На запрос «kraft» способы
 `entity/exact` и `entity/trigram` находят сам узел-сущность, и в выдаче
 он стоит первым, а страницы о нём приходят как его соседи; `kb_node` по
 адресу `entity://kraft` показывает, где она встречается и с каким весом.
-Глобальные метрики (2.2.4) считаются и для сущностей: PageRank сущности —
+Глобальные метрики (2.5) считаются и для сущностей: PageRank сущности —
 насколько термин центральный для корпуса.
 
 **Жизнь во времени.** У сущности нет области обхода и версии в
@@ -3126,15 +2549,31 @@ weight    = tf · idf / max по узлу n            в [0, 1], 1 у само�
 не осталось входящих рёбер `entity`, — вместе с ними уходит и строка
 `entities`.
 
-### 5.4 Способы поиска
+### 5.5 Способы поиска
 
-Слой сущностей ищется теми же классами, что и остальные, но объявляет их
-не корпус, а ядро: таблица `entities` и её колонки одинаковы в любой
-схеме. Реализация — `PgEntityLookups` в `boba-db-pggraph` (2.6); корпус
+Слой Entity ищется теми же классами (2.9.1), что и остальные, но
+объявляет их не корпус, а ядро: таблица `entities` и её колонки
+одинаковы в любой схеме. Реализация живёт в `boba-db-pggraph`; корпус
 включает её в свой список одной строкой и назначает вес подписям
-`entity/exact` и `entity/trigram` в `[search.weights]`.
+`entity/exact` и `entity/trigram` в `[search.weights]`:
 
-### 5.5 Проба извлечения
+```python
+class PgEntityLookups:
+    """Способы поиска по слою сущностей: точное имя и триграммы над entities; одинаковы для любого корпуса."""
+
+    CONTENT: ClassVar[str] = "entity"          # вид содержимого слоя сущностей: подписи entity/exact, entity/trigram
+
+    @classmethod
+    def of(cls, schema: str) -> Sequence[IndexLookup[PgStatement]]:
+        return (
+            PgExactLookup(content=cls.CONTENT, schema=schema, table="entities",
+                          node_column="node_id", row_column="node_id", text_column="name"),
+            PgTrigramLookup(content=cls.CONTENT, schema=schema, table="entities",
+                            node_column="node_id", row_column="node_id", text_column="display"),
+        )
+```
+
+### 5.6 Проба извлечения
 
 GLiNER `multi-v2.1` в песочнице плагина вместе с torch CPU: по пробе на
 50 страницах cwiki — 4 с на страницу в 13,6 тыс. символов на 8 потоках,
@@ -3154,22 +2593,7 @@ YAKE на русском без лемматизации слаб («Рисун�
 термины берутся только из двух и более слов и с меньшим весом, замена на
 извлечение ключевых фраз через эмбеддер e5 — отдельная проба позже.
 
-## 6. Документ узла
-
-Поиск отдаёт узлы фрагментами; когда модели нужен узел целиком, инструмент
-`kb_node` зовёт `Corpus.document(node_id, limit)` и получает
-`NodeDocument` (2.4): заголовок, адрес и части по порядку. Документ
-собирается из content tables, а не из источника: в Confluence за страницей
-не ходим, отдаём то, что проиндексировано, — версия на момент индексации.
-Часть — либо текст (`TextPart`: markdown раздела, DDL, профиль колонки),
-либо другой узел (`NodePart`: картинка, pdf, дочерняя страница), и рендерер
-решает по `kind`, что показать человеку картинкой, а модели строкой.
-Confluence — страница как разделы по порядку с вложениями на своих
-местах, вложение — разобранным текстом или подписью картинки. Хранилище —
-DDL, комментарии, профиль и пример строк отношения; колонка — профиль и
-ссылка на таблицу. `limit` режет части, `truncated` говорит, что порезано.
-
-## 7. Код
+## 6. Код
 
 Новых пакетов три — ядро, его реализация на Postgres и инструменты над
 графом; всё, что относится к источнику, живёт в существующих пакетах
@@ -3180,11 +2604,11 @@ DDL, комментарии, профиль и пример строк отно�
 | `packages/core/boba-graph` | новый. Домен: `Node`, `Edge`, `Address`, `EntityAddress`, `Evidence`, `Probe`, `IndexLookup[S]`, `LookupMethod`, `VectorEncoder[V]`, `Corpus`; порты хранения и сервисов стадий; конвейер 2.0 |
 | `packages/infra/db/boba-db-pggraph` | новый. Postgres: DDL graph tables, реализации портов для relational и age, слияние поиска по способам, обход, глобальный экспорт; пул и курсоры — из `boba-db-postgres` |
 | `packages/tools/boba-tool-graph` | новый. Инструменты над любым корпусом: `kb_search`, `kb_related`, `kb_node`, `kb_graph_rebuild`, `kb_graph_check`, установка схемы |
-| `packages/infra/format/boba-confluence` | модели узлов и адресов (3.1) — рядом с `models.py`; подмодуль `boba.confluence.graph` за extra `graph`: `ConfluenceContentKind`, content tables и их DDL, `ConfluenceCorpus`, ридер 2.0, явные рёбра, документ узла (раздел 3) |
+| `packages/infra/format/boba-confluence` | модели узлов и адресов (3.2) — рядом с `models.py`; подмодуль `boba.confluence.graph` за extra `graph`: `ConfluenceContentKind`, content tables и их DDL, `ConfluenceCorpus`, ридер 2.0, явные рёбра, документ узла (раздел 3) |
 | `packages/tools/boba-tool-confluence` | инструменты индексации 2.0 `confluence_graph_index_*` рядом с индексатором 1.0; манифест плагина регистрирует корпус в реестре |
-| `packages/infra/db/boba-db-postgres` | `PgNodeKind`, адреса и узлы объектов каталога, `PgNode` (4.1); интроспекция PostgreSQL для хранилища — там, где уже лежит `catalog.py` (следующий план) |
-| `packages/infra/db/boba-db-clickhouse` | `ChNodeKind`, адреса и узлы объектов, `ChNode` (4.1); интроспекция ClickHouse (следующий план) |
-| `packages/core/boba-catalog` и `boba-tool-postgres`, `boba-tool-clickhouse` | слой хранилища (следующий план): content tables 4.3 сверяются с моделью отношений каталога и сводятся к ней, где совпадают; инструменты индексации — в инструментах движков |
+| `packages/infra/db/boba-db-postgres` | `PgNodeKind`, адреса и узлы объектов каталога, `PgNode` (4.2); интроспекция PostgreSQL для Warehouse — там, где уже лежит `catalog.py` (следующий план) |
+| `packages/infra/db/boba-db-clickhouse` | `ChNodeKind`, адреса и узлы объектов, `ChNode` (4.2); интроспекция ClickHouse (следующий план) |
+| `packages/core/boba-catalog` и `boba-tool-postgres`, `boba-tool-clickhouse` | слой Warehouse (следующий план): content tables 4.4 сверяются с моделью отношений каталога и сводятся к ней, где совпадают; инструменты индексации — в инструментах движков |
 
 Extra `graph` у `boba-confluence` — тот же механизм `[tool.boba.extras]`,
 что у `boba-krb`: подмодуль объявляет свои зависимости (`boba-graph`,
@@ -3197,24 +2621,10 @@ Extra `graph` у `boba-confluence` — тот же механизм `[tool.boba.
 Корпус попадает в реестр корпусов по имени схемы через манифест плагина
 `boba.tools` своего источника (`boba-tool-confluence`); `boba-tool-graph`
 получает реализацию `Corpus` из реестра и никогда не импортирует пакеты
-источников напрямую. Добавление корпуса хранилища не меняет ни ядро, ни
+источников напрямую. Добавление корпуса Warehouse не меняет ни ядро, ни
 `boba-db-pggraph`, ни `boba-tool-graph`.
 
-Порты ядра в `boba-graph`:
-
-| порт | что делает | кто реализует |
-|---|---|---|
-| `NodeStore` | upsert узла по адресу, чтение по адресу и id, удаление | хранилище |
-| `SyncLedger` | реестр обхода над таблицей `sync` | хранилище |
-| `EntityStore` | узлы-сущности по адресу, их строки `entities`, пересчёт `idf` по рёбрам `entity`, удаление осиротевших | хранилище |
-| `GraphStore` | рёбра, соседи, расширение от опорных узлов — две реализации (2.6, раздел 9) | хранилище |
-| `RankStore` | метрики | хранилище |
-| `SearchStore` | `candidates(corpus, query)`: один запрос по всем способам с RRF в базе; `rows(statement)`: один способ отдельно (2.6, раздел 9) | хранилище |
-| `VectorEncoderRegistry` | `VectorEncoder` по имени модели и форме вектора; собран из `[encoders.models]` | `boba-llm` |
-| `VectorEncoder` | текст в вектор одним методом; реализации по `modality` модели | `boba-llm`, зовут стадии корпуса и индексы |
-| `Generator` | сервис генерации по схеме: саммари, описания картинок | сервис, зовут стадии корпуса |
-| `EntityExtractor` | сервис извлечения сущностей из текста | сервис, зовёт ядро |
-| `Corpus` | перечисления, content tables, индексы, явные рёбра, резолвер | корпус |
+Порты ядра и кто их реализует — в обзоре ядра (2.1).
 
 `boba-graph` зависит от `boba-indexing` только ради `Reader`, `Section`,
 `Chunker`, `Embedder`, `RawDocument`. Схема создаётся установкой:
@@ -3293,19 +2703,19 @@ Extra `graph` у `boba-confluence` — тот же механизм `[tool.boba.
         system_prompt = "..."
 ```
 
-## 8. Индексация
+## 7. Индексация
 
 Стадии на узел. Ядро задаёт каркас — учёт, сущности, рёбра ядра,
 глобальную стадию — и даёт сервисы; что писать в content tables, решает корпус:
 
 | стадия | кто делает | что пишет |
 |---|---|---|
-| `fetch` | транспорт корпуса | Confluence: как сейчас |
-| `parse` | ридер корпуса в строки content tables | страницы, разделы, таблицы, ссылки / объекты, колонки, определения |
-| `embed` | корпус зовёт `VectorEncoder` тех же моделей, что и его векторные способы поиска | `page_section_vectors`, `page_summary_vectors` / `relation_ddl_vectors`, … |
-| `summary` | корпус зовёт `Generator`, если запрошено | `page_summaries` / `relation_summaries` |
-| `entities` | ядро: `EntityExtractor` по `Corpus.entity_texts` | узлы `entity` в `nodes` и `entities`, рёбра `entity` от узла к ним |
-| `edges` | `Corpus.explicit_edges` + `similar` по `Corpus.similar_text` | `GraphStore` |
+| `fetch` | `boba-tool-confluence`: `ConfluenceHttpTransport` индексатора 1.0, без правок | Confluence: как сейчас |
+| `parse` | `boba-confluence`, подмодуль `graph`: ридер 2.0 (раздел 6) | страницы, разделы, таблицы, ссылки / объекты, колонки, определения |
+| `embed` | `ConfluenceCorpus` зовёт `VectorEncoder` из `boba-llm` — те же модели, что у его векторных способов поиска | `page_section_vectors`, `page_summary_vectors` / `relation_ddl_vectors`, … |
+| `summary` | `ConfluenceCorpus` зовёт `Generator` из `boba-llm`, если запрошено | `page_summaries` / `relation_summaries` |
+| `entities` | конвейер `boba-graph`: `GlinerExtractor` по `Corpus.entity_texts` | узлы `entity` в `nodes` и `entities`, рёбра `entity` от узла к ним — через `PgEntityStore` |
+| `edges` | конвейер `boba-graph`: `Corpus.explicit_edges` + `similar` по `Corpus.similar_text` | `PgGraphStore` или `AgeGraphStore` |
 
 Стадии `entities` и `edges` инкрементальны: рёбра индексируемого узла
 удаляются в обе стороны и строятся заново. `entity` — от узла к
@@ -3319,10 +2729,10 @@ Extra `graph` у `boba-confluence` — тот же механизм `[tool.boba.
 На корпусе в 1,4 тыс. узлов — секунды; NetworkX держит десятки тысяч узлов
 и миллионы рёбер в памяти.
 
-## 9. Поиск и ранжирование
+## 8. Поиск и ранжирование
 
 Инструмент `kb_search(corpus, query, top_k, expand)`. Вход — текст
-пользователя; выход — до `top_k` строк `Match` (2.4): узел с `kind` и
+пользователя; выход — до `top_k` строк `Match` (2.6): узел с `kind` и
 адресом, заголовок, счёт, фрагменты, которыми он найден, и путь по графу,
 если пришёл через граф. Алгоритм — три запроса к базе и одно сложение в
 ядре; ни строки способов, ни фрагменты, которые не попадут в выдачу, до
@@ -3335,7 +2745,7 @@ Python не доходят.
 | 3 счёт | `NodeSearch` в ядре | сложить `s_base`, `s_graph` и метрики, отрезать `top_k` | 0 |
 | 4 заголовки | `Corpus.titles` | заголовки итоговых узлов из content tables | 1 |
 
-### 9.1 Кандидаты: один запрос на все способы
+### 8.1 Кандидаты: один запрос на все способы
 
 Каждый способ (`IndexLookup`) даёт подзапрос с колонками `node_id`,
 `row_id`, `snippet`, `score`, не длиннее `candidates` строк. Хранилище
@@ -3479,7 +2889,7 @@ order by
 ни базы. Колонка остаётся узлом для графа и lineage; кому нужны колонки
 таблицы, тот берёт `kb_node`.
 
-### 9.2 Расширение: узлы, которых текст не нашёл
+### 8.2 Расширение: узлы, которых текст не нашёл
 
 Текстовый поиск находит узлы, где встретились слова запроса. Нужный
 ответ часто лежит в соседнем узле, где этих слов нет: страница, на
@@ -3517,12 +2927,12 @@ s_graph(n) = Σ по путям от опорных к n длиной ≤ depth:
 ```
 
 Порт один, `GraphStore.expand(seeds, depth)`, реализации две. Реляционная —
-рекурсивный CTE по `adjacency` (2.2.3):
+рекурсивный CTE по `adjacency` (2.4):
 
 ```sql
 with recursive
     seed(node_id, s_base) as (
-        values (17, 0.0482), (21, 0.0311)                     -- опорные узлы из 9.1, параметр запроса
+        values (17, 0.0482), (21, 0.0311)                     -- опорные узлы из 8.1, параметр запроса
     ),
     factor(kind, value) as (
         values ('link', 1.0), ('mention', 0.8), ('similar', 0.7), ('entity', 0.7)   -- [search.expand.factors]
@@ -3606,69 +3016,14 @@ from
     $$, $params) as w(node_id agtype, s_graph agtype, distance agtype)
 ```
 
-### 9.3 Счёт и выдача
+### 8.3 Счёт и выдача
 
 Сложение делает ядро: строк здесь не больше `seed_k` плюс достигнутые,
-это десятки, а не сотни, и они уже с `kind`, адресом и метриками.
-
-```python
-class NodeSearch:
-    """Сервис поиска ядра: из текста запроса — список узлов со счётом, фрагментами и путём по графу.
-
-    Единственное место, где сходятся три порта: SearchStore.candidates, при
-    expand — GraphStore.expand, заголовки — у корпуса; складывает
-    кандидатов по node_id, считает счёт, отдаёт Match. Способов поиска, SQL
-    и бэкенда графа не знает.
-    """
-
-    def __init__(self, store: SearchStore[S], graph: GraphStore, cfg: SearchConfig) -> None: ...
-
-    async def run(self, corpus: Corpus[S], query: str, top_k: int, expand: bool) -> Sequence[Match]:
-        found = await self._store.candidates(corpus, query)
-        by_id: dict[int, Candidate] = {}
-        for candidate in found:
-            by_id[candidate.node_id] = candidate
-
-        if expand:
-            seeds: dict[int, float] = {}
-            for candidate in found:
-                seeds[candidate.node_id] = candidate.s_base
-
-            for reached in await self._graph.expand(seeds, self._cfg.expand.depth):
-                by_id[reached.node_id] = self._merged(by_id, reached)
-
-        titles = corpus.titles(list(by_id))
-        matches: list[Match] = []
-        for candidate in by_id.values():
-            matches.append(self._match(candidate, titles[candidate.node_id]))
-
-        matches.sort(key=self._score, reverse=True)
-        return matches[:top_k]
-
-    def _merged(self, by_id: Mapping[int, Candidate], reached: Candidate) -> Candidate:
-        """Узел из обхода: если он же был кандидатом, s_graph и путь ложатся к его s_base и фрагментам."""
-        known = by_id.get(reached.node_id)
-        if known is None:
-            return reached
-
-        return known.model_copy(update={"s_graph": reached.s_graph, "distance": reached.distance, "path": reached.path})
-
-    def _match(self, candidate: Candidate, title: str) -> Match:
-        ranked = 0.0
-        for metric, weight in self._cfg.metrics.items():
-            ranked += weight * candidate.metrics.get(metric, 0.0)
-
-        score = candidate.s_base + self._cfg.expand.weight * candidate.s_graph + ranked
-        return Match(
-            node_id=candidate.node_id, kind=candidate.kind, address=candidate.address, title=title,
-            score=score, s_base=candidate.s_base, s_graph=candidate.s_graph,
-            snippets=candidate.snippets, path=candidate.path,
-        )
-```
+это десятки, а не сотни, и они уже с `kind`, адресом и метриками (`NodeSearch`, 2.2.2).
 
 Счёт: `score = s_base + weight · s_graph + Σ μ_m · metric_m`, где `weight`
 из `[search.expand]`, `μ_m` из `[search.metrics]`, метрики — глобальные
-величины из `ranks` (2.2.4). Реранк кросс-энкодером первых N — стадия
+величины из `ranks` (2.5). Реранк кросс-энкодером первых N — стадия
 поверх этого счёта, не способ поиска; добавляется отдельно, когда
 понадобится.
 
@@ -3689,7 +3044,7 @@ class NodeSearch:
 нет, но в выдаче она третья, с путём «`link` от libpq, `mention` от
 Настроек драйвера».
 
-### 9.4 Ход по графу руками: kb_node и kb_related
+### 8.4 Ход по графу руками: kb_node и kb_related
 
 Расширение внутри `kb_search` одинаково для всех запросов: множители
 заданы конфигом и смысла запроса не знают. Когда модели нужно идти по
@@ -3698,7 +3053,7 @@ class NodeSearch:
 
 - `kb_node(corpus, address)` — узел целиком: адрес строкой разбирает
   `parse()` модели адреса корпуса, документ собирает
-  `Corpus.document` (раздел 6); рёбра узла с обоснованием, включая
+  `Corpus.document` (2.8); рёбра узла с обоснованием, включая
   `entity` к его сущностям, — из `edges`. Для узла-сущности документ —
   кто её упоминает и с каким весом.
 - `kb_related(corpus, address, kinds)` — соседи узла по видам рёбер
@@ -3710,10 +3065,10 @@ class NodeSearch:
 схемы своя нумерация узлов, мост — отдельная таблица без внешних ключей.
 Проектируется с появлением второго корпуса.
 
-## 10. Этапы
+## 9. Этапы
 
 1. **Проба NER** — сделана на английском; русская проба на внутреннем
-   Confluence — результат в 7.1.
+   Confluence — результат в 5.6.
 2. **Ядро и хранение.** `boba-graph`: модели, протоколы `Address` и
    `Evidence`, порты, конвейер;
    `boba-db-pggraph`: DDL graph tables, реализации портов, реляционный
@@ -3732,11 +3087,10 @@ class NodeSearch:
 6. **Семантика.** Векторные индексы, рёбра `similar`.
 7. **Саммари.** `page_summaries`, генератор по схеме, способ `summary` в `applied_methods`.
 8. **Глобальная стадия.** `kb_graph_rebuild`, `ranks`.
-9. **Поиск.** `boba-tool-graph`: `kb_search` по алгоритму раздела 9
+9. **Поиск.** `boba-tool-graph`: `kb_search` по алгоритму раздела 8
    (сначала без расширения, затем расширение по флагу), `kb_related`,
    `kb_node`; документ узла — в корпусе.
 
 Текущий индексатор всё это время не трогается; его судьба решается
-отдельно, когда 2.0 принят. Корпус хранилища — следующий план поверх
+отдельно, когда 2.0 принят. Корпус Warehouse — следующий план поверх
 этого: интроспекторы движков, профили, косвенные рёбра.
-
