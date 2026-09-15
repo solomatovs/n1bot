@@ -1,15 +1,13 @@
-"""Хранилище описаний: таблицы node и edge в базе приложения.
+"""Общая часть хранилища описаний: конфиг, сессия с готовой схемой, ключ области.
 
-Узел — адрес объекта с описанием в области вызова (тред, запуск workflow,
-задание); ребро — связь двух узлов той же области. Таблицы идемпотентно
-готовит сам store на каждой сессии: внешний потребитель забирает строки и
-делает truncate, схему и таблицы не трогает. Запись — upsert: повторное
-описание того же объекта или той же связи обновляет текст.
+Сущности живут в своих модулях (nodes, edges) со своими SQL, моделями,
+ошибками и инструментами; отсюда они берут только сессию — соединение с
+подготовленными таблицами — и ключ области. Схему и обе таблицы сессия
+готовит идемпотентно на каждом вызове: внешний потребитель забирает строки
+и делает truncate, схему и таблицы не трогает.
 
 Ошибки:
 DescriberError — область вызова не годится ключом: id не uuid.
-NodeMissingError — конец ребра не описан в области; к тексту приложены
-    известные url области.
 PostgresError — до базы приложения не достучаться.
 psycopg.Error — СУБД отклонила запрос.
 """
@@ -26,112 +24,60 @@ from uuid import UUID
 import psycopg
 from psycopg import sql
 from psycopg.errors import InsufficientPrivilege
-from psycopg.rows import dict_row
-from psycopg.types.json import Jsonb
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
-from boba.connections.address import Address
 from boba.db.postgres import PayloadPostgres
 from boba.db.postgres.profile import PostgresConfig
 from boba.identity.context import Scope, ScopeKind
+from boba.toolkit.types import SecretRevealing
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "DescriberError",
+    "DescriberErrorKind",
+    "DescriberSession",
     "DescriberStore",
-    "EdgeKind",
-    "EdgeRecord",
-    "EdgeSpec",
-    "EdgeWrite",
-    "NodeMissingError",
-    "NodeRecord",
-    "NodeWrite",
+    "DescriberToolConfig",
+    "MissingIds",
     "ScopeKey",
+    "SqlNames",
     "WriteAction",
 ]
+
+
+class DescriberToolConfig(SecretRevealing):
+    """Секция [tool.describer]: база приложения и схема таблиц node/edge."""
+
+    SECTION: ClassVar[str] = "tool.describer"
+
+    connection: PostgresConfig = Field(
+        description="Подключение к базе приложения, где лежат таблицы описаний.",
+    )
+    db_schema: str = Field(min_length=1, description="Схема таблиц node и edge.")
 
 
 class DescriberError(Exception):
     """Область вызова не годится ключом хранилища."""
 
 
-class NodeMissingError(Exception):
-    """Конец ребра не описан в области."""
+class DescriberErrorKind(StrEnum):
+    """Ожидаемые отказы инструментов describer: карты EXPECTED модулей."""
 
-    def __init__(self, url: str, known: Sequence[str]) -> None:
-        msg = (
-            f"node {url!r} is not described in this scope yet, call describe_node "
-            f"first; described nodes: {list(known)}"
-        )
-        super().__init__(msg)
-        self.url = url
-        self.known = tuple(known)
+    INVALID_ADDRESS = "invalid_address"
+    NODE_MISSING = "node_missing"
+    NODE_ID_MISSING = "node_id_missing"
+    EDGE_ID_MISSING = "edge_id_missing"
+    INVALID_SCOPE = "invalid_scope"
+    DATABASE_UNAVAILABLE = "database_unavailable"
+    SQL_FAILED = "sql_failed"
 
 
 class DescriberTable(StrEnum):
-    """Таблицы хранилища."""
+    """Таблицы хранилища; плейсхолдеры {node} и {edge} в текстах SQL."""
 
     NODE = "node"
     EDGE = "edge"
-
-
-class NodeColumn(StrEnum):
-    """Колонки node, которые читаются из строк выдачи."""
-
-    ID = "id"
-    KIND = "kind"
-    URL = "url_address"
-    DESCRIPTION = "description"
-    INSERTED = "inserted"
-
-
-class EdgeColumn(StrEnum):
-    """Колонки выдачи по edge."""
-
-    ID = "id"
-    SOURCE = "source"
-    TARGET = "target"
-    KIND = "kind"
-    DESCRIPTION = "description"
-    INSERTED = "inserted"
-
-
-class EdgeKind(StrEnum):
-    """Вид связи source → target; значения ограничены, чтобы потребитель не
-    получал свободный текст."""
-
-    FOREIGN_KEY = "foreign_key"
-    IMPLICIT_KEY = "implicit_key"
-    DERIVED_FROM = "derived_from"
-    SIMILAR = "similar"
-
-    @property
-    def meaning(self) -> str:
-        if self is EdgeKind.FOREIGN_KEY:
-            return "связь объявлена в DDL ограничением FK: source ссылается на target"
-
-        if self is EdgeKind.IMPLICIT_KEY:
-            return (
-                "ограничения нет, но значения совпадают: join-ключ, найденный "
-                "запросами к данным, в том числе между разными системами"
-            )
-
-        if self is EdgeKind.DERIVED_FROM:
-            return (
-                "target построен из source: view, matview, словарь, ETL-копия; "
-                "направление данных"
-            )
-
-        return "объекты про одно и то же, но ни ключа, ни потока данных не доказано"
-
-    @classmethod
-    def prompt(cls) -> str:
-        lines: list[str] = []
-        for kind in cls:
-            lines.append(f"{kind.value} — {kind.meaning}")
-
-        return "\n".join(lines)
 
 
 class WriteAction(StrEnum):
@@ -170,68 +116,43 @@ class ScopeKey(BaseModel):
         return cls(kind=scope.kind, id=scope_id)
 
 
-class NodeRecord(BaseModel):
-    """Узел области как он лежит в таблице."""
+class MissingIds:
+    """Какие из запрошенных id не нашлись: порядок запроса сохраняется."""
 
-    id: int
-    kind: str
-    url: str
-    description: str
+    @staticmethod
+    def of(wanted: Sequence[int], found: set[int]) -> list[int]:
+        missing: list[int] = []
+        for record_id in wanted:
+            if record_id not in found:
+                missing.append(record_id)
 
-
-class EdgeRecord(BaseModel):
-    """Ребро области с url обоих концов."""
-
-    id: int
-    source: str
-    target: str
-    kind: EdgeKind
-    description: str
+        return missing
 
 
-class NodeWrite(BaseModel):
-    """Итог записи узла: канонический url для дальнейших ссылок."""
+class SqlNames:
+    """Подстановка идентификаторов схемы и таблиц в тексты SQL сущностей."""
 
-    kind: str
-    url: str
-    action: WriteAction
-    description: str
+    def __init__(self, schema: str) -> None:
+        self._schema = schema
 
+    @property
+    def schema(self) -> str:
+        return self._schema
 
-class EdgeSpec(BaseModel):
-    """Что записать ребром: адреса концов, вид и описание."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
-
-    source: Address
-    target: Address
-    kind: EdgeKind
-    description: str
+    def render(self, template: str) -> sql.Composed:
+        return sql.SQL(template).format(  # type: ignore[arg-type]
+            schema=sql.Identifier(self._schema),
+            node=sql.Identifier(self._schema, DescriberTable.NODE.value),
+            edge=sql.Identifier(self._schema, DescriberTable.EDGE.value),
+        )
 
 
-class EdgeWrite(BaseModel):
-    """Итог записи ребра."""
-
-    source: str
-    target: str
-    kind: EdgeKind
-    action: WriteAction
-    description: str
-
-
-class NodeRef(BaseModel):
-    """Найденный узел области: id для ребра и url для сообщений."""
-
-    id: int
-    url: str
-
-
-class DescriberSql:
-    """Тексты SQL хранилища; имена таблиц подставляются идентификаторами."""
+class SchemaSql:
+    """DDL схемы: замок, схема, обе таблицы и связь между ними."""
 
     LOCK: ClassVar[sql.SQL] = sql.SQL("select pg_advisory_xact_lock(hashtext(%(key)s))")
     SCHEMA: ClassVar[str] = "create schema if not exists {schema}"
-    DDL: ClassVar[str] = """
+    TABLES: ClassVar[str] = """
 create table if not exists {node} (
     id          bigserial primary key,
     scope_kind  varchar not null,
@@ -256,254 +177,49 @@ create table if not exists {edge} (
     unique (source_id, target_id, kind)
 )
 """
-    UPSERT_NODE: ClassVar[str] = """
-insert into {node} (
-    scope_kind,
-    scope_id,
-    kind,
-    address,
-    url_address,
-    description
-)
-values (
-    %(scope_kind)s,
-    %(scope_id)s,
-    %(kind)s,
-    %(address)s,
-    %(url)s,
-    %(description)s
-)
-on conflict (scope_id, address) do update set
-    kind        = excluded.kind,
-    url_address = excluded.url_address,
-    description = excluded.description,
-    s__wrt_ts   = now()
-returning
-    (xmax = 0) as inserted
-"""
-    FIND_NODE: ClassVar[str] = """
-select
-    id,
-    url_address
-from {node}
-where 1=1
-    and scope_id = %(scope_id)s
-    and address = %(address)s
-"""
-    UPSERT_EDGE: ClassVar[str] = """
-insert into {edge} (
-    source_id,
-    target_id,
-    kind,
-    description
-)
-values (
-    %(source_id)s,
-    %(target_id)s,
-    %(kind)s,
-    %(description)s
-)
-on conflict (source_id, target_id, kind)
-do update set
-    description = excluded.description,
-    s__wrt_ts   = now()
-returning
-    (xmax = 0) as inserted
-"""
-    NODES: ClassVar[str] = """
-select
-    id,
-    kind,
-    url_address,
-    description
-from
-    {node}
-where
-    scope_id = %(scope_id)s
-order by
-    id
-"""
-    EDGES: ClassVar[str] = """
-select
-    e.id,
-    s.url_address as source,
-    t.url_address as target,
-    e.kind,
-    e.description
-from
-    {edge} e
-    inner join {node} s on s.id = e.source_id
-    inner join {node} t on t.id = e.target_id
-where
-    s.scope_id = %(scope_id)s
-order by
-    e.id
-"""
+
+
+class DescriberSession:
+    """Соединение с готовыми таблицами и имена SQL для таблиц сущностей."""
+
+    def __init__(self, conn: psycopg.AsyncConnection[Any], names: SqlNames) -> None:
+        self.conn = conn
+        self.names = names
 
 
 class DescriberStore:
-    """Сессии над таблицами node/edge: одно соединение на вызов инструмента,
+    """Сессии хранилища: одно соединение на вызов инструмента, схема и
     таблицы готовы к первому запросу."""
 
     DDL_LOCK: ClassVar[str] = "boba.describer.ddl"
 
-    def __init__(self, connection: PostgresConfig, db_schema: str) -> None:
-        self._connection = connection
-        self._schema = db_schema
+    def __init__(self, cfg: DescriberToolConfig) -> None:
+        self._connection = cfg.connection
+        self._names = SqlNames(cfg.db_schema)
 
     @asynccontextmanager
-    async def session(self) -> AsyncGenerator[psycopg.AsyncConnection[Any], None]:
-        """Соединение с готовыми таблицами; закрывается по выходу."""
+    async def session(self) -> AsyncGenerator[DescriberSession, None]:
+        """Сессия с готовыми таблицами; соединение закрывается по выходу."""
         conn = await PayloadPostgres.connect_config(self._connection)
         async with conn:
             await self._ensure(conn)
-            yield conn
+            yield DescriberSession(conn, self._names)
 
     async def _ensure(self, conn: psycopg.AsyncConnection[Any]) -> None:
         """Схема и таблицы под одним advisory-замком: параллельные вызовы одного
         ответа модели иначе роняют create schema if not exists на уникальности
         pg_namespace. Без права на create schema её заводит администратор."""
         async with conn.transaction():
-            await conn.execute(DescriberSql.LOCK, {"key": self.DDL_LOCK})
+            await conn.execute(SchemaSql.LOCK, {"key": self.DDL_LOCK})
 
             try:
                 async with conn.transaction():
-                    await conn.execute(self._sql(DescriberSql.SCHEMA))
+                    await conn.execute(self._names.render(SchemaSql.SCHEMA))
             except InsufficientPrivilege:
                 logger.info(
                     "no permission for create schema %r, assuming an administrator "
                     "created it",
-                    self._schema,
+                    self._names.schema,
                 )
 
-            await conn.execute(self._sql(DescriberSql.DDL))
-
-    async def upsert_node(
-        self,
-        conn: psycopg.AsyncConnection[Any],
-        scope: ScopeKey,
-        address: Address,
-        description: str,
-    ) -> NodeWrite:
-        url = address.render()
-        params = {
-            "scope_kind": scope.kind.value,
-            "scope_id": scope.id,
-            "kind": type(address).KIND,
-            "address": Jsonb(address.to_json()),
-            "url": url,
-            "description": description,
-        }
-
-        async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(self._sql(DescriberSql.UPSERT_NODE), params)
-            row = await cur.fetchone()
-
-        if row is None:
-            msg = f"describer: upsert of node {url!r} returned no row"
-            raise DescriberError(msg)
-
-        return NodeWrite(
-            kind=type(address).KIND,
-            url=url,
-            action=WriteAction.of(bool(row[NodeColumn.INSERTED.value])),
-            description=description
-        )
-
-    async def upsert_edge(
-        self, conn: psycopg.AsyncConnection[Any], scope: ScopeKey, spec: EdgeSpec
-    ) -> EdgeWrite:
-        source_ref = await self._find_node(conn, scope, spec.source)
-        target_ref = await self._find_node(conn, scope, spec.target)
-
-        params = {
-            "source_id": source_ref.id,
-            "target_id": target_ref.id,
-            "kind": spec.kind.value,
-            "description": spec.description,
-        }
-
-        async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(self._sql(DescriberSql.UPSERT_EDGE), params)
-            row = await cur.fetchone()
-
-        if row is None:
-            msg = (
-                f"describer: upsert of edge {source_ref.url!r} -> {target_ref.url!r} "
-                "returned no row"
-            )
-            raise DescriberError(msg)
-
-        return EdgeWrite(
-            source=source_ref.url,
-            target=target_ref.url,
-            kind=spec.kind,
-            description=spec.description,
-            action=WriteAction.of(bool(row[EdgeColumn.INSERTED.value])),
-        )
-
-    async def nodes(
-        self, conn: psycopg.AsyncConnection[Any], scope: ScopeKey
-    ) -> Sequence[NodeRecord]:
-        records: list[NodeRecord] = []
-
-        async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(self._sql(DescriberSql.NODES), {"scope_id": scope.id})
-
-            for row in await cur.fetchall():
-                records.append(
-                    NodeRecord(
-                        id=row[NodeColumn.ID.value],
-                        kind=row[NodeColumn.KIND.value],
-                        url=row[NodeColumn.URL.value],
-                        description=row[NodeColumn.DESCRIPTION.value],
-                    )
-                )
-
-        return records
-
-    async def edges(
-        self, conn: psycopg.AsyncConnection[Any], scope: ScopeKey
-    ) -> Sequence[EdgeRecord]:
-        records: list[EdgeRecord] = []
-
-        async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(self._sql(DescriberSql.EDGES), {"scope_id": scope.id})
-
-            for row in await cur.fetchall():
-                records.append(
-                    EdgeRecord(
-                        id=row[EdgeColumn.ID.value],
-                        source=row[EdgeColumn.SOURCE.value],
-                        target=row[EdgeColumn.TARGET.value],
-                        kind=EdgeKind(row[EdgeColumn.KIND.value]),
-                        description=row[EdgeColumn.DESCRIPTION.value],
-                    )
-                )
-
-        return records
-
-    async def _find_node(
-        self, conn: psycopg.AsyncConnection[Any], scope: ScopeKey, address: Address
-    ) -> NodeRef:
-        params = {"scope_id": scope.id, "address": Jsonb(address.to_json())}
-
-        async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(self._sql(DescriberSql.FIND_NODE), params)
-            row = await cur.fetchone()
-
-        if row is None:
-            known: list[str] = []
-            for node in await self.nodes(conn, scope):
-                known.append(node.url)
-
-            raise NodeMissingError(address.render(), known)
-
-        return NodeRef(id=row[NodeColumn.ID.value], url=row[NodeColumn.URL.value])
-
-    def _sql(self, template: str) -> sql.Composed:
-        return sql.SQL(template).format(  # type: ignore[arg-type]
-            schema=sql.Identifier(self._schema),
-            node=sql.Identifier(self._schema, DescriberTable.NODE.value),
-            edge=sql.Identifier(self._schema, DescriberTable.EDGE.value),
-        )
+            await conn.execute(self._names.render(SchemaSql.TABLES))

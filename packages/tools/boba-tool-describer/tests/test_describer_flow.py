@@ -5,7 +5,8 @@
 Ход повторяет работу агента: connection_list → pg_describe_table и pg_query
 по pg_constraint → ch_describe_table → базовые url соединений → узлы и
 рёбра describe_* (в том числе кроссбазное ребро pg ↔ ch и понятие entity) →
-ошибочные вызовы, которые ход переживает → describe_list → ответ. Строки
+ошибочные вызовы, которые ход переживает → describe_list_nodes и
+describe_list_edges → удаление по id → ответ. Строки
 проверяются прямым запросом к таблицам node/edge тестовой базы.
 """
 
@@ -56,9 +57,9 @@ from boba.sandbox import ZygoteRegistry
 from boba.stand.refs import StandRefs
 from boba.stand.site import Stand
 from boba.stand_core.context import use_context
-from boba.tool.describer.address import EntityAddress
-from boba.tool.describer.store import EdgeKind
-from boba.tool.describer.tools import ListColumn, ListItem
+from boba.tool.describer.address import Addresses, EntityAddress
+from boba.tool.describer.edges import EdgeKind, EdgeListColumn
+from boba.tool.describer.nodes import NodeListColumn
 from boba.toolkit.result import ErrorResult, SqlResult, TableResult, ToolArtifact
 
 _REPO = Path(__file__).resolve().parents[4]
@@ -114,6 +115,11 @@ FINAL_ANSWER = "the schema is described and linked"
 WINDOW: dict[str, int] = {"offset": 0, "max_rows": 50, "max_chars": 20000}
 """Окно выдачи каталожных инструментов: его задаёт вызов."""
 
+FIRST_EDGE_ID = 1
+LAST_NODE_ID = 6
+"""id на удаление: схема пересоздаётся на тест, sequence начинает с 1; шесть
+узлов и три ребра пишутся параллельно, поэтому известны только множества."""
+
 
 class CallId:
     """Идентификаторы вызовов сценария: по ним ищутся ответы в истории."""
@@ -136,7 +142,13 @@ class CallId:
     BAD_ADDRESS = "call-bad-address"
     BAD_EDGE = "call-bad-edge"
     BAD_ARGS = "call-bad-args"
-    LIST = "call-list"
+    LIST_NODES = "call-list-nodes"
+    LIST_EDGES = "call-list-edges"
+    DELETE_EDGE = "call-delete-edge"
+    DELETE_NODE = "call-delete-node"
+    BAD_DELETE = "call-bad-delete"
+    LIST_NODES_AFTER = "call-list-nodes-after"
+    LIST_EDGES_AFTER = "call-list-edges-after"
 
 
 class ScriptedChat(GenericFakeChatModel):
@@ -450,12 +462,8 @@ def _script(expected: Expected) -> list[AIMessage]:
         AIMessage(
             content="",
             tool_calls=[
-                _call(
-                    CallId.PG_ADDRESS, "describe_pg_address", connection=PG_CONNECTION
-                ),
-                _call(
-                    CallId.CH_ADDRESS, "describe_ch_address", connection=CH_CONNECTION
-                ),
+                _call(CallId.PG_ADDRESS, "pg_address", connection=PG_CONNECTION),
+                _call(CallId.CH_ADDRESS, "ch_address", connection=CH_CONNECTION),
             ],
         ),
         AIMessage(
@@ -560,8 +568,41 @@ def _script(expected: Expected) -> list[AIMessage]:
                 ),
             ],
         ),
-        AIMessage(content="", tool_calls=[_call(CallId.LIST, "describe_list")]),
+        AIMessage(
+            content="",
+            tool_calls=[
+                _call(CallId.LIST_NODES, "describe_list_nodes"),
+                _call(CallId.LIST_EDGES, "describe_list_edges"),
+            ],
+        ),
+        AIMessage(
+            content="",
+            tool_calls=[
+                _call(CallId.DELETE_EDGE, "describe_delete_edge", ids=[FIRST_EDGE_ID]),
+                _call(CallId.DELETE_NODE, "describe_delete_node", ids=[LAST_NODE_ID]),
+                _call(CallId.BAD_DELETE, "describe_delete_node", ids=[999_999]),
+            ],
+        ),
+        AIMessage(
+            content="",
+            tool_calls=[
+                _call(CallId.LIST_NODES_AFTER, "describe_list_nodes"),
+                _call(CallId.LIST_EDGES_AFTER, "describe_list_edges"),
+            ],
+        ),
         AIMessage(content=FINAL_ANSWER),
+    ]
+
+
+def node_calls_urls(expected: Expected) -> list[str]:
+    """Все url узлов сценария в порядке вызовов."""
+    return [
+        expected.pg_table("orders"),
+        expected.pg_column("orders", "customer_id"),
+        expected.pg_table("customers"),
+        expected.pg_column("customers", "id"),
+        expected.ch_column("events", "user_id"),
+        expected.entity("customer"),
     ]
 
 
@@ -774,65 +815,72 @@ async def test_agent_describes_schema_and_links(  # noqa: PLR0915 — один �
     assert "description" in str(bad_args.content)
     assert "required" in str(bad_args.content).lower()
 
-    # список области: шесть узлов и три ребра
-    listing = _rows(replies.ok(CallId.LIST))
-    items = _column(listing, ListColumn.ITEM.value)
-    assert items.count(ListItem.NODE.value) == 6
-    assert items.count(ListItem.EDGE.value) == 3
+    # списки области: шесть узлов и три ребра со своими id
+    nodes_listing = _rows(replies.ok(CallId.LIST_NODES))
+    edges_listing = _rows(replies.ok(CallId.LIST_EDGES))
+    assert sorted(_column(nodes_listing, NodeListColumn.ID.value)) == list(range(1, 7))
+    assert sorted(_column(edges_listing, EdgeListColumn.ID.value)) == [1, 2, 3]
+
+    # удаление по id: ребро и узел с его рёбрами сняты, чужой id отвергнут
+    deleted_edge = _rows(replies.ok(CallId.DELETE_EDGE))
+    assert deleted_edge == [{"id": FIRST_EDGE_ID, "action": "deleted"}]
+
+    deleted_node = _rows(replies.ok(CallId.DELETE_NODE))
+    assert deleted_node == [{"id": LAST_NODE_ID, "action": "deleted"}]
+
+    bad_delete = replies.refused(CallId.BAD_DELETE)
+    assert bad_delete.error_kind == "node_id_missing"
+    assert "999999" in bad_delete.message
+
+    nodes_after = _rows(replies.ok(CallId.LIST_NODES_AFTER))
+    edges_after = _rows(replies.ok(CallId.LIST_EDGES_AFTER))
+    assert len(nodes_after) == 5
+    assert FIRST_EDGE_ID not in _column(edges_after, EdgeListColumn.ID.value)
 
     last = messages[-1]
     assert isinstance(last, AIMessage)
     assert last.content == FINAL_ANSWER
 
-    # таблицы: строки области треда с разобранным адресом и каноническим url
+    # таблицы до удаления проверялись ответами; после — строки области треда
     nodes = await _stored_nodes(pool)
-    assert len(nodes) == 6
+    assert len(nodes) == 5
     for node in nodes:
         assert node["scope_kind"] == "chat"
         assert node["scope_id"] == THREAD_ID
 
     by_url = {node["url"]: node for node in nodes}
-    orders = by_url[expected.pg_table("orders")]
-    assert orders["kind"] == "pg_table"
-    assert orders["address"]["schema"] == DM
-    assert orders["address"]["table"] == "orders"
-    assert orders["address"]["database"] == expected.pg_base.database
-    assert orders["description"] == "orders placed by customers"
+    deleted_urls = set(node_calls_urls(expected)) - set(by_url)
+    assert len(deleted_urls) == 1
 
-    events = by_url[expected.ch_column("events", "user_id")]
-    assert events["address"] == {
-        "scheme": "clickhouse",
-        "host": expected.ch_base.host,
-        "port": expected.ch_base.port,
-        "database": CH_DATABASE,
-        "table": "events",
-        "column": "user_id",
-    }
+    for url, node in by_url.items():
+        address = Addresses.parse_any(url)
+        assert node["address"] == address.to_json(), url
+        assert node["kind"] == type(address).KIND, url
 
-    entity = by_url[expected.entity("customer")]
-    assert entity["address"] == {"scheme": "entity", "name": "customer"}
-
-    # рёбра одного ответа модели пишутся параллельно: порядок id не задан
+    # рёбра: ни одно не ссылается на снятый узел, снятого ребра нет
     edges = await _stored_edges(pool)
-    assert sorted(edges) == sorted(
-        [
-            (
-                expected.pg_column("orders", "customer_id"),
-                expected.pg_column("customers", "id"),
-                EdgeKind.FOREIGN_KEY.value,
-            ),
-            (
-                expected.ch_column("events", "user_id"),
-                expected.pg_column("customers", "id"),
-                EdgeKind.IMPLICIT_KEY.value,
-            ),
-            (
-                expected.pg_table("customers"),
-                expected.entity("customer"),
-                EdgeKind.SIMILAR.value,
-            ),
-        ]
-    )
+    for source, target, _ in edges:
+        assert source not in deleted_urls
+        assert target not in deleted_urls
+
+    expected_edges = {
+        (
+            expected.pg_column("orders", "customer_id"),
+            expected.pg_column("customers", "id"),
+            EdgeKind.FOREIGN_KEY.value,
+        ),
+        (
+            expected.ch_column("events", "user_id"),
+            expected.pg_column("customers", "id"),
+            EdgeKind.IMPLICIT_KEY.value,
+        ),
+        (
+            expected.pg_table("customers"),
+            expected.entity("customer"),
+            EdgeKind.SIMILAR.value,
+        ),
+    }
+    assert set(edges) < expected_edges
 
 
 @pytest.mark.usefixtures("chainlit_context", "granted", "seeded_pg", "seeded_ch")
