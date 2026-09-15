@@ -1,37 +1,33 @@
-"""Адреса плагина: узлы-понятия и сводный реестр семейств.
+"""Адреса плагина: семейство понятий и реестр установленных семейств.
 
-Семейства систем живут в своих пакетах (PgAddresses, ChAddresses,
-ConfluenceAddresses); здесь — адрес понятия без системы (`entity://<name>`)
-и реестр Addresses, который по схеме url выбирает семейство, а по виду
-объекта — класс внутри него.
+Семейства систем живут в своих пакетах и находятся по entry points группы
+boba.addresses; плагин их не перечисляет. Своё семейство здесь одно —
+понятие без системы (`entity://<name>`), оно объявлено той же группой в
+pyproject плагина.
 
 Ошибки:
 AddressError — строка не является адресом заявленного вида или ни одного
-    известного семейства.
+    установленного семейства.
+AddressFamiliesError — установленный entry point группы boba.addresses не
+    является семейством адресов.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
 from enum import StrEnum
 from typing import ClassVar, Literal, Self
 from urllib.parse import SplitResult, quote, unquote, urlsplit, urlunsplit
 
 from pydantic import Field, ValidationError
 
-from boba.confluence.address import ConfluenceAddresses, ConfluenceNodeKind
-from boba.connections.address import Address, AddressError, AddressFamily
-from boba.db.clickhouse.address import ChAddress, ChAddresses, ChNodeKind
-from boba.db.postgres.address import PgAddress, PgAddresses, PgNodeKind
-from boba.transport.http.profile import UrlScheme
+from boba.connections.address import (
+    Address,
+    AddressError,
+    AddressFamilies,
+    AddressFamily,
+)
 
-__all__ = [
-    "Addresses",
-    "EntityAddress",
-    "EntityAddresses",
-    "EntityKind",
-    "NodeKind",
-]
+__all__ = ["Addresses", "EntityAddress", "EntityAddresses", "EntityKind"]
 
 
 class EntityKind(StrEnum):
@@ -97,76 +93,36 @@ class EntityAddress(Address):
 class EntityAddresses(AddressFamily):
     """Реестр адресов-понятий."""
 
+    SYSTEM: ClassVar[str] = "Domain entity (no system)"
+    SCHEMES: ClassVar[frozenset[str]] = frozenset({EntityAddress.SCHEME})
+    EXAMPLE: ClassVar[str] = "entity://<name>"
     MODELS: ClassVar[tuple[type[EntityAddress], ...]] = (EntityAddress,)
 
 
-NodeKind = PgNodeKind | ChNodeKind | ConfluenceNodeKind | EntityKind
-"""Вид узла: объединение видов всех семейств; его называет модель."""
-
-
 class Addresses:
-    """Сводный реестр: семейство по схеме url, класс — по виду и форме."""
+    """Установленные семейства адресов: находятся один раз при первом обращении."""
 
-    FAMILIES: ClassVar[Mapping[str, type[AddressFamily]]] = {
-        PgAddress.SCHEME: PgAddresses,
-        ChAddress.SCHEME: ChAddresses,
-        UrlScheme.HTTP.value: ConfluenceAddresses,
-        UrlScheme.HTTPS.value: ConfluenceAddresses,
-        EntityAddress.SCHEME: EntityAddresses,
-    }
+    _FAMILIES: ClassVar[AddressFamilies | None] = None
 
     @classmethod
-    def parse(cls, kind: NodeKind, text: str) -> Address:
-        """Строка → адрес заявленного вида."""
-        family = cls._family_of_kind(kind)
+    def families(cls) -> AddressFamilies:
+        if cls._FAMILIES is None:
+            cls._FAMILIES = AddressFamilies.discover()
 
-        return family.parse(kind, text)
+        return cls._FAMILIES
+
+    @classmethod
+    def parse(cls, kind: str, text: str) -> Address:
+        return cls.families().parse(kind, text)
 
     @classmethod
     def parse_any(cls, text: str) -> Address:
-        """Строка → адрес; семейство по схеме, вид по форме."""
-        family = cls._family_of_scheme(text)
-
-        return family.parse_any(text)
+        return cls.families().parse_any(text)
 
     @classmethod
     def prompt(cls) -> str:
-        """Формы всех семейств по видам: по строке на вид."""
-        return "\n".join(cls._prompts())
+        return cls.families().prompt()
 
     @classmethod
-    def _prompts(cls) -> Iterator[str]:
-        for family in cls._families():
-            yield family.prompt()
-
-    @classmethod
-    def _families(cls) -> Iterator[type[AddressFamily]]:
-        seen: set[type[AddressFamily]] = set()
-        for family in cls.FAMILIES.values():
-            if family in seen:
-                continue
-
-            seen.add(family)
-            yield family
-
-    @classmethod
-    def _family_of_kind(cls, kind: NodeKind) -> type[AddressFamily]:
-        for family in cls._families():
-            if kind in family.kinds():
-                return family
-
-        msg = f"address kind {kind!r} belongs to no known family"
-        raise AddressError(msg)
-
-    @classmethod
-    def _family_of_scheme(cls, text: str) -> type[AddressFamily]:
-        scheme = urlsplit(text).scheme
-        family = cls.FAMILIES.get(scheme)
-        if family is None:
-            msg = (
-                f"address {text!r}: unknown scheme {scheme!r}, "
-                f"expected one of {sorted(cls.FAMILIES)}"
-            )
-            raise AddressError(msg)
-
-        return family
+    def kinds_prompt(cls) -> str:
+        return cls.families().kinds_prompt()

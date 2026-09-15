@@ -20,7 +20,7 @@ from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.address import PgNodeKind
 from boba.db.postgres.profile import PostgresConfig
 from boba.identity.context import Scope, ScopeKind
-from boba.tool.describer.address import EntityKind
+from boba.tool.describer.address import Addresses, EntityKind
 from boba.tool.describer.edges import (
     EdgeDeleteColumn,
     EdgeEndMissingError,
@@ -395,3 +395,18 @@ async def test_delete_refuses_ids_of_another_scope(
 
     assert await _count(pool, "node") == 3
     assert await _count(pool, "edge") == 2
+
+
+def test_families_are_discovered_by_entry_points() -> None:
+    """Семейства адресов приходят из установленных пакетов, плагин их не перечисляет."""
+    families = Addresses.families()
+
+    assert set(families.schemes()) >= {"postgresql", "clickhouse", "https", "entity"}
+    assert "pg_table" in families.kinds()
+    assert "PostgreSQL:" in Addresses.kinds_prompt()
+    assert "entity://<name>" in Addresses.prompt()
+
+
+async def test_unknown_kind_is_refused(cfg: DescriberToolConfig, scope: Scope) -> None:
+    with pytest.raises(AddressError, match="unknown, expected one of"):
+        await _node(cfg, scope, "pg_tabel", PG_TABLE, "x")

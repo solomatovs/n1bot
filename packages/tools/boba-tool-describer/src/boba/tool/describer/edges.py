@@ -240,23 +240,15 @@ where
 order by
     e.id
 """
-    SCOPE_IDS: ClassVar[str] = """
-select
-    e.id
-from
-    {edge} e
-    join {node} s on s.id = e.source_id
-where
-    s.scope_id = %(scope_id)s
-    and e.id = any(%(ids)s)
-"""
     DELETE: ClassVar[str] = """
 delete from {edge} e
 using {node} s
-where
-    e.source_id = s.id
+where 1=1
+    and e.source_id = s.id
     and s.scope_id = %(scope_id)s
     and e.id = any(%(ids)s)
+returning
+    e.id
 """
 
 
@@ -317,18 +309,23 @@ class EdgeTable:
         return records
 
     async def delete(self, scope: ScopeKey, ids: Sequence[int]) -> EdgeDelete:
-        """Снять рёбра области; чужой или неизвестный id — отказ до удаления."""
+        """Снять рёбра области одним запросом: область — условие удаления,
+        нехватка вернувшихся id — откат транзакции."""
         wanted = list(ids)
         params = {"scope_id": scope.id, "ids": wanted}
 
         async with self._conn.transaction():
-            found = await self._scope_ids(params)
+            removed: set[int] = set()
 
-            missing = MissingIds.of(wanted, found)
+            async with self._conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(self._names.render(EdgeSql.DELETE), params)
+
+                for row in await cur.fetchall():
+                    removed.add(int(row[EdgeColumn.ID.value]))
+
+            missing = MissingIds.of(wanted, removed)
             if missing:
                 raise EdgeIdsMissingError(missing)
-
-            await self._conn.execute(self._names.render(EdgeSql.DELETE), params)
 
         return EdgeDelete(ids=tuple(wanted))
 
@@ -357,17 +354,6 @@ class EdgeTable:
                 known.append(row[EdgeColumn.URL.value])
 
         return known
-
-    async def _scope_ids(self, params: dict[str, Any]) -> set[int]:
-        found: set[int] = set()
-
-        async with self._conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(self._names.render(EdgeSql.SCOPE_IDS), params)
-
-            for row in await cur.fetchall():
-                found.add(int(row[EdgeColumn.ID.value]))
-
-        return found
 
 
 class EdgePrompt:

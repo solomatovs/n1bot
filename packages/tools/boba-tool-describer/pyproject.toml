@@ -4,17 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-describer"
-version = "0.0.20.dev3"
+version = "0.0.20.dev4"
 description = "Инструменты describe_*: описания объектов данных и связей между ними в таблицы node/edge."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-toolkit==0.0.20.dev3",
-    "boba-identity==0.0.20.dev3",
-    "boba-connections==0.0.20.dev3",
-    "boba-db-postgres==0.0.20.dev3",
-    "boba-db-clickhouse==0.0.20.dev3",
-    "boba-transport-http==0.0.20.dev3",
-    "boba-confluence==0.0.20.dev3",
+    "boba-toolkit==0.0.20.dev4",
+    "boba-identity==0.0.20.dev4",
+    "boba-connections==0.0.20.dev4",
+    "boba-db-postgres==0.0.20.dev4",
     "psycopg[binary,pool]>=3.2",
     "pydantic>=2.10,<2.11",
 ]
@@ -22,17 +19,21 @@ dependencies = [
 [project.entry-points."boba.tools"]
 describer = "boba.tool.describer.plugin:MANIFEST"
 
+[project.entry-points."boba.addresses"]
+entity = "boba.tool.describer.address:EntityAddresses"
+
 [project.optional-dependencies]
 payload = [
 ]
 dev = [
-    "boba-chainlit==0.0.20.dev3",
-    "boba-config==0.0.20.dev3",
-    "boba-connection-broker==0.0.20.dev3",
-    "boba-runtime==0.0.20.dev3",
-    "boba-sandbox==0.0.20.dev3",
-    "boba-stand==0.0.20.dev3",
-    "boba-stand-core==0.0.20.dev3",
+    "boba-chainlit==0.0.20.dev4",
+    "boba-config==0.0.20.dev4",
+    "boba-connection-broker==0.0.20.dev4",
+    "boba-db-clickhouse==0.0.20.dev4",
+    "boba-runtime==0.0.20.dev4",
+    "boba-sandbox==0.0.20.dev4",
+    "boba-stand==0.0.20.dev4",
+    "boba-stand-core==0.0.20.dev4",
     "chainlit==2.11.1",
     "langchain-core>=1.4,<1.5",
     "langgraph",
@@ -48,3 +49,4 @@ namespaces = true
 
 [tool.boba.sandbox]
 imports = ["psycopg"]
+entry_points = ["boba.addresses"]

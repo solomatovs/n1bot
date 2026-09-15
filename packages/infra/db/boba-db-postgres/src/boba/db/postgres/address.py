@@ -361,6 +361,9 @@ class PgTriggerAddress(PgAddress):
 class PgAddresses(AddressFamily):
     """Реестр адресов PostgreSQL и адрес базы по профилю соединения."""
 
+    SYSTEM: ClassVar[str] = "PostgreSQL"
+    SCHEMES: ClassVar[frozenset[str]] = frozenset({PgAddress.SCHEME})
+    EXAMPLE: ClassVar[str] = "postgresql://host:port/database?<role>=<name>&..."
     MODELS: ClassVar[Sequence[type[PgAddress]]] = (
         PgDatabaseAddress,
         PgSchemaAddress,
