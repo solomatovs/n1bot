@@ -125,6 +125,94 @@ create table sync (
     skip_reason       text        not null default ''
 );
 create index on sync (crawl_scope, last_seen_run);
+
+create extension if not exists pg_trgm;
+
+create extension if not exists unaccent;
+
+create extension if not exists vector;
+
+create function immutable_unaccent(text) returns text language sql immutable parallel safe strict as $ $
+select
+    public.unaccent('public.unaccent', $1) $$;
+
+create table pg_table_list (
+    id                  bigserial primary key,
+    node_id             bigint not null references nodes on delete cascade,
+    database_name       varchar(64) not null,
+    schema_name         varchar(64) not null,
+    table_name          varchar(64) not null,
+    tablespace_name     varchar(64) null,
+    owner               varchar(64) not null,
+    comment             varchar null,
+    c__name             varchar(500) not null generated always as (
+        database_name || '.' || schema_name || '.' || table_name
+    ) stored,
+    c__full_tsv         tsvector not null generated always as (
+        setweight(to_tsvector('russian', table_name), 'A')
+        || setweight(to_tsvector('russian', schema_name || ' ' || database_name), 'B')
+        || setweight(to_tsvector('russian', owner || ' ' || coalesce(tablespace_name, '')), 'C')
+        || setweight(to_tsvector('russian', immutable_unaccent(coalesce(comment, ''))), 'D')
+    ) stored,
+    unique (node_id, database_name, schema_name, table_name)
+);
+
+
+-- точное совпадение без учёта регистра.
+-- where lower(c__full) = lower('Order')
+-- Даёт мгновенный ответ на "есть ли объект с именем Orders или orders или ORDERS или orDers"
+create index pg_table_list__table_name__btree       on pg_table_list using btree (lower(table_name));
+create index pg_table_list__schema_name__btree      on pg_table_list using btree (lower(schema_name));
+create index pg_table_list__database_name__btree    on pg_table_list using btree (lower(database_name));
+create index pg_table_list__tablespace_name__btree  on pg_table_list using btree (lower(tablespace_name));
+
+-- подстрока, опечатки, ранжирование (KNN search, trigram similarity): ilike '%abc%', %, <->
+-- опечатка в имени, ближайшие выдаются первыми
+-- select   id, c__name
+-- from     pg_table_list
+-- where    c__name % 'ordrs'
+-- order by c__name <-> 'ordrs'
+-- limit    20;
+create index pg_table_list__c__name__gist on pg_table_list using gist (c__name gist_trgm_ops);
+
+-- полнотекстовый индекс по имени: c__full_tsv @ @ to_tsquery('english', 'customer & orders')
+-- слова из имени и комментария, имя весит больше
+-- select id, c__name, ts_rank(c__full_tsv, q) as rank
+-- from
+--     pg_table_list,
+--     to_tsquery('russian', 'customer & orders') q
+-- where c__full_tsv @ @ q
+-- order by rank desc
+-- limit 20;
+create index pg_table_list__c__full__gin on pg_table_list using gin (c__full_tsv);
+
+-- отдельная таблица для векторного поиска по имени и комментарию (e5 embedding, 1024 размерность)
+create table pg_table_list__vector_e5_1024 (
+    id              bigint primary key references pg_table_list on delete cascade,
+    c__full_emb     vector(1024) null,
+    comment_emb     vector(1024) null
+);
+
+create index on pg_table_list__vector_e5_1024 using hnsw (c__full_emb vector_cosine_ops);
+
+create index on pg_table_list__vector_e5_1024 using hnsw (comment_emb vector_cosine_ops);
+
+-- хранит информацию о том, что было проиндексировано в источнике и что нужно проиндексировать в источнике
+create table pg_index_runner (
+    id                  bigint not null primary key,
+    -- версия в источнике, которая была найдена в прошлый прогон
+    -- берется из источника и сохраняется в таблице, чтобы при следующем прогоне можно было определить,
+    -- что объект в источнике изменился и начать скачивание и анализ исходника
+    s__source_version   varchar null,
+    -- хэш сумма по node объекта в источнике
+    -- по ней определяем изменился ли источник объекта и нужно ли его индексировать
+    s__source_checksum  varchar not null,
+    -- хэш сумма по индексатору объекта в источнике
+    -- например хэш сумма по параметрами embeding модели, которые использовались для индексирования объекта в источнике
+    s__indexer_checksum varchar not null,
+    -- время обновления scope
+    s__upd_ts           timestamptz not null,
+);
 ```
 
 #### 2.2.2 Python core
