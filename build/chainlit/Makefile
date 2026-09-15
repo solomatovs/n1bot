@@ -16,7 +16,7 @@ DEPS_DIR        ?= $(BASE_DIR)/src
 RELEASE_DIR     := $(SRC_DIR)/release
 
 APP             := chainlit
-APP_PACKAGES    := boba-chainlit[tools] boba-llm[generation]
+APP_PACKAGES     = boba-chainlit $(PLUGIN_PACKAGES) boba-llm[generation]
 APP_IMPORTS     := boba.chainlit onnxruntime_genai
 APP_HEALTH      := /
 APP_CGROUP      := boba-sandbox
@@ -33,6 +33,8 @@ SHELL           := /bin/bash
 PYTHON          ?= $(SRC_DIR)/.venv/bin/python
 VERSION         := $(shell $(PYTHON) $(SCRIPTS_DIR)/version.py show $(SRC_DIR)/packages)
 REQUIRES_PY     := $(shell $(PYTHON) $(SCRIPTS_DIR)/version.py requires $(SRC_DIR)/packages)
+# плагины приложения — пакеты с entry points группы boba.tools; списка в extras нет
+PLUGIN_PACKAGES := $(shell $(PYTHON) $(SCRIPTS_DIR)/plugin_rootfs.py list $(SRC_DIR)/packages)
 BOBA_TAG        ?= $(VERSION)
 
 # корень установки на сервере и данные, переживающие релизы; тот же корень в образе

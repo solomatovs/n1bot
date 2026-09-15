@@ -128,7 +128,7 @@ RUN uv build --all-packages --wheel --no-sources -o /tmp/wheels                 
 # эмбеддер сюда не попадают — они объявлены как extra payload у tool-пакетов
 FROM base AS app-site
 
-ARG APP_PACKAGES="boba-studio[tools]"
+ARG APP_PACKAGES="boba-studio"
 ARG APP_IMPORTS="boba.studio"
 
 COPY --from=boba-wheels /tmp/wheels/  /tmp/wheels/

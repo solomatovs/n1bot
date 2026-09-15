@@ -192,7 +192,6 @@ def _store(cfg: DescriberToolConfig) -> DescriberStore:
 @tool
 async def describe_node(
     kind: Annotated[NodeKind, Field(description=DescriberPrompt.NODE_KIND)],
-    
     address: Annotated[str, Field(min_length=1, description=DescriberPrompt.address())],
     description: Annotated[
         str, Field(min_length=1, description=DescriberPrompt.NODE_DESCRIPTION)
