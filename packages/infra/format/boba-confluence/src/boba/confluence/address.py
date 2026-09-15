@@ -22,6 +22,7 @@ from pydantic import Field
 
 from boba.connections.address import AddressFamily
 from boba.transport.http.address import WebAddress
+from boba.transport.http.profile import UrlScheme
 
 __all__ = [
     "ConfluenceAddress",
@@ -118,6 +119,11 @@ class ConfluenceAttachmentAddress(ConfluenceAddress):
 class ConfluenceAddresses(AddressFamily):
     """Реестр адресов Confluence."""
 
+    SYSTEM: ClassVar[str] = "Confluence"
+    SCHEMES: ClassVar[frozenset[str]] = frozenset(
+        {UrlScheme.HTTP.value, UrlScheme.HTTPS.value}
+    )
+    EXAMPLE: ClassVar[str] = "https://host[:port]/<service root>/rest/api/..."
     MODELS: ClassVar[Sequence[type[ConfluenceAddress]]] = (
         ConfluenceSpaceAddress,
         ConfluencePageAddress,

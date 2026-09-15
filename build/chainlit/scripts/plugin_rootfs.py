@@ -5,7 +5,8 @@
 
 Вызов: plugin_rootfs.py <команда> <корень packages> [пакет]
 Команды:
-names   — закрытие python-зависимостей пакета с payload (по строке).
+names   — закрытие python-зависимостей пакета с payload и поставщиками
+          потребляемых групп entry points (по строке).
 apt     — системные пакеты декларации (по строке).
 root    — каталог-оверлей корня внутри пакета; пусто — нет.
 setup   — setup-скрипт внутри пакета; пусто — нет.
@@ -82,9 +83,13 @@ class Projects:
         return self._dirs[name]
 
     def with_tools(self) -> list[str]:
+        return self.with_group(GROUP)
+
+    def with_group(self, group: str) -> list[str]:
+        """Пакеты, объявившие entry points группы."""
         names: list[str] = []
         for name, points in self._entry_points.items():
-            if GROUP in points:
+            if group in points:
                 names.append(name)
 
         return sorted(names)
@@ -136,6 +141,11 @@ class Commands:
         for guest in self._projects.guests():
             queue.append((guest, frozenset({"payload"})))
 
+        # поставщики групп entry points, которые тело находит на ходу
+        # (entry_points в [tool.boba.sandbox]); тело от них не зависит
+        for provider in self._consumed():
+            queue.append((provider, frozenset({"payload"})))
+
         while queue:
             name, wanted = queue.pop()
             if (name, wanted) in seen:
@@ -152,16 +162,29 @@ class Commands:
 
         return sorted(names)
 
+    def _consumed(self) -> list[str]:
+        """Пакеты репозитория с entry points групп, которые потребляет плагин."""
+        providers: list[str] = []
+        for group in self._projects.sandbox_of(self._package).get("entry_points", []):
+            for name in self._projects.with_group(group):
+                if name not in providers:
+                    providers.append(name)
+
+        return providers
+
     def names(self) -> list[str]:
-        """Строки установки: каждый payload-пакет закрытия явно.
+        """Строки установки: пакет, поставщики потребляемых групп и каждый
+        payload-пакет закрытия явно.
 
         Extras транзитивно не активируются, поэтому payload каждого пакета
         закрытия перечисляется установке отдельной строкой; остальные
         зависимости uv разрешает сам по метаданным колёс.
         """
+        explicit = {self._package, *self._consumed()}
+
         listed: list[str] = []
         for name in self._closure():
-            if name != self._package and not self._projects.has_payload(name):
+            if name not in explicit and not self._projects.has_payload(name):
                 continue
 
             if self._projects.has_payload(name):

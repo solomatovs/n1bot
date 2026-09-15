@@ -1,29 +1,45 @@
-"""Адрес объекта внешней системы: тонкий контракт для реестров.
+"""Адрес объекта внешней системы: тонкий контракт и реестр семейств.
 
 Строка url — для модели и показа, разобранные поля — для jsonb и поиска;
 оба представления строит и разбирает только модель адреса. Грамматика
 строки — знание системы и живёт в её пакете (PgAddress, ChAddress,
 ConfluenceAddress, ...); здесь только то, что нужно реестру, чтобы выбрать
-класс по виду объекта и форме строки.
+класс по виду объекта и форме строки. Семейства находятся по entry points
+группы boba.addresses установленных пакетов, как типы соединений: ни
+потребитель, ни ядро их не перечисляют.
 
 Ошибки:
-AddressError — строка не является адресом класса или семейства; текст
-    называет, что именно не так.
+AddressError — строка не является адресом класса или семейства, либо вид
+    объекта не известен ни одному семейству; текст называет, что не так.
+AddressFamiliesError — entry point группы boba.addresses не является
+    семейством адресов или не описывает себя.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Sequence
+from importlib.metadata import entry_points
 from typing import ClassVar, Self
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict
 
-__all__ = ["Address", "AddressError", "AddressFamily"]
+__all__ = [
+    "Address",
+    "AddressError",
+    "AddressFamilies",
+    "AddressFamiliesError",
+    "AddressFamily",
+]
 
 
 class AddressError(Exception):
     """Строка не является адресом этого класса или семейства."""
+
+
+class AddressFamiliesError(Exception):
+    """Entry point группы boba.addresses не годится семейством."""
 
 
 class Address(BaseModel, ABC):
@@ -60,10 +76,14 @@ class Address(BaseModel, ABC):
 
 class AddressFamily:
     """Реестр адресов одной системы: классы по виду объекта и выбор класса
-    по форме строки. Наследник в пакете системы перечисляет MODELS; kind
-    берётся с класса, поэтому один вид может иметь несколько форм (колонка
-    таблицы, view и matview — один pg_column)."""
+    по форме строки. Наследник в пакете системы перечисляет MODELS и
+    описывает себя: SYSTEM — имя для модели, SCHEMES — схемы url,
+    EXAMPLE — шаблон строки. kind берётся с класса, поэтому один вид может
+    иметь несколько форм (колонка таблицы, view и matview — один pg_column)."""
 
+    SYSTEM: ClassVar[str] = ""
+    SCHEMES: ClassVar[frozenset[str]] = frozenset()
+    EXAMPLE: ClassVar[str] = ""
     MODELS: ClassVar[Sequence[type[Address]]] = ()
 
     @classmethod
@@ -139,3 +159,112 @@ class AddressFamily:
                 shapes.append(model.shape())
 
             yield f"{kind}: " + " | ".join(shapes)
+
+    @classmethod
+    def describe(cls) -> str:
+        """Семейство целиком для подсказки модели: система, пример, формы."""
+        schemes = ", ".join(sorted(cls.SCHEMES))
+        head = f"{cls.SYSTEM} ({schemes}): {cls.EXAMPLE}"
+
+        return head + "\n" + cls.prompt()
+
+
+class AddressFamilies:
+    """Все установленные семейства: по схеме url и по виду объекта."""
+
+    GROUP: ClassVar[str] = "boba.addresses"
+
+    def __init__(self, families: Sequence[type[AddressFamily]]) -> None:
+        self._families = tuple(families)
+
+    @classmethod
+    def discover(cls) -> AddressFamilies:
+        """Семейства из entry points установленных пакетов, по имени точки."""
+        found: list[tuple[str, type[AddressFamily]]] = []
+        for entry in entry_points(group=cls.GROUP):
+            family = entry.load()
+            if not isinstance(family, type) or not issubclass(family, AddressFamily):
+                msg = (
+                    f"entry point {entry.name!r} of group {cls.GROUP!r} "
+                    f"({entry.value}): expected an AddressFamily subclass, "
+                    f"got {family!r}"
+                )
+                raise AddressFamiliesError(msg)
+
+            if not family.SYSTEM or not family.SCHEMES or not family.MODELS:
+                msg = (
+                    f"entry point {entry.name!r} of group {cls.GROUP!r} "
+                    f"({entry.value}): family must set SYSTEM, SCHEMES and MODELS"
+                )
+                raise AddressFamiliesError(msg)
+
+            found.append((entry.name, family))
+
+        found.sort(key=lambda pair: pair[0])
+
+        families: list[type[AddressFamily]] = []
+        for _, family in found:
+            families.append(family)
+
+        return cls(families)
+
+    def families(self) -> Sequence[type[AddressFamily]]:
+        return self._families
+
+    def kinds(self) -> Sequence[str]:
+        kinds: list[str] = []
+        for family in self._families:
+            kinds.extend(family.kinds())
+
+        return tuple(kinds)
+
+    def parse(self, kind: str, text: str) -> Address:
+        """Строка → адрес заявленного вида; семейство — по виду."""
+        return self.of_kind(kind).parse(kind, text)
+
+    def parse_any(self, text: str) -> Address:
+        """Строка → адрес; семейство по схеме url, вид по форме."""
+        return self.of_scheme(text).parse_any(text)
+
+    def of_kind(self, kind: str) -> type[AddressFamily]:
+        for family in self._families:
+            if kind in family.kinds():
+                return family
+
+        msg = f"address kind {kind!r} is unknown, expected one of {list(self.kinds())}"
+        raise AddressError(msg)
+
+    def of_scheme(self, text: str) -> type[AddressFamily]:
+        scheme = urlsplit(text).scheme
+        for family in self._families:
+            if scheme in family.SCHEMES:
+                return family
+
+        msg = (
+            f"address {text!r}: unknown scheme {scheme!r}, "
+            f"expected one of {sorted(self.schemes())}"
+        )
+        raise AddressError(msg)
+
+    def schemes(self) -> Sequence[str]:
+        schemes: set[str] = set()
+        for family in self._families:
+            schemes.update(family.SCHEMES)
+
+        return tuple(sorted(schemes))
+
+    def prompt(self) -> str:
+        """Все семейства для описания аргумента адреса."""
+        blocks: list[str] = []
+        for family in self._families:
+            blocks.append(family.describe())
+
+        return "\n\n".join(blocks)
+
+    def kinds_prompt(self) -> str:
+        """Виды объектов по системам для описания аргумента kind."""
+        lines: list[str] = []
+        for family in self._families:
+            lines.append(f"{family.SYSTEM}: " + ", ".join(family.kinds()))
+
+        return "\n".join(lines)

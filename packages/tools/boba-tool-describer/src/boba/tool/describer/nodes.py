@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field
 from boba.connections.address import Address, AddressError
 from boba.db.postgres import PostgresError
 from boba.identity.context import Scope
-from boba.tool.describer.address import Addresses, NodeKind
+from boba.tool.describer.address import Addresses
 from boba.tool.describer.store import (
     DescriberError,
     DescriberErrorKind,
@@ -77,7 +77,7 @@ class NodeColumn(StrEnum):
     URL = "url_address"
     DESCRIPTION = "description"
     INSERTED = "inserted"
-    COUNT = "count"
+    CASCADED = "cascaded"
 
 
 class NodeRecord(BaseModel):
@@ -146,29 +146,24 @@ where
 order by
     id
 """
-    SCOPE_IDS: ClassVar[str] = """
-select
-    id
-from
-    {node}
-where
-    scope_id = %(scope_id)s
-    and id = any(%(ids)s)
-"""
-    CASCADED_EDGES: ClassVar[str] = """
-select
-    count(*) as count
-from
-    {edge}
-where
-    source_id = any(%(ids)s)
-    or target_id = any(%(ids)s)
-"""
     DELETE: ClassVar[str] = """
-delete from {node}
-where
-    scope_id = %(scope_id)s
-    and id = any(%(ids)s)
+with removed as (
+    delete from {node}
+    where 1=1
+        and scope_id = %(scope_id)s
+        and id = any(%(ids)s)
+    returning id
+)
+select
+    r.id,
+    (
+        select count(*)
+        from {edge} e
+        where
+            e.source_id = any(%(ids)s) or e.target_id = any(%(ids)s)
+    ) as cascaded
+from
+    removed r
 """
 
 
@@ -226,54 +221,33 @@ class NodeTable:
         return records
 
     async def delete(self, scope: ScopeKey, ids: Sequence[int]) -> NodeDelete:
-        """Снять узлы области и каскадом их рёбра; чужой или неизвестный id —
-        отказ до удаления."""
+        """Снять узлы области и каскадом их рёбра одним запросом: область —
+        условие удаления, нехватка вернувшихся id — откат транзакции."""
         wanted = list(ids)
         params = {"scope_id": scope.id, "ids": wanted}
 
         async with self._conn.transaction():
-            found = await self._scope_ids(params)
+            removed: set[int] = set()
+            cascaded = 0
 
-            missing = MissingIds.of(wanted, found)
+            async with self._conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(self._names.render(NodeSql.DELETE), params)
+
+                for row in await cur.fetchall():
+                    removed.add(int(row[NodeColumn.ID.value]))
+                    cascaded = int(row[NodeColumn.CASCADED.value])
+
+            missing = MissingIds.of(wanted, removed)
             if missing:
                 raise NodeIdsMissingError(missing)
 
-            cascaded = await self._cascaded_edges(params)
-
-            await self._conn.execute(self._names.render(NodeSql.DELETE), params)
-
         return NodeDelete(ids=tuple(wanted), cascaded_edges=cascaded)
-
-    async def _scope_ids(self, params: dict[str, Any]) -> set[int]:
-        found: set[int] = set()
-
-        async with self._conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(self._names.render(NodeSql.SCOPE_IDS), params)
-
-            for row in await cur.fetchall():
-                found.add(int(row[NodeColumn.ID.value]))
-
-        return found
-
-    async def _cascaded_edges(self, params: dict[str, Any]) -> int:
-        async with self._conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(self._names.render(NodeSql.CASCADED_EDGES), params)
-            row = await cur.fetchone()
-
-        if row is None:
-            return 0
-
-        return int(row[NodeColumn.COUNT.value])
 
 
 class NodePrompt:
-    """Тексты аргументов инструментов узла для модели."""
+    """Тексты аргументов инструментов узла для модели; виды и формы адресов
+    берутся из установленных семейств, а не перечисляются здесь."""
 
-    KIND: ClassVar[str] = (
-        "Вид объекта. Определяет, какие роли ждёт адрес: pg_* — объекты "
-        "PostgreSQL, ch_* — ClickHouse, confluence_* — Confluence, entity — "
-        "понятие без системы (сущность предметной области)."
-    )
     DESCRIPTION: ClassVar[str] = (
         "Описание объекта словами: что хранит или означает, зачем нужен, "
         "ключевые поля и особенности данных."
@@ -284,14 +258,18 @@ class NodePrompt:
     )
 
     @classmethod
+    def kind(cls) -> str:
+        return (
+            "Вид объекта; определяет, какие роли ждёт адрес. Значения по "
+            f"системам:\n{Addresses.kinds_prompt()}"
+        )
+
+    @classmethod
     def address(cls) -> str:
         return (
-            "Адрес объекта строкой url. PostgreSQL: "
-            "postgresql://host:port/database?<роли>; ClickHouse: "
-            "clickhouse://host:port/database?<роли>; Confluence: url "
-            "REST-объекта; понятие: entity://<имя>. Базовый url соединения "
-            "дают pg_address, ch_address, web_address, confluence_address. "
-            "Роли по видам:\n"
+            "Адрес объекта строкой url. Корневой url соединения дают "
+            "инструменты *_address его источника, роли объекта дописываются к "
+            "нему. Системы, шаблоны и роли по видам:\n"
             f"{Addresses.prompt()}"
         )
 
@@ -362,7 +340,7 @@ class NodeDeleteListing:
 
 @tool
 async def describe_node(
-    kind: Annotated[NodeKind, Field(description=NodePrompt.KIND)],
+    kind: Annotated[str, Field(min_length=1, description=NodePrompt.kind())],
     address: Annotated[str, Field(min_length=1, description=NodePrompt.address())],
     description: Annotated[
         str, Field(min_length=1, description=NodePrompt.DESCRIPTION)

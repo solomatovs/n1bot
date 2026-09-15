@@ -310,6 +310,9 @@ class ChFunctionAddress(ChAddress):
 class ChAddresses(AddressFamily):
     """Реестр адресов ClickHouse и адрес базы по профилю соединения."""
 
+    SYSTEM: ClassVar[str] = "ClickHouse"
+    SCHEMES: ClassVar[frozenset[str]] = frozenset({ChAddress.SCHEME})
+    EXAMPLE: ClassVar[str] = "clickhouse://host:port/database?<role>=<name>&..."
     MODELS: ClassVar[Sequence[type[ChAddress]]] = (
         ChDatabaseAddress,
         ChTableAddress,
