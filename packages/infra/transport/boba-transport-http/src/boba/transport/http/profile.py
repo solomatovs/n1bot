@@ -327,8 +327,7 @@ class HttpConnection(ConnectionProfileBase):
     userinfo: SecretStr | None = Field(
         default=None,
         description=(
-            "Готовая часть `user:password` "
-            "адреса; перекрывает username/password."
+            "Готовая часть `user:password` адреса; перекрывает username/password."
         ),
     )
     netloc: str | None = Field(
