@@ -22,7 +22,6 @@ from uuid import UUID
 
 import chainlit as cl
 import pytest
-from chainlit_stand import use_context
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -52,9 +51,11 @@ from boba.db.postgres.address import (
     PgTableColumnAddress,
 )
 from boba.db.postgres.profile import PostgresConfig
+from boba.runtime.config import AppLayers, ConfigLocator
 from boba.sandbox import ZygoteRegistry
 from boba.stand.refs import StandRefs
 from boba.stand.site import Stand
+from boba.stand_core.context import use_context
 from boba.tool.describer.address import EntityAddress
 from boba.tool.describer.store import EdgeKind
 from boba.tool.describer.tools import ListColumn, ListItem
@@ -209,6 +210,12 @@ def _key() -> SecretStr:
 def _call(call_id: str, name: str, **args: Any) -> dict[str, Any]:
     args["intent"] = f"scripted {name}"
     return {"name": name, "args": args, "id": call_id, "type": "tool_call"}
+
+
+@pytest.fixture(scope="module")
+def app_config() -> AppConfig:
+    """Конфиг приложения чата: профили, роли, лимиты истории."""
+    return bind(AppLayers.compose(ConfigLocator.path()), path="app", model=AppConfig)
 
 
 @pytest.fixture(scope="module")

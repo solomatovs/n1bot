@@ -241,7 +241,8 @@ create table if not exists {node} (
     s__wrt_ts   timestamptz not null default now()
 );
 create unique index if not exists node_uk   on {node} (scope_id, address);
-create index if not exists node_address_gin on {node} using gin (address jsonb_path_ops);
+create index if not exists node_address_gin
+    on {node} using gin (address jsonb_path_ops);
 create index if not exists node_kind_btree  on {node} (kind);
 create table if not exists {edge} (
     id          bigserial primary key,
@@ -336,6 +337,7 @@ where
 order by
     e.id
 """
+
 
 class DescriberStore:
     """Сессии над таблицами node/edge: одно соединение на вызов инструмента,
@@ -447,12 +449,12 @@ class DescriberStore:
             for row in await cur.fetchall():
                 records.append(
                     NodeRecord(
-                    id=row[NodeColumn.ID.value],
-                    kind=row[NodeColumn.KIND.value],
-                    url=row[NodeColumn.URL.value],
-                    description=row[NodeColumn.DESCRIPTION.value],
+                        id=row[NodeColumn.ID.value],
+                        kind=row[NodeColumn.KIND.value],
+                        url=row[NodeColumn.URL.value],
+                        description=row[NodeColumn.DESCRIPTION.value],
+                    )
                 )
-            )
 
         return records
 
