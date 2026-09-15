@@ -195,6 +195,7 @@ class NodeWrite(BaseModel):
     kind: str
     url: str
     action: WriteAction
+    description: str
 
 
 class EdgeSpec(BaseModel):
@@ -215,6 +216,7 @@ class EdgeWrite(BaseModel):
     target: str
     kind: EdgeKind
     action: WriteAction
+    description: str
 
 
 class NodeRef(BaseModel):
@@ -405,6 +407,7 @@ class DescriberStore:
             kind=type(address).KIND,
             url=url,
             action=WriteAction.of(bool(row[NodeColumn.INSERTED.value])),
+            description=description
         )
 
     async def upsert_edge(
@@ -435,6 +438,7 @@ class DescriberStore:
             source=source_ref.url,
             target=target_ref.url,
             kind=spec.kind,
+            description=spec.description,
             action=WriteAction.of(bool(row[EdgeColumn.INSERTED.value])),
         )
 
