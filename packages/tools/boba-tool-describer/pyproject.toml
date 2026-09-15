@@ -4,17 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-tool-describer"
-version = "0.0.20.dev1"
+version = "0.0.20.dev2"
 description = "Инструменты describe_*: описания объектов данных и связей между ними в таблицы node/edge."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-toolkit==0.0.20.dev1",
-    "boba-identity==0.0.20.dev1",
-    "boba-connections==0.0.20.dev1",
-    "boba-db-postgres==0.0.20.dev1",
-    "boba-db-clickhouse==0.0.20.dev1",
-    "boba-transport-http==0.0.20.dev1",
-    "boba-confluence==0.0.20.dev1",
+    "boba-toolkit==0.0.20.dev2",
+    "boba-identity==0.0.20.dev2",
+    "boba-connections==0.0.20.dev2",
+    "boba-db-postgres==0.0.20.dev2",
+    "boba-db-clickhouse==0.0.20.dev2",
+    "boba-transport-http==0.0.20.dev2",
+    "boba-confluence==0.0.20.dev2",
     "psycopg[binary,pool]>=3.2",
     "pydantic>=2.10,<2.11",
 ]
@@ -26,9 +26,9 @@ describer = "boba.tool.describer.plugin:MANIFEST"
 payload = [
 ]
 dev = [
-    "boba-config==0.0.20.dev1",
-    "boba-runtime==0.0.20.dev1",
-    "boba-stand==0.0.20.dev1",
+    "boba-config==0.0.20.dev2",
+    "boba-runtime==0.0.20.dev2",
+    "boba-stand==0.0.20.dev2",
     "pytest>=8",
 ]
 
