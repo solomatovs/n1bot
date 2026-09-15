@@ -8,21 +8,30 @@ ClickHouseError — до базы не достучаться (сеть, TLS, ke
 ClickHouseQueryError — сервер отклонил запрос (синтаксис, права).
 UnknownConnectionError — имя подключения вне whitelist'а конфига.
 ResultTooLargeError — выдача превысила max_bytes конфига.
+AddressError — у профиля соединения нет базы по умолчанию для ch_address.
 """
 
 from __future__ import annotations
 
 import sys
 from collections.abc import Mapping, Sequence
+from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Final, cast
 
 from pydantic import Field
 
+from boba.connections.address import AddressError
 from boba.db.clickhouse import ClickHouseError, ClickHouseQueryError
+from boba.db.clickhouse.address import ChAddresses
 from boba.db.clickhouse.profile import ClickHouseConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
-from boba.toolkit.result import MarkdownResult, ResultTooLargeError, SqlResult
+from boba.toolkit.result import (
+    MarkdownResult,
+    ResultTooLargeError,
+    SqlResult,
+    TableResult,
+)
 from boba.toolkit.sql import (
     CatalogQuery,
     MaxChars,
@@ -41,6 +50,13 @@ ChParams = dict[str, Any]
 
 
 ChConnection = Annotated[ClickHouseConfig, UserConnection]
+
+
+class AddressColumn(StrEnum):
+    """Колонки выдачи ch_address."""
+
+    CONNECTION = "connection"
+    URL = "url"
 
 
 class ChToolConfig(SecretRevealing, SqlLimits):
@@ -285,7 +301,26 @@ async def ch_query(
     return await _query_rows(connection, CatalogQuery(text=sql, params={}), cfg)
 
 
+@tool
+async def ch_address(connection: ChConnection) -> TableResult:
+    """Базовый url соединения ClickHouse: clickhouse://host:port/database.
+
+    Ничего не выполняет в базе. В url — база по умолчанию соединения;
+    объект в другой базе адресуется заменой сегмента пути. Роли объекта —
+    в query поверх url: ?table=events, ?table=events&column=user_id.
+    """
+    base = ChAddresses.base_of(connection)
+
+    row = {
+        AddressColumn.CONNECTION.value: connection.source.name,
+        AddressColumn.URL.value: base.render(),
+    }
+
+    return TableResult(rows=[row])
+
+
 EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
+    AddressError: SqlErrorKind.UNKNOWN_TARGET,
     ClickHouseError: SqlErrorKind.DATABASE_UNAVAILABLE,
     ClickHouseQueryError: SqlErrorKind.SQL_FAILED,
     ResultTooLargeError: SqlErrorKind.RESULT_TOO_LARGE,
@@ -295,6 +330,7 @@ TOOLS: Final = ToolMain.toolset(
     ch_list_tables,
     ch_describe_table,
     ch_query,
+    ch_address,
 )
 
 if __name__ == "__main__":

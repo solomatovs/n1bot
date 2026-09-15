@@ -1515,6 +1515,7 @@ name = "boba-tool-clickhouse"
 version = "0.0.20.dev3"
 source = { editable = "packages/tools/boba-tool-clickhouse" }
 dependencies = [
+    { name = "boba-connections", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-db-clickhouse", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1532,6 +1533,7 @@ payload = [
 [package.metadata]
 requires-dist = [
     { name = "boba-config", marker = "extra == 'dev'", editable = "packages/infra/config/boba-config" },
+    { name = "boba-connections", editable = "packages/core/boba-connections" },
     { name = "boba-db-clickhouse", editable = "packages/infra/db/boba-db-clickhouse" },
     { name = "boba-db-clickhouse", extras = ["payload"], marker = "extra == 'payload'", editable = "packages/infra/db/boba-db-clickhouse" },
     { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },

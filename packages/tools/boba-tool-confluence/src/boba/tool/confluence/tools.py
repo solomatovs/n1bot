@@ -19,6 +19,7 @@ from typing import Annotated, Any, ClassVar, Final, Literal
 import httpx
 from pydantic import ConfigDict, Field, ValidationError
 
+from boba.confluence.address import ConfluenceAddresses
 from boba.confluence.models import ConfluenceSpaceItem
 from boba.confluence.parsing import ConfluenceJson
 from boba.text.grep import GrepLimits, TextGrep
@@ -63,6 +64,12 @@ class ConfluenceToolsConfig(SecretRevealing):
         ge=1,
         description="Потолок длины content/before/after на match в grep.",
     )
+
+
+class AddressColumn(StrEnum):
+    """Колонки выдачи confluence_address."""
+
+    URL = "url"
 
 
 class ConfluenceHttp:
@@ -416,6 +423,20 @@ async def confluence_spaces(
     return TableResult(rows=rows)
 
 
+@tool
+async def confluence_address(
+    cfg: Annotated[ConfluenceToolsConfig, Injected],
+) -> TableResult:
+    """Корневой url Confluence без учётных данных и формы url его объектов.
+
+    Ничего не запрашивает. Спейс, страница и вложение адресуются REST-путями
+    под этим корнем; формы перечислены в подписи ответа.
+    """
+    row = {AddressColumn.URL.value: str(cfg.confluence.public_url())}
+
+    return TableResult(rows=[row], note=ConfluenceAddresses.prompt())
+
+
 EXPECTED: Mapping[type[Exception], ConfluenceErrorKind] = {
     ConfluenceRequestError: ConfluenceErrorKind.REQUEST_FAILED,
 }
@@ -425,6 +446,7 @@ TOOLS: Final = ToolMain.toolset(
     confluence_grep,
     confluence_search,
     confluence_spaces,
+    confluence_address,
 )
 
 if __name__ == "__main__":

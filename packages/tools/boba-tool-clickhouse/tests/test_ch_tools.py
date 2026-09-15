@@ -13,7 +13,7 @@ from boba.db.clickhouse.payload import SpnegoHeaders
 from boba.db.clickhouse.profile import ClickHouseConfig
 from boba.tool.ch.tools import TOOLS as CH_TOOLS
 from boba.tool.ch.tools import ChToolConfig
-from boba.toolkit.entry import ToolArgv
+from boba.toolkit.entry import ToolArgv, ToolMain
 from boba.toolkit.facade import PayloadTool
 
 
@@ -26,6 +26,7 @@ class TestChTools:
         "ch_list_tables",
         "ch_describe_table",
         "ch_query",
+        "ch_address",
     ]
 
     def test_module_declares_the_toolset(self) -> None:
@@ -229,3 +230,51 @@ class TestJsonable:
             }
         ):
             raise AssertionError('RowStream.plain(row) == { "i": 1, "d": "1.5", "u": …')
+
+
+class TestChAddress:
+    pytestmark = pytest.mark.anyio
+
+    @staticmethod
+    def _profile(**parts: object) -> ClickHouseConfig:
+        from uuid import uuid4
+
+        from pydantic import SecretStr
+
+        from boba.db.clickhouse.profile import PasswordAuth
+
+        return ClickHouseConfig.model_validate(
+            {
+                "host": "ch1",
+                "port": 8123,
+                "interface": "http",
+                "auth": PasswordAuth(
+                    method="password", user="app", password=SecretStr("x")
+                ),
+                **parts,
+            }
+        ).identified(connection_id=uuid4(), name="logs")
+
+    async def test_address_of_profile(self) -> None:
+        from boba.tool.ch.tools import ch_address
+
+        body = ToolMain.toolset(ch_address)[0].coroutine
+        if body is None:
+            raise AssertionError("tool body is a coroutine")
+
+        result = await body(connection=self._profile(database="logs"))
+
+        assert [dict(row) for row in result.rows] == [
+            {"connection": "logs", "url": "clickhouse://ch1:8123/logs"}
+        ]
+
+    async def test_profile_without_database_is_refused(self) -> None:
+        from boba.connections.address import AddressError
+        from boba.tool.ch.tools import ch_address
+
+        body = ToolMain.toolset(ch_address)[0].coroutine
+        if body is None:
+            raise AssertionError("tool body is a coroutine")
+
+        with pytest.raises(AddressError, match="no default database"):
+            await body(connection=self._profile())

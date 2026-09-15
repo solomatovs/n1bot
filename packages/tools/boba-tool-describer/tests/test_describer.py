@@ -21,16 +21,25 @@ from boba.db.postgres.address import PgNodeKind
 from boba.db.postgres.profile import PostgresConfig
 from boba.identity.context import Scope, ScopeKind
 from boba.tool.describer.address import EntityKind
-from boba.tool.describer.store import EdgeKind, NodeMissingError, WriteAction
-from boba.tool.describer.tools import (
-    DescriberToolConfig,
-    ListColumn,
-    ListItem,
+from boba.tool.describer.edges import (
+    EdgeDeleteColumn,
+    EdgeEndMissingError,
+    EdgeIdsMissingError,
+    EdgeKind,
+    EdgeListColumn,
+    describe_delete_edge,
     describe_edge,
-    describe_list,
-    describe_node,
-    describe_pg_address,
+    describe_list_edges,
 )
+from boba.tool.describer.nodes import (
+    NodeDeleteColumn,
+    NodeIdsMissingError,
+    NodeListColumn,
+    describe_delete_node,
+    describe_list_nodes,
+    describe_node,
+)
+from boba.tool.describer.store import DescriberToolConfig, WriteAction
 from boba.toolkit.entry import ToolMain
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
@@ -95,8 +104,18 @@ async def _edge(  # noqa: PLR0913 — аргументы вызова инстр
     return dict(result.rows[0])
 
 
-async def _listing(cfg: DescriberToolConfig, scope: Scope) -> list[dict[str, Any]]:
-    result = await _body(describe_list)(scope=scope, cfg=cfg)
+async def _nodes(cfg: DescriberToolConfig, scope: Scope) -> list[dict[str, Any]]:
+    result = await _body(describe_list_nodes)(scope=scope, cfg=cfg)
+
+    rows: list[dict[str, Any]] = []
+    for row in result.rows:
+        rows.append(dict(row))
+
+    return rows
+
+
+async def _edges(cfg: DescriberToolConfig, scope: Scope) -> list[dict[str, Any]]:
+    result = await _body(describe_list_edges)(scope=scope, cfg=cfg)
 
     rows: list[dict[str, Any]] = []
     for row in result.rows:
@@ -118,6 +137,23 @@ async def _count(pool: AsyncPostgresPool, table: str) -> int:
     return int(row[0])
 
 
+def _ids(rows: list[dict[str, Any]]) -> list[int]:
+    ids: list[int] = []
+    for row in rows:
+        ids.append(int(row["id"]))
+
+    return ids
+
+
+async def _graph(cfg: DescriberToolConfig, scope: Scope) -> None:
+    """Три узла и два ребра: events → users.id, users → users.id."""
+    await _node(cfg, scope, PgNodeKind.COLUMN, PG_COLUMN, "user id")
+    await _node(cfg, scope, ChNodeKind.COLUMN, CH_COLUMN, "user id in events")
+    await _node(cfg, scope, PgNodeKind.TABLE, PG_TABLE, "users")
+    await _edge(cfg, scope, CH_COLUMN, PG_COLUMN, EdgeKind.IMPLICIT_KEY, "match")
+    await _edge(cfg, scope, PG_TABLE, PG_COLUMN, EdgeKind.SIMILAR, "holds")
+
+
 async def test_node_is_upserted_by_address(
     cfg: DescriberToolConfig, scope: Scope, pool: AsyncPostgresPool
 ) -> None:
@@ -133,8 +169,8 @@ async def test_node_is_upserted_by_address(
 
     assert await _count(pool, "node") == 1
 
-    rows = await _listing(cfg, scope)
-    assert rows[0][ListColumn.DESCRIPTION] == "registered users"
+    rows = await _nodes(cfg, scope)
+    assert rows[0][NodeListColumn.DESCRIPTION] == "registered users"
 
 
 async def test_edge_links_nodes_across_systems(
@@ -156,17 +192,12 @@ async def test_edge_links_nodes_across_systems(
     assert again["action"] == WriteAction.UPDATED
     assert await _count(pool, "edge") == 1
 
-    rows = await _listing(cfg, scope)
-    edges: list[dict[str, Any]] = []
-    for row in rows:
-        if row[ListColumn.ITEM] == ListItem.EDGE:
-            edges.append(row)
-
+    edges = await _edges(cfg, scope)
     assert len(edges) == 1
-    assert edges[0][ListColumn.SOURCE] == CH_COLUMN
-    assert edges[0][ListColumn.TARGET] == PG_COLUMN
-    assert edges[0][ListColumn.KIND] == EdgeKind.IMPLICIT_KEY
-    assert edges[0][ListColumn.DESCRIPTION] == "checked by join"
+    assert edges[0][EdgeListColumn.SOURCE] == CH_COLUMN
+    assert edges[0][EdgeListColumn.TARGET] == PG_COLUMN
+    assert edges[0][EdgeListColumn.KIND] == EdgeKind.IMPLICIT_KEY
+    assert edges[0][EdgeListColumn.DESCRIPTION] == "checked by join"
 
 
 async def test_edge_to_undescribed_node_is_refused(
@@ -174,7 +205,7 @@ async def test_edge_to_undescribed_node_is_refused(
 ) -> None:
     await _node(cfg, scope, PgNodeKind.COLUMN, PG_COLUMN, "user id")
 
-    with pytest.raises(NodeMissingError) as caught:
+    with pytest.raises(EdgeEndMissingError) as caught:
         await _edge(cfg, scope, PG_COLUMN, CH_COLUMN, EdgeKind.FOREIGN_KEY, "x")
 
     assert caught.value.url == CH_COLUMN
@@ -189,10 +220,10 @@ async def test_scopes_do_not_see_each_other(
     await _node(cfg, scope, PgNodeKind.COLUMN, PG_COLUMN, "user id")
     await _node(cfg, other, ChNodeKind.COLUMN, CH_COLUMN, "user id in events")
 
-    assert len(await _listing(cfg, scope)) == 1
-    assert len(await _listing(cfg, other)) == 1
+    assert len(await _nodes(cfg, scope)) == 1
+    assert len(await _nodes(cfg, other)) == 1
 
-    with pytest.raises(NodeMissingError):
+    with pytest.raises(EdgeEndMissingError):
         await _edge(cfg, scope, PG_COLUMN, CH_COLUMN, EdgeKind.IMPLICIT_KEY, "x")
 
 
@@ -210,17 +241,20 @@ async def test_entity_and_confluence_nodes(
     await _edge(cfg, scope, PG_TABLE, ENTITY, EdgeKind.SIMILAR, "table holds customers")
     await _edge(cfg, scope, page, ENTITY, EdgeKind.SIMILAR, "page describes customer")
 
-    rows = await _listing(cfg, scope)
-    assert len(rows) == 5
+    assert len(await _nodes(cfg, scope)) == 3
+    assert len(await _edges(cfg, scope)) == 2
 
 
 async def test_empty_scope_lists_nothing(
     cfg: DescriberToolConfig, scope: Scope
 ) -> None:
-    result = await _body(describe_list)(scope=scope, cfg=cfg)
+    nodes = await _body(describe_list_nodes)(scope=scope, cfg=cfg)
+    edges = await _body(describe_list_edges)(scope=scope, cfg=cfg)
 
-    assert result.rows == []
-    assert result.note is not None
+    assert nodes.rows == []
+    assert nodes.note is not None
+    assert edges.rows == []
+    assert edges.note is not None
 
 
 async def test_address_is_checked_against_kind(
@@ -255,14 +289,6 @@ async def test_tables_survive_truncate_by_the_consumer(
     assert await _count(pool, "node") == 1
 
 
-async def test_pg_address_of_connection(test_postgres: PostgresConfig) -> None:
-    result = await _body(describe_pg_address)(connection=test_postgres)
-
-    row = dict(result.rows[0])
-    assert row["url"].startswith("postgresql://")
-    assert row["url"].endswith(f"/{test_postgres.dbname}")
-
-
 async def test_parallel_calls_on_a_fresh_schema(
     cfg: DescriberToolConfig, scope: Scope, pool: AsyncPostgresPool
 ) -> None:
@@ -281,3 +307,91 @@ async def test_parallel_calls_on_a_fresh_schema(
 
     assert actions == [WriteAction.INSERTED] * 8
     assert await _count(pool, "node") == 8
+
+
+async def test_listings_carry_ids(cfg: DescriberToolConfig, scope: Scope) -> None:
+    await _graph(cfg, scope)
+
+    node_ids = _ids(await _nodes(cfg, scope))
+    edge_ids = _ids(await _edges(cfg, scope))
+
+    assert len(node_ids) == 3
+    assert len(set(node_ids)) == 3
+    assert len(edge_ids) == 2
+
+
+async def test_delete_edge_keeps_nodes(
+    cfg: DescriberToolConfig, scope: Scope, pool: AsyncPostgresPool
+) -> None:
+    await _graph(cfg, scope)
+    edge_ids = _ids(await _edges(cfg, scope))
+
+    result = await _body(describe_delete_edge)(ids=[edge_ids[0]], scope=scope, cfg=cfg)
+
+    assert [dict(row) for row in result.rows] == [
+        {
+            EdgeDeleteColumn.ID.value: edge_ids[0],
+            EdgeDeleteColumn.ACTION.value: "deleted",
+        }
+    ]
+    assert result.note is None
+    assert await _count(pool, "edge") == 1
+    assert await _count(pool, "node") == 3
+
+
+async def test_delete_node_cascades_its_edges(
+    cfg: DescriberToolConfig, scope: Scope, pool: AsyncPostgresPool
+) -> None:
+    await _graph(cfg, scope)
+
+    target: int | None = None
+    for row in await _nodes(cfg, scope):
+        if row[NodeListColumn.URL] == PG_COLUMN:
+            target = int(row[NodeListColumn.ID])
+
+    assert target is not None
+
+    result = await _body(describe_delete_node)(ids=[target], scope=scope, cfg=cfg)
+
+    assert dict(result.rows[0]) == {
+        NodeDeleteColumn.ID.value: target,
+        NodeDeleteColumn.ACTION.value: "deleted",
+    }
+    assert result.note is not None
+    assert result.note.startswith("2 edge(s)")
+    assert await _count(pool, "node") == 2
+    assert await _count(pool, "edge") == 0
+
+
+async def test_delete_is_all_or_nothing(
+    cfg: DescriberToolConfig, scope: Scope, pool: AsyncPostgresPool
+) -> None:
+    await _graph(cfg, scope)
+    node_ids = _ids(await _nodes(cfg, scope))
+
+    with pytest.raises(NodeIdsMissingError) as caught:
+        await _body(describe_delete_node)(
+            ids=[node_ids[0], 999_999], scope=scope, cfg=cfg
+        )
+
+    assert caught.value.missing == (999_999,)
+    assert await _count(pool, "node") == 3
+    assert await _count(pool, "edge") == 2
+
+
+async def test_delete_refuses_ids_of_another_scope(
+    cfg: DescriberToolConfig, scope: Scope, pool: AsyncPostgresPool
+) -> None:
+    await _graph(cfg, scope)
+    other = Scope(kind=ScopeKind.WORKFLOW, id=str(uuid4()))
+    node_ids = _ids(await _nodes(cfg, scope))
+    edge_ids = _ids(await _edges(cfg, scope))
+
+    with pytest.raises(EdgeIdsMissingError):
+        await _body(describe_delete_edge)(ids=edge_ids, scope=other, cfg=cfg)
+
+    with pytest.raises(NodeIdsMissingError):
+        await _body(describe_delete_node)(ids=node_ids, scope=other, cfg=cfg)
+
+    assert await _count(pool, "node") == 3
+    assert await _count(pool, "edge") == 2
