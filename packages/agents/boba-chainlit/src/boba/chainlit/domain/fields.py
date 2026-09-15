@@ -29,6 +29,7 @@ class StepField:
     OUTPUT: Final = "output"
     IS_ERROR: Final = "isError"
     FEEDBACK: Final = "feedback"
+    METADATA: Final = "metadata"
 
 
 class ElementField:
