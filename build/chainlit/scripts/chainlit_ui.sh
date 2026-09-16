@@ -2,14 +2,23 @@
 # UI chainlit из исходников тега с overlay поверх (web/chainlit-ui): все пакеты
 # workspace — react-client, app (фронт) и copilot (виджет), как pnpm build у upstream.
 # custom_build в chainlit заменяет весь UI: и фронт, и copilot ищутся в одном каталоге.
-#   store <src.tar.gz> <store.tar.gz>                 — pnpm-store для offline-сборки (нужна сеть)
-#   build <src.tar.gz> <store.tar.gz> <overlay> <out> — сборка dist без сети
+# Зависимости pnpm ставит из реестра npm образа nodejs (в закрытом контуре — nexus).
+#   chainlit_ui.sh <src.tar.gz> <overlay> <out>
 # Запускается в образе nodejs (node + pnpm), как стадией Dockerfile, так и целью make.
 set -eu
 
 export HOME=/tmp HUSKY=0 CYPRESS_INSTALL_BINARY=0
 PNPM_OPTS="--frozen-lockfile --config.package-manager-strict=false --filter @chainlit/react-client --filter @chainlit/app --filter @chainlit/copilot"
 WORK="${UI_WORK:-/tmp/chainlit-ui}"
+
+if [ $# -ne 3 ]; then
+    echo "usage: chainlit_ui.sh <src.tar.gz> <overlay> <out>" >&2
+    exit 2
+fi
+
+SRC_TARBALL="$1"
+OVERLAY="$2"
+OUT="$3"
 
 unpack_sources() {
     root=$(tar -tzf "$1" | head -1 | cut -d/ -f1)
@@ -39,37 +48,21 @@ check_ui() {
     done
 }
 
-case "${1:-}" in
-store)
-    rm -rf "$WORK"
-    unpack_sources "$2"
-    mkdir -p "$WORK/store"
-    cd "$WORK/src"
-    pnpm install --store-dir "$WORK/store" $PNPM_OPTS
-    tar -czf "$3" -C "$WORK/store" .
-    ;;
-build)
-    rm -rf "$WORK"
-    unpack_sources "$2"
-    mkdir -p "$WORK/store"
-    tar -xzf "$3" -C "$WORK/store"
-    cp -a "$4/." "$WORK/src/"
-    cd "$WORK/src"
-    pnpm install --offline --store-dir "$WORK/store" $PNPM_OPTS
-    pnpm --filter @chainlit/react-client run build
-    pnpm --filter @chainlit/react-client run type-check
-    pnpm --filter @chainlit/app run type-check
-    pnpm --filter @chainlit/app run build
-    pnpm --filter @chainlit/copilot run build
-    patch_index frontend/dist/index.html
-    mkdir -p "$5"
-    find "$5" -mindepth 1 -delete
-    cp -a frontend/dist/. "$5/"
-    cp -a libs/copilot/dist/. "$5/"
-    check_ui "$5"
-    ;;
-*)
-    echo "usage: chainlit_ui.sh store <src.tar.gz> <store.tar.gz> | build <src.tar.gz> <store.tar.gz> <overlay> <out>" >&2
-    exit 2
-    ;;
-esac
+rm -rf "$WORK"
+unpack_sources "$SRC_TARBALL"
+cp -a "$OVERLAY/." "$WORK/src/"
+cd "$WORK/src"
+
+pnpm install $PNPM_OPTS
+pnpm --filter @chainlit/react-client run build
+pnpm --filter @chainlit/react-client run type-check
+pnpm --filter @chainlit/app run type-check
+pnpm --filter @chainlit/app run build
+pnpm --filter @chainlit/copilot run build
+
+patch_index frontend/dist/index.html
+mkdir -p "$OUT"
+find "$OUT" -mindepth 1 -delete
+cp -a frontend/dist/. "$OUT/"
+cp -a libs/copilot/dist/. "$OUT/"
+check_ui "$OUT"
