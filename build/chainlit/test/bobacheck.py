@@ -80,7 +80,7 @@ import glob
 import importlib
 
 THIRD_PARTY = {
-    "chainlit": ["pydantic", "fastapi", "tabulate", "chainlit"],
+    "chainlit": ["pydantic", "fastapi", "chainlit"],
     "studio": ["pydantic", "fastapi"],
 }
 for m in THIRD_PARTY[APP]:
