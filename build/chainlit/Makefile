@@ -57,9 +57,9 @@ GCC_IMAGE       ?= dmp/gcc:8.5.0
 PYTHON_IMAGE    ?= dmp/python:$(PYTHON_VERSION)-dist
 NODE_IMAGE      ?= dmp/nodejs:20
 BASE_IMAGE      := boba-base-$(APP):$(PYTHON_VERSION)
-BWRAP_IMAGE     := boba-bwrap-$(APP):$(PYTHON_VERSION)
-FUSE_IMAGE      := boba-fuse2fs-$(APP):$(PYTHON_VERSION)
 SANDBOX_DIR     := $(DEPS_DIR)/sandbox
+# сколько build cache оставляет prune
+PRUNE_KEEP      ?= 20GB
 
 # --- что скачивает fetch -------------------------------------------------------
 
@@ -140,6 +140,8 @@ UI_SRCS         := $(shell find $(UI_DIR) -type f) $(SCRIPTS_DIR)/chainlit_ui.sh
 # --- что кладут sandbox и release ------------------------------------------------
 
 SANDBOX_PARTS   := $(SANDBOX_DIR)/third/bin/bwrap $(SANDBOX_DIR)/third/bin/fuse2fs $(SANDBOX_DIR)/workspace.ext4
+# mke2fs из сборки: им make делает workspace.ext4 и rootfs плагинов вне docker build
+SANDBOX_TOOLS   := $(SANDBOX_DIR)/tools/mke2fs $(SANDBOX_DIR)/tools/mke2fs.conf
 
 RELEASE_PARTS   := sandbox/plugins sandbox/workspace.ext4 third/bin/bwrap third/bin/fuse2fs \
                    app/bin app_root/public app_root/public/page.js app_root/public/vendor \
@@ -173,7 +175,6 @@ DOCKER_ARGS      = --build-arg GLIBC_IMAGE=$(GLIBC_IMAGE)              \
     --build-arg BWRAP_VERSION=$(BWRAP_VERSION)                         \
     --build-arg LIBFUSE_VERSION=$(LIBFUSE_VERSION)                     \
     --build-arg E2FSPROGS_VERSION=$(E2FSPROGS_VERSION)                 \
-    --build-arg SANDBOX_WS_SIZE=$(SANDBOX_WS_SIZE)                     \
     --build-arg NODE_IMAGE=$(NODE_IMAGE)                               \
     --build-arg CHAINLIT_VERSION=$(CHAINLIT_VERSION)
 
@@ -185,23 +186,36 @@ APP_ARGS         = --build-arg APP=$(APP)                           \
     --build-arg SANDBOX_DEV_KRB=$(SRC_DIR)/compose/$(APP)/conf/krb  \
     --build-arg BOBA_DIR="$(DEST_DIR)" --build-arg BOBA_VERSION="$(VERSION)"
 
-# сборка стадии: $(1) — стадия, $(2) — тег, $(3) — дополнительные аргументы
+# сборка стадии в образ: $(1) — стадия, $(2) — тег, $(3) — дополнительные аргументы
 define docker-stage
 docker build -f $(BASE_DIR)/Dockerfile $(NO_CACHE_OPT) $(DOCKER_ARGS) $(PROXY_ARGS) $(3) \
     --target $(1) --tag $(2) $(PROGRESS) $(BUILD_CONTEXT)
+endef
+
+# выгрузка файлов стадии в каталог без образа: $(1) — стадия, $(2) — каталог, $(3) — аргументы
+define docker-output
+docker build -f $(BASE_DIR)/Dockerfile $(NO_CACHE_OPT) $(DOCKER_ARGS) $(PROXY_ARGS) $(3) \
+    --target $(1) --output type=local,dest=$(2) $(PROGRESS) $(BUILD_CONTEXT)
+endef
+
+# файловая система стадии tar'ом в stdout: $(1) — стадия, $(2) — аргументы
+define docker-tar
+docker build -f $(BASE_DIR)/Dockerfile $(NO_CACHE_OPT) $(DOCKER_ARGS) $(PROXY_ARGS) $(2) \
+    --target $(1) --output type=tar,dest=- $(PROGRESS) $(BUILD_CONTEXT)
+endef
+
+# mke2fs из src/sandbox/tools в контейнере glibc: $(1) — скрипт, $(2) — каталог результата,
+# $(3) — аргументы скрипта. root в контейнере нужен, чтобы сохранить владельцев из tar
+define mke2fs-run
+docker run --rm -i -e MKE2FS_CONFIG=/tools/mke2fs.conf -e PATH=/tools:/usr/sbin:/usr/bin:/sbin:/bin \
+    -v "$(SANDBOX_DIR)/tools:/tools:ro" -v "$(SCRIPTS_DIR):/scripts:ro" -v "$(2):/out" \
+    --entrypoint sh $(GLIBC_IMAGE) /scripts/$(1) $(3) "$$(id -u):$$(id -g)"
 endef
 
 # загрузка: $(1) — url, $(2) — файл
 define fetch
 mkdir -p "$(dir $(2))"
 curl -fSL $(CURL_OPTS) -o "$(2)" "$(1)"
-endef
-
-# выемка артефакта из образа: $(1) — образ, $(2) — путь внутри, $(3) — куда
-define image-copy
-cid=$$(docker create $(1) /bin/true)
-docker cp "$$cid:$(2)" "$(3)"
-docker rm "$$cid" > /dev/null
 endef
 
 # скрипт загрузки моделей в образе base: $(1) — pip-пакет качалки, $(2) — каталог назначения,
@@ -215,6 +229,13 @@ docker run --rm $(PROXY_ENV) -e HF_ENDPOINT="$(ONNX_HUB_URL)"       \
         pip3 install --no-cache-dir "$(1)"
         python3 /scripts/fetch_models.py $(3)
         chown -R $(shell id -u):$(shell id -g) /out'
+endef
+
+# дерево релиза из образа: $(1) — образ, $(2) — путь внутри, $(3) — куда
+define image-copy
+cid=$$(docker create $(1) /bin/true)
+docker cp "$$cid:$(2)" "$(3)"
+docker rm "$$cid" > /dev/null
 endef
 
 # наличие путей: $(1) — список, $(2) — подсказка, что сделать
@@ -243,10 +264,10 @@ define HELP
   fetch                 tarball'ы bwrap/fuse/e2fsprogs, uv, tessdata, веса fastembed,
                         модели onnx-genai, katex/Inter/mermaid, исходники chainlit $(CHAINLIT_VERSION)
 
-Сборка (сеть — только реестры pypi/npm):
+Сборка (сеть — только реестры pypi/npm; образ один — $(IMAGE), остальное файлами в src/):
   sandbox               bwrap, fuse2fs и шаблон workspace.ext4 -> src/sandbox
-  plugin-rootfs         образ корня одного плагина: PLUGIN=<пакет>
-  plugin-rootfs-all     образы корня всех плагинов с entry points boba.tools
+  plugin-rootfs         rootfs.ext4 одного плагина: PLUGIN=<пакет>
+  plugin-rootfs-all     rootfs.ext4 всех плагинов с entry points boba.tools
   web                   фронт для dev-дерева: page.js и UI chainlit (фронт + copilot)
   chainlit-ui           UI chainlit заново, без проверки свежести
   build                 образ $(IMAGE)
@@ -260,6 +281,7 @@ define HELP
 Прочее:
   all                   fetch sandbox plugin-rootfs-all web build dev
   clean                 удалить release, src/ и фронт, кроме моделей
+  prune                 снести образы прошлых версий и промежуточные теги, build cache до PRUNE_KEEP=$(PRUNE_KEEP)
   sec                   sec.sh, MODE=all|sast|sca|rules
   version               показать версию пакетов
   version-set           проставить версию: VER=X.Y.Z
@@ -378,32 +400,33 @@ base: $(UV_BIN)
 sandbox: version-check
 	@$(call check,$(INPUTS),запусти: make fetch)
 	echo "== песочница $(APP) =="
-	$(call docker-stage,bwrap-build,$(BWRAP_IMAGE))
-	$(call docker-stage,fuse2fs-build,$(FUSE_IMAGE))
-	mkdir -p "$(SANDBOX_DIR)/third/bin"
-	rm -f $(SANDBOX_PARTS)
-	$(call image-copy,$(BWRAP_IMAGE),/out/bwrap,$(SANDBOX_DIR)/third/bin/bwrap)
-	$(call image-copy,$(FUSE_IMAGE),/out/fuse2fs,$(SANDBOX_DIR)/third/bin/fuse2fs)
-	$(call image-copy,$(FUSE_IMAGE),/out/sandbox-workspace.ext4,$(SANDBOX_DIR)/workspace.ext4)
-	chmod 0755 "$(SANDBOX_DIR)/third/bin/bwrap" "$(SANDBOX_DIR)/third/bin/fuse2fs"
+	mkdir -p "$(SANDBOX_DIR)"
+	rm -f $(SANDBOX_PARTS) $(SANDBOX_TOOLS)
+	$(call docker-output,sandbox-out,$(SANDBOX_DIR))
+	chmod 0755 "$(SANDBOX_DIR)/third/bin/bwrap" "$(SANDBOX_DIR)/third/bin/fuse2fs" "$(SANDBOX_DIR)/tools/mke2fs"
+	$(call mke2fs-run,mkworkspace.sh,$(SANDBOX_DIR),/out/workspace.ext4 $(SANDBOX_WS_SIZE)) < /dev/null
 	# TrustedBinaries отвергает каталог, открытый группе на запись
 	chmod -R go-w "$(SANDBOX_DIR)/third"
 	ls -lh $(SANDBOX_DIR)/third/bin $(SANDBOX_DIR)/workspace.ext4
 
 # образ корня одного плагина: цель читает декларации [tool.boba.sandbox] пакета
-PLUGIN_IMAGE     = boba-plugin-$(PLUGIN):$(BOBA_TAG)
 PLUGIN_ROOTFS    = $(SANDBOX_DIR)/plugins/$(PLUGIN)/rootfs.ext4
 
 .PHONY: plugin-rootfs
 plugin-rootfs: version-check
 	@$(if $(PLUGIN),,$(error нужен PLUGIN=<имя пакета>: make plugin-rootfs PLUGIN=boba-tool-postgres))
 	$(call check,$(INPUTS),запусти: make fetch)
+	$(call check,$(SANDBOX_TOOLS),запусти: make sandbox)
 	echo "== образ корня плагина $(PLUGIN) =="
-	$(call docker-stage,plugin-rootfs,$(PLUGIN_IMAGE),$(APP_ARGS) --build-arg PLUGIN=$(PLUGIN))
 	mkdir -p "$(dir $(PLUGIN_ROOTFS))"
-	rm -f "$(PLUGIN_ROOTFS)"
-	$(call image-copy,$(PLUGIN_IMAGE),/out/plugin-rootfs.ext4,$(PLUGIN_ROOTFS))
-	ls -lh "$(PLUGIN_ROOTFS)"
+	# корень и site-packages стримятся в mke2fs двумя tar'ами: ни ext4, ни копия site
+	# не оседают в build cache; из стадии plugin-site tarsub вырезает только /opt/site и код
+	{
+	    $(call docker-tar,plugin-root,$(APP_ARGS) --build-arg PLUGIN=$(PLUGIN))
+	    $(call docker-tar,plugin-site,$(APP_ARGS) --build-arg PLUGIN=$(PLUGIN)) \
+	        | $(PYTHON) "$(SCRIPTS_DIR)/tarsub.py" \
+	            opt/site=usr/local/lib/python$(PYTHON_VERSION)/site-packages opt/code-sandbox=usr/src
+	} | $(call mke2fs-run,mkrootfs.sh,$(dir $(PLUGIN_ROOTFS)),/out/rootfs.ext4 $(PYTHON_VERSION) 16)
 
 # образы всех плагинов с entry points группы boba.tools
 .PHONY: plugin-rootfs-all
@@ -456,7 +479,9 @@ test: build
 	@$(call check,$(SANDBOX_PARTS),запусти: make sandbox)
 	$(call check,$(SANDBOX_DIR)/plugins,запусти: make plugin-rootfs-all)
 	echo "== проверка релиза $(VERSION) в образе $(IMAGE) =="
-	env_file="$(DEPS_DIR)/boba-$(APP).env"
+	# окружение контейнера — шаблон conf/boba.env с путями образа, живёт только на время проверки
+	env_file=$$(mktemp)
+	trap 'rm -f "$$env_file"' EXIT
 	export BOBA_BASE="$(DEST_DIR)" BOBA_VERSION="$(VERSION)"
 	envsubst '$${BOBA_BASE} $${BOBA_VERSION}' < "$(CONF_DIR)/boba.env" > "$$env_file"
 	# модели и песочница в образе не лежат, в релизе они рядом: подставляем их биндами
@@ -544,8 +569,18 @@ all: fetch sandbox plugin-rootfs-all web build dev
 sec:
 	@"$(SRC_DIR)/sec.sh" $(MODE)
 
+# образы прошлых сборок и промежуточные теги старых схем, затем build cache до PRUNE_KEEP
+.PHONY: prune
+prune:
+	@docker images --format '{{.Repository}}:{{.Tag}}' \
+	    | grep -E '^boba-(plugin|bwrap|fuse2fs|sandbox)' | xargs -r docker rmi
+	docker images --format '{{.Repository}}:{{.Tag}}' \
+	    | grep -E '^boba-$(APP):' | grep -v -E ':($(BOBA_TAG)|latest)$$' | xargs -r docker rmi
+	docker builder prune -f --keep-storage $(PRUNE_KEEP)
+	docker system df
+
 # модели не трогаем: качаются долго
 .PHONY: clean
 clean:
 	rm -rf $(RELEASE_DIR) $(DEPS_DIR)/uv $(DEPS_DIR)/tessdata $(WEBASSETS_DIR) $(SANDBOX_DIR) \
-	       $(DEPS_DIR)/*.tar.xz $(DEPS_DIR)/*.tar.gz $(DEPS_DIR)/*.env $(PAGE_JS) $(ASSETS_VENDOR) $(UI_DIST)
+	       $(DEPS_DIR)/*.tar.xz $(DEPS_DIR)/*.tar.gz $(PAGE_JS) $(ASSETS_VENDOR) $(UI_DIST)
