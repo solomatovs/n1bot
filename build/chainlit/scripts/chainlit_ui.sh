@@ -2,7 +2,8 @@
 # UI chainlit из исходников тега с overlay поверх (web/chainlit-ui): все пакеты
 # workspace — react-client, app (фронт) и copilot (виджет), как pnpm build у upstream.
 # custom_build в chainlit заменяет весь UI: и фронт, и copilot ищутся в одном каталоге.
-# Зависимости pnpm ставит из реестра npm образа nodejs (в закрытом контуре — nexus).
+# Зависимости pnpm ставит из реестра npm образа nodejs (в закрытом контуре — nexus);
+# store лежит в $WORK/store: стадия Dockerfile держит $WORK cache mount'ом между сборками.
 #   chainlit_ui.sh <src.tar.gz> <overlay> <out>
 # Запускается в образе nodejs (node + pnpm), как стадией Dockerfile, так и целью make.
 set -eu
@@ -48,12 +49,13 @@ check_ui() {
     done
 }
 
-rm -rf "$WORK"
+rm -rf "$WORK/src"
+mkdir -p "$WORK/store"
 unpack_sources "$SRC_TARBALL"
 cp -a "$OVERLAY/." "$WORK/src/"
 cd "$WORK/src"
 
-pnpm install $PNPM_OPTS
+pnpm install --store-dir "$WORK/store" $PNPM_OPTS
 pnpm --filter @chainlit/react-client run build
 pnpm --filter @chainlit/react-client run type-check
 pnpm --filter @chainlit/app run type-check

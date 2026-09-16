@@ -7,6 +7,26 @@ ARG NODE_IMAGE=dmp/nodejs:20
 FROM ${PYTHON_IMAGE} AS python-dist
 
 
+# python рантайма без сборочного и учебного балласта: одно дерево для образа
+# приложения и корней плагинов. Сборочные стадии берут полный python-dist
+FROM ${GLIBC_IMAGE} AS python-slim
+
+ARG PYTHON_VERSION=3.11
+
+COPY --from=python-dist /opt/python/usr/local  /python/
+
+RUN lib="/python/lib/python${PYTHON_VERSION}" \
+    && rm -rf /python/include /python/share /python/lib/pkgconfig \
+              /python/bin/2to3* /python/bin/idle3* /python/bin/pip* /python/bin/pydoc3* \
+              /python/bin/python*-config \
+              "$lib/test" "$lib/idlelib" "$lib/tkinter" "$lib/lib2to3" "$lib/ensurepip" \
+              "$lib/config-${PYTHON_VERSION}-x86_64-linux-gnu" \
+              "$lib/site-packages/pip" "$lib/site-packages/setuptools" \
+              "$lib/site-packages/pkg_resources" "$lib/site-packages/"*.dist-info
+
+RUN LD_LIBRARY_PATH=/python/lib PYTHONHOME=/python /python/bin/python3 -c "import ssl, sqlite3, lzma, bz2; print('python-slim ok')"
+
+
 # закрытый контур: CA внутреннего TLS и индексы пакетов из build/chainlit/conf.
 # Стадии берут готовые деревья: /certs — всем, /index — только сборочным
 FROM ${GLIBC_IMAGE} AS site-conf
@@ -76,7 +96,6 @@ FROM base AS fuse2fs-build
 
 ARG LIBFUSE_VERSION=3.12.0
 ARG E2FSPROGS_VERSION=1.47.2
-ARG SANDBOX_WS_SIZE=1G
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         meson ninja-build pkg-config xz-utils                    \
@@ -99,9 +118,17 @@ RUN strip misc/fuse2fs && install -D -m 0755 misc/fuse2fs /out/fuse2fs
 
 RUN ! ldd /out/fuse2fs | grep fuse && /out/fuse2fs -V
 
-RUN truncate -s ${SANDBOX_WS_SIZE} /out/sandbox-workspace.ext4 \
-    && MKE2FS_CONFIG=/tmp/e2fs-src/misc/mke2fs.conf \
-       ./misc/mke2fs -F -q -t ext4 -O ^has_journal -m 0 -L workspace /out/sandbox-workspace.ext4
+# mke2fs линкован только с libc: им make делает workspace.ext4 и rootfs плагинов вне сборки
+RUN install -D -m 0755 misc/mke2fs /out/mke2fs && cp misc/mke2fs.conf /out/mke2fs.conf
+
+
+# артефакты песочницы для make sandbox: docker build --output, без образа
+FROM scratch AS sandbox-out
+
+COPY --from=bwrap-build   /out/bwrap        /third/bin/bwrap
+COPY --from=fuse2fs-build /out/fuse2fs      /third/bin/fuse2fs
+COPY --from=fuse2fs-build /out/mke2fs       /tools/mke2fs
+COPY --from=fuse2fs-build /out/mke2fs.conf  /tools/mke2fs.conf
 
 
 # колёса всех пакетов репозитория и constraints из uv.lock: обе стадии установки
@@ -180,35 +207,28 @@ RUN mkdir -p /opt/code-sandbox \
 RUN PYTHONPATH=/opt/code-sandbox:/opt/site python3 -c "import boba.sandbox.guest; print('guest ok')"
 
 
-# корень плагина: база песочницы плюс нативные зависимости из декларации
-FROM ${GLIBC_IMAGE} AS plugin-root
+# общая база корней плагинов: glibc, нативные зависимости, одинаковые у всех
+# плагинов, libstdc++ сборочного gcc и python. Одна на все плагины и версии
+FROM ${GLIBC_IMAGE} AS sandbox-base
 
 ARG LIBSTDCXX_VERSION=6.0.25
 ARG LIBSTDCXX_OLD=6.0.22
 
-COPY --from=site-conf /certs/                 /
-COPY --from=plugin-site /opt/plugin-apt.txt   /tmp/plugin-apt.txt
-COPY --from=plugin-site /opt/plugin-setup.d/  /tmp/plugin-setup.d/
+COPY --from=site-conf /certs/  /
 
 RUN apt-get update && apt-get install -y --no-install-recommends        \
         unzip p7zip-full file curl jq                                   \
         libssl1.1 libffi6 libsqlite3-0 libbz2-1.0 liblzma5 libreadline7 \
         libncurses5 zlib1g                                              \
         libkrb5-3 libgssapi-krb5-2 krb5-user                            \
-        $(tr '\n' ' ' < /tmp/plugin-apt.txt)                            \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=base /usr/lib/x86_64-linux-gnu/libstdc++.so.${LIBSTDCXX_VERSION}  /usr/lib/x86_64-linux-gnu/
 COPY --from=base /usr/lib/x86_64-linux-gnu/libgcc_s.so.1                      /lib/x86_64-linux-gnu/
+COPY --from=python-slim /python/                                               /usr/local/
 RUN rm -f /usr/lib/x86_64-linux-gnu/libstdc++.so.${LIBSTDCXX_OLD} \
     && ln -sf libstdc++.so.${LIBSTDCXX_VERSION} /usr/lib/x86_64-linux-gnu/libstdc++.so.6 \
     && ldconfig
-
-COPY --from=plugin-site /opt/plugin-root/  /
-RUN for setup in /tmp/plugin-setup.d/*.sh; do \
-        if [ -f "$setup" ]; then sh "$setup"; fi; \
-    done \
-    && rm -rf /tmp/plugin-setup.d /tmp/plugin-apt.txt
 
 RUN rm -rf /usr/share/man /usr/share/doc /usr/share/info /usr/share/locale \
            /usr/share/lintian /var/cache/* /var/log/*
@@ -216,33 +236,37 @@ RUN rm -rf /usr/share/man /usr/share/doc /usr/share/info /usr/share/locale \
 RUN mkdir -p /usr/src /workspace /mnt/pgsock
 
 
-# ext4-образ корня плагина
-FROM fuse2fs-build AS plugin-rootfs
+# корень одного плагина поверх базы: apt и оверлей из декларации, точки монтирования.
+# site-packages сюда не копируются: make plugin-rootfs стримит эту стадию и
+# plugin-site двумя tar'ами в mke2fs (docker build --output type=tar), ext4 и
+# копии site в build cache не оседают
+FROM sandbox-base AS plugin-root
 
-ARG PYTHON_VERSION=3.11
 ARG BOBA_DIR=/app/boba
 ARG SANDBOX_DEV_KRB=/app/boba/conf/krb
 
-COPY --from=plugin-root /                      /tree/
-COPY --from=python-dist /opt/python/usr/local  /tree/usr/local/
-COPY --from=plugin-site /opt/site              /tree/usr/local/lib/python${PYTHON_VERSION}/site-packages/
-COPY --from=plugin-site /opt/code-sandbox      /tree/usr/src/
-COPY --from=plugin-site /opt/plugin-data.txt   /tmp/plugin-data.txt
-COPY build/chainlit/scripts/mkrootfs.sh        /tmp/mkrootfs.sh
+COPY --from=plugin-site /opt/plugin-apt.txt   /tmp/plugin-apt.txt
+COPY --from=plugin-site /opt/plugin-setup.d/  /tmp/plugin-setup.d/
+COPY --from=plugin-site /opt/plugin-data.txt  /tmp/plugin-data.txt
+
+RUN if [ -s /tmp/plugin-apt.txt ]; then \
+        apt-get update \
+        && apt-get install -y --no-install-recommends $(tr '\n' ' ' < /tmp/plugin-apt.txt) \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+COPY --from=plugin-site /opt/plugin-root/  /
+RUN for setup in /tmp/plugin-setup.d/*.sh; do \
+        if [ -f "$setup" ]; then sh "$setup"; fi; \
+    done
 
 # данные (веса эмбеддера, tessdata) монтирует рантайм: образ несёт точки монтирования
-RUN for path in $(cat /tmp/plugin-data.txt); do mkdir -p "/tree$path"; done
-RUN mkdir -p "/tree${BOBA_DIR}/conf/krb" "/tree${SANDBOX_DEV_KRB}"
+RUN for path in $(cat /tmp/plugin-data.txt); do mkdir -p "$path"; done
+RUN mkdir -p "${BOBA_DIR}/conf/krb" "${SANDBOX_DEV_KRB}"
 
-# статическая libpython, tests и инструменты установки телу не нужны:
-# python внутри образа только исполняет модуль инструментов
-RUN lib="/tree/usr/local/lib/python${PYTHON_VERSION}" \
-    && rm -rf "$lib/test" "$lib/idlelib" "$lib/tkinter" "$lib/lib2to3" "$lib/ensurepip" \
-              "$lib/config-${PYTHON_VERSION}-x86_64-linux-gnu" \
-              "$lib/site-packages/pip" "$lib/site-packages/setuptools" \
-              "$lib/site-packages/pkg_resources"
-
-RUN sh /tmp/mkrootfs.sh /tree /out/plugin-rootfs.ext4 ${PYTHON_VERSION} 16
+RUN rm -rf /tmp/plugin-setup.d /tmp/plugin-apt.txt /tmp/plugin-data.txt \
+           /usr/share/man /usr/share/doc /usr/share/info /usr/share/locale \
+           /usr/share/lintian /var/cache/* /var/log/*
 
 
 # --- фронт: стадии node, на хосте node не нужен -----------------------------------
@@ -257,7 +281,8 @@ COPY build/chainlit/scripts/chainlit_ui.sh                   /tmp/chainlit_ui.sh
 COPY build/chainlit/src/chainlit-${CHAINLIT_VERSION}.tar.gz  /tmp/chainlit.tar.gz
 COPY packages/agents/boba-chainlit/web/chainlit-ui/overlay/  /tmp/overlay/
 
-RUN sh /tmp/chainlit_ui.sh /tmp/chainlit.tar.gz /tmp/overlay /out/ui
+RUN --mount=type=cache,target=/tmp/chainlit-ui,sharing=locked \
+    sh /tmp/chainlit_ui.sh /tmp/chainlit.tar.gz /tmp/overlay /out/ui
 
 
 # скрипт страницы chainlit (web/page, TypeScript)
@@ -283,10 +308,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=site-conf /certs/                                                 /
-COPY --from=python-dist /opt/python/usr/local                                 ${BOBA_DIR}/third
+COPY --from=python-slim /python/                                              ${BOBA_DIR}/third/
 COPY --from=base /usr/lib/x86_64-linux-gnu/libstdc++.so.6                     ${BOBA_DIR}/third/lib/
 COPY --from=base /usr/lib/x86_64-linux-gnu/libstdc++.so.${LIBSTDCXX_VERSION}  ${BOBA_DIR}/third/lib/
-COPY --from=base /usr/local/bin/uv                                            ${BOBA_DIR}/third/bin/uv
 COPY --from=bwrap-build /out/bwrap                                            ${BOBA_DIR}/third/bin/bwrap
 COPY --from=fuse2fs-build /out/fuse2fs                                        ${BOBA_DIR}/third/bin/fuse2fs
 COPY --from=app-site /opt/app-site                                            ${BOBA_DIR}/app/
@@ -323,15 +347,18 @@ ARG BOBA_DIR=/app/boba
 ARG BOBA_UID=1000
 ARG BOBA_GID=1000
 
-COPY packages/agents/boba-chainlit/assets/.chainlit/config.toml   ${BOBA_DIR}/app_root/.chainlit/
-COPY packages/agents/boba-chainlit/assets/.chainlit/translations/ ${BOBA_DIR}/app_root/.chainlit/translations/
-COPY packages/agents/boba-chainlit/assets/chainlit.md             ${BOBA_DIR}/app_root/
-COPY packages/agents/boba-chainlit/assets/public/                 ${BOBA_DIR}/app_root/public/
-COPY --from=web-build /src/assets/public/page.js                  ${BOBA_DIR}/app_root/public/page.js
-COPY --from=chainlit-ui-build /out/ui/                             ${BOBA_DIR}/app_root/ui/
-COPY build/chainlit/src/webassets/                                ${BOBA_DIR}/app_root/public/vendor/
+COPY --chown=${BOBA_UID}:${BOBA_GID} packages/agents/boba-chainlit/assets/.chainlit/config.toml   ${BOBA_DIR}/app_root/.chainlit/
+COPY --chown=${BOBA_UID}:${BOBA_GID} packages/agents/boba-chainlit/assets/.chainlit/translations/ ${BOBA_DIR}/app_root/.chainlit/translations/
+COPY --chown=${BOBA_UID}:${BOBA_GID} packages/agents/boba-chainlit/assets/chainlit.md             ${BOBA_DIR}/app_root/
+COPY --chown=${BOBA_UID}:${BOBA_GID} packages/agents/boba-chainlit/assets/public/                 ${BOBA_DIR}/app_root/public/
+COPY --chown=${BOBA_UID}:${BOBA_GID} --from=web-build /src/assets/public/page.js                  ${BOBA_DIR}/app_root/public/page.js
+COPY --chown=${BOBA_UID}:${BOBA_GID} --from=chainlit-ui-build /out/ui/                             ${BOBA_DIR}/app_root/ui/
+COPY --chown=${BOBA_UID}:${BOBA_GID} build/chainlit/src/webassets/                                ${BOBA_DIR}/app_root/public/vendor/
 
-RUN mkdir -p ${BOBA_DIR}/app_root/.files && chown -R ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/app_root
+# файлы уже принадлежат пользователю, каталогам владелец ставится без рекурсии
+RUN mkdir -p ${BOBA_DIR}/app_root/.files \
+    && chown ${BOBA_UID}:${BOBA_GID} ${BOBA_DIR}/app_root ${BOBA_DIR}/app_root/.files \
+       ${BOBA_DIR}/app_root/.chainlit ${BOBA_DIR}/app_root/public
 
 EXPOSE 8501
 USER ${BOBA_UID}:${BOBA_GID}
