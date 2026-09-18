@@ -115,8 +115,9 @@ create index if not exists tree__parent on ix.tree using btree (parent_id, node_
 --                    в обе стороны; из лога запросов)
 -- 5 shares_key_with  таблица делит ключ с таблицей: колонка с тем же именем
 --                    и типом, что первичный ключ другой таблицы (эвристика)
--- 6 mentions         страница документации упоминает таблицу
--- 7 links_to         страница ссылается на страницу или вложение
+-- 6 refers_to        документ ссылается на объект: страница на страницу,
+--                    вложение или таблицу; чем ссылается, гиперссылкой или
+--                    именем в тексте, записано в origin
 create table if not exists ix.edge_kind (
     id    smallint primary key,
     name  varchar     not null unique
@@ -128,34 +129,40 @@ insert into ix.edge_kind (id, name) values
     (3, 'writes_to'),
     (4, 'queried_with'),
     (5, 'shares_key_with'),
-    (6, 'mentions'),
-    (7, 'links_to')
+    (6, 'refers_to')
 on conflict (id) do nothing;
 
--- Словарь origin: откуда взят edge и кто владеет строкой. Explicit связи
--- приходят из каталога источника, implicit из логов, текстов, правил и LLM.
--- Один и тот же смысл связи (kind) может прийти из нескольких origin, и тогда
--- в edge лежит по строке на каждый, со своим weight.
--- 1 pg_catalog          объявлен в каталоге: foreign key (references),
---                       зависимость view от таблицы (reads_from)
--- 2 pg_stat_statements  наблюдён в логе запросов: таблицы в одном запросе
---                       (queried_with)
--- 3 confluence_body     взят из тела страницы: ссылка на страницу или вложение
---                       (links_to), упоминание таблицы (mentions)
--- 4 column_match        предположен правилом: колонка совпала по имени и типу
---                       с primary key другой таблицы (shares_key_with)
--- 5 llm                 предположен LLM из имён, комментариев и соседей
---                       (shares_key_with, reads_from, writes_to)
+-- Словарь origin: как стало известно, что связь есть. Тип свидетельства,
+-- не источник данных: view в Postgres и materialized view в ClickHouse читают
+-- таблицу одинаково, и у обеих связей origin declared. Origin отвечает за три
+-- вещи: писатель находит свои строки по origin и своим node; у каждого origin
+-- своя шкала weight; пользователю объясняется, откуда связь, а откуда именно,
+-- видно по kind node на концах.
+-- 1 declared    объявлена самим источником: foreign key, зависимость view
+--               от таблицы, гиперссылка на странице, зависимость задач ETL.
+--               weight всегда 1
+-- 2 observed    наблюдена в поведении: таблицы в одном запросе из
+--               pg_stat_statements или system.query_log. weight = логарифм
+--               числа наблюдений, нормированный по прогону
+-- 3 text_match  идентификатор объекта найден буквально в тексте другого:
+--               страница упоминает dm.fact_orders, тело функции упоминает
+--               таблицу. weight 1, объект назван явно
+-- 4 name_rule   предположена правилом по именам и типам: колонка совпала
+--               с primary key другой таблицы, копия таблицы в другом
+--               источнике с теми же колонками. weight = уверенность правила
+-- 5 llm         предположена моделью: describer вывел связь из комментариев
+--               и соседей, vision назвал таблицы на схеме. weight =
+--               уверенность модели
 create table if not exists ix.origin (
     id    smallint primary key,
     name  varchar  not null unique
 );
 
 insert into ix.origin (id, name) values
-    (1, 'pg_catalog'),
-    (2, 'pg_stat_statements'),
-    (3, 'confluence_body'),
-    (4, 'column_match'),
+    (1, 'declared'),
+    (2, 'observed'),
+    (3, 'text_match'),
+    (4, 'name_rule'),
     (5, 'llm')
 on conflict (id) do nothing;
 
@@ -177,15 +184,18 @@ on conflict (id) do nothing;
 -- линию на диаграмме выбирает kind, а не weight.
 --
 -- origin: откуда взят edge. Одна пара node и один kind могут лежать по строке
--- на origin: (orders, customers, shares_key_with, column_match, 0.5) и
+-- на origin: (orders, customers, shares_key_with, name_rule, 0.5) и
 -- (orders, customers, shares_key_with, llm, 0.8). Для ранга и диаграммы пара
 -- сворачивается в одно число: 1 - (1 - 0.5) * (1 - 0.8) = 0.9, два независимых
 -- мнения усиливают друг друга. Подтверждение правила это запрос: пары, у которых
--- есть и shares_key_with от column_match, и references от pg_catalog.
+-- есть и shares_key_with от name_rule, и references от declared.
 --
 -- Повторный прогон писателя это diff, а не перезапись: найденное сравнивается
--- с его строками (по origin), новые вставляются, у изменившихся обновляется
--- weight, удаляются только исчезнувшие. Массовых delete и insert нет.
+-- с его строками (по origin и своим node: загрузчик Postgres владеет declared
+-- и observed строками с source_id в его базе, правило по именам всеми
+-- name_rule, describer всеми llm), новые вставляются, у изменившихся
+-- обновляется weight, удаляются только исчезнувшие. Массовых delete
+-- и insert нет.
 create table if not exists ix.edge (
     source_id  bigint   not null references ix.node on delete cascade,
     target_id  bigint   not null references ix.node on delete cascade,
@@ -692,8 +702,9 @@ create index if not exists pg_emb_e5_1024__pg_constraint_description__hnsw
 -- tree: спейс -> страницы без ancestors (домашняя, корневые, блог-записи) ->
 -- дочерние страницы (родитель = последний из ancestors) -> вложения
 -- и комментарии страницы.
--- edge: links_to от страницы к странице или вложению по ссылкам в теле,
--- mentions от страницы к таблице по совпадению идентификатора в тексте.
+-- edge: refers_to от страницы к странице или вложению по гиперссылке в теле
+-- (origin declared) и от страницы к таблице по идентификатору в тексте
+-- (origin text_match).
 -- Ссылки берутся из body.view, а не body.storage: макросы (cql, toc, children)
 -- разворачиваются только там; на странице-оглавлении storage даёт 4 ссылки,
 -- view 184. Внутренняя ссылка бывает по id (/spaces/KEY/pages/ID/...,
