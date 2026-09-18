@@ -568,6 +568,8 @@ class ChatView:
     """
 
     NAMESPACE: ClassVar[UUID] = UUID("6f9b1f4e-2f1a-4c1a-9a2f-1d3b5c7e9a11")
+    AVATAR_NAME_KEY: ClassVar[str] = "avatarName"
+    """Ключ metadata шага, по которому фронт chainlit выбирает аватар вместо имени."""
 
     def __init__(
         self,
@@ -759,6 +761,8 @@ class ChatView:
             parent_id=None,
             step_id=self.derive_id(self._thread_id, self._turn.key, StepRole.PROCESS),
         )
+        # корневой шаг грузит аватар по имени, а имя контейнера меняется со счётчиком
+        step.metadata = {self.AVATAR_NAME_KEY: self._assistant_name}
         await self._sink.put(step)
         await self._pulse.bump()
         self._turn.container = step

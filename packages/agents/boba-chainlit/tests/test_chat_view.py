@@ -9,6 +9,7 @@ from enum import StrEnum
 from typing import Any, cast
 
 import pytest
+from chainlit.config import config as chainlit_config
 from chainlit.context import ChainlitContext, context_var
 from chainlit.step import StepDict
 
@@ -557,6 +558,37 @@ class TestTokenSpendLabel:
         spend = TokenSpend()
         if spend.append_to("○ thinking") != "○ thinking":
             raise AssertionError(spend.append_to("○ thinking"))
+
+
+class TestContainerAvatar:
+    """Фронт грузит аватар корневого шага по имени, а имя контейнера меняется со
+    счётчиком: контейнер несёт имя ассистента в metadata, и запрос аватара один."""
+
+    @pytest.mark.anyio
+    async def test_container_carries_the_assistant_avatar(
+        self, http_context: None
+    ) -> None:
+        sink = RecordingSink()
+        view = ChatView(THREAD, sink, user_name="Пользователь")
+        view.begin_turn(TURN)
+
+        await view.container()
+        await view.tokens_spent(TURN, 10856, 400, 305)
+
+        containers = [
+            step
+            for step in sink.steps
+            if str(step.get(StepField.NAME, "")).startswith(StepText.CONTAINER)
+        ]
+        if not containers:
+            raise AssertionError("контейнер хода не отправлен")
+
+        avatars = {
+            str(step.get(StepField.METADATA, {}).get(ChatView.AVATAR_NAME_KEY))
+            for step in containers
+        }
+        if avatars != {chainlit_config.ui.name}:
+            raise AssertionError(f"аватар контейнера: {avatars}")
 
 
 class TestTokensInTheFeed:

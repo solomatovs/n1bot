@@ -16,6 +16,7 @@ from __future__ import annotations
 import codecs
 import sys
 from collections.abc import Mapping
+from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Final
 
 import psycopg
@@ -23,6 +24,7 @@ from psycopg.rows import dict_row
 from pydantic import Field
 
 from boba.db.postgres import PayloadPostgres, PostgresError
+from boba.db.postgres.address import PgAddresses
 from boba.db.postgres.profile import PostgresConfig
 from boba.tool.pg.catalog import PgCatalog, PgCatalogQuery
 from boba.toolkit.entry import ToolMain
@@ -33,6 +35,7 @@ from boba.toolkit.result import (
     ResultTooLargeError,
     SqlResult,
     SqlStatement,
+    TableResult,
 )
 from boba.toolkit.sql import (
     MaxChars,
@@ -47,6 +50,13 @@ from boba.toolkit.sql import (
 from boba.toolkit.types import SecretRevealing
 
 PgConnection = Annotated[PostgresConfig, UserConnection]
+
+
+class AddressColumn(StrEnum):
+    """Колонки выдачи pg_address."""
+
+    CONNECTION = "connection"
+    URL = "url"
 
 
 class CopyDump:
@@ -434,6 +444,23 @@ async def pg_copy_in(
     return MarkdownResult(text=f"copied in {total} bytes; server: {status}")
 
 
+@tool
+async def pg_address(connection: PgConnection) -> TableResult:
+    """Базовый url соединения PostgreSQL: postgresql://host:port/database.
+
+    Ничего не выполняет в базе. Объект адресуется ролями в query поверх
+    этого url: ?schema=dm&table=fact_orders, ?schema=dm&table=t&column=c.
+    """
+    base = PgAddresses.base_of(connection)
+
+    row = {
+        AddressColumn.CONNECTION.value: connection.source.name,
+        AddressColumn.URL.value: base.render(),
+    }
+
+    return TableResult(rows=[row])
+
+
 EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
     CopyDirectionError: SqlErrorKind.SQL_FAILED,
     PostgresError: SqlErrorKind.DATABASE_UNAVAILABLE,
@@ -448,6 +475,7 @@ TOOLS: Final = ToolMain.toolset(
     pg_copy,
     pg_copy_out,
     pg_copy_in,
+    pg_address,
 )
 
 if __name__ == "__main__":
