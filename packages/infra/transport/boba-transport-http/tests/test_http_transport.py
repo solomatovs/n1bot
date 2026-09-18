@@ -225,7 +225,7 @@ async def test_status_listed_in_the_profile_is_retried(monkeypatch):
         body = await resp.stream.read()
 
     if calls["n"] != 3:
-        raise AssertionError(f'429 is retried until it passes: {calls["n"]}')
+        raise AssertionError(f"429 is retried until it passes: {calls['n']}")
     if body != b"ok":
         raise AssertionError('body == b"ok"')
 
@@ -241,9 +241,7 @@ async def test_status_outside_the_profile_is_not_retried(monkeypatch):
     _patch(monkeypatch, handler)
 
     transport = HttpTransport(
-        HttpConnection(
-            host="x.test", port=443, retry_attempts=3, retry_backoff_sec=0
-        )
+        HttpConnection(host="x.test", port=443, retry_attempts=3, retry_backoff_sec=0)
     )
     with pytest.raises(httpx.HTTPStatusError) as exc:
         async with transport.fetch(HttpRequest(url="https://x.test/y")):
@@ -252,7 +250,7 @@ async def test_status_outside_the_profile_is_not_retried(monkeypatch):
     if exc.value.response.status_code != 429:
         raise AssertionError("exc.value.response.status_code == 429")
     if calls["n"] != 1:
-        raise AssertionError(f'a status without a rule is not retried: {calls["n"]}')
+        raise AssertionError(f"a status without a rule is not retried: {calls['n']}")
 
     await transport.close()
 

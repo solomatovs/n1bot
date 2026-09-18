@@ -24,7 +24,7 @@ from pydantic import ConfigDict, Field
 from boba.text.grep import GrepLimits, TextGrep
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
-from boba.toolkit.result import MarkdownResult, ResultTooLargeError
+from boba.toolkit.result import MarkdownResult, ResultTooLargeError, TableResult
 from boba.toolkit.types import SecretRevealing
 from boba.transport.http import HttpxAuth
 from boba.transport.http.profile import HttpConnection
@@ -46,6 +46,13 @@ class WebErrorKind(StrEnum):
 
 WebTarget = Annotated[HttpConnection, UserConnection]
 """Параметр-соединение web-инструментов: имя от модели, профиль от хоста."""
+
+
+class AddressColumn(StrEnum):
+    """Колонки выдачи web_address."""
+
+    CONNECTION = "connection"
+    URL = "url"
 
 
 class WebGrepConfig(SecretRevealing):
@@ -252,13 +259,27 @@ async def web_grep_page(  # noqa: PLR0913
     )
 
 
+@tool
+async def web_address(connection: WebTarget) -> TableResult:
+    """Корневой url web-соединения без учётных данных: схема, хост, порт, путь.
+
+    Ничего не запрашивает. Страницы адресуются путями под этим корнем.
+    """
+    row = {
+        AddressColumn.CONNECTION.value: connection.source.name,
+        AddressColumn.URL.value: str(connection.public_url()),
+    }
+
+    return TableResult(rows=[row])
+
+
 EXPECTED: Mapping[type[Exception], WebErrorKind] = {
     WebRequestError: WebErrorKind.REQUEST_FAILED,
     UnknownHostError: WebErrorKind.UNKNOWN_HOST,
     ResultTooLargeError: WebErrorKind.RESULT_TOO_LARGE,
 }
 
-TOOLS: Final = ToolMain.toolset(web_fetch_page, web_grep_page)
+TOOLS: Final = ToolMain.toolset(web_fetch_page, web_grep_page, web_address)
 
 if __name__ == "__main__":
     sys.exit(ToolMain.run(TOOLS))
