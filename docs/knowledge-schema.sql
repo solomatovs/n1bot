@@ -4,47 +4,117 @@ create extension if not exists btree_gin;
 
 create schema if not exists ix;
 
--- ============================================================================
--- Принципы проектирования
---
--- Система состоит из ядра (core) и поверхностей (surface).
---
--- Ядро: node, tree, edge, node_pagerank. Нода это то, что можно адресовать
--- в источнике: таблица в базе, колонка в таблице, страница в Confluence.
--- node.address это прямое указание, где искать объект, и по этому адресу до
--- объекта всегда можно достучаться. Ядро единственный источник связей между
--- объектами: принадлежность лежит в tree, смысловые связи в edge, и только по
--- ним строятся обход дерева, диаграммы и ранжирование.
---
--- Поверхность: одна таблица на вид ноды, node.kind буквально является именем
--- этой таблицы: pg_table, pg_column, pg_constraint, confluence_page. Поверхность
--- хранит атрибуты, раскрывающие адрес из node.address в деталях: размер таблицы,
--- владельца, комментарий, а также быстрый способ получить адрес внутри
--- источника (database_name, schema_name, table_name, column_name). Это
--- информационная часть о нодах и база для индексатора. По поверхности нельзя
--- строить запросы, описывающие связи, даже если имена в ней позволяют
--- склеить таблицу с колонкой: связи только в ядре. Оригиналы документов
--- поверхность не хранит: ни тело страницы, ни файл, ни DDL. Оригинал LLM
--- читает в источнике по node.address; адрес живёт только там, и поверхность
--- не дублирует его ни в каком виде (ни url, ни ссылка на скачивание), только
--- идентификаторы объекта как атрибуты. Текст, извлечённый индексатором,
--- живёт только в поисковых таблицах как content аспекта.
---
--- Отношение ядра и поверхности: node_id единственное, что их связывает.
--- Поверхность ссылается на ядро полем node_id и ничем больше; поверхности друг
--- на друга не ссылаются. Загрузчик пишет ноду и строку поверхности в одной
--- транзакции. Новая поверхность это новая таблица со связью к node_id и новое
--- значение node_kind_e с описанием в node_kind, больше ничего в ядре не меняется.
--- ============================================================================
+/*
+============================================================================
+Принципы проектирования
 
--- Вид node: enum ix.node_kind_e, значение это имя таблицы поверхности, у которой
--- лежат атрибуты node. Enum, а не числовой словарь, потому что на значения
--- ссылаются предикаты частичных индексов: enum хранится в предикате ссылкой
--- на значение, и переименование через alter type rename value обновляет все
--- предикаты само. Значения только добавляются (alter type add value if not
--- exists) и переименовываются, удалить значение enum нельзя. Описание каждого
--- значения обязательно: таблица ix.node_kind с ключом enum, на неё ссылаются
--- node и поисковые таблицы, значение без описания отвергается внешним ключом.
+Система состоит из ядра (core) и поверхностей индексации (surface)
+
+core — место хранения адресов объектов и связей между ними.
+core состоит из:
+    node — хранит всё, что можно адресовать в источнике: таблица, колонка, страница в Confluence.
+Все что угодно, что можно выразить в виде адреса, а при поисковой выдаче можно скинуть прямую ссылку на объект
+    tree - хранит иерархию между node.id, когда есть четкая иерархическая последовательность.
+    edge - хранит смысловые связи в виде графа, когда одни
+
+Пример tree:
+    - confluence tree: space -> page -> attachment
+    - postgres tree: database -> schema -> table -> column
+Пример edge:
+    - postgres edge: foreign key
+    - confluence edge: links
+
+По tree можно построить иерархию, по edge можно построить граф связанности
+
+surface — поверхность индексации - то, что индексируется.
+surface - это одна или несколько плоских таблиц, в которых храниться метаинформация об объекте
+surface таблицы перечислены в таблице node_kind - буквально содержит название surface таблицы,
+что бы проще было найти связи между core и surface
+Если хочется добавить новый surface, то в node_kind расположен тот самый реестр surface таблиц
+Пример surface:
+    - pg_table          - хранит информацию о таблицах любых заиндексированных postgres источников
+    - pg_column         - хранит информацию о колонках таблиц
+    - pg_constraint     - хранит информацию об индексах
+    - confluence_page   - хранит информацию об заиндексированных confluence страницах
+
+surface таблицы желательно должны проектироваться без связи друг с другом.
+Они должны ссылаться через node_id на core, но не на друг друга
+Это позволит выполнять горизонтальное масштабирование и добавлять новые индексы без особых проблем
+
+surface хранит атрибуты объекта в структурированном виде, а node_id позволяет получить address.
+    атрибуты хранящиеся в surface являются горячей информацией об объекте и могут быть полезны
+    для получения быстрого доступа, но естественным образом могут устаревать.
+    Поэтому по ним нельзя строить иерархии или связи.
+    Атрибуты surface таблиц позволят поисковику быстро получать названия колонок, баз, таблиц, размеры таблиц, confluence заголовков и прочего
+    Но важно четко понимать, что эта информация актуальна на момент индексации и будет периодически устаревать и обновляться индексатором.
+    Любую актуальную surface информацию можно получить если перейти по адресу объекта (node.address)
+    Предполагается, что llm получив адрес будет переходить в источник и выполнять получение актуальной информации
+
+surface таблицы имеют собственные индексы, которые храняться в отдельных таблицах:
+- btree     - это lower(content) индекс, который нужен для быстрой выдачи при наборе в поисковой строке: "нефтян%" -> вот такое быстро ищется через btree
+- fts       - это полнотекстовый индекс, который позволяет искать совпадения внутри большого текста
+- trgm      - это триграмм индекс, который используются для нечеткого поиска по частям слов. пример как если бы хотелось найти: "%Васил%" - тут btree не подходит, а триграммы отлично справяться
+- vector    - это векторный индекс, который используется для семантического поиска по "смыслу". Сохраняется векторное представление оригинального документа. поисковый запрос также преобразуется в вектор и производиться поиск косинуса расстояния между векторами
+
+Важно понимать, что индексация объекта напрямую невозможна, мы лишь можем определить
+    несколько аспектов объекта, которые будем индексировать.
+    К примеру что значит объект pg_column? Что именно здесь будем индексировать? Имя?
+    Вот нескольк примеров того, что можно заиндексировать только у колонки:
+    - comment - у postgres есть коментарий и его можно прогнать через btree, fts, trgm, vector индексы
+    - human_description - описание колонки, которое делает человек
+    - llm_description - описание колонки, которое делает llm
+    - create statement - некий sql stmp в который входит название, тип данных, ограничения
+    - path - путь к колонке через точку, к примеру: {schema}.{table}.{column}
+    Таких аспектов индексации можно придумать сколько угодно, они бесконечны.
+Обрати вниание, что при составлении индекса мы имеем дело с пересечением четырех осей:
+- node.address: адрес индексируемого объекта
+- node.kind:    поверхность индексируемого объекта
+- aspect:       аспект индексации (что именно индексируем у объекта)
+- index:        тип используемого индекса
+Каждый индексатор по своему будет проходить свои объекты,
+контролировать содержательность поверхностей и их индексов.
+Соответственно все индексы изначально деляться по surface:
+- *_btree
+- *_trgm
+- *_fts
+- *_vector
+
+В префикс кладется принадлежность к surface (это не полный список):
+- pg    - префикс postgres surface
+- ch    - префикс clickhouse surface
+- cfl   - префикс confluence surface
+- oc    - префикс oracle surface
+- ms    - префикс mssql surface
+- my    - префикс mysql surface
+- odata - префикс odata surface
+
+Обрати внимание, что из-за технических ограничений postgres,
+векторный индекс приходиться разделять по разным таблицам
+в зависимости от размерности вектора и модели, к примеру pg_emb_e5_1024
+
+Проход индексатора по объектам зиждиться на нескольких важных полях:
+- src_version:  версия отдаваемая источником (если такой имеется) и позволяющая выявить
+    изменен ли документ до скачивания и индексации (потому что это дорогие операции)
+    К примеру confluence version
+- src_checksum: sha256 хэш составленный самим индексатором из оригинального документа (не преобразованного)
+    в процессе индексации. Позволяет определить, изменился ли индексируемый аспект объекта
+    К примеру для confluence_page это исходное состояние страницы,
+    comment column (в postgres),
+    описание составляемое llm или человеком
+- indexer_id:       уникальное имя индексатора в системе, которое позволяет выявить документы, им проиндексированные
+- indexer_scope:    sha256 хэш от параметров индексатора, с которыми он был запущен и сформировал документ
+    Нужен для того, что бы понять скоуп документов которые требуют переиндексации при изменении параметров индексации
+    К примеру
+    - summary через llm имеет параметры: model, system_prompt
+    - sql запрос на выборку pg_table. Представь что изменился запрос на выборку поверхности
+        добавил фильтрацию information_schema, что бы не получать ее данные. Это значит, что scope объектов
+        которые возвращались ранее измениться и нам нужно удалить те объекты, которые больше никогда не придут с новым scope
+        а именн объекты information_schema.
+    Изменение одного из них должно приводить к изменению hash суммы и соответственно удалению объектов старого scope
+    Сначала обхекты с новым scope индексируются (insert/update) а в конце прогона запускается удаление того
+    Что осталось по indexer со scope
+============================================================================
+*/
 do $$ begin
     create type ix.node_kind_e as enum ();
 exception when duplicate_object then null; end $$;
@@ -64,7 +134,7 @@ alter type ix.node_kind_e add value if not exists 'confluence_attachment';
 alter type ix.node_kind_e add value if not exists 'confluence_comment';
 
 comment on type ix.node_kind_e is
-    'Вид node: имя таблицы поверхности, в которой лежат его атрибуты. Значения только добавляются (alter type add value if not exists) или переименовываются; предикаты индексов следуют за переименованием.';
+    'Kind node: имя surface-таблицы, в которой лежат атрибуты node. Значения только добавляются (alter type add value if not exists) или переименовываются; предикаты частичных индексов следуют за переименованием.';
 
 create table if not exists ix.node_kind (
     kind         ix.node_kind_e primary key,
@@ -72,26 +142,28 @@ create table if not exists ix.node_kind (
 );
 
 insert into ix.node_kind (kind, description) values
-    ('pg_database',           'database of a PostgreSQL source; root of its tree'),
-    ('pg_schema',             'schema of a PostgreSQL database'),
-    ('pg_table',              'table, including partitioned tables and partitions'),
-    ('pg_column',             'column of a table, view or materialized view'),
-    ('pg_view',               'view or materialized view'),
-    ('pg_index',              'index of a table'),
-    ('pg_sequence',           'sequence'),
-    ('pg_routine',            'function, procedure, aggregate or window function; overloads are separate nodes'),
-    ('pg_constraint',         'table constraint; a foreign key is the source of a references edge'),
-    ('confluence_space',      'Confluence space; root of its tree'),
-    ('confluence_page',       'Confluence page or blog post'),
-    ('confluence_attachment', 'file attached to a page'),
-    ('confluence_comment',    'inline or footer comment on a page')
+    ('pg_database',           'База данных источника PostgreSQL; корень его tree.'),
+    ('pg_schema',             'Схема базы данных PostgreSQL.'),
+    ('pg_table',              'Таблица, включая секционированные таблицы и секции.'),
+    ('pg_column',             'Колонка таблицы, представления или материализованного представления.'),
+    ('pg_view',               'Представление или материализованное представление.'),
+    ('pg_index',              'Индекс таблицы.'),
+    ('pg_sequence',           'Последовательность.'),
+    ('pg_routine',            'Функция, процедура, агрегат или оконная функция; каждая перегрузка — отдельный node.'),
+    ('pg_constraint',         'Ограничение таблицы; внешний ключ является source для edge вида references.'),
+    ('confluence_space',      'Спейс Confluence; корень его tree.'),
+    ('confluence_page',       'Страница или запись блога Confluence.'),
+    ('confluence_attachment', 'Файл, вложенный в страницу.'),
+    ('confluence_comment',    'Встроенный или нижний комментарий к странице.')
 on conflict (kind) do nothing;
 
--- Узел графа: любой объект, который можно адресовать в источнике. Главное поле
--- address, url строится из него детерминированно и служит уникальным ключом.
--- Роль address и url одна: адресовать объект; связи по ним не строятся.
--- address = {"scheme":"postgresql","host":"dwh.local","port":5432,"database":"dwh","schema":"dm","table":"fact_orders"}
--- url     = postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders
+/*
+Node — любой объект, который можно адресовать в источнике. Главное поле —
+address; url строится из него детерминированно и служит уникальным ключом.
+И address, и url только адресуют объект, связи по ним не строятся.
+address = {"scheme":"postgresql","host":"dwh.local","port":5432,"database":"dwh","schema":"dm","table":"fact_orders"}
+url     = postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders
+*/
 create table if not exists ix.node (
     id          bigserial   primary key,
     kind        ix.node_kind_e not null references ix.node_kind,
@@ -101,36 +173,47 @@ create table if not exists ix.node (
     updated_at  timestamptz not null default now()
 );
 
--- нода по адресу при загрузке и в API; типы значений в address фиксированы (port число):
--- select id from ix.node
--- where  address @> '{"host":"dwh.local","port":5432,"database":"dwh","schema":"dm","table":"fact_orders"}';
+/*
+Поиск node по адресу при загрузке и в API. Типы значений в address
+фиксированы, port всегда число:
+select id from ix.node
+where  address @> '{"host":"dwh.local","port":5432,"database":"dwh","schema":"dm","table":"fact_orders"}';
+*/
 create index if not exists node__address__gin on ix.node using gin (address jsonb_path_ops);
 create index if not exists node__kind on ix.node using btree (kind);
 
--- Дерево принадлежности: колонка лежит в таблице, таблица в схеме, схема в базе,
--- вложение в странице, страница в спейсе. Это единственная связь, которая есть
--- у всех источников, и единственная с формой дерева: у ноды не больше одного
--- родителя, что обеспечивает первичный ключ. У корня (база, спейс) строки нет.
--- Хранится отдельно от edge, чтобы ранжирование не исключало её каждый раз
--- и чтобы форма «один родитель» держалась ключом, а не дисциплиной загрузчика.
+/*
+Tree — принадлежность: колонка лежит в таблице, таблица в схеме, схема в
+базе, вложение в странице, страница в спейсе. Это единственная связь,
+которая есть у всех источников, и единственная в форме дерева: у node не
+больше одного родителя, и это обеспечивает первичный ключ. У корня (база,
+спейс) строки нет. Tree хранится отдельно от edge, чтобы ранжированию не
+приходилось каждый раз исключать принадлежность и чтобы форма «один
+родитель» держалась ключом, а не дисциплиной загрузчика.
+*/
 create table if not exists ix.tree (
     node_id    bigint primary key references ix.node on delete cascade,
     parent_id  bigint not null references ix.node on delete cascade
 );
 
--- дети ноды: select node_id from ix.tree where parent_id = $1;
--- всё под нодой:
--- with recursive sub as (
---     select $1::bigint as id
---     union all
---     select t.node_id from ix.tree t join sub on t.parent_id = sub.id)
--- select id from sub;
--- При удалении родителя каскад убирает строки tree, но не ноды детей: поддерево
--- удаляет загрузчик этим же рекурсивным запросом.
-create index if not exists tree__parent on ix.tree using btree (parent_id, node_id);
+/*
+Дети node: select node_id from ix.tree where parent_id = $1;
+Всё поддерево node:
+with recursive sub as (
+    select $1::bigint as id
+    union all
+    select t.node_id from ix.tree t join sub on t.parent_id = sub.id)
+select id from sub;
+При удалении родителя каскад убирает его строки tree, но не node детей:
+поддерево удаляет загрузчик этим же рекурсивным запросом.
+*/
 
--- Вид edge: enum ix.edge_kind_e, имя читается как фраза «source <глагол> target»
--- в направлении самого edge. Описания в ix.edge_kind, ключ enum.
+create index if not exists tree__parent on ix.tree using btree (parent_id, node_id);
+/*
+Kind edge — enum ix.edge_kind_e. Имя читается как фраза «source <глагол>
+target» в направлении самого edge. Описания лежат в ix.edge_kind с ключом
+enum.
+*/
 do $$ begin
     create type ix.edge_kind_e as enum ();
 exception when duplicate_object then null; end $$;
@@ -143,7 +226,7 @@ alter type ix.edge_kind_e add value if not exists 'shares_key_with';
 alter type ix.edge_kind_e add value if not exists 'refers_to';
 
 comment on type ix.edge_kind_e is
-    'Вид edge, читается как «source <глагол> target» в направлении самого edge. Значения только добавляются или переименовываются.';
+    'Kind edge: имя читается как «source <глагол> target» в направлении самого edge. Значения только добавляются или переименовываются.';
 
 create table if not exists ix.edge_kind (
     kind         ix.edge_kind_e primary key,
@@ -151,35 +234,38 @@ create table if not exists ix.edge_kind (
 );
 
 insert into ix.edge_kind (kind, description) values
-    ('references',      'foreign key constraint references a table'),
-    ('reads_from',      'view or ETL job reads from a table'),
-    ('writes_to',       'ETL job writes into a table'),
-    ('queried_with',    'tables appear in the same query; written in both directions'),
-    ('shares_key_with', 'tables share a key: a column matches the primary key of another table'),
-    ('refers_to',       'document refers to an object: a page to a page, an attachment or a table; how (hyperlink or name in text) is in origin')
+    ('references',      'Ограничение внешнего ключа ссылается на таблицу.'),
+    ('reads_from',      'Представление или задача ETL читает из таблицы.'),
+    ('writes_to',       'Задача ETL пишет в таблицу.'),
+    ('queried_with',    'Таблицы встречаются в одном запросе; пишется в обе стороны.'),
+    ('shares_key_with', 'Таблицы делят ключ: колонка совпадает с primary key другой таблицы.'),
+    ('refers_to',       'Документ ссылается на объект: страница на страницу, вложение или таблицу; способ ссылки (гиперссылка или имя в тексте) задаёт origin.')
 on conflict (kind) do nothing;
 
--- Origin edge: enum ix.origin_e, как стало известно, что связь есть. Тип свидетельства,
--- не источник данных: view в Postgres и materialized view в ClickHouse читают
--- таблицу одинаково, и у обеих связей origin declared. Origin отвечает за три
--- вещи: писатель находит свои строки по origin и своим node; у каждого origin
--- своя шкала weight; пользователю объясняется, откуда связь, а откуда именно,
--- видно по kind node на концах.
--- declared      объявлена самим источником: foreign key, зависимость view
---               от таблицы, гиперссылка на странице, зависимость задач ETL.
---               weight всегда 1
--- observed      наблюдена в поведении: таблицы в одном запросе из
---               pg_stat_statements или system.query_log. weight = логарифм
---               числа наблюдений, нормированный по прогону
--- text_match    идентификатор объекта найден буквально в тексте другого:
---               страница упоминает dm.fact_orders, тело функции упоминает
---               таблицу. weight 1, объект назван явно
--- name_rule     предположена правилом по именам и типам: колонка совпала
---               с primary key другой таблицы, копия таблицы в другом
---               источнике с теми же колонками. weight = уверенность правила
--- llm           предположена моделью: describer вывел связь из комментариев
---               и соседей, vision назвал таблицы на схеме. weight =
---               уверенность модели
+/*
+Origin edge — enum ix.origin_e: как стало известно, что связь есть. Это
+тип свидетельства, а не источник данных: view в Postgres и materialized
+view в ClickHouse читают таблицу одинаково, и у обоих edge origin declared.
+Origin нужен для трёх вещей: писатель находит свои строки по origin и своим
+node; у каждого origin своя шкала weight; пользователю можно объяснить,
+откуда взялась связь, а откуда именно, видно по kind node на её концах.
+declared      объявлена самим источником: foreign key, зависимость view
+              от таблицы, гиперссылка на странице, зависимость задач ETL.
+              weight всегда 1.
+observed      наблюдена в поведении: таблицы в одном запросе из
+              pg_stat_statements или system.query_log. weight равен
+              логарифму числа наблюдений, нормированному по прогону.
+text_match    идентификатор объекта найден буквально в тексте другого:
+              страница упоминает dm.fact_orders, тело функции упоминает
+              таблицу. weight 1, потому что объект назван явно.
+name_rule     предположена правилом по именам и типам: колонка совпала
+              с primary key другой таблицы, копия таблицы в другом
+              источнике с теми же колонками. weight равен уверенности
+              правила.
+llm           предположена моделью: describer вывел связь из комментариев
+              и соседей, vision назвал таблицы на схеме. weight равен
+              уверенности модели.
+*/
 do $$ begin
     create type ix.origin_e as enum ();
 exception when duplicate_object then null; end $$;
@@ -199,43 +285,47 @@ create table if not exists ix.origin (
 );
 
 insert into ix.origin (origin, description) values
-    ('declared',   'declared by the source itself: foreign key, view dependency, hyperlink, ETL dependency; weight 1'),
-    ('observed',   'observed in usage: tables in one query from pg_stat_statements or system.query_log; weight = log of observations, normalized per run'),
-    ('text_match', 'identifier of an object found literally in the text of another; weight 1'),
-    ('name_rule',  'inferred by a rule on names and types; weight = rule confidence'),
-    ('llm',        'inferred by a model (describer, vision); weight = model confidence')
+    ('declared',   'Объявлен самим источником: foreign key, зависимость view, гиперссылка, зависимость ETL; weight 1.'),
+    ('observed',   'Наблюдён в использовании: таблицы в одном запросе из pg_stat_statements или system.query_log; weight равен логарифму числа наблюдений, нормированному по прогону.'),
+    ('text_match', 'Идентификатор объекта найден буквально в тексте другого; weight 1.'),
+    ('name_rule',  'Предположен правилом по именам и типам; weight равен уверенности правила.'),
+    ('llm',        'Предположен моделью (describer, vision); weight равен уверенности модели.')
 on conflict (origin) do nothing;
 
--- Смысловые связи между node, explicit и implicit вместе; по ним считается ранг
--- и строятся диаграммы. Принадлежности здесь нет, она в tree.
---
--- Направление: source это объект, которому нужен target. Ограничение
--- fact_orders_customer_fkey пишется как ограничение -> customers, представление,
--- читающее orders, как представление -> orders. PageRank считает входящие рёбра
--- голосами, поэтому высокий ранг означает, что от ноды зависят многие.
---
--- Внешний ключ это отдельная нода вида pg_constraint под таблицей-владельцем
--- в tree, и ребро references идёт от неё. Так каждая связь адресуема, и пять
--- ключей между одной парой таблиц остаются пятью рёбрами. Колонки ключа это
--- атрибуты, они в поверхности ограничения.
---
--- weight: сколько edge весит для ранга, от 0 до 1. У explicit связей 1,
--- у implicit меньше, нормируется внутри своего origin. Сплошную или пунктирную
--- линию на диаграмме выбирает kind, а не weight.
---
--- origin: откуда взят edge. Одна пара node и один kind могут лежать по строке
--- на origin: (orders, customers, shares_key_with, name_rule, 0.5) и
--- (orders, customers, shares_key_with, llm, 0.8). Для ранга и диаграммы пара
--- сворачивается в одно число: 1 - (1 - 0.5) * (1 - 0.8) = 0.9, два независимых
--- мнения усиливают друг друга. Подтверждение правила это запрос: пары, у которых
--- есть и shares_key_with от name_rule, и references от declared.
---
--- Повторный прогон писателя это diff, а не перезапись: найденное сравнивается
--- с его строками (по origin и своим node: загрузчик Postgres владеет declared
--- и observed строками с source_id в его базе, правило по именам всеми
--- name_rule, describer всеми llm), новые вставляются, у изменившихся
--- обновляется weight, удаляются только исчезнувшие. Массовых delete
--- и insert нет.
+/*
+Edge — смысловые связи между node, explicit и implicit вместе. По ним
+считается ранг и строятся диаграммы. Принадлежности здесь нет, она в tree.
+
+Направление: source — объект, которому нужен target. Ограничение
+fact_orders_customer_fkey пишется как ограничение -> customers,
+представление, читающее orders, — как представление -> orders. PageRank
+считает входящие edge голосами, поэтому высокий ранг означает, что от node
+зависят многие.
+
+Внешний ключ — отдельный node вида pg_constraint под таблицей-владельцем
+в tree, и edge references идёт от него. Так каждая связь адресуема, и пять
+ключей между одной парой таблиц остаются пятью edge. Колонки ключа — его
+атрибуты, они лежат в surface ограничения.
+
+weight — сколько edge весит для ранга, от 0 до 1. У explicit связей 1,
+у implicit меньше, и нормируется он внутри своего origin. Сплошную или
+пунктирную линию на диаграмме выбирает kind, а не weight.
+
+origin — откуда взят edge. Одна пара node с одним kind может лежать по
+строке на каждый origin: (orders, customers, shares_key_with, name_rule,
+0.5) и (orders, customers, shares_key_with, llm, 0.8). Для ранга и
+диаграммы пара сворачивается в одно число: 1 - (1 - 0.5) * (1 - 0.8) = 0.9,
+то есть два независимых мнения усиливают друг друга. Подтверждение правила —
+это запрос: пары, у которых есть и shares_key_with от name_rule, и
+references от declared.
+
+Повторный прогон писателя — это diff, а не перезапись. Найденное
+сравнивается с его собственными строками (по origin и своим node: загрузчик
+Postgres владеет строками declared и observed с source_id в его базе,
+правило по именам — всеми name_rule, describer — всеми llm), новые
+вставляются, у изменившихся обновляется weight, удаляются только исчезнувшие.
+Массовых delete и insert нет.
+*/
 create table if not exists ix.edge (
     source_id  bigint   not null references ix.node on delete cascade,
     target_id  bigint   not null references ix.node on delete cascade,
@@ -245,29 +335,36 @@ create table if not exists ix.edge (
     primary key (source_id, target_id, kind, origin)
 );
 
--- кто зависит от node, пара свёрнута по origin:
--- select source_id, kind, 1 - exp(sum(ln(1 - weight))) as weight
--- from   ix.edge where target_id = $1 group by source_id, kind;
--- ER-диаграмма схемы: таблицы через tree, ключи как дети таблиц вида pg_constraint,
--- целевая таблица через edge
--- with t  as (select node_id as id from ix.tree where parent_id = $schema_id),
---      fk as (select tr.node_id as fk_id, tr.parent_id as table_id
---             from   ix.tree tr
---             join   t on t.id = tr.parent_id
---             join   ix.node n on n.id = tr.node_id and n.kind = 'pg_constraint')
--- select fk.table_id, fk.fk_id, e.target_id
--- from   fk join ix.edge e on e.source_id = fk.fk_id and e.kind = 'references';
+/*
+Кто зависит от node, пара свёрнута по origin:
+select source_id, kind, 1 - exp(sum(ln(1 - weight))) as weight
+from   ix.edge where target_id = $1 group by source_id, kind;
+ER-диаграмма схемы: таблицы берутся через tree, ключи — как дети таблиц
+вида pg_constraint, целевая таблица — через edge:
+*/
+with t  as (select node_id as id from ix.tree where parent_id = $schema_id),
+     fk as (select tr.node_id as fk_id, tr.parent_id as table_id
+            from   ix.tree tr
+            join   t on t.id = tr.parent_id
+            join   ix.node n on n.id = tr.node_id and n.kind = 'pg_constraint')
+select fk.table_id, fk.fk_id, e.target_id
+from   fk join ix.edge e on e.source_id = fk.fk_id and e.kind = 'references';
 create index if not exists edge__target_source_kind
     on ix.edge using btree (target_id, source_id, kind) include (origin, weight);
--- строки одного origin для diff при повторном прогоне
+
+-- Строки одного origin для diff при повторном прогоне писателя.
 create index if not exists edge__origin_source on ix.edge using btree (origin, source_id);
 
--- PageRank node. Считается в коде: берутся edge выбранных kind, свёрнутые
--- по origin в один weight на пару, и ноды вида таблица, представление,
--- матвью; ребро от ноды ограничения стягивается через tree в таблицу-владельца. Результат записывается одной транзакцией.
--- value это сырое значение (сумма по всему графу равна 1), percentile это место
--- ноды среди остальных от 0 до 10000, его использует поиск как буст к текстовой
--- релевантности. Если строки нет, нода в прогоне не участвовала и буст у неё нулевой.
+/*
+PageRank node. Считается в коде: берутся edge выбранных kind, свёрнутые по
+origin в один weight на пару, и node вида таблица, представление или
+материализованное представление; edge от node ограничения стягивается через
+tree в таблицу-владельца. Результат записывается одной транзакцией.
+value — сырое значение, сумма по всему графу равна 1. percentile — место
+node среди остальных от 0 до 10000; поиск использует его как буст к
+текстовой релевантности. Если строки нет, node в прогоне не участвовал и
+буст у него нулевой.
+*/
 create table if not exists ix.node_pagerank (
     node_id      bigint           primary key references ix.node on delete cascade,
     value        double precision not null,
@@ -275,38 +372,54 @@ create table if not exists ix.node_pagerank (
     computed_at  timestamptz      not null default now()
 );
 
+-- Верхушка ранга:
 -- select node_id, value from ix.node_pagerank order by value desc limit 20;
 create index if not exists node_pagerank__value on ix.node_pagerank using btree (value desc);
 
--- ============================================================================
--- Поверхности: атрибуты нод из источника. Каждая поверхность это плоская таблица
--- с единственной связью с ядром через node_id и полными именами объекта для
--- быстрого доступа внутри источника. Связей в ней нет и по ней они не строятся.
--- ============================================================================
+/*
+============================================================================
+Surface-таблицы: атрибуты node из источника. Каждая surface — плоская
+таблица с единственной связью с ядром через node_id и полными именами
+объекта для быстрого доступа внутри источника. Связей в ней нет и по ней
+они не строятся.
+============================================================================
 
--- ============================================================================
--- Источник PostgreSQL. Ноды: база, схема, таблица, колонка, представление
--- (view и matview один вид, различаются атрибутом), индекс, последовательность,
--- подпрограмма (function, procedure, aggregate, window один вид), ограничение.
--- tree: база -> схема -> таблица | представление | последовательность |
--- подпрограмма; таблица -> колонка | ограничение | индекс; представление ->
--- колонка. Индекс в адресе уникален в схеме, но в дереве лежит под таблицей,
--- которой принадлежит (pg_index.indrelid).
--- edge: references от ноды ограничения к таблице, на которую ссылается ключ;
--- reads_from от представления к таблицам и представлениям, которые оно
--- читает (pg_rewrite и pg_depend). Тела представлений и подпрограмм не
--- хранятся: LLM читает их в источнике по адресу.
--- Хэш таблицы покрывает её колонки и ограничения: при смене content_hash
--- таблицы переписываются поисковые строки таблицы, колонок и ограничений.
--- У базы, схемы и последовательности хэша нет, их атрибуты сравниваются
--- напрямую.
--- ============================================================================
+============================================================================
+Источник PostgreSQL.
 
--- Поверхность pg_table: оригинал метаданных таблицы PostgreSQL.
--- content_hash = sha256 текста, из которого строятся аспекты: имя, путь,
--- комментарий, колонки с типами и комментариями. Версии у объектов Postgres
--- нет, поэтому хэш здесь единственный признак изменения: совпал с прошлым
--- прогоном, поисковые строки ноды не трогаем; не совпал, переписываем все.
+Виды node: база, схема, таблица, колонка, представление (view и matview
+один kind, различаются атрибутом view_kind), индекс, последовательность,
+подпрограмма (function, procedure, aggregate и window один kind,
+различаются атрибутом routine_kind), ограничение.
+
+Tree строится так: база -> схема -> таблица | представление |
+последовательность | подпрограмма; таблица -> колонка | ограничение |
+индекс; представление -> колонка. Индекс в адресе уникален в пределах
+схемы, но в tree лежит под таблицей, которой принадлежит
+(pg_index.indrelid).
+
+Edge двух kind: references идёт от node ограничения к таблице, на которую
+ссылается внешний ключ; reads_from идёт от представления к таблицам и
+представлениям, которые оно читает (по pg_rewrite и pg_depend).
+
+Тела представлений и подпрограмм не хранятся: LLM при необходимости
+читает их в источнике по адресу node.
+
+content_hash таблицы покрывает её колонки и ограничения: если хэш таблицы
+изменился, переписываются поисковые строки самой таблицы, её колонок и
+ограничений. У базы, схемы и последовательности content_hash нет, их
+атрибуты сравниваются с прошлым прогоном напрямую.
+============================================================================
+
+Surface pg_table: атрибуты таблицы PostgreSQL. Оригинал DDL и адрес здесь
+не хранятся, только идентификаторы (база, схема, имя), табличное
+пространство, владелец и комментарий.
+content_hash — sha256 текста, из которого строятся аспекты поиска: имя,
+путь, комментарий, колонки с типами и комментариями. Версии у объектов
+PostgreSQL нет, поэтому хэш здесь единственный признак изменения: совпал с
+прошлым прогоном — поисковые строки node не трогаются; не совпал —
+переписываются все, включая строки колонок и ограничений таблицы.
+*/
 create table if not exists ix.pg_table (
     node_id          bigint primary key references ix.node on delete cascade,
     database_name    varchar   not null,
@@ -318,14 +431,18 @@ create table if not exists ix.pg_table (
     content_hash     bytea     not null
 );
 
--- Поверхность pg_summary: описание объекта, сгенерированное LLM (describer).
--- Describer это источник, чьи оригиналы хранятся у нас: адреса, где перечитать
--- summary, не существует. indexer_hash играет роль version: md5 снимка
--- настроек прогона (модель, системный промпт, параметры генерации); при
--- повторном прогоне строки с текущим хэшем не трогаются, с чужим
--- генерируются заново. content_hash = md5 текста, по нему поисковые строки
--- аспекта summary понимают, надо ли переиндексировать. Пишут таблицы,
--- колонки, представления, подпрограммы.
+/*
+Surface pg_summary: текст описания объекта, сгенерированный LLM
+(describer). Describer — источник, чьи оригиналы хранятся только у нас:
+адреса, по которому summary можно перечитать, не существует, поэтому сам
+текст лежит в поле content.
+indexer_hash играет роль версии: md5 снимка настроек прогона (модель,
+системный промпт, параметры генерации). При повторном прогоне строки с
+текущим indexer_hash не трогаются, строки с чужим генерируются заново.
+content_hash — md5 текста content; по нему поисковые строки aspect summary
+решают, надо ли переиндексировать node.
+Summary пишется для таблиц, колонок, представлений и подпрограмм.
+*/
 create table if not exists ix.pg_summary (
     node_id       bigint      primary key references ix.node on delete cascade,
     content       varchar     not null,
@@ -334,14 +451,18 @@ create table if not exists ix.pg_summary (
     created_at    timestamptz not null default now()
 );
 
--- очередь describer'а: ноды нужных видов без summary или с чужим хэшем
--- select n.id from ix.node n left join ix.pg_summary s on s.node_id = n.id
--- where  n.kind in ('pg_table', 'pg_column', 'pg_view', 'pg_routine') and (s.node_id is null or s.indexer_hash <> $current);
+-- Очередь describer'а: node нужных kind без summary или с чужим indexer_hash.
+-- select n.id
+-- from   ix.node n
+-- left join ix.pg_summary s on s.node_id = n.id
+-- where  n.kind in ('pg_table', 'pg_column', 'pg_view', 'pg_routine')
+--   and (s.node_id is null or s.indexer_hash <> $current);
 create index if not exists pg_summary__indexer_hash on ix.pg_summary using btree (indexer_hash);
 
--- Поверхность pg_database: pg_database, владелец pg_get_userbyid(datdba),
--- кодировка pg_encoding_to_char(encoding), collate_name = datcollate,
--- комментарий shobj_description.
+-- Surface pg_database: атрибуты базы из pg_database. owner —
+-- pg_get_userbyid(datdba), encoding — pg_encoding_to_char(encoding),
+-- collate_name — datcollate, comment — shobj_description. content_hash нет:
+-- атрибутов мало, они сравниваются с прошлым прогоном напрямую.
 create table if not exists ix.pg_database (
     node_id        bigint  primary key references ix.node on delete cascade,
     database_name  varchar not null,
@@ -351,7 +472,8 @@ create table if not exists ix.pg_database (
     comment        varchar not null default ''
 );
 
--- Поверхность pg_schema: pg_namespace, комментарий obj_description.
+-- Surface pg_schema: атрибуты схемы из pg_namespace, comment —
+-- obj_description. content_hash нет, атрибуты сравниваются напрямую.
 create table if not exists ix.pg_schema (
     node_id        bigint  primary key references ix.node on delete cascade,
     database_name  varchar not null,
@@ -360,11 +482,13 @@ create table if not exists ix.pg_schema (
     comment        varchar not null default ''
 );
 
--- Поверхность pg_column: pg_attribute таблицы или представления.
--- relation_kind = table | view | matview, чтобы по строке было видно, чья
--- колонка. default_expr из pg_attrdef через pg_get_expr, generated =
--- attgenerated ('' обычная, 's' вычисляемая). Своего content_hash нет,
--- колонку покрывает хэш таблицы.
+-- Surface pg_column: атрибуты колонки из pg_attribute таблицы или
+-- представления. relation_kind = table | view | matview показывает, чья это
+-- колонка, без обращения к tree. default_expr берётся из pg_attrdef через
+-- pg_get_expr, generated = attgenerated ('' — обычная колонка, 's' —
+-- вычисляемая). Своего content_hash нет: колонку покрывает content_hash
+-- таблицы или представления, при его смене поисковые строки колонки
+-- переписываются вместе с родителем.
 create table if not exists ix.pg_column (
     node_id        bigint   primary key references ix.node on delete cascade,
     database_name  varchar  not null,
@@ -380,10 +504,10 @@ create table if not exists ix.pg_column (
     comment        varchar  not null default ''
 );
 
--- Поверхность pg_view: pg_class с relkind v | m, view_kind = view | matview.
--- Определение (pg_get_viewdef) не хранится, но входит в content_hash вместе
--- с колонками и комментарием: изменилось определение, переписываются
--- поисковые строки представления и его колонок.
+-- Surface pg_view: атрибуты представления из pg_class с relkind v | m;
+-- view_kind = view | matview. Определение (pg_get_viewdef) не хранится, но
+-- входит в content_hash вместе с колонками и комментарием: изменилось
+-- определение — переписываются поисковые строки представления и его колонок.
 create table if not exists ix.pg_view (
     node_id        bigint  primary key references ix.node on delete cascade,
     database_name  varchar not null,
@@ -395,11 +519,11 @@ create table if not exists ix.pg_view (
     content_hash   bytea   not null
 );
 
--- Поверхность pg_index: pg_index с pg_class индекса и таблицы, метод доступа
--- из pg_am. columns = выражения ключа по порядку из pg_get_indexdef по
--- колонкам, predicate = условие частичного индекса из indpred.
--- content_hash = md5(pg_get_indexdef(indexrelid)): в хэш таблицы индексы
--- не входят.
+-- Surface pg_index: атрибуты индекса из pg_index, pg_class индекса и
+-- таблицы, метод доступа из pg_am. columns — выражения ключа по порядку,
+-- взятые из pg_get_indexdef по колонкам; predicate — условие частичного
+-- индекса из indpred. content_hash = md5(pg_get_indexdef(indexrelid)) у
+-- индекса свой, потому что в content_hash таблицы индексы не входят.
 create table if not exists ix.pg_index (
     node_id        bigint    primary key references ix.node on delete cascade,
     database_name  varchar   not null,
@@ -414,9 +538,11 @@ create table if not exists ix.pg_index (
     content_hash   bytea     not null
 );
 
--- Поверхность pg_sequence: pg_sequence с pg_class. owned_by = колонка-владелец
--- schema.table.column из pg_depend (deptype a или i), пусто у свободной
--- последовательности; это атрибут для чтения, связью не является.
+-- Surface pg_sequence: атрибуты последовательности из pg_sequence и
+-- pg_class. owned_by — колонка-владелец в виде schema.table.column из
+-- pg_depend (deptype a или i), пусто у свободной последовательности; это
+-- атрибут для чтения, edge из него не строится. content_hash нет, атрибуты
+-- сравниваются напрямую.
 create table if not exists ix.pg_sequence (
     node_id        bigint  primary key references ix.node on delete cascade,
     database_name  varchar not null,
@@ -429,12 +555,12 @@ create table if not exists ix.pg_sequence (
     comment        varchar not null default ''
 );
 
--- Поверхность pg_routine: pg_proc. routine_kind = function | procedure |
--- aggregate | window (prokind f, p, a, w). arguments из
--- pg_get_function_identity_arguments, они же в адресе (перегрузки это разные
--- ноды), result из pg_get_function_result, language из pg_language.
--- Тело (prosrc) не хранится, но входит в content_hash с сигнатурой
--- и комментарием.
+-- Surface pg_routine: атрибуты подпрограммы из pg_proc. routine_kind =
+-- function | procedure | aggregate | window (prokind f, p, a, w).
+-- arguments — pg_get_function_identity_arguments; те же аргументы входят в
+-- адрес, поэтому перегрузки — разные node. result —
+-- pg_get_function_result, language — из pg_language. Тело (prosrc) не
+-- хранится, но входит в content_hash вместе с сигнатурой и комментарием.
 create table if not exists ix.pg_routine (
     node_id        bigint  primary key references ix.node on delete cascade,
     database_name  varchar not null,
@@ -449,13 +575,14 @@ create table if not exists ix.pg_routine (
     content_hash   bytea   not null
 );
 
--- Поверхность pg_constraint: pg_constraint таблицы. constraint_type =
--- primary | unique | foreign | check | exclusion (contype p, u, f, c, x).
--- columns = колонки ограничения по порядку conkey. Для внешнего ключа
--- ref_schema_name, ref_table_name, ref_columns по confkey, on_delete и
--- on_update из confdeltype и confupdtype; это атрибуты для чтения, сама
--- связь это ребро references от этой ноды. Выражение check не хранится.
--- Своего content_hash нет, ограничение покрывает хэш таблицы.
+-- Surface pg_constraint: атрибуты ограничения таблицы из pg_constraint.
+-- constraint_type = primary | unique | foreign | check | exclusion (contype
+-- p, u, f, c, x). columns — колонки ограничения по порядку conkey. Для
+-- внешнего ключа заполняются ref_schema_name, ref_table_name и ref_columns
+-- по confkey, on_delete и on_update — из confdeltype и confupdtype; это
+-- атрибуты для чтения, сама связь — edge references от этой node к таблице,
+-- на которую ссылается ключ. Выражение check не хранится. Своего
+-- content_hash нет: ограничение покрывает content_hash таблицы.
 create table if not exists ix.pg_constraint (
     node_id          bigint    primary key references ix.node on delete cascade,
     database_name    varchar   not null,
@@ -473,60 +600,59 @@ create table if not exists ix.pg_constraint (
 );
 
 -- ----------------------------------------------------------------------------
--- Аспекты объектов PostgreSQL и откуда они берутся. Аспект это текст, по
--- которому объект ищут; в поисковых таблицах pg_* ниже указано, какие аспекты
--- пишет каждая поверхность. Состав по поверхностям:
+-- Аспекты объектов PostgreSQL. Аспект это текст объекта, по которому объект
+-- ищут; у объекта их несколько, и каждый лежит отдельной строкой поисковой
+-- таблицы. Какие аспекты пишет каждая surface и из чего собирает description:
 --
--- pg_table       name, path (schema.table), words, comment, columns, summary,
---                description
--- pg_column      name, path (schema.table.column), words, comment, summary,
---                description ('Column {path} {type}: {comment}')
--- pg_view        как pg_table; description строится из имени, комментария
---                и колонок, определение в текст не входит
--- pg_schema      name, words, comment, description
--- pg_database    name, words, comment, description
--- pg_index       name, path (schema.index), words, description
---                ('Index {name} on {table} ({columns}) {unique}')
--- pg_sequence    name, path (schema.sequence), words, description
--- pg_routine     name, path (schema.routine(arguments)), words, comment,
---                summary, description ('Function {name}({arguments}) returns
---                {result}: {comment}')
--- pg_constraint  name, words, description ('Foreign key {name} on {table}
---                ({columns}) references {ref_table} ({ref_columns})')
+-- pg_table пишет name, path (schema.table), words, comment, columns, summary
+--   и description.
+-- pg_column пишет name, path (schema.table.column), words, comment, summary
+--   и description вида 'Column {path} {type}: {comment}'.
+-- pg_view пишет то же, что pg_table; description строится из имени,
+--   комментария и колонок, определение представления в текст не входит.
+-- pg_schema и pg_database пишут name, words, comment и description.
+-- pg_index пишет name, path (schema.index), words и description вида
+--   'Index {name} on {table} ({columns}) {unique}'.
+-- pg_sequence пишет name, path (schema.sequence), words и description.
+-- pg_routine пишет name, path (schema.routine(arguments)), words, comment,
+--   summary и description вида 'Function {name}({arguments}) returns
+--   {result}: {comment}'.
+-- pg_constraint пишет name, words и description вида 'Foreign key {name}
+--   on {table} ({columns}) references {ref_table} ({ref_columns})'.
 --
--- Атрибуты, по которым не ищут словами, а фильтруют или подправляют выдачу,
--- живут в поверхностях: владелец, табличное пространство, размер, оценка
--- числа строк, статистика обращений. DDL, определения представлений и тела
--- подпрограмм не хранятся и не индексируются: это оригиналы, LLM читает их
--- в источнике по адресу ноды. Значения строк не индексируются.
+-- Атрибуты, по которым не ищут словами, а фильтруют или подправляют выдачу
+-- (владелец, табличное пространство, размер, оценка числа строк, статистика
+-- обращений), живут в surface. DDL, определения представлений и тела
+-- подпрограмм не хранятся и не индексируются: LLM читает их в источнике по
+-- адресу node. Значения строк таблиц не индексируются.
 -- ----------------------------------------------------------------------------
 
 -- Словарь аспектов источника PostgreSQL: какой текст объекта закодирован
--- в строке поисковой таблицы. Номера фиксированы здесь, потому что на них
--- ссылаются частичные индексы, а в условии индекса допустима только константа.
--- Ниже у каждого аспекта: откуда берётся текст для pg_table и для чего он.
--- Другие поверхности собирают те же аспекты из своих полей (attname вместо
--- relname, schema.table.column вместо schema.table); какие аспекты пишет
--- поверхность в какую поисковую таблицу, указано у самих поисковых таблиц.
+-- в строке поисковой таблицы. Значения enum только добавляются или
+-- переименовываются: на них ссылаются предикаты частичных индексов
+-- pg_emb_e5_1024, и при переименовании значения в словаре предикаты следуют
+-- за ним. Ниже у каждого аспекта сказано, откуда берётся текст для pg_table
+-- и для чего он нужен; другие surface собирают те же аспекты из своих полей
+-- (attname вместо relname, schema.table.column вместо schema.table).
 --
--- description    описание, собранное индексатором из всего известного об
---                объекте, основной аспект для поиска. Для pg_fts это части
---                с весами внутри одного tsvector: A = words, B = words схемы
---                и comment, C = columns, D = summary; для pg_emb одна строка:
---                'Table {path}: {comment}. Columns: {col1} ({type}), ...'
--- comment        комментарий из источника как есть: obj_description для
---                таблицы, col_description для колонки; пишется, если не пуст
--- columns        имена колонок таблицы словами через пробел (в pg_emb через
---                запятую), чтобы таблица находилась по своим колонкам
--- summary        описание от LLM (плагин describer); пишется, если оно есть
--- name           имя объекта как есть: pg_class.relname, pg_attribute.attname;
---                для точного совпадения, подстроки и подсказки по префиксу
--- path           путь через точку, как пишет пользователь: nspname || '.' ||
---                relname, для колонки ещё || '.' || attname; для точного
---                совпадения
--- words          слова имени: name, разрезанный по CamelCase и подчёркиваниям,
---                в нижнем регистре, ё -> е; для опечаток: 'ordrs' к
---                'CustomerOrders' даёт 0.22, к 'customer orders' 0.5
+-- description это описание, собранное индексатором из всего известного об
+--   объекте, основной аспект поиска. В pg_fts это части с весами внутри
+--   одного tsvector: A = words, B = words схемы и comment, C = columns;
+--   в pg_emb_e5_1024 одна строка вида
+--   'Table {path}: {comment}. Columns: {col1} ({type}), ...'.
+-- comment это комментарий из источника как есть: obj_description для
+--   таблицы, col_description для колонки. Пишется, только если не пуст.
+-- columns это имена колонок таблицы через пробел (в pg_emb_e5_1024 через
+--   запятую), чтобы таблица находилась по своим колонкам.
+-- summary это описание от LLM (плагин describer) из surface pg_summary.
+--   Пишется отдельной строкой, когда описание появилось.
+-- name это имя объекта как есть: pg_class.relname, pg_attribute.attname.
+--   Нужно для точного совпадения, подстроки и подсказки по префиксу.
+-- path это путь через точку, как его пишет пользователь: nspname || '.' ||
+--   relname, для колонки ещё || '.' || attname. Нужен для точного совпадения.
+-- words это слова имени: name, разрезанный по CamelCase и подчёркиваниям,
+--   в нижнем регистре, ё заменена на е. Нужен для поиска с опечатками:
+--   'ordrs' к 'CustomerOrders' даёт похожесть 0.22, к 'customer orders' 0.5.
 do $$ begin
     create type ix.pg_aspect_e as enum ();
 exception when duplicate_object then null; end $$;
@@ -540,7 +666,7 @@ alter type ix.pg_aspect_e add value if not exists 'path';
 alter type ix.pg_aspect_e add value if not exists 'words';
 
 comment on type ix.pg_aspect_e is
-    'Какой текст объекта PostgreSQL закодирован в строке поисковой таблицы. Значения только добавляются или переименовываются; предикаты индексов следуют за переименованием.';
+    'Какой текст объекта PostgreSQL закодирован в строке поисковой таблицы. Значения только добавляются или переименовываются: на них ссылаются предикаты частичных индексов, и они следуют за переименованием.';
 
 create table if not exists ix.pg_aspect (
     aspect       ix.pg_aspect_e primary key,
@@ -548,44 +674,53 @@ create table if not exists ix.pg_aspect (
 );
 
 insert into ix.pg_aspect (aspect, description) values
-    ('description', 'indexer-built description of the object from everything known about it; the main search aspect'),
-    ('comment',     'comment from the source as is (obj_description, col_description); written only when not empty'),
-    ('columns',     'column names of a table separated by spaces; lets a table be found by its columns'),
-    ('summary',     'description generated by the LLM describer; written only when it exists'),
-    ('name',        'object name as is (relname, attname); exact match and substring'),
-    ('path',        'dotted path as the user types it: schema.table or schema.table.column; exact match'),
-    ('words',       'name split into words by CamelCase and underscores, lower case, yo -> ye; typo-tolerant search')
+    ('description', 'описание объекта, собранное индексатором из всего, что о нём известно; основной аспект поиска'),
+    ('comment',     'комментарий из источника как есть (obj_description, col_description); пишется, только если не пуст'),
+    ('columns',     'имена колонок таблицы через пробел; таблица находится по своим колонкам'),
+    ('summary',     'описание от LLM (плагин describer); пишется, только когда оно есть'),
+    ('name',        'имя объекта как есть (relname, attname); точное совпадение и подстрока'),
+    ('path',        'путь через точку, как пишет пользователь: schema.table или schema.table.column; точное совпадение'),
+    ('words',       'слова имени, разрезанного по CamelCase и подчёркиваниям, в нижнем регистре, ё -> е; поиск с опечатками')
 on conflict (aspect) do nothing;
 
 -- ----------------------------------------------------------------------------
--- Поисковые таблицы источника PostgreSQL: одна на вид индекса для всех
--- поверхностей pg_*, у всех трёх один ключ: node_id, kind, aspect.
--- kind это копия node.kind того же типа node_kind_e; она нужна индексам для
--- фильтра по виду без обращения к node. aspect это значение pg_aspect_e. content во всех трёх это текст аспекта, из которого построен
--- индекс: триграммам он нужен для точного расчёта похожести, полнотексту для
--- сниппета, вектору для проверки, изменился ли текст. Загрузчик пишет ноду,
--- поверхность и поисковые строки одной транзакцией.
+-- Поисковые таблицы источника PostgreSQL: по одной на вид индекса, общие для
+-- всех surface pg_*. У всех трёх один ключ (node_id, kind, aspect). kind это
+-- копия node.kind того же типа node_kind_e: по ней индексы фильтруют по виду,
+-- не обращаясь к node. aspect это значение pg_aspect_e. content это текст
+-- аспекта, из которого построен индекс: триграммам он нужен для точного
+-- расчёта похожести, полнотексту для сниппета, вектору для проверки,
+-- изменился ли текст. Загрузчик пишет node, surface и поисковые строки одной
+-- транзакцией.
 -- ----------------------------------------------------------------------------
 
--- Полнотекстовый индекс: строка на аспект. Все поверхности пишут description
+-- Полнотекстовый индекс, строка на аспект. Все surface пишут description
 -- одним tsvector с весами: A = words имени, B = words схемы и comment,
--- C = columns (таблица, представление).
--- Текст каждой части нормализован в коде, tsvector собирает insert;
--- content = те же части одной строкой, для сниппета ts_headline в выдаче
--- и для сравнения при повторном прогоне.
--- insert into ix.pg_fts (node_id, kind, aspect, content, tsv) values ($1, 'pg_table', 'description', $content,
+-- C = columns (только таблица и представление). Текст каждой части
+-- нормализован в коде, tsvector собирает сам insert; content это те же части
+-- одной строкой, для сниппета ts_headline в выдаче и для сравнения при
+-- повторном прогоне:
+--
+-- insert into ix.pg_fts (node_id, kind, aspect, content, tsv)
+-- values ($1, 'pg_table', 'description', $content,
 --     setweight(to_tsvector('russian', $words), 'A') ||
---     setweight(to_tsvector('russian', $schema_words || ' ' || $comment), 'B') ||
+--     setweight(to_tsvector('russian', $schema_words || ' ' || $comment),
+--               'B') ||
 --     setweight(to_tsvector('russian', $columns), 'C'));
 --
--- Summary от LLM это отдельная строка с аспектом summary, а не часть строки description:
--- у неё другой писатель (describer, а не индексатор), другой источник
--- (pg_summary), своё время появления и свой цикл пересчёта. Индексатор
--- пишет строку description при загрузке объекта, describer позже пишет строку summary:
+-- Summary от LLM это отдельная строка с аспектом summary, а не часть строки
+-- description: у неё другой писатель (describer, а не индексатор), другой
+-- источник (surface pg_summary), своё время появления и свой цикл пересчёта.
+-- Индексатор пишет строку description при загрузке объекта, describer позже
+-- добавляет строку summary с весом D:
+--
 -- insert into ix.pg_fts (node_id, kind, aspect, content, tsv)
--- values ($1, 'pg_table', 'summary', $summary, setweight(to_tsvector('russian', $summary), 'D'));
--- Поиск читает обе строки как один документ, ранг ноды это сумма рангов
--- её строк:
+-- values ($1, 'pg_table', 'summary', $summary,
+--     setweight(to_tsvector('russian', $summary), 'D'));
+--
+-- Поиск читает обе строки как один документ: ранг node это сумма рангов
+-- её строк.
+--
 -- select node_id, sum(ts_rank_cd(tsv, q)) as rank
 -- from   ix.pg_fts, websearch_to_tsquery('russian', 'заказы клиентов') q
 -- where  tsv @@ q
@@ -599,22 +734,27 @@ create table if not exists ix.pg_fts (
     primary key (node_id, kind, aspect)
 );
 
--- конфигурация russian стеммит и русский, и английский: order/orders, заказ/заказы
+-- Конфигурация russian стеммит и русский, и английский: order/orders,
+-- заказ/заказы. Простой запрос без суммирования по node:
+--
 -- select node_id, kind, ts_rank_cd(tsv, q) as rank
 -- from   ix.pg_fts, websearch_to_tsquery('russian', 'заказы клиентов') q
 -- where  tsv @@ q
 -- order by rank desc
 -- limit  20;
--- Один GIN на kind и tsv (btree_gin): запрос без фильтра по виду идёт по нему
--- же, запрос с фильтром по редкому виду отбирает вид внутри индекса. Для частого
--- вида планировщик сам оставляет kind обычным фильтром после индекса, это
--- дешевле, чем читать его список из GIN.
+--
+-- Один GIN по kind и tsv (btree_gin) обслуживает оба случая: запрос без
+-- фильтра по виду идёт по нему же, запрос с фильтром по редкому виду
+-- отбирает вид внутри индекса. Для частого вида планировщик сам оставляет
+-- kind обычным фильтром после индекса: это дешевле, чем читать его список
+-- из GIN.
 create index if not exists pg_fts__kind_tsv__gin on ix.pg_fts using gin (kind, tsv);
 
--- Таблица триграмм хранит только идентификаторы, по одной строке на node_id, aspect.
--- Длинный текст сюда не кладём: триграммная похожесть на нём не работает, а btree по lower(content) падает на строках длиннее 2704 байт.
--- Все поверхности пишут name и words; path пишут таблица, колонка,
--- представление, индекс, последовательность, подпрограмма.
+-- Таблица триграмм хранит только идентификаторы, по строке на node_id и
+-- aspect. Длинный текст сюда не кладут: триграммная похожесть на нём не
+-- работает, а btree по lower(content) падает на строках длиннее 2704 байт.
+-- Все surface пишут name и words; path пишут таблица, колонка, представление,
+-- индекс, последовательность и подпрограмма.
 create table if not exists ix.pg_trgm (
     node_id    bigint   not null references ix.node on delete cascade,
     kind       ix.node_kind_e not null references ix.node_kind,
@@ -623,9 +763,10 @@ create table if not exists ix.pg_trgm (
     primary key (node_id, kind, aspect)
 );
 
--- подстрока и опечатки по всему источнику, таблицы и колонки в одной выдаче;
--- word_similarity (<%, <<->), а не similarity (%, <->). Порог <% по умолчанию 0.6,
--- для коротких имён нужен 0.4
+-- Подстрока и опечатки по всему источнику, таблицы и колонки в одной выдаче.
+-- Используется word_similarity (операторы <% и <<->), а не similarity
+-- (% и <->). Порог <% по умолчанию 0.6, для коротких имён нужен 0.4.
+--
 -- set pg_trgm.word_similarity_threshold = 0.4;
 -- select node_id, kind, content
 -- from   ix.pg_trgm
@@ -634,15 +775,17 @@ create table if not exists ix.pg_trgm (
 -- limit  20;
 create index if not exists pg_trgm__content__gist on ix.pg_trgm using gist (content gist_trgm_ops);
 
--- точное совпадение без учёта регистра
+-- Точное совпадение без учёта регистра.
+--
 -- select node_id, kind from ix.pg_trgm
 -- where  aspect = 'path' and lower(content) = lower('dm.fact_orders');
 create index if not exists pg_trgm__aspect_lower_content on ix.pg_trgm using btree (aspect, lower(content));
 
--- подсказка при наборе: префикс. Обычный btree по lower(content) для префикса
--- не годится, нужен класс операторов varchar_pattern_ops. Оператор ^@ (starts
--- with) вместо like: в like подчёркивание значит «любой символ», и имя
--- fact_orders пришлось бы экранировать
+-- Подсказка при наборе по префиксу. Обычный btree по lower(content) для
+-- префикса не годится, нужен класс операторов varchar_pattern_ops. Вместо
+-- like используется оператор ^@ (starts with): в like подчёркивание значит
+-- «любой символ», и имя fact_orders пришлось бы экранировать.
+--
 -- select node_id, kind, content from ix.pg_trgm
 -- where  aspect = 'name' and lower(content) ^@ lower('fact_ord')
 -- limit  20;
@@ -650,13 +793,12 @@ create index if not exists pg_trgm__aspect_lower_content__prefix
     on ix.pg_trgm using btree (aspect, lower(content) varchar_pattern_ops);
 create index if not exists pg_trgm__kind_aspect on ix.pg_trgm using btree (kind, aspect);
 
--- Векторный поиск, e5 1024: строка на аспект. Все поверхности пишут
--- description; comment пишут те, у кого он не пуст; columns таблица
--- и представление; summary таблица, колонка, представление, подпрограмма,
--- когда описание от LLM есть.
--- Текст кодируется с префиксом passage:, запрос с префиксом query:.
--- content = закодированный текст аспекта. Нужен для того, чтобы не гонять
--- embedding модель повторно, если текст не изменился
+-- Векторный поиск по embedding-модели e5 размерностью 1024, строка на аспект.
+-- Все surface пишут description; comment пишут те, у кого он не пуст;
+-- columns пишут таблица и представление; summary пишут таблица, колонка,
+-- представление и подпрограмма, когда описание от LLM есть. Текст кодируется
+-- с префиксом passage:, запрос с префиксом query:. content это закодированный
+-- текст аспекта: если он не изменился, модель повторно не запускают.
 create table if not exists ix.pg_emb_e5_1024 (
     node_id       bigint        not null references ix.node on delete cascade,
     kind          ix.node_kind_e not null references ix.node_kind,
@@ -666,10 +808,12 @@ create table if not exists ix.pg_emb_e5_1024 (
     primary key (node_id, kind, aspect)
 );
 
--- частичный HNSW на каждую существующую пару kind + aspect: фильтр по ним
--- попадает в свой индекс, а не усекает выдачу общего после обхода.
--- kind и aspect в предикате это значения enum, они следуют за
--- переименованием в словаре
+-- Частичный HNSW на каждую существующую пару kind + aspect. HNSW отдаёт
+-- k ближайших из своего индекса, и фильтр по общему индексу после обхода
+-- усекал бы выдачу; с частичными индексами фильтр по kind и aspect попадает
+-- в свой индекс. kind и aspect в предикате это значения enum, они следуют
+-- за переименованием в словаре.
+--
 -- select node_id, emb <=> $1::halfvec(1024) as dist
 -- from   ix.pg_emb_e5_1024
 -- where  kind = 'pg_table' and aspect = 'description'
@@ -743,49 +887,53 @@ create index if not exists pg_emb_e5_1024__pg_constraint_description__hnsw
     where kind = 'pg_constraint' and aspect = 'description';
 
 -- ============================================================================
--- Источник Confluence, проверено по REST API cwiki.apache.org. Ноды: спейс,
--- страница (страница и блог-запись это один вид, различаются атрибутом),
--- вложение, комментарий. Пользователи и метки нодами не являются: метки это
--- атрибут страницы. Адреса из таблицы адресов:
+-- Источник Confluence, проверено по REST API cwiki.apache.org. Node бывает
+-- четырёх kind: спейс, страница (страница и блог-запись это один kind,
+-- различаются колонкой content_type), вложение и комментарий. Пользователи
+-- и метки node не становятся: метки это атрибут страницы. Адрес node по kind:
 -- confluence_space       https://host/confluence/rest/api/space/FLINK
 -- confluence_page        https://host/confluence/rest/api/content/307136992
--- confluence_attachment  https://host/confluence/download/attachments/307136992/design.pdf
 -- confluence_comment     https://host/confluence/rest/api/content/127405740
+-- confluence_attachment
+--     https://host/confluence/download/attachments/307136992/design.pdf
 --
 -- tree: спейс -> страницы без ancestors (домашняя, корневые, блог-записи) ->
--- дочерние страницы (родитель = последний из ancestors) -> вложения
+-- дочерние страницы (родитель это последний элемент ancestors) -> вложения
 -- и комментарии страницы.
 -- edge: refers_to от страницы к странице или вложению по гиперссылке в теле
 -- (origin declared) и от страницы к таблице по идентификатору в тексте
 -- (origin text_match).
--- Ссылки берутся из body.view, а не body.storage: макросы (cql, toc, children)
--- разворачиваются только там; на странице-оглавлении storage даёт 4 ссылки,
--- view 184. Внутренняя ссылка бывает по id (/spaces/KEY/pages/ID/...,
--- viewpage.action?pageId=ID) и по заголовку (/display/KEY/Title, ri:page);
--- заголовок разрешается в ноду по индексу confluence_page (space_key, title).
--- Внешние ссылки нодами не становятся и отбрасываются.
+-- Ссылки берутся из body.view, а не из body.storage: макросы (cql, toc,
+-- children) разворачиваются только там; на странице-оглавлении storage даёт
+-- 4 ссылки, view 184. Внутренняя ссылка бывает по id
+-- (/spaces/KEY/pages/ID/..., viewpage.action?pageId=ID) и по заголовку
+-- (/display/KEY/Title, ri:page); заголовок разрешается в node по индексу
+-- confluence_page (space_key, title). Внешние ссылки отбрасываются, node
+-- для них не создаётся.
 --
--- Два уровня отсечения при повторном прогоне. version из Confluence
--- отсекает скачивание: номер не изменился, объект не трогаем. content_hash
--- отсекает переиндексацию: объект скачан и разобран, хэш совпал с сохранённым,
--- поисковые строки не трогаем (версия растёт и при смене меток или
--- ограничений доступа, текст при этом прежний). Хэш не совпал: строки всех
--- аспектов ноды удаляются и пишутся заново одной транзакцией, эмбеддинги
--- считаются заново. Что хэшируется, сказано у каждой поверхности.
+-- Повторный прогон отсекает работу на двух уровнях. version из Confluence
+-- отсекает скачивание: если номер не изменился, объект не трогается.
+-- content_hash отсекает переиндексацию: объект скачан и разобран, но хэш
+-- совпал с сохранённым, и поисковые строки остаются прежними (version растёт
+-- и при смене меток или ограничений доступа, текст при этом тот же). Если
+-- хэш не совпал, строки всех aspect этой node удаляются и пишутся заново
+-- одной транзакцией, эмбеддинги считаются заново. Что именно хэшируется,
+-- сказано у каждой surface.
 --
--- Оригиналы документов не хранятся: ни тело страницы, ни файлы вложений,
--- ни текст комментариев. Адрес объекта только в node.address (REST API);
--- ссылка для человека строится из него: /pages/viewpage.action?pageId=ID,
--- download вложения это и есть его адрес. Поверхность хранит идентификаторы
--- и метаданные, по адресу LLM читает оригинал сама. Текст,
--- который индексатор извлёк (тело страницы, разбор pdf и docx, OCR картинки,
--- описание картинки от LLM), живёт только в поисковых таблицах как content
--- своего аспекта: это индекс, а не копия данных.
+-- Оригиналы не хранятся: ни тело страницы, ни файл вложения, ни текст
+-- комментария. Адрес объекта хранится только в ix.node.address (REST API),
+-- surface его не дублирует. Ссылка для человека строится из адреса
+-- (/pages/viewpage.action?pageId=ID), а адрес вложения и есть ссылка на
+-- скачивание. Surface хранит идентификаторы и метаданные, оригинал LLM
+-- читает по адресу сама. Текст, извлечённый индексатором (тело страницы,
+-- разбор pdf и docx, OCR картинки, описание картинки от LLM), живёт только
+-- в поисковых таблицах как content своего aspect: это индекс, а не копия.
 -- ============================================================================
 
--- Поверхность confluence_summary: описание страницы или вложения от LLM
--- (describer), устроена как pg_summary: indexer_hash это снимок настроек
--- прогона, content_hash это хэш текста для поисковых строк аспекта summary.
+-- Surface confluence_summary: описание страницы или вложения, которое
+-- сгенерировал LLM (describer). Устроена как pg_summary: indexer_hash это
+-- снимок настроек прогона, content_hash это хэш текста, из которого пишутся
+-- поисковые строки aspect summary.
 create table if not exists ix.confluence_summary (
     node_id       bigint      primary key references ix.node on delete cascade,
     content       varchar     not null,
@@ -796,7 +944,7 @@ create table if not exists ix.confluence_summary (
 
 create index if not exists confluence_summary__indexer_hash on ix.confluence_summary using btree (indexer_hash);
 
--- Поверхность confluence_space: оригинал спейса
+-- Surface confluence_space: ключ, имя, тип, статус и описание спейса.
 create table if not exists ix.confluence_space (
     node_id      bigint  primary key references ix.node on delete cascade,
     space_key    varchar not null,
@@ -806,16 +954,16 @@ create table if not exists ix.confluence_space (
     description  varchar not null default ''
 );
 
--- Поверхность confluence_page: оригинал страницы или блог-записи.
+-- Surface confluence_page: метаданные страницы или блог-записи.
 -- content_type = page | blogpost, status = current | archived | trashed.
--- version = номер версии в Confluence (version.number): индексатор пропускает
--- страницу, если номер не изменился с прошлого прогона. created_at и author
--- из history, updated_at и last_editor из version. Тело страницы здесь не
--- хранится: индексатор берёт body.view (отрендеренный HTML с раскрытыми
--- макросами), снимает теги в коде и кладёт текст в аспект body поисковых
--- таблиц. content_hash = sha256 этого извлечённого текста вместе с заголовком
--- и метками. ancestor_titles = путь заголовков от корня спейса до родителя,
--- для хлебной крошки в выдаче.
+-- version это номер версии в Confluence (version.number): если он не
+-- изменился с прошлого прогона, индексатор страницу пропускает. created_at
+-- и author берутся из history, updated_at и last_editor из version. Тело
+-- страницы здесь не хранится: индексатор берёт body.view (отрендеренный HTML
+-- с раскрытыми макросами), снимает теги в коде и кладёт текст в aspect body
+-- поисковых таблиц. content_hash = sha256 этого текста вместе с заголовком
+-- и метками. ancestor_titles это путь заголовков от корня спейса до
+-- родителя, для хлебной крошки в выдаче.
 create table if not exists ix.confluence_page (
     node_id          bigint      primary key references ix.node on delete cascade,
     space_key        varchar     not null,
@@ -833,12 +981,15 @@ create table if not exists ix.confluence_page (
     labels           varchar[]   not null default '{}'
 );
 
--- разрешение ссылок по заголовку в ноду: /display/KEY/Title
+-- Разрешение ссылки по заголовку (/display/KEY/Title) в node.
 create index if not exists confluence_page__space_key_title on ix.confluence_page using btree (space_key, title);
 
--- Поверхность confluence_attachment: метаданные вложения. Сам файл не хранится: индексатор скачивает его,
--- извлекает текст (разбор pdf и docx в аспект body, OCR картинки в аспект
--- ocr, описание картинки от LLM в аспект vision) и файл отбрасывает.
+-- Surface confluence_attachment: метаданные вложения. Сам файл не хранится:
+-- индексатор скачивает его, извлекает текст и файл отбрасывает. Какие aspect
+-- получаются, зависит от типа файла: разбор pdf и docx идёт в body, OCR
+-- картинки в ocr, описание картинки от LLM в vision. content_hash это хэш
+-- байтов файла, а не извлечённого текста: OCR и описание от LLM
+-- недетерминированы.
 create table if not exists ix.confluence_attachment (
     node_id        bigint      primary key references ix.node on delete cascade,
     space_key      varchar     not null,
@@ -854,9 +1005,9 @@ create table if not exists ix.confluence_attachment (
     content_hash   bytea       not null
 );
 
--- Поверхность confluence_comment: метаданные комментария к странице.
--- location = inline | footer; у комментария своя версия и автор. Текст
--- берётся из body.storage, теги сняты в коде, и живёт в аспекте body;
+-- Surface confluence_comment: метаданные комментария к странице.
+-- location = inline | footer; у комментария свои version и author. Текст
+-- берётся из body.storage, теги снимаются в коде, и живёт в aspect body;
 -- content_hash = sha256 этого текста.
 create table if not exists ix.confluence_comment (
     node_id     bigint      primary key references ix.node on delete cascade,
@@ -871,22 +1022,26 @@ create table if not exists ix.confluence_comment (
     content_hash bytea      not null
 );
 
--- Аспект источника Confluence: enum ix.confluence_aspect_e, описания в ix.confluence_aspect.
--- description    описание, собранное индексатором: для страницы title, метки,
---                путь заголовков и начало body; для вложения title, media_type
---                и начало text; для спейса name и description
--- body           полный текст: body страницы или text вложения. В pg-fts
---                целиком, в emb порезан на куски по окну модели, chunk_no
--- summary        описание от LLM; пишется, если оно есть
--- labels         метки страницы через пробел
--- name           заголовок страницы, имя файла вложения, имя спейса как есть
--- path           space_key || '/' || title, для точного совпадения
--- words          слова заголовка: name, разрезанный по CamelCase, дефисам
---                и подчёркиваниям, в нижнем регистре, ё -> е; для опечаток
--- ocr            текст, распознанный на картинке или скане (вложения
---                image/*, pdf без текстового слоя)
--- vision         смысл картинки, описанный LLM по изображению: что на схеме,
---                какие таблицы и системы на ней названы
+-- Aspect источника Confluence: enum ix.confluence_aspect_e, описания значений
+-- в словаре ix.confluence_aspect. Что попадает в каждый aspect:
+-- description  описание, которое собрал индексатор. У страницы это title,
+--              метки, путь заголовков и начало body; у вложения title,
+--              media_type и начало извлечённого текста; у спейса name
+--              и description.
+-- body         полный текст: тело страницы или извлечённый текст вложения.
+--              В confluence_fts лежит целиком, в confluence_emb_e5_1024
+--              порезан на куски по окну модели, кусок нумерует chunk_no.
+-- summary      описание от LLM из confluence_summary; пишется, если оно есть.
+-- labels       метки страницы через пробел.
+-- name         заголовок страницы, имя файла вложения или имя спейса как есть.
+-- path         space_key || '/' || title, для точного совпадения.
+-- words        слова из name: разрезан по CamelCase, дефисам и
+--              подчёркиваниям, в нижнем регистре, ё -> е; для поиска
+--              с опечатками.
+-- ocr          текст, распознанный на картинке или скане (вложения image/*
+--              и pdf без текстового слоя).
+-- vision       смысл картинки, описанный LLM по изображению: что на схеме,
+--              какие таблицы и системы на ней названы.
 do $$ begin
     create type ix.confluence_aspect_e as enum ();
 exception when duplicate_object then null; end $$;
@@ -902,7 +1057,7 @@ alter type ix.confluence_aspect_e add value if not exists 'ocr';
 alter type ix.confluence_aspect_e add value if not exists 'vision';
 
 comment on type ix.confluence_aspect_e is
-    'Какой текст объекта Confluence закодирован в строке поисковой таблицы. Значения только добавляются или переименовываются; предикаты индексов следуют за переименованием.';
+    'Какой текст объекта Confluence лежит в строке поисковой таблицы. Значения только добавляются или переименовываются, и предикаты частичных индексов следуют за переименованием.';
 
 create table if not exists ix.confluence_aspect (
     aspect       ix.confluence_aspect_e primary key,
@@ -910,23 +1065,24 @@ create table if not exists ix.confluence_aspect (
 );
 
 insert into ix.confluence_aspect (aspect, description) values
-    ('description', 'indexer-built description: title, labels, ancestor path and the head of the text'),
-    ('body',        'full text of a page or extracted text of an attachment; chunked for embeddings'),
-    ('summary',     'description generated by the LLM describer; written only when it exists'),
-    ('labels',      'page labels separated by spaces'),
-    ('name',        'page title, attachment file name or space name as is; exact match and prefix'),
-    ('path',        'space_key/title; exact match'),
-    ('words',       'title split into words by CamelCase, hyphens and underscores, lower case, yo -> ye; typo-tolerant search'),
-    ('ocr',         'text recognized on an image or a scanned document'),
-    ('vision',      'meaning of an image described by the LLM from the picture itself')
+    ('description', 'описание, собранное индексатором из title, меток, пути заголовков и начала текста'),
+    ('body',        'полный текст страницы или извлечённый текст вложения; для эмбеддингов режется на куски'),
+    ('summary',     'описание от LLM (describer); пишется, только если оно есть'),
+    ('labels',      'метки страницы через пробел'),
+    ('name',        'заголовок страницы, имя файла вложения или имя спейса как есть; точное совпадение и префикс'),
+    ('path',        'space_key/title; точное совпадение'),
+    ('words',       'заголовок, разрезанный на слова по CamelCase, дефисам и подчёркиваниям, в нижнем регистре, ё -> е; поиск с опечатками'),
+    ('ocr',         'текст, распознанный на картинке или скане'),
+    ('vision',      'смысл картинки, описанный LLM по самому изображению')
 on conflict (aspect) do nothing;
 
--- Полнотекстовый индекс. confluence_page пишет description одним tsvector
--- с весами: A = words заголовка, B = labels, C = body;
--- confluence_attachment: A = words имени файла, C = body, ocr и vision;
--- confluence_space: A = words имени, B = description; confluence_comment:
--- C = body. Summary от LLM это отдельная строка с аспектом summary из
--- confluence_summary, вес D, как у pg_fts.
+-- Полнотекстовый индекс. Каждый kind пишет в aspect description один
+-- tsvector с весами. У confluence_page вес A получают words заголовка,
+-- B получают labels, C получает body. У confluence_attachment A получают
+-- words имени файла, C получают body, ocr и vision. У confluence_space
+-- A получают words имени, B получает description. У confluence_comment
+-- C получает body. Summary от LLM это отдельная строка с aspect summary из
+-- confluence_summary и весом D, как в pg_fts.
 create table if not exists ix.confluence_fts (
     node_id    bigint   not null references ix.node on delete cascade,
     kind       ix.node_kind_e         not null references ix.node_kind,
@@ -938,8 +1094,9 @@ create table if not exists ix.confluence_fts (
 
 create index if not exists confluence_fts__kind_tsv__gin on ix.confluence_fts using gin (kind, tsv);
 
--- Триграммы: спейс, страница и вложение пишут name, words; страница
--- и вложение ещё path. У комментария имени нет, он сюда не пишется
+-- Триграммы для поиска по имени. Спейс, страница и вложение пишут aspect
+-- name и words, страница и вложение ещё path. У комментария имени нет,
+-- в эту таблицу он не пишется.
 create table if not exists ix.confluence_trgm (
     node_id    bigint   not null references ix.node on delete cascade,
     kind       ix.node_kind_e         not null references ix.node_kind,
@@ -954,11 +1111,12 @@ create index if not exists confluence_trgm__aspect_lower_content__prefix
     on ix.confluence_trgm using btree (aspect, lower(content) varchar_pattern_ops);
 create index if not exists confluence_trgm__kind_aspect on ix.confluence_trgm using btree (kind, aspect);
 
--- Векторный поиск, e5 1024. Текст страницы длиннее окна модели (512 токенов),
--- поэтому аспект body режется на куски с перекрытием, и в ключе есть chunk_no;
--- у аспектов в один кусок chunk_no = 0. Страница пишет description и body,
--- комментарий body, вложение body или ocr и vision по типу файла,
--- спейс description, summary у любого, если есть.
+-- Векторный поиск на эмбеддингах e5 размерности 1024. Текст страницы длиннее
+-- окна модели (512 токенов), поэтому aspect body режется на куски
+-- с перекрытием, и в первичном ключе есть chunk_no; у aspect, который
+-- помещается в один кусок, chunk_no = 0. Страница пишет description и body,
+-- комментарий body, вложение body или ocr и vision в зависимости от типа
+-- файла, спейс description; summary пишет любой kind, у которого оно есть.
 create table if not exists ix.confluence_emb_e5_1024 (
     node_id    bigint        not null references ix.node on delete cascade,
     kind       ix.node_kind_e         not null references ix.node_kind,
@@ -969,8 +1127,8 @@ create table if not exists ix.confluence_emb_e5_1024 (
     primary key (node_id, kind, aspect, chunk_no)
 );
 
--- частичный HNSW на пару kind + aspect; аспекты description, body, ocr, vision,
--- summary
+-- Частичный HNSW на каждую пару kind + aspect, по которой ищут: description,
+-- body, ocr, vision и summary.
 create index if not exists confluence_emb_e5_1024__page_description__hnsw
     on ix.confluence_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
     where kind = 'confluence_page' and aspect = 'description';
