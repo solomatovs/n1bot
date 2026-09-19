@@ -158,38 +158,71 @@ insert into ix.node_kind (kind, description) values
 on conflict (kind) do nothing;
 
 /*
-Node — любой объект, который можно адресовать в источнике. Главное поле —
-address; url строится из него детерминированно и служит уникальным ключом.
-И address, и url только адресуют объект, связи по ним не строятся.
+node — любой объект, который можно адресовать в источнике.
+- address:  главное поле содержащее адрес объекта в виде отдельных частей
+- url:      строится из address (всегда по одному и тому же алгоритму) и имеет уникальный индекс
+    по сути это другая форма записи address, более понятная человеку и llm
+    однако по address полю удобней искать
+
+Пример:
+postgres:
 address = {"scheme":"postgresql","host":"dwh.local","port":5432,"database":"dwh","schema":"dm","table":"fact_orders"}
 url     = postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders
+address = {"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm", "view": "v_orders_daily", "column": "day"}
+url     = postgresql://dwh.local:5432/dwh?schema=dm&view=v_orders_daily&column=day
+address = {"scheme": "postgresql", "host": "dwh.local", "port": 5432, "database": "dwh", "schema": "dm", "function": "calc_total", "args": "bigint,numeric"}
+url     = postgresql://dwh.local:5432/dwh?schema=dm&function=calc_total&args=bigint%2Cnumeric
+
+web:
+addres  = {"scheme": "https", "host": "cwiki.apache.org", "port": 443, "path": "/confluence/rest/api/space/FLINK"}
+url     = https://cwiki.apache.org/confluence/rest/api/space/FLINK
+
+clickhouse:
+address = {"scheme": "clickhouse", "host": "ch1", "port": 9000, "database": "logs", "table": "events", "column": "user_id"}
+url     = clickhouse://ch1:9000/logs?table=events&column=user_id
+address = {"scheme": "clickhouse", "host": "ch1", "port": 9000, "database": "logs", "table": "events", "projection": "events_by_user"}
+url     = clickhouse://ch1:9000/logs?table=events&projection=events_by_user
+
+oracle:
+address = {"scheme": "oracle", "host": "ora1", "port": 1521, "database": "ORCL", "schema": "SALES", "table": "ORDERS"}
+url     = oracle://ora1:1521/ORCL?schema=SALES&table=ORDERS
+
+mysql:
+address = {"scheme": "mysql", "host": "db1", "port": 3306, "database": "shop", "table": "orders"}
+url     = mysql://db1:3306/shop?table=orders
 */
 create table if not exists ix.node (
     id          bigserial   primary key,
     kind        ix.node_kind_e not null references ix.node_kind,
     address     jsonb       not null,
-    url         varchar        not null unique,
+    url         varchar     not null unique,
     created_at  timestamptz not null default now(),
     updated_at  timestamptz not null default now()
 );
 
 /*
-Поиск node по адресу при загрузке и в API. Типы значений в address
-фиксированы, port всегда число:
+Поиск node по адресу:
 select id from ix.node
-where  address @> '{"host":"dwh.local","port":5432,"database":"dwh","schema":"dm","table":"fact_orders"}';
+where
+    -- поиск всех node с указанными частями
+    address @> '{"host":"dwh.local","port":5432,"database":"dwh","schema":"dm","table":"fact_orders"}';
+    -- поиск всех адресов postgresql
+    address @> '{"scheme": "postgresql"}
+    -- поиск всех адресов с укзаанным host
+    address @> '{"host": "dwh.local"}'
 */
 create index if not exists node__address__gin on ix.node using gin (address jsonb_path_ops);
 create index if not exists node__kind on ix.node using btree (kind);
 
 /*
-Tree — принадлежность: колонка лежит в таблице, таблица в схеме, схема в
-базе, вложение в странице, страница в спейсе. Это единственная связь,
-которая есть у всех источников, и единственная в форме дерева: у node не
-больше одного родителя, и это обеспечивает первичный ключ. У корня (база,
-спейс) строки нет. Tree хранится отдельно от edge, чтобы ранжированию не
-приходилось каждый раз исключать принадлежность и чтобы форма «один
-родитель» держалась ключом, а не дисциплиной загрузчика.
+tree описывает иерархию объектов.
+Колонка лежит в таблице, таблица в схеме, схема в базе, вложение в странице, страница в спейсе.
+tree содержит связи в виде дерева:
+    node_id:    это node_id адреса объекта
+    parent_id:  это node_id родителя
+
+tree хранится отдельно от edge, чтобы ранжированию не приходилось каждый раз исключать
+подобные связи, так как они влияют на поисковую выдачу (самые очевидные)
 */
 create table if not exists ix.tree (
     node_id    bigint primary key references ix.node on delete cascade,
@@ -197,55 +230,86 @@ create table if not exists ix.tree (
 );
 
 /*
-Дети node: select node_id from ix.tree where parent_id = $1;
-Всё поддерево node:
-with recursive sub as (
-    select $1::bigint as id
-    union all
-    select t.node_id from ix.tree t join sub on t.parent_id = sub.id)
-select id from sub;
-При удалении родителя каскад убирает его строки tree, но не node детей:
-поддерево удаляет загрузчик этим же рекурсивным запросом.
+Выбрать всех детей:
+    select node_id from ix.tree where parent_id = $1
+
+Выбрать все поддерево:
+    with recursive sub as (
+        select $1::bigint as id
+        union all
+        select t.node_id from ix.tree t join sub on t.parent_id = sub.id)
+    select id from sub
+
+Отдельно стоит отметить что при удалении в node объектов
+сработает cascade delete который удалит его строки и в tree однако дети остануться.
+Поэтому для удаления всего поддерева индексатор должен это сделать
+отдельным рекурсивным запросом
 */
 
 create index if not exists tree__parent on ix.tree using btree (parent_id, node_id);
 /*
-Kind edge — enum ix.edge_kind_e. Имя читается как фраза «source <глагол>
-target» в направлении самого edge. Описания лежат в ix.edge_kind с ключом
-enum.
+edge_kind — это виды связей, которые хранит edge таблица
+    Виды связей строго фиксированы и расписаны как postgres enum
+    Это позволяет индексировать поле как число (быстро)
+    и при этом обращаться к полю по имени (удобно для человека)
+
+Каждый новый вид связей это добавление в enum нового значения через alter:
+    alter type ix.edge_kind_e add value if not exists 'references';
+
+Удаление из enum невозможно, а значит если это необходимо сделать
+    значит необходимо заново пересоздавать этотenum
+
+Обрати внимание, что для того, что бы enum небыл повисшим в воздухе магическим словом
+    сделана таблица edge_kind у которой primary key это edge_kind_e (enum postgres)
+    это позволяет сделать прямые foreign key между таблицами и контролировать использование kind связей
+    а также, что бы начать использовать новое enum значение, нужно добавить в эту таблицу этот enum
+    и сделать его описание в виде description, что позволит сохранить порядок в схеме хранения
 */
 do $$ begin
     create type ix.edge_kind_e as enum ();
 exception when duplicate_object then null; end $$;
 
-alter type ix.edge_kind_e add value if not exists 'references';
+alter type ix.edge_kind_e add value if not exists 'foreign_key';
 alter type ix.edge_kind_e add value if not exists 'reads_from';
 alter type ix.edge_kind_e add value if not exists 'writes_to';
 alter type ix.edge_kind_e add value if not exists 'queried_with';
-alter type ix.edge_kind_e add value if not exists 'shares_key_with';
 alter type ix.edge_kind_e add value if not exists 'refers_to';
 
 comment on type ix.edge_kind_e is
-    'Kind edge: имя читается как «source <глагол> target» в направлении самого edge. Значения только добавляются или переименовываются.';
+    'Вид связей в таблице edge';
 
 create table if not exists ix.edge_kind (
-    kind         ix.edge_kind_e primary key,
+    name         ix.edge_kind_e primary key,
     description  varchar        not null
 );
 
-insert into ix.edge_kind (kind, description) values
-    ('references',      'Ограничение внешнего ключа ссылается на таблицу.'),
-    ('reads_from',      'Представление или задача ETL читает из таблицы.'),
-    ('writes_to',       'Задача ETL пишет в таблицу.'),
+insert into ix.edge_kind (name, description) values
+    ('reads_from',      'View (представление) или ETL, который читает из таблицы.'),
+    ('writes_to',       'ETL пишет в таблицу'),
     ('queried_with',    'Таблицы встречаются в одном запросе; пишется в обе стороны.'),
-    ('shares_key_with', 'Таблицы делят ключ: колонка совпадает с primary key другой таблицы.'),
     ('refers_to',       'Документ ссылается на объект: страница на страницу, вложение или таблицу; способ ссылки (гиперссылка или имя в тексте) задаёт origin.')
-on conflict (kind) do nothing;
+on conflict (name) do nothing;
 
 /*
-Origin edge — enum ix.origin_e: как стало известно, что связь есть. Это
-тип свидетельства, а не источник данных: view в Postgres и materialized
-view в ClickHouse читают таблицу одинаково, и у обоих edge origin declared.
+edge_origin — это ответ на вопрос а "как получена связь?" в таблице edge
+Почему вообще нужно сохранять источник взаимосвязи?
+несколько задач:
+    - владение весовым коэфициентом. у каждого индексатора свой собственный вес в ранжировании результатов
+    - объяснение пользователю, кто нашел связь, какой именно индексатор
+
+Давай пример:
+В postgres пользователи пишут запросы, которые логируются и которые могут явиться источником информации о связях.
+    Прочитав источник pg_stat_statements мы сможем определить связи между таблицами, колонками и прочим
+    Если отдадим конкретный запрос в llm и попросим сформировать строго определенные взаимосвязи
+    Однако 
+    Значит тип связи reads_from устанавливается для разных объектов,
+    так как postgres и clickhouse адреса будут разными.
+    Но представь что информация об этой связи получена из разных источников:
+    - pg_catalog.pg_stat_statements - предоставляет запросы, которые пишут пользователи
+    - system.query_log              - предоставляет запросы, которые пишут пользователи
+
+
+
 Origin нужен для трёх вещей: писатель находит свои строки по origin и своим
 node; у каждого origin своя шкала weight; пользователю можно объяснить,
 откуда взялась связь, а откуда именно, видно по kind node на её концах.
@@ -267,30 +331,30 @@ llm           предположена моделью: describer вывел св
               уверенности модели.
 */
 do $$ begin
-    create type ix.origin_e as enum ();
+    create type ix.edge_origin_e as enum ();
 exception when duplicate_object then null; end $$;
 
-alter type ix.origin_e add value if not exists 'declared';
-alter type ix.origin_e add value if not exists 'observed';
-alter type ix.origin_e add value if not exists 'text_match';
-alter type ix.origin_e add value if not exists 'name_rule';
-alter type ix.origin_e add value if not exists 'llm';
+alter type ix.edge_origin_e add value if not exists 'declared';
+alter type ix.edge_origin_e add value if not exists 'observed';
+alter type ix.edge_origin_e add value if not exists 'text_match';
+alter type ix.edge_origin_e add value if not exists 'name_rule';
+alter type ix.edge_origin_e add value if not exists 'llm';
 
-comment on type ix.origin_e is
+comment on type ix.edge_origin_e is
     'Как стало известно об edge: объявлен источником, наблюдён в использовании, найден буквально в тексте, предположен правилом по именам, предположен LLM. У каждого origin своя шкала weight.';
 
-create table if not exists ix.origin (
-    origin       ix.origin_e primary key,
-    description  varchar     not null
+create table if not exists ix.edge_origin (
+    name        ix.edge_origin_e   primary key,
+    description varchar            not null
 );
 
-insert into ix.origin (origin, description) values
+insert into ix.edge_origin (name, description) values
     ('declared',   'Объявлен самим источником: foreign key, зависимость view, гиперссылка, зависимость ETL; weight 1.'),
     ('observed',   'Наблюдён в использовании: таблицы в одном запросе из pg_stat_statements или system.query_log; weight равен логарифму числа наблюдений, нормированному по прогону.'),
     ('text_match', 'Идентификатор объекта найден буквально в тексте другого; weight 1.'),
     ('name_rule',  'Предположен правилом по именам и типам; weight равен уверенности правила.'),
     ('llm',        'Предположен моделью (describer, vision); weight равен уверенности модели.')
-on conflict (origin) do nothing;
+on conflict (name) do nothing;
 
 /*
 Edge — смысловые связи между node, explicit и implicit вместе. По ним
