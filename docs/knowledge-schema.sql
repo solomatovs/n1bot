@@ -33,35 +33,59 @@ create schema if not exists ix;
 -- Отношение ядра и поверхности: node_id единственное, что их связывает.
 -- Поверхность ссылается на ядро полем node_id и ничем больше; поверхности друг
 -- на друга не ссылаются. Загрузчик пишет ноду и строку поверхности в одной
--- транзакции. Новая поверхность это новая таблица со связью к node_id и новая
--- строка в node_kind, больше ничего в ядре не меняется.
+-- транзакции. Новая поверхность это новая таблица со связью к node_id и новое
+-- значение node_kind_e с описанием в node_kind, больше ничего в ядре не меняется.
 -- ============================================================================
 
--- Словарь видов нод. name это имя таблицы поверхности, у которой лежат атрибуты
--- ноды: pg_database, pg_schema, pg_table, pg_column, pg_constraint, ch_table,
--- confluence_page и так далее.
+-- Вид node: enum ix.node_kind_e, значение это имя таблицы поверхности, у которой
+-- лежат атрибуты node. Enum, а не числовой словарь, потому что на значения
+-- ссылаются предикаты частичных индексов: enum хранится в предикате ссылкой
+-- на значение, и переименование через alter type rename value обновляет все
+-- предикаты само. Значения только добавляются (alter type add value if not
+-- exists) и переименовываются, удалить значение enum нельзя. Описание каждого
+-- значения обязательно: таблица ix.node_kind с ключом enum, на неё ссылаются
+-- node и поисковые таблицы, значение без описания отвергается внешним ключом.
+do $$ begin
+    create type ix.node_kind_e as enum ();
+exception when duplicate_object then null; end $$;
+
+alter type ix.node_kind_e add value if not exists 'pg_database';
+alter type ix.node_kind_e add value if not exists 'pg_schema';
+alter type ix.node_kind_e add value if not exists 'pg_table';
+alter type ix.node_kind_e add value if not exists 'pg_column';
+alter type ix.node_kind_e add value if not exists 'pg_view';
+alter type ix.node_kind_e add value if not exists 'pg_index';
+alter type ix.node_kind_e add value if not exists 'pg_sequence';
+alter type ix.node_kind_e add value if not exists 'pg_routine';
+alter type ix.node_kind_e add value if not exists 'pg_constraint';
+alter type ix.node_kind_e add value if not exists 'confluence_space';
+alter type ix.node_kind_e add value if not exists 'confluence_page';
+alter type ix.node_kind_e add value if not exists 'confluence_attachment';
+alter type ix.node_kind_e add value if not exists 'confluence_comment';
+
+comment on type ix.node_kind_e is
+    'Вид node: имя таблицы поверхности, в которой лежат его атрибуты. Значения только добавляются (alter type add value if not exists) или переименовываются; предикаты индексов следуют за переименованием.';
+
 create table if not exists ix.node_kind (
-    id    smallint primary key,
-    name  varchar     not null unique
+    kind         ix.node_kind_e primary key,
+    description  varchar        not null
 );
 
--- Номера фиксированы здесь, потому что на них ссылаются частичные индексы
--- поисковых таблиц, а в условии индекса допустима только константа.
-insert into ix.node_kind (id, name) values
-    (1,  'pg_database'),
-    (2,  'pg_schema'),
-    (3,  'pg_table'),
-    (4,  'pg_column'),
-    (5,  'pg_view'),
-    (6,  'pg_index'),
-    (7,  'pg_sequence'),
-    (8,  'pg_routine'),
-    (9,  'pg_constraint'),
-    (10, 'confluence_space'),
-    (11, 'confluence_page'),
-    (12, 'confluence_attachment'),
-    (13, 'confluence_comment')
-on conflict (id) do nothing;
+insert into ix.node_kind (kind, description) values
+    ('pg_database',           'database of a PostgreSQL source; root of its tree'),
+    ('pg_schema',             'schema of a PostgreSQL database'),
+    ('pg_table',              'table, including partitioned tables and partitions'),
+    ('pg_column',             'column of a table, view or materialized view'),
+    ('pg_view',               'view or materialized view'),
+    ('pg_index',              'index of a table'),
+    ('pg_sequence',           'sequence'),
+    ('pg_routine',            'function, procedure, aggregate or window function; overloads are separate nodes'),
+    ('pg_constraint',         'table constraint; a foreign key is the source of a references edge'),
+    ('confluence_space',      'Confluence space; root of its tree'),
+    ('confluence_page',       'Confluence page or blog post'),
+    ('confluence_attachment', 'file attached to a page'),
+    ('confluence_comment',    'inline or footer comment on a page')
+on conflict (kind) do nothing;
 
 -- Узел графа: любой объект, который можно адресовать в источнике. Главное поле
 -- address, url строится из него детерминированно и служит уникальным ключом.
@@ -70,7 +94,7 @@ on conflict (id) do nothing;
 -- url     = postgresql://dwh.local:5432/dwh?schema=dm&table=fact_orders
 create table if not exists ix.node (
     id          bigserial   primary key,
-    kind        smallint    not null references ix.node_kind,
+    kind        ix.node_kind_e not null references ix.node_kind,
     address     jsonb       not null,
     url         varchar        not null unique,
     created_at  timestamptz not null default now(),
@@ -105,66 +129,82 @@ create table if not exists ix.tree (
 -- удаляет загрузчик этим же рекурсивным запросом.
 create index if not exists tree__parent on ix.tree using btree (parent_id, node_id);
 
--- Словарь видов рёбер. Имя вида читается как фраза «source <глагол> target»,
--- в том же направлении, что и само ребро. Номера фиксированы здесь, на них
--- ссылается код прогона ранга.
--- 1 references       ограничение внешнего ключа ссылается на таблицу
--- 2 reads_from       представление или ETL читает из таблицы
--- 3 writes_to        ETL пишет в таблицу
--- 4 queried_with     таблица запрашивается вместе с таблицей (две строки,
---                    в обе стороны; из лога запросов)
--- 5 shares_key_with  таблица делит ключ с таблицей: колонка с тем же именем
---                    и типом, что первичный ключ другой таблицы (эвристика)
--- 6 refers_to        документ ссылается на объект: страница на страницу,
---                    вложение или таблицу; чем ссылается, гиперссылкой или
---                    именем в тексте, записано в origin
+-- Вид edge: enum ix.edge_kind_e, имя читается как фраза «source <глагол> target»
+-- в направлении самого edge. Описания в ix.edge_kind, ключ enum.
+do $$ begin
+    create type ix.edge_kind_e as enum ();
+exception when duplicate_object then null; end $$;
+
+alter type ix.edge_kind_e add value if not exists 'references';
+alter type ix.edge_kind_e add value if not exists 'reads_from';
+alter type ix.edge_kind_e add value if not exists 'writes_to';
+alter type ix.edge_kind_e add value if not exists 'queried_with';
+alter type ix.edge_kind_e add value if not exists 'shares_key_with';
+alter type ix.edge_kind_e add value if not exists 'refers_to';
+
+comment on type ix.edge_kind_e is
+    'Вид edge, читается как «source <глагол> target» в направлении самого edge. Значения только добавляются или переименовываются.';
+
 create table if not exists ix.edge_kind (
-    id    smallint primary key,
-    name  varchar     not null unique
+    kind         ix.edge_kind_e primary key,
+    description  varchar        not null
 );
 
-insert into ix.edge_kind (id, name) values
-    (1, 'references'),
-    (2, 'reads_from'),
-    (3, 'writes_to'),
-    (4, 'queried_with'),
-    (5, 'shares_key_with'),
-    (6, 'refers_to')
-on conflict (id) do nothing;
+insert into ix.edge_kind (kind, description) values
+    ('references',      'foreign key constraint references a table'),
+    ('reads_from',      'view or ETL job reads from a table'),
+    ('writes_to',       'ETL job writes into a table'),
+    ('queried_with',    'tables appear in the same query; written in both directions'),
+    ('shares_key_with', 'tables share a key: a column matches the primary key of another table'),
+    ('refers_to',       'document refers to an object: a page to a page, an attachment or a table; how (hyperlink or name in text) is in origin')
+on conflict (kind) do nothing;
 
--- Словарь origin: как стало известно, что связь есть. Тип свидетельства,
+-- Origin edge: enum ix.origin_e, как стало известно, что связь есть. Тип свидетельства,
 -- не источник данных: view в Postgres и materialized view в ClickHouse читают
 -- таблицу одинаково, и у обеих связей origin declared. Origin отвечает за три
 -- вещи: писатель находит свои строки по origin и своим node; у каждого origin
 -- своя шкала weight; пользователю объясняется, откуда связь, а откуда именно,
 -- видно по kind node на концах.
--- 1 declared    объявлена самим источником: foreign key, зависимость view
+-- declared      объявлена самим источником: foreign key, зависимость view
 --               от таблицы, гиперссылка на странице, зависимость задач ETL.
 --               weight всегда 1
--- 2 observed    наблюдена в поведении: таблицы в одном запросе из
+-- observed      наблюдена в поведении: таблицы в одном запросе из
 --               pg_stat_statements или system.query_log. weight = логарифм
 --               числа наблюдений, нормированный по прогону
--- 3 text_match  идентификатор объекта найден буквально в тексте другого:
+-- text_match    идентификатор объекта найден буквально в тексте другого:
 --               страница упоминает dm.fact_orders, тело функции упоминает
 --               таблицу. weight 1, объект назван явно
--- 4 name_rule   предположена правилом по именам и типам: колонка совпала
+-- name_rule     предположена правилом по именам и типам: колонка совпала
 --               с primary key другой таблицы, копия таблицы в другом
 --               источнике с теми же колонками. weight = уверенность правила
--- 5 llm         предположена моделью: describer вывел связь из комментариев
+-- llm           предположена моделью: describer вывел связь из комментариев
 --               и соседей, vision назвал таблицы на схеме. weight =
 --               уверенность модели
+do $$ begin
+    create type ix.origin_e as enum ();
+exception when duplicate_object then null; end $$;
+
+alter type ix.origin_e add value if not exists 'declared';
+alter type ix.origin_e add value if not exists 'observed';
+alter type ix.origin_e add value if not exists 'text_match';
+alter type ix.origin_e add value if not exists 'name_rule';
+alter type ix.origin_e add value if not exists 'llm';
+
+comment on type ix.origin_e is
+    'Как стало известно об edge: объявлен источником, наблюдён в использовании, найден буквально в тексте, предположен правилом по именам, предположен LLM. У каждого origin своя шкала weight.';
+
 create table if not exists ix.origin (
-    id    smallint primary key,
-    name  varchar  not null unique
+    origin       ix.origin_e primary key,
+    description  varchar     not null
 );
 
-insert into ix.origin (id, name) values
-    (1, 'declared'),
-    (2, 'observed'),
-    (3, 'text_match'),
-    (4, 'name_rule'),
-    (5, 'llm')
-on conflict (id) do nothing;
+insert into ix.origin (origin, description) values
+    ('declared',   'declared by the source itself: foreign key, view dependency, hyperlink, ETL dependency; weight 1'),
+    ('observed',   'observed in usage: tables in one query from pg_stat_statements or system.query_log; weight = log of observations, normalized per run'),
+    ('text_match', 'identifier of an object found literally in the text of another; weight 1'),
+    ('name_rule',  'inferred by a rule on names and types; weight = rule confidence'),
+    ('llm',        'inferred by a model (describer, vision); weight = model confidence')
+on conflict (origin) do nothing;
 
 -- Смысловые связи между node, explicit и implicit вместе; по ним считается ранг
 -- и строятся диаграммы. Принадлежности здесь нет, она в tree.
@@ -199,8 +239,8 @@ on conflict (id) do nothing;
 create table if not exists ix.edge (
     source_id  bigint   not null references ix.node on delete cascade,
     target_id  bigint   not null references ix.node on delete cascade,
-    kind       smallint not null references ix.edge_kind,
-    origin     smallint not null references ix.origin,
+    kind       ix.edge_kind_e not null references ix.edge_kind,
+    origin     ix.origin_e    not null references ix.origin,
     weight     real     not null check (weight between 0 and 1),
     primary key (source_id, target_id, kind, origin)
 );
@@ -214,9 +254,9 @@ create table if not exists ix.edge (
 --      fk as (select tr.node_id as fk_id, tr.parent_id as table_id
 --             from   ix.tree tr
 --             join   t on t.id = tr.parent_id
---             join   ix.node n on n.id = tr.node_id and n.kind = 9)
+--             join   ix.node n on n.id = tr.node_id and n.kind = 'pg_constraint')
 -- select fk.table_id, fk.fk_id, e.target_id
--- from   fk join ix.edge e on e.source_id = fk.fk_id and e.kind = 1;
+-- from   fk join ix.edge e on e.source_id = fk.fk_id and e.kind = 'references';
 create index if not exists edge__target_source_kind
     on ix.edge using btree (target_id, source_id, kind) include (origin, weight);
 -- строки одного origin для diff при повторном прогоне
@@ -296,7 +336,7 @@ create table if not exists ix.pg_summary (
 
 -- очередь describer'а: ноды нужных видов без summary или с чужим хэшем
 -- select n.id from ix.node n left join ix.pg_summary s on s.node_id = n.id
--- where  n.kind in (3, 4, 5, 8) and (s.node_id is null or s.indexer_hash <> $current);
+-- where  n.kind in ('pg_table', 'pg_column', 'pg_view', 'pg_routine') and (s.node_id is null or s.indexer_hash <> $current);
 create index if not exists pg_summary__indexer_hash on ix.pg_summary using btree (indexer_hash);
 
 -- Поверхность pg_database: pg_database, владелец pg_get_userbyid(datdba),
@@ -469,68 +509,81 @@ create table if not exists ix.pg_constraint (
 -- relname, schema.table.column вместо schema.table); какие аспекты пишет
 -- поверхность в какую поисковую таблицу, указано у самих поисковых таблиц.
 --
--- 1 description  описание, собранное индексатором из всего известного об
+-- description    описание, собранное индексатором из всего известного об
 --                объекте, основной аспект для поиска. Для pg_fts это части
 --                с весами внутри одного tsvector: A = words, B = words схемы
 --                и comment, C = columns, D = summary; для pg_emb одна строка:
 --                'Table {path}: {comment}. Columns: {col1} ({type}), ...'
--- 2 comment      комментарий из источника как есть: obj_description для
+-- comment        комментарий из источника как есть: obj_description для
 --                таблицы, col_description для колонки; пишется, если не пуст
--- 3 columns      имена колонок таблицы словами через пробел (в pg_emb через
+-- columns        имена колонок таблицы словами через пробел (в pg_emb через
 --                запятую), чтобы таблица находилась по своим колонкам
--- 4 summary      описание от LLM (плагин describer); пишется, если оно есть
--- 5 name         имя объекта как есть: pg_class.relname, pg_attribute.attname;
+-- summary        описание от LLM (плагин describer); пишется, если оно есть
+-- name           имя объекта как есть: pg_class.relname, pg_attribute.attname;
 --                для точного совпадения, подстроки и подсказки по префиксу
--- 6 path         путь через точку, как пишет пользователь: nspname || '.' ||
+-- path           путь через точку, как пишет пользователь: nspname || '.' ||
 --                relname, для колонки ещё || '.' || attname; для точного
 --                совпадения
--- 7 words        слова имени: name, разрезанный по CamelCase и подчёркиваниям,
+-- words          слова имени: name, разрезанный по CamelCase и подчёркиваниям,
 --                в нижнем регистре, ё -> е; для опечаток: 'ordrs' к
 --                'CustomerOrders' даёт 0.22, к 'customer orders' 0.5
+do $$ begin
+    create type ix.pg_aspect_e as enum ();
+exception when duplicate_object then null; end $$;
+
+alter type ix.pg_aspect_e add value if not exists 'description';
+alter type ix.pg_aspect_e add value if not exists 'comment';
+alter type ix.pg_aspect_e add value if not exists 'columns';
+alter type ix.pg_aspect_e add value if not exists 'summary';
+alter type ix.pg_aspect_e add value if not exists 'name';
+alter type ix.pg_aspect_e add value if not exists 'path';
+alter type ix.pg_aspect_e add value if not exists 'words';
+
+comment on type ix.pg_aspect_e is
+    'Какой текст объекта PostgreSQL закодирован в строке поисковой таблицы. Значения только добавляются или переименовываются; предикаты индексов следуют за переименованием.';
+
 create table if not exists ix.pg_aspect (
-    id           smallint primary key,
-    name         varchar  not null unique,
-    description  varchar  not null
+    aspect       ix.pg_aspect_e primary key,
+    description  varchar        not null
 );
 
-insert into ix.pg_aspect (id, name, description) values
-    (1, 'description', 'indexer-built description of the object from everything known about it; the main search aspect'),
-    (2, 'comment',     'comment from the source as is (obj_description, col_description); written only when not empty'),
-    (3, 'columns',     'column names of a table separated by spaces; lets a table be found by its columns'),
-    (4, 'summary',     'description generated by the LLM describer; written only when it exists'),
-    (5, 'name',        'object name as is (relname, attname); exact match and substring'),
-    (6, 'path',        'dotted path as the user types it: schema.table or schema.table.column; exact match'),
-    (7, 'words',       'name split into words by CamelCase and underscores, lower case, yo -> ye; typo-tolerant search')
-on conflict (id) do nothing;
+insert into ix.pg_aspect (aspect, description) values
+    ('description', 'indexer-built description of the object from everything known about it; the main search aspect'),
+    ('comment',     'comment from the source as is (obj_description, col_description); written only when not empty'),
+    ('columns',     'column names of a table separated by spaces; lets a table be found by its columns'),
+    ('summary',     'description generated by the LLM describer; written only when it exists'),
+    ('name',        'object name as is (relname, attname); exact match and substring'),
+    ('path',        'dotted path as the user types it: schema.table or schema.table.column; exact match'),
+    ('words',       'name split into words by CamelCase and underscores, lower case, yo -> ye; typo-tolerant search')
+on conflict (aspect) do nothing;
 
 -- ----------------------------------------------------------------------------
 -- Поисковые таблицы источника PostgreSQL: одна на вид индекса для всех
--- поверхностей pg_*, у всех трёх один ключ: node_id, kind_id, aspect_id.
--- kind_id это копия node.kind, ссылка на тот же словарь node_kind; она нужна
--- индексам для фильтра по виду без обращения к node. aspect_id это ссылка
--- на pg_aspect. content во всех трёх это текст аспекта, из которого построен
+-- поверхностей pg_*, у всех трёх один ключ: node_id, kind, aspect.
+-- kind это копия node.kind того же типа node_kind_e; она нужна индексам для
+-- фильтра по виду без обращения к node. aspect это значение pg_aspect_e. content во всех трёх это текст аспекта, из которого построен
 -- индекс: триграммам он нужен для точного расчёта похожести, полнотексту для
 -- сниппета, вектору для проверки, изменился ли текст. Загрузчик пишет ноду,
 -- поверхность и поисковые строки одной транзакцией.
 -- ----------------------------------------------------------------------------
 
--- Полнотекстовый индекс: строка на аспект. Все поверхности пишут 1 description
+-- Полнотекстовый индекс: строка на аспект. Все поверхности пишут description
 -- одним tsvector с весами: A = words имени, B = words схемы и comment,
 -- C = columns (таблица, представление).
 -- Текст каждой части нормализован в коде, tsvector собирает insert;
 -- content = те же части одной строкой, для сниппета ts_headline в выдаче
 -- и для сравнения при повторном прогоне.
--- insert into ix.pg_fts (node_id, kind_id, aspect_id, content, tsv) values ($1, 3, 1, $content,
+-- insert into ix.pg_fts (node_id, kind, aspect, content, tsv) values ($1, 'pg_table', 'description', $content,
 --     setweight(to_tsvector('russian', $words), 'A') ||
 --     setweight(to_tsvector('russian', $schema_words || ' ' || $comment), 'B') ||
 --     setweight(to_tsvector('russian', $columns), 'C'));
 --
--- Summary от LLM это отдельная строка с аспектом 4, а не часть строки 1:
+-- Summary от LLM это отдельная строка с аспектом summary, а не часть строки description:
 -- у неё другой писатель (describer, а не индексатор), другой источник
 -- (pg_summary), своё время появления и свой цикл пересчёта. Индексатор
--- пишет строку 1 при загрузке объекта, describer позже пишет строку 4:
--- insert into ix.pg_fts (node_id, kind_id, aspect_id, content, tsv)
--- values ($1, 3, 4, $summary, setweight(to_tsvector('russian', $summary), 'D'));
+-- пишет строку description при загрузке объекта, describer позже пишет строку summary:
+-- insert into ix.pg_fts (node_id, kind, aspect, content, tsv)
+-- values ($1, 'pg_table', 'summary', $summary, setweight(to_tsvector('russian', $summary), 'D'));
 -- Поиск читает обе строки как один документ, ранг ноды это сумма рангов
 -- её строк:
 -- select node_id, sum(ts_rank_cd(tsv, q)) as rank
@@ -539,155 +592,155 @@ on conflict (id) do nothing;
 -- group by node_id order by rank desc limit 20;
 create table if not exists ix.pg_fts (
     node_id    bigint   not null references ix.node on delete cascade,
-    kind_id    smallint not null references ix.node_kind,
-    aspect_id  smallint not null references ix.pg_aspect,
+    kind       ix.node_kind_e not null references ix.node_kind,
+    aspect     ix.pg_aspect_e not null references ix.pg_aspect,
     content    varchar  not null,
     tsv        tsvector not null,
-    primary key (node_id, kind_id, aspect_id)
+    primary key (node_id, kind, aspect)
 );
 
 -- конфигурация russian стеммит и русский, и английский: order/orders, заказ/заказы
--- select node_id, kind_id, ts_rank_cd(tsv, q) as rank
+-- select node_id, kind, ts_rank_cd(tsv, q) as rank
 -- from   ix.pg_fts, websearch_to_tsquery('russian', 'заказы клиентов') q
 -- where  tsv @@ q
 -- order by rank desc
 -- limit  20;
--- Один GIN на kind_id и tsv (btree_gin): запрос без фильтра по виду идёт по нему
+-- Один GIN на kind и tsv (btree_gin): запрос без фильтра по виду идёт по нему
 -- же, запрос с фильтром по редкому виду отбирает вид внутри индекса. Для частого
--- вида планировщик сам оставляет kind_id обычным фильтром после индекса, это
+-- вида планировщик сам оставляет kind обычным фильтром после индекса, это
 -- дешевле, чем читать его список из GIN.
-create index if not exists pg_fts__kind_id_tsv__gin on ix.pg_fts using gin (kind_id, tsv);
+create index if not exists pg_fts__kind_tsv__gin on ix.pg_fts using gin (kind, tsv);
 
--- Таблица триграмм хранит только идентификаторы, по одной строке на node_id, aspect_id.
+-- Таблица триграмм хранит только идентификаторы, по одной строке на node_id, aspect.
 -- Длинный текст сюда не кладём: триграммная похожесть на нём не работает, а btree по lower(content) падает на строках длиннее 2704 байт.
--- Все поверхности пишут 5 name и 7 words; 6 path пишут таблица, колонка,
+-- Все поверхности пишут name и words; path пишут таблица, колонка,
 -- представление, индекс, последовательность, подпрограмма.
 create table if not exists ix.pg_trgm (
     node_id    bigint   not null references ix.node on delete cascade,
-    kind_id    smallint not null references ix.node_kind,
-    aspect_id  smallint not null references ix.pg_aspect,
+    kind       ix.node_kind_e not null references ix.node_kind,
+    aspect     ix.pg_aspect_e not null references ix.pg_aspect,
     content    varchar  not null,
-    primary key (node_id, kind_id, aspect_id)
+    primary key (node_id, kind, aspect)
 );
 
 -- подстрока и опечатки по всему источнику, таблицы и колонки в одной выдаче;
 -- word_similarity (<%, <<->), а не similarity (%, <->). Порог <% по умолчанию 0.6,
 -- для коротких имён нужен 0.4
 -- set pg_trgm.word_similarity_threshold = 0.4;
--- select node_id, kind_id, content
+-- select node_id, kind, content
 -- from   ix.pg_trgm
--- where  aspect_id = 7 and 'ordrs' <% content
+-- where  aspect = 'words' and 'ordrs' <% content
 -- order by 'ordrs' <<-> content
 -- limit  20;
 create index if not exists pg_trgm__content__gist on ix.pg_trgm using gist (content gist_trgm_ops);
 
 -- точное совпадение без учёта регистра
--- select node_id, kind_id from ix.pg_trgm
--- where  aspect_id = 6 and lower(content) = lower('dm.fact_orders');
-create index if not exists pg_trgm__aspect_id_lower_content on ix.pg_trgm using btree (aspect_id, lower(content));
+-- select node_id, kind from ix.pg_trgm
+-- where  aspect = 'path' and lower(content) = lower('dm.fact_orders');
+create index if not exists pg_trgm__aspect_lower_content on ix.pg_trgm using btree (aspect, lower(content));
 
 -- подсказка при наборе: префикс. Обычный btree по lower(content) для префикса
 -- не годится, нужен класс операторов varchar_pattern_ops. Оператор ^@ (starts
 -- with) вместо like: в like подчёркивание значит «любой символ», и имя
 -- fact_orders пришлось бы экранировать
--- select node_id, kind_id, content from ix.pg_trgm
--- where  aspect_id = 5 and lower(content) ^@ lower('fact_ord')
+-- select node_id, kind, content from ix.pg_trgm
+-- where  aspect = 'name' and lower(content) ^@ lower('fact_ord')
 -- limit  20;
-create index if not exists pg_trgm__aspect_id_lower_content__prefix
-    on ix.pg_trgm using btree (aspect_id, lower(content) varchar_pattern_ops);
-create index if not exists pg_trgm__kind_id_aspect_id on ix.pg_trgm using btree (kind_id, aspect_id);
+create index if not exists pg_trgm__aspect_lower_content__prefix
+    on ix.pg_trgm using btree (aspect, lower(content) varchar_pattern_ops);
+create index if not exists pg_trgm__kind_aspect on ix.pg_trgm using btree (kind, aspect);
 
 -- Векторный поиск, e5 1024: строка на аспект. Все поверхности пишут
--- 1 description; 2 comment пишут те, у кого он не пуст; 3 columns таблица
--- и представление; 4 summary таблица, колонка, представление, подпрограмма,
+-- description; comment пишут те, у кого он не пуст; columns таблица
+-- и представление; summary таблица, колонка, представление, подпрограмма,
 -- когда описание от LLM есть.
 -- Текст кодируется с префиксом passage:, запрос с префиксом query:.
 -- content = закодированный текст аспекта. Нужен для того, чтобы не гонять
 -- embedding модель повторно, если текст не изменился
 create table if not exists ix.pg_emb_e5_1024 (
     node_id       bigint        not null references ix.node on delete cascade,
-    kind_id       smallint      not null references ix.node_kind,
-    aspect_id     smallint      not null references ix.pg_aspect,
+    kind          ix.node_kind_e not null references ix.node_kind,
+    aspect        ix.pg_aspect_e not null references ix.pg_aspect,
     content       varchar       not null,
     emb           halfvec(1024) not null,
-    primary key (node_id, kind_id, aspect_id)
+    primary key (node_id, kind, aspect)
 );
 
--- частичный HNSW на каждую существующую пару kind_id + aspect_id: фильтр по ним
+-- частичный HNSW на каждую существующую пару kind + aspect: фильтр по ним
 -- попадает в свой индекс, а не усекает выдачу общего после обхода.
--- kind_id из node_kind (1 pg_database ... 9 pg_constraint), aspect_id из
--- pg_aspect (1 description, 2 comment, 3 columns, 4 summary)
+-- kind и aspect в предикате это значения enum, они следуют за
+-- переименованием в словаре
 -- select node_id, emb <=> $1::halfvec(1024) as dist
 -- from   ix.pg_emb_e5_1024
--- where  kind_id = 3 and aspect_id = 1
+-- where  kind = 'pg_table' and aspect = 'description'
 -- order by dist
 -- limit  20;
 create index if not exists pg_emb_e5_1024__pg_database_description__hnsw
     on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 1 and aspect_id = 1;
+    where kind = 'pg_database' and aspect = 'description';
 create index if not exists pg_emb_e5_1024__pg_database_comment__hnsw
     on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 1 and aspect_id = 2;
+    where kind = 'pg_database' and aspect = 'comment';
 create index if not exists pg_emb_e5_1024__pg_schema_description__hnsw
     on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 2 and aspect_id = 1;
+    where kind = 'pg_schema' and aspect = 'description';
 create index if not exists pg_emb_e5_1024__pg_schema_comment__hnsw
     on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 2 and aspect_id = 2;
+    where kind = 'pg_schema' and aspect = 'comment';
 create index if not exists pg_emb_e5_1024__pg_table_description__hnsw
     on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 3 and aspect_id = 1;
+    where kind = 'pg_table' and aspect = 'description';
 create index if not exists pg_emb_e5_1024__pg_table_comment__hnsw
     on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 3 and aspect_id = 2;
+    where kind = 'pg_table' and aspect = 'comment';
 create index if not exists pg_emb_e5_1024__pg_table_columns__hnsw
     on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 3 and aspect_id = 3;
+    where kind = 'pg_table' and aspect = 'columns';
 create index if not exists pg_emb_e5_1024__pg_table_summary__hnsw
     on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 3 and aspect_id = 4;
+    where kind = 'pg_table' and aspect = 'summary';
 create index if not exists pg_emb_e5_1024__pg_column_description__hnsw
     on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 4 and aspect_id = 1;
+    where kind = 'pg_column' and aspect = 'description';
 create index if not exists pg_emb_e5_1024__pg_column_comment__hnsw
     on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 4 and aspect_id = 2;
+    where kind = 'pg_column' and aspect = 'comment';
 create index if not exists pg_emb_e5_1024__pg_column_summary__hnsw
     on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 4 and aspect_id = 4;
+    where kind = 'pg_column' and aspect = 'summary';
 create index if not exists pg_emb_e5_1024__pg_view_description__hnsw
     on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 5 and aspect_id = 1;
+    where kind = 'pg_view' and aspect = 'description';
 create index if not exists pg_emb_e5_1024__pg_view_comment__hnsw
     on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 5 and aspect_id = 2;
+    where kind = 'pg_view' and aspect = 'comment';
 create index if not exists pg_emb_e5_1024__pg_view_columns__hnsw
     on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 5 and aspect_id = 3;
+    where kind = 'pg_view' and aspect = 'columns';
 create index if not exists pg_emb_e5_1024__pg_view_summary__hnsw
     on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 5 and aspect_id = 4;
+    where kind = 'pg_view' and aspect = 'summary';
 create index if not exists pg_emb_e5_1024__pg_index_description__hnsw
     on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 6 and aspect_id = 1;
+    where kind = 'pg_index' and aspect = 'description';
 create index if not exists pg_emb_e5_1024__pg_sequence_description__hnsw
     on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 7 and aspect_id = 1;
+    where kind = 'pg_sequence' and aspect = 'description';
 create index if not exists pg_emb_e5_1024__pg_sequence_comment__hnsw
     on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 7 and aspect_id = 2;
+    where kind = 'pg_sequence' and aspect = 'comment';
 create index if not exists pg_emb_e5_1024__pg_routine_description__hnsw
     on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 8 and aspect_id = 1;
+    where kind = 'pg_routine' and aspect = 'description';
 create index if not exists pg_emb_e5_1024__pg_routine_comment__hnsw
     on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 8 and aspect_id = 2;
+    where kind = 'pg_routine' and aspect = 'comment';
 create index if not exists pg_emb_e5_1024__pg_routine_summary__hnsw
     on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 8 and aspect_id = 4;
+    where kind = 'pg_routine' and aspect = 'summary';
 create index if not exists pg_emb_e5_1024__pg_constraint_description__hnsw
     on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 9 and aspect_id = 1;
+    where kind = 'pg_constraint' and aspect = 'description';
 
 -- ============================================================================
 -- Источник Confluence, проверено по REST API cwiki.apache.org. Ноды: спейс,
@@ -818,111 +871,127 @@ create table if not exists ix.confluence_comment (
     content_hash bytea      not null
 );
 
--- Словарь аспектов источника Confluence.
--- 1 description  описание, собранное индексатором: для страницы title, метки,
+-- Аспект источника Confluence: enum ix.confluence_aspect_e, описания в ix.confluence_aspect.
+-- description    описание, собранное индексатором: для страницы title, метки,
 --                путь заголовков и начало body; для вложения title, media_type
 --                и начало text; для спейса name и description
--- 2 body         полный текст: body страницы или text вложения. В pg-fts
+-- body           полный текст: body страницы или text вложения. В pg-fts
 --                целиком, в emb порезан на куски по окну модели, chunk_no
--- 3 summary      описание от LLM; пишется, если оно есть
--- 4 labels       метки страницы через пробел
--- 5 name         заголовок страницы, имя файла вложения, имя спейса как есть
--- 6 path         space_key || '/' || title, для точного совпадения
--- 7 words        слова заголовка: name, разрезанный по CamelCase, дефисам
+-- summary        описание от LLM; пишется, если оно есть
+-- labels         метки страницы через пробел
+-- name           заголовок страницы, имя файла вложения, имя спейса как есть
+-- path           space_key || '/' || title, для точного совпадения
+-- words          слова заголовка: name, разрезанный по CamelCase, дефисам
 --                и подчёркиваниям, в нижнем регистре, ё -> е; для опечаток
--- 8 ocr          текст, распознанный на картинке или скане (вложения
+-- ocr            текст, распознанный на картинке или скане (вложения
 --                image/*, pdf без текстового слоя)
--- 9 vision       смысл картинки, описанный LLM по изображению: что на схеме,
+-- vision         смысл картинки, описанный LLM по изображению: что на схеме,
 --                какие таблицы и системы на ней названы
+do $$ begin
+    create type ix.confluence_aspect_e as enum ();
+exception when duplicate_object then null; end $$;
+
+alter type ix.confluence_aspect_e add value if not exists 'description';
+alter type ix.confluence_aspect_e add value if not exists 'body';
+alter type ix.confluence_aspect_e add value if not exists 'summary';
+alter type ix.confluence_aspect_e add value if not exists 'labels';
+alter type ix.confluence_aspect_e add value if not exists 'name';
+alter type ix.confluence_aspect_e add value if not exists 'path';
+alter type ix.confluence_aspect_e add value if not exists 'words';
+alter type ix.confluence_aspect_e add value if not exists 'ocr';
+alter type ix.confluence_aspect_e add value if not exists 'vision';
+
+comment on type ix.confluence_aspect_e is
+    'Какой текст объекта Confluence закодирован в строке поисковой таблицы. Значения только добавляются или переименовываются; предикаты индексов следуют за переименованием.';
+
 create table if not exists ix.confluence_aspect (
-    id           smallint primary key,
-    name         varchar  not null unique,
-    description  varchar  not null
+    aspect       ix.confluence_aspect_e primary key,
+    description  varchar                not null
 );
 
-insert into ix.confluence_aspect (id, name, description) values
-    (1, 'description', 'indexer-built description: title, labels, ancestor path and the head of the text'),
-    (2, 'body',        'full text of a page or extracted text of an attachment; chunked for embeddings'),
-    (3, 'summary',     'description generated by the LLM describer; written only when it exists'),
-    (4, 'labels',      'page labels separated by spaces'),
-    (5, 'name',        'page title, attachment file name or space name as is; exact match and prefix'),
-    (6, 'path',        'space_key/title; exact match'),
-    (7, 'words',       'title split into words by CamelCase, hyphens and underscores, lower case, yo -> ye; typo-tolerant search'),
-    (8, 'ocr',         'text recognized on an image or a scanned document'),
-    (9, 'vision',      'meaning of an image described by the LLM from the picture itself')
-on conflict (id) do nothing;
+insert into ix.confluence_aspect (aspect, description) values
+    ('description', 'indexer-built description: title, labels, ancestor path and the head of the text'),
+    ('body',        'full text of a page or extracted text of an attachment; chunked for embeddings'),
+    ('summary',     'description generated by the LLM describer; written only when it exists'),
+    ('labels',      'page labels separated by spaces'),
+    ('name',        'page title, attachment file name or space name as is; exact match and prefix'),
+    ('path',        'space_key/title; exact match'),
+    ('words',       'title split into words by CamelCase, hyphens and underscores, lower case, yo -> ye; typo-tolerant search'),
+    ('ocr',         'text recognized on an image or a scanned document'),
+    ('vision',      'meaning of an image described by the LLM from the picture itself')
+on conflict (aspect) do nothing;
 
--- Полнотекстовый индекс. confluence_page пишет 1 description одним tsvector
+-- Полнотекстовый индекс. confluence_page пишет description одним tsvector
 -- с весами: A = words заголовка, B = labels, C = body;
 -- confluence_attachment: A = words имени файла, C = body, ocr и vision;
 -- confluence_space: A = words имени, B = description; confluence_comment:
--- C = body. Summary от LLM это отдельная строка с аспектом 3 из
+-- C = body. Summary от LLM это отдельная строка с аспектом summary из
 -- confluence_summary, вес D, как у pg_fts.
 create table if not exists ix.confluence_fts (
     node_id    bigint   not null references ix.node on delete cascade,
-    kind_id    smallint not null references ix.node_kind,
-    aspect_id  smallint not null references ix.confluence_aspect,
+    kind       ix.node_kind_e         not null references ix.node_kind,
+    aspect     ix.confluence_aspect_e not null references ix.confluence_aspect,
     content    varchar  not null,
     tsv        tsvector not null,
-    primary key (node_id, kind_id, aspect_id)
+    primary key (node_id, kind, aspect)
 );
 
-create index if not exists confluence_fts__kind_id_tsv__gin on ix.confluence_fts using gin (kind_id, tsv);
+create index if not exists confluence_fts__kind_tsv__gin on ix.confluence_fts using gin (kind, tsv);
 
--- Триграммы: спейс, страница и вложение пишут 5 name, 7 words; страница
--- и вложение ещё 6 path. У комментария имени нет, он сюда не пишется
+-- Триграммы: спейс, страница и вложение пишут name, words; страница
+-- и вложение ещё path. У комментария имени нет, он сюда не пишется
 create table if not exists ix.confluence_trgm (
     node_id    bigint   not null references ix.node on delete cascade,
-    kind_id    smallint not null references ix.node_kind,
-    aspect_id  smallint not null references ix.confluence_aspect,
+    kind       ix.node_kind_e         not null references ix.node_kind,
+    aspect     ix.confluence_aspect_e not null references ix.confluence_aspect,
     content    varchar  not null,
-    primary key (node_id, kind_id, aspect_id)
+    primary key (node_id, kind, aspect)
 );
 
 create index if not exists confluence_trgm__content__gist on ix.confluence_trgm using gist (content gist_trgm_ops);
-create index if not exists confluence_trgm__aspect_id_lower_content on ix.confluence_trgm using btree (aspect_id, lower(content));
-create index if not exists confluence_trgm__aspect_id_lower_content__prefix
-    on ix.confluence_trgm using btree (aspect_id, lower(content) varchar_pattern_ops);
-create index if not exists confluence_trgm__kind_id_aspect_id on ix.confluence_trgm using btree (kind_id, aspect_id);
+create index if not exists confluence_trgm__aspect_lower_content on ix.confluence_trgm using btree (aspect, lower(content));
+create index if not exists confluence_trgm__aspect_lower_content__prefix
+    on ix.confluence_trgm using btree (aspect, lower(content) varchar_pattern_ops);
+create index if not exists confluence_trgm__kind_aspect on ix.confluence_trgm using btree (kind, aspect);
 
 -- Векторный поиск, e5 1024. Текст страницы длиннее окна модели (512 токенов),
 -- поэтому аспект body режется на куски с перекрытием, и в ключе есть chunk_no;
--- у аспектов в один кусок chunk_no = 0. Страница пишет 1 description и 2 body,
--- комментарий 2 body, вложение 2 body или 8 ocr и 9 vision по типу файла,
--- спейс 1 description, summary у любого, если есть.
+-- у аспектов в один кусок chunk_no = 0. Страница пишет description и body,
+-- комментарий body, вложение body или ocr и vision по типу файла,
+-- спейс description, summary у любого, если есть.
 create table if not exists ix.confluence_emb_e5_1024 (
     node_id    bigint        not null references ix.node on delete cascade,
-    kind_id    smallint      not null references ix.node_kind,
-    aspect_id  smallint      not null references ix.confluence_aspect,
+    kind       ix.node_kind_e         not null references ix.node_kind,
+    aspect     ix.confluence_aspect_e not null references ix.confluence_aspect,
     chunk_no   smallint      not null,
     content    varchar       not null,
     emb        halfvec(1024) not null,
-    primary key (node_id, kind_id, aspect_id, chunk_no)
+    primary key (node_id, kind, aspect, chunk_no)
 );
 
--- частичный HNSW на пару kind_id + aspect_id: 10 спейс, 11 страница,
--- 12 вложение, 13 комментарий; аспекты 1 description, 2 body, 8 ocr, 9 vision
+-- частичный HNSW на пару kind + aspect; аспекты description, body, ocr, vision,
+-- summary
 create index if not exists confluence_emb_e5_1024__page_description__hnsw
     on ix.confluence_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 11 and aspect_id = 1;
+    where kind = 'confluence_page' and aspect = 'description';
 create index if not exists confluence_emb_e5_1024__page_summary__hnsw
     on ix.confluence_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 11 and aspect_id = 3;
+    where kind = 'confluence_page' and aspect = 'summary';
 create index if not exists confluence_emb_e5_1024__page_body__hnsw
     on ix.confluence_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 11 and aspect_id = 2;
+    where kind = 'confluence_page' and aspect = 'body';
 create index if not exists confluence_emb_e5_1024__attachment_body__hnsw
     on ix.confluence_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 12 and aspect_id = 2;
+    where kind = 'confluence_attachment' and aspect = 'body';
 create index if not exists confluence_emb_e5_1024__space_description__hnsw
     on ix.confluence_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 10 and aspect_id = 1;
+    where kind = 'confluence_space' and aspect = 'description';
 create index if not exists confluence_emb_e5_1024__comment_body__hnsw
     on ix.confluence_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 13 and aspect_id = 2;
+    where kind = 'confluence_comment' and aspect = 'body';
 create index if not exists confluence_emb_e5_1024__attachment_ocr__hnsw
     on ix.confluence_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 12 and aspect_id = 8;
+    where kind = 'confluence_attachment' and aspect = 'ocr';
 create index if not exists confluence_emb_e5_1024__attachment_vision__hnsw
     on ix.confluence_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where kind_id = 12 and aspect_id = 9;
+    where kind = 'confluence_attachment' and aspect = 'vision';
