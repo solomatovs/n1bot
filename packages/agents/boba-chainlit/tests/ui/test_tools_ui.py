@@ -160,12 +160,11 @@ class RowWindowArgs:
     """Окно выдачи каталожных инструментов: одно на все вызовы стенда."""
 
     OFFSET: ClassVar[int] = 0
-    MAX_ROWS: ClassVar[int] = 10
-    MAX_CHARS: ClassVar[int] = 10000
+    LIMIT: ClassVar[int] = 10
 
     @classmethod
-    def of(cls, max_rows: int = MAX_ROWS) -> dict[str, Any]:
-        return {"offset": cls.OFFSET, "max_rows": max_rows, "max_chars": cls.MAX_CHARS}
+    def of(cls, limit: int = LIMIT) -> dict[str, Any]:
+        return {"offset": cls.OFFSET, "limit": limit}
 
 
 class OcrArgs:
@@ -1538,7 +1537,7 @@ class TestChTools:
             arguments={
                 "connection": "main",
                 "ch_database": ProbeSql.CH_SYSTEM.value,
-                **RowWindowArgs.of(max_rows=2),
+                **RowWindowArgs.of(limit=2),
             },
         )
         expect = ToolExpect(

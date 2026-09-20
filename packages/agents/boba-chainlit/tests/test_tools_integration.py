@@ -895,8 +895,7 @@ class TestPgTools:
             connection=pg_connection,
             pg_schema="pg_catalog",
             offset=0,
-            max_rows=50,
-            max_chars=20000,
+            limit=50,
         )
         if not (_rows(result)):
             raise AssertionError("_rows(result)")
@@ -911,8 +910,7 @@ class TestPgTools:
             pg_tools["pg_list_tables"],
             connection=pg_connection,
             offset=0,
-            max_rows=50,
-            max_chars=20000,
+            limit=50,
         )
         schemas = set()
         for row in _rows(result):
@@ -927,8 +925,7 @@ class TestPgTools:
             pg_schema="pg_catalog",
             table_pattern="pg_cl%",
             offset=0,
-            max_rows=50,
-            max_chars=20000,
+            limit=50,
         )
         if not (_rows(result)):
             raise AssertionError("_rows(result)")
@@ -943,8 +940,7 @@ class TestPgTools:
             pg_schema="pg_catalog",
             table_pattern="pg_class",
             offset=0,
-            max_rows=50,
-            max_chars=20000,
+            limit=50,
         )
         first = _rows(tables)[0]
         result = await Call.ok(
@@ -953,8 +949,7 @@ class TestPgTools:
             table=first["table_name"],
             pg_schema=first["schema"],
             offset=0,
-            max_rows=50,
-            max_chars=20000,
+            limit=50,
         )
         if not (_rows(result)):
             raise AssertionError("_rows(result)")
@@ -970,8 +965,7 @@ class TestPgTools:
             connection=pg_connection,
             pg_schema="pg_catalog",
             offset=0,
-            max_rows=2,
-            max_chars=20000,
+            limit=2,
         )
         if len(_rows(first)) != 2:
             raise AssertionError(f"страница ровно по окну, дано {len(_rows(first))}")
@@ -984,8 +978,7 @@ class TestPgTools:
             connection=pg_connection,
             pg_schema="pg_catalog",
             offset=2,
-            max_rows=2,
-            max_chars=20000,
+            limit=2,
         )
         if "rows 3-4" not in str(_note(second)):
             raise AssertionError(f"вторая страница нумеруется, дано {_note(second)!r}")
@@ -997,22 +990,6 @@ class TestPgTools:
         for row in _rows(second):
             if row["table_name"] in names:
                 raise AssertionError(f"строка {row['table_name']!r} пришла дважды")
-
-    async def test_char_limit_cuts_the_page(self, pg_tools, pg_connection) -> None:
-        """Потолок символов обрывает страницу, остаток достаётся следующей."""
-        result = await Call.ok(
-            pg_tools["pg_list_tables"],
-            connection=pg_connection,
-            pg_schema="pg_catalog",
-            offset=0,
-            max_rows=100,
-            max_chars=300,
-        )
-        if len(_rows(result)) >= 100:
-            raise AssertionError("узкий потолок обязан оборвать набор")
-
-        if "next offset=" not in str(_note(result)):
-            raise AssertionError(f"note зовёт за остатком, дано {_note(result)!r}")
 
     async def test_query_returns_rows(self, pg_tools, pg_connection) -> None:
         result = await Call.ok(

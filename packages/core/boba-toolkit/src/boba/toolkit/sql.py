@@ -165,9 +165,11 @@ class SqlLimits(BaseModel):
         ),
     )
 
+
 TQuery = TypeVar("TQuery")
 TParams = TypeVar("TParams")
 """Стиль параметров драйвера: позиционный кортеж psycopg, именованный dict ch."""
+
 
 @dataclass(frozen=True)
 class AbstractQuery(Generic[TQuery, TParams]):

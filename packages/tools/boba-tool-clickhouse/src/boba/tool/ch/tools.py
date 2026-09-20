@@ -7,28 +7,18 @@ launcher'а приложения и у человека в терминале.
 ClickHouseError — до базы не достучаться (сеть, TLS, kerberos).
 ClickHouseQueryError — сервер отклонил запрос (синтаксис, права).
 UnknownConnectionError — имя подключения вне whitelist'а конфига.
-ResultTooLargeError — выдача превысила max_bytes конфига.
 AddressError — у профиля соединения нет базы по умолчанию для ch_address.
+ChQueryError — сборщик получил один параметр с двумя разными значениями.
 """
 
 from __future__ import annotations
 
-import logging
-import random
-import string
 import sys
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import (
-    Annotated,
-    Any,
-    ClassVar,
-    Final,
-    Self,
-    TypeVar,
-)
+from typing import Annotated, Any, ClassVar, Final, Self
 
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import Field
 
 from boba.connections.address import AddressError
 from boba.db.clickhouse import ClickHouseError, ClickHouseQueryError
@@ -36,12 +26,7 @@ from boba.db.clickhouse.address import ChAddresses
 from boba.db.clickhouse.profile import ClickHouseConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import UserConnection, tool
-from boba.toolkit.result import (
-    MarkdownResult,
-    ResultTooLargeError,
-    SqlResult,
-    TableResult,
-)
+from boba.toolkit.result import MarkdownResult, SqlResult, TableResult
 from boba.toolkit.sql import (
     AbstractQuery,
     RowLimit,
@@ -53,13 +38,100 @@ from boba.toolkit.sql import (
 )
 from boba.toolkit.types import SecretRevealing
 
-logger = logging.getLogger(__name__)
+ChConnection = Annotated[ClickHouseConfig, UserConnection]
 
 ChParams = dict[str, Any]
-"""Именованные параметры ClickHouse под подстановку {name:Type}."""
+"""Серверные параметры ClickHouse: {name:Type} в тексте, значение в словаре."""
+
+ChQuery = AbstractQuery[str, ChParams]
+"""Собранный запрос: текст с {name:Type} плюс словарь параметров."""
+
+DatabaseFilter = Annotated[
+    str,
+    Field(
+        min_length=1,
+        description=(
+            "Имя базы. `*` — все пользовательские базы (без system/information_schema)."
+        ),
+    ),
+]
+"""LLM-аргумент database: точное имя или `*`."""
+
+TableFilter = Annotated[
+    str,
+    Field(min_length=1, description="Имя таблицы или view. `*` — все отношения базы."),
+]
+"""LLM-аргумент table: точное имя или `*`."""
 
 
-ChConnection = Annotated[ClickHouseConfig, UserConnection]
+class SystemDatabase(StrEnum):
+    """Базы ClickHouse, которые каталожные инструменты не показывают."""
+
+    SYSTEM = "system"
+    INFORMATION_SCHEMA = "INFORMATION_SCHEMA"
+    INFORMATION_SCHEMA_LOWER = "information_schema"
+
+    @classmethod
+    def names(cls) -> list[str]:
+        return [member.value for member in cls]
+
+
+class AddressColumn(StrEnum):
+    """Колонки выдачи ch_address."""
+
+    CONNECTION = "connection"
+    URL = "url"
+
+
+class ChQueryError(Exception):
+    """Сборщик запроса получил противоречивые куски."""
+
+
+class ChToolConfig(SecretRevealing, SqlLimits):
+    """Лимиты выдачи ch-инструментов; [tool.ch]."""
+
+    SECTION: ClassVar[str] = "tool.ch"
+    ENGINE: ClassVar[str] = "clickhouse"
+    """Подпись движка в SqlResult."""
+
+
+class ChQueryBuilder:
+    """Запрос кусками, которые инструмент добавляет по ходу своей логики.
+
+    Подстановку делает сервер: в куске `{name:Type}` это параметр запроса
+    ClickHouse, значение уезжает в словаре параметров, а идентификатор
+    пишется как `{name:Identifier}`. Кусок с условием попадает в запрос
+    только при истинном условии, так инструмент держит весь SQL у себя и
+    решает, какие фильтры включить.
+    """
+
+    def __init__(self) -> None:
+        self._parts: list[str] = []
+        self._params: ChParams = {}
+
+    def add(self, text: str, /, **bind: Any) -> Self:
+        for name, value in bind.items():
+            if name in self._params and self._params[name] != value:
+                msg = (
+                    f"query builder: parameter {name!r} bound twice with different "
+                    f"values: {self._params[name]!r} and {value!r}"
+                )
+                raise ChQueryError(msg)
+
+            self._params[name] = value
+
+        self._parts.append(text)
+
+        return self
+
+    def when(self, condition: bool, text: str, /, **bind: Any) -> Self:
+        if not condition:
+            return self
+
+        return self.add(text, **bind)
+
+    def build(self) -> ChQuery:
+        return ChQuery(text="\n".join(self._parts), params=dict(self._params))
 
 
 def get_payload() -> Any:
@@ -73,170 +145,20 @@ def get_payload() -> Any:
     return payload.PayloadClickHouse
 
 
-class AddressColumn(StrEnum):
-    """Колонки выдачи ch_address."""
-
-    CONNECTION = "connection"
-    URL = "url"
-
-
-class ChToolConfig(SecretRevealing, SqlLimits):
-    """Лимиты выдачи ch-инструментов; [tool.ch]."""
-
-    SECTION: ClassVar[str] = "tool.ch"
-    ENGINE: ClassVar[str] = "clickhouse"
-    """Подпись движка в SqlResult."""
-
-
-T = TypeVar("T")
-
-
-class ChFieldQueryBuilder(BaseModel):
-    param_name: str
-    bind_type: str
-    compare: str
-    val: Any
-    alias: str | None = None
-    prefix_condition: str | None = Field(default="and")
-
-    _param_attr_name: str = PrivateAttr()
-    _param_value_name: str = PrivateAttr()
-
-    @classmethod
-    def random_name(cls, length: int) -> str:
-        return "".join(
-            random.choices(  # noqa: S311
-                string.ascii_letters,
-                k=length,
-            )
-        )
-
-    def model_post_init(self, __context: Any) -> None:
-        self._param_attr_name = self.random_name(8)
-        self._param_value_name = self.random_name(8)
-
-    def get_param_placeholder(self):
-        return f"{{{self._param_value_name}:{self.bind_type}}}"
-
-    def get_attr_placeholder(self):
-        alias = ""
-        if self.alias:
-            alias = f"{self.alias}."
-
-        res = f"{{{self._param_attr_name}:Identifier}}"
-        return f"{alias}{res}"
-
-    def get_prefix_condition(self):
-        return self.prefix_condition or ""
-
-    def get_compare(self):
-        return self.compare
-
-    def get_parameters(self) -> dict[str, Any]:
-        return {
-            self._param_attr_name: self.param_name,
-            self._param_value_name: self.val,
-        }
-
-
-class ChQueryBuilder:
-    def __init__(self, query: str) -> None:
-        self._query = query
-        self._condition_filters: list[ChFieldQueryBuilder] = []
-
-    def condition(self, f: ChFieldQueryBuilder) -> Self:
-        self._condition_filters.append(f)
-        return self
-
-    def build(self) -> AbstractQuery[str, ChParams]:
-        """Формирует запрос для получения списка databases"""
-        base_query = self._query
-        condition = ["where 1=1"]
-        params: ChParams = {}
-
-        for c in self._condition_filters:
-            prefix_condition = c.get_prefix_condition()
-
-            condition.append(
-                f"{prefix_condition} {c.get_attr_placeholder()} "
-                f"{c.get_compare()} {c.get_param_placeholder()}"
-            )
-
-            params.update(c.get_parameters())
-
-        text = base_query.format_map(
-            {
-                "condition": "\n\t".join(condition),
-            }
-        )
-
-        return AbstractQuery(
-            text=text,
-            params=params,
-        )
-
-
-def set_database_filter_bootstrap(
-    builder: ChQueryBuilder,
-    param_name: str,
-    bind_type: str,
-    compare: str,
-    database: str | None,
-):
-    """
-    Заполняет QueryBuilder фильтрацией по базам данных
-    Типичная для многих инструментов
-    """
-
-    builder.condition(
-        ChFieldQueryBuilder(
-            param_name=param_name,
-            bind_type="Array(String)",
-            compare="not in",
-            val=[
-                "system",
-                "INFORMATION_SCHEMA",
-                "information_schema",
-            ],
-        )
-    )
-
-    if database and database != "*":
-        builder.condition(
-            ChFieldQueryBuilder(
-                param_name=param_name,
-                bind_type=bind_type,
-                compare=compare,
-                val=database,
-            )
-        )
-
-
 async def run_and_collect(
     connection: ClickHouseConfig,
-    query: AbstractQuery[str, ChParams],
+    query: ChQuery,
     window: RowWindow,
 ) -> SqlResult:
-    """Каталожный запрос страницей окна: границы выдачи назначает вызов."""
-    parameters = query.params
-    if not parameters:
-        parameters = None
-
+    """Запрос страницей окна: границы выдачи назначает вызов."""
     page = RowPage(window)
 
-    async with get_payload().row_blocks(
-        connection,
-        query.text,
-        query.params,
-    ) as stream:
+    async with get_payload().row_blocks(connection, query.text, query.params) as stream:
         async for block in stream.blocks:
             if not page.add(dict(zip(stream.names, block, strict=True))):
                 break
 
-    return SqlResult(
-        engine=ChToolConfig.ENGINE,
-        statements=[page.statement()],
-    )
+    return SqlResult(engine=ChToolConfig.ENGINE, statements=[page.statement()])
 
 
 @tool
@@ -256,39 +178,33 @@ async def ch_list_tables(
     offset: RowOffset,
     limit: RowLimit,
 ) -> SqlResult:
-    """Список таблиц/view подключения. Колонки: database, table, engine.
+    """Список таблиц/view подключения. Колонки: database, table, engine,
+    total_rows.
 
     Выдача постраничная: сколько показано и как листать, сказано в note.
     """
-    builder = ChQueryBuilder("""
-        select
-            database,
-            name as table,
-            engine,
-            total_rows
-        from
-            system.tables
-        {condition}
-        order by
-            database,
-            name
-    """)
-
-    set_database_filter_bootstrap(
-        builder,
-        "database",
-        "String",
-        "=",
-        database,
+    builder = (
+        ChQueryBuilder()
+        .add(
+            """
+            select
+                database,
+                name as table,
+                engine,
+                total_rows
+            from system.tables
+            where database not in {system_databases:Array(String)}
+            """,
+            system_databases=SystemDatabase.names(),
+        )
+        .when(
+            database is not None, "and database = {database:String}", database=database
+        )
+        .add("order by database, name")
     )
 
     return await run_and_collect(
-        connection,
-        builder.build(),
-        RowWindow(
-            offset=offset,
-            limit=limit,
-        ),
+        connection, builder.build(), RowWindow(offset=offset, limit=limit)
     )
 
 
@@ -300,79 +216,59 @@ async def ch_list_columns(
         Field(
             description=(
                 "Опциональный фильтр по базе (например `default`). "
-                "Пусто = все пользовательские базы "
+                "Пусто = все пользовательские базы."
             ),
         ),
     ] = None,
     table: Annotated[
         str | None,
-        Field(
-            description=(
-                "Опциональный фильтр по таблице (например `default`). "
-                "Пусто = все пользовательские базы "
-            ),
-        ),
+        Field(description="Опциональный фильтр по таблице. Пусто = все таблицы."),
     ] = None,
     *,
     offset: RowOffset,
     limit: RowLimit,
 ) -> SqlResult:
-    """Список таблиц/view подключения. Колонки: database, table, engine.
+    """Колонки таблиц подключения из system.columns.
 
+    Колонки: database, table, name, position, type, default_kind,
+    default_expression, размеры, признаки ключей, compression_codec, comment.
     Выдача постраничная: сколько показано и как листать, сказано в note.
     """
-    builder = ChQueryBuilder("""
-        select
-            database,
-            table,
-            name,
-            position,
-            type,
-            default_kind,
-            default_expression,
-            data_compressed_bytes,
-            data_uncompressed_bytes,
-            marks_bytes,
-            is_in_partition_key,
-            is_in_sorting_key,
-            is_in_primary_key,
-            is_in_sampling_key,
-            compression_codec,
-            comment
-        from
-            system.columns
-        {condition}
-        order by
-            database,
-            table,
-            position
-    """)
-
-    set_database_filter_bootstrap(
-        builder,
-        "database",
-        "String",
-        "=",
-        database,
+    builder = (
+        ChQueryBuilder()
+        .add(
+            """
+            select
+                database,
+                table,
+                name,
+                position,
+                type,
+                default_kind,
+                default_expression,
+                data_compressed_bytes,
+                data_uncompressed_bytes,
+                marks_bytes,
+                is_in_partition_key,
+                is_in_sorting_key,
+                is_in_primary_key,
+                is_in_sampling_key,
+                compression_codec,
+                comment
+            from system.columns
+            where database not in {system_databases:Array(String)}
+            """,
+            system_databases=SystemDatabase.names(),
+        )
+        .when(
+            database is not None, "and database = {database:String}", database=database
+        )
+        .when(table is not None, "and table = {table:String}", table=table)
+        .add("order by database, table, position")
     )
 
-    if table and table != "*":
-        builder.condition(
-            ChFieldQueryBuilder(
-                param_name="table",
-                bind_type="String",
-                compare="=",
-                val=table,
-            )
-        )
-
     return await run_and_collect(
-        connection,
-        builder.build(),
-        RowWindow(
-            offset=offset,
-            limit=limit,
-        ),
+        connection, builder.build(), RowWindow(offset=offset, limit=limit)
     )
 
 
@@ -383,23 +279,23 @@ async def ch_query(
         Field(
             min_length=1,
             description=(
-                "Произвольный SQL ClickHouse. Если строк больше лимита "
-                "— добавьте LIMIT в сам запрос."
+                "Произвольный SQL ClickHouse. Строки выборки возвращаются "
+                "окном offset/limit."
             ),
         ),
         MarkdownResult(language="sql"),
     ],
     connection: ChConnection,
+    *,
+    offset: RowOffset,
+    limit: RowLimit,
 ) -> SqlResult:
-    """Выполнить SQL на выбранном соединении."""
+    """Выполнить SQL на выбранном соединении: строки окном offset/limit."""
 
     return await run_and_collect(
         connection,
-        AbstractQuery(text=sql, params={}),
-        RowWindow(
-            offset=0,
-            limit=None,
-        ),
+        ChQuery(text=sql, params={}),
+        RowWindow(offset=offset, limit=limit),
     )
 
 
@@ -413,7 +309,7 @@ async def ch_describe_table(
     database: Annotated[
         str | None,
         Field(
-            description="База таблицы; пусто — база по умолчанию у подключения.",
+            description="База таблицы; пусто — искать во всех пользовательских базах."
         ),
     ] = None,
     *,
@@ -424,73 +320,56 @@ async def ch_describe_table(
 
     Широкая таблица приходит частями: как листать, сказано в note.
     """
-    builder = ChQueryBuilder("""
-        select
-            concat(database, '.', table, '.', name) as address,
-            database,
-            table,
-            name,
-            position,
-            type,
-            default_kind,
-            default_expression,
-            data_compressed_bytes,
-            data_uncompressed_bytes,
-            marks_bytes,
-            is_in_partition_key,
-            is_in_sorting_key,
-            is_in_primary_key,
-            is_in_sampling_key,
-            compression_codec,
-            comment
-        from
-            system.columns
-        {condition}
-        order by
-            database,
-            table,
-            position
-    """)
-
-    set_database_filter_bootstrap(
-        builder,
-        "database",
-        "String",
-        "=",
-        database,
+    builder = (
+        ChQueryBuilder()
+        .add(
+            """
+            select
+                concat(database, '.', table, '.', name) as address,
+                database,
+                table,
+                name,
+                position,
+                type,
+                default_kind,
+                default_expression,
+                data_compressed_bytes,
+                data_uncompressed_bytes,
+                marks_bytes,
+                is_in_partition_key,
+                is_in_sorting_key,
+                is_in_primary_key,
+                is_in_sampling_key,
+                compression_codec,
+                comment
+            from system.columns
+            where database not in {system_databases:Array(String)}
+              and table = {table:String}
+            """,
+            system_databases=SystemDatabase.names(),
+            table=table,
+        )
+        .when(
+            database is not None, "and database = {database:String}", database=database
+        )
+        .add("order by database, table, position")
     )
 
-    if table and table != "*":
-        builder.condition(
-            ChFieldQueryBuilder(
-                param_name="table",
-                bind_type="String",
-                compare="=",
-                val=table,
-            )
-        )
-
     return await run_and_collect(
-        connection,
-        builder.build(),
-        RowWindow(
-            offset=offset,
-            limit=limit,
-        ),
+        connection, builder.build(), RowWindow(offset=offset, limit=limit)
     )
 
 
 @tool
-async def ch_database_discribe(
+async def ch_database_describe(
     connection: ChConnection,
     database: Annotated[
         str,
         Field(
             min_length=1,
             description=(
-                "Имя базы из system.databases. `*` — все базы кластера, "
-                "доступные текущему пользователю. Конкретное имя — "
-                "одна строка."
+                "Имя базы из system.databases. `*` — все пользовательские базы, "
+                "доступные текущему пользователю. Конкретное имя — одна строка."
             ),
         ),
     ],
@@ -498,377 +377,240 @@ async def ch_database_discribe(
     offset: RowOffset,
     limit: RowLimit,
 ) -> SqlResult:
-    """Для ClickHouse и ADQM - Описание баз данных кластера из system.databases.
+    """ClickHouse и ADQM: описание баз данных кластера из system.databases.
+
     Колонки: address (db), name, engine, data_path, metadata_path, uuid,
     comment. Одна строка на базу. Выдача постраничная — как листать,
     сказано в note.
     """
-    builder = ChQueryBuilder("""
-        select
-            name        as address,
-            name        as name,
-            engine,
-            data_path,
-            metadata_path,
-            uuid,
-            comment
-        from
-            system.databases
-        {condition}
-        order by
-            name
-    """)
-
-    set_database_filter_bootstrap(
-        builder,
-        "name",
-        "String",
-        "=",
-        database,
+    builder = (
+        ChQueryBuilder()
+        .add(
+            """
+            select
+                name as address,
+                name,
+                engine,
+                data_path,
+                metadata_path,
+                uuid,
+                comment
+            from system.databases
+            where name not in {system_databases:Array(String)}
+            """,
+            system_databases=SystemDatabase.names(),
+        )
+        .when(database != "*", "and name = {database:String}", database=database)
+        .add("order by name")
     )
 
     return await run_and_collect(
-        connection,
-        builder.build(),
-        RowWindow(
-            offset=offset,
-            limit=limit,
-        ),
+        connection, builder.build(), RowWindow(offset=offset, limit=limit)
     )
 
 
 @tool
-async def ch_table_discribe(
+async def ch_table_describe(
     connection: ChConnection,
-    database: Annotated[
-        str,
-        Field(
-            min_length=1,
-            description=(
-                "Имя базы (схемы). `*` — все пользовательские базы "
-                "(без system/information_schema)."
-            ),
-        ),
-    ],
-    table: Annotated[
-        str,
-        Field(
-            min_length=1,
-            description=(
-                "Имя таблицы/view. `*` — все отношения базы. "
-                "Широкая выдача — сузьте фильтр или увеличьте max_rows."
-            ),
-        ),
-    ],
+    database: DatabaseFilter,
+    table: TableFilter,
     *,
     offset: RowOffset,
     limit: RowLimit,
 ) -> SqlResult:
-    """ADQM, ClickHouse, описание таблиц из system.tables: таблицы, view, матвью,
-    dictionary, distributed и пр.
+    """ClickHouse и ADQM: описание таблиц из system.tables: таблицы, view,
+    матвью, dictionary, distributed и пр.
+
     Колонки: address, database, name, engine, is_temporary, total_rows,
     total_bytes, partition_key, sorting_key, primary_key, sampling_key,
-    storage_policy, comment. Выдача постраничная — как листать, сказано
-    в note.
+    storage_policy, metadata_modification_time, comment. Выдача
+    постраничная — как листать, сказано в note.
     """
-    builder = ChQueryBuilder("""
-        select
-            concat(database, '.', name) as address,
-            database,
-            name,
-            engine,
-            is_temporary,
-            total_rows,
-            total_bytes,
-            partition_key,
-            sorting_key,
-            primary_key,
-            sampling_key,
-            storage_policy,
-            metadata_modification_time,
-            comment
-        from
-            system.tables
-        {condition}
-        order by
-            database,
-            name
-    """)
-
-    set_database_filter_bootstrap(
-        builder,
-        "database",
-        "String",
-        "=",
-        database,
+    builder = (
+        ChQueryBuilder()
+        .add(
+            """
+            select
+                concat(database, '.', name) as address,
+                database,
+                name,
+                engine,
+                is_temporary,
+                total_rows,
+                total_bytes,
+                partition_key,
+                sorting_key,
+                primary_key,
+                sampling_key,
+                storage_policy,
+                metadata_modification_time,
+                comment
+            from system.tables
+            where database not in {system_databases:Array(String)}
+            """,
+            system_databases=SystemDatabase.names(),
+        )
+        .when(database != "*", "and database = {database:String}", database=database)
+        .when(table != "*", "and name = {table:String}", table=table)
+        .add("order by database, name")
     )
 
-    if table and table != "*":
-        builder.condition(
-            ChFieldQueryBuilder(
-                param_name="name",
-                bind_type="String",
-                compare="=",
-                val=table,
-            )
-        )
-
     return await run_and_collect(
-        connection,
-        builder.build(),
-        RowWindow(
-            offset=offset,
-            limit=limit,
-        ),
+        connection, builder.build(), RowWindow(offset=offset, limit=limit)
     )
 
 
 @tool
-async def ch_column_discribe(
+async def ch_column_describe(
     connection: ChConnection,
-    database: Annotated[
-        str,
-        Field(
-            min_length=1,
-            description=(
-                "Имя базы. `*` — все пользовательские базы "
-                "(без system/information_schema)."
-            ),
-        ),
-    ],
-    table: Annotated[
-        str,
-        Field(
-            min_length=1,
-            description=("Имя отношения (таблица/view). `*` — все отношения базы."),
-        ),
-    ],
+    database: DatabaseFilter,
+    table: TableFilter,
     *,
     offset: RowOffset,
     limit: RowLimit,
 ) -> SqlResult:
-    """ADQM, ClickHouse, описания полей, колонок, из system.columns.
-    Колонки: address, database, table, name, position, type,
-    default_kind, default_expression, data_compressed_bytes,
-    data_uncompressed_bytes, marks_bytes, is_in_partition_key,
-    is_in_sorting_key, is_in_primary_key, is_in_sampling_key,
-    compression_codec, comment. Для широких таблиц выдача приходит
-    частями — как листать, сказано в note.
-    """
-    builder = ChQueryBuilder("""
-        select
-            concat(database, '.', table, '.', name) as address,
-            database,
-            table,
-            name,
-            position,
-            type,
-            default_kind,
-            default_expression,
-            data_compressed_bytes,
-            data_uncompressed_bytes,
-            marks_bytes,
-            is_in_partition_key,
-            is_in_sorting_key,
-            is_in_primary_key,
-            is_in_sampling_key,
-            compression_codec,
-            comment
-        from system.columns
-        {condition}
-        order by
-            database,
-            table,
-            position
-    """)
+    """ClickHouse и ADQM: описание колонок из system.columns.
 
-    set_database_filter_bootstrap(
-        builder,
-        "database",
-        "String",
-        "=",
-        database,
+    Колонки: address, database, table, name, position, type, default_kind,
+    default_expression, data_compressed_bytes, data_uncompressed_bytes,
+    marks_bytes, is_in_partition_key, is_in_sorting_key, is_in_primary_key,
+    is_in_sampling_key, compression_codec, comment. Для широких таблиц
+    выдача приходит частями — как листать, сказано в note.
+    """
+    builder = (
+        ChQueryBuilder()
+        .add(
+            """
+            select
+                concat(database, '.', table, '.', name) as address,
+                database,
+                table,
+                name,
+                position,
+                type,
+                default_kind,
+                default_expression,
+                data_compressed_bytes,
+                data_uncompressed_bytes,
+                marks_bytes,
+                is_in_partition_key,
+                is_in_sorting_key,
+                is_in_primary_key,
+                is_in_sampling_key,
+                compression_codec,
+                comment
+            from system.columns
+            where database not in {system_databases:Array(String)}
+            """,
+            system_databases=SystemDatabase.names(),
+        )
+        .when(database != "*", "and database = {database:String}", database=database)
+        .when(table != "*", "and table = {table:String}", table=table)
+        .add("order by database, table, position")
     )
 
-    if table and table != "*":
-        builder.condition(
-            ChFieldQueryBuilder(
-                param_name="table",
-                bind_type="String",
-                compare="=",
-                val=table,
-            )
-        )
-
     return await run_and_collect(
-        connection,
-        builder.build(),
-        RowWindow(
-            offset=offset,
-            limit=limit,
-        ),
+        connection, builder.build(), RowWindow(offset=offset, limit=limit)
     )
 
 
 @tool
-async def ch_constraints_discribe(
+async def ch_constraints_describe(
     connection: ChConnection,
-    database: Annotated[
-        str,
-        Field(
-            min_length=1,
-            description=("Имя базы. `*` — все пользовательские базы."),
-        ),
-    ],
-    table: Annotated[
-        str,
-        Field(
-            min_length=1,
-            description="Имя таблицы. `*` — все таблицы базы.",
-        ),
-    ],
+    database: DatabaseFilter,
+    table: TableFilter,
     *,
     offset: RowOffset,
     limit: RowLimit,
 ) -> SqlResult:
-    """ADQM, ClickHouse, описание ограничений из system.constraints (CHECK / ASSUME).
-    Колонки: address, database, table, name, type (CHECK/ASSUME),
-    expression. В ClickHouse нет PRIMARY/UNIQUE/FOREIGN как отдельных
-    объектов — их роль исполняют ключи в system.tables.
-    """
-    builder = ChQueryBuilder("""
-        select
-            concat(database, '.', table, '.', name) as address,
-            database,
-            table,
-            name,
-            type,
-            expression
-        from
-            system.constraints
-        where 1=1
-        {condition}
-        order by
-            database,
-            table,
-            name
-    """)
+    """ClickHouse и ADQM: ограничения из system.constraints (CHECK / ASSUME).
 
-    set_database_filter_bootstrap(
-        builder,
-        "database",
-        "String",
-        "=",
-        database,
+    Колонки: address, database, table, name, type (CHECK/ASSUME), expression.
+    В ClickHouse нет PRIMARY/UNIQUE/FOREIGN как отдельных объектов — их роль
+    исполняют ключи в system.tables.
+    """
+    builder = (
+        ChQueryBuilder()
+        .add(
+            """
+            select
+                concat(database, '.', table, '.', name) as address,
+                database,
+                table,
+                name,
+                type,
+                expression
+            from system.constraints
+            where database not in {system_databases:Array(String)}
+            """,
+            system_databases=SystemDatabase.names(),
+        )
+        .when(database != "*", "and database = {database:String}", database=database)
+        .when(table != "*", "and table = {table:String}", table=table)
+        .add("order by database, table, name")
     )
 
-    if table and table != "*":
-        builder.condition(
-            ChFieldQueryBuilder(
-                param_name="table",
-                bind_type="String",
-                compare="=",
-                val=table,
-            )
-        )
-
     return await run_and_collect(
-        connection,
-        builder.build(),
-        RowWindow(
-            offset=offset,
-            limit=limit,
-        ),
+        connection, builder.build(), RowWindow(offset=offset, limit=limit)
     )
 
 
 @tool
-async def ch_indexes_discribe(
+async def ch_indexes_describe(
     connection: ChConnection,
-    database: Annotated[
-        str,
-        Field(
-            min_length=1,
-            description="Имя базы. `*` — все пользовательские базы.",
-        ),
-    ],
-    table: Annotated[
-        str,
-        Field(
-            min_length=1,
-            description="Имя таблицы. `*` — все таблицы базы.",
-        ),
-    ],
+    database: DatabaseFilter,
+    table: TableFilter,
     *,
     offset: RowOffset,
     limit: RowLimit,
 ) -> SqlResult:
-    """ADQM, ClickHouse, описание индексов пропуска данных из
+    """ClickHouse и ADQM: индексы пропуска данных из
     system.data_skipping_indices.
+
     Колонки: address, database, table, name, type (minmax/set/bloom_filter/
     ngrambf_v1/tokenbf_v1), expr, granularity, data_compressed_bytes,
-    data_uncompressed_bytes. Первичный ключ смотрите в ch_table_discribe.
+    data_uncompressed_bytes. Первичный ключ смотрите в ch_table_describe.
     """
-    builder = ChQueryBuilder("""
-        select
-            concat(database, '.', table, '.', name) as address,
-            database,
-            table,
-            name,
-            type,
-            expr,
-            granularity,
-            data_compressed_bytes,
-            data_uncompressed_bytes
-        from
-            system.data_skipping_indices
-        where 1=1
-        {condition}
-        order by
-            database,
-            table,
-            name
-    """)
-
-    set_database_filter_bootstrap(
-        builder,
-        "database",
-        "String",
-        "=",
-        database,
+    builder = (
+        ChQueryBuilder()
+        .add(
+            """
+            select
+                concat(database, '.', table, '.', name) as address,
+                database,
+                table,
+                name,
+                type,
+                expr,
+                granularity,
+                data_compressed_bytes,
+                data_uncompressed_bytes
+            from system.data_skipping_indices
+            where database not in {system_databases:Array(String)}
+            """,
+            system_databases=SystemDatabase.names(),
+        )
+        .when(database != "*", "and database = {database:String}", database=database)
+        .when(table != "*", "and table = {table:String}", table=table)
+        .add("order by database, table, name")
     )
 
-    if table and table != "*":
-        builder.condition(
-            ChFieldQueryBuilder(
-                param_name="table",
-                bind_type="String",
-                compare="=",
-                val=table,
-            )
-        )
-
     return await run_and_collect(
-        connection,
-        builder.build(),
-        RowWindow(
-            offset=offset,
-            limit=limit,
-        ),
+        connection, builder.build(), RowWindow(offset=offset, limit=limit)
     )
 
 
 @tool
-async def ch_function_discribe(
+async def ch_function_describe(
     connection: ChConnection,
     function: Annotated[
         str,
         Field(
             min_length=1,
             description=(
-                "Шаблон имени функции в синтаксисе LIKE: `array%`, "
-                "`%date%`. `*` — все функции, включая системные "
-                "(их очень много, используйте фильтр)."
+                "Шаблон имени функции в синтаксисе LIKE: `array%`, `%date%`. "
+                "`*` — все функции, включая системные (их очень много, "
+                "используйте фильтр)."
             ),
         ),
     ] = "*",
@@ -876,113 +618,87 @@ async def ch_function_discribe(
     offset: RowOffset,
     limit: RowLimit,
 ) -> SqlResult:
-    """ADQM, ClickHouse, функции из system.functions.
-    Колонки: name, is_aggregate, case_insensitive, alias_to, origin
-    (System/User/…), syntax, arguments (строка), returned_value,
-    description, categories. В ClickHouse нет процедур/хранимых
-    программ  — есть встроенные и UDF-функции.
-    """
-    builder = ChQueryBuilder("""
-        select
-            name as address,
-            name,
-            is_aggregate,
-            case_insensitive,
-            alias_to,
-            origin,
-            syntax,
-            arguments,
-            returned_value,
-            description,
-            categories
-        from
-            system.functions
-        where 1=1
-        {condition}
-        order by
-            name
-    """)
+    """ClickHouse и ADQM: функции из system.functions.
 
-    if function and function != "*":
-        builder.condition(
-            ChFieldQueryBuilder(
-                param_name="name",
-                bind_type="String",
-                compare="=",
-                val=function,
-            )
+    Колонки: address, name, is_aggregate, case_insensitive, alias_to, origin
+    (System/User/…), syntax, arguments, returned_value, description,
+    categories. В ClickHouse нет процедур — есть встроенные и UDF-функции.
+    """
+    builder = (
+        ChQueryBuilder()
+        .add(
+            """
+            select
+                name as address,
+                name,
+                is_aggregate,
+                case_insensitive,
+                alias_to,
+                origin,
+                syntax,
+                arguments,
+                returned_value,
+                description,
+                categories
+            from system.functions
+            where true
+            """
         )
+        .when(function != "*", "and name like {function:String}", function=function)
+        .add("order by name")
+    )
 
     return await run_and_collect(
-        connection,
-        builder.build(),
-        RowWindow(
-            offset=offset,
-            limit=limit,
-        ),
+        connection, builder.build(), RowWindow(offset=offset, limit=limit)
     )
 
 
 @tool
-async def ch_sequences_discribe(
+async def ch_sequences_describe(
     connection: ChConnection,
-    database: Annotated[
-        str,
-        Field(
-            min_length=1,
-            description="Имя базы. `*` — все пользовательские базы.",
-        ),
-    ] = "*",
+    database: DatabaseFilter = "*",
     *,
     offset: RowOffset,
     limit: RowLimit,
 ) -> SqlResult:
-    """ADQM, ClickHouse, описание последовательностей из system.sequences
-    Колонки: address, database, name, uuid, start_value, increment,
-    min_value, max_value, cycle, cache, comment. На старых версиях
-    таблицы нет — запрос упадёт с ошибкой сервера.
-    """
-    builder = ChQueryBuilder("""
-        select
-            concat(database, '.', name) as address,
-            database,
-            name,
-            uuid,
-            start_value,
-            increment,
-            min_value,
-            max_value,
-            cycle,
-            cache,
-            comment
-        from
-            system.sequences
-        {condition}
-        order by
-            database,
-            name
-    """)
+    """ClickHouse и ADQM: последовательности из system.sequences.
 
-    set_database_filter_bootstrap(
-        builder,
-        "database",
-        "String",
-        "=",
-        database,
+    Колонки: address, database, name, uuid, start_value, increment,
+    min_value, max_value, cycle, cache, comment. На старых версиях таблицы
+    нет — запрос упадёт с ошибкой сервера.
+    """
+    builder = (
+        ChQueryBuilder()
+        .add(
+            """
+            select
+                concat(database, '.', name) as address,
+                database,
+                name,
+                uuid,
+                start_value,
+                increment,
+                min_value,
+                max_value,
+                cycle,
+                cache,
+                comment
+            from system.sequences
+            where database not in {system_databases:Array(String)}
+            """,
+            system_databases=SystemDatabase.names(),
+        )
+        .when(database != "*", "and database = {database:String}", database=database)
+        .add("order by database, name")
     )
 
     return await run_and_collect(
-        connection,
-        builder.build(),
-        RowWindow(
-            offset=offset,
-            limit=limit,
-        ),
+        connection, builder.build(), RowWindow(offset=offset, limit=limit)
     )
 
 
 @tool
-async def ch_types_discribe(
+async def ch_types_describe(
     connection: ChConnection,
     name: Annotated[
         str,
@@ -998,41 +714,31 @@ async def ch_types_discribe(
     offset: RowOffset,
     limit: RowLimit,
 ) -> SqlResult:
-    """ADQM, ClickHouse, описание типов данных из system.data_type_families.
-    Колонки: name, case_insensitive, alias_to. В ClickHouse нет
-    enum/domain/composite; Enum-типы описываются
-    прямо в колонке — смотрите ch_column_discribe.
-    """
-    builder = ChQueryBuilder("""
-        select
-            name as address,
-            name,
-            case_insensitive,
-            alias_to
-        from
-            system.data_type_families
-        {condition}
-        order by
-            name
-    """)
+    """ClickHouse и ADQM: типы данных из system.data_type_families.
 
-    if name and name != "*":
-        builder.condition(
-            ChFieldQueryBuilder(
-                param_name="name",
-                bind_type="String",
-                compare="=",
-                val=name,
-            )
+    Колонки: address, name, case_insensitive, alias_to. В ClickHouse нет
+    enum/domain/composite; Enum-типы описываются прямо в колонке — смотрите
+    ch_column_describe.
+    """
+    builder = (
+        ChQueryBuilder()
+        .add(
+            """
+            select
+                name as address,
+                name,
+                case_insensitive,
+                alias_to
+            from system.data_type_families
+            where true
+            """
         )
+        .when(name != "*", "and name like {name:String}", name=name)
+        .add("order by name")
+    )
 
     return await run_and_collect(
-        connection,
-        builder.build(),
-        RowWindow(
-            offset=offset,
-            limit=limit,
-        ),
+        connection, builder.build(), RowWindow(offset=offset, limit=limit)
     )
 
 
@@ -1045,7 +751,6 @@ async def ch_address(connection: ChConnection) -> TableResult:
     в query поверх url: ?table=events, ?table=events&column=user_id.
     """
     base = ChAddresses.base_of(connection)
-
     row = {
         AddressColumn.CONNECTION.value: connection.source.name,
         AddressColumn.URL.value: base.render(),
@@ -1056,9 +761,9 @@ async def ch_address(connection: ChConnection) -> TableResult:
 
 EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
     AddressError: SqlErrorKind.UNKNOWN_TARGET,
+    ChQueryError: SqlErrorKind.SQL_FAILED,
     ClickHouseError: SqlErrorKind.DATABASE_UNAVAILABLE,
     ClickHouseQueryError: SqlErrorKind.SQL_FAILED,
-    ResultTooLargeError: SqlErrorKind.RESULT_TOO_LARGE,
 }
 
 TOOLS: Final = ToolMain.toolset(
@@ -1067,14 +772,14 @@ TOOLS: Final = ToolMain.toolset(
     ch_describe_table,
     ch_query,
     ch_address,
-    ch_database_discribe,
-    ch_table_discribe,
-    ch_column_discribe,
-    ch_constraints_discribe,
-    ch_indexes_discribe,
-    ch_function_discribe,
-    ch_sequences_discribe,
-    ch_types_discribe,
+    ch_database_describe,
+    ch_table_describe,
+    ch_column_describe,
+    ch_constraints_describe,
+    ch_indexes_describe,
+    ch_function_describe,
+    ch_sequences_describe,
+    ch_types_describe,
 )
 
 if __name__ == "__main__":
