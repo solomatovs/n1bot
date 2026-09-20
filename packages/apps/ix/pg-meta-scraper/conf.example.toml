@@ -1,0 +1,10 @@
+[ix.meta_scraper]
+    db_schema = "ix"
+    dsn = "host=127.0.0.1 port=5432 dbname=ix user=ix password=secret"
+    attempts = 3
+    lock_timeout = "2s"
+    statement_timeout = "30s"
+    sources = [
+        { name = "pg-18", dsn = "host=pg18.example.local port=5432 dbname=demo user=reader password=secret" },
+        { name = "gp-7", dsn = "host=gp7.example.local port=5432 dbname=demo user=gpadmin" },
+    ]

@@ -1,11 +1,12 @@
-"""Прогон скрапера по всем целям стенда: демонстрационный набор пересоздаётся на источнике,
-снимается в чистую базу ix, проверяются инварианты, эталонный отпечаток и повторный прогон."""
+"""Прогон скрапера по всем целям стенда: демонстрационный набор пересоздаётся на
+источнике,
+снимается в чистую базу ix, проверяются инварианты, эталонный отпечаток и повторный
+прогон."""
 
 from __future__ import annotations
 
 import pytest
-
-from conftest import Golden, IxDatabase, IxStand, DemoDataset
+from conftest import DemoDataset, Golden, IxDatabase, IxStand
 
 pytestmark = pytest.mark.integration
 
@@ -27,7 +28,9 @@ class TestScrapeStand:
         assert ix_database.invariants() == {}, f"{name}: invariants broken"
 
         if golden.has(name):
-            assert ix_database.fingerprint(source.host) == golden.of(name), f"{name}: fingerprint differs from golden"
+            assert ix_database.fingerprint(source.host) == golden.of(name), (
+                f"{name}: fingerprint differs from golden"
+            )
 
         second = ix_database.scrape(source)
         changed = [row.op for row in second if row.applied != 0]

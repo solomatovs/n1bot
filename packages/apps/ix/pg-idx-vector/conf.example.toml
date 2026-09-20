@@ -1,0 +1,11 @@
+[ix.idx_vector]
+    db_schema = "ix"
+    dsn = "host=127.0.0.1 port=5432 dbname=ix user=ix password=secret"
+    cache_dir = "/app/boba/models/fastembed"
+    model = "intfloat/multilingual-e5-large"
+    dim = 1024
+    batch = 64
+    chunk_tokens = 400
+    chunk_overlap = 50
+    lock_timeout = "2s"
+    statement_timeout = "60s"

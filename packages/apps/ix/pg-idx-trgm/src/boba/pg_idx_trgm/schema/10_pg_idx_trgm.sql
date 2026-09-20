@@ -1,29 +1,11 @@
 /*
-pg-idx-trgm, схема: аспекты PostgreSQL (общий словарь, создаётся идемпотентно каждым
-индексатором) и таблица ix.pg_idx_trgm с индексами. Предусловие: ядро ix из
-docs/knowledge-schema.sql. Внешнего ключа на ix.node нет намеренно.
+pg-idx-trgm, схема, шаг 1: словарь аспектов и таблица {schema}.pg_idx_trgm с индексами.
 */
-do $$ begin
-    create type ix.pg_idx_aspect_e as enum ();
-exception when duplicate_object then null; end $$;
-
-alter type ix.pg_idx_aspect_e add value if not exists 'meta_description';
-alter type ix.pg_idx_aspect_e add value if not exists 'meta_comment';
-alter type ix.pg_idx_aspect_e add value if not exists 'meta_columns';
-alter type ix.pg_idx_aspect_e add value if not exists 'llm_description';
-alter type ix.pg_idx_aspect_e add value if not exists 'meta_name';
-alter type ix.pg_idx_aspect_e add value if not exists 'meta_path';
-alter type ix.pg_idx_aspect_e add value if not exists 'meta_words';
-
-comment on type ix.pg_idx_aspect_e is
-    'Какой текст объекта PostgreSQL закодирован в строке поисковой таблицы. Значения только добавляются или переименовываются: на них ссылаются предикаты частичных индексов, и они следуют за переименованием.';
-
-create table if not exists ix.pg_idx_aspect (
-    aspect       ix.pg_idx_aspect_e primary key,
+create table if not exists {schema}.pg_idx_aspect (    aspect       {schema}.pg_idx_aspect_e primary key,
     description  varchar        not null
 );
 
-insert into ix.pg_idx_aspect (aspect, description) values
+insert into {schema}.pg_idx_aspect (aspect, description) values
     ('meta_description', 'описание объекта, собранное индексатором из всего, что о нём известно; основной аспект поиска'),
     ('meta_comment',     'комментарий из источника как есть (obj_description, col_description); пишется, только если не пуст'),
     ('meta_columns',     'имена колонок таблицы через пробел; таблица находится по своим колонкам'),
@@ -33,10 +15,10 @@ insert into ix.pg_idx_aspect (aspect, description) values
     ('meta_words',       'слова имени, разрезанного по CamelCase и подчёркиваниям, в нижнем регистре, ё -> е; поиск с опечатками')
 on conflict (aspect) do nothing;
 
-create table if not exists ix.pg_idx_trgm (
+create table if not exists {schema}.pg_idx_trgm (
     node_id    bigint   not null,
-    surface       ix.surface_e not null references ix.surface,
-    aspect     ix.pg_idx_aspect_e not null references ix.pg_idx_aspect,
+    surface       {schema}.surface_e not null references {schema}.surface,
+    aspect     {schema}.pg_idx_aspect_e not null references {schema}.pg_idx_aspect,
     content    varchar  not null,
     primary key (node_id, surface, aspect)
 );
@@ -48,20 +30,20 @@ create table if not exists ix.pg_idx_trgm (
 
 set pg_trgm.word_similarity_threshold = 0.4;
 select node_id, surface, content
-from   ix.pg_idx_trgm
+from   {schema}.pg_idx_trgm
 where  aspect = 'meta_words' and 'ordrs' <% content
 order by 'ordrs' <<-> content
 limit  20;
 */
-create index if not exists pg_idx_trgm__content__gist on ix.pg_idx_trgm using gist (content gist_trgm_ops);
+create index if not exists pg_idx_trgm__content__gist on {schema}.pg_idx_trgm using gist (content gist_trgm_ops);
 
 /*
 Точное совпадение без учёта регистра.
 
-select node_id, surface from ix.pg_idx_trgm
+select node_id, surface from {schema}.pg_idx_trgm
 where  aspect = 'meta_path' and lower(content) = lower('dm.fact_orders');
 */
-create index if not exists pg_idx_trgm__aspect_lower_content on ix.pg_idx_trgm using btree (aspect, lower(content));
+create index if not exists pg_idx_trgm__aspect_lower_content on {schema}.pg_idx_trgm using btree (aspect, lower(content));
 
 /*
 Подсказка при наборе по префиксу. Обычный btree по lower(content) для
@@ -69,10 +51,10 @@ create index if not exists pg_idx_trgm__aspect_lower_content on ix.pg_idx_trgm u
 like используется оператор ^@ (starts with): в like подчёркивание значит
 «любой символ», и имя fact_orders пришлось бы экранировать.
 
-select node_id, surface, content from ix.pg_idx_trgm
+select node_id, surface, content from {schema}.pg_idx_trgm
 where  aspect = 'meta_name' and lower(content) ^@ lower('fact_ord')
 limit  20;
 */
 create index if not exists pg_idx_trgm__aspect_lower_content__prefix
-    on ix.pg_idx_trgm using btree (aspect, lower(content) varchar_pattern_ops);
-create index if not exists pg_idx_trgm__surface_aspect on ix.pg_idx_trgm using btree (surface, aspect);
+    on {schema}.pg_idx_trgm using btree (aspect, lower(content) varchar_pattern_ops);
+create index if not exists pg_idx_trgm__surface_aspect on {schema}.pg_idx_trgm using btree (surface, aspect);

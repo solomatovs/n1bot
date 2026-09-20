@@ -1,8 +1,8 @@
 """Воркер векторного индексатора: очередь из ix, резка на чанки, эмбеддинг провайдером
 проекта, запись набора чанков аспекта.
 
-Один цикл: 10_queue.sql пачкой, текст каждого аспекта режется токенизатором модели на окна
-с перекрытием, embed_documents провайдера boba.llm.embedding по всем чанкам пачки,
+Один цикл: 10_queue.sql пачкой, текст каждого аспекта режется токенизатором модели
+на окна с перекрытием, embed_documents провайдера boba.llm.embedding по чанкам пачки,
 20_write.sql на каждый аспект (весь набор его чанков одним statement'ом), 90_unlock.sql,
 и так до пустой очереди; в конце 30_prune.sql. SQL-файлы читаются как есть, параметры
 передаются словарём по именам.
@@ -20,13 +20,21 @@ import re
 from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
+from typing import ClassVar
 
 import psycopg
 from psycopg import sql
 from pydantic import BaseModel, Field
 from tokenizers import Tokenizer
 
+from boba.config import ConfigError, bind_section
 from boba.llm.embedding import EmbedderFactory, EmbeddingError, LocalEmbedding
+from boba.pg_ix_core.schema_name import SchemaName, StorageSchema
+from boba.pg_ix_core.upgrade import (
+    SchemaUpgrade,
+    SchemaUpgradeError,
+    UpgradeConfig,
+)
 
 logger = logging.getLogger("pg-idx-vector")
 
@@ -42,7 +50,7 @@ class SqlFile(StrEnum):
     UNLOCK = "90_unlock.sql"
 
 
-class WorkerConfig(BaseModel):
+class WorkerConfig(StorageSchema):
     dsn: str
     model: str = "intfloat/multilingual-e5-large"
     cache_dir: str
@@ -63,18 +71,25 @@ class QueueRow(BaseModel):
 
 
 class Chunker:
-    """Режет текст аспекта на окна по токенам модели с перекрытием. Токенизатор берётся из
-    того же кэша fastembed, что и модель, поэтому границы совпадают с тем, что видит модель.
+    """
+    Режет текст аспекта на окна по токенам модели с перекрытием. Токенизатор берётся из
+    того же кэша fastembed, что и модель, поэтому границы совпадают с тем, что видит
+    модель.
     Текст короче окна остаётся одним чанком без перекодирования."""
 
     TOKENIZER_GLOB = "models--*/snapshots/*/tokenizer.json"
 
     def __init__(self, cache_dir: str, chunk_tokens: int, overlap: int) -> None:
         if overlap >= chunk_tokens:
-            raise VectorWorkerError(f"chunking: overlap {overlap} must be smaller than chunk size {chunk_tokens}")
+            raise VectorWorkerError(
+                f"chunking: overlap {overlap} must be smaller than chunk size "
+                "{chunk_tokens}"
+            )
         found = sorted(Path(cache_dir).glob(self.TOKENIZER_GLOB))
         if not found:
-            raise VectorWorkerError(f"chunking: no tokenizer.json under {cache_dir}/{self.TOKENIZER_GLOB}")
+            raise VectorWorkerError(
+                f"chunking: no tokenizer.json under {cache_dir}/{self.TOKENIZER_GLOB}"
+            )
         self._tokenizer = Tokenizer.from_file(str(found[0]))
         self._size = chunk_tokens
         self._step = chunk_tokens - overlap
@@ -86,7 +101,7 @@ class Chunker:
         chunks: list[str] = []
         start = 0
         while start < len(ids):
-            chunks.append(self._tokenizer.decode(ids[start:start + self._size]))
+            chunks.append(self._tokenizer.decode(ids[start : start + self._size]))
             if start + self._size >= len(ids):
                 break
             start += self._step
@@ -100,15 +115,19 @@ class CycleReport(BaseModel):
 
 
 class PackageSql:
-    """Файлы цикла из каталога run/ пакета; параметры именованные, в стиле psycopg. У шага может
-    быть вариант с суффиксом __<имя> и заголовком `-- @requires <таблица>`: он берётся, когда
-    все перечисленные таблицы существуют в базе (to_regclass), иначе базовый файл. Так индекс
-    подхватывает описания от pg-llm-describer, если тот установлен, и работает без него."""
+    """Файлы цикла из каталога run/ пакета; параметры именованные, в стиле psycopg.
+
+    У шага может быть вариант с суффиксом __<имя> и заголовком `-- @requires
+    <таблица>`: он берётся, когда все перечисленные таблицы есть в базе
+    (to_regclass), иначе берётся базовый файл. Так индекс подхватывает описания от
+    pg-llm-describer, если тот установлен, и работает без него.
+    """
 
     REQUIRES = re.compile(r"^-- @requires\s+(.+)$", re.M)
 
-    def __init__(self, package_dir: Path) -> None:
+    def __init__(self, package_dir: Path, db_schema: str) -> None:
         self._dir = package_dir
+        self._db_schema = db_schema
         self._present: dict[str, bool] = {}
 
     def load(self, name: SqlFile, conn: psycopg.Connection) -> bytes:
@@ -116,15 +135,18 @@ class PackageSql:
         chosen = self._dir / name
         for variant in sorted(self._dir.glob(f"{stem}__*.sql")):
             text = variant.read_text(encoding="utf-8")
-            required = [t.strip() for m in self.REQUIRES.finditer(text) for t in m.group(1).split()]
+            required = [
+                t.strip()
+                for m in self.REQUIRES.finditer(text)
+                for t in m.group(1).split()
+            ]
             if required and all(self._exists(conn, t) for t in required):
                 chosen = variant
-        return chosen.read_text(encoding="utf-8").encode("utf-8")
+        return SchemaName.render(chosen.read_text(encoding="utf-8"), self._db_schema)
 
     def _exists(self, conn: psycopg.Connection, table: str) -> bool:
         if table not in self._present:
-            record = conn.execute("select to_regclass(%s) is not null", (table,)).fetchone()
-            self._present[table] = bool(record is not None and record[0])
+            self._present[table] = SchemaName.exists(conn, self._db_schema, table)
         return self._present[table]
 
 
@@ -184,38 +206,70 @@ class VectorWorker:
                 flat.extend(parts)
             vectors = await self._embed(flat)
             offset = 0
-            for row, parts in zip(rows, chunks):
-                self._write(conn, row, parts, vectors[offset:offset + len(parts)])
+            for row, parts in zip(rows, chunks, strict=True):
+                self._write(conn, row, parts, vectors[offset : offset + len(parts)])
                 offset += len(parts)
             self._unlock(conn)
             rounds += 1
             written += len(rows)
-            logger.info("round %d: %d aspects written as %d chunks", rounds, len(rows), len(flat))
+            logger.info(
+                "round %d: %d aspects written as %d chunks",
+                rounds,
+                len(rows),
+                len(flat),
+            )
         return rounds, written
 
     def _queue(self, conn: psycopg.Connection) -> list[QueueRow]:
-        cur = conn.execute(self._sql.load(SqlFile.QUEUE, conn), {"batch": self._cfg.batch})
+        cur = conn.execute(
+            self._sql.load(SqlFile.QUEUE, conn), {"batch": self._cfg.batch}
+        )
         rows: list[QueueRow] = []
         for node_id, surface, aspect, content, content_hash in cur.fetchall():
-            rows.append(QueueRow(node_id=node_id, surface=surface, aspect=aspect, content=content, content_hash=content_hash))
+            rows.append(
+                QueueRow(
+                    node_id=node_id,
+                    surface=surface,
+                    aspect=aspect,
+                    content=content,
+                    content_hash=content_hash,
+                )
+            )
         return rows
 
     async def _embed(self, contents: Sequence[str]) -> Sequence[Sequence[float]]:
         try:
             vectors = await self._embedder.embed_documents(contents)
         except EmbeddingError as exc:
-            raise VectorWorkerError(f"embedding {len(contents)} chunks with {self._cfg.model}: {exc}") from exc
+            raise VectorWorkerError(
+                f"embedding {len(contents)} chunks with {self._cfg.model}: {exc}"
+            ) from exc
         if len(vectors) != len(contents):
-            raise VectorWorkerError(f"embedding {len(contents)} chunks: expected {len(contents)} vectors, got {len(vectors)}")
+            raise VectorWorkerError(
+                f"embedding {len(contents)} chunks: expected {len(contents)} vectors, "
+                "got {len(vectors)}"
+            )
         return vectors
 
-    def _write(self, conn: psycopg.Connection, row: QueueRow, parts: Sequence[str], vectors: Sequence[Sequence[float]]) -> None:
+    def _write(
+        self,
+        conn: psycopg.Connection,
+        row: QueueRow,
+        parts: Sequence[str],
+        vectors: Sequence[Sequence[float]],
+    ) -> None:
         rendered: list[str] = []
         for vector in vectors:
             rendered.append("[" + ",".join(f"{value:.6g}" for value in vector) + "]")
         params = {
-            "node_id": row.node_id, "surface": row.surface, "aspect": row.aspect, "content_hash": row.content_hash,
-            "chunk_count": len(parts), "chunk_nos": list(range(len(parts))), "contents": list(parts), "embs": rendered,
+            "node_id": row.node_id,
+            "surface": row.surface,
+            "aspect": row.aspect,
+            "content_hash": row.content_hash,
+            "chunk_count": len(parts),
+            "chunk_nos": list(range(len(parts))),
+            "contents": list(parts),
+            "embs": rendered,
         }
         conn.execute(self._sql.load(SqlFile.WRITE, conn), params)
 
@@ -230,42 +284,73 @@ class VectorWorker:
         return int(record[1])
 
 
+class Command(StrEnum):
+    """Что делает запуск: накатить свою схему или отработать цикл."""
+
+    UPGRADE = "upgrade"
+    RUN = "run"
+
+
 class Cli:
-    """Аргументы командной строки в WorkerConfig."""
+    """Команда и путь к конфигу; настройки берутся из секции [ix.idx_vector]."""
+
+    SECTION: ClassVar[str] = "ix.idx_vector"
 
     @classmethod
-    def parse(cls, argv: Sequence[str] | None = None) -> WorkerConfig:
-        parser = argparse.ArgumentParser(description="pg-idx-vector worker")
-        parser.add_argument("--dsn", required=True, help="Строка подключения к базе ix (host=... dbname=... user=... password=...). Единственное место, где задаются креды.")
-        parser.add_argument("--cache-dir", required=True, help="Каталог с весами fastembed (models--qdrant--...), как в конфиге проекта: compose/chainlit/models/fastembed.")
-        parser.add_argument("--model", default="intfloat/multilingual-e5-large", help="Имя модели эмбеддингов в терминах fastembed. Должно совпадать с той, под которую создана таблица и размерность.")
-        parser.add_argument("--dim", type=int, default=1024, help="Размерность вектора; должна совпадать с типом колонки emb в таблице (halfvec(1024)). Провайдер падает, если модель вернула другую.")
-        parser.add_argument("--chunk-tokens", type=int, default=400, help="Размер окна чанка в токенах модели. Окно e5 это 512 токенов, из них 3 уходят на префикс passage:, остальное запас; длинный текст аспекта режется на такие окна.")
-        parser.add_argument("--chunk-overlap", type=int, default=50, help="На сколько токенов соседние чанки перекрываются, чтобы фраза на границе попала в оба.")
-        parser.add_argument("--batch", type=int, default=64, help="Сколько текстов брать из очереди и кодировать моделью за один раз. Столько же строк держится в памяти между очередью и записью.")
-        args = parser.parse_args(argv)
-        return WorkerConfig(
-            dsn=args.dsn,
-            cache_dir=args.cache_dir,
-            model=args.model,
-            dim=args.dim,
-            batch=args.batch,
-            chunk_tokens=args.chunk_tokens,
-            chunk_overlap=args.chunk_overlap,
+    def parse(cls, argv: Sequence[str] | None = None) -> tuple[Command, Path]:
+        parser = argparse.ArgumentParser(
+            prog="boba-pg-idx-vector",
+            description=(
+                "Векторный индексатор pg_idx_emb_e5_1024: схема пакета и цикл чанков."
+            ),
         )
+        parser.add_argument(
+            "command",
+            type=Command,
+            choices=list(Command),
+            help=(
+                "upgrade — накатить схему пакета в базу ix (идемпотентно, ядро "
+                "должно быть уже накачено пакетом pg-ix-core); run — рабочий цикл."
+            ),
+        )
+        parser.add_argument(
+            "--config",
+            required=True,
+            type=Path,
+            help=(
+                "Путь к файлу конфига приложения (toml). Все настройки, включая "
+                "строку подключения к базе ix, берутся из секции [ix.idx_vector]."
+            ),
+        )
+        args = parser.parse_args(argv)
+
+        return args.command, args.config
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
-    cfg = Cli.parse()
-    worker = VectorWorker(cfg, PackageSql(Path(__file__).resolve().parent / "run"))
-    report = asyncio.run(worker.run())
-    logger.info(
-        "done: rounds=%d written=%d pruned=%d",
-        report.rounds,
-        report.written,
-        report.pruned,
-    )
+
+    package_dir = Path(__file__).resolve().parent
+    try:
+        command, config_path = Cli.parse()
+
+        if command is Command.UPGRADE:
+            upgrade = bind_section(config_path, Cli.SECTION, UpgradeConfig)
+            report = SchemaUpgrade(package_dir / "schema").run(upgrade)
+            logger.info("schema applied: %s", ", ".join(report.files))
+            return
+
+        cfg = bind_section(config_path, Cli.SECTION, WorkerConfig)
+        worker = VectorWorker(cfg, PackageSql(package_dir / "run", cfg.db_schema))
+        report = asyncio.run(worker.run())
+        logger.info(
+            "done: rounds=%d written=%d pruned=%d",
+            report.rounds,
+            report.written,
+            report.pruned,
+        )
+    except (ConfigError, SchemaUpgradeError, VectorWorkerError) as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 if __name__ == "__main__":

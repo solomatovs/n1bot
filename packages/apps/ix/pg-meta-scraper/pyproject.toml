@@ -4,18 +4,20 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-pg-meta-scraper"
-version = "0.0.20.dev6"
+version = "0.0.20.dev7"
 description = "Скрапер каталога PostgreSQL/Greenplum в ядро ix: node, tree, edge и поверхности pg_meta_*."
 requires-python = ">=3.11,<4"
 dependencies = [
+    "boba-config==0.0.20.dev7",
+    "boba-pg-ix-core==0.0.20.dev7",
     "psycopg[binary]>=3.2",
     "pydantic>=2.10,<2.11",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "boba-runtime==0.0.20.dev6",
-    "boba-stand==0.0.20.dev6",
+    "boba-runtime==0.0.20.dev7",
+    "boba-stand==0.0.20.dev7",
     "pytest>=8",
 ]
 

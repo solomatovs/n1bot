@@ -48,6 +48,7 @@ pythonpath = [
     "packages/tools/boba-tool-clickhouse/src",
     "packages/tools/boba-tool-knowledge/src",
     "packages/tools/boba-tool-confluence/src",
+    "packages/apps/ix/pg-ix-core/src",
     "packages/apps/ix/pg-meta-scraper/src",
     "packages/apps/ix/pg-llm-describer/src",
     "packages/apps/ix/pg-idx-fts/src",
@@ -119,6 +120,7 @@ extraPaths = [
     "packages/tools/boba-tool-clickhouse/src",
     "packages/tools/boba-tool-knowledge/src",
     "packages/tools/boba-tool-confluence/src",
+    "packages/apps/ix/pg-ix-core/src",
     "packages/apps/ix/pg-meta-scraper/src",
     "packages/apps/ix/pg-llm-describer/src",
     "packages/apps/ix/pg-idx-fts/src",
@@ -226,6 +228,7 @@ boba-transport-http = { workspace = true }
 boba-db-postgres    = { workspace = true }
 boba-db-pgvector    = { workspace = true }
 boba-db-clickhouse  = { workspace = true }
+boba-pg-ix-core     = { workspace = true }
 boba-pg-meta-scraper= { workspace = true }
 boba-pg-llm-describer= { workspace = true }
 boba-pg-idx-fts     = { workspace = true }

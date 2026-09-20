@@ -15,7 +15,7 @@ insert into stage_node (kind, oid, surface, address)
 select 'rel', c.oid, case when c.relkind in ('v', 'm') then 'pg_meta_view'
             when c.relkind = 'S' then 'pg_meta_sequence'
             when c.relkind in ('i', 'I') then 'pg_meta_index'
-            else 'pg_meta_table' end::ix.surface_e, a
+            else 'pg_meta_table' end::{schema}.surface_e, a
 from raw_class c
 join raw_namespace ns on ns.oid = c.relnamespace, raw_source s,
      lateral (select jsonb_build_object('scheme', s.scheme, 'host', s.host, 'port', s.port, 'database', s.database,

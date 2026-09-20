@@ -7,7 +7,6 @@ IxStandError — секция [ix_stand] отсутствует или непо�
 
 from __future__ import annotations
 
-import subprocess
 import tomllib
 from collections.abc import Sequence
 from enum import StrEnum
@@ -20,13 +19,23 @@ from psycopg import sql
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from boba.pg_ix_core import main as core
+from boba.pg_ix_core.schema_name import SchemaName, StorageSchema
+from boba.pg_ix_core.upgrade import SchemaUpgrade, UpgradeConfig
 from boba.pg_meta_scraper import worker as scraper
-from boba.pg_meta_scraper.worker import ApplyRow, ScrapeWorker, ServerInfo, VersionGate, WorkerConfig
+from boba.pg_meta_scraper.worker import (
+    ApplyRow,
+    ScrapeWorker,
+    ServerInfo,
+    VersionGate,
+    WorkerConfig,
+)
 from boba.runtime.config import ConfigLocator
 from boba.stand.site import StandLayers
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 PACKAGE_DIR = Path(scraper.__file__).resolve().parent
+CORE_SCHEMA_DIR = Path(core.__file__).resolve().parent / "schema"
 STAND_DIR = Path(__file__).resolve().parent / "stand"
 
 
@@ -35,7 +44,6 @@ class IxStandError(Exception):
 
 
 class StandFile(StrEnum):
-    CORE_SCHEMA = "docs/knowledge-schema.sql"
     CANON = "cons/canon.sql"
     CONSISTENCY = "cons/consistency.sql"
     GOLDEN = "cons/golden.txt"
@@ -73,7 +81,7 @@ class IxSource(BaseModel):
 
 
 class IxStand(BaseModel):
-    """Секция [ix_stand]: база ix для прогонов и список источников."""
+    """Секция [ix_stand]: база ix для прогонов, схема графа и список источников."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -81,6 +89,7 @@ class IxStand(BaseModel):
 
     ix_dsn: str
     database: str
+    db_schema: str = StorageSchema.DEFAULT
     sources: Sequence[IxSource]
 
     @classmethod
@@ -109,7 +118,9 @@ class IxStand(BaseModel):
         for item in self.sources:
             if item.name == name:
                 return item
-        raise IxStandError(f"ix stand: source {name!r} is not listed in [{self.SECTION}]")
+        raise IxStandError(
+            f"ix stand: source {name!r} is not listed in [{self.SECTION}]"
+        )
 
     @property
     def ix_database_dsn(self) -> str:
@@ -130,17 +141,29 @@ class DdlFile(VersionGate):
 
 
 class DemoDataset:
-    """Пересоздаёт edge_demo на источнике из stand/ddl, выбирая варианты по версии сервера."""
+    """Пересоздаёт edge_demo на источнике из stand/ddl, выбирая варианты по версии
+    сервера."""
 
     def __init__(self, source: IxSource) -> None:
         self._source = source
-        self._files = [DdlFile.parse(p) for p in sorted(StandFile.DDL_DIR.under_stand().glob("*.sql"))]
+        self._files = [
+            DdlFile.parse(p)
+            for p in sorted(StandFile.DDL_DIR.under_stand().glob("*.sql"))
+        ]
 
     def recreate(self) -> ServerInfo:
-        with psycopg.connect(self._source.dsn_of(IxSource.MAINTENANCE_DB), autocommit=True) as conn:
+        with psycopg.connect(
+            self._source.dsn_of(IxSource.MAINTENANCE_DB), autocommit=True
+        ) as conn:
             server = self._server(conn)
-            conn.execute(sql.SQL("drop database if exists {}").format(sql.Identifier(IxSource.DEMO_DB)))
-            conn.execute(sql.SQL("create database {}").format(sql.Identifier(IxSource.DEMO_DB)))
+            conn.execute(
+                sql.SQL("drop database if exists {}").format(
+                    sql.Identifier(IxSource.DEMO_DB)
+                )
+            )
+            conn.execute(
+                sql.SQL("create database {}").format(sql.Identifier(IxSource.DEMO_DB))
+            )
 
         with psycopg.connect(self._source.demo_dsn, autocommit=True) as conn:
             for file in self._files:
@@ -155,8 +178,12 @@ class DemoDataset:
         version = conn.execute("show server_version_num").fetchone()
         banner = conn.execute("select version()").fetchone()
         if version is None or banner is None:
-            raise IxStandError("source: expected server_version_num and version(), got none")
-        return ServerInfo(version_num=int(version[0]), is_greenplum="Greenplum" in str(banner[0]))
+            raise IxStandError(
+                "source: expected server_version_num and version(), got none"
+            )
+        return ServerInfo(
+            version_num=int(version[0]), is_greenplum="Greenplum" in str(banner[0])
+        )
 
 
 class Fingerprint(BaseModel):
@@ -181,7 +208,9 @@ class Golden:
 
     def __init__(self) -> None:
         self._by_name: dict[str, Fingerprint] = {}
-        for line in StandFile.GOLDEN.under_stand().read_text(encoding="utf-8").splitlines():
+        for line in (
+            StandFile.GOLDEN.under_stand().read_text(encoding="utf-8").splitlines()
+        ):
             if not line.strip():
                 continue
             name, rows, digest = line.split()
@@ -195,9 +224,8 @@ class Golden:
 
 
 class IxDatabase:
-    """База ix стенда: пересоздаётся с ядром из docs/knowledge-schema.sql и схемой пакета."""
-
-    PSQL: ClassVar[str] = "psql"
+    """База ix стенда: пересоздаётся с ядром пакета pg-ix-core и схемой
+    пакета."""
 
     def __init__(self, stand: IxStand) -> None:
         self._stand = stand
@@ -205,25 +233,25 @@ class IxDatabase:
     def recreate(self) -> None:
         with psycopg.connect(self._stand.ix_dsn, autocommit=True) as conn:
             conn.execute(
-                sql.SQL("drop database if exists {} with (force)").format(sql.Identifier(self._stand.database))
+                sql.SQL("drop database if exists {} with (force)").format(
+                    sql.Identifier(self._stand.database)
+                )
             )
-            conn.execute(sql.SQL("create database {}").format(sql.Identifier(self._stand.database)))
+            conn.execute(
+                sql.SQL("create database {}").format(
+                    sql.Identifier(self._stand.database)
+                )
+            )
 
-        self._psql(StandFile.CORE_SCHEMA.under_repo())
-        for path in sorted((PACKAGE_DIR / StandFile.SCHEMA_DIR).glob("*.sql")):
-            self._psql(path)
-
-    def _psql(self, script: Path) -> None:
-        """Скрипт схемы командой за командой, как его применяет оператор: новые значения
-        enum должны быть закоммичены до использования, одной строкой через psycopg так нельзя."""
-        argv = [self.PSQL, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-f", str(script), self._stand.ix_database_dsn]
-        done = subprocess.run(argv, capture_output=True, text=True, check=False)
-        if done.returncode != 0:
-            raise IxStandError(f"ix stand: applying {script} with psql failed: {done.stderr.strip()}")
+        upgrade = UpgradeConfig(
+            dsn=self._stand.ix_database_dsn, db_schema=self._stand.db_schema
+        )
+        SchemaUpgrade(CORE_SCHEMA_DIR, requires_core=False).run(upgrade)
+        SchemaUpgrade(PACKAGE_DIR / StandFile.SCHEMA_DIR).run(upgrade)
 
     def invariants(self) -> dict[str, int]:
         """Инварианты структуры, у которых счётчик не ноль."""
-        query = StandFile.CONSISTENCY.under_stand().read_bytes()
+        query = self._query(StandFile.CONSISTENCY)
         with psycopg.connect(self._stand.ix_database_dsn) as conn:
             rows = conn.execute(query).fetchall()
         broken: dict[str, int] = {}
@@ -233,22 +261,37 @@ class IxDatabase:
         return broken
 
     def fingerprint(self, host: str) -> Fingerprint:
-        query = StandFile.CANON.under_stand().read_bytes()
+        query = self._query(StandFile.CANON)
         with psycopg.connect(self._stand.ix_database_dsn) as conn:
             row = conn.execute(query, {"host": host}).fetchone()
         if row is None:
-            raise IxStandError(f"ix stand: fingerprint of {host}: expected one row, got none")
+            raise IxStandError(
+                f"ix stand: fingerprint of {host}: expected one row, got none"
+            )
         return Fingerprint.parse(str(row[0]))
 
     def scope_nodes(self, host: str) -> int:
+        query = SchemaName.render(
+            "select count(*) from {schema}.node where address->>'host' = %(host)s",
+            self._stand.db_schema,
+        )
         with psycopg.connect(self._stand.ix_database_dsn) as conn:
-            row = conn.execute("select count(*) from ix.node where address->>'host' = %(host)s", {"host": host}).fetchone()
+            row = conn.execute(query, {"host": host}).fetchone()
         if row is None:
-            raise IxStandError(f"ix stand: node count of {host}: expected one row, got none")
+            raise IxStandError(
+                f"ix stand: node count of {host}: expected one row, got none"
+            )
         return int(row[0])
 
+    def _query(self, name: StandFile) -> bytes:
+        """Запрос стенда под схему графа: в файлах она стоит плейсхолдером."""
+        text = name.under_stand().read_text(encoding="utf-8")
+        return SchemaName.render(text, self._stand.db_schema)
+
     def scrape(self, source: IxSource) -> Sequence[ApplyRow]:
-        cfg = WorkerConfig(source_dsn=source.demo_dsn, ix_dsn=self._stand.ix_database_dsn)
+        cfg = WorkerConfig(
+            source_dsn=source.demo_dsn, ix_dsn=self._stand.ix_database_dsn
+        )
         return ScrapeWorker(cfg, PACKAGE_DIR).run()
 
 

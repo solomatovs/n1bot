@@ -4,12 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-pg-llm-describer"
-version = "0.0.20.dev6"
+version = "0.0.20.dev7"
 description = "Описатель объектов ix через LLM: таблица pg_llm_description по структуре из pg_meta_*."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-chat==0.0.20.dev6",
-    "boba-llm==0.0.20.dev6",
+    "boba-config==0.0.20.dev7",
+    "boba-pg-ix-core==0.0.20.dev7",
+    "boba-chat==0.0.20.dev7",
+    "boba-llm==0.0.20.dev7",
     "psycopg[binary]>=3.2",
     "pydantic>=2.10,<2.11",
 ]

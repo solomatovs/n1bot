@@ -1,22 +1,7 @@
 /*
-pg-meta-scraper, схема, шаг 0: поверхности, которыми владеет скрапер.
-Предусловие: ядро ix из docs/knowledge-schema.sql (schema ix, тип ix.surface_e, таблицы
-ix.surface, ix.node, ix.tree, ix.edge). Все команды идемпотентны.
+pg-meta-scraper, схема, шаг 1: строки словаря {schema}.surface.
 */
-alter type ix.surface_e add value if not exists 'pg_meta_database';
-alter type ix.surface_e add value if not exists 'pg_meta_schema';
-alter type ix.surface_e add value if not exists 'pg_meta_table';
-alter type ix.surface_e add value if not exists 'pg_meta_column';
-alter type ix.surface_e add value if not exists 'pg_meta_view';
-alter type ix.surface_e add value if not exists 'pg_meta_index';
-alter type ix.surface_e add value if not exists 'pg_meta_sequence';
-alter type ix.surface_e add value if not exists 'pg_meta_routine';
-alter type ix.surface_e add value if not exists 'pg_meta_constraint';
-alter type ix.surface_e add value if not exists 'pg_meta_trigger';
-alter type ix.surface_e add value if not exists 'pg_meta_type';
-alter type ix.surface_e add value if not exists 'pg_meta_statistics';
-
-insert into ix.surface (name, description) values
+insert into {schema}.surface (name, description) values
     ('pg_meta_database',           'База данных источника PostgreSQL или Greenplum; корень tree источника.'),
     ('pg_meta_schema',             'Схема базы данных.'),
     ('pg_meta_table',              'Таблица: обычная, секционированная, секция, внешняя.'),

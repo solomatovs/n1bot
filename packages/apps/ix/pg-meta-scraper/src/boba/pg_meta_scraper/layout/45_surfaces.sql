@@ -1,5 +1,5 @@
 -- Стадии surface: свойства node по видам, из raw_* через stage_node. Одна temp-таблица на
--- surface, первая колонка address, дальше колонки surface-таблицы ix.<surface> по порядку.
+-- surface, первая колонка address, дальше колонки surface-таблицы {schema}.<surface> по порядку.
 -- Комментарии из raw_description по (objoid, classoid, objsubid): classoid это OID каталога
 -- владельца (pg_class 1259, pg_type 1247, pg_proc 1255, pg_constraint 2606, pg_trigger 2620,
 -- pg_namespace 2615, pg_statistic_ext 3381), база из raw_shdescription (pg_database 1262).

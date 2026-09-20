@@ -2,8 +2,8 @@
 pg-meta-scraper, схема, шаг 2: surface-таблицы node PostgreSQL и Greenplum, ключ node_id.
 Изменившаяся строка удаляется и вставляется заново, полей updated_at и content_hash нет.
 */
-create table if not exists ix.pg_meta_database (
-    node_id          bigint primary key references ix.node on delete cascade,
+create table if not exists {schema}.pg_meta_database (
+    node_id          bigint primary key references {schema}.node on delete cascade,
     name             varchar,
     owner            varchar,
     encoding         varchar,
@@ -12,15 +12,15 @@ create table if not exists ix.pg_meta_database (
     comment          varchar
 );
 
-create table if not exists ix.pg_meta_schema (
-    node_id          bigint primary key references ix.node on delete cascade,
+create table if not exists {schema}.pg_meta_schema (
+    node_id          bigint primary key references {schema}.node on delete cascade,
     name             varchar,
     owner            varchar,
     comment          varchar
 );
 
-create table if not exists ix.pg_meta_table (
-    node_id          bigint primary key references ix.node on delete cascade,
+create table if not exists {schema}.pg_meta_table (
+    node_id          bigint primary key references {schema}.node on delete cascade,
     schema_name      varchar,
     name             varchar,
     kind             varchar,
@@ -37,8 +37,8 @@ create table if not exists ix.pg_meta_table (
     comment          varchar
 );
 
-create table if not exists ix.pg_meta_column (
-    node_id          bigint primary key references ix.node on delete cascade,
+create table if not exists {schema}.pg_meta_column (
+    node_id          bigint primary key references {schema}.node on delete cascade,
     schema_name      varchar,
     relation_name    varchar,
     relation_kind    varchar,
@@ -52,8 +52,8 @@ create table if not exists ix.pg_meta_column (
     comment          varchar
 );
 
-create table if not exists ix.pg_meta_view (
-    node_id          bigint primary key references ix.node on delete cascade,
+create table if not exists {schema}.pg_meta_view (
+    node_id          bigint primary key references {schema}.node on delete cascade,
     schema_name      varchar,
     name             varchar,
     kind             varchar,
@@ -61,8 +61,8 @@ create table if not exists ix.pg_meta_view (
     comment          varchar
 );
 
-create table if not exists ix.pg_meta_index (
-    node_id          bigint primary key references ix.node on delete cascade,
+create table if not exists {schema}.pg_meta_index (
+    node_id          bigint primary key references {schema}.node on delete cascade,
     schema_name      varchar,
     table_name       varchar,
     name             varchar,
@@ -77,8 +77,8 @@ create table if not exists ix.pg_meta_index (
     comment          varchar
 );
 
-create table if not exists ix.pg_meta_sequence (
-    node_id          bigint primary key references ix.node on delete cascade,
+create table if not exists {schema}.pg_meta_sequence (
+    node_id          bigint primary key references {schema}.node on delete cascade,
     schema_name      varchar,
     name             varchar,
     owner            varchar,
@@ -91,8 +91,8 @@ create table if not exists ix.pg_meta_sequence (
     comment          varchar
 );
 
-create table if not exists ix.pg_meta_routine (
-    node_id          bigint primary key references ix.node on delete cascade,
+create table if not exists {schema}.pg_meta_routine (
+    node_id          bigint primary key references {schema}.node on delete cascade,
     schema_name      varchar,
     name             varchar,
     kind             varchar,
@@ -105,8 +105,8 @@ create table if not exists ix.pg_meta_routine (
     comment          varchar
 );
 
-create table if not exists ix.pg_meta_constraint (
-    node_id          bigint primary key references ix.node on delete cascade,
+create table if not exists {schema}.pg_meta_constraint (
+    node_id          bigint primary key references {schema}.node on delete cascade,
     schema_name      varchar,
     table_name       varchar,
     name             varchar,
@@ -121,8 +121,8 @@ create table if not exists ix.pg_meta_constraint (
     comment          varchar
 );
 
-create table if not exists ix.pg_meta_trigger (
-    node_id          bigint primary key references ix.node on delete cascade,
+create table if not exists {schema}.pg_meta_trigger (
+    node_id          bigint primary key references {schema}.node on delete cascade,
     schema_name      varchar,
     table_name       varchar,
     name             varchar,
@@ -133,8 +133,8 @@ create table if not exists ix.pg_meta_trigger (
     comment          varchar
 );
 
-create table if not exists ix.pg_meta_type (
-    node_id          bigint primary key references ix.node on delete cascade,
+create table if not exists {schema}.pg_meta_type (
+    node_id          bigint primary key references {schema}.node on delete cascade,
     schema_name      varchar,
     name             varchar,
     kind             varchar,
@@ -143,8 +143,8 @@ create table if not exists ix.pg_meta_type (
     comment          varchar
 );
 
-create table if not exists ix.pg_meta_statistics (
-    node_id          bigint primary key references ix.node on delete cascade,
+create table if not exists {schema}.pg_meta_statistics (
+    node_id          bigint primary key references {schema}.node on delete cascade,
     schema_name      varchar,
     name             varchar,
     table_name       varchar,

@@ -4,16 +4,21 @@
 vector) поверх схемы `ix`. Нужен, чтобы подбирать поисковые запросы и ранжирование на живых
 данных. Не часть приложения.
 
+Настройки берутся из одного файла конфига, секция [ix.search_lab]; пример
+секции лежит рядом в `conf.example.toml`. Все секции приложений ix обычно живут в одном
+файле, общие значения можно вынести в `[ix]` и ссылаться на них интерполяцией
+(`dsn = "${ix.dsn}"`).
+
 ```
-.venv/bin/boba-pg-search-lab \
-    --dsn "host=... dbname=... user=... password=..." \
-    --cache-dir compose/chainlit/models/fastembed \
-    --port 8700
+.venv/bin/boba-pg-search-lab --config conf/ix.toml
 ```
+
+Схема хранения задаётся полем `db_schema` секции (по умолчанию `ix`): в sql-файлах она
+стоит плейсхолдером `{schema}`, имя берётся из конфига, а квотирует его psycopg.
 
 Дальше http://127.0.0.1:8700/ или через nginx по /boba-search/ (location в
 /app/docker/compose/nginx/conf.d/locations/boba.conf проксирует на хост, порт 8700; сервер тогда
-запускается с `--host 0.0.0.0`). Ключи: `--host`, `--port`, `--model`, `--dim`, как у
+в секции стоит `host = "0.0.0.0"`). Поля секции: `host`, `port`, `model`, `dim`, как у
 `pg-idx-vector`; вектор запроса считает тот же провайдер проекта (`embed_query`,
 префикс `query:`).
 
