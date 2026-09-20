@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-pg-llm-describer"
+version = "0.0.20.dev6"
+description = "Описатель объектов ix через LLM: таблица pg_llm_description по структуре из pg_meta_*."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba-chat==0.0.20.dev6",
+    "boba-llm==0.0.20.dev6",
+    "psycopg[binary]>=3.2",
+    "pydantic>=2.10,<2.11",
+]
+
+[project.scripts]
+boba-pg-llm-describer = "boba.pg_llm_describer.worker:main"
+
+[tool.setuptools.package-data]
+"boba.pg_llm_describer" = ["*/*.sql", "*/*.md", "*/*.json", "*.html"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

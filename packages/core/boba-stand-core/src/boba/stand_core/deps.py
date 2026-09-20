@@ -7,7 +7,7 @@ dependencies и extras кроме dev, tests — с dependencies и экстро
 владельца boba.* — каталоги src пакетов репозитория. Подмодуль, который живёт
 за extra владельца ([tool.boba.extras] в его pyproject), требует у импортёра
 объявления этого extra. Слой пакета — каталог под packages: core ← infra ←
-services ← agents; ребро против направления в src — расхождение, tools —
+services ← agents/apps; ребро против направления в src — расхождение, tools —
 плагины и в services не импортируются, testing вне оси. Циклы ищутся по
 dependencies.
 
@@ -94,6 +94,7 @@ class Layer(StrEnum):
     SERVICES = "services"
     TOOLS = "tools"
     AGENTS = "agents"
+    APPS = "apps"
     TESTING = "testing"
 
     @classmethod
@@ -115,6 +116,7 @@ class Layer(StrEnum):
             Layer.SERVICES: 2,
             Layer.TOOLS: 2,
             Layer.AGENTS: 3,
+            Layer.APPS: 3,
             Layer.TESTING: 4,
         }
 
@@ -122,12 +124,12 @@ class Layer(StrEnum):
 
     def may_import(self, other: Layer) -> bool:
         """Ребро слоя к слою: только вниз или вбок; tools — плагины, их знают
-        только agents и testing; testing вне оси и импортирует что угодно."""
+        только agents, apps и testing; testing вне оси и импортирует что угодно."""
         if self is Layer.TESTING:
             return True
 
         if other is Layer.TOOLS:
-            return self in (Layer.TOOLS, Layer.AGENTS)
+            return self in (Layer.TOOLS, Layer.AGENTS, Layer.APPS)
 
         return other.rank() <= self.rank()
 
@@ -713,7 +715,7 @@ class DepsAudit:
     def _layer_findings(
         self, project: PackageProject, used: Mapping[str, set[str]]
     ) -> Iterator[Finding]:
-        """Ребро src против направления слоёв: core ← infra ← services ← agents."""
+        """Ребро src против направления слоёв: core ← infra ← services ← agents/apps."""
         layer = self._layers[project.name]
         for dist in sorted(used):
             other = self._layers.get(dist)

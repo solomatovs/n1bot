@@ -11,6 +11,8 @@ __pycache__
 !/docs/admin-guide.md
 !/docs/knowledge-graph-plan.md
 !/docs/knowledge-schema.sql
+!/docs/psql-queries/
+/docs/psql-queries/*.log
 .claude
 CLAUDE.md
 
@@ -62,9 +64,3 @@ packages/agents/boba-chainlit/web/catalog/*.tsbuildinfo
 packages/agents/boba-chainlit/assets/catalog/
 packages/agents/boba-chainlit/assets/ui/
 /docs/catalog.md
-!/docs/pg-meta-scraper/
-!/docs/pg-idx-fts/
-!/docs/pg-idx-trgm/
-!/docs/pg-idx-vector/
-!/docs/pg-search-lab/
-!/docs/pg-llm-describer/

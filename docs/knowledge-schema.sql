@@ -158,7 +158,7 @@ do $$ begin
     create type ix.surface_e as enum ();
 exception when duplicate_object then null; end $$;
 
-/* значения pg_*: docs/pg-meta-scraper/schema/00_surface.sql */
+/* значения pg_*: packages/apps/ix/pg-meta-scraper/src/boba/pg_meta_scraper/schema/00_surface.sql */
 alter type ix.surface_e add value if not exists 'cfl_meta_space';
 alter type ix.surface_e add value if not exists 'cfl_meta_page';
 alter type ix.surface_e add value if not exists 'cfl_meta_attachment';
@@ -175,7 +175,7 @@ create table if not exists ix.surface (
     description  varchar      not null
 );
 
-/* строки pg_*: docs/pg-meta-scraper/schema/00_surface.sql */
+/* строки pg_*: packages/apps/ix/pg-meta-scraper/src/boba/pg_meta_scraper/schema/00_surface.sql */
 insert into ix.surface (name, description) values
     ('cfl_meta_space',      'Спейс Confluence; корень его tree.'),
     ('cfl_meta_page',       'Страница или запись блога Confluence.'),
@@ -304,7 +304,7 @@ graph). Она связана с core только через node_id и не с
 ============================================================================
 PostgreSQL и Greenplum
 
-Наполняет пакет docs/pg-meta-scraper: scrape снимает сырые таблицы каталога источника
+Наполняет пакет packages/apps/ix/pg-meta-scraper: scrape снимает сырые таблицы каталога источника
 (без представлений и без замков на пользовательских таблицах), layout раскладывает их в
 node, tree, edge, pg_edge и surface. Адрес node строится из частей: scheme, host, port,
 database, schema и один из table, view, sequence, index, function+args, type, statistics;
@@ -350,7 +350,7 @@ role называет список, side различает стороны FK, o
 На PostgreSQL 12–14 и Greenplum 7 рёбер generated-колонки нет: каталог их не записывает.
 ============================================================================
 
-DDL: docs/pg-meta-scraper/schema/10_pg_meta_edge.sql (pg_meta_edge_role_e, pg_edge) и 20_pg_meta_surfaces.sql (pg_database ... pg_statistics)
+DDL: packages/apps/ix/pg-meta-scraper/src/boba/pg_meta_scraper/schema/10_pg_meta_edge.sql (pg_meta_edge_role_e, pg_edge) и 20_pg_meta_surfaces.sql (pg_database ... pg_statistics)
 
 
 Аспекты объектов PostgreSQL. Аспект это текст объекта, по которому объект
@@ -481,7 +481,7 @@ from   ix.pg_idx_fts, websearch_to_tsquery('russian', 'заказы клиент
 where  tsv @@ q
 group by node_id order by rank desc limit 20;
 
-DDL: docs/pg-idx-fts/schema/00_pg_idx_fts.sql
+DDL: packages/apps/ix/pg-idx-fts/src/boba/pg_idx_fts/schema/00_pg_idx_fts.sql
 
 
 Конфигурация russian стеммит и русский, и английский: order/orders,
@@ -506,7 +506,7 @@ aspect. Длинный текст сюда не кладут: триграммн
 Все surface пишут name и words; path пишут таблица, колонка, представление,
 индекс, последовательность и подпрограмма.
 
-DDL: docs/pg-idx-trgm/schema/00_pg_idx_trgm.sql
+DDL: packages/apps/ix/pg-idx-trgm/src/boba/pg_idx_trgm/schema/00_pg_idx_trgm.sql
 
 
 Подстрока и опечатки по всему источнику, таблицы и колонки в одной выдаче.
@@ -547,7 +547,7 @@ columns пишут таблица и представление; summary пиш�
 с префиксом passage:, запрос с префиксом query:. content это закодированный
 текст аспекта: если он не изменился, модель повторно не запускают.
 
-DDL: docs/pg-idx-vector/schema/00_pg_idx_emb_e5_1024.sql
+DDL: packages/apps/ix/pg-idx-vector/src/boba/pg_idx_vector/schema/00_pg_idx_emb_e5_1024.sql
 */
 
 /*
