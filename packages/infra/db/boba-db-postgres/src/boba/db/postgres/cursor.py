@@ -85,7 +85,7 @@ class LoggingCursor(AsyncClientCursor[Row]):
         params: Params | None = None,
         *,
         writer: AsyncWriter | None = None,
-    ) -> AsyncGenerator[AsyncCopy]:
+    ) -> AsyncGenerator[AsyncCopy, None]:
         logger.info("pg query: %s", self.mogrify(statement, params))
 
         async with super().copy(statement, params, writer=writer) as copy:

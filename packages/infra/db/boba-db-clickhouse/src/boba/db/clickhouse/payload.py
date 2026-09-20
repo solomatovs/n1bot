@@ -8,13 +8,14 @@ ClickHouseError — до базы не достучаться (сеть, TLS, ke
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, AsyncIterable, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, ClassVar, cast
 
 from clickhouse_connect.driver.asyncclient import AsyncClient
 from clickhouse_connect.driver.exceptions import ClickHouseError as DriverError
+from clickhouse_connect.driver.query import QueryResult
 
 from boba.db.clickhouse.errors import ClickHouseError, ClickHouseQueryError
 from boba.db.clickhouse.profile import ClickHouseConfig
@@ -62,17 +63,23 @@ class SpnegoHeaders(dict[str, str]):
             raise ClickHouseError(msg) from exc
 
 
-@dataclass(frozen=True)
-class RowBlocks:
-    """Поток блоков строк и имена колонок: строки собирает вызывающий.
+@dataclass(frozen=True, slots=True)
+class RowStream:
+    names: tuple[str, ...]
+    blocks: AsyncIterator[Sequence[Any]]  # тип блока — ваш
 
-    Драйвер отдаёт имена колонок отдельно от значений, поэтому они едут
-    вместе с потоком — иначе каждый вызывающий доставал бы их сам из
-    внутренностей стрима.
-    """
 
-    names: Sequence[str]
-    blocks: AsyncIterable[Sequence[Sequence[Any]]]
+# @dataclass(frozen=True)
+# class RowBlock:
+#     """Поток блоков строк и имена колонок: строки собирает вызывающий.
+
+#     Драйвер отдаёт имена колонок отдельно от значений, поэтому они едут
+#     вместе с потоком — иначе каждый вызывающий доставал бы их сам из
+#     внутренностей стрима.
+#     """
+
+#     names: Sequence[str]
+#     block: AsyncIterable[Sequence[Sequence[Any]]]
 
 
 class PayloadClickHouse:
@@ -108,29 +115,27 @@ class PayloadClickHouse:
     @staticmethod
     @asynccontextmanager
     async def row_blocks(
-        client: AsyncClient,
         connection: ClickHouseConfig,
         text: str,
         parameters: Mapping[str, Any] | None = None,
-    ) -> AsyncGenerator[RowBlocks, None]:
+    ):
         """Блоки строк запроса; отказ сервера уходит ClickHouseQueryError."""
-        values: dict[str, Any] | None = None
-        if parameters:
-            values = dict(parameters)
-
-        try:
-            stream = await client.query_row_block_stream(text, parameters=values)
-            async with stream as blocks:
-                source = cast("Any", blocks)
-                names: Sequence[str] = source.source.column_names
-                yield RowBlocks(names=names, blocks=source)
-        except DriverError as exc:
-            target = f"{connection.host}:{connection.port}/{connection.database}"
-            msg = (
-                f"query on clickhouse {target} failed: {type(exc).__name__}: "
-                f"{exc}; query: {text[:200]!r}"
-            )
-            raise ClickHouseQueryError(msg) from exc
+        values = dict(parameters) if parameters else None
+        async with PayloadClickHouse.opened_config(connection) as client:
+            try:
+                async with await client.query_rows_stream(
+                    text, parameters=values
+                ) as stream:
+                    source = cast(QueryResult, stream.source)
+                    yield RowStream(
+                        names=tuple(source.column_names),
+                        blocks=cast(AsyncIterator, stream),
+                    )
+            except DriverError as exc:
+                raise ClickHouseQueryError(
+                    f"query on clickhouse failed: {type(exc).__name__}: {exc}; "
+                    f"query: {text[:200]!r}"
+                ) from exc
 
     @staticmethod
     @asynccontextmanager

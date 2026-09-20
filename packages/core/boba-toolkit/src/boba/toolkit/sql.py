@@ -15,14 +15,11 @@ from typing import Annotated, Any, ClassVar, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.toolkit.launcher import RowStream
-from boba.toolkit.result import ResultTooLargeError, SqlStatement
+from boba.toolkit.result import SqlStatement
 
 __all__ = [
-    "CatalogQuery",
-    "MaxChars",
-    "MaxRows",
-    "RowBudget",
+    "AbstractQuery",
+    "RowLimit",
     "RowOffset",
     "RowPage",
     "RowWindow",
@@ -52,71 +49,11 @@ RowOffset = Annotated[
 ]
 """LLM-аргумент offset: начало окна выдачи."""
 
-MaxRows = Annotated[
+RowLimit = Annotated[
     int,
-    Field(ge=1, description="Сколько строк вернуть на этой странице."),
+    Field(ge=1, description="Сколько строк вернуть"),
 ]
 """LLM-аргумент max_rows: высота окна выдачи."""
-
-MaxChars = Annotated[
-    int,
-    Field(
-        ge=1,
-        description=(
-            "Потолок символов страницы: набор строк обрывается на нём, "
-            "остаток достаётся следующим offset."
-        ),
-    ),
-]
-"""LLM-аргумент max_chars: вес окна выдачи."""
-
-
-class RowBudget:
-    """Копилка строк выборки под лимитами max_rows и max_bytes.
-
-    add возвращает False на потолке строк — выборка помечается усечённой;
-    превышение max_bytes — ResultTooLargeError. Строка драйвера приводится
-    к JSON-виду через RowStream.
-    """
-
-    def __init__(self, max_rows: int, max_bytes: int) -> None:
-        self._max_rows = max_rows
-        self._max_bytes = max_bytes
-        self._rows: list[dict[str, Any]] = []
-        self._size = 0
-        self._truncated = False
-
-    @property
-    def truncated(self) -> bool:
-        return self._truncated
-
-    @property
-    def size(self) -> int:
-        """Съеденные байты: остаток нужен следующей команде того же запроса."""
-        return self._size
-
-    def add(self, row: Mapping[str, Any]) -> bool:
-        """Добавить строку; False — потолок строк достигнут, хватит."""
-        if len(self._rows) >= self._max_rows:
-            self._truncated = True
-            return False
-
-        plain = RowStream.plain(row)
-
-        self._size += len(RowStream.encode(plain))
-        if self._size > self._max_bytes:
-            raise ResultTooLargeError.bytes_limit(self._max_bytes)
-
-        self._rows.append(plain)
-        return True
-
-    def statement(self) -> SqlStatement:
-        """Собранная выдача одной команды; усечение помечено в note."""
-        note = ""
-        if self._truncated:
-            note = f"truncated to max_rows ({self._max_rows})"
-
-        return SqlStatement(rows=self._rows, note=note)
 
 
 class RowWindow(BaseModel):
@@ -130,15 +67,17 @@ class RowWindow(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     offset: int = Field(ge=0)
-    max_rows: int = Field(ge=1)
-    max_chars: int = Field(ge=1)
+    limit: int | None = Field(default=None)
 
-    def probe(self) -> int:
+    def probe(self) -> int | None:
         """Сколько строк тянуть у драйвера: окно, а сверху разведочная строка.
 
         Лишняя строка не показывается: по ней видно, что данные не кончились.
         """
-        return self.offset + self.max_rows + 1
+        if not self.limit:
+            return None
+
+        return self.offset + self.limit + 1
 
 
 class RowPage:
@@ -150,9 +89,9 @@ class RowPage:
 
     def __init__(self, window: RowWindow) -> None:
         self._window = window
-        self._rows: list[dict[str, Any]] = []
+        self._rows: list[Mapping[str, Any]] = []
         self._skipped = 0
-        self._chars = 0
+        # self._chars = 0
         self._more = False
 
     @property
@@ -161,24 +100,22 @@ class RowPage:
         return self._more
 
     def add(self, row: Mapping[str, Any]) -> bool:
-        """Взять строку; False — окно набрано, читать дальше незачем."""
+        """
+        Добавляет строку в результат
+        - False - если результат уже набрали и больше добавлять не будет
+        - True - если результат еще не набран и можно дальше добавлять
+        """
         if self._skipped < self._window.offset:
+            # пропускаем столько строк, сколько передано в настройках
             self._skipped += 1
             return True
 
-        if len(self._rows) >= self._window.max_rows:
+        if self._window.limit and len(self._rows) >= self._window.limit:
+            # добиваем до указанного лимита строк
             self._more = True
             return False
 
-        plain = RowStream.plain(row)
-        chars = len(RowStream.encode(plain))
-
-        if self._rows and self._chars + chars > self._window.max_chars:
-            self._more = True
-            return False
-
-        self._chars += chars
-        self._rows.append(plain)
+        self._rows.append(row)
 
         return True
 
@@ -202,10 +139,6 @@ class RowPage:
         return f"{shown}; more rows available, next offset={last}"
 
 
-TParams = TypeVar("TParams")
-"""Стиль параметров драйвера: позиционный кортеж psycopg, именованный dict ch."""
-
-
 class SqlLimits(BaseModel):
     """Потолки выдачи SQL-инструмента; секцию задаёт наследник в плагине."""
 
@@ -214,7 +147,7 @@ class SqlLimits(BaseModel):
     SECTION: ClassVar[str]
     """Секция конфига инструмента (tool.pg, tool.ch); подкласс обязан задать."""
 
-    max_rows: int = Field(
+    limit: int = Field(
         default=100,
         ge=1,
         description=(
@@ -232,10 +165,13 @@ class SqlLimits(BaseModel):
         ),
     )
 
+TQuery = TypeVar("TQuery")
+TParams = TypeVar("TParams")
+"""Стиль параметров драйвера: позиционный кортеж psycopg, именованный dict ch."""
 
 @dataclass(frozen=True)
-class CatalogQuery(Generic[TParams]):
+class AbstractQuery(Generic[TQuery, TParams]):
     """Каталожный запрос: текст плюс параметры в стиле драйвера."""
 
-    text: str
+    text: TQuery
     params: TParams
