@@ -11,11 +11,11 @@ pg-idx-trgm, шаг 1: вставить недостающие строки и �
 -- @params batch
 with col as (
     select
-        t.parent_id                                        as rel_id,
-        string_agg(c.name, ' ' order by c.ordinal)         as names,
+        t.parent_id as rel_id,
+        string_agg(c.name, ' ' order by c.ordinal) as names,
         string_agg(
             c.name || ' (' || c.data_type || ')', ', ' order by c.ordinal
-        )                                                  as typed
+        ) as typed
     from
         {schema}.pg_meta_column c
         join {schema}.tree t on t.node_id = c.node_id
@@ -25,14 +25,14 @@ with col as (
 obj as (
     select
         x.node_id,
-        'pg_meta_database'::{schema}.surface_e              as surface,
+        'pg_meta_database'::{schema}.surface_e as surface,
         x.name,
-        null::varchar                                      as schema_name,
-        x.name                                             as path,
-        'Database ' || x.name                              as head,
+        null::varchar as schema_name,
+        x.name as path,
+        'Database ' || x.name as head,
         x.comment,
-        null::varchar                                      as columns,
-        null::varchar                                      as typed
+        null::varchar as columns,
+        null::varchar as typed
     from
         {schema}.pg_meta_database x
     union all
@@ -203,8 +203,8 @@ aspect as (
     select
         o.node_id,
         o.surface,
-        'meta_name'::{schema}.pg_idx_aspect_e              as aspect,
-        o.name::varchar                                    as content
+        'meta_name'::{schema}.pg_idx_aspect_e as aspect,
+        o.name::varchar as content
     from
         obj o
     union all
@@ -251,7 +251,8 @@ todo as (
         or f.content is distinct from a.content
     order by
         a.node_id, a.surface, a.aspect
-    limit %(batch)s
+    limit
+        %(batch)s
 ),
 done as (
     insert into {schema}.pg_idx_trgm
@@ -267,6 +268,6 @@ done as (
     returning 1
 )
 select
-    'upsert'                        as op,
-    (select count(*) from todo)     as planned,
-    (select count(*) from done)     as applied;
+    'upsert' as op,
+    (select count(*) from todo) as planned,
+    (select count(*) from done) as applied;

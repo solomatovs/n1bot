@@ -9,11 +9,11 @@ pg-idx-vector, шаг 3: удалить чанки, для которых асп
 -- @name prune
 with col as (
     select
-        t.parent_id                                        as rel_id,
-        string_agg(c.name, ' ' order by c.ordinal)         as names,
+        t.parent_id as rel_id,
+        string_agg(c.name, ' ' order by c.ordinal) as names,
         string_agg(
             c.name || ' (' || c.data_type || ')', ', ' order by c.ordinal
-        )                                                  as typed
+        ) as typed
     from
         {schema}.pg_meta_column c
         join {schema}.tree t on t.node_id = c.node_id
@@ -23,14 +23,14 @@ with col as (
 obj as (
     select
         x.node_id,
-        'pg_meta_database'::{schema}.surface_e              as surface,
+        'pg_meta_database'::{schema}.surface_e as surface,
         x.name,
-        null::varchar                                      as schema_name,
-        x.name                                             as path,
-        'Database ' || x.name                              as head,
+        null::varchar as schema_name,
+        x.name as path,
+        'Database ' || x.name as head,
         x.comment,
-        null::varchar                                      as columns,
-        null::varchar                                      as typed
+        null::varchar as columns,
+        null::varchar as typed
     from
         {schema}.pg_meta_database x
     union all
@@ -198,26 +198,63 @@ obj as (
         {schema}.pg_meta_statistics x
 ),
 aspect as (
-    select o.node_id, o.surface, 'meta_description'::{schema}.pg_idx_aspect_e as aspect,
-           o.head || coalesce(': ' || o.comment, '') || coalesce('. Columns: ' || o.typed, '') as content
-    from obj o
+    select
+        o.node_id,
+        o.surface,
+        'meta_description'::{schema}.pg_idx_aspect_e as aspect,
+        o.head
+            || coalesce(': ' || o.comment, '')
+            || coalesce('. Columns: ' || o.typed, '') as content
+    from
+        obj o
     union all
-    select o.node_id, o.surface, 'meta_comment', o.comment
-    from obj o where o.comment is not null and o.comment <> ''
+    select
+        o.node_id,
+        o.surface,
+        'meta_comment',
+        o.comment
+    from
+        obj o
+    where
+        o.comment is not null and o.comment <> ''
     union all
-    select o.node_id, o.surface, 'meta_columns', o.columns
-    from obj o where o.columns is not null and o.columns <> ''
+    select
+        o.node_id,
+        o.surface,
+        'meta_columns',
+        o.columns
+    from
+        obj o
+    where
+        o.columns is not null and o.columns <> ''
 ),
 stale as (
-    select e.node_id, e.surface, e.aspect
-    from {schema}.pg_idx_emb_e5_1024 e
-    where not exists (select 1 from aspect a where a.node_id = e.node_id and a.surface = e.surface and a.aspect = e.aspect)
-    order by e.node_id, e.surface, e.aspect
+    select
+        e.node_id, e.surface, e.aspect
+    from
+        {schema}.pg_idx_emb_e5_1024 e
+    where
+        not exists (
+            select 1
+            from   aspect a
+            where  a.node_id = e.node_id
+              and  a.surface = e.surface
+              and  a.aspect  = e.aspect
+        )
+    order by
+        e.node_id, e.surface, e.aspect
     for update skip locked
 ),
 done as (
-    delete from {schema}.pg_idx_emb_e5_1024 e using stale s
-    where e.node_id = s.node_id and e.surface = s.surface and e.aspect = s.aspect
+    delete from {schema}.pg_idx_emb_e5_1024 e
+    using
+        stale s
+    where
+        e.node_id = s.node_id
+        and e.surface = s.surface
+        and e.aspect = s.aspect
     returning 1
 )
-select 'prune' as op, (select count(*) from done) as deleted;
+select
+    'prune' as op,
+    (select count(*) from done) as deleted;

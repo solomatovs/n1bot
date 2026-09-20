@@ -12,11 +12,11 @@ content_hash чанков отличается от md5 полного текс�
 -- @params batch
 with col as (
     select
-        t.parent_id                                        as rel_id,
-        string_agg(c.name, ' ' order by c.ordinal)         as names,
+        t.parent_id as rel_id,
+        string_agg(c.name, ' ' order by c.ordinal) as names,
         string_agg(
             c.name || ' (' || c.data_type || ')', ', ' order by c.ordinal
-        )                                                  as typed
+        ) as typed
     from
         {schema}.pg_meta_column c
         join {schema}.tree t on t.node_id = c.node_id
@@ -26,14 +26,14 @@ with col as (
 obj as (
     select
         x.node_id,
-        'pg_meta_database'::{schema}.surface_e              as surface,
+        'pg_meta_database'::{schema}.surface_e as surface,
         x.name,
-        null::varchar                                      as schema_name,
-        x.name                                             as path,
-        'Database ' || x.name                              as head,
+        null::varchar as schema_name,
+        x.name as path,
+        'Database ' || x.name as head,
         x.comment,
-        null::varchar                                      as columns,
-        null::varchar                                      as typed
+        null::varchar as columns,
+        null::varchar as typed
     from
         {schema}.pg_meta_database x
     union all
@@ -201,26 +201,65 @@ obj as (
         {schema}.pg_meta_statistics x
 ),
 aspect as (
-    select o.node_id, o.surface, 'meta_description'::{schema}.pg_idx_aspect_e as aspect,
-           o.head || coalesce(': ' || o.comment, '') || coalesce('. Columns: ' || o.typed, '') as content
-    from obj o
+    select
+        o.node_id,
+        o.surface,
+        'meta_description'::{schema}.pg_idx_aspect_e as aspect,
+        o.head
+            || coalesce(': ' || o.comment, '')
+            || coalesce('. Columns: ' || o.typed, '') as content
+    from
+        obj o
     union all
-    select o.node_id, o.surface, 'meta_comment', o.comment
-    from obj o where o.comment is not null and o.comment <> ''
+    select
+        o.node_id,
+        o.surface,
+        'meta_comment',
+        o.comment
+    from
+        obj o
+    where
+        o.comment is not null and o.comment <> ''
     union all
-    select o.node_id, o.surface, 'meta_columns', o.columns
-    from obj o where o.columns is not null and o.columns <> ''
+    select
+        o.node_id,
+        o.surface,
+        'meta_columns',
+        o.columns
+    from
+        obj o
+    where
+        o.columns is not null and o.columns <> ''
 ),
 todo as (
-    select a.node_id, a.surface, a.aspect, a.content, md5(a.content) as content_hash
-    from aspect a
-    left join (select distinct node_id, surface, aspect, content_hash from {schema}.pg_idx_emb_e5_1024) e
-           on e.node_id = a.node_id and e.surface = a.surface and e.aspect = a.aspect
-    where e.node_id is null or e.content_hash <> md5(a.content)
-    order by a.node_id, a.surface, a.aspect
-    limit %(batch)s * 4
+    select
+        a.node_id,
+        a.surface,
+        a.aspect,
+        a.content,
+        md5(a.content) as content_hash
+    from
+        aspect a
+        left join (
+            select distinct node_id, surface, aspect, content_hash
+            from   {schema}.pg_idx_emb_e5_1024
+        ) e
+            on  e.node_id = a.node_id
+            and e.surface = a.surface
+            and e.aspect  = a.aspect
+    where
+        e.node_id is null
+        or e.content_hash <> md5(a.content)
+    order by
+        a.node_id, a.surface, a.aspect
+    limit
+        %(batch)s * 4
 )
-select node_id, surface, aspect, content, content_hash
-from todo
-where pg_try_advisory_lock(hashtextextended('pg_emb', node_id))
-limit %(batch)s;
+select
+    node_id, surface, aspect, content, content_hash
+from
+    todo
+where
+    pg_try_advisory_lock(hashtextextended('pg_emb', node_id))
+limit
+    %(batch)s;

@@ -4,13 +4,40 @@
 -- @key oid
 -- @collect constraints oid
 -- @min 150000
-select oid, conname, connamespace, contype, conrelid, contypid, conindid, confrelid,
-       condeferrable, condeferred, convalidated as convalidated, conparentid as conparentid, conislocal, coninhcount,
-       confupdtype, confdeltype, confmatchtype, conkey, confkey, conpfeqop, conexclop,
-       confdelsetcols as confdelsetcols, pg_get_constraintdef(oid) as definition, xmin::text as row_xmin
-from pg_constraint
-where conrelid = any(%(rels)s::oid[]) or contypid = any(%(types)s::oid[]);
+select
+    oid,
+    conname,
+    connamespace,
+    contype,
+    conrelid,
+    contypid,
+    conindid,
+    confrelid,
+    condeferrable,
+    condeferred,
+    convalidated as convalidated,
+    conparentid as conparentid,
+    conislocal,
+    coninhcount,
+    confupdtype,
+    confdeltype,
+    confmatchtype,
+    conkey,
+    confkey,
+    conpfeqop,
+    conexclop,
+    confdelsetcols as confdelsetcols,
+    pg_get_constraintdef(oid) as definition,
+    xmin::text as row_xmin
+from
+    pg_constraint
+where
+    conrelid = any(%(rels)s::oid[]) or contypid = any(%(types)s::oid[]);
 -- @verify
-select oid, xmin::text as row_xmin
-from pg_constraint
-where conrelid = any(%(rels)s::oid[]) or contypid = any(%(types)s::oid[]);
+select
+    oid,
+    xmin::text as row_xmin
+from
+    pg_constraint
+where
+    conrelid = any(%(rels)s::oid[]) or contypid = any(%(types)s::oid[]);

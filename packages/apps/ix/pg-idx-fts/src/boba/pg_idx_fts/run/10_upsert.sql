@@ -11,11 +11,11 @@ pg-idx-fts, шаг 1: вставить недостающие строки и о
 -- @params batch
 with col as (
     select
-        t.parent_id                                        as rel_id,
-        string_agg(c.name, ' ' order by c.ordinal)         as names,
+        t.parent_id as rel_id,
+        string_agg(c.name, ' ' order by c.ordinal) as names,
         string_agg(
             c.name || ' (' || c.data_type || ')', ', ' order by c.ordinal
-        )                                                  as typed
+        ) as typed
     from
         {schema}.pg_meta_column c
         join {schema}.tree t on t.node_id = c.node_id
@@ -25,14 +25,14 @@ with col as (
 obj as (
     select
         x.node_id,
-        'pg_meta_database'::{schema}.surface_e              as surface,
+        'pg_meta_database'::{schema}.surface_e as surface,
         x.name,
-        null::varchar                                      as schema_name,
-        x.name                                             as path,
-        'Database ' || x.name                              as head,
+        null::varchar as schema_name,
+        x.name as path,
+        'Database ' || x.name as head,
         x.comment,
-        null::varchar                                      as columns,
-        null::varchar                                      as typed
+        null::varchar as columns,
+        null::varchar as typed
     from
         {schema}.pg_meta_database x
     union all
@@ -203,10 +203,10 @@ aspect as (
     select
         o.node_id,
         o.surface,
-        'meta_description'::{schema}.pg_idx_aspect_e       as aspect,
+        'meta_description'::{schema}.pg_idx_aspect_e as aspect,
         o.head
             || coalesce(': ' || o.comment, '')
-            || coalesce('. Columns: ' || o.typed, '')      as content,
+            || coalesce('. Columns: ' || o.typed, '') as content,
         setweight(
             to_tsvector('russian', lower(replace(regexp_replace(
                 regexp_replace(o.name, '([a-z0-9])([A-Z])', '\1 \2', 'g'),
@@ -224,7 +224,7 @@ aspect as (
             'B'
         )
         || setweight(to_tsvector('russian', coalesce(o.columns, '')), 'C')
-                                                           as tsv
+ as tsv
     from
         obj o
     union all
@@ -264,7 +264,8 @@ todo as (
         or f.content is distinct from a.content
     order by
         a.node_id, a.surface, a.aspect
-    limit %(batch)s
+    limit
+        %(batch)s
 ),
 done as (
     insert into {schema}.pg_idx_fts
@@ -281,6 +282,6 @@ done as (
     returning 1
 )
 select
-    'upsert'                        as op,
-    (select count(*) from todo)     as planned,
-    (select count(*) from done)     as applied;
+    'upsert' as op,
+    (select count(*) from todo) as planned,
+    (select count(*) from done) as applied;

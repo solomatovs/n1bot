@@ -1,8 +1,9 @@
 /*
 pg-idx-fts, схема, шаг 1: словарь аспектов и таблица {schema}.pg_idx_fts с индексами.
 */
-create table if not exists {schema}.pg_idx_aspect (    aspect       {schema}.pg_idx_aspect_e primary key,
-    description  varchar        not null
+create table if not exists {schema}.pg_idx_aspect (
+    aspect       {schema}.pg_idx_aspect_e primary key,
+    description  varchar not null
 );
 
 insert into {schema}.pg_idx_aspect (aspect, description) values
@@ -16,11 +17,11 @@ insert into {schema}.pg_idx_aspect (aspect, description) values
 on conflict (aspect) do nothing;
 
 create table if not exists {schema}.pg_idx_fts (
-    node_id    bigint   not null,
-    surface       {schema}.surface_e not null references {schema}.surface,
-    aspect     {schema}.pg_idx_aspect_e not null references {schema}.pg_idx_aspect,
-    content    varchar  not null,
-    tsv        tsvector not null,
+    node_id  bigint not null,
+    surface  {schema}.surface_e not null references {schema}.surface,
+    aspect   {schema}.pg_idx_aspect_e not null references {schema}.pg_idx_aspect,
+    content  varchar not null,
+    tsv      tsvector not null,
     primary key (node_id, surface, aspect)
 );
 

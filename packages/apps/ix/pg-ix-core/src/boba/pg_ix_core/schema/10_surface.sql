@@ -3,5 +3,5 @@ pg-ix-core, схема, шаг 1: словарь поверхностей {schem
 */
 create table if not exists {schema}.surface (
     name         {schema}.surface_e primary key,
-    description  varchar      not null
+    description  varchar not null
 );

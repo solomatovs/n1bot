@@ -12,11 +12,11 @@ pg-idx-fts, шаг 1: вставить недостающие строки и о
 -- @params batch
 with col as (
     select
-        t.parent_id                                        as rel_id,
-        string_agg(c.name, ' ' order by c.ordinal)         as names,
+        t.parent_id as rel_id,
+        string_agg(c.name, ' ' order by c.ordinal) as names,
         string_agg(
             c.name || ' (' || c.data_type || ')', ', ' order by c.ordinal
-        )                                                  as typed
+        ) as typed
     from
         {schema}.pg_meta_column c
         join {schema}.tree t on t.node_id = c.node_id
@@ -26,14 +26,14 @@ with col as (
 obj as (
     select
         x.node_id,
-        'pg_meta_database'::{schema}.surface_e              as surface,
+        'pg_meta_database'::{schema}.surface_e as surface,
         x.name,
-        null::varchar                                      as schema_name,
-        x.name                                             as path,
-        'Database ' || x.name                              as head,
+        null::varchar as schema_name,
+        x.name as path,
+        'Database ' || x.name as head,
         x.comment,
-        null::varchar                                      as columns,
-        null::varchar                                      as typed
+        null::varchar as columns,
+        null::varchar as typed
     from
         {schema}.pg_meta_database x
     union all
@@ -201,34 +201,97 @@ obj as (
         {schema}.pg_meta_statistics x
 ),
 aspect as (
-    select o.node_id, o.surface, 'meta_description'::{schema}.pg_idx_aspect_e as aspect,
-           o.head || coalesce(': ' || o.comment, '') || coalesce('. Columns: ' || o.typed, '') as content,
-           setweight(to_tsvector('russian', lower(replace(regexp_replace(regexp_replace(o.name, '([a-z0-9])([A-Z])', '\1 \2', 'g'), '[_\-]+', ' ', 'g'), 'ё', 'е'))), 'A')
-           || setweight(to_tsvector('russian', lower(replace(regexp_replace(regexp_replace(coalesce(o.schema_name, ''), '([a-z0-9])([A-Z])', '\1 \2', 'g'), '[_\-]+', ' ', 'g'), 'ё', 'е')) || ' ' || coalesce(o.comment, '')), 'B')
-           || setweight(to_tsvector('russian', coalesce(o.columns, '')), 'C') as tsv
-    from obj o
+    select
+        o.node_id,
+        o.surface,
+        'meta_description'::{schema}.pg_idx_aspect_e as aspect,
+        o.head
+            || coalesce(': ' || o.comment, '')
+            || coalesce('. Columns: ' || o.typed, '') as content,
+        setweight(
+            to_tsvector('russian', lower(replace(regexp_replace(
+                regexp_replace(o.name, '([a-z0-9])([A-Z])', '\1 \2', 'g'),
+                '[_\-]+', ' ', 'g'
+            ), 'ё', 'е'))),
+            'A'
+        )
+        || setweight(
+            to_tsvector('russian', lower(replace(regexp_replace(
+                regexp_replace(
+                    coalesce(o.schema_name, ''), '([a-z0-9])([A-Z])', '\1 \2', 'g'
+                ),
+                '[_\-]+', ' ', 'g'
+            ), 'ё', 'е')) || ' ' || coalesce(o.comment, '')),
+            'B'
+        )
+        || setweight(to_tsvector('russian', coalesce(o.columns, '')), 'C')
+ as tsv
+    from
+        obj o
     union all
-    select o.node_id, o.surface, 'meta_comment', o.comment, setweight(to_tsvector('russian', o.comment), 'B')
-    from obj o where o.comment is not null and o.comment <> ''
+    select
+        o.node_id,
+        o.surface,
+        'meta_comment',
+        o.comment,
+        setweight(to_tsvector('russian', o.comment), 'B')
+    from
+        obj o
+    where
+        o.comment is not null and o.comment <> ''
     union all
-    select o.node_id, o.surface, 'meta_columns', o.columns, setweight(to_tsvector('russian', o.columns), 'C')
-    from obj o where o.columns is not null and o.columns <> ''
+    select
+        o.node_id,
+        o.surface,
+        'meta_columns',
+        o.columns,
+        setweight(to_tsvector('russian', o.columns), 'C')
+    from
+        obj o
+    where
+        o.columns is not null and o.columns <> ''
     union all
-    select s.node_id, s.surface, 'llm_description', s.content, setweight(to_tsvector('russian', s.content), 'D')
-    from {schema}.pg_llm_description s
+    select
+        s.node_id,
+        s.surface,
+        'llm_description',
+        s.content,
+        setweight(to_tsvector('russian', s.content), 'D')
+    from
+        {schema}.pg_llm_description s
 ),
 todo as (
-    select a.* from aspect a
-    left join {schema}.pg_idx_fts f on f.node_id = a.node_id and f.surface = a.surface and f.aspect = a.aspect
-    where f.node_id is null or f.content is distinct from a.content
-    order by a.node_id, a.surface, a.aspect
-    limit %(batch)s
+    select
+        a.*
+    from
+        aspect a
+        left join {schema}.pg_idx_fts f
+            on  f.node_id = a.node_id
+            and f.surface = a.surface
+            and f.aspect  = a.aspect
+    where
+        f.node_id is null
+        or f.content is distinct from a.content
+    order by
+        a.node_id, a.surface, a.aspect
+    limit
+        %(batch)s
 ),
 done as (
-    insert into {schema}.pg_idx_fts (node_id, surface, aspect, content, tsv)
-    select node_id, surface, aspect, content, tsv from todo
-    on conflict (node_id, surface, aspect) do update set content = excluded.content, tsv = excluded.tsv
-    where pg_idx_fts.content is distinct from excluded.content
+    insert into {schema}.pg_idx_fts
+        (node_id, surface, aspect, content, tsv)
+    select
+        node_id, surface, aspect, content, tsv
+    from
+        todo
+    on conflict (node_id, surface, aspect) do update
+        set content = excluded.content,
+            tsv     = excluded.tsv
+    where
+        pg_idx_fts.content is distinct from excluded.content
     returning 1
 )
-select 'upsert' as op, (select count(*) from todo) as planned, (select count(*) from done) as applied;
+select
+    'upsert' as op,
+    (select count(*) from todo) as planned,
+    (select count(*) from done) as applied;
