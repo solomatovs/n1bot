@@ -112,7 +112,7 @@ THREAD = RunnableConfig(configurable={"thread_id": THREAD_ID})
 
 FINAL_ANSWER = "the schema is described and linked"
 
-WINDOW: dict[str, int] = {"offset": 0, "max_rows": 50, "max_chars": 20000}
+WINDOW: dict[str, int] = {"offset": 0, "limit": 50}
 """Окно выдачи каталожных инструментов: его задаёт вызов."""
 
 FIRST_EDGE_ID = 1

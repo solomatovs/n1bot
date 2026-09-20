@@ -41,7 +41,7 @@ async def test_run_ch_query(ch_cfg: ChToolConfig, connection: ClickHouseConfig) 
     if body is None:
         raise AssertionError("body is not None")
 
-    artifact = await body(sql=RunArgs.SQL, connection=connection, cfg=ch_cfg)
+    artifact = await body(sql=RunArgs.SQL, connection=connection, offset=0, limit=50)
 
     print(artifact.llm_view())
     print(artifact)
@@ -56,11 +56,9 @@ async def test_run_ch_list_tables(
 
     artifact = await body(
         connection=connection,
-        ch_database=None,
+        database=None,
         offset=0,
-        max_rows=50,
-        max_chars=20000,
-        cfg=ch_cfg,
+        limit=50,
     )
 
     print(artifact.llm_view())

@@ -107,9 +107,7 @@ class TestSqlResult:
     def test_single_statement_shows_rows_only(self) -> None:
         result = SqlResult(
             engine="clickhouse",
-            statements=[
-                SqlStatement(rows=[{"a": 1}], note="truncated to limit (1)")
-            ],
+            statements=[SqlStatement(rows=[{"a": 1}], note="truncated to limit (1)")],
         )
         if result.llm_view() != '[{"a": 1}]\n\ntruncated to limit (1)':
             raise AssertionError(f"llm_view: {result.llm_view()!r}")
@@ -153,9 +151,9 @@ class TestRowWindow:
         if window.probe() != 31:
             raise AssertionError(f"окно плюс разведка, дано {window.probe()}")
 
-    def test_page_cut_by_chars_points_at_the_first_unseen_row(self) -> None:
-        """Обрыв по символам сдвигает offset на показанное, а не на окно."""
-        window = RowWindow(offset=0, limit=100)
+    def test_page_cut_by_limit_points_at_the_first_unseen_row(self) -> None:
+        """Обрыв по limit сдвигает offset ровно на показанное."""
+        window = RowWindow(offset=0, limit=10)
 
         page = RowPage(window)
         for number in range(1, 50):
@@ -218,25 +216,6 @@ class TestRowPage:
 
         if table.note != "no rows at offset 50":
             raise AssertionError(f"note про пустое окно, дано {table.note!r}")
-
-    def test_char_limit_stops_the_page_and_keeps_the_rest(self) -> None:
-        """Потолок символов обрывает набор, а не роняет вызов."""
-        window = RowWindow(offset=0, limit=100)
-
-        page = self._filled(window, self._rows(50))
-        table = page.statement()
-
-        if not table.rows:
-            raise AssertionError("первая строка входит всегда")
-
-        if len(table.rows) >= 50:
-            raise AssertionError("потолок символов обязан оборвать набор")
-
-        if not page.more:
-            raise AssertionError("остаток отмечен как доступный")
-
-        if "next offset=" not in str(table.note):
-            raise AssertionError(f"note зовёт за остатком, дано {table.note!r}")
 
     def test_single_huge_row_is_not_dropped(self) -> None:
         """Строка шире потолка всё равно отдаётся: иначе страница пуста и
