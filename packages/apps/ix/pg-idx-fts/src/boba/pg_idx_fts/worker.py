@@ -1,4 +1,5 @@
-"""Воркер индексатора pg_fts: 10_upsert.sql пачками до пустого результата, затем 20_prune.sql.
+"""Воркер индексатора pg_fts: 10_upsert.sql пачками до пустого результата, затем
+20_prune.sql.
 
 Ошибки:
 IndexerWorkerError — база ix недоступна или ответ шага не того вида, что ожидался.
@@ -12,10 +13,19 @@ import re
 from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
+from typing import ClassVar
 
 import psycopg
 from psycopg import sql
 from pydantic import BaseModel, Field
+
+from boba.config import ConfigError, bind_section
+from boba.pg_ix_core.schema_name import SchemaName, StorageSchema
+from boba.pg_ix_core.upgrade import (
+    SchemaUpgrade,
+    SchemaUpgradeError,
+    UpgradeConfig,
+)
 
 logger = logging.getLogger("pg-idx-fts")
 
@@ -29,7 +39,7 @@ class SqlFile(StrEnum):
     PRUNE = "20_prune.sql"
 
 
-class WorkerConfig(BaseModel):
+class WorkerConfig(StorageSchema):
     dsn: str
     batch: int = Field(gt=0, default=500)
     lock_timeout: str = "2s"
@@ -48,15 +58,19 @@ class CycleReport(BaseModel):
 
 
 class PackageSql:
-    """Файлы цикла из каталога run/ пакета; параметры именованные, в стиле psycopg. У шага может
-    быть вариант с суффиксом __<имя> и заголовком `-- @requires <таблица>`: он берётся, когда
-    все перечисленные таблицы существуют в базе (to_regclass), иначе базовый файл. Так индекс
-    подхватывает описания от pg-llm-describer, если тот установлен, и работает без него."""
+    """Файлы цикла из каталога run/ пакета; параметры именованные, в стиле psycopg.
+
+    У шага может быть вариант с суффиксом __<имя> и заголовком `-- @requires
+    <таблица>`: он берётся, когда все перечисленные таблицы есть в базе
+    (to_regclass), иначе берётся базовый файл. Так индекс подхватывает описания от
+    pg-llm-describer, если тот установлен, и работает без него.
+    """
 
     REQUIRES = re.compile(r"^-- @requires\s+(.+)$", re.M)
 
-    def __init__(self, package_dir: Path) -> None:
+    def __init__(self, package_dir: Path, db_schema: str) -> None:
         self._dir = package_dir
+        self._db_schema = db_schema
         self._present: dict[str, bool] = {}
 
     def load(self, name: SqlFile, conn: psycopg.Connection) -> bytes:
@@ -64,15 +78,18 @@ class PackageSql:
         chosen = self._dir / name
         for variant in sorted(self._dir.glob(f"{stem}__*.sql")):
             text = variant.read_text(encoding="utf-8")
-            required = [t.strip() for m in self.REQUIRES.finditer(text) for t in m.group(1).split()]
+            required = [
+                t.strip()
+                for m in self.REQUIRES.finditer(text)
+                for t in m.group(1).split()
+            ]
             if required and all(self._exists(conn, t) for t in required):
                 chosen = variant
-        return chosen.read_text(encoding="utf-8").encode("utf-8")
+        return SchemaName.render(chosen.read_text(encoding="utf-8"), self._db_schema)
 
     def _exists(self, conn: psycopg.Connection, table: str) -> bool:
         if table not in self._present:
-            record = conn.execute("select to_regclass(%s) is not null", (table,)).fetchone()
-            self._present[table] = bool(record is not None and record[0])
+            self._present[table] = SchemaName.exists(conn, self._db_schema, table)
         return self._present[table]
 
 
@@ -118,7 +135,9 @@ class IndexerWorker:
             raise IndexerWorkerError(f"ix database {self._cfg.dsn}: {exc}") from exc
 
     def _upsert(self, conn: psycopg.Connection) -> StepResult:
-        record = conn.execute(self._sql.load(SqlFile.UPSERT, conn), {"batch": self._cfg.batch}).fetchone()
+        record = conn.execute(
+            self._sql.load(SqlFile.UPSERT, conn), {"batch": self._cfg.batch}
+        ).fetchone()
         if record is None:
             raise IndexerWorkerError("upsert: expected one summary row, got none")
         return StepResult(planned=int(record[1]), applied=int(record[2]))
@@ -130,28 +149,75 @@ class IndexerWorker:
         return int(record[1])
 
 
+class Command(StrEnum):
+    """Что делает запуск: накатить свою схему или отработать цикл."""
+
+    UPGRADE = "upgrade"
+    RUN = "run"
+
+
 class Cli:
-    """Аргументы командной строки в WorkerConfig."""
+    """Команда и путь к конфигу; настройки берутся из секции [ix.idx_fts]."""
+
+    SECTION: ClassVar[str] = "ix.idx_fts"
 
     @classmethod
-    def parse(cls, argv: Sequence[str] | None = None) -> WorkerConfig:
-        parser = argparse.ArgumentParser(description="pg-idx-fts worker")
-        parser.add_argument("--dsn", required=True, help="Строка подключения к базе ix (host=... dbname=... user=... password=...). Единственное место, где задаются креды.")
-        parser.add_argument("--batch", type=int, default=500, help="Сколько строк обрабатывать за один шаг upsert. Один шаг это одна транзакция; чем меньше пачка, тем короче замки и тем чаще видны промежуточные результаты.")
+    def parse(cls, argv: Sequence[str] | None = None) -> tuple[Command, Path]:
+        parser = argparse.ArgumentParser(
+            prog="boba-pg-idx-fts",
+            description=(
+                "Индексатор полнотекстового поиска pg_idx_fts: схема пакета "
+                "и цикл upsert/prune."
+            ),
+        )
+        parser.add_argument(
+            "command",
+            type=Command,
+            choices=list(Command),
+            help=(
+                "upgrade — накатить схему пакета в базу ix (идемпотентно, ядро "
+                "должно быть уже накачено пакетом pg-ix-core); run — рабочий цикл."
+            ),
+        )
+        parser.add_argument(
+            "--config",
+            required=True,
+            type=Path,
+            help=(
+                "Путь к файлу конфига приложения (toml). Все настройки, включая "
+                "строку подключения к базе ix, берутся из секции [ix.idx_fts]."
+            ),
+        )
         args = parser.parse_args(argv)
-        return WorkerConfig(dsn=args.dsn, batch=args.batch)
+
+        return args.command, args.config
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
-    cfg = Cli.parse()
-    report = IndexerWorker(cfg, PackageSql(Path(__file__).resolve().parent / "run")).run()
-    logger.info(
-        "done: rounds=%d applied=%d pruned=%d",
-        report.rounds,
-        report.applied,
-        report.pruned,
-    )
+
+    package_dir = Path(__file__).resolve().parent
+    try:
+        command, config_path = Cli.parse()
+
+        if command is Command.UPGRADE:
+            upgrade = bind_section(config_path, Cli.SECTION, UpgradeConfig)
+            report = SchemaUpgrade(package_dir / "schema").run(upgrade)
+            logger.info("schema applied: %s", ", ".join(report.files))
+            return
+
+        cfg = bind_section(config_path, Cli.SECTION, WorkerConfig)
+        report = IndexerWorker(
+            cfg, PackageSql(package_dir / "run", cfg.db_schema)
+        ).run()
+        logger.info(
+            "done: rounds=%d applied=%d pruned=%d",
+            report.rounds,
+            report.applied,
+            report.pruned,
+        )
+    except (ConfigError, SchemaUpgradeError, IndexerWorkerError) as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 if __name__ == "__main__":

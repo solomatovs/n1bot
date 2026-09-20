@@ -19,16 +19,23 @@ worker.py оркестратор
 источнику, затем описатель, затем `pg-idx-fts` и `pg-idx-vector`, чтобы описания
 попали в поиск. Роль в DSN читает `ix.*` и пишет в `ix.pg_llm_description`.
 
+Настройки берутся из одного файла конфига, секция [ix.llm_describer]; пример
+секции лежит рядом в `conf.example.toml`. Все секции приложений ix обычно живут в одном
+файле, общие значения можно вынести в `[ix]` и ссылаться на них интерполяцией
+(`dsn = "${ix.dsn}"`).
+
 ```
-.venv/bin/boba-pg-llm-describer \
-    --dsn "host=... dbname=... user=... password=..." \
-    --provider openai --base-url https://.../v1 --api-key ... --model deepseek/deepseek-v4-flash
+.venv/bin/boba-pg-llm-describer --config conf/ix.toml
 ```
 
-Или локальная onnx-модель: `--provider local --model-dir compose/chainlit/models/onnx-genai/qwen3-4b-int4`.
-Остальные ключи: `--max-tokens`, `--temperature`, `--tool-choice` (auto по умолчанию:
-deepseek в thinking mode через роутер проекта другого не принимает), `--batch`. Креды только
-в аргументах. Воркер всегда идёт до пустой очереди и заканчивает prune.
+Схема хранения задаётся полем `db_schema` секции (по умолчанию `ix`): в sql-файлах она
+стоит плейсхолдером `{schema}`, имя берётся из конфига, а квотирует его psycopg.
+
+Провайдер выбирается ключом `provider` секции: `openai` (`base_url`, `api_key`, `model`) или
+`local` (`model_dir`, например `compose/chainlit/models/onnx-genai/qwen3-4b-int4`). Остальные
+поля секции: `max_tokens`, `temperature`, `tool_choice` (auto по умолчанию: deepseek в
+thinking mode через роутер проекта другого не принимает), `batch`. Воркер всегда идёт до
+пустой очереди и заканчивает prune.
 
 ## Что уходит в модель
 

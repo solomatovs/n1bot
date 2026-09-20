@@ -203,7 +203,9 @@ class Refresh:
 
         from chainlit.auth.cookie import _auth_cookie_name
 
-        headers: list[tuple[bytes, bytes]] = [(b"authorization", b"Negotiate " + base64.b64encode(token))]
+        headers: list[tuple[bytes, bytes]] = [
+            (b"authorization", b"Negotiate " + base64.b64encode(token))
+        ]
         if own_header:
             headers.append((OwnRequest.HEADER.encode(), OwnRequest.VALUE.encode()))
         if jwt_cookie is not None:

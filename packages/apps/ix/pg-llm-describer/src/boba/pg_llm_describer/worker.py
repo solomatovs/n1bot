@@ -1,4 +1,6 @@
-"""Воркер описателя: очередь объектов из ix, описание моделью через порт StructuredGenerator
+"""
+Воркер описателя: очередь объектов из ix, описание моделью через порт
+StructuredGenerator
 проекта, запись в ix.pg_llm_description.
 
 Один цикл: 10_queue.sql пачкой, на каждый объект generate(user, schema) провайдера
@@ -21,6 +23,7 @@ import logging
 from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
+from typing import ClassVar
 
 import psycopg
 from psycopg import sql
@@ -34,9 +37,16 @@ from boba.chat.generation import (
     StructuredGenerator,
 )
 from boba.chat.http import HttpConfig
+from boba.config import ConfigError, bind_section
 from boba.llm.generation import GeneratorFactory
 from boba.llm.http import LlmHttp
 from boba.llm.local import OnnxChatRuntime
+from boba.pg_ix_core.schema_name import SchemaName, StorageSchema
+from boba.pg_ix_core.upgrade import (
+    SchemaUpgrade,
+    SchemaUpgradeError,
+    UpgradeConfig,
+)
 
 logger = logging.getLogger("pg-llm-describer")
 
@@ -63,7 +73,7 @@ class Provider(StrEnum):
     LOCAL = "local"
 
 
-class WorkerConfig(BaseModel):
+class WorkerConfig(StorageSchema):
     dsn: str
     provider: Provider
     model: str = ""
@@ -96,7 +106,9 @@ class CycleReport(BaseModel):
 
 
 class Prompts:
-    """Три файла prompt/: системный промпт, шаблон входа с плейсхолдером {input}, json-схема
+    """
+    Три файла prompt/: системный промпт, шаблон входа с плейсхолдером {input},
+    json-схема
     ответа. Их md5 вместе с именем модели даёт indexer_hash."""
 
     PLACEHOLDER = "{input}"
@@ -112,7 +124,8 @@ class Prompts:
         self.schema = SchemaSpec.model_validate(raw)
         if self.PLACEHOLDER not in self.user_template:
             raise DescriberWorkerError(
-                f"{prompt_dir / PromptFile.USER}: expected placeholder {self.PLACEHOLDER}"
+                f"{prompt_dir / PromptFile.USER}: expected placeholder "
+                "{self.PLACEHOLDER}"
             )
 
     def user(self, text: str) -> str:
@@ -127,22 +140,27 @@ class Prompts:
                 json.dumps(self.schema.body, sort_keys=True, ensure_ascii=False),
             ]
         )
-        return hashlib.md5(material.encode("utf-8")).hexdigest()
+        return hashlib.md5(material.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
 class PackageSql:
     """Файлы цикла из каталога run/ пакета; параметры именованные, в стиле psycopg."""
 
-    def __init__(self, package_dir: Path) -> None:
+    def __init__(self, package_dir: Path, db_schema: str) -> None:
         self._dir = package_dir
+        self._db_schema = db_schema
 
     def load(self, name: SqlFile) -> bytes:
-        return (self._dir / name).read_text(encoding="utf-8").encode("utf-8")
+        text = (self._dir / name).read_text(encoding="utf-8")
+        return SchemaName.render(text, self._db_schema)
 
 
 class Generators:
-    """Сборка генератора проекта по флагам воркера: openai-совместимый endpoint или локальная
-    onnx-модель. Системный промпт живёт в конфиге генератора, поэтому он собирается здесь."""
+    """
+    Сборка генератора проекта по флагам воркера: openai-совместимый endpoint или
+    локальная
+    onnx-модель. Системный промпт живёт в конфиге генератора, поэтому он собирается
+    здесь."""
 
     @classmethod
     def build(cls, cfg: WorkerConfig, prompts: Prompts) -> StructuredGenerator:
@@ -268,7 +286,8 @@ class DescriberWorker:
             reply = Reply.model_validate_json(raw)
         except ValidationError as exc:
             raise DescriberWorkerError(
-                f"describe node {row.node_id}: reply is not by schema: {raw[:200]!r}: {exc}"
+                f"describe node {row.node_id}: reply is not by schema: {raw[:200]!r}: "
+                "{exc}"
             ) from exc
         return reply.description.strip()
 
@@ -292,94 +311,80 @@ class DescriberWorker:
         return int(record[1])
 
 
+class Command(StrEnum):
+    """Что делает запуск: накатить свою схему или отработать цикл."""
+
+    UPGRADE = "upgrade"
+    RUN = "run"
+
+
 class Cli:
-    """Аргументы командной строки в WorkerConfig."""
+    """Команда и путь к конфигу; настройки берутся из секции [ix.llm_describer]."""
+
+    SECTION: ClassVar[str] = "ix.llm_describer"
 
     @classmethod
-    def parse(cls, argv: Sequence[str] | None = None) -> WorkerConfig:
-        parser = argparse.ArgumentParser(description="pg-llm-describer worker")
+    def parse(cls, argv: Sequence[str] | None = None) -> tuple[Command, Path]:
+        parser = argparse.ArgumentParser(
+            prog="boba-pg-llm-describer",
+            description=(
+                "Описатель объектов ix моделью: схема пакета и цикл описаний."
+            ),
+        )
         parser.add_argument(
-            "--dsn",
+            "command",
+            type=Command,
+            choices=list(Command),
+            help=(
+                "upgrade — накатить схему пакета в базу ix (идемпотентно, ядро "
+                "должно быть уже накачено пакетом pg-ix-core); run — рабочий цикл."
+            ),
+        )
+        parser.add_argument(
+            "--config",
             required=True,
-            help="Строка подключения к базе ix. Единственное место, где задаются креды базы.",
-        )
-        parser.add_argument(
-            "--provider",
-            choices=[p.value for p in Provider],
-            default=Provider.OPENAI.value,
-            help="Откуда брать модель: openai это любой openai-совместимый endpoint (litellm, requesty, Ollama /v1), local это onnx-genai модель на CPU из каталога --model-dir.",
-        )
-        parser.add_argument(
-            "--model",
-            default="",
-            help="Имя модели у провайдера для openai, например deepseek/deepseek-v4-flash. Входит в indexer_hash: смена модели переописывает всё.",
-        )
-        parser.add_argument(
-            "--base-url",
-            default="",
-            help="Endpoint провайдера для openai, например https://router.requesty.ai/v1.",
-        )
-        parser.add_argument(
-            "--api-key", default="", help="Ключ API провайдера для openai."
-        )
-        parser.add_argument(
-            "--model-dir",
-            default="",
-            help="Каталог onnx-genai модели для local, например compose/chainlit/models/onnx-genai/qwen3-4b-int4.",
-        )
-        parser.add_argument(
-            "--max-tokens",
-            type=int,
-            default=1024,
-            help="Потолок ответа модели в токенах.",
-        )
-        parser.add_argument(
-            "--temperature",
-            type=float,
-            default=0.2,
-            help="Температура для openai; ниже стабильнее и суше.",
-        )
-        parser.add_argument(
-            "--tool-choice",
-            default="auto",
-            help="Как провайдеру предлагать функцию ответа: auto оставляет выбор модели (единственный режим, который принимает deepseek в thinking mode через роутер проекта), required или имя функции заставляют.",
-        )
-        parser.add_argument(
-            "--batch",
-            type=int,
-            default=8,
-            help="Сколько объектов захватывать из очереди за раз; столько объектов держится захваченными, пока модель отвечает по ним по одному.",
+            type=Path,
+            help=(
+                "Путь к файлу конфига приложения (toml). Все настройки, включая "
+                "строку подключения к базе ix, берутся из секции [ix.llm_describer]."
+            ),
         )
         args = parser.parse_args(argv)
-        return WorkerConfig(
-            dsn=args.dsn,
-            provider=Provider(args.provider),
-            model=args.model,
-            base_url=args.base_url,
-            api_key=args.api_key,
-            model_dir=args.model_dir,
-            max_tokens=args.max_tokens,
-            temperature=args.temperature,
-            tool_choice=args.tool_choice,
-            batch=args.batch,
-        )
+
+        return args.command, args.config
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
-    cfg = Cli.parse()
-    here = Path(__file__).resolve().parent
-    prompts = Prompts(here / "prompt")
-    worker = DescriberWorker(
-        cfg, PackageSql(here / "run"), prompts, Generators.build(cfg, prompts)
-    )
-    report = asyncio.run(worker.run())
-    logger.info(
-        "done: rounds=%d written=%d pruned=%d",
-        report.rounds,
-        report.written,
-        report.pruned,
-    )
+
+    package_dir = Path(__file__).resolve().parent
+    try:
+        command, config_path = Cli.parse()
+
+        if command is Command.UPGRADE:
+            upgrade = bind_section(config_path, Cli.SECTION, UpgradeConfig)
+            report = SchemaUpgrade(package_dir / "schema").run(upgrade)
+            logger.info("schema applied: %s", ", ".join(report.files))
+            return
+
+        cfg = bind_section(config_path, Cli.SECTION, WorkerConfig)
+        here = Path(__file__).resolve().parent
+        prompts = Prompts(here / "prompt")
+        worker = DescriberWorker(
+            cfg,
+            PackageSql(here / "run", cfg.db_schema),
+            prompts,
+            Generators.build(cfg, prompts),
+        )
+        report = asyncio.run(worker.run())
+        logger.info(
+            "done: rounds=%d written=%d pruned=%d",
+            report.rounds,
+            report.written,
+            report.pruned,
+        )
+    except (ConfigError, SchemaUpgradeError, DescriberWorkerError) as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 if __name__ == "__main__":

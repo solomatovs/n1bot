@@ -106,17 +106,20 @@ class Repository:
         return f"version-check: {version}, {len(self._projects)} packages - ok"
 
     def set(self, new: str) -> str:
+        """Одна версия и пины во всех пакетах; разошедшиеся версии тоже сводит."""
         if self.NEW_VERSION.match(new) is None:
             raise SystemExit(f"version must be X.Y.Z or X.Y.Z.devN, not '{new}'")
 
-        old = self.version
+        old = sorted({project.version for project in self._projects})
         for project in self._projects:
             text = project.path.read_text(encoding="utf-8")
             text = self.VERSION_LINE.sub(f'version = "{new}"', text, count=1)
-            text = text.replace(f'=={old}"', f'=={new}"')
+            for previous in old:
+                text = text.replace(f'=={previous}"', f'=={new}"')
+
             project.path.write_text(text, encoding="utf-8")
 
-        return f">>> {old} -> {new} in {len(self._projects)} packages"
+        return f">>> {', '.join(old)} -> {new} in {len(self._projects)} packages"
 
 
 def main(argv: list[str]) -> int:

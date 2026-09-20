@@ -13,7 +13,7 @@ run/      SQL шагов цикла, их выполняет worker.py
 ## Установка
 
 `schema/00_pg_idx_emb_e5_1024.sql`: таблица и частичные HNSW-индексы по парам surface и aspect.
-Предусловие: ядро `ix` из `docs/knowledge-schema.sql`, `packages/apps/ix/pg-meta-scraper/src/boba/pg_meta_scraper/schema/00_surface.sql`
+Предусловие: ядро `ix` пакета `pg-ix-core` и схема скрапера
 (значения `surface_e` в предикатах индексов), словарь аспектов из схемы любого индексатора.
 
 ## Запуск
@@ -24,10 +24,17 @@ run/      SQL шагов цикла, их выполняет worker.py
 скрапера: он сам находит, чего не хватает, и доводит таблицу до структуры; параллельные
 запуски не мешают друг другу.
 
+Настройки берутся из одного файла конфига, секция [ix.idx_vector]; пример
+секции лежит рядом в `conf.example.toml`. Все секции приложений ix обычно живут в одном
+файле, общие значения можно вынести в `[ix]` и ссылаться на них интерполяцией
+(`dsn = "${ix.dsn}"`).
+
 ```
-.venv/bin/boba-pg-idx-vector --dsn "host=<хост ix> port=5432 dbname=<база ix> user=<роль> password=<пароль>" \
-    --cache-dir compose/chainlit/models/fastembed
+.venv/bin/boba-pg-idx-vector --config conf/ix.toml
 ```
+
+Схема хранения задаётся полем `db_schema` секции (по умолчанию `ix`): в sql-файлах она
+стоит плейсхолдером `{schema}`, имя берётся из конфига, а квотирует его psycopg.
 
 Роль в DSN должна иметь права на чтение `ix.node`, `ix.tree`, surface-таблиц `ix.pg_*` и на
 запись в свою таблицу `ix.pg_idx_emb_e5_1024`. Схему таблицы создаёт `schema/*.sql` при установке
@@ -41,14 +48,11 @@ CPU, модель `intfloat/multilingual-e5-large` из каталога `models
 `passage:` подставляет fastembed). Запуск из venv проекта:
 
 ```
-.venv/bin/boba-pg-idx-vector \
-    --dsn "host=... dbname=... user=... password=..." \
-    --cache-dir compose/chainlit/models/fastembed \
-    --batch 64
+.venv/bin/boba-pg-idx-vector --config conf/ix.toml
 ```
 
-Ключи: `--model` (по умолчанию `intfloat/multilingual-e5-large`), `--dim` (1024), `--batch`
-(размер пачки очереди), `--chunk-tokens` (400) и `--chunk-overlap` (50). Воркер всегда идёт
+Поля секции: `model` (по умолчанию `intfloat/multilingual-e5-large`), `dim` (1024), `batch`
+(размер пачки очереди), `chunk_tokens` (400) и `chunk_overlap` (50). Воркер всегда идёт
 до пустой очереди и заканчивает prune. Он читает
 SQL-файлы пакета как есть и передаёт параметры словарём, держит одну сессию с
 `lock_timeout` и `statement_timeout`, после каждой пачки и при любой ошибке снимает захваты

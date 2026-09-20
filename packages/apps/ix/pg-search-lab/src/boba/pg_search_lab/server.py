@@ -1,5 +1,7 @@
-"""Стенд поисковой выдачи: страница с полем запроса, три колонки результатов (fts, trgm, vector)
-и подсказки при наборе (suggest: btree по префиксу и триграммы) поверх схемы ix. Один процесс на стандартном http.server: отдаёт index.html и /search.
+"""Стенд поисковой выдачи: страница с полем запроса, три колонки результатов (fts, trgm,
+vector)
+и подсказки при наборе (suggest: btree по префиксу и триграммы) поверх схемы ix. Один
+процесс на стандартном http.server: отдаёт index.html и /search.
 SQL запросов лежит в sql/ и читается на каждый запрос, чтобы править ранжирование без
 перезапуска. Вектор запроса считает провайдер проекта boba.llm.embedding.
 
@@ -13,17 +15,20 @@ import argparse
 import asyncio
 import json
 import logging
+from collections.abc import Sequence
 from enum import StrEnum
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Sequence
+from typing import ClassVar
 from urllib.parse import parse_qs, urlparse
 
 import psycopg
 from pydantic import BaseModel, Field
 
+from boba.config import ConfigError, bind_section
 from boba.llm.embedding import Embedder, EmbedderFactory, LocalEmbedding
+from boba.pg_ix_core.schema_name import SchemaName, StorageSchema
 
 logger = logging.getLogger("pg-search-lab")
 
@@ -47,7 +52,7 @@ class Route(StrEnum):
     SEARCH = "/search"
 
 
-class LabConfig(BaseModel):
+class LabConfig(StorageSchema):
     dsn: str
     cache_dir: str
     model: str = "intfloat/multilingual-e5-large"
@@ -70,7 +75,8 @@ class SearchReply(BaseModel):
 
 
 class Searcher:
-    """Выполняет запрос выбранного режима: SQL из sql/<mode>.sql, параметры q, limit и v."""
+    """Выполняет запрос выбранного режима: SQL из sql/<mode>.sql, параметры q, limit и
+    v."""
 
     def __init__(self, cfg: LabConfig, sql_dir: Path, embedder: Embedder[str]) -> None:
         self._cfg = cfg
@@ -85,15 +91,27 @@ class Searcher:
         sql_path = self._dir / mode.sql_file()
         if not sql_path.exists():
             raise SearchLabError(f"search {mode}: query file {sql_path} not found")
-        text = sql_path.read_text(encoding="utf-8").encode("utf-8")
+        text = SchemaName.render(
+            sql_path.read_text(encoding="utf-8"), self._cfg.db_schema
+        )
         try:
-            with psycopg.connect(self._cfg.dsn, application_name="pg-search-lab") as conn:
+            with psycopg.connect(
+                self._cfg.dsn, application_name="pg-search-lab"
+            ) as conn:
                 rows = conn.execute(text, params).fetchall()
         except psycopg.Error as exc:
             raise SearchLabError(f"search {mode} in {self._cfg.dsn}: {exc}") from exc
         hits: list[Hit] = []
         for surface, address, score, aspect, snippet in rows:
-            hits.append(Hit(surface=str(surface), address=address, score=float(score), aspect=str(aspect), snippet=str(snippet)))
+            hits.append(
+                Hit(
+                    surface=str(surface),
+                    address=address,
+                    score=float(score),
+                    aspect=str(aspect),
+                    snippet=str(snippet),
+                )
+            )
         return SearchReply(mode=mode, hits=hits)
 
 
@@ -106,7 +124,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         url = urlparse(self.path)
         if url.path == Route.PAGE:
-            self._send(HTTPStatus.OK, "text/html; charset=utf-8", self.page.read_bytes())
+            self._send(
+                HTTPStatus.OK, "text/html; charset=utf-8", self.page.read_bytes()
+            )
             return
         if url.path == Route.SEARCH:
             self._search(parse_qs(url.query))
@@ -130,7 +150,11 @@ class Handler(BaseHTTPRequestHandler):
         self._json(reply.model_dump(mode="json"))
 
     def _json(self, payload: dict[str, object]) -> None:
-        self._send(HTTPStatus.OK, "application/json; charset=utf-8", json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+        self._send(
+            HTTPStatus.OK,
+            "application/json; charset=utf-8",
+            json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        )
 
     def _send(self, status: HTTPStatus, content_type: str, body: bytes) -> None:
         self.send_response(status)
@@ -139,36 +163,56 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def log_message(self, format: str, *args: object) -> None:
-        logger.info("%s %s", self.address_string(), format % args)
+    def log_message(self, log_format: str, *args: object) -> None:
+        logger.info("%s %s", self.address_string(), log_format % args)
 
 
 class Cli:
-    """Аргументы командной строки в LabConfig."""
+    """Запуск с одним аргументом --config: секция [ix.search_lab] в модель."""
+
+    SECTION: ClassVar[str] = "ix.search_lab"
 
     @classmethod
     def parse(cls, argv: Sequence[str] | None = None) -> LabConfig:
-        parser = argparse.ArgumentParser(description="pg-search-lab: страница проверки поисковой выдачи ix")
-        parser.add_argument("--dsn", required=True, help="Строка подключения к базе ix (host=... dbname=... user=... password=...).")
-        parser.add_argument("--cache-dir", required=True, help="Каталог с весами fastembed для вектора запроса, как у pg-idx-vector.")
-        parser.add_argument("--model", default="intfloat/multilingual-e5-large", help="Модель эмбеддингов; та же, что у индексатора.")
-        parser.add_argument("--dim", type=int, default=1024, help="Размерность вектора, как у таблицы pg_emb_e5_1024.")
-        parser.add_argument("--host", default="127.0.0.1", help="Адрес, на котором слушать.")
-        parser.add_argument("--port", type=int, default=8700, help="Порт страницы.")
+        parser = argparse.ArgumentParser(
+            prog="boba-pg-search-lab",
+            description="Стенд поисковой выдачи ix: страница и http-сервер.",
+        )
+        parser.add_argument(
+            "--config",
+            required=True,
+            type=Path,
+            help=(
+                "Путь к файлу конфига приложения (toml). Адрес страницы, база ix и "
+                "модель эмбеддингов берутся из секции [ix.search_lab]."
+            ),
+        )
         args = parser.parse_args(argv)
-        return LabConfig(dsn=args.dsn, cache_dir=args.cache_dir, model=args.model, dim=args.dim, host=args.host, port=args.port)
+
+        return bind_section(args.config, cls.SECTION, LabConfig)
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
-    cfg = Cli.parse()
-    here = Path(__file__).resolve().parent
-    embedding = LocalEmbedding(kind="local", model=cfg.model, cache_dir=cfg.cache_dir, dim=cfg.dim, batch_size=8, progress_every=8)
-    Handler.searcher = Searcher(cfg, here / "sql", EmbedderFactory.build(embedding))
-    Handler.page = here / "index.html"
-    server = ThreadingHTTPServer((cfg.host, cfg.port), Handler)
-    logger.info("listening on http://%s:%d/", cfg.host, cfg.port)
-    server.serve_forever()
+
+    try:
+        cfg = Cli.parse()
+        here = Path(__file__).resolve().parent
+        embedding = LocalEmbedding(
+            kind="local",
+            model=cfg.model,
+            cache_dir=cfg.cache_dir,
+            dim=cfg.dim,
+            batch_size=8,
+            progress_every=8,
+        )
+        Handler.searcher = Searcher(cfg, here / "sql", EmbedderFactory.build(embedding))
+        Handler.page = here / "index.html"
+        server = ThreadingHTTPServer((cfg.host, cfg.port), Handler)
+        logger.info("listening on http://%s:%d/", cfg.host, cfg.port)
+        server.serve_forever()
+    except (ConfigError, SearchLabError) as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ create temp table stage_node (
     kind     text          not null,
     oid      oid           not null,
     subid    int           not null default 0,
-    surface  ix.surface_e  not null,
+    surface  {schema}.surface_e  not null,
     address  jsonb         not null,
     primary key (kind, oid, subid),
     unique (address)

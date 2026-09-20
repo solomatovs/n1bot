@@ -10,10 +10,10 @@ default и комментарием, внешние ключи наружу и �
 -- @params batch indexer_hash
 with rel as (
     select n.id as node_id, n.surface, t.schema_name, t.name, t.kind, t.comment, t.row_estimate, t.partition_bound
-    from ix.pg_meta_table t join ix.node n on n.id = t.node_id
+    from {schema}.pg_meta_table t join {schema}.node n on n.id = t.node_id
     union all
     select n.id, n.surface, v.schema_name, v.name, v.kind, v.comment, null, null
-    from ix.pg_meta_view v join ix.node n on n.id = v.node_id
+    from {schema}.pg_meta_view v join {schema}.node n on n.id = v.node_id
 ),
 cols as (
     select tr.parent_id as rel_id,
@@ -21,22 +21,22 @@ cols as (
                       || case when c.not_null then ' not null' else '' end
                       || coalesce(' default ' || c.default_expr, '')
                       || coalesce(' -- ' || c.comment, ''), E'\n' order by c.ordinal) as text
-    from ix.pg_meta_column c join ix.tree tr on tr.node_id = c.node_id
+    from {schema}.pg_meta_column c join {schema}.tree tr on tr.node_id = c.node_id
     group by tr.parent_id
 ),
 fk_out as (
     select tr.parent_id as rel_id, string_agg('  ' || k.definition, E'\n' order by k.name) as text
-    from ix.pg_meta_constraint k join ix.tree tr on tr.node_id = k.node_id
+    from {schema}.pg_meta_constraint k join {schema}.tree tr on tr.node_id = k.node_id
     where k.kind = 'foreign key'
     group by tr.parent_id
 ),
 fk_in as (
     select ct.parent_id as rel_id,
            string_agg(distinct '  ' || k.schema_name || '.' || k.table_name || ': ' || k.definition, E'\n') as text
-    from ix.pg_meta_edge m
-    join ix.edge e on e.id = m.edge_id
-    join ix.pg_meta_constraint k on k.node_id = e.node_src_id and k.kind = 'foreign key'
-    join ix.tree ct on ct.node_id = e.node_tgt_id
+    from {schema}.pg_meta_edge m
+    join {schema}.edge e on e.id = m.edge_id
+    join {schema}.pg_meta_constraint k on k.node_id = e.node_src_id and k.kind = 'foreign key'
+    join {schema}.tree ct on ct.node_id = e.node_tgt_id
     where m.role = 'constraint' and m.side = 1
     group by ct.parent_id
 ),
@@ -45,16 +45,16 @@ idx as (
            string_agg('  ' || i.name || ' (' || array_to_string(i.columns, ', ') || ')'
                       || case when i.is_unique then ' unique' else '' end
                       || coalesce(' where ' || i.predicate, ''), E'\n' order by i.name) as text
-    from ix.pg_meta_index i join ix.tree tr on tr.node_id = i.node_id
+    from {schema}.pg_meta_index i join {schema}.tree tr on tr.node_id = i.node_id
     group by tr.parent_id
 ),
 reads as (
     select e.node_src_id as rel_id, string_agg(distinct '  ' || (p.address->>'schema') || '.' || coalesce(p.address->>'table', p.address->>'view'), E'\n') as text
-    from ix.edge e
-    join ix.node v on v.id = e.node_src_id and v.surface = 'pg_meta_view'
-    join ix.node c on c.id = e.node_tgt_id
-    join ix.tree ct on ct.node_id = c.id
-    join ix.node p on p.id = ct.parent_id
+    from {schema}.edge e
+    join {schema}.node v on v.id = e.node_src_id and v.surface = 'pg_meta_view'
+    join {schema}.node c on c.id = e.node_tgt_id
+    join {schema}.tree ct on ct.node_id = c.id
+    join {schema}.node p on p.id = ct.parent_id
     group by e.node_src_id
 ),
 input as (
@@ -78,7 +78,7 @@ input as (
 todo as (
     select i.node_id, i.surface, i.text, md5(i.text) as input_hash
     from input i
-    left join ix.pg_llm_description s on s.node_id = i.node_id
+    left join {schema}.pg_llm_description s on s.node_id = i.node_id
     where s.node_id is null or s.input_hash <> md5(i.text) or s.indexer_hash <> %(indexer_hash)s
     order by i.node_id
     limit %(batch)s * 4

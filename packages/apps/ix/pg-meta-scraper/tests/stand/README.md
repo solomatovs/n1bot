@@ -6,6 +6,7 @@
 
 ```toml
 [ix_stand]
+    db_schema = "ix"
     ix_dsn   = "host=... port=5432 dbname=postgres user=... password=..."
     database = "ix_stand"
     sources  = [
@@ -14,8 +15,8 @@
     ]
 ```
 
-`database` пересоздаётся на каждую сессию тестов: ядро из `docs/knowledge-schema.sql`,
-затем `schema/` пакета. На каждом источнике пересоздаётся база `edge_demo` из `ddl/`.
+`database` пересоздаётся на каждую сессию тестов: схема `db_schema` с ядром пакета
+`pg-ix-core`, затем `schema/` скрапера; оба накатывает `SchemaUpgrade`. На каждом источнике пересоздаётся база `edge_demo` из `ddl/`.
 
 - `ddl/`: демонстрационный набор. Файл с воротами `-- @min`, `-- @max`, `-- @only gp`,
   `-- @not gp` применяется только к подходящей версии; варианты одной таблицы различаются

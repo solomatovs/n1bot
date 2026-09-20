@@ -13,10 +13,10 @@ from typing import ClassVar
 
 import psycopg
 import pytest
+from conftest import DemoDataset, Golden, IxDatabase, IxSource, IxStand
 from pydantic import BaseModel
 
 from boba.pg_meta_scraper.worker import Pipeline, ScrapeWorkerError
-from conftest import DemoDataset, Golden, IxDatabase, IxSource, IxStand
 
 pytestmark = pytest.mark.load
 
@@ -54,7 +54,9 @@ class Killer:
         self._stop.set()
         self._thread.join()
         if self._error is not None:
-            raise AssertionError(f"killer thread failed: {self._error}") from self._error
+            raise AssertionError(
+                f"killer thread failed: {self._error}"
+            ) from self._error
 
     def _run(self) -> None:
         try:
@@ -67,7 +69,8 @@ class Killer:
             while not self._stop.is_set():
                 rows = conn.execute(
                     "select pg_terminate_backend(pid) from pg_stat_activity "
-                    "where application_name = %(app)s and datname = %(db)s and pid <> pg_backend_pid() "
+                    "where application_name = %(app)s and datname = %(db)s and pid <> "
+                    "pg_backend_pid()"
                     "order by random() limit %(n)s",
                     {"app": Pipeline.APP_NAME, "db": self._database, "n": self.VICTIMS},
                 ).fetchall()
@@ -87,14 +90,16 @@ class Storm:
 
     def run(self) -> list[StormOutcome]:
         with ThreadPoolExecutor(max_workers=self.THREADS) as pool:
-            futures = [pool.submit(self._thread_runs, seed) for seed in range(self.THREADS)]
+            futures = [
+                pool.submit(self._thread_runs, seed) for seed in range(self.THREADS)
+            ]
             outcomes: list[StormOutcome] = []
             for future in futures:
                 outcomes.extend(future.result())
         return outcomes
 
     def _thread_runs(self, seed: int) -> list[StormOutcome]:
-        rng = random.Random(seed)
+        rng = random.Random(seed)  # noqa: S311 — выбор цели шторма, не крипто
         outcomes: list[StormOutcome] = []
         for _ in range(self.RUNS_PER_THREAD):
             source = rng.choice(self._sources)
@@ -119,7 +124,8 @@ class Deadlocks:
     def count(self) -> int:
         with psycopg.connect(self._dsn) as conn:
             row = conn.execute(
-                "select deadlocks from pg_stat_database where datname = %(db)s", {"db": self._database}
+                "select deadlocks from pg_stat_database where datname = %(db)s",
+                {"db": self._database},
             ).fetchone()
         if row is None:
             raise AssertionError(f"pg_stat_database has no row for {self._database}")
@@ -141,10 +147,16 @@ class TestScrapeStorm:
 
         succeeded = sum(1 for o in outcomes if o.ok)
         failed = [o for o in outcomes if not o.ok]
-        assert succeeded > 0, f"storm: no run succeeded; first errors: {[o.error for o in failed[:5]]}"
-        assert killer.kills > 0, "storm: the killer terminated nothing, the storm did not overlap"
+        assert succeeded > 0, (
+            f"storm: no run succeeded; first errors: {[o.error for o in failed[:5]]}"
+        )
+        assert killer.kills > 0, (
+            "storm: the killer terminated nothing, the storm did not overlap"
+        )
 
-        assert ix_database.invariants() == {}, "storm: invariants broken right after the storm"
+        assert ix_database.invariants() == {}, (
+            "storm: invariants broken right after the storm"
+        )
 
         for source in ix_stand.sources:
             ix_database.scrape(source)
@@ -153,6 +165,10 @@ class TestScrapeStorm:
         assert deadlocks.count() - before == 0, "deadlocks happened during the storm"
 
         for source in ix_stand.sources:
-            assert ix_database.scope_nodes(source.host) > 0, f"{source.name}: scope is empty after control pass"
+            assert ix_database.scope_nodes(source.host) > 0, (
+                f"{source.name}: scope is empty after control pass"
+            )
             if golden.has(source.name):
-                assert ix_database.fingerprint(source.host) == golden.of(source.name), f"{source.name}: fingerprint differs"
+                assert ix_database.fingerprint(source.host) == golden.of(source.name), (
+                    f"{source.name}: fingerprint differs"
+                )
