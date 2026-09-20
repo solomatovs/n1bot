@@ -1,26 +1,23 @@
 *
 
-!packages
-!build
 !pyproject.toml
 !uv.lock
+!packages
+
+!build/*/conf
+!build/*/scripts
+!build/*/src/uv
+!build/*/src/webassets
+!build/*/src/*.tar.xz
+!build/*/src/chainlit-[0-9]*.tar.gz
 
 packages/**/__pycache__
 packages/**/*.egg-info
 packages/**/node_modules
 
-.venv
-
-# в контекст не уезжают: артефакты песочницы собирают стадии Dockerfile
-# (fuse2fs-build, plugin-rootfs), колёса — стадия boba-wheels; готовые образы
-# плагинов едут в runtime-образ из src/sandbox/plugins
-build/*/src/sandbox
-!build/*/src/sandbox/plugins
-build/*/src/wheels
-
-# страницы: зависимости ставит и сборку делает стадия web-build
 packages/agents/boba-studio/assets/workflow
 packages/agents/boba-studio/web/workflow/openapi.json
 packages/agents/boba-studio/web/workflow/src/api/schema.d.ts
 packages/agents/boba-chainlit/assets/public/page.js
 packages/agents/boba-chainlit/assets/public/vendor
+packages/agents/boba-chainlit/assets/ui
