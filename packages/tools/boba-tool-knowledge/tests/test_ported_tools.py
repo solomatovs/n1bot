@@ -21,7 +21,7 @@ def chainlit_context() -> None:
 
 
 def pg_config() -> PgToolConfig:
-    return PgToolConfig.model_validate({"max_rows": 10, "sandbox": _SANDBOX})
+    return PgToolConfig.model_validate({"limit": 10, "sandbox": _SANDBOX})
 
 
 def kb_config() -> PostgresKnowledgeBaseConfig:
@@ -55,6 +55,17 @@ class TestPgTools:
         "pg_copy",
         "pg_copy_out",
         "pg_copy_in",
+        "pg_address",
+        "pg_database_describe",
+        "pg_schema_describe",
+        "pg_table_describe",
+        "pg_column_describe",
+        "pg_constraints_describe",
+        "pg_indexes_describe",
+        "pg_routines_describe",
+        "pg_routine_arg_describe",
+        "pg_sequences_describe",
+        "pg_types_describe",
     ]
 
     def test_module_declares_the_toolset(self) -> None:

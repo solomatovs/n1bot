@@ -82,7 +82,8 @@ class Repository:
         given = self._parse_python(candidate)
         if given < required:
             raise SystemExit(
-                f"python {candidate} is older than requires-python >={self.requires_python}"
+                f"python {candidate} is older than requires-python "
+                f">={self.requires_python}"
             )
 
         return f"python-check: {candidate} >= {self.requires_python} - ok"
