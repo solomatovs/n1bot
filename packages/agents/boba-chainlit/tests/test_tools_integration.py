@@ -996,6 +996,8 @@ class TestPgTools:
             pg_tools["pg_query"],
             connection=pg_connection,
             sql="select 1 as one, 'два' as two",
+            offset=0,
+            limit=50,
         )
         if not (isinstance(result, SqlResult)):
             raise AssertionError("isinstance(result, SqlResult)")
@@ -1012,6 +1014,8 @@ class TestPgTools:
             pg_tools["pg_query"],
             connection=pg_connection,
             sql="create temp table integration_probe(x int)",
+            offset=0,
+            limit=50,
         )
         if not (isinstance(result, SqlResult)):
             raise AssertionError("isinstance(result, SqlResult)")
@@ -1080,6 +1084,8 @@ class TestPgTools:
                 "insert into multi_probe values (1), (2); "
                 "select count(*) as n from multi_probe;"
             ),
+            offset=0,
+            limit=50,
         )
 
         if not isinstance(result, SqlResult):
@@ -1106,12 +1112,16 @@ class TestPgTools:
                     "create temp table rollback_probe(x int); "
                     "select * from no_such_table_here;"
                 ),
+                offset=0,
+                limit=50,
             )
 
         after = await Call.result(
             pg_tools["pg_query"],
             connection=pg_connection,
             sql="select to_regclass('rollback_probe') is null as gone",
+            offset=0,
+            limit=50,
         )
         if list(_rows(after)) != [{"gone": True}]:
             raise AssertionError("таблица первой команды откачена")
@@ -1259,6 +1269,8 @@ class TestPgCopyPipeline:
                 " insert into it_pipe_src"
                 " select g, 'строка ' || g from generate_series(1, 1000) g"
             ),
+            offset=0,
+            limit=50,
         )
 
     async def test_wrong_direction_is_refused_before_the_database(

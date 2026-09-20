@@ -22,7 +22,11 @@ def main() -> int:
     path = os.environ[HealthEnv.PATH]
     url = f"http://127.0.0.1:{port}{prefix}{path}"
 
-    with urllib.request.urlopen(url, timeout=4) as response:
+    # схема собрана здесь же и всегда http: проверка ради явного отказа от file:
+    if not url.startswith("http://"):
+        raise SystemExit(f"healthcheck: expected an http url, got {url!r}")
+
+    with urllib.request.urlopen(url, timeout=4) as response:  # noqa: S310
         print(f"{url}: {response.status}")
 
     return 0
