@@ -451,7 +451,7 @@ class Pipeline:
             if not cur.nextset():
                 return rows
 
-    def _read(self, name: LayoutFile) -> bytes:
+    def _read(self, name: LayoutFile) -> sql.Composed:
         text = (self._dir / name).read_text(encoding="utf-8")
         return SchemaName.render(text, self._cfg.db_schema)
 

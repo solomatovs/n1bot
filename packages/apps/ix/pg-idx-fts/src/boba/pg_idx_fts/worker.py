@@ -73,7 +73,7 @@ class PackageSql:
         self._db_schema = db_schema
         self._present: dict[str, bool] = {}
 
-    def load(self, name: SqlFile, conn: psycopg.Connection) -> bytes:
+    def load(self, name: SqlFile, conn: psycopg.Connection) -> sql.Composed:
         stem = Path(name).stem
         chosen = self._dir / name
         for variant in sorted(self._dir.glob(f"{stem}__*.sql")):
