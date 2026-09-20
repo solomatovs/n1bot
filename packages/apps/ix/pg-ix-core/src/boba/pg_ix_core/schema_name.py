@@ -39,17 +39,19 @@ class SchemaName:
     """Подстановка схемы в запросы пакета через `sql.SQL.format`."""
 
     @classmethod
-    def render(cls, text: str, db_schema: str) -> sql.Composed:
-        """Запрос под схему; cast до LiteralString безопасен: источник текста —
-        файл пакета, не пользовательский ввод."""
+    def render(cls, text: str, db_schema: str, **parts: sql.Composable) -> sql.Composed:
+        """Запрос под схему; остальные плейсхолдеры файла (`{sources}`, `{weights}`)
+        заполняются переданными частями. cast до LiteralString безопасен: источник
+        текста — файл пакета или объявление из базы, не пользовательский ввод."""
         template = sql.SQL(cast(LiteralString, text))
 
         try:
-            return template.format(schema=sql.Identifier(db_schema))
+            return template.format(schema=sql.Identifier(db_schema), **parts)
         except (KeyError, ValueError, IndexError) as exc:
+            known = ", ".join(["schema", *sorted(parts)])
             msg = (
                 f"schema render for {db_schema!r}: query template expects only "
-                f"the {{schema}} placeholder, got {exc!r}"
+                f"placeholders {known}, got {exc!r}"
             )
             raise SchemaNameError(msg) from exc
 

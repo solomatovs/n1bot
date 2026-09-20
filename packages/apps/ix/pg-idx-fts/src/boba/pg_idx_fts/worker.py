@@ -1,5 +1,7 @@
 """Воркер индексатора pg_fts: 10_upsert.sql пачками до пустого результата, затем
-20_prune.sql.
+20_prune.sql. Источник аспектов собирается при старте из объявлений
+{schema}.surface_aspect по классам из конфига и подставляется в файлы run/
+вместо `{sources}`; веса аспектов из конфига подставляются вместо `{weights}`.
 
 Ошибки:
 IndexerWorkerError — база ix недоступна или ответ шага не того вида, что ожидался.
@@ -9,17 +11,17 @@ from __future__ import annotations
 
 import argparse
 import logging
-import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, LiteralString
 
 import psycopg
 from psycopg import sql
 from pydantic import BaseModel, Field
 
 from boba.config import ConfigError, bind_section
+from boba.pg_ix_core.aspects import AspectClass, AspectDeclarations, AspectSources
 from boba.pg_ix_core.schema_name import SchemaName, StorageSchema
 from boba.pg_ix_core.upgrade import (
     SchemaUpgrade,
@@ -39,8 +41,26 @@ class SqlFile(StrEnum):
     PRUNE = "20_prune.sql"
 
 
+class Part(StrEnum):
+    """Плейсхолдеры файлов run/, которые заполняет воркер."""
+
+    SOURCES = "sources"
+    WEIGHTS = "weights"
+
+
+class FtsWeight(StrEnum):
+    """Вес tsvector: A самый тяжёлый, D по умолчанию для аспекта без веса."""
+
+    A = "A"
+    B = "B"
+    C = "C"
+    D = "D"
+
+
 class WorkerConfig(StorageSchema):
     dsn: str
+    classes: Sequence[AspectClass]
+    weights: Mapping[str, FtsWeight]
     batch: int = Field(gt=0, default=500)
     lock_timeout: str = "2s"
     statement_timeout: str = "60s"
@@ -57,48 +77,58 @@ class CycleReport(BaseModel):
     pruned: int
 
 
+class FtsWeights:
+    """Веса аспектов из конфига как список values для `{weights}`: аспект как
+    значение aspect_e, вес текстом; аспект без строки получает D в запросе."""
+
+    ROW: ClassVar[LiteralString] = "({aspect}::{schema}.aspect_e, {weight})"
+    EMPTY: ClassVar[LiteralString] = (
+        "select null::{schema}.aspect_e, null::text where false"
+    )
+
+    @classmethod
+    def values(cls, weights: Mapping[str, FtsWeight], db_schema: str) -> sql.Composed:
+        schema = sql.Identifier(db_schema)
+
+        if not weights:
+            return sql.SQL(cls.EMPTY).format(schema=schema)
+
+        rows: list[sql.Composed] = []
+        for aspect, weight in sorted(weights.items()):
+            rows.append(
+                sql.SQL(cls.ROW).format(
+                    schema=schema,
+                    aspect=sql.Literal(aspect),
+                    weight=sql.Literal(str(weight)),
+                )
+            )
+
+        return sql.SQL("values ") + sql.SQL(", ").join(rows)
+
+
 class PackageSql:
-    """Файлы цикла из каталога run/ пакета; параметры именованные, в стиле psycopg.
+    """Файлы цикла из каталога run/ пакета; параметры именованные, в стиле psycopg,
+    плейсхолдеры файла заполняются частями, собранными воркером при старте."""
 
-    У шага может быть вариант с суффиксом __<имя> и заголовком `-- @requires
-    <таблица>`: он берётся, когда все перечисленные таблицы есть в базе
-    (to_regclass), иначе берётся базовый файл. Так индекс подхватывает описания от
-    pg-llm-describer, если тот установлен, и работает без него.
-    """
-
-    REQUIRES = re.compile(r"^-- @requires\s+(.+)$", re.M)
-
-    def __init__(self, package_dir: Path, db_schema: str) -> None:
+    def __init__(
+        self, package_dir: Path, db_schema: str, parts: Mapping[str, sql.Composable]
+    ) -> None:
         self._dir = package_dir
         self._db_schema = db_schema
-        self._present: dict[str, bool] = {}
+        self._parts = dict(parts)
 
-    def load(self, name: SqlFile, conn: psycopg.Connection) -> sql.Composed:
-        stem = Path(name).stem
-        chosen = self._dir / name
-        for variant in sorted(self._dir.glob(f"{stem}__*.sql")):
-            text = variant.read_text(encoding="utf-8")
-            required = [
-                t.strip()
-                for m in self.REQUIRES.finditer(text)
-                for t in m.group(1).split()
-            ]
-            if required and all(self._exists(conn, t) for t in required):
-                chosen = variant
-        return SchemaName.render(chosen.read_text(encoding="utf-8"), self._db_schema)
+    def load(self, name: SqlFile) -> sql.Composed:
+        text = (self._dir / name).read_text(encoding="utf-8")
 
-    def _exists(self, conn: psycopg.Connection, table: str) -> bool:
-        if table not in self._present:
-            self._present[table] = SchemaName.exists(conn, self._db_schema, table)
-        return self._present[table]
+        return SchemaName.render(text, self._db_schema, **self._parts)
 
 
 class IndexerWorker:
     """Цикл индексатора: одна сессия к ix."""
 
-    def __init__(self, cfg: WorkerConfig, sql_files: PackageSql) -> None:
+    def __init__(self, cfg: WorkerConfig, package_dir: Path) -> None:
         self._cfg = cfg
-        self._sql = sql_files
+        self._dir = package_dir
 
     def run(self) -> CycleReport:
         try:
@@ -115,10 +145,15 @@ class IndexerWorker:
                         sql.Literal(self._cfg.statement_timeout)
                     )
                 )
+
+                sql_files = PackageSql(
+                    self._dir, self._cfg.db_schema, self._parts(conn)
+                )
+
                 rounds = 0
                 applied = 0
                 while True:
-                    step = self._upsert(conn)
+                    step = self._upsert(conn, sql_files)
                     rounds += 1
                     applied += step.applied
                     logger.info(
@@ -129,23 +164,44 @@ class IndexerWorker:
                     )
                     if step.applied == 0:
                         break
-                pruned = self._prune(conn)
+
+                pruned = self._prune(conn, sql_files)
+
                 return CycleReport(rounds=rounds, applied=applied, pruned=pruned)
         except psycopg.Error as exc:
             raise IndexerWorkerError(f"ix database {self._cfg.dsn}: {exc}") from exc
 
-    def _upsert(self, conn: psycopg.Connection) -> StepResult:
+    def _parts(self, conn: psycopg.Connection) -> dict[str, sql.Composable]:
+        declarations = AspectDeclarations.of_classes(
+            conn, self._cfg.db_schema, self._cfg.classes
+        )
+        logger.info(
+            "aspect sources: %d declarations for classes %s",
+            len(declarations),
+            ", ".join(self._cfg.classes),
+        )
+
+        return {
+            str(Part.SOURCES): AspectSources.union(declarations, self._cfg.db_schema),
+            str(Part.WEIGHTS): FtsWeights.values(
+                self._cfg.weights, self._cfg.db_schema
+            ),
+        }
+
+    def _upsert(self, conn: psycopg.Connection, sql_files: PackageSql) -> StepResult:
         record = conn.execute(
-            self._sql.load(SqlFile.UPSERT, conn), {"batch": self._cfg.batch}
+            sql_files.load(SqlFile.UPSERT), {"batch": self._cfg.batch}
         ).fetchone()
         if record is None:
             raise IndexerWorkerError("upsert: expected one summary row, got none")
+
         return StepResult(planned=int(record[1]), applied=int(record[2]))
 
-    def _prune(self, conn: psycopg.Connection) -> int:
-        record = conn.execute(self._sql.load(SqlFile.PRUNE, conn)).fetchone()
+    def _prune(self, conn: psycopg.Connection, sql_files: PackageSql) -> int:
+        record = conn.execute(sql_files.load(SqlFile.PRUNE)).fetchone()
         if record is None:
             raise IndexerWorkerError("prune: expected one summary row, got none")
+
         return int(record[1])
 
 
@@ -207,9 +263,7 @@ def main() -> None:
             return
 
         cfg = bind_section(config_path, Cli.SECTION, WorkerConfig)
-        report = IndexerWorker(
-            cfg, PackageSql(package_dir / "run", cfg.db_schema)
-        ).run()
+        report = IndexerWorker(cfg, package_dir / "run").run()
         logger.info(
             "done: rounds=%d applied=%d pruned=%d",
             report.rounds,

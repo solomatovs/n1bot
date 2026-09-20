@@ -1,25 +1,10 @@
 /*
-pg-idx-trgm, схема, шаг 1: словарь аспектов и таблица {schema}.pg_idx_trgm с индексами.
+pg-idx-trgm, схема: таблица {schema}.pg_idx_trgm с индексами.
 */
-create table if not exists {schema}.pg_idx_aspect (
-    aspect       {schema}.pg_idx_aspect_e primary key,
-    description  varchar not null
-);
-
-insert into {schema}.pg_idx_aspect (aspect, description) values
-    ('meta_description', 'описание объекта, собранное индексатором из всего, что о нём известно; основной аспект поиска'),
-    ('meta_comment',     'комментарий из источника как есть (obj_description, col_description); пишется, только если не пуст'),
-    ('meta_columns',     'имена колонок таблицы через пробел; таблица находится по своим колонкам'),
-    ('llm_description',     'описание от LLM (плагин describer); пишется, только когда оно есть'),
-    ('meta_name',        'имя объекта как есть (relname, attname); точное совпадение и подстрока'),
-    ('meta_path',        'путь через точку, как пишет пользователь: schema.table или schema.table.column; точное совпадение'),
-    ('meta_words',       'слова имени, разрезанного по CamelCase и подчёркиваниям, в нижнем регистре, ё -> е; поиск с опечатками')
-on conflict (aspect) do nothing;
-
 create table if not exists {schema}.pg_idx_trgm (
     node_id  bigint not null,
     surface  {schema}.surface_e not null references {schema}.surface,
-    aspect   {schema}.pg_idx_aspect_e not null references {schema}.pg_idx_aspect,
+    aspect   {schema}.aspect_e not null references {schema}.aspect,
     content  varchar not null,
     primary key (node_id, surface, aspect)
 );

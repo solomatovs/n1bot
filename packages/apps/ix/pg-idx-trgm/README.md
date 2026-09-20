@@ -11,15 +11,15 @@ run/      SQL шагов цикла, их выполняет worker.py
 
 ## Установка
 
-`schema/00_pg_idx_trgm.sql`: словарь аспектов `ix.pg_idx_aspect_e` и `ix.pg_idx_aspect` (общий для
-индексаторов, каждый создаёт его идемпотентно) и таблица `ix.pg_idx_trgm` с индексами.
+`schema/10_pg_idx_trgm.sql`: таблица `ix.pg_idx_trgm` с индексами. Колонка `aspect` ссылается на
+словарь ядра `ix.aspect`, значения в него добавляют владельцы поверхностей.
 
 Схема пакета накатывается его же командой; ядро `ix` ставится до этого пакетом
 `pg-ix-core`:
 
 ```
-.venv/bin/boba-ix-core upgrade --config conf/ix.toml
-.venv/bin/boba-pg-idx-trgm upgrade --config conf/ix.toml
+.venv/bin/boba-ix-core upgrade --config ../../compose/apps/pg-ix-core/conf.toml
+.venv/bin/boba-pg-idx-trgm upgrade --config ../../compose/apps/pg-idx-trgm/conf.toml
 ```
 
 Схема хранения задаётся полем `db_schema` секции (по умолчанию `ix`): в sql-файлах она
@@ -37,13 +37,12 @@ run/      SQL шагов цикла, их выполняет worker.py
 скрапера: он сам находит, чего не хватает, и доводит таблицу до структуры; параллельные
 запуски не мешают друг другу.
 
-Настройки берутся из одного файла конфига, секция [ix.idx_trgm]; пример
-секции лежит рядом в `conf.example.toml`. Все секции приложений ix обычно живут в одном
-файле, общие значения можно вынести в `[ix]` и ссылаться на них интерполяцией
-(`dsn = "${ix.dsn}"`).
+Настройки берутся из одного файла конфига, секция [ix.idx_trgm]. Конфиг приложения на dev-стенде лежит в `compose/apps/pg-idx-trgm/conf.toml`
+(каталог вне git, в нём креды). Одним файлом можно запускать и несколько приложений:
+каждое читает только свою секцию.
 
 ```
-.venv/bin/boba-pg-idx-trgm --config conf/ix.toml
+.venv/bin/boba-pg-idx-trgm --config ../../compose/apps/pg-idx-trgm/conf.toml
 ```
 
 Роль в DSN должна иметь права на чтение `ix.node`, `ix.tree`, surface-таблиц `ix.pg_*` и на
@@ -54,7 +53,7 @@ run/      SQL шагов цикла, их выполняет worker.py
 ## Воркер: worker.py
 
 ```
-.venv/bin/boba-pg-idx-trgm --config conf/ix.toml
+.venv/bin/boba-pg-idx-trgm --config ../../compose/apps/pg-idx-trgm/conf.toml
 ```
 
 Крутит `run/10_upsert.sql` пачками до applied = 0, затем `run/20_prune.sql`; креды только в конфиге.
@@ -82,32 +81,33 @@ run/      SQL шагов цикла, их выполняет worker.py
 воркером индекс отстаёт, изменённые node получают новый content после upsert, удалённые
 исчезают из выдачи сразу (через join с `ix.node`) и из таблицы после prune.
 
+## Откуда берутся аспекты
+
+Индексатор не знает ни поверхностей, ни происхождений. Он подписан на классы аспектов
+(`classes` в секции конфига, для триграмм это `ident` и `words`) и при старте цикла читает
+объявления своих классов из `ix.surface_aspect` — таблицы ядра, в которую пакет-владелец
+поверхности кладёт по строке на пару «поверхность, аспект» с запросом, возвращающим
+`node_id` и `content`. Воркер склеивает тела объявлений в один `union all` с колонками
+`surface`, `aspect`, `node_id`, `content` и подставляет его в `run/10_upsert.sql` и
+`run/20_prune.sql` вместо `{sources}`. Новая поверхность подхватывается без правок здесь:
+её пакет объявляет свои аспекты классов `ident` и `words`.
+
 ## Аспекты
 
-| aspect | кто пишет |
-|---|---|
-| name | все surface |
-| words | все surface |
-| path | pg_table, pg_column, pg_view, pg_index, pg_sequence, pg_routine |
+С объявлениями скрапера PostgreSQL в таблицу попадают:
 
-Как строится текст: `path` это `schema.table`, `schema.table.column`,
-`schema.routine(args)`; `words` это имя, разрезанное по CamelCase, подчёркиваниям и
-дефисам, в нижнем регистре, ё заменена на е; `columns` это имена колонок таблицы или
-view через пробел в порядке ordinal, через `ix.tree`; `description` это заголовок вида
-«Table dm.orders», «Column dm.orders.amount numeric», «Index orders__open on orders
-(created_at)», «Function calc_total(p_order bigint, p_rate numeric) returns numeric»,
-плюс комментарий и для таблиц список колонок с типами.
+| aspect | класс | кто объявляет |
+|---|---|---|
+| meta_name | ident | все поверхности pg_meta_* |
+| meta_path | ident | pg_meta_table, pg_meta_column, pg_meta_view, pg_meta_index, pg_meta_sequence, pg_meta_routine |
+| meta_words | words | все поверхности pg_meta_* |
 
-## Важно: дублирование определения аспектов
-
-CTE `obj` и `aspect` в `run/10_upsert.sql` и `run/20_prune.sql` этого пакета и в соседних
-пакетах индексаторов это одна и та же логика, скопированная намеренно. Общих объектов
-в базе (представлений, функций) по решению нет. При переносе на Python эти CTE должны
-стать одной общей функцией, которая генерирует текст аспектов для всех индексаторов;
-до тех пор при правке определения аспекта править все копии.
+Как строится текст: `meta_path` это `schema.table`, `schema.table.column`,
+`schema.routine(args)`; `meta_words` это имя, разрезанное по CamelCase, подчёркиваниям и
+дефисам, в нижнем регистре, ё заменена на е.
 
 ## Требования к схеме
 
-Ядро `ix` (`ix.node`, `ix.tree`) и surface-таблицы `ix.pg_*` скрапера. Свою таблицу и словарь
-аспектов пакет создаёт сам в `schema/`: без внешнего ключа на `ix.node`, со ссылками на
-словари `ix.surface` и `ix.pg_idx_aspect`.
+Ядро `ix` (`ix.node`, `ix.aspect`, `ix.surface_aspect`) и объявления хотя бы одного владельца
+поверхностей. Свою таблицу пакет создаёт сам в `schema/`: без внешнего ключа на `ix.node`, со
+ссылками на словари `ix.surface` и `ix.aspect`.

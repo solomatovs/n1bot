@@ -1,9 +1,13 @@
 /*
-pg-llm-describer, шаг 3: удалить описания объектов, которых больше нет или которые перестали
-быть таблицей или view. Занятые другим сеансом строки пропускаются.
+pg-llm-describer, шаг 3: удалить описания объектов, для которых больше нет входа: node удалён
+или поверхность перестала отдавать аспект класса describer_input. Занятые другим сеансом
+строки пропускаются.
 */
 -- @name prune
-with stale as (
+with input as (
+    {sources}
+),
+stale as (
     select
         s.node_id
     from
@@ -11,9 +15,8 @@ with stale as (
     where
         not exists (
             select 1
-            from   {schema}.node n
-            where  n.id = s.node_id
-              and  n.surface in ('pg_meta_table', 'pg_meta_view')
+            from   input i
+            where  i.node_id = s.node_id
         )
     order by
         s.node_id
