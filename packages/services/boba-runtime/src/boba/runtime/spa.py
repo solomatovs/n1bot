@@ -238,11 +238,15 @@ class DevSpa:
     async def _to_browser(browser: WebSocket, upstream: ClientConnection) -> None:
         try:
             async for frame in upstream:
-                if isinstance(frame, bytes):
-                    await browser.send_bytes(frame)
-                    continue
-
-                await browser.send_text(frame)
+                match frame:
+                    case bytes(frame):
+                        await browser.send_bytes(frame)
+                        continue
+                    case str(frame):
+                        await browser.send_text(frame)
+                        continue
+                    case _:
+                        raise RuntimeError(f"frame type type({frame}) is unsupported")
         except WebSocketException:
             return
 

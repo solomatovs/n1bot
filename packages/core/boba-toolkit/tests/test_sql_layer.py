@@ -33,18 +33,18 @@ class FakeLimits(SqlLimits):
 class TestSqlLimits:
     def test_defaults_are_sane(self) -> None:
         limits = FakeLimits.model_validate({})
-        if limits.max_rows <= 0 or limits.max_bytes <= 0:
+        if limits.limit <= 0 or limits.max_bytes <= 0:
             raise AssertionError("limits must be positive")
 
     def test_section_keys_are_read(self) -> None:
-        limits = FakeLimits.model_validate({"max_rows": 5, "max_bytes": 100})
-        if (limits.max_rows, limits.max_bytes) != (5, 100):
+        limits = FakeLimits.model_validate({"limit": 5, "max_bytes": 100})
+        if (limits.limit, limits.max_bytes) != (5, 100):
             raise AssertionError("section keys must reach the model")
 
     def test_foreign_keys_are_ignored(self) -> None:
         """В секции лежат ещё enable/tools/sandbox: модель их не касается."""
-        limits = FakeLimits.model_validate({"max_rows": 5, "enable": True})
-        if limits.max_rows != 5:
+        limits = FakeLimits.model_validate({"limit": 5, "enable": True})
+        if limits.limit != 5:
             raise AssertionError("extra keys must not break the model")
 
 
@@ -108,14 +108,14 @@ class TestSqlResult:
         result = SqlResult(
             engine="clickhouse",
             statements=[
-                SqlStatement(rows=[{"a": 1}], note="truncated to max_rows (1)")
+                SqlStatement(rows=[{"a": 1}], note="truncated to limit (1)")
             ],
         )
-        if result.llm_view() != '[{"a": 1}]\n\ntruncated to max_rows (1)':
+        if result.llm_view() != '[{"a": 1}]\n\ntruncated to limit (1)':
             raise AssertionError(f"llm_view: {result.llm_view()!r}")
         if "| a" not in result.chat_view().markdown:
             raise AssertionError("markdown table in chat view")
-        if "_truncated to max_rows (1)_" not in result.chat_view().markdown:
+        if "_truncated to limit (1)_" not in result.chat_view().markdown:
             raise AssertionError("note under the table")
 
     def test_several_statements_are_captioned(self) -> None:
@@ -148,14 +148,14 @@ class TestRowWindow:
     """Окно выдачи: что пропустить, сколько отдать, где следующая страница."""
 
     def test_probe_asks_one_row_beyond_the_window(self) -> None:
-        window = RowWindow(offset=20, max_rows=10, max_chars=1000)
+        window = RowWindow(offset=20, limit=10)
 
         if window.probe() != 31:
             raise AssertionError(f"окно плюс разведка, дано {window.probe()}")
 
     def test_page_cut_by_chars_points_at_the_first_unseen_row(self) -> None:
         """Обрыв по символам сдвигает offset на показанное, а не на окно."""
-        window = RowWindow(offset=0, max_rows=100, max_chars=30)
+        window = RowWindow(offset=0, limit=100)
 
         page = RowPage(window)
         for number in range(1, 50):
@@ -190,7 +190,7 @@ class TestRowPage:
         return page
 
     def test_offset_skips_and_note_points_further(self) -> None:
-        window = RowWindow(offset=2, max_rows=2, max_chars=10_000)
+        window = RowWindow(offset=2, limit=2)
 
         table = self._filled(window, self._rows(10)).statement()
 
@@ -201,7 +201,7 @@ class TestRowPage:
             raise AssertionError(f"навигация в note, дано {table.note!r}")
 
     def test_last_page_says_the_result_ended(self) -> None:
-        window = RowWindow(offset=0, max_rows=10, max_chars=10_000)
+        window = RowWindow(offset=0, limit=10)
 
         table = self._filled(window, self._rows(3)).statement()
 
@@ -209,7 +209,7 @@ class TestRowPage:
             raise AssertionError(f"конец выдачи, дано {table.note!r}")
 
     def test_offset_past_the_end_returns_nothing(self) -> None:
-        window = RowWindow(offset=50, max_rows=10, max_chars=10_000)
+        window = RowWindow(offset=50, limit=10)
 
         table = self._filled(window, self._rows(3)).statement()
 
@@ -221,7 +221,7 @@ class TestRowPage:
 
     def test_char_limit_stops_the_page_and_keeps_the_rest(self) -> None:
         """Потолок символов обрывает набор, а не роняет вызов."""
-        window = RowWindow(offset=0, max_rows=100, max_chars=30)
+        window = RowWindow(offset=0, limit=100)
 
         page = self._filled(window, self._rows(50))
         table = page.statement()
@@ -241,7 +241,7 @@ class TestRowPage:
     def test_single_huge_row_is_not_dropped(self) -> None:
         """Строка шире потолка всё равно отдаётся: иначе страница пуста и
         листать некуда."""
-        window = RowWindow(offset=0, max_rows=10, max_chars=1)
+        window = RowWindow(offset=0, limit=10)
 
         table = self._filled(window, [{"n": "x" * 500}]).statement()
 

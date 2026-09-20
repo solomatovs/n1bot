@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-tool-mail"
+version = "0.0.18.dev2"
+description = "Инструмент mail: отправка почты в песочнице поверх workspace-образа."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba-toolkit==0.0.18.dev2",
+    "pydantic>=2.10,<2.11",
+    "secure-smtplib",
+]
+# зависимости payload'а: нужны только внутри песочницы,
+# в окружении приложения их быть не должно
+[project.entry-points."boba.tools"]
+mail = "boba.tool.mail.plugin:MANIFEST"
+
+[project.optional-dependencies]
+payload = ["markdownify>=0.11,<1.0"]
+dev = ["boba-config==0.0.18.dev2", "pytest>=8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true
+
+[tool.boba.sandbox]
+imports = ["smtplib"]

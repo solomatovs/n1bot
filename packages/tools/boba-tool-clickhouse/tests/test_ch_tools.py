@@ -50,7 +50,7 @@ class TestChTools:
     def test_section_config_holds_limits_only(self) -> None:
         """Whitelist ушёл на хост: в секции остались только границы выдачи."""
         cfg = ch_config()
-        if cfg.max_rows != 10:
+        if cfg.limit != 10:
             raise AssertionError("section keys must reach the model")
 
         if hasattr(cfg, "profiles"):

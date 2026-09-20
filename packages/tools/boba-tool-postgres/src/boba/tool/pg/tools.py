@@ -14,19 +14,33 @@ CopyDirectionError — COPY-стейтмент не подходит напра�
 from __future__ import annotations
 
 import codecs
+import logging
+import random
+import string
 import sys
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from enum import StrEnum
-from typing import Annotated, Any, ClassVar, Final
+from typing import (
+    Annotated,
+    Any,
+    ClassVar,
+    Final,
+    Self,
+    TypeVar,
+    Union,
+)
 
 import psycopg
+from psycopg import AsyncClientCursor, sql
 from psycopg.rows import dict_row
-from pydantic import Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 from boba.db.postgres import PayloadPostgres, PostgresError
 from boba.db.postgres.address import PgAddresses
 from boba.db.postgres.profile import PostgresConfig
-from boba.tool.pg.catalog import PgCatalog, PgCatalogQuery
+
+# from boba.tool.pg.catalog import PgCatalog, PgCatalogQuery
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
 from boba.toolkit.ports import RawInbound, RawOutbound
@@ -38,9 +52,7 @@ from boba.toolkit.result import (
     TableResult,
 )
 from boba.toolkit.sql import (
-    MaxChars,
-    MaxRows,
-    RowBudget,
+    RowLimit,
     RowOffset,
     RowPage,
     RowWindow,
@@ -49,7 +61,30 @@ from boba.toolkit.sql import (
 )
 from boba.toolkit.types import SecretRevealing
 
+logger = logging.getLogger(__name__)
+
 PgConnection = Annotated[PostgresConfig, UserConnection]
+
+PgParams = dict[str, Any]
+"""Именованные параметры Postgres под подстановку $(name)s."""
+
+
+@dataclass(frozen=True)
+class PgQuery:
+    """Каталожный запрос: текст плюс параметры в стиле драйвера."""
+
+    sql: sql.Composable
+
+
+def get_payload() -> Any:
+    """Клиент базы: тянет psycopg, которого может не быть в приложении.
+
+    Модуль инструмента читает хост ради объявлений, а драйвер живёт только
+    в песочнице — поэтому импорт отложен до самого вызова.
+    """
+    from boba.db.postgres import payload  # noqa: PLC0415
+
+    return payload.PayloadPostgres
 
 
 class AddressColumn(StrEnum):
@@ -107,6 +142,104 @@ class PgToolConfig(SecretRevealing, SqlLimits):
     """Подпись движка в SqlResult."""
 
 
+T = TypeVar("T")
+
+
+class PgParamQueryBuilder(BaseModel):
+    name: str | None = Field(default=None)
+    val: Any
+
+    _total_name: str = PrivateAttr()
+
+    @classmethod
+    def random_name(cls, length: int) -> str:
+        return "".join(
+            random.choices(  # noqa: S311
+                string.ascii_letters,
+                k=length,
+            )
+        )
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.name is None:
+            self._total_name = self.random_name(8)
+
+    def get_placeholder(self):
+        return f"%({self._total_name})s"
+
+    def get_value(self) -> Any:
+        return {
+            self._total_name: self.name,
+        }
+
+
+class PgIdentifierQueryBuilder(BaseModel):
+    name: str | None = Field(default=None)
+    val: Any
+
+    _total_name: str = PrivateAttr()
+
+    @classmethod
+    def random_name(cls, length: int) -> str:
+        return "".join(
+            random.choices(  # noqa: S311
+                string.ascii_letters,
+                k=length,
+            )
+        )
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.name is None:
+            self._total_name = self.random_name(8)
+
+    def get_placeholder(self):
+        return f"{{{self._total_name}}}"
+
+    def get_value(self) -> Any:
+        return {
+            self._total_name: self.name,
+        }
+
+
+PgFieldQueryBuilder = Union[PgParamQueryBuilder, PgIdentifierQueryBuilder]
+
+
+class PgQueryBuilder:
+    def __init__(self) -> None:
+        self._sql: list[tuple[str, list[PgFieldQueryBuilder]]] = []
+
+    def add(self, sql: str, params: Iterable[PgFieldQueryBuilder]) -> Self:
+        self._sql.append((sql, list(params)))
+        return self
+
+    def build(self) -> sql.Composable:
+        """Формирует запрос для получения списка databases"""
+        base_query = self._query
+        condition = ["where 1=1"]
+        params: PgParams = {}
+
+        for c in self._condition_filters:
+            prefix_condition = c.get_prefix_condition()
+
+            condition.append(
+                f"{prefix_condition} {c.get_attr_placeholder()} "
+                f"{c.get_compare()} {c.get_param_placeholder()}"
+            )
+
+            params.update(c.get_parameters())
+
+        text = base_query.format_map(
+            {
+                "condition": "\n\t".join(condition),
+            }
+        )
+
+        return AbstractQuery(
+            text=text,
+            params=params,
+        )
+
+
 async def _query_rows(
     connection: PostgresConfig,
     query: PgCatalogQuery,
@@ -141,7 +274,7 @@ async def _query_rows(
     return SqlResult(engine=PgToolConfig.ENGINE, statements=statements)
 
 
-async def _catalog_page(
+async def run_and_collect(
     connection: PostgresConfig,
     query: PgCatalogQuery,
     window: RowWindow,
@@ -155,9 +288,9 @@ async def _catalog_page(
 
     conn = await PayloadPostgres.connect_config(connection)
     async with conn, conn.cursor(row_factory=dict_row) as cur:
-        await cur.execute(query.text.encode(conn.info.encoding), query.params or None)
+        await cur.execute(query.text.encode(conn.info.encoding), query.params)
 
-        for row in await cur.fetchmany(window.probe()):
+        async for row in cur:
             if not page.add(row):
                 break
 
@@ -175,9 +308,9 @@ async def _fetch_rows(
     выдача уходит в одно сообщение, поэтому следующей команде остаётся
     остаток.
     """
-    budget = RowBudget(max_rows=cfg.max_rows, max_bytes=max_bytes)
+    budget = RowBudget(max_rows=cfg.limit, max_bytes=max_bytes)
 
-    fetched = await cur.fetchmany(cfg.max_rows + 1)
+    fetched = await cur.fetchmany(cfg.limit + 1)
     for row in fetched:
         if not budget.add(row):
             break
@@ -205,7 +338,7 @@ def _affected(cur: psycopg.AsyncCursor[Any]) -> SqlStatement:
 
 
 @tool
-async def pg_list_tables(  # noqa: PLR0913 — окно выдачи задаёт вызов
+async def pg_list_tables(
     connection: PgConnection,
     pg_schema: Annotated[
         str | None,
@@ -228,9 +361,7 @@ async def pg_list_tables(  # noqa: PLR0913 — окно выдачи задаё�
     ] = None,
     *,
     offset: RowOffset,
-    max_rows: MaxRows,
-    max_chars: MaxChars,
-    cfg: Annotated[PgToolConfig, Injected],
+    limit: RowLimit,
 ) -> SqlResult:
     """Таблицы и view подключения из pg_catalog.
 
@@ -240,44 +371,96 @@ async def pg_list_tables(  # noqa: PLR0913 — окно выдачи задаё�
     сколько показано и как листать дальше, сказано в note. Сложные условия
     по каталогу пишутся запросом к pg_catalog через pg_query.
     """
-    window = RowWindow(offset=offset, max_rows=max_rows, max_chars=max_chars)
-
-    query = PgCatalog.tables(pg_schema, table_pattern)
-    return await _catalog_page(connection, query, window)
-
-
-@tool
-async def pg_describe_table(  # noqa: PLR0913 — окно выдачи задаёт вызов
-    connection: PgConnection,
-    table: Annotated[
-        str,
-        Field(min_length=1, description="Имя таблицы (без схемы)"),
-    ],
-    pg_schema: Annotated[
-        str | None,
-        Field(
-            description=(
-                "Схема таблицы; пусто — искать во всех схемах, "
-                "схема каждой найденной видна колонкой schema."
-            ),
+    builder = PgQueryBuilder()
+    builder.add("""
+        select
+            n.nspname                                     as schema,
+            c.relname                                     as table_name,
+            c.relkind                                     as kind,
+            c.reltuples::bigint                           as approx_rows,
+            pg_catalog.pg_get_userbyid(c.relowner)        as owner,
+            pg_catalog.pg_total_relation_size(c.oid)      as total_bytes,
+            pg_catalog.obj_description(c.oid, 'pg_class') as comment
+        from
+            pg_catalog.pg_class c
+            join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+        {condition}
+        order by
+            n.nspname,
+            c.relname
+    """).format({
+        
+    })
+    conditions.append(sql.SQL("where 1=1"))
+    res = sql.SQL("c.relkind = ANY (%(relkind)s)").format(
+        relkind=sql.Literal(("r", "p", "v", "m", "f"))
+    )
+    conditions.append(res)
+    condition_builder.condition(
+        "c.relkind = ANY (%s)",
+        (
+            "r",
+            "p",
+            "v",
+            "m",
+            "f",
         ),
-    ] = None,
-    *,
-    offset: RowOffset,
-    max_rows: MaxRows,
-    max_chars: MaxChars,
-    cfg: Annotated[PgToolConfig, Injected],
-) -> SqlResult:
-    """Схема таблицы из pg_catalog: колонки, нативные типы, ключи.
+    )
 
-    Колонки: schema, position, column_name, type, nullable,
-    default_expression, identity, generated, primary_key, comment. Широкая
-    таблица приходит частями: как листать, сказано в note.
-    """
-    window = RowWindow(offset=offset, max_rows=max_rows, max_chars=max_chars)
+    if pg_schema:
+        condition_builder.condition("and n.nspname = %s", pg_schema)
+        params.append(pg_schema)
 
-    query = PgCatalog.columns(table, pg_schema)
-    return await _catalog_page(connection, query, window)
+    builder = sql.SQL("""
+        select
+            n.nspname                                     as schema,
+            c.relname                                     as table_name,
+            c.relkind                                     as kind,
+            c.reltuples::bigint                           as approx_rows,
+            pg_catalog.pg_get_userbyid(c.relowner)        as owner,
+            pg_catalog.pg_total_relation_size(c.oid)      as total_bytes,
+            pg_catalog.obj_description(c.oid, 'pg_class') as comment
+        from
+            pg_catalog.pg_class c
+            join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+        {condition}
+        order by
+            n.nspname,
+            c.relname
+    """).format(condition=sql.SQL(""))
+
+    builder.condition(
+        PgParamQueryBuilder(
+            alias="c",
+            name="relkind",
+            bind_type="String",
+            compare="=",
+            val=table,
+        )
+    )
+
+    if table and table != "*":
+        builder.condition(
+            PgParamQueryBuilder(
+                name="table",
+                bind_type="String",
+                compare="=",
+                val=table,
+            )
+        )
+
+    return await run_and_collect(
+        connection,
+        builder.build(),
+        RowWindow(
+            offset=offset,
+            limit=limit,
+        ),
+    )
+    # window = RowWindow(offset=offset, limit=limit)
+
+    # query = PgCatalog.tables(pg_schema, table_pattern)
+    # return await run_and_collect(connection, query, window)
 
 
 @tool
@@ -445,6 +628,1009 @@ async def pg_copy_in(
 
 
 @tool
+async def pg_describe_table(  # noqa: PLR0913 — окно выдачи задаёт вызов
+    connection: PgConnection,
+    table: Annotated[
+        str,
+        Field(min_length=1, description="Имя таблицы (без схемы)"),
+    ],
+    pg_schema: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Схема таблицы; пусто — искать во всех схемах, "
+                "схема каждой найденной видна колонкой schema."
+            ),
+        ),
+    ] = None,
+    *,
+    offset: RowOffset,
+    limit: RowLimit,
+    cfg: Annotated[PgToolConfig, Injected],
+) -> SqlResult:
+    """Схема таблицы из pg_catalog: колонки, нативные типы, ключи.
+
+    Колонки: schema, position, column_name, type, nullable,
+    default_expression, identity, generated, primary_key, comment. Широкая
+    таблица приходит частями: как листать, сказано в note.
+    """
+    window = RowWindow(offset=offset, limit=limit)
+
+    query = PgCatalog.columns(table, pg_schema)
+    return await run_and_collect(connection, query, window)
+
+
+@tool
+async def pg_database_discribe(
+    connection: PgConnection,
+    db_name: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Имя базы из pg_database. `*` — показать все базы "
+                "кластера, доступные текущей роли. Конкретное имя — "
+                "одна строка."
+            ),
+        ),
+    ],
+    offset: Annotated[
+        RowOffset, Field(description="Смещение страницы выдачи (0 — с начала).")
+    ],
+    limit: Annotated[RowLimit, Field(description="Потолок строк на страницу.")],
+) -> SqlResult:
+    """Описание баз данных кластера из pg_catalog.pg_database.
+    Колонки: address (db), name, owner, encoding, collate, comment.
+    Одна строка на базу. Учтите: комментарий виден только у своей базы,
+    остальные возвращаются без comment. Выдача постраничная — как
+    листать, сказано в note.
+    """
+
+    conn = await PayloadPostgres.connect_config(connection)
+
+    conn.cursor_factory = AsyncClientCursor
+
+    async with conn, conn.cursor(row_factory=dict_row) as cur:
+        # bytes: тип Query psycopg требует LiteralString, а текст собран кодом;
+        # кодировка — client_encoding подключения, а не обязательно utf-8
+        sql_stmt = sql.SQL("""select
+            concat_ws('.',d.datname) address,
+            d.datname                                          as name,
+            pg_catalog.pg_get_userbyid(d.datdba)               as owner,
+            pg_catalog.pg_encoding_to_char(d.encoding)         as encoding,
+            d.datcollate                                       as collate,
+            pg_catalog.shobj_description(d.oid, 'pg_database') as comment
+        from pg_catalog.pg_database d
+        where 1=1
+        and (d.datname =  %(db_name)s or  %(db_name)s = '*')""")
+        params = {"sql_stmt": sql_stmt, "db_name": db_name}
+
+        window = RowWindow(offset=offset, limit=limit)
+
+        await cur.execute(sql_stmt, params)
+
+        page = RowPage(window)
+
+        async for row in cur:
+            if not page.add(row):
+                break
+
+    return SqlResult(
+        engine=PgToolConfig.ENGINE,
+        statements=[page.statement()],
+    )
+
+
+@tool
+async def pg_schema_discribe(
+    connection: PgConnection,
+    db_name: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Имя базы для подписи в address. На выборку не влияет — "
+                "схемы читаются из текущей базы подключения; служит "
+                "только для читаемости результата."
+            ),
+        ),
+    ],
+    schema_name: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Имя схемы из pg_namespace. `*` — все схемы, включая "
+                "системные (pg_catalog, information_schema, pg_toast). "
+                "Их много — сузьте фильтр или поднимите limit."
+            ),
+        ),
+    ],
+    offset: Annotated[
+        RowOffset, Field(description="Смещение страницы выдачи (0 — с начала).")
+    ],
+    limit: Annotated[RowLimit, Field(description="Потолок строк на страницу.")],
+) -> SqlResult:
+    """Описание схем базы из pg_catalog.pg_namespace.
+    Колонки: address (db.schema), database, name, owner, comment.
+    Одна строка на схему. Порядок строк задан каталогом; окно
+    повторяемо, пока каталог не изменился.
+    """
+
+    conn = await PayloadPostgres.connect_config(connection)
+
+    conn.cursor_factory = AsyncClientCursor
+
+    async with conn, conn.cursor(row_factory=dict_row) as cur:
+        # bytes: тип Query psycopg требует LiteralString, а текст собран кодом;
+        # кодировка — client_encoding подключения, а не обязательно utf-8
+        sql_stmt = sql.SQL("""select
+            concat_ws('.',current_database(),n.nspname) address,
+            current_database()                                 as database,
+            n.nspname                                          as name,
+            pg_catalog.pg_get_userbyid(n.nspowner)             as owner,
+            pg_catalog.obj_description(n.oid, 'pg_namespace')  as comment
+        from pg_catalog.pg_namespace n
+        where 1=1
+        and (n.nspname = %(schema_name)s or  %(schema_name)s = '*')
+        """)
+        params = {"sql_stmt": sql_stmt, "db_name": db_name, "schema_name": schema_name}
+
+        window = RowWindow(offset=offset, limit=limit)
+
+        await cur.execute(sql_stmt, params)
+
+        page = RowPage(window)
+
+        async for row in cur:
+            logger.info(row)
+
+            if not page.add(row):
+                break
+
+    return SqlResult(engine=PgToolConfig.ENGINE, statements=[page.statement()])
+
+
+@tool
+async def pg_table_discribe(
+    connection: PgConnection,
+    db_name: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description="Имя базы для подписи в address; на выборку не влияет.",
+        ),
+    ],
+    schema_name: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Имя схемы. `*` — все схемы. Таблицы, view, "
+                "матвью, партиции и сторонние таблицы попадают в выдачу; "
+                "фильтр по конкретной таблице делайте через pg_column_discribe "
+                "или pg_query."
+            ),
+        ),
+    ],
+    offset: Annotated[
+        RowOffset, Field(description="Смещение страницы выдачи (0 — с начала).")
+    ],
+    limit: Annotated[RowLimit, Field(description="Потолок строк на страницу.")],
+) -> SqlResult:
+    """Описание отношений схемы из pg_class: таблицы, view, матвью,
+    партиции, сторонние таблицы.
+    Колонки: address, database, schema, name, kind (table/partitioned/
+    partition/view/materialized/foreign), owner, comment, tablespace,
+    persistence, row_estimate, total_bytes, partition_key, partition_of,
+    partition_bound, definition, check_option, populated, foreign_server,
+    options. Широкий результат — листайте окном, как сказано в note.
+    """
+
+    logger.info(f"type = {type(schema_name)}")
+    conn = await PayloadPostgres.connect_config(connection)
+
+    conn.cursor_factory = AsyncClientCursor
+
+    async with conn, conn.cursor(row_factory=dict_row) as cur:
+        # bytes: тип Query psycopg требует LiteralString, а текст собран кодом;
+        # кодировка — client_encoding подключения, а не обязательно utf-8
+        sql_stmt = sql.SQL("""select
+            concat_ws('.',current_database(),n.nspname,c.relname) address,
+            current_database()                                 as database,
+            n.nspname                                          as schema,
+            c.relname                                          as name,
+            case c.relkind
+                when 'r' then
+                    case when c.relispartition then 'partition' else 'table' end
+                when 'p' then 'partitioned'
+                when 'v' then 'view'
+                when 'm' then 'materialized'
+                when 'f' then 'foreign'
+            end                                                as kind,
+            pg_catalog.pg_get_userbyid(c.relowner)             as owner,
+            pg_catalog.obj_description(c.oid, 'pg_class')      as comment,
+            ts.spcname                                         as tablespace,
+            case c.relpersistence
+                when 'p' then 'permanent'
+                when 'u' then 'unlogged'
+                when 't' then 'temporary'
+            end                                                as persistence,
+            greatest(c.reltuples, 0)::bigint                   as row_estimate,
+            pg_catalog.pg_total_relation_size(c.oid)           as total_bytes,
+            case when c.relkind = 'p'
+                 then pg_catalog.pg_get_partkeydef(c.oid) end  as partition_key,
+            case when parent.oid is not null
+                 then pn.nspname || '.' || parent.relname end  as partition_of,
+            pg_catalog.pg_get_expr(c.relpartbound, c.oid)      as partition_bound,
+            case when c.relkind in ('v', 'm')
+                 then pg_catalog.pg_get_viewdef(c.oid, true) end as definition,
+            opts.options ->> 'check_option'                    as check_option,
+            case when c.relkind = 'm' then c.relispopulated end as populated,
+            fs.srvname                                         as foreign_server,
+            opts.options                                       as options
+        from pg_catalog.pg_class c
+            join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+            left join pg_catalog.pg_tablespace ts on ts.oid = c.reltablespace
+            left join pg_catalog.pg_inherits inh on inh.inhrelid = c.oid
+            left join pg_catalog.pg_class parent
+                on parent.oid = inh.inhparent and c.relispartition
+            left join pg_catalog.pg_namespace pn on pn.oid = parent.relnamespace
+            left join pg_catalog.pg_foreign_table ft on ft.ftrelid = c.oid
+            left join pg_catalog.pg_foreign_server fs on fs.oid = ft.ftserver
+            cross join lateral (
+                select coalesce(
+                    (select jsonb_object_agg(
+                        split_part(o, '=', 1), substr(o, strpos(o, '=') + 1))
+                     from unnest(c.reloptions) as o),
+                    '{}'::jsonb) as options
+            ) opts
+        where 1=1
+          and (n.nspname = %(schema_name)s or  %(schema_name)s = '*')
+          and c.relkind in ('r', 'p', 'v', 'm', 'f')""")
+        params = {"sql_stmt": sql_stmt, "db_name": db_name, "schema_name": schema_name}
+
+        window = RowWindow(offset=offset, limit=limit)
+
+        await cur.execute(sql_stmt, params)
+
+        page = RowPage(window)
+
+        async for row in cur:
+            logger.info(row)
+
+            if not page.add(row):
+                break
+
+    return SqlResult(engine=PgToolConfig.ENGINE, statements=[page.statement()])
+
+
+@tool
+async def pg_column_discribe(
+    connection: PgConnection,
+    db_name: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description="Имя базы для подписи в address; на выборку не влияет.",
+        ),
+    ],
+    schema_name: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description="Имя схемы. `*` — все схемы.",
+        ),
+    ],
+    table_name: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Имя отношения (таблица/view/матвью/партиция). "
+                "`*` — все отношения схемы (широкая выдача, "
+                "сузьте через limit или возьмите конкретное имя)."
+            ),
+        ),
+    ],
+    offset: Annotated[
+        RowOffset, Field(description="Смещение страницы выдачи (0 — с начала).")
+    ],
+    limit: Annotated[RowLimit, Field(description="Потолок строк на страницу.")],
+) -> SqlResult:
+    """Колонки отношения из pg_attribute.
+    Колонки: address, database, schema, relation, name, ordinal, type,
+    nullable, default, identity (always/by default), generated (stored),
+    collation, comment. Дропнутые атрибуты пропускаются. Для широкой
+    таблицы выдача приходит частями — как листать, сказано в note.
+    """
+
+    logger.info(f"type = {type(schema_name)}")
+    conn = await PayloadPostgres.connect_config(connection)
+
+    conn.cursor_factory = AsyncClientCursor
+
+    async with conn, conn.cursor(row_factory=dict_row) as cur:
+        # bytes: тип Query psycopg требует LiteralString, а текст собран кодом;
+        # кодировка — client_encoding подключения, а не обязательно utf-8
+        sql_stmt = sql.SQL("""select
+            concat_ws('.',current_database(),n.nspname,c.relname,a.attname) address,
+            current_database()                                 as database,
+            n.nspname                                          as schema,
+            c.relname                                          as relation,
+            a.attname                                          as name,
+            a.attnum                                           as ordinal,
+            pg_catalog.format_type(a.atttypid, a.atttypmod)    as type,
+            not a.attnotnull                                   as nullable,
+            pg_catalog.pg_get_expr(d.adbin, d.adrelid)         as "default",
+            case a.attidentity
+                when 'a' then 'always'
+                when 'd' then 'by default'
+            end                                                as identity,
+            case a.attgenerated when 's' then 'stored' end     as generated,
+            case when a.attcollation <> t.typcollation
+                then co.collname end                          as collation,
+            pg_catalog.col_description(a.attrelid, a.attnum)   as comment
+        from pg_catalog.pg_attribute a
+            join pg_catalog.pg_class c on c.oid = a.attrelid
+            join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+            join pg_catalog.pg_type t on t.oid = a.atttypid
+            left join pg_catalog.pg_attrdef d
+                on d.adrelid = a.attrelid and d.adnum = a.attnum
+            left join pg_catalog.pg_collation co on co.oid = a.attcollation
+        where (n.nspname = %(schema_name)s or %(schema_name)s = '*')
+        and (c.relname = %(table_name)s or %(table_name)s = '*')
+        and c.relkind in ('r', 'p', 'v', 'm', 'f')
+        and a.attnum > 0
+        and not a.attisdropped""")
+        params = {
+            "sql_stmt": sql_stmt,
+            "db_name": db_name,
+            "schema_name": schema_name,
+            "table_name": table_name,
+        }
+
+        window = RowWindow(offset=offset, limit=limit)
+
+        await cur.execute(sql_stmt, params)
+
+        page = RowPage(window)
+
+        async for row in cur:
+            logger.info(row)
+
+            if not page.add(row):
+                break
+
+    return SqlResult(engine=PgToolConfig.ENGINE, statements=[page.statement()])
+
+
+@tool
+async def pg_realtion_discribe(
+    connection: PgConnection,
+    db_name: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description="Имя базы для подписи в address; на выборку не влияет.",
+        ),
+    ],
+    schema_name: Annotated[
+        str,
+        Field(min_length=1, description="Имя схемы. `*` — все схемы."),
+    ],
+    offset: Annotated[
+        RowOffset, Field(description="Смещение страницы выдачи (0 — с начала).")
+    ],
+    limit: Annotated[RowLimit, Field(description="Потолок строк на страницу.")],
+) -> SqlResult:
+    """Карточка отношений схемы (таблицы, view, матвью, партиции,
+    сторонние таблицы) — та же выдача, что у pg_table_discribe.
+    Полезна, когда нужен обзор всех отношений сразу: kind, persistence,
+    owner, размеры, признак партиции (partition_of, partition_bound),
+    определение view и параметры foreign server.
+    Порядок строк задан каталогом; окно повторяемо.
+    """
+
+    conn = await PayloadPostgres.connect_config(connection)
+
+    conn.cursor_factory = AsyncClientCursor
+
+    async with conn, conn.cursor(row_factory=dict_row) as cur:
+        # bytes: тип Query psycopg требует LiteralString, а текст собран кодом;
+        # кодировка — client_encoding подключения, а не обязательно utf-8
+        sql_stmt = sql.SQL("""
+select
+            concat_ws('.',current_database(),n.nspname,c.relname) address,
+            current_database()                                 as database,
+            n.nspname                                          as schema,
+            c.relname                                          as name,
+            case c.relkind
+                when 'r' then
+                    case when c.relispartition then 'partition' else 'table' end
+                when 'p' then 'partitioned'
+                when 'v' then 'view'
+                when 'm' then 'materialized'
+                when 'f' then 'foreign'
+            end                                                as kind,
+            pg_catalog.pg_get_userbyid(c.relowner)             as owner,
+            pg_catalog.obj_description(c.oid, 'pg_class')      as comment,
+            ts.spcname                                         as tablespace,
+            case c.relpersistence
+                when 'p' then 'permanent'
+                when 'u' then 'unlogged'
+                when 't' then 'temporary'
+            end                                                as persistence,
+            greatest(c.reltuples, 0)::bigint                   as row_estimate,
+            pg_catalog.pg_total_relation_size(c.oid)           as total_bytes,
+            case when c.relkind = 'p'
+                 then pg_catalog.pg_get_partkeydef(c.oid) end  as partition_key,
+            case when parent.oid is not null
+                 then pn.nspname || '.' || parent.relname end  as partition_of,
+            pg_catalog.pg_get_expr(c.relpartbound, c.oid)      as partition_bound,
+            case when c.relkind in ('v', 'm')
+                 then pg_catalog.pg_get_viewdef(c.oid, true) end as definition,
+            opts.options ->> 'check_option'                    as check_option,
+            case when c.relkind = 'm' then c.relispopulated end as populated,
+            fs.srvname                                         as foreign_server,
+            opts.options                                       as options
+        from pg_catalog.pg_class c
+            join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+            left join pg_catalog.pg_tablespace ts on ts.oid = c.reltablespace
+            left join pg_catalog.pg_inherits inh on inh.inhrelid = c.oid
+            left join pg_catalog.pg_class parent
+                on parent.oid = inh.inhparent and c.relispartition
+            left join pg_catalog.pg_namespace pn on pn.oid = parent.relnamespace
+            left join pg_catalog.pg_foreign_table ft on ft.ftrelid = c.oid
+            left join pg_catalog.pg_foreign_server fs on fs.oid = ft.ftserver
+            cross join lateral (
+                select coalesce(
+                    (select jsonb_object_agg(
+                        split_part(o, '=', 1), substr(o, strpos(o, '=') + 1))
+                     from unnest(c.reloptions) as o),
+                    '{}'::jsonb) as options
+            ) opts
+         where 1=1
+          and (n.nspname = %(schema_name)s or  %(schema_name)s = '*')
+          and c.relkind in ('r', 'p', 'v', 'm', 'f')
+        """)
+        params = {"sql_stmt": sql_stmt, "db_name": db_name, "schema_name": schema_name}
+
+        window = RowWindow(offset=offset, limit=limit)
+
+        await cur.execute(sql_stmt, params)
+
+        page = RowPage(window)
+
+        async for row in cur:
+            logger.info(row)
+
+            if not page.add(row):
+                break
+
+    return SqlResult(engine=PgToolConfig.ENGINE, statements=[page.statement()])
+
+
+@tool
+async def pg_constraints_discribe(
+    connection: PgConnection,
+    db_name: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description="Имя базы для подписи в address; на выборку не влияет.",
+        ),
+    ],
+    schema_name: Annotated[
+        str,
+        Field(min_length=1, description="Имя схемы. `*` — все схемы."),
+    ],
+    offset: Annotated[
+        RowOffset, Field(description="Смещение страницы выдачи (0 — с начала).")
+    ],
+    limit: Annotated[RowLimit, Field(description="Потолок строк на страницу.")],
+) -> SqlResult:
+    """Ограничения отношений из pg_constraint: primary, unique, foreign,
+    check, exclusion.
+    Колон стрки: database, schema, relation, name, kind, columns, ref_schema,
+    ref_relation, ref_columns, on_update, on_delete, deferrable,
+    initially_deferred, definition, comment. Для FK ref_* заполнены;
+    для остальных типов — null. Definition — каоканонический текст
+    ограничения от сервера.
+    """
+
+    conn = await PayloadPostgres.connect_config(connection)
+
+    conn.cursor_factory = AsyncClientCursor
+
+    async with conn, conn.cursor(row_factory=dict_row) as cur:
+        # bytes: тип Query psycopg требует LiteralString, а текст собран кодом;
+        # кодировка — client_encoding подключения, а не обязательно utf-8
+        sql_stmt = sql.SQL("""select
+            concat_ws('.',current_database(),n.nspname,c.relname,con.conname) address,
+            current_database()                                 as database,
+            n.nspname                                          as schema,
+            c.relname                                          as relation,
+            con.conname                                        as name,
+            case con.contype
+                when 'p' then 'primary'
+                when 'u' then 'unique'
+                when 'f' then 'foreign'
+                when 'c' then 'check'
+                when 'x' then 'exclusion'
+            end                                                as kind,
+            array(
+                select a.attname from pg_catalog.pg_attribute a
+                where a.attrelid = con.conrelid and a.attnum = any(con.conkey)
+                order by array_position(con.conkey, a.attnum)
+            )                                                  as columns,
+            rn.nspname                                         as ref_schema,
+            rc.relname                                         as ref_relation,
+            case when con.confrelid <> 0 then array(
+                select a.attname from pg_catalog.pg_attribute a
+                where a.attrelid = con.confrelid and a.attnum = any(con.confkey)
+                order by array_position(con.confkey, a.attnum)
+            ) end                                              as ref_columns,
+            case when con.contype = 'f' then
+                case con.confupdtype
+                    when 'a' then 'no action'
+                    when 'r' then 'restrict'
+                    when 'c' then 'cascade'
+                    when 'n' then 'set null'
+                    when 'd' then 'set default'
+                end
+            end                                                as on_update,
+            case when con.contype = 'f' then
+                case con.confdeltype
+                    when 'a' then 'no action'
+                    when 'r' then 'restrict'
+                    when 'c' then 'cascade'
+                    when 'n' then 'set null'
+                    when 'd' then 'set default'
+                end
+            end                                                as on_delete,
+            con.condeferrable                                  as deferrable,
+            con.condeferred                                    as initially_deferred,
+            pg_catalog.pg_get_constraintdef(con.oid, true)     as definition,
+            pg_catalog.obj_description(con.oid, 'pg_constraint') as comment
+        from pg_catalog.pg_constraint con
+            join pg_catalog.pg_class c on c.oid = con.conrelid
+            join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+            left join pg_catalog.pg_class rc on rc.oid = con.confrelid
+            left join pg_catalog.pg_namespace rn on rn.oid = rc.relnamespace
+        where 1=1
+          and (n.nspname = %(schema_name)s or  %(schema_name)s = '*')
+          and c.relkind in ('r', 'p', 'v', 'm', 'f')
+          and con.contype in ('p', 'u', 'f', 'c', 'x')
+        """)
+        params = {"sql_stmt": sql_stmt, "db_name": db_name, "schema_name": schema_name}
+
+        window = RowWindow(offset=offset, limit=limit)
+
+        await cur.execute(sql_stmt, params)
+
+        page = RowPage(window)
+
+        async for row in cur:
+            logger.info(row)
+
+            if not page.add(row):
+                break
+
+    return SqlResult(engine=PgToolConfig.ENGINE, statements=[page.statement()])
+
+
+@tool
+async def pg_indexes_discribe(
+    connection: PgConnection,
+    db_name: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description="Имя базы для подписи в address; на выборку не влияет.",
+        ),
+    ],
+    schema_name: Annotated[
+        str,
+        Field(min_length=1, description="Имя схемы. `*` — все схемы."),
+    ],
+    offset: Annotated[
+        RowOffset, Field(description="Смещение страницы выдачи (0 — с начала).")
+    ],
+    limit: Annotated[RowLimit, Field(description="Потолок строк на страницу.")],
+) -> SqlResult:
+    """Индексы отношений из pg_index.
+    Колонки: database, schema, relation, name, method (btree/hash/gin/
+    gist/…), unique, primary, columns (выражения/колонки индекса),
+    predicate (частичный индекс), definition (полный CREATE INDEX),
+    total_bytes, comment. Уникальные и первичные ключи помечены
+    флагами; детали ограничения — в pg_constraints_discribe.
+    """
+
+    conn = await PayloadPostgres.connect_config(connection)
+
+    conn.cursor_factory = AsyncClientCursor
+
+    async with conn, conn.cursor(row_factory=dict_row) as cur:
+        # bytes: тип Query psycopg требует LiteralString, а текст собран кодом;
+        # кодировка — client_encoding подключения, а не обязательно utf-8
+        sql_stmt = sql.SQL("""
+        select
+            concat_ws('.',current_database(),n.nspname,c.relname,ic.relname) address,
+            current_database()                                 as database,
+            n.nspname                                          as schema,
+            c.relname                                          as relation,
+            ic.relname                                         as name,
+            am.amname                                          as method,
+            i.indisunique                                      as unique,
+            i.indisprimary                                     as primary,
+            array(
+                select pg_catalog.pg_get_indexdef(i.indexrelid, k.n, true)
+                from generate_series(1, i.indnkeyatts) as k(n)
+            )                                                  as columns,
+            pg_catalog.pg_get_expr(i.indpred, i.indrelid, true) as predicate,
+            pg_catalog.pg_get_indexdef(i.indexrelid)           as definition,
+            pg_catalog.pg_relation_size(i.indexrelid)          as total_bytes,
+            pg_catalog.obj_description(i.indexrelid, 'pg_class') as comment
+        from pg_catalog.pg_index i
+            join pg_catalog.pg_class c on c.oid = i.indrelid
+            join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+            join pg_catalog.pg_class ic on ic.oid = i.indexrelid
+            join pg_catalog.pg_am am on am.oid = ic.relam
+        where 1=1
+          and (n.nspname = %(schema_name)s or  %(schema_name)s = '*')
+          and c.relkind in ('r', 'p', 'v', 'm', 'f')
+        """)
+        params = {"sql_stmt": sql_stmt, "db_name": db_name, "schema_name": schema_name}
+
+        window = RowWindow(offset=offset, limit=limit)
+
+        await cur.execute(sql_stmt, params)
+
+        page = RowPage(window)
+
+        async for row in cur:
+            logger.info(row)
+
+            if not page.add(row):
+                break
+
+    return SqlResult(engine=PgToolConfig.ENGINE, statements=[page.statement()])
+
+
+@tool
+async def pg_routindes_discribe(
+    connection: PgConnection,
+    db_name: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description="Имя базы для подписи в address; на выборку не влияет.",
+        ),
+    ],
+    schema_name: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description="Имя схемы. `*` — все схемы, включая системные функции.",
+        ),
+    ],
+    offset: Annotated[
+        RowOffset, Field(description="Смещение страницы выдачи (0 — с начала).")
+    ],
+    limit: Annotated[RowLimit, Field(description="Потолок строк на страницу.")],
+) -> SqlResult:
+    """Рутины из pg_proc: функции, процедуры, агрегаты, оконные функции.
+    Колонки: database, schema, name, signature, kind (function/procedure/
+    aggregate/window), owner, language, arguments, returns, returns_set,
+    volatility, strict, security_definer, parallel, cost, rows, body
+    (для неагрегатов), definition (полный CREATE OR REPLACE), comment.
+    На одну рутину —ую перегрузку; различайте по signature.
+    """
+
+    conn = await PayloadPostgres.connect_config(connection)
+
+    conn.cursor_factory = AsyncClientCursor
+
+    async with conn, conn.cursor(row_factory=dict_row) as cur:
+        # bytes: тип Query psycopg требует LiteralString, а текст собран кодом;
+        # кодировка — client_encoding подключения, а не обязательно utf-8
+        sql_stmt = sql.SQL("""
+         select
+            concat_ws('.',current_database(),n.nspname,p.proname) address,
+            current_database()                                 as database,
+            n.nspname                                          as schema,
+            p.proname                                          as name,
+            pg_catalog.oidvectortypes(p.proargtypes)           as signature,
+            case p.prokind
+                when 'f' then 'function'
+                when 'p' then 'procedure'
+                when 'a' then 'aggregate'
+                when 'w' then 'window'
+            end                                                as kind,
+            pg_catalog.pg_get_userbyid(p.proowner)             as owner,
+            l.lanname                                          as language,
+            pg_catalog.pg_get_function_arguments(p.oid)        as arguments,
+            case when p.prokind <> 'p'
+                 then pg_catalog.pg_get_function_result(p.oid) end as returns,
+            p.proretset                                        as returns_set,
+            case p.provolatile
+                when 'i' then 'immutable'
+                when 's' then 'stable'
+                when 'v' then 'volatile'
+            end                                                as volatility,
+            p.proisstrict                                      as strict,
+            p.prosecdef                                        as security_definer,
+            case p.proparallel
+                when 's' then 'safe'
+                when 'r' then 'restricted'
+                when 'u' then 'unsafe'
+            end                                                as parallel,
+            p.procost                                          as cost,
+            case when p.proretset then p.prorows end           as rows,
+            coalesce(p.prosrc, '')                             as body,
+            case when p.prokind <> 'a'
+                 then coalesce(pg_catalog.pg_get_functiondef(p.oid), '')
+                 else '' end                                   as definition,
+            pg_catalog.obj_description(p.oid, 'pg_proc')       as comment
+        from pg_catalog.pg_proc p
+            join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+            join pg_catalog.pg_language l on l.oid = p.prolang
+        where 1=1
+         and (n.nspname = %(schema_name)s or  %(schema_name)s = '*')
+        """)
+        params = {"sql_stmt": sql_stmt, "db_name": db_name, "schema_name": schema_name}
+
+        window = RowWindow(offset=offset, limit=limit)
+
+        await cur.execute(sql_stmt, params)
+
+        page = RowPage(window)
+
+        async for row in cur:
+            logger.info(row)
+
+            if not page.add(row):
+                break
+
+    return SqlResult(engine=PgToolConfig.ENGINE, statements=[page.statement()])
+
+
+@tool
+async def pg_routine_arg_discribe(
+    connection: PgConnection,
+    db_name: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description="Имя базы для подписи в address; на выборку не влияет.",
+        ),
+    ],
+    schema_name: Annotated[
+        str,
+        Field(min_length=1, description="Имя схемы. `*` — все схемы."),
+    ],
+    offset: Annotated[
+        RowOffset, Field(description="Смещение страницы выдачи (0 — с начала).")
+    ],
+    limit: Annotated[RowLimit, Field(description="Потолок строк на страницу.")],
+) -> SqlResult:
+    """Аргументы рутин из pg_proc (развёртка proallargtypes).
+    Колонки: database, schema, routine, signature (для привязки к
+    pg_routindes_discribe), position (0-базный), name, type, mode
+    (in/out/inout/variadic/table), default. Одна строка на аргумент,
+    перегрузки различаются по signature.
+    """
+
+    conn = await PayloadPostgres.connect_config(connection)
+
+    conn.cursor_factory = AsyncClientCursor
+
+    async with conn, conn.cursor(row_factory=dict_row) as cur:
+        # bytes: тип Query psycopg требует LiteralString, а текст собран кодом;
+        # кодировка — client_encoding подключения, а не обязательно utf-8
+        sql_stmt = sql.SQL("""
+        select
+            concat_ws('.',current_database(),n.nspname,p.proname,nullif(p.proargnames[u.n], '')) address,
+            current_database()                                 as database,
+            n.nspname                                          as schema,
+            p.proname                                          as routine,
+            pg_catalog.oidvectortypes(p.proargtypes)           as signature,
+            u.n - 1                                            as position,
+            nullif(p.proargnames[u.n], '')                     as name,
+            pg_catalog.format_type(u.t, null)                  as type,
+            case coalesce(p.proargmodes[u.n], 'i')
+                when 'i' then 'in'
+                when 'o' then 'out'
+                when 'b' then 'inout'
+                when 'v' then 'variadic'
+                when 't' then 'table'
+            end                                                as mode,
+            null::text                                         as "default"
+        from pg_catalog.pg_proc p
+            join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+            cross join lateral unnest(coalesce(p.proallargtypes, p.proargtypes::oid[]))
+                with ordinality as u(t, n)
+         where 1=1
+          and (n.nspname = %(schema_name)s or  %(schema_name)s = '*')
+        """)
+        params = {"sql_stmt": sql_stmt, "db_name": db_name, "schema_name": schema_name}
+
+        window = RowWindow(offset=offset, limit=limit)
+
+        await cur.execute(sql_stmt, params)
+
+        page = RowPage(window)
+
+        async for row in cur:
+            logger.info(row)
+
+            if not page.add(row):
+                break
+
+    return SqlResult(engine=PgToolConfig.ENGINE, statements=[page.statement()])
+
+
+@tool
+async def pg_sequences_discribe(
+    connection: PgConnection,
+    db_name: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description="Имя базы для подписи в address; на выборку не влияет.",
+        ),
+    ],
+    schema_name: Annotated[
+        str,
+        Field(min_length=1, description="Имя схемы. `*` — все схемы."),
+    ],
+    offset: Annotated[
+        RowOffset, Field(description="Смещение страницы выдачи (0 — с начала).")
+    ],
+    limit: Annotated[RowLimit, Field(description="Потолок строк на страницу.")],
+) -> SqlResult:
+    """Последовательности из pg_class/pg_sequence.
+    Колонки: database, schema, name, type (bigint/integer/…), start,
+    minimum, maximum, increment, cycle, cache, last_value (текущее
+    значение, null если ещё не вызывалась), owned_by (schema.table.column
+    для SERIAL/IDENTITY), comment. last_value требует SELECT-прав на
+    последовательность, иначе будет null.
+    """
+
+    conn = await PayloadPostgres.connect_config(connection)
+
+    conn.cursor_factory = AsyncClientCursor
+
+    async with conn, conn.cursor(row_factory=dict_row) as cur:
+        # bytes: тип Query psycopg требует LiteralString, а текст собран кодом;
+        # кодировка — client_encoding подключения, а не обязательно utf-8
+        sql_stmt = sql.SQL("""
+        select
+            concat_ws('.',current_database(),n.nspname,c.relname) address,
+            current_database()                                 as database,
+            n.nspname                                          as schema,
+            c.relname                                          as name,
+            pg_catalog.format_type(s.seqtypid, null)           as type,
+            s.seqstart                                         as start,
+            s.seqmin                                           as minimum,
+            s.seqmax                                           as maximum,
+            s.seqincrement                                     as increment,
+            s.seqcycle                                         as cycle,
+            s.seqcache                                         as cache,
+            (select ps.last_value from pg_catalog.pg_sequences ps
+                where ps.schemaname = n.nspname
+                  and ps.sequencename = c.relname)             as last_value,
+            (select on_.nspname || '.' || oc.relname || '.' || oa.attname
+                from pg_catalog.pg_depend dep
+                join pg_catalog.pg_class oc on oc.oid = dep.refobjid
+                join pg_catalog.pg_namespace on_ on on_.oid = oc.relnamespace
+                join pg_catalog.pg_attribute oa
+                    on oa.attrelid = dep.refobjid and oa.attnum = dep.refobjsubid
+                where dep.objid = c.oid and dep.deptype = 'a'
+                  and dep.classid = 'pg_class'::regclass
+                limit 1)                                       as owned_by,
+            pg_catalog.obj_description(c.oid, 'pg_class')      as comment
+        from pg_catalog.pg_class c
+            join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+            join pg_catalog.pg_sequence s on s.seqrelid = c.oid
+        where 1=1
+          and (n.nspname = %(schema_name)s or  %(schema_name)s = '*')
+          and c.relkind = 'S'
+        """)
+        params = {"sql_stmt": sql_stmt, "db_name": db_name, "schema_name": schema_name}
+
+        window = RowWindow(offset=offset, limit=limit)
+
+        await cur.execute(sql_stmt, params)
+
+        page = RowPage(window)
+
+        async for row in cur:
+            logger.info(row)
+
+            if not page.add(row):
+                break
+
+    return SqlResult(engine=PgToolConfig.ENGINE, statements=[page.statement()])
+
+
+@tool
+async def pg_types_discribe(
+    connection: PgConnection,
+    db_name: Annotated[str, Field(description="")],
+    schema_name: Annotated[str, Field(description="")],
+    offset: Annotated[RowOffset, Field(description="")],
+    limit: Annotated[RowLimit, Field(description="")],
+) -> SqlResult:
+    """PostgreSQL - возвращает связи между таблицами"""
+
+    conn = await PayloadPostgres.connect_config(connection)
+
+    conn.cursor_factory = AsyncClientCursor
+
+    async with conn, conn.cursor(row_factory=dict_row) as cur:
+        # bytes: тип Query psycopg требует LiteralString, а текст собран кодом;
+        # кодировка — client_encoding подключения, а не обязательно utf-8
+        sql_stmt = sql.SQL("""
+        select
+            concat_ws('.',current_database(),n.nspname,c.relname,t.typname) address,
+            current_database()                                 as database,
+            n.nspname                                          as schema,
+            t.typname                                          as name,
+            case t.typtype
+                when 'e' then 'enum'
+                when 'd' then 'domain'
+                when 'c' then 'composite'
+                when 'r' then 'range'
+            end                                                as kind,
+            pg_catalog.pg_get_userbyid(t.typowner)             as owner,
+            case when t.typtype = 'e' then array(
+                select e.enumlabel from pg_catalog.pg_enum e
+                where e.enumtypid = t.oid order by e.enumsortorder
+            ) end                                              as labels,
+            case when t.typtype = 'd'
+                 then pg_catalog.format_type(t.typbasetype, t.typtypmod) end
+                                                               as base_type,
+            case when t.typtype = 'd' then (
+                select string_agg(pg_catalog.pg_get_constraintdef(dc.oid, true), ' ')
+                from pg_catalog.pg_constraint dc where dc.contypid = t.oid
+            ) end                                              as constraint,
+            case when t.typtype = 'c' then coalesce((
+                select jsonb_agg(
+                    jsonb_build_object(
+                        'name', a.attname,
+                        'type', pg_catalog.format_type(a.atttypid, a.atttypmod))
+                    order by a.attnum)
+                from pg_catalog.pg_attribute a
+                where a.attrelid = t.typrelid and a.attnum > 0 and not a.attisdropped
+            ), '[]'::jsonb) end                                as attributes,
+            pg_catalog.obj_description(t.oid, 'pg_type')       as comment
+        from pg_catalog.pg_type t
+            join pg_catalog.pg_namespace n on n.oid = t.typnamespace
+            left join pg_catalog.pg_class c on c.oid = t.typrelid
+        where 1=1
+        and (n.nspname = %(schema_name)s or  %(schema_name)s = '*')
+          and t.typtype in ('e', 'd', 'c', 'r')
+          and (t.typtype <> 'c' or c.relkind = 'c')
+        """)
+        params = {"sql_stmt": sql_stmt, "db_name": db_name, "schema_name": schema_name}
+
+        window = RowWindow(offset=offset, limit=limit)
+
+        await cur.execute(sql_stmt, params)
+
+        page = RowPage(window)
+
+        async for row in cur:
+            logger.info(row)
+            if not page.add(row):
+                break
+
+    return SqlResult(engine=PgToolConfig.ENGINE, statements=[page.statement()])
+
+
+@tool
 async def pg_address(connection: PgConnection) -> TableResult:
     """Базовый url соединения PostgreSQL: postgresql://host:port/database.
 
@@ -476,6 +1662,17 @@ TOOLS: Final = ToolMain.toolset(
     pg_copy_out,
     pg_copy_in,
     pg_address,
+    pg_database_discribe,
+    pg_schema_discribe,
+    pg_table_discribe,
+    pg_column_discribe,
+    pg_realtion_discribe,
+    pg_constraints_discribe,
+    pg_indexes_discribe,
+    pg_routindes_discribe,
+    pg_routine_arg_discribe,
+    pg_sequences_discribe,
+    pg_types_discribe,
 )
 
 if __name__ == "__main__":

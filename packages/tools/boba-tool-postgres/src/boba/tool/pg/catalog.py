@@ -10,11 +10,11 @@ from typing import Any, ClassVar
 
 from psycopg import sql
 
-from boba.toolkit.sql import CatalogQuery
+from boba.toolkit.sql import AbstractQuery
 
 __all__ = ["PgCatalog"]
 
-PgCatalogQuery = CatalogQuery[tuple[Any, ...]]
+PgCatalogQuery = AbstractQuery[tuple[Any, ...]]
 """Каталожный запрос postgres: текст плюс позиционные параметры psycopg."""
 
 
