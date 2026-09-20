@@ -28,7 +28,7 @@ services:
       - 127.0.0.1:8501:8501
   chainlit2:
     <<: *runtime
-    image: boba-chainlit:0.0.20.dev7
+    image: boba-chainlit:0.0.21.dev1
     hostname: chainlit2
     container_name: chainlit2
     env_file: ./conf/boba.env
