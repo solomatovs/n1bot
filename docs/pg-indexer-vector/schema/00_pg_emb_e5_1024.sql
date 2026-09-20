@@ -4,6 +4,8 @@ surface + aspect. Предусловие: ядро ix из docs/knowledge-schema
 docs/pg-scraper/schema/00_surface.sql, словарь аспектов из схемы любого индексатора
 (pg-indexer-fts или pg-indexer-trgm). Внешнего ключа на ix.node нет намеренно.
 */
+create extension if not exists vector;
+
 create table if not exists ix.pg_emb_e5_1024 (
     node_id    bigint   not null,
     surface          ix.surface_e not null references ix.surface,
