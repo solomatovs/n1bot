@@ -16,7 +16,8 @@ from typing import IO, Final
 
 
 class TarMode:
-    """Режимы tarfile.open: типизация требует строковых литералов, поэтому Final, а не enum."""
+    """Режимы tarfile.open: типизация требует строковых литералов,
+    поэтому Final, а не enum."""
 
     READ_STREAM: Final = "r|"
     WRITE_STREAM: Final = "w|"
@@ -43,7 +44,7 @@ class Move:
         if not stripped.startswith(self.source + "/"):
             return None
 
-        return self.target + stripped[len(self.source):]
+        return self.target + stripped[len(self.source) :]
 
 
 class TarSubset:
@@ -60,7 +61,9 @@ class TarSubset:
 
         return count
 
-    def _selected(self, source: tarfile.TarFile) -> Iterator[tuple[tarfile.TarInfo, IO[bytes] | None]]:
+    def _selected(
+        self, source: tarfile.TarFile
+    ) -> Iterator[tuple[tarfile.TarInfo, IO[bytes] | None]]:
         for member in source:
             renamed = self._rename(member.name)
             if renamed is None:
@@ -91,9 +94,11 @@ def main(argv: list[str]) -> int:
         return 2
 
     moves = [Move.parse(raw) for raw in argv[1:]]
-    with tarfile.open(fileobj=sys.stdin.buffer, mode=TarMode.READ_STREAM) as source:
-        with tarfile.open(fileobj=sys.stdout.buffer, mode=TarMode.WRITE_STREAM) as target:
-            count = TarSubset(moves).run(source, target)
+    with (
+        tarfile.open(fileobj=sys.stdin.buffer, mode=TarMode.READ_STREAM) as source,
+        tarfile.open(fileobj=sys.stdout.buffer, mode=TarMode.WRITE_STREAM) as target,
+    ):
+        count = TarSubset(moves).run(source, target)
 
     print(f"tarsub: {count} entries", file=sys.stderr)
     return 0

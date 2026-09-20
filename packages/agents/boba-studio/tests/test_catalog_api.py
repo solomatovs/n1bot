@@ -372,6 +372,7 @@ async def test_context_staleness_and_pins_over_http(
         assert started.status_code == 200, started.text
         run_id = started.json()["id"]
         assert started.json()["target"] == "draft"
+        run = None
         for _ in range(50):
             run = await client.get(stand.url(CatalogUrl.UPGRADE, run_id=run_id))
             if run.json()["status"] != "running":
@@ -379,6 +380,7 @@ async def test_context_staleness_and_pins_over_http(
 
             await asyncio.sleep(0.1)
 
+        assert run is not None
         assert run.json()["status"] == "done", run.text
         assert (run.json()["moved"], run.json()["blocked"]) == (1, 0)
         report = await client.get(stand.url(CatalogUrl.UPGRADE_REPORT, run_id=run_id))

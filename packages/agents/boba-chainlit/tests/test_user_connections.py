@@ -267,7 +267,11 @@ async def test_granted_connection_is_visible_and_works(
         raise AssertionError(f"whitelist must hold the granted row only: {names}")
 
     result = await Call.ok(
-        pg_tools["pg_query"], connection="main", sql="select 1 as answer"
+        pg_tools["pg_query"],
+        connection="main",
+        sql="select 1 as answer",
+        offset=0,
+        limit=50,
     )
     if result.statements[0].rows != [{"answer": 1}]:
         raise AssertionError(f"query must run on the granted connection: {result}")
@@ -310,7 +314,9 @@ async def test_stranger_sees_nothing(
         raise AssertionError(f"stranger must see no connections: {targets.rows}")
 
     with pytest.raises(RefusalError) as caught:
-        await Call.result(pg_tools["pg_query"], connection="main", sql="select 1")
+        await Call.result(
+            pg_tools["pg_query"], connection="main", sql="select 1", offset=0, limit=50
+        )
 
     if caught.value.kind != ConnectionRefusal.NOT_VISIBLE:
         raise AssertionError(f"unexpected refusal kind: {caught.value.kind}")
@@ -359,7 +365,9 @@ async def test_ambiguous_name_is_refused(
         raise AssertionError(f"ambiguous name must not be listed: {targets.rows}")
 
     with pytest.raises(RefusalError) as caught:
-        await Call.result(pg_tools["pg_query"], connection="main", sql="select 1")
+        await Call.result(
+            pg_tools["pg_query"], connection="main", sql="select 1", offset=0, limit=50
+        )
 
     if caught.value.kind != ConnectionRefusal.AMBIGUOUS:
         raise AssertionError(f"unexpected refusal kind: {caught.value.kind}")
@@ -385,6 +393,8 @@ async def test_delegated_connection_runs_as_the_session_principal(
         pg_tools["pg_query"],
         connection="mine",
         sql="select current_user as who",
+        offset=0,
+        limit=50,
     )
     if result.statements[0].rows != [{"who": SERVICE_USER}]:
         raise AssertionError(f"query must run as the delegated principal: {result}")
@@ -405,7 +415,9 @@ async def test_delegated_connection_refuses_local_login(
     Session.enter(user)
 
     with pytest.raises(RefusalError) as caught:
-        await Call.result(pg_tools["pg_query"], connection="mine", sql="select 1")
+        await Call.result(
+            pg_tools["pg_query"], connection="mine", sql="select 1", offset=0, limit=50
+        )
 
     if caught.value.kind != ConnectionRefusal.NO_DELEGATION:
         raise AssertionError(f"unexpected refusal kind: {caught.value.kind}")
@@ -434,7 +446,9 @@ async def test_unreachable_database_is_reported_by_the_body(
     Session.enter(user)
 
     with pytest.raises(PayloadFailureError) as caught:
-        await Call.result(pg_tools["pg_query"], connection="dead", sql="select 1")
+        await Call.result(
+            pg_tools["pg_query"], connection="dead", sql="select 1", offset=0, limit=50
+        )
 
     if caught.value.kind != SqlErrorKind.DATABASE_UNAVAILABLE:
         raise AssertionError(f"unexpected failure kind: {caught.value.kind}")

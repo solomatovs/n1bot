@@ -47,7 +47,6 @@ from boba.chat.generation import (
     StructuredGenerator,
 )
 from boba.chat.profiles import PrefetchFlowConfig, SelectedProfile
-from boba.config import bind
 from boba.connection_broker.store import ConnectionStore
 from boba.llm.bridge import ChatProviderFactory, ProviderChatModel
 from boba.llm.generation import LocalOnnxGenerator, OpenAiStructuredGenerator
@@ -87,11 +86,6 @@ PROFILE = "search"
 QUESTION = "как настроить kerberos для postgres?"
 
 THREAD = RunnableConfig(configurable={"thread_id": "flow-integration"})
-
-
-@pytest.fixture(scope="module")
-def app_config(raw_config: DictConfig) -> AppConfig:
-    return bind(raw_config, path="app", model=AppConfig)
 
 
 @pytest.fixture(scope="module")

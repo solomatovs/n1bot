@@ -83,12 +83,15 @@ def test_module_singletons_stay_pristine(reload_config: DictConfig) -> None:
     ChatPlugins.load(reload_config, StandRefs.of(_no_store, _no_registry))
 
     for tool in PG_TOOLS:
-        fields = _schema_fields(tool)
+        if ToolCallIdField.NAME not in _schema_fields(tool):
+            continue
 
-        if ToolCallIdField.NAME in fields:
-            raise AssertionError("ToolCallIdField.NAME not in fields")
-        if "cfg" not in fields:
-            raise AssertionError('"cfg" in fields')
+        raise AssertionError(f"{tool.name}: обвязка пришила call_id синглтону")
+
+    # инъекция конфига объявлена телом: у pg_copy поле cfg обязано уцелеть
+    copy_tool = {tool.name: tool for tool in PG_TOOLS}["pg_copy"]
+    if "cfg" not in _schema_fields(copy_tool):
+        raise AssertionError("pg_copy: обвязка срезала injected-поле cfg")
 
     origin = ToolMainBody.of(pg_query)
     if origin.__module__ != "boba.tool.pg.tools":

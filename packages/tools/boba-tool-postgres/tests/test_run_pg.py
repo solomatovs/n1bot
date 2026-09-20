@@ -44,7 +44,7 @@ async def test_run_pg_query(pg_cfg: PgToolConfig, connection: PostgresConfig) ->
     if body is None:
         raise AssertionError("body is not None")
 
-    artifact = await body(connection=connection, sql=RunArgs.SQL, cfg=pg_cfg)
+    artifact = await body(connection=connection, sql=RunArgs.SQL, offset=0, limit=50)
 
     content = artifact.llm_view()
 
@@ -65,9 +65,7 @@ async def test_run_pg_list_tables(
             pg_schema="public",
             table_pattern=None,
             offset=0,
-            max_rows=50,
-            max_chars=20000,
-            cfg=pg_cfg,
+            limit=50,
         )
     ).llm_view()
 

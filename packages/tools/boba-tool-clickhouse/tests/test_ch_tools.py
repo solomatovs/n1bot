@@ -18,15 +18,24 @@ from boba.toolkit.facade import PayloadTool
 
 
 def ch_config() -> ChToolConfig:
-    return ChToolConfig.model_validate({"max_rows": 10})
+    return ChToolConfig.model_validate({"limit": 10})
 
 
 class TestChTools:
     _NAMES: ClassVar[list[str]] = [
         "ch_list_tables",
+        "ch_list_columns",
         "ch_describe_table",
         "ch_query",
         "ch_address",
+        "ch_database_describe",
+        "ch_table_describe",
+        "ch_column_describe",
+        "ch_constraints_describe",
+        "ch_indexes_describe",
+        "ch_function_describe",
+        "ch_sequences_describe",
+        "ch_types_describe",
     ]
 
     def test_module_declares_the_toolset(self) -> None:
@@ -50,7 +59,7 @@ class TestChTools:
     def test_section_config_holds_limits_only(self) -> None:
         """Whitelist ушёл на хост: в секции остались только границы выдачи."""
         cfg = ch_config()
-        if cfg.max_rows != 10:
+        if cfg.limit != 10:
             raise AssertionError("section keys must reach the model")
 
         if hasattr(cfg, "profiles"):
