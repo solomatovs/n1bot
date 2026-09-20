@@ -11,6 +11,14 @@
 Предусловие: ядро `ix` из `docs/knowledge-schema.sql`. Применять при установке и при
 каждом обновлении пакета.
 
+## Воркер: worker.py
+
+```
+.venv/bin/python docs/pg-indexer-trgm/worker.py --dsn "host=... dbname=... user=... password=..." [--batch 500]
+```
+
+Крутит `10_upsert.sql` пачками до applied = 0, затем `20_prune.sql`; креды только в DSN.
+
 ## Цикл воркера
 
 1. `10_upsert.sql` с параметром `$1` (размер пачки): вставить недостающие строки и обновить

@@ -14,9 +14,9 @@ import argparse
 import asyncio
 import logging
 import re
+from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
-from typing import Sequence
 
 import psycopg
 from psycopg import sql
@@ -44,8 +44,6 @@ class WorkerConfig(BaseModel):
     cache_dir: str
     dim: int = Field(gt=0, default=1024)
     batch: int = Field(gt=0, default=64)
-    rounds: int = Field(ge=0, default=0)
-    prune: bool = True
     lock_timeout: str = "2s"
     statement_timeout: str = "60s"
 
@@ -89,21 +87,36 @@ class VectorWorker:
     def __init__(self, cfg: WorkerConfig, sql: PackageSql) -> None:
         self._cfg = cfg
         self._sql = sql
-        embedding = LocalEmbedding(kind="local", model=cfg.model, cache_dir=cfg.cache_dir, dim=cfg.dim, batch_size=cfg.batch, progress_every=cfg.batch)
+        embedding = LocalEmbedding(
+            kind="local",
+            model=cfg.model,
+            cache_dir=cfg.cache_dir,
+            dim=cfg.dim,
+            batch_size=cfg.batch,
+            progress_every=cfg.batch,
+        )
         self._embedder = EmbedderFactory.build(embedding)
 
     async def run(self) -> CycleReport:
         try:
-            with psycopg.connect(self._cfg.dsn, autocommit=True, application_name="pg-indexer-vector") as conn:
-                conn.execute(sql.SQL("set lock_timeout = {}").format(sql.Literal(self._cfg.lock_timeout)))
-                conn.execute(sql.SQL("set statement_timeout = {}").format(sql.Literal(self._cfg.statement_timeout)))
+            with psycopg.connect(
+                self._cfg.dsn, autocommit=True, application_name="pg-indexer-vector"
+            ) as conn:
+                conn.execute(
+                    sql.SQL("set lock_timeout = {}").format(
+                        sql.Literal(self._cfg.lock_timeout)
+                    )
+                )
+                conn.execute(
+                    sql.SQL("set statement_timeout = {}").format(
+                        sql.Literal(self._cfg.statement_timeout)
+                    )
+                )
                 try:
                     rounds, written = await self._upsert_rounds(conn)
                 finally:
                     self._unlock(conn)
-                pruned = 0
-                if self._cfg.prune:
-                    pruned = self._prune(conn)
+                pruned = self._prune(conn)
                 return CycleReport(rounds=rounds, written=written, pruned=pruned)
         except psycopg.Error as exc:
             raise VectorWorkerError(f"ix database {self._cfg.dsn}: {exc}") from exc
@@ -111,7 +124,7 @@ class VectorWorker:
     async def _upsert_rounds(self, conn: psycopg.Connection) -> tuple[int, int]:
         rounds = 0
         written = 0
-        while self._cfg.rounds == 0 or rounds < self._cfg.rounds:
+        while True:
             rows = self._queue(conn)
             if not rows:
                 break
@@ -129,7 +142,11 @@ class VectorWorker:
         cur = conn.execute(text, PackageSql.bind(order, [self._cfg.batch]))
         rows: list[QueueRow] = []
         for node_id, surface, aspect, content in cur.fetchall():
-            rows.append(QueueRow(node_id=node_id, surface=surface, aspect=aspect, content=content))
+            rows.append(
+                QueueRow(
+                    node_id=node_id, surface=surface, aspect=aspect, content=content
+                )
+            )
         return rows
 
     async def _embed(self, rows: Sequence[QueueRow]) -> Sequence[Sequence[float]]:
@@ -139,15 +156,26 @@ class VectorWorker:
         try:
             vectors = await self._embedder.embed_documents(contents)
         except EmbeddingError as exc:
-            raise VectorWorkerError(f"embedding {len(contents)} texts with {self._cfg.model}: {exc}") from exc
+            raise VectorWorkerError(
+                f"embedding {len(contents)} texts with {self._cfg.model}: {exc}"
+            ) from exc
         if len(vectors) != len(rows):
-            raise VectorWorkerError(f"embedding {len(rows)} texts: expected {len(rows)} vectors, got {len(vectors)}")
+            raise VectorWorkerError(
+                f"embedding {len(rows)} texts: expected {len(rows)} vectors, got {len(vectors)}"
+            )
         return vectors
 
-    def _write(self, conn: psycopg.Connection, row: QueueRow, vector: Sequence[float]) -> None:
+    def _write(
+        self, conn: psycopg.Connection, row: QueueRow, vector: Sequence[float]
+    ) -> None:
         text, order = self._sql.load(SqlFile.WRITE)
         rendered = "[" + ",".join(f"{value:.6g}" for value in vector) + "]"
-        conn.execute(text, PackageSql.bind(order, [row.node_id, row.surface, row.aspect, row.content, rendered]))
+        conn.execute(
+            text,
+            PackageSql.bind(
+                order, [row.node_id, row.surface, row.aspect, row.content, rendered]
+            ),
+        )
 
     def _unlock(self, conn: psycopg.Connection) -> None:
         text, _ = self._sql.load(SqlFile.UNLOCK)
@@ -168,15 +196,19 @@ class Cli:
     @classmethod
     def parse(cls, argv: Sequence[str] | None = None) -> WorkerConfig:
         parser = argparse.ArgumentParser(description="pg-indexer-vector worker")
-        parser.add_argument("--dsn", required=True)
-        parser.add_argument("--cache-dir", required=True)
-        parser.add_argument("--model", default="intfloat/multilingual-e5-large")
-        parser.add_argument("--dim", type=int, default=1024)
-        parser.add_argument("--batch", type=int, default=64)
-        parser.add_argument("--rounds", type=int, default=0)
-        parser.add_argument("--no-prune", action="store_true")
+        parser.add_argument("--dsn", required=True, help="Строка подключения к базе ix (host=... dbname=... user=... password=...). Единственное место, где задаются креды.")
+        parser.add_argument("--cache-dir", required=True, help="Каталог с весами fastembed (models--qdrant--...), как в конфиге проекта: compose/chainlit/models/fastembed.")
+        parser.add_argument("--model", default="intfloat/multilingual-e5-large", help="Имя модели эмбеддингов в терминах fastembed. Должно совпадать с той, под которую создана таблица и размерность.")
+        parser.add_argument("--dim", type=int, default=1024, help="Размерность вектора; должна совпадать с типом колонки emb в таблице (halfvec(1024)). Провайдер падает, если модель вернула другую.")
+        parser.add_argument("--batch", type=int, default=64, help="Сколько текстов брать из очереди и кодировать моделью за один раз. Столько же строк держится в памяти между очередью и записью.")
         args = parser.parse_args(argv)
-        return WorkerConfig(dsn=args.dsn, cache_dir=args.cache_dir, model=args.model, dim=args.dim, batch=args.batch, rounds=args.rounds, prune=not args.no_prune)
+        return WorkerConfig(
+            dsn=args.dsn,
+            cache_dir=args.cache_dir,
+            model=args.model,
+            dim=args.dim,
+            batch=args.batch,
+        )
 
 
 def main() -> None:
@@ -184,7 +216,12 @@ def main() -> None:
     cfg = Cli.parse()
     worker = VectorWorker(cfg, PackageSql(Path(__file__).resolve().parent))
     report = asyncio.run(worker.run())
-    logger.info("done: rounds=%d written=%d pruned=%d", report.rounds, report.written, report.pruned)
+    logger.info(
+        "done: rounds=%d written=%d pruned=%d",
+        report.rounds,
+        report.written,
+        report.pruned,
+    )
 
 
 if __name__ == "__main__":
