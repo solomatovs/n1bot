@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-pg-meta-scraper"
+version = "0.0.20.dev6"
+description = "Скрапер каталога PostgreSQL/Greenplum в ядро ix: node, tree, edge и поверхности pg_meta_*."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "psycopg[binary]>=3.2",
+    "pydantic>=2.10,<2.11",
+]
+
+[project.optional-dependencies]
+dev = [
+    "boba-runtime==0.0.20.dev6",
+    "boba-stand==0.0.20.dev6",
+    "pytest>=8",
+]
+
+[project.scripts]
+boba-pg-meta-scraper = "boba.pg_meta_scraper.worker:main"
+
+[tool.setuptools.package-data]
+"boba.pg_meta_scraper" = ["*/*.sql", "*/*.md", "*/*.json", "*.html"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

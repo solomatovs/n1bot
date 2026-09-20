@@ -48,6 +48,12 @@ pythonpath = [
     "packages/tools/boba-tool-clickhouse/src",
     "packages/tools/boba-tool-knowledge/src",
     "packages/tools/boba-tool-confluence/src",
+    "packages/apps/ix/pg-meta-scraper/src",
+    "packages/apps/ix/pg-llm-describer/src",
+    "packages/apps/ix/pg-idx-fts/src",
+    "packages/apps/ix/pg-idx-trgm/src",
+    "packages/apps/ix/pg-idx-vector/src",
+    "packages/apps/ix/pg-search-lab/src",
 ]
 addopts = ["--strict-markers", "-m", "not integration and not ui and not load and not run"]
 markers = [
@@ -113,6 +119,12 @@ extraPaths = [
     "packages/tools/boba-tool-clickhouse/src",
     "packages/tools/boba-tool-knowledge/src",
     "packages/tools/boba-tool-confluence/src",
+    "packages/apps/ix/pg-meta-scraper/src",
+    "packages/apps/ix/pg-llm-describer/src",
+    "packages/apps/ix/pg-idx-fts/src",
+    "packages/apps/ix/pg-idx-trgm/src",
+    "packages/apps/ix/pg-idx-vector/src",
+    "packages/apps/ix/pg-search-lab/src",
 ]
 venvPath = "."
 venv = ".venv"
@@ -166,6 +178,7 @@ known-first-party = ["boba"]
 members = [
     "packages/core/*",
     "packages/agents/*",
+    "packages/apps/*/*",
     "packages/tools/*",
     "packages/infra/*/*",
     "packages/services/*",
@@ -213,6 +226,12 @@ boba-transport-http = { workspace = true }
 boba-db-postgres    = { workspace = true }
 boba-db-pgvector    = { workspace = true }
 boba-db-clickhouse  = { workspace = true }
+boba-pg-meta-scraper= { workspace = true }
+boba-pg-llm-describer= { workspace = true }
+boba-pg-idx-fts     = { workspace = true }
+boba-pg-idx-trgm    = { workspace = true }
+boba-pg-idx-vector  = { workspace = true }
+boba-pg-search-lab  = { workspace = true }
 boba-sandbox        = { workspace = true }
 boba-krb            = { workspace = true }
 boba-ldap           = { workspace = true }
