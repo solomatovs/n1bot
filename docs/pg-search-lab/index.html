@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>ix search lab</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 0; padding: 16px; color: #222; }
+  form { display: flex; gap: 8px; margin-bottom: 12px; }
+  input[type=text] { flex: 1; font-size: 16px; padding: 6px 8px; }
+  .cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  h2 { font-size: 14px; margin: 0 0 8px; color: #555; }
+  .hit { border-top: 1px solid #ddd; padding: 6px 0; }
+  .addr { font-family: ui-monospace, monospace; font-size: 12px; }
+  .meta { color: #777; font-size: 12px; }
+  .snip { margin-top: 2px; }
+  b { background: #fff2a8; }
+  .err { color: #b00; white-space: pre-wrap; }
+  .qbox { position: relative; flex: 1; }
+  .qbox input { width: 100%; box-sizing: border-box; }
+  #sug { position: absolute; left: 0; right: 0; top: 100%; z-index: 10; background: #fff; border: 1px solid #bbb; box-shadow: 0 4px 12px rgba(0,0,0,.15); max-height: 320px; overflow: auto; display: none; }
+  #sug div { padding: 4px 8px; cursor: pointer; }
+  #sug div:hover, #sug div.sel { background: #eef4ff; }
+  #sug .meta { display: inline; margin-left: 6px; }
+</style>
+</head>
+<body>
+<form id="f" autocomplete="off">
+  <div class="qbox">
+    <input type="text" id="q" placeholder="запрос" autofocus>
+    <div id="sug"></div>
+  </div>
+  <label>limit <input type="number" id="limit" value="10" min="1" max="100" style="width:4em"></label>
+  <label><input type="checkbox" id="live"> подсказки</label>
+  <button>искать</button>
+</form>
+<div class="cols">
+  <div><h2>fts</h2><div id="fts"></div></div>
+  <div><h2>trgm</h2><div id="trgm"></div></div>
+  <div><h2>vector</h2><div id="vector"></div></div>
+</div>
+<script>
+const addr = a => {
+  const keys = ['schema','table','view','sequence','index','function','args','type','statistics','column','constraint','trigger'];
+  return keys.filter(k => a[k] !== undefined).map(k => k + '=' + a[k]).join(' ') + '  @ ' + a.host + ':' + a.port + '/' + a.database;
+};
+// Ответ сервера: JSON, а не-JSON (502 от nginx, пока сервер перезапускается) показывается текстом
+const asJson = async r => {
+  const text = await r.text();
+  try { return JSON.parse(text); } catch (e) { return {hits: [], error: 'HTTP ' + r.status + ': ' + text.replace(/<[^>]+>/g, ' ').trim().slice(0, 200)}; }
+};
+const render = (el, hits, err) => {
+  el.innerHTML = '';
+  if (err) { el.innerHTML = '<div class="err">' + err + '</div>'; return; }
+  for (const h of hits) {
+    const d = document.createElement('div'); d.className = 'hit';
+    d.innerHTML = '<div class="addr">' + addr(h.address) + '</div>'
+      + '<div class="meta">' + h.surface + ' · ' + h.aspect + ' · ' + Number(h.score).toFixed(3) + '</div>'
+      + '<div class="snip">' + h.snippet + '</div>';
+    el.appendChild(d);
+  }
+};
+const search = () => {
+  hideSug();
+  const q = document.getElementById('q').value, limit = document.getElementById('limit').value;
+  for (const mode of ['fts', 'trgm', 'vector']) {
+    const el = document.getElementById(mode); el.innerHTML = '…';
+    fetch('search?' + new URLSearchParams({q, mode, limit}))
+      .then(asJson).then(j => render(el, j.hits, j.error)).catch(e => render(el, [], String(e)));
+  }
+};
+document.getElementById('f').addEventListener('submit', ev => { ev.preventDefault(); search(); });
+
+// Подсказки: галочка включает, запрос уходит через 0.5 с после остановки набора,
+// клик по пункту подставляет его текст и запускает поиск, Enter ищет набранное.
+const qInput = document.getElementById('q'), sug = document.getElementById('sug'), live = document.getElementById('live');
+let timer = null, seq = 0;
+const hideSug = () => { sug.style.display = 'none'; sug.innerHTML = ''; };
+const showSug = hits => {
+  sug.innerHTML = '';
+  if (!hits.length) { hideSug(); return; }
+  for (const h of hits) {
+    const d = document.createElement('div');
+    d.innerHTML = h.snippet + '<span class="meta">' + h.surface + ' · ' + Number(h.score).toFixed(2) + '</span>';
+    d.addEventListener('mousedown', ev => { ev.preventDefault(); qInput.value = h.snippet; search(); });
+    sug.appendChild(d);
+  }
+  sug.style.display = 'block';
+};
+qInput.addEventListener('input', () => {
+  clearTimeout(timer);
+  if (!live.checked || !qInput.value.trim()) { hideSug(); return; }
+  timer = setTimeout(() => {
+    const my = ++seq, q = qInput.value.trim();
+    fetch('search?' + new URLSearchParams({q, mode: 'suggest', limit: 10}))
+      .then(asJson).then(j => { if (my === seq) showSug(j.error ? [] : j.hits); }).catch(hideSug);
+  }, 500);
+});
+qInput.addEventListener('blur', () => setTimeout(hideSug, 150));
+qInput.addEventListener('keydown', ev => { if (ev.key === 'Escape') hideSug(); });
+live.addEventListener('change', () => { if (!live.checked) hideSug(); });
+</script>
+</body>
+</html>
