@@ -5,6 +5,7 @@
   requires  — напечатать минимальный python (requires-python)
   check     — упасть, если версии разошлись или пин boba-* смотрит на другую версию
   set X.Y.Z — проставить версию и пины во все пакеты
+  python-check X.Y — упасть, если python X.Y младше requires-python пакетов
 """
 
 import re
@@ -21,6 +22,7 @@ class Command(StrEnum):
     REQUIRES = "requires"
     CHECK = "check"
     SET = "set"
+    PYTHON_CHECK = "python-check"
 
 
 @dataclass(frozen=True)
@@ -75,6 +77,23 @@ class Repository:
 
         return found.group(1)
 
+    def python_check(self, candidate: str) -> str:
+        required = self._parse_python(self.requires_python)
+        given = self._parse_python(candidate)
+        if given < required:
+            raise SystemExit(
+                f"python {candidate} is older than requires-python >={self.requires_python}"
+            )
+
+        return f"python-check: {candidate} >= {self.requires_python} - ok"
+
+    def _parse_python(self, text: str) -> tuple[int, int]:
+        found = re.fullmatch(r"([0-9]+)\.([0-9]+)", text)
+        if found is None:
+            raise SystemExit(f"python version must be X.Y, not '{text}'")
+
+        return int(found.group(1)), int(found.group(2))
+
     def check(self) -> str:
         version = self.version
         for project in self._projects:
@@ -120,7 +139,11 @@ def main(argv: list[str]) -> int:
         return 0
 
     if len(argv) < 4:
-        raise SystemExit("usage: version.py set <packages root> X.Y.Z")
+        raise SystemExit(f"usage: version.py {command} <packages root> <argument>")
+
+    if command is Command.PYTHON_CHECK:
+        print(repository.python_check(argv[3]))
+        return 0
 
     print(repository.set(argv[3]))
     print(Repository(Path(argv[2])).check())

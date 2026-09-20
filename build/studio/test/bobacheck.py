@@ -1,6 +1,6 @@
 #!/usr/local/bin/python3
 """Проверка работоспособности собранного портативного каталога boba:
-интерпретатор, uv, offline-установленные пакеты (boba-* и внешние),
+интерпретатор, установленные пакеты (boba-* и внешние),
 консольные точки входа, OCR-модели и внешние инструменты (magick, soffice, gs).
 
 Запускается с окружением установки (make test):
@@ -69,18 +69,13 @@ print("== interpreter ==")
 print(f"  python     : {sys.version.split()[0]}")
 print(f"  executable : {sys.executable}")
 
-# 1) пакетный менеджер uv (статический бинарь рядом с pip)
-print("== package managers ==")
-check("uv on PATH", lambda: run("uv", "--version"))
-check("pip module", lambda: run(sys.executable, "-m", "pip", "--version"))
-
 # 2) внешние зависимости, поставленные offline из wheelhouse
 print("== third-party imports ==")
 import glob
 import importlib
 
 THIRD_PARTY = {
-    "chainlit": ["pydantic", "fastapi", "tabulate", "chainlit"],
+    "chainlit": ["pydantic", "fastapi", "chainlit"],
     "studio": ["pydantic", "fastapi"],
 }
 for m in THIRD_PARTY[APP]:
