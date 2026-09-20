@@ -62,3 +62,6 @@ packages/agents/boba-chainlit/web/catalog/*.tsbuildinfo
 packages/agents/boba-chainlit/assets/catalog/
 packages/agents/boba-chainlit/assets/ui/
 /docs/catalog.md
+!/docs/pg-scraper/
+!/docs/pg-indexer-fts/
+!/docs/pg-indexer-trgm/
