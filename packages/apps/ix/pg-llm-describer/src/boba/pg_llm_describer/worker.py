@@ -150,7 +150,7 @@ class PackageSql:
         self._dir = package_dir
         self._db_schema = db_schema
 
-    def load(self, name: SqlFile) -> bytes:
+    def load(self, name: SqlFile) -> sql.Composed:
         text = (self._dir / name).read_text(encoding="utf-8")
         return SchemaName.render(text, self._db_schema)
 

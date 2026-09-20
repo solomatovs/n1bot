@@ -9,17 +9,20 @@ create table if not exists {schema}.node (
 );
 
 /*
-Поиск node по адресу:
+Поиск node по адресу: containment по jsonb, части адреса перечисляются объектом.
+Все node с указанными частями:
 select id from {schema}.node
 where
-поиск всех node с указанными частями
-    address @> '{"host":"dwh.local","port":5432,"database":"dwh","schema":"dm","table":"fact_orders"}';
+    address @> jsonb_build_object(
+        'host', 'dwh.local', 'port', 5432, 'database', 'dwh',
+        'schema', 'dm', 'table', 'fact_orders'
+    );
 
-поиск всех адресов postgresql
-    address @> '{"scheme": "postgresql"}
+Все адреса postgresql:
+    address @> jsonb_build_object('scheme', 'postgresql')
 
-поиск всех адресов с укзаанным host
-    address @> '{"host": "dwh.local"}'
+Все адреса с указанным host:
+    address @> jsonb_build_object('host', 'dwh.local')
 */
 create unique index if not exists node__address__uk on {schema}.node using btree (address);
 create index if not exists node__address__gin on {schema}.node using gin (address jsonb_path_ops);

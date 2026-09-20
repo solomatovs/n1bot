@@ -283,7 +283,7 @@ class IxDatabase:
             )
         return int(row[0])
 
-    def _query(self, name: StandFile) -> bytes:
+    def _query(self, name: StandFile) -> sql.Composed:
         """Запрос стенда под схему графа: в файлах она стоит плейсхолдером."""
         text = name.under_stand().read_text(encoding="utf-8")
         return SchemaName.render(text, self._stand.db_schema)

@@ -1,17 +1,18 @@
 """Схема хранения графа: имя приходит из конфига и подставляется в запросы пакета.
 
-В sql-файлах схема стоит плейсхолдером `{schema}` (`{schema}.node`), имя берётся
-из секции конфига, а квотирует его psycopg (`sql.Identifier`), поэтому в текст
-запроса не попадает ничего, кроме правильно закавыченного идентификатора.
+В sql-файлах схема стоит плейсхолдером `{schema}` (`{schema}.node`) в нотации
+`psycopg.sql.SQL.format`: имя берётся из секции конфига и подставляется как
+`sql.Identifier`, поэтому в запрос попадает только закавыченный идентификатор.
+Литеральная скобка в файле пишется удвоенной, как у `str.format`.
 
 Ошибки:
-SchemaNameError — в тексте запроса остался неизвестный плейсхолдер.
+SchemaNameError — текст запроса не собрался под схему: неизвестный плейсхолдер
+    или непарная скобка.
 """
 
 from __future__ import annotations
 
-import re
-from typing import ClassVar
+from typing import ClassVar, LiteralString, cast
 
 import psycopg
 from psycopg import sql
@@ -35,27 +36,22 @@ class StorageSchema(BaseModel):
 
 
 class SchemaName:
-    """Подстановка схемы в запросы пакета: `{schema}` -> закавыченное имя."""
-
-    PLACEHOLDER: ClassVar[str] = "{schema}"
-    LEFTOVER: ClassVar[re.Pattern[str]] = re.compile(r"\{[a-z_]+\}")
+    """Подстановка схемы в запросы пакета через `sql.SQL.format`."""
 
     @classmethod
-    def render(cls, text: str, db_schema: str) -> bytes:
-        """Текст запроса под схему; отдаёт bytes, потому что тип Query psycopg
-        требует литерала, а текст пришёл из файла пакета."""
-        quoted = sql.Identifier(db_schema).as_string()
-        rendered = text.replace(cls.PLACEHOLDER, quoted)
+    def render(cls, text: str, db_schema: str) -> sql.Composed:
+        """Запрос под схему; cast до LiteralString безопасен: источник текста —
+        файл пакета, не пользовательский ввод."""
+        template = sql.SQL(cast(LiteralString, text))
 
-        leftover = cls.LEFTOVER.search(rendered)
-        if leftover is not None:
+        try:
+            return template.format(schema=sql.Identifier(db_schema))
+        except (KeyError, ValueError, IndexError) as exc:
             msg = (
-                f"schema render: unknown placeholder {leftover.group(0)} in the query; "
-                f"only {cls.PLACEHOLDER} is substituted"
+                f"schema render for {db_schema!r}: query template expects only "
+                f"the {{schema}} placeholder, got {exc!r}"
             )
-            raise SchemaNameError(msg)
-
-        return rendered.encode("utf-8")
+            raise SchemaNameError(msg) from exc
 
     @classmethod
     def exists(cls, conn: psycopg.Connection, db_schema: str, table: str) -> bool:
