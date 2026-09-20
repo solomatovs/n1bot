@@ -1,6 +1,6 @@
 /*
-pg-indexer-vector, шаг 1: очередь на расчёт. Строки аспектов, у которых нет эмбеддинга
-или content в таблице отличается от вычисленного, в порядке ключа, пачкой %(batch)s. Каждая
+pg-indexer-vector, шаг 1: очередь на расчёт. Аспекты, у которых нет ни одного чанка или
+content_hash чанков отличается от md5 полного текста, в порядке ключа, пачкой %(batch)s. Каждая
 выданная строка захвачена сессионным advisory-замком (ключ: хэш 'pg_emb' и node_id),
 чтобы второй воркер не считал её одновременно; замки снимает 90_unlock.sql после записи
 или обрыв сессии. Строки, занятые другим воркером, пропускаются.
@@ -79,14 +79,15 @@ aspect as (
     from obj o where o.columns is not null and o.columns <> ''
 ),
 todo as (
-    select a.node_id, a.surface, a.aspect, a.content
+    select a.node_id, a.surface, a.aspect, a.content, md5(a.content) as content_hash
     from aspect a
-    left join ix.pg_emb_e5_1024 e on e.node_id = a.node_id and e.surface = a.surface and e.aspect = a.aspect
-    where e.node_id is null or e.content is distinct from a.content
+    left join (select distinct node_id, surface, aspect, content_hash from ix.pg_emb_e5_1024) e
+           on e.node_id = a.node_id and e.surface = a.surface and e.aspect = a.aspect
+    where e.node_id is null or e.content_hash <> md5(a.content)
     order by a.node_id, a.surface, a.aspect
     limit %(batch)s * 4
 )
-select node_id, surface, aspect, content
+select node_id, surface, aspect, content, content_hash
 from todo
 where pg_try_advisory_lock(hashtextextended('pg_emb', node_id))
 limit %(batch)s;

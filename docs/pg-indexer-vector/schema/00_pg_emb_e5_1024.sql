@@ -1,18 +1,22 @@
 /*
 pg-indexer-vector, схема: таблица ix.pg_emb_e5_1024 и частичные HNSW-индексы по парам
-surface + aspect. Предусловие: ядро ix из docs/knowledge-schema.sql, значения surface_e из
+surface + aspect. Текст аспекта длиннее окна модели режется на чанки: chunk_no это номер
+куска, content его текст, content_hash это md5 полного текста аспекта, общий для всех его
+чанков; по нему очередь понимает, что аспект пересчитывать не надо. Предусловие: ядро ix из docs/knowledge-schema.sql, значения surface_e из
 docs/pg-scraper/schema/00_surface.sql, словарь аспектов из схемы любого индексатора
 (pg-indexer-fts или pg-indexer-trgm). Внешнего ключа на ix.node нет намеренно.
 */
 create extension if not exists vector;
 
 create table if not exists ix.pg_emb_e5_1024 (
-    node_id    bigint   not null,
-    surface          ix.surface_e not null references ix.surface,
+    node_id       bigint         not null,
+    surface       ix.surface_e   not null references ix.surface,
     aspect        ix.pg_aspect_e not null references ix.pg_aspect,
-    content       varchar       not null,
-    emb           halfvec(1024) not null,
-    primary key (node_id, surface, aspect)
+    chunk_no      smallint       not null,
+    content       varchar        not null,
+    content_hash  varchar        not null,
+    emb           halfvec(1024)  not null,
+    primary key (node_id, surface, aspect, chunk_no)
 );
 
 /*
