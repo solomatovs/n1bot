@@ -9,13 +9,13 @@ packages/apps/ix/pg-meta-scraper/src/boba/pg_meta_scraper/schema/00_surface.sql,
 create extension if not exists vector;
 
 create table if not exists {schema}.pg_idx_emb_e5_1024 (
-    node_id       bigint         not null,
-    surface       {schema}.surface_e   not null references {schema}.surface,
+    node_id       bigint not null,
+    surface       {schema}.surface_e not null references {schema}.surface,
     aspect        {schema}.pg_idx_aspect_e not null references {schema}.pg_idx_aspect,
-    chunk_no      smallint       not null,
-    content       varchar        not null,
-    content_hash  varchar        not null,
-    emb           halfvec(1024)  not null,
+    chunk_no      smallint not null,
+    content       varchar not null,
+    content_hash  varchar not null,
+    emb           halfvec(1024) not null,
     primary key (node_id, surface, aspect, chunk_no)
 );
 

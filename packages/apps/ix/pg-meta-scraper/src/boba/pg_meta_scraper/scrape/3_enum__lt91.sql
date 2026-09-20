@@ -3,10 +3,21 @@
 -- @params types
 -- @key oid
 -- @max 90099
-select oid, enumtypid, enumlabel, oid::int4::float8 as enumsortorder, xmin::text as row_xmin
-from pg_enum
-where enumtypid = any(%(types)s::oid[]);
+select
+    oid,
+    enumtypid,
+    enumlabel,
+    oid::int4::float8 as enumsortorder,
+    xmin::text as row_xmin
+from
+    pg_enum
+where
+    enumtypid = any(%(types)s::oid[]);
 -- @verify
-select oid, xmin::text as row_xmin
-from pg_enum
-where enumtypid = any(%(types)s::oid[]);
+select
+    oid,
+    xmin::text as row_xmin
+from
+    pg_enum
+where
+    enumtypid = any(%(types)s::oid[]);

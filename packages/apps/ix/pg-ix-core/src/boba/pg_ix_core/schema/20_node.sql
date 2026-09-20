@@ -2,10 +2,10 @@
 pg-ix-core, схема, шаг 2: узлы {schema}.node и их индексы.
 */
 create table if not exists {schema}.node (
-    id          bigserial       primary key,
-    surface     {schema}.surface_e    not null references {schema}.surface,
-    address     jsonb           not null,
-    created_at  timestamptz     not null default now()
+    id          bigserial primary key,
+    surface     {schema}.surface_e not null references {schema}.surface,
+    address     jsonb not null,
+    created_at  timestamptz not null default now()
 );
 
 /*

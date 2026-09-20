@@ -7,5 +7,11 @@
 -- коммитит своё состояние плюс чужие невидимые строки. Замок до begin гарантирует, что
 -- второй начнёт транзакцию, а значит и снимок, после коммита первого. Ожидание ограничено
 -- lock_timeout сессии: занятый scope это ошибка 55P03 и повтор позже.
-select pg_advisory_lock(hashtextextended(scheme || '://' || host || ':' || port || '/' || database, 0)) as scope_locked
-from raw_source;
+select
+    pg_advisory_lock(
+        hashtextextended(
+            scheme || '://' || host || ':' || port || '/' || database, 0
+        )
+    ) as scope_locked
+from
+    raw_source;

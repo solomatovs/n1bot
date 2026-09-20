@@ -2,9 +2,9 @@
 pg-ix-core, схема, шаг 3: дерево {schema}.tree и его индексы.
 */
 create table if not exists {schema}.tree (
-    id          bigserial   not null primary key,
-    node_id     bigint      not null references {schema}.node on delete cascade,
-    parent_id   bigint          null references {schema}.node on delete cascade,
+    id          bigserial not null primary key,
+    node_id     bigint not null references {schema}.node on delete cascade,
+    parent_id   bigint null references {schema}.node on delete cascade,
     created_at  timestamptz not null default now()
 );
 create unique index if not exists tree__uk on {schema}.tree using btree (node_id, parent_id);
