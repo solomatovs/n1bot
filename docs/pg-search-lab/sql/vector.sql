@@ -4,7 +4,7 @@
 */
 with hit as (
     select e.node_id, e.aspect, e.chunk_no, e.content, e.emb <=> %(v)s::halfvec(1024) as dist
-    from ix.pg_emb_e5_1024 e
+    from ix.pg_idx_emb_e5_1024 e
     order by e.emb <=> %(v)s::halfvec(1024)
     limit %(limit)s * 8
 )

@@ -7,13 +7,13 @@
 with q as (select lower(%(q)s) as text),
 prefix as (
     select t.node_id, t.aspect, t.content, 1.0::float8 as score
-    from ix.pg_trgm t, q
-    where t.aspect in ('name', 'path') and lower(t.content) ^@ q.text
+    from ix.pg_idx_trgm t, q
+    where t.aspect in ('meta_name', 'meta_path') and lower(t.content) ^@ q.text
 ),
 fuzzy as (
     select t.node_id, t.aspect, t.content, word_similarity(q.text, t.content) as score
-    from ix.pg_trgm t, q
-    where t.aspect = 'words' and word_similarity(q.text, t.content) >= 0.4
+    from ix.pg_idx_trgm t, q
+    where t.aspect = 'meta_words' and word_similarity(q.text, t.content) >= 0.4
 ),
 hit as (select * from prefix union all select * from fuzzy)
 select (array_agg(n.surface order by h.score desc))[1] as surface,

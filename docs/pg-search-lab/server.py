@@ -150,7 +150,7 @@ class Cli:
     def parse(cls, argv: Sequence[str] | None = None) -> LabConfig:
         parser = argparse.ArgumentParser(description="pg-search-lab: страница проверки поисковой выдачи ix")
         parser.add_argument("--dsn", required=True, help="Строка подключения к базе ix (host=... dbname=... user=... password=...).")
-        parser.add_argument("--cache-dir", required=True, help="Каталог с весами fastembed для вектора запроса, как у pg-indexer-vector.")
+        parser.add_argument("--cache-dir", required=True, help="Каталог с весами fastembed для вектора запроса, как у pg-idx-vector.")
         parser.add_argument("--model", default="intfloat/multilingual-e5-large", help="Модель эмбеддингов; та же, что у индексатора.")
         parser.add_argument("--dim", type=int, default=1024, help="Размерность вектора, как у таблицы pg_emb_e5_1024.")
         parser.add_argument("--host", default="127.0.0.1", help="Адрес, на котором слушать.")

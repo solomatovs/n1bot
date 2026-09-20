@@ -62,8 +62,9 @@ packages/agents/boba-chainlit/web/catalog/*.tsbuildinfo
 packages/agents/boba-chainlit/assets/catalog/
 packages/agents/boba-chainlit/assets/ui/
 /docs/catalog.md
-!/docs/pg-scraper/
-!/docs/pg-indexer-fts/
-!/docs/pg-indexer-trgm/
-!/docs/pg-indexer-vector/
+!/docs/pg-meta-scraper/
+!/docs/pg-idx-fts/
+!/docs/pg-idx-trgm/
+!/docs/pg-idx-vector/
 !/docs/pg-search-lab/
+!/docs/pg-llm-describer/

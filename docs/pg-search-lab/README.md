@@ -14,7 +14,7 @@ vector) поверх схемы `ix`. Нужен, чтобы подбирать 
 Дальше http://127.0.0.1:8700/ или через nginx по /boba-search/ (location в
 /app/docker/compose/nginx/conf.d/locations/boba.conf проксирует на хост, порт 8700; сервер тогда
 запускается с `--host 0.0.0.0`). Ключи: `--host`, `--port`, `--model`, `--dim`, как у
-`pg-indexer-vector`; вектор запроса считает тот же провайдер проекта (`embed_query`,
+`pg-idx-vector`; вектор запроса считает тот же провайдер проекта (`embed_query`,
 префикс `query:`).
 
 Запросы лежат в `sql/fts.sql`, `sql/trgm.sql`, `sql/vector.sql` и читаются на каждый поиск:
