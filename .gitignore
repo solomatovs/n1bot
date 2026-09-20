@@ -65,3 +65,4 @@ packages/agents/boba-chainlit/assets/ui/
 !/docs/pg-scraper/
 !/docs/pg-indexer-fts/
 !/docs/pg-indexer-trgm/
+!/docs/pg-indexer-vector/

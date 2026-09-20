@@ -6,9 +6,14 @@
 `../pg-scrape-queries/`).
 
 ```
+schema/   DDL объектов, которыми владеет скрапер: значения surface_e и словарь, pg_edge, surface-таблицы
 scrape/   запросы к источнику, один файл на таблицу каталога, результат в raw_<name>
 layout/   запросы к своей базе: raw_* -> stage_* -> ix
 ```
+
+`schema/*.sql` применяются по порядку имён один раз при установке и при каждом обновлении
+пакета; все команды идемпотентны (`if not exists`, `add value if not exists`,
+`on conflict do nothing`). Предусловие: ядро `ix` из `docs/knowledge-schema.sql`.
 
 ## 1. Прогон одного источника
 
@@ -100,7 +105,7 @@ constraint, partition_key, distribution_key, trigger, statistics; `side = 1` т�
 партиционированная и распределённая по одной колонке, или FK на ту же колонку.
 
 Surface node это двенадцать таблиц `ix.pg_<surface>` с ключом `node_id`, DDL в
-`ix_surfaces.sql`. Строка surface сравнивается целиком: изменившаяся удаляется и
+`schema/20_surfaces.sql`. Строка surface сравнивается целиком: изменившаяся удаляется и
 вставляется заново, неизменившаяся не трогается, поэтому полей `updated_at` и
 `content_hash` у них нет. Что в них лежит: имена, владелец, вид, комментарий у всех;
 у таблицы ещё tablespace, persistence, граница партиции, оценка строк и страниц,
@@ -183,15 +188,11 @@ increase max_locks_per_transaction`.
 - `ix.node (id, surface ix.surface_e, address jsonb unique)`; поле url раскладка не
   заполняет. Индекс `gin (address jsonb_path_ops)` обязателен: по нему `50_apply.sql`
   находит срез источника через `@>`.
-- `ix.surface_e` содержит pg_database, pg_schema, pg_table, pg_column, pg_view, pg_index,
-  pg_sequence, pg_routine, pg_constraint, pg_trigger, pg_type, pg_statistics.
 - `ix.tree (id, node_id, parent_id null, unique (node_id, parent_id))`.
 - `ix.edge (id, node_src_id, node_tgt_id, surface, weight, unique (node_src_id, node_tgt_id))`.
-- `ix.pg_edge_role_e`: index, constraint, partition_key, distribution_key, trigger, statistics.
-- `ix.pg_edge (edge_id, role ix.pg_edge_role_e, side, ordinal, is_key, primary key (edge_id, role, side, ordinal))`.
-- FK из tree и edge на node, из pg_edge на edge, все с `on delete cascade`.
-- Двенадцать surface-таблиц из `ix_surfaces.sql`, каждая с `node_id primary key references
-  ix.node on delete cascade`.
+- FK из tree и edge на node с `on delete cascade`.
+- Остальное создаёт сам пакет в `schema/`: значения `surface_e`, словарь, `pg_edge_role_e`,
+  `pg_edge`, двенадцать surface-таблиц.
 
 ## 6. Что не снимается
 
