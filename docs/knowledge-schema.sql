@@ -1,21 +1,55 @@
-create extension if not exists pg_trgm;
-create extension if not exists vector;
-create extension if not exists btree_gin;
-
-create schema if not exists ix;
-
 /*
+============================================================================
+Система решает две задачи:
+- индексация
+- поиск
+по разнородным источникам информации:
+- postgres
+- clickhouse
+- oracle
+- mssql
+- mysql
+- confluence
+- other webapp
 ============================================================================
 Принципы проектирования
 
-Система состоит из ядра (core) и поверхностей индексации (surface)
+В основе системы заложен property graph для установления связей
+Граф раскладывается на несколько реляционных таблиц:
+- core          - ядро системы, здесь храниться вся абстрактная информация об объектах и их связях
+- properties    - информация о конкретной поверхности: postgres, clickhouse, confluence и прочих
 
-core — место хранения адресов объектов и связей между ними.
+В основе Property Graphs лежат по сути две таблицы
+- node:         это непосредственно объекты для графа
+- edge:         это непосредственно связи между node
+
+у node и edge есть свои списки properties, который можно хранить по разному.
+Один из подходов это хранение properties в виде jsonb, тогда схема хранения очень сильно упрощается.
+Но тогда поиск, изменение информации становиться сложным процессом
+
+Другим подходом является разделение properties на разные поверхности и хранение поверхностей в разных таблицах.
+Здесь как раз используется этот подход.
+Информация о node properties и edge properties лежит в отдельных surface таблицах
+properties по сути синоним surface далее. Далее по тексту буду использовать понятие surface
+
+Итак, система состоит из ядра (core) и поверхностей (surface)
+
+core — центральное место хранения адресов объектов и связей между ними.
 core состоит из:
     node — хранит всё, что можно адресовать в источнике: таблица, колонка, страница в Confluence.
-Все что угодно, что можно выразить в виде адреса, а при поисковой выдаче можно скинуть прямую ссылку на объект
+        Все что угодно, что можно выразить в виде адреса,
+        а при поисковой выдаче можно скинуть прямую ссылку на объект
     tree - хранит иерархию между node.id, когда есть четкая иерархическая последовательность.
-    edge - хранит смысловые связи в виде графа, когда одни
+        Такой вид моделирования графа называется Список предков (Adjacency List для Деревьев)
+        имеет четкую структуру и направление node
+        из плюсов это быстрая вставка, дерево перестраивается сразу же
+        из минусов это долгий recursive cte для поиска
+    edge - хранит взаимосвязи в виде Взвешенного графа (Weighted Graph), когда несколько node
+        которые могут указывать друг на друга, иметь явное направление от (src_node_id к tgt_node_id)
+        и имеют вес этой связи в виде числа и имеют тип взаимосвязи
+
+Почему используется два представления связей графа? Это продиктовано удобством поиска и обновления
+В целом мы не ограничены моделями хранения графа (они бывают разные) и можем выбрать тот, который хорошо решает задачу
 
 Пример tree:
     - confluence tree: space -> page -> attachment
@@ -26,11 +60,10 @@ core состоит из:
 
 По tree можно построить иерархию, по edge можно построить граф связанности
 
-surface — поверхность индексации - то, что индексируется.
+surface — поверхность индексации - то, что индексируется, то по чему строиться граф
 surface - это одна или несколько плоских таблиц, в которых храниться метаинформация об объекте
-surface таблицы перечислены в таблице node_kind - буквально содержит название surface таблицы,
-что бы проще было найти связи между core и surface
-Если хочется добавить новый surface, то в node_kind расположен тот самый реестр surface таблиц
+surface таблицы перечислены в таблице surface
+Если хочется добавить новый surface, необходимо сюда добавить новую строку
 Пример surface:
     - pg_table          - хранит информацию о таблицах любых заиндексированных postgres источников
     - pg_column         - хранит информацию о колонках таблиц
@@ -38,10 +71,11 @@ surface таблицы перечислены в таблице node_kind - бу
     - confluence_page   - хранит информацию об заиндексированных confluence страницах
 
 surface таблицы желательно должны проектироваться без связи друг с другом.
-Они должны ссылаться через node_id на core, но не на друг друга
-Это позволит выполнять горизонтальное масштабирование и добавлять новые индексы без особых проблем
+Они должны ссылаться через node_id или edge_id на core, но не на друг друга
+Это позволит выполнять горизонтальное масштабирование и добавлять новые поверхности без особых проблем
 
-surface хранит атрибуты объекта в структурированном виде, а node_id позволяет получить address.
+surface хранит атрибуты объекта в структурированном виде (те самые properties в properties graph),
+    а node_id позволяет получить address.
     атрибуты хранящиеся в surface являются горячей информацией об объекте и могут быть полезны
     для получения быстрого доступа, но естественным образом могут устаревать.
     Поэтому по ним нельзя строить иерархии или связи.
@@ -60,13 +94,13 @@ surface таблицы имеют собственные индексы, кот�
     несколько аспектов объекта, которые будем индексировать.
     К примеру что значит объект pg_column? Что именно здесь будем индексировать? Имя?
     Вот нескольк примеров того, что можно заиндексировать только у колонки:
-    - comment - у postgres есть коментарий и его можно прогнать через btree, fts, trgm, vector индексы
+    - comment           - у postgres есть коментарий и его можно прогнать через btree, fts, trgm, vector индексы
     - human_description - описание колонки, которое делает человек
-    - llm_description - описание колонки, которое делает llm
-    - create statement - некий sql stmp в который входит название, тип данных, ограничения
-    - path - путь к колонке через точку, к примеру: {schema}.{table}.{column}
+    - llm_description   - описание колонки, которое делает llm
+    - create statement  - некий sql stmp в который входит название, тип данных, ограничения
+    - dot_path          - путь к таблице/колонке через точку, к примеру: {schema}.{table}.{column}
     Таких аспектов индексации можно придумать сколько угодно, они бесконечны.
-Обрати вниание, что при составлении индекса мы имеем дело с пересечением четырех осей:
+Обрати вниание, что при составлении поисккового индекса мы имеем дело с пересечением четырех осей:
 - node.address: адрес индексируемого объекта
 - node.kind:    поверхность индексируемого объекта
 - aspect:       аспект индексации (что именно индексируем у объекта)
@@ -115,34 +149,42 @@ surface таблицы имеют собственные индексы, кот�
     Что осталось по indexer со scope
 ============================================================================
 */
+create extension if not exists pg_trgm;
+create extension if not exists vector;
+create extension if not exists btree_gin;
+
+create schema if not exists ix;
 do $$ begin
-    create type ix.node_kind_e as enum ();
+    create type ix.surface_e as enum ();
 exception when duplicate_object then null; end $$;
 
-alter type ix.node_kind_e add value if not exists 'pg_database';
-alter type ix.node_kind_e add value if not exists 'pg_schema';
-alter type ix.node_kind_e add value if not exists 'pg_table';
-alter type ix.node_kind_e add value if not exists 'pg_column';
-alter type ix.node_kind_e add value if not exists 'pg_view';
-alter type ix.node_kind_e add value if not exists 'pg_index';
-alter type ix.node_kind_e add value if not exists 'pg_sequence';
-alter type ix.node_kind_e add value if not exists 'pg_routine';
-alter type ix.node_kind_e add value if not exists 'pg_constraint';
-alter type ix.node_kind_e add value if not exists 'confluence_space';
-alter type ix.node_kind_e add value if not exists 'confluence_page';
-alter type ix.node_kind_e add value if not exists 'confluence_attachment';
-alter type ix.node_kind_e add value if not exists 'confluence_comment';
+alter type ix.surface_e add value if not exists 'pg_database';
+alter type ix.surface_e add value if not exists 'pg_schema';
+alter type ix.surface_e add value if not exists 'pg_table';
+alter type ix.surface_e add value if not exists 'pg_column';
+alter type ix.surface_e add value if not exists 'pg_view';
+alter type ix.surface_e add value if not exists 'pg_index';
+alter type ix.surface_e add value if not exists 'pg_sequence';
+alter type ix.surface_e add value if not exists 'pg_routine';
+alter type ix.surface_e add value if not exists 'pg_constraint';
+alter type ix.surface_e add value if not exists 'confluence_space';
+alter type ix.surface_e add value if not exists 'confluence_page';
+alter type ix.surface_e add value if not exists 'confluence_attachment';
+alter type ix.surface_e add value if not exists 'confluence_comment';
 
-comment on type ix.node_kind_e is
-    'Kind node: имя surface-таблицы, в которой лежат атрибуты node. Значения только добавляются (alter type add value if not exists) или переименовываются; предикаты частичных индексов следуют за переименованием.';
+comment on type ix.surface_e is
+'surface name: имя surface-таблицы, в которой лежат атрибуты (properties graph).
+Значения в этот enum могут только добавляться (alter type add value if not exists) или переименоваться
+Удаление из enum в postgres невозможно. для этого требуется создание нового enum
+';
 
-create table if not exists ix.node_kind (
-    kind         ix.node_kind_e primary key,
-    description  varchar        not null
+create table if not exists ix.surface (
+    name         ix.surface_e primary key,
+    description  varchar      not null
 );
 
-insert into ix.node_kind (kind, description) values
-    ('pg_database',           'База данных источника PostgreSQL; корень его tree.'),
+insert into ix.surface (name, description) values
+    ('pg_database',           'База данных источника PostgreSQL'),
     ('pg_schema',             'Схема базы данных PostgreSQL.'),
     ('pg_table',              'Таблица, включая секционированные таблицы и секции.'),
     ('pg_column',             'Колонка таблицы, представления или материализованного представления.'),
@@ -192,12 +234,14 @@ address = {"scheme": "mysql", "host": "db1", "port": 3306, "database": "shop", "
 url     = mysql://db1:3306/shop?table=orders
 */
 create table if not exists ix.node (
-    id          bigserial   primary key,
-    kind        ix.node_kind_e not null references ix.node_kind,
-    address     jsonb       not null,
-    url         varchar     not null unique,
-    created_at  timestamptz not null default now(),
-    updated_at  timestamptz not null default now()
+    id          bigserial       primary key,
+    surface     ix.surface_e    not null references ix.surface,
+    address     jsonb           not null,
+    -- ранее я думал добавить это поле, но сейчас хочу отказать от него
+    -- что бы не хранить избыточную информацию. url можно будет вычислить в любой момент через address
+    -- url         varchar         not null unique,
+    created_at  timestamptz     not null default now(),
+    updated_at  timestamptz     not null default now()
 );
 
 /*
@@ -212,11 +256,12 @@ where
     address @> '{"host": "dwh.local"}'
 */
 create index if not exists node__address__gin on ix.node using gin (address jsonb_path_ops);
-create index if not exists node__kind on ix.node using btree (kind);
+create index if not exists node__surface on ix.node using btree (surface);
 
 /*
 tree описывает иерархию объектов.
-Колонка лежит в таблице, таблица в схеме, схема в базе, вложение в странице, страница в спейсе.
+Колонка лежит в таблице, таблица в схеме, схема в базе,
+Вложение лежит в странице, страница в спейсе.
 tree содержит связи в виде дерева:
     node_id:    это node_id адреса объекта
     parent_id:  это node_id родителя
@@ -225,13 +270,20 @@ tree хранится отдельно от edge, чтобы ранжирова�
 подобные связи, так как они влияют на поисковую выдачу (самые очевидные)
 */
 create table if not exists ix.tree (
-    node_id    bigint primary key references ix.node on delete cascade,
-    parent_id  bigint not null references ix.node on delete cascade
+    id          bigserial   not null primary key,
+    node_id     bigint      not null references ix.node on delete cascade,
+    parent_id   bigint          null references ix.node on delete cascade,
+    created_at  timestamptz not null default now(),
+    updated_at  timestamptz not null default now()
 );
+create unique index if not exists tree__uk on ix.tree using btree (node_id, parent_id);
 
 /*
 Выбрать всех детей:
     select node_id from ix.tree where parent_id = $1
+
+Выбрать всех корневых родителей:
+    select parent_id from ix.tree where parent_id is null
 
 Выбрать все поддерево:
     with recursive sub as (
@@ -245,314 +297,109 @@ create table if not exists ix.tree (
 Поэтому для удаления всего поддерева индексатор должен это сделать
 отдельным рекурсивным запросом
 */
-
 create index if not exists tree__parent on ix.tree using btree (parent_id, node_id);
-/*
-edge_kind — это виды связей, которые хранит edge таблица
-    Виды связей строго фиксированы и расписаны как postgres enum
-    Это позволяет индексировать поле как число (быстро)
-    и при этом обращаться к полю по имени (удобно для человека)
-
-Каждый новый вид связей это добавление в enum нового значения через alter:
-    alter type ix.edge_kind_e add value if not exists 'references';
-
-Удаление из enum невозможно, а значит если это необходимо сделать
-    значит необходимо заново пересоздавать этотenum
-
-Обрати внимание, что для того, что бы enum небыл повисшим в воздухе магическим словом
-    сделана таблица edge_kind у которой primary key это edge_kind_e (enum postgres)
-    это позволяет сделать прямые foreign key между таблицами и контролировать использование kind связей
-    а также, что бы начать использовать новое enum значение, нужно добавить в эту таблицу этот enum
-    и сделать его описание в виде description, что позволит сохранить порядок в схеме хранения
-*/
-do $$ begin
-    create type ix.edge_kind_e as enum ();
-exception when duplicate_object then null; end $$;
-
-alter type ix.edge_kind_e add value if not exists 'foreign_key';
-alter type ix.edge_kind_e add value if not exists 'reads_from';
-alter type ix.edge_kind_e add value if not exists 'writes_to';
-alter type ix.edge_kind_e add value if not exists 'queried_with';
-alter type ix.edge_kind_e add value if not exists 'refers_to';
-
-comment on type ix.edge_kind_e is
-    'Вид связей в таблице edge';
-
-create table if not exists ix.edge_kind (
-    name         ix.edge_kind_e primary key,
-    description  varchar        not null
-);
-
-insert into ix.edge_kind (name, description) values
-    ('reads_from',      'View (представление) или ETL, который читает из таблицы.'),
-    ('writes_to',       'ETL пишет в таблицу'),
-    ('queried_with',    'Таблицы встречаются в одном запросе; пишется в обе стороны.'),
-    ('refers_to',       'Документ ссылается на объект: страница на страницу, вложение или таблицу; способ ссылки (гиперссылка или имя в тексте) задаёт origin.')
-on conflict (name) do nothing;
 
 /*
-edge_origin — это ответ на вопрос а "как получена связь?" в таблице edge
-Почему вообще нужно сохранять источник взаимосвязи?
-несколько задач:
-    - владение весовым коэфициентом. у каждого индексатора свой собственный вес в ранжировании результатов
-    - объяснение пользователю, кто нашел связь, какой именно индексатор
+edge описывает взвешанный граф связей между node
 
-Давай пример:
-В postgres пользователи пишут запросы, которые логируются и которые могут явиться источником информации о связях.
-    Прочитав источник pg_stat_statements мы сможем определить связи между таблицами, колонками и прочим
-    Если отдадим конкретный запрос в llm и попросим сформировать строго определенные взаимосвязи
-    Однако 
-    Значит тип связи reads_from устанавливается для разных объектов,
-    так как postgres и clickhouse адреса будут разными.
-    Но представь что информация об этой связи получена из разных источников:
-    - pg_catalog.pg_stat_statements - предоставляет запросы, которые пишут пользователи
-    - system.query_log              - предоставляет запросы, которые пишут пользователи
+surface указывает на поверхность в которой найдена связь, к примеру:
+- postgres:     pg_stat_statements пишет запросы, которые используют пользователи, в этих запросах можно найти взаимосвязи между postgres node
+- clickhouse:   system.query_log  также пишет запросы влог, в этих запросах мы найдем взаимосвязи между clickhouse node
+- 
 
-
-
-Origin нужен для трёх вещей: писатель находит свои строки по origin и своим
-node; у каждого origin своя шкала weight; пользователю можно объяснить,
-откуда взялась связь, а откуда именно, видно по kind node на её концах.
-declared      объявлена самим источником: foreign key, зависимость view
-              от таблицы, гиперссылка на странице, зависимость задач ETL.
-              weight всегда 1.
-observed      наблюдена в поведении: таблицы в одном запросе из
-              pg_stat_statements или system.query_log. weight равен
-              логарифму числа наблюдений, нормированному по прогону.
-text_match    идентификатор объекта найден буквально в тексте другого:
-              страница упоминает dm.fact_orders, тело функции упоминает
-              таблицу. weight 1, потому что объект назван явно.
-name_rule     предположена правилом по именам и типам: колонка совпала
-              с primary key другой таблицы, копия таблицы в другом
-              источнике с теми же колонками. weight равен уверенности
-              правила.
-llm           предположена моделью: describer вывел связь из комментариев
-              и соседей, vision назвал таблицы на схеме. weight равен
-              уверенности модели.
-*/
-do $$ begin
-    create type ix.edge_origin_e as enum ();
-exception when duplicate_object then null; end $$;
-
-alter type ix.edge_origin_e add value if not exists 'declared';
-alter type ix.edge_origin_e add value if not exists 'observed';
-alter type ix.edge_origin_e add value if not exists 'text_match';
-alter type ix.edge_origin_e add value if not exists 'name_rule';
-alter type ix.edge_origin_e add value if not exists 'llm';
-
-comment on type ix.edge_origin_e is
-    'Как стало известно об edge: объявлен источником, наблюдён в использовании, найден буквально в тексте, предположен правилом по именам, предположен LLM. У каждого origin своя шкала weight.';
-
-create table if not exists ix.edge_origin (
-    name        ix.edge_origin_e   primary key,
-    description varchar            not null
-);
-
-insert into ix.edge_origin (name, description) values
-    ('declared',   'Объявлен самим источником: foreign key, зависимость view, гиперссылка, зависимость ETL; weight 1.'),
-    ('observed',   'Наблюдён в использовании: таблицы в одном запросе из pg_stat_statements или system.query_log; weight равен логарифму числа наблюдений, нормированному по прогону.'),
-    ('text_match', 'Идентификатор объекта найден буквально в тексте другого; weight 1.'),
-    ('name_rule',  'Предположен правилом по именам и типам; weight равен уверенности правила.'),
-    ('llm',        'Предположен моделью (describer, vision); weight равен уверенности модели.')
-on conflict (name) do nothing;
-
-/*
-Edge — смысловые связи между node, explicit и implicit вместе. По ним
-считается ранг и строятся диаграммы. Принадлежности здесь нет, она в tree.
-
-Направление: source — объект, которому нужен target. Ограничение
-fact_orders_customer_fkey пишется как ограничение -> customers,
-представление, читающее orders, — как представление -> orders. PageRank
-считает входящие edge голосами, поэтому высокий ранг означает, что от node
-зависят многие.
-
-Внешний ключ — отдельный node вида pg_constraint под таблицей-владельцем
-в tree, и edge references идёт от него. Так каждая связь адресуема, и пять
-ключей между одной парой таблиц остаются пятью edge. Колонки ключа — его
-атрибуты, они лежат в surface ограничения.
-
-weight — сколько edge весит для ранга, от 0 до 1. У explicit связей 1,
-у implicit меньше, и нормируется он внутри своего origin. Сплошную или
-пунктирную линию на диаграмме выбирает kind, а не weight.
-
-origin — откуда взят edge. Одна пара node с одним kind может лежать по
-строке на каждый origin: (orders, customers, shares_key_with, name_rule,
-0.5) и (orders, customers, shares_key_with, llm, 0.8). Для ранга и
-диаграммы пара сворачивается в одно число: 1 - (1 - 0.5) * (1 - 0.8) = 0.9,
-то есть два независимых мнения усиливают друг друга. Подтверждение правила —
-это запрос: пары, у которых есть и shares_key_with от name_rule, и
-references от declared.
-
-Повторный прогон писателя — это diff, а не перезапись. Найденное
-сравнивается с его собственными строками (по origin и своим node: загрузчик
-Postgres владеет строками declared и observed с source_id в его базе,
-правило по именам — всеми name_rule, describer — всеми llm), новые
-вставляются, у изменившихся обновляется weight, удаляются только исчезнувшие.
-Массовых delete и insert нет.
 */
 create table if not exists ix.edge (
-    source_id  bigint   not null references ix.node on delete cascade,
-    target_id  bigint   not null references ix.node on delete cascade,
-    kind       ix.edge_kind_e not null references ix.edge_kind,
-    origin     ix.origin_e    not null references ix.origin,
-    weight     real     not null check (weight between 0 and 1),
-    primary key (source_id, target_id, kind, origin)
+    id          bigserial       not null primary key,
+    node_src_id bigint          not null references ix.node on delete cascade,
+    node_tgt_id bigint          not null references ix.node on delete cascade,
+    surface     ix.surface_e    not null references ix.surface,
+    weight      real            not null check (weight between 0 and 1)
 );
 
-/*
-Кто зависит от node, пара свёрнута по origin:
-select source_id, kind, 1 - exp(sum(ln(1 - weight))) as weight
-from   ix.edge where target_id = $1 group by source_id, kind;
-ER-диаграмма схемы: таблицы берутся через tree, ключи — как дети таблиц
-вида pg_constraint, целевая таблица — через edge:
-*/
-with t  as (select node_id as id from ix.tree where parent_id = $schema_id),
-     fk as (select tr.node_id as fk_id, tr.parent_id as table_id
-            from   ix.tree tr
-            join   t on t.id = tr.parent_id
-            join   ix.node n on n.id = tr.node_id and n.kind = 'pg_constraint')
-select fk.table_id, fk.fk_id, e.target_id
-from   fk join ix.edge e on e.source_id = fk.fk_id and e.kind = 'references';
-create index if not exists edge__target_source_kind
-    on ix.edge using btree (target_id, source_id, kind) include (origin, weight);
+create unique   index if not exists edge__uk                    on ix.edge using btree (node_src_id, node_tgt_id)
+create          index if not exists node__surface               on ix.node using btree (surface);
+create          index if not exists edge__tgt_src_surface       on ix.edge using btree (node_tgt_id, node_src_id, surface) include (weight);
+create          index if not exists edge__surface_src           on ix.edge using btree (surface, node_src_id);
 
--- Строки одного origin для diff при повторном прогоне писателя.
-create index if not exists edge__origin_source on ix.edge using btree (origin, source_id);
-
-/*
-PageRank node. Считается в коде: берутся edge выбранных kind, свёрнутые по
-origin в один weight на пару, и node вида таблица, представление или
-материализованное представление; edge от node ограничения стягивается через
-tree в таблицу-владельца. Результат записывается одной транзакцией.
-value — сырое значение, сумма по всему графу равна 1. percentile — место
-node среди остальных от 0 до 10000; поиск использует его как буст к
-текстовой релевантности. Если строки нет, node в прогоне не участвовал и
-буст у него нулевой.
-*/
-create table if not exists ix.node_pagerank (
-    node_id      bigint           primary key references ix.node on delete cascade,
-    value        double precision not null,
-    percentile   smallint         not null check (percentile between 0 and 10000),
-    computed_at  timestamptz      not null default now()
-);
-
--- Верхушка ранга:
--- select node_id, value from ix.node_pagerank order by value desc limit 20;
-create index if not exists node_pagerank__value on ix.node_pagerank using btree (value desc);
 
 /*
 ============================================================================
-Surface-таблицы: атрибуты node из источника. Каждая surface — плоская
-таблица с единственной связью с ядром через node_id и полными именами
-объекта для быстрого доступа внутри источника. Связей в ней нет и по ней
-они не строятся.
+Surface-таблицы
+
+Каждая surface — плоская таблица со своим набором атрибутов, наполняемые индексатором
+В properties graph концепции эти таблицы как раз для хранения properties
+surface таблица связана с core через node_id
+surface таблицы не связаны друг с другом намеренно, что бы
+    плоская структура могла легко расширяться горизонтально
+    таблицы с не очень удачной индексацией могли заменяться
+    таблицы с разными версиями могли существовать парралельно
 ============================================================================
+PostgreSQL surface
 
-============================================================================
-Источник PostgreSQL.
+Виды node:
+    pg_database
+    pg_schema
+    pg_table
+    pg_column
+    pg_view
+    pg_index
+    pg_sequence
+    pg_routine
+    pg_constraint
 
-Виды node: база, схема, таблица, колонка, представление (view и matview
-один kind, различаются атрибутом view_kind), индекс, последовательность,
-подпрограмма (function, procedure, aggregate и window один kind,
-различаются атрибутом routine_kind), ограничение.
+tree в postgres surface строиться строго через pg_class
+Обычно в postgres следующие виды иерархий:
+    pg_database 
+    -> pg_schema
+       -> pg_table
+            -> pg_column
+       -> pg_view
+            -> pg_column
+       -> pg_sequence
+            -> pg_column
+       -> pg_constraint
+            -> pg_column
+       -> pg_routine + args
 
-Tree строится так: база -> схема -> таблица | представление |
-последовательность | подпрограмма; таблица -> колонка | ограничение |
-индекс; представление -> колонка. Индекс в адресе уникален в пределах
-схемы, но в tree лежит под таблицей, которой принадлежит
-(pg_index.indrelid).
+edge в postgres surface строиться на основе нескольких типов взаимосвязей.
+Каждый тип взаимосвязей будем хранить в отдельной таблице:
+pg_index:
+    node_id bigint primary key references ix.node on delete cascade,
+    
 
-Edge двух kind: references идёт от node ограничения к таблице, на которую
-ссылается внешний ключ; reads_from идёт от представления к таблицам и
-представлениям, которые оно читает (по pg_rewrite и pg_depend).
-
-Тела представлений и подпрограмм не хранятся: LLM при необходимости
-читает их в источнике по адресу node.
-
-content_hash таблицы покрывает её колонки и ограничения: если хэш таблицы
-изменился, переписываются поисковые строки самой таблицы, её колонок и
-ограничений. У базы, схемы и последовательности content_hash нет, их
-атрибуты сравниваются с прошлым прогоном напрямую.
-============================================================================
-
-Surface pg_table: атрибуты таблицы PostgreSQL. Оригинал DDL и адрес здесь
-не хранятся, только идентификаторы (база, схема, имя), табличное
-пространство, владелец и комментарий.
-content_hash — sha256 текста, из которого строятся аспекты поиска: имя,
-путь, комментарий, колонки с типами и комментариями. Версии у объектов
-PostgreSQL нет, поэтому хэш здесь единственный признак изменения: совпал с
-прошлым прогоном — поисковые строки node не трогаются; не совпал —
-переписываются все, включая строки колонок и ограничений таблицы.
+- constraint:           прямые взаимосвязи указанные между колонками разных таблиц (foreign_key)
+- generated_column:     прямые взаимосвязи колонок между друг другом в одной таблице (generated столбцы)
+- index:                прямые взаимосвязи во view, указывающие на другие объекты
+- column_reference:     прямые взаимосвязи в column expression
 */
 create table if not exists ix.pg_table (
-    node_id          bigint primary key references ix.node on delete cascade,
+    node_id          bigint    primary key references ix.node on delete cascade,
     database_name    varchar   not null,
     schema_name      varchar   not null,
     table_name       varchar   not null,
-    tablespace_name  varchar   not null default '',
+    tablespace_name  varchar   null,
     owner            varchar   not null,
-    comment          varchar   not null default '',
+    comment          varchar   null,
     content_hash     bytea     not null
 );
 
-/*
-Surface pg_summary: текст описания объекта, сгенерированный LLM
-(describer). Describer — источник, чьи оригиналы хранятся только у нас:
-адреса, по которому summary можно перечитать, не существует, поэтому сам
-текст лежит в поле content.
-indexer_hash играет роль версии: md5 снимка настроек прогона (модель,
-системный промпт, параметры генерации). При повторном прогоне строки с
-текущим indexer_hash не трогаются, строки с чужим генерируются заново.
-content_hash — md5 текста content; по нему поисковые строки aspect summary
-решают, надо ли переиндексировать node.
-Summary пишется для таблиц, колонок, представлений и подпрограмм.
-*/
-create table if not exists ix.pg_summary (
-    node_id       bigint      primary key references ix.node on delete cascade,
-    content       varchar     not null,
-    content_hash  bytea       not null,
-    indexer_hash  bytea       not null,
-    created_at    timestamptz not null default now()
-);
-
--- Очередь describer'а: node нужных kind без summary или с чужим indexer_hash.
--- select n.id
--- from   ix.node n
--- left join ix.pg_summary s on s.node_id = n.id
--- where  n.kind in ('pg_table', 'pg_column', 'pg_view', 'pg_routine')
---   and (s.node_id is null or s.indexer_hash <> $current);
-create index if not exists pg_summary__indexer_hash on ix.pg_summary using btree (indexer_hash);
-
--- Surface pg_database: атрибуты базы из pg_database. owner —
--- pg_get_userbyid(datdba), encoding — pg_encoding_to_char(encoding),
--- collate_name — datcollate, comment — shobj_description. content_hash нет:
--- атрибутов мало, они сравниваются с прошлым прогоном напрямую.
 create table if not exists ix.pg_database (
     node_id        bigint  primary key references ix.node on delete cascade,
     database_name  varchar not null,
     owner          varchar not null,
     encoding       varchar not null,
     collate_name   varchar not null,
-    comment        varchar not null default ''
+    comment        varchar null
 );
 
--- Surface pg_schema: атрибуты схемы из pg_namespace, comment —
--- obj_description. content_hash нет, атрибуты сравниваются напрямую.
 create table if not exists ix.pg_schema (
     node_id        bigint  primary key references ix.node on delete cascade,
     database_name  varchar not null,
     schema_name    varchar not null,
     owner          varchar not null,
-    comment        varchar not null default ''
+    comment        varchar null
 );
 
--- Surface pg_column: атрибуты колонки из pg_attribute таблицы или
--- представления. relation_kind = table | view | matview показывает, чья это
--- колонка, без обращения к tree. default_expr берётся из pg_attrdef через
--- pg_get_expr, generated = attgenerated ('' — обычная колонка, 's' —
--- вычисляемая). Своего content_hash нет: колонку покрывает content_hash
--- таблицы или представления, при его смене поисковые строки колонки
--- переписываются вместе с родителем.
 create table if not exists ix.pg_column (
     node_id        bigint   primary key references ix.node on delete cascade,
     database_name  varchar  not null,
@@ -563,15 +410,11 @@ create table if not exists ix.pg_column (
     ordinal        smallint not null,
     data_type      varchar  not null,
     not_null       boolean  not null,
-    default_expr   varchar  not null default '',
-    generated      varchar  not null default '',
-    comment        varchar  not null default ''
+    default_expr   varchar  null,
+    generated      varchar  null,
+    comment        varchar  null
 );
 
--- Surface pg_view: атрибуты представления из pg_class с relkind v | m;
--- view_kind = view | matview. Определение (pg_get_viewdef) не хранится, но
--- входит в content_hash вместе с колонками и комментарием: изменилось
--- определение — переписываются поисковые строки представления и его колонок.
 create table if not exists ix.pg_view (
     node_id        bigint  primary key references ix.node on delete cascade,
     database_name  varchar not null,
@@ -582,12 +425,6 @@ create table if not exists ix.pg_view (
     comment        varchar not null default '',
     content_hash   bytea   not null
 );
-
--- Surface pg_index: атрибуты индекса из pg_index, pg_class индекса и
--- таблицы, метод доступа из pg_am. columns — выражения ключа по порядку,
--- взятые из pg_get_indexdef по колонкам; predicate — условие частичного
--- индекса из indpred. content_hash = md5(pg_get_indexdef(indexrelid)) у
--- индекса свой, потому что в content_hash таблицы индексы не входят.
 create table if not exists ix.pg_index (
     node_id        bigint    primary key references ix.node on delete cascade,
     database_name  varchar   not null,
@@ -601,12 +438,6 @@ create table if not exists ix.pg_index (
     predicate      varchar   not null default '',
     content_hash   bytea     not null
 );
-
--- Surface pg_sequence: атрибуты последовательности из pg_sequence и
--- pg_class. owned_by — колонка-владелец в виде schema.table.column из
--- pg_depend (deptype a или i), пусто у свободной последовательности; это
--- атрибут для чтения, edge из него не строится. content_hash нет, атрибуты
--- сравниваются напрямую.
 create table if not exists ix.pg_sequence (
     node_id        bigint  primary key references ix.node on delete cascade,
     database_name  varchar not null,
@@ -619,12 +450,6 @@ create table if not exists ix.pg_sequence (
     comment        varchar not null default ''
 );
 
--- Surface pg_routine: атрибуты подпрограммы из pg_proc. routine_kind =
--- function | procedure | aggregate | window (prokind f, p, a, w).
--- arguments — pg_get_function_identity_arguments; те же аргументы входят в
--- адрес, поэтому перегрузки — разные node. result —
--- pg_get_function_result, language — из pg_language. Тело (prosrc) не
--- хранится, но входит в content_hash вместе с сигнатурой и комментарием.
 create table if not exists ix.pg_routine (
     node_id        bigint  primary key references ix.node on delete cascade,
     database_name  varchar not null,
@@ -639,14 +464,6 @@ create table if not exists ix.pg_routine (
     content_hash   bytea   not null
 );
 
--- Surface pg_constraint: атрибуты ограничения таблицы из pg_constraint.
--- constraint_type = primary | unique | foreign | check | exclusion (contype
--- p, u, f, c, x). columns — колонки ограничения по порядку conkey. Для
--- внешнего ключа заполняются ref_schema_name, ref_table_name и ref_columns
--- по confkey, on_delete и on_update — из confdeltype и confupdtype; это
--- атрибуты для чтения, сама связь — edge references от этой node к таблице,
--- на которую ссылается ключ. Выражение check не хранится. Своего
--- content_hash нет: ограничение покрывает content_hash таблицы.
 create table if not exists ix.pg_constraint (
     node_id          bigint    primary key references ix.node on delete cascade,
     database_name    varchar   not null,
@@ -662,6 +479,7 @@ create table if not exists ix.pg_constraint (
     on_update        varchar   not null default '',
     is_deferrable    boolean   not null
 );
+
 
 -- ----------------------------------------------------------------------------
 -- Аспекты объектов PostgreSQL. Аспект это текст объекта, по которому объект
@@ -750,7 +568,7 @@ on conflict (aspect) do nothing;
 -- ----------------------------------------------------------------------------
 -- Поисковые таблицы источника PostgreSQL: по одной на вид индекса, общие для
 -- всех surface pg_*. У всех трёх один ключ (node_id, kind, aspect). kind это
--- копия node.kind того же типа node_kind_e: по ней индексы фильтруют по виду,
+-- копия node.kind того же типа surface_e: по ней индексы фильтруют по виду,
 -- не обращаясь к node. aspect это значение pg_aspect_e. content это текст
 -- аспекта, из которого построен индекс: триграммам он нужен для точного
 -- расчёта похожести, полнотексту для сниппета, вектору для проверки,
@@ -791,7 +609,7 @@ on conflict (aspect) do nothing;
 -- group by node_id order by rank desc limit 20;
 create table if not exists ix.pg_fts (
     node_id    bigint   not null references ix.node on delete cascade,
-    kind       ix.node_kind_e not null references ix.node_kind,
+    kind       ix.surface_e not null references ix.surface,
     aspect     ix.pg_aspect_e not null references ix.pg_aspect,
     content    varchar  not null,
     tsv        tsvector not null,
@@ -821,7 +639,7 @@ create index if not exists pg_fts__kind_tsv__gin on ix.pg_fts using gin (kind, t
 -- индекс, последовательность и подпрограмма.
 create table if not exists ix.pg_trgm (
     node_id    bigint   not null references ix.node on delete cascade,
-    kind       ix.node_kind_e not null references ix.node_kind,
+    kind       ix.surface_e not null references ix.surface,
     aspect     ix.pg_aspect_e not null references ix.pg_aspect,
     content    varchar  not null,
     primary key (node_id, kind, aspect)
@@ -865,7 +683,7 @@ create index if not exists pg_trgm__kind_aspect on ix.pg_trgm using btree (kind,
 -- текст аспекта: если он не изменился, модель повторно не запускают.
 create table if not exists ix.pg_emb_e5_1024 (
     node_id       bigint        not null references ix.node on delete cascade,
-    kind          ix.node_kind_e not null references ix.node_kind,
+    kind          ix.surface_e not null references ix.surface,
     aspect        ix.pg_aspect_e not null references ix.pg_aspect,
     content       varchar       not null,
     emb           halfvec(1024) not null,
@@ -1149,7 +967,7 @@ on conflict (aspect) do nothing;
 -- confluence_summary и весом D, как в pg_fts.
 create table if not exists ix.confluence_fts (
     node_id    bigint   not null references ix.node on delete cascade,
-    kind       ix.node_kind_e         not null references ix.node_kind,
+    kind       ix.surface_e         not null references ix.surface,
     aspect     ix.confluence_aspect_e not null references ix.confluence_aspect,
     content    varchar  not null,
     tsv        tsvector not null,
@@ -1163,7 +981,7 @@ create index if not exists confluence_fts__kind_tsv__gin on ix.confluence_fts us
 -- в эту таблицу он не пишется.
 create table if not exists ix.confluence_trgm (
     node_id    bigint   not null references ix.node on delete cascade,
-    kind       ix.node_kind_e         not null references ix.node_kind,
+    kind       ix.surface_e         not null references ix.surface,
     aspect     ix.confluence_aspect_e not null references ix.confluence_aspect,
     content    varchar  not null,
     primary key (node_id, kind, aspect)
@@ -1183,7 +1001,7 @@ create index if not exists confluence_trgm__kind_aspect on ix.confluence_trgm us
 -- файла, спейс description; summary пишет любой kind, у которого оно есть.
 create table if not exists ix.confluence_emb_e5_1024 (
     node_id    bigint        not null references ix.node on delete cascade,
-    kind       ix.node_kind_e         not null references ix.node_kind,
+    kind       ix.surface_e         not null references ix.surface,
     aspect     ix.confluence_aspect_e not null references ix.confluence_aspect,
     chunk_no   smallint      not null,
     content    varchar       not null,
