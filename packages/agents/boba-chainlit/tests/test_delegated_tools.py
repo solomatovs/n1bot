@@ -384,7 +384,11 @@ async def test_postgres_query_runs_as_the_signed_in_principal(
     await _granted(store, session, "pg-me", delegated_pg)
 
     result = await Call.ok(
-        pg_tools["pg_query"], connection="pg-me", sql="select current_user as who"
+        pg_tools["pg_query"],
+        connection="pg-me",
+        sql="select current_user as who",
+        offset=0,
+        limit=50,
     )
 
     rows = result.statements[0].rows
@@ -401,7 +405,11 @@ async def test_clickhouse_query_runs_as_the_signed_in_principal(
     await _granted(store, session, "ch-me", delegated_ch)
 
     result = await Call.ok(
-        ch_tools["ch_query"], connection="ch-me", sql="select currentUser() as who"
+        ch_tools["ch_query"],
+        connection="ch-me",
+        sql="select currentUser() as who",
+        offset=0,
+        limit=50,
     )
 
     rows = result.statements[0].rows
@@ -470,13 +478,23 @@ async def test_revoked_connection_stops_working_at_once(
     target = GrantTarget.user(UUID(session.id))
     await store.grant(connection_id, target)
 
-    await Call.ok(pg_tools["pg_query"], connection="pg-me", sql="select 1 as one")
+    await Call.ok(
+        pg_tools["pg_query"],
+        connection="pg-me",
+        sql="select 1 as one",
+        offset=0,
+        limit=50,
+    )
 
     await store.revoke(connection_id, target)
 
     with pytest.raises(RefusalError) as caught:
         await Call.result(
-            pg_tools["pg_query"], connection="pg-me", sql="select 1 as one"
+            pg_tools["pg_query"],
+            connection="pg-me",
+            sql="select 1 as one",
+            offset=0,
+            limit=50,
         )
 
     if caught.value.kind != ConnectionRefusal.NOT_VISIBLE:

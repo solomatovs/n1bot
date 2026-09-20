@@ -573,9 +573,11 @@ sec:
 .PHONY: prune
 prune:
 	@docker images --format '{{.Repository}}:{{.Tag}}' \
-	    | grep -E '^boba-(plugin|bwrap|fuse2fs|sandbox)' | xargs -r docker rmi
+	    | { grep -E '^boba-(plugin|bwrap|fuse2fs|sandbox)' || true; } | xargs -r docker rmi
 	docker images --format '{{.Repository}}:{{.Tag}}' \
-	    | grep -E '^boba-$(APP):' | grep -v -E ':($(BOBA_TAG)|latest)$$' | xargs -r docker rmi
+	    | { grep -E '^boba-$(APP):' || true; } \
+	    | { grep -v -E ':($(BOBA_TAG)|latest)$$' || true; } \
+	    | { xargs -r -n1 docker rmi || true; }   # образ под живым контейнером остаётся
 	docker builder prune -f --keep-storage $(PRUNE_KEEP)
 	docker system df
 
