@@ -188,9 +188,9 @@ class Pipeline:
     def run(self) -> Sequence[ApplyRow]:
         with psycopg.connect(self._cfg.source_dsn, autocommit=True, application_name="pg-scraper") as src, \
              psycopg.connect(self._cfg.ix_dsn, autocommit=True, application_name="pg-scraper") as ix:
-            self._session(src, read_only=True)
-            self._session(ix, read_only=False)
             server = self._server(src)
+            self._session(src, server, read_only=True)
+            self._session(ix, ServerInfo(version_num=999999, is_greenplum=False), read_only=False)
             chosen = list(self._choose(server))
             ix.execute(self._read(LayoutFile.RAW_SCHEMA))
             ix.execute("insert into raw_source (scheme, host, port, database) values (%s, %s, %s, %s)",
@@ -204,8 +204,12 @@ class Pipeline:
                 ix.execute(self._read(name))
             return self._apply(ix)
 
-    def _session(self, conn: psycopg.Connection, read_only: bool) -> None:
-        conn.execute(sql.SQL("set lock_timeout = {}").format(sql.Literal(self._cfg.lock_timeout)))
+    LOCK_TIMEOUT_SINCE = 90300
+
+    def _session(self, conn: psycopg.Connection, server: ServerInfo, read_only: bool) -> None:
+        """Настройки сессии; lock_timeout появился в 9.3, statement_timeout есть везде."""
+        if server.version_num >= self.LOCK_TIMEOUT_SINCE:
+            conn.execute(sql.SQL("set lock_timeout = {}").format(sql.Literal(self._cfg.lock_timeout)))
         conn.execute(sql.SQL("set statement_timeout = {}").format(sql.Literal(self._cfg.statement_timeout)))
         if read_only:
             conn.execute("set default_transaction_read_only = on")
