@@ -68,7 +68,7 @@ surface таблицы перечислены в таблице surface
     - pg_table          - хранит информацию о таблицах любых заиндексированных postgres источников
     - pg_column         - хранит информацию о колонках таблиц
     - pg_constraint     - хранит информацию об индексах
-    - confluence_page   - хранит информацию об заиндексированных confluence страницах
+    - cfl_meta_page   - хранит информацию об заиндексированных confluence страницах
 
 surface таблицы желательно должны проектироваться без связи друг с другом.
 Они должны ссылаться через node_id или edge_id на core, но не на друг друга
@@ -132,7 +132,7 @@ surface таблицы имеют собственные индексы, кот�
     К примеру confluence version
 - src_checksum: sha256 хэш составленный самим индексатором из оригинального документа (не преобразованного)
     в процессе индексации. Позволяет определить, изменился ли индексируемый аспект объекта
-    К примеру для confluence_page это исходное состояние страницы,
+    К примеру для cfl_meta_page это исходное состояние страницы,
     comment column (в postgres),
     описание составляемое llm или человеком
 - indexer_id:       уникальное имя индексатора в системе, которое позволяет выявить документы, им проиндексированные
@@ -158,11 +158,11 @@ do $$ begin
     create type ix.surface_e as enum ();
 exception when duplicate_object then null; end $$;
 
-/* значения pg_*: docs/pg-scraper/schema/00_surface.sql */
-alter type ix.surface_e add value if not exists 'confluence_space';
-alter type ix.surface_e add value if not exists 'confluence_page';
-alter type ix.surface_e add value if not exists 'confluence_attachment';
-alter type ix.surface_e add value if not exists 'confluence_comment';
+/* значения pg_*: docs/pg-meta-scraper/schema/00_surface.sql */
+alter type ix.surface_e add value if not exists 'cfl_meta_space';
+alter type ix.surface_e add value if not exists 'cfl_meta_page';
+alter type ix.surface_e add value if not exists 'cfl_meta_attachment';
+alter type ix.surface_e add value if not exists 'cfl_meta_comment';
 
 comment on type ix.surface_e is
 'surface name: имя surface-таблицы, в которой лежат атрибуты (properties graph).
@@ -175,12 +175,12 @@ create table if not exists ix.surface (
     description  varchar      not null
 );
 
-/* строки pg_*: docs/pg-scraper/schema/00_surface.sql */
+/* строки pg_*: docs/pg-meta-scraper/schema/00_surface.sql */
 insert into ix.surface (name, description) values
-    ('confluence_space',      'Спейс Confluence; корень его tree.'),
-    ('confluence_page',       'Страница или запись блога Confluence.'),
-    ('confluence_attachment', 'Файл, вложенный в страницу.'),
-    ('confluence_comment',    'Встроенный или нижний комментарий к странице.')
+    ('cfl_meta_space',      'Спейс Confluence; корень его tree.'),
+    ('cfl_meta_page',       'Страница или запись блога Confluence.'),
+    ('cfl_meta_attachment', 'Файл, вложенный в страницу.'),
+    ('cfl_meta_comment',    'Встроенный или нижний комментарий к странице.')
 on conflict (name) do nothing;
 
 /*
@@ -304,7 +304,7 @@ graph). Она связана с core только через node_id и не с
 ============================================================================
 PostgreSQL и Greenplum
 
-Наполняет пакет docs/pg-scraper: scrape снимает сырые таблицы каталога источника
+Наполняет пакет docs/pg-meta-scraper: scrape снимает сырые таблицы каталога источника
 (без представлений и без замков на пользовательских таблицах), layout раскладывает их в
 node, tree, edge, pg_edge и surface. Адрес node строится из частей: scheme, host, port,
 database, schema и один из table, view, sequence, index, function+args, type, statistics;
@@ -340,7 +340,7 @@ surface концов:
     pg_routine    -> pg_column     тело begin atomic (PostgreSQL 14+)
     pg_statistics -> pg_column     колонки статистики
 
-Позиционные рёбра (объект перечисляет колонки по порядку) несут строки в ix.pg_edge:
+Позиционные рёбра (объект перечисляет колонки по порядку) несут строки в ix.pg_meta_edge:
 role называет список, side различает стороны FK, ordinal это позиция, is_key отделяет
 ключевые колонки индекса от include. У одного ребра может быть несколько строк: таблица,
 секционированная и распределённая по одной колонке, или FK на ту же колонку.
@@ -350,7 +350,7 @@ role называет список, side различает стороны FK, o
 На PostgreSQL 12–14 и Greenplum 7 рёбер generated-колонки нет: каталог их не записывает.
 ============================================================================
 
-DDL: docs/pg-scraper/schema/10_pg_edge.sql (pg_edge_role_e, pg_edge) и 20_surfaces.sql (pg_database ... pg_statistics)
+DDL: docs/pg-meta-scraper/schema/10_pg_meta_edge.sql (pg_meta_edge_role_e, pg_edge) и 20_pg_meta_surfaces.sql (pg_database ... pg_statistics)
 
 
 Аспекты объектов PostgreSQL. Аспект это текст объекта, по которому объект
@@ -397,7 +397,7 @@ comment это комментарий из источника как есть: o
   таблицы, col_description для колонки. Пишется, только если не пуст.
 columns это имена колонок таблицы через пробел (в pg_emb_e5_1024 через
   запятую), чтобы таблица находилась по своим колонкам.
-summary это описание от LLM (плагин describer) из surface pg_summary.
+summary это описание от LLM (плагин describer) из surface pg_llm_description.
   Пишется отдельной строкой, когда описание появилось.
 name это имя объекта как есть: pg_class.relname, pg_attribute.attname.
   Нужно для точного совпадения, подстроки и подсказки по префиксу.
@@ -408,40 +408,40 @@ words это слова имени: name, разрезанный по CamelCase 
   'ordrs' к 'CustomerOrders' даёт похожесть 0.22, к 'customer orders' 0.5.
 */
 do $$ begin
-    create type ix.pg_aspect_e as enum ();
+    create type ix.pg_idx_aspect_e as enum ();
 exception when duplicate_object then null; end $$;
 
-alter type ix.pg_aspect_e add value if not exists 'description';
-alter type ix.pg_aspect_e add value if not exists 'comment';
-alter type ix.pg_aspect_e add value if not exists 'columns';
-alter type ix.pg_aspect_e add value if not exists 'summary';
-alter type ix.pg_aspect_e add value if not exists 'name';
-alter type ix.pg_aspect_e add value if not exists 'path';
-alter type ix.pg_aspect_e add value if not exists 'words';
+alter type ix.pg_idx_aspect_e add value if not exists 'meta_description';
+alter type ix.pg_idx_aspect_e add value if not exists 'meta_comment';
+alter type ix.pg_idx_aspect_e add value if not exists 'meta_columns';
+alter type ix.pg_idx_aspect_e add value if not exists 'llm_description';
+alter type ix.pg_idx_aspect_e add value if not exists 'meta_name';
+alter type ix.pg_idx_aspect_e add value if not exists 'meta_path';
+alter type ix.pg_idx_aspect_e add value if not exists 'meta_words';
 
-comment on type ix.pg_aspect_e is
+comment on type ix.pg_idx_aspect_e is
     'Какой текст объекта PostgreSQL закодирован в строке поисковой таблицы. Значения только добавляются или переименовываются: на них ссылаются предикаты частичных индексов, и они следуют за переименованием.';
 
-create table if not exists ix.pg_aspect (
-    aspect       ix.pg_aspect_e primary key,
+create table if not exists ix.pg_idx_aspect (
+    aspect       ix.pg_idx_aspect_e primary key,
     description  varchar        not null
 );
 
-insert into ix.pg_aspect (aspect, description) values
-    ('description', 'описание объекта, собранное индексатором из всего, что о нём известно; основной аспект поиска'),
-    ('comment',     'комментарий из источника как есть (obj_description, col_description); пишется, только если не пуст'),
-    ('columns',     'имена колонок таблицы через пробел; таблица находится по своим колонкам'),
-    ('summary',     'описание от LLM (плагин describer); пишется, только когда оно есть'),
-    ('name',        'имя объекта как есть (relname, attname); точное совпадение и подстрока'),
-    ('path',        'путь через точку, как пишет пользователь: schema.table или schema.table.column; точное совпадение'),
-    ('words',       'слова имени, разрезанного по CamelCase и подчёркиваниям, в нижнем регистре, ё -> е; поиск с опечатками')
+insert into ix.pg_idx_aspect (aspect, description) values
+    ('meta_description', 'описание объекта, собранное индексатором из всего, что о нём известно; основной аспект поиска'),
+    ('meta_comment',     'комментарий из источника как есть (obj_description, col_description); пишется, только если не пуст'),
+    ('meta_columns',     'имена колонок таблицы через пробел; таблица находится по своим колонкам'),
+    ('llm_description', 'описание от LLM (пакет pg-llm-describer); пишется, только когда оно есть'),
+    ('meta_name',        'имя объекта как есть (relname, attname); точное совпадение и подстрока'),
+    ('meta_path',        'путь через точку, как пишет пользователь: schema.table или schema.table.column; точное совпадение'),
+    ('meta_words',       'слова имени, разрезанного по CamelCase и подчёркиваниям, в нижнем регистре, ё -> е; поиск с опечатками')
 on conflict (aspect) do nothing;
 
 /*
 Поисковые таблицы источника PostgreSQL: по одной на вид индекса, общие для
 всех surface pg_*. У всех трёх один ключ (node_id, surface, aspect). surface это
 копия node.surface того же типа surface_e: по ней индексы фильтруют по виду,
-не обращаясь к node. aspect это значение pg_aspect_e. content это текст
+не обращаясь к node. aspect это значение pg_idx_aspect_e. content это текст
 аспекта, из которого построен индекс: триграммам он нужен для точного
 расчёта похожести, полнотексту для сниппета, вектору для проверки,
 изменился ли текст. Поисковые таблицы не связаны с node внешним ключом: их ведут
@@ -456,8 +456,8 @@ C = columns (только таблица и представление). Тек�
 одной строкой, для сниппета ts_headline в выдаче и для сравнения при
 повторном прогоне:
 
-insert into ix.pg_fts (node_id, surface, aspect, content, tsv)
-values ($1, 'pg_table', 'description', $content,
+insert into ix.pg_idx_fts (node_id, surface, aspect, content, tsv)
+values ($1, 'pg_meta_table', 'meta_description', $content,
     setweight(to_tsvector('russian', $words), 'A') ||
     setweight(to_tsvector('russian', $schema_words || ' ' || $comment),
               'B') ||
@@ -465,30 +465,30 @@ values ($1, 'pg_table', 'description', $content,
 
 Summary от LLM это отдельная строка с аспектом summary, а не часть строки
 description: у неё другой писатель (describer, а не индексатор), другой
-источник (surface pg_summary), своё время появления и свой цикл пересчёта.
+источник (surface pg_llm_description), своё время появления и свой цикл пересчёта.
 Индексатор пишет строку description при загрузке объекта, describer позже
 добавляет строку summary с весом D:
 
-insert into ix.pg_fts (node_id, surface, aspect, content, tsv)
-values ($1, 'pg_table', 'summary', $summary,
-    setweight(to_tsvector('russian', $summary), 'D'));
+insert into ix.pg_idx_fts (node_id, surface, aspect, content, tsv)
+values ($1, 'pg_meta_table', 'llm_description', $text,
+    setweight(to_tsvector('russian', $text), 'D'));
 
 Поиск читает обе строки как один документ: ранг node это сумма рангов
 её строк.
 
 select node_id, sum(ts_rank_cd(tsv, q)) as rank
-from   ix.pg_fts, websearch_to_tsquery('russian', 'заказы клиентов') q
+from   ix.pg_idx_fts, websearch_to_tsquery('russian', 'заказы клиентов') q
 where  tsv @@ q
 group by node_id order by rank desc limit 20;
 
-DDL: docs/pg-indexer-fts/schema/00_pg_fts.sql
+DDL: docs/pg-idx-fts/schema/00_pg_idx_fts.sql
 
 
 Конфигурация russian стеммит и русский, и английский: order/orders,
 заказ/заказы. Простой запрос без суммирования по node:
 
 select node_id, surface, ts_rank_cd(tsv, q) as rank
-from   ix.pg_fts, websearch_to_tsquery('russian', 'заказы клиентов') q
+from   ix.pg_idx_fts, websearch_to_tsquery('russian', 'заказы клиентов') q
 where  tsv @@ q
 order by rank desc
 limit  20;
@@ -506,7 +506,7 @@ aspect. Длинный текст сюда не кладут: триграммн
 Все surface пишут name и words; path пишут таблица, колонка, представление,
 индекс, последовательность и подпрограмма.
 
-DDL: docs/pg-indexer-trgm/schema/00_pg_trgm.sql
+DDL: docs/pg-idx-trgm/schema/00_pg_idx_trgm.sql
 
 
 Подстрока и опечатки по всему источнику, таблицы и колонки в одной выдаче.
@@ -515,8 +515,8 @@ DDL: docs/pg-indexer-trgm/schema/00_pg_trgm.sql
 
 set pg_trgm.word_similarity_threshold = 0.4;
 select node_id, surface, content
-from   ix.pg_trgm
-where  aspect = 'words' and 'ordrs' <% content
+from   ix.pg_idx_trgm
+where  aspect = 'meta_words' and 'ordrs' <% content
 order by 'ordrs' <<-> content
 limit  20;
 
@@ -524,8 +524,8 @@ limit  20;
 
 Точное совпадение без учёта регистра.
 
-select node_id, surface from ix.pg_trgm
-where  aspect = 'path' and lower(content) = lower('dm.fact_orders');
+select node_id, surface from ix.pg_idx_trgm
+where  aspect = 'meta_path' and lower(content) = lower('dm.fact_orders');
 
 
 
@@ -534,8 +534,8 @@ where  aspect = 'path' and lower(content) = lower('dm.fact_orders');
 like используется оператор ^@ (starts with): в like подчёркивание значит
 «любой символ», и имя fact_orders пришлось бы экранировать.
 
-select node_id, surface, content from ix.pg_trgm
-where  aspect = 'name' and lower(content) ^@ lower('fact_ord')
+select node_id, surface, content from ix.pg_idx_trgm
+where  aspect = 'meta_name' and lower(content) ^@ lower('fact_ord')
 limit  20;
 
 
@@ -547,7 +547,7 @@ columns пишут таблица и представление; summary пиш�
 с префиксом passage:, запрос с префиксом query:. content это закодированный
 текст аспекта: если он не изменился, модель повторно не запускают.
 
-DDL: docs/pg-indexer-vector/schema/00_pg_emb_e5_1024.sql
+DDL: docs/pg-idx-vector/schema/00_pg_idx_emb_e5_1024.sql
 */
 
 /*
@@ -556,10 +556,10 @@ DDL: docs/pg-indexer-vector/schema/00_pg_emb_e5_1024.sql
 четырёх surface: спейс, страница (страница и блог-запись это один surface,
 различаются колонкой content_type), вложение и комментарий. Пользователи
 и метки node не становятся: метки это атрибут страницы. Адрес node по surface:
-confluence_space       https://host/confluence/rest/api/space/FLINK
-confluence_page        https://host/confluence/rest/api/content/307136992
-confluence_comment     https://host/confluence/rest/api/content/127405740
-confluence_attachment
+cfl_meta_space       https://host/confluence/rest/api/space/FLINK
+cfl_meta_page        https://host/confluence/rest/api/content/307136992
+cfl_meta_comment     https://host/confluence/rest/api/content/127405740
+cfl_meta_attachment
     https://host/confluence/download/attachments/307136992/design.pdf
 
 tree: спейс -> страницы без ancestors (домашняя, корневые, блог-записи) ->
@@ -573,7 +573,7 @@ children) разворачиваются только там; на страни�
 4 ссылки, view 184. Внутренняя ссылка бывает по id
 (/spaces/KEY/pages/ID/..., viewpage.action?pageId=ID) и по заголовку
 (/display/KEY/Title, ri:page); заголовок разрешается в node по индексу
-confluence_page (space_key, title). Внешние ссылки отбрасываются, node
+cfl_meta_page (space_key, title). Внешние ссылки отбрасываются, node
 для них не создаётся.
 
 Повторный прогон отсекает работу на двух уровнях. version из Confluence
@@ -597,12 +597,12 @@ surface его не дублирует. Ссылка для человека с�
 */
 
 /*
-Surface confluence_summary: описание страницы или вложения, которое
-сгенерировал LLM (describer). Устроена как pg_summary: indexer_hash это
+Surface cfl_llm_description: описание страницы или вложения, которое
+сгенерировал LLM (describer). Устроена как pg_llm_description: indexer_hash это
 снимок настроек прогона, content_hash это хэш текста, из которого пишутся
-поисковые строки aspect summary.
+поисковые строки aspect llm_description.
 */
-create table if not exists ix.confluence_summary (
+create table if not exists ix.cfl_llm_description (
     node_id       bigint      primary key references ix.node on delete cascade,
     content       varchar     not null,
     content_hash  bytea       not null,
@@ -610,12 +610,12 @@ create table if not exists ix.confluence_summary (
     created_at    timestamptz not null default now()
 );
 
-create index if not exists confluence_summary__indexer_hash on ix.confluence_summary using btree (indexer_hash);
+create index if not exists cfl_llm_description__indexer_hash on ix.cfl_llm_description using btree (indexer_hash);
 
 /*
-Surface confluence_space: ключ, имя, тип, статус и описание спейса.
+Surface cfl_meta_space: ключ, имя, тип, статус и описание спейса.
 */
-create table if not exists ix.confluence_space (
+create table if not exists ix.cfl_meta_space (
     node_id      bigint  primary key references ix.node on delete cascade,
     space_key    varchar not null,
     name         varchar not null,
@@ -625,18 +625,18 @@ create table if not exists ix.confluence_space (
 );
 
 /*
-Surface confluence_page: метаданные страницы или блог-записи.
+Surface cfl_meta_page: метаданные страницы или блог-записи.
 content_type = page | blogpost, status = current | archived | trashed.
 version это номер версии в Confluence (version.number): если он не
 изменился с прошлого прогона, индексатор страницу пропускает. created_at
 и author берутся из history, updated_at и last_editor из version. Тело
 страницы здесь не хранится: индексатор берёт body.view (отрендеренный HTML
-с раскрытыми макросами), снимает теги в коде и кладёт текст в aspect body
+с раскрытыми макросами), снимает теги в коде и кладёт текст в aspect meta_body
 поисковых таблиц. content_hash = sha256 этого текста вместе с заголовком
 и метками. ancestor_titles это путь заголовков от корня спейса до
 родителя, для хлебной крошки в выдаче.
 */
-create table if not exists ix.confluence_page (
+create table if not exists ix.cfl_meta_page (
     node_id          bigint      primary key references ix.node on delete cascade,
     space_key        varchar     not null,
     content_id       varchar     not null,
@@ -656,17 +656,17 @@ create table if not exists ix.confluence_page (
 /*
 Разрешение ссылки по заголовку (/display/KEY/Title) в node.
 */
-create index if not exists confluence_page__space_key_title on ix.confluence_page using btree (space_key, title);
+create index if not exists cfl_meta_page__space_key_title on ix.cfl_meta_page using btree (space_key, title);
 
 /*
-Surface confluence_attachment: метаданные вложения. Сам файл не хранится:
+Surface cfl_meta_attachment: метаданные вложения. Сам файл не хранится:
 индексатор скачивает его, извлекает текст и файл отбрасывает. Какие aspect
 получаются, зависит от типа файла: разбор pdf и docx идёт в body, OCR
 картинки в ocr, описание картинки от LLM в vision. content_hash это хэш
 байтов файла, а не извлечённого текста: OCR и описание от LLM
 недетерминированы.
 */
-create table if not exists ix.confluence_attachment (
+create table if not exists ix.cfl_meta_attachment (
     node_id        bigint      primary key references ix.node on delete cascade,
     space_key      varchar     not null,
     page_id        varchar     not null,
@@ -682,12 +682,12 @@ create table if not exists ix.confluence_attachment (
 );
 
 /*
-Surface confluence_comment: метаданные комментария к странице.
+Surface cfl_meta_comment: метаданные комментария к странице.
 location = inline | footer; у комментария свои version и author. Текст
-берётся из body.storage, теги снимаются в коде, и живёт в aspect body;
+берётся из body.storage, теги снимаются в коде, и живёт в aspect meta_body;
 content_hash = sha256 этого текста.
 */
-create table if not exists ix.confluence_comment (
+create table if not exists ix.cfl_meta_comment (
     node_id     bigint      primary key references ix.node on delete cascade,
     space_key   varchar     not null,
     page_id     varchar     not null,
@@ -701,112 +701,112 @@ create table if not exists ix.confluence_comment (
 );
 
 /*
-Aspect источника Confluence: enum ix.confluence_aspect_e, описания значений
-в словаре ix.confluence_aspect. Что попадает в каждый aspect:
-description  описание, которое собрал индексатор. У страницы это title,
+Aspect источника Confluence: enum ix.cfl_idx_aspect_e, описания значений
+в словаре ix.cfl_idx_aspect. Что попадает в каждый aspect:
+meta_description  описание, которое собрал индексатор. У страницы это title,
              метки, путь заголовков и начало body; у вложения title,
              media_type и начало извлечённого текста; у спейса name
              и description.
-body         полный текст: тело страницы или извлечённый текст вложения.
-             В confluence_fts лежит целиком, в confluence_emb_e5_1024
+meta_body         полный текст: тело страницы или извлечённый текст вложения.
+             В cfl_idx_fts лежит целиком, в cfl_idx_emb_e5_1024
              порезан на куски по окну модели, кусок нумерует chunk_no.
-summary      описание от LLM из confluence_summary; пишется, если оно есть.
-labels       метки страницы через пробел.
-name         заголовок страницы, имя файла вложения или имя спейса как есть.
-path         space_key || '/' || title, для точного совпадения.
-words        слова из name: разрезан по CamelCase, дефисам и
+llm_description      описание от LLM из cfl_llm_description; пишется, если оно есть.
+meta_labels       метки страницы через пробел.
+meta_name         заголовок страницы, имя файла вложения или имя спейса как есть.
+meta_path         space_key || '/' || title, для точного совпадения.
+meta_words        слова из name: разрезан по CamelCase, дефисам и
              подчёркиваниям, в нижнем регистре, ё -> е; для поиска
              с опечатками.
-ocr          текст, распознанный на картинке или скане (вложения с типом image
+meta_ocr          текст, распознанный на картинке или скане (вложения с типом image
              и pdf без текстового слоя).
-vision       смысл картинки, описанный LLM по изображению: что на схеме,
+llm_vision       смысл картинки, описанный LLM по изображению: что на схеме,
              какие таблицы и системы на ней названы.
 */
 do $$ begin
-    create type ix.confluence_aspect_e as enum ();
+    create type ix.cfl_idx_aspect_e as enum ();
 exception when duplicate_object then null; end $$;
 
-alter type ix.confluence_aspect_e add value if not exists 'description';
-alter type ix.confluence_aspect_e add value if not exists 'body';
-alter type ix.confluence_aspect_e add value if not exists 'summary';
-alter type ix.confluence_aspect_e add value if not exists 'labels';
-alter type ix.confluence_aspect_e add value if not exists 'name';
-alter type ix.confluence_aspect_e add value if not exists 'path';
-alter type ix.confluence_aspect_e add value if not exists 'words';
-alter type ix.confluence_aspect_e add value if not exists 'ocr';
-alter type ix.confluence_aspect_e add value if not exists 'vision';
+alter type ix.cfl_idx_aspect_e add value if not exists 'meta_description';
+alter type ix.cfl_idx_aspect_e add value if not exists 'meta_body';
+alter type ix.cfl_idx_aspect_e add value if not exists 'llm_description';
+alter type ix.cfl_idx_aspect_e add value if not exists 'meta_labels';
+alter type ix.cfl_idx_aspect_e add value if not exists 'meta_name';
+alter type ix.cfl_idx_aspect_e add value if not exists 'meta_path';
+alter type ix.cfl_idx_aspect_e add value if not exists 'meta_words';
+alter type ix.cfl_idx_aspect_e add value if not exists 'meta_ocr';
+alter type ix.cfl_idx_aspect_e add value if not exists 'llm_vision';
 
-comment on type ix.confluence_aspect_e is
+comment on type ix.cfl_idx_aspect_e is
     'Какой текст объекта Confluence лежит в строке поисковой таблицы. Значения только добавляются или переименовываются, и предикаты частичных индексов следуют за переименованием.';
 
-create table if not exists ix.confluence_aspect (
-    aspect       ix.confluence_aspect_e primary key,
+create table if not exists ix.cfl_idx_aspect (
+    aspect       ix.cfl_idx_aspect_e primary key,
     description  varchar                not null
 );
 
-insert into ix.confluence_aspect (aspect, description) values
-    ('description', 'описание, собранное индексатором из title, меток, пути заголовков и начала текста'),
-    ('body',        'полный текст страницы или извлечённый текст вложения; для эмбеддингов режется на куски'),
-    ('summary',     'описание от LLM (describer); пишется, только если оно есть'),
-    ('labels',      'метки страницы через пробел'),
-    ('name',        'заголовок страницы, имя файла вложения или имя спейса как есть; точное совпадение и префикс'),
-    ('path',        'space_key/title; точное совпадение'),
-    ('words',       'заголовок, разрезанный на слова по CamelCase, дефисам и подчёркиваниям, в нижнем регистре, ё -> е; поиск с опечатками'),
-    ('ocr',         'текст, распознанный на картинке или скане'),
-    ('vision',      'смысл картинки, описанный LLM по самому изображению')
+insert into ix.cfl_idx_aspect (aspect, description) values
+    ('meta_description', 'описание, собранное индексатором из title, меток, пути заголовков и начала текста'),
+    ('meta_body',        'полный текст страницы или извлечённый текст вложения; для эмбеддингов режется на куски'),
+    ('llm_description',     'описание от LLM (describer); пишется, только если оно есть'),
+    ('meta_labels',      'метки страницы через пробел'),
+    ('meta_name',        'заголовок страницы, имя файла вложения или имя спейса как есть; точное совпадение и префикс'),
+    ('meta_path',        'space_key/title; точное совпадение'),
+    ('meta_words',       'заголовок, разрезанный на слова по CamelCase, дефисам и подчёркиваниям, в нижнем регистре, ё -> е; поиск с опечатками'),
+    ('meta_ocr',         'текст, распознанный на картинке или скане'),
+    ('llm_vision',      'смысл картинки, описанный LLM по самому изображению')
 on conflict (aspect) do nothing;
 
 /*
-Полнотекстовый индекс. Каждый surface пишет в aspect description один
-tsvector с весами. У confluence_page вес A получают words заголовка,
-B получают labels, C получает body. У confluence_attachment A получают
-words имени файла, C получают body, ocr и vision. У confluence_space
-A получают words имени, B получает description. У confluence_comment
-C получает body. Summary от LLM это отдельная строка с aspect summary из
-confluence_summary и весом D, как в pg_fts.
+Полнотекстовый индекс. Каждый surface пишет в aspect meta_description один
+tsvector с весами. У cfl_meta_page вес A получают words заголовка,
+B получают labels, C получает body. У cfl_meta_attachment A получают
+words имени файла, C получают body, ocr и vision. У cfl_meta_space
+A получают words имени, B получает description. У cfl_meta_comment
+C получает body. llm_description от LLM это отдельная строка с aspect llm_description из
+cfl_llm_description и весом D, как в pg_fts.
 */
-create table if not exists ix.confluence_fts (
+create table if not exists ix.cfl_idx_fts (
     node_id    bigint   not null,
     surface       ix.surface_e         not null references ix.surface,
-    aspect     ix.confluence_aspect_e not null references ix.confluence_aspect,
+    aspect     ix.cfl_idx_aspect_e not null references ix.cfl_idx_aspect,
     content    varchar  not null,
     tsv        tsvector not null,
     primary key (node_id, surface, aspect)
 );
 
-create index if not exists confluence_fts__surface_tsv__gin on ix.confluence_fts using gin (surface, tsv);
+create index if not exists cfl_idx_fts__surface_tsv__gin on ix.cfl_idx_fts using gin (surface, tsv);
 
 /*
 Триграммы для поиска по имени. Спейс, страница и вложение пишут aspect
 name и words, страница и вложение ещё path. У комментария имени нет,
 в эту таблицу он не пишется.
 */
-create table if not exists ix.confluence_trgm (
+create table if not exists ix.cfl_idx_trgm (
     node_id    bigint   not null,
     surface       ix.surface_e         not null references ix.surface,
-    aspect     ix.confluence_aspect_e not null references ix.confluence_aspect,
+    aspect     ix.cfl_idx_aspect_e not null references ix.cfl_idx_aspect,
     content    varchar  not null,
     primary key (node_id, surface, aspect)
 );
 
-create index if not exists confluence_trgm__content__gist on ix.confluence_trgm using gist (content gist_trgm_ops);
-create index if not exists confluence_trgm__aspect_lower_content on ix.confluence_trgm using btree (aspect, lower(content));
-create index if not exists confluence_trgm__aspect_lower_content__prefix
-    on ix.confluence_trgm using btree (aspect, lower(content) varchar_pattern_ops);
-create index if not exists confluence_trgm__surface_aspect on ix.confluence_trgm using btree (surface, aspect);
+create index if not exists cfl_idx_trgm__content__gist on ix.cfl_idx_trgm using gist (content gist_trgm_ops);
+create index if not exists cfl_idx_trgm__aspect_lower_content on ix.cfl_idx_trgm using btree (aspect, lower(content));
+create index if not exists cfl_idx_trgm__aspect_lower_content__prefix
+    on ix.cfl_idx_trgm using btree (aspect, lower(content) varchar_pattern_ops);
+create index if not exists cfl_idx_trgm__surface_aspect on ix.cfl_idx_trgm using btree (surface, aspect);
 
 /*
 Векторный поиск на эмбеддингах e5 размерности 1024. Текст страницы длиннее
-окна модели (512 токенов), поэтому aspect body режется на куски
+окна модели (512 токенов), поэтому aspect meta_body режется на куски
 с перекрытием, и в первичном ключе есть chunk_no; у aspect, который
 помещается в один кусок, chunk_no = 0. Страница пишет description и body,
 комментарий body, вложение body или ocr и vision в зависимости от типа
 файла, спейс description; summary пишет любой surface, у которого оно есть.
 */
-create table if not exists ix.confluence_emb_e5_1024 (
+create table if not exists ix.cfl_idx_emb_e5_1024 (
     node_id    bigint   not null,
     surface       ix.surface_e         not null references ix.surface,
-    aspect     ix.confluence_aspect_e not null references ix.confluence_aspect,
+    aspect     ix.cfl_idx_aspect_e not null references ix.cfl_idx_aspect,
     chunk_no   smallint      not null,
     content    varchar       not null,
     emb        halfvec(1024) not null,
@@ -817,27 +817,27 @@ create table if not exists ix.confluence_emb_e5_1024 (
 Частичный HNSW на каждую пару surface + aspect, по которой ищут: description,
 body, ocr, vision и summary.
 */
-create index if not exists confluence_emb_e5_1024__page_description__hnsw
-    on ix.confluence_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'confluence_page' and aspect = 'description';
-create index if not exists confluence_emb_e5_1024__page_summary__hnsw
-    on ix.confluence_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'confluence_page' and aspect = 'summary';
-create index if not exists confluence_emb_e5_1024__page_body__hnsw
-    on ix.confluence_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'confluence_page' and aspect = 'body';
-create index if not exists confluence_emb_e5_1024__attachment_body__hnsw
-    on ix.confluence_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'confluence_attachment' and aspect = 'body';
-create index if not exists confluence_emb_e5_1024__space_description__hnsw
-    on ix.confluence_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'confluence_space' and aspect = 'description';
-create index if not exists confluence_emb_e5_1024__comment_body__hnsw
-    on ix.confluence_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'confluence_comment' and aspect = 'body';
-create index if not exists confluence_emb_e5_1024__attachment_ocr__hnsw
-    on ix.confluence_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'confluence_attachment' and aspect = 'ocr';
-create index if not exists confluence_emb_e5_1024__attachment_vision__hnsw
-    on ix.confluence_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'confluence_attachment' and aspect = 'vision';
+create index if not exists cfl_idx_emb_e5_1024__page_meta_description__hnsw
+    on ix.cfl_idx_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
+    where surface = 'cfl_meta_page' and aspect = 'meta_description';
+create index if not exists cfl_idx_emb_e5_1024__page_llm_description__hnsw
+    on ix.cfl_idx_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
+    where surface = 'cfl_meta_page' and aspect = 'llm_description';
+create index if not exists cfl_idx_emb_e5_1024__page_meta_body__hnsw
+    on ix.cfl_idx_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
+    where surface = 'cfl_meta_page' and aspect = 'meta_body';
+create index if not exists cfl_idx_emb_e5_1024__attachment_meta_body__hnsw
+    on ix.cfl_idx_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
+    where surface = 'cfl_meta_attachment' and aspect = 'meta_body';
+create index if not exists cfl_idx_emb_e5_1024__space_meta_description__hnsw
+    on ix.cfl_idx_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
+    where surface = 'cfl_meta_space' and aspect = 'meta_description';
+create index if not exists cfl_idx_emb_e5_1024__comment_meta_body__hnsw
+    on ix.cfl_idx_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
+    where surface = 'cfl_meta_comment' and aspect = 'meta_body';
+create index if not exists cfl_idx_emb_e5_1024__attachment_meta_ocr__hnsw
+    on ix.cfl_idx_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
+    where surface = 'cfl_meta_attachment' and aspect = 'meta_ocr';
+create index if not exists cfl_idx_emb_e5_1024__attachment_llm_vision__hnsw
+    on ix.cfl_idx_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
+    where surface = 'cfl_meta_attachment' and aspect = 'llm_vision';

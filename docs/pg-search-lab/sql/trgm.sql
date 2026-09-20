@@ -4,7 +4,7 @@
 */
 with hit as (
     select t.node_id, t.aspect, t.content, word_similarity(%(q)s, t.content) as sim
-    from ix.pg_trgm t
+    from ix.pg_idx_trgm t
     where word_similarity(%(q)s, t.content) >= 0.3
 )
 select n.surface, n.address, max(h.sim) as score,

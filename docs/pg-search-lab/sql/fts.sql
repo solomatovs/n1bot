@@ -5,7 +5,7 @@
 with q as (select websearch_to_tsquery('russian', %(q)s) as tsq),
 hit as (
     select f.node_id, f.aspect, ts_rank_cd(f.tsv, q.tsq) as rank, ts_headline('russian', f.content, q.tsq, 'MaxWords=24, MinWords=8') as snippet
-    from ix.pg_fts f, q
+    from ix.pg_idx_fts f, q
     where f.tsv @@ q.tsq
 )
 select n.surface, n.address, sum(h.rank) as score,
