@@ -239,7 +239,6 @@ create table if not exists ix.node (
 Поиск node по адресу:
 select id from ix.node
 where
-/*
 поиск всех node с указанными частями
     address @> '{"host":"dwh.local","port":5432,"database":"dwh","schema":"dm","table":"fact_orders"}';
 
