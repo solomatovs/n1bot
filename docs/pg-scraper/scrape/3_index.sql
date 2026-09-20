@@ -10,8 +10,8 @@ select indexrelid, indrelid, indnatts, indnkeyatts as indnkeyatts, indisunique, 
        array(select unnest(indclass::oid[])) as indclass,
        pg_get_expr(indexprs, indrelid) as indexprs, pg_get_expr(indpred, indrelid) as indpred, xmin::text as row_xmin
 from pg_index
-where indrelid = any($1);
+where indrelid = any(%(rels)s::oid[]);
 -- @verify
 select indexrelid, xmin::text as row_xmin
 from pg_index
-where indrelid = any($1);
+where indrelid = any(%(rels)s::oid[]);

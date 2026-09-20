@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import re
 from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
@@ -48,23 +47,15 @@ class CycleReport(BaseModel):
 
 
 class PackageSql:
-    """Файлы пакета рядом с воркером; $N заменяется на %s, параметры по порядку вхождений.
-    Текст отдаётся байтами: psycopg принимает запрос как LiteralString, bytes или sql.SQL."""
+    """Файлы цикла из каталога run/ пакета. Плейсхолдеры в них именованные, в стиле psycopg:
+    %(batch)s, %(node_id)s; параметры передаются словарём. Текст отдаётся байтами: psycopg
+    принимает запрос как LiteralString, bytes или sql.SQL."""
 
     def __init__(self, package_dir: Path) -> None:
         self._dir = package_dir
 
-    def load(self, name: SqlFile) -> tuple[bytes, list[int]]:
-        text = (self._dir / name).read_text(encoding="utf-8")
-        order = [int(m.group(1)) for m in re.finditer(r"\$(\d+)", text)]
-        return re.sub(r"\$(\d+)", "%s", text).encode("utf-8"), order
-
-    @staticmethod
-    def bind(order: Sequence[int], values: Sequence[object]) -> list[object]:
-        bound: list[object] = []
-        for index in order:
-            bound.append(values[index - 1])
-        return bound
+    def load(self, name: SqlFile) -> bytes:
+        return (self._dir / name).read_text(encoding="utf-8").encode("utf-8")
 
 
 class IndexerWorker:
@@ -109,17 +100,13 @@ class IndexerWorker:
             raise IndexerWorkerError(f"ix database {self._cfg.dsn}: {exc}") from exc
 
     def _upsert(self, conn: psycopg.Connection) -> StepResult:
-        text, order = self._sql.load(SqlFile.UPSERT)
-        record = conn.execute(
-            text, PackageSql.bind(order, [self._cfg.batch])
-        ).fetchone()
+        record = conn.execute(self._sql.load(SqlFile.UPSERT), {"batch": self._cfg.batch}).fetchone()
         if record is None:
             raise IndexerWorkerError("upsert: expected one summary row, got none")
         return StepResult(planned=int(record[1]), applied=int(record[2]))
 
     def _prune(self, conn: psycopg.Connection) -> int:
-        text, _ = self._sql.load(SqlFile.PRUNE)
-        record = conn.execute(text).fetchone()
+        record = conn.execute(self._sql.load(SqlFile.PRUNE)).fetchone()
         if record is None:
             raise IndexerWorkerError("prune: expected one summary row, got none")
         return int(record[1])
@@ -140,7 +127,7 @@ class Cli:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     cfg = Cli.parse()
-    report = IndexerWorker(cfg, PackageSql(Path(__file__).resolve().parent)).run()
+    report = IndexerWorker(cfg, PackageSql(Path(__file__).resolve().parent / "run")).run()
     logger.info(
         "done: rounds=%d applied=%d pruned=%d",
         report.rounds,

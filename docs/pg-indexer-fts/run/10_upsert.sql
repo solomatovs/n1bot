@@ -1,6 +1,6 @@
 /*
 pg-indexer-fts, шаг 1: вставить недостающие строки и обновить те, у которых content
-изменился, пачкой размером $1. Повторять, пока applied не станет 0.
+изменился, пачкой размером %(batch)s. Повторять, пока applied не станет 0.
 Строки берутся в порядке ключа (node_id, surface, aspect): два воркера, обновляющие одни и те
 же строки, берут замки в одном порядке и не заходят в deadlock.
 Определение аспектов (CTE obj и aspect) продублировано в каждом файле пакета и в других
@@ -85,7 +85,7 @@ todo as (
     left join ix.pg_fts f on f.node_id = a.node_id and f.surface = a.surface and f.aspect = a.aspect
     where f.node_id is null or f.content is distinct from a.content
     order by a.node_id, a.surface, a.aspect
-    limit $1
+    limit %(batch)s
 ),
 done as (
     insert into ix.pg_fts (node_id, surface, aspect, content, tsv)

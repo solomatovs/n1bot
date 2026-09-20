@@ -156,16 +156,16 @@ class ApplyRow(BaseModel):
     applied: int
 
 
-class Bind:
-    """$N в %s::oid[] и параметры по порядку вхождений: все параметры scrape это массивы OID."""
+class Params:
+    """Параметры scrape-файла: словарь массивов OID по именам из @params; плейсхолдеры в файлах
+    именованные (%(rels)s::oid[]), в стиле psycopg."""
 
     @staticmethod
-    def render(text: str, arrays: dict[str, Sequence[int]], params: Sequence[str]) -> tuple[bytes, list[list[int]]]:
-        order = [int(m.group(1)) for m in re.finditer(r"\$(\d+)", text)]
-        values: list[list[int]] = []
-        for index in order:
-            values.append(list(arrays.get(params[index - 1], ())))
-        return re.sub(r"\$(\d+)", "%s::oid[]", text).encode("utf-8"), values
+    def of(arrays: dict[str, Sequence[int]], names: Sequence[str]) -> dict[str, list[int]]:
+        values: dict[str, list[int]] = {}
+        for name in names:
+            values[name] = list(arrays.get(name, ()))
+        return values
 
 
 class CatalogChanged(Exception):
@@ -234,7 +234,8 @@ class Pipeline:
 
     def _stream(self, src: psycopg.Connection, ix: psycopg.Connection, file: ScrapeFile, arrays: dict[str, Sequence[int]]) -> dict[str, Sequence[int]]:
         """Выборка одного файла: серверный курсор на источнике, COPY в raw_<name>, попутно массив @collect."""
-        query, values = Bind.render(file.fetch_sql, arrays, file.params)
+        query = file.fetch_sql.encode("utf-8")
+        values = Params.of(arrays, file.params)
         collected: list[int] = []
         count = 0
         with src.transaction(), src.cursor(name=f"scrape_{file.name}") as cur:
@@ -256,7 +257,8 @@ class Pipeline:
 
     def _verify(self, src: psycopg.Connection, ix: psycopg.Connection, file: ScrapeFile, arrays: dict[str, Sequence[int]]) -> None:
         """Сверка: строки @verify потоком в verify_<name>, сравнение с raw_<name> на стороне ix."""
-        query, values = Bind.render(file.verify_sql, arrays, file.params)
+        query = file.verify_sql.encode("utf-8")
+        values = Params.of(arrays, file.params)
         keys = sql.SQL(", ").join(sql.Identifier(c) for c in [*file.key, "row_xmin"])
         raw = sql.Identifier(f"raw_{file.name}")
         check = sql.Identifier(f"verify_{file.name}")

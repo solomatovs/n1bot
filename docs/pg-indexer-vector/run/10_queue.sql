@@ -1,13 +1,14 @@
 /*
-pg-indexer-trgm, шаг 1: вставить недостающие строки и обновить те, у которых content
-изменился, пачкой размером $1. Повторять, пока applied не станет 0.
-Строки берутся в порядке ключа (node_id, surface, aspect): два воркера, обновляющие одни и те
-же строки, берут замки в одном порядке и не заходят в deadlock.
+pg-indexer-vector, шаг 1: очередь на расчёт. Строки аспектов, у которых нет эмбеддинга
+или content в таблице отличается от вычисленного, в порядке ключа, пачкой %(batch)s. Каждая
+выданная строка захвачена сессионным advisory-замком (ключ: хэш 'pg_emb' и node_id),
+чтобы второй воркер не считал её одновременно; замки снимает 90_unlock.sql после записи
+или обрыв сессии. Строки, занятые другим воркером, пропускаются.
 Определение аспектов (CTE obj и aspect) продублировано в каждом файле пакета и в других
 пакетах индексаторов намеренно: общих объектов в базе нет, общая функция появится при
 переносе на Python.
 */
--- @name upsert
+-- @name queue
 -- @params batch
 with col as (
     select t.parent_id as rel_id,
@@ -67,25 +68,25 @@ obj as (
     from ix.pg_statistics x
 ),
 aspect as (
-    select o.node_id, o.surface, 'name'::ix.pg_aspect_e as aspect, o.name::varchar as content from obj o
+    select o.node_id, o.surface, 'description'::ix.pg_aspect_e as aspect,
+           o.head || coalesce(': ' || o.comment, '') || coalesce('. Columns: ' || o.typed, '') as content
+    from obj o
     union all
-    select o.node_id, o.surface, 'words', lower(replace(regexp_replace(regexp_replace(o.name, '([a-z0-9])([A-Z])', '\1 \2', 'g'), '[_\-]+', ' ', 'g'), 'ё', 'е')) from obj o
+    select o.node_id, o.surface, 'comment', o.comment
+    from obj o where o.comment is not null and o.comment <> ''
     union all
-    select o.node_id, o.surface, 'path', o.path from obj o
-    where o.surface in ('pg_table', 'pg_column', 'pg_view', 'pg_index', 'pg_sequence', 'pg_routine')
+    select o.node_id, o.surface, 'columns', o.columns
+    from obj o where o.columns is not null and o.columns <> ''
 ),
 todo as (
-    select a.* from aspect a
-    left join ix.pg_trgm f on f.node_id = a.node_id and f.surface = a.surface and f.aspect = a.aspect
-    where f.node_id is null or f.content is distinct from a.content
+    select a.node_id, a.surface, a.aspect, a.content
+    from aspect a
+    left join ix.pg_emb_e5_1024 e on e.node_id = a.node_id and e.surface = a.surface and e.aspect = a.aspect
+    where e.node_id is null or e.content is distinct from a.content
     order by a.node_id, a.surface, a.aspect
-    limit $1
-),
-done as (
-    insert into ix.pg_trgm (node_id, surface, aspect, content)
-    select node_id, surface, aspect, content from todo
-    on conflict (node_id, surface, aspect) do update set content = excluded.content
-    where pg_trgm.content is distinct from excluded.content
-    returning 1
+    limit %(batch)s * 4
 )
-select 'upsert' as op, (select count(*) from todo) as planned, (select count(*) from done) as applied;
+select node_id, surface, aspect, content
+from todo
+where pg_try_advisory_lock(hashtextextended('pg_emb', node_id))
+limit %(batch)s;
