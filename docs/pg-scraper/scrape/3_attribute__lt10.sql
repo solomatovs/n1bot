@@ -1,0 +1,13 @@
+-- @name attribute
+-- @wave 3
+-- @params rels
+-- @key attrelid, attnum
+-- @max 99999
+select attrelid, attnum, attname, atttypid, atttypmod, format_type(atttypid, atttypmod) as data_type,
+       attnotnull, atthasdef, '' as attidentity, '' as attgenerated, xmin::text as row_xmin
+from pg_attribute
+where attrelid = any($1) and attnum > 0 and not attisdropped;
+-- @verify
+select attrelid, attnum, xmin::text as row_xmin
+from pg_attribute
+where attrelid = any($1) and attnum > 0 and not attisdropped;
