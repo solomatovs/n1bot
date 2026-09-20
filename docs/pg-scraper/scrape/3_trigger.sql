@@ -7,8 +7,8 @@
 select oid, tgrelid, tgname, tgfoid, tgtype, tgenabled, tgconstraint, tgconstrrelid, tgparentid as tgparentid,
        array(select unnest(tgattr::int2[])) as tgattr, xmin::text as row_xmin
 from pg_trigger
-where tgrelid = any($1) and not tgisinternal;
+where tgrelid = any(%(rels)s::oid[]) and not tgisinternal;
 -- @verify
 select oid, xmin::text as row_xmin
 from pg_trigger
-where tgrelid = any($1) and not tgisinternal;
+where tgrelid = any(%(rels)s::oid[]) and not tgisinternal;

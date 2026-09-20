@@ -5,8 +5,8 @@
 -- @min 90100
 select ftrelid, ftserver, ftoptions, xmin::text as row_xmin
 from pg_foreign_table
-where ftrelid = any($1);
+where ftrelid = any(%(rels)s::oid[]);
 -- @verify
 select ftrelid, xmin::text as row_xmin
 from pg_foreign_table
-where ftrelid = any($1);
+where ftrelid = any(%(rels)s::oid[]);

@@ -13,7 +13,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import re
 from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
@@ -62,23 +61,15 @@ class CycleReport(BaseModel):
 
 
 class PackageSql:
-    """Файлы пакета рядом с воркером; $N заменяется на %s, параметры раскладываются по порядку
-    вхождений. Текст отдаётся байтами: psycopg принимает запрос как LiteralString, bytes или sql.SQL."""
+    """Файлы цикла из каталога run/ пакета. Плейсхолдеры в них именованные, в стиле psycopg:
+    %(batch)s, %(node_id)s; параметры передаются словарём. Текст отдаётся байтами: psycopg
+    принимает запрос как LiteralString, bytes или sql.SQL."""
 
     def __init__(self, package_dir: Path) -> None:
         self._dir = package_dir
 
-    def load(self, name: SqlFile) -> tuple[bytes, list[int]]:
-        text = (self._dir / name).read_text(encoding="utf-8")
-        order = [int(m.group(1)) for m in re.finditer(r"\$(\d+)", text)]
-        return re.sub(r"\$(\d+)", "%s", text).encode("utf-8"), order
-
-    @staticmethod
-    def bind(order: Sequence[int], values: Sequence[object]) -> list[object]:
-        bound: list[object] = []
-        for index in order:
-            bound.append(values[index - 1])
-        return bound
+    def load(self, name: SqlFile) -> bytes:
+        return (self._dir / name).read_text(encoding="utf-8").encode("utf-8")
 
 
 class VectorWorker:
@@ -138,8 +129,7 @@ class VectorWorker:
         return rounds, written
 
     def _queue(self, conn: psycopg.Connection) -> list[QueueRow]:
-        text, order = self._sql.load(SqlFile.QUEUE)
-        cur = conn.execute(text, PackageSql.bind(order, [self._cfg.batch]))
+        cur = conn.execute(self._sql.load(SqlFile.QUEUE), {"batch": self._cfg.batch})
         rows: list[QueueRow] = []
         for node_id, surface, aspect, content in cur.fetchall():
             rows.append(
@@ -168,22 +158,15 @@ class VectorWorker:
     def _write(
         self, conn: psycopg.Connection, row: QueueRow, vector: Sequence[float]
     ) -> None:
-        text, order = self._sql.load(SqlFile.WRITE)
         rendered = "[" + ",".join(f"{value:.6g}" for value in vector) + "]"
-        conn.execute(
-            text,
-            PackageSql.bind(
-                order, [row.node_id, row.surface, row.aspect, row.content, rendered]
-            ),
-        )
+        params = {"node_id": row.node_id, "surface": row.surface, "aspect": row.aspect, "content": row.content, "emb": rendered}
+        conn.execute(self._sql.load(SqlFile.WRITE), params)
 
     def _unlock(self, conn: psycopg.Connection) -> None:
-        text, _ = self._sql.load(SqlFile.UNLOCK)
-        conn.execute(text)
+        conn.execute(self._sql.load(SqlFile.UNLOCK))
 
     def _prune(self, conn: psycopg.Connection) -> int:
-        text, _ = self._sql.load(SqlFile.PRUNE)
-        cur = conn.execute(text)
+        cur = conn.execute(self._sql.load(SqlFile.PRUNE))
         record = cur.fetchone()
         if record is None:
             raise VectorWorkerError("prune: expected one summary row, got none")
@@ -214,7 +197,7 @@ class Cli:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     cfg = Cli.parse()
-    worker = VectorWorker(cfg, PackageSql(Path(__file__).resolve().parent))
+    worker = VectorWorker(cfg, PackageSql(Path(__file__).resolve().parent / "run"))
     report = asyncio.run(worker.run())
     logger.info(
         "done: rounds=%d written=%d pruned=%d",
