@@ -7,7 +7,7 @@
 `tests/stand/`).
 
 ```
-schema/   DDL объектов, которыми владеет скрапер: значения surface_e и словарь, pg_edge, surface-таблицы
+schema/   DDL объектов, которыми владеет скрапер: значения surface_e и aspect_e, словари, pg_edge, surface-таблицы, объявления аспектов
 scrape/   запросы к источнику, один файл на таблицу каталога, результат в raw_<name>
 layout/   запросы к своей базе: raw_* -> stage_* -> ix
 ```
@@ -16,8 +16,8 @@ layout/   запросы к своей базе: raw_* -> stage_* -> ix
 `pg-ix-core`:
 
 ```
-.venv/bin/boba-ix-core upgrade --config conf/ix.toml
-.venv/bin/boba-pg-meta-scraper upgrade --config conf/ix.toml
+.venv/bin/boba-ix-core upgrade --config ../../compose/apps/pg-ix-core/conf.toml
+.venv/bin/boba-pg-meta-scraper upgrade --config ../../compose/apps/pg-meta-scraper/conf.toml
 ```
 
 Схема хранения задаётся полем `db_schema` секции (по умолчанию `ix`): в sql-файлах она
@@ -27,18 +27,39 @@ layout/   запросы к своей базе: raw_* -> stage_* -> ix
 отдельной транзакцией, повторный запуск ничего не ломает. Без накаченного ядра команда
 отказывает с указанием, что запустить.
 
+## Аспекты поверхностей
+
+Скрапер как владелец поверхностей `pg_meta_*` объявляет, какие тексты из них извлекаются:
+`schema/01_aspect_values.sql` добавляет значения в `ix.aspect_e`, `schema/40_aspects.sql`
+кладёт строки словаря `ix.aspect` и по объявлению в `ix.surface_aspect` на каждую пару
+«поверхность, аспект» — запрос, возвращающий `node_id` и `content`. Индексаторы и описатель
+читают эти объявления по классам и ничего про `pg_meta_*` не знают; добавить аспект или
+поверхность значит добавить строки здесь.
+
+| aspect | класс | поверхности |
+|---|---|---|
+| meta_name | ident | все |
+| meta_path | ident | table, column, view, index, sequence, routine |
+| meta_words | words | все |
+| meta_description | description | все |
+| meta_comment | description | все |
+| meta_columns | description | table, view |
+| meta_describer_input | describer_input | table, view |
+
+Схема в теле объявления пишется удвоенной, `{{schema}}`, чтобы после наката в строке остался
+плейсхолдер для потребителя; накат проверяет каждое тело по контракту.
+
 ## 0. Воркер: worker.py
 
 Готовый прогон одного источника на Python, ровно по шагам ниже, с повторами при изменении
 каталога во время чтения и при занятом `ix`:
 
-Настройки берутся из одного файла конфига, секция [ix.meta_scraper]; пример
-секции лежит рядом в `conf.example.toml`. Все секции приложений ix обычно живут в одном
-файле, общие значения можно вынести в `[ix]` и ссылаться на них интерполяцией
-(`dsn = "${ix.dsn}"`).
+Настройки берутся из одного файла конфига, секция [ix.meta_scraper]. Конфиг приложения на dev-стенде лежит в `compose/apps/pg-meta-scraper/conf.toml`
+(каталог вне git, в нём креды). Одним файлом можно запускать и несколько приложений:
+каждое читает только свою секцию.
 
 ```
-.venv/bin/boba-pg-meta-scraper --config conf/ix.toml [--source pg-18]
+.venv/bin/boba-pg-meta-scraper --config ../../compose/apps/pg-meta-scraper/conf.toml [--source pg-18]
 ```
 
 Источники перечислены в секции списком `sources`, у каждого имя и строка подключения. Без

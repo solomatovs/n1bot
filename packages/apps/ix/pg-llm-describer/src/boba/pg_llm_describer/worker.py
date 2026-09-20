@@ -3,9 +3,12 @@
 StructuredGenerator
 проекта, запись в ix.pg_llm_description.
 
-Один цикл: 10_queue.sql пачкой, на каждый объект generate(user, schema) провайдера
-boba.llm.generation с системным промптом, шаблоном входа и json-схемой из prompt/,
-20_write.sql, 90_unlock.sql, и так до пустой очереди; в конце 30_prune.sql.
+Один цикл: 05_declare.sql объявляет аспект llm_description для поверхностей с входом,
+источник входа собирается из объявлений {schema}.surface_aspect по классам из конфига
+и подставляется вместо `{sources}`; дальше 10_queue.sql пачкой, на каждый объект
+generate(user, schema) провайдера boba.llm.generation с системным промптом, шаблоном
+входа и json-схемой из prompt/, 20_write.sql, 90_unlock.sql, и так до пустой очереди;
+в конце 30_prune.sql.
 indexer_hash это md5 модели и трёх файлов prompt/: смена любого переводит всё в очередь.
 
 Ошибки:
@@ -20,7 +23,7 @@ import asyncio
 import hashlib
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
 from typing import ClassVar
@@ -41,6 +44,7 @@ from boba.config import ConfigError, bind_section
 from boba.llm.generation import GeneratorFactory
 from boba.llm.http import LlmHttp
 from boba.llm.local import OnnxChatRuntime
+from boba.pg_ix_core.aspects import AspectClass, AspectDeclarations, AspectSources
 from boba.pg_ix_core.schema_name import SchemaName, StorageSchema
 from boba.pg_ix_core.upgrade import (
     SchemaUpgrade,
@@ -56,6 +60,7 @@ class DescriberWorkerError(Exception):
 
 
 class SqlFile(StrEnum):
+    DECLARE = "05_declare.sql"
     QUEUE = "10_queue.sql"
     WRITE = "20_write.sql"
     PRUNE = "30_prune.sql"
@@ -73,8 +78,15 @@ class Provider(StrEnum):
     LOCAL = "local"
 
 
+class Part(StrEnum):
+    """Плейсхолдеры файлов run/, которые заполняет воркер."""
+
+    SOURCES = "sources"
+
+
 class WorkerConfig(StorageSchema):
     dsn: str
+    classes: Sequence[AspectClass]
     provider: Provider
     model: str = ""
     base_url: str = ""
@@ -144,15 +156,20 @@ class Prompts:
 
 
 class PackageSql:
-    """Файлы цикла из каталога run/ пакета; параметры именованные, в стиле psycopg."""
+    """Файлы цикла из каталога run/ пакета; параметры именованные, в стиле psycopg,
+    плейсхолдеры файла заполняются частями, собранными воркером при старте."""
 
-    def __init__(self, package_dir: Path, db_schema: str) -> None:
+    def __init__(
+        self, package_dir: Path, db_schema: str, parts: Mapping[str, sql.Composable]
+    ) -> None:
         self._dir = package_dir
         self._db_schema = db_schema
+        self._parts = dict(parts)
 
     def load(self, name: SqlFile) -> sql.Composed:
         text = (self._dir / name).read_text(encoding="utf-8")
-        return SchemaName.render(text, self._db_schema)
+
+        return SchemaName.render(text, self._db_schema, **self._parts)
 
 
 class Generators:
@@ -211,12 +228,12 @@ class DescriberWorker:
     def __init__(
         self,
         cfg: WorkerConfig,
-        sql_files: PackageSql,
+        package_dir: Path,
         prompts: Prompts,
         generator: StructuredGenerator,
     ) -> None:
         self._cfg = cfg
-        self._sql = sql_files
+        self._dir = package_dir
         self._prompts = prompts
         self._generator = generator
         self._indexer_hash = prompts.fingerprint(Generators.label(cfg))
@@ -236,34 +253,61 @@ class DescriberWorker:
                         sql.Literal(self._cfg.statement_timeout)
                     )
                 )
+
+                sql_files = self._bind(conn)
+
                 try:
-                    rounds, written = await self._rounds(conn)
+                    rounds, written = await self._rounds(conn, sql_files)
                 finally:
-                    self._unlock(conn)
-                pruned = self._prune(conn)
+                    self._unlock(conn, sql_files)
+
+                pruned = self._prune(conn, sql_files)
+
                 return CycleReport(rounds=rounds, written=written, pruned=pruned)
         except psycopg.Error as exc:
             raise DescriberWorkerError(f"ix database {self._cfg.dsn}: {exc}") from exc
 
-    async def _rounds(self, conn: psycopg.Connection) -> tuple[int, int]:
+    def _bind(self, conn: psycopg.Connection) -> PackageSql:
+        """Объявить llm_description и собрать источник входа под файлы цикла."""
+        declare = PackageSql(self._dir, self._cfg.db_schema, {})
+        conn.execute(declare.load(SqlFile.DECLARE))
+
+        declarations = AspectDeclarations.of_classes(
+            conn, self._cfg.db_schema, self._cfg.classes
+        )
+        logger.info(
+            "aspect sources: %d declarations for classes %s",
+            len(declarations),
+            ", ".join(self._cfg.classes),
+        )
+
+        return PackageSql(
+            self._dir,
+            self._cfg.db_schema,
+            {str(Part.SOURCES): AspectSources.union(declarations, self._cfg.db_schema)},
+        )
+
+    async def _rounds(
+        self, conn: psycopg.Connection, sql_files: PackageSql
+    ) -> tuple[int, int]:
         rounds = 0
         written = 0
         while True:
-            rows = self._queue(conn)
+            rows = self._queue(conn, sql_files)
             if not rows:
                 break
             for row in rows:
                 description = await self._describe(row)
-                self._write(conn, row, description)
+                self._write(conn, sql_files, row, description)
                 written += 1
-            self._unlock(conn)
+            self._unlock(conn, sql_files)
             rounds += 1
             logger.info("round %d: %d objects described", rounds, len(rows))
         return rounds, written
 
-    def _queue(self, conn: psycopg.Connection) -> list[QueueRow]:
+    def _queue(self, conn: psycopg.Connection, sql_files: PackageSql) -> list[QueueRow]:
         cur = conn.execute(
-            self._sql.load(SqlFile.QUEUE),
+            sql_files.load(SqlFile.QUEUE),
             {"batch": self._cfg.batch, "indexer_hash": self._indexer_hash},
         )
         rows: list[QueueRow] = []
@@ -291,7 +335,13 @@ class DescriberWorker:
             ) from exc
         return reply.description.strip()
 
-    def _write(self, conn: psycopg.Connection, row: QueueRow, description: str) -> None:
+    def _write(
+        self,
+        conn: psycopg.Connection,
+        sql_files: PackageSql,
+        row: QueueRow,
+        description: str,
+    ) -> None:
         params = {
             "node_id": row.node_id,
             "surface": row.surface,
@@ -299,13 +349,13 @@ class DescriberWorker:
             "input_hash": row.input_hash,
             "indexer_hash": self._indexer_hash,
         }
-        conn.execute(self._sql.load(SqlFile.WRITE), params)
+        conn.execute(sql_files.load(SqlFile.WRITE), params)
 
-    def _unlock(self, conn: psycopg.Connection) -> None:
-        conn.execute(self._sql.load(SqlFile.UNLOCK))
+    def _unlock(self, conn: psycopg.Connection, sql_files: PackageSql) -> None:
+        conn.execute(sql_files.load(SqlFile.UNLOCK))
 
-    def _prune(self, conn: psycopg.Connection) -> int:
-        record = conn.execute(self._sql.load(SqlFile.PRUNE)).fetchone()
+    def _prune(self, conn: psycopg.Connection, sql_files: PackageSql) -> int:
+        record = conn.execute(sql_files.load(SqlFile.PRUNE)).fetchone()
         if record is None:
             raise DescriberWorkerError("prune: expected one summary row, got none")
         return int(record[1])
@@ -372,7 +422,7 @@ def main() -> None:
         prompts = Prompts(here / "prompt")
         worker = DescriberWorker(
             cfg,
-            PackageSql(here / "run", cfg.db_schema),
+            here / "run",
             prompts,
             Generators.build(cfg, prompts),
         )

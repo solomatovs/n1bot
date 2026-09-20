@@ -7,9 +7,14 @@ psycopg в autocommit; схема подставляется в `{schema}` пе�
 а их использование следующим. Файлы идемпотентны (`if not exists`,
 `on conflict do nothing`), повторный накат безопасен.
 
+После файлов проверяются все объявления аспектов {schema}.surface_aspect:
+тело каждого выполняется с limit 0 и сверяется с контрактом, так что опечатка
+владельца поверхности валит его же накат, а не прогон потребителя.
+
 Ошибки:
-SchemaUpgradeError — база недоступна, каталога схемы нет, сервер отклонил DDL
-    или ядро ix отсутствует там, где пакет на него опирается.
+SchemaUpgradeError — база недоступна, каталога схемы нет, сервер отклонил DDL,
+    ядро ix отсутствует там, где пакет на него опирается, или объявление
+    аспекта нарушает контракт.
 """
 
 from __future__ import annotations
@@ -23,6 +28,11 @@ import psycopg
 from psycopg import sql
 from pydantic import BaseModel, ConfigDict, Field
 
+from boba.pg_ix_core.aspects import (
+    AspectContract,
+    AspectDeclarationError,
+    AspectDeclarations,
+)
 from boba.pg_ix_core.schema_name import SchemaName, StorageSchema
 
 __all__ = [
@@ -44,6 +54,7 @@ class CoreTable:
     """Таблица ядра, наличием которой пакет проверяет, что ядро уже накачено."""
 
     NODE: ClassVar[str] = "node"
+    SURFACE_ASPECT: ClassVar[str] = "surface_aspect"
 
 
 class UpgradeConfig(StorageSchema):
@@ -93,8 +104,13 @@ class SchemaUpgrade:
                     text = path.read_text(encoding="utf-8")
                     conn.execute(SchemaName.render(text, cfg.db_schema))
 
+                self._check_declarations(conn, cfg.db_schema)
+
         except psycopg.Error as exc:
             msg = f"upgrade {self._schema_dir}: applying schema failed: {exc}"
+            raise SchemaUpgradeError(msg) from exc
+        except AspectDeclarationError as exc:
+            msg = f"upgrade {self._schema_dir}: aspect declaration rejected: {exc}"
             raise SchemaUpgradeError(msg) from exc
 
         return UpgradeReport(files=[path.name for path in files])
@@ -110,6 +126,15 @@ class SchemaUpgrade:
             raise SchemaUpgradeError(msg)
 
         return files
+
+    @staticmethod
+    def _check_declarations(conn: psycopg.Connection, db_schema: str) -> None:
+        if not SchemaName.exists(conn, db_schema, CoreTable.SURFACE_ASPECT):
+            return
+
+        declarations = AspectDeclarations.all(conn, db_schema)
+        AspectContract.check(conn, db_schema, declarations)
+        logger.info("aspect declarations verified: %d", len(declarations))
 
     @staticmethod
     def _require_core(conn: psycopg.Connection, db_schema: str) -> None:

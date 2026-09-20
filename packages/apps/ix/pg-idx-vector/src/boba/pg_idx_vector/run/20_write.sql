@@ -13,7 +13,7 @@ with gone as (
     where
         node_id = %(node_id)s
         and surface = %(surface)s::{schema}.surface_e
-        and aspect = %(aspect)s::{schema}.pg_idx_aspect_e
+        and aspect = %(aspect)s::{schema}.aspect_e
         and chunk_no >= %(chunk_count)s
     returning 1
 )
@@ -22,7 +22,7 @@ insert into {schema}.pg_idx_emb_e5_1024
 select
     %(node_id)s,
     %(surface)s::{schema}.surface_e,
-    %(aspect)s::{schema}.pg_idx_aspect_e,
+    %(aspect)s::{schema}.aspect_e,
     c.chunk_no,
     c.content,
     %(content_hash)s,

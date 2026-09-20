@@ -1,4 +1,0 @@
-[ix.core]
-    db_schema = "ix"
-    dsn = "host=127.0.0.1 port=5432 dbname=ix user=ix password=secret"
-    statement_timeout = "60s"
