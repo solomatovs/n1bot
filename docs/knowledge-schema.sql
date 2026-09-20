@@ -158,18 +158,7 @@ do $$ begin
     create type ix.surface_e as enum ();
 exception when duplicate_object then null; end $$;
 
-alter type ix.surface_e add value if not exists 'pg_database';
-alter type ix.surface_e add value if not exists 'pg_schema';
-alter type ix.surface_e add value if not exists 'pg_table';
-alter type ix.surface_e add value if not exists 'pg_column';
-alter type ix.surface_e add value if not exists 'pg_view';
-alter type ix.surface_e add value if not exists 'pg_index';
-alter type ix.surface_e add value if not exists 'pg_sequence';
-alter type ix.surface_e add value if not exists 'pg_routine';
-alter type ix.surface_e add value if not exists 'pg_constraint';
-alter type ix.surface_e add value if not exists 'pg_trigger';
-alter type ix.surface_e add value if not exists 'pg_type';
-alter type ix.surface_e add value if not exists 'pg_statistics';
+/* значения pg_*: docs/pg-scraper/schema/00_surface.sql */
 alter type ix.surface_e add value if not exists 'confluence_space';
 alter type ix.surface_e add value if not exists 'confluence_page';
 alter type ix.surface_e add value if not exists 'confluence_attachment';
@@ -186,19 +175,8 @@ create table if not exists ix.surface (
     description  varchar      not null
 );
 
+/* строки pg_*: docs/pg-scraper/schema/00_surface.sql */
 insert into ix.surface (name, description) values
-    ('pg_database',           'База данных источника PostgreSQL или Greenplum; корень tree источника.'),
-    ('pg_schema',             'Схема базы данных.'),
-    ('pg_table',              'Таблица: обычная, секционированная, секция, внешняя.'),
-    ('pg_column',             'Колонка таблицы, представления или материализованного представления.'),
-    ('pg_view',               'Представление или материализованное представление.'),
-    ('pg_index',              'Индекс, в том числе индекс на секционированной таблице и его копии на секциях.'),
-    ('pg_sequence',           'Последовательность.'),
-    ('pg_routine',            'Функция, процедура, агрегат или оконная функция; каждая перегрузка отдельный node, args в адресе.'),
-    ('pg_constraint',         'Ограничение таблицы или домена: primary key, unique, foreign key, check, exclusion, not null (с PostgreSQL 18).'),
-    ('pg_trigger',            'Триггер таблицы; системные триггеры FK не индексируются.'),
-    ('pg_type',               'Пользовательский тип: домен, enum, составной, range.'),
-    ('pg_statistics',         'Расширенная статистика (create statistics).'),
     ('confluence_space',      'Спейс Confluence; корень его tree.'),
     ('confluence_page',       'Страница или запись блога Confluence.'),
     ('confluence_attachment', 'Файл, вложенный в страницу.'),
@@ -371,171 +349,10 @@ role называет список, side различает стороны FK, o
 источнике по адресу), размеры отношений, статистика обращений и колонок, права.
 На PostgreSQL 12–14 и Greenplum 7 рёбер generated-колонки нет: каталог их не записывает.
 ============================================================================
-*/
-do $$ begin
-    create type ix.pg_edge_role_e as enum ('index', 'constraint', 'partition_key', 'distribution_key', 'trigger', 'statistics');
-exception when duplicate_object then null; end $$;
 
-create table if not exists ix.pg_edge (
-    edge_id   bigint              not null references ix.edge on delete cascade,
-    role      ix.pg_edge_role_e   not null,
-    side      smallint            not null,
-    ordinal   smallint            not null,
-    is_key    boolean             not null,
-    primary key (edge_id, role, side, ordinal)
-);
+DDL: docs/pg-scraper/schema/10_pg_edge.sql (pg_edge_role_e, pg_edge) и 20_surfaces.sql (pg_database ... pg_statistics)
 
-create table if not exists ix.pg_database (
-    node_id          bigint primary key references ix.node on delete cascade,
-    name             varchar,
-    owner            varchar,
-    encoding         varchar,
-    collate_name     varchar,
-    ctype            varchar,
-    comment          varchar
-);
 
-create table if not exists ix.pg_schema (
-    node_id          bigint primary key references ix.node on delete cascade,
-    name             varchar,
-    owner            varchar,
-    comment          varchar
-);
-
-create table if not exists ix.pg_table (
-    node_id          bigint primary key references ix.node on delete cascade,
-    schema_name      varchar,
-    name             varchar,
-    kind             varchar,
-    owner            varchar,
-    tablespace       varchar,
-    persistence      varchar,
-    partition_bound  varchar,
-    row_estimate     float8,
-    pages            int,
-    has_index        bool,
-    has_triggers     bool,
-    distribution     varchar,
-    storage          varchar,
-    comment          varchar
-);
-
-create table if not exists ix.pg_column (
-    node_id          bigint primary key references ix.node on delete cascade,
-    schema_name      varchar,
-    relation_name    varchar,
-    relation_kind    varchar,
-    name             varchar,
-    ordinal          int,
-    data_type        varchar,
-    not_null         bool,
-    default_expr     varchar,
-    identity         varchar,
-    generated        varchar,
-    comment          varchar
-);
-
-create table if not exists ix.pg_view (
-    node_id          bigint primary key references ix.node on delete cascade,
-    schema_name      varchar,
-    name             varchar,
-    kind             varchar,
-    owner            varchar,
-    comment          varchar
-);
-
-create table if not exists ix.pg_index (
-    node_id          bigint primary key references ix.node on delete cascade,
-    schema_name      varchar,
-    table_name       varchar,
-    name             varchar,
-    access_method    varchar,
-    is_unique        bool,
-    is_primary       bool,
-    is_exclusion     bool,
-    is_valid         bool,
-    columns          varchar[],
-    expression       varchar,
-    predicate        varchar,
-    comment          varchar
-);
-
-create table if not exists ix.pg_sequence (
-    node_id          bigint primary key references ix.node on delete cascade,
-    schema_name      varchar,
-    name             varchar,
-    owner            varchar,
-    data_type        varchar,
-    start_value      bigint,
-    increment        bigint,
-    min_value        bigint,
-    max_value        bigint,
-    cycle            bool,
-    comment          varchar
-);
-
-create table if not exists ix.pg_routine (
-    node_id          bigint primary key references ix.node on delete cascade,
-    schema_name      varchar,
-    name             varchar,
-    kind             varchar,
-    language         varchar,
-    identity_args    varchar,
-    result_type      varchar,
-    volatility       varchar,
-    security_definer bool,
-    owner            varchar,
-    comment          varchar
-);
-
-create table if not exists ix.pg_constraint (
-    node_id          bigint primary key references ix.node on delete cascade,
-    schema_name      varchar,
-    table_name       varchar,
-    name             varchar,
-    kind             varchar,
-    definition       varchar,
-    is_deferrable    bool,
-    is_deferred      bool,
-    is_validated     bool,
-    on_update        varchar,
-    on_delete        varchar,
-    match_type       varchar,
-    comment          varchar
-);
-
-create table if not exists ix.pg_trigger (
-    node_id          bigint primary key references ix.node on delete cascade,
-    schema_name      varchar,
-    table_name       varchar,
-    name             varchar,
-    timing           varchar,
-    events           varchar[],
-    row_level        bool,
-    enabled          bool,
-    comment          varchar
-);
-
-create table if not exists ix.pg_type (
-    node_id          bigint primary key references ix.node on delete cascade,
-    schema_name      varchar,
-    name             varchar,
-    kind             varchar,
-    base_type        varchar,
-    enum_labels      varchar[],
-    comment          varchar
-);
-
-create table if not exists ix.pg_statistics (
-    node_id          bigint primary key references ix.node on delete cascade,
-    schema_name      varchar,
-    name             varchar,
-    table_name       varchar,
-    kinds            varchar[],
-    comment          varchar
-);
-
-/*
 Аспекты объектов PostgreSQL. Аспект это текст объекта, по которому объект
 ищут; у объекта их несколько, и каждый лежит отдельной строкой поисковой
 таблицы. Какие аспекты пишет каждая surface и из чего собирает description:
@@ -561,9 +378,8 @@ pg_constraint пишет name, words и description вида 'Foreign key {name}
 обращений), живут в surface. DDL, определения представлений и тела
 подпрограмм не хранятся и не индексируются: LLM читает их в источнике по
 адресу node. Значения строк таблиц не индексируются.
-*/
 
-/*
+
 Словарь аспектов источника PostgreSQL: какой текст объекта закодирован
 в строке поисковой таблицы. Значения enum только добавляются или
 переименовываются: на них ссылаются предикаты частичных индексов
@@ -631,9 +447,8 @@ on conflict (aspect) do nothing;
 изменился ли текст. Поисковые таблицы не связаны с node внешним ключом: их ведут
 независимые индексаторы, каждый своим процессом, и сами убирают строки node,
 которых больше нет, и строки с устаревшим content.
-*/
 
-/*
+
 Полнотекстовый индекс, строка на аспект. Все surface пишут description
 одним tsvector с весами: A = words имени, B = words схемы и comment,
 C = columns (только таблица и представление). Текст каждой части
@@ -665,17 +480,10 @@ select node_id, sum(ts_rank_cd(tsv, q)) as rank
 from   ix.pg_fts, websearch_to_tsquery('russian', 'заказы клиентов') q
 where  tsv @@ q
 group by node_id order by rank desc limit 20;
-*/
-create table if not exists ix.pg_fts (
-    node_id    bigint   not null,
-    surface       ix.surface_e not null references ix.surface,
-    aspect     ix.pg_aspect_e not null references ix.pg_aspect,
-    content    varchar  not null,
-    tsv        tsvector not null,
-    primary key (node_id, surface, aspect)
-);
 
-/*
+DDL: docs/pg-indexer-fts/schema/00_pg_fts.sql
+
+
 Конфигурация russian стеммит и русский, и английский: order/orders,
 заказ/заказы. Простой запрос без суммирования по node:
 
@@ -690,25 +498,17 @@ limit  20;
 отбирает вид внутри индекса. Для частого вида планировщик сам оставляет
 surface обычным фильтром после индекса: это дешевле, чем читать его список
 из GIN.
-*/
-create index if not exists pg_fts__surface_tsv__gin on ix.pg_fts using gin (surface, tsv);
 
-/*
+
 Таблица триграмм хранит только идентификаторы, по строке на node_id и
 aspect. Длинный текст сюда не кладут: триграммная похожесть на нём не
 работает, а btree по lower(content) падает на строках длиннее 2704 байт.
 Все surface пишут name и words; path пишут таблица, колонка, представление,
 индекс, последовательность и подпрограмма.
-*/
-create table if not exists ix.pg_trgm (
-    node_id    bigint   not null,
-    surface       ix.surface_e not null references ix.surface,
-    aspect     ix.pg_aspect_e not null references ix.pg_aspect,
-    content    varchar  not null,
-    primary key (node_id, surface, aspect)
-);
 
-/*
+DDL: docs/pg-indexer-trgm/schema/00_pg_trgm.sql
+
+
 Подстрока и опечатки по всему источнику, таблицы и колонки в одной выдаче.
 Используется word_similarity (операторы <% и <<->), а не similarity
 (% и <->). Порог <% по умолчанию 0.6, для коротких имён нужен 0.4.
@@ -719,18 +519,16 @@ from   ix.pg_trgm
 where  aspect = 'words' and 'ordrs' <% content
 order by 'ordrs' <<-> content
 limit  20;
-*/
-create index if not exists pg_trgm__content__gist on ix.pg_trgm using gist (content gist_trgm_ops);
 
-/*
+
+
 Точное совпадение без учёта регистра.
 
 select node_id, surface from ix.pg_trgm
 where  aspect = 'path' and lower(content) = lower('dm.fact_orders');
-*/
-create index if not exists pg_trgm__aspect_lower_content on ix.pg_trgm using btree (aspect, lower(content));
 
-/*
+
+
 Подсказка при наборе по префиксу. Обычный btree по lower(content) для
 префикса не годится, нужен класс операторов varchar_pattern_ops. Вместо
 like используется оператор ^@ (starts with): в like подчёркивание значит
@@ -739,107 +537,18 @@ like используется оператор ^@ (starts with): в like под�
 select node_id, surface, content from ix.pg_trgm
 where  aspect = 'name' and lower(content) ^@ lower('fact_ord')
 limit  20;
-*/
-create index if not exists pg_trgm__aspect_lower_content__prefix
-    on ix.pg_trgm using btree (aspect, lower(content) varchar_pattern_ops);
-create index if not exists pg_trgm__surface_aspect on ix.pg_trgm using btree (surface, aspect);
 
-/*
+
+
 Векторный поиск по embedding-модели e5 размерностью 1024, строка на аспект.
 Все surface пишут description; comment пишут те, у кого он не пуст;
 columns пишут таблица и представление; summary пишут таблица, колонка,
 представление и подпрограмма, когда описание от LLM есть. Текст кодируется
 с префиксом passage:, запрос с префиксом query:. content это закодированный
 текст аспекта: если он не изменился, модель повторно не запускают.
-*/
-create table if not exists ix.pg_emb_e5_1024 (
-    node_id    bigint   not null,
-    surface          ix.surface_e not null references ix.surface,
-    aspect        ix.pg_aspect_e not null references ix.pg_aspect,
-    content       varchar       not null,
-    emb           halfvec(1024) not null,
-    primary key (node_id, surface, aspect)
-);
 
-/*
-Частичный HNSW на каждую существующую пару surface + aspect. HNSW отдаёт
-k ближайших из своего индекса, и фильтр по общему индексу после обхода
-усекал бы выдачу; с частичными индексами фильтр по surface и aspect попадает
-в свой индекс. surface и aspect в предикате это значения enum, они следуют
-за переименованием в словаре.
-
-select node_id, emb <=> $1::halfvec(1024) as dist
-from   ix.pg_emb_e5_1024
-where  surface = 'pg_table' and aspect = 'description'
-order by dist
-limit  20;
+DDL: docs/pg-indexer-vector/schema/00_pg_emb_e5_1024.sql
 */
-create index if not exists pg_emb_e5_1024__pg_database_description__hnsw
-    on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'pg_database' and aspect = 'description';
-create index if not exists pg_emb_e5_1024__pg_database_comment__hnsw
-    on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'pg_database' and aspect = 'comment';
-create index if not exists pg_emb_e5_1024__pg_schema_description__hnsw
-    on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'pg_schema' and aspect = 'description';
-create index if not exists pg_emb_e5_1024__pg_schema_comment__hnsw
-    on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'pg_schema' and aspect = 'comment';
-create index if not exists pg_emb_e5_1024__pg_table_description__hnsw
-    on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'pg_table' and aspect = 'description';
-create index if not exists pg_emb_e5_1024__pg_table_comment__hnsw
-    on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'pg_table' and aspect = 'comment';
-create index if not exists pg_emb_e5_1024__pg_table_columns__hnsw
-    on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'pg_table' and aspect = 'columns';
-create index if not exists pg_emb_e5_1024__pg_table_summary__hnsw
-    on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'pg_table' and aspect = 'summary';
-create index if not exists pg_emb_e5_1024__pg_column_description__hnsw
-    on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'pg_column' and aspect = 'description';
-create index if not exists pg_emb_e5_1024__pg_column_comment__hnsw
-    on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'pg_column' and aspect = 'comment';
-create index if not exists pg_emb_e5_1024__pg_column_summary__hnsw
-    on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'pg_column' and aspect = 'summary';
-create index if not exists pg_emb_e5_1024__pg_view_description__hnsw
-    on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'pg_view' and aspect = 'description';
-create index if not exists pg_emb_e5_1024__pg_view_comment__hnsw
-    on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'pg_view' and aspect = 'comment';
-create index if not exists pg_emb_e5_1024__pg_view_columns__hnsw
-    on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'pg_view' and aspect = 'columns';
-create index if not exists pg_emb_e5_1024__pg_view_summary__hnsw
-    on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'pg_view' and aspect = 'summary';
-create index if not exists pg_emb_e5_1024__pg_index_description__hnsw
-    on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'pg_index' and aspect = 'description';
-create index if not exists pg_emb_e5_1024__pg_sequence_description__hnsw
-    on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'pg_sequence' and aspect = 'description';
-create index if not exists pg_emb_e5_1024__pg_sequence_comment__hnsw
-    on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'pg_sequence' and aspect = 'comment';
-create index if not exists pg_emb_e5_1024__pg_routine_description__hnsw
-    on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'pg_routine' and aspect = 'description';
-create index if not exists pg_emb_e5_1024__pg_routine_comment__hnsw
-    on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'pg_routine' and aspect = 'comment';
-create index if not exists pg_emb_e5_1024__pg_routine_summary__hnsw
-    on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'pg_routine' and aspect = 'summary';
-create index if not exists pg_emb_e5_1024__pg_constraint_description__hnsw
-    on ix.pg_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'pg_constraint' and aspect = 'description';
 
 /*
 ============================================================================

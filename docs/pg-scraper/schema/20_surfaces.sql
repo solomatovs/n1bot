@@ -1,8 +1,8 @@
--- Surface-таблицы node, которые заполняет layout/45_surfaces.sql и 50_apply.sql.
--- Ключ node_id; изменившаяся строка удаляется и вставляется заново, полей updated_at и
--- content_hash нет: сравнение идёт по всем колонкам.
-
-create table ix.pg_database (
+/*
+pg-scraper, схема, шаг 2: surface-таблицы node PostgreSQL и Greenplum, ключ node_id.
+Изменившаяся строка удаляется и вставляется заново, полей updated_at и content_hash нет.
+*/
+create table if not exists ix.pg_database (
     node_id          bigint primary key references ix.node on delete cascade,
     name             varchar,
     owner            varchar,
@@ -12,14 +12,14 @@ create table ix.pg_database (
     comment          varchar
 );
 
-create table ix.pg_schema (
+create table if not exists ix.pg_schema (
     node_id          bigint primary key references ix.node on delete cascade,
     name             varchar,
     owner            varchar,
     comment          varchar
 );
 
-create table ix.pg_table (
+create table if not exists ix.pg_table (
     node_id          bigint primary key references ix.node on delete cascade,
     schema_name      varchar,
     name             varchar,
@@ -37,7 +37,7 @@ create table ix.pg_table (
     comment          varchar
 );
 
-create table ix.pg_column (
+create table if not exists ix.pg_column (
     node_id          bigint primary key references ix.node on delete cascade,
     schema_name      varchar,
     relation_name    varchar,
@@ -52,7 +52,7 @@ create table ix.pg_column (
     comment          varchar
 );
 
-create table ix.pg_view (
+create table if not exists ix.pg_view (
     node_id          bigint primary key references ix.node on delete cascade,
     schema_name      varchar,
     name             varchar,
@@ -61,7 +61,7 @@ create table ix.pg_view (
     comment          varchar
 );
 
-create table ix.pg_index (
+create table if not exists ix.pg_index (
     node_id          bigint primary key references ix.node on delete cascade,
     schema_name      varchar,
     table_name       varchar,
@@ -77,7 +77,7 @@ create table ix.pg_index (
     comment          varchar
 );
 
-create table ix.pg_sequence (
+create table if not exists ix.pg_sequence (
     node_id          bigint primary key references ix.node on delete cascade,
     schema_name      varchar,
     name             varchar,
@@ -91,7 +91,7 @@ create table ix.pg_sequence (
     comment          varchar
 );
 
-create table ix.pg_routine (
+create table if not exists ix.pg_routine (
     node_id          bigint primary key references ix.node on delete cascade,
     schema_name      varchar,
     name             varchar,
@@ -105,7 +105,7 @@ create table ix.pg_routine (
     comment          varchar
 );
 
-create table ix.pg_constraint (
+create table if not exists ix.pg_constraint (
     node_id          bigint primary key references ix.node on delete cascade,
     schema_name      varchar,
     table_name       varchar,
@@ -121,7 +121,7 @@ create table ix.pg_constraint (
     comment          varchar
 );
 
-create table ix.pg_trigger (
+create table if not exists ix.pg_trigger (
     node_id          bigint primary key references ix.node on delete cascade,
     schema_name      varchar,
     table_name       varchar,
@@ -133,7 +133,7 @@ create table ix.pg_trigger (
     comment          varchar
 );
 
-create table ix.pg_type (
+create table if not exists ix.pg_type (
     node_id          bigint primary key references ix.node on delete cascade,
     schema_name      varchar,
     name             varchar,
@@ -143,7 +143,7 @@ create table ix.pg_type (
     comment          varchar
 );
 
-create table ix.pg_statistics (
+create table if not exists ix.pg_statistics (
     node_id          bigint primary key references ix.node on delete cascade,
     schema_name      varchar,
     name             varchar,
