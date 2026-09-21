@@ -18,8 +18,6 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "boba-krb==0.0.21.dev2",
-    "boba-runtime==0.0.21.dev2",
     "boba-stand==0.0.21.dev2",
     "pytest>=8",
 ]

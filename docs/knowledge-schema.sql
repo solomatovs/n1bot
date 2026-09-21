@@ -68,7 +68,7 @@ surface таблицы перечислены в таблице surface
     - pg_table          - хранит информацию о таблицах любых заиндексированных postgres источников
     - pg_column         - хранит информацию о колонках таблиц
     - pg_constraint     - хранит информацию об индексах
-    - cfl_meta_page   - хранит информацию об заиндексированных confluence страницах
+    - cfl_page          - хранит информацию о заиндексированных страницах Confluence
 
 surface таблицы желательно должны проектироваться без связи друг с другом.
 Они должны ссылаться через node_id или edge_id на core, но не на друг друга
@@ -132,7 +132,7 @@ surface таблицы имеют собственные индексы, кот�
     К примеру confluence version
 - src_checksum: sha256 хэш составленный самим индексатором из оригинального документа (не преобразованного)
     в процессе индексации. Позволяет определить, изменился ли индексируемый аспект объекта
-    К примеру для cfl_meta_page это исходное состояние страницы,
+    К примеру для cfl_page это исходный HTML страницы,
     comment column (в postgres),
     описание составляемое llm или человеком
 - indexer_id:       уникальное имя индексатора в системе, которое позволяет выявить документы, им проиндексированные
@@ -158,11 +158,14 @@ do $$ begin
     create type ix.surface_e as enum ();
 exception when duplicate_object then null; end $$;
 
-/* значения pg_*: packages/apps/ix/pg-meta-scraper/src/boba/pg_meta_scraper/schema/00_surface.sql */
-alter type ix.surface_e add value if not exists 'cfl_meta_space';
-alter type ix.surface_e add value if not exists 'cfl_meta_page';
-alter type ix.surface_e add value if not exists 'cfl_meta_attachment';
-alter type ix.surface_e add value if not exists 'cfl_meta_comment';
+/* значения pg_*: packages/apps/ix/pg-meta-scraper/src/boba/pg_meta_scraper/schema/00_surface_values.sql */
+/* значения cfl_*: packages/apps/ix/cfl-indexer/src/boba/cfl_indexer/schema/00_values.sql */
+alter type ix.surface_e add value if not exists 'cfl_space';
+alter type ix.surface_e add value if not exists 'cfl_page';
+alter type ix.surface_e add value if not exists 'cfl_blogpost';
+alter type ix.surface_e add value if not exists 'cfl_attachment';
+alter type ix.surface_e add value if not exists 'cfl_comment';
+alter type ix.surface_e add value if not exists 'cfl_page_link';
 
 comment on type ix.surface_e is
 'surface name: имя surface-таблицы, в которой лежат атрибуты (properties graph).
@@ -175,12 +178,15 @@ create table if not exists ix.surface (
     description  varchar      not null
 );
 
-/* строки pg_*: packages/apps/ix/pg-meta-scraper/src/boba/pg_meta_scraper/schema/00_surface.sql */
+/* строки pg_*: packages/apps/ix/pg-meta-scraper/src/boba/pg_meta_scraper/schema/10_surface_rows.sql */
+/* строки cfl_*: packages/apps/ix/cfl-indexer/src/boba/cfl_indexer/schema/10_rows.sql */
 insert into ix.surface (name, description) values
-    ('cfl_meta_space',      'Спейс Confluence; корень его tree.'),
-    ('cfl_meta_page',       'Страница или запись блога Confluence.'),
-    ('cfl_meta_attachment', 'Файл, вложенный в страницу.'),
-    ('cfl_meta_comment',    'Встроенный или нижний комментарий к странице.')
+    ('cfl_space',      'Спейс Confluence; корень его tree.'),
+    ('cfl_page',       'Страница Confluence.'),
+    ('cfl_blogpost',   'Запись блога спейса Confluence.'),
+    ('cfl_attachment', 'Файл, вложенный в страницу или блог-запись.'),
+    ('cfl_comment',    'Встроенный или нижний комментарий к странице.'),
+    ('cfl_page_link',  'Ребро: ссылка со страницы на другую страницу Confluence.')
 on conflict (name) do nothing;
 
 /*
@@ -552,292 +558,544 @@ DDL: packages/apps/ix/pg-idx-vector/src/boba/pg_idx_vector/schema/00_pg_idx_emb_
 
 /*
 ============================================================================
-Источник Confluence, проверено по REST API cwiki.apache.org. Node бывает
-четырёх surface: спейс, страница (страница и блог-запись это один surface,
-различаются колонкой content_type), вложение и комментарий. Пользователи
-и метки node не становятся: метки это атрибут страницы. Адрес node по surface:
-cfl_meta_space       https://host/confluence/rest/api/space/FLINK
-cfl_meta_page        https://host/confluence/rest/api/content/307136992
-cfl_meta_comment     https://host/confluence/rest/api/content/127405740
-cfl_meta_attachment
-    https://host/confluence/download/attachments/307136992/design.pdf
+Источник Confluence: пакет packages/apps/ix/cfl-indexer, скрапер и индексатор
+одним компонентом. Проверено на Confluence Server стенда (confl.loshara.com)
+и на заглушке boba.stand.confluence.
 
-tree: спейс -> страницы без ancestors (домашняя, корневые, блог-записи) ->
-дочерние страницы (родитель это последний элемент ancestors) -> вложения
-и комментарии страницы.
-edge: refers_to от страницы к странице или вложению по гиперссылке в теле
-(origin declared) и от страницы к таблице по идентификатору в тексте
-(origin text_match).
-Ссылки берутся из body.view, а не из body.storage: макросы (cql, toc,
-children) разворачиваются только там; на странице-оглавлении storage даёт
-4 ссылки, view 184. Внутренняя ссылка бывает по id
-(/spaces/KEY/pages/ID/..., viewpage.action?pageId=ID) и по заголовку
-(/display/KEY/Title, ri:page); заголовок разрешается в node по индексу
-cfl_meta_page (space_key, title). Внешние ссылки отбрасываются, node
-для них не создаётся.
+Node бывает пяти surface: спейс, страница, блог-запись, вложение и комментарий;
+ребро одного surface — ссылка страницы на страницу. Имена без meta_: это не
+метаданные о базе, как у pg, а сами страницы и файлы. Адрес частями, как у
+postgres; страница адресуется id без ключа спейса, перенос между спейсами
+не рождает новый node:
 
-Повторный прогон отсекает работу на двух уровнях. version из Confluence
-отсекает скачивание: если номер не изменился, объект не трогается.
-content_hash отсекает переиндексацию: объект скачан и разобран, но хэш
-совпал с сохранённым, и поисковые строки остаются прежними (version растёт
-и при смене меток или ограничений доступа, текст при этом тот же). Если
-хэш не совпал, строки всех aspect этой node удаляются и пишутся заново
-одной транзакцией, эмбеддинги считаются заново. Что именно хэшируется,
-сказано у каждой surface.
+cfl_space       {"scheme":"https","host":"confl.loshara.com","port":443,"space":"DEV"}
+cfl_page        {"scheme":"https","host":"confl.loshara.com","port":443,"content":"307136992"}
+cfl_blogpost    {"scheme":"https","host":"confl.loshara.com","port":443,"content":"307140001"}
+cfl_attachment  {..., "content":"307136992","attachment":"att4521"}
+cfl_comment     {..., "content":"307136992","comment":"127405740"}
 
-Оригиналы не хранятся: ни тело страницы, ни файл вложения, ни текст
-комментария. Адрес объекта хранится только в ix.node.address (REST API),
-surface его не дублирует. Ссылка для человека строится из адреса
-(/pages/viewpage.action?pageId=ID), а адрес вложения и есть ссылка на
-скачивание. Surface хранит идентификаторы и метаданные, оригинал LLM
-читает по адресу сама. Текст, извлечённый индексатором (тело страницы,
-разбор pdf и docx, OCR картинки, описание картинки от LLM), живёт только
-в поисковых таблицах как content своего aspect: это индекс, а не копия.
+tree: спейс -> страницы без предков и блог-записи -> дочерние страницы по
+последнему ancestor -> вложения и комментарии страницы.
+edge: cfl_page_link от страницы к странице по ссылке в body.view (по id,
+по заголовку, макросом ri:page); внешние ссылки и ссылки на себя рёбер не
+дают. Ссылки берутся из body.view, а не из body.storage: макросы (cql, toc,
+children) разворачиваются только там.
+
+Обход спейса строго последовательный, один воркер на спейс: список страниц
+и блог-записей без тел (space/{key}/content/page и /blogpost с expand
+version, ancestors, metadata.labels, history, children.attachment), на
+каждом объекте node, tree, surface-строка и все три индекса, потом вложения
+и комментарии страницы. Оригиналы не хранятся: ни HTML страницы, ни файл
+вложения, ни текст комментария. Хэш от оригинала, индекс от преобразования:
+content_hash = sha256 исходного HTML body.view (у вложения — байтов файла,
+считается по дороге на диск), а в индекс идёт markdown из markdownify без
+экранирования подчёркиваний, у вложений — текст liteparse (pdf, office,
+картинки с OCR) или декодирование текстовых типов; текст картинки идёт
+аспектом ocr, остальное — body. indexer_hash = md5 параметров преобразования
+и модели (формат тела, стиль markdown, модель, окно чанков, веса, маски
+вложений, кодировки, OCR, версия раскладки): смена любого переиндексирует
+спейс с повторным скачиванием — цена решения не хранить оригиналы.
+
+Отсечение работы: version и indexer_hash совпали с surface-строкой — объект
+не трогается; version сменился — тело скачивается, content_hash оригинала
+решает, что переписать; у вложения при том же content_hash прежний текст
+берётся из полнотекста без повторного разбора. Node пишется одной
+транзакцией (surface-строка, триграммы, полнотекст, вектор): сорвался шаг —
+node прежний, следующий прогон делает его заново. Вектор пересчитывает
+только аспекты, чей md5 текста изменился. В конце обхода node спейса,
+которых прогон не видел, снимаются вместе со строками индексов; область
+спейса — space_key поверхностей внутри одного сервера (address @> base).
+Ключ спейса и id контента уникальны только внутри сервера, поэтому индексы
+по ним не уникальные.
+
+Вложение получает node и surface-строку всегда — файл находится по имени и
+пути; текст только у взятых: маски attachments и флаг OCR решают, качать ли
+файл, неподдерживаемый тип остаётся метаданными. Файл, который не
+разобрался, считается в failed отчёта спейса и его не останавливает.
 ============================================================================
 */
 
 /*
-Surface cfl_llm_description: описание страницы или вложения, которое
-сгенерировал LLM (describer). Устроена как pg_llm_description: indexer_hash это
-снимок настроек прогона, content_hash это хэш текста, из которого пишутся
-поисковые строки aspect llm_description.
+cfl-indexer, схема, шаг 0: значения surface_e и aspect_e, которыми владеет индексатор
+Confluence. Отдельным файлом: использовать значения enum можно только после коммита,
+словарь и объявления идут следующими файлами.
 */
-create table if not exists ix.cfl_llm_description (
-    node_id       bigint      primary key references ix.node on delete cascade,
-    content       varchar     not null,
-    content_hash  bytea       not null,
-    indexer_hash  bytea       not null,
-    created_at    timestamptz not null default now()
-);
+alter type ix.surface_e add value if not exists 'cfl_space';
+alter type ix.surface_e add value if not exists 'cfl_page';
+alter type ix.surface_e add value if not exists 'cfl_blogpost';
+alter type ix.surface_e add value if not exists 'cfl_attachment';
+alter type ix.surface_e add value if not exists 'cfl_comment';
+alter type ix.surface_e add value if not exists 'cfl_page_link';
 
-create index if not exists cfl_llm_description__indexer_hash on ix.cfl_llm_description using btree (indexer_hash);
+alter type ix.aspect_e add value if not exists 'title';
+alter type ix.aspect_e add value if not exists 'path';
+alter type ix.aspect_e add value if not exists 'words';
+alter type ix.aspect_e add value if not exists 'labels';
+alter type ix.aspect_e add value if not exists 'card';
+alter type ix.aspect_e add value if not exists 'body';
+alter type ix.aspect_e add value if not exists 'ocr';
 
 /*
-Surface cfl_meta_space: ключ, имя, тип, статус и описание спейса.
+cfl-indexer, схема, шаг 1: строки словарей ix.surface и ix.aspect.
 */
-create table if not exists ix.cfl_meta_space (
-    node_id      bigint  primary key references ix.node on delete cascade,
-    space_key    varchar not null,
-    name         varchar not null,
-    space_type   varchar not null,
-    status       varchar not null,
-    description  varchar not null default ''
-);
+insert into ix.surface (name, description) values
+    ('cfl_space',      'Спейс Confluence; корень его tree.'),
+    ('cfl_page',       'Страница Confluence.'),
+    ('cfl_blogpost',   'Запись блога спейса Confluence.'),
+    ('cfl_attachment', 'Файл, вложенный в страницу или блог-запись.'),
+    ('cfl_comment',    'Встроенный или нижний комментарий к странице.'),
+    ('cfl_page_link',  'Ребро: ссылка со страницы на другую страницу Confluence.')
+on conflict (name) do nothing;
 
-/*
-Surface cfl_meta_page: метаданные страницы или блог-записи.
-content_type = page | blogpost, status = current | archived | trashed.
-version это номер версии в Confluence (version.number): если он не
-изменился с прошлого прогона, индексатор страницу пропускает. created_at
-и author берутся из history, updated_at и last_editor из version. Тело
-страницы здесь не хранится: индексатор берёт body.view (отрендеренный HTML
-с раскрытыми макросами), снимает теги в коде и кладёт текст в aspect meta_body
-поисковых таблиц. content_hash = sha256 этого текста вместе с заголовком
-и метками. ancestor_titles это путь заголовков от корня спейса до
-родителя, для хлебной крошки в выдаче.
-*/
-create table if not exists ix.cfl_meta_page (
-    node_id          bigint      primary key references ix.node on delete cascade,
-    space_key        varchar     not null,
-    content_id       varchar     not null,
-    content_type     varchar     not null,
-    title            varchar     not null,
-    status           varchar     not null,
-    version          integer     not null,
-    created_at       timestamptz not null,
-    updated_at       timestamptz not null,
-    author           varchar     not null,
-    last_editor      varchar     not null,
-    content_hash     bytea       not null,
-    ancestor_titles  varchar[]   not null default '{}',
-    labels           varchar[]   not null default '{}'
-);
-
-/*
-Разрешение ссылки по заголовку (/display/KEY/Title) в node.
-*/
-create index if not exists cfl_meta_page__space_key_title on ix.cfl_meta_page using btree (space_key, title);
-
-/*
-Surface cfl_meta_attachment: метаданные вложения. Сам файл не хранится:
-индексатор скачивает его, извлекает текст и файл отбрасывает. Какие aspect
-получаются, зависит от типа файла: разбор pdf и docx идёт в body, OCR
-картинки в ocr, описание картинки от LLM в vision. content_hash это хэш
-байтов файла, а не извлечённого текста: OCR и описание от LLM
-недетерминированы.
-*/
-create table if not exists ix.cfl_meta_attachment (
-    node_id        bigint      primary key references ix.node on delete cascade,
-    space_key      varchar     not null,
-    page_id        varchar     not null,
-    attachment_id  varchar     not null,
-    title          varchar     not null,
-    media_type     varchar     not null,
-    file_size      bigint      not null,
-    version        integer     not null,
-    created_at     timestamptz not null,
-    updated_at     timestamptz not null,
-    author         varchar     not null,
-    content_hash   bytea       not null
-);
-
-/*
-Surface cfl_meta_comment: метаданные комментария к странице.
-location = inline | footer; у комментария свои version и author. Текст
-берётся из body.storage, теги снимаются в коде, и живёт в aspect meta_body;
-content_hash = sha256 этого текста.
-*/
-create table if not exists ix.cfl_meta_comment (
-    node_id     bigint      primary key references ix.node on delete cascade,
-    space_key   varchar     not null,
-    page_id     varchar     not null,
-    comment_id  varchar     not null,
-    location    varchar     not null,
-    version     integer     not null,
-    created_at  timestamptz not null,
-    updated_at  timestamptz not null,
-    author      varchar     not null,
-    content_hash bytea      not null
-);
-
-/*
-Aspect источника Confluence: enum ix.cfl_idx_aspect_e, описания значений
-в словаре ix.cfl_idx_aspect. Что попадает в каждый aspect:
-meta_description  описание, которое собрал индексатор. У страницы это title,
-             метки, путь заголовков и начало body; у вложения title,
-             media_type и начало извлечённого текста; у спейса name
-             и description.
-meta_body         полный текст: тело страницы или извлечённый текст вложения.
-             В cfl_idx_fts лежит целиком, в cfl_idx_emb_e5_1024
-             порезан на куски по окну модели, кусок нумерует chunk_no.
-llm_description      описание от LLM из cfl_llm_description; пишется, если оно есть.
-meta_labels       метки страницы через пробел.
-meta_name         заголовок страницы, имя файла вложения или имя спейса как есть.
-meta_path         space_key || '/' || title, для точного совпадения.
-meta_words        слова из name: разрезан по CamelCase, дефисам и
-             подчёркиваниям, в нижнем регистре, ё -> е; для поиска
-             с опечатками.
-meta_ocr          текст, распознанный на картинке или скане (вложения с типом image
-             и pdf без текстового слоя).
-llm_vision       смысл картинки, описанный LLM по изображению: что на схеме,
-             какие таблицы и системы на ней названы.
-*/
-do $$ begin
-    create type ix.cfl_idx_aspect_e as enum ();
-exception when duplicate_object then null; end $$;
-
-alter type ix.cfl_idx_aspect_e add value if not exists 'meta_description';
-alter type ix.cfl_idx_aspect_e add value if not exists 'meta_body';
-alter type ix.cfl_idx_aspect_e add value if not exists 'llm_description';
-alter type ix.cfl_idx_aspect_e add value if not exists 'meta_labels';
-alter type ix.cfl_idx_aspect_e add value if not exists 'meta_name';
-alter type ix.cfl_idx_aspect_e add value if not exists 'meta_path';
-alter type ix.cfl_idx_aspect_e add value if not exists 'meta_words';
-alter type ix.cfl_idx_aspect_e add value if not exists 'meta_ocr';
-alter type ix.cfl_idx_aspect_e add value if not exists 'llm_vision';
-
-comment on type ix.cfl_idx_aspect_e is
-    'Какой текст объекта Confluence лежит в строке поисковой таблицы. Значения только добавляются или переименовываются, и предикаты частичных индексов следуют за переименованием.';
-
-create table if not exists ix.cfl_idx_aspect (
-    aspect       ix.cfl_idx_aspect_e primary key,
-    description  varchar                not null
-);
-
-insert into ix.cfl_idx_aspect (aspect, description) values
-    ('meta_description', 'описание, собранное индексатором из title, меток, пути заголовков и начала текста'),
-    ('meta_body',        'полный текст страницы или извлечённый текст вложения; для эмбеддингов режется на куски'),
-    ('llm_description',     'описание от LLM (describer); пишется, только если оно есть'),
-    ('meta_labels',      'метки страницы через пробел'),
-    ('meta_name',        'заголовок страницы, имя файла вложения или имя спейса как есть; точное совпадение и префикс'),
-    ('meta_path',        'space_key/title; точное совпадение'),
-    ('meta_words',       'заголовок, разрезанный на слова по CamelCase, дефисам и подчёркиваниям, в нижнем регистре, ё -> е; поиск с опечатками'),
-    ('meta_ocr',         'текст, распознанный на картинке или скане'),
-    ('llm_vision',      'смысл картинки, описанный LLM по самому изображению')
+insert into ix.aspect (aspect, class, description, owner) values
+    ('title',  'ident',       'Заголовок страницы, имя файла вложения или имя спейса как есть.',          'cfl-indexer'),
+    ('path',   'ident',       'Путь через ключ спейса: DEV/Заголовок, DEV/Заголовок/design.pdf.',          'cfl-indexer'),
+    ('words',  'words',       'Слова заголовка по CamelCase и подчёркиваниям, в нижнем регистре, ё -> е.',  'cfl-indexer'),
+    ('labels', 'description', 'Метки страницы через пробел.',                                             'cfl-indexer'),
+    ('card',   'description', 'Карточка: вид объекта, путь, метки и начало текста.',                     'cfl-indexer'),
+    ('body',   'description', 'Полный текст: markdown страницы, текст вложения или комментария.',        'cfl-indexer'),
+    ('ocr',    'description', 'Текст, распознанный на картинке или скане вложения.',                     'cfl-indexer')
 on conflict (aspect) do nothing;
 
 /*
-Полнотекстовый индекс. Каждый surface пишет в aspect meta_description один
-tsvector с весами. У cfl_meta_page вес A получают words заголовка,
-B получают labels, C получает body. У cfl_meta_attachment A получают
-words имени файла, C получают body, ocr и vision. У cfl_meta_space
-A получают words имени, B получает description. У cfl_meta_comment
-C получает body. llm_description от LLM это отдельная строка с aspect llm_description из
-cfl_llm_description и весом D, как в pg_fts.
+cfl-indexer, схема, шаг 2: поверхности Confluence. В них идентификаторы, метаданные и
+хэши; ни тела страницы, ни файла здесь нет. content_hash это sha256 оригинала (HTML
+страницы, байты файла), indexer_hash это md5 параметров преобразования и модели:
+по ним индексатор решает, что переиндексировать. Ключ спейса и id контента уникальны
+только внутри одного сервера Confluence, сервер задаёт адрес node, поэтому индексы по
+ним не уникальные.
 */
-create table if not exists ix.cfl_idx_fts (
-    node_id    bigint   not null,
-    surface       ix.surface_e         not null references ix.surface,
-    aspect     ix.cfl_idx_aspect_e not null references ix.cfl_idx_aspect,
-    content    varchar  not null,
-    tsv        tsvector not null,
-    primary key (node_id, surface, aspect)
+create table if not exists ix.cfl_space (
+    node_id       bigint primary key references ix.node on delete cascade,
+    space_key     varchar not null,
+    name          varchar not null,
+    space_type    varchar not null,
+    status        varchar not null,
+    description   varchar not null,
+    content_hash  varchar not null,
+    indexer_hash  varchar not null
 );
+create index if not exists cfl_space__space_key on ix.cfl_space using btree (space_key);
 
-create index if not exists cfl_idx_fts__surface_tsv__gin on ix.cfl_idx_fts using gin (surface, tsv);
+create table if not exists ix.cfl_page (
+    node_id          bigint primary key references ix.node on delete cascade,
+    space_key        varchar not null,
+    content_id       varchar not null,
+    title            varchar not null,
+    status           varchar not null,
+    version          integer not null,
+    created_at       timestamptz not null,
+    updated_at       timestamptz not null,
+    author           varchar not null,
+    last_editor      varchar not null,
+    labels           varchar[] not null,
+    ancestor_titles  varchar[] not null,
+    content_hash     varchar not null,
+    indexer_hash     varchar not null
+);
+create index if not exists cfl_page__content_id on ix.cfl_page using btree (content_id);
+create index if not exists cfl_page__space_key_title on ix.cfl_page using btree (space_key, title);
+
+create table if not exists ix.cfl_blogpost (
+    node_id       bigint primary key references ix.node on delete cascade,
+    space_key     varchar not null,
+    content_id    varchar not null,
+    title         varchar not null,
+    status        varchar not null,
+    version       integer not null,
+    created_at    timestamptz not null,
+    updated_at    timestamptz not null,
+    author        varchar not null,
+    last_editor   varchar not null,
+    labels        varchar[] not null,
+    content_hash  varchar not null,
+    indexer_hash  varchar not null
+);
+create index if not exists cfl_blogpost__content_id on ix.cfl_blogpost using btree (content_id);
+create index if not exists cfl_blogpost__space_key on ix.cfl_blogpost using btree (space_key);
+
+create table if not exists ix.cfl_attachment (
+    node_id        bigint primary key references ix.node on delete cascade,
+    space_key      varchar not null,
+    page_id        varchar not null,
+    attachment_id  varchar not null,
+    title          varchar not null,
+    media_type     varchar not null,
+    file_size      bigint not null,
+    version        integer not null,
+    created_at     timestamptz not null,
+    updated_at     timestamptz not null,
+    author         varchar not null,
+    content_hash   varchar not null,
+    indexer_hash   varchar not null
+);
+create index if not exists cfl_attachment__space_key on ix.cfl_attachment using btree (space_key);
+create index if not exists cfl_attachment__page_id on ix.cfl_attachment using btree (page_id);
+
+create table if not exists ix.cfl_comment (
+    node_id       bigint primary key references ix.node on delete cascade,
+    space_key     varchar not null,
+    page_id       varchar not null,
+    comment_id    varchar not null,
+    location      varchar not null,
+    version       integer not null,
+    created_at    timestamptz not null,
+    updated_at    timestamptz not null,
+    author        varchar not null,
+    content_hash  varchar not null,
+    indexer_hash  varchar not null
+);
+create index if not exists cfl_comment__space_key on ix.cfl_comment using btree (space_key);
+create index if not exists cfl_comment__page_id on ix.cfl_comment using btree (page_id);
 
 /*
-Триграммы для поиска по имени. Спейс, страница и вложение пишут aspect
-name и words, страница и вложение ещё path. У комментария имени нет,
-в эту таблицу он не пишется.
+Ребро страница -> страница по ссылке в теле; kind говорит, как ссылка была записана:
+по id, по заголовку или макросом.
 */
-create table if not exists ix.cfl_idx_trgm (
-    node_id    bigint   not null,
-    surface       ix.surface_e         not null references ix.surface,
-    aspect     ix.cfl_idx_aspect_e not null references ix.cfl_idx_aspect,
-    content    varchar  not null,
-    primary key (node_id, surface, aspect)
+create table if not exists ix.cfl_page_link (
+    edge_id  bigint primary key references ix.edge on delete cascade,
+    kind     varchar not null
 );
 
+/*
+cfl-indexer, схема, шаг 3: три таблицы индексов поверхностей Confluence. Устроены как
+pg_idx_*: колонка aspect ссылается на словарь ядра, внешнего ключа на ix.node нет
+намеренно, строки удалённых node снимает сам индексатор при чистке спейса.
+*/
+create table if not exists ix.cfl_idx_trgm (
+    node_id  bigint not null,
+    surface  ix.surface_e not null references ix.surface,
+    aspect   ix.aspect_e not null references ix.aspect,
+    content  varchar not null,
+    primary key (node_id, surface, aspect)
+);
 create index if not exists cfl_idx_trgm__content__gist on ix.cfl_idx_trgm using gist (content gist_trgm_ops);
 create index if not exists cfl_idx_trgm__aspect_lower_content on ix.cfl_idx_trgm using btree (aspect, lower(content));
 create index if not exists cfl_idx_trgm__aspect_lower_content__prefix
     on ix.cfl_idx_trgm using btree (aspect, lower(content) varchar_pattern_ops);
 create index if not exists cfl_idx_trgm__surface_aspect on ix.cfl_idx_trgm using btree (surface, aspect);
 
-/*
-Векторный поиск на эмбеддингах e5 размерности 1024. Текст страницы длиннее
-окна модели (512 токенов), поэтому aspect meta_body режется на куски
-с перекрытием, и в первичном ключе есть chunk_no; у aspect, который
-помещается в один кусок, chunk_no = 0. Страница пишет description и body,
-комментарий body, вложение body или ocr и vision в зависимости от типа
-файла, спейс description; summary пишет любой surface, у которого оно есть.
-*/
-create table if not exists ix.cfl_idx_emb_e5_1024 (
-    node_id    bigint   not null,
-    surface       ix.surface_e         not null references ix.surface,
-    aspect     ix.cfl_idx_aspect_e not null references ix.cfl_idx_aspect,
-    chunk_no   smallint      not null,
-    content    varchar       not null,
-    emb        halfvec(1024) not null,
-    primary key (node_id, surface, aspect, chunk_no)
+create table if not exists ix.cfl_idx_fts (
+    node_id  bigint not null,
+    surface  ix.surface_e not null references ix.surface,
+    aspect   ix.aspect_e not null references ix.aspect,
+    content  varchar not null,
+    tsv      tsvector not null,
+    primary key (node_id, surface, aspect)
 );
+create index if not exists cfl_idx_fts__surface_tsv__gin on ix.cfl_idx_fts using gin (surface, tsv);
 
 /*
-Частичный HNSW на каждую пару surface + aspect, по которой ищут: description,
-body, ocr, vision и summary.
+Текст длиннее окна модели режется на чанки: chunk_no это номер куска, content_hash это
+md5 полного текста аспекта, общий для всех его чанков. Частичный HNSW на каждую пару
+surface + aspect, по которой ищут: пары известны пакету, поэтому индексы здесь.
 */
-create index if not exists cfl_idx_emb_e5_1024__page_meta_description__hnsw
+create table if not exists ix.cfl_idx_emb_e5_1024 (
+    node_id       bigint not null,
+    surface       ix.surface_e not null references ix.surface,
+    aspect        ix.aspect_e not null references ix.aspect,
+    chunk_no      smallint not null,
+    content       varchar not null,
+    content_hash  varchar not null,
+    emb           halfvec(1024) not null,
+    primary key (node_id, surface, aspect, chunk_no)
+);
+create index if not exists cfl_idx_emb_e5_1024__cfl_space_card__hnsw
     on ix.cfl_idx_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'cfl_meta_page' and aspect = 'meta_description';
-create index if not exists cfl_idx_emb_e5_1024__page_llm_description__hnsw
+    where surface = 'cfl_space' and aspect = 'card';
+create index if not exists cfl_idx_emb_e5_1024__cfl_page_card__hnsw
     on ix.cfl_idx_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'cfl_meta_page' and aspect = 'llm_description';
-create index if not exists cfl_idx_emb_e5_1024__page_meta_body__hnsw
+    where surface = 'cfl_page' and aspect = 'card';
+create index if not exists cfl_idx_emb_e5_1024__cfl_page_body__hnsw
     on ix.cfl_idx_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'cfl_meta_page' and aspect = 'meta_body';
-create index if not exists cfl_idx_emb_e5_1024__attachment_meta_body__hnsw
+    where surface = 'cfl_page' and aspect = 'body';
+create index if not exists cfl_idx_emb_e5_1024__cfl_blogpost_card__hnsw
     on ix.cfl_idx_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'cfl_meta_attachment' and aspect = 'meta_body';
-create index if not exists cfl_idx_emb_e5_1024__space_meta_description__hnsw
+    where surface = 'cfl_blogpost' and aspect = 'card';
+create index if not exists cfl_idx_emb_e5_1024__cfl_blogpost_body__hnsw
     on ix.cfl_idx_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'cfl_meta_space' and aspect = 'meta_description';
-create index if not exists cfl_idx_emb_e5_1024__comment_meta_body__hnsw
+    where surface = 'cfl_blogpost' and aspect = 'body';
+create index if not exists cfl_idx_emb_e5_1024__cfl_attachment_card__hnsw
     on ix.cfl_idx_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'cfl_meta_comment' and aspect = 'meta_body';
-create index if not exists cfl_idx_emb_e5_1024__attachment_meta_ocr__hnsw
+    where surface = 'cfl_attachment' and aspect = 'card';
+create index if not exists cfl_idx_emb_e5_1024__cfl_attachment_body__hnsw
     on ix.cfl_idx_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'cfl_meta_attachment' and aspect = 'meta_ocr';
-create index if not exists cfl_idx_emb_e5_1024__attachment_llm_vision__hnsw
+    where surface = 'cfl_attachment' and aspect = 'body';
+create index if not exists cfl_idx_emb_e5_1024__cfl_attachment_ocr__hnsw
     on ix.cfl_idx_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
-    where surface = 'cfl_meta_attachment' and aspect = 'llm_vision';
+    where surface = 'cfl_attachment' and aspect = 'ocr';
+create index if not exists cfl_idx_emb_e5_1024__cfl_comment_card__hnsw
+    on ix.cfl_idx_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
+    where surface = 'cfl_comment' and aspect = 'card';
+create index if not exists cfl_idx_emb_e5_1024__cfl_comment_body__hnsw
+    on ix.cfl_idx_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
+    where surface = 'cfl_comment' and aspect = 'body';
+
+
+/*
+Аспекты Confluence — значения общего ix.aspect_e и строки словаря ix.aspect
+с владельцем cfl-indexer; объявления surface_aspect делает сам индексатор и
+сам ими пользуется: title, path, words, labels, card выводятся из
+surface-строки и уже лежащего в cfl_idx_fts текста (union объявлений с
+фильтром по node_id), а body и ocr он кладёт в cfl_idx_fts из Python, и
+объявление body читает их оттуда. Описатель и другие потребители объявят
+поверх них свои аспекты (describer_input, llm_description).
+
+Таблицы индексов остаются своими у происхождения — cfl_idx_trgm,
+cfl_idx_fts, cfl_idx_emb_e5_1024 — с той же формой, что pg_idx_*; стенд
+pg-search-lab читает оба набора union all, а подсказки выбирают аспекты по
+классу из словаря, а не по имени. Веса полнотекста задаёт конфиг индексатора
+по имени аспекта (title A, words A, path B, labels B, card B, body C, ocr C),
+аспект без веса получает D.
+
+DDL ниже — копия schema/ пакета cfl-indexer с подставленной схемой ix.
+*/
+
+/*
+cfl-indexer, схема, шаг 4: объявления surface_aspect поверхностей Confluence. Индексатор
+сам читает их при записи каждого node: title, path, words, labels и card выводятся из
+surface-строки и уже лежащего в cfl_idx_fts текста, а body и ocr он кладёт в cfl_idx_fts
+из Python, и объявление читает их оттуда. Схема в теле удвоена, чтобы после наката в
+строке остался плейсхолдер; накат проверяет каждое тело по контракту (node_id, content).
+*/
+insert into ix.surface_aspect (surface, aspect, body) values
+    ('cfl_space', 'title', $body$
+    select
+        x.node_id,
+        x.name as content
+    from
+        ix.cfl_space x
+    $body$),
+    ('cfl_space', 'words', $body$
+    select
+        x.node_id,
+        lower(
+            replace(
+                regexp_replace(
+                    regexp_replace(x.name, '([a-z0-9])([A-Z])', '\1 \2', 'g'),
+                    '[_\-]+', ' ', 'g'
+                ),
+                'ё', 'е'
+            )
+        ) as content
+    from
+        ix.cfl_space x
+    $body$),
+    ('cfl_space', 'card', $body$
+    select
+        x.node_id,
+        'Space ' || x.space_key || ': ' || x.name
+            || coalesce(E'\n' || nullif(x.description, ''), '') as content
+    from
+        ix.cfl_space x
+    $body$),
+    ('cfl_page', 'title', $body$
+    select
+        x.node_id,
+        x.title as content
+    from
+        ix.cfl_page x
+    $body$),
+    ('cfl_page', 'path', $body$
+    select
+        x.node_id,
+        x.space_key || '/' || x.title as content
+    from
+        ix.cfl_page x
+    $body$),
+    ('cfl_page', 'words', $body$
+    select
+        x.node_id,
+        lower(
+            replace(
+                regexp_replace(
+                    regexp_replace(x.title, '([a-z0-9])([A-Z])', '\1 \2', 'g'),
+                    '[_\-]+', ' ', 'g'
+                ),
+                'ё', 'е'
+            )
+        ) as content
+    from
+        ix.cfl_page x
+    $body$),
+    ('cfl_page', 'labels', $body$
+    select
+        x.node_id,
+        nullif(array_to_string(x.labels, ' '), '') as content
+    from
+        ix.cfl_page x
+    $body$),
+    ('cfl_page', 'card', $body$
+    select
+        x.node_id,
+        'Page ' || x.space_key || '/' || array_to_string(x.ancestor_titles || x.title, '/')
+            || coalesce(E'\nLabels: ' || nullif(array_to_string(x.labels, ' '), ''), '')
+            || coalesce(E'\n' || nullif(left(f.content, 500), ''), '') as content
+    from
+        ix.cfl_page x
+        left join ix.cfl_idx_fts f
+            on  f.node_id = x.node_id
+            and f.aspect = 'body'
+    $body$),
+    ('cfl_page', 'body', $body$
+    select
+        f.node_id,
+        f.content
+    from
+        ix.cfl_idx_fts f
+        join ix.node n
+            on  n.id = f.node_id
+            and n.surface = 'cfl_page'
+    where
+        f.aspect = 'body'
+    $body$),
+    ('cfl_blogpost', 'title', $body$
+    select
+        x.node_id,
+        x.title as content
+    from
+        ix.cfl_blogpost x
+    $body$),
+    ('cfl_blogpost', 'path', $body$
+    select
+        x.node_id,
+        x.space_key || '/' || x.title as content
+    from
+        ix.cfl_blogpost x
+    $body$),
+    ('cfl_blogpost', 'words', $body$
+    select
+        x.node_id,
+        lower(
+            replace(
+                regexp_replace(
+                    regexp_replace(x.title, '([a-z0-9])([A-Z])', '\1 \2', 'g'),
+                    '[_\-]+', ' ', 'g'
+                ),
+                'ё', 'е'
+            )
+        ) as content
+    from
+        ix.cfl_blogpost x
+    $body$),
+    ('cfl_blogpost', 'labels', $body$
+    select
+        x.node_id,
+        nullif(array_to_string(x.labels, ' '), '') as content
+    from
+        ix.cfl_blogpost x
+    $body$),
+    ('cfl_blogpost', 'card', $body$
+    select
+        x.node_id,
+        'Blog post ' || x.space_key || '/' || x.title
+            || coalesce(E'\nLabels: ' || nullif(array_to_string(x.labels, ' '), ''), '')
+            || coalesce(E'\n' || nullif(left(f.content, 500), ''), '') as content
+    from
+        ix.cfl_blogpost x
+        left join ix.cfl_idx_fts f
+            on  f.node_id = x.node_id
+            and f.aspect = 'body'
+    $body$),
+    ('cfl_blogpost', 'body', $body$
+    select
+        f.node_id,
+        f.content
+    from
+        ix.cfl_idx_fts f
+        join ix.node n
+            on  n.id = f.node_id
+            and n.surface = 'cfl_blogpost'
+    where
+        f.aspect = 'body'
+    $body$),
+    ('cfl_attachment', 'title', $body$
+    select
+        x.node_id,
+        x.title as content
+    from
+        ix.cfl_attachment x
+    $body$),
+    ('cfl_attachment', 'path', $body$
+    select
+        x.node_id,
+        x.space_key || '/' || x.title as content
+    from
+        ix.cfl_attachment x
+    $body$),
+    ('cfl_attachment', 'words', $body$
+    select
+        x.node_id,
+        lower(
+            replace(
+                regexp_replace(
+                    regexp_replace(x.title, '([a-z0-9])([A-Z])', '\1 \2', 'g'),
+                    '[_\-]+', ' ', 'g'
+                ),
+                'ё', 'е'
+            )
+        ) as content
+    from
+        ix.cfl_attachment x
+    $body$),
+    ('cfl_attachment', 'card', $body$
+    select
+        x.node_id,
+        'Attachment ' || x.space_key || '/' || x.title
+            || ' (' || x.media_type || ', ' || x.file_size || ' bytes)'
+            || coalesce(E'\n' || nullif(left(f.content, 500), ''), '') as content
+    from
+        ix.cfl_attachment x
+        left join ix.cfl_idx_fts f
+            on  f.node_id = x.node_id
+            and f.aspect = 'body'
+    $body$),
+    ('cfl_attachment', 'body', $body$
+    select
+        f.node_id,
+        f.content
+    from
+        ix.cfl_idx_fts f
+        join ix.node n
+            on  n.id = f.node_id
+            and n.surface = 'cfl_attachment'
+    where
+        f.aspect = 'body'
+    $body$),
+    ('cfl_attachment', 'ocr', $body$
+    select
+        f.node_id,
+        f.content
+    from
+        ix.cfl_idx_fts f
+        join ix.node n
+            on  n.id = f.node_id
+            and n.surface = 'cfl_attachment'
+    where
+        f.aspect = 'ocr'
+    $body$),
+    ('cfl_comment', 'card', $body$
+    select
+        x.node_id,
+        'Comment by ' || x.author || ' in ' || x.space_key
+            || coalesce(E'\n' || nullif(left(f.content, 500), ''), '') as content
+    from
+        ix.cfl_comment x
+        left join ix.cfl_idx_fts f
+            on  f.node_id = x.node_id
+            and f.aspect = 'body'
+    $body$),
+    ('cfl_comment', 'body', $body$
+    select
+        f.node_id,
+        f.content
+    from
+        ix.cfl_idx_fts f
+        join ix.node n
+            on  n.id = f.node_id
+            and n.surface = 'cfl_comment'
+    where
+        f.aspect = 'body'
+    $body$)
+on conflict (surface, aspect) do update
+    set body = excluded.body;

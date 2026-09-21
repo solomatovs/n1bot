@@ -2,9 +2,10 @@
 
 from boba.config.bind import bind
 from boba.config.builder import ConfigBuilder, build_app_config
-from boba.config.section import ConfigError, bind_section
+from boba.config.section import ConfigBase, ConfigError, bind_section
 
 __all__ = [
+    "ConfigBase",
     "ConfigBuilder",
     "ConfigError",
     "bind",

@@ -38,6 +38,7 @@ from boba.confluence.models import (
     HttpKeys,
 )
 from boba.confluence.parsing import BodyDigest, ConfluenceJsonDecoder
+from boba.confluence.rest import ConfluenceConnection, ConfluenceRequest
 from boba.indexing import (
     AsyncBinaryStream,
     Metadata,
@@ -49,9 +50,7 @@ from boba.indexing import (
     TransportError,
     TransportKeys,
 )
-from boba.tool.confluence.connection import ConfluenceConnection
 from boba.tool.confluence.indexing_log import LoggingStream
-from boba.tool.confluence.request_sources import ConfluenceRequest
 from boba.toolkit.timing import Elapsed
 from boba.transport.http import (
     CancellableHttpTransport,
@@ -230,7 +229,7 @@ class ConfluenceSourceTransport(Transport[ConfluenceRequest]):
 
     @classmethod
     def from_connection(cls, conn: ConfluenceConnection) -> ConfluenceSourceTransport:
-        http = CancellableHttpTransport(conn.profile)
+        http = CancellableHttpTransport(conn.profile, dump=conn.dump)
         return cls(
             inner=ConfluenceHttpTransport(http),
             decoder=ConfluenceJsonDecoder(

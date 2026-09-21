@@ -2,7 +2,9 @@
 
 Утилита получает путь к файлу и знает имя своей секции; всё остальное (чтение
 toml, интерполяции, переход в модель) делает этот модуль, поэтому у утилиты нет
-своего разбора конфига.
+своего разбора конфига. Как и у приложения (AppLayers), в конфиг подкладывается
+вычисленный `env.base` — каталог, в котором лежит файл, — чтобы пути в toml
+писались от него (`"${env.base}/krb"`), а не абсолютно.
 
 Ошибки:
 ConfigError — файла нет, он не разбирается, секции нет или её поля не
@@ -12,7 +14,7 @@ ConfigError — файла нет, он не разбирается, секци�
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TypeVar
+from typing import ClassVar, TypeVar
 
 from omegaconf import OmegaConf
 from pydantic import BaseModel, ValidationError
@@ -20,9 +22,21 @@ from pydantic import BaseModel, ValidationError
 from boba.config.bind import bind
 from boba.config.builder import ConfigBuilder
 
-__all__ = ["ConfigError", "bind_section"]
+__all__ = ["ConfigBase", "ConfigError", "bind_section"]
 
 M = TypeVar("M", bound=BaseModel)
+
+
+class ConfigBase:
+    """Вычисленный слой конфига утилиты: секция [env] с базовым каталогом."""
+
+    SECTION: ClassVar[str] = "env"
+    BASE: ClassVar[str] = "base"
+
+    @classmethod
+    def of(cls, path: Path) -> dict[str, dict[str, str]]:
+        base = path.resolve().parent
+        return {cls.SECTION: {cls.BASE: str(base)}}
 
 
 class ConfigError(Exception):
@@ -36,7 +50,10 @@ def bind_section(path: Path, section: str, model: type[M]) -> M:
         raise ConfigError(msg)
 
     try:
-        raw = ConfigBuilder().add_toml(path).build()
+        builder = ConfigBuilder()
+        builder.add_dict(ConfigBase.of(path))
+        builder.add_toml(path)
+        raw = builder.build()
     except Exception as exc:
         msg = f"config {path}: reading toml failed: {type(exc).__name__}: {exc}"
         raise ConfigError(msg) from exc

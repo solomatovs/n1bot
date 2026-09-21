@@ -13,7 +13,9 @@ dependencies = [
     "boba-kerberos==0.0.21.dev2",
     "boba-cancellation==0.0.21.dev2",
     "boba-krb==0.0.21.dev2",
+    "boba-chat==0.0.21.dev2",
     "httpx>=0.28,<1",
+    "httpcore>=1.0",
 ]
 
 [project.optional-dependencies]

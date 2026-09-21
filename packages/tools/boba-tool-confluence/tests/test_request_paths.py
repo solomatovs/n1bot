@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from boba.tool.confluence.request_sources import ConfluenceRest
+from boba.confluence.rest import ConfluenceRest
 
 
 class TestConfluencePaths:

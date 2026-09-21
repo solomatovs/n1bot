@@ -9,6 +9,7 @@ description = "Инструменты Confluence: чтение страниц и
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-toolkit==0.0.21.dev2",
+    "boba-chat==0.0.21.dev2",
     "boba-confluence==0.0.21.dev2",
     "boba-db-postgres==0.0.21.dev2",
     "boba-db-pgvector==0.0.21.dev2",
@@ -30,23 +31,21 @@ ingest = "boba.tool.confluence.plugin:INGEST"
 payload = [
     "boba-liteparse==0.0.21.dev2",
     "boba-llm[payload]==0.0.21.dev2",
+    "boba-confluence[html]==0.0.21.dev2",
     "lxml>=5.0",
     "liteparse>=2,<3",
-    "beautifulsoup4>=4.12",
-    "markdownify>=0.11,<1.0",
 ]
 dev = [
     "boba-runtime==0.0.21.dev2",
     "boba-liteparse==0.0.21.dev2",
     "boba-sandbox==0.0.21.dev2",
     "boba-config==0.0.21.dev2",
+    "boba-confluence[html]==0.0.21.dev2",
     "boba-stand==0.0.21.dev2",
-    "fastapi>=0.115,<1",
     "liteparse>=2,<3",
     "omegaconf>=2.3,<3",
     "psycopg[binary,pool]>=3.2",
     "pytest>=8",
-    "uvicorn>=0.30",
 ]
 
 [tool.setuptools.packages.find]

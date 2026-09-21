@@ -100,6 +100,21 @@ class AspectDeclarations:
             sa.surface,
             sa.aspect
     """
+    OF_SURFACES: ClassVar[str] = """
+        select
+            sa.surface::varchar,
+            sa.aspect::varchar,
+            sa.body
+        from
+            {schema}.surface_aspect sa
+            join {schema}.aspect a on a.aspect = sa.aspect
+        where
+            a.class::varchar = any(%(classes)s)
+            and sa.surface::varchar = any(%(surfaces)s)
+        order by
+            sa.surface,
+            sa.aspect
+    """
 
     @classmethod
     async def all(
@@ -117,22 +132,47 @@ class AspectDeclarations:
         db_schema: str,
         classes: Sequence[AspectClass],
     ) -> list[SurfaceAspect]:
-        names: list[str] = []
-        for item in classes:
-            names.append(str(item))
-
         cur = await conn.execute(
-            SchemaName.render(cls.OF_CLASSES, db_schema), {"classes": names}
+            SchemaName.render(cls.OF_CLASSES, db_schema),
+            {"classes": cls._names(classes)},
+        )
+        rows = await cur.fetchall()
+
+        return list(cls._rows(rows))
+
+    @classmethod
+    async def of_surfaces(
+        cls,
+        conn: psycopg.AsyncConnection[Any],
+        db_schema: str,
+        surfaces: Sequence[str],
+        classes: Sequence[AspectClass],
+    ) -> list[SurfaceAspect]:
+        """Объявления своих поверхностей: индексатор-владелец читает только их,
+        чтобы не пробовать чужие тела на каждом node."""
+        cur = await conn.execute(
+            SchemaName.render(cls.OF_SURFACES, db_schema),
+            {"classes": cls._names(classes), "surfaces": list(surfaces)},
         )
         rows = await cur.fetchall()
 
         return list(cls._rows(rows))
 
     @staticmethod
+    def _names(classes: Sequence[AspectClass]) -> list[str]:
+        names: list[str] = []
+        for item in classes:
+            names.append(str(item))
+
+        return names
+
+    @staticmethod
     def _rows(rows: Iterable[Sequence[Any]]) -> Iterator[SurfaceAspect]:
         for surface, aspect, body in rows:
             yield SurfaceAspect(
-                surface=str(surface), aspect=str(aspect), body=str(body)
+                surface=str(surface),
+                aspect=str(aspect),
+                body=str(body),
             )
 
 

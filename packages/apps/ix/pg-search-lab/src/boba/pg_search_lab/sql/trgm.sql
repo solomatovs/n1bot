@@ -1,15 +1,21 @@
 /*
-Триграммы: похожесть слова запроса на name, words, path; префикс по name отдельно не ищется,
-он покрывается word_similarity. Порог 0.3 задаётся здесь же.
+Триграммы по всем происхождениям: похожесть слова запроса на имя, слова и путь из
+pg_idx_trgm и cfl_idx_trgm; префикс отдельно не ищется, его покрывает word_similarity.
+Порог 0.3 задаётся здесь же.
 */
-with hit as (
+with idx as (
+    select node_id, aspect, content from {schema}.pg_idx_trgm
+    union all
+    select node_id, aspect, content from {schema}.cfl_idx_trgm
+),
+hit as (
     select
         t.node_id,
         t.aspect,
         t.content,
         word_similarity(%(q)s, t.content) as sim
     from
-        {schema}.pg_idx_trgm t
+        idx t
     where
         word_similarity(%(q)s, t.content) >= 0.3
 )

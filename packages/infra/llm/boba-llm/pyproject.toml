@@ -11,7 +11,7 @@ dependencies = [
     "boba-chat==0.0.21.dev2",
     "boba-indexing==0.0.21.dev2",
     "boba-toolkit==0.0.21.dev2",
-    "httpcore>=1.0",
+    "boba-transport-http==0.0.21.dev2",
     "typing-extensions>=4.12",
     "httpx[http2]>=0.28,<1",
     "httpx-sse>=0.4,<1",

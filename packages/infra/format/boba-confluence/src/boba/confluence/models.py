@@ -27,7 +27,7 @@ from typing import Annotated, Any, ClassVar, Literal
 from urllib.parse import SplitResult, parse_qs, unquote, urlsplit
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from boba.indexing import MetadataKey, SourceId, SourceMark, TableLayout
 from boba.transport.http.profile import HttpConnection
@@ -38,8 +38,11 @@ __all__ = [
     "AttachmentGate",
     "AttachmentInfo",
     "AttachmentVerdict",
+    "ConfluenceContainer",
     "ConfluenceContent",
+    "ConfluenceContentExtensions",
     "ConfluenceDescription",
+    "ConfluenceHistory",
     "ConfluenceKeys",
     "ConfluenceLabel",
     "ConfluenceLabels",
@@ -50,9 +53,12 @@ __all__ = [
     "ConfluencePlainText",
     "ConfluenceSourceId",
     "ConfluenceSpaceItem",
+    "ConfluenceUser",
     "HttpKeys",
+    "LinkKind",
     "PageCardSection",
     "PageHref",
+    "PageLink",
     "PageOutlineItem",
     "PageParseRequest",
     "PageSection",
@@ -88,6 +94,15 @@ class ConfluencePageItem(BaseModel):
     title: str = ""
 
 
+class ConfluenceUser(BaseModel):
+    """Пользователь Confluence в version.by и history.createdBy."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    username: str = ""
+    display_name: str = Field(default="", alias="displayName")
+
+
 class ConfluenceVersion(BaseModel):
     """Блок version у страницы и вложения."""
 
@@ -95,6 +110,18 @@ class ConfluenceVersion(BaseModel):
 
     number: int = 0
     when: str = ""
+    by: ConfluenceUser = Field(default_factory=ConfluenceUser)
+
+
+class ConfluenceHistory(BaseModel):
+    """Блок history контента: когда и кем создан (expand=history)."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    created_date: str = Field(default="", alias="createdDate")
+    created_by: ConfluenceUser = Field(
+        default_factory=ConfluenceUser, alias="createdBy"
+    )
 
 
 class ConfluenceSpaceRef(BaseModel):
@@ -173,11 +200,42 @@ class ConfluenceChildren(BaseModel):
     attachment: AttachmentBlock = Field(default_factory=AttachmentBlock)
 
 
+class ConfluenceContentExtensions(BaseModel):
+    """extensions контента: у комментария здесь место — inline или footer.
+
+    Server отдаёт location строкой, Cloud — списком; наружу всегда строка.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    location: str = ""
+
+    @field_validator("location", mode="before")
+    @classmethod
+    def _first_of_list(cls, value: object) -> object:
+        if isinstance(value, list):
+            if not value:
+                return ""
+
+            return str(value[0])
+
+        return value
+
+
+class ConfluenceContainer(BaseModel):
+    """container контента: страница, к которой относится комментарий."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str = ""
+
+
 class ConfluenceAncestor(BaseModel):
     """Предок страницы: нужен заголовок для хлебных крошек."""
 
     model_config = ConfigDict(extra="ignore")
 
+    id: str = ""
     title: str = ""
 
 
@@ -214,8 +272,15 @@ class ConfluenceContent(BaseModel):
 
     id: str
     title: str = ""
+    type: str = ""
+    status: str = ""
     version: ConfluenceVersion = Field(default_factory=ConfluenceVersion)
+    history: ConfluenceHistory = Field(default_factory=ConfluenceHistory)
     space: ConfluenceSpaceRef = Field(default_factory=ConfluenceSpaceRef)
+    extensions: ConfluenceContentExtensions = Field(
+        default_factory=ConfluenceContentExtensions
+    )
+    container: ConfluenceContainer = Field(default_factory=ConfluenceContainer)
     ancestors: list[ConfluenceAncestor] = Field(default_factory=list)
     children: ConfluenceChildren = Field(default_factory=ConfluenceChildren)
     metadata: ConfluenceMetadata = Field(default_factory=ConfluenceMetadata)
@@ -542,6 +607,23 @@ class PageTarget(BaseModel):
             return True
 
         return False
+
+
+class LinkKind(StrEnum):
+    """Как ссылка на страницу записана в теле: по id, по заголовку или макросом."""
+
+    ID = "id"
+    TITLE = "title"
+    MACRO = "macro"
+
+
+class PageLink(BaseModel):
+    """Ссылка со страницы на другую страницу: цель и способ записи."""
+
+    model_config = ConfigDict(frozen=True)
+
+    target: PageTarget
+    kind: LinkKind
 
 
 class PageHref:

@@ -24,6 +24,11 @@ from boba.confluence.models import (
     AttachmentGate,
     ParseGrade,
 )
+from boba.confluence.rest import (
+    ConfluenceConnection,
+    ConfluencePaginator,
+    ConfluenceRest,
+)
 from boba.db.pgvector.config import PostgresStoreConfig
 from boba.db.pgvector.store import (
     PostgresChunkStore,
@@ -53,7 +58,6 @@ from boba.tool.confluence.chunking import (
     ChunkerParams,
     StructuralChunkerFactory,
 )
-from boba.tool.confluence.connection import ConfluenceConnection
 from boba.tool.confluence.indexing_log import (
     IngestProgress,
     LoggedIndexRun,
@@ -66,8 +70,6 @@ from boba.tool.confluence.indexing_log import (
 from boba.tool.confluence.pipeline import ConfluenceSourceTransport
 from boba.tool.confluence.request_sources import (
     ConfluenceDiscovery,
-    ConfluencePaginator,
-    ConfluenceRest,
     ContentListing,
     CqlListing,
     PageListing,

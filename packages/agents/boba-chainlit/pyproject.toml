@@ -59,7 +59,7 @@ dev = [
     "boba-tool-connections==0.0.21.dev2",
     "boba-tool-canvas==0.0.21.dev2",
     "boba-tool-doc==0.0.21.dev2",
-    "boba-confluence==0.0.21.dev2",
+    "boba-confluence[html]==0.0.21.dev2",
     "boba-tool-confluence==0.0.21.dev2",
     "boba-tool-knowledge==0.0.21.dev2",
     "boba-tool-postgres==0.0.21.dev2",

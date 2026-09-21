@@ -2,8 +2,8 @@
 
 Пакет держит контракт формата, общий для писателя и читателя индекса:
 инструменты `boba.tool.confluence` пишут чанки страниц и вложений с этими
-ключами, kb-поиск (`boba.tool.kb`) по ним же собирает колонки выдачи. Ни
-транспорта, ни ввода-вывода здесь нет — только модели и их разбор.
+ключами, kb-поиск (`boba.tool.kb`) по ним же собирает колонки выдачи, а
+индексатор ix читает Confluence теми же адресами и пагинатором.
 
 Содержимое:
 
@@ -15,6 +15,12 @@
   порогами раскладки TableShape.
 - parsing.py — ConfluenceJson и ConfluenceJsonDecoder: REST-JSON -> RawDocument
   с расширенной metadata; BodyDigest — хэш тела страницы.
+- rest.py    — ConfluenceConnection (endpoint: профиль, формат тела, дамп),
+  ConfluenceUrl и ConfluenceRest (адреса REST), ConfluencePaginator
+  (пагинированные запросы поверх HttpTransport проекта).
+- html.py    — ConfluenceHtml и PageOps: разбор HTML Confluence, секции,
+  ссылки и конверсия в markdown; закрыт extra `html` (bs4, markdownify)
+  и импортируется только там, где он нужен.
 
 Ошибки:
 ConfluencePayloadError — REST-ответ не разобран: не тот тип, нет полей схемы.

@@ -1,20 +1,37 @@
 /*
-Вектор: ранг node это лучший чанк среди её аспектов; %(v)s это вектор запроса от embed_query
-(префикс query: подставляет провайдер). Расстояние косинусное, меньше значит ближе.
+Вектор по всем происхождениям: ближайшие чанки берутся из каждой таблицы эмбеддингов
+своим порядком и лимитом, чтобы каждая шла своим индексом, затем ранг node это лучший
+чанк среди её аспектов. %(v)s это вектор запроса от embed_query (префикс query:
+подставляет провайдер). Расстояние косинусное, меньше значит ближе.
 */
 with hit as (
-    select
-        e.node_id,
-        e.aspect,
-        e.chunk_no,
-        e.content,
-        e.emb <=> %(v)s::halfvec(1024) as dist
-    from
-        {schema}.pg_idx_emb_e5_1024 e
-    order by
-        e.emb <=> %(v)s::halfvec(1024)
-    limit
-        %(limit)s * 8
+    (
+        select
+            e.node_id,
+            e.aspect,
+            e.content,
+            e.emb <=> %(v)s::halfvec(1024) as dist
+        from
+            {schema}.pg_idx_emb_e5_1024 e
+        order by
+            e.emb <=> %(v)s::halfvec(1024)
+        limit
+            %(limit)s * 8
+    )
+    union all
+    (
+        select
+            e.node_id,
+            e.aspect,
+            e.content,
+            e.emb <=> %(v)s::halfvec(1024) as dist
+        from
+            {schema}.cfl_idx_emb_e5_1024 e
+        order by
+            e.emb <=> %(v)s::halfvec(1024)
+        limit
+            %(limit)s * 8
+    )
 )
 select
     n.surface,

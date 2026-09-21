@@ -19,11 +19,12 @@ from typing import Annotated, Any, ClassVar, Final, Literal
 import httpx
 from pydantic import ConfigDict, Field, ValidationError
 
+from boba.chat.http import HttpDumpConfig
 from boba.confluence.address import ConfluenceAddresses
 from boba.confluence.models import ConfluenceSpaceItem
 from boba.confluence.parsing import ConfluenceJson
+from boba.confluence.rest import ConfluenceRest
 from boba.text.grep import GrepLimits, TextGrep
-from boba.tool.confluence.request_sources import ConfluenceRest
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
 from boba.toolkit.result import MarkdownResult, TableResult
@@ -64,6 +65,10 @@ class ConfluenceToolsConfig(SecretRevealing):
         ge=1,
         description="Потолок длины content/before/after на match в grep.",
     )
+    dump: HttpDumpConfig = Field(
+        default_factory=HttpDumpConfig,
+        description="Дамп HTTP-обмена с Confluence в файлы по хосту.",
+    )
 
 
 class AddressColumn(StrEnum):
@@ -82,7 +87,7 @@ class ConfluenceHttp:
         url = profile.url_of(str(path))
         try:
             async with (
-                HttpTransport(profile) as transport,
+                HttpTransport(profile, dump=cfg.dump) as transport,
                 transport.fetch(HttpRequest(url=str(path))) as got,
             ):
                 return await got.stream.read()
@@ -117,14 +122,14 @@ class ConfluencePageText:
         if not as_markdown:
             return html
 
-        from boba.tool.confluence.html import PageOps  # noqa: PLC0415
+        from boba.confluence.html import PageOps  # noqa: PLC0415
 
         answer = PageOps.to_markdown({"html": html, "heading_style": cls.HEADING_STYLE})
         return str(answer["markdown"])
 
     @staticmethod
     def excerpt_of(html: str, snippet_chars: int) -> str:
-        from boba.tool.confluence.html import PageOps  # noqa: PLC0415
+        from boba.confluence.html import PageOps  # noqa: PLC0415
 
         excerpt = ""
         if html:

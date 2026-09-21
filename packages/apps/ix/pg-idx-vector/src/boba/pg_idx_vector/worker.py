@@ -1,16 +1,17 @@
 """Воркер векторного индексатора: очередь из ix, резка на чанки, эмбеддинг провайдером
 проекта, запись набора чанков аспекта.
 
-Один цикл: 10_queue.sql пачкой, текст каждого аспекта режется токенизатором модели
-на окна с перекрытием, embed_documents провайдера boba.llm.embedding по чанкам пачки,
-20_write.sql на каждый аспект (весь набор его чанков одним statement'ом), 90_unlock.sql,
-и так до пустой очереди; в конце 30_prune.sql. Источник аспектов собирается при старте
+Один цикл: 10_queue.sql пачкой, чанки, векторы и 20_write.sql на каждый аспект делает
+AspectEmbedding из embedding.py (библиотечная часть пакета, её же зовут индексаторы
+других происхождений), затем 90_unlock.sql, и так до пустой очереди; в конце
+30_prune.sql. Источник аспектов собирается при старте
 из объявлений {schema}.surface_aspect по классам из конфига и подставляется вместо
 `{sources}`; на каждую объявленную пару surface + aspect воркер ставит частичный HNSW
 файлом 05_index.sql.
 
 Ошибки:
-VectorWorkerError — база или провайдер недоступны, ответ не того вида, что ожидался.
+VectorWorkerError — база ix недоступна или ответ шага не того вида, что ожидался.
+AspectEmbeddingError — модель, чанкер или провайдер эмбеддингов (embedding.py).
 """
 
 from __future__ import annotations
@@ -25,11 +26,15 @@ from typing import Any, ClassVar
 
 import psycopg
 from psycopg import sql
-from pydantic import BaseModel, Field
-from tokenizers import Tokenizer
+from pydantic import BaseModel
 
 from boba.config import ConfigError, bind_section
-from boba.llm.embedding import EmbedderFactory, EmbeddingError, LocalEmbedding
+from boba.pg_idx_vector.embedding import (
+    AspectEmbedding,
+    AspectEmbeddingError,
+    AspectText,
+    EmbeddingParams,
+)
 from boba.pg_ix_core.aspects import (
     AspectClass,
     AspectDeclarations,
@@ -50,7 +55,6 @@ class VectorWorkerError(Exception):
 class SqlFile(StrEnum):
     INDEX = "05_index.sql"
     QUEUE = "10_queue.sql"
-    WRITE = "20_write.sql"
     PRUNE = "30_prune.sql"
     UNLOCK = "90_unlock.sql"
 
@@ -64,60 +68,8 @@ class Part(StrEnum):
     ASPECT = "aspect"
 
 
-class WorkerConfig(IxDatabase):
+class WorkerConfig(IxDatabase, EmbeddingParams):
     classes: Sequence[AspectClass]
-    model: str = "intfloat/multilingual-e5-large"
-    cache_dir: str
-    dim: int = Field(gt=0, default=1024)
-    batch: int = Field(gt=0, default=64)
-    chunk_tokens: int = Field(gt=0, default=400)
-    chunk_overlap: int = Field(ge=0, default=50)
-
-
-class QueueRow(BaseModel):
-    node_id: int
-    surface: str
-    aspect: str
-    content: str
-    content_hash: str
-
-
-class Chunker:
-    """
-    Режет текст аспекта на окна по токенам модели с перекрытием. Токенизатор берётся из
-    того же кэша fastembed, что и модель, поэтому границы совпадают с тем, что видит
-    модель.
-    Текст короче окна остаётся одним чанком без перекодирования."""
-
-    TOKENIZER_GLOB = "models--*/snapshots/*/tokenizer.json"
-
-    def __init__(self, cache_dir: str, chunk_tokens: int, overlap: int) -> None:
-        if overlap >= chunk_tokens:
-            raise VectorWorkerError(
-                f"chunking: overlap {overlap} must be smaller than chunk size "
-                "{chunk_tokens}"
-            )
-        found = sorted(Path(cache_dir).glob(self.TOKENIZER_GLOB))
-        if not found:
-            raise VectorWorkerError(
-                f"chunking: no tokenizer.json under {cache_dir}/{self.TOKENIZER_GLOB}"
-            )
-        self._tokenizer = Tokenizer.from_file(str(found[0]))
-        self._size = chunk_tokens
-        self._step = chunk_tokens - overlap
-
-    def split(self, text: str) -> list[str]:
-        ids = self._tokenizer.encode(text, add_special_tokens=False).ids
-        if len(ids) <= self._size:
-            return [text]
-        chunks: list[str] = []
-        start = 0
-        while start < len(ids):
-            chunks.append(self._tokenizer.decode(ids[start : start + self._size]))
-            if start + self._size >= len(ids):
-                break
-            start += self._step
-        return chunks
 
 
 class CycleReport(BaseModel):
@@ -148,21 +100,13 @@ class PackageSql:
 class VectorWorker:
     """Цикл индексатора: одна сессия к ix, один эмбеддер проекта."""
 
+    TABLE: ClassVar[str] = "pg_idx_emb_e5_1024"
     INDEX_NAME: ClassVar[str] = "pg_idx_emb_e5_1024__{surface}_{aspect}__hnsw"
 
     def __init__(self, cfg: WorkerConfig, package_dir: Path) -> None:
         self._cfg = cfg
         self._dir = package_dir
-        embedding = LocalEmbedding(
-            kind="local",
-            model=cfg.model,
-            cache_dir=cfg.cache_dir,
-            dim=cfg.dim,
-            batch_size=cfg.batch,
-            progress_every=cfg.batch,
-        )
-        self._embedder = EmbedderFactory.build(embedding)
-        self._chunker = Chunker(cfg.cache_dir, cfg.chunk_tokens, cfg.chunk_overlap)
+        self._embedding = AspectEmbedding(cfg, cfg.db_schema, self.TABLE)
 
     async def run(self) -> CycleReport:
         try:
@@ -228,40 +172,26 @@ class VectorWorker:
             rows = await self._queue(conn, sql_files)
             if not rows:
                 break
-            chunks: list[list[str]] = []
-            for row in rows:
-                chunks.append(self._chunker.split(row.content))
-            flat: list[str] = []
-            for parts in chunks:
-                flat.extend(parts)
-            vectors = await self._embed(flat)
-            offset = 0
-            for row, parts in zip(rows, chunks, strict=True):
-                await self._write(
-                    conn, sql_files, row, parts, vectors[offset : offset + len(parts)]
-                )
-                offset += len(parts)
+
+            chunks = await self._embedding.write(conn, rows)
             await self._unlock(conn, sql_files)
             rounds += 1
             written += len(rows)
             logger.info(
-                "round %d: %d aspects written as %d chunks",
-                rounds,
-                len(rows),
-                len(flat),
+                "round %d: %d aspects written as %d chunks", rounds, len(rows), chunks
             )
         return rounds, written
 
     async def _queue(
         self, conn: psycopg.AsyncConnection[Any], sql_files: PackageSql
-    ) -> list[QueueRow]:
+    ) -> list[AspectText]:
         cur = await conn.execute(
             sql_files.load(SqlFile.QUEUE), {"batch": self._cfg.batch}
         )
-        rows: list[QueueRow] = []
+        rows: list[AspectText] = []
         for node_id, surface, aspect, content, content_hash in await cur.fetchall():
             rows.append(
-                QueueRow(
+                AspectText(
                     node_id=node_id,
                     surface=surface,
                     aspect=aspect,
@@ -270,43 +200,6 @@ class VectorWorker:
                 )
             )
         return rows
-
-    async def _embed(self, contents: Sequence[str]) -> Sequence[Sequence[float]]:
-        try:
-            vectors = await self._embedder.embed_documents(contents)
-        except EmbeddingError as exc:
-            raise VectorWorkerError(
-                f"embedding {len(contents)} chunks with {self._cfg.model}: {exc}"
-            ) from exc
-        if len(vectors) != len(contents):
-            raise VectorWorkerError(
-                f"embedding {len(contents)} chunks: expected {len(contents)} vectors, "
-                "got {len(vectors)}"
-            )
-        return vectors
-
-    async def _write(
-        self,
-        conn: psycopg.AsyncConnection[Any],
-        sql_files: PackageSql,
-        row: QueueRow,
-        parts: Sequence[str],
-        vectors: Sequence[Sequence[float]],
-    ) -> None:
-        rendered: list[str] = []
-        for vector in vectors:
-            rendered.append("[" + ",".join(f"{value:.6g}" for value in vector) + "]")
-        params = {
-            "node_id": row.node_id,
-            "surface": row.surface,
-            "aspect": row.aspect,
-            "content_hash": row.content_hash,
-            "chunk_count": len(parts),
-            "chunk_nos": list(range(len(parts))),
-            "contents": list(parts),
-            "embs": rendered,
-        }
-        await conn.execute(sql_files.load(SqlFile.WRITE), params)
 
     async def _unlock(
         self, conn: psycopg.AsyncConnection[Any], sql_files: PackageSql
@@ -389,7 +282,12 @@ def main() -> None:
             report.written,
             report.pruned,
         )
-    except (ConfigError, SchemaUpgradeError, VectorWorkerError) as exc:
+    except (
+        AspectEmbeddingError,
+        ConfigError,
+        SchemaUpgradeError,
+        VectorWorkerError,
+    ) as exc:
         raise SystemExit(str(exc)) from exc
 
 

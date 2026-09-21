@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 
+from boba.confluence.html import PageOps
 from boba.confluence.models import (
     PageCardSection,
     PageHref,
@@ -19,7 +20,6 @@ from boba.confluence.models import (
     TableShape,
 )
 from boba.indexing import SourceId, TableLayout, TableSection
-from boba.tool.confluence.html import PageOps
 
 _HTML = (
     "<html><body><h1>Заголовок</h1><p>Абзац с <b>жирным</b>.</p>"

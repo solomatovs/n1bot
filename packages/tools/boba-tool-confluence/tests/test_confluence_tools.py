@@ -6,7 +6,7 @@ from typing import Any, ClassVar
 
 import pytest
 
-from boba.tool.confluence.request_sources import ConfluenceRest
+from boba.confluence.rest import ConfluenceRest
 from boba.tool.confluence.tools import TOOLS as CONFLUENCE_TOOLS
 from boba.tool.confluence.tools import (
     ConfluenceToolsConfig,
