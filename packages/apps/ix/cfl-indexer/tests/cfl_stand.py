@@ -6,15 +6,17 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from boba.cfl_indexer import worker as indexer
+from boba.cfl_indexer.confluence import SpaceSelector
 from boba.cfl_indexer.worker import (
     ConfluenceSource,
     IndexerConfig,
     IndexerWorker,
     SpaceReport,
 )
-from boba.confluence.rest import ConfluenceConnection
+from boba.confluence.rest import ConfluenceConnection, SpaceType
 from boba.pg_idx_fts.worker import FtsWeight
 from boba.stand.ix import IxStand
+from boba.text.document import LiteParseParams
 from boba.transport.http.profile import HttpConnection, UrlScheme
 
 __all__ = ["PACKAGE_DIR", "WEIGHTS", "StubIndexer"]
@@ -54,15 +56,17 @@ class StubIndexer:
                 ConfluenceSource(
                     name="stub",
                     confluence=ConfluenceConnection(profile=profile),
-                    spaces=list(spaces),
+                    spaces=SpaceSelector(
+                        masks=list(spaces), type=SpaceType.GLOBAL, archived=True
+                    ),
                 )
             ],
-            workers=1,
+            parallel_spaces=1,
+            parser=LiteParseParams(),
             weights=WEIGHTS,
         )
 
     async def run(self, *spaces: str) -> list[SpaceReport]:
         cfg = self.config(*spaces)
-        targets = cfg.targets("", "")
 
-        return await IndexerWorker(cfg, PACKAGE_DIR / "run").run(targets)
+        return await IndexerWorker(cfg, PACKAGE_DIR / "run").run()

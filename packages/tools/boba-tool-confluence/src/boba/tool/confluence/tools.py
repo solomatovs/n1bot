@@ -9,7 +9,6 @@ ConfluenceRequestError — REST недоступен или ответил ст�
 
 from __future__ import annotations
 
-import fnmatch
 import json
 import sys
 from collections.abc import Mapping, Sequence
@@ -21,9 +20,9 @@ from pydantic import ConfigDict, Field, ValidationError
 
 from boba.chat.http import HttpDumpConfig
 from boba.confluence.address import ConfluenceAddresses
-from boba.confluence.models import ConfluenceSpaceItem
+from boba.confluence.models import ConfluenceSpaceItem, SpaceMask
 from boba.confluence.parsing import ConfluenceJson
-from boba.confluence.rest import ConfluenceRest
+from boba.confluence.rest import ConfluenceRest, SpaceType
 from boba.text.grep import GrepLimits, TextGrep
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
@@ -165,11 +164,7 @@ class SpaceList:
         if pattern is None:
             return True
 
-        lowered = pattern.lower()
-        if fnmatch.fnmatch(space.key.lower(), lowered):
-            return True
-
-        return fnmatch.fnmatch(space.name.lower(), lowered)
+        return SpaceMask.of_masks([pattern]).matches(space)
 
     @staticmethod
     def row(space: ConfluenceSpaceItem, profile: HttpConnection) -> dict[str, Any]:
@@ -415,7 +410,7 @@ async def confluence_spaces(
     но поиск Confluence его не отдаёт, поэтому по CQL такой спейс выглядит
     пустым.
     """
-    path = ConfluenceRest.space_list_path(space_type, limit=limit)
+    path = ConfluenceRest.space_list_path(SpaceType(space_type), limit=limit)
     data = json.loads(await ConfluenceHttp.get(cfg, path))
 
     rows: list[dict[str, Any]] = []

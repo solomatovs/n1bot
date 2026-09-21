@@ -8,10 +8,12 @@ from __future__ import annotations
 import pytest
 from cfl_stand import PACKAGE_DIR, WEIGHTS
 
+from boba.cfl_indexer.confluence import SpaceSelector
 from boba.cfl_indexer.worker import ConfluenceSource, IndexerConfig, IndexerWorker
-from boba.confluence.rest import ConfluenceConnection
+from boba.confluence.rest import ConfluenceConnection, SpaceType
 from boba.stand.ix import IxStand, IxStandDatabase
 from boba.stand.site import Stand
+from boba.text.document import LiteParseParams
 from boba.transport.http.profile import BearerAuth, HttpConnection
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -39,10 +41,13 @@ def _config(ix_stand: IxStand) -> IndexerConfig:
             ConfluenceSource(
                 name="stand",
                 confluence=ConfluenceConnection(profile=profile),
-                spaces=[SPACE],
+                spaces=SpaceSelector(
+                    masks=[SPACE], type=SpaceType.GLOBAL, archived=True
+                ),
             )
         ],
-        workers=1,
+        parallel_spaces=1,
+        parser=LiteParseParams(),
         weights=WEIGHTS,
     )
 
@@ -54,14 +59,12 @@ class TestLiveSpace:
         if not STAND.confluence_token.get_secret_value():
             pytest.skip("в конфиге стенда нет токена confluence")
 
-        cfg = _config(ix_stand)
-        worker = IndexerWorker(cfg, PACKAGE_DIR / "run")
-        targets = cfg.targets("", "")
+        worker = IndexerWorker(_config(ix_stand), PACKAGE_DIR / "run")
 
-        first = (await worker.run(targets))[0]
+        first = (await worker.run())[0]
         assert first.seen >= 2
         assert first.indexed == first.seen
 
-        second = (await worker.run(targets))[0]
+        second = (await worker.run())[0]
         assert second.indexed == 0
         assert second.unchanged == second.seen

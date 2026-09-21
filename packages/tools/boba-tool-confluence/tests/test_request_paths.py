@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from boba.confluence.rest import ConfluenceRest
+from boba.confluence.rest import ConfluenceRest, SpaceType
 
 
 class TestConfluencePaths:
@@ -52,11 +52,11 @@ class TestConfluencePaths:
         assert "children.attachment" in url.params["expand"]
 
     def test_space_list_path(self) -> None:
-        assert str(ConfluenceRest.space_list_path("any")) == (
+        assert str(ConfluenceRest.space_list_path(SpaceType.ANY)) == (
             "/rest/api/space?limit=50&start=0"
         )
         assert str(
-            ConfluenceRest.space_list_path("global", expand="description.plain")
+            ConfluenceRest.space_list_path(SpaceType.GLOBAL, expand="description.plain")
         ) == ("/rest/api/space?limit=50&start=0&type=global&expand=description.plain")
 
     def test_cql_search_path(self) -> None:
