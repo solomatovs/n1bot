@@ -116,6 +116,7 @@ extraPaths = [
     "packages/tools/boba-tool-chart/src",
     "packages/tools/boba-tool-web/src",
     "packages/tools/boba-tool-doc/src",
+    "packages/tools/boba-tool-mail/src",
     "packages/tools/boba-tool-postgres/src",
     "packages/tools/boba-tool-clickhouse/src",
     "packages/tools/boba-tool-knowledge/src",
@@ -220,6 +221,7 @@ boba-tool-postgres  = { workspace = true }
 boba-tool-clickhouse = { workspace = true }
 boba-tool-knowledge = { workspace = true }
 boba-tool-confluence = { workspace = true }
+boba-tool-mail       = { workspace = true }
 boba-confluence     = { workspace = true }
 boba-kbdoc          = { workspace = true }
 boba-liteparse      = { workspace = true }

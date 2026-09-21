@@ -14,6 +14,8 @@ tree=/tree
 
 mkdir -p "$tree"
 tar -x -i -f - -C "$tree"
+# docker cp берёт дерево из контейнера: маркер docker'а в корень образа не нужен
+rm -f "$tree/.dockerenv"
 
 PYTHONHOME="$tree/usr/local" LD_LIBRARY_PATH="$tree/usr/local/lib" "$tree/usr/local/bin/python3" \
     -m compileall -q -j 0 -s "$tree" -p / -x '/(test|tests|lib2to3|idle_test)/' \

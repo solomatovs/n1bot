@@ -766,7 +766,7 @@ class SqlStatement(BaseModel):
         if self.rows is None:
             return self.caption()
 
-        body = json.dumps(self.rows, ensure_ascii=False)
+        body = json.dumps(self.rows, ensure_ascii=False, default=str)
         if not self.note:
             return body
 

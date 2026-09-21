@@ -192,16 +192,11 @@ docker build -f $(BASE_DIR)/Dockerfile $(NO_CACHE_OPT) $(DOCKER_ARGS) $(PROXY_AR
     --target $(1) --tag $(2) $(PROGRESS) $(BUILD_CONTEXT)
 endef
 
-# выгрузка файлов стадии в каталог без образа: $(1) — стадия, $(2) — каталог, $(3) — аргументы
-define docker-output
+# образ стадии без тега, работает и без buildkit: $(1) — стадия, $(2) — файл для ID
+# образа, $(3) — аргументы. Лог сборки уходит в stderr: stdout рецепта бывает занят tar'ом
+define docker-image
 docker build -f $(BASE_DIR)/Dockerfile $(NO_CACHE_OPT) $(DOCKER_ARGS) $(PROXY_ARGS) $(3) \
-    --target $(1) --output type=local,dest=$(2) $(PROGRESS) $(BUILD_CONTEXT)
-endef
-
-# файловая система стадии tar'ом в stdout: $(1) — стадия, $(2) — аргументы
-define docker-tar
-docker build -f $(BASE_DIR)/Dockerfile $(NO_CACHE_OPT) $(DOCKER_ARGS) $(PROXY_ARGS) $(2) \
-    --target $(1) --output type=tar,dest=- $(PROGRESS) $(BUILD_CONTEXT)
+    --target $(1) --iidfile "$(2)" $(PROGRESS) $(BUILD_CONTEXT) >&2
 endef
 
 # mke2fs из src/sandbox/tools в контейнере glibc: $(1) — скрипт, $(2) — каталог результата,
@@ -402,7 +397,11 @@ sandbox: version-check
 	echo "== песочница $(APP) =="
 	mkdir -p "$(SANDBOX_DIR)"
 	rm -f $(SANDBOX_PARTS) $(SANDBOX_TOOLS)
-	$(call docker-output,sandbox-out,$(SANDBOX_DIR))
+	tmp=$$(mktemp -d)
+	trap 'rm -rf "$$tmp"' EXIT
+	$(call docker-image,sandbox-out,$$tmp/sandbox.iid)
+	$(call image-copy,$$(cat "$$tmp/sandbox.iid"),/third,$(SANDBOX_DIR))
+	$(call image-copy,$$(cat "$$tmp/sandbox.iid"),/tools,$(SANDBOX_DIR))
 	chmod 0755 "$(SANDBOX_DIR)/third/bin/bwrap" "$(SANDBOX_DIR)/third/bin/fuse2fs" "$(SANDBOX_DIR)/tools/mke2fs"
 	$(call mke2fs-run,mkworkspace.sh,$(SANDBOX_DIR),/out/workspace.ext4 $(SANDBOX_WS_SIZE)) < /dev/null
 	# TrustedBinaries отвергает каталог, открытый группе на запись
@@ -419,13 +418,19 @@ plugin-rootfs: version-check
 	$(call check,$(SANDBOX_TOOLS),запусти: make sandbox)
 	echo "== образ корня плагина $(PLUGIN) =="
 	mkdir -p "$(dir $(PLUGIN_ROOTFS))"
-	# корень и site-packages стримятся в mke2fs двумя tar'ами: ни ext4, ни копия site
-	# не оседают в build cache; из стадии plugin-site tarsub вырезает только /opt/site и код
+	# корень и site-packages стримятся в mke2fs двумя tar'ами через docker cp в stdout:
+	# ext4 не оседает ни в образах, ни на диске хоста. Пути site и кода раскладывает
+	# стадия plugin-site-out, переписывать tar на хосте не нужно
+	tmp=$$(mktemp -d)
+	root_cid= site_cid=
+	trap 'docker rm -f $$root_cid $$site_cid > /dev/null 2>&1 || true; rm -rf "$$tmp"' EXIT
+	$(call docker-image,plugin-root,$$tmp/root.iid,$(APP_ARGS) --build-arg PLUGIN=$(PLUGIN))
+	$(call docker-image,plugin-site-out,$$tmp/site.iid,$(APP_ARGS) --build-arg PLUGIN=$(PLUGIN))
+	root_cid=$$(docker create "$$(cat "$$tmp/root.iid")" /bin/true)
+	site_cid=$$(docker create "$$(cat "$$tmp/site.iid")" /bin/true)
 	{
-	    $(call docker-tar,plugin-root,$(APP_ARGS) --build-arg PLUGIN=$(PLUGIN))
-	    $(call docker-tar,plugin-site,$(APP_ARGS) --build-arg PLUGIN=$(PLUGIN)) \
-	        | $(PYTHON) "$(SCRIPTS_DIR)/tarsub.py" \
-	            opt/site=usr/local/lib/python$(PYTHON_VERSION)/site-packages opt/code-sandbox=usr/src
+	docker cp "$$root_cid:/." -
+	docker cp "$$site_cid:/usr" -
 	} | $(call mke2fs-run,mkrootfs.sh,$(dir $(PLUGIN_ROOTFS)),/out/rootfs.ext4 $(PYTHON_VERSION) 16)
 
 # образы всех плагинов с entry points группы boba.tools
@@ -578,6 +583,8 @@ prune:
 	    | { grep -E '^boba-$(APP):' || true; } \
 	    | { grep -v -E ':($(BOBA_TAG)|latest)$$' || true; } \
 	    | { xargs -r -n1 docker rmi || true; }   # образ под живым контейнером остаётся
+	# образы стадий без тега (docker-image): кэш классического builder'а
+	docker image prune -f
 	docker builder prune -f --keep-storage $(PRUNE_KEEP)
 	docker system df
 
