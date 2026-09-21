@@ -1,0 +1,365 @@
+"""Описание одного объекта моделью: промпт его поверхности, бюджет входа и свёртка.
+
+Что говорить модели, знает владелец поверхности строкой в {schema}.surface_prompt;
+сколько текста модель принимает за раз, знает конфиг описателя, потому что это
+свойство модели, а не объекта. Отсюда правило одно на всех: материал короче бюджета
+уходит одним вызовом, длиннее — режется по структуре markdown, каждый кусок получает
+выжимку, и второй вызов сводит выжимки в описание. Размер страницы после этого
+перестаёт иметь значение: в базу в любом случае ложится один текст.
+
+Шаблоны выжимки и сведения лежат файлами пакета: они про способ разговора с моделью, а
+не про предметную область, и одинаковы для всех поверхностей. Туда же относится правило
+ответа — вызовом функции схемы: описатель дописывает его к системному промпту любой
+поверхности, чтобы владельцу не приходилось знать контракт ответа. Системный промпт на
+обоих проходах берётся из строки поверхности, поэтому модель остаётся в своей роли.
+
+Генератор собирается на каждый системный промпт и переиспользуется: клиент к endpoint'у
+и локальный рантайм общие на процесс, потому что модель одна.
+
+Ошибки:
+DescribeError — модель недоступна или ответила не по схеме, файла шаблона нет,
+    провайдер настроен неполно.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from collections.abc import Sequence
+from enum import StrEnum
+from pathlib import Path
+from typing import ClassVar
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from boba.chat.generation import (
+    GenerationError,
+    LocalGeneration,
+    OpenAiGeneration,
+    SchemaSpec,
+    StructuredGenerator,
+)
+from boba.chat.http import HttpConfig
+from boba.ix_core.prompts import SurfacePrompt
+from boba.llm.generation import GeneratorFactory
+from boba.llm.http import LlmHttp
+from boba.llm.local import OnnxChatRuntime
+
+__all__ = [
+    "DescribeError",
+    "Described",
+    "Description",
+    "Generators",
+    "MarkdownSplit",
+    "ModelConfig",
+    "PackPrompts",
+    "Provider",
+]
+
+
+class DescribeError(Exception):
+    """Объект не удалось описать."""
+
+
+class Provider(StrEnum):
+    OPENAI = "openai"
+    LOCAL = "local"
+
+
+class ModelConfig(BaseModel):
+    """Часть секции конфига, которая описывает модель и её бюджет входа."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    provider: Provider
+    model: str = ""
+    base_url: str = ""
+    api_key: str = ""
+    model_dir: str = ""
+    max_tokens: int = Field(gt=0, default=1024)
+    temperature: float = Field(ge=0, default=0.2)
+    tool_choice: str = "auto"
+    max_input_chars: int = Field(gt=0)
+    """Сколько знаков материала модель принимает за один вызов; длиннее — свёртка."""
+
+    def label(self) -> str:
+        """Модель для отпечатка: её смена перегоняет описания заново."""
+        if self.provider is Provider.LOCAL:
+            return f"local:{self.model_dir}"
+
+        return f"openai:{self.model}"
+
+
+class PromptFile(StrEnum):
+    """Файлы пакета: схема ответа, правило ответа и шаблоны свёртки."""
+
+    SCHEMA = "schema.json"
+    ANSWER = "answer.md"
+    PART = "part.md"
+    REDUCE = "reduce.md"
+
+
+class PackPrompts:
+    """Шаблоны свёртки и схема ответа из каталога prompt/ пакета.
+
+    Шаблон выжимки получает кусок материала вместо {input}, шаблон сведения —
+    пронумерованные выжимки вместо {parts}. Схема ответа одна на всё: модель всегда
+    возвращает один текст. Правило ответа называет функцию схемы вместо {function} и
+    дописывается к системному промпту поверхности.
+    """
+
+    PARTS: ClassVar[str] = "{parts}"
+    FUNCTION: ClassVar[str] = "{function}"
+
+    def __init__(self, prompt_dir: Path) -> None:
+        self._dir = prompt_dir
+        self._part = self._text(PromptFile.PART, SurfacePrompt.INPUT)
+        self._reduce = self._text(PromptFile.REDUCE, self.PARTS)
+        raw = self._read(PromptFile.SCHEMA)
+        self.schema = SchemaSpec.model_validate(json.loads(raw))
+        answer = self._text(PromptFile.ANSWER, self.FUNCTION)
+        self._answer = answer.replace(self.FUNCTION, self.schema.name)
+
+    def system(self, surface_system: str) -> str:
+        """Системный промпт вызова: роль от владельца поверхности и правило ответа."""
+        return f"{surface_system}\n\n{self._answer}"
+
+    def part(self, chunk: str) -> str:
+        return self._part.replace(SurfacePrompt.INPUT, chunk)
+
+    def reduce(self, parts: Sequence[str]) -> str:
+        lines: list[str] = []
+        for number, text in enumerate(parts, start=1):
+            lines.append(f"{number}. {text}")
+
+        return self._reduce.replace(self.PARTS, "\n\n".join(lines))
+
+    def material(self) -> str:
+        """То, что пакет добавляет в отпечаток пары: шаблоны и схема ответа."""
+        return "\n".join(
+            [
+                self._answer,
+                self._part,
+                self._reduce,
+                json.dumps(self.schema.body, sort_keys=True, ensure_ascii=False),
+            ]
+        )
+
+    def _text(self, name: PromptFile, placeholder: str) -> str:
+        text = self._read(name).strip()
+        if placeholder not in text:
+            raise DescribeError(
+                f"{self._dir / name}: expected the placeholder {placeholder}, "
+                f"got {text[:80]!r}"
+            )
+
+        return text
+
+    def _read(self, name: PromptFile) -> str:
+        path = self._dir / name
+        if not path.is_file():
+            raise DescribeError(f"prompt file {path} not found")
+
+        return path.read_text(encoding="utf-8")
+
+
+class MarkdownSplit:
+    """Резак материала под бюджет модели.
+
+    Текст режется по границам структуры: сначала по заголовкам markdown, потом по
+    пустым строкам, и только затем, если абзац сам длиннее бюджета, по знакам. Куски
+    набираются жадно, поэтому их получается столько, сколько нужно, а не сколько
+    заголовков в тексте.
+    """
+
+    HEADING: ClassVar[re.Pattern[str]] = re.compile(r"(?m)^(?=#{1,6} )")
+    PARAGRAPH: ClassVar[str] = "\n\n"
+    GLUE: ClassVar[str] = "\n\n"
+
+    def __init__(self, budget: int) -> None:
+        if budget <= 0:
+            raise DescribeError(f"chunking: expected a positive budget, got {budget}")
+
+        self._budget = budget
+
+    def split(self, text: str) -> list[str]:
+        if len(text) <= self._budget:
+            return [text]
+
+        return self._pack(self._pieces(text))
+
+    def _pieces(self, text: str) -> list[str]:
+        pieces: list[str] = []
+        for section in self.HEADING.split(text):
+            pieces.extend(self._paragraphs(section))
+
+        return pieces
+
+    def _paragraphs(self, section: str) -> list[str]:
+        if len(section) <= self._budget:
+            return [section]
+
+        pieces: list[str] = []
+        for paragraph in section.split(self.PARAGRAPH):
+            pieces.extend(self._hard(paragraph))
+
+        return pieces
+
+    def _hard(self, paragraph: str) -> list[str]:
+        if len(paragraph) <= self._budget:
+            return [paragraph]
+
+        pieces: list[str] = []
+        start = 0
+        while start < len(paragraph):
+            pieces.append(paragraph[start : start + self._budget])
+            start += self._budget
+
+        return pieces
+
+    def _pack(self, pieces: Sequence[str]) -> list[str]:
+        chunks: list[str] = []
+        current: list[str] = []
+        size = 0
+        for piece in pieces:
+            if not piece.strip():
+                continue
+
+            if current and size + len(piece) > self._budget:
+                chunks.append(self.GLUE.join(current))
+                current = []
+                size = 0
+
+            current.append(piece)
+            size += len(piece) + len(self.GLUE)
+
+        if current:
+            chunks.append(self.GLUE.join(current))
+
+        return chunks
+
+
+class Reply(BaseModel):
+    """Ответ модели по схеме пакета."""
+
+    description: str = Field(min_length=1)
+
+
+class Described(BaseModel):
+    """Итог описания объекта: текст и сколько кусков понадобилось материалу."""
+
+    model_config = ConfigDict(frozen=True)
+
+    text: str
+    chunks: int
+
+
+class Generators:
+    """Генераторы по системному промпту.
+
+    Модель одна на процесс, а роль у неё своя на каждую поверхность, поэтому клиент к
+    endpoint'у и локальный рантайм создаются один раз, а генератор собирается на каждый
+    системный промпт и дальше переиспользуется.
+    """
+
+    def __init__(self, cfg: ModelConfig) -> None:
+        self._cfg = cfg
+        self._built: dict[str, StructuredGenerator] = {}
+        self._client = None
+        self._runtime = None
+
+        if cfg.provider is Provider.LOCAL:
+            if not cfg.model_dir:
+                raise DescribeError("provider local: expected model_dir in the config")
+
+            self._runtime = OnnxChatRuntime(cfg.model_dir)
+            return
+
+        if not cfg.base_url:
+            raise DescribeError("provider openai: expected base_url in the config")
+
+        if not cfg.model:
+            raise DescribeError("provider openai: expected model in the config")
+
+        self._client = LlmHttp.client(HttpConfig())
+
+    def of(self, system_prompt: str) -> StructuredGenerator:
+        found = self._built.get(system_prompt)
+        if found is not None:
+            return found
+
+        built = self._build(system_prompt)
+        self._built[system_prompt] = built
+
+        return built
+
+    def _build(self, system_prompt: str) -> StructuredGenerator:
+        if self._cfg.provider is Provider.LOCAL:
+            local = LocalGeneration(
+                kind="local",
+                system_prompt=system_prompt,
+                max_tokens=self._cfg.max_tokens,
+                model_dir=self._cfg.model_dir,
+                reply_prefix="",
+            )
+
+            return GeneratorFactory.build(local, client=None, runtime=self._runtime)
+
+        remote = OpenAiGeneration(
+            kind="openai",
+            system_prompt=system_prompt,
+            http=HttpConfig(),
+            base_url=self._cfg.base_url,
+            api_key=self._cfg.api_key,
+            model=self._cfg.model,
+            sampling={
+                "temperature": self._cfg.temperature,
+                "max_tokens": self._cfg.max_tokens,
+                "tool_choice": self._cfg.tool_choice,
+            },
+        )
+
+        return GeneratorFactory.build(remote, client=self._client, runtime=None)
+
+
+class Description:
+    """Описание объекта: один вызов или свёртка, если материал в бюджет не влез."""
+
+    def __init__(self, generators: Generators, pack: PackPrompts, budget: int) -> None:
+        self._generators = generators
+        self._pack = pack
+        self._budget = budget
+        self._split = MarkdownSplit(budget)
+
+    async def of(self, prompt: SurfacePrompt, material: str) -> Described:
+        chunks = self._split.split(material)
+        if len(chunks) == 1:
+            text = await self._ask(prompt, prompt.user(material))
+            return Described(text=text, chunks=1)
+
+        parts: list[str] = []
+        for chunk in chunks:
+            parts.append(await self._ask(prompt, self._pack.part(chunk)))
+
+        text = await self._ask(prompt, self._pack.reduce(parts))
+
+        return Described(text=text, chunks=len(chunks))
+
+    async def _ask(self, prompt: SurfacePrompt, user: str) -> str:
+        system = self._pack.system(prompt.system_prompt)
+        generator = self._generators.of(system)
+        where = f"describe {prompt.surface}/{prompt.aspect}"
+
+        try:
+            raw = await generator.generate(user, self._pack.schema)
+        except GenerationError as exc:
+            raise DescribeError(f"{where}: model call failed: {exc}") from exc
+
+        try:
+            reply = Reply.model_validate_json(raw)
+        except ValidationError as exc:
+            raise DescribeError(
+                f"{where}: reply is not by schema: {raw[:200]!r}: {exc}"
+            ) from exc
+
+        return reply.description.strip()

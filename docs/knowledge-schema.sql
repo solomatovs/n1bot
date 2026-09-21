@@ -223,6 +223,28 @@ insert into ix.surface_url (surface, template, owner) values
 on conflict (surface) do update set template = excluded.template, owner = excluded.owner;
 
 /*
+surface_prompt — промпт описания пары «поверхность, аспект». Материал объекта даёт
+объявление аспекта класса describer_input, а роль модели и шаблон запроса знает владелец
+поверхности: карточку таблицы и текст страницы модели объясняют по-разному. Описатель
+читает реестр и описывает только пары со строкой; общего промпта нет намеренно.
+Сколько материала модель принимает за раз, реестр не знает: это свойство модели, и
+бюджет задаётся в конфиге описателя. Длинный материал описатель сворачивает сам.
+*/
+create table if not exists ix.surface_prompt (
+    surface        ix.surface_e not null,
+    aspect         ix.aspect_e  not null,
+    system_prompt  varchar      not null,
+    user_template  varchar      not null,
+    owner          varchar      not null,
+    primary key (surface, aspect),
+    foreign key (surface, aspect)
+        references ix.surface_aspect (surface, aspect) on delete cascade
+);
+
+/* строки pg_*: packages/apps/ix/pg-meta-scraper/src/boba/pg_meta_scraper/schema/50_prompts.sql */
+/* строки cfl_*: packages/apps/ix/cfl-indexer/src/boba/cfl_indexer/schema/50_prompts.sql */
+
+/*
 node — любой объект, который можно адресовать в источнике.
 - address:  главное поле содержащее адрес объекта в виде отдельных частей
 

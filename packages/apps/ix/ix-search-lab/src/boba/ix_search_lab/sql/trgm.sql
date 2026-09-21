@@ -14,7 +14,7 @@ with hit as (
     from
         {schema}.{index} t
     where 1=1
-        and t.surface::varchar = any(%(surfaces)s::varchar[])
+        and t.surface = any(%(surfaces)s::{schema}.surface_e[])
         and word_similarity(%(q)s, t.content) >= 0.3
 )
 select

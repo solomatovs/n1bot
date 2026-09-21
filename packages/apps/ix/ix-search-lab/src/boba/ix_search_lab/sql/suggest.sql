@@ -24,7 +24,7 @@ prefix as (
         join {schema}.aspect a on a.aspect = t.aspect,
         q
     where 1=1
-        and t.surface::varchar = any(%(surfaces)s::varchar[])
+        and t.surface = any(%(surfaces)s::{schema}.surface_e[])
         and a.class = 'ident'
         and lower(t.content) ^@ q.text
 ),
@@ -39,7 +39,7 @@ fuzzy as (
         join {schema}.aspect a on a.aspect = t.aspect,
         q
     where 1=1
-        and t.surface::varchar = any(%(surfaces)s::varchar[])
+        and t.surface = any(%(surfaces)s::{schema}.surface_e[])
         and a.class = 'words'
         and word_similarity(q.text, t.content) >= 0.4
 ),
