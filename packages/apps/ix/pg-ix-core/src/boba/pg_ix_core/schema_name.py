@@ -12,27 +12,16 @@ SchemaNameError — текст запроса не собрался под сх�
 
 from __future__ import annotations
 
-from typing import ClassVar, LiteralString, cast
+from typing import Any, LiteralString, cast
 
 import psycopg
 from psycopg import sql
-from pydantic import BaseModel, ConfigDict, Field
 
-__all__ = ["SchemaName", "SchemaNameError", "StorageSchema"]
+__all__ = ["SchemaName", "SchemaNameError"]
 
 
 class SchemaNameError(Exception):
     """Текст запроса не удалось собрать под схему."""
-
-
-class StorageSchema(BaseModel):
-    """Имя схемы графа в базе; общее поле всех секций конфига приложений ix."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    DEFAULT: ClassVar[str] = "ix"
-
-    db_schema: str = Field(min_length=1, default=DEFAULT)
 
 
 class SchemaName:
@@ -56,11 +45,14 @@ class SchemaName:
             raise SchemaNameError(msg) from exc
 
     @classmethod
-    def exists(cls, conn: psycopg.Connection, db_schema: str, table: str) -> bool:
-        """Есть ли таблица в схеме графа: по ней пакет понимает, накачено ли ядро."""
-        row = conn.execute(
+    async def exists(
+        cls, conn: psycopg.AsyncConnection[Any], db_schema: str, table: str
+    ) -> bool:
+        """Есть ли таблица db_schema.table в базе соединения."""
+        cur = await conn.execute(
             "select to_regclass(quote_ident(%s) || '.' || quote_ident(%s)) is not null",
             (db_schema, table),
-        ).fetchone()
+        )
+        row = await cur.fetchone()
 
         return bool(row is not None and row[0])

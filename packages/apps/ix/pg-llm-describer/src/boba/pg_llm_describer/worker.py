@@ -26,7 +26,7 @@ import logging
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import psycopg
 from psycopg import sql
@@ -45,12 +45,9 @@ from boba.llm.generation import GeneratorFactory
 from boba.llm.http import LlmHttp
 from boba.llm.local import OnnxChatRuntime
 from boba.pg_ix_core.aspects import AspectClass, AspectDeclarations, AspectSources
-from boba.pg_ix_core.schema_name import SchemaName, StorageSchema
-from boba.pg_ix_core.upgrade import (
-    SchemaUpgrade,
-    SchemaUpgradeError,
-    UpgradeConfig,
-)
+from boba.pg_ix_core.database import IxDatabase, IxDatabaseError, IxPool
+from boba.pg_ix_core.schema_name import SchemaName
+from boba.pg_ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError
 
 logger = logging.getLogger("pg-llm-describer")
 
@@ -84,8 +81,7 @@ class Part(StrEnum):
     SOURCES = "sources"
 
 
-class WorkerConfig(StorageSchema):
-    dsn: str
+class WorkerConfig(IxDatabase):
     classes: Sequence[AspectClass]
     provider: Provider
     model: str = ""
@@ -96,8 +92,6 @@ class WorkerConfig(StorageSchema):
     temperature: float = Field(ge=0, default=0.2)
     tool_choice: str = "auto"
     batch: int = Field(gt=0, default=8)
-    lock_timeout: str = "2s"
-    statement_timeout: str = "60s"
 
 
 class QueueRow(BaseModel):
@@ -240,39 +234,29 @@ class DescriberWorker:
 
     async def run(self) -> CycleReport:
         try:
-            with psycopg.connect(
-                self._cfg.dsn, autocommit=True, application_name="pg-llm-describer"
-            ) as conn:
-                conn.execute(
-                    sql.SQL("set lock_timeout = {}").format(
-                        sql.Literal(self._cfg.lock_timeout)
-                    )
-                )
-                conn.execute(
-                    sql.SQL("set statement_timeout = {}").format(
-                        sql.Literal(self._cfg.statement_timeout)
-                    )
-                )
-
-                sql_files = self._bind(conn)
+            async with IxPool.session(self._cfg) as conn:
+                sql_files = await self._bind(conn)
 
                 try:
                     rounds, written = await self._rounds(conn, sql_files)
                 finally:
-                    self._unlock(conn, sql_files)
+                    await self._unlock(conn, sql_files)
 
-                pruned = self._prune(conn, sql_files)
+                pruned = await self._prune(conn, sql_files)
 
                 return CycleReport(rounds=rounds, written=written, pruned=pruned)
+        except IxDatabaseError as exc:
+            raise DescriberWorkerError(str(exc)) from exc
         except psycopg.Error as exc:
-            raise DescriberWorkerError(f"ix database {self._cfg.dsn}: {exc}") from exc
+            msg = f"ix database {self._cfg.postgres.where()}: {exc}"
+            raise DescriberWorkerError(msg) from exc
 
-    def _bind(self, conn: psycopg.Connection) -> PackageSql:
+    async def _bind(self, conn: psycopg.AsyncConnection[Any]) -> PackageSql:
         """Объявить llm_description и собрать источник входа под файлы цикла."""
         declare = PackageSql(self._dir, self._cfg.db_schema, {})
-        conn.execute(declare.load(SqlFile.DECLARE))
+        await conn.execute(declare.load(SqlFile.DECLARE))
 
-        declarations = AspectDeclarations.of_classes(
+        declarations = await AspectDeclarations.of_classes(
             conn, self._cfg.db_schema, self._cfg.classes
         )
         logger.info(
@@ -288,30 +272,32 @@ class DescriberWorker:
         )
 
     async def _rounds(
-        self, conn: psycopg.Connection, sql_files: PackageSql
+        self, conn: psycopg.AsyncConnection[Any], sql_files: PackageSql
     ) -> tuple[int, int]:
         rounds = 0
         written = 0
         while True:
-            rows = self._queue(conn, sql_files)
+            rows = await self._queue(conn, sql_files)
             if not rows:
                 break
             for row in rows:
                 description = await self._describe(row)
-                self._write(conn, sql_files, row, description)
+                await self._write(conn, sql_files, row, description)
                 written += 1
-            self._unlock(conn, sql_files)
+            await self._unlock(conn, sql_files)
             rounds += 1
             logger.info("round %d: %d objects described", rounds, len(rows))
         return rounds, written
 
-    def _queue(self, conn: psycopg.Connection, sql_files: PackageSql) -> list[QueueRow]:
-        cur = conn.execute(
+    async def _queue(
+        self, conn: psycopg.AsyncConnection[Any], sql_files: PackageSql
+    ) -> list[QueueRow]:
+        cur = await conn.execute(
             sql_files.load(SqlFile.QUEUE),
             {"batch": self._cfg.batch, "indexer_hash": self._indexer_hash},
         )
         rows: list[QueueRow] = []
-        for node_id, surface, text, input_hash in cur.fetchall():
+        for node_id, surface, text, input_hash in await cur.fetchall():
             rows.append(
                 QueueRow(
                     node_id=node_id, surface=surface, text=text, input_hash=input_hash
@@ -335,9 +321,9 @@ class DescriberWorker:
             ) from exc
         return reply.description.strip()
 
-    def _write(
+    async def _write(
         self,
-        conn: psycopg.Connection,
+        conn: psycopg.AsyncConnection[Any],
         sql_files: PackageSql,
         row: QueueRow,
         description: str,
@@ -349,13 +335,18 @@ class DescriberWorker:
             "input_hash": row.input_hash,
             "indexer_hash": self._indexer_hash,
         }
-        conn.execute(sql_files.load(SqlFile.WRITE), params)
+        await conn.execute(sql_files.load(SqlFile.WRITE), params)
 
-    def _unlock(self, conn: psycopg.Connection, sql_files: PackageSql) -> None:
-        conn.execute(sql_files.load(SqlFile.UNLOCK))
+    async def _unlock(
+        self, conn: psycopg.AsyncConnection[Any], sql_files: PackageSql
+    ) -> None:
+        await conn.execute(sql_files.load(SqlFile.UNLOCK))
 
-    def _prune(self, conn: psycopg.Connection, sql_files: PackageSql) -> int:
-        record = conn.execute(sql_files.load(SqlFile.PRUNE)).fetchone()
+    async def _prune(
+        self, conn: psycopg.AsyncConnection[Any], sql_files: PackageSql
+    ) -> int:
+        cur = await conn.execute(sql_files.load(SqlFile.PRUNE))
+        record = await cur.fetchone()
         if record is None:
             raise DescriberWorkerError("prune: expected one summary row, got none")
         return int(record[1])
@@ -396,7 +387,7 @@ class Cli:
             type=Path,
             help=(
                 "Путь к файлу конфига приложения (toml). Все настройки, включая "
-                "строку подключения к базе ix, берутся из секции [ix.llm_describer]."
+                "профиль подключения к базе ix, берутся из секции [ix.llm_describer]."
             ),
         )
         args = parser.parse_args(argv)
@@ -412,8 +403,9 @@ def main() -> None:
         command, config_path = Cli.parse()
 
         if command is Command.UPGRADE:
-            upgrade = bind_section(config_path, Cli.SECTION, UpgradeConfig)
-            report = SchemaUpgrade(package_dir / "schema").run(upgrade)
+            database = bind_section(config_path, Cli.SECTION, IxDatabase)
+            upgrade = SchemaUpgrade(package_dir / "schema")
+            report = asyncio.run(upgrade.run(database))
             logger.info("schema applied: %s", ", ".join(report.files))
             return
 

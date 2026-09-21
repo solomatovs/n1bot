@@ -18,17 +18,23 @@ worker.py оркестратор
 всех поверхностей, у которых объявлен аспект класса `describer_input` (у скрапера PostgreSQL это
 таблицы и view). Подписка задаётся в конфиге: `classes = ["describer_input"]`. Порядок в цепочке: `pg-meta-scraper` по каждому
 источнику, затем описатель, затем `pg-idx-fts` и `pg-idx-vector`, чтобы описания
-попали в поиск. Роль в DSN читает `ix.*` и пишет в `ix.pg_llm_description`.
+попали в поиск. Роль профиля читает `ix.*` и пишет в `ix.pg_llm_description`.
 
 Настройки берутся из одного файла конфига, секция [ix.llm_describer]. Конфиг приложения на dev-стенде лежит в `compose/apps/pg-llm-describer/conf.toml`
 (каталог вне git, в нём креды). Одним файлом можно запускать и несколько приложений:
 каждое читает только свою секцию.
 
+База задаётся подсекцией `[ix.llm_describer.postgres]` — профилем boba-db-postgres: host, dbname,
+`auth` с методом (`password`, `certificate`, `kerberos_keytab`, `kerberos_password`),
+`options` с `lock_timeout` и `statement_timeout` сессии, `pool` с размерами пула. Подсекция
+`[ix.llm_describer.krb]` даёт krb5.conf и каталог кэшей билетов для kerberos-профиля. Соединения
+берутся из AsyncPostgresPool, воркер async.
+
 ```
 .venv/bin/boba-pg-llm-describer --config ../../compose/apps/pg-llm-describer/conf.toml
 ```
 
-Схема хранения задаётся полем `db_schema` секции (по умолчанию `ix`): в sql-файлах она
+Схема хранения задаётся полем `db_schema` секции: в sql-файлах она
 стоит плейсхолдером `{schema}`, имя берётся из конфига, а квотирует его psycopg.
 
 Провайдер выбирается ключом `provider` секции: `openai` (`base_url`, `api_key`, `model`) или

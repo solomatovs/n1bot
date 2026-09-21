@@ -48,7 +48,7 @@ class PayloadPostgres:
                 conn = await PayloadPostgres._connect(connection)
         except KerberosError as e:
             msg = (
-                f"postgres {PayloadPostgres._where(connection)}: kerberos "
+                f"postgres {connection.where()}: kerberos "
                 f"credentials of {credentials.principal} failed: "
                 f"{type(e).__name__}: {e}"
             )
@@ -63,16 +63,7 @@ class PayloadPostgres:
             return await psycopg.AsyncConnection.connect(**connection.conn_settings())
         except psycopg.Error as e:
             msg = (
-                f"connecting to postgres {PayloadPostgres._where(connection)} "
+                f"connecting to postgres {connection.where()} "
                 f"as {connection.trace()} failed: {type(e).__name__}: {e}"
             )
             raise PostgresError(msg) from e
-
-    @staticmethod
-    def _where(connection: PostgresConfig) -> str:
-        """host:port/dbname соединения для текста ошибки."""
-        host = connection.host
-        if not host:
-            host = connection.hostaddr
-
-        return f"{host}:{connection.port}/{connection.dbname}"

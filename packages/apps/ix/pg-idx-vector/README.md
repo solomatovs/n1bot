@@ -28,14 +28,20 @@ run/      SQL шагов цикла, их выполняет worker.py
 (каталог вне git, в нём креды). Одним файлом можно запускать и несколько приложений:
 каждое читает только свою секцию.
 
+База задаётся подсекцией `[ix.idx_vector.postgres]` — профилем boba-db-postgres: host, dbname,
+`auth` с методом (`password`, `certificate`, `kerberos_keytab`, `kerberos_password`),
+`options` с `lock_timeout` и `statement_timeout` сессии, `pool` с размерами пула. Подсекция
+`[ix.idx_vector.krb]` даёт krb5.conf и каталог кэшей билетов для kerberos-профиля. Соединения
+берутся из AsyncPostgresPool, воркер async.
+
 ```
 .venv/bin/boba-pg-idx-vector --config ../../compose/apps/pg-idx-vector/conf.toml
 ```
 
-Схема хранения задаётся полем `db_schema` секции (по умолчанию `ix`): в sql-файлах она
+Схема хранения задаётся полем `db_schema` секции: в sql-файлах она
 стоит плейсхолдером `{schema}`, имя берётся из конфига, а квотирует его psycopg.
 
-Роль в DSN должна иметь права на чтение `ix.node`, `ix.tree`, surface-таблиц `ix.pg_*` и на
+Роль профиля должна иметь права на чтение `ix.node`, `ix.tree`, surface-таблиц `ix.pg_*` и на
 запись в свою таблицу `ix.pg_idx_emb_e5_1024`. Схему таблицы создаёт `schema/*.sql` при установке
 (идемпотентно), запускается той же ролью или владельцем схемы `ix`. Один запуск = один
 проход до пустой очереди и prune; для регулярной работы ставится в планировщик.
@@ -74,7 +80,7 @@ aspect)`. На стенде таблица с 300 колонками дала 9 
 
 ## Цикл воркера
 
-Одна сессия к `ix`, `set lock_timeout`, `set statement_timeout`, autocommit:
+Одна сессия к `ix` из пула, autocommit, `lock_timeout` и `statement_timeout` из `postgres.options`:
 
 1. `run/10_queue.sql` с параметром `%(batch)s`: аспекты `(node_id, surface, aspect, content,
    content_hash)`, у которых нет ни одного чанка или хэш чанков отличается от md5 полного

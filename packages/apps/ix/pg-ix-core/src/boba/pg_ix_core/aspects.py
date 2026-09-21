@@ -13,9 +13,9 @@ AspectDeclarationError — тело объявления не выполняет
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from enum import StrEnum
-from typing import ClassVar, LiteralString
+from typing import Any, ClassVar, LiteralString
 
 import psycopg
 from psycopg import sql
@@ -76,28 +76,44 @@ class AspectDeclarations:
     """Чтение объявлений из {schema}.surface_aspect: все или только заданных классов."""
 
     ALL: ClassVar[str] = """
-        select sa.surface::varchar, sa.aspect::varchar, sa.body
-        from {schema}.surface_aspect sa
-        order by sa.surface, sa.aspect
+        select
+            sa.surface::varchar,
+            sa.aspect::varchar,
+            sa.body
+        from
+            {schema}.surface_aspect sa
+        order by
+            sa.surface,
+            sa.aspect
     """
     OF_CLASSES: ClassVar[str] = """
-        select sa.surface::varchar, sa.aspect::varchar, sa.body
-        from {schema}.surface_aspect sa
-        join {schema}.aspect a on a.aspect = sa.aspect
-        where a.class::varchar = any(%(classes)s)
-        order by sa.surface, sa.aspect
+        select
+            sa.surface::varchar,
+            sa.aspect::varchar,
+            sa.body
+        from
+            {schema}.surface_aspect sa
+            join {schema}.aspect a on a.aspect = sa.aspect
+        where
+            a.class::varchar = any(%(classes)s)
+        order by
+            sa.surface,
+            sa.aspect
     """
 
     @classmethod
-    def all(cls, conn: psycopg.Connection, db_schema: str) -> list[SurfaceAspect]:
-        cur = conn.execute(SchemaName.render(cls.ALL, db_schema))
+    async def all(
+        cls, conn: psycopg.AsyncConnection[Any], db_schema: str
+    ) -> list[SurfaceAspect]:
+        cur = await conn.execute(SchemaName.render(cls.ALL, db_schema))
+        rows = await cur.fetchall()
 
-        return list(cls._rows(cur))
+        return list(cls._rows(rows))
 
     @classmethod
-    def of_classes(
+    async def of_classes(
         cls,
-        conn: psycopg.Connection,
+        conn: psycopg.AsyncConnection[Any],
         db_schema: str,
         classes: Sequence[AspectClass],
     ) -> list[SurfaceAspect]:
@@ -105,15 +121,16 @@ class AspectDeclarations:
         for item in classes:
             names.append(str(item))
 
-        cur = conn.execute(
+        cur = await conn.execute(
             SchemaName.render(cls.OF_CLASSES, db_schema), {"classes": names}
         )
+        rows = await cur.fetchall()
 
-        return list(cls._rows(cur))
+        return list(cls._rows(rows))
 
     @staticmethod
-    def _rows(cur: psycopg.Cursor) -> Iterator[SurfaceAspect]:
-        for surface, aspect, body in cur.fetchall():
+    def _rows(rows: Iterable[Sequence[Any]]) -> Iterator[SurfaceAspect]:
+        for surface, aspect, body in rows:
             yield SurfaceAspect(
                 surface=str(surface), aspect=str(aspect), body=str(body)
             )
@@ -128,18 +145,21 @@ class AspectContract:
     )
 
     @classmethod
-    def check(
+    async def check(
         cls,
-        conn: psycopg.Connection,
+        conn: psycopg.AsyncConnection[Any],
         db_schema: str,
         declarations: Sequence[SurfaceAspect],
     ) -> None:
         for declaration in declarations:
-            cls._check_one(conn, db_schema, declaration)
+            await cls._check_one(conn, db_schema, declaration)
 
     @classmethod
-    def _check_one(
-        cls, conn: psycopg.Connection, db_schema: str, declaration: SurfaceAspect
+    async def _check_one(
+        cls,
+        conn: psycopg.AsyncConnection[Any],
+        db_schema: str,
+        declaration: SurfaceAspect,
     ) -> None:
         where = f"aspect {declaration.aspect} of surface {declaration.surface}"
 
@@ -150,7 +170,7 @@ class AspectContract:
 
         probe = sql.SQL(cls.PROBE).format(body=body)
         try:
-            cur = conn.execute(probe)
+            cur = await conn.execute(probe)
         except psycopg.Error as exc:
             raise AspectDeclarationError(f"{where}: body does not run: {exc}") from exc
 

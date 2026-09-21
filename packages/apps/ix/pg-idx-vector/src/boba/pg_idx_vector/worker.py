@@ -21,7 +21,7 @@ import logging
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import psycopg
 from psycopg import sql
@@ -36,12 +36,9 @@ from boba.pg_ix_core.aspects import (
     AspectSources,
     SurfaceAspect,
 )
-from boba.pg_ix_core.schema_name import SchemaName, StorageSchema
-from boba.pg_ix_core.upgrade import (
-    SchemaUpgrade,
-    SchemaUpgradeError,
-    UpgradeConfig,
-)
+from boba.pg_ix_core.database import IxDatabase, IxDatabaseError, IxPool
+from boba.pg_ix_core.schema_name import SchemaName
+from boba.pg_ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError
 
 logger = logging.getLogger("pg-idx-vector")
 
@@ -67,8 +64,7 @@ class Part(StrEnum):
     ASPECT = "aspect"
 
 
-class WorkerConfig(StorageSchema):
-    dsn: str
+class WorkerConfig(IxDatabase):
     classes: Sequence[AspectClass]
     model: str = "intfloat/multilingual-e5-large"
     cache_dir: str
@@ -76,8 +72,6 @@ class WorkerConfig(StorageSchema):
     batch: int = Field(gt=0, default=64)
     chunk_tokens: int = Field(gt=0, default=400)
     chunk_overlap: int = Field(ge=0, default=50)
-    lock_timeout: str = "2s"
-    statement_timeout: str = "60s"
 
 
 class QueueRow(BaseModel):
@@ -172,21 +166,8 @@ class VectorWorker:
 
     async def run(self) -> CycleReport:
         try:
-            with psycopg.connect(
-                self._cfg.dsn, autocommit=True, application_name="pg-idx-vector"
-            ) as conn:
-                conn.execute(
-                    sql.SQL("set lock_timeout = {}").format(
-                        sql.Literal(self._cfg.lock_timeout)
-                    )
-                )
-                conn.execute(
-                    sql.SQL("set statement_timeout = {}").format(
-                        sql.Literal(self._cfg.statement_timeout)
-                    )
-                )
-
-                declarations = AspectDeclarations.of_classes(
+            async with IxPool.session(self._cfg) as conn:
+                declarations = await AspectDeclarations.of_classes(
                     conn, self._cfg.db_schema, self._cfg.classes
                 )
                 logger.info(
@@ -203,22 +184,25 @@ class VectorWorker:
                         )
                     },
                 )
-                self._ensure_indexes(conn, sql_files, declarations)
+                await self._ensure_indexes(conn, sql_files, declarations)
 
                 try:
                     rounds, written = await self._upsert_rounds(conn, sql_files)
                 finally:
-                    self._unlock(conn, sql_files)
+                    await self._unlock(conn, sql_files)
 
-                pruned = self._prune(conn, sql_files)
+                pruned = await self._prune(conn, sql_files)
 
                 return CycleReport(rounds=rounds, written=written, pruned=pruned)
+        except IxDatabaseError as exc:
+            raise VectorWorkerError(str(exc)) from exc
         except psycopg.Error as exc:
-            raise VectorWorkerError(f"ix database {self._cfg.dsn}: {exc}") from exc
+            msg = f"ix database {self._cfg.postgres.where()}: {exc}"
+            raise VectorWorkerError(msg) from exc
 
-    def _ensure_indexes(
+    async def _ensure_indexes(
         self,
-        conn: psycopg.Connection,
+        conn: psycopg.AsyncConnection[Any],
         sql_files: PackageSql,
         declarations: Sequence[SurfaceAspect],
     ) -> None:
@@ -226,7 +210,7 @@ class VectorWorker:
             name = self.INDEX_NAME.format(
                 surface=declaration.surface, aspect=declaration.aspect
             )
-            conn.execute(
+            await conn.execute(
                 sql_files.load(
                     SqlFile.INDEX,
                     index_name=sql.Identifier(name),
@@ -236,12 +220,12 @@ class VectorWorker:
             )
 
     async def _upsert_rounds(
-        self, conn: psycopg.Connection, sql_files: PackageSql
+        self, conn: psycopg.AsyncConnection[Any], sql_files: PackageSql
     ) -> tuple[int, int]:
         rounds = 0
         written = 0
         while True:
-            rows = self._queue(conn, sql_files)
+            rows = await self._queue(conn, sql_files)
             if not rows:
                 break
             chunks: list[list[str]] = []
@@ -253,11 +237,11 @@ class VectorWorker:
             vectors = await self._embed(flat)
             offset = 0
             for row, parts in zip(rows, chunks, strict=True):
-                self._write(
+                await self._write(
                     conn, sql_files, row, parts, vectors[offset : offset + len(parts)]
                 )
                 offset += len(parts)
-            self._unlock(conn, sql_files)
+            await self._unlock(conn, sql_files)
             rounds += 1
             written += len(rows)
             logger.info(
@@ -268,10 +252,14 @@ class VectorWorker:
             )
         return rounds, written
 
-    def _queue(self, conn: psycopg.Connection, sql_files: PackageSql) -> list[QueueRow]:
-        cur = conn.execute(sql_files.load(SqlFile.QUEUE), {"batch": self._cfg.batch})
+    async def _queue(
+        self, conn: psycopg.AsyncConnection[Any], sql_files: PackageSql
+    ) -> list[QueueRow]:
+        cur = await conn.execute(
+            sql_files.load(SqlFile.QUEUE), {"batch": self._cfg.batch}
+        )
         rows: list[QueueRow] = []
-        for node_id, surface, aspect, content, content_hash in cur.fetchall():
+        for node_id, surface, aspect, content, content_hash in await cur.fetchall():
             rows.append(
                 QueueRow(
                     node_id=node_id,
@@ -297,9 +285,9 @@ class VectorWorker:
             )
         return vectors
 
-    def _write(
+    async def _write(
         self,
-        conn: psycopg.Connection,
+        conn: psycopg.AsyncConnection[Any],
         sql_files: PackageSql,
         row: QueueRow,
         parts: Sequence[str],
@@ -318,14 +306,18 @@ class VectorWorker:
             "contents": list(parts),
             "embs": rendered,
         }
-        conn.execute(sql_files.load(SqlFile.WRITE), params)
+        await conn.execute(sql_files.load(SqlFile.WRITE), params)
 
-    def _unlock(self, conn: psycopg.Connection, sql_files: PackageSql) -> None:
-        conn.execute(sql_files.load(SqlFile.UNLOCK))
+    async def _unlock(
+        self, conn: psycopg.AsyncConnection[Any], sql_files: PackageSql
+    ) -> None:
+        await conn.execute(sql_files.load(SqlFile.UNLOCK))
 
-    def _prune(self, conn: psycopg.Connection, sql_files: PackageSql) -> int:
-        cur = conn.execute(sql_files.load(SqlFile.PRUNE))
-        record = cur.fetchone()
+    async def _prune(
+        self, conn: psycopg.AsyncConnection[Any], sql_files: PackageSql
+    ) -> int:
+        cur = await conn.execute(sql_files.load(SqlFile.PRUNE))
+        record = await cur.fetchone()
         if record is None:
             raise VectorWorkerError("prune: expected one summary row, got none")
         return int(record[1])
@@ -366,7 +358,7 @@ class Cli:
             type=Path,
             help=(
                 "Путь к файлу конфига приложения (toml). Все настройки, включая "
-                "строку подключения к базе ix, берутся из секции [ix.idx_vector]."
+                "профиль подключения к базе ix, берутся из секции [ix.idx_vector]."
             ),
         )
         args = parser.parse_args(argv)
@@ -382,8 +374,9 @@ def main() -> None:
         command, config_path = Cli.parse()
 
         if command is Command.UPGRADE:
-            upgrade = bind_section(config_path, Cli.SECTION, UpgradeConfig)
-            report = SchemaUpgrade(package_dir / "schema").run(upgrade)
+            database = bind_section(config_path, Cli.SECTION, IxDatabase)
+            upgrade = SchemaUpgrade(package_dir / "schema")
+            report = asyncio.run(upgrade.run(database))
             logger.info("schema applied: %s", ", ".join(report.files))
             return
 
