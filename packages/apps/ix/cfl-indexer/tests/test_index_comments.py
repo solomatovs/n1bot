@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from cfl_stand import StubIndexer
+from cfl_stand import SharedIndexers, StubIndexer
 
 from boba.stand.confluence import (
     ConfluenceStub,
@@ -46,7 +46,7 @@ COMMENT_NODES = """
 """
 FTS_ROWS = """
     select aspect::varchar, content
-    from {schema}.cfl_idx_fts f
+    from {schema}.ix_fts f
     join {schema}.node n on n.id = f.node_id
     where n.address->>'comment' = %(comment)s
     order by aspect
@@ -71,12 +71,14 @@ class TestIndexComments:
         self,
         stub: tuple[ConfluenceStub, int],
         stub_indexer: StubIndexer,
+        shared: SharedIndexers,
         ix_database: IxStandDatabase,
     ) -> None:
         fake, _ = stub
         seed(fake)
 
         reports = await stub_indexer.run(SPACE)
+        await shared.text()
 
         assert reports[0].seen == 4
         assert await ix_database.scalar(COMMENT_NODES, {"content": "400"}) == 2

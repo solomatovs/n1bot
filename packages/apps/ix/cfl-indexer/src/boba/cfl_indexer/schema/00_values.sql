@@ -17,3 +17,4 @@ alter type {schema}.aspect_e add value if not exists 'labels';
 alter type {schema}.aspect_e add value if not exists 'card';
 alter type {schema}.aspect_e add value if not exists 'body';
 alter type {schema}.aspect_e add value if not exists 'ocr';
+alter type {schema}.aspect_e add value if not exists 'describer_input';

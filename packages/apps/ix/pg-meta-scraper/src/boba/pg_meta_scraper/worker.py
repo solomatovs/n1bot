@@ -26,10 +26,10 @@ from pydantic import BaseModel, Field
 from boba.config import ConfigError, bind_section
 from boba.db.postgres import AsyncPostgresPool, PostgresError
 from boba.db.postgres.profile import PostgresConfig
+from boba.ix_core.database import IxDatabase, IxDatabaseError, IxPool
+from boba.ix_core.schema_name import SchemaName
+from boba.ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError
 from boba.kerberos import KerberosError
-from boba.pg_ix_core.database import IxDatabase, IxDatabaseError, IxPool
-from boba.pg_ix_core.schema_name import SchemaName
-from boba.pg_ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError
 
 logger = logging.getLogger("pg-meta-scraper")
 
@@ -568,7 +568,7 @@ class Cli:
             choices=list(Command),
             help=(
                 "upgrade — накатить схему пакета в базу ix (идемпотентно, ядро "
-                "должно быть уже накачено пакетом pg-ix-core); run — снять каталог."
+                "должно быть уже накачено пакетом ix-core); run — снять каталог."
             ),
         )
         parser.add_argument(

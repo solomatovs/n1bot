@@ -1,5 +1,5 @@
 """Стенд базы ix для тестов приложений ix: секция [ix_stand] stand.toml и база
-прогонов, которую тест пересоздаёт с ядром pg-ix-core и схемами нужных пакетов.
+прогонов, которую тест пересоздаёт с ядром ix-core и схемами нужных пакетов.
 
 Модель секции — общая часть: профиль сервера, kerberos-каталог, имя базы прогонов,
 схема графа и кэш моделей эмбеддинга; стенд конкретного пакета наследует её и
@@ -24,11 +24,11 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.profile import PostgresConfig
+from boba.ix_core.database import IxDatabase
+from boba.ix_core.main import SCHEMA_DIR as CORE_SCHEMA_DIR
+from boba.ix_core.schema_name import SchemaName
+from boba.ix_core.upgrade import SchemaUpgrade
 from boba.krb import KerberosWorkspaceConfig
-from boba.pg_ix_core.database import IxDatabase
-from boba.pg_ix_core.main import SCHEMA_DIR as CORE_SCHEMA_DIR
-from boba.pg_ix_core.schema_name import SchemaName
-from boba.pg_ix_core.upgrade import SchemaUpgrade
 from boba.runtime.config import ConfigLocator
 from boba.stand.site import StandLayers
 
@@ -90,7 +90,7 @@ class IxStand(BaseModel):
 
 
 class IxStandDatabase:
-    """База ix стенда: пересоздаётся с ядром pg-ix-core и схемами переданных
+    """База ix стенда: пересоздаётся с ядром ix-core и схемами переданных
     пакетов; соединение к ней — для проверок теста."""
 
     def __init__(self, stand: IxStand) -> None:

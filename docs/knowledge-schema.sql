@@ -403,7 +403,7 @@ comment это комментарий из источника как есть: o
   таблицы, col_description для колонки. Пишется, только если не пуст.
 columns это имена колонок таблицы через пробел (в pg_emb_e5_1024 через
   запятую), чтобы таблица находилась по своим колонкам.
-summary это описание от LLM (плагин describer) из surface pg_llm_description.
+summary это описание от LLM (плагин describer) из surface llm_description.
   Пишется отдельной строкой, когда описание появилось.
 name это имя объекта как есть: pg_class.relname, pg_attribute.attname.
   Нужно для точного совпадения, подстроки и подсказки по префиксу.
@@ -414,30 +414,30 @@ words это слова имени: name, разрезанный по CamelCase 
   'ordrs' к 'CustomerOrders' даёт похожесть 0.22, к 'customer orders' 0.5.
 */
 do $$ begin
-    create type ix.pg_idx_aspect_e as enum ();
+    create type ix.ix_aspect_e as enum ();
 exception when duplicate_object then null; end $$;
 
-alter type ix.pg_idx_aspect_e add value if not exists 'meta_description';
-alter type ix.pg_idx_aspect_e add value if not exists 'meta_comment';
-alter type ix.pg_idx_aspect_e add value if not exists 'meta_columns';
-alter type ix.pg_idx_aspect_e add value if not exists 'llm_description';
-alter type ix.pg_idx_aspect_e add value if not exists 'meta_name';
-alter type ix.pg_idx_aspect_e add value if not exists 'meta_path';
-alter type ix.pg_idx_aspect_e add value if not exists 'meta_words';
+alter type ix.ix_aspect_e add value if not exists 'meta_description';
+alter type ix.ix_aspect_e add value if not exists 'meta_comment';
+alter type ix.ix_aspect_e add value if not exists 'meta_columns';
+alter type ix.ix_aspect_e add value if not exists 'llm_description';
+alter type ix.ix_aspect_e add value if not exists 'meta_name';
+alter type ix.ix_aspect_e add value if not exists 'meta_path';
+alter type ix.ix_aspect_e add value if not exists 'meta_words';
 
-comment on type ix.pg_idx_aspect_e is
+comment on type ix.ix_aspect_e is
     'Какой текст объекта PostgreSQL закодирован в строке поисковой таблицы. Значения только добавляются или переименовываются: на них ссылаются предикаты частичных индексов, и они следуют за переименованием.';
 
-create table if not exists ix.pg_idx_aspect (
-    aspect       ix.pg_idx_aspect_e primary key,
+create table if not exists ix.ix_aspect (
+    aspect       ix.ix_aspect_e primary key,
     description  varchar        not null
 );
 
-insert into ix.pg_idx_aspect (aspect, description) values
+insert into ix.ix_aspect (aspect, description) values
     ('meta_description', 'описание объекта, собранное индексатором из всего, что о нём известно; основной аспект поиска'),
     ('meta_comment',     'комментарий из источника как есть (obj_description, col_description); пишется, только если не пуст'),
     ('meta_columns',     'имена колонок таблицы через пробел; таблица находится по своим колонкам'),
-    ('llm_description', 'описание от LLM (пакет pg-llm-describer); пишется, только когда оно есть'),
+    ('llm_description', 'описание от LLM (пакет ix-llm-describer); пишется, только когда оно есть'),
     ('meta_name',        'имя объекта как есть (relname, attname); точное совпадение и подстрока'),
     ('meta_path',        'путь через точку, как пишет пользователь: schema.table или schema.table.column; точное совпадение'),
     ('meta_words',       'слова имени, разрезанного по CamelCase и подчёркиваниям, в нижнем регистре, ё -> е; поиск с опечатками')
@@ -447,7 +447,7 @@ on conflict (aspect) do nothing;
 Поисковые таблицы источника PostgreSQL: по одной на вид индекса, общие для
 всех surface pg_*. У всех трёх один ключ (node_id, surface, aspect). surface это
 копия node.surface того же типа surface_e: по ней индексы фильтруют по виду,
-не обращаясь к node. aspect это значение pg_idx_aspect_e. content это текст
+не обращаясь к node. aspect это значение ix_aspect_e. content это текст
 аспекта, из которого построен индекс: триграммам он нужен для точного
 расчёта похожести, полнотексту для сниппета, вектору для проверки,
 изменился ли текст. Поисковые таблицы не связаны с node внешним ключом: их ведут
@@ -462,7 +462,7 @@ C = columns (только таблица и представление). Тек�
 одной строкой, для сниппета ts_headline в выдаче и для сравнения при
 повторном прогоне:
 
-insert into ix.pg_idx_fts (node_id, surface, aspect, content, tsv)
+insert into ix.ix_fts (node_id, surface, aspect, content, tsv)
 values ($1, 'pg_meta_table', 'meta_description', $content,
     setweight(to_tsvector('russian', $words), 'A') ||
     setweight(to_tsvector('russian', $schema_words || ' ' || $comment),
@@ -471,11 +471,11 @@ values ($1, 'pg_meta_table', 'meta_description', $content,
 
 Summary от LLM это отдельная строка с аспектом summary, а не часть строки
 description: у неё другой писатель (describer, а не индексатор), другой
-источник (surface pg_llm_description), своё время появления и свой цикл пересчёта.
+источник (surface llm_description), своё время появления и свой цикл пересчёта.
 Индексатор пишет строку description при загрузке объекта, describer позже
 добавляет строку summary с весом D:
 
-insert into ix.pg_idx_fts (node_id, surface, aspect, content, tsv)
+insert into ix.ix_fts (node_id, surface, aspect, content, tsv)
 values ($1, 'pg_meta_table', 'llm_description', $text,
     setweight(to_tsvector('russian', $text), 'D'));
 
@@ -483,18 +483,18 @@ values ($1, 'pg_meta_table', 'llm_description', $text,
 её строк.
 
 select node_id, sum(ts_rank_cd(tsv, q)) as rank
-from   ix.pg_idx_fts, websearch_to_tsquery('russian', 'заказы клиентов') q
+from   ix.ix_fts, websearch_to_tsquery('russian', 'заказы клиентов') q
 where  tsv @@ q
 group by node_id order by rank desc limit 20;
 
-DDL: packages/apps/ix/pg-idx-fts/src/boba/pg_idx_fts/schema/00_pg_idx_fts.sql
+DDL: packages/apps/ix/ix-fts/src/boba/ix_fts/schema/00_ix_fts.sql
 
 
 Конфигурация russian стеммит и русский, и английский: order/orders,
 заказ/заказы. Простой запрос без суммирования по node:
 
 select node_id, surface, ts_rank_cd(tsv, q) as rank
-from   ix.pg_idx_fts, websearch_to_tsquery('russian', 'заказы клиентов') q
+from   ix.ix_fts, websearch_to_tsquery('russian', 'заказы клиентов') q
 where  tsv @@ q
 order by rank desc
 limit  20;
@@ -512,7 +512,7 @@ aspect. Длинный текст сюда не кладут: триграммн
 Все surface пишут name и words; path пишут таблица, колонка, представление,
 индекс, последовательность и подпрограмма.
 
-DDL: packages/apps/ix/pg-idx-trgm/src/boba/pg_idx_trgm/schema/00_pg_idx_trgm.sql
+DDL: packages/apps/ix/ix-trgm/src/boba/ix_trgm/schema/00_ix_trgm.sql
 
 
 Подстрока и опечатки по всему источнику, таблицы и колонки в одной выдаче.
@@ -521,7 +521,7 @@ DDL: packages/apps/ix/pg-idx-trgm/src/boba/pg_idx_trgm/schema/00_pg_idx_trgm.sql
 
 set pg_trgm.word_similarity_threshold = 0.4;
 select node_id, surface, content
-from   ix.pg_idx_trgm
+from   ix.ix_trgm
 where  aspect = 'meta_words' and 'ordrs' <% content
 order by 'ordrs' <<-> content
 limit  20;
@@ -530,7 +530,7 @@ limit  20;
 
 Точное совпадение без учёта регистра.
 
-select node_id, surface from ix.pg_idx_trgm
+select node_id, surface from ix.ix_trgm
 where  aspect = 'meta_path' and lower(content) = lower('dm.fact_orders');
 
 
@@ -540,7 +540,7 @@ where  aspect = 'meta_path' and lower(content) = lower('dm.fact_orders');
 like используется оператор ^@ (starts with): в like подчёркивание значит
 «любой символ», и имя fact_orders пришлось бы экранировать.
 
-select node_id, surface, content from ix.pg_idx_trgm
+select node_id, surface, content from ix.ix_trgm
 where  aspect = 'meta_name' and lower(content) ^@ lower('fact_ord')
 limit  20;
 
@@ -553,7 +553,7 @@ columns пишут таблица и представление; summary пиш�
 с префиксом passage:, запрос с префиксом query:. content это закодированный
 текст аспекта: если он не изменился, модель повторно не запускают.
 
-DDL: packages/apps/ix/pg-idx-vector/src/boba/pg_idx_vector/schema/00_pg_idx_emb_e5_1024.sql
+DDL: packages/apps/ix/ix-vector/src/boba/ix_vector/schema/00_ix_emb_e5_1024.sql
 */
 
 /*
@@ -759,23 +759,23 @@ create table if not exists ix.cfl_page_link (
 
 /*
 cfl-indexer, схема, шаг 3: три таблицы индексов поверхностей Confluence. Устроены как
-pg_idx_*: колонка aspect ссылается на словарь ядра, внешнего ключа на ix.node нет
+ix_*: колонка aspect ссылается на словарь ядра, внешнего ключа на ix.node нет
 намеренно, строки удалённых node снимает сам индексатор при чистке спейса.
 */
-create table if not exists ix.cfl_idx_trgm (
+create table if not exists ix.ix_trgm (
     node_id  bigint not null,
     surface  ix.surface_e not null references ix.surface,
     aspect   ix.aspect_e not null references ix.aspect,
     content  varchar not null,
     primary key (node_id, surface, aspect)
 );
-create index if not exists cfl_idx_trgm__content__gist on ix.cfl_idx_trgm using gist (content gist_trgm_ops);
-create index if not exists cfl_idx_trgm__aspect_lower_content on ix.cfl_idx_trgm using btree (aspect, lower(content));
-create index if not exists cfl_idx_trgm__aspect_lower_content__prefix
-    on ix.cfl_idx_trgm using btree (aspect, lower(content) varchar_pattern_ops);
-create index if not exists cfl_idx_trgm__surface_aspect on ix.cfl_idx_trgm using btree (surface, aspect);
+create index if not exists ix_trgm__content__gist on ix.ix_trgm using gist (content gist_trgm_ops);
+create index if not exists ix_trgm__aspect_lower_content on ix.ix_trgm using btree (aspect, lower(content));
+create index if not exists ix_trgm__aspect_lower_content__prefix
+    on ix.ix_trgm using btree (aspect, lower(content) varchar_pattern_ops);
+create index if not exists ix_trgm__surface_aspect on ix.ix_trgm using btree (surface, aspect);
 
-create table if not exists ix.cfl_idx_fts (
+create table if not exists ix.ix_fts (
     node_id  bigint not null,
     surface  ix.surface_e not null references ix.surface,
     aspect   ix.aspect_e not null references ix.aspect,
@@ -783,14 +783,14 @@ create table if not exists ix.cfl_idx_fts (
     tsv      tsvector not null,
     primary key (node_id, surface, aspect)
 );
-create index if not exists cfl_idx_fts__surface_tsv__gin on ix.cfl_idx_fts using gin (surface, tsv);
+create index if not exists ix_fts__surface_tsv__gin on ix.ix_fts using gin (surface, tsv);
 
 /*
 Текст длиннее окна модели режется на чанки: chunk_no это номер куска, content_hash это
 md5 полного текста аспекта, общий для всех его чанков. Частичный HNSW на каждую пару
 surface + aspect, по которой ищут: пары известны пакету, поэтому индексы здесь.
 */
-create table if not exists ix.cfl_idx_emb_e5_1024 (
+create table if not exists ix.ix_emb_e5_1024 (
     node_id       bigint not null,
     surface       ix.surface_e not null references ix.surface,
     aspect        ix.aspect_e not null references ix.aspect,
@@ -800,35 +800,35 @@ create table if not exists ix.cfl_idx_emb_e5_1024 (
     emb           halfvec(1024) not null,
     primary key (node_id, surface, aspect, chunk_no)
 );
-create index if not exists cfl_idx_emb_e5_1024__cfl_space_card__hnsw
-    on ix.cfl_idx_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
+create index if not exists ix_emb_e5_1024__cfl_space_card__hnsw
+    on ix.ix_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
     where surface = 'cfl_space' and aspect = 'card';
-create index if not exists cfl_idx_emb_e5_1024__cfl_page_card__hnsw
-    on ix.cfl_idx_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
+create index if not exists ix_emb_e5_1024__cfl_page_card__hnsw
+    on ix.ix_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
     where surface = 'cfl_page' and aspect = 'card';
-create index if not exists cfl_idx_emb_e5_1024__cfl_page_body__hnsw
-    on ix.cfl_idx_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
+create index if not exists ix_emb_e5_1024__cfl_page_body__hnsw
+    on ix.ix_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
     where surface = 'cfl_page' and aspect = 'body';
-create index if not exists cfl_idx_emb_e5_1024__cfl_blogpost_card__hnsw
-    on ix.cfl_idx_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
+create index if not exists ix_emb_e5_1024__cfl_blogpost_card__hnsw
+    on ix.ix_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
     where surface = 'cfl_blogpost' and aspect = 'card';
-create index if not exists cfl_idx_emb_e5_1024__cfl_blogpost_body__hnsw
-    on ix.cfl_idx_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
+create index if not exists ix_emb_e5_1024__cfl_blogpost_body__hnsw
+    on ix.ix_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
     where surface = 'cfl_blogpost' and aspect = 'body';
-create index if not exists cfl_idx_emb_e5_1024__cfl_attachment_card__hnsw
-    on ix.cfl_idx_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
+create index if not exists ix_emb_e5_1024__cfl_attachment_card__hnsw
+    on ix.ix_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
     where surface = 'cfl_attachment' and aspect = 'card';
-create index if not exists cfl_idx_emb_e5_1024__cfl_attachment_body__hnsw
-    on ix.cfl_idx_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
+create index if not exists ix_emb_e5_1024__cfl_attachment_body__hnsw
+    on ix.ix_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
     where surface = 'cfl_attachment' and aspect = 'body';
-create index if not exists cfl_idx_emb_e5_1024__cfl_attachment_ocr__hnsw
-    on ix.cfl_idx_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
+create index if not exists ix_emb_e5_1024__cfl_attachment_ocr__hnsw
+    on ix.ix_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
     where surface = 'cfl_attachment' and aspect = 'ocr';
-create index if not exists cfl_idx_emb_e5_1024__cfl_comment_card__hnsw
-    on ix.cfl_idx_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
+create index if not exists ix_emb_e5_1024__cfl_comment_card__hnsw
+    on ix.ix_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
     where surface = 'cfl_comment' and aspect = 'card';
-create index if not exists cfl_idx_emb_e5_1024__cfl_comment_body__hnsw
-    on ix.cfl_idx_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
+create index if not exists ix_emb_e5_1024__cfl_comment_body__hnsw
+    on ix.ix_emb_e5_1024 using hnsw (emb halfvec_cosine_ops)
     where surface = 'cfl_comment' and aspect = 'body';
 
 
@@ -836,15 +836,17 @@ create index if not exists cfl_idx_emb_e5_1024__cfl_comment_body__hnsw
 Аспекты Confluence — значения общего ix.aspect_e и строки словаря ix.aspect
 с владельцем cfl-indexer; объявления surface_aspect делает сам индексатор и
 сам ими пользуется: title, path, words, labels, card выводятся из
-surface-строки и уже лежащего в cfl_idx_fts текста (union объявлений с
-фильтром по node_id), а body и ocr он кладёт в cfl_idx_fts из Python, и
+surface-строки и уже лежащего в ix_fts текста (union объявлений с
+фильтром по node_id), а body и ocr он кладёт в ix_fts из Python, и
 объявление body читает их оттуда. Описатель и другие потребители объявят
 поверх них свои аспекты (describer_input, llm_description).
 
-Таблицы индексов остаются своими у происхождения — cfl_idx_trgm,
-cfl_idx_fts, cfl_idx_emb_e5_1024 — с той же формой, что pg_idx_*; стенд
-pg-search-lab читает оба набора union all, а подсказки выбирают аспекты по
-классу из словаря, а не по имени. Веса полнотекста задаёт конфиг индексатора
+Таблицы индексов общие для всех происхождений: ix_trgm, ix_fts и
+ix_emb_e5_1024. Владеют ими пакеты ix-trgm, ix-fts и ix-vector, они же
+вписывают свои строки в реестр ix.index_table (вид, имя, владелец; модель и
+размерность вектора живут в конфиге его владельца), а стенд ix-search-lab читает
+реестр и опрашивает каждую таблицу отдельным запросом параллельно. Подсказки
+выбирают аспекты по классу из словаря, а не по имени. Веса полнотекста задаёт конфиг индексатора
 по имени аспекта (title A, words A, path B, labels B, card B, body C, ocr C),
 аспект без веса получает D.
 
@@ -854,7 +856,7 @@ DDL ниже — копия schema/ пакета cfl-indexer с подставл
 /*
 cfl-indexer, схема, шаг 4: объявления surface_aspect поверхностей Confluence. Индексатор
 сам читает их при записи каждого node: title, path, words, labels и card выводятся из
-surface-строки и уже лежащего в cfl_idx_fts текста, а body и ocr он кладёт в cfl_idx_fts
+surface-строки и уже лежащего в ix_fts текста, а body и ocr он кладёт в ix_fts
 из Python, и объявление читает их оттуда. Схема в теле удвоена, чтобы после наката в
 строке остался плейсхолдер; накат проверяет каждое тело по контракту (node_id, content).
 */
@@ -933,7 +935,7 @@ insert into ix.surface_aspect (surface, aspect, body) values
             || coalesce(E'\n' || nullif(left(f.content, 500), ''), '') as content
     from
         ix.cfl_page x
-        left join ix.cfl_idx_fts f
+        left join ix.ix_fts f
             on  f.node_id = x.node_id
             and f.aspect = 'body'
     $body$),
@@ -942,7 +944,7 @@ insert into ix.surface_aspect (surface, aspect, body) values
         f.node_id,
         f.content
     from
-        ix.cfl_idx_fts f
+        ix.ix_fts f
         join ix.node n
             on  n.id = f.node_id
             and n.surface = 'cfl_page'
@@ -993,7 +995,7 @@ insert into ix.surface_aspect (surface, aspect, body) values
             || coalesce(E'\n' || nullif(left(f.content, 500), ''), '') as content
     from
         ix.cfl_blogpost x
-        left join ix.cfl_idx_fts f
+        left join ix.ix_fts f
             on  f.node_id = x.node_id
             and f.aspect = 'body'
     $body$),
@@ -1002,7 +1004,7 @@ insert into ix.surface_aspect (surface, aspect, body) values
         f.node_id,
         f.content
     from
-        ix.cfl_idx_fts f
+        ix.ix_fts f
         join ix.node n
             on  n.id = f.node_id
             and n.surface = 'cfl_blogpost'
@@ -1046,7 +1048,7 @@ insert into ix.surface_aspect (surface, aspect, body) values
             || coalesce(E'\n' || nullif(left(f.content, 500), ''), '') as content
     from
         ix.cfl_attachment x
-        left join ix.cfl_idx_fts f
+        left join ix.ix_fts f
             on  f.node_id = x.node_id
             and f.aspect = 'body'
     $body$),
@@ -1055,7 +1057,7 @@ insert into ix.surface_aspect (surface, aspect, body) values
         f.node_id,
         f.content
     from
-        ix.cfl_idx_fts f
+        ix.ix_fts f
         join ix.node n
             on  n.id = f.node_id
             and n.surface = 'cfl_attachment'
@@ -1067,7 +1069,7 @@ insert into ix.surface_aspect (surface, aspect, body) values
         f.node_id,
         f.content
     from
-        ix.cfl_idx_fts f
+        ix.ix_fts f
         join ix.node n
             on  n.id = f.node_id
             and n.surface = 'cfl_attachment'
@@ -1081,7 +1083,7 @@ insert into ix.surface_aspect (surface, aspect, body) values
             || coalesce(E'\n' || nullif(left(f.content, 500), ''), '') as content
     from
         ix.cfl_comment x
-        left join ix.cfl_idx_fts f
+        left join ix.ix_fts f
             on  f.node_id = x.node_id
             and f.aspect = 'body'
     $body$),
@@ -1090,7 +1092,7 @@ insert into ix.surface_aspect (surface, aspect, body) values
         f.node_id,
         f.content
     from
-        ix.cfl_idx_fts f
+        ix.ix_fts f
         join ix.node n
             on  n.id = f.node_id
             and n.surface = 'cfl_comment'

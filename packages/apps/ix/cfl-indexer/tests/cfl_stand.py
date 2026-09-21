@@ -1,8 +1,14 @@
-"""Помощники стенда индексатора Confluence: конфиг на заглушке и прогон по спейсу."""
+"""Помощники стенда индексатора Confluence: конфиг на заглушке, прогон по спейсу и
+прогон общих индексаторов.
+
+Индексатор Confluence кладёт в ix_fts только добытый текст; title, path, words, card,
+триграммы и векторы выводят из объявлений общие индексаторы. Тест гоняет их следом,
+поэтому проверяет цепочку целиком — и заодно то, что новое происхождение подхватывается
+ими без правок.
+"""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from pathlib import Path
 
 from boba.cfl_indexer import worker as indexer
@@ -14,24 +20,24 @@ from boba.cfl_indexer.worker import (
     SpaceReport,
 )
 from boba.confluence.rest import ConfluenceConnection, SpaceType
-from boba.pg_idx_fts.worker import FtsWeight
+from boba.ix_core.aspects import AspectClass
+from boba.ix_fts import worker as fts
+from boba.ix_fts.worker import FtsWeight
+from boba.ix_fts.worker import IndexerWorker as FtsWorker
+from boba.ix_fts.worker import WorkerConfig as FtsConfig
+from boba.ix_trgm import worker as trgm
+from boba.ix_trgm.worker import IndexerWorker as TrgmWorker
+from boba.ix_trgm.worker import WorkerConfig as TrgmConfig
+from boba.ix_vector import worker as vector
+from boba.ix_vector.worker import VectorWorker
+from boba.ix_vector.worker import WorkerConfig as VectorConfig
 from boba.stand.ix import IxStand
 from boba.text.document import LiteParseParams
 from boba.transport.http.profile import HttpConnection, UrlScheme
 
-__all__ = ["PACKAGE_DIR", "WEIGHTS", "StubIndexer"]
+__all__ = ["PACKAGE_DIR", "SharedIndexers", "StubIndexer"]
 
 PACKAGE_DIR = Path(indexer.__file__).resolve().parent
-
-WEIGHTS: Mapping[str, FtsWeight] = {
-    "title": FtsWeight.A,
-    "words": FtsWeight.A,
-    "path": FtsWeight.B,
-    "labels": FtsWeight.B,
-    "card": FtsWeight.B,
-    "body": FtsWeight.C,
-    "ocr": FtsWeight.C,
-}
 
 
 class StubIndexer:
@@ -51,7 +57,6 @@ class StubIndexer:
             db_schema=database.db_schema,
             postgres=database.postgres,
             krb=database.krb,
-            cache_dir=self._stand.embedding_cache_dir,
             sources=[
                 ConfluenceSource(
                     name="stub",
@@ -63,10 +68,58 @@ class StubIndexer:
             ],
             parallel_spaces=1,
             parser=LiteParseParams(),
-            weights=WEIGHTS,
         )
 
     async def run(self, *spaces: str) -> list[SpaceReport]:
         cfg = self.config(*spaces)
 
         return await IndexerWorker(cfg, PACKAGE_DIR / "run").run()
+
+
+class SharedIndexers:
+    """Общие индексаторы поверх той же базы: выводят аспекты из объявлений и
+    раскладывают их по ix_trgm, ix_fts и ix_emb_e5_1024."""
+
+    WEIGHTS = {
+        "title": FtsWeight.A,
+        "words": FtsWeight.A,
+        "path": FtsWeight.B,
+        "labels": FtsWeight.B,
+        "card": FtsWeight.B,
+        "body": FtsWeight.C,
+        "ocr": FtsWeight.C,
+    }
+
+    def __init__(self, stand: IxStand) -> None:
+        self._stand = stand
+
+    async def text(self) -> None:
+        """Триграммы и полнотекст: без модели, поэтому быстро."""
+        database = self._stand.ix_database
+        common = {
+            "db_schema": database.db_schema,
+            "postgres": database.postgres,
+            "krb": database.krb,
+        }
+
+        trgm_cfg = TrgmConfig(**common, classes=[AspectClass.IDENT, AspectClass.WORDS])
+        await TrgmWorker(trgm_cfg, Path(trgm.__file__).resolve().parent / "run").run()
+
+        fts_cfg = FtsConfig(
+            **common,
+            classes=[AspectClass.IDENT, AspectClass.WORDS, AspectClass.DESCRIPTION],
+            weights=self.WEIGHTS,
+        )
+        await FtsWorker(fts_cfg, Path(fts.__file__).resolve().parent / "run").run()
+
+    async def vectors(self) -> None:
+        """Векторы: поднимает модель, поэтому зовётся только там, где проверяется."""
+        database = self._stand.ix_database
+        cfg = VectorConfig(
+            db_schema=database.db_schema,
+            postgres=database.postgres,
+            krb=database.krb,
+            classes=[AspectClass.DESCRIPTION],
+            cache_dir=self._stand.embedding_cache_dir,
+        )
+        await VectorWorker(cfg, Path(vector.__file__).resolve().parent / "run").run()

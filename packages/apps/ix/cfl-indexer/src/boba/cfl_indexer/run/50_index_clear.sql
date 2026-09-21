@@ -1,23 +1,14 @@
 /*
-cfl-indexer, индекс node,
-шаг 1: снять строки триграмм и полнотекста node перед перезаписью.
-Чанки эмбеддингов не трогаются
-их сверяет по content_hash шаг векторизации
+cfl-indexer, текст node, шаг 1: снять прежние строки текста этого node из полнотекста.
+
+Индексатор пишет в общий {schema}.ix_fts только то, чего SQL добыть не может: markdown
+страницы, текст вложения, OCR. Остальные аспекты выводят из объявлений общие
+индексаторы ix-fts, ix-trgm и ix-vector, поэтому снимаются здесь только строки
+аспектов, которые кладёт сам индексатор.
 */
 -- @name index_clear
--- @params node_id
-with trgm as (
-    delete from {schema}.cfl_idx_trgm
-    where
-        node_id = %(node_id)s
-    returning 1
-),
-fts as (
-    delete from {schema}.cfl_idx_fts
-    where
-        node_id = %(node_id)s
-    returning 1
-)
-select
-    (select count(*) from trgm) as trgm,
-    (select count(*) from fts) as fts;
+-- @params node_id aspects
+delete from {schema}.ix_fts
+where
+    node_id = %(node_id)s
+    and aspect::varchar = any(%(aspects)s::varchar[]);

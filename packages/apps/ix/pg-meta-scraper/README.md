@@ -13,10 +13,10 @@ layout/   запросы к своей базе: raw_* -> stage_* -> ix
 ```
 
 Схема пакета накатывается его же командой; ядро `ix` ставится до этого пакетом
-`pg-ix-core`:
+`ix-core`:
 
 ```
-.venv/bin/boba-ix-core upgrade --config ../../compose/apps/pg-ix-core/conf.toml
+.venv/bin/boba-ix-core upgrade --config ../../compose/apps/ix-core/conf.toml
 .venv/bin/boba-pg-meta-scraper upgrade --config ../../compose/apps/pg-meta-scraper/conf.toml
 ```
 

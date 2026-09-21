@@ -1,4 +1,6 @@
-"""Обход спейса заглушки: граф, три индекса, отсечение по версии и хэшу, чистка.
+"""Обход спейса заглушки: граф, текст в общем полнотексте, отсечение по версии и
+хэшу, чистка. Выводимые аспекты и векторы делают общие индексаторы, поэтому там, где
+они проверяются, тест гоняет их следом за обходом.
 
 Ошибки стенда: IxStandError — секции [ix_stand] нет, модуль пропускается.
 """
@@ -8,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from cfl_stand import StubIndexer
+from cfl_stand import SharedIndexers, StubIndexer
 
 from boba.stand.confluence import (
     ConfluenceStub,
@@ -57,20 +59,20 @@ COUNT_BY_SURFACE = """
 """
 FTS_ROWS = """
     select aspect::varchar, content
-    from {schema}.cfl_idx_fts f
+    from {schema}.ix_fts f
     join {schema}.node n on n.id = f.node_id
     where n.address->>'content' = %(content)s
     order by aspect
 """
 TRGM_COUNT = """
     select count(*)
-    from {schema}.cfl_idx_trgm f
+    from {schema}.ix_trgm f
     join {schema}.node n on n.id = f.node_id
     where n.address->>'content' = %(content)s
 """
 EMB_HASHES = """
     select aspect::varchar || ':' || content_hash
-    from {schema}.cfl_idx_emb_e5_1024 e
+    from {schema}.ix_emb_e5_1024 e
     join {schema}.node n on n.id = e.node_id
     where n.address->>'content' = %(content)s
     group by 1 order by 1
@@ -98,16 +100,19 @@ async def rows(
 
 
 class TestIndexSpace:
-    async def test_space_lands_in_graph_and_three_indexes(
+    async def test_space_lands_in_graph_and_shared_indexes(
         self,
         stub: tuple[ConfluenceStub, int],
         stub_indexer: StubIndexer,
+        shared: SharedIndexers,
         ix_database: IxStandDatabase,
     ) -> None:
         fake, _ = stub
         seed(fake)
 
         reports = await stub_indexer.run(SPACE)
+        await shared.text()
+        await shared.vectors()
 
         assert reports[0].seen == 4
         assert reports[0].indexed == 4
@@ -173,15 +178,20 @@ class TestIndexSpace:
         self,
         stub: tuple[ConfluenceStub, int],
         stub_indexer: StubIndexer,
+        shared: SharedIndexers,
         ix_database: IxStandDatabase,
     ) -> None:
         fake, _ = stub
         seed(fake)
         await stub_indexer.run(SPACE)
+        await shared.text()
+        await shared.vectors()
         before = await rows(ix_database, EMB_HASHES, {"content": "101"})
 
         fake.pages["101"].edit(html="<p>Orders moved to dm.order_lines.</p>")
         reports = await stub_indexer.run(SPACE)
+        await shared.text()
+        await shared.vectors()
 
         assert reports[0].indexed == 1
         fts = dict(await rows(ix_database, FTS_ROWS, {"content": "101"}))
@@ -193,11 +203,14 @@ class TestIndexSpace:
         self,
         stub: tuple[ConfluenceStub, int],
         stub_indexer: StubIndexer,
+        shared: SharedIndexers,
         ix_database: IxStandDatabase,
     ) -> None:
         fake, _ = stub
         seed(fake)
         await stub_indexer.run(SPACE)
+        await shared.text()
+        await shared.vectors()
         before = dict(
             row[0].split(":")
             for row in await rows(ix_database, EMB_HASHES, {"content": "101"})
@@ -206,6 +219,8 @@ class TestIndexSpace:
 
         fake.pages["101"].edit(labels=["dwh", "etl", "finance"])
         reports = await stub_indexer.run(SPACE)
+        await shared.text()
+        await shared.vectors()
 
         assert fake.calls[StubRoute.BODY] == 1
         assert reports[0].indexed == 1
@@ -222,14 +237,19 @@ class TestIndexSpace:
         self,
         stub: tuple[ConfluenceStub, int],
         stub_indexer: StubIndexer,
+        shared: SharedIndexers,
         ix_database: IxStandDatabase,
     ) -> None:
         fake, _ = stub
         seed(fake)
         await stub_indexer.run(SPACE)
+        await shared.text()
+        await shared.vectors()
 
         fake.delete("200")
         reports = await stub_indexer.run(SPACE)
+        await shared.text()
+        await shared.vectors()
 
         assert reports[0].swept == 1
         assert (

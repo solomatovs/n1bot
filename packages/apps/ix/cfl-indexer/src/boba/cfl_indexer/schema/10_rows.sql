@@ -17,5 +17,6 @@ insert into {schema}.aspect (aspect, class, description, owner) values
     ('labels', 'description', 'Метки страницы через пробел.',                                             'cfl-indexer'),
     ('card',   'description', 'Карточка: вид объекта, путь, метки и начало текста.',                     'cfl-indexer'),
     ('body',   'description', 'Полный текст: markdown страницы, текст вложения или комментария.',        'cfl-indexer'),
-    ('ocr',    'description', 'Текст, распознанный на картинке или скане вложения.',                     'cfl-indexer')
+    ('ocr',    'description', 'Текст, распознанный на картинке или скане вложения.',                     'cfl-indexer'),
+    ('describer_input', 'describer_input', 'Страница целиком для описателя: заголовок, путь, метки и текст.', 'cfl-indexer')
 on conflict (aspect) do nothing;

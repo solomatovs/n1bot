@@ -1,12 +1,11 @@
-"""Запись индексатора в ix: node и tree, surface-строки cfl_*, три таблицы индексов
-одного node и чистка спейса. Все запросы — файлы run/ с именованными параметрами;
-плейсхолдеры sources и weights заполняются при старте прогона.
+"""Запись индексатора в ix: node и tree, surface-строки cfl_*, текст в общий полнотекст
+и чистка спейса. Все запросы — файлы run/ с именованными параметрами.
 
-Node пишется одной транзакцией: surface-строка, снятие строк триграмм и полнотекста,
-текст из Python (body, ocr) в полнотекст, остальные аспекты из объявлений в полнотекст
-и триграммы, затем вектор — аспекты класса description сверяются по md5 с уже
-записанными чанками, и модель считает только изменившиеся. Сорвался любой шаг —
-node остаётся прежним, и следующий прогон делает его заново.
+Node пишется одной транзакцией: surface-строка и текст, который SQL добыть не может
+(markdown страницы, текст вложения, OCR), в {schema}.ix_fts. Всё остальное делают общие
+индексаторы: ix-fts выводит из объявлений title, path, card и выравнивает веса, ix-trgm
+и ix-vector берут свои классы аспектов. Поэтому объявление, добавленное описателем или
+другим потребителем, попадает в индексы само, без обхода Confluence.
 
 Ошибки:
 IxWriteError — база отдала не то, что ждали: нет id node, нет сводки шага.
@@ -26,9 +25,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict
 
 from boba.confluence.models import PageLink
-from boba.pg_idx_fts.worker import FtsWeight
-from boba.pg_idx_vector.embedding import AspectEmbedding, AspectText
-from boba.pg_ix_core.schema_name import SchemaName
+from boba.ix_core.schema_name import SchemaName
 
 __all__ = [
     "Aspect",
@@ -36,7 +33,7 @@ __all__ = [
     "IxWriter",
     "NodeState",
     "PackageSql",
-    "Part",
+    "PushedAspects",
     "PushedText",
     "RowWrite",
     "RunFile",
@@ -91,21 +88,18 @@ class RunFile(StrEnum):
     PUSHED_TEXTS = "40_pushed_texts.sql"
     INDEX_CLEAR = "50_index_clear.sql"
     INDEX_PUSH = "51_index_push.sql"
-    INDEX_DERIVE = "52_index_derive.sql"
-    INDEX_TRGM = "53_index_trgm.sql"
-    VECTOR_CANDIDATES = "54_vector_candidates.sql"
-    VECTOR_STATE = "55_vector_state.sql"
-    VECTOR_DROP = "56_vector_drop.sql"
     LINKS_CLEAR = "80_links_clear.sql"
     LINKS_APPLY = "81_links_apply.sql"
     SWEEP = "90_sweep.sql"
 
 
-class Part(StrEnum):
-    """Плейсхолдеры файлов run/, которые заполняет прогон."""
+class PushedAspects:
+    """Аспекты, текст которых кладёт сам индексатор; остальные выводятся из
+    объявлений общими индексаторами."""
 
-    SOURCES = "sources"
-    WEIGHTS = "weights"
+    @staticmethod
+    def names() -> list[str]:
+        return [str(Aspect.BODY), str(Aspect.OCR)]
 
 
 class NodeState(BaseModel):
@@ -143,35 +137,23 @@ class RowWrite(BaseModel):
 
 
 class PackageSql:
-    """Файлы run/ пакета под схему графа с частями прогона."""
+    """Файлы run/ пакета под схему графа."""
 
-    def __init__(
-        self, package_dir: Path, db_schema: str, parts: Mapping[str, sql.Composable]
-    ) -> None:
+    def __init__(self, package_dir: Path, db_schema: str) -> None:
         self._dir = package_dir
         self._db_schema = db_schema
-        self._parts = dict(parts)
 
     def load(self, name: RunFile) -> sql.Composed:
         text = (self._dir / name).read_text(encoding="utf-8")
 
-        return SchemaName.render(text, self._db_schema, **self._parts)
+        return SchemaName.render(text, self._db_schema)
 
 
 class IxWriter:
     """Запись одного node и чистка спейса; соединение приходит в каждый вызов."""
 
-    DEFAULT_WEIGHT = FtsWeight.D
-
-    def __init__(
-        self,
-        sql_files: PackageSql,
-        embedding: AspectEmbedding,
-        weights: Mapping[str, FtsWeight],
-    ) -> None:
+    def __init__(self, sql_files: PackageSql) -> None:
         self._sql = sql_files
-        self._embedding = embedding
-        self._weights = dict(weights)
 
     async def node(
         self,
@@ -277,13 +259,14 @@ class IxWriter:
         surface: Surface,
         row: RowWrite,
         pushed: Sequence[PushedText],
-    ) -> int:
-        """Surface-строка, триграммы, полнотекст и вектор node одной транзакцией;
-        возвращает число посчитанных чанков."""
+    ) -> None:
+        """Surface-строка и текст node одной транзакцией: сорвался шаг — node
+        остаётся прежним, и следующий прогон делает его заново."""
         async with conn.transaction():
             await conn.execute(self._sql.load(row.file), dict(row.params))
             await conn.execute(
-                self._sql.load(RunFile.INDEX_CLEAR), {"node_id": node_id}
+                self._sql.load(RunFile.INDEX_CLEAR),
+                {"node_id": node_id, "aspects": PushedAspects.names()},
             )
 
             for text in pushed:
@@ -297,61 +280,8 @@ class IxWriter:
                         "surface": str(surface),
                         "aspect": str(text.aspect),
                         "content": text.content,
-                        "weight": str(self._weight_of(text.aspect)),
                     },
                 )
-
-            await conn.execute(
-                self._sql.load(RunFile.INDEX_DERIVE), {"node_id": node_id}
-            )
-            await conn.execute(self._sql.load(RunFile.INDEX_TRGM), {"node_id": node_id})
-
-            return await self._embed(conn, node_id)
-
-    async def _embed(self, conn: psycopg.AsyncConnection[Any], node_id: int) -> int:
-        """Вектор node: только аспекты, чей текст изменился; возвращает число чанков."""
-        cur = await conn.execute(
-            self._sql.load(RunFile.VECTOR_CANDIDATES), {"node_id": node_id}
-        )
-        candidates: list[AspectText] = []
-        for surface, aspect, content, content_hash in await cur.fetchall():
-            candidates.append(
-                AspectText(
-                    node_id=node_id,
-                    surface=str(surface),
-                    aspect=str(aspect),
-                    content=str(content),
-                    content_hash=str(content_hash),
-                )
-            )
-
-        cur = await conn.execute(
-            self._sql.load(RunFile.VECTOR_STATE), {"node_id": node_id}
-        )
-        written: dict[str, str] = {}
-        for aspect, content_hash in await cur.fetchall():
-            written[str(aspect)] = str(content_hash)
-
-        stale: list[AspectText] = []
-        for candidate in candidates:
-            if written.get(candidate.aspect) == candidate.content_hash:
-                continue
-
-            stale.append(candidate)
-
-        aspects: list[str] = []
-        for candidate in candidates:
-            aspects.append(candidate.aspect)
-
-        await conn.execute(
-            self._sql.load(RunFile.VECTOR_DROP),
-            {"node_id": node_id, "aspects": aspects},
-        )
-
-        if not stale:
-            return 0
-
-        return await self._embedding.write(conn, stale)
 
     async def sweep(
         self,
@@ -370,9 +300,3 @@ class IxWriter:
             )
 
         return int(row[0])
-
-    def _weight_of(self, aspect: Aspect) -> FtsWeight:
-        if aspect in self._weights:
-            return self._weights[aspect]
-
-        return self.DEFAULT_WEIGHT

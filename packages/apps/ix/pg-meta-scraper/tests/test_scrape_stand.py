@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import pytest
-from conftest import DemoDataset, Golden, IxStand, IxStandDatabase
+from scraper_stand import DemoDataset, Golden, IxStand, IxStandDatabase
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
 
