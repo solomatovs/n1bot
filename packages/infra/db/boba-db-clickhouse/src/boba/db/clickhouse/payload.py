@@ -22,7 +22,7 @@ from boba.db.clickhouse.profile import ClickHouseConfig
 from boba.kerberos import KerberosAuthBase, KerberosError
 from boba.krb import ClientCredentials, SpnegoNegotiate
 
-__all__ = ["PayloadClickHouse", "SpnegoHeaders"]
+__all__ = ["PayloadClickHouse", "RowStream", "SpnegoHeaders"]
 
 
 class SpnegoHeaders(dict[str, str]):
@@ -65,21 +65,15 @@ class SpnegoHeaders(dict[str, str]):
 
 @dataclass(frozen=True, slots=True)
 class RowStream:
+    """Строки одного запроса: имена колонок и сами строки асинхронным потоком.
+
+    Драйвер отдаёт имена колонок отдельно от значений, поэтому они едут вместе
+    с потоком: вызывающий собирает словарь строки по names, не заглядывая во
+    внутренности стрима.
+    """
+
     names: tuple[str, ...]
-    blocks: AsyncIterator[Sequence[Any]]  # тип блока — ваш
-
-
-# @dataclass(frozen=True)
-# class RowBlock:
-#     """Поток блоков строк и имена колонок: строки собирает вызывающий.
-
-#     Драйвер отдаёт имена колонок отдельно от значений, поэтому они едут
-#     вместе с потоком — иначе каждый вызывающий доставал бы их сам из
-#     внутренностей стрима.
-#     """
-
-#     names: Sequence[str]
-#     block: AsyncIterable[Sequence[Sequence[Any]]]
+    blocks: AsyncIterator[Sequence[Any]]
 
 
 class PayloadClickHouse:
@@ -118,24 +112,72 @@ class PayloadClickHouse:
         connection: ClickHouseConfig,
         text: str,
         parameters: Mapping[str, Any] | None = None,
-    ):
-        """Блоки строк запроса; отказ сервера уходит ClickHouseQueryError."""
-        values = dict(parameters) if parameters else None
-        async with PayloadClickHouse.opened_config(connection) as client:
-            try:
-                async with await client.query_rows_stream(
-                    text, parameters=values
-                ) as stream:
-                    source = cast(QueryResult, stream.source)
-                    yield RowStream(
-                        names=tuple(source.column_names),
-                        blocks=cast(AsyncIterator, stream),
-                    )
-            except DriverError as exc:
-                raise ClickHouseQueryError(
-                    f"query on clickhouse failed: {type(exc).__name__}: {exc}; "
-                    f"query: {text[:200]!r}"
-                ) from exc
+    ) -> AsyncGenerator[RowStream, None]:
+        """Строки запроса на клиенте, открытом только под этот запрос."""
+        async with (
+            PayloadClickHouse.opened_config(connection) as client,
+            PayloadClickHouse.rows(client, text, parameters) as stream,
+        ):
+            yield stream
+
+    DESCRIBE: ClassVar[str] = "describe ({query})"
+
+    @staticmethod
+    @asynccontextmanager
+    async def rows(
+        client: AsyncClient,
+        text: str,
+        parameters: Mapping[str, Any] | None = None,
+    ) -> AsyncGenerator[RowStream, None]:
+        """Строки запроса на уже открытом клиенте: одна сессия на много запросов.
+        Отказ сервера уходит ClickHouseQueryError; параметры едут серверными
+        подстановками {name:Type}. Имена колонок пустого результата берутся
+        describe'ом: Native-формат без строк не шлёт заголовка."""
+        values = None
+        if parameters:
+            values = dict(parameters)
+
+        try:
+            async with await client.query_rows_stream(
+                text, parameters=values
+            ) as stream:
+                source = cast(QueryResult, stream.source)
+                names = tuple(source.column_names)
+                if not names:
+                    names = await PayloadClickHouse.describe(client, text, values)
+
+                yield RowStream(
+                    names=names,
+                    blocks=cast(AsyncIterator[Sequence[Any]], stream),
+                )
+        except DriverError as exc:
+            raise ClickHouseQueryError(
+                f"query on clickhouse failed: {type(exc).__name__}: {exc}; "
+                f"query: {text[:200]!r}"
+            ) from exc
+
+    @staticmethod
+    async def describe(
+        client: AsyncClient,
+        text: str,
+        parameters: dict[str, Any] | None = None,
+    ) -> tuple[str, ...]:
+        """Имена колонок результата запроса без его выполнения."""
+        try:
+            result = await client.query(
+                PayloadClickHouse.DESCRIBE.format(query=text), parameters=parameters
+            )
+        except DriverError as exc:
+            raise ClickHouseQueryError(
+                f"describe on clickhouse failed: {type(exc).__name__}: {exc}; "
+                f"query: {text[:200]!r}"
+            ) from exc
+
+        names: list[str] = []
+        for row in result.result_rows:
+            names.append(str(row[0]))
+
+        return tuple(names)
 
     @staticmethod
     @asynccontextmanager

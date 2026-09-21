@@ -1,7 +1,6 @@
 -- @name gp_partition_rule
 -- @wave 3
 -- @params rels
--- @key oid
 -- @only gp
 -- @max 99999
 select

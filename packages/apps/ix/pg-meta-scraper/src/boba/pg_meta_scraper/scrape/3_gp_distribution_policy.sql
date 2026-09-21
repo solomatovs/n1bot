@@ -1,7 +1,6 @@
 -- @name gp_distribution_policy
 -- @wave 3
 -- @params rels
--- @key localoid
 -- @only gp
 select
     localoid,

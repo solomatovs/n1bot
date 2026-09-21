@@ -1,7 +1,6 @@
 -- @name gp_exttable
 -- @wave 3
 -- @params rels
--- @key reloid
 -- @only gp
 -- @max 99999
 select

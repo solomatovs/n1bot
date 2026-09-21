@@ -1,7 +1,6 @@
 -- @name gp_appendonly
 -- @wave 3
 -- @params rels
--- @key relid
 -- @only gp
 -- @max 99999
 select

@@ -1,7 +1,6 @@
 -- @name attribute
 -- @wave 3
 -- @params rels
--- @key attrelid, attnum
 -- @min 120000
 select
     attrelid,

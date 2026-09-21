@@ -1,7 +1,6 @@
 -- @name sequence
 -- @wave 3
 -- @params rels
--- @key seqrelid
 -- @min 100000
 select
     seqrelid,

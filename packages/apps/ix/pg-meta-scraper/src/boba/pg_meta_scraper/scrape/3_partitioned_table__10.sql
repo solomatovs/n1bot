@@ -1,7 +1,6 @@
 -- @name partitioned_table
 -- @wave 3
 -- @params rels
--- @key partrelid
 -- @min 100000
 -- @max 109999
 select

@@ -1,7 +1,6 @@
 -- @name attrdef
 -- @wave 3
 -- @params rels
--- @key oid
 -- @collect attrdefs oid
 select
     oid,

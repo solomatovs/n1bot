@@ -1,7 +1,6 @@
 -- @name depend
 -- @wave 4
 -- @params rels attrdefs procs types
--- @key classid, objid, objsubid, refclassid, refobjid, refobjsubid, deptype
 select
     classid,
     objid,

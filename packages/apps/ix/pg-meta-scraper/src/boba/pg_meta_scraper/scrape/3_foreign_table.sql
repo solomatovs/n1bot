@@ -1,7 +1,6 @@
 -- @name foreign_table
 -- @wave 3
 -- @params rels
--- @key ftrelid
 -- @min 90100
 select
     ftrelid,

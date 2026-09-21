@@ -1,6 +1,5 @@
 -- @name shdescription
 -- @wave 1
--- @key objoid, classoid
 select
     objoid,
     classoid,

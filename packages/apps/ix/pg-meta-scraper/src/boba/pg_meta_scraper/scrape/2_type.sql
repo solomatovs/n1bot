@@ -1,7 +1,6 @@
 -- @name type
 -- @wave 2
 -- @params schemas
--- @key oid
 -- @collect types oid
 select
     oid,

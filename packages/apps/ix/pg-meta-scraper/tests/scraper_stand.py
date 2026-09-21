@@ -19,9 +19,11 @@ from pydantic import BaseModel, ConfigDict
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.profile import PostgresConfig
 from boba.ix_core.schema_name import SchemaName
+from boba.ix_core.scrape import ScrapeHeaders
 from boba.pg_meta_scraper import worker as scraper
 from boba.pg_meta_scraper.worker import (
     ApplyRow,
+    PgSource,
     ScrapeWorker,
     ServerInfo,
     SourceAddress,
@@ -110,7 +112,7 @@ class DdlFile(VersionGate):
     @classmethod
     def parse(cls, path: Path) -> DdlFile:
         text = path.read_text(encoding="utf-8")
-        gate = cls.gate_of(cls.headers_of(text))
+        gate = cls.gate_of(ScrapeHeaders.of(text))
         return cls(path=path, text=text, **gate.model_dump())
 
 
@@ -250,11 +252,9 @@ class IxStandDatabase(SharedIxStandDatabase):
         text = name.under_stand().read_text(encoding="utf-8")
         return SchemaName.render(text, self._stand.db_schema)
 
+    ATTEMPTS: ClassVar[int] = 3
+
     async def scrape(self, source: IxSource) -> Sequence[ApplyRow]:
-        cfg = WorkerConfig(
-            source=source.demo,
-            postgres=self._stand.ix_profile,
-            krb=self._stand.krb,
-            db_schema=self._stand.db_schema,
-        )
-        return await ScrapeWorker(cfg, PACKAGE_DIR).run()
+        pg = PgSource(WorkerConfig(source=source.demo))
+        worker = ScrapeWorker(self._stand.ix_database, pg, PACKAGE_DIR, self.ATTEMPTS)
+        return await worker.run()

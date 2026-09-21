@@ -1,7 +1,6 @@
 -- @name constraint
 -- @wave 3
 -- @params rels types
--- @key oid
 -- @collect constraints oid
 -- @max 90199
 select

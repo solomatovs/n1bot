@@ -1,7 +1,6 @@
 -- @name index
 -- @wave 3
 -- @params rels
--- @key indexrelid
 -- @min 90100
 -- @max 109999
 select

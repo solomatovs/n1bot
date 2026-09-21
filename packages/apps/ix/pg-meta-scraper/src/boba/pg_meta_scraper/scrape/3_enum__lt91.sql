@@ -1,7 +1,6 @@
 -- @name enum
 -- @wave 3
 -- @params types
--- @key oid
 -- @max 90099
 select
     oid,

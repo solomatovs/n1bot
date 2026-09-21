@@ -1,7 +1,6 @@
 -- @name range
 -- @wave 3
 -- @params types
--- @key rngtypid
 -- @min 90200
 select
     rngtypid,

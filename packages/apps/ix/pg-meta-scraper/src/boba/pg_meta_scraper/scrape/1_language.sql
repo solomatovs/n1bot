@@ -1,6 +1,5 @@
 -- @name language
 -- @wave 1
--- @key oid
 select
     oid,
     lanname,
