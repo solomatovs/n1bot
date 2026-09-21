@@ -28,6 +28,7 @@ from boba.ix_core.database import IxDatabase
 from boba.ix_core.main import SCHEMA_DIR as CORE_SCHEMA_DIR
 from boba.ix_core.schema_name import SchemaName
 from boba.ix_core.upgrade import SchemaUpgrade
+from boba.ix_core.urls import SurfaceUrls
 from boba.krb import KerberosWorkspaceConfig
 from boba.runtime.config import ConfigLocator
 from boba.stand.site import StandLayers
@@ -126,6 +127,33 @@ class IxStandDatabase:
     def render(self, text: str) -> sql.Composed:
         """Запрос проверки под схему графа: в тексте она стоит плейсхолдером."""
         return SchemaName.render(text, self._stand.db_schema)
+
+    NODES: ClassVar[str] = """
+        select
+            n.surface::varchar,
+            n.address
+        from
+            {schema}.node n
+        order by
+            n.id
+    """
+
+    async def urls(self) -> SurfaceUrls:
+        """Формулы ссылок из реестра стенда: тест проверяет ими объявление владельца."""
+        async with self.connection() as conn:
+            return await SurfaceUrls.load(conn, self._stand.db_schema)
+
+    async def nodes(self) -> list[tuple[str, dict[str, Any]]]:
+        """Поверхность и адрес каждой node: по ним тест собирает ссылки."""
+        async with self.connection() as conn:
+            cur = await conn.execute(self.render(self.NODES))
+            rows = await cur.fetchall()
+
+        found: list[tuple[str, dict[str, Any]]] = []
+        for surface, address in rows:
+            found.append((str(surface), dict(address)))
+
+        return found
 
     async def scalar(self, text: str, params: dict[str, Any]) -> Any:
         """Одно значение запроса проверки; отсутствие строки — ошибка стенда."""

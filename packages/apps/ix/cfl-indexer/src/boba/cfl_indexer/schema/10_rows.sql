@@ -20,3 +20,19 @@ insert into {schema}.aspect (aspect, class, description, owner) values
     ('ocr',    'description', 'Текст, распознанный на картинке или скане вложения.',                     'cfl-indexer'),
     ('describer_input', 'describer_input', 'Страница целиком для описателя: заголовок, путь, метки и текст.', 'cfl-indexer')
 on conflict (aspect) do nothing;
+
+/*
+Формулы ссылок на объекты Confluence: по ним поиск и чат собирают адрес, по которому
+объект открывает человек. {{origin}} это scheme://host с портом, если он не порт схемы,
+{{path}} — префикс сервера, когда Confluence живёт не в корне; отсутствующий ключ даёт
+пустую строку, поэтому одна формула годится и для корня, и для /confluence.
+*/
+insert into {schema}.surface_url (surface, template, owner) values
+    ('cfl_space',      '{{origin}}{{path}}/display/{{space}}',                                      'cfl-indexer'),
+    ('cfl_page',       '{{origin}}{{path}}/pages/viewpage.action?pageId={{content}}',               'cfl-indexer'),
+    ('cfl_blogpost',   '{{origin}}{{path}}/pages/viewpage.action?pageId={{content}}',               'cfl-indexer'),
+    ('cfl_attachment', '{{origin}}{{path}}/pages/viewpageattachments.action?pageId={{content}}',    'cfl-indexer'),
+    ('cfl_comment',    '{{origin}}{{path}}/pages/viewpage.action?pageId={{content}}#comment-{{comment}}', 'cfl-indexer')
+on conflict (surface) do update
+    set template = excluded.template,
+        owner    = excluded.owner;
