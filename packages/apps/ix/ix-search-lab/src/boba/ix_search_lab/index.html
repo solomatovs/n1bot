@@ -21,6 +21,11 @@
   #sug div { padding: 4px 8px; cursor: pointer; }
   #sug div:hover, #sug div.sel { background: #eef4ff; }
   #sug .meta { display: inline; margin-left: 6px; }
+  .surfaces { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 12px; }
+  .surfaces .chip { border: 1px solid #ccc; border-radius: 12px; padding: 2px 8px; cursor: pointer; user-select: none; background: #fafafa; }
+  .surfaces .chip.on { border-color: #3b6fd4; background: #eef4ff; color: #14306e; }
+  .surfaces .all { color: #777; cursor: pointer; text-decoration: underline; }
+  .surfaces .lead { color: #555; }
 </style>
 </head>
 <body>
@@ -33,15 +38,70 @@
   <label><input type="checkbox" id="live"> подсказки</label>
   <button>искать</button>
 </form>
+<div class="surfaces" id="surfaces"><span class="lead">поверхности:</span></div>
 <div class="cols">
   <div><h2>fts</h2><div id="fts"></div></div>
   <div><h2>trgm</h2><div id="trgm"></div></div>
   <div><h2>vector</h2><div id="vector"></div></div>
 </div>
 <script>
+// Адрес объекта собирает сервер по формуле его поверхности и отдаёт полем url.
+// Формулы нет — показываем части адреса: сервер отдельно, остальное парами
+// ключ=значение по алфавиту.
+const SERVER_KEYS = ['scheme', 'host', 'port', 'path'];
 const addr = a => {
-  const keys = ['schema','table','view','sequence','index','function','args','type','statistics','column','constraint','trigger'];
-  return keys.filter(k => a[k] !== undefined).map(k => k + '=' + a[k]).join(' ') + '  @ ' + a.host + ':' + a.port + '/' + a.database;
+  const parts = Object.keys(a).filter(k => !SERVER_KEYS.includes(k)).sort()
+    .map(k => k + '=' + a[k]).join(' ');
+  const server = (a.scheme ? a.scheme + '://' : '') + (a.host || '')
+    + (a.port ? ':' + a.port : '') + (a.path || '');
+  return parts + '  @ ' + server;
+};
+const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+// Ссылкой делаем только то, что откроет браузер; адрес базы показывается текстом.
+const OPENABLE = /^https?:\/\//;
+const where = h => {
+  if (!h.url) return esc(addr(h.address));
+  if (!OPENABLE.test(h.url)) return esc(h.url);
+  return '<a href="' + esc(h.url) + '" target="_blank" rel="noopener">' + esc(h.url) + '</a>';
+};
+
+// Поверхности: список приходит от сервера, выбор уходит в запрос повторами surface.
+// Не выбрано ничего — ищем везде.
+const chosen = new Set();
+const surfaceBox = document.getElementById('surfaces');
+const mark = on => {
+  chosen.clear();
+  for (const el of surfaceBox.querySelectorAll('.chip')) {
+    el.classList.toggle('on', on);
+    if (on) chosen.add(el.textContent);
+  }
+  search();
+};
+const drawSurfaces = items => {
+  for (const [label, on] of [['все', true], ['сбросить', false]]) {
+    const link = document.createElement('span');
+    link.className = 'all';
+    link.textContent = label;
+    link.addEventListener('click', () => mark(on));
+    surfaceBox.appendChild(link);
+  }
+  for (const s of items) {
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.textContent = s.name;
+    chip.title = s.description || s.name;
+    chip.addEventListener('click', () => {
+      if (chosen.has(s.name)) chosen.delete(s.name); else chosen.add(s.name);
+      chip.classList.toggle('on');
+      search();
+    });
+    surfaceBox.appendChild(chip);
+  }
+};
+const params = extra => {
+  const p = new URLSearchParams(extra);
+  for (const name of chosen) p.append('surface', name);
+  return p;
 };
 // Ответ сервера: JSON, а не-JSON (502 от nginx, пока сервер перезапускается) показывается текстом
 const asJson = async r => {
@@ -53,7 +113,7 @@ const render = (el, hits, err) => {
   if (err) { el.innerHTML = '<div class="err">' + err + '</div>'; return; }
   for (const h of hits) {
     const d = document.createElement('div'); d.className = 'hit';
-    d.innerHTML = '<div class="addr">' + addr(h.address) + '</div>'
+    d.innerHTML = '<div class="addr">' + where(h) + '</div>'
       + '<div class="meta">' + h.surface + ' · ' + h.aspect + ' · ' + Number(h.score).toFixed(3) + '</div>'
       + '<div class="snip">' + h.snippet + '</div>';
     el.appendChild(d);
@@ -64,11 +124,12 @@ const search = () => {
   const q = document.getElementById('q').value, limit = document.getElementById('limit').value;
   for (const mode of ['fts', 'trgm', 'vector']) {
     const el = document.getElementById(mode); el.innerHTML = '…';
-    fetch('search?' + new URLSearchParams({q, mode, limit}))
+    fetch('search?' + params({q, mode, limit}))
       .then(asJson).then(j => render(el, j.hits, j.error)).catch(e => render(el, [], String(e)));
   }
 };
 document.getElementById('f').addEventListener('submit', ev => { ev.preventDefault(); search(); });
+fetch('surfaces').then(asJson).then(j => drawSurfaces(j.surfaces || [])).catch(() => {});
 
 // Подсказки: галочка включает, запрос уходит через 0.5 с после остановки набора,
 // клик по пункту подставляет его текст и запускает поиск, Enter ищет набранное.
@@ -91,7 +152,7 @@ qInput.addEventListener('input', () => {
   if (!live.checked || !qInput.value.trim()) { hideSug(); return; }
   timer = setTimeout(() => {
     const my = ++seq, q = qInput.value.trim();
-    fetch('search?' + new URLSearchParams({q, mode: 'suggest', limit: 10}))
+    fetch('search?' + params({q, mode: 'suggest', limit: 10}))
       .then(asJson).then(j => { if (my === seq) showSug(j.error ? [] : j.hits); }).catch(hideSug);
   }, 500);
 });

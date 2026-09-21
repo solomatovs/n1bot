@@ -3,6 +3,8 @@
 {schema}.index_table, поэтому запрос не знает ни происхождений, ни поверхностей.
 Ранг node это сумма рангов её строк по всем аспектам, сниппет из лучшей строки.
 Правится без перезапуска сервера: файл читается на каждый запрос.
+Поверхности задаёт вызывающий списком %(surfaces)s; список никогда не пуст: когда
+на странице не выбрано ничего, стенд подставляет все поверхности словаря.
 */
 with q as (
     select websearch_to_tsquery('russian', %(q)s) as tsq
@@ -17,8 +19,9 @@ hit as (
         ) as snippet
     from
         {schema}.{index} f, q
-    where
-        f.tsv @@ q.tsq
+    where 1=1
+        and f.surface::varchar = any(%(surfaces)s::varchar[])
+        and f.tsv @@ q.tsq
 )
 select
     n.surface,

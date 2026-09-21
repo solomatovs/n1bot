@@ -157,6 +157,26 @@ class TestIndexSpace:
             "labels",
         ]
 
+    async def test_links_follow_surface_formulas(
+        self,
+        stub: tuple[ConfluenceStub, int],
+        stub_indexer: StubIndexer,
+        ix_database: IxStandDatabase,
+    ) -> None:
+        fake, port = stub
+        seed(fake)
+        await stub_indexer.run(SPACE)
+
+        urls = await ix_database.urls()
+        built: dict[str, str] = {}
+        for surface, address in await ix_database.nodes():
+            built[surface] = urls.of(surface, address)
+
+        origin = f"http://127.0.0.1:{port}"
+        assert built["cfl_space"] == f"{origin}/display/{SPACE}"
+        assert built["cfl_page"].startswith(f"{origin}/pages/viewpage.action?pageId=")
+        assert built["cfl_blogpost"] == f"{origin}/pages/viewpage.action?pageId=200"
+
     async def test_second_run_fetches_no_bodies(
         self,
         stub: tuple[ConfluenceStub, int],

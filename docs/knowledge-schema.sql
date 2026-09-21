@@ -190,6 +190,39 @@ insert into ix.surface (name, description) values
 on conflict (name) do nothing;
 
 /*
+surface_url — формула ссылки на объект поверхности: одна строка на поверхность,
+кладёт её владелец своим файлом схемы. Адрес узла лежит частями, а строка, по которой
+объект открывает человек и называет модель, собирается из них по-разному, и правило
+знает владелец: потребитель (поиск, api, чат) читает реестр при старте и только
+применяет шаблон.
+
+В шаблоне {ключ} это часть адреса в percent-кодировке; сверх ключей адреса есть
+{origin} — scheme://host с портом, если он не порт схемы. Квадратные скобки — кусок,
+который исчезает целиком, если хоть одной подстановки внутри в адресе нет. Так одной
+формулой пишется и страница Confluence под префиксом сервера, и колонка PostgreSQL,
+которая живёт то в таблице, то в представлении. Поверхности без строки ссылки не
+имеют, и отсутствие строки это и значит «ссылки нет».
+*/
+create table if not exists ix.surface_url (
+    surface   ix.surface_e primary key references ix.surface,
+    template  varchar      not null,
+    owner     varchar      not null
+);
+
+/* здесь по образцу, весь список формул — в файлах пакетов-владельцев */
+/* формулы pg_*: packages/apps/ix/pg-meta-scraper/src/boba/pg_meta_scraper/schema/10_surface_rows.sql */
+/* формулы cfl_*: packages/apps/ix/cfl-indexer/src/boba/cfl_indexer/schema/10_rows.sql */
+insert into ix.surface_url (surface, template, owner) values
+    ('cfl_space',      '{origin}{path}/display/{space}',                                         'cfl-indexer'),
+    ('cfl_page',       '{origin}{path}/pages/viewpage.action?pageId={content}',                  'cfl-indexer'),
+    ('cfl_blogpost',   '{origin}{path}/pages/viewpage.action?pageId={content}',                  'cfl-indexer'),
+    ('cfl_attachment', '{origin}{path}/pages/viewpageattachments.action?pageId={content}',       'cfl-indexer'),
+    ('cfl_comment',    '{origin}{path}/pages/viewpage.action?pageId={content}#comment-{comment}', 'cfl-indexer'),
+    ('pg_meta_table',  '{origin}/{database}?schema={schema}&table={table}',                      'pg-meta-scraper'),
+    ('pg_meta_column', '{origin}/{database}?schema={schema}[&table={table}][&view={view}]&column={column}', 'pg-meta-scraper')
+on conflict (surface) do update set template = excluded.template, owner = excluded.owner;
+
+/*
 node — любой объект, который можно адресовать в источнике.
 - address:  главное поле содержащее адрес объекта в виде отдельных частей
 
@@ -845,8 +878,10 @@ surface-строки и уже лежащего в ix_fts текста (union о
 ix_emb_e5_1024. Владеют ими пакеты ix-trgm, ix-fts и ix-vector, они же
 вписывают свои строки в реестр ix.index_table (вид, имя, владелец; модель и
 размерность вектора живут в конфиге его владельца), а стенд ix-search-lab читает
-реестр и опрашивает каждую таблицу отдельным запросом параллельно. Подсказки
-выбирают аспекты по классу из словаря, а не по имени. Веса полнотекста задаёт конфиг индексатора
+реестр и опрашивает каждую таблицу отдельным запросом параллельно. Поверхности
+выдачи стенд фильтрует списком имён: выбор человека со страницы или все поверхности
+словаря, у которых объявлены аспекты. Ссылку на найденный объект он собирает формулой
+из ix.surface_url. Подсказки выбирают аспекты по классу из словаря, а не по имени. Веса полнотекста задаёт конфиг индексатора
 по имени аспекта (title A, words A, path B, labels B, card B, body C, ocr C),
 аспект без веса получает D.
 

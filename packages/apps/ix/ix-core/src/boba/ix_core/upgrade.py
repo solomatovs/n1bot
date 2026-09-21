@@ -7,15 +7,15 @@ psycopg в autocommit; схема подставляется в `{schema}` пе�
 а их использование следующим. Файлы идемпотентны (`if not exists`,
 `on conflict do nothing`), повторный накат безопасен.
 
-После файлов проверяются все объявления аспектов {schema}.surface_aspect и все
-строки реестра таблиц индексов {schema}.index_table: тело объявления выполняется
-с limit 0 и сверяется с контрактом, таблица индекса — на существование и колонки
-своего вида. Опечатка владельца валит его же накат, а не прогон потребителя.
+После файлов проверяется всё, что владельцы объявили в ядре: тело объявления аспекта
+выполняется с limit 0 и сверяется с контрактом, таблица индекса — на существование и
+колонки своего вида, формула ссылки — на разбор подстановок. Опечатка владельца валит
+его же накат, а не прогон потребителя.
 
 Ошибки:
 SchemaUpgradeError — база недоступна, каталога схемы нет, сервер отклонил DDL,
-    ядро ix отсутствует там, где пакет на него опирается, объявление аспекта или
-    строка реестра индексов нарушает контракт.
+    ядро ix отсутствует там, где пакет на него опирается, объявление аспекта,
+    строка реестра индексов или формула ссылки нарушает контракт.
 """
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ from boba.ix_core.aspects import (
 from boba.ix_core.database import IxDatabase, IxDatabaseError, IxPool
 from boba.ix_core.indexes import IndexTableError, IndexTables
 from boba.ix_core.schema_name import SchemaName
+from boba.ix_core.urls import SurfaceUrlError, SurfaceUrls
 
 __all__ = [
     "CoreTable",
@@ -58,6 +59,7 @@ class CoreTable:
     EDGE: ClassVar[str] = "edge"
     SURFACE_ASPECT: ClassVar[str] = "surface_aspect"
     INDEX_TABLE: ClassVar[str] = "index_table"
+    SURFACE_URL: ClassVar[str] = "surface_url"
 
 
 class UpgradeReport(BaseModel):
@@ -102,6 +104,7 @@ class SchemaUpgrade:
 
                 await self._check_declarations(conn, database.db_schema)
                 await self._check_index_tables(conn, database.db_schema)
+                await self._check_urls(conn, database.db_schema)
 
         except IxDatabaseError as exc:
             msg = f"upgrade {self._schema_dir}: {exc}"
@@ -114,6 +117,9 @@ class SchemaUpgrade:
             raise SchemaUpgradeError(msg) from exc
         except IndexTableError as exc:
             msg = f"upgrade {self._schema_dir}: index table rejected: {exc}"
+            raise SchemaUpgradeError(msg) from exc
+        except SurfaceUrlError as exc:
+            msg = f"upgrade {self._schema_dir}: url template rejected: {exc}"
             raise SchemaUpgradeError(msg) from exc
 
         return UpgradeReport(files=[path.name for path in files])
@@ -151,6 +157,14 @@ class SchemaUpgrade:
         tables = await IndexTables.all(conn, db_schema)
         await IndexTables.check(conn, db_schema, tables)
         logger.info("index tables verified: %d", len(tables))
+
+    @staticmethod
+    async def _check_urls(conn: psycopg.AsyncConnection[Any], db_schema: str) -> None:
+        if not await SchemaName.exists(conn, db_schema, CoreTable.SURFACE_URL):
+            return
+
+        urls = await SurfaceUrls.load(conn, db_schema)
+        logger.info("url templates verified: %d", len(urls.surfaces()))
 
     @classmethod
     async def _validate_core_layer_exists(

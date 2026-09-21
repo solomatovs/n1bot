@@ -7,6 +7,8 @@
 получают счёт 1 и идут выше триграммных. Подсказка это текст, а не объект: одинаковые
 имена схлопнуты, число объектов отдаётся колонкой objects и склеивается по таблицам
 на стороне стенда.
+Поверхности задаёт вызывающий списком %(surfaces)s; список никогда не пуст: когда
+на странице не выбрано ничего, стенд подставляет все поверхности словаря.
 */
 with q as (
     select lower(%(q)s) as text
@@ -22,6 +24,7 @@ prefix as (
         join {schema}.aspect a on a.aspect = t.aspect,
         q
     where 1=1
+        and t.surface::varchar = any(%(surfaces)s::varchar[])
         and a.class = 'ident'
         and lower(t.content) ^@ q.text
 ),
@@ -36,6 +39,7 @@ fuzzy as (
         join {schema}.aspect a on a.aspect = t.aspect,
         q
     where 1=1
+        and t.surface::varchar = any(%(surfaces)s::varchar[])
         and a.class = 'words'
         and word_similarity(q.text, t.content) >= 0.4
 ),

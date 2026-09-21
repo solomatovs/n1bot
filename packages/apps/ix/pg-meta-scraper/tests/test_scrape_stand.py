@@ -1,8 +1,10 @@
 """Прогон скрапера по всем целям стенда: демонстрационный набор пересоздаётся на
 источнике, снимается в чистую базу ix, проверяются инварианты, эталонный отпечаток
-и повторный прогон."""
+, ссылки по формулам поверхностей и повторный прогон."""
 
 from __future__ import annotations
+
+from urllib.parse import parse_qsl, urlsplit
 
 import pytest
 from scraper_stand import DemoDataset, Golden, IxStand, IxStandDatabase
@@ -30,6 +32,8 @@ class TestScrapeStand:
 
         assert await ix_database.invariants() == {}, f"{name}: invariants broken"
 
+        await self._check_urls(ix_database, source.host)
+
         if golden.has(name):
             fingerprint = await ix_database.fingerprint(source.host)
             assert fingerprint == golden.of(name), (
@@ -39,3 +43,29 @@ class TestScrapeStand:
         second = await ix_database.scrape(source)
         changed = [row.op for row in second if row.applied != 0]
         assert changed == [], f"{name}: second run changed {changed}"
+
+    @staticmethod
+    async def _check_urls(ix_database: IxStandDatabase, host: str) -> None:
+        """Формула ссылки объявлена скрапером, поэтому его же прогон её и проверяет:
+        у каждой node этого источника ссылка собралась и роли в ней те же, что в
+        адресе. База стенда копит узлы всех целей, поэтому чужие пропускаем."""
+        urls = await ix_database.urls()
+        seen = 0
+        for surface, address in await ix_database.nodes():
+            if address.get("host") != host:
+                continue
+
+            seen += 1
+            url = urls.of(surface, address)
+            assert url, f"{surface}: no url formula for {address}"
+
+            split = urlsplit(url)
+            assert split.scheme == "postgresql", f"{surface}: {url}"
+            assert split.hostname == host, f"{surface}: {url}"
+            assert split.path == "/" + address["database"], f"{surface}: {url}"
+
+            roles = dict(parse_qsl(split.query, keep_blank_values=True))
+            for role, value in roles.items():
+                assert address.get(role) == value, f"{surface}: {url} vs {address}"
+
+        assert seen > 0, f"{host}: no nodes to build urls for"

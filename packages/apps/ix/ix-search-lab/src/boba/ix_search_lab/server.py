@@ -9,6 +9,16 @@ trgm, vector) и подсказки при наборе (suggest: btree по п�
 без правок запросов. SQL лежит в sql/ и читается на каждый запрос, чтобы править
 ранжирование без перезапуска; имя таблицы подставляется вместо {index}.
 
+Поверхности выдачи выбирает человек на странице: список стенд берёт при старте из
+словаря поверхностей, оставляя те, у которых объявлены аспекты, то есть те, что вообще
+попадают в индекс. Выбранное уходит в запрос списком; не выбрано ничего — значит ищем
+везде, и в запрос уходят все имена словаря, чтобы фильтр в sql был один и тот же.
+
+Ссылку на объект стенд тоже не сочиняет: формулу её сборки объявляет владелец
+поверхности в {schema}.surface_url, стенд читает реестр при старте и применяет шаблон
+к адресу каждой строки выдачи. У поверхности без формулы ссылки нет, и это пустая
+строка, а не выдумка.
+
 Вектор запроса стенд считает своей моделью из конфига, и она обязана совпадать с той,
 которой наполнена таблица эмбеддингов: у размерностей расхождение поймает сама база,
 у моделей одной размерности — никто. Пока таблица вектора одна и её владелец задаёт
@@ -44,6 +54,8 @@ from boba.db.postgres import AsyncPostgresPool, PostgresError
 from boba.ix_core.database import IxDatabase, IxDatabaseError, IxPool
 from boba.ix_core.indexes import IndexKind, IndexTable, IndexTables
 from boba.ix_core.schema_name import SchemaName
+from boba.ix_core.surfaces import Surface, SurfaceCatalog
+from boba.ix_core.urls import SurfaceUrls
 from boba.llm.embedding import Embedder, EmbedderFactory, LocalEmbedding
 
 logger = logging.getLogger("ix-search-lab")
@@ -86,6 +98,7 @@ class Mode(StrEnum):
 class Route(StrEnum):
     PAGE = "/"
     SEARCH = "/search"
+    SURFACES = "/surfaces"
 
 
 class LabConfig(IxDatabase):
@@ -104,6 +117,8 @@ class Hit(BaseModel):
     snippet: str
     objects: int = 1
     """Сколько объектов стоит за строкой: у подсказки больше одного, у выдачи один."""
+    url: str = ""
+    """Ссылка на объект по формуле его поверхности; пусто — формулы нет."""
 
     def key(self) -> tuple[str, str]:
         return (self.aspect, self.snippet)
@@ -157,6 +172,8 @@ class SearchBackend(BaseModel):
     pool: AsyncPostgresPool
     embedder: Embedder[str]
     tables: Mapping[IndexKind, Sequence[IndexTable]]
+    urls: SurfaceUrls
+    catalog: SurfaceCatalog
     loop: asyncio.AbstractEventLoop
 
 
@@ -173,15 +190,25 @@ class Searcher:
         self._pool = backend.pool
         self._loop = backend.loop
         self._tables = dict(backend.tables)
+        self._urls = backend.urls
+        self._catalog = backend.catalog
 
-    def search_from_thread(self, mode: Mode, query: str, limit: int) -> SearchReply:
+    def surfaces(self) -> Sequence[Surface]:
+        """Что предложить для выбора: поверхности, попадающие в индексы."""
+        return self._catalog.indexed()
+
+    def search_from_thread(
+        self, mode: Mode, query: str, limit: int, surfaces: Sequence[str]
+    ) -> SearchReply:
         future = asyncio.run_coroutine_threadsafe(
-            self.search(mode, query, limit), self._loop
+            self.search(mode, query, limit, surfaces), self._loop
         )
 
         return future.result()
 
-    async def search(self, mode: Mode, query: str, limit: int) -> SearchReply:
+    async def search(
+        self, mode: Mode, query: str, limit: int, surfaces: Sequence[str]
+    ) -> SearchReply:
         tables = self._tables.get(mode.kind(), ())
         if not tables:
             raise SearchLabError(
@@ -189,7 +216,12 @@ class Searcher:
                 f"has no {mode.kind()} table this stand can read"
             )
 
-        params: dict[str, object] = {"q": query, "limit": limit}
+        chosen = self._chosen(surfaces)
+        params: dict[str, object] = {
+            "q": query,
+            "limit": limit,
+            "surfaces": chosen,
+        }
         if mode is Mode.VECTOR:
             vector = await self._embedder.embed_query(query)
             params["v"] = "[" + ",".join(f"{value:.6g}" for value in vector) + "]"
@@ -202,6 +234,26 @@ class Searcher:
         parts = await asyncio.gather(*tasks)
 
         return SearchReply(mode=mode, hits=Merge.of(mode, parts, limit))
+
+    def _chosen(self, surfaces: Sequence[str]) -> list[str]:
+        """Поверхности запроса: выбранные страницей или все из словаря. Пустого
+        списка запрос не получает, поэтому фильтр в sql один и тот же."""
+        unknown = self._catalog.unknown(surfaces)
+        if unknown:
+            raise SearchLabError(
+                f"search: surfaces {list(unknown)} are not declared in "
+                f"{self._cfg.db_schema}.surface_e; known are "
+                f"{list(self._catalog.names())}"
+            )
+
+        if surfaces:
+            return list(surfaces)
+
+        everywhere: list[str] = []
+        for surface in self._catalog.indexed():
+            everywhere.append(surface.name)
+
+        return everywhere
 
     def _text(self, mode: Mode) -> str:
         sql_path = self._dir / mode.sql_file()
@@ -239,6 +291,7 @@ class Searcher:
                     aspect=str(aspect),
                     snippet=str(snippet),
                     objects=int(objects),
+                    url=self._urls.of(str(surface), address),
                 )
             )
 
@@ -246,7 +299,8 @@ class Searcher:
 
 
 class Handler(BaseHTTPRequestHandler):
-    """Маршруты: / отдаёт страницу, /search?q=&mode=&limit= отдаёт JSON."""
+    """Маршруты: / отдаёт страницу, /surfaces отдаёт словарь поверхностей,
+    /search?q=&mode=&limit=&surface=&surface= отдаёт JSON выдачи."""
 
     searcher: Searcher
     page: Path
@@ -258,25 +312,42 @@ class Handler(BaseHTTPRequestHandler):
                 HTTPStatus.OK, "text/html; charset=utf-8", self.page.read_bytes()
             )
             return
+
+        if url.path == Route.SURFACES:
+            self._surfaces()
+            return
+
         if url.path == Route.SEARCH:
             self._search(parse_qs(url.query))
             return
+
         self._send(HTTPStatus.NOT_FOUND, "text/plain", b"not found")
+
+    def _surfaces(self) -> None:
+        """Словарь поверхностей: по нему страница рисует выбор."""
+        found: list[dict[str, str]] = []
+        for surface in self.searcher.surfaces():
+            found.append(surface.model_dump(mode="json"))
+
+        self._json({"surfaces": found})
 
     def _search(self, args: dict[str, list[str]]) -> None:
         query = args.get("q", [""])[0].strip()
         mode_name = args.get("mode", [Mode.FTS.value])[0]
         limit = int(args.get("limit", ["10"])[0])
+        surfaces = args.get("surface", [])
         if not query:
             self._json({"mode": mode_name, "hits": []})
             return
+
         try:
             mode = Mode(mode_name)
-            reply = self.searcher.search_from_thread(mode, query, limit)
+            reply = self.searcher.search_from_thread(mode, query, limit, surfaces)
         except (SearchLabError, ValueError) as exc:
             logger.error("%s", exc)
             self._json({"mode": mode_name, "hits": [], "error": str(exc)})
             return
+
         self._json(reply.model_dump(mode="json"))
 
     def _json(self, payload: dict[str, object]) -> None:
@@ -321,6 +392,28 @@ class LabServer:
 
         return found
 
+    async def _catalog(self, pool: AsyncPostgresPool) -> SurfaceCatalog:
+        """Словарь поверхностей: выбор на странице и проверка фильтра запроса."""
+        async with pool.connection() as conn:
+            catalog = await SurfaceCatalog.load(conn, self._cfg.db_schema)
+
+        names: list[str] = []
+        for surface in catalog.indexed():
+            names.append(surface.name)
+
+        logger.info("surfaces to search over: %s", ", ".join(names))
+
+        return catalog
+
+    async def _urls(self, pool: AsyncPostgresPool) -> SurfaceUrls:
+        """Формулы ссылок из реестра: по ним выдача получает адрес объекта."""
+        async with pool.connection() as conn:
+            urls = await SurfaceUrls.load(conn, self._cfg.db_schema)
+
+        logger.info("url templates for surfaces: %s", ", ".join(urls.surfaces()))
+
+        return urls
+
     async def serve(self) -> None:
         embedding = LocalEmbedding(
             kind="local",
@@ -334,10 +427,14 @@ class LabServer:
 
         async with IxPool.opened(self._cfg) as pool:
             tables = await self._tables(pool)
+            urls = await self._urls(pool)
+            catalog = await self._catalog(pool)
             backend = SearchBackend(
                 pool=pool,
                 embedder=embedder,
                 tables=tables,
+                urls=urls,
+                catalog=catalog,
                 loop=asyncio.get_running_loop(),
             )
             Handler.searcher = Searcher(self._cfg, self._dir / "sql", backend)
