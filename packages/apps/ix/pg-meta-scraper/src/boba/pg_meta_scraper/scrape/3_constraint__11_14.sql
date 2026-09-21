@@ -1,7 +1,6 @@
 -- @name constraint
 -- @wave 3
 -- @params rels types
--- @key oid
 -- @collect constraints oid
 -- @min 110000
 -- @max 149999

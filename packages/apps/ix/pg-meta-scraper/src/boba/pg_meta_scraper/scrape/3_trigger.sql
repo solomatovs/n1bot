@@ -1,7 +1,6 @@
 -- @name trigger
 -- @wave 3
 -- @params rels
--- @key oid
 -- @collect triggers oid
 -- @min 130000
 select

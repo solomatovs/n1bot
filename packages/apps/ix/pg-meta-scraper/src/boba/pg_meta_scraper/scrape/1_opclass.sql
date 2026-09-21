@@ -1,6 +1,5 @@
 -- @name opclass
 -- @wave 1
--- @key oid
 select
     oid,
     opcname,

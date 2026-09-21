@@ -1,7 +1,6 @@
 -- @name rewrite
 -- @wave 3
 -- @params rels
--- @key oid
 select
     oid,
     ev_class,

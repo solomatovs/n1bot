@@ -1,7 +1,6 @@
 -- @name description
 -- @wave 4
 -- @params rels procs types constraints schemas triggers statistics
--- @key objoid, classoid, objsubid
 select
     objoid,
     classoid,

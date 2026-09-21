@@ -1,6 +1,5 @@
 -- @name namespace
 -- @wave 1
--- @key oid
 -- @collect schemas oid
 select
     oid,

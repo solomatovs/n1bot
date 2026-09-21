@@ -1,7 +1,6 @@
 -- @name class
 -- @wave 2
 -- @params schemas
--- @key oid
 -- @collect rels oid
 -- @max 90099
 -- @not gp

@@ -1,7 +1,6 @@
 -- @name statistic_ext
 -- @wave 3
 -- @params rels
--- @key oid
 -- @collect statistics oid
 -- @min 100000
 select

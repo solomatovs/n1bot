@@ -1,7 +1,6 @@
 -- @name proc
 -- @wave 2
 -- @params schemas
--- @key oid
 -- @collect procs oid
 -- @max 109999
 select

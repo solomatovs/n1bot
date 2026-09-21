@@ -1,6 +1,5 @@
 -- @name foreign_server
 -- @wave 1
--- @key oid
 -- @min 90100
 select
     oid,

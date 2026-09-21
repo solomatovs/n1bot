@@ -1,7 +1,6 @@
 -- @name inherits
 -- @wave 3
 -- @params rels
--- @key inhrelid, inhparent
 select
     inhrelid,
     inhparent,

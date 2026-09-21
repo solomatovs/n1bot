@@ -8,7 +8,6 @@ version = "0.0.21.dev2"
 description = "Скрапер каталога PostgreSQL/Greenplum в ядро ix: node, tree, edge и поверхности pg_meta_*."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-config==0.0.21.dev2",
     "boba-db-postgres==0.0.21.dev2",
     "boba-kerberos==0.0.21.dev2",
     "boba-ix-core==0.0.21.dev2",

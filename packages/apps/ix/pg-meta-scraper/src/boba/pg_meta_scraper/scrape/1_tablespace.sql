@@ -1,6 +1,5 @@
 -- @name tablespace
 -- @wave 1
--- @key oid
 select
     oid,
     spcname,

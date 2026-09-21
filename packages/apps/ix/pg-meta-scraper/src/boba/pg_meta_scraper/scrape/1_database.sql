@@ -1,6 +1,5 @@
 -- @name database
 -- @wave 1
--- @key oid
 select
     oid,
     datname,

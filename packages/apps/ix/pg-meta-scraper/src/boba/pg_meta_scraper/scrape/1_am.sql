@@ -1,6 +1,5 @@
 -- @name am
 -- @wave 1
--- @key oid
 select
     oid,
     amname,
