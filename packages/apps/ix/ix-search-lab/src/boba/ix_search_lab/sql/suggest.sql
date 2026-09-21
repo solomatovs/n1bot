@@ -21,8 +21,8 @@ prefix as (
         {schema}.{index} t
         join {schema}.aspect a on a.aspect = t.aspect,
         q
-    where
-        a.class = 'ident'
+    where 1=1
+        and a.class = 'ident'
         and lower(t.content) ^@ q.text
 ),
 fuzzy as (
@@ -35,8 +35,8 @@ fuzzy as (
         {schema}.{index} t
         join {schema}.aspect a on a.aspect = t.aspect,
         q
-    where
-        a.class = 'words'
+    where 1=1
+        and a.class = 'words'
         and word_similarity(q.text, t.content) >= 0.4
 ),
 hit as (
