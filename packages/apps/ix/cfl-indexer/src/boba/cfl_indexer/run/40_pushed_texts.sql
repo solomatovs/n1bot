@@ -9,7 +9,7 @@ select
     aspect::varchar as aspect,
     content
 from
-    {schema}.cfl_idx_fts
+    {schema}.ix_fts
 where
     node_id = %(node_id)s
     and aspect in ('body', 'ocr')

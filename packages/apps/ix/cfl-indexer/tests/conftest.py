@@ -8,10 +8,14 @@ IxStandError — секция [ix_stand] отсутствует или непо�
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
-from cfl_stand import PACKAGE_DIR, StubIndexer
+from cfl_stand import PACKAGE_DIR, SharedIndexers, StubIndexer
 
+from boba.ix_fts import worker as fts
+from boba.ix_trgm import worker as trgm
+from boba.ix_vector import worker as vector
 from boba.stand.confluence import ConfluenceStub, LiveServer
 from boba.stand.ix import IxStand, IxStandDatabase
 
@@ -24,7 +28,14 @@ def ix_stand() -> IxStand:
 @pytest.fixture(scope="session")
 async def ix_database(ix_stand: IxStand) -> IxStandDatabase:
     database = IxStandDatabase(ix_stand)
-    await database.recreate([PACKAGE_DIR / "schema"])
+    await database.recreate(
+        [
+            Path(fts.__file__).resolve().parent / "schema",
+            Path(trgm.__file__).resolve().parent / "schema",
+            Path(vector.__file__).resolve().parent / "schema",
+            PACKAGE_DIR / "schema",
+        ]
+    )
 
     return database
 
@@ -34,6 +45,11 @@ async def stub() -> AsyncIterator[tuple[ConfluenceStub, int]]:
     fake = ConfluenceStub()
     async with LiveServer(fake.app()) as server:
         yield fake, server.port
+
+
+@pytest.fixture
+def shared(ix_stand: IxStand, ix_database: IxStandDatabase) -> SharedIndexers:
+    return SharedIndexers(ix_stand)
 
 
 @pytest.fixture
@@ -50,15 +66,15 @@ CLEAN = """
         delete from {schema}.node where surface::varchar like 'cfl_%%' returning id
     ),
     trgm as (
-        delete from {schema}.cfl_idx_trgm
+        delete from {schema}.ix_trgm
         where node_id in (select id from gone) returning 1
     ),
     fts as (
-        delete from {schema}.cfl_idx_fts
+        delete from {schema}.ix_fts
         where node_id in (select id from gone) returning 1
     ),
     emb as (
-        delete from {schema}.cfl_idx_emb_e5_1024
+        delete from {schema}.ix_emb_e5_1024
         where node_id in (select id from gone) returning 1
     )
     select count(*) from gone

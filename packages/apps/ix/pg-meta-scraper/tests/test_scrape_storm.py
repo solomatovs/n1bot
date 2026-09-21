@@ -10,8 +10,8 @@ from collections.abc import Sequence
 from typing import ClassVar
 
 import pytest
-from conftest import DemoDataset, Golden, IxSource, IxStand, IxStandDatabase
 from pydantic import BaseModel
+from scraper_stand import DemoDataset, Golden, IxSource, IxStand, IxStandDatabase
 
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.profile import PostgresConfig

@@ -31,7 +31,7 @@ dependencies = [
     "boba-toolkit==0.0.21.dev2",
     "boba-toolrun==0.0.21.dev2",
     "boba-stand-core==0.0.21.dev2",
-    "boba-pg-ix-core==0.0.21.dev2",
+    "boba-ix-core==0.0.21.dev2",
     "fastapi>=0.115,<1",
     "httpx>=0.28,<1",
     "playwright>=1.47",

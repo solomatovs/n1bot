@@ -1,24 +1,27 @@
-"""Индексатор Confluence в граф ix: скрапер и индексатор трёх индексов cfl_idx_*
-одним компонентом.
+"""Индексатор Confluence в граф ix: скрапер поверхностей и текста.
 
 Один спейс обрабатывает один воркер строго последовательно: спейс, затем страницы и
-блог-записи по списку без тел, на каждом объекте — node, tree, surface-строка и все
-индексы, после страницы — её вложения и комментарии тем же порядком; оригиналы не
-хранятся.
-Несколько спейсов на входе — несколько воркеров параллельно, у каждого своё
-соединение из пула, эмбеддер один на процесс. В конце обхода спейса невиденные node
-снимаются.
+блог-записи по списку без тел, на каждом объекте — node, tree, surface-строка и текст,
+который SQL добыть не может (markdown страницы, текст вложения, OCR), в общий
+{schema}.ix_fts; после страницы идут её вложения и комментарии тем же порядком.
+Оригиналы не хранятся, только их хэши. Несколько спейсов на входе — несколько воркеров
+параллельно, у каждого своё соединение из пула. В конце обхода невиденные node
+снимаются, а ссылки становятся рёбрами.
+
+Остальное делают общие индексаторы по объявлениям аспектов: ix-fts выводит title, path
+и card и выравнивает веса, ix-trgm и ix-vector берут свои классы. Поэтому аспект,
+объявленный описателем или другим потребителем, попадает в индексы сам, без обхода
+Confluence, а этот индексатор не знает ни весов, ни модели эмбеддинга.
 
 Отсечение работы: version и indexer_hash совпали с surface-строкой — объект не
-трогается; version сменился — тело скачивается, и content_hash оригинала решает,
-что переписать; вектор пересчитывает только аспекты с изменившимся текстом.
+трогается; version сменился — тело скачивается, и content_hash оригинала решает, что
+переписать.
 
 Ошибки:
 IndexerWorkerError — Confluence или база ix недоступны, ответ не того вида, что
     ожидался, или конфиг противоречив (спейсов в полёте больше, чем соединений в
-    пуле). Файл вложения, который
-    не разобран, в ошибку не превращается: он считается в failed отчёта спейса.
-AspectEmbeddingError — модель, чанкер или провайдер эмбеддингов.
+    пуле). Файл вложения, который не разобран, в ошибку не превращается: он
+    считается в failed отчёта спейса.
 """
 
 from __future__ import annotations
@@ -29,14 +32,13 @@ import hashlib
 import json
 import logging
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar, Self
 
 import httpx
 import psycopg
-from psycopg import sql
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from boba.cfl_indexer.confluence import (
@@ -58,7 +60,6 @@ from boba.cfl_indexer.store import (
     IxWriter,
     NodeState,
     PackageSql,
-    Part,
     PushedText,
     RowWrite,
     RunFile,
@@ -67,15 +68,9 @@ from boba.cfl_indexer.store import (
 from boba.config import ConfigError, bind_section
 from boba.confluence.models import AttachmentVerdict
 from boba.confluence.rest import ConfluenceConnection, ContentType
-from boba.pg_idx_fts.worker import FtsWeight, FtsWeights
-from boba.pg_idx_vector.embedding import (
-    AspectEmbedding,
-    AspectEmbeddingError,
-    EmbeddingParams,
-)
-from boba.pg_ix_core.aspects import AspectClass, AspectDeclarations, AspectSources
-from boba.pg_ix_core.database import IxDatabase, IxDatabaseError, IxPool
-from boba.pg_ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError
+from boba.ix_core.database import IxDatabase, IxDatabaseError, IxPool
+from boba.ix_core.schema_name import SchemaName
+from boba.ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError
 from boba.text.document import LiteParseParams
 
 __all__ = [
@@ -117,14 +112,16 @@ class SpaceTarget(BaseModel):
     key: str
 
 
-class IndexerConfig(IxDatabase, EmbeddingParams):
-    """Секция [ix.cfl_indexer]: база ix, модель эмбеддинга, источники Confluence
-    со спейсами, сколько спейсов идёт параллельно, маски вложений, кодировки
-    текстовых файлов, таблица parser с настройками liteparse и веса полнотекста.
+class IndexerConfig(IxDatabase):
+    """Секция [ix.cfl_indexer]: база ix, источники Confluence со спейсами, сколько
+    спейсов идёт параллельно, маски вложений, кодировки текстовых файлов и таблица
+    parser с настройками liteparse.
 
-    Настройки парсера лежат своей таблицей, а не рядом с настройками прогона:
-    у liteparse своя пара параллелизма (parser.num_workers — потоки OCR), и в
-    одном уровне она путалась бы с parallel_spaces.
+    Ни модели, ни весов здесь нет: индексатор кладёт в общий полнотекст только текст,
+    который добыл сам, а веса, триграммы и векторы делают общие индексаторы ix-fts,
+    ix-trgm и ix-vector по объявлениям. Настройки парсера лежат своей таблицей: у
+    liteparse своя пара параллелизма (parser.num_workers — потоки OCR), и в одном
+    уровне она путалась бы с parallel_spaces.
     """
 
     sources: Sequence[ConfluenceSource] = Field(min_length=1)
@@ -134,7 +131,6 @@ class IndexerConfig(IxDatabase, EmbeddingParams):
     attachments: Sequence[str] = ()
     """Маски взятых вложений: имя файла или media-type со слэшем; пусто — все."""
     text_encodings: Sequence[str] = Field(min_length=1, default=("utf-8",))
-    weights: Mapping[str, FtsWeight]
 
     def text_params(self) -> TextParams:
         return TextParams(
@@ -184,12 +180,6 @@ class IndexerConfig(IxDatabase, EmbeddingParams):
         return self
 
 
-class TableName(StrEnum):
-    """Таблица эмбеддингов пакета; имя уходит в AspectEmbedding."""
-
-    EMB = "cfl_idx_emb_e5_1024"
-
-
 class IndexerHash:
     """md5 параметров, от которых зависит содержимое индекса: смена любого переводит
     все объекты в переиндексацию, и так как оригиналы не хранятся, спейс качается
@@ -204,11 +194,6 @@ class IndexerHash:
             "layout": cls.LAYOUT,
             "body_format": source.confluence.body_format,
             "heading_style": TextOf.HEADING_STYLE,
-            "model": cfg.model,
-            "dim": cfg.dim,
-            "chunk_tokens": cfg.chunk_tokens,
-            "chunk_overlap": cfg.chunk_overlap,
-            "weights": dict(sorted(cfg.weights.items())),
             "attachments": list(cfg.attachments),
             "text_encodings": list(cfg.text_encodings),
             "ocr_enabled": cfg.parser.ocr_enabled,
@@ -285,7 +270,6 @@ class SpaceReport(BaseModel):
     seen: int
     indexed: int
     unchanged: int
-    chunks: int
     swept: int
     failed: int
     linked: int
@@ -317,7 +301,6 @@ class SpaceCounters(BaseModel):
     seen: int = 0
     indexed: int = 0
     unchanged: int = 0
-    chunks: int = 0
     failed: int = 0
 
     def report(self, space_key: str, swept: int, linked: int) -> SpaceReport:
@@ -326,7 +309,6 @@ class SpaceCounters(BaseModel):
             seen=self.seen,
             indexed=self.indexed,
             unchanged=self.unchanged,
-            chunks=self.chunks,
             swept=swept,
             failed=self.failed,
             linked=linked,
@@ -415,13 +397,11 @@ class SpaceIndexer:
         swept = await self._writer.sweep(conn, space_key, self._address.base)
         report = counters.report(space_key, swept, linked)
         logger.info(
-            "space %s: seen=%d indexed=%d unchanged=%d chunks=%d linked=%d swept=%d "
-            "failed=%d",
+            "space %s: seen=%d indexed=%d unchanged=%d linked=%d swept=%d failed=%d",
             space_key,
             report.seen,
             report.indexed,
             report.unchanged,
-            report.chunks,
             report.linked,
             report.swept,
             report.failed,
@@ -461,9 +441,7 @@ class SpaceIndexer:
                 "indexer_hash": self._indexer_hash,
             },
         )
-        counters.chunks += await self._writer.write_node(
-            conn, node_id, Surface.SPACE, row, ()
-        )
+        await self._writer.write_node(conn, node_id, Surface.SPACE, row, ())
         counters.indexed += 1
 
         return node_id
@@ -504,7 +482,7 @@ class SpaceIndexer:
         row = RowWrite(
             file=ContentFiles.upsert(summary.kind), params=self._row(node_id, body)
         )
-        counters.chunks += await self._writer.write_node(
+        await self._writer.write_node(
             conn,
             node_id,
             surface,
@@ -589,7 +567,7 @@ class SpaceIndexer:
                 "indexer_hash": self._indexer_hash,
             },
         )
-        counters.chunks += await self._writer.write_node(
+        await self._writer.write_node(
             conn,
             node_id,
             Surface.COMMENT,
@@ -717,7 +695,7 @@ class SpaceIndexer:
                 "indexer_hash": self._indexer_hash,
             },
         )
-        counters.chunks += await self._writer.write_node(
+        await self._writer.write_node(
             conn, node_id, Surface.ATTACHMENT, row, write.pushed
         )
         counters.indexed += 1
@@ -734,11 +712,7 @@ class SpaceIndexer:
 class IndexerWorker:
     """Прогон по спейсам конфига: пул к ix, эмбеддер, воркер на спейс."""
 
-    CLASSES: ClassVar[tuple[AspectClass, ...]] = (
-        AspectClass.IDENT,
-        AspectClass.WORDS,
-        AspectClass.DESCRIPTION,
-    )
+    FTS_TABLE: ClassVar[str] = "ix_fts"
 
     def __init__(
         self, cfg: IndexerConfig, package_dir: Path, *, reindex: bool = False
@@ -746,15 +720,15 @@ class IndexerWorker:
         self._cfg = cfg
         self._dir = package_dir
         self._reindex = reindex
-        self._embedding = AspectEmbedding(cfg, cfg.db_schema, str(TableName.EMB))
         self._texts = AttachmentText(cfg.text_params())
 
     async def run(self, *, source: str = "", space: str = "") -> list[SpaceReport]:
         try:
             targets = await self._targets(source, space)
             async with IxPool.opened(self._cfg) as pool:
+                sql_files = PackageSql(self._dir, self._cfg.db_schema)
                 async with pool.connection() as conn:
-                    sql_files = await self._sql_files(conn)
+                    await self._require_fts(conn)
 
                 limit = asyncio.Semaphore(self._cfg.parallel_spaces)
                 tasks: list[asyncio.Task[SpaceReport]] = []
@@ -799,7 +773,7 @@ class IndexerWorker:
     ) -> SpaceReport:
         source = target.source
         async with limit, pool.connection() as conn:
-            writer = IxWriter(sql_files, self._embedding, self._cfg.weights)
+            writer = IxWriter(sql_files)
             async with SpaceReader(source.confluence) as reader:
                 scope = SpaceScope(
                     address=CflAddress(source.confluence),
@@ -810,24 +784,16 @@ class IndexerWorker:
 
                 return await indexer.run(conn, target.key)
 
-    async def _sql_files(self, conn: psycopg.AsyncConnection[Any]) -> PackageSql:
-        surfaces: list[str] = []
-        for surface in Surface:
-            surfaces.append(str(surface))
+    async def _require_fts(self, conn: psycopg.AsyncConnection[Any]) -> None:
+        """Общий полнотекст обязан быть накачен: индексатор кладёт текст только туда,
+        а его владелец — пакет ix-fts."""
+        if await SchemaName.exists(conn, self._cfg.db_schema, self.FTS_TABLE):
+            return
 
-        declarations = await AspectDeclarations.of_surfaces(
-            conn, self._cfg.db_schema, surfaces, list(self.CLASSES)
+        raise IndexerWorkerError(
+            f"table {self._cfg.db_schema}.{self.FTS_TABLE} is missing: apply the "
+            "full-text index first: boba-ix-fts upgrade --config <config>"
         )
-        logger.info("aspect declarations of cfl surfaces: %d", len(declarations))
-
-        parts: dict[str, sql.Composable] = {
-            str(Part.SOURCES): AspectSources.union(declarations, self._cfg.db_schema),
-            str(Part.WEIGHTS): FtsWeights.values(
-                self._cfg.weights, self._cfg.db_schema
-            ),
-        }
-
-        return PackageSql(self._dir, self._cfg.db_schema, parts)
 
 
 class Command(StrEnum):
@@ -870,7 +836,7 @@ class Cli:
             choices=list(Command),
             help=(
                 "upgrade — накатить схему пакета в базу ix (идемпотентно, ядро "
-                "должно быть уже накачено пакетом pg-ix-core); run — обход спейсов."
+                "должно быть уже накачено пакетом ix-core); run — обход спейсов."
             ),
         )
         parser.add_argument(
@@ -936,13 +902,11 @@ def main() -> None:
         for report in reports:
             failed += report.failed
             logger.info(
-                "done %s: seen=%d indexed=%d unchanged=%d chunks=%d linked=%d swept=%d "
-                "failed=%d",
+                "done %s: seen=%d indexed=%d unchanged=%d linked=%d swept=%d failed=%d",
                 report.space_key,
                 report.seen,
                 report.indexed,
                 report.unchanged,
-                report.chunks,
                 report.linked,
                 report.swept,
                 report.failed,
@@ -951,7 +915,6 @@ def main() -> None:
         if failed:
             raise SystemExit(f"{failed} attachment(s) not indexed, see the log above")
     except (
-        AspectEmbeddingError,
         ConfigError,
         SchemaUpgradeError,
         IndexerWorkerError,

@@ -1,7 +1,7 @@
 /*
 cfl-indexer, схема, шаг 4: объявления surface_aspect поверхностей Confluence. Индексатор
 сам читает их при записи каждого node: title, path, words, labels и card выводятся из
-surface-строки и уже лежащего в cfl_idx_fts текста, а body и ocr он кладёт в cfl_idx_fts
+surface-строки и уже лежащего в ix_fts текста, а body и ocr он кладёт в ix_fts
 из Python, и объявление читает их оттуда. Схема в теле удвоена, чтобы после наката в
 строке остался плейсхолдер; накат проверяет каждое тело по контракту (node_id, content).
 */
@@ -80,7 +80,7 @@ insert into {schema}.surface_aspect (surface, aspect, body) values
             || coalesce(E'\n' || nullif(left(f.content, 500), ''), '') as content
     from
         {{schema}}.cfl_page x
-        left join {{schema}}.cfl_idx_fts f
+        left join {{schema}}.ix_fts f
             on  f.node_id = x.node_id
             and f.aspect = 'body'
     $body$),
@@ -89,7 +89,7 @@ insert into {schema}.surface_aspect (surface, aspect, body) values
         f.node_id,
         f.content
     from
-        {{schema}}.cfl_idx_fts f
+        {{schema}}.ix_fts f
         join {{schema}}.node n
             on  n.id = f.node_id
             and n.surface = 'cfl_page'
@@ -140,7 +140,7 @@ insert into {schema}.surface_aspect (surface, aspect, body) values
             || coalesce(E'\n' || nullif(left(f.content, 500), ''), '') as content
     from
         {{schema}}.cfl_blogpost x
-        left join {{schema}}.cfl_idx_fts f
+        left join {{schema}}.ix_fts f
             on  f.node_id = x.node_id
             and f.aspect = 'body'
     $body$),
@@ -149,7 +149,7 @@ insert into {schema}.surface_aspect (surface, aspect, body) values
         f.node_id,
         f.content
     from
-        {{schema}}.cfl_idx_fts f
+        {{schema}}.ix_fts f
         join {{schema}}.node n
             on  n.id = f.node_id
             and n.surface = 'cfl_blogpost'
@@ -193,7 +193,7 @@ insert into {schema}.surface_aspect (surface, aspect, body) values
             || coalesce(E'\n' || nullif(left(f.content, 500), ''), '') as content
     from
         {{schema}}.cfl_attachment x
-        left join {{schema}}.cfl_idx_fts f
+        left join {{schema}}.ix_fts f
             on  f.node_id = x.node_id
             and f.aspect = 'body'
     $body$),
@@ -202,7 +202,7 @@ insert into {schema}.surface_aspect (surface, aspect, body) values
         f.node_id,
         f.content
     from
-        {{schema}}.cfl_idx_fts f
+        {{schema}}.ix_fts f
         join {{schema}}.node n
             on  n.id = f.node_id
             and n.surface = 'cfl_attachment'
@@ -214,7 +214,7 @@ insert into {schema}.surface_aspect (surface, aspect, body) values
         f.node_id,
         f.content
     from
-        {{schema}}.cfl_idx_fts f
+        {{schema}}.ix_fts f
         join {{schema}}.node n
             on  n.id = f.node_id
             and n.surface = 'cfl_attachment'
@@ -228,7 +228,7 @@ insert into {schema}.surface_aspect (surface, aspect, body) values
             || coalesce(E'\n' || nullif(left(f.content, 500), ''), '') as content
     from
         {{schema}}.cfl_comment x
-        left join {{schema}}.cfl_idx_fts f
+        left join {{schema}}.ix_fts f
             on  f.node_id = x.node_id
             and f.aspect = 'body'
     $body$),
@@ -237,12 +237,36 @@ insert into {schema}.surface_aspect (surface, aspect, body) values
         f.node_id,
         f.content
     from
-        {{schema}}.cfl_idx_fts f
+        {{schema}}.ix_fts f
         join {{schema}}.node n
             on  n.id = f.node_id
             and n.surface = 'cfl_comment'
     where
         f.aspect = 'body'
+    $body$),
+    ('cfl_page', 'describer_input', $body$
+    select
+        x.node_id,
+        'Page ' || x.space_key || '/' || array_to_string(x.ancestor_titles || x.title, '/')
+            || coalesce(E'\nLabels: ' || nullif(array_to_string(x.labels, ' '), ''), '')
+            || coalesce(E'\n' || f.content, '') as content
+    from
+        {{schema}}.cfl_page x
+        left join {{schema}}.ix_fts f
+            on  f.node_id = x.node_id
+            and f.aspect = 'body'
+    $body$),
+    ('cfl_blogpost', 'describer_input', $body$
+    select
+        x.node_id,
+        'Blog post ' || x.space_key || '/' || x.title
+            || coalesce(E'\nLabels: ' || nullif(array_to_string(x.labels, ' '), ''), '')
+            || coalesce(E'\n' || f.content, '') as content
+    from
+        {{schema}}.cfl_blogpost x
+        left join {{schema}}.ix_fts f
+            on  f.node_id = x.node_id
+            and f.aspect = 'body'
     $body$)
 on conflict (surface, aspect) do update
     set body = excluded.body;

@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import pytest
-from cfl_stand import PACKAGE_DIR, WEIGHTS
+from cfl_stand import PACKAGE_DIR
 
 from boba.cfl_indexer.confluence import SpaceSelector
 from boba.cfl_indexer.worker import ConfluenceSource, IndexerConfig, IndexerWorker
@@ -36,7 +36,6 @@ def _config(ix_stand: IxStand) -> IndexerConfig:
         db_schema=database.db_schema,
         postgres=database.postgres,
         krb=database.krb,
-        cache_dir=ix_stand.embedding_cache_dir,
         sources=[
             ConfluenceSource(
                 name="stand",
@@ -48,7 +47,6 @@ def _config(ix_stand: IxStand) -> IndexerConfig:
         ],
         parallel_spaces=1,
         parser=LiteParseParams(),
-        weights=WEIGHTS,
     )
 
 

@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-ix-trgm"
+version = "0.0.21.dev2"
+description = "Триграммный индекс ix_trgm: аспекты объектов ix любого происхождения."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba-config==0.0.21.dev2",
+    "boba-ix-core==0.0.21.dev2",
+    "psycopg[binary]>=3.2",
+    "pydantic>=2.10,<2.11",
+]
+
+[project.scripts]
+boba-ix-trgm = "boba.ix_trgm.worker:main"
+
+[tool.setuptools.package-data]
+"boba.ix_trgm" = ["*/*.sql", "*/*.md", "*/*.json", "*.html"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

@@ -48,13 +48,13 @@ pythonpath = [
     "packages/tools/boba-tool-clickhouse/src",
     "packages/tools/boba-tool-knowledge/src",
     "packages/tools/boba-tool-confluence/src",
-    "packages/apps/ix/pg-ix-core/src",
+    "packages/apps/ix/ix-core/src",
     "packages/apps/ix/pg-meta-scraper/src",
-    "packages/apps/ix/pg-llm-describer/src",
-    "packages/apps/ix/pg-idx-fts/src",
-    "packages/apps/ix/pg-idx-trgm/src",
-    "packages/apps/ix/pg-idx-vector/src",
-    "packages/apps/ix/pg-search-lab/src",
+    "packages/apps/ix/ix-llm-describer/src",
+    "packages/apps/ix/ix-fts/src",
+    "packages/apps/ix/ix-trgm/src",
+    "packages/apps/ix/ix-vector/src",
+    "packages/apps/ix/ix-search-lab/src",
     "packages/apps/ix/cfl-indexer/src",
 ]
 addopts = ["--strict-markers", "-m", "not integration and not ui and not load and not run"]
@@ -122,13 +122,13 @@ extraPaths = [
     "packages/tools/boba-tool-clickhouse/src",
     "packages/tools/boba-tool-knowledge/src",
     "packages/tools/boba-tool-confluence/src",
-    "packages/apps/ix/pg-ix-core/src",
+    "packages/apps/ix/ix-core/src",
     "packages/apps/ix/pg-meta-scraper/src",
-    "packages/apps/ix/pg-llm-describer/src",
-    "packages/apps/ix/pg-idx-fts/src",
-    "packages/apps/ix/pg-idx-trgm/src",
-    "packages/apps/ix/pg-idx-vector/src",
-    "packages/apps/ix/pg-search-lab/src",
+    "packages/apps/ix/ix-llm-describer/src",
+    "packages/apps/ix/ix-fts/src",
+    "packages/apps/ix/ix-trgm/src",
+    "packages/apps/ix/ix-vector/src",
+    "packages/apps/ix/ix-search-lab/src",
     "packages/apps/ix/cfl-indexer/src",
 ]
 venvPath = "."
@@ -232,13 +232,13 @@ boba-transport-http = { workspace = true }
 boba-db-postgres    = { workspace = true }
 boba-db-pgvector    = { workspace = true }
 boba-db-clickhouse  = { workspace = true }
-boba-pg-ix-core     = { workspace = true }
+boba-ix-core     = { workspace = true }
 boba-pg-meta-scraper= { workspace = true }
-boba-pg-llm-describer= { workspace = true }
-boba-pg-idx-fts     = { workspace = true }
-boba-pg-idx-trgm    = { workspace = true }
-boba-pg-idx-vector  = { workspace = true }
-boba-pg-search-lab  = { workspace = true }
+boba-ix-llm-describer= { workspace = true }
+boba-ix-fts     = { workspace = true }
+boba-ix-trgm    = { workspace = true }
+boba-ix-vector  = { workspace = true }
+boba-ix-search-lab  = { workspace = true }
 boba-sandbox        = { workspace = true }
 boba-krb            = { workspace = true }
 boba-ldap           = { workspace = true }
