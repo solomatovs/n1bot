@@ -257,11 +257,6 @@ class LdapAuthConfig(BaseModel):
         description="LDAP bind user; {username} подставляется",
     )
 
-    @field_validator("user_filter", "bind_dn_template")
-    @classmethod
-    def _template_has_username(cls, value: str) -> str:
-        return LoginTemplate.check(value)
-
     roles: LdapRoleProviders = Field(default=LdapRoleProviders())
     require_roles: bool = Field(
         default=True,
@@ -270,6 +265,11 @@ class LdapAuthConfig(BaseModel):
             "если пользователю не замапилась ни одна роль."
         ),
     )
+
+    @field_validator("user_filter", "bind_dn_template")
+    @classmethod
+    def _template_has_username(cls, value: str) -> str:
+        return LoginTemplate.check(value)
 
 
 class KerberosAuthConfig(BaseModel):

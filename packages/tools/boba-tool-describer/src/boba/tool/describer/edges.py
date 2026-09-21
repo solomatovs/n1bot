@@ -190,8 +190,8 @@ select
     url_address
 from
     {node}
-where
-    scope_id = %(scope_id)s
+where 1=1
+    and scope_id = %(scope_id)s
     and address = %(address)s
 """
     KNOWN_ENDS: ClassVar[str] = """

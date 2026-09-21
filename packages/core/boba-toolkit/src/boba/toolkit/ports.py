@@ -270,9 +270,11 @@ class StreamPorts:
         if len(members) == 1:
             return TypeAdapter(members[0])
 
-        union = Union[tuple(members)]  # noqa: UP007 — динамический союз моделей
-        discriminated = Annotated[union, Field(discriminator=cls.KIND_FIELD)]
+        union = members[0]
+        for member in members[1:]:
+            union = union | member
 
+        discriminated = Annotated[union, Field(discriminator=cls.KIND_FIELD)]
         return TypeAdapter(discriminated)
 
     @classmethod
