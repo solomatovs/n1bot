@@ -9,6 +9,8 @@ description = "Скрапер каталога PostgreSQL/Greenplum в ядро 
 requires-python = ">=3.11,<4"
 dependencies = [
     "boba-config==0.0.21.dev2",
+    "boba-db-postgres==0.0.21.dev2",
+    "boba-kerberos==0.0.21.dev2",
     "boba-pg-ix-core==0.0.21.dev2",
     "psycopg[binary]>=3.2",
     "pydantic>=2.10,<2.11",
@@ -16,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "boba-krb==0.0.21.dev2",
     "boba-runtime==0.0.21.dev2",
     "boba-stand==0.0.21.dev2",
     "pytest>=8",

@@ -22,24 +22,23 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import psycopg
-from psycopg import sql
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from boba.pg_ix_core.aspects import (
     AspectContract,
     AspectDeclarationError,
     AspectDeclarations,
 )
-from boba.pg_ix_core.schema_name import SchemaName, StorageSchema
+from boba.pg_ix_core.database import IxDatabase, IxDatabaseError, IxPool
+from boba.pg_ix_core.schema_name import SchemaName
 
 __all__ = [
     "CoreTable",
     "SchemaUpgrade",
     "SchemaUpgradeError",
-    "UpgradeConfig",
     "UpgradeReport",
 ]
 
@@ -54,14 +53,8 @@ class CoreTable:
     """Таблица ядра, наличием которой пакет проверяет, что ядро уже накачено."""
 
     NODE: ClassVar[str] = "node"
+    EDGE: ClassVar[str] = "edge"
     SURFACE_ASPECT: ClassVar[str] = "surface_aspect"
-
-
-class UpgradeConfig(StorageSchema):
-    """Секция конфига команды upgrade: куда накатывать и в какую схему."""
-
-    dsn: str = Field(min_length=1)
-    statement_timeout: str = "60s"
 
 
 class UpgradeReport(BaseModel):
@@ -77,35 +70,38 @@ class SchemaUpgrade:
 
     Пакет отдаёт свой каталог схемы и, если его таблицы ссылаются на ядро,
     просит проверить ядро: без него DDL упал бы на первом references, и по
-    сообщению сервера было бы непонятно, что делать.
+    сообщению сервера было бы непонятно, что делать. База, схема и таймауты
+    сессии приходят секцией IxDatabase приложения.
     """
 
     SUFFIX: ClassVar[str] = "*.sql"
+    MISSING_CORE: ClassVar[str] = (
+        "upgrade: core table {schema}.{table} is missing in the database; "
+        "apply the core first: boba-ix-core upgrade --config <config>"
+    )
 
     def __init__(self, schema_dir: Path, *, requires_core: bool = True) -> None:
         self._schema_dir = schema_dir
         self._requires_core = requires_core
 
-    def run(self, cfg: UpgradeConfig) -> UpgradeReport:
+    async def run(self, database: IxDatabase) -> UpgradeReport:
         files = self._files()
 
         try:
-            with psycopg.connect(cfg.dsn, autocommit=True) as conn:
-                conn.execute(
-                    sql.SQL("set statement_timeout = {}").format(
-                        sql.Literal(cfg.statement_timeout)
-                    )
-                )
+            async with IxPool.session(database) as conn:
                 if self._requires_core:
-                    self._require_core(conn, cfg.db_schema)
+                    await self._validate_core_layer_exists(conn, database.db_schema)
 
                 for path in files:
                     logger.info("applying %s", path.name)
                     text = path.read_text(encoding="utf-8")
-                    conn.execute(SchemaName.render(text, cfg.db_schema))
+                    await conn.execute(SchemaName.render(text, database.db_schema))
 
-                self._check_declarations(conn, cfg.db_schema)
+                await self._check_declarations(conn, database.db_schema)
 
+        except IxDatabaseError as exc:
+            msg = f"upgrade {self._schema_dir}: {exc}"
+            raise SchemaUpgradeError(msg) from exc
         except psycopg.Error as exc:
             msg = f"upgrade {self._schema_dir}: applying schema failed: {exc}"
             raise SchemaUpgradeError(msg) from exc
@@ -128,21 +124,26 @@ class SchemaUpgrade:
         return files
 
     @staticmethod
-    def _check_declarations(conn: psycopg.Connection, db_schema: str) -> None:
-        if not SchemaName.exists(conn, db_schema, CoreTable.SURFACE_ASPECT):
+    async def _check_declarations(
+        conn: psycopg.AsyncConnection[Any], db_schema: str
+    ) -> None:
+        if not await SchemaName.exists(conn, db_schema, CoreTable.SURFACE_ASPECT):
             return
 
-        declarations = AspectDeclarations.all(conn, db_schema)
-        AspectContract.check(conn, db_schema, declarations)
+        declarations = await AspectDeclarations.all(conn, db_schema)
+        await AspectContract.check(conn, db_schema, declarations)
         logger.info("aspect declarations verified: %d", len(declarations))
 
-    @staticmethod
-    def _require_core(conn: psycopg.Connection, db_schema: str) -> None:
-        if SchemaName.exists(conn, db_schema, CoreTable.NODE):
-            return
+    @classmethod
+    async def _validate_core_layer_exists(
+        cls, conn: psycopg.AsyncConnection[Any], db_schema: str
+    ) -> None:
+        if not await SchemaName.exists(conn, db_schema, CoreTable.NODE):
+            raise SchemaUpgradeError(
+                cls.MISSING_CORE.format(schema=db_schema, table=CoreTable.NODE)
+            )
 
-        msg = (
-            f"upgrade: core table {db_schema}.{CoreTable.NODE} is missing in the "
-            "database; apply the core first: boba-ix-core upgrade --config <config>"
-        )
-        raise SchemaUpgradeError(msg)
+        if not await SchemaName.exists(conn, db_schema, CoreTable.EDGE):
+            raise SchemaUpgradeError(
+                cls.MISSING_CORE.format(schema=db_schema, table=CoreTable.EDGE)
+            )

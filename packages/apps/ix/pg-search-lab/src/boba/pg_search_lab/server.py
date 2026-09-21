@@ -1,9 +1,11 @@
-"""Стенд поисковой выдачи: страница с полем запроса, три колонки результатов (fts, trgm,
-vector)
-и подсказки при наборе (suggest: btree по префиксу и триграммы) поверх схемы ix. Один
-процесс на стандартном http.server: отдаёт index.html и /search.
+"""Стенд поисковой выдачи: страница с полем запроса, три колонки результатов (fts,
+trgm, vector) и подсказки при наборе (suggest: btree по префиксу и триграммы) поверх
+схемы ix. Один процесс на стандартном http.server: отдаёт index.html и /search.
 SQL запросов лежит в sql/ и читается на каждый запрос, чтобы править ранжирование без
 перезапуска. Вектор запроса считает провайдер проекта boba.llm.embedding.
+
+Пул к ix и эмбеддер живут в event loop главного потока; http-сервер отвечает из
+своих потоков и отдаёт корутину поиска в этот loop.
 
 Ошибки:
 SearchLabError — база недоступна, файл запроса не найден или режим поиска неизвестен.
@@ -27,8 +29,10 @@ import psycopg
 from pydantic import BaseModel, Field
 
 from boba.config import ConfigError, bind_section
+from boba.db.postgres import AsyncPostgresPool, PostgresError
 from boba.llm.embedding import Embedder, EmbedderFactory, LocalEmbedding
-from boba.pg_ix_core.schema_name import SchemaName, StorageSchema
+from boba.pg_ix_core.database import IxDatabase, IxDatabaseError, IxPool
+from boba.pg_ix_core.schema_name import SchemaName
 
 logger = logging.getLogger("pg-search-lab")
 
@@ -52,8 +56,7 @@ class Route(StrEnum):
     SEARCH = "/search"
 
 
-class LabConfig(StorageSchema):
-    dsn: str
+class LabConfig(IxDatabase):
     cache_dir: str
     model: str = "intfloat/multilingual-e5-large"
     dim: int = Field(gt=0, default=1024)
@@ -75,32 +78,53 @@ class SearchReply(BaseModel):
 
 
 class Searcher:
-    """Выполняет запрос выбранного режима: SQL из sql/<mode>.sql, параметры q, limit и
-    v."""
+    """Выполняет запрос выбранного режима: SQL из sql/<mode>.sql, параметры q, limit
+    и v. Соединение берётся из пула на запрос; поток сервера зовёт
+    search_from_thread, который отдаёт корутину в loop пула."""
 
-    def __init__(self, cfg: LabConfig, sql_dir: Path, embedder: Embedder[str]) -> None:
+    def __init__(
+        self,
+        cfg: LabConfig,
+        sql_dir: Path,
+        embedder: Embedder[str],
+        pool: AsyncPostgresPool,
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
         self._cfg = cfg
         self._dir = sql_dir
         self._embedder = embedder
+        self._pool = pool
+        self._loop = loop
 
-    def search(self, mode: Mode, query: str, limit: int) -> SearchReply:
+    def search_from_thread(self, mode: Mode, query: str, limit: int) -> SearchReply:
+        future = asyncio.run_coroutine_threadsafe(
+            self.search(mode, query, limit), self._loop
+        )
+
+        return future.result()
+
+    async def search(self, mode: Mode, query: str, limit: int) -> SearchReply:
         params: dict[str, object] = {"q": query, "limit": limit}
         if mode is Mode.VECTOR:
-            vector = asyncio.run(self._embedder.embed_query(query))
+            vector = await self._embedder.embed_query(query)
             params["v"] = "[" + ",".join(f"{value:.6g}" for value in vector) + "]"
+
         sql_path = self._dir / mode.sql_file()
         if not sql_path.exists():
             raise SearchLabError(f"search {mode}: query file {sql_path} not found")
+
         text = SchemaName.render(
             sql_path.read_text(encoding="utf-8"), self._cfg.db_schema
         )
+
         try:
-            with psycopg.connect(
-                self._cfg.dsn, application_name="pg-search-lab"
-            ) as conn:
-                rows = conn.execute(text, params).fetchall()
-        except psycopg.Error as exc:
-            raise SearchLabError(f"search {mode} in {self._cfg.dsn}: {exc}") from exc
+            async with self._pool.connection() as conn:
+                cur = await conn.execute(text, params)
+                rows = await cur.fetchall()
+        except (psycopg.Error, PostgresError) as exc:
+            msg = f"search {mode} in {self._cfg.postgres.where()}: {exc}"
+            raise SearchLabError(msg) from exc
+
         hits: list[Hit] = []
         for surface, address, score, aspect, snippet in rows:
             hits.append(
@@ -112,6 +136,7 @@ class Searcher:
                     snippet=str(snippet),
                 )
             )
+
         return SearchReply(mode=mode, hits=hits)
 
 
@@ -142,7 +167,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             mode = Mode(mode_name)
-            reply = self.searcher.search(mode, query, limit)
+            reply = self.searcher.search_from_thread(mode, query, limit)
         except (SearchLabError, ValueError) as exc:
             logger.error("%s", exc)
             self._json({"mode": mode_name, "hits": [], "error": str(exc)})
@@ -165,6 +190,44 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, log_format: str, *args: object) -> None:
         logger.info("%s %s", self.address_string(), log_format % args)
+
+
+class LabServer:
+    """Жизненный цикл стенда: пул к ix открыт на время работы http-сервера,
+    сервер крутится в потоке исполнителя, loop главного потока обслуживает поиск."""
+
+    def __init__(self, cfg: LabConfig, package_dir: Path) -> None:
+        self._cfg = cfg
+        self._dir = package_dir
+
+    async def serve(self) -> None:
+        embedding = LocalEmbedding(
+            kind="local",
+            model=self._cfg.model,
+            cache_dir=self._cfg.cache_dir,
+            dim=self._cfg.dim,
+            batch_size=8,
+            progress_every=8,
+        )
+        embedder = EmbedderFactory.build(embedding)
+
+        async with IxPool.opened(self._cfg) as pool:
+            Handler.searcher = Searcher(
+                self._cfg,
+                self._dir / "sql",
+                embedder,
+                pool,
+                asyncio.get_running_loop(),
+            )
+            Handler.page = self._dir / "index.html"
+            server = ThreadingHTTPServer((self._cfg.host, self._cfg.port), Handler)
+            logger.info("listening on http://%s:%d/", self._cfg.host, self._cfg.port)
+
+            try:
+                await asyncio.to_thread(server.serve_forever)
+            finally:
+                server.shutdown()
+                server.server_close()
 
 
 class Cli:
@@ -198,20 +261,8 @@ def main() -> None:
     try:
         cfg = Cli.parse()
         here = Path(__file__).resolve().parent
-        embedding = LocalEmbedding(
-            kind="local",
-            model=cfg.model,
-            cache_dir=cfg.cache_dir,
-            dim=cfg.dim,
-            batch_size=8,
-            progress_every=8,
-        )
-        Handler.searcher = Searcher(cfg, here / "sql", EmbedderFactory.build(embedding))
-        Handler.page = here / "index.html"
-        server = ThreadingHTTPServer((cfg.host, cfg.port), Handler)
-        logger.info("listening on http://%s:%d/", cfg.host, cfg.port)
-        server.serve_forever()
-    except (ConfigError, SearchLabError) as exc:
+        asyncio.run(LabServer(cfg, here).serve())
+    except (ConfigError, SearchLabError, IxDatabaseError) as exc:
         raise SystemExit(str(exc)) from exc
 
 

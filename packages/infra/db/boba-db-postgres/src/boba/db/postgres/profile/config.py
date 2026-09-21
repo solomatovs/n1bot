@@ -263,6 +263,14 @@ class PostgresConfig(ConnectionProfileBase):
     def trace(self) -> str:
         return self.auth.trace()
 
+    def where(self) -> str:
+        """host:port/dbname соединения для текста ошибок и журнала."""
+        host = self.host
+        if not host:
+            host = self.hostaddr
+
+        return f"{host}:{self.port}/{self.dbname}"
+
     def labeled(self, client: ClientIdentity) -> PostgresConfig:
         """Подпись сессии в application_name: его же показывает pg_stat_activity."""
         return self.model_copy(update={"application_name": ApplicationName.of(client)})

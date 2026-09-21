@@ -22,7 +22,7 @@ run/      SQL шагов цикла, их выполняет worker.py
 .venv/bin/boba-pg-idx-trgm upgrade --config ../../compose/apps/pg-idx-trgm/conf.toml
 ```
 
-Схема хранения задаётся полем `db_schema` секции (по умолчанию `ix`): в sql-файлах она
+Схема хранения задаётся полем `db_schema` секции: в sql-файлах она
 стоит плейсхолдером `{schema}`, имя берётся из конфига, а квотирует его psycopg.
 
 Команда идемпотентна: файлы `schema/*.sql` применяются по порядку имён, каждая команда
@@ -41,11 +41,17 @@ run/      SQL шагов цикла, их выполняет worker.py
 (каталог вне git, в нём креды). Одним файлом можно запускать и несколько приложений:
 каждое читает только свою секцию.
 
+База задаётся подсекцией `[ix.idx_trgm.postgres]` — профилем boba-db-postgres: host, dbname,
+`auth` с методом (`password`, `certificate`, `kerberos_keytab`, `kerberos_password`),
+`options` с `lock_timeout` и `statement_timeout` сессии, `pool` с размерами пула. Подсекция
+`[ix.idx_trgm.krb]` даёт krb5.conf и каталог кэшей билетов для kerberos-профиля. Соединения
+берутся из AsyncPostgresPool, воркер async.
+
 ```
 .venv/bin/boba-pg-idx-trgm --config ../../compose/apps/pg-idx-trgm/conf.toml
 ```
 
-Роль в DSN должна иметь права на чтение `ix.node`, `ix.tree`, surface-таблиц `ix.pg_*` и на
+Роль профиля должна иметь права на чтение `ix.node`, `ix.tree`, surface-таблиц `ix.pg_*` и на
 запись в свою таблицу `ix.pg_idx_trgm`. Схему таблицы создаёт `schema/*.sql` при установке
 (идемпотентно), запускается той же ролью или владельцем схемы `ix`. Один запуск = один
 проход до пустой очереди и prune; для регулярной работы ставится в планировщик.
@@ -74,8 +80,8 @@ run/      SQL шагов цикла, их выполняет worker.py
 для векторного индекса это минуты. Условие, которое отсюда следует: поисковые запросы
 всегда join'ят `ix.node`, сироты в индексных таблицах допустимы до ближайшего prune.
 
-Каждый шаг это одна транзакция в autocommit, `set statement_timeout` и `lock_timeout` на
-сессию. Вставка идёт `on conflict do update ... where content is distinct from`, поэтому
+Каждый шаг это одна транзакция в autocommit; `statement_timeout` и `lock_timeout` сессии
+задаёт `postgres.options` секции. Вставка идёт `on conflict do update ... where content is distinct from`, поэтому
 два воркера одного индекса не мешают друг другу: строку запишет один, второй увидит
 совпадение. Воркер догоняет структуру частыми запусками; между прогоном скрапера и
 воркером индекс отстаёт, изменённые node получают новый content после upsert, удалённые

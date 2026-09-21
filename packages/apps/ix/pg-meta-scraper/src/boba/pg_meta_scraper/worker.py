@@ -10,22 +10,26 @@ ScrapeWorkerError — источник или ix недоступны, конт�
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import re
 from collections.abc import Iterator, Sequence
 from enum import StrEnum
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import psycopg
 from psycopg import sql
-from psycopg.conninfo import conninfo_to_dict
 from psycopg.errors import LockNotAvailable, SerializationFailure
 from pydantic import BaseModel, Field
 
 from boba.config import ConfigError, bind_section
-from boba.pg_ix_core.schema_name import SchemaName, StorageSchema
-from boba.pg_ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError, UpgradeConfig
+from boba.db.postgres import AsyncPostgresPool, PostgresError
+from boba.db.postgres.profile import PostgresConfig
+from boba.kerberos import KerberosError
+from boba.pg_ix_core.database import IxDatabase, IxDatabaseError, IxPool
+from boba.pg_ix_core.schema_name import SchemaName
+from boba.pg_ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError
 
 logger = logging.getLogger("pg-meta-scraper")
 
@@ -65,16 +69,19 @@ class LayoutFile(StrEnum):
 
 
 class SourceConfig(BaseModel):
-    """Источник снятия: имя для выбора из командной строки и строка подключения."""
+    """Источник снятия: имя для выбора из командной строки и профиль подключения."""
 
     name: str = Field(min_length=1)
-    dsn: str = Field(min_length=1)
+    postgres: PostgresConfig
 
 
-class ScraperConfig(StorageSchema):
-    """Секция [ix.meta_scraper]: база ix, список источников и границы прогона."""
+class ScraperConfig(IxDatabase):
+    """Секция [ix.meta_scraper]: база ix, список источников и границы прогона.
 
-    dsn: str = Field(min_length=1)
+    lock_timeout и statement_timeout ограничивают сессию источника; границы сессии
+    ix задаёт postgres.options той же секции.
+    """
+
     sources: Sequence[SourceConfig] = Field(min_length=1)
     attempts: int = Field(gt=0, default=3)
     lock_timeout: str = "2s"
@@ -92,8 +99,9 @@ class ScraperConfig(StorageSchema):
     def run_of(self, source: SourceConfig) -> WorkerConfig:
         """Настройки одного прогона: выбранный источник плюс общие границы."""
         return WorkerConfig(
-            source_dsn=source.dsn,
-            ix_dsn=self.dsn,
+            source=source.postgres,
+            postgres=self.postgres,
+            krb=self.krb,
             db_schema=self.db_schema,
             attempts=self.attempts,
             lock_timeout=self.lock_timeout,
@@ -101,11 +109,10 @@ class ScraperConfig(StorageSchema):
         )
 
 
-class WorkerConfig(StorageSchema):
+class WorkerConfig(IxDatabase):
     """Один прогон: откуда снимаем, куда раскладываем, сколько раз повторять."""
 
-    source_dsn: str
-    ix_dsn: str
+    source: PostgresConfig
     attempts: int = Field(gt=0, default=3)
     lock_timeout: str = "2s"
     statement_timeout: str = "30s"
@@ -118,19 +125,27 @@ class SourceAddress(BaseModel):
     database: str
 
     @classmethod
-    def of_dsn(cls, dsn: str) -> SourceAddress:
-        parts = conninfo_to_dict(dsn)
-        host = parts.get("host")
-        database = parts.get("dbname")
-        if host is None or database is None:
+    def of(cls, postgres: PostgresConfig) -> SourceAddress:
+        host = postgres.host
+        if host is None:
+            host = postgres.hostaddr
+
+        if host is None:
             raise ScrapeWorkerError(
-                f"source dsn: expected host and dbname, got {sorted(parts)}"
+                f"source {postgres.where()}: expected host or hostaddr in the profile"
             )
-        return cls(
-            host=str(host),
-            port=int(str(parts.get("port", 5432))),
-            database=str(database),
-        )
+
+        if postgres.port is None:
+            raise ScrapeWorkerError(
+                f"source {postgres.where()}: expected port in the profile"
+            )
+
+        if postgres.dbname is None:
+            raise ScrapeWorkerError(
+                f"source {postgres.where()}: expected dbname in the profile"
+            )
+
+        return cls(host=host, port=postgres.port, database=postgres.dbname)
 
 
 class ServerInfo(BaseModel):
@@ -259,23 +274,16 @@ class Pipeline:
         self._dir = layout_dir
         self._address = address
 
-    def run(self) -> Sequence[ApplyRow]:
-        with (
-            psycopg.connect(
-                self._cfg.source_dsn, autocommit=True, application_name=self.APP_NAME
-            ) as src,
-            psycopg.connect(
-                self._cfg.ix_dsn, autocommit=True, application_name=self.APP_NAME
-            ) as ix,
+    async def run(self) -> Sequence[ApplyRow]:
+        async with (
+            IxPool.session(self._cfg) as ix,
+            await AsyncPostgresPool.dedicated(self._cfg.source) as src,
         ):
-            server = self._server(src)
-            self._session(src, server, read_only=True)
-            self._session(
-                ix, ServerInfo(version_num=999999, is_greenplum=False), read_only=False
-            )
+            server = await self._server(src)
+            await self._session(src, server)
             chosen = list(self._choose(server))
-            ix.execute(self._read(LayoutFile.RAW_SCHEMA))
-            ix.execute(
+            await ix.execute(self._read(LayoutFile.RAW_SCHEMA))
+            await ix.execute(
                 "insert into raw_source (scheme, host, port, database) values (%s, "
                 "%s, %s, %s)",
                 (
@@ -287,9 +295,9 @@ class Pipeline:
             )
             arrays: dict[str, Sequence[int]] = {}
             for file in chosen:
-                arrays.update(self._stream(src, ix, file, arrays))
+                arrays.update(await self._stream(src, ix, file, arrays))
             for file in chosen:
-                self._verify(src, ix, file, arrays)
+                await self._verify(src, ix, file, arrays)
             for name in (
                 LayoutFile.STAGE,
                 LayoutFile.NODES,
@@ -297,34 +305,34 @@ class Pipeline:
                 LayoutFile.EDGES,
                 LayoutFile.SURFACES,
             ):
-                ix.execute(self._read(name))
-            return self._apply(ix)
+                await ix.execute(self._read(name))
+            return await self._apply(ix)
 
     LOCK_TIMEOUT_SINCE = 90300
-    APP_NAME: ClassVar[str] = "pg-meta-scraper"
 
-    def _session(
-        self, conn: psycopg.Connection, server: ServerInfo, read_only: bool
+    async def _session(
+        self, conn: psycopg.AsyncConnection[Any], server: ServerInfo
     ) -> None:
-        """Настройки сессии; lock_timeout появился в 9.3, statement_timeout есть
-        везде."""
+        """Сессия источника только на чтение; lock_timeout появился в 9.3,
+        statement_timeout есть везде. Сессию ix настраивает libpq по options."""
         if server.version_num >= self.LOCK_TIMEOUT_SINCE:
-            conn.execute(
+            await conn.execute(
                 sql.SQL("set lock_timeout = {}").format(
                     sql.Literal(self._cfg.lock_timeout)
                 )
             )
-        conn.execute(
+        await conn.execute(
             sql.SQL("set statement_timeout = {}").format(
                 sql.Literal(self._cfg.statement_timeout)
             )
         )
-        if read_only:
-            conn.execute("set default_transaction_read_only = on")
+        await conn.execute("set default_transaction_read_only = on")
 
-    def _server(self, conn: psycopg.Connection) -> ServerInfo:
-        record = conn.execute("show server_version_num").fetchone()
-        version_record = conn.execute("select version()").fetchone()
+    async def _server(self, conn: psycopg.AsyncConnection[Any]) -> ServerInfo:
+        cur = await conn.execute("show server_version_num")
+        record = await cur.fetchone()
+        version_cur = await conn.execute("select version()")
+        version_record = await version_cur.fetchone()
         if record is None or version_record is None:
             raise ScrapeWorkerError(
                 "source: expected server_version_num and version(), got none"
@@ -348,10 +356,10 @@ class Pipeline:
             if variants:
                 yield variants[0]
 
-    def _stream(
+    async def _stream(
         self,
-        src: psycopg.Connection,
-        ix: psycopg.Connection,
+        src: psycopg.AsyncConnection[Any],
+        ix: psycopg.AsyncConnection[Any],
         file: ScrapeFile,
         arrays: dict[str, Sequence[int]],
     ) -> dict[str, Sequence[int]]:
@@ -361,19 +369,22 @@ class Pipeline:
         values = Params.of(arrays, file.params)
         collected: list[int] = []
         count = 0
-        with src.transaction(), src.cursor(name=f"scrape_{file.name}") as cur:
+        async with (
+            src.transaction(),
+            src.cursor(name=f"scrape_{file.name}") as cur,
+        ):
             cur.itersize = self.ITERSIZE
-            cur.execute(query, values)
+            await cur.execute(query, values)
             columns = [d.name for d in cur.description or ()]
             position = columns.index(file.collect_column) if file.collect else -1
             target = sql.Identifier(f"raw_{file.name}")
-            with ix.cursor().copy(
+            async with ix.cursor().copy(
                 sql.SQL("copy {} ({}) from stdin").format(
                     target, sql.SQL(", ").join(sql.Identifier(c) for c in columns)
                 )
             ) as copy:
-                for row in cur:
-                    copy.write_row(row)
+                async for row in cur:
+                    await copy.write_row(row)
                     count += 1
                     if position >= 0:
                         collected.append(int(row[position]))
@@ -382,10 +393,10 @@ class Pipeline:
             return {}
         return {file.collect: collected}
 
-    def _verify(
+    async def _verify(
         self,
-        src: psycopg.Connection,
-        ix: psycopg.Connection,
+        src: psycopg.AsyncConnection[Any],
+        ix: psycopg.AsyncConnection[Any],
         file: ScrapeFile,
         arrays: dict[str, Sequence[int]],
     ) -> None:
@@ -396,42 +407,47 @@ class Pipeline:
         keys = sql.SQL(", ").join(sql.Identifier(c) for c in [*file.key, "row_xmin"])
         raw = sql.Identifier(f"raw_{file.name}")
         check = sql.Identifier(f"verify_{file.name}")
-        ix.execute(
+        await ix.execute(
             sql.SQL("create temp table {} as select {} from {} where false").format(
                 check, keys, raw
             )
         )
-        with src.transaction(), src.cursor(name=f"verify_{file.name}") as cur:
+        async with (
+            src.transaction(),
+            src.cursor(name=f"verify_{file.name}") as cur,
+        ):
             cur.itersize = self.ITERSIZE
-            cur.execute(query, values)
-            with ix.cursor().copy(
+            await cur.execute(query, values)
+            async with ix.cursor().copy(
                 sql.SQL("copy {} ({}) from stdin").format(check, keys)
             ) as copy:
-                for row in cur:
-                    copy.write_row(row)
-        diff = ix.execute(
+                async for row in cur:
+                    await copy.write_row(row)
+        diff_cur = await ix.execute(
             sql.SQL(
                 "select count(*) from ((select {k} from {r} except all select {k} "
                 "from {c}) union all (select {k} from {c} except all select {k} from "
                 "{r})) d"
             ).format(k=keys, r=raw, c=check)
-        ).fetchone()
-        ix.execute(sql.SQL("drop table {}").format(check))
+        )
+        diff = await diff_cur.fetchone()
+        await ix.execute(sql.SQL("drop table {}").format(check))
         if diff is None or int(diff[0]) != 0:
             raise CatalogChangedError(file.name)
 
-    def _apply(self, ix: psycopg.Connection) -> Sequence[ApplyRow]:
+    async def _apply(self, ix: psycopg.AsyncConnection[Any]) -> Sequence[ApplyRow]:
         try:
-            ix.execute(self._read(LayoutFile.LOCK))
-            ix.execute("begin isolation level repeatable read")
+            await ix.execute(self._read(LayoutFile.LOCK))
+            await ix.execute("begin isolation level repeatable read")
             try:
-                rows = self._last_result(ix.execute(self._read(LayoutFile.APPLY)))
-                ix.execute("commit")
+                cur = await ix.execute(self._read(LayoutFile.APPLY))
+                rows = await self._last_result(cur)
+                await ix.execute("commit")
             except Exception:
-                ix.execute("rollback")
+                await ix.execute("rollback")
                 raise
         finally:
-            ix.execute(self._read(LayoutFile.UNLOCK))
+            await ix.execute(self._read(LayoutFile.UNLOCK))
         summary: list[ApplyRow] = []
         for row in rows:
             summary.append(
@@ -442,12 +458,14 @@ class Pipeline:
         return summary
 
     @staticmethod
-    def _last_result(cur: psycopg.Cursor) -> list[tuple[object, ...]]:
+    async def _last_result(
+        cur: psycopg.AsyncCursor[Any],
+    ) -> list[tuple[object, ...]]:
         """Скрипт из многих statement'ов: сводка это последний набор строк."""
         rows: list[tuple[object, ...]] = []
         while True:
             if cur.description is not None:
-                rows = [tuple(r) for r in cur.fetchall()]
+                rows = [tuple(r) for r in await cur.fetchall()]
             if not cur.nextset():
                 return rows
 
@@ -468,21 +486,25 @@ class ScrapeWorker:
             ScrapeFile.parse(p) for p in sorted((package_dir / "scrape").glob("*.sql"))
         ]
         self._layout_dir = package_dir / "layout"
-        self._address = SourceAddress.of_dsn(cfg.source_dsn)
+        self._address = SourceAddress.of(cfg.source)
 
-    def run(self) -> Sequence[ApplyRow]:
+    async def run(self) -> Sequence[ApplyRow]:
         last = ""
         for attempt in range(1, self._cfg.attempts + 1):
             pipeline = Pipeline(self._cfg, self._files, self._layout_dir, self._address)
             try:
-                summary = pipeline.run()
+                summary = await pipeline.run()
             except CatalogChangedError as exc:
                 last = f"catalog changed during read: {exc}"
             except (LockNotAvailable, SerializationFailure) as exc:
                 last = f"ix busy: {exc}".strip()
-            except psycopg.Error as exc:
+            except IxDatabaseError as exc:
                 raise ScrapeWorkerError(
-                    f"scrape {self._cfg.source_dsn}: {exc}"
+                    f"scrape {self._cfg.source.where()}: {exc}"
+                ) from exc
+            except (psycopg.Error, PostgresError, KerberosError) as exc:
+                raise ScrapeWorkerError(
+                    f"scrape {self._cfg.source.where()}: {type(exc).__name__}: {exc}"
                 ) from exc
             else:
                 mismatched = [r.op for r in summary if r.planned != r.applied]
@@ -493,9 +515,26 @@ class ScrapeWorker:
                 return summary
             logger.warning("attempt %d/%d: %s", attempt, self._cfg.attempts, last)
         raise ScrapeWorkerError(
-            f"scrape {self._cfg.source_dsn}: {self._cfg.attempts} attempts failed, "
-            "last: {last}"
+            f"scrape {self._cfg.source.where()}: {self._cfg.attempts} attempts "
+            f"failed, last: {last}"
         )
+
+    @classmethod
+    async def run_sources(
+        cls, config: ScraperConfig, sources: Sequence[SourceConfig], package_dir: Path
+    ) -> None:
+        """Снять перечисленные источники по порядку, итог каждого в журнал."""
+        for source in sources:
+            logger.info("source %s: scrape started", source.name)
+            summary = await cls(config.run_of(source), package_dir).run()
+            for row in summary:
+                logger.info(
+                    "source %s: %s planned=%d applied=%d",
+                    source.name,
+                    row.op,
+                    row.planned,
+                    row.applied,
+                )
 
 
 class Command(StrEnum):
@@ -562,8 +601,9 @@ def main() -> None:
         command, config_path, selected = Cli.parse()
 
         if command is Command.UPGRADE:
-            upgrade = bind_section(config_path, Cli.SECTION, UpgradeConfig)
-            report = SchemaUpgrade(package_dir / "schema").run(upgrade)
+            database = bind_section(config_path, Cli.SECTION, IxDatabase)
+            upgrade = SchemaUpgrade(package_dir / "schema")
+            report = asyncio.run(upgrade.run(database))
             logger.info("schema applied: %s", ", ".join(report.files))
             return
 
@@ -573,17 +613,7 @@ def main() -> None:
         if selected:
             sources = [config.source(selected)]
 
-        for source in sources:
-            logger.info("source %s: scrape started", source.name)
-            summary = ScrapeWorker(config.run_of(source), package_dir).run()
-            for row in summary:
-                logger.info(
-                    "source %s: %s planned=%d applied=%d",
-                    source.name,
-                    row.op,
-                    row.planned,
-                    row.applied,
-                )
+        asyncio.run(ScrapeWorker.run_sources(config, sources, package_dir))
     except (ConfigError, SchemaUpgradeError, ScrapeWorkerError) as exc:
         raise SystemExit(str(exc)) from exc
 

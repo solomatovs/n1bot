@@ -20,15 +20,21 @@ schema/   DDL ядра: 00_schema, 10_surface, 15_aspect, 20_node, 30_tree, 40_e
 (каталог вне git, в нём креды). Одним файлом можно запускать и несколько приложений:
 каждое читает только свою секцию.
 
+База задаётся подсекцией `[ix.core.postgres]` — профилем boba-db-postgres: host, dbname,
+`auth` с методом (`password`, `certificate`, `kerberos_keytab`, `kerberos_password`),
+`options` с `lock_timeout` и `statement_timeout` сессии, `pool` с размерами пула. Подсекция
+`[ix.core.krb]` даёт krb5.conf и каталог кэшей билетов для kerberos-профиля. Соединения
+берутся из AsyncPostgresPool, воркер async.
+
 ```
 .venv/bin/boba-ix-core upgrade --config ../../compose/apps/pg-ix-core/conf.toml
 ```
 
-Схема хранения задаётся полем `db_schema` секции (по умолчанию `ix`): в sql-файлах она
+Схема хранения задаётся полем `db_schema` секции: в sql-файлах она
 стоит плейсхолдером `{schema}` (`{schema}.node`), имя берётся из конфига, а квотирует его
 psycopg (`sql.Identifier`).
 
-Роль в конфиге должна иметь право создавать схему и расширения (`pg_trgm`, `vector`,
+Роль профиля должна иметь право создавать схему и расширения (`pg_trgm`, `vector`,
 `btree_gin`) в базе. Дальше каждый пакет накатывает свою схему своей же командой:
 
 ```

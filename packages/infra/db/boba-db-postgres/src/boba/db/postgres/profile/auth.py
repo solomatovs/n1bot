@@ -3,6 +3,8 @@
 Вариант несёт ровно свои поля и сам переводит их в ключи libpq. Производные
 ключи (gssencmode, require_auth, krbsrvname, user у kerberos) задаёт вариант,
 а не администратор: сервер не сможет предложить метод слабее выбранного.
+У парольного варианта список допустимых методов задаётся явно: по умолчанию
+только scram-sha-256, для серверов старше 14-й версии администратор добавляет md5.
 
 Ошибки:
 PostgresAuthError — вариант не может дать параметры соединения: делегирование
@@ -11,7 +13,7 @@ PostgresAuthError — вариант не может дать параметры
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Literal, TypeAlias
 
@@ -66,8 +68,18 @@ class RequireAuth(StrEnum):
     """require_auth соединения: сервер не может предложить метод слабее."""
 
     SCRAM = "scram-sha-256"
+    MD5 = "md5"
     CERT = "cert"
     GSS = "gss"
+
+    @classmethod
+    def render(cls, methods: Sequence[RequireAuth]) -> str:
+        """Значение libpq require_auth: методы через запятую."""
+        names: list[str] = []
+        for method in methods:
+            names.append(method.value)
+
+        return ",".join(names)
 
 
 class PostgresAuthBase(BaseModel):
@@ -111,18 +123,26 @@ class TrustAuth(PostgresAuthBase):
 
 
 class PasswordAuth(PostgresAuthBase):
-    """Пароль роли: scram-sha-256."""
+    """Пароль роли: scram-sha-256, для старых серверов дополнительно md5."""
 
     method: Literal["password"]
 
     password: SecretStr = Field(min_length=1, description="Пароль роли (секрет).")
+    require_auth: Sequence[Literal[RequireAuth.SCRAM, RequireAuth.MD5]] = Field(
+        default=(RequireAuth.SCRAM,),
+        min_length=1,
+        description=(
+            "Методы, которые сервер вправе запросить: scram-sha-256 и/или md5; "
+            "по умолчанию только scram-sha-256."
+        ),
+    )
 
     def libpq(self) -> dict[str, Any]:
         return {
             "user": self.user,
             "password": self.password.get_secret_value(),
             "gssencmode": GssMode.OFF.value,
-            "require_auth": RequireAuth.SCRAM.value,
+            "require_auth": RequireAuth.render(self.require_auth),
         }
 
     @field_serializer("password", when_used="json")

@@ -7,26 +7,30 @@ IxStandError — секция [ix_stand] отсутствует или непо�
 
 from __future__ import annotations
 
-import tomllib
 from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import psycopg
 import pytest
 from psycopg import sql
-from psycopg.conninfo import conninfo_to_dict, make_conninfo
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from boba.config import bind
+from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres.profile import PostgresConfig
+from boba.krb import KerberosWorkspaceConfig
 from boba.pg_ix_core import main as core
-from boba.pg_ix_core.schema_name import SchemaName, StorageSchema
-from boba.pg_ix_core.upgrade import SchemaUpgrade, UpgradeConfig
+from boba.pg_ix_core.database import IxDatabase
+from boba.pg_ix_core.schema_name import SchemaName
+from boba.pg_ix_core.upgrade import SchemaUpgrade
 from boba.pg_meta_scraper import worker as scraper
 from boba.pg_meta_scraper.worker import (
     ApplyRow,
     ScrapeWorker,
     ServerInfo,
+    SourceAddress,
     VersionGate,
     WorkerConfig,
 )
@@ -58,54 +62,57 @@ class StandFile(StrEnum):
 
 
 class IxSource(BaseModel):
-    """Один источник стенда: имя цели и DSN без базы; база всегда edge_demo."""
+    """Один источник стенда: имя цели и профиль его служебной базы; демонстрационный
+    набор всегда живёт в edge_demo."""
 
     model_config = ConfigDict(frozen=True)
 
     DEMO_DB: ClassVar[str] = "edge_demo"
-    MAINTENANCE_DB: ClassVar[str] = "postgres"
 
     name: str
-    dsn: str
+    postgres: PostgresConfig
 
-    def dsn_of(self, dbname: str) -> str:
-        return make_conninfo(self.dsn, dbname=dbname)
+    def profile_of(self, dbname: str) -> PostgresConfig:
+        return self.postgres.model_copy(update={"dbname": dbname})
 
     @property
-    def demo_dsn(self) -> str:
-        return self.dsn_of(self.DEMO_DB)
+    def demo(self) -> PostgresConfig:
+        return self.profile_of(self.DEMO_DB)
 
     @property
     def host(self) -> str:
-        return str(conninfo_to_dict(self.dsn)["host"])
+        return SourceAddress.of(self.postgres).host
 
 
 class IxStand(BaseModel):
-    """Секция [ix_stand]: база ix для прогонов, схема графа и список источников."""
+    """Секция [ix_stand]: служебное подключение к серверу ix, имя базы прогонов,
+    схема графа, kerberos-каталог и список источников."""
 
     model_config = ConfigDict(frozen=True)
 
     SECTION: ClassVar[str] = "ix_stand"
 
-    ix_dsn: str
+    postgres: PostgresConfig
+    krb: KerberosWorkspaceConfig
     database: str
-    db_schema: str = StorageSchema.DEFAULT
+    db_schema: str
     sources: Sequence[IxSource]
 
     @classmethod
     def load(cls) -> IxStand:
-        path = ConfigLocator.path().parent / StandLayers.FILE
-        if not path.is_file():
-            raise IxStandError(f"ix stand: {path} not found")
-        with path.open("rb") as handle:
-            document = tomllib.load(handle)
-        section = document.get(cls.SECTION)
-        if section is None:
-            raise IxStandError(f"ix stand: {path} has no [{cls.SECTION}] section")
+        path = ConfigLocator.path()
+        stand_path = path.parent / StandLayers.FILE
+        if not stand_path.is_file():
+            raise IxStandError(f"ix stand: {stand_path} not found")
+
+        raw = StandLayers.compose(path)
+
         try:
-            return cls.model_validate(section)
+            return bind(raw, path=cls.SECTION, model=cls)
         except ValidationError as exc:
-            raise IxStandError(f"ix stand: [{cls.SECTION}] in {path}: {exc}") from exc
+            raise IxStandError(
+                f"ix stand: [{cls.SECTION}] in {stand_path}: {exc}"
+            ) from exc
 
     @classmethod
     def required(cls) -> IxStand:
@@ -123,8 +130,16 @@ class IxStand(BaseModel):
         )
 
     @property
-    def ix_database_dsn(self) -> str:
-        return make_conninfo(self.ix_dsn, dbname=self.database)
+    def ix_profile(self) -> PostgresConfig:
+        """Профиль базы прогонов на сервере ix."""
+        return self.postgres.model_copy(update={"dbname": self.database})
+
+    @property
+    def ix_database(self) -> IxDatabase:
+        """Секция базы ix глазами пакетов: схема, профиль базы прогонов, kerberos."""
+        return IxDatabase(
+            db_schema=self.db_schema, postgres=self.ix_profile, krb=self.krb
+        )
 
 
 class DdlFile(VersionGate):
@@ -151,32 +166,32 @@ class DemoDataset:
             for p in sorted(StandFile.DDL_DIR.under_stand().glob("*.sql"))
         ]
 
-    def recreate(self) -> ServerInfo:
-        with psycopg.connect(
-            self._source.dsn_of(IxSource.MAINTENANCE_DB), autocommit=True
-        ) as conn:
-            server = self._server(conn)
-            conn.execute(
+    async def recreate(self) -> ServerInfo:
+        async with await AsyncPostgresPool.dedicated(self._source.postgres) as conn:
+            server = await self._server(conn)
+            await conn.execute(
                 sql.SQL("drop database if exists {}").format(
                     sql.Identifier(IxSource.DEMO_DB)
                 )
             )
-            conn.execute(
+            await conn.execute(
                 sql.SQL("create database {}").format(sql.Identifier(IxSource.DEMO_DB))
             )
 
-        with psycopg.connect(self._source.demo_dsn, autocommit=True) as conn:
+        async with await AsyncPostgresPool.dedicated(self._source.demo) as conn:
             for file in self._files:
                 if not file.applies(server):
                     continue
-                conn.execute(file.text.encode("utf-8"))
+                await conn.execute(file.text.encode("utf-8"))
 
         return server
 
     @staticmethod
-    def _server(conn: psycopg.Connection) -> ServerInfo:
-        version = conn.execute("show server_version_num").fetchone()
-        banner = conn.execute("select version()").fetchone()
+    async def _server(conn: psycopg.AsyncConnection[Any]) -> ServerInfo:
+        version_cur = await conn.execute("show server_version_num")
+        version = await version_cur.fetchone()
+        banner_cur = await conn.execute("select version()")
+        banner = await banner_cur.fetchone()
         if version is None or banner is None:
             raise IxStandError(
                 "source: expected server_version_num and version(), got none"
@@ -223,60 +238,61 @@ class Golden:
         return self._by_name[name]
 
 
-class IxDatabase:
+class IxStandDatabase:
     """База ix стенда: пересоздаётся с ядром пакета pg-ix-core и схемой
     пакета."""
 
     def __init__(self, stand: IxStand) -> None:
         self._stand = stand
 
-    def recreate(self) -> None:
-        with psycopg.connect(self._stand.ix_dsn, autocommit=True) as conn:
-            conn.execute(
+    async def recreate(self) -> None:
+        async with await AsyncPostgresPool.dedicated(self._stand.postgres) as conn:
+            await conn.execute(
                 sql.SQL("drop database if exists {} with (force)").format(
                     sql.Identifier(self._stand.database)
                 )
             )
-            conn.execute(
+            await conn.execute(
                 sql.SQL("create database {}").format(
                     sql.Identifier(self._stand.database)
                 )
             )
 
-        upgrade = UpgradeConfig(
-            dsn=self._stand.ix_database_dsn, db_schema=self._stand.db_schema
-        )
-        SchemaUpgrade(CORE_SCHEMA_DIR, requires_core=False).run(upgrade)
-        SchemaUpgrade(PACKAGE_DIR / StandFile.SCHEMA_DIR).run(upgrade)
+        database = self._stand.ix_database
+        await SchemaUpgrade(CORE_SCHEMA_DIR, requires_core=False).run(database)
+        await SchemaUpgrade(PACKAGE_DIR / StandFile.SCHEMA_DIR).run(database)
 
-    def invariants(self) -> dict[str, int]:
+    async def invariants(self) -> dict[str, int]:
         """Инварианты структуры, у которых счётчик не ноль."""
         query = self._query(StandFile.CONSISTENCY)
-        with psycopg.connect(self._stand.ix_database_dsn) as conn:
-            rows = conn.execute(query).fetchall()
+        async with await AsyncPostgresPool.dedicated(self._stand.ix_profile) as conn:
+            cur = await conn.execute(query)
+            rows = await cur.fetchall()
         broken: dict[str, int] = {}
         for name, count in rows:
             if int(count) != 0:
                 broken[str(name)] = int(count)
         return broken
 
-    def fingerprint(self, host: str) -> Fingerprint:
+    async def fingerprint(self, host: str) -> Fingerprint:
         query = self._query(StandFile.CANON)
-        with psycopg.connect(self._stand.ix_database_dsn) as conn:
-            row = conn.execute(query, {"host": host}).fetchone()
+        async with await AsyncPostgresPool.dedicated(self._stand.ix_profile) as conn:
+            cur = await conn.execute(query, {"host": host})
+            row = await cur.fetchone()
         if row is None:
             raise IxStandError(
                 f"ix stand: fingerprint of {host}: expected one row, got none"
             )
         return Fingerprint.parse(str(row[0]))
 
-    def scope_nodes(self, host: str) -> int:
+    async def scope_nodes(self, host: str) -> int:
         query = SchemaName.render(
             "select count(*) from {schema}.node where address->>'host' = %(host)s",
             self._stand.db_schema,
         )
-        with psycopg.connect(self._stand.ix_database_dsn) as conn:
-            row = conn.execute(query, {"host": host}).fetchone()
+        async with await AsyncPostgresPool.dedicated(self._stand.ix_profile) as conn:
+            cur = await conn.execute(query, {"host": host})
+            row = await cur.fetchone()
         if row is None:
             raise IxStandError(
                 f"ix stand: node count of {host}: expected one row, got none"
@@ -288,11 +304,14 @@ class IxDatabase:
         text = name.under_stand().read_text(encoding="utf-8")
         return SchemaName.render(text, self._stand.db_schema)
 
-    def scrape(self, source: IxSource) -> Sequence[ApplyRow]:
+    async def scrape(self, source: IxSource) -> Sequence[ApplyRow]:
         cfg = WorkerConfig(
-            source_dsn=source.demo_dsn, ix_dsn=self._stand.ix_database_dsn
+            source=source.demo,
+            postgres=self._stand.ix_profile,
+            krb=self._stand.krb,
+            db_schema=self._stand.db_schema,
         )
-        return ScrapeWorker(cfg, PACKAGE_DIR).run()
+        return await ScrapeWorker(cfg, PACKAGE_DIR).run()
 
 
 @pytest.fixture(scope="session")
@@ -301,9 +320,9 @@ def ix_stand() -> IxStand:
 
 
 @pytest.fixture(scope="session")
-def ix_database(ix_stand: IxStand) -> IxDatabase:
-    database = IxDatabase(ix_stand)
-    database.recreate()
+async def ix_database(ix_stand: IxStand) -> IxStandDatabase:
+    database = IxStandDatabase(ix_stand)
+    await database.recreate()
     return database
 
 

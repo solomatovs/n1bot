@@ -12,13 +12,15 @@ ConfigError — конфига нет, секции нет или её поля 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 from collections.abc import Sequence
 from pathlib import Path
 from typing import ClassVar
 
 from boba.config import ConfigError, bind_section
-from boba.pg_ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError, UpgradeConfig
+from boba.pg_ix_core.database import IxDatabase
+from boba.pg_ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError
 
 logger = logging.getLogger("pg-ix-core")
 
@@ -32,7 +34,7 @@ class Cli:
     COMMAND: ClassVar[str] = "upgrade"
 
     @classmethod
-    def parse(cls, argv: Sequence[str] | None = None) -> UpgradeConfig:
+    def parse(cls, argv: Sequence[str] | None = None) -> IxDatabase:
         parser = argparse.ArgumentParser(
             prog="boba-ix-core",
             description="Ядро графа ix: схема ix, surface, node, tree, edge.",
@@ -53,7 +55,7 @@ class Cli:
         )
         args = parser.parse_args(argv)
 
-        return bind_section(args.config, cls.SECTION, UpgradeConfig)
+        return bind_section(args.config, cls.SECTION, IxDatabase)
 
 
 def main() -> None:
@@ -61,7 +63,8 @@ def main() -> None:
 
     try:
         cfg = Cli.parse()
-        report = SchemaUpgrade(SCHEMA_DIR, requires_core=False).run(cfg)
+        upgrade = SchemaUpgrade(SCHEMA_DIR, requires_core=False)
+        report = asyncio.run(upgrade.run(cfg))
         logger.info("core schema applied: %s", ", ".join(report.files))
     except (ConfigError, SchemaUpgradeError) as exc:
         raise SystemExit(str(exc)) from exc

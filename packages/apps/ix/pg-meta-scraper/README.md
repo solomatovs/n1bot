@@ -20,7 +20,7 @@ layout/   запросы к своей базе: raw_* -> stage_* -> ix
 .venv/bin/boba-pg-meta-scraper upgrade --config ../../compose/apps/pg-meta-scraper/conf.toml
 ```
 
-Схема хранения задаётся полем `db_schema` секции (по умолчанию `ix`): в sql-файлах она
+Схема хранения задаётся полем `db_schema` секции: в sql-файлах она
 стоит плейсхолдером `{schema}`, имя берётся из конфига, а квотирует его psycopg.
 
 Команда идемпотентна: файлы `schema/*.sql` применяются по порядку имён, каждая команда
@@ -58,17 +58,25 @@ layout/   запросы к своей базе: raw_* -> stage_* -> ix
 (каталог вне git, в нём креды). Одним файлом можно запускать и несколько приложений:
 каждое читает только свою секцию.
 
+База задаётся подсекцией `[ix.meta_scraper.postgres]` — профилем boba-db-postgres: host, dbname,
+`auth` с методом (`password`, `certificate`, `kerberos_keytab`, `kerberos_password`),
+`options` с `lock_timeout` и `statement_timeout` сессии, `pool` с размерами пула. Подсекция
+`[ix.meta_scraper.krb]` даёт krb5.conf и каталог кэшей билетов для kerberos-профиля. Соединения
+берутся из AsyncPostgresPool, воркер async.
+
 ```
 .venv/bin/boba-pg-meta-scraper --config ../../compose/apps/pg-meta-scraper/conf.toml [--source pg-18]
 ```
 
-Источники перечислены в секции списком `sources`, у каждого имя и строка подключения. Без
+Источники перечислены в секции списком `sources`, у каждого `name` и профиль `postgres`
+того же вида, что у базы ix (у старых серверов в `auth` парольного профиля указывается
+`require_auth = ["scram-sha-256", "md5"]`). Без
 `--source` снимаются все по порядку, с `--source <имя>` только один. Один прогон это один
 источник, одна база одного сервера. Роль источника читает только каталог, ей хватает
-`pg_catalog` и права подключения к базе; роль в `ix_dsn` пишет в `ix.node`, `ix.tree`,
+`pg_catalog` и права подключения к базе; роль профиля ix пишет в `ix.node`, `ix.tree`,
 `ix.edge`, `ix.pg_meta_edge` и surface-таблицы.
 
-Адрес источника для `raw_source` (host, port, database) берётся из его `dsn`, поэтому host
+Адрес источника для `raw_source` (host, port, database) берётся из его профиля, поэтому host
 должен быть каноническим именем, а не одним из алиасов. `attempts` (3) число попыток. Итог
 в логе: имя источника, planned и applied по каждой операции apply.
 
@@ -84,9 +92,9 @@ layout/   запросы к своей базе: raw_* -> stage_* -> ix
 
 1. Источник: `show server_version_num`, `select version()`. Greenplum распознаётся по слову
    `Greenplum` в `version()`.
-2. Источник: `set lock_timeout = '2s'`, `set statement_timeout = '30s'`,
-   `set application_name = ...`, `set default_transaction_read_only = on`. Каждый запрос
-   отдельной транзакцией в autocommit, без общей транзакции.
+2. Источник: `set lock_timeout` и `set statement_timeout` из полей `lock_timeout` и
+   `statement_timeout` секции (lock_timeout только с 9.3), `set default_transaction_read_only
+   = on`. Каждый запрос отдельной транзакцией в autocommit, без общей транзакции.
 3. Источник: `scrape/*.sql` в порядке имён (первая цифра это волна). Для каждого `@name`
    выбирается единственный файл, чьи ворота подходят под версию. Плейсхолдеры в файлах
    именованные, в стиле psycopg: `%(rels)s::oid[]`; значения передаются словарём по именам
@@ -102,7 +110,8 @@ layout/   запросы к своей базе: raw_* -> stage_* -> ix
    stdin` для каждой таблицы шага 3 в порядке колонок результата, затем `10_stage.sql`,
    `20_nodes.sql`, `30_tree.sql`, `40_edges.sql`, `45_surfaces.sql`. Эти шаги читают только
    temp-таблицы сессии, `ix` не трогают, и транзакция им не нужна.
-6. Та же сессия: `set lock_timeout = '2s'`, затем `layout/48_lock.sql` в autocommit: это
+6. Та же сессия (её `lock_timeout` задан в `postgres.options`): `layout/48_lock.sql` в
+   autocommit: это
    сессионный advisory-замок на scope источника, он держится через всю транзакцию.
 7. Та же сессия: `begin isolation level repeatable read;` `50_apply.sql`, `commit;`,
    затем `55_unlock.sql`. Последний файл apply возвращает сводку planned/applied: delete
