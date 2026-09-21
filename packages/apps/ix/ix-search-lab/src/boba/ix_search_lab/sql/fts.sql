@@ -20,7 +20,7 @@ hit as (
     from
         {schema}.{index} f, q
     where 1=1
-        and f.surface::varchar = any(%(surfaces)s::varchar[])
+        and f.surface = any(%(surfaces)s::{schema}.surface_e[])
         and f.tsv @@ q.tsq
 )
 select

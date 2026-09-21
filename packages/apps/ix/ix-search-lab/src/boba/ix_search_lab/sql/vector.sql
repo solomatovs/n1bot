@@ -15,7 +15,7 @@ with hit as (
     from
         {schema}.{index} e
     where
-        e.surface::varchar = any(%(surfaces)s::varchar[])
+        e.surface = any(%(surfaces)s::{schema}.surface_e[])
     order by
         e.emb <=> %(v)s::halfvec
     limit

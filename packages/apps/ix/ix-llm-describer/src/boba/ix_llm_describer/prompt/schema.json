@@ -1,12 +1,17 @@
 {
   "name": "describe_object",
-  "description": "Описание объекта базы данных для каталога.",
+  "description": "Описание объекта для каталога.",
   "body": {
     "type": "object",
     "properties": {
-      "description": {"type": "string", "description": "Описание объекта на русском языке, три-пять предложений."}
+      "description": {
+        "type": "string",
+        "description": "Описание объекта на русском языке."
+      }
     },
-    "required": ["description"],
+    "required": [
+      "description"
+    ],
     "additionalProperties": false
   }
 }

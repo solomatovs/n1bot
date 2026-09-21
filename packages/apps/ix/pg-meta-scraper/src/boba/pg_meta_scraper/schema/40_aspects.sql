@@ -1,9 +1,33 @@
 /*
-pg-meta-scraper, схема, шаг 4: словарь аспектов и объявления surface_aspect для
-поверхностей pg_meta_*. Тело объявления пишется dollar-quoted строкой, схема в нём
-удвоена ({{schema}}), чтобы после наката в строке остался плейсхолдер: его
-подставит потребитель. Накат проверяет каждое тело по контракту (node_id, content).
+pg-meta-scraper, схема, шаг 4: аспекты поверхностей pg_meta_*.
+
+Скрапер кладёт объекты PostgreSQL в surface-таблицы pg_meta_* (шаг 2), а поиск работает
+не по строкам этих таблиц, а по текстам объекта: имени, пути, словам имени, описанию,
+карточке для модели. Такой текст называется аспектом. Индексаторы ix-fts, ix-trgm,
+ix-vector и описатель ix-llm-describer про pg_meta_* ничего не знают: каждый подписан на
+классы аспектов (ident, words, description, describer_input) и берёт тексты из
+объявлений {schema}.surface_aspect. Новая поверхность попадает в поиск без правки
+индексаторов — достаточно объявить здесь её аспекты.
+
+Первый insert — словарь аспектов скрапера с классом каждого. Дальше по insert на
+поверхность: строка на пару «поверхность, аспект», тело — запрос, который отдаёт по
+строке на node две колонки node_id и content. Потребитель склеивает тела своих классов
+в один union all, отбрасывает пустой content и кладёт тексты в свою таблицу с ключом
+(node_id, surface, aspect). Для таблицы dm.orders стенда edge_demo потребитель класса
+ident получает такие строки:
+
+    surface        aspect        node_id  content
+    pg_meta_table  meta_name     39       orders
+    pg_meta_table  meta_path     39       dm.orders
+    pg_meta_table  meta_words    39       orders
+
+Перед каждым insert показано, что его тела отдают для одного объекта того же стенда.
+
+Схема в теле удвоена: после наката в строке остаётся плейсхолдер схемы, его подставит
+потребитель. Накат проверяет каждое тело по контракту (node_id, content), повторный
+накат перезаписывает тела.
 */
+
 insert into {schema}.aspect (aspect, class, description, owner) values
     ('meta_name',            'ident',           'Имя объекта как есть (relname, attname): точное совпадение и префикс.',                              'pg-meta-scraper'),
     ('meta_path',            'ident',           'Путь через точку, как пишет пользователь: schema.table или schema.table.column.',                    'pg-meta-scraper'),
@@ -14,6 +38,12 @@ insert into {schema}.aspect (aspect, class, description, owner) values
     ('meta_describer_input', 'describer_input', 'Структура таблицы или view для описателя: колонки, ключи, индексы, читаемые таблицы, оценка строк.', 'pg-meta-scraper')
 on conflict (aspect) do nothing;
 
+/*
+pg_meta_database — база данных. Пример — edge_demo без комментария, meta_comment пуст и отброшен:
+    meta_name         edge_demo
+    meta_words        edge demo
+    meta_description  Database edge_demo
+*/
 insert into {schema}.surface_aspect (surface, aspect, body) values
     ('pg_meta_database', 'meta_name', $body$
     select
@@ -51,7 +81,18 @@ insert into {schema}.surface_aspect (surface, aspect, body) values
         x.comment as content
     from
         {{schema}}.pg_meta_database x
-    $body$),
+    $body$)
+on conflict (surface, aspect) do update
+    set body = excluded.body;
+
+/*
+pg_meta_schema — схема. Пример — public:
+    meta_name         public
+    meta_words        public
+    meta_description  Schema public: standard public schema
+    meta_comment      standard public schema
+*/
+insert into {schema}.surface_aspect (surface, aspect, body) values
     ('pg_meta_schema', 'meta_name', $body$
     select
         x.node_id,
@@ -88,7 +129,45 @@ insert into {schema}.surface_aspect (surface, aspect, body) values
         x.comment as content
     from
         {{schema}}.pg_meta_schema x
-    $body$),
+    $body$)
+on conflict (surface, aspect) do update
+    set body = excluded.body;
+
+/*
+pg_meta_table — таблица, секция или секционированная таблица. meta_describer_input — карточка
+для описателя: колонки, внешние ключи в обе стороны, индексы, оценка строк, если
+статистика собрана. Пример — dm.orders без комментария и без статистики:
+    meta_name         orders
+    meta_path         dm.orders
+    meta_words        orders
+    meta_description  Table dm.orders. Columns: id (bigint), customer_id (bigint),
+                      currency (character(3)), line_no (smallint), amount (numeric),
+                      status (dm.order_status), created_at (timestamp with time zone)
+    meta_columns      id customer_id currency line_no amount status created_at
+    meta_describer_input
+        Table dm.orders
+        Columns:
+          id bigint not null default nextval('dm.orders_id_seq'::regclass)
+          customer_id bigint not null
+          currency character(3) not null
+          line_no smallint not null
+          amount numeric not null
+          status dm.order_status not null default 'open'::dm.order_status
+          created_at timestamp with time zone not null default now()
+        Foreign keys:
+          FOREIGN KEY (currency) REFERENCES ref.currencies(code) DEFERRABLE INITIALLY DEFERRED
+          FOREIGN KEY (customer_id) REFERENCES dm.customers(id)
+        Referenced by:
+          dm.invoices: FOREIGN KEY (order_id) REFERENCES dm.orders(id)
+          dm.order_items: FOREIGN KEY (order_id, line_no) REFERENCES dm.orders(id, line_no) ON DELETE CASCADE
+          dm.shipments: FOREIGN KEY (order_id, order_line) REFERENCES dm.orders(id, line_no) ON DELETE SET NULL (order_line)
+        Indexes:
+          orders__customer_created (customer_id, created_at, amount)
+          orders_id_line_no_key (id, line_no) unique
+          orders__open (created_at) where (status = 'open'::dm.order_status)
+          orders_pkey (id) unique
+*/
+insert into {schema}.surface_aspect (surface, aspect, body) values
     ('pg_meta_table', 'meta_name', $body$
     select
         x.node_id,
@@ -192,7 +271,10 @@ insert into {schema}.surface_aspect (surface, aspect, body) values
     fk_out as (
         select
             tr.parent_id as rel_id,
-            string_agg('  ' || k.definition, E'\n' order by k.name) as text
+            string_agg(
+                '  ' || k.definition || coalesce(' -- ' || k.comment, ''),
+                E'\n' order by k.name
+            ) as text
         from
             {{schema}}.pg_meta_constraint k
             join {{schema}}.tree tr on tr.node_id = k.node_id
@@ -206,7 +288,8 @@ insert into {schema}.surface_aspect (surface, aspect, body) values
             ct.parent_id as rel_id,
             string_agg(
                 distinct '  ' || k.schema_name || '.' || k.table_name
-                    || ': ' || k.definition,
+                    || ': ' || k.definition
+                    || coalesce(' -- ' || k.comment, ''),
                 E'\n'
             ) as text
         from
@@ -227,7 +310,8 @@ insert into {schema}.surface_aspect (surface, aspect, body) values
             string_agg(
                 '  ' || i.name || ' (' || array_to_string(i.columns, ', ') || ')'
                     || case when i.is_unique then ' unique' else '' end
-                    || coalesce(' where ' || i.predicate, ''),
+                    || coalesce(' where ' || i.predicate, '')
+                    || coalesce(' -- ' || i.comment, ''),
                 E'\n' order by i.name
             ) as text
         from
@@ -277,7 +361,18 @@ insert into {schema}.surface_aspect (surface, aspect, body) values
         left join fk_in  on fk_in.rel_id = x.node_id
         left join idx    on idx.rel_id = x.node_id
         left join reads  on reads.rel_id = x.node_id
-    $body$),
+    $body$)
+on conflict (surface, aspect) do update
+    set body = excluded.body;
+
+/*
+pg_meta_column — колонка таблицы или представления. Пример — dm.orders.created_at:
+    meta_name         created_at
+    meta_path         dm.orders.created_at
+    meta_words        created at
+    meta_description  Column dm.orders.created_at timestamp with time zone
+*/
+insert into {schema}.surface_aspect (surface, aspect, body) values
     ('pg_meta_column', 'meta_name', $body$
     select
         x.node_id,
@@ -322,7 +417,30 @@ insert into {schema}.surface_aspect (surface, aspect, body) values
         x.comment as content
     from
         {{schema}}.pg_meta_column x
-    $body$),
+    $body$)
+on conflict (surface, aspect) do update
+    set body = excluded.body;
+
+/*
+pg_meta_view — представление или материализованное представление. В карточке вместо внешних
+ключей — таблицы, которые представление читает. Пример — dm.v_customer_totals:
+    meta_name         v_customer_totals
+    meta_path         dm.v_customer_totals
+    meta_words        v customer totals
+    meta_description  View dm.v_customer_totals. Columns: customer_id (bigint),
+                      region (text), amount (numeric)
+    meta_columns      customer_id region amount
+    meta_describer_input
+        View dm.v_customer_totals
+        Columns:
+          customer_id bigint
+          region text
+          amount numeric
+        Reads:
+          dm.customers
+          dm.orders
+*/
+insert into {schema}.surface_aspect (surface, aspect, body) values
     ('pg_meta_view', 'meta_name', $body$
     select
         x.node_id,
@@ -424,7 +542,10 @@ insert into {schema}.surface_aspect (surface, aspect, body) values
     fk_out as (
         select
             tr.parent_id as rel_id,
-            string_agg('  ' || k.definition, E'\n' order by k.name) as text
+            string_agg(
+                '  ' || k.definition || coalesce(' -- ' || k.comment, ''),
+                E'\n' order by k.name
+            ) as text
         from
             {{schema}}.pg_meta_constraint k
             join {{schema}}.tree tr on tr.node_id = k.node_id
@@ -438,7 +559,8 @@ insert into {schema}.surface_aspect (surface, aspect, body) values
             ct.parent_id as rel_id,
             string_agg(
                 distinct '  ' || k.schema_name || '.' || k.table_name
-                    || ': ' || k.definition,
+                    || ': ' || k.definition
+                    || coalesce(' -- ' || k.comment, ''),
                 E'\n'
             ) as text
         from
@@ -459,7 +581,8 @@ insert into {schema}.surface_aspect (surface, aspect, body) values
             string_agg(
                 '  ' || i.name || ' (' || array_to_string(i.columns, ', ') || ')'
                     || case when i.is_unique then ' unique' else '' end
-                    || coalesce(' where ' || i.predicate, ''),
+                    || coalesce(' where ' || i.predicate, '')
+                    || coalesce(' -- ' || i.comment, ''),
                 E'\n' order by i.name
             ) as text
         from
@@ -509,7 +632,18 @@ insert into {schema}.surface_aspect (surface, aspect, body) values
         left join fk_in  on fk_in.rel_id = x.node_id
         left join idx    on idx.rel_id = x.node_id
         left join reads  on reads.rel_id = x.node_id
-    $body$),
+    $body$)
+on conflict (surface, aspect) do update
+    set body = excluded.body;
+
+/*
+pg_meta_index — индекс. Пример — orders__customer_created:
+    meta_name         orders__customer_created
+    meta_path         dm.orders__customer_created
+    meta_words        orders customer created
+    meta_description  Index orders__customer_created on orders (customer_id, created_at, amount)
+*/
+insert into {schema}.surface_aspect (surface, aspect, body) values
     ('pg_meta_index', 'meta_name', $body$
     select
         x.node_id,
@@ -555,7 +689,18 @@ insert into {schema}.surface_aspect (surface, aspect, body) values
         x.comment as content
     from
         {{schema}}.pg_meta_index x
-    $body$),
+    $body$)
+on conflict (surface, aspect) do update
+    set body = excluded.body;
+
+/*
+pg_meta_sequence — последовательность. Пример — dm.orders_id_seq:
+    meta_name         orders_id_seq
+    meta_path         dm.orders_id_seq
+    meta_words        orders id seq
+    meta_description  Sequence dm.orders_id_seq
+*/
+insert into {schema}.surface_aspect (surface, aspect, body) values
     ('pg_meta_sequence', 'meta_name', $body$
     select
         x.node_id,
@@ -599,7 +744,19 @@ insert into {schema}.surface_aspect (surface, aspect, body) values
         x.comment as content
     from
         {{schema}}.pg_meta_sequence x
-    $body$),
+    $body$)
+on conflict (surface, aspect) do update
+    set body = excluded.body;
+
+/*
+pg_meta_routine — функция или процедура. Путь содержит типы аргументов: перегрузки различаются.
+Пример — public.gbt_ts_sortsupport:
+    meta_name         gbt_ts_sortsupport
+    meta_path         public.gbt_ts_sortsupport(internal)
+    meta_words        gbt ts sortsupport
+    meta_description  Function gbt_ts_sortsupport(internal) returns void
+*/
+insert into {schema}.surface_aspect (surface, aspect, body) values
     ('pg_meta_routine', 'meta_name', $body$
     select
         x.node_id,
@@ -646,7 +803,19 @@ insert into {schema}.surface_aspect (surface, aspect, body) values
         x.comment as content
     from
         {{schema}}.pg_meta_routine x
-    $body$),
+    $body$)
+on conflict (surface, aspect) do update
+    set body = excluded.body;
+
+/*
+pg_meta_constraint — ограничение таблицы. Пути нет: имя ограничения ищут без схемы. Пример —
+внешний ключ order_items_order_id_line_no_fkey:
+    meta_name         order_items_order_id_line_no_fkey
+    meta_words        order items order id line no fkey
+    meta_description  Foreign Key order_items_order_id_line_no_fkey on order_items:
+                      FOREIGN KEY (order_id, line_no) REFERENCES dm.orders(id, line_no) ON DELETE CASCADE
+*/
+insert into {schema}.surface_aspect (surface, aspect, body) values
     ('pg_meta_constraint', 'meta_name', $body$
     select
         x.node_id,
@@ -684,7 +853,17 @@ insert into {schema}.surface_aspect (surface, aspect, body) values
         x.comment as content
     from
         {{schema}}.pg_meta_constraint x
-    $body$),
+    $body$)
+on conflict (surface, aspect) do update
+    set body = excluded.body;
+
+/*
+pg_meta_trigger — триггер. Пример — orders__audit:
+    meta_name         orders__audit
+    meta_words        orders audit
+    meta_description  Trigger orders__audit on orders after update
+*/
+insert into {schema}.surface_aspect (surface, aspect, body) values
     ('pg_meta_trigger', 'meta_name', $body$
     select
         x.node_id,
@@ -722,7 +901,17 @@ insert into {schema}.surface_aspect (surface, aspect, body) values
         x.comment as content
     from
         {{schema}}.pg_meta_trigger x
-    $body$),
+    $body$)
+on conflict (surface, aspect) do update
+    set body = excluded.body;
+
+/*
+pg_meta_type — пользовательский тип. Пример — перечисление dm.order_status:
+    meta_name         order_status
+    meta_words        order status
+    meta_description  Enum dm.order_status (open, paid, cancelled)
+*/
+insert into {schema}.surface_aspect (surface, aspect, body) values
     ('pg_meta_type', 'meta_name', $body$
     select
         x.node_id,
@@ -761,7 +950,17 @@ insert into {schema}.surface_aspect (surface, aspect, body) values
         x.comment as content
     from
         {{schema}}.pg_meta_type x
-    $body$),
+    $body$)
+on conflict (surface, aspect) do update
+    set body = excluded.body;
+
+/*
+pg_meta_statistics — расширенная статистика. Пример — orders__stats:
+    meta_name         orders__stats
+    meta_words        orders stats
+    meta_description  Statistics orders__stats on orders
+*/
+insert into {schema}.surface_aspect (surface, aspect, body) values
     ('pg_meta_statistics', 'meta_name', $body$
     select
         x.node_id,

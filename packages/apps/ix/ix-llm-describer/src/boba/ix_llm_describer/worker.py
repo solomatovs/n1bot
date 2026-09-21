@@ -1,19 +1,24 @@
-"""
-Воркер описателя: очередь объектов из ix, описание моделью через порт
-StructuredGenerator
-проекта, запись в ix.llm_description.
+"""Цикл описателя: очередь объектов из ix, описание моделью, запись в
+{schema}.llm_description.
+
+Описатель не знает ни поверхностей, ни того, что говорить модели. Материал объекта
+даёт объявление аспекта класса describer_input, а роль модели и шаблон запроса — строка
+владельца в {schema}.surface_prompt. Описываются только пары «поверхность, аспект», у
+которых есть и объявление, и промпт: пара без промпта пропускается, и это видно в логе.
 
 Один цикл: 05_declare.sql объявляет аспект llm_description для поверхностей с входом,
-источник входа собирается из объявлений {schema}.surface_aspect по классам из конфига
-и подставляется вместо `{sources}`; дальше 10_queue.sql пачкой, на каждый объект
-generate(user, schema) провайдера boba.llm.generation с системным промптом, шаблоном
-входа и json-схемой из prompt/, 20_write.sql, 90_unlock.sql, и так до пустой очереди;
-в конце 30_prune.sql.
-indexer_hash это md5 модели и трёх файлов prompt/: смена любого переводит всё в очередь.
+источник входа собирается из объявлений и подставляется вместо `{sources}`; дальше
+10_queue.sql пачкой, на каждый объект описание (Description: один вызов или свёртка
+длинного материала), 20_write.sql, 90_unlock.sql, и так до пустой очереди; в конце
+30_prune.sql.
+
+Отпечаток считается на каждую пару: модель, бюджет входа, промпт пары и шаблоны
+пакета. Поэтому правка промпта одной поверхности переводит в очередь только её
+объекты, а не все описания сразу.
 
 Ошибки:
 DescriberWorkerError — база или провайдер недоступны, ответ модели не по схеме, файлы
-    пакета не найдены.
+    пакета не найдены, промпт пары нарушает контракт.
 """
 
 from __future__ import annotations
@@ -21,7 +26,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
-import json
 import logging
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
@@ -30,24 +34,21 @@ from typing import Any, ClassVar
 
 import psycopg
 from psycopg import sql
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field
 
-from boba.chat.generation import (
-    GenerationError,
-    LocalGeneration,
-    OpenAiGeneration,
-    SchemaSpec,
-    StructuredGenerator,
-)
-from boba.chat.http import HttpConfig
 from boba.config import ConfigError, bind_section
 from boba.ix_core.aspects import AspectClass, AspectDeclarations, AspectSources
 from boba.ix_core.database import IxDatabase, IxDatabaseError, IxPool
+from boba.ix_core.prompts import SurfacePromptError, SurfacePrompts
 from boba.ix_core.schema_name import SchemaName
 from boba.ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError
-from boba.llm.generation import GeneratorFactory
-from boba.llm.http import LlmHttp
-from boba.llm.local import OnnxChatRuntime
+from boba.ix_llm_describer.describe import (
+    DescribeError,
+    Description,
+    Generators,
+    ModelConfig,
+    PackPrompts,
+)
 
 logger = logging.getLogger("ix-llm-describer")
 
@@ -64,89 +65,36 @@ class SqlFile(StrEnum):
     UNLOCK = "90_unlock.sql"
 
 
-class PromptFile(StrEnum):
-    SYSTEM = "system.md"
-    USER = "user.md"
-    SCHEMA = "schema.json"
-
-
-class Provider(StrEnum):
-    OPENAI = "openai"
-    LOCAL = "local"
-
-
 class Part(StrEnum):
     """Плейсхолдеры файлов run/, которые заполняет воркер."""
 
     SOURCES = "sources"
 
 
-class WorkerConfig(IxDatabase):
+class WorkerConfig(IxDatabase, ModelConfig):
+    """Секция [ix.llm_describer]: база ix, модель с её бюджетом входа и размер пачки."""
+
     classes: Sequence[AspectClass]
-    provider: Provider
-    model: str = ""
-    base_url: str = ""
-    api_key: str = ""
-    model_dir: str = ""
-    max_tokens: int = Field(gt=0, default=1024)
-    temperature: float = Field(ge=0, default=0.2)
-    tool_choice: str = "auto"
     batch: int = Field(gt=0, default=8)
 
 
 class QueueRow(BaseModel):
     node_id: int
     surface: str
+    aspect: str
     text: str
     input_hash: str
 
-
-class Reply(BaseModel):
-    description: str = Field(min_length=1)
+    def pair(self) -> tuple[str, str]:
+        return (self.surface, self.aspect)
 
 
 class CycleReport(BaseModel):
     rounds: int
     written: int
+    folded: int
+    """Сколько объектов описано свёрткой, то есть не влезло в бюджет одним вызовом."""
     pruned: int
-
-
-class Prompts:
-    """
-    Три файла prompt/: системный промпт, шаблон входа с плейсхолдером {input},
-    json-схема
-    ответа. Их md5 вместе с именем модели даёт indexer_hash."""
-
-    PLACEHOLDER = "{input}"
-
-    def __init__(self, prompt_dir: Path) -> None:
-        self.system = (
-            (prompt_dir / PromptFile.SYSTEM).read_text(encoding="utf-8").strip()
-        )
-        self.user_template = (
-            (prompt_dir / PromptFile.USER).read_text(encoding="utf-8").strip()
-        )
-        raw = json.loads((prompt_dir / PromptFile.SCHEMA).read_text(encoding="utf-8"))
-        self.schema = SchemaSpec.model_validate(raw)
-        if self.PLACEHOLDER not in self.user_template:
-            raise DescriberWorkerError(
-                f"{prompt_dir / PromptFile.USER}: expected placeholder "
-                "{self.PLACEHOLDER}"
-            )
-
-    def user(self, text: str) -> str:
-        return self.user_template.replace(self.PLACEHOLDER, text)
-
-    def fingerprint(self, model: str) -> str:
-        material = "\n".join(
-            [
-                model,
-                self.system,
-                self.user_template,
-                json.dumps(self.schema.body, sort_keys=True, ensure_ascii=False),
-            ]
-        )
-        return hashlib.md5(material.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
 class PackageSql:
@@ -166,165 +114,195 @@ class PackageSql:
         return SchemaName.render(text, self._db_schema, **self._parts)
 
 
-class Generators:
-    """
-    Сборка генератора проекта по флагам воркера: openai-совместимый endpoint или
-    локальная
-    onnx-модель. Системный промпт живёт в конфиге генератора, поэтому он собирается
-    здесь."""
+class Binding(BaseModel):
+    """Что воркер собрал при старте цикла: файлы под источник входа, промпты пар и
+    отпечаток каждой пары."""
 
-    @classmethod
-    def build(cls, cfg: WorkerConfig, prompts: Prompts) -> StructuredGenerator:
-        if cfg.provider is Provider.LOCAL:
-            if not cfg.model_dir:
-                raise DescriberWorkerError("provider local: expected --model-dir")
-            local = LocalGeneration(
-                kind="local",
-                system_prompt=prompts.system,
-                max_tokens=cfg.max_tokens,
-                model_dir=cfg.model_dir,
-                reply_prefix="",
-            )
-            return GeneratorFactory.build(
-                local, client=None, runtime=OnnxChatRuntime(cfg.model_dir)
-            )
-        if not cfg.base_url or not cfg.model:
-            raise DescriberWorkerError(
-                "provider openai: expected --base-url and --model"
-            )
-        remote = OpenAiGeneration(
-            kind="openai",
-            system_prompt=prompts.system,
-            http=HttpConfig(),
-            base_url=cfg.base_url,
-            api_key=cfg.api_key,
-            model=cfg.model,
-            sampling={
-                "temperature": cfg.temperature,
-                "max_tokens": cfg.max_tokens,
-                "tool_choice": cfg.tool_choice,
-            },
-        )
-        return GeneratorFactory.build(
-            remote, client=LlmHttp.client(remote.http), runtime=None
-        )
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
-    @staticmethod
-    def label(cfg: WorkerConfig) -> str:
-        if cfg.provider is Provider.LOCAL:
-            return f"local:{cfg.model_dir}"
-        return f"openai:{cfg.model}"
+    sql_files: PackageSql
+    prompts: SurfacePrompts
+    hashes: Mapping[tuple[str, str], str]
+
+    def surfaces(self) -> list[str]:
+        found: list[str] = []
+        for surface, _ in self.hashes:
+            found.append(surface)
+
+        return found
+
+    def aspects(self) -> list[str]:
+        found: list[str] = []
+        for _, aspect in self.hashes:
+            found.append(aspect)
+
+        return found
+
+    def fingerprints(self) -> list[str]:
+        return list(self.hashes.values())
 
 
 class DescriberWorker:
-    """Цикл описателя: одна сессия к ix, один генератор."""
+    """Цикл описателя: одна сессия к ix, описание объекта промптом его поверхности."""
 
     def __init__(
         self,
         cfg: WorkerConfig,
         package_dir: Path,
-        prompts: Prompts,
-        generator: StructuredGenerator,
+        pack: PackPrompts,
+        describer: Description,
     ) -> None:
         self._cfg = cfg
         self._dir = package_dir
-        self._prompts = prompts
-        self._generator = generator
-        self._indexer_hash = prompts.fingerprint(Generators.label(cfg))
+        self._pack = pack
+        self._describer = describer
 
     async def run(self) -> CycleReport:
         try:
             async with IxPool.session(self._cfg) as conn:
-                sql_files = await self._bind(conn)
+                binding = await self._bind(conn)
 
                 try:
-                    rounds, written = await self._rounds(conn, sql_files)
+                    rounds, written, folded = await self._rounds(conn, binding)
                 finally:
-                    await self._unlock(conn, sql_files)
+                    await self._unlock(conn, binding)
 
-                pruned = await self._prune(conn, sql_files)
+                pruned = await self._prune(conn, binding)
 
-                return CycleReport(rounds=rounds, written=written, pruned=pruned)
+                return CycleReport(
+                    rounds=rounds, written=written, folded=folded, pruned=pruned
+                )
         except IxDatabaseError as exc:
+            raise DescriberWorkerError(str(exc)) from exc
+        except SurfacePromptError as exc:
+            raise DescriberWorkerError(f"describe prompts: {exc}") from exc
+        except DescribeError as exc:
             raise DescriberWorkerError(str(exc)) from exc
         except psycopg.Error as exc:
             msg = f"ix database {self._cfg.postgres.where()}: {exc}"
             raise DescriberWorkerError(msg) from exc
 
-    async def _bind(self, conn: psycopg.AsyncConnection[Any]) -> PackageSql:
-        """Объявить llm_description и собрать источник входа под файлы цикла."""
+    async def _bind(self, conn: psycopg.AsyncConnection[Any]) -> Binding:
+        """Объявить llm_description, собрать источник входа и промпты пар."""
         declare = PackageSql(self._dir, self._cfg.db_schema, {})
         await conn.execute(declare.load(SqlFile.DECLARE))
 
         declarations = await AspectDeclarations.of_classes(
             conn, self._cfg.db_schema, self._cfg.classes
         )
-        logger.info(
-            "aspect sources: %d declarations for classes %s",
-            len(declarations),
-            ", ".join(self._cfg.classes),
-        )
+        prompts = await SurfacePrompts.load(conn, self._cfg.db_schema)
 
-        return PackageSql(
+        hashes: dict[tuple[str, str], str] = {}
+        skipped: list[str] = []
+        for declaration in declarations:
+            pair = (declaration.surface, declaration.aspect)
+            if pair not in prompts.pairs():
+                skipped.append(f"{pair[0]}/{pair[1]}")
+                continue
+
+            prompt = prompts.of(pair[0], pair[1])
+            prompt.check()
+            hashes[pair] = self._fingerprint(prompt.system_prompt, prompt.user_template)
+
+        names: list[str] = []
+        for surface, aspect in hashes:
+            names.append(f"{surface}/{aspect}")
+
+        logger.info("describing pairs: %s", ", ".join(names))
+
+        if skipped:
+            logger.warning(
+                "no prompt in %s.surface_prompt, skipped: %s",
+                self._cfg.db_schema,
+                ", ".join(skipped),
+            )
+
+        sql_files = PackageSql(
             self._dir,
             self._cfg.db_schema,
             {str(Part.SOURCES): AspectSources.union(declarations, self._cfg.db_schema)},
         )
 
+        return Binding(sql_files=sql_files, prompts=prompts, hashes=hashes)
+
+    def _fingerprint(self, system_prompt: str, user_template: str) -> str:
+        """Отпечаток пары: модель, бюджет, промпт владельца и шаблоны пакета."""
+        material = "\n".join(
+            [
+                self._cfg.label(),
+                str(self._cfg.max_input_chars),
+                system_prompt,
+                user_template,
+                self._pack.material(),
+            ]
+        )
+
+        return hashlib.md5(material.encode("utf-8"), usedforsecurity=False).hexdigest()
+
     async def _rounds(
-        self, conn: psycopg.AsyncConnection[Any], sql_files: PackageSql
-    ) -> tuple[int, int]:
+        self, conn: psycopg.AsyncConnection[Any], binding: Binding
+    ) -> tuple[int, int, int]:
         rounds = 0
         written = 0
+        folded = 0
         while True:
-            rows = await self._queue(conn, sql_files)
+            rows = await self._queue(conn, binding)
             if not rows:
                 break
+
             for row in rows:
-                description = await self._describe(row)
-                await self._write(conn, sql_files, row, description)
+                prompt = binding.prompts.of(row.surface, row.aspect)
+                described = await self._describer.of(prompt, row.text)
+                await self._write(conn, binding, row, described.text)
                 written += 1
-            await self._unlock(conn, sql_files)
+                if described.chunks > 1:
+                    folded += 1
+                    logger.info(
+                        "node %d (%s): %d chars folded from %d chunks",
+                        row.node_id,
+                        row.surface,
+                        len(row.text),
+                        described.chunks,
+                    )
+
+            await self._unlock(conn, binding)
             rounds += 1
             logger.info("round %d: %d objects described", rounds, len(rows))
-        return rounds, written
+
+        return rounds, written, folded
 
     async def _queue(
-        self, conn: psycopg.AsyncConnection[Any], sql_files: PackageSql
+        self, conn: psycopg.AsyncConnection[Any], binding: Binding
     ) -> list[QueueRow]:
-        cur = await conn.execute(
-            sql_files.load(SqlFile.QUEUE),
-            {"batch": self._cfg.batch, "indexer_hash": self._indexer_hash},
-        )
+        if not binding.hashes:
+            return []
+
+        params = {
+            "batch": self._cfg.batch,
+            "surfaces": binding.surfaces(),
+            "aspects": binding.aspects(),
+            "hashes": binding.fingerprints(),
+        }
+        cur = await conn.execute(binding.sql_files.load(SqlFile.QUEUE), params)
+
         rows: list[QueueRow] = []
-        for node_id, surface, text, input_hash in await cur.fetchall():
+        for node_id, surface, aspect, text, input_hash in await cur.fetchall():
             rows.append(
                 QueueRow(
-                    node_id=node_id, surface=surface, text=text, input_hash=input_hash
+                    node_id=node_id,
+                    surface=surface,
+                    aspect=aspect,
+                    text=text,
+                    input_hash=input_hash,
                 )
             )
-        return rows
 
-    async def _describe(self, row: QueueRow) -> str:
-        try:
-            raw = await self._generator.generate(
-                self._prompts.user(row.text), self._prompts.schema
-            )
-        except GenerationError as exc:
-            raise DescriberWorkerError(f"describe node {row.node_id}: {exc}") from exc
-        try:
-            reply = Reply.model_validate_json(raw)
-        except ValidationError as exc:
-            raise DescriberWorkerError(
-                f"describe node {row.node_id}: reply is not by schema: {raw[:200]!r}: "
-                "{exc}"
-            ) from exc
-        return reply.description.strip()
+        return rows
 
     async def _write(
         self,
         conn: psycopg.AsyncConnection[Any],
-        sql_files: PackageSql,
+        binding: Binding,
         row: QueueRow,
         description: str,
     ) -> None:
@@ -333,22 +311,21 @@ class DescriberWorker:
             "surface": row.surface,
             "content": description,
             "input_hash": row.input_hash,
-            "indexer_hash": self._indexer_hash,
+            "indexer_hash": binding.hashes[row.pair()],
         }
-        await conn.execute(sql_files.load(SqlFile.WRITE), params)
+        await conn.execute(binding.sql_files.load(SqlFile.WRITE), params)
 
     async def _unlock(
-        self, conn: psycopg.AsyncConnection[Any], sql_files: PackageSql
+        self, conn: psycopg.AsyncConnection[Any], binding: Binding
     ) -> None:
-        await conn.execute(sql_files.load(SqlFile.UNLOCK))
+        await conn.execute(binding.sql_files.load(SqlFile.UNLOCK))
 
-    async def _prune(
-        self, conn: psycopg.AsyncConnection[Any], sql_files: PackageSql
-    ) -> int:
-        cur = await conn.execute(sql_files.load(SqlFile.PRUNE))
+    async def _prune(self, conn: psycopg.AsyncConnection[Any], binding: Binding) -> int:
+        cur = await conn.execute(binding.sql_files.load(SqlFile.PRUNE))
         record = await cur.fetchone()
         if record is None:
             raise DescriberWorkerError("prune: expected one summary row, got none")
+
         return int(record[1])
 
 
@@ -410,24 +387,21 @@ def main() -> None:
             return
 
         cfg = bind_section(config_path, Cli.SECTION, WorkerConfig)
-        here = Path(__file__).resolve().parent
-        prompts = Prompts(here / "prompt")
-        worker = DescriberWorker(
-            cfg,
-            here / "run",
-            prompts,
-            Generators.build(cfg, prompts),
-        )
+        pack = PackPrompts(package_dir / "prompt")
+        describer = Description(Generators(cfg), pack, cfg.max_input_chars)
+        worker = DescriberWorker(cfg, package_dir / "run", pack, describer)
         report = asyncio.run(worker.run())
         logger.info(
-            "done: rounds=%d written=%d pruned=%d",
+            "done: rounds=%d written=%d folded=%d pruned=%d",
             report.rounds,
             report.written,
+            report.folded,
             report.pruned,
         )
-    except (ConfigError, SchemaUpgradeError, DescriberWorkerError) as exc:
+    except (
+        ConfigError,
+        SchemaUpgradeError,
+        DescribeError,
+        DescriberWorkerError,
+    ) as exc:
         raise SystemExit(str(exc)) from exc
-
-
-if __name__ == "__main__":
-    main()
