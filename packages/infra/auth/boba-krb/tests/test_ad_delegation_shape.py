@@ -48,7 +48,7 @@ def _account(name: str) -> dict[str, Any]:
         server,
         user=STAND.ldap_bind_user,
         password=STAND.ldap_bind_password.get_secret_value(),
-        auto_bind='DEFAULT',
+        auto_bind="DEFAULT",
     )
     try:
         connection.search(

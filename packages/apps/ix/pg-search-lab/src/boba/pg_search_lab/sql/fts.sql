@@ -1,9 +1,15 @@
 /*
-Полнотекст: ранг node это сумма рангов её строк по всем аспектам, сниппет из лучшей строки.
+Полнотекст по всем происхождениям: строки pg_idx_fts и cfl_idx_fts в одном источнике,
+ранг node это сумма рангов её строк по всем аспектам, сниппет из лучшей строки.
 Правится без перезапуска сервера: файл читается на каждый запрос.
 */
 with q as (
     select websearch_to_tsquery('russian', %(q)s) as tsq
+),
+idx as (
+    select node_id, aspect, content, tsv from {schema}.pg_idx_fts
+    union all
+    select node_id, aspect, content, tsv from {schema}.cfl_idx_fts
 ),
 hit as (
     select
@@ -14,7 +20,7 @@ hit as (
             'russian', f.content, q.tsq, 'MaxWords=24, MinWords=8'
         ) as snippet
     from
-        {schema}.pg_idx_fts f, q
+        idx f, q
     where
         f.tsv @@ q.tsq
 )

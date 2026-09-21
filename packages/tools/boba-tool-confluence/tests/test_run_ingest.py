@@ -25,9 +25,9 @@ class RunArgs:
 
     PAGE_ID: ClassVar[str] = "950276"
 
-    PRUNE_MISSING: ClassVar[bool] = False
+    ATTACHMENTS: ClassVar[bool] = False
 
-    FORCE_UPDATE: ClassVar[bool] = False
+    OCR: ClassVar[bool] = False
 
 
 @pytest.fixture(scope="module")
@@ -43,8 +43,8 @@ async def test_run_confluence_ingest(ingest_cfg: IngestToolConfig) -> None:
     content = (
         await body(
             page_id=RunArgs.PAGE_ID,
-            prune_missing=RunArgs.PRUNE_MISSING,
-            force_update=RunArgs.FORCE_UPDATE,
+            attachments=RunArgs.ATTACHMENTS,
+            ocr=RunArgs.OCR,
             cfg=ingest_cfg,
         )
     ).llm_view()

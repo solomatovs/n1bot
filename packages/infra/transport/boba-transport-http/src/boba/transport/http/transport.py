@@ -12,12 +12,15 @@ import logging
 from collections.abc import AsyncGenerator, AsyncIterator, Iterable, Mapping
 from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, ClassVar, Protocol
 
 import httpx
 
 from boba.cancellation import current_cancellation
+from boba.chat.http import HttpDumpConfig
 from boba.transport.http import HttpxAuth
+from boba.transport.http.dump import DumpingTransport
 from boba.transport.http.profile import HttpConnection
 
 __all__ = [
@@ -125,16 +128,38 @@ class HttpTransport:
     ретраится. Тело отдаётся потоком и живёт, пока открыт блок fetch.
     """
 
-    def __init__(self, profile: HttpConnection) -> None:
+    NO_DUMP: ClassVar[HttpDumpConfig] = HttpDumpConfig()
+
+    def __init__(
+        self, profile: HttpConnection, *, dump: HttpDumpConfig = NO_DUMP
+    ) -> None:
         self._profile = profile
         self._retry = RetryPolicy(profile)
         # headers/params на клиент не кладём: они целиком per-request
         self._client = httpx.AsyncClient(
             base_url=profile.root_url(),
             timeout=profile.timeout_sec,
-            verify=profile.ssl_verify,
+            transport=self._transport(profile, dump),
             auth=HttpxAuth.of(profile),
         )
+
+    @classmethod
+    def _transport(
+        cls, profile: HttpConnection, dump: HttpDumpConfig
+    ) -> httpx.AsyncHTTPTransport:
+        """Транспорт httpx; с включённым дампом обмен пишется в файл по хосту."""
+        if not dump.enable:
+            return httpx.AsyncHTTPTransport(verify=profile.ssl_verify)
+
+        return DumpingTransport(
+            dump_dir=Path(dump.path),
+            dump_file=cls._dump_file,
+            verify=profile.ssl_verify,
+        )
+
+    @staticmethod
+    def _dump_file(request: httpx.Request) -> str:
+        return f"{request.url.host}.log"
 
     async def __aenter__(self) -> HttpTransport:
         return self
@@ -263,8 +288,10 @@ class CancellableHttpTransport(HttpTransport):
     тела обрываются на ближайшем await, а не дочитываются до конца.
     """
 
-    def __init__(self, profile: HttpConnection) -> None:
-        super().__init__(profile)
+    def __init__(
+        self, profile: HttpConnection, *, dump: HttpDumpConfig = HttpTransport.NO_DUMP
+    ) -> None:
+        super().__init__(profile, dump=dump)
         self._cancellation = current_cancellation()
         self._cancellation.raise_if_cancelled()
 

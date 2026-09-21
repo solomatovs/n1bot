@@ -55,6 +55,7 @@ pythonpath = [
     "packages/apps/ix/pg-idx-trgm/src",
     "packages/apps/ix/pg-idx-vector/src",
     "packages/apps/ix/pg-search-lab/src",
+    "packages/apps/ix/cfl-indexer/src",
 ]
 addopts = ["--strict-markers", "-m", "not integration and not ui and not load and not run"]
 markers = [
@@ -128,6 +129,7 @@ extraPaths = [
     "packages/apps/ix/pg-idx-trgm/src",
     "packages/apps/ix/pg-idx-vector/src",
     "packages/apps/ix/pg-search-lab/src",
+    "packages/apps/ix/cfl-indexer/src",
 ]
 venvPath = "."
 venv = ".venv"

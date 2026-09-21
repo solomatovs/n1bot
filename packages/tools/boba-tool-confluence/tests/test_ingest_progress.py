@@ -12,7 +12,6 @@ from __future__ import annotations
 import logging
 
 import pytest
-from confluence_stand import ConfluenceStub, LiveServer, StubAttachment, StubPage
 from ingest_stand import MemoryChunkStore, MemorySourceLedger, TextReader, ZeroEmbedder
 
 from boba.confluence.models import (
@@ -21,6 +20,7 @@ from boba.confluence.models import (
     ParseGrade,
     TableShape,
 )
+from boba.confluence.rest import ConfluenceConnection, ConfluenceRequest
 from boba.indexing import (
     CollectionId,
     CollectionScopedView,
@@ -31,8 +31,8 @@ from boba.indexing import (
     ReaderId,
     TransportKeys,
 )
+from boba.stand.confluence import ConfluenceStub, LiveServer, StubAttachment, StubPage
 from boba.tool.confluence.chunking import ChunkerParams, StructuralChunkerFactory
-from boba.tool.confluence.connection import ConfluenceConnection
 from boba.tool.confluence.indexing_log import (
     IngestProgress,
     LoggedIndexRun,
@@ -42,11 +42,7 @@ from boba.tool.confluence.indexing_log import (
     LoggingSourceLedger,
 )
 from boba.tool.confluence.pipeline import ConfluenceSourceTransport
-from boba.tool.confluence.request_sources import (
-    ConfluenceDiscovery,
-    ConfluenceRequest,
-    SpaceListing,
-)
+from boba.tool.confluence.request_sources import ConfluenceDiscovery, SpaceListing
 from boba.transport.http.profile import HttpConnection, UrlScheme
 
 pytestmark = pytest.mark.anyio

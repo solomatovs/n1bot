@@ -15,13 +15,6 @@ from collections.abc import AsyncIterator, Sequence
 from typing import Any, ClassVar
 
 import pytest
-from confluence_stand import (
-    ConfluenceStub,
-    LiveServer,
-    StubAttachment,
-    StubPage,
-    StubRoute,
-)
 from ingest_stand import TextReader, ZeroEmbedder
 from omegaconf import DictConfig
 from psycopg import AsyncConnection, sql
@@ -35,6 +28,7 @@ from boba.confluence.models import (
     ParseGrade,
     TableShape,
 )
+from boba.confluence.rest import ConfluenceConnection, ConfluenceRest
 from boba.db.pgvector.config import PostgresStoreConfig, PostgresStoreSchema
 from boba.db.pgvector.migrations import Migrations
 from boba.db.pgvector.store import (
@@ -52,8 +46,14 @@ from boba.indexing import (
     SourceId,
     SourceRecord,
 )
+from boba.stand.confluence import (
+    ConfluenceStub,
+    LiveServer,
+    StubAttachment,
+    StubPage,
+    StubRoute,
+)
 from boba.tool.confluence.chunking import ChunkerParams, StructuralChunkerFactory
-from boba.tool.confluence.connection import ConfluenceConnection
 from boba.tool.confluence.indexing_log import (
     IngestProgress,
     LoggingChunker,
@@ -66,7 +66,6 @@ from boba.tool.confluence.ingest_base import (
     IngestReport,
     IngestScope,
 )
-from boba.tool.confluence.request_sources import ConfluenceRest
 from boba.transport.http.profile import HttpConnection, UrlScheme
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]

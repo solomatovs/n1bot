@@ -39,6 +39,7 @@ from boba.confluence.models import (
     PageTableSection,
     TableShape,
 )
+from boba.confluence.rest import ConfluenceUrl
 from boba.db.postgres import PostgresError
 from boba.indexing import (
     DocumentCardSection,
@@ -65,7 +66,6 @@ from boba.tool.confluence.ingest_base import (
     IngestReport,
     IngestScope,
 )
-from boba.tool.confluence.request_sources import ConfluenceUrl
 from boba.tool.confluence.tools import ConfluenceHttp, ConfluenceToolsConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool, warmup
@@ -162,7 +162,7 @@ class LocalConfluenceReader(Reader[str]):
         title = value.metadata.get(ReaderKeys.PAGE_TITLE) or ""
 
         # bs4 тяжёлый: в процесс приложения модуль инструментов его не тянет
-        from boba.tool.confluence.html import PageOps  # noqa: PLC0415
+        from boba.confluence.html import PageOps  # noqa: PLC0415
 
         logger.info("html parse start: %s, %d bytes", title or "?", len(payload))
         elapsed = Elapsed()

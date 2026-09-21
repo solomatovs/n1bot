@@ -1,10 +1,13 @@
-"""Стенд Confluence для ingest-тестов: живой REST на uvicorn с состоянием.
+"""Стенд Confluence для тестов инструментов и индексатора: живой REST на uvicorn
+с состоянием.
 
-Заглушка держит страницы и вложения в памяти и отвечает теми же формами, что
-Confluence Server: content/search с expand версий и вложений, тело страницы
-content/{id}, пагинированный child/attachment, download вложений, проба
-`id in (...)`. Тест меняет состояние напрямую (правка, перезаливка, удаление)
-и считает запросы по счётчикам — так видно, что неизменившееся не качается.
+Заглушка держит спейсы, страницы, блог-записи и вложения в памяти и отвечает
+теми же формами, что Confluence Server: content/search с expand версий и
+вложений, списки space/{key}/content/page и /blogpost с предками, метками и
+историей, тело страницы content/{id}, пагинированный child/attachment,
+download вложений, проба `id in (...)`. Тест меняет состояние напрямую (правка,
+перезаливка, удаление) и считает запросы по счётчикам — так видно, что
+неизменившееся не качается.
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ import asyncio
 import json
 import re
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import TracebackType
@@ -26,8 +30,11 @@ __all__ = [
     "ConfluenceStub",
     "LiveServer",
     "StubAttachment",
+    "StubComment",
+    "StubKind",
     "StubPage",
     "StubRoute",
+    "StubSpace",
     "Window",
 ]
 
@@ -40,8 +47,10 @@ class StubRoute(StrEnum):
     SEARCH = "search"
     SPACE = "space"
     SPACE_CONTENT = "space_content"
+    SPACE_BLOGPOSTS = "space_blogposts"
     BODY = "body"
     ATTACHMENTS = "attachments"
+    COMMENTS = "comments"
     DOWNLOAD = "download"
 
 
@@ -56,6 +65,7 @@ class StubAttachment:
     version: int = 1
     when: str = "2026-01-01T00:00:00.000Z"
     broken: bool = False
+    uploader: str = "stub.uploader"
 
     def upload(self, content: bytes, *, when: str) -> None:
         self.content = content
@@ -70,7 +80,11 @@ class StubAttachment:
         return {
             "id": self.id,
             "title": self.title,
-            "version": {"number": self.version, "when": self.when},
+            "version": {
+                "number": self.version,
+                "when": self.when,
+                "by": {"username": self.uploader, "displayName": self.uploader},
+            },
             "extensions": {"mediaType": self.media_type, "fileSize": len(self.content)},
             "_links": {
                 "download": str(download),
@@ -79,9 +93,64 @@ class StubAttachment:
         }
 
 
+class StubKind(StrEnum):
+    """Вид контента: страница или блог-запись; у каждого свой список в спейсе."""
+
+    PAGE = "page"
+    BLOGPOST = "blogpost"
+
+
+@dataclass
+class StubSpace:
+    """Спейс с именем и описанием — то, что индексатор кладёт в cfl_space."""
+
+    key: str
+    name: str = ""
+    description: str = ""
+
+
+@dataclass
+class StubComment:
+    """Комментарий к странице; версия растёт при правке текста."""
+
+    id: str
+    html: str
+    location: str = "footer"
+    version: int = 1
+    when: str = "2026-01-01T00:00:00.000Z"
+    created: str = "2026-01-01T00:00:00.000Z"
+    author: str = "stub.commenter"
+
+    def edit(self, html: str) -> None:
+        self.html = html
+        self.version += 1
+
+    def json(self, page_id: str, body_format: str) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "type": "comment",
+            "status": "current",
+            "title": f"Re: {page_id}",
+            "version": {
+                "number": self.version,
+                "when": self.when,
+                "by": {"username": self.author, "displayName": self.author},
+            },
+            "history": {
+                "createdDate": self.created,
+                "createdBy": {"username": self.author, "displayName": self.author},
+            },
+            "extensions": {"location": self.location},
+            "container": {"id": page_id},
+            "body": {body_format: {"value": self.html}},
+        }
+
+
 @dataclass
 class StubPage:
-    """Страница спейса; версия растёт при правке тела или заголовка."""
+    """Страница или блог-запись спейса; версия растёт при правке тела,
+    заголовка или меток. parent — id родительской страницы, по цепочке
+    родителей заглушка отдаёт ancestors."""
 
     id: str
     space: str
@@ -93,13 +162,29 @@ class StubPage:
     broken: bool = False
     missing: bool = False
     """Страница пропала: список её ещё отдаёт, а тело отвечает 404."""
+    kind: StubKind = StubKind.PAGE
+    parent: str = ""
+    labels: list[str] = field(default_factory=list)
+    created: str = "2026-01-01T00:00:00.000Z"
+    author: str = "stub.author"
+    editor: str = "stub.editor"
+    comments: list[StubComment] = field(default_factory=list)
 
-    def edit(self, *, html: str | None = None, title: str | None = None) -> None:
+    def edit(
+        self,
+        *,
+        html: str | None = None,
+        title: str | None = None,
+        labels: list[str] | None = None,
+    ) -> None:
         if html is not None:
             self.html = html
 
         if title is not None:
             self.title = title
+
+        if labels is not None:
+            self.labels = list(labels)
 
         self.version += 1
 
@@ -111,18 +196,37 @@ class StubPage:
         msg = f"stub page {self.id}: no attachment {title!r}"
         raise KeyError(msg)
 
-    def summary(self, *, expansion_limit: int) -> dict[str, Any]:
+    def summary(
+        self,
+        *,
+        expansion_limit: int,
+        ancestors: Sequence[dict[str, Any]] = ({"title": "Home"},),
+    ) -> dict[str, Any]:
         results: list[dict[str, Any]] = []
         for att in self.attachments[:expansion_limit]:
             results.append(att.json(self.id))
 
+        labels: list[dict[str, Any]] = []
+        for name in self.labels:
+            labels.append({"name": name})
+
         return {
             "id": self.id,
-            "type": "page",
+            "type": str(self.kind),
+            "status": "current",
             "title": self.title,
             "space": {"key": self.space},
-            "version": {"number": self.version, "when": self.when},
-            "ancestors": [{"title": "Home"}],
+            "version": {
+                "number": self.version,
+                "when": self.when,
+                "by": {"username": self.editor, "displayName": self.editor},
+            },
+            "history": {
+                "createdDate": self.created,
+                "createdBy": {"username": self.author, "displayName": self.author},
+            },
+            "ancestors": list(ancestors),
+            "metadata": {"labels": {"results": labels}},
             "children": {
                 "attachment": {
                     "results": results,
@@ -133,8 +237,10 @@ class StubPage:
             "_links": {"webui": f"/pages/{self.id}"},
         }
 
-    def body(self) -> dict[str, Any]:
-        data = self.summary(expansion_limit=0)
+    def body(
+        self, *, ancestors: Sequence[dict[str, Any]] = ({"title": "Home"},)
+    ) -> dict[str, Any]:
+        data = self.summary(expansion_limit=0, ancestors=ancestors)
         data["body"] = {"view": {"value": self.html}}
         return data
 
@@ -181,6 +287,33 @@ class ConfluenceStub:
         self.spaces: set[str] = set()
         self.archived: set[str] = set()
         """Архивные спейсы: поиск их контент не отдаёт, список спейса — отдаёт."""
+        self.described: dict[str, StubSpace] = {}
+        """Имя и описание спейса; без записи спейс называется своим ключом."""
+
+    def describe(self, space: StubSpace) -> StubSpace:
+        self.spaces.add(space.key)
+        self.described[space.key] = space
+        return space
+
+    def space_of(self, key: str) -> StubSpace:
+        if key in self.described:
+            return self.described[key]
+
+        return StubSpace(key=key, name=key)
+
+    def ancestors_of(self, page: StubPage) -> list[dict[str, Any]]:
+        """Цепочка родителей от корня к странице: id и title каждого."""
+        chain: list[dict[str, Any]] = []
+        current = page
+        while current.parent:
+            parent = self.pages.get(current.parent)
+            if parent is None:
+                break
+
+            chain.insert(0, {"id": parent.id, "title": parent.title})
+            current = parent
+
+        return chain
 
     def has_space(self, key: str) -> bool:
         """Спейс есть, если объявлен явно или в нём есть хоть одна страница."""
@@ -201,11 +334,14 @@ class ConfluenceStub:
 
         return "current"
 
-    def pages_of(self, key: str) -> list[StubPage]:
-        """Страницы спейса в порядке id — так их отдаёт список контента."""
+    def pages_of(self, key: str, kind: StubKind = StubKind.PAGE) -> list[StubPage]:
+        """Контент спейса одного вида в порядке id — так его отдаёт список."""
         found: list[StubPage] = []
         for page in self.pages.values():
             if page.space != key:
+                continue
+
+            if page.kind is not kind:
                 continue
 
             found.append(page)
@@ -229,6 +365,7 @@ class ConfluenceStub:
         self._route_space(app)
         self._route_space_content(app)
         self._route_attachments(app)
+        self._route_comments(app)
         self._route_body(app)
         self._route_download(app)
         return app
@@ -241,7 +378,12 @@ class ConfluenceStub:
             window = self._window(request, default=self.PAGE_LIMIT)
             results: list[dict[str, Any]] = []
             for page in window.of(matched):
-                results.append(page.summary(expansion_limit=self.EXPANSION_LIMIT))
+                results.append(
+                    page.summary(
+                        expansion_limit=self.EXPANSION_LIMIT,
+                        ancestors=self.ancestors_of(page),
+                    )
+                )
 
             data = self._listing(
                 results=results,
@@ -260,12 +402,14 @@ class ConfluenceStub:
             if not self.has_space(key):
                 return Response(status_code=404)
 
+            space = self.space_of(key)
             return self._json(
                 {
                     "key": key,
-                    "name": key,
+                    "name": space.name,
                     "type": "global",
                     "status": self.status_of(key),
+                    "description": {"plain": {"value": space.description}},
                 }
             )
 
@@ -273,23 +417,36 @@ class ConfluenceStub:
         @app.get("/rest/api/space/{key}/content/page")
         async def space_content(key: str, request: Request) -> Response:
             self.calls[StubRoute.SPACE_CONTENT] += 1
-            if not self.has_space(key):
-                return Response(status_code=404)
+            return self._content_listing(key, StubKind.PAGE, request)
 
-            pages = self.pages_of(key)
-            window = self._window(request, default=self.PAGE_LIMIT)
-            results: list[dict[str, Any]] = []
-            for page in window.of(pages):
-                results.append(page.summary(expansion_limit=self.EXPANSION_LIMIT))
+        @app.get("/rest/api/space/{key}/content/blogpost")
+        async def space_blogposts(key: str, request: Request) -> Response:
+            self.calls[StubRoute.SPACE_BLOGPOSTS] += 1
+            return self._content_listing(key, StubKind.BLOGPOST, request)
 
-            data = self._listing(
-                results=results,
-                window=window,
-                total=len(pages),
-                path=f"/rest/api/space/{key}/content/page",
-                request=request,
+    def _content_listing(self, key: str, kind: StubKind, request: Request) -> Response:
+        if not self.has_space(key):
+            return Response(status_code=404)
+
+        pages = self.pages_of(key, kind)
+        window = self._window(request, default=self.PAGE_LIMIT)
+        results: list[dict[str, Any]] = []
+        for page in window.of(pages):
+            results.append(
+                page.summary(
+                    expansion_limit=self.EXPANSION_LIMIT,
+                    ancestors=self.ancestors_of(page),
+                )
             )
-            return self._json(data)
+
+        data = self._listing(
+            results=results,
+            window=window,
+            total=len(pages),
+            path=f"/rest/api/space/{key}/content/{kind}",
+            request=request,
+        )
+        return self._json(data)
 
     def _route_attachments(self, app: FastAPI) -> None:
         @app.get("/rest/api/content/{page_id}/child/attachment")
@@ -317,6 +474,38 @@ class ConfluenceStub:
             )
             return self._json(data)
 
+    def _route_comments(self, app: FastAPI) -> None:
+        @app.get("/rest/api/content/{page_id}/child/comment")
+        async def comments(page_id: str, request: Request) -> Response:
+            self.calls[StubRoute.COMMENTS] += 1
+            page = self.pages.get(page_id)
+            if page is None:
+                return Response(status_code=404)
+
+            body_format = self._body_format(request)
+            window = self._window(request, default=self.ATTACHMENT_LIMIT)
+            results: list[dict[str, Any]] = []
+            for comment in window.of(page.comments):
+                results.append(comment.json(page_id, body_format))
+
+            data = self._listing(
+                results=results,
+                window=window,
+                total=len(page.comments),
+                path=f"/rest/api/content/{page_id}/child/comment",
+                request=request,
+            )
+            return self._json(data)
+
+    @staticmethod
+    def _body_format(request: Request) -> str:
+        """Формат тела из expand запроса (body.view, body.storage); без него view."""
+        for part in request.query_params.get("expand", "").split(","):
+            if part.startswith("body."):
+                return part.removeprefix("body.")
+
+        return "view"
+
     def _route_body(self, app: FastAPI) -> None:
         @app.get("/rest/api/content/{page_id}")
         async def body(page_id: str) -> Response:
@@ -328,7 +517,7 @@ class ConfluenceStub:
             if page.broken:
                 return Response(status_code=500)
 
-            return self._json(page.body())
+            return self._json(page.body(ancestors=self.ancestors_of(page)))
 
     def _route_download(self, app: FastAPI) -> None:
         @app.get("/download/attachments/{page_id}/{title}")
@@ -419,7 +608,11 @@ class LiveServer:
     STARTUP_POLL_SEC: ClassVar[float] = 0.02
 
     def __init__(self, app: FastAPI) -> None:
-        config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="error")
+        # ws="none": заглушке websocket'ы не нужны, а их реализация в uvicorn
+        # тянет legacy-модуль websockets и предупреждает об устаревании
+        config = uvicorn.Config(
+            app, host="127.0.0.1", port=0, log_level="error", ws="none"
+        )
         self._server = uvicorn.Server(config)
         self._task: asyncio.Task[None] | None = None
 

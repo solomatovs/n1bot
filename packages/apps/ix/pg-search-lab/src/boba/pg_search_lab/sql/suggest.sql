@@ -1,11 +1,18 @@
 /*
-Подсказки при наборе: сначала совпадение по префиксу имени или пути через btree
-(varchar_pattern_ops, оператор ^@), затем похожие слова через триграммы с порогом 0.4.
+Подсказки при наборе по всем происхождениям: сначала совпадение по префиксу
+идентификатора через btree (varchar_pattern_ops, оператор ^@), затем похожие слова
+через триграммы с порогом 0.4. Какие аспекты идентификаторы, а какие слова, говорит
+класс в словаре аспектов, а не имя: подсказки не знают, откуда пришла поверхность.
 Префиксные попадания получают счёт 1 и идут выше триграммных. Подсказка это текст, а не
 объект: одинаковые имена схлопнуты, число объектов в скобках.
 */
 with q as (
     select lower(%(q)s) as text
+),
+idx as (
+    select node_id, aspect, content from {schema}.pg_idx_trgm
+    union all
+    select node_id, aspect, content from {schema}.cfl_idx_trgm
 ),
 prefix as (
     select
@@ -14,9 +21,11 @@ prefix as (
         t.content,
         1.0::float8 as score
     from
-        {schema}.pg_idx_trgm t, q
+        idx t
+        join {schema}.aspect a on a.aspect = t.aspect,
+        q
     where
-        t.aspect in ('meta_name', 'meta_path')
+        a.class = 'ident'
         and lower(t.content) ^@ q.text
 ),
 fuzzy as (
@@ -26,9 +35,11 @@ fuzzy as (
         t.content,
         word_similarity(q.text, t.content) as score
     from
-        {schema}.pg_idx_trgm t, q
+        idx t
+        join {schema}.aspect a on a.aspect = t.aspect,
+        q
     where
-        t.aspect = 'meta_words'
+        a.class = 'words'
         and word_similarity(q.text, t.content) >= 0.4
 ),
 hit as (

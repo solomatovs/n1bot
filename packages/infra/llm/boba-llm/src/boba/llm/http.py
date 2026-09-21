@@ -20,7 +20,7 @@ import httpx
 
 from boba.chat.http import HttpConfig
 from boba.chat.provider import ChatProviderError
-from boba.llm.dump import DumpingTransport
+from boba.transport.http.dump import DumpingTransport
 
 logger = logging.getLogger(__name__)
 

@@ -15,16 +15,11 @@ from typing import Any, ClassVar
 import psycopg
 import pytest
 from psycopg import sql
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict
 
-from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.profile import PostgresConfig
-from boba.krb import KerberosWorkspaceConfig
-from boba.pg_ix_core import main as core
-from boba.pg_ix_core.database import IxDatabase
 from boba.pg_ix_core.schema_name import SchemaName
-from boba.pg_ix_core.upgrade import SchemaUpgrade
 from boba.pg_meta_scraper import worker as scraper
 from boba.pg_meta_scraper.worker import (
     ApplyRow,
@@ -34,17 +29,13 @@ from boba.pg_meta_scraper.worker import (
     VersionGate,
     WorkerConfig,
 )
-from boba.runtime.config import ConfigLocator
-from boba.stand.site import StandLayers
+from boba.stand.ix import IxStand as SharedIxStand
+from boba.stand.ix import IxStandDatabase as SharedIxStandDatabase
+from boba.stand.ix import IxStandError
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 PACKAGE_DIR = Path(scraper.__file__).resolve().parent
-CORE_SCHEMA_DIR = Path(core.__file__).resolve().parent / "schema"
 STAND_DIR = Path(__file__).resolve().parent / "stand"
-
-
-class IxStandError(Exception):
-    """Конфиг стенда скрапера недоступен или неполон."""
 
 
 class StandFile(StrEnum):
@@ -84,42 +75,10 @@ class IxSource(BaseModel):
         return SourceAddress.of(self.postgres).host
 
 
-class IxStand(BaseModel):
-    """Секция [ix_stand]: служебное подключение к серверу ix, имя базы прогонов,
-    схема графа, kerberos-каталог и список источников."""
+class IxStand(SharedIxStand):
+    """Секция [ix_stand] скрапера: общий стенд ix плюс список источников."""
 
-    model_config = ConfigDict(frozen=True)
-
-    SECTION: ClassVar[str] = "ix_stand"
-
-    postgres: PostgresConfig
-    krb: KerberosWorkspaceConfig
-    database: str
-    db_schema: str
     sources: Sequence[IxSource]
-
-    @classmethod
-    def load(cls) -> IxStand:
-        path = ConfigLocator.path()
-        stand_path = path.parent / StandLayers.FILE
-        if not stand_path.is_file():
-            raise IxStandError(f"ix stand: {stand_path} not found")
-
-        raw = StandLayers.compose(path)
-
-        try:
-            return bind(raw, path=cls.SECTION, model=cls)
-        except ValidationError as exc:
-            raise IxStandError(
-                f"ix stand: [{cls.SECTION}] in {stand_path}: {exc}"
-            ) from exc
-
-    @classmethod
-    def required(cls) -> IxStand:
-        try:
-            return cls.load()
-        except IxStandError as exc:
-            pytest.skip(str(exc), allow_module_level=True)
 
     def source(self, name: str) -> IxSource:
         for item in self.sources:
@@ -127,18 +86,6 @@ class IxStand(BaseModel):
                 return item
         raise IxStandError(
             f"ix stand: source {name!r} is not listed in [{self.SECTION}]"
-        )
-
-    @property
-    def ix_profile(self) -> PostgresConfig:
-        """Профиль базы прогонов на сервере ix."""
-        return self.postgres.model_copy(update={"dbname": self.database})
-
-    @property
-    def ix_database(self) -> IxDatabase:
-        """Секция базы ix глазами пакетов: схема, профиль базы прогонов, kerberos."""
-        return IxDatabase(
-            db_schema=self.db_schema, postgres=self.ix_profile, krb=self.krb
         )
 
 
@@ -238,29 +185,16 @@ class Golden:
         return self._by_name[name]
 
 
-class IxStandDatabase:
-    """База ix стенда: пересоздаётся с ядром пакета pg-ix-core и схемой
-    пакета."""
+class IxStandDatabase(SharedIxStandDatabase):
+    """База ix стенда скрапера: общее пересоздание плюс инварианты, отпечатки и
+    прогон скрапера."""
 
     def __init__(self, stand: IxStand) -> None:
+        super().__init__(stand)
         self._stand = stand
 
-    async def recreate(self) -> None:
-        async with await AsyncPostgresPool.dedicated(self._stand.postgres) as conn:
-            await conn.execute(
-                sql.SQL("drop database if exists {} with (force)").format(
-                    sql.Identifier(self._stand.database)
-                )
-            )
-            await conn.execute(
-                sql.SQL("create database {}").format(
-                    sql.Identifier(self._stand.database)
-                )
-            )
-
-        database = self._stand.ix_database
-        await SchemaUpgrade(CORE_SCHEMA_DIR, requires_core=False).run(database)
-        await SchemaUpgrade(PACKAGE_DIR / StandFile.SCHEMA_DIR).run(database)
+    async def recreate_for_scraper(self) -> None:
+        await self.recreate([PACKAGE_DIR / StandFile.SCHEMA_DIR])
 
     async def invariants(self) -> dict[str, int]:
         """Инварианты структуры, у которых счётчик не ноль."""
@@ -322,7 +256,7 @@ def ix_stand() -> IxStand:
 @pytest.fixture(scope="session")
 async def ix_database(ix_stand: IxStand) -> IxStandDatabase:
     database = IxStandDatabase(ix_stand)
-    await database.recreate()
+    await database.recreate_for_scraper()
     return database
 
 

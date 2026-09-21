@@ -13,7 +13,9 @@ import asyncio
 import logging
 import os
 import threading
+import warnings
 from collections.abc import Sequence
+from importlib.metadata import PackageNotFoundError, version
 from typing import Annotated, ClassVar, Literal
 
 import httpx
@@ -129,13 +131,24 @@ class LocalFastEmbedEmbedder(Embedder[str]):
     процессе, который модель загрузил сам.
     """
 
+    DISTRIBUTION: ClassVar[str] = "fastembed"
+    POOLING_WARNING: ClassVar[str] = "now uses mean pooling instead of CLS embedding"
+    """Сообщение fastembed о смене пулинга у моделей e5: проект работает на
+    текущем пулинге, поэтому предупреждение гасится, а версия пакета уходит в
+    лог. Вектор, посчитанный другой версией fastembed, с нынешним запросом
+    несравним, и по логу видно, какой версией наполнен индекс."""
+
     def __init__(self, cfg: LocalEmbedding) -> None:
         imports = Elapsed()
         from fastembed import (  # noqa: PLC0415 # pyright: ignore[reportMissingImports]
             TextEmbedding,
         )
 
-        logger.info("embedder: fastembed imported in %dms", imports.ms())
+        logger.info(
+            "embedder: fastembed %s imported in %dms",
+            self._fastembed_version(),
+            imports.ms(),
+        )
 
         # размер пула onnxruntime берёт из маски доступных ядер, а её
         # выставляет запуск по cgroup-квоте профиля
@@ -144,10 +157,14 @@ class LocalFastEmbedEmbedder(Embedder[str]):
 
         load = Elapsed()
         self._model_name = cfg.model
-        self._model = TextEmbedding(
-            model_name=cfg.model,
-            cache_dir=cfg.cache_dir,
-        )
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", message=f".*{self.POOLING_WARNING}.*", category=UserWarning
+            )
+            self._model = TextEmbedding(
+                model_name=cfg.model,
+                cache_dir=cfg.cache_dir,
+            )
         logger.info("embedder: %s loaded in %dms", cfg.model, load.ms())
 
         self._dim = cfg.dim
@@ -158,6 +175,15 @@ class LocalFastEmbedEmbedder(Embedder[str]):
         # захваченный в момент fork замок остался бы захваченным в ребёнке
         # навсегда: владелец в ребёнка не переносится
         os.register_at_fork(after_in_child=self._reset_lock)
+
+    @classmethod
+    def _fastembed_version(cls) -> str:
+        """Версия пакета, которым посчитан индекс; в тестах модуль подменён
+        заглушкой, и дистрибутива может не быть."""
+        try:
+            return version(cls.DISTRIBUTION)
+        except PackageNotFoundError:
+            return "unknown"
 
     def _reset_lock(self) -> None:
         self._lock = threading.Lock()

@@ -1,7 +1,9 @@
-"""Разбор HTML для тел инструментов: недоверенную разметку разбирают только здесь.
+"""Разбор HTML Confluence и конверсия в markdown: недоверенную разметку
+разбирают только здесь.
 
-Модуль импортируется телами инструментов, работающими в песочнице; в процесс
-приложения bs4/markdownify не попадают.
+Модуль закрыт extra `html` пакета (bs4, markdownify): тела инструментов
+импортируют его в песочнице, индексатор — у себя в процессе; приложение
+чата его не импортирует.
 
 Ошибки: ожидаемых нет. bs4 и markdownify не отказывают на битой разметке —
 они её восстанавливают, поэтому любая ошибка здесь означает дефект кода.
@@ -18,13 +20,16 @@ from bs4 import BeautifulSoup
 from bs4.element import NavigableString, Tag
 
 from boba.confluence.models import (
+    LinkKind,
     PageCardSection,
     PageHref,
+    PageLink,
     PageOutlineItem,
     PageParseRequest,
     PageSection,
     PageSections,
     PageTableSection,
+    PageTarget,
     PageTextSection,
     TableShape,
 )
@@ -208,6 +213,68 @@ class ConfluenceHtml:
         return tuple(titles)
 
     @classmethod
+    def collect_targets(
+        cls,
+        soup: BeautifulSoup,
+        *,
+        page_id: str,
+        title: str,
+    ) -> tuple[PageLink, ...]:
+        """Цели ссылок на другие страницы с видом записи — для рёбер графа.
+
+        Повторы, ссылки на саму страницу и короткие /x/<код> без id и заголовка
+        отброшены.
+        """
+        own = PageTarget(page_id=page_id, title=title)
+        links: list[PageLink] = []
+        seen: set[tuple[str, str]] = set()
+
+        for node in soup.find_all(str(HtmlTag.PAGE_REF)):
+            if not isinstance(node, Tag):
+                continue
+
+            target = PageTarget(title=cls._attr(node, HtmlAttr.CONTENT_TITLE))
+            link = PageLink(target=target, kind=LinkKind.MACRO)
+            cls._append_target(links, seen, link, own)
+
+        for node in soup.find_all(str(HtmlTag.ANCHOR)):
+            if not isinstance(node, Tag):
+                continue
+
+            target = PageHref.parse(cls._attr(node, HtmlAttr.HREF))
+            if target is None:
+                continue
+
+            kind = LinkKind.TITLE
+            if target.page_id:
+                kind = LinkKind.ID
+
+            cls._append_target(links, seen, PageLink(target=target, kind=kind), own)
+
+        return tuple(links)
+
+    @staticmethod
+    def _append_target(
+        links: list[PageLink],
+        seen: set[tuple[str, str]],
+        link: PageLink,
+        own: PageTarget,
+    ) -> None:
+        target = link.target
+        if not target.page_id and not target.title:
+            return
+
+        if target.is_page(page_id=own.page_id, title=own.title):
+            return
+
+        key = (target.page_id, target.title)
+        if key in seen:
+            return
+
+        seen.add(key)
+        links.append(link)
+
+    @classmethod
     def _link_label(cls, node: Tag, *, page_id: str, title: str) -> str:
         """Подпись ссылки на другую страницу или пустая строка."""
         target = PageHref.parse(cls._attr(node, HtmlAttr.HREF))
@@ -367,10 +434,19 @@ class PageOps:
     """Теги, задающие раскладку страницы: заголовок открывает секцию,
     таблица идёт отдельной записью."""
 
+    ESCAPE: ClassVar[str] = "escape"
+    """Ключ запроса: экранировать ли `_` и `*` в тексте. Для чтения человеком
+    да (по умолчанию), для текста индекса нет: идентификаторы вида dm.order_lines
+    обязаны остаться как есть."""
+
     @staticmethod
     def to_markdown(request: dict[str, Any]) -> dict[str, Any]:
+        escape = bool(request.get(PageOps.ESCAPE, True))
         markdown = markdownify.markdownify(
-            request["html"], heading_style=request["heading_style"]
+            request["html"],
+            heading_style=request["heading_style"],
+            escape_underscores=escape,
+            escape_asterisks=escape,
         )
         return {"markdown": markdown}
 

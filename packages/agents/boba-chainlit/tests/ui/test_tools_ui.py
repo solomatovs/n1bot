@@ -28,7 +28,9 @@ from chat_ui import ChatOpener
 
 from boba.canvas.diagram import DiagramPrompt
 from boba.config import bind
+from boba.confluence.html import PageOps
 from boba.confluence.parsing import ConfluenceJson
+from boba.confluence.rest import ConfluenceRest
 from boba.liteparse.engine import LiteParseEngine
 from boba.runtime.config import AppLayers
 from boba.stand.site import Stand
@@ -48,8 +50,6 @@ from boba.stand.ui.stand import (
 from boba.text.document import LiteParseParams
 from boba.text.grep import GrepLimits, TextGrep
 from boba.tool.canvas.tools import CanvasPrompt
-from boba.tool.confluence.html import PageOps
-from boba.tool.confluence.request_sources import ConfluenceRest
 from boba.tool.confluence.tools import ConfluenceToolsConfig, CqlSearch
 from boba.toolkit.result import (
     CanvasResult,
