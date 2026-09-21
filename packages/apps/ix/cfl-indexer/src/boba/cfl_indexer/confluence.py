@@ -1,6 +1,6 @@
-"""Чтение Confluence для индексатора: спейс, списки страниц и блог-записей без тел,
-тело контента и его преобразование в текст индекса, список и скачивание вложений,
-комментарии страницы с телами.
+"""Чтение Confluence для индексатора: выбор спейсов по маскам, спейс, списки страниц
+и блог-записей без тел, тело контента и его преобразование в текст индекса, список и
+скачивание вложений, комментарии страницы с телами.
 
 Правило текстовых аспектов: хэш от оригинала, индекс от преобразования. content_hash
 считается от исходного HTML body.view как он пришёл (у вложения — от байтов файла,
@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import ClassVar, Self
 
 import httpx
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from boba.confluence.html import ConfluenceHtml, PageOps
 from boba.confluence.models import (
@@ -31,12 +31,15 @@ from boba.confluence.models import (
     ConfluencePayloadError,
     ConfluenceSpaceItem,
     PageLink,
+    SpaceMask,
 )
 from boba.confluence.rest import (
     ConfluenceConnection,
     ConfluencePaginator,
     ConfluenceRest,
     ContentType,
+    SpaceStatus,
+    SpaceType,
 )
 from boba.indexing import TransportError
 from boba.transport.http import CancellableHttpTransport, HttpRequest
@@ -50,6 +53,7 @@ __all__ = [
     "ContentSummary",
     "SpaceDocument",
     "SpaceReader",
+    "SpaceSelector",
     "TextOf",
 ]
 
@@ -94,6 +98,21 @@ class AttachmentSummary(BaseModel):
             updated_at=Stamp.parse(item.version.when, f"{where}: version.when"),
             author=Stamp.user(item.version.by.username, item.version.by.display_name),
         )
+
+
+class SpaceSelector(BaseModel):
+    """Какие спейсы источника обходить: маски ключей, вид спейса и брать ли
+    архивные. Список ключей без glob-символов берётся как есть, и список
+    спейсов с сервера для него не запрашивается."""
+
+    model_config = ConfigDict(frozen=True)
+
+    masks: Sequence[str] = Field(min_length=1)
+    type: SpaceType
+    archived: bool
+
+    def mask(self) -> SpaceMask:
+        return SpaceMask.of_masks(self.masks)
 
 
 class SpaceDocument(BaseModel):
@@ -383,6 +402,32 @@ class SpaceReader:
             ) from exc
 
         return digest.hexdigest()
+
+    async def space_keys(self, selector: SpaceSelector) -> list[str]:
+        """Ключи спейсов обхода: перечисление как есть или обход списка сервера
+        с отбором по маскам, виду и состоянию."""
+        mask = selector.mask()
+        if not mask.has_wildcard:
+            return list(mask.keys())
+
+        url = ConfluenceRest.space_list_path(selector.type)
+        keys: list[str] = []
+        try:
+            async for item in self._paginator(url, ConfluenceSpaceItem):
+                if not item.key:
+                    continue
+
+                if not selector.archived and item.status == SpaceStatus.ARCHIVED:
+                    continue
+
+                if not mask.matches(item):
+                    continue
+
+                keys.append(item.key)
+        except (TransportError, ConfluencePayloadError) as exc:
+            raise ConfluenceReadError(f"confluence space list: {exc}") from exc
+
+        return keys
 
     async def space(self, key: str) -> SpaceDocument:
         try:

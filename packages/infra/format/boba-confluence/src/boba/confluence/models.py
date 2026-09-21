@@ -69,6 +69,7 @@ __all__ = [
     "PageTarget",
     "PageTextSection",
     "ParseGrade",
+    "SpaceMask",
     "TableShape",
 ]
 
@@ -479,6 +480,56 @@ class AttachmentFilter:
             return True
         title = att.title.lower()
         return any(fnmatchcase(title, p.lower()) for p in self.title_patterns)
+
+
+@dataclass(frozen=True, slots=True)
+class SpaceMask:
+    """Маски выбора спейсов: ключ как есть или glob по ключу и названию.
+
+    Список без glob-символов это перечисление ключей, и список спейсов с
+    сервера для него не нужен; маска со звёздочкой требует обхода списка,
+    поэтому вызывающий спрашивает has_wildcard до запроса.
+    """
+
+    GLOB_MARKS: ClassVar[str] = "*?["
+
+    patterns: tuple[str, ...] = ()
+
+    @classmethod
+    def of_masks(cls, masks: Iterable[str]) -> SpaceMask:
+        patterns: list[str] = []
+        for item in masks:
+            cleaned = item.strip()
+            if cleaned:
+                patterns.append(cleaned)
+
+        return cls(patterns=tuple(patterns))
+
+    @property
+    def has_wildcard(self) -> bool:
+        for pattern in self.patterns:
+            if any(mark in pattern for mark in self.GLOB_MARKS):
+                return True
+
+        return False
+
+    def keys(self) -> tuple[str, ...]:
+        """Маски как ключи: годится, только когда has_wildcard ложно."""
+        return self.patterns
+
+    def matches(self, space: ConfluenceSpaceItem) -> bool:
+        """Совпадение по ключу или названию целиком, без учёта регистра."""
+        key = space.key.lower()
+        name = space.name.lower()
+        for pattern in self.patterns:
+            lowered = pattern.lower()
+            if fnmatchcase(key, lowered):
+                return True
+
+            if fnmatchcase(name, lowered):
+                return True
+
+        return False
 
 
 class AttachmentVerdict(StrEnum):

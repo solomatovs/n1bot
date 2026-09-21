@@ -6,7 +6,7 @@ from typing import Any, ClassVar
 
 import pytest
 
-from boba.confluence.rest import ConfluenceRest
+from boba.confluence.rest import ConfluenceRest, SpaceType
 from boba.tool.confluence.tools import TOOLS as CONFLUENCE_TOOLS
 from boba.tool.confluence.tools import (
     ConfluenceToolsConfig,
@@ -76,7 +76,9 @@ class TestSpaceList:
     }
 
     def test_row_carries_the_space_url(self) -> None:
-        [space, _] = SpaceList.items(self.ANSWER, ConfluenceRest.space_list_path("any"))
+        [space, _] = SpaceList.items(
+            self.ANSWER, ConfluenceRest.space_list_path(SpaceType.ANY)
+        )
 
         row = SpaceList.row(space, self.PROFILE)
 
@@ -86,7 +88,9 @@ class TestSpaceList:
             raise AssertionError(f"unexpected row: {row}")
 
     def test_space_without_webui_falls_back_to_the_service_root(self) -> None:
-        [_, bare] = SpaceList.items(self.ANSWER, ConfluenceRest.space_list_path("any"))
+        [_, bare] = SpaceList.items(
+            self.ANSWER, ConfluenceRest.space_list_path(SpaceType.ANY)
+        )
 
         row = SpaceList.row(bare, self.PROFILE)
 
@@ -94,7 +98,9 @@ class TestSpaceList:
             raise AssertionError(f"unexpected url: {row}")
 
     def test_pattern_matches_key_or_name(self) -> None:
-        [space, _] = SpaceList.items(self.ANSWER, ConfluenceRest.space_list_path("any"))
+        [space, _] = SpaceList.items(
+            self.ANSWER, ConfluenceRest.space_list_path(SpaceType.ANY)
+        )
 
         if not SpaceList.matches(space, None):
             raise AssertionError("no pattern takes every space")
@@ -111,5 +117,5 @@ class TestSpaceList:
         with pytest.raises(confluence_tools.ConfluenceRequestError, match="space"):
             confluence_tools.SpaceList.items(
                 {"results": [{"name": "no key here"}]},
-                ConfluenceRest.space_list_path("any"),
+                ConfluenceRest.space_list_path(SpaceType.ANY),
             )

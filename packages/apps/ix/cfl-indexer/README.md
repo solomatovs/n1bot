@@ -30,14 +30,21 @@ worker.py      конфиг, обход спейса, воркеры, CLI
 эмбеддинга (`cache_dir`, `model`, `dim`, `chunk_tokens`, `chunk_overlap`), список
 `sources` — по записи на сервер Confluence с именем, `spaces` и endpoint
 (`confluence.profile` — web-профиль с auth или без, `confluence.body_format`,
-`confluence.dump` — дамп HTTP-обмена), `workers`, вложения (`attachments` — маски
-имён и media-type, `text_encodings`, `ocr_enabled`, `ocr_language`, `tessdata_path`,
-`max_pages`, `num_workers` OCR) и `weights` полнотекста по имени аспекта.
+`confluence.dump` — дамп HTTP-обмена), `parallel_spaces` — сколько спейсов идёт
+одновременно, вложения (`attachments` — маски имён и media-type, `text_encodings`),
+таблица `parser` с настройками liteparse (`ocr_enabled`, `ocr_language`,
+`tessdata_path`, `max_pages`, `num_workers` — потоки OCR) и `weights` полнотекста по
+имени аспекта. Параметры парсера лежат своей таблицей не для красоты: у liteparse
+своя пара параллелизма, и рядом с `parallel_spaces` она читалась бы как то же самое.
 
 ```toml
 [[ix.cfl_indexer.sources]]
-    name   = "cwiki"
-    spaces = ["ATTIC", "BVAL"]
+    name = "cwiki"
+
+    [ix.cfl_indexer.sources.spaces]
+        masks    = ["ATTIC", "BVAL"]
+        type     = "global"
+        archived = false
 
     [ix.cfl_indexer.sources.confluence.profile]
         scheme = "https"
@@ -45,6 +52,21 @@ worker.py      конфиг, обход спейса, воркеры, CLI
         port   = 443
         path   = "/confluence"
 ```
+
+## Какие спейсы обходить
+
+Выбор спейсов источника задаёт таблица `spaces`: `masks` — ключи или glob-маски,
+`type` — `global`, `personal` или `any`, `archived` — брать ли архивные спейсы.
+
+Маска без glob-символов это ключ спейса как есть: список спейсов с сервера не
+запрашивается, и спейс читается по адресу, даже если в списке его не видно.
+Маска со звёздочкой разворачивается обходом `/rest/api/space`: подходят спейсы, у
+которых ключ или название целиком совпали с маской (без учёта регистра), с учётом
+`type` и `archived`. Поэтому `masks = ["*"]` — это «все доступные спейсы», а
+`masks = ["DWH*", "Каталог данных"]` — отбор по ключу и по названию.
+
+Архивные спейсы читаются штатно: обход идёт списком контента спейса, а не поиском,
+которому архив невиден. Брать их или нет — решает `archived`.
 
 ## Запуск
 
@@ -58,9 +80,10 @@ worker.py      конфиг, обход спейса, воркеры, CLI
 правок конфига и кода; вектор при этом всё равно пересчитывает только аспекты, чей
 текст изменился.
 
-Один спейс обрабатывает один воркер строго последовательно; `workers` — сколько спейсов
-идёт параллельно, каждому нужно своё соединение, поэтому `postgres.pool.max_size` не
-меньше `workers`. Эмбеддер один на процесс.
+Один спейс обрабатывает один воркер строго последовательно; `parallel_spaces` — сколько
+спейсов идёт одновременно, каждому нужно своё соединение, поэтому
+`postgres.pool.max_size` не меньше `parallel_spaces`. Эмбеддер один на процесс, потоки
+OCR задаёт `parser.num_workers`.
 
 ## Что делает обход
 

@@ -15,7 +15,8 @@
 
 Ошибки:
 IndexerWorkerError — Confluence или база ix недоступны, ответ не того вида, что
-    ожидался, или конфиг противоречив (workers больше пула). Файл вложения, который
+    ожидался, или конфиг противоречив (спейсов в полёте больше, чем соединений в
+    пуле). Файл вложения, который
     не разобран, в ошибку не превращается: он считается в failed отчёта спейса.
 AspectEmbeddingError — модель, чанкер или провайдер эмбеддингов.
 """
@@ -47,6 +48,7 @@ from boba.cfl_indexer.confluence import (
     ContentSummary,
     SpaceDocument,
     SpaceReader,
+    SpaceSelector,
     TextOf,
 )
 from boba.cfl_indexer.documents import AttachmentText, DocumentTextError, TextParams
@@ -97,13 +99,13 @@ class IndexerWorkerError(Exception):
 
 class ConfluenceSource(BaseModel):
     """Один сервер Confluence и его спейсы: endpoint (профиль с auth или без,
-    формат тела, дамп) и список ключей."""
+    формат тела, дамп) и выбор спейсов масками."""
 
     model_config = ConfigDict(frozen=True)
 
     name: str = Field(min_length=1)
     confluence: ConfluenceConnection
-    spaces: Sequence[str] = Field(min_length=1)
+    spaces: SpaceSelector
 
 
 class SpaceTarget(BaseModel):
@@ -115,14 +117,20 @@ class SpaceTarget(BaseModel):
     key: str
 
 
-class IndexerConfig(IxDatabase, EmbeddingParams, LiteParseParams):
-    """Секция [ix.cfl_indexer]: база ix, модель, парсер вложений (LiteParseParams:
-    ocr_enabled, ocr_language, tessdata_path, max_pages, num_workers), источники
-    Confluence со спейсами, воркеры, маски вложений, кодировки текстовых файлов и
-    веса полнотекста."""
+class IndexerConfig(IxDatabase, EmbeddingParams):
+    """Секция [ix.cfl_indexer]: база ix, модель эмбеддинга, источники Confluence
+    со спейсами, сколько спейсов идёт параллельно, маски вложений, кодировки
+    текстовых файлов, таблица parser с настройками liteparse и веса полнотекста.
+
+    Настройки парсера лежат своей таблицей, а не рядом с настройками прогона:
+    у liteparse своя пара параллелизма (parser.num_workers — потоки OCR), и в
+    одном уровне она путалась бы с parallel_spaces.
+    """
 
     sources: Sequence[ConfluenceSource] = Field(min_length=1)
-    workers: int = Field(ge=1, default=1)
+    parallel_spaces: int = Field(ge=1, default=1)
+    """Сколько спейсов обходится одновременно; каждому нужно своё соединение."""
+    parser: LiteParseParams
     attachments: Sequence[str] = ()
     """Маски взятых вложений: имя файла или media-type со слэшем; пусто — все."""
     text_encodings: Sequence[str] = Field(min_length=1, default=("utf-8",))
@@ -130,7 +138,9 @@ class IndexerConfig(IxDatabase, EmbeddingParams, LiteParseParams):
 
     def text_params(self) -> TextParams:
         return TextParams(
-            masks=self.attachments, encodings=self.text_encodings, liteparse=self
+            masks=self.attachments,
+            encodings=self.text_encodings,
+            liteparse=self.parser,
         )
 
     def source(self, name: str) -> ConfluenceSource:
@@ -143,8 +153,8 @@ class IndexerConfig(IxDatabase, EmbeddingParams, LiteParseParams):
             f"source {name!r} is not listed in the config, known sources: {known}"
         )
 
-    def targets(self, source_name: str, space_key: str) -> list[SpaceTarget]:
-        """Спейсы прогона: все, одного источника или один спейс одного источника."""
+    def selected(self, source_name: str, space_key: str) -> list[ConfluenceSource]:
+        """Источники прогона; один спейс задаётся только одному источнику."""
         sources = list(self.sources)
         if source_name:
             sources = [self.source(source_name)]
@@ -155,28 +165,20 @@ class IndexerConfig(IxDatabase, EmbeddingParams, LiteParseParams):
                 f"{len(sources)} sources"
             )
 
-        targets: list[SpaceTarget] = []
-        for source in sources:
-            keys = list(source.spaces)
-            if space_key:
-                keys = [space_key]
-
-            for key in keys:
-                targets.append(SpaceTarget(source=source, key=key))
-
-        return targets
+        return sources
 
     @model_validator(mode="after")
-    def _workers_fit_pool(self) -> Self:
-        """Каждому воркеру нужно своё соединение; пул без потолка подходит любому."""
+    def _spaces_fit_pool(self) -> Self:
+        """Каждому спейсу в полёте нужно своё соединение; пул без потолка подходит
+        любому числу."""
         ceiling = self.postgres.pool.max_size
         if ceiling is None:
             return self
 
-        if self.workers > ceiling:
+        if self.parallel_spaces > ceiling:
             raise ValueError(
-                f"workers = {self.workers} needs postgres.pool.max_size >= "
-                f"{self.workers}, got {ceiling}"
+                f"parallel_spaces = {self.parallel_spaces} needs "
+                f"postgres.pool.max_size >= {self.parallel_spaces}, got {ceiling}"
             )
 
         return self
@@ -209,9 +211,9 @@ class IndexerHash:
             "weights": dict(sorted(cfg.weights.items())),
             "attachments": list(cfg.attachments),
             "text_encodings": list(cfg.text_encodings),
-            "ocr_enabled": cfg.ocr_enabled,
-            "ocr_language": cfg.ocr_language,
-            "max_pages": cfg.max_pages,
+            "ocr_enabled": cfg.parser.ocr_enabled,
+            "ocr_language": cfg.parser.ocr_language,
+            "max_pages": cfg.parser.max_pages,
         }
         encoded = json.dumps(material, sort_keys=True, ensure_ascii=False)
 
@@ -747,13 +749,14 @@ class IndexerWorker:
         self._embedding = AspectEmbedding(cfg, cfg.db_schema, str(TableName.EMB))
         self._texts = AttachmentText(cfg.text_params())
 
-    async def run(self, targets: Sequence[SpaceTarget]) -> list[SpaceReport]:
+    async def run(self, *, source: str = "", space: str = "") -> list[SpaceReport]:
         try:
+            targets = await self._targets(source, space)
             async with IxPool.opened(self._cfg) as pool:
                 async with pool.connection() as conn:
                     sql_files = await self._sql_files(conn)
 
-                limit = asyncio.Semaphore(self._cfg.workers)
+                limit = asyncio.Semaphore(self._cfg.parallel_spaces)
                 tasks: list[asyncio.Task[SpaceReport]] = []
                 for target in targets:
                     tasks.append(
@@ -768,6 +771,24 @@ class IndexerWorker:
         except psycopg.Error as exc:
             msg = f"ix database {self._cfg.postgres.where()}: {exc}"
             raise IndexerWorkerError(msg) from exc
+
+    async def _targets(self, source_name: str, space_key: str) -> list[SpaceTarget]:
+        """Спейсы прогона: маска без glob-символов это перечисление ключей,
+        маска со звёздочкой разворачивается списком спейсов сервера."""
+        targets: list[SpaceTarget] = []
+        for source in self._cfg.selected(source_name, space_key):
+            if space_key:
+                targets.append(SpaceTarget(source=source, key=space_key))
+                continue
+
+            async with SpaceReader(source.confluence) as reader:
+                keys = await reader.space_keys(source.spaces)
+
+            logger.info("source %s: %d space(s) to walk", source.name, len(keys))
+            for key in keys:
+                targets.append(SpaceTarget(source=source, key=key))
+
+        return targets
 
     async def _space(
         self,
@@ -909,9 +930,8 @@ def main() -> None:
             return
 
         cfg = bind_section(args.config, Cli.SECTION, IndexerConfig)
-        targets = cfg.targets(args.source, args.space)
         worker = IndexerWorker(cfg, package_dir / "run", reindex=args.reindex)
-        reports = asyncio.run(worker.run(targets))
+        reports = asyncio.run(worker.run(source=args.source, space=args.space))
         failed = 0
         for report in reports:
             failed += report.failed

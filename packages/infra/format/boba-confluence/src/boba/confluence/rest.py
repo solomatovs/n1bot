@@ -33,7 +33,6 @@ from boba.confluence.models import (
     ConfluenceKeys,
     ConfluenceMarks,
     ConfluencePayloadError,
-    ConfluenceSpaceItem,
     ParseGrade,
 )
 from boba.confluence.parsing import ConfluenceJson
@@ -57,6 +56,8 @@ __all__ = [
     "ConfluenceRest",
     "ConfluenceUrl",
     "ContentType",
+    "SpaceStatus",
+    "SpaceType",
 ]
 
 logger = logging.getLogger(__name__)
@@ -140,6 +141,22 @@ class ContentType(StrEnum):
 
     PAGE = "page"
     BLOGPOST = "blogpost"
+
+
+class SpaceType(StrEnum):
+    """Вид спейса в параметре type списка спейсов."""
+
+    GLOBAL = "global"
+    PERSONAL = "personal"
+    ANY = "any"
+
+
+class SpaceStatus(StrEnum):
+    """Состояние спейса в ответе списка: у архивного контент читается, но поиск
+    Confluence его не отдаёт."""
+
+    CURRENT = "current"
+    ARCHIVED = "archived"
 
 
 class ConfluenceRest:
@@ -257,14 +274,14 @@ class ConfluenceRest:
 
     @staticmethod
     def space_list_path(
-        space_type: str,
+        space_type: SpaceType,
         *,
         expand: str | None = None,
         limit: int = DEFAULT_PAGE_LIMIT,
     ) -> httpx.URL:
         params: dict[str, object] = {"limit": limit, "start": 0}
-        if space_type != "any":
-            params["type"] = space_type
+        if space_type is not SpaceType.ANY:
+            params["type"] = str(space_type)
 
         if expand:
             params["expand"] = expand
@@ -448,17 +465,3 @@ class ConfluencePaginator:
 
     async def __aexit__(self, exc_type, exc, tb):
         await self._http.close()
-
-    @classmethod
-    async def discover_spaces(
-        cls,
-        conn: ConfluenceConnection,
-        space_type: str,
-    ) -> AsyncIterator[str]:
-        async with cls(conn) as paginator:
-            async for item in paginator(
-                ConfluenceRest.space_list_path(space_type),
-                ConfluenceSpaceItem,
-            ):
-                if item.key:
-                    yield item.key
