@@ -7,6 +7,7 @@ pythonpath = [
     "packages/infra/format/boba-kbdoc/src",
     "packages/infra/format/boba-liteparse/src",
     "packages/infra/format/boba-text/src",
+    "packages/infra/format/boba-doc/src",
     "packages/infra/llm/boba-llm/src",
     "packages/infra/transport/boba-transport-http/src",
     "packages/infra/db/boba-db-postgres/src",
@@ -82,6 +83,7 @@ extraPaths = [
     "packages/infra/format/boba-kbdoc/src",
     "packages/infra/format/boba-liteparse/src",
     "packages/infra/format/boba-text/src",
+    "packages/infra/format/boba-doc/src",
     "packages/infra/llm/boba-llm/src",
     "packages/infra/transport/boba-transport-http/src",
     "packages/infra/db/boba-db-postgres/src",
@@ -232,6 +234,7 @@ boba-confluence     = { workspace = true }
 boba-kbdoc          = { workspace = true }
 boba-liteparse      = { workspace = true }
 boba-text           = { workspace = true }
+boba-doc            = { workspace = true }
 boba-transport-http = { workspace = true }
 boba-db-postgres    = { workspace = true }
 boba-db-pgvector    = { workspace = true }
@@ -258,6 +261,7 @@ dev = [
     "pyright>=1.1.400",
     "playwright>=1.40",
     "boba-liteparse",
+    "boba-doc[ocr]",
     "markdownify>=0.11,<1.0",
     "beautifulsoup4>=4.12",
     "lxml>=5.0",

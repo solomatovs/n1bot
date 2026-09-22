@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-doc"
+version = "0.0.22.dev1"
+description = "Boba doc: чтение документов по форматам (pdf, docx, xlsx, pptx, xls, rtf, текст, картинки) окнами страниц из потока без seek; OCR сканов и картинок моделями PP-OCR."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "openpyxl>=3.1,<4",
+    "pillow>=10",
+    "pydantic>=2.10,<2.11",
+    "pypdfium2>=5,<6",
+    "python-docx>=1.2,<2",
+    "python-pptx>=1,<2",
+    "striprtf>=0.0.29,<1",
+    "xlrd>=2,<3",
+]
+
+[project.optional-dependencies]
+ocr = [
+    "numpy>=1.26",
+    "onnxruntime>=1.20",
+    "rapidocr>=3.9,<4",
+]
+dev = [
+    "boba-stand==0.0.22.dev1",
+    "pytest>=8",
+    "xlwt>=1.3",
+]
+
+[tool.boba.extras]
+"boba.doc.ocr" = "ocr"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true
