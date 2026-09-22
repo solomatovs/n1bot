@@ -17,19 +17,18 @@ from psycopg import sql
 from pydantic import BaseModel, ConfigDict
 
 from boba.ch_meta_scraper import worker as scraper
-from boba.ch_meta_scraper.worker import (
-    ApplyRow,
-    ChSource,
-    ScrapeWorker,
-    ServerVersion,
-    SourceAddress,
-    VersionGate,
-)
+from boba.ch_meta_scraper.worker import ChSource, source_address
 from boba.db.clickhouse.payload import PayloadClickHouse
 from boba.db.clickhouse.profile import ClickHouseConfig, ClickHouseSettingsConfig
 from boba.db.postgres import AsyncPostgresPool
 from boba.ix_core.schema_name import SchemaName
-from boba.ix_core.scrape import ScrapeHeaders
+from boba.ix_core.scrape import (
+    ApplyRow,
+    parse_headers,
+    parse_version,
+    scrape_source,
+    version_applies,
+)
 from boba.stand.ix import IxStand as SharedIxStand
 from boba.stand.ix import IxStandDatabase as SharedIxStandDatabase
 from boba.stand.ix import IxStandError
@@ -77,7 +76,7 @@ class IxSource(BaseModel):
 
     @property
     def host(self) -> str:
-        return SourceAddress.of(self.clickhouse).host
+        return source_address(self.clickhouse).host
 
     @property
     def admin(self) -> ClickHouseConfig:
@@ -102,25 +101,25 @@ class IxStand(SharedIxStand):
         )
 
 
-class DdlFile(VersionGate):
-    """Файл демонстрационного набора с воротами по версии; statement'ы разделены
-    точкой с запятой в конце строки, HTTP-интерфейс принимает по одному."""
+class DdlFile(BaseModel):
+    """Файл демонстрационного набора с воротами по версии в заголовках; statement'ы
+    разделены точкой с запятой в конце строки, HTTP-интерфейс принимает по одному."""
+
+    model_config = ConfigDict(frozen=True)
 
     STATEMENT_END: ClassVar[re.Pattern[str]] = re.compile(r";\s*$", re.M)
 
     path: Path
     text: str
+    headers: dict[str, str]
 
     @classmethod
     def parse(cls, path: Path) -> DdlFile:
         text = path.read_text(encoding="utf-8")
-        gate = cls.gate_of(ScrapeHeaders.of(text))
-        return cls(
-            path=path,
-            text=text,
-            min_version=gate.min_version,
-            max_version=gate.max_version,
-        )
+        return cls(path=path, text=text, headers=parse_headers(text))
+
+    def applies(self, server: tuple[int, ...]) -> bool:
+        return version_applies(self.headers, server)
 
     def statements(self) -> Iterator[str]:
         for piece in self.STATEMENT_END.split(self.text):
@@ -140,11 +139,11 @@ class DemoDataset:
             for p in sorted(StandFile.DDL_DIR.under_stand().glob("*.sql"))
         ]
 
-    async def recreate(self) -> ServerVersion:
+    async def recreate(self) -> tuple[int, ...]:
         async with PayloadClickHouse.opened_config(self._source.admin) as client:
             result = await client.query("select version()")
             first = next(iter(result.result_rows))
-            server = ServerVersion.parse(str(first[0]))
+            server = parse_version(str(first[0]))
 
             await client.command(f"drop database if exists {IxSource.DEMO_DB}")
             await client.command(f"create database {IxSource.DEMO_DB}")
@@ -257,10 +256,10 @@ class IxStandDatabase(SharedIxStandDatabase):
         return SchemaName.render(text, self._stand.db_schema)
 
     async def scrape(self, source: IxSource) -> Sequence[ApplyRow]:
-        worker = ScrapeWorker(
+        report = await scrape_source(
             self._stand.ix_database,
             ChSource(source.clickhouse),
             PACKAGE_DIR,
             self.ATTEMPTS,
         )
-        return await worker.run()
+        return report.rows

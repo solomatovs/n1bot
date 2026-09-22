@@ -203,9 +203,7 @@ class NodeReader:
 
         return tables
 
-    async def _node(
-        self, conn: psycopg.AsyncConnection[Any], node_id: int
-    ) -> NodeRow:
+    async def _node(self, conn: psycopg.AsyncConnection[Any], node_id: int) -> NodeRow:
         cur = await conn.execute(
             SchemaName.render(self.NODE, self._schema), {"node_id": node_id}
         )
@@ -282,7 +280,9 @@ class NodeReader:
         texts: list[NodeText] = []
         for table in self._fts_tables():
             query = SchemaName.render(self.TEXTS, self._schema, index=table.ident())
-            cur = await conn.execute(query, {"node_id": node_id, "aspects": list(aspects)})
+            cur = await conn.execute(
+                query, {"node_id": node_id, "aspects": list(aspects)}
+            )
             for aspect, aspect_class, content in await cur.fetchall():
                 texts.append(
                     NodeText(

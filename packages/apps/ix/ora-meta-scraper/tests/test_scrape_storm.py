@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.profile import PostgresConfig
-from boba.ora_meta_scraper.worker import ScrapeWorkerError
+from boba.ix_core.scrape import ScrapeWorkerError
 
 pytestmark = [pytest.mark.load, pytest.mark.anyio]
 

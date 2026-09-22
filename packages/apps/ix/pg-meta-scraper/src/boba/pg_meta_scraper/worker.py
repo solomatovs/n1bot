@@ -27,26 +27,20 @@ from pydantic import BaseModel, ConfigDict
 from boba.db.postgres import AsyncPostgresPool, PostgresError
 from boba.db.postgres.profile import PostgresConfig
 from boba.ix_core.scrape import (
-    ApplyRow,
-    ScrapeApp,
     ScraperConfigBase,
     ScrapeSession,
     ScrapeSource,
     ScrapeSourceBusyError,
     ScrapeSourceError,
-    ScrapeWorker,
-    ScrapeWorkerError,
     SourceAddressBase,
     SourceConfigBase,
     SourceRows,
+    run_cli,
 )
 from boba.kerberos import KerberosError
 
 __all__ = [
-    "ApplyRow",
     "PgSource",
-    "ScrapeWorker",
-    "ScrapeWorkerError",
     "ScraperConfig",
     "ServerInfo",
     "SourceAddress",
@@ -54,6 +48,13 @@ __all__ = [
     "VersionGate",
     "WorkerConfig",
 ]
+
+SECTION = "ix.meta_scraper"
+PROG = "boba-pg-meta-scraper"
+DESCRIPTION = (
+    "Снятие каталога PostgreSQL или Greenplum в граф ix: схема пакета, "
+    "scrape, раскладка, merge."
+)
 
 
 class GateHeader(StrEnum):
@@ -239,7 +240,7 @@ class PgSession(ScrapeSession):
         return VersionGate.gate_of(headers).applies(self._server)
 
     @asynccontextmanager
-    async def rows(
+    async def fetch_rows(
         self, name: str, query: str, params: Mapping[str, Sequence[object]]
     ) -> AsyncGenerator[SourceRows, None]:
         async with self._conn.transaction(), self._conn.cursor(name=name) as cur:
@@ -272,16 +273,16 @@ class PgSource(ScrapeSource):
     def address(self) -> SourceAddress:
         return self._address
 
-    def where(self) -> str:
+    def describe(self) -> str:
         return self._cfg.source.where()
 
     @asynccontextmanager
-    async def session(self) -> AsyncGenerator[ScrapeSession, None]:
+    async def open_session(self) -> AsyncGenerator[ScrapeSession, None]:
         try:
             conn = await AsyncPostgresPool.dedicated(self._cfg.source)
         except (psycopg.Error, PostgresError, KerberosError) as exc:
             raise ScrapeSourceError(
-                f"connecting to {self.where()} as {self._cfg.source.trace()}: "
+                f"connecting to {self.describe()} as {self._cfg.source.trace()}: "
                 f"{type(exc).__name__}: {exc}"
             ) from exc
 
@@ -291,10 +292,11 @@ class PgSource(ScrapeSource):
                 await self._configure(conn, server)
             except psycopg.Error as exc:
                 raise ScrapeSourceError(
-                    f"preparing session on {self.where()}: {type(exc).__name__}: {exc}"
+                    f"preparing session on {self.describe()}: "
+                    f"{type(exc).__name__}: {exc}"
                 ) from exc
 
-            yield PgSession(conn, server, self.where())
+            yield PgSession(conn, server, self.describe())
 
     async def _configure(
         self, conn: psycopg.AsyncConnection[Any], server: ServerInfo
@@ -314,21 +316,9 @@ class PgSource(ScrapeSource):
         await conn.execute("set default_transaction_read_only = on")
 
 
-class Cli:
-    """Секция и подпись команды пакета; сама команда собирается ядром."""
-
-    SECTION: ClassVar[str] = "ix.meta_scraper"
-    PROG: ClassVar[str] = "boba-pg-meta-scraper"
-    DESCRIPTION: ClassVar[str] = (
-        "Снятие каталога PostgreSQL или Greenplum в граф ix: схема пакета, "
-        "scrape, раскладка, merge."
-    )
-
-
 def main() -> None:
     package_dir = Path(__file__).resolve().parent
-    app = ScrapeApp(Cli.PROG, Cli.DESCRIPTION, Cli.SECTION, package_dir, ScraperConfig)
-    app.main()
+    run_cli(PROG, DESCRIPTION, SECTION, package_dir, ScraperConfig)
 
 
 if __name__ == "__main__":

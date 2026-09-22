@@ -69,6 +69,34 @@ class IxPool:
         finally:
             await pool.close()
 
+    @staticmethod
+    @asynccontextmanager
+    async def dedicated(
+        database: IxDatabase,
+    ) -> AsyncGenerator[psycopg.AsyncConnection[Any], None]:
+        """Одно выделенное соединение в autocommit без пула: для процесса, которому
+        нужна ровно одна сессия на весь прогон."""
+        try:
+            database.krb.apply()
+        except OSError as exc:
+            msg = (
+                f"ix database {database.postgres.where()}: preparing kerberos "
+                f"cache dir {database.krb.ccache_dir} failed: {exc}"
+            )
+            raise IxDatabaseError(msg) from exc
+
+        try:
+            conn = await AsyncPostgresPool.dedicated(database.postgres)
+        except (psycopg.Error, PostgresError) as exc:
+            msg = (
+                f"ix database {database.postgres.where()} as "
+                f"{database.postgres.trace()}: connecting failed: {exc}"
+            )
+            raise IxDatabaseError(msg) from exc
+
+        async with conn:
+            yield conn
+
     @classmethod
     @asynccontextmanager
     async def session(
