@@ -177,7 +177,7 @@ class TestIndexSpace:
         urls = await ix_database.urls()
         built: dict[str, str] = {}
         for surface, address in await ix_database.nodes():
-            built[surface] = urls.of(surface, address)
+            built[surface] = urls.url_of(surface, address)
 
         origin = f"http://127.0.0.1:{port}"
         assert built["cfl_space"] == f"{origin}/display/{SPACE}"

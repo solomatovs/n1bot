@@ -35,6 +35,7 @@ from abc import abstractmethod
 from collections.abc import AsyncIterator, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import AbstractAsyncContextManager
+from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Generic, Protocol, TypeVar
@@ -42,12 +43,14 @@ from typing import Any, Generic, Protocol, TypeVar
 import psycopg
 from psycopg import sql
 from psycopg.errors import LockNotAvailable, SerializationFailure
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 from boba.config import ConfigError, bind_section
+from boba.db.postgres import AsyncPostgresPool, PostgresError
 from boba.db.postgres.query import PgQueryBuilder
-from boba.ix_core.database import IxDatabase, IxDatabaseError, IxPool
+from boba.ix_core.database import IxDatabase, enter_kerberos
 from boba.ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError
+from boba.krb import KerberosWorkspaceConfig
 
 __all__ = [
     "ApplyRow",
@@ -114,22 +117,20 @@ class LayoutFile(StrEnum):
     UNLOCK = "55_unlock.sql"
 
 
-class Collect(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class Collect:
     """Массив для запросов следующих волн: имя массива и колонка результата."""
-
-    model_config = ConfigDict(frozen=True)
 
     name: str
     column: str
 
 
-class VersionGate(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class VersionGate:
     """Ворота файла по серверу. Версия сравнивается по длине ворот: max (19,)
     отсекает 21.0, но пропускает 19.3; only и unless сравнивают вкус сервера
     (у PostgreSQL это gp для Greenplum). Базовый класс ScrapeFile и файлов DDL
     стендов."""
-
-    model_config = ConfigDict(frozen=True)
 
     min_version: tuple[int, ...] = ()
     max_version: tuple[int, ...] = ()
@@ -151,6 +152,7 @@ class VersionGate(BaseModel):
         return not (self.unless and flavor == self.unless)
 
 
+@dataclass(frozen=True, kw_only=True)
 class ScrapeFile(VersionGate):
     """Объявление файла scrape/ источником: имя raw-таблицы, волна, файл запроса,
     массивы параметров и ворота. Сверка лежит рядом с запросом в `<файл>.verify.sql`."""
@@ -171,13 +173,15 @@ class ScrapeFile(VersionGate):
         return f"verify_{self.name}"
 
 
-class ApplyRow(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class ApplyRow:
     op: str
     planned: int
     applied: int
 
 
-class ScrapeReport(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class ScrapeReport:
     """Итог прогона одного источника: сводка apply и число попыток."""
 
     source: str
@@ -204,18 +208,17 @@ class ScrapeReport(BaseModel):
         return f"{self.source}: {changed}, attempts={self.attempts}"
 
 
-class SourceAddressBase(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class SourceAddressBase:
     """Адрес источника для raw_source: поля модели это колонки таблицы. Реализация
     добавляет свои (у PostgreSQL база), совпадающие с raw_source её layout."""
-
-    model_config = ConfigDict(frozen=True)
 
     scheme: str
     host: str
     port: int
 
     def columns(self) -> dict[str, object]:
-        return self.model_dump()
+        return asdict(self)
 
 
 class SourceRows(Protocol):
@@ -481,7 +484,7 @@ async def read_last_rows(cur: psycopg.AsyncCursor[Any]) -> list[tuple[object, ..
     rows: list[tuple[object, ...]] = []
     while True:
         if cur.description is not None:
-            rows = [tuple(row) for row in await cur.fetchall()]
+            rows = await cur.fetchall()
 
         if not cur.nextset():
             return rows
@@ -522,9 +525,7 @@ async def apply_layout(
     summary: list[ApplyRow] = []
     for row in rows:
         summary.append(
-            ApplyRow.model_validate(
-                {"op": row[0], "planned": row[1], "applied": row[2]}
-            )
+            ApplyRow(op=str(row[0]), planned=int(str(row[1])), applied=int(str(row[2])))
         )
 
     return summary
@@ -537,7 +538,10 @@ async def scrape_once(
     schema = database.db_schema
     scrape_dir = package_dir / PackageDir.SCRAPE
     layout_dir = package_dir / PackageDir.LAYOUT
-    async with IxPool.dedicated(database) as ix, source.open_session() as session:
+    async with (
+        await AsyncPostgresPool.dedicated(database.postgres) as ix,
+        source.open_session() as session,
+    ):
         chosen = choose_files(source.files, session, source.describe())
 
         query = (
@@ -592,8 +596,10 @@ async def attempt_scrape(
         raise RetryableError(f"ix busy: {exc}".strip()) from exc
     except ScrapeSourceBusyError as exc:
         raise RetryableError(f"source busy: {exc}") from exc
-    except IxDatabaseError as exc:
-        raise ScrapeWorkerError(f"scrape {where}: {exc}") from exc
+    except PostgresError as exc:
+        raise ScrapeWorkerError(
+            f"scrape {where}: ix {database.postgres.where()}: {exc}"
+        ) from exc
     except ScrapeSourceError as exc:
         raise ScrapeWorkerError(f"scrape {where}: source failed: {exc}") from exc
     except psycopg.Error as exc:
@@ -675,10 +681,17 @@ class ScraperConfigBase(IxDatabase, Generic[S]):
 
 
 def scrape_in_process(
-    config: ScraperConfigBase[Any], source_name: str, package_dir: Path
+    config: ScraperConfigBase[Any],
+    source_name: str,
+    package_dir: Path,
+    krb: KerberosWorkspaceConfig | None,
 ) -> ScrapeReport:
-    """Вход процесса источника: свой лог, свой event loop, один прогон."""
+    """Вход процесса источника: свой лог, свой каталог kerberos, свой event loop,
+    один прогон."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+    if krb is not None:
+        krb.apply()
+
     item = config.find_source(source_name)
     source = config.scrape_source(item)
 
@@ -686,7 +699,10 @@ def scrape_in_process(
 
 
 def run_sources(
-    config: ScraperConfigBase[Any], package_dir: Path, source_name: str = ""
+    config: ScraperConfigBase[Any],
+    package_dir: Path,
+    krb: KerberosWorkspaceConfig | None,
+    source_name: str = "",
 ) -> list[ScrapeReport]:
     """Прогон по источникам: процесс на источник, parallel_sources процессов разом.
     Отчёты в порядке источников."""
@@ -700,7 +716,7 @@ def run_sources(
         futures = []
         for item in selected:
             futures.append(
-                pool.submit(scrape_in_process, config, item.name, package_dir)
+                pool.submit(scrape_in_process, config, item.name, package_dir, krb)
             )
 
         for item, future in zip(selected, futures, strict=True):
@@ -758,6 +774,7 @@ def run_cli(
 
     try:
         args = parse_args(prog, description, section, None)
+        krb = enter_kerberos(args.config)
         if args.command is Command.UPGRADE:
             database = bind_section(args.config, section, IxDatabase)
             upgrade = SchemaUpgrade(package_dir / PackageDir.SCHEMA)
@@ -766,7 +783,7 @@ def run_cli(
             return
 
         config = bind_section(args.config, section, config_type)
-        for report in run_sources(config, package_dir, args.source):
+        for report in run_sources(config, package_dir, krb, args.source):
             logger.info("done: %s", report.line())
     except (ConfigError, SchemaUpgradeError, ScrapeWorkerError) as exc:
         raise SystemExit(str(exc)) from exc

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,8 @@ __all__ = [
     "SourceAddress",
     "SourceConfig",
     "WorkerConfig",
+    "read_server_info",
+    "source_address",
 ]
 
 SECTION = "ix.meta_scraper"
@@ -101,35 +104,37 @@ class ScraperConfig(ScraperConfigBase[SourceConfig]):
         )
 
 
+@dataclass(frozen=True, kw_only=True)
 class SourceAddress(SourceAddressBase):
     scheme: str = Marker.SCHEME
     database: str
 
-    @classmethod
-    def of(cls, postgres: PostgresConfig) -> SourceAddress:
-        host = postgres.host
-        if host is None:
-            host = postgres.hostaddr
 
-        if host is None:
-            raise ScrapeSourceError(
-                f"source {postgres.where()}: expected host or hostaddr in the profile"
-            )
+def source_address(postgres: PostgresConfig) -> SourceAddress:
+    host = postgres.host
+    if host is None:
+        host = postgres.hostaddr
 
-        if postgres.port is None:
-            raise ScrapeSourceError(
-                f"source {postgres.where()}: expected port in the profile"
-            )
+    if host is None:
+        raise ScrapeSourceError(
+            f"source {postgres.where()}: expected host or hostaddr in the profile"
+        )
 
-        if postgres.dbname is None:
-            raise ScrapeSourceError(
-                f"source {postgres.where()}: expected dbname in the profile"
-            )
+    if postgres.port is None:
+        raise ScrapeSourceError(
+            f"source {postgres.where()}: expected port in the profile"
+        )
 
-        return cls(host=host, port=postgres.port, database=postgres.dbname)
+    if postgres.dbname is None:
+        raise ScrapeSourceError(
+            f"source {postgres.where()}: expected dbname in the profile"
+        )
+
+    return SourceAddress(host=host, port=postgres.port, database=postgres.dbname)
 
 
-class ServerInfo(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class ServerInfo:
     """Версия сервера и его вкус для ворот файлов: gp у Greenplum, иначе пусто."""
 
     version_num: int
@@ -141,21 +146,21 @@ class ServerInfo(BaseModel):
 
         return ""
 
-    @classmethod
-    async def of(cls, conn: psycopg.AsyncConnection[Any]) -> ServerInfo:
-        cur = await conn.execute("show server_version_num")
-        record = await cur.fetchone()
-        version_cur = await conn.execute("select version()")
-        version_record = await version_cur.fetchone()
-        if record is None or version_record is None:
-            raise ScrapeSourceError(
-                "source: expected server_version_num and version(), got none"
-            )
 
-        return cls(
-            version_num=int(record[0]),
-            is_greenplum=Marker.GREENPLUM in str(version_record[0]),
+async def read_server_info(conn: psycopg.AsyncConnection[Any]) -> ServerInfo:
+    cur = await conn.execute("show server_version_num")
+    record = await cur.fetchone()
+    version_cur = await conn.execute("select version()")
+    version_record = await version_cur.fetchone()
+    if record is None or version_record is None:
+        raise ScrapeSourceError(
+            "source: expected server_version_num and version(), got none"
         )
+
+    return ServerInfo(
+        version_num=int(record[0]),
+        is_greenplum=Marker.GREENPLUM in str(version_record[0]),
+    )
 
 
 class PgRows(SourceRows):
@@ -232,7 +237,7 @@ class PgSource(ScrapeSource):
 
     def __init__(self, cfg: WorkerConfig) -> None:
         self._cfg = cfg
-        self._address = SourceAddress.of(cfg.source)
+        self._address = source_address(cfg.source)
 
     @property
     def files(self) -> Sequence[ScrapeFile]:
@@ -567,7 +572,7 @@ class PgSource(ScrapeSource):
 
         async with conn:
             try:
-                server = await ServerInfo.of(conn)
+                server = await read_server_info(conn)
                 await self._configure(conn, server)
             except psycopg.Error as exc:
                 raise ScrapeSourceError(

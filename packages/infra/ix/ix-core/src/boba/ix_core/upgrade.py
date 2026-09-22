@@ -23,24 +23,29 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import psycopg
 from psycopg import sql
-from pydantic import BaseModel, ConfigDict
+from psycopg.postgres import types as pg_types
 
+from boba.db.postgres import AsyncPostgresPool, PostgresError
 from boba.db.postgres.names import PostgresSchema
 from boba.db.postgres.query import PgQueryBuilder
 from boba.ix_core.aspects import (
-    AspectContract,
     AspectDeclarationError,
-    AspectDeclarations,
+    ContractColumn,
+    ContractType,
+    SurfaceAspect,
 )
-from boba.ix_core.database import IxDatabase, IxDatabaseError, IxPool
-from boba.ix_core.indexes import IndexTableError, IndexTables
-from boba.ix_core.prompts import SurfacePromptError, SurfacePrompts
-from boba.ix_core.urls import SurfaceUrlError, SurfaceUrls
+from boba.ix_core.database import IxDatabase
+from boba.ix_core.indexes import IndexTable, IndexTableError, index_columns
+from boba.ix_core.prompts import SurfacePromptError
+from boba.ix_core.registry import IxRegistry
+from boba.ix_core.urls import SurfaceUrlError
+from boba.toolkit.sql import QueryBuildError
 
 __all__ = [
     "SchemaUpgrade",
@@ -55,10 +60,9 @@ class SchemaUpgradeError(Exception):
     """Схему не удалось применить."""
 
 
-class UpgradeReport(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class UpgradeReport:
     """Итог наката: какие файлы применены."""
-
-    model_config = ConfigDict(frozen=True)
 
     files: Sequence[str]
 
@@ -80,27 +84,30 @@ class SchemaUpgrade:
         files = self._files()
 
         try:
-            async with IxPool.session(database) as conn:
+            async with await AsyncPostgresPool.dedicated(database.postgres) as conn:
                 if self._requires_core:
                     await self._validate_core_layer_exists(conn, database.db_schema)
 
                 for path in files:
                     logger.info("applying %s", path.name)
-                    text = path.read_text(encoding="utf-8")
                     query = (
-                        PgQueryBuilder()
-                        .add(text, schema=sql.Identifier(database.db_schema))
+                        PgQueryBuilder(schema=sql.Identifier(database.db_schema))
+                        .read(path)
                         .build()
                     )
                     await conn.execute(query.text, query.params)
 
-                await self._check_declarations(conn, database.db_schema)
-                await self._check_index_tables(conn, database.db_schema)
-                await self._check_urls(conn, database.db_schema)
-                await self._check_prompts(conn, database.db_schema)
+                registry = IxRegistry(database.db_schema)
+                await self._check_declarations(conn, registry)
+                await self._check_index_tables(conn, registry)
+                await self._check_urls(conn, registry)
+                await self._check_prompts(conn, registry)
 
-        except IxDatabaseError as exc:
-            msg = f"upgrade {self._schema_dir}: {exc}"
+        except PostgresError as exc:
+            msg = (
+                f"upgrade {self._schema_dir}: ix database "
+                f"{database.postgres.where()}: {exc}"
+            )
             raise SchemaUpgradeError(msg) from exc
         except psycopg.Error as exc:
             msg = f"upgrade {self._schema_dir}: applying schema failed: {exc}"
@@ -132,49 +139,168 @@ class SchemaUpgrade:
 
         return files
 
-    @staticmethod
     async def _check_declarations(
-        conn: psycopg.AsyncConnection[Any], db_schema: str
+        self, conn: psycopg.AsyncConnection[Any], registry: IxRegistry
     ) -> None:
-        if not await PostgresSchema.exists(conn, db_schema, "surface_aspect"):
+        if not await PostgresSchema.exists(conn, registry.db_schema, "surface_aspect"):
             return
 
-        declarations = await AspectDeclarations.all(conn, db_schema)
-        await AspectContract.check(conn, db_schema, declarations)
+        declarations = await registry.read_declarations(conn, ())
+        for declaration in declarations:
+            await self._check_body(conn, registry.db_schema, declaration)
+
         logger.info("aspect declarations verified: %d", len(declarations))
 
-    @staticmethod
-    async def _check_index_tables(
-        conn: psycopg.AsyncConnection[Any], db_schema: str
+    async def _check_body(
+        self,
+        conn: psycopg.AsyncConnection[Any],
+        db_schema: str,
+        declaration: SurfaceAspect,
     ) -> None:
-        if not await PostgresSchema.exists(conn, db_schema, "index_table"):
+        """Тело объявления выполняется и отдаёт node_id bigint и content text."""
+        where = f"aspect {declaration.aspect} of surface {declaration.surface}"
+
+        try:
+            body = (
+                PgQueryBuilder(schema=sql.Identifier(db_schema))
+                .add(declaration.body)
+                .build()
+            )
+        except QueryBuildError as exc:
+            raise AspectDeclarationError(f"{where}: body: {exc}") from exc
+
+        probe = (
+            PgQueryBuilder()
+            .add("select * from ({body}) s limit 0", body=body.text)
+            .build()
+        )
+        try:
+            cur = await conn.execute(probe.text, probe.params)
+        except psycopg.Error as exc:
+            raise AspectDeclarationError(f"{where}: body does not run: {exc}") from exc
+
+        if cur.description is None:
+            raise AspectDeclarationError(f"{where}: body returns no result set")
+
+        names: list[str] = []
+        type_names: list[str] = []
+        for column in cur.description:
+            names.append(column.name)
+            info = pg_types.get(column.type_code)
+            if info is None:
+                type_names.append(f"oid {column.type_code}")
+                continue
+
+            type_names.append(info.name)
+
+        expected = [ContractColumn.NODE_ID, ContractColumn.CONTENT]
+        if names != expected:
+            raise AspectDeclarationError(
+                f"{where}: body must return columns {expected}, got {names}"
+            )
+
+        if type_names[0] != ContractType.INT8:
+            raise AspectDeclarationError(
+                f"{where}: {ContractColumn.NODE_ID} must be {ContractType.INT8}, "
+                f"got {type_names[0]}"
+            )
+
+        content_types = frozenset({ContractType.TEXT, ContractType.VARCHAR})
+        if type_names[1] not in content_types:
+            raise AspectDeclarationError(
+                f"{where}: {ContractColumn.CONTENT} must be one of "
+                f"{sorted(content_types)}, got {type_names[1]}"
+            )
+
+    async def _check_index_tables(
+        self, conn: psycopg.AsyncConnection[Any], registry: IxRegistry
+    ) -> None:
+        if not await PostgresSchema.exists(conn, registry.db_schema, "index_table"):
             return
 
-        tables = await IndexTables.all(conn, db_schema)
-        await IndexTables.check(conn, db_schema, tables)
+        await registry.read_tables(conn)
+        tables = registry.get_tables()
+        for table in tables:
+            await self._check_index_table(conn, registry.db_schema, table)
+
         logger.info("index tables verified: %d", len(tables))
 
-    @staticmethod
-    async def _check_urls(conn: psycopg.AsyncConnection[Any], db_schema: str) -> None:
-        if not await PostgresSchema.exists(conn, db_schema, "surface_url"):
-            return
-
-        urls = await SurfaceUrls.load(conn, db_schema)
-        logger.info("url templates verified: %d", len(urls.surfaces()))
-
-    @staticmethod
-    async def _check_prompts(
-        conn: psycopg.AsyncConnection[Any], db_schema: str
+    async def _check_index_table(
+        self, conn: psycopg.AsyncConnection[Any], db_schema: str, table: IndexTable
     ) -> None:
-        if not await PostgresSchema.exists(conn, db_schema, "surface_prompt"):
+        """Таблица индекса существует и несёт колонки своего вида."""
+        where = f"index table {table.name} of kind {table.kind} (owner {table.owner})"
+
+        probe = (
+            PgQueryBuilder(schema=sql.Identifier(db_schema))
+            .add("select 1 from {schema}.{name} limit 0", name=table.ident())
+            .build()
+        )
+        try:
+            await conn.execute(probe.text, probe.params)
+        except psycopg.Error as exc:
+            raise IndexTableError(f"{where}: table is not readable: {exc}") from exc
+
+        query = (
+            PgQueryBuilder()
+            .add(
+                """
+                select
+                    c.column_name
+                from
+                    information_schema.columns c
+                where 1=1
+                    and c.table_schema = %(schema_name)s
+                    and c.table_name = %(name)s
+                """,
+                schema_name=db_schema,
+                name=table.name,
+            )
+            .build()
+        )
+        cur = await conn.execute(query.text, query.params)
+        present: set[str] = set()
+        async for row in cur:
+            present.add(str(row[0]))
+
+        missing: list[str] = []
+        for column in index_columns(table.kind):
+            if column not in present:
+                missing.append(column)
+
+        if not missing:
             return
 
-        checked = await SurfacePrompts.check(conn, db_schema)
-        logger.info("describe prompts verified: %d", checked)
+        raise IndexTableError(
+            f"{where}: expected columns {list(index_columns(table.kind))}, "
+            f"missing {missing}"
+        )
 
-    @classmethod
+    async def _check_urls(
+        self, conn: psycopg.AsyncConnection[Any], registry: IxRegistry
+    ) -> None:
+        if not await PostgresSchema.exists(conn, registry.db_schema, "surface_url"):
+            return
+
+        await registry.read_urls(conn)
+        surfaces = registry.get_urls()
+        logger.info("url templates verified: %d", len(surfaces))
+
+    async def _check_prompts(
+        self, conn: psycopg.AsyncConnection[Any], registry: IxRegistry
+    ) -> None:
+        if not await PostgresSchema.exists(conn, registry.db_schema, "surface_prompt"):
+            return
+
+        await registry.read_prompts(conn)
+        prompts = registry.get_prompts()
+        for prompt in prompts:
+            prompt.check()
+
+        logger.info("describe prompts verified: %d", len(prompts))
+
     async def _validate_core_layer_exists(
-        cls, conn: psycopg.AsyncConnection[Any], db_schema: str
+        self, conn: psycopg.AsyncConnection[Any], db_schema: str
     ) -> None:
         for table in ("node", "edge"):
             if await PostgresSchema.exists(conn, db_schema, table):

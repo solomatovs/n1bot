@@ -116,14 +116,16 @@ class IxStore:
         self, package_dir: Path, db_schema: str, conn: psycopg.AsyncConnection[Any]
     ) -> None:
         self._conn = conn
-        self._schema = sql.Identifier(db_schema)
+        self._schema = db_schema
         self._texts: dict[RunFile, str] = {}
         for name in RunFile:
             self._texts[name] = (package_dir / name).read_text(encoding="utf-8")
 
-    async def _run(self, file: RunFile, **params: Any) -> psycopg.AsyncCursor[Any]:
+    async def _execute(self, file: RunFile, **params: Any) -> psycopg.AsyncCursor[Any]:
         query = (
-            PgQueryBuilder(schema=self._schema).add(self._texts[file], **params).build()
+            PgQueryBuilder(schema=sql.Identifier(self._schema))
+            .add(self._texts[file], **params)
+            .build()
         )
 
         return await self._conn.execute(query.text, query.params)
@@ -133,12 +135,12 @@ class IxStore:
         async with self._conn.transaction():
             yield
 
-    async def create_run_tables(self) -> None:
-        await self._run(RunFile.SEEN_TABLE)
-        await self._run(RunFile.LINKS_TABLE)
+    async def create_tables(self) -> None:
+        await self._execute(RunFile.SEEN_TABLE)
+        await self._execute(RunFile.LINKS_TABLE)
 
     async def upsert_node(self, surface: Surface, address: Mapping[str, object]) -> int:
-        cur = await self._run(
+        cur = await self._execute(
             RunFile.NODE, surface=str(surface), address=Jsonb(dict(address))
         )
         row = await cur.fetchone()
@@ -148,13 +150,13 @@ class IxStore:
         return int(row[0])
 
     async def attach_to_parent(self, node_id: int, parent_id: int | None) -> None:
-        await self._run(RunFile.TREE, node_id=node_id, parent_id=parent_id)
+        await self._execute(RunFile.TREE, node_id=node_id, parent_id=parent_id)
 
     async def mark_seen(self, node_id: int) -> None:
-        await self._run(RunFile.SEEN_MARK, node_id=node_id)
+        await self._execute(RunFile.SEEN_MARK, node_id=node_id)
 
     async def read_state(self, file: RunFile, node_id: int) -> State | None:
-        cur = await self._run(file, node_id=node_id)
+        cur = await self._execute(file, node_id=node_id)
         row = await cur.fetchone()
         if row is None:
             return None
@@ -162,7 +164,7 @@ class IxStore:
         return State(int(row[0]), str(row[1]), str(row[2]))
 
     async def write_space(self, node_id: int, space: Space, indexer_hash: str) -> None:
-        await self._run(
+        await self._execute(
             RunFile.SPACE,
             node_id=node_id,
             space_key=space.key,
@@ -195,7 +197,7 @@ class IxStore:
         if content.kind is ContentType.PAGE:
             params["ancestor_titles"] = list(content.ancestor_titles)
 
-        await self._run(row_file_of(content.kind), **params)
+        await self._execute(row_file_of(content.kind), **params)
 
     async def write_attachment(
         self,
@@ -204,7 +206,7 @@ class IxStore:
         content_hash: str,
         indexer_hash: str,
     ) -> None:
-        await self._run(
+        await self._execute(
             RunFile.ATTACHMENT,
             node_id=node_id,
             space_key=attachment.space_key,
@@ -224,7 +226,7 @@ class IxStore:
     async def write_comment(
         self, node_id: int, comment: Comment, indexer_hash: str
     ) -> None:
-        await self._run(
+        await self._execute(
             RunFile.COMMENT,
             node_id=node_id,
             space_key=comment.space_key,
@@ -240,7 +242,9 @@ class IxStore:
         )
 
     async def clear_texts(self, node_id: int) -> None:
-        await self._run(RunFile.INDEX_CLEAR, node_id=node_id, aspects=PUSHED_ASPECTS)
+        await self._execute(
+            RunFile.INDEX_CLEAR, node_id=node_id, aspects=PUSHED_ASPECTS
+        )
 
     async def push_text(
         self, node_id: int, surface: Surface, aspect: Aspect, text: str
@@ -248,7 +252,7 @@ class IxStore:
         if not text:
             return
 
-        await self._run(
+        await self._execute(
             RunFile.INDEX_PUSH,
             node_id=node_id,
             surface=str(surface),
@@ -259,7 +263,7 @@ class IxStore:
     async def queue_links(self, node_id: int, links: Sequence[PageLink]) -> None:
         """Ссылки страницы в temp-таблицу; рёбрами они станут после обхода."""
         for link in links:
-            await self._run(
+            await self._execute(
                 RunFile.LINKS_MARK,
                 src_node=node_id,
                 target_id=link.target.page_id,
@@ -269,8 +273,8 @@ class IxStore:
 
     async def apply_links(self, space_key: str, base: Mapping[str, object]) -> int:
         async with self._conn.transaction():
-            await self._run(RunFile.LINKS_CLEAR)
-            cur = await self._run(
+            await self._execute(RunFile.LINKS_CLEAR)
+            cur = await self._execute(
                 RunFile.LINKS_APPLY, space_key=space_key, base=Jsonb(dict(base))
             )
             row = await cur.fetchone()
@@ -281,7 +285,7 @@ class IxStore:
         return int(row[0])
 
     async def sweep_space(self, space_key: str, base: Mapping[str, object]) -> int:
-        cur = await self._run(
+        cur = await self._execute(
             RunFile.SWEEP, space_key=space_key, base=Jsonb(dict(base))
         )
         row = await cur.fetchone()

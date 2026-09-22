@@ -57,7 +57,7 @@ class TestScrapeStand:
                 continue
 
             seen += 1
-            url = urls.of(surface, address)
+            url = urls.url_of(surface, address)
             assert url, f"{surface}: no url formula for {address}"
 
             split = urlsplit(url)

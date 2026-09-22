@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
@@ -237,10 +238,9 @@ class Reply(BaseModel):
     description: str = Field(min_length=1)
 
 
-class Described(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class Described:
     """Итог описания объекта: текст и сколько кусков понадобилось материалу."""
-
-    model_config = ConfigDict(frozen=True)
 
     text: str
     chunks: int

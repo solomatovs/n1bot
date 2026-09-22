@@ -1,34 +1,30 @@
-"""База ix из секции конфига приложения: схема графа, профиль postgres, рабочий
-каталог kerberos и пул соединений на прогон.
+"""Секция базы ix для приложений ix и вход процесса в kerberos.
 
-Каждое приложение ix (ядро, скрапер, индексаторы, описатель, стенд поиска) держит
-в своей секции одни и те же поля: `db_schema`, `postgres` — профиль boba-db-postgres
-с выбором способа авторизации, опциями сессии и параметрами пула — и `krb` с
-krb5.conf и каталогом кэшей билетов. IxDatabase — общая модель этих полей, IxPool
-открывает по ней AsyncPostgresPool и отдаёт пул или одно соединение из него.
+IxDatabase это общие поля секции приложения: схема графа и профиль PostgreSQL из
+boba-db-postgres; секция приложения наследует модель. Соединения берутся у
+AsyncPostgresPool напрямую: воркер держит одно выделенное соединение на цикл
+(`AsyncPostgresPool.dedicated`), http-стенд открывает пул.
+
+Рабочий каталог kerberos задаёт секция [krb] того же файла конфига, как у
+приложения и toolcli: enter_kerberos ставит его один раз на процесс, и без секции
+профили с keytab не смогут получить билет. Дочерний процесс (источник скрапера,
+спейс индексатора) получает ту же модель и ставит каталог себе сам.
 
 Ошибки:
-IxDatabaseError — каталог кэшей kerberos не подготовить или пул не отдал соединение.
+ConfigError — файл конфига не читается или секция [krb] не сходится с моделью.
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
-from contextlib import AsyncExitStack, asynccontextmanager
-from typing import Any
+from pathlib import Path
 
-import psycopg
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.db.postgres import AsyncPostgresPool, PostgresError
+from boba.config import bind_optional_section
 from boba.db.postgres.profile import PostgresConfig
 from boba.krb import KerberosWorkspaceConfig
 
-__all__ = ["IxDatabase", "IxDatabaseError", "IxPool"]
-
-
-class IxDatabaseError(Exception):
-    """База ix недоступна: kerberos-каталог или соединение из пула."""
+__all__ = ["IxDatabase", "enter_kerberos"]
 
 
 class IxDatabase(BaseModel):
@@ -38,80 +34,12 @@ class IxDatabase(BaseModel):
 
     db_schema: str = Field(min_length=1)
     postgres: PostgresConfig
-    krb: KerberosWorkspaceConfig
 
 
-class IxPool:
-    """Пул к базе ix на один прогон приложения.
+def enter_kerberos(config_path: Path) -> KerberosWorkspaceConfig | None:
+    """Рабочий каталог kerberos из [krb] файла конфига; нет секции — None."""
+    workspace = bind_optional_section(config_path, "krb", KerberosWorkspaceConfig)
+    if workspace is not None:
+        workspace.apply()
 
-    Ставит рабочий каталог kerberos секции, открывает AsyncPostgresPool по профилю
-    и закрывает его на выходе из блока. Воркеры берут одно соединение session()
-    на весь цикл, http-стенд держит пул opened() и берёт соединение на запрос.
-    """
-
-    @staticmethod
-    @asynccontextmanager
-    async def opened(database: IxDatabase) -> AsyncGenerator[AsyncPostgresPool, None]:
-        try:
-            database.krb.apply()
-        except OSError as exc:
-            msg = (
-                f"ix database {database.postgres.where()}: preparing kerberos "
-                f"cache dir {database.krb.ccache_dir} failed: {exc}"
-            )
-            raise IxDatabaseError(msg) from exc
-
-        pool = AsyncPostgresPool(database.postgres)
-        await pool.open()
-
-        try:
-            yield pool
-        finally:
-            await pool.close()
-
-    @staticmethod
-    @asynccontextmanager
-    async def dedicated(
-        database: IxDatabase,
-    ) -> AsyncGenerator[psycopg.AsyncConnection[Any], None]:
-        """Одно выделенное соединение в autocommit без пула: для процесса, которому
-        нужна ровно одна сессия на весь прогон."""
-        try:
-            database.krb.apply()
-        except OSError as exc:
-            msg = (
-                f"ix database {database.postgres.where()}: preparing kerberos "
-                f"cache dir {database.krb.ccache_dir} failed: {exc}"
-            )
-            raise IxDatabaseError(msg) from exc
-
-        try:
-            conn = await AsyncPostgresPool.dedicated(database.postgres)
-        except (psycopg.Error, PostgresError) as exc:
-            msg = (
-                f"ix database {database.postgres.where()} as "
-                f"{database.postgres.trace()}: connecting failed: {exc}"
-            )
-            raise IxDatabaseError(msg) from exc
-
-        async with conn:
-            yield conn
-
-    @classmethod
-    @asynccontextmanager
-    async def session(
-        cls, database: IxDatabase
-    ) -> AsyncGenerator[psycopg.AsyncConnection[Any], None]:
-        async with AsyncExitStack() as stack:
-            pool = await stack.enter_async_context(cls.opened(database))
-
-            try:
-                conn = await stack.enter_async_context(pool.connection())
-            except (psycopg.Error, PostgresError) as exc:
-                msg = (
-                    f"ix database {database.postgres.where()} as "
-                    f"{database.postgres.trace()}: no connection from the pool: {exc}"
-                )
-                raise IxDatabaseError(msg) from exc
-
-            yield conn
+    return workspace

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -56,7 +57,8 @@ class EmbeddingParams(BaseModel):
     chunk_overlap: int = Field(ge=0, default=50)
 
 
-class AspectText(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class AspectText:
     """Текст одного аспекта node на вход эмбеддингу; content_hash — md5 всего текста."""
 
     node_id: int

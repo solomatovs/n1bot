@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
@@ -77,6 +78,7 @@ class ScraperConfig(ScraperConfigBase[SourceConfig]):
         return OraSource(item.oracle)
 
 
+@dataclass(frozen=True, kw_only=True)
 class SourceAddress(SourceAddressBase):
     """Scope источника: сервис, к которому идёт соединение, лежит в database."""
 

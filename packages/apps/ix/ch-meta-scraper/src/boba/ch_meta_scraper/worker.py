@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 from clickhouse_connect.driver.asyncclient import AsyncClient
@@ -65,6 +66,7 @@ class ScraperConfig(ScraperConfigBase[SourceConfig]):
         return ChSource(item.clickhouse)
 
 
+@dataclass(frozen=True, kw_only=True)
 class SourceAddress(SourceAddressBase):
     scheme: str = SCHEME
 

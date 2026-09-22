@@ -7,9 +7,9 @@ from __future__ import annotations
 import asyncio
 import random
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import pytest
-from pydantic import BaseModel
 from scraper_stand import DemoDataset, Golden, IxSource, IxStand, IxStandDatabase
 
 from boba.db.postgres import AsyncPostgresPool
@@ -21,7 +21,8 @@ pytestmark = [pytest.mark.load, pytest.mark.anyio]
 STAND = IxStand.required()
 
 
-class StormOutcome(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class StormOutcome:
     """Итог одного прогона внутри шторма."""
 
     source: str
