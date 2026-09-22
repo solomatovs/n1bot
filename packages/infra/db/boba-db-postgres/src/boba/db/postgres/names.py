@@ -56,6 +56,17 @@ class PostgresSchema:
     """Создание схемы: без прав на CREATE SCHEMA её заводит администратор."""
 
     @staticmethod
+    async def exists(conn: AsyncConnection, schema: str, table: str) -> bool:
+        """Есть ли таблица schema.table в базе соединения."""
+        cur = await conn.execute(
+            "select to_regclass(quote_ident(%s) || '.' || quote_ident(%s)) is not null",
+            (schema, table),
+        )
+        row = await cur.fetchone()
+
+        return bool(row is not None and row[0])
+
+    @staticmethod
     async def ensure(conn: AsyncConnection, schema: str) -> None:
         try:
             async with conn.transaction():

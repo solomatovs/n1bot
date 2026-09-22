@@ -13,6 +13,7 @@ from boba.db.postgres.async_pool import (
 from boba.db.postgres.cursor import LoggingCursor
 from boba.db.postgres.names import PostgresSchema, SqlNames
 from boba.db.postgres.payload import PayloadPostgres
+from boba.db.postgres.query import PgQuery, PgQueryBuilder
 from boba.db.postgres.table import PostgresTable
 
 __all__ = [
@@ -21,6 +22,8 @@ __all__ = [
     "KerberosConnection",
     "LoggingCursor",
     "PayloadPostgres",
+    "PgQuery",
+    "PgQueryBuilder",
     "PostgresError",
     "PostgresPoolClosedError",
     "PostgresPoolLoopError",

@@ -1,5 +1,3 @@
--- @min 80300
--- @not gp
 create table dm.products (
     id    bigserial primary key,
     sku   text      not null,

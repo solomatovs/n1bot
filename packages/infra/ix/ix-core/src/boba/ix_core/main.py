@@ -16,10 +16,9 @@ import asyncio
 import logging
 from collections.abc import Sequence
 from pathlib import Path
-from typing import ClassVar
 
 from boba.config import ConfigError, bind_section
-from boba.ix_core.database import IxDatabase
+from boba.ix_core.database import IxDatabase, enter_kerberos
 from boba.ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError
 
 logger = logging.getLogger("ix-core")
@@ -27,42 +26,39 @@ logger = logging.getLogger("ix-core")
 SCHEMA_DIR = Path(__file__).resolve().parent / "schema"
 
 
-class Cli:
+def parse_args(argv: Sequence[str] | None = None) -> IxDatabase:
     """Запуск с одним аргументом --config: секция [ix.core] в модель."""
+    section = "ix.core"
+    command = "upgrade"
+    parser = argparse.ArgumentParser(
+        prog="boba-ix-core",
+        description="Ядро графа ix: схема ix, surface, node, tree, edge.",
+    )
+    parser.add_argument(
+        command,
+        choices=[command],
+        help="Накатить схему ядра в базу из конфига; команда идемпотентна.",
+    )
+    parser.add_argument(
+        "--config",
+        required=True,
+        type=Path,
+        help=(
+            "Путь к файлу конфига приложения (toml). База берётся из секции "
+            f"[{section}]."
+        ),
+    )
+    args = parser.parse_args(argv)
+    enter_kerberos(args.config)
 
-    SECTION: ClassVar[str] = "ix.core"
-    COMMAND: ClassVar[str] = "upgrade"
-
-    @classmethod
-    def parse(cls, argv: Sequence[str] | None = None) -> IxDatabase:
-        parser = argparse.ArgumentParser(
-            prog="boba-ix-core",
-            description="Ядро графа ix: схема ix, surface, node, tree, edge.",
-        )
-        parser.add_argument(
-            cls.COMMAND,
-            choices=[cls.COMMAND],
-            help="Накатить схему ядра в базу из конфига; команда идемпотентна.",
-        )
-        parser.add_argument(
-            "--config",
-            required=True,
-            type=Path,
-            help=(
-                "Путь к файлу конфига приложения (toml). База берётся из секции "
-                f"[{cls.SECTION}]."
-            ),
-        )
-        args = parser.parse_args(argv)
-
-        return bind_section(args.config, cls.SECTION, IxDatabase)
+    return bind_section(args.config, section, IxDatabase)
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
     try:
-        cfg = Cli.parse()
+        cfg = parse_args()
         upgrade = SchemaUpgrade(SCHEMA_DIR, requires_core=False)
         report = asyncio.run(upgrade.run(cfg))
         logger.info("core schema applied: %s", ", ".join(report.files))

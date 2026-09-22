@@ -26,7 +26,7 @@ class TestOracleConfig:
 
         assert profile.kind == "oracle"
         assert isinstance(profile.auth, PasswordAuth)
-        assert profile.where() == "oracle.example.com:1521/orclpdb1"
+        assert profile.address_prefix() == "oracle.example.com:1521/orclpdb1"
         assert profile.trace() == "auth=password user=scraper"
         assert profile.connect_settings() == {
             "host": "oracle.example.com",

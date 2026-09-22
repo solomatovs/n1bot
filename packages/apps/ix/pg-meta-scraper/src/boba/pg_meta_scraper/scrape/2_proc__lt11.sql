@@ -1,8 +1,3 @@
--- @name proc
--- @wave 2
--- @params schemas
--- @collect procs oid
--- @max 109999
 select
     oid,
     proname,
@@ -24,12 +19,4 @@ select
 from
     pg_proc
 where
-    pronamespace = any(%(schemas)s::oid[]);
--- @verify
-select
-    oid,
-    xmin::text as row_xmin
-from
-    pg_proc
-where
-    pronamespace = any(%(schemas)s::oid[]);
+    pronamespace = any(%(schemas)s::oid[])

@@ -1,7 +1,3 @@
--- @name attribute
--- @wave 3
--- @params rels
--- @min 120000
 select
     attrelid,
     attnum,
@@ -17,13 +13,4 @@ select
 from
     pg_attribute
 where
-    attrelid = any(%(rels)s::oid[]) and attnum > 0 and not attisdropped;
--- @verify
-select
-    attrelid,
-    attnum,
-    xmin::text as row_xmin
-from
-    pg_attribute
-where
-    attrelid = any(%(rels)s::oid[]) and attnum > 0 and not attisdropped;
+    attrelid = any(%(rels)s::oid[]) and attnum > 0 and not attisdropped

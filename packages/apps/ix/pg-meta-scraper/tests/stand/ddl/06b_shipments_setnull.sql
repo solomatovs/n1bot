@@ -1,4 +1,3 @@
--- @max 149999
 create table dm.shipments (
     id           bigserial primary key,
     order_id     bigint,

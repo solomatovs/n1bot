@@ -37,13 +37,16 @@ class OracleConfig(ConnectionProfileBase):
 
     Соединение идёт по имени сервиса: одна PDB или сервис экземпляра, как dbname у
     postgres. call_timeout ограничивает каждый вызов к серверу — это единственный
-    таймаут запроса, который есть у драйвера.
+    таймаут запроса, который есть у драйвера; arraysize задаёт, сколько строк курсор
+    берёт за одну поездку к серверу.
     """
 
     model_config = ConfigDict(extra="ignore")
 
-    # не аргументы connect(): граница вызова и способ авторизации
-    NOT_CONNECT_FIELDS: ClassVar[frozenset[str]] = frozenset({"call_timeout", "auth"})
+    # не аргументы connect(): границы вызова и выборки, способ авторизации
+    NOT_CONNECT_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {"call_timeout", "arraysize", "auth"}
+    )
 
     kind: Literal["oracle"] = Field(
         default="oracle",
@@ -60,6 +63,9 @@ class OracleConfig(ConnectionProfileBase):
         gt=0, description="Таймаут установки TCP-соединения (сек)."
     )
     call_timeout: int = Field(gt=0, description="Потолок одного вызова к серверу (мс).")
+    arraysize: int = Field(
+        gt=0, description="Строк за один fetch с сервера; столько же строк в пачке CSV."
+    )
     program: str = Field(
         default="",
         description="Подпись сессии; её показывает v$session.program.",
@@ -69,7 +75,7 @@ class OracleConfig(ConnectionProfileBase):
         description="Как аутентифицируемся: password. Поля задаёт сам вариант."
     )
 
-    def where(self) -> str:
+    def address_prefix(self) -> str:
         """Адрес для сообщений: host:port/service."""
         return f"{self.host}:{self.port}/{self.service}"
 

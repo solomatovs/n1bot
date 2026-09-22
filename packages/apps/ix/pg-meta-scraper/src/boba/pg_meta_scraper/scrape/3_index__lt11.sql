@@ -1,8 +1,3 @@
--- @name index
--- @wave 3
--- @params rels
--- @min 90100
--- @max 109999
 select
     indexrelid,
     indrelid,
@@ -22,12 +17,4 @@ select
 from
     pg_index
 where
-    indrelid = any(%(rels)s::oid[]);
--- @verify
-select
-    indexrelid,
-    xmin::text as row_xmin
-from
-    pg_index
-where
-    indrelid = any(%(rels)s::oid[]);
+    indrelid = any(%(rels)s::oid[])

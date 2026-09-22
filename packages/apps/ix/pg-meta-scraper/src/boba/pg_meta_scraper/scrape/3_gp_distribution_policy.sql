@@ -1,7 +1,3 @@
--- @name gp_distribution_policy
--- @wave 3
--- @params rels
--- @only gp
 select
     localoid,
     policytype,
@@ -11,12 +7,4 @@ select
 from
     gp_distribution_policy
 where
-    localoid = any(%(rels)s::oid[]);
--- @verify
-select
-    localoid,
-    xmin::text as row_xmin
-from
-    gp_distribution_policy
-where
-    localoid = any(%(rels)s::oid[]);
+    localoid = any(%(rels)s::oid[])

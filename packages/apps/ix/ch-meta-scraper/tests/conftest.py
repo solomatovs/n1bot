@@ -1,9 +1,12 @@
-"""Фикстуры стенда скрапера ClickHouse; модели и помощники лежат в ch_scraper_stand."""
+"""Фикстуры стенда скрапера; модели источников лежат в ch_scraper_stand, общая часть
+стенда — в boba.stand.scraper."""
 
 from __future__ import annotations
 
 import pytest
-from ch_scraper_stand import Golden, IxStand, IxStandDatabase
+from ch_scraper_stand import LAYOUT, IxStand
+
+from boba.stand.scraper import Golden, ScraperStandDatabase, StandFile
 
 
 @pytest.fixture(scope="session")
@@ -12,12 +15,12 @@ def ix_stand() -> IxStand:
 
 
 @pytest.fixture(scope="session")
-async def ix_database(ix_stand: IxStand) -> IxStandDatabase:
-    database = IxStandDatabase(ix_stand)
+async def ix_database(ix_stand: IxStand) -> ScraperStandDatabase:
+    database = ScraperStandDatabase(ix_stand, LAYOUT)
     await database.recreate_for_scraper()
     return database
 
 
 @pytest.fixture(scope="session")
 def golden() -> Golden:
-    return Golden()
+    return Golden(LAYOUT.path(StandFile.GOLDEN))

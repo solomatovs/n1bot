@@ -16,15 +16,16 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from typing import Any, ClassVar, LiteralString
+from dataclasses import dataclass
+from typing import Any
 
 import psycopg
-from pydantic import BaseModel, ConfigDict
+from psycopg import sql
 
+from boba.db.postgres.query import PgQueryBuilder
 from boba.ix_core.aspects import AspectClass
 from boba.ix_core.indexes import IndexKind, IndexTable
-from boba.ix_core.schema_name import SchemaName
-from boba.ix_core.search import SearchRegistry
+from boba.ix_core.registry import IxRegistry
 
 __all__ = ["NodeCard", "NodeReadError", "NodeReader", "NodeStep", "NodeText"]
 
@@ -33,30 +34,27 @@ class NodeReadError(Exception):
     """Карточку node не собрать."""
 
 
-class NodeStep(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class NodeStep:
     """Один родитель в пути от корня tree: объект и его подпись."""
-
-    model_config = ConfigDict(frozen=True)
 
     node_id: int
     surface: str
     label: str
 
 
-class NodeText(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class NodeText:
     """Текст одного аспекта объекта."""
-
-    model_config = ConfigDict(frozen=True)
 
     aspect: str
     aspect_class: AspectClass
     content: str
 
 
-class NodeCard(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class NodeCard:
     """Всё, что известно об объекте для чтения."""
-
-    model_config = ConfigDict(frozen=True)
 
     node_id: int
     surface: str
@@ -66,10 +64,9 @@ class NodeCard(BaseModel):
     texts: tuple[NodeText, ...]
 
 
-class NodeRow(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class NodeRow:
     """Строка {schema}.node до сборки карточки."""
-
-    model_config = ConfigDict(frozen=True)
 
     node_id: int
     surface: str
@@ -79,77 +76,8 @@ class NodeRow(BaseModel):
 class NodeReader:
     """Сборка карточки node на переданном соединении по реестрам вызывающего."""
 
-    NODE: ClassVar[LiteralString] = """
-        select
-            n.id,
-            n.surface::varchar,
-            n.address
-        from
-            {schema}.node n
-        where
-            n.id = %(node_id)s
-    """
-    PARENTS: ClassVar[LiteralString] = """
-        with recursive up as (
-            select
-                t.parent_id as id,
-                1 as depth
-            from
-                {schema}.tree t
-            where
-                t.node_id = %(node_id)s
-            union all
-            select
-                t.parent_id,
-                up.depth + 1
-            from
-                {schema}.tree t
-                join up on t.node_id = up.id
-            where
-                up.id is not null
-        )
-        select
-            n.id,
-            n.surface::varchar,
-            n.address
-        from
-            up
-            join {schema}.node n on n.id = up.id
-        order by
-            up.depth desc
-    """
-    LABELS: ClassVar[LiteralString] = """
-        select
-            f.node_id,
-            f.content
-        from
-            {schema}.{index} f
-            join {schema}.aspect a on a.aspect = f.aspect
-        where 1=1
-            and f.node_id = any(%(ids)s)
-            and a.class = 'ident'
-        order by
-            f.node_id,
-            length(f.content)
-    """
-    TEXTS: ClassVar[LiteralString] = """
-        select
-            f.aspect::varchar,
-            a.class::varchar,
-            f.content
-        from
-            {schema}.{index} f
-            join {schema}.aspect a on a.aspect = f.aspect
-        where 1=1
-            and f.node_id = %(node_id)s
-            and f.aspect = any(%(aspects)s::{schema}.aspect_e[])
-        order by
-            a.class,
-            f.aspect
-    """
-
-    def __init__(self, db_schema: str, registry: SearchRegistry) -> None:
-        self._schema = db_schema
+    def __init__(self, registry: IxRegistry) -> None:
+        self._schema = registry.db_schema
         self._registry = registry
 
     async def read(
@@ -174,24 +102,24 @@ class NodeReader:
             node_id=node.node_id,
             surface=node.surface,
             address=node.address,
-            url=self._registry.urls.of(node.surface, node.address),
+            url=self._registry.url_of(node.surface, node.address),
             parents=parents,
             texts=texts,
         )
 
     def _aspects_of(self, chosen: Sequence[str]) -> list[str]:
-        catalog = self._registry.aspects
-        unknown = catalog.unknown(chosen)
+        unknown = self._registry.unknown_aspects(chosen)
         if unknown:
             raise NodeReadError(
                 f"node: aspects {list(unknown)} are not declared in "
-                f"{self._schema}.aspect; known are {list(catalog.names())}"
+                f"{self._schema}.aspect; known are "
+                f"{list(self._registry.aspect_names())}"
             )
 
         if chosen:
             return list(chosen)
 
-        return list(catalog.names())
+        return list(self._registry.aspect_names())
 
     def _fts_tables(self) -> tuple[IndexTable, ...]:
         tables = self._registry.tables_of(IndexKind.FTS)
@@ -204,9 +132,25 @@ class NodeReader:
         return tables
 
     async def _node(self, conn: psycopg.AsyncConnection[Any], node_id: int) -> NodeRow:
-        cur = await conn.execute(
-            SchemaName.render(self.NODE, self._schema), {"node_id": node_id}
+        query = (
+            PgQueryBuilder()
+            .add(
+                """
+                select
+                    n.id,
+                    n.surface::varchar,
+                    n.address
+                from
+                    {schema}.node n
+                where
+                    n.id = %(node_id)s
+                """,
+                schema=sql.Identifier(self._schema),
+                node_id=node_id,
+            )
+            .build()
         )
+        cur = await conn.execute(query.text, query.params)
         row = await cur.fetchone()
         if row is None:
             raise NodeReadError(f"node {node_id} not found in {self._schema}.node")
@@ -218,11 +162,46 @@ class NodeReader:
     async def _parents(
         self, conn: psycopg.AsyncConnection[Any], node_id: int
     ) -> tuple[NodeStep, ...]:
-        cur = await conn.execute(
-            SchemaName.render(self.PARENTS, self._schema), {"node_id": node_id}
+        query = (
+            PgQueryBuilder()
+            .add(
+                """
+                with recursive up as (
+                    select
+                        t.parent_id as id,
+                        1 as depth
+                    from
+                        {schema}.tree t
+                    where
+                        t.node_id = %(node_id)s
+                    union all
+                    select
+                        t.parent_id,
+                        up.depth + 1
+                    from
+                        {schema}.tree t
+                        join up on t.node_id = up.id
+                    where
+                        up.id is not null
+                )
+                select
+                    n.id,
+                    n.surface::varchar,
+                    n.address
+                from
+                    up
+                    join {schema}.node n on n.id = up.id
+                order by
+                    up.depth desc
+                """,
+                schema=sql.Identifier(self._schema),
+                node_id=node_id,
+            )
+            .build()
         )
+        cur = await conn.execute(query.text, query.params)
         rows: list[NodeRow] = []
-        for found_id, surface, address in await cur.fetchall():
+        async for found_id, surface, address in cur:
             rows.append(
                 NodeRow(node_id=int(found_id), surface=str(surface), address=address)
             )
@@ -254,9 +233,31 @@ class NodeReader:
         """Первая (самая короткая) ident-строка каждого node по всем fts-таблицам."""
         labels: dict[int, str] = {}
         for table in self._fts_tables():
-            query = SchemaName.render(self.LABELS, self._schema, index=table.ident())
-            cur = await conn.execute(query, {"ids": list(ids)})
-            for found_id, content in await cur.fetchall():
+            query = (
+                PgQueryBuilder()
+                .add(
+                    """
+                        select
+                            f.node_id,
+                            f.content
+                        from
+                            {schema}.{index} f
+                            join {schema}.aspect a on a.aspect = f.aspect
+                        where 1=1
+                            and f.node_id = any(%(ids)s)
+                            and a.class = 'ident'
+                        order by
+                            f.node_id,
+                            length(f.content)
+                    """,
+                    schema=sql.Identifier(self._schema),
+                    index=table.ident(),
+                    ids=list(ids),
+                )
+                .build()
+            )
+            cur = await conn.execute(query.text, query.params)
+            async for found_id, content in cur:
                 if int(found_id) in labels:
                     continue
 
@@ -265,7 +266,7 @@ class NodeReader:
         return labels
 
     def _fallback_label(self, row: NodeRow) -> str:
-        url = self._registry.urls.of(row.surface, row.address)
+        url = self._registry.url_of(row.surface, row.address)
         if url:
             return url
 
@@ -279,11 +280,33 @@ class NodeReader:
     ) -> tuple[NodeText, ...]:
         texts: list[NodeText] = []
         for table in self._fts_tables():
-            query = SchemaName.render(self.TEXTS, self._schema, index=table.ident())
-            cur = await conn.execute(
-                query, {"node_id": node_id, "aspects": list(aspects)}
+            query = (
+                PgQueryBuilder()
+                .add(
+                    """
+                        select
+                            f.aspect::varchar,
+                            a.class::varchar,
+                            f.content
+                        from
+                            {schema}.{index} f
+                            join {schema}.aspect a on a.aspect = f.aspect
+                        where 1=1
+                            and f.node_id = %(node_id)s
+                            and f.aspect = any(%(aspects)s::{schema}.aspect_e[])
+                        order by
+                            a.class,
+                            f.aspect
+                    """,
+                    schema=sql.Identifier(self._schema),
+                    index=table.ident(),
+                    node_id=node_id,
+                    aspects=list(aspects),
+                )
+                .build()
             )
-            for aspect, aspect_class, content in await cur.fetchall():
+            cur = await conn.execute(query.text, query.params)
+            async for aspect, aspect_class, content in cur:
                 texts.append(
                     NodeText(
                         aspect=str(aspect),

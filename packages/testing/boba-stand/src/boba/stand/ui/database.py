@@ -30,7 +30,7 @@ from boba.connections.profile import (
 )
 from boba.db.clickhouse.profile import ClickHouseConfig
 from boba.db.clickhouse.snapshot import ChSourceKind
-from boba.db.postgres import AsyncPostgresPool, SqlNames
+from boba.db.postgres import AsyncPostgresPool, PgQuery, PgQueryBuilder, SqlNames
 from boba.db.postgres.profile.config import PostgresConfig
 from boba.identity.session import UserMetadataField
 from boba.runtime.config import DataLayerConfig
@@ -49,9 +49,11 @@ class StandExtension(StrEnum):
     UNACCENT = "unaccent"
     BTREE_GIN = "btree_gin"
 
-    def statement(self) -> sql.Composed:
-        return sql.SQL("create extension if not exists {}").format(
-            sql.Identifier(self.value)
+    def statement(self) -> PgQuery:
+        return (
+            PgQueryBuilder()
+            .add("create extension if not exists {ext}", ext=sql.Identifier(self.value))
+            .build()
         )
 
     def manual_hint(self, database: str) -> str:
@@ -106,14 +108,30 @@ class StandDatabase:
         workflow = bind(self._built, path="workflow", model=WorkflowConfig)
         async with self._pool() as pool, pool.cursor() as cur:
             for table in (ConnectionTable.GRANTS, ConnectionTable.CONNECTIONS):
-                await cur.execute(self._drop(connections.db_schema, table.value))
+                query = (
+                    PgQueryBuilder()
+                    .add(
+                        "drop table if exists {table} cascade",
+                        table=sql.Identifier(connections.db_schema, table.value),
+                    )
+                    .build()
+                )
+                await cur.execute(query.text, query.params)
 
             workflow_tables = (
                 WorkflowTable.RUNS,
                 WorkflowTable.WORKFLOWS,
             )
             for table in workflow_tables:
-                await cur.execute(self._drop(workflow.db_schema, table.value))
+                query = (
+                    PgQueryBuilder()
+                    .add(
+                        "drop table if exists {table} cascade",
+                        table=sql.Identifier(workflow.db_schema, table.value),
+                    )
+                    .build()
+                )
+                await cur.execute(query.text, query.params)
 
         # каталог живёт в studio: домен сносится схемой, таблицы приложения —
         # поимённо, схема приложения общая с users и workflow; у chainlit секция
@@ -121,26 +139,40 @@ class StandDatabase:
         if self._app is StandApp.STUDIO:
             catalog = bind(self._built, path="catalog", model=CatalogConfig)
             async with self._pool() as pool, pool.cursor() as cur:
-                await cur.execute(
-                    sql.SQL("drop schema if exists {} cascade").format(
-                        sql.Identifier(catalog.db_schema)
+                query = (
+                    PgQueryBuilder()
+                    .add(
+                        "drop schema if exists {schema} cascade",
+                        schema=sql.Identifier(catalog.db_schema),
                     )
+                    .build()
                 )
+                await cur.execute(query.text, query.params)
                 for table in CatalogTable:
-                    await cur.execute(self._drop(catalog.app_schema, table.value))
+                    query = (
+                        PgQueryBuilder()
+                        .add(
+                            "drop table if exists {table} cascade",
+                            table=sql.Identifier(catalog.app_schema, table.value),
+                        )
+                        .build()
+                    )
+                    await cur.execute(query.text, query.params)
 
                 for snapshot_table in SnapshotTable:
-                    await cur.execute(
-                        self._drop(catalog.app_schema, snapshot_table.value)
+                    query = (
+                        PgQueryBuilder()
+                        .add(
+                            "drop table if exists {table} cascade",
+                            table=sql.Identifier(
+                                catalog.app_schema, snapshot_table.value
+                            ),
+                        )
+                        .build()
                     )
+                    await cur.execute(query.text, query.params)
 
         await self._forget_studio_profiles()
-
-    @staticmethod
-    def _drop(schema: str, table: str) -> sql.Composed:
-        return sql.SQL("drop table if exists {} cascade").format(
-            sql.Identifier(schema, table)
-        )
 
     async def _ensure_database(self) -> None:
         maintenance = AsyncPostgresPool(self._maintenance)
@@ -152,9 +184,12 @@ class StandDatabase:
                 )
                 exists = await cur.fetchone()
                 if not exists:
-                    await cur.execute(
-                        sql.SQL("create database {}").format(sql.Identifier(self._name))
+                    query = (
+                        PgQueryBuilder()
+                        .add("create database {db}", db=sql.Identifier(self._name))
+                        .build()
                     )
+                    await cur.execute(query.text, query.params)
         finally:
             await maintenance.close()
 
@@ -169,25 +204,25 @@ class StandDatabase:
                     continue
 
                 try:
-                    await cur.execute(extension.statement())
+                    query = extension.statement()
+                    await cur.execute(query.text, query.params)
                 except InsufficientPrivilege as exc:
                     msg = f"{extension.manual_hint(self._name)}: {exc}"
                     raise StandError(msg) from exc
 
     async def _forget_studio_profiles(self) -> None:
         """Выбор профиля studio хранится на пользователе и пережил бы прогон."""
-        query = sql.SQL("update {}.users set meta = meta - %s where meta ? %s").format(
-            sql.Identifier(self._schema)
+        query = (
+            PgQueryBuilder(schema=sql.Identifier(self._schema))
+            .add(
+                "update {schema}.users set meta = meta - %(key)s where meta ? %(key)s",
+                key=UserMetadataField.STUDIO_PROFILE,
+            )
+            .build()
         )
         try:
             async with self._pool() as pool, pool.cursor() as cur:
-                await cur.execute(
-                    query,
-                    (
-                        UserMetadataField.STUDIO_PROFILE,
-                        UserMetadataField.STUDIO_PROFILE,
-                    ),
-                )
+                await cur.execute(query.text, query.params)
         except Exception as exc:
             # таблицы users ещё нет у чистой базы: приложение создаст её на старте
             if "does not exist" not in str(exc):
@@ -195,17 +230,24 @@ class StandDatabase:
 
     def wipe_llm_settings(self) -> None:
         """Снимает сохранённые настройки LLM у всех пользователей базы."""
-        query = sql.SQL("update {}.users set meta = meta - 'llm'").format(
-            sql.Identifier(self._schema)
+        query = (
+            PgQueryBuilder(schema=sql.Identifier(self._schema))
+            .add("update {schema}.users set meta = meta - 'llm'")
+            .build()
         )
-        run_blocking(self._execute(query, None))
+        run_blocking(self._execute(query))
 
     def elements_named(self, name: str) -> int:
         """Сколько элементов с таким именем записал data layer стенда."""
-        query = sql.SQL("select count(*) from {}.elements where name = %s").format(
-            sql.Identifier(self._schema)
+        query = (
+            PgQueryBuilder(schema=sql.Identifier(self._schema))
+            .add(
+                "select count(*) from {schema}.elements where name = %(name)s",
+                name=name,
+            )
+            .build()
         )
-        row = run_blocking(self._execute(query, (name,)))
+        row = run_blocking(self._execute(query))
         if row is None:
             return 0
 
@@ -214,10 +256,16 @@ class StandDatabase:
     def catalog_portions(self, draft_id: str) -> int:
         """Сколько порций операций записано в черновик каталога."""
         catalog = bind(self._built, path="catalog", model=CatalogConfig)
-        query = sql.SQL("select count(*) from {} where draft_id = %s").format(
-            SqlNames.table(catalog.app_schema, CatalogTable.DRAFT_OPS)
+        query = (
+            PgQueryBuilder()
+            .add(
+                "select count(*) from {table} where draft_id = %(draft_id)s",
+                table=SqlNames.table(catalog.app_schema, CatalogTable.DRAFT_OPS),
+                draft_id=draft_id,
+            )
+            .build()
         )
-        row = run_blocking(self._execute(query, (draft_id,)))
+        row = run_blocking(self._execute(query))
         if row is None:
             return 0
 
@@ -225,11 +273,16 @@ class StandDatabase:
 
     def llm_settings_of(self, identifier: str) -> dict[str, Any]:
         """Ключ llm из users.meta: тест сверяет, что именно сохранилось."""
-        query = sql.SQL(
-            "select coalesce(meta -> 'llm', '{{}}'::jsonb) "
-            "from {}.users where identifier = %s"
-        ).format(sql.Identifier(self._schema))
-        row = run_blocking(self._execute(query, (identifier,)))
+        query = (
+            PgQueryBuilder(schema=sql.Identifier(self._schema))
+            .add(
+                "select coalesce(meta -> 'llm', '{{}}'::jsonb) "
+                "from {schema}.users where identifier = %(identifier)s",
+                identifier=identifier,
+            )
+            .build()
+        )
+        row = run_blocking(self._execute(query))
         if row is None:
             msg = f"user {identifier!r} has no row in {self._schema}.users"
             raise RuntimeError(msg)
@@ -246,18 +299,27 @@ class StandDatabase:
 
     async def _break_connection_kind(self, name: str, kind: str) -> None:
         connections = bind(self._built, path="connections", model=ConnectionsConfig)
-        query = sql.SQL(
-            "update {} "
-            "set data = jsonb_set(data, '{{kind}}', to_jsonb(%(kind)s::text)) "
-            "where name = %(name)s"
-        ).format(SqlNames.table(connections.db_schema, ConnectionTable.CONNECTIONS))
+        query = (
+            PgQueryBuilder()
+            .add(
+                "update {table} "
+                "set data = jsonb_set(data, '{{kind}}', to_jsonb(%(kind)s::text)) "
+                "where name = %(name)s",
+                table=SqlNames.table(
+                    connections.db_schema, ConnectionTable.CONNECTIONS
+                ),
+                kind=kind,
+                name=name,
+            )
+            .build()
+        )
 
         async with self._pool() as pool, pool.cursor() as cur:
-            await cur.execute(query, {"kind": kind, "name": name})
+            await cur.execute(query.text, query.params)
 
     def ddl(self, statement: LiteralString) -> None:
         """DDL в базе стенда: таблицы-пробники для синхронизации каталога."""
-        run_blocking(self._execute(sql.Composed([sql.SQL(statement)]), None))
+        run_blocking(self._execute(PgQueryBuilder().add(statement).build()))
 
     def add_connection(self, name: str, kind: str) -> UUID:
         """Подключение стенда к своей базе под именем name: копия профиля
@@ -327,11 +389,15 @@ class StandDatabase:
             # профиля, поэтому чистятся мимо стора
             async with pool.cursor() as cur:
                 for table in (ConnectionTable.GRANTS, ConnectionTable.CONNECTIONS):
-                    await cur.execute(
-                        sql.SQL("delete from {}").format(
-                            SqlNames.table(connections.db_schema, table)
+                    query = (
+                        PgQueryBuilder()
+                        .add(
+                            "delete from {table}",
+                            table=SqlNames.table(connections.db_schema, table),
                         )
+                        .build()
                     )
+                    await cur.execute(query.text, query.params)
 
             rows = [
                 await store.add("main", self._postgres),
@@ -340,11 +406,9 @@ class StandDatabase:
             ]
             await self._grant_stand_roles(store, rows)
 
-    async def _execute(
-        self, query: sql.Composed, params: tuple[Any, ...] | None
-    ) -> Any:
+    async def _execute(self, query: PgQuery) -> Any:
         async with self._pool() as pool, pool.cursor() as cur:
-            await cur.execute(query, params)
+            await cur.execute(query.text, query.params)
             if cur.description is None:
                 return None
 

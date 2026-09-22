@@ -11,7 +11,9 @@ from typing import Any
 
 import pytest
 from cfl_stand import SharedIndexers, StubIndexer
+from psycopg import sql
 
+from boba.db.postgres.query import PgQueryBuilder
 from boba.stand.confluence import (
     ConfluenceStub,
     StubKind,
@@ -94,7 +96,12 @@ async def rows(
     database: IxStandDatabase, text: str, params: dict[str, Any]
 ) -> list[Any]:
     async with database.connection() as conn:
-        cur = await conn.execute(database.render(text), params)
+        query = (
+            PgQueryBuilder(schema=sql.Identifier(database.stand.db_schema))
+            .add(text, **params)
+            .build()
+        )
+        cur = await conn.execute(query.text, query.params)
 
         return list(await cur.fetchall())
 
@@ -170,7 +177,7 @@ class TestIndexSpace:
         urls = await ix_database.urls()
         built: dict[str, str] = {}
         for surface, address in await ix_database.nodes():
-            built[surface] = urls.of(surface, address)
+            built[surface] = urls.url_of(surface, address)
 
         origin = f"http://127.0.0.1:{port}"
         assert built["cfl_space"] == f"{origin}/display/{SPACE}"

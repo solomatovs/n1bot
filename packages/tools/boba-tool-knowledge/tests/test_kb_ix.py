@@ -19,7 +19,8 @@ from psycopg import sql
 from boba.config import bind
 from boba.db.postgres import PayloadPostgres
 from boba.ix_core.indexes import IndexKind
-from boba.ix_core.search import IxSearchError, SearchRegistry
+from boba.ix_core.registry import IxRegistry
+from boba.ix_core.search import IxSearchError
 from boba.tool.kb.kb import KbToolConfig
 from boba.tool.kb.tools import (
     kb_catalog2,
@@ -64,7 +65,7 @@ async def page_title(kb_cfg: KbToolConfig) -> str:
     """Заголовок любой проиндексированной страницы из полнотекстовой таблицы."""
     conn = await PayloadPostgres.connect_config(kb_cfg.connection)
     async with conn:
-        registry = await SearchRegistry.load(conn, kb_cfg.db_schema)
+        registry = await IxRegistry(kb_cfg.db_schema).read(conn)
         tables = registry.tables_of(IndexKind.FTS)
         if not tables:
             pytest.skip("no fts table in the registry")
