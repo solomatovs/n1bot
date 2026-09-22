@@ -2,7 +2,7 @@
 
 from psycopg import sql
 
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PgQueryBuilder
 from boba.db.postgres.profile.config import PostgresConfig
 
 
@@ -23,9 +23,12 @@ class TestDatabase:
                 )
                 exists = await cur.fetchone()
                 if not exists:
-                    await cur.execute(
-                        sql.SQL("create database {}").format(sql.Identifier(cls.NAME))
+                    query = (
+                        PgQueryBuilder()
+                        .add("create database {db}", db=sql.Identifier(cls.NAME))
+                        .build()
                     )
+                    await cur.execute(query.text, query.params)
         finally:
             await maintenance.close()
 

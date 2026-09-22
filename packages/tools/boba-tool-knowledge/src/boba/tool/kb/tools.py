@@ -33,14 +33,14 @@ import psycopg
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.db.postgres import PayloadPostgres, PostgresError
-from boba.ix_core.indexes import IndexCoverage, IndexKind
+from boba.ix_core.indexes import IndexKind
 from boba.ix_core.nodes import NodeCard, NodeReader, NodeReadError
+from boba.ix_core.registry import IxRegistry
 from boba.ix_core.search import (
     Hit,
     IxSearch,
     IxSearchError,
     SearchMode,
-    SearchRegistry,
     SearchRequest,
 )
 from boba.ix_core.surfaces import Surface
@@ -157,7 +157,7 @@ class KbSession:
         self,
         cfg: KbToolConfig,
         conn: psycopg.AsyncConnection[Any],
-        registry: SearchRegistry,
+        registry: IxRegistry,
     ) -> None:
         self._cfg = cfg
         self._conn = conn
@@ -172,7 +172,7 @@ class KbSession:
 
         async with conn:
             load = Elapsed()
-            registry = await SearchRegistry.load(conn, cfg.db_schema)
+            registry = await IxRegistry(cfg.db_schema).read(conn)
             logger.info("ix registries loaded in %dms", load.ms())
 
             yield cls(cfg, conn, registry)
@@ -182,7 +182,7 @@ class KbSession:
         return self._conn
 
     @property
-    def registry(self) -> SearchRegistry:
+    def registry(self) -> IxRegistry:
         return self._registry
 
     async def search(self, request: SearchRequest) -> Sequence[Hit]:
@@ -190,28 +190,29 @@ class KbSession:
             await self._conn.execute(self.ITERATIVE_SCAN)
 
         elapsed = Elapsed()
-        reply = await IxSearch(self._cfg.db_schema, self._registry).search(
-            self._conn, request
-        )
+        hits: list[Hit] = []
+        async for hit in IxSearch(self._registry).search(self._conn, request):
+            hits.append(hit)
+
         logger.info(
             "ix %s search finished in %dms (%d hits)",
             request.mode,
             elapsed.ms(),
-            len(reply.hits),
+            len(hits),
         )
 
-        return reply.hits
+        return hits
 
     async def node(self, node_id: int, aspects: Sequence[str]) -> NodeCard:
-        reader = NodeReader(self._cfg.db_schema, self._registry)
+        reader = NodeReader(self._registry)
 
         return await reader.read(self._conn, node_id, aspects)
 
     async def coverage(self) -> dict[tuple[str, str], list[IndexKind]]:
         """Виды индексов, в которых есть каждая пара «поверхность, аспект»."""
         found: dict[tuple[str, str], list[IndexKind]] = {}
-        for table in self._registry.all_tables():
-            pairs = await IndexCoverage.of(self._conn, self._cfg.db_schema, table)
+        for table in self._registry.get_tables():
+            pairs = await self._registry.read_coverage(self._conn, table)
             for pair in pairs:
                 kinds = found.setdefault(pair, [])
                 if table.kind in kinds:
@@ -290,7 +291,7 @@ class CatalogRows:
     def of(
         cls,
         surfaces: Sequence[Surface],
-        registry: SearchRegistry,
+        registry: IxRegistry,
         coverage: Mapping[tuple[str, str], Sequence[IndexKind]],
     ) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
@@ -312,11 +313,11 @@ class CatalogRows:
     def _aspects(
         cls,
         surface: str,
-        registry: SearchRegistry,
+        registry: IxRegistry,
         coverage: Mapping[tuple[str, str], Sequence[IndexKind]],
     ) -> str:
         parts: list[str] = []
-        for entry in registry.aspects.of_surface(surface):
+        for entry in registry.aspects_of(surface):
             kinds = coverage.get((surface, entry.aspect), ())
             names: list[str] = []
             for kind in kinds:
@@ -331,9 +332,9 @@ class CatalogRows:
         return "; ".join(parts)
 
     @staticmethod
-    def note(registry: SearchRegistry) -> str:
+    def note(registry: IxRegistry) -> str:
         lines: list[str] = ["aspects:"]
-        for entry in registry.aspects.all():
+        for entry in registry.get_aspects():
             lines.append(
                 f"- {entry.aspect} [{entry.aspect_class}]: {entry.description}"
             )
@@ -449,7 +450,7 @@ async def kb_catalog2(
     """
     async with KbSession.opened(cfg) as session:
         coverage = await session.coverage()
-        surfaces = session.registry.surfaces.indexed()
+        surfaces = session.registry.indexed_surfaces()
         rows = CatalogRows.of(surfaces, session.registry, coverage)
         note = CatalogRows.note(session.registry)
 

@@ -11,6 +11,7 @@ dependencies = [
     "boba-config==0.0.22.dev1",
     "boba-db-postgres==0.0.22.dev1",
     "boba-krb==0.0.22.dev1",
+    "boba-toolkit==0.0.22.dev1",
     "psycopg[binary]>=3.2",
     "pydantic>=2.10,<2.11",
 ]

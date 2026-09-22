@@ -1,7 +1,3 @@
--- @name type
--- @wave 2
--- @params schemas
--- @collect types oid
 select
     oid,
     typname,
@@ -18,12 +14,4 @@ select
 from
     pg_type
 where
-    typnamespace = any(%(schemas)s::oid[]);
--- @verify
-select
-    oid,
-    xmin::text as row_xmin
-from
-    pg_type
-where
-    typnamespace = any(%(schemas)s::oid[]);
+    typnamespace = any(%(schemas)s::oid[])

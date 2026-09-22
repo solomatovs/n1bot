@@ -8,7 +8,7 @@ ClickHouseError — до базы не достучаться (сеть, TLS, ke
 ClickHouseQueryError — сервер отклонил запрос (синтаксис, права).
 UnknownConnectionError — имя подключения вне whitelist'а конфига.
 AddressError — у профиля соединения нет базы по умолчанию для ch_address.
-ChQueryError — сборщик получил один параметр с двумя разными значениями.
+QueryBuildError — сборщик получил один параметр с двумя разными значениями.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import Annotated, Any, ClassVar, Final, Self
+from typing import Annotated, Any, ClassVar, Final
 
 from pydantic import Field
 
@@ -24,11 +24,12 @@ from boba.connections.address import AddressError
 from boba.db.clickhouse import ClickHouseError, ClickHouseQueryError
 from boba.db.clickhouse.address import ChAddresses
 from boba.db.clickhouse.profile import ClickHouseConfig
+from boba.db.clickhouse.query import ChQuery, ChQueryBuilder
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import UserConnection, tool
 from boba.toolkit.result import MarkdownResult, SqlResult, TableResult
 from boba.toolkit.sql import (
-    AbstractQuery,
+    QueryBuildError,
     RowLimit,
     RowOffset,
     RowPage,
@@ -39,12 +40,6 @@ from boba.toolkit.sql import (
 from boba.toolkit.types import SecretRevealing
 
 ChConnection = Annotated[ClickHouseConfig, UserConnection]
-
-ChParams = dict[str, Any]
-"""Серверные параметры ClickHouse: {name:Type} в тексте, значение в словаре."""
-
-ChQuery = AbstractQuery[str, ChParams]
-"""Собранный запрос: текст с {name:Type} плюс словарь параметров."""
 
 DatabaseFilter = Annotated[
     str,
@@ -83,55 +78,12 @@ class AddressColumn(StrEnum):
     URL = "url"
 
 
-class ChQueryError(Exception):
-    """Сборщик запроса получил противоречивые куски."""
-
-
 class ChToolConfig(SecretRevealing, SqlLimits):
     """Лимиты выдачи ch-инструментов; [tool.ch]."""
 
     SECTION: ClassVar[str] = "tool.ch"
     ENGINE: ClassVar[str] = "clickhouse"
     """Подпись движка в SqlResult."""
-
-
-class ChQueryBuilder:
-    """Запрос кусками, которые инструмент добавляет по ходу своей логики.
-
-    Подстановку делает сервер: в куске `{name:Type}` это параметр запроса
-    ClickHouse, значение уезжает в словаре параметров, а идентификатор
-    пишется как `{name:Identifier}`. Кусок с условием попадает в запрос
-    только при истинном условии, так инструмент держит весь SQL у себя и
-    решает, какие фильтры включить.
-    """
-
-    def __init__(self) -> None:
-        self._parts: list[str] = []
-        self._params: ChParams = {}
-
-    def add(self, text: str, /, **bind: Any) -> Self:
-        for name, value in bind.items():
-            if name in self._params and self._params[name] != value:
-                msg = (
-                    f"query builder: parameter {name!r} bound twice with different "
-                    f"values: {self._params[name]!r} and {value!r}"
-                )
-                raise ChQueryError(msg)
-
-            self._params[name] = value
-
-        self._parts.append(text)
-
-        return self
-
-    def when(self, condition: bool, text: str, /, **bind: Any) -> Self:
-        if not condition:
-            return self
-
-        return self.add(text, **bind)
-
-    def build(self) -> ChQuery:
-        return ChQuery(text="\n".join(self._parts), params=dict(self._params))
 
 
 def get_payload() -> Any:
@@ -761,7 +713,7 @@ async def ch_address(connection: ChConnection) -> TableResult:
 
 EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
     AddressError: SqlErrorKind.UNKNOWN_TARGET,
-    ChQueryError: SqlErrorKind.SQL_FAILED,
+    QueryBuildError: SqlErrorKind.SQL_FAILED,
     ClickHouseError: SqlErrorKind.DATABASE_UNAVAILABLE,
     ClickHouseQueryError: SqlErrorKind.SQL_FAILED,
 }

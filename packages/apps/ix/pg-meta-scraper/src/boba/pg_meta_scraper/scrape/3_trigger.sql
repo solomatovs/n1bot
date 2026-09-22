@@ -1,8 +1,3 @@
--- @name trigger
--- @wave 3
--- @params rels
--- @collect triggers oid
--- @min 130000
 select
     oid,
     tgrelid,
@@ -18,12 +13,4 @@ select
 from
     pg_trigger
 where
-    tgrelid = any(%(rels)s::oid[]) and not tgisinternal;
--- @verify
-select
-    oid,
-    xmin::text as row_xmin
-from
-    pg_trigger
-where
-    tgrelid = any(%(rels)s::oid[]) and not tgisinternal;
+    tgrelid = any(%(rels)s::oid[]) and not tgisinternal

@@ -1,5 +1,5 @@
 """Oracle для payload'ов и скраперов: thin-соединение python-oracledb по профилю,
-строки запроса потоком с именованными bind'ами.
+строки запроса потоком с именованными bind'ами или CSV-байтами пачками.
 
 Ошибки:
 OracleQueryError — сервер отклонил запрос или оборвал чтение (в том числе по
@@ -9,6 +9,8 @@ OracleError — до базы не достучаться: сеть, listener, �
 
 from __future__ import annotations
 
+import csv
+import io
 from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -20,7 +22,7 @@ from oracledb import AsyncConnection, AsyncCursor
 from boba.db.oracle.errors import OracleError, OracleQueryError
 from boba.db.oracle.profile import OracleConfig
 
-__all__ = ["PayloadOracle", "RowStream"]
+__all__ = ["ByteStream", "PayloadOracle", "RowStream"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,32 +38,43 @@ class RowStream:
     blocks: AsyncIterator[Sequence[Any]]
 
 
-class PayloadOracle:
-    """Соединение по профилю и строки запроса на нём.
+@dataclass(frozen=True)
+class ByteStream:
+    """Ответ запроса байтами CSV без заголовка: имена колонок и блоки по пачкам
+    arraysize строк."""
 
-    Пула нет: скрапер держит одно соединение на попытку, payload — на вызов.
-    LOB-колонки читаются строками и байтами, а не объектами LOB, чтобы поток
-    строк не зависел от открытого курсора; NUMBER приходит Decimal, а не float:
-    битовые поля словаря шире 2^53.
+    names: tuple[str, ...]
+    blocks: AsyncIterator[memoryview]
+
+
+class PayloadOracle:
+    """Соединение по профилю и запросы на нём: строки потоком или CSV-байты пачками.
+
+    Создаётся на профиль OracleConfig; из него берутся параметры соединения,
+    call_timeout и arraysize курсоров. Пула нет: скрапер держит одно соединение на
+    попытку, payload — на вызов. LOB-колонки читаются строками и байтами, а не
+    объектами LOB, чтобы поток строк не зависел от открытого курсора; NUMBER
+    приходит Decimal, а не float: битовые поля словаря шире 2^53.
     """
 
-    ARRAYSIZE: ClassVar[int] = 2000
+    ENCODING: ClassVar[str] = "utf-8"
 
-    @staticmethod
+    def __init__(self, connection: OracleConfig) -> None:
+        self._connection = connection
+
     @asynccontextmanager
-    async def opened_config(
-        connection: OracleConfig,
-    ) -> AsyncGenerator[AsyncConnection, None]:
+    async def opened(self) -> AsyncGenerator[AsyncConnection, None]:
         """Соединение на время операции; закрывается на выходе из блока."""
         oracledb.defaults.fetch_lobs = False
         oracledb.defaults.fetch_decimals = True
 
+        connection = self._connection
         try:
             conn = await oracledb.connect_async(**connection.connect_settings())
         except oracledb.Error as exc:
             raise OracleError(
-                f"connecting to oracle {connection.where()} as {connection.trace()}: "
-                f"{type(exc).__name__}: {exc}"
+                f"connecting to oracle {connection.address_prefix()} "
+                f"as {connection.trace()}: {type(exc).__name__}: {exc}"
             ) from exc
 
         conn.call_timeout = connection.call_timeout
@@ -70,9 +83,9 @@ class PayloadOracle:
         finally:
             await conn.close()
 
-    @staticmethod
     @asynccontextmanager
     async def rows(
+        self,
         conn: AsyncConnection,
         text: str,
         parameters: Mapping[str, object] | None = None,
@@ -84,11 +97,43 @@ class PayloadOracle:
         if parameters:
             binds = dict(parameters)
 
+        cursor = await self._executed(conn, text, binds)
+        try:
+            yield RowStream(
+                names=self._names(cursor),
+                blocks=self._iterate(cursor, text),
+            )
+        finally:
+            cursor.close()
+
+    @asynccontextmanager
+    async def csv(
+        self, conn: AsyncConnection, text: str
+    ) -> AsyncGenerator[ByteStream, None]:
+        """Ответ запроса CSV-байтами без заголовка пачками по arraysize: пачку строк
+        собирает драйвер, в текст её переводит csv.writer одним вызовом. NULL это
+        пустое поле, строка с кавычкой, запятой или переводом строки — в кавычках,
+        NUMBER пишется как Decimal, DATE и TIMESTAMP — ISO с пробелом. RAW запрос
+        отдаёт `rawtohex`: bytes в CSV не пишутся. Ответ Arrow (fetch_df_batches)
+        не используется: на 12.2 и 18 он роняет thin-драйвер 26.0 на обычных
+        запросах словаря."""
+        cursor = await self._executed(conn, text, {})
+        try:
+            yield ByteStream(
+                names=self._names(cursor),
+                blocks=self._csv_batches(cursor, text),
+            )
+        finally:
+            cursor.close()
+
+    async def _executed(
+        self, conn: AsyncConnection, text: str, binds: Mapping[str, Any]
+    ) -> AsyncCursor:
         cursor = conn.cursor()
-        cursor.arraysize = PayloadOracle.ARRAYSIZE
+        cursor.arraysize = self._connection.arraysize
 
         try:
-            await cursor.execute(text, binds)
+            await cursor.execute(text, dict(binds))
         except oracledb.Error as exc:
             cursor.close()
             raise OracleQueryError(
@@ -96,16 +141,34 @@ class PayloadOracle:
                 f"query: {text[:200]!r}"
             ) from exc
 
+        return cursor
+
+    @staticmethod
+    def _names(cursor: AsyncCursor) -> tuple[str, ...]:
         names: list[str] = []
         for column in cursor.description or ():
             names.append(str(column[0]).lower())
 
+        return tuple(names)
+
+    @classmethod
+    async def _csv_batches(
+        cls, cursor: AsyncCursor, text: str
+    ) -> AsyncIterator[memoryview]:
         try:
-            yield RowStream(
-                names=tuple(names), blocks=PayloadOracle._iterate(cursor, text)
-            )
-        finally:
-            cursor.close()
+            while True:
+                rows = await cursor.fetchmany()
+                if not rows:
+                    return
+
+                buffer = io.StringIO()
+                csv.writer(buffer, lineterminator="\n").writerows(rows)
+                yield memoryview(buffer.getvalue().encode(cls.ENCODING))
+        except oracledb.Error as exc:
+            raise OracleQueryError(
+                f"reading rows from oracle failed: {type(exc).__name__}: {exc}; "
+                f"query: {text[:200]!r}"
+            ) from exc
 
     @staticmethod
     async def _iterate(cursor: AsyncCursor, text: str) -> AsyncIterator[Sequence[Any]]:

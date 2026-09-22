@@ -37,9 +37,10 @@ class TestPayloadOracle:
     @pytest.mark.parametrize("name", [source.name for source in STAND.ora_sources])
     async def test_rows_names_lists_and_lobs(self, name: str) -> None:
         source = next(s for s in STAND.ora_sources if s.name == name)
+        payload = PayloadOracle(source.oracle)
 
-        async with PayloadOracle.opened_config(source.oracle) as conn:
-            async with PayloadOracle.rows(
+        async with payload.opened() as conn:
+            async with payload.rows(
                 conn,
                 "select user as who, sys_context('userenv', 'con_name') as con "
                 "from dual",
@@ -49,7 +50,7 @@ class TestPayloadOracle:
             con_name, _, _ = source.oracle.service.partition(".")
             assert rows == [(source.oracle.auth.user.upper(), con_name.upper())]
 
-            async with PayloadOracle.rows(
+            async with payload.rows(
                 conn,
                 "select u.name from sys.user$ u where u.name = :who",
                 {"who": source.oracle.auth.user.upper()},
@@ -57,14 +58,14 @@ class TestPayloadOracle:
                 rows = [row async for row in stream.blocks]
             assert rows == [(source.oracle.auth.user.upper(),)]
 
-            async with PayloadOracle.rows(
+            async with payload.rows(
                 conn, "select to_clob('lob text') as body from dual"
             ) as stream:
                 rows = [row async for row in stream.blocks]
             assert rows == [("lob text",)]
 
             with pytest.raises(OracleQueryError, match="ORA-00942"):
-                async with PayloadOracle.rows(conn, "select * from no_such_table"):
+                async with payload.rows(conn, "select * from no_such_table"):
                     pass
 
     async def test_wrong_password_is_oracle_error(self) -> None:
@@ -73,5 +74,5 @@ class TestPayloadOracle:
         profile = source.oracle.model_copy(update={"auth": auth})
 
         with pytest.raises(OracleError, match="ORA-01017"):
-            async with PayloadOracle.opened_config(profile):
+            async with PayloadOracle(profile).opened():
                 pass

@@ -12,7 +12,9 @@ from pathlib import Path
 
 import pytest
 from cfl_stand import PACKAGE_DIR, SharedIndexers, StubIndexer
+from psycopg import sql
 
+from boba.db.postgres.query import PgQueryBuilder
 from boba.ix_fts import worker as fts
 from boba.ix_trgm import worker as trgm
 from boba.ix_vector import worker as vector
@@ -92,4 +94,9 @@ async def clean_graph(ix_database: IxStandDatabase) -> None:
     """Каждый сценарий начинает с пустого графа Confluence: заглушка каждого теста
     живёт на своём порту, то есть это другой сервер с теми же ключами."""
     async with ix_database.connection() as conn:
-        await conn.execute(ix_database.render(CLEAN))
+        query = (
+            PgQueryBuilder(schema=sql.Identifier(ix_database.stand.db_schema))
+            .add(CLEAN)
+            .build()
+        )
+        await conn.execute(query.text, query.params)

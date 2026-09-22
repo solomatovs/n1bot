@@ -1,110 +1,44 @@
-"""Формулы ссылок на объекты: шаблон владельца поверхности и его применение.
+"""Формулы ссылок {schema}.surface_url: как из адреса node собрать строку, по
+которой объект открывает человек.
 
-Адрес node это части в jsonb, а строка, по которой объект открывает человек или
-называет модель, собирается из них по правилу происхождения. Правило живёт строкой в
-{schema}.surface_url, владелец кладёт его своим файлом схемы, а потребитель читает
-реестр один раз при старте и применяет шаблон к каждой выдаче, не зная ни
-происхождений, ни поверхностей.
+Адрес лежит частями (scheme, host, port, path, database, schema...), а строка
+собирается из них по-разному, и правило знает владелец поверхности. Формула это
+строка с подстановками `{ключ}` в нотации str.format: ключ это часть адреса в
+percent-кодировке (косая черта сохраняется), сверх них есть `{origin}` — scheme://host
+с портом, если он не порт схемы. Кусок в `[...]` необязателен: нет хоть одной
+подстановки внутри, кусок исчезает целиком. Так одной формулой пишется и страница
+Confluence под префиксом сервера, и колонка PostgreSQL, которая живёт то в таблице,
+то в представлении:
 
-Грамматика шаблона:
-`{ключ}` — подстановка: значение части адреса в percent-кодировке; слэш в значении
-    сохраняется, потому что подстановкой бывает путь. Сверх ключей адреса доступен
-    `{origin}` — scheme://host с портом, если он не порт схемы.
-`[...]` — необязательный кусок: если хоть одной подстановки внутри в адресе нет,
-    кусок исчезает целиком. Так одной формулой пишется колонка, которая живёт и в
-    таблице, и в представлении: `?schema={schema}[&table={table}][&view={view}]`.
-Подстановка вне куска, которой нет в адресе, даёт пустую строку.
+    cfl_page        {origin}{path}/pages/viewpage.action?pageId={content}
+    pg_meta_column  {origin}/{database}?schema={schema}[&table={table}][&view={view}]
+                    &column={column}
+
+Формулы читает IxRegistry, разбирает UrlTemplate стандартным string.Formatter.
 
 Ошибки:
-SurfaceUrlError — шаблон не разбирается: пустой, подстановка названа не
-    идентификатором или скобка непарная.
+SurfaceUrlError — формула не разбирается: пустая, непарные скобки, подстановка не
+    из строчных букв, цифр и подчёркивания.
 """
 
 from __future__ import annotations
 
-import re
-from collections.abc import Iterable, Mapping, Sequence
-from typing import Any, ClassVar, LiteralString
+from collections.abc import Mapping
+from dataclasses import dataclass
+from string import Formatter
+from typing import Any
 from urllib.parse import quote
 
-import psycopg
-from pydantic import BaseModel, ConfigDict
-
-from boba.ix_core.schema_name import SchemaName
-
-__all__ = [
-    "SurfaceUrl",
-    "SurfaceUrlError",
-    "SurfaceUrls",
-    "UrlFragment",
-    "UrlTemplate",
-]
+__all__ = ["SurfaceUrl", "SurfaceUrlError", "UrlFragment", "UrlTemplate"]
 
 
 class SurfaceUrlError(Exception):
     """Формула ссылки не разбирается."""
 
 
-class AddressPart:
-    """Части адреса, из которых собирается origin шаблона."""
-
-    SCHEME: ClassVar[str] = "scheme"
-    HOST: ClassVar[str] = "host"
-    PORT: ClassVar[str] = "port"
-
-    DEFAULT_PORTS: ClassVar[Mapping[str, int]] = {"http": 80, "https": 443}
-
-
-class UrlValue:
-    """Значение одной подстановки: часть адреса или собранный origin."""
-
-    ORIGIN: ClassVar[str] = "origin"
-    SAFE: ClassVar[str] = "/"
-
-    @classmethod
-    def known(cls, name: str, address: Mapping[str, Any]) -> bool:
-        """Есть ли подстановка в адресе; origin есть, когда есть сервер."""
-        if name == cls.ORIGIN:
-            return bool(cls._origin(address))
-
-        return address.get(name) is not None
-
-    @classmethod
-    def of(cls, name: str, address: Mapping[str, Any]) -> str:
-        if name == cls.ORIGIN:
-            return cls._origin(address)
-
-        found = address.get(name)
-        if found is None:
-            return ""
-
-        return quote(str(found), safe=cls.SAFE)
-
-    @classmethod
-    def _origin(cls, address: Mapping[str, Any]) -> str:
-        scheme = str(address.get(AddressPart.SCHEME) or "")
-        host = str(address.get(AddressPart.HOST) or "")
-        if not scheme:
-            return ""
-
-        if not host:
-            return ""
-
-        origin = f"{scheme}://{host}"
-        port = address.get(AddressPart.PORT)
-        if port is None:
-            return origin
-
-        if AddressPart.DEFAULT_PORTS.get(scheme) == int(port):
-            return origin
-
-        return f"{origin}:{int(port)}"
-
-
-class UrlFragment(BaseModel):
-    """Кусок шаблона: текст с подстановками и признак необязательности."""
-
-    model_config = ConfigDict(frozen=True)
+@dataclass(frozen=True, kw_only=True)
+class UrlFragment:
+    """Кусок формулы: текст с подстановками и признак необязательности."""
 
     text: str
     keys: tuple[str, ...]
@@ -112,68 +46,56 @@ class UrlFragment(BaseModel):
 
     def render(self, address: Mapping[str, Any]) -> str:
         if self.optional:
-            absent = self._absent(address)
-            if absent:
-                return ""
+            for key in self.keys:
+                if not self._known(key, address):
+                    return ""
 
-        return TemplateSyntax.PLACEHOLDER.sub(
-            lambda match: UrlValue.of(match.group(1), address), self.text
-        )
+        parts: list[str] = []
+        for literal, key, _, _ in Formatter().parse(self.text):
+            parts.append(literal)
+            if key is not None:
+                parts.append(self._value(key, address))
 
-    def _absent(self, address: Mapping[str, Any]) -> str:
-        """Первая подстановка куска, которой в адресе нет; пусто — есть все."""
-        for key in self.keys:
-            if not UrlValue.known(key, address):
-                return key
+        return "".join(parts)
 
-        return ""
+    def _known(self, key: str, address: Mapping[str, Any]) -> bool:
+        if key == "origin":
+            return bool(self._origin(address))
 
+        return address.get(key) is not None
 
-class TemplateSyntax:
-    """Разбор строки формулы на куски."""
+    def _value(self, key: str, address: Mapping[str, Any]) -> str:
+        if key == "origin":
+            return self._origin(address)
 
-    PLACEHOLDER: ClassVar[re.Pattern[str]] = re.compile(r"\{([a-z_][a-z0-9_]*)\}")
-    GROUP: ClassVar[re.Pattern[str]] = re.compile(r"\[([^\[\]]*)\]")
-    BRACKETS: ClassVar[str] = "{}[]"
+        found = address.get(key)
+        if found is None:
+            return ""
 
-    @classmethod
-    def parse(cls, template: str) -> tuple[UrlFragment, ...]:
-        fragments: list[UrlFragment] = []
-        position = 0
-        for group in cls.GROUP.finditer(template):
-            before = template[position : group.start()]
-            if before:
-                fragments.append(cls._fragment(before, optional=False))
+        return quote(str(found), safe="/")
 
-            fragments.append(cls._fragment(group.group(1), optional=True))
-            position = group.end()
+    def _origin(self, address: Mapping[str, Any]) -> str:
+        scheme = str(address.get("scheme") or "")
+        host = str(address.get("host") or "")
+        if not scheme:
+            return ""
 
-        tail = template[position:]
-        if tail:
-            fragments.append(cls._fragment(tail, optional=False))
+        if not host:
+            return ""
 
-        return tuple(fragments)
+        origin = f"{scheme}://{host}"
+        port = address.get("port")
+        if port is None:
+            return origin
 
-    @classmethod
-    def _fragment(cls, text: str, *, optional: bool) -> UrlFragment:
-        keys: list[str] = []
-        for match in cls.PLACEHOLDER.finditer(text):
-            keys.append(match.group(1))
+        if {"http": 80, "https": 443}.get(scheme) == int(port):
+            return origin
 
-        leftover = cls.PLACEHOLDER.sub("", text)
-        for bracket in cls.BRACKETS:
-            if bracket in leftover:
-                raise SurfaceUrlError(
-                    f"url template chunk {text!r}: expected {{name}} with a lowercase "
-                    f"identifier inside and paired [] around an optional chunk, "
-                    f"got a stray {bracket!r}"
-                )
-
-        return UrlFragment(text=text, keys=tuple(keys), optional=optional)
+        return f"{origin}:{int(port)}"
 
 
 class UrlTemplate:
-    """Формула ссылки одной поверхности и её применение к адресу."""
+    """Разобранная формула: куски по порядку, необязательные в `[...]`."""
 
     def __init__(self, template: str) -> None:
         cleaned = template.strip()
@@ -181,7 +103,7 @@ class UrlTemplate:
             raise SurfaceUrlError("url template: expected a template, got empty string")
 
         self._template = cleaned
-        self._fragments = TemplateSyntax.parse(cleaned)
+        self._fragments = tuple(self._split(cleaned))
 
     @property
     def text(self) -> str:
@@ -202,69 +124,72 @@ class UrlTemplate:
 
         return "".join(parts)
 
+    def _split(self, template: str) -> list[UrlFragment]:
+        """Куски по скобкам `[...]`: текст снаружи обязателен, внутри — нет."""
+        fragments: list[UrlFragment] = []
+        chunk = ""
+        optional = False
+        for char in template:
+            if char == "[":
+                if optional:
+                    raise SurfaceUrlError(
+                        f"url template {template!r}: nested [ inside an optional chunk"
+                    )
 
-class SurfaceUrl(BaseModel):
+                if chunk:
+                    fragments.append(self._fragment(chunk, optional=False))
+
+                chunk = ""
+                optional = True
+                continue
+
+            if char == "]":
+                if not optional:
+                    raise SurfaceUrlError(
+                        f"url template {template!r}: ] without an opening ["
+                    )
+
+                fragments.append(self._fragment(chunk, optional=True))
+                chunk = ""
+                optional = False
+                continue
+
+            chunk += char
+
+        if optional:
+            raise SurfaceUrlError(f"url template {template!r}: [ without a closing ]")
+
+        if chunk:
+            fragments.append(self._fragment(chunk, optional=False))
+
+        return fragments
+
+    def _fragment(self, text: str, *, optional: bool) -> UrlFragment:
+        keys: list[str] = []
+        try:
+            pieces = list(Formatter().parse(text))
+        except ValueError as exc:
+            raise SurfaceUrlError(f"url template chunk {text!r}: {exc}") from exc
+
+        for _, key, spec, conversion in pieces:
+            if key is None:
+                continue
+
+            if spec or conversion or not key.isidentifier() or not key.islower():
+                raise SurfaceUrlError(
+                    f"url template chunk {text!r}: expected {{name}} with a lowercase "
+                    f"identifier inside, got {key!r}"
+                )
+
+            keys.append(key)
+
+        return UrlFragment(text=text, keys=tuple(keys), optional=optional)
+
+
+@dataclass(frozen=True, kw_only=True)
+class SurfaceUrl:
     """Одна строка {schema}.surface_url."""
-
-    model_config = ConfigDict(frozen=True)
 
     surface: str
     template: str
     owner: str
-
-
-class SurfaceUrls:
-    """Чтение формул из реестра и их применение к выдаче."""
-
-    ALL: ClassVar[LiteralString] = """
-        select
-            u.surface::varchar,
-            u.template,
-            u.owner
-        from
-            {schema}.surface_url u
-        order by
-            u.surface
-    """
-
-    def __init__(self, templates: Mapping[str, UrlTemplate]) -> None:
-        self._templates = dict(templates)
-
-    @classmethod
-    async def load(
-        cls, conn: psycopg.AsyncConnection[Any], db_schema: str
-    ) -> SurfaceUrls:
-        cur = await conn.execute(SchemaName.render(cls.ALL, db_schema))
-        rows = await cur.fetchall()
-
-        templates: dict[str, UrlTemplate] = {}
-        for surface, template, _ in rows:
-            try:
-                templates[str(surface)] = UrlTemplate(str(template))
-            except SurfaceUrlError as exc:
-                raise SurfaceUrlError(f"surface {surface}: {exc}") from exc
-
-        return cls(templates)
-
-    @classmethod
-    def rows(cls, raw: Iterable[Sequence[Any]]) -> list[SurfaceUrl]:
-        found: list[SurfaceUrl] = []
-        for surface, template, owner in raw:
-            found.append(
-                SurfaceUrl(
-                    surface=str(surface), template=str(template), owner=str(owner)
-                )
-            )
-
-        return found
-
-    def surfaces(self) -> tuple[str, ...]:
-        return tuple(sorted(self._templates))
-
-    def of(self, surface: str, address: Mapping[str, Any]) -> str:
-        """Ссылка на объект; у поверхности без формулы её нет, и это пустая строка."""
-        template = self._templates.get(surface)
-        if template is None:
-            return ""
-
-        return template.render(address)

@@ -1,9 +1,3 @@
--- @name class
--- @wave 2
--- @params schemas
--- @collect rels oid
--- @only gp
--- @max 99999
 select
     oid,
     relname,
@@ -31,13 +25,4 @@ from
     pg_class
 where
     relnamespace = any(%(schemas)s::oid[])
-    and relkind in ('r', 'p', 'v', 'm', 'f', 'S', 'i', 'I', 'c');
--- @verify
-select
-    oid,
-    xmin::text as row_xmin
-from
-    pg_class
-where
-    relnamespace = any(%(schemas)s::oid[])
-    and relkind in ('r', 'p', 'v', 'm', 'f', 'S', 'i', 'I', 'c');
+    and relkind in ('r', 'p', 'v', 'm', 'f', 'S', 'i', 'I', 'c')

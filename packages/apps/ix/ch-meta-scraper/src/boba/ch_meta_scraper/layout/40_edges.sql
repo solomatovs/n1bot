@@ -33,16 +33,18 @@ select
     dep.address, t.address, 'dependency'
 from
     raw_tables rt
-    join lateral unnest(rt.dependencies_database, rt.dependencies_table)
-        as d(db, tbl) on true
+    join lateral jsonb_array_elements_text(rt.dependencies_database)
+        with ordinality as db(db, n) on true
+    join lateral jsonb_array_elements_text(rt.dependencies_table)
+        with ordinality as tbl(tbl, n) on tbl.n = db.n
     join stage_node t
         on  t.kind in ('rel', 'dict')
         and t.database = rt.database
         and t.relation = rt.name
     join stage_node dep
         on  dep.kind in ('rel', 'dict')
-        and dep.database = d.db
-        and dep.relation = d.tbl
+        and dep.database = db.db
+        and dep.relation = tbl.tbl
 where
     dep.address <> t.address
 on conflict do nothing;
@@ -54,16 +56,18 @@ select
     t.address, dep.address, 'loading'
 from
     raw_tables rt
-    join lateral unnest(rt.loading_dependencies_database, rt.loading_dependencies_table)
-        as d(db, tbl) on true
+    join lateral jsonb_array_elements_text(rt.loading_dependencies_database)
+        with ordinality as db(db, n) on true
+    join lateral jsonb_array_elements_text(rt.loading_dependencies_table)
+        with ordinality as tbl(tbl, n) on tbl.n = db.n
     join stage_node t
         on  t.kind in ('rel', 'dict')
         and t.database = rt.database
         and t.relation = rt.name
     join stage_node dep
         on  dep.kind in ('rel', 'dict')
-        and dep.database = d.db
-        and dep.relation = d.tbl
+        and dep.database = db.db
+        and dep.relation = tbl.tbl
 where
     dep.address <> t.address
 on conflict do nothing;

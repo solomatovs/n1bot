@@ -8,11 +8,15 @@ ix, стадии layout/ в autocommit, advisory-замок на scope, apply о
 repeatable read. Каталог изменился во время чтения или ix занят — попытка
 повторяется с новыми сессиями, temp-таблицы прежней умирают вместе с ней.
 
-Источник (PostgreSQL, ClickHouse, Oracle) даёт реализацию ScrapeSource: открыть
-сессию, сказать, подходит ли файл серверу по заголовкам, отдать строки запроса
-потоком и назвать свой адрес для raw_source. Единственное накопление в памяти —
-массивы @collect: колонка результата одной волны идёт параметром запросов следующих.
-Ими пользуется pg-скрапер; Oracle и ClickHouse задают границы подзапросом в SQL.
+Источник (PostgreSQL, ClickHouse, Oracle) даёт реализацию ScrapeSource: объявить
+свои файлы scrape/ моделями ScrapeFile, открыть сессию, сказать, подходит ли файл
+серверу, прочитать файл своим билдером и отдать результат байтами в формате COPY
+PostgreSQL (text или csv), назвать свой адрес для raw_source. Строки в Python не
+собираются: блок байт от драйвера источника уходит в COPY ix как есть; PostgreSQL
+отдаёт его через `COPY ... TO STDOUT`, ClickHouse через TabSeparated, Oracle через
+Arrow-пачки и CSV. В файле лежит только запрос, сверка лежит рядом в
+`<файл>.verify.sql`; ядро текст файлов не разбирает. Массивы collect для запросов
+следующих волн читаются из raw-таблицы на стороне ix после COPY.
 
 Ошибки:
 ScrapeWorkerError — ix недоступен, контракт файлов нарушен, источник отказал,
@@ -29,12 +33,11 @@ import argparse
 import asyncio
 import logging
 import multiprocessing
-import re
-import resource
 from abc import abstractmethod
 from collections.abc import AsyncIterator, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import AbstractAsyncContextManager
+from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Generic, Protocol, TypeVar
@@ -42,18 +45,23 @@ from typing import Any, Generic, Protocol, TypeVar
 import psycopg
 from psycopg import sql
 from psycopg.errors import LockNotAvailable, SerializationFailure
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 from boba.config import ConfigError, bind_section
-from boba.ix_core.database import IxDatabase, IxDatabaseError, IxPool
-from boba.ix_core.schema_name import SchemaName
+from boba.db.postgres import AsyncPostgresPool, PostgresError
+from boba.db.postgres.query import PgQueryBuilder
+from boba.ix_core.database import IxDatabase, enter_kerberos
 from boba.ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError
+from boba.krb import KerberosWorkspaceConfig
 
 __all__ = [
     "ApplyRow",
+    "BlockStream",
     "CatalogChangedError",
-    "Header",
+    "Collect",
+    "CopyFormat",
     "LayoutFile",
+    "PackageDir",
     "ScrapeFile",
     "ScrapeReport",
     "ScrapeSession",
@@ -63,33 +71,17 @@ __all__ = [
     "ScrapeWorkerError",
     "ScraperConfigBase",
     "SourceAddressBase",
+    "SourceBlocks",
     "SourceConfigBase",
-    "SourceRows",
-    "StreamRows",
-    "load_scrape_files",
-    "parse_headers",
+    "VersionGate",
     "parse_version",
-    "render_version",
     "run_cli",
     "run_sources",
     "scrape_in_process",
     "scrape_source",
-    "version_applies",
 ]
 
 logger = logging.getLogger("ix-scrape")
-
-VERIFY_MARKER = "-- @verify"
-RAW_SOURCE_TABLE = "raw_source"
-RAW_PREFIX = "raw_"
-VERIFY_PREFIX = "verify_"
-SCHEMA_DIR = "schema"
-SCRAPE_DIR = "scrape"
-LAYOUT_DIR = "layout"
-HEADER_PATTERN = re.compile(r"^-- @(\w+)(?:\s+(.*))?$", re.M)
-LOG_FORMAT = "%(asctime)s %(name)s %(message)s"
-VERSION_FLOOR = (0,)
-VERSION_CEILING = (999999,)
 
 
 class ScrapeWorkerError(Exception):
@@ -108,15 +100,12 @@ class CatalogChangedError(Exception):
     """Каталог источника изменился между чтением и сверкой."""
 
 
-class Header(StrEnum):
-    """Заголовки `-- @имя значение` файла scrape/."""
+class PackageDir(StrEnum):
+    """Каталоги пакета скрапера рядом с worker.py."""
 
-    NAME = "name"
-    WAVE = "wave"
-    PARAMS = "params"
-    COLLECT = "collect"
-    MIN = "min"
-    MAX = "max"
+    SCHEMA = "schema"
+    SCRAPE = "scrape"
+    LAYOUT = "layout"
 
 
 class LayoutFile(StrEnum):
@@ -131,45 +120,76 @@ class LayoutFile(StrEnum):
     UNLOCK = "55_unlock.sql"
 
 
-STAGE_FILES = (
-    LayoutFile.STAGE,
-    LayoutFile.NODES,
-    LayoutFile.TREE,
-    LayoutFile.EDGES,
-    LayoutFile.SURFACES,
-)
+@dataclass(frozen=True, kw_only=True)
+class Collect:
+    """Массив для запросов следующих волн: имя массива и колонка результата."""
+
+    name: str
+    column: str
 
 
-class ScrapeFile(BaseModel):
-    """Файл scrape/: запрос выборки, запрос сверки и заголовки. Заголовки остаются в
-    тексте запроса: для сервера это обычные комментарии."""
+@dataclass(frozen=True, kw_only=True)
+class VersionGate:
+    """Ворота файла по серверу. Версия сравнивается по длине ворот: max (19,)
+    отсекает 21.0, но пропускает 19.3; only и unless сравнивают вкус сервера
+    (у PostgreSQL это gp для Greenplum). Базовый класс ScrapeFile и файлов DDL
+    стендов."""
 
-    model_config = ConfigDict(frozen=True)
+    min_version: tuple[int, ...] = ()
+    max_version: tuple[int, ...] = ()
+    only: str = ""
+    unless: str = ""
 
-    path: Path
+    def applies(self, version: Sequence[int], flavor: str) -> bool:
+        low = self.min_version
+        if low and tuple(version[: len(low)]) < low:
+            return False
+
+        high = self.max_version
+        if high and tuple(version[: len(high)]) > high:
+            return False
+
+        if self.only and flavor != self.only:
+            return False
+
+        return not (self.unless and flavor == self.unless)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ScrapeFile(VersionGate):
+    """Объявление файла scrape/ источником: имя raw-таблицы, волна, файл запроса,
+    массивы параметров и ворота. Сверка лежит рядом с запросом в `<файл>.verify.sql`."""
+
     name: str
     wave: int
-    params: Sequence[str] = ()
-    collect: str = ""
-    collect_column: str = ""
-    fetch_sql: str
-    verify_sql: str
-    headers: Mapping[str, str]
+    query: str
+    params: tuple[str, ...] = ()
+    collect: Collect | None = None
+
+    def verify(self) -> str:
+        return f"{Path(self.query).stem}.verify.sql"
+
+    def raw_table(self) -> str:
+        return f"raw_{self.name}"
+
+    def verify_table(self) -> str:
+        return f"verify_{self.name}"
 
 
-class ApplyRow(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class ApplyRow:
     op: str
     planned: int
     applied: int
 
 
-class ScrapeReport(BaseModel):
-    """Итог прогона одного источника: сводка apply, попытки, пик RSS процесса."""
+@dataclass(frozen=True, kw_only=True)
+class ScrapeReport:
+    """Итог прогона одного источника: сводка apply и число попыток."""
 
     source: str
     rows: Sequence[ApplyRow]
     attempts: int
-    peak_rss_mib: int
 
     def applied(self) -> int:
         total = 0
@@ -188,53 +208,67 @@ class ScrapeReport(BaseModel):
         if not changed:
             changed = "no changes"
 
-        return (
-            f"{self.source}: {changed}, attempts={self.attempts} "
-            f"rss={self.peak_rss_mib}MiB"
-        )
+        return f"{self.source}: {changed}, attempts={self.attempts}"
 
 
-class SourceAddressBase(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class SourceAddressBase:
     """Адрес источника для raw_source: поля модели это колонки таблицы. Реализация
     добавляет свои (у PostgreSQL база), совпадающие с raw_source её layout."""
-
-    model_config = ConfigDict(frozen=True)
 
     scheme: str
     host: str
     port: int
 
     def columns(self) -> dict[str, object]:
-        return self.model_dump()
+        return asdict(self)
 
 
-class SourceRows(Protocol):
-    """Результат одного запроса к источнику: имена колонок и строки потоком."""
+class CopyFormat(StrEnum):
+    """Формат блоков источника для COPY ... FROM STDIN: значение это список опций
+    COPY. NULL в text это `\\N`, в csv — пустое поле без кавычек."""
+
+    TEXT = "format text"
+    CSV = "format csv, null ''"
+
+
+class SourceBlocks(Protocol):
+    """Результат одного запроса к источнику: имена колонок, формат COPY и блоки
+    байт потоком."""
 
     @property
     @abstractmethod
     def columns(self) -> Sequence[str]: ...
 
+    @property
     @abstractmethod
-    def __aiter__(self) -> AsyncIterator[Sequence[object]]: ...
+    def copy_format(self) -> CopyFormat: ...
+
+    @abstractmethod
+    def __aiter__(self) -> AsyncIterator[memoryview]: ...
 
 
 class ScrapeSession(Protocol):
     """Открытая сессия источника на одну попытку прогона."""
 
     @abstractmethod
-    def applies(self, headers: Mapping[str, str]) -> bool:
-        """Подходит ли файл с такими заголовками серверу этой сессии."""
+    def applies(self, file: ScrapeFile) -> bool:
+        """Подходит ли файл серверу этой сессии."""
 
     @abstractmethod
-    def fetch_rows(
-        self, name: str, query: str, params: Mapping[str, Sequence[object]]
-    ) -> AbstractAsyncContextManager[SourceRows]:
-        """Строки запроса потоком под именем name; массивы по именам @params."""
+    def fetch_blocks(
+        self, name: str, path: Path, params: Mapping[str, Sequence[object]]
+    ) -> AbstractAsyncContextManager[SourceBlocks]:
+        """Результат запроса из файла path блоками байт под именем name; массивы по
+        именам params объявления."""
 
 
 class ScrapeSource(Protocol):
-    """Источник каталога: адрес для raw_source и сессия на попытку."""
+    """Источник каталога: файлы scrape/, адрес для raw_source и сессия на попытку."""
+
+    @property
+    @abstractmethod
+    def files(self) -> Sequence[ScrapeFile]: ...
 
     @property
     @abstractmethod
@@ -248,87 +282,38 @@ class ScrapeSource(Protocol):
     def open_session(self) -> AbstractAsyncContextManager[ScrapeSession]: ...
 
 
-class StreamRows(SourceRows):
-    """Строки потока драйвера; отказ сервера по дороге уходит ScrapeSourceError."""
+class BlockStream(SourceBlocks):
+    """Блоки байт от драйвера источника как memoryview на его буфер, без копии;
+    отказ сервера по дороге уходит ScrapeSourceError."""
 
     def __init__(
         self,
         columns: Sequence[str],
-        blocks: AsyncIterator[Sequence[object]],
-        name: str,
-        where: str,
+        copy_format: CopyFormat,
+        blocks: AsyncIterator[memoryview],
+        label: str,
         errors: tuple[type[Exception], ...],
     ) -> None:
         self._columns = tuple(columns)
+        self._format = copy_format
         self._blocks = blocks
-        self._name = name
-        self._where = where
+        self._label = label
         self._errors = errors
 
     @property
     def columns(self) -> Sequence[str]:
         return self._columns
 
-    async def __aiter__(self) -> AsyncIterator[Sequence[object]]:
+    @property
+    def copy_format(self) -> CopyFormat:
+        return self._format
+
+    async def __aiter__(self) -> AsyncIterator[memoryview]:
         try:
-            async for row in self._blocks:
-                yield row
+            async for block in self._blocks:
+                yield block
         except self._errors as exc:
-            raise ScrapeSourceError(
-                f"reading {self._name} from {self._where}: {exc}"
-            ) from exc
-
-
-def parse_headers(text: str) -> dict[str, str]:
-    headers: dict[str, str] = {}
-    for match in HEADER_PATTERN.finditer(text):
-        value = match.group(2)
-        if value is None:
-            value = ""
-
-        headers[match.group(1)] = value.strip()
-
-    return headers
-
-
-def parse_scrape_file(path: Path) -> ScrapeFile:
-    text = path.read_text(encoding="utf-8")
-    headers = parse_headers(text)
-    if Header.NAME not in headers:
-        raise ScrapeWorkerError(f"{path}: expected @name header")
-
-    fetch_sql, _, verify_sql = text.partition(VERIFY_MARKER)
-    if not verify_sql.strip():
-        raise ScrapeWorkerError(f"{path}: expected a {VERIFY_MARKER} section")
-
-    collect = headers.get(Header.COLLECT, "").split()
-    collect_name = ""
-    collect_column = ""
-    if collect:
-        collect_name = collect[0]
-
-    if len(collect) > 1:
-        collect_column = collect[1]
-
-    return ScrapeFile(
-        path=path,
-        name=headers[Header.NAME],
-        wave=int(headers.get(Header.WAVE, "1")),
-        params=headers.get(Header.PARAMS, "").split(),
-        collect=collect_name,
-        collect_column=collect_column,
-        fetch_sql=fetch_sql.strip(),
-        verify_sql=verify_sql.strip(),
-        headers=headers,
-    )
-
-
-def load_scrape_files(package_dir: Path) -> list[ScrapeFile]:
-    files: list[ScrapeFile] = []
-    for path in sorted((package_dir / SCRAPE_DIR).glob("*.sql")):
-        files.append(parse_scrape_file(path))
-
-    return files
+            raise ScrapeSourceError(f"reading {self._label}: {exc}") from exc
 
 
 def parse_version(raw: str) -> tuple[int, ...]:
@@ -348,27 +333,6 @@ def parse_version(raw: str) -> tuple[int, ...]:
     return tuple(parts)
 
 
-def render_version(parts: Sequence[int]) -> str:
-    return ".".join(str(part) for part in parts)
-
-
-def version_applies(headers: Mapping[str, str], server: Sequence[int]) -> bool:
-    """Ворота @min и @max сравниваются по своей длине: @max 19 отсекает 21.0.0, но
-    пропускает 19.3."""
-    low = VERSION_FLOOR
-    if raw := headers.get(Header.MIN):
-        low = parse_version(raw)
-
-    high = VERSION_CEILING
-    if raw := headers.get(Header.MAX):
-        high = parse_version(raw)
-
-    if tuple(server[: len(low)]) < low:
-        return False
-
-    return tuple(server[: len(high)]) <= high
-
-
 def choose_files(
     files: Sequence[ScrapeFile], session: ScrapeSession, where: str
 ) -> list[ScrapeFile]:
@@ -381,11 +345,11 @@ def choose_files(
     for name in sorted(by_name, key=lambda n: (by_name[n][0].wave, n)):
         variants: list[ScrapeFile] = []
         for file in by_name[name]:
-            if session.applies(file.headers):
+            if session.applies(file):
                 variants.append(file)
 
         if len(variants) > 1:
-            listed = ", ".join(file.path.name for file in variants)
+            listed = ", ".join(file.query for file in variants)
             raise ScrapeWorkerError(
                 f"scrape {name}: {len(variants)} variants apply to {where}: {listed}"
             )
@@ -394,18 +358,6 @@ def choose_files(
             chosen.append(variants[0])
 
     return chosen
-
-
-def read_layout(layout_dir: Path, name: LayoutFile, db_schema: str) -> sql.Composed:
-    text = (layout_dir / name).read_text(encoding="utf-8")
-
-    return SchemaName.render(text, db_schema)
-
-
-def compose_copy(target: sql.Identifier, columns: Sequence[str]) -> sql.Composed:
-    names = sql.SQL(", ").join(sql.Identifier(column) for column in columns)
-
-    return sql.SQL("copy {} ({}) from stdin").format(target, names)
 
 
 def pick_params(
@@ -422,82 +374,140 @@ async def register_source(
     ix: psycopg.AsyncConnection[Any], address: SourceAddressBase
 ) -> None:
     columns = address.columns()
-    names = sql.SQL(", ").join(sql.Identifier(name) for name in columns)
-    marks = sql.SQL(", ").join(sql.Placeholder() for _ in columns)
-    await ix.execute(
-        sql.SQL("insert into {} ({}) values ({})").format(
-            sql.Identifier(RAW_SOURCE_TABLE), names, marks
-        ),
-        list(columns.values()),
+    names: list[sql.Composable] = []
+    marks: list[sql.Composable] = []
+    for name in columns:
+        names.append(sql.Identifier(name))
+        marks.append(sql.Placeholder(name))
+
+    query = (
+        PgQueryBuilder()
+        .add(
+            "insert into {table} ({names}) values ({marks})",
+            table=sql.Identifier("raw_source"),
+            names=sql.SQL(", ").join(names),
+            marks=sql.SQL(", ").join(marks),
+            **columns,
+        )
+        .build()
     )
+    await ix.execute(query.text, query.params)
+
+
+async def copy_blocks(
+    ix: psycopg.AsyncConnection[Any], target: str, blocks: SourceBlocks
+) -> None:
+    """Блоки источника в temp-таблицу ix одним COPY, колонки в порядке источника."""
+    names: list[sql.Composable] = []
+    for column in blocks.columns:
+        names.append(sql.Identifier(column))
+
+    statement = (
+        PgQueryBuilder()
+        .add(
+            "copy {target} ({names}) from stdin ({options})",
+            target=sql.Identifier(target),
+            names=sql.SQL(", ").join(names),
+            options=sql.SQL(blocks.copy_format.value),
+        )
+        .build()
+    )
+    async with ix.cursor().copy(statement.text) as copy:
+        async for block in blocks:
+            await copy.write(block)
 
 
 async def copy_rows(
     session: ScrapeSession,
     ix: psycopg.AsyncConnection[Any],
     file: ScrapeFile,
+    scrape_dir: Path,
     arrays: Mapping[str, Sequence[object]],
 ) -> dict[str, Sequence[object]]:
-    """Выборка одного файла потоком в raw_<name>; попутно колонка @collect."""
+    """Выборка одного файла блоками в raw_<name>; массив collect читается из неё."""
     values = pick_params(arrays, file.params)
-    collected: list[object] = []
-    count = 0
-    async with session.fetch_rows(file.name, file.fetch_sql, values) as rows:
-        columns = list(rows.columns)
-        position = -1
-        if file.collect:
-            position = columns.index(file.collect_column)
+    async with session.fetch_blocks(
+        file.name, scrape_dir / file.query, values
+    ) as blocks:
+        await copy_blocks(ix, file.raw_table(), blocks)
 
-        target = sql.Identifier(f"{RAW_PREFIX}{file.name}")
-        async with ix.cursor().copy(compose_copy(target, columns)) as copy:
-            async for row in rows:
-                await copy.write_row(row)
-                count += 1
-                if position >= 0:
-                    collected.append(row[position])
+    query = (
+        PgQueryBuilder()
+        .add("select count(*) from {raw}", raw=sql.Identifier(file.raw_table()))
+        .build()
+    )
+    cur = await ix.execute(query.text, query.params)
+    counted = await cur.fetchone()
+    if counted is None:
+        raise ScrapeWorkerError(f"scrape {file.name}: expected a count, got none")
 
-    logger.info("scrape %s (%s): %d rows", file.name, file.path.name, count)
+    logger.info("scrape %s (%s): %d rows", file.name, file.query, int(counted[0]))
 
-    if not file.collect:
+    if file.collect is None:
         return {}
 
-    return {file.collect: collected}
+    query = (
+        PgQueryBuilder()
+        .add(
+            "select {column} from {raw}",
+            column=sql.Identifier(file.collect.column),
+            raw=sql.Identifier(file.raw_table()),
+        )
+        .build()
+    )
+    cur = await ix.execute(query.text, query.params)
+    collected: list[object] = []
+    async for row in cur:
+        collected.append(row[0])
+
+    return {file.collect.name: collected}
 
 
 async def verify_rows(
     session: ScrapeSession,
     ix: psycopg.AsyncConnection[Any],
     file: ScrapeFile,
+    scrape_dir: Path,
     arrays: Mapping[str, Sequence[object]],
 ) -> None:
-    """Сверка: строки @verify потоком в verify_<name>, затем except all с raw_<name>
-    в обе стороны на стороне ix."""
+    """Сверка: `<файл>.verify.sql` блоками в verify_<name>, затем except all с
+    raw_<name> в обе стороны на стороне ix."""
     values = pick_params(arrays, file.params)
-    raw = sql.Identifier(f"{RAW_PREFIX}{file.name}")
-    check = sql.Identifier(f"{VERIFY_PREFIX}{file.name}")
-    async with session.fetch_rows(
-        f"{VERIFY_PREFIX}{file.name}", file.verify_sql, values
-    ) as rows:
-        columns = list(rows.columns)
-        keys = sql.SQL(", ").join(sql.Identifier(column) for column in columns)
-        await ix.execute(
-            sql.SQL("create temp table {} as select {} from {} where false").format(
-                check, keys, raw
-            )
-        )
-        async with ix.cursor().copy(compose_copy(check, columns)) as copy:
-            async for row in rows:
-                await copy.write_row(row)
+    raw = sql.Identifier(file.raw_table())
+    check = sql.Identifier(file.verify_table())
+    async with session.fetch_blocks(
+        file.verify_table(), scrape_dir / file.verify(), values
+    ) as blocks:
+        names: list[sql.Composable] = []
+        for column in blocks.columns:
+            names.append(sql.Identifier(column))
 
-    diff_cur = await ix.execute(
-        sql.SQL(
-            "select count(*) from ((select {k} from {r} except all select {k} "
-            "from {c}) union all (select {k} from {c} except all select {k} from "
-            "{r})) d"
-        ).format(k=keys, r=raw, c=check)
+        keys = sql.SQL(", ").join(names)
+        query = (
+            PgQueryBuilder()
+            .add(
+                "create temp table {c} as select {k} from {r} where false",
+                c=check,
+                k=keys,
+                r=raw,
+            )
+            .build()
+        )
+        await ix.execute(query.text, query.params)
+        await copy_blocks(ix, file.verify_table(), blocks)
+
+    query = (
+        PgQueryBuilder(k=keys, r=raw, c=check)
+        .add("select count(*) from (")
+        .add("(select {k} from {r} except all select {k} from {c})")
+        .add("union all (select {k} from {c} except all select {k} from {r})")
+        .add(") d")
+        .build()
     )
+    diff_cur = await ix.execute(query.text, query.params)
     diff = await diff_cur.fetchone()
-    await ix.execute(sql.SQL("drop table {}").format(check))
+    query = PgQueryBuilder().add("drop table {c}", c=check).build()
+    await ix.execute(query.text, query.params)
 
     if diff is None:
         raise ScrapeWorkerError(f"verify {file.name}: expected a count, got none")
@@ -511,7 +521,7 @@ async def read_last_rows(cur: psycopg.AsyncCursor[Any]) -> list[tuple[object, ..
     rows: list[tuple[object, ...]] = []
     while True:
         if cur.description is not None:
-            rows = [tuple(row) for row in await cur.fetchall()]
+            rows = await cur.fetchall()
 
         if not cur.nextset():
             return rows
@@ -522,52 +532,86 @@ async def apply_layout(
 ) -> list[ApplyRow]:
     """Замок на scope, apply одной транзакцией repeatable read, замок снят."""
     try:
-        await ix.execute(read_layout(layout_dir, LayoutFile.LOCK, db_schema))
+        query = (
+            PgQueryBuilder(schema=sql.Identifier(db_schema))
+            .read(layout_dir / LayoutFile.LOCK)
+            .build()
+        )
+        await ix.execute(query.text, query.params)
         await ix.execute("begin isolation level repeatable read")
         try:
-            cur = await ix.execute(read_layout(layout_dir, LayoutFile.APPLY, db_schema))
+            query = (
+                PgQueryBuilder(schema=sql.Identifier(db_schema))
+                .read(layout_dir / LayoutFile.APPLY)
+                .build()
+            )
+            cur = await ix.execute(query.text, query.params)
             rows = await read_last_rows(cur)
             await ix.execute("commit")
         except Exception:
             await ix.execute("rollback")
             raise
     finally:
-        await ix.execute(read_layout(layout_dir, LayoutFile.UNLOCK, db_schema))
+        query = (
+            PgQueryBuilder(schema=sql.Identifier(db_schema))
+            .read(layout_dir / LayoutFile.UNLOCK)
+            .build()
+        )
+        await ix.execute(query.text, query.params)
 
     summary: list[ApplyRow] = []
     for row in rows:
         summary.append(
-            ApplyRow.model_validate(
-                {"op": row[0], "planned": row[1], "applied": row[2]}
-            )
+            ApplyRow(op=str(row[0]), planned=int(str(row[1])), applied=int(str(row[2])))
         )
 
     return summary
 
 
 async def scrape_once(
-    database: IxDatabase,
-    source: ScrapeSource,
-    files: Sequence[ScrapeFile],
-    layout_dir: Path,
+    database: IxDatabase, source: ScrapeSource, package_dir: Path
 ) -> list[ApplyRow]:
     """Одна попытка: raw-таблицы, строки всех файлов, сверка, стадии, apply."""
     schema = database.db_schema
-    async with IxPool.dedicated(database) as ix, source.open_session() as session:
-        chosen = choose_files(files, session, source.describe())
+    scrape_dir = package_dir / PackageDir.SCRAPE
+    layout_dir = package_dir / PackageDir.LAYOUT
+    async with (
+        await AsyncPostgresPool.dedicated(database.postgres) as ix,
+        source.open_session() as session,
+    ):
+        await ix.execute("set timezone to 'UTC'")
+        await ix.execute("set datestyle to 'ISO, YMD'")
+        chosen = choose_files(source.files, session, source.describe())
 
-        await ix.execute(read_layout(layout_dir, LayoutFile.RAW_SCHEMA, schema))
+        query = (
+            PgQueryBuilder(schema=sql.Identifier(schema))
+            .read(layout_dir / LayoutFile.RAW_SCHEMA)
+            .build()
+        )
+        await ix.execute(query.text, query.params)
         await register_source(ix, source.address)
 
         arrays: dict[str, Sequence[object]] = {}
         for file in chosen:
-            arrays.update(await copy_rows(session, ix, file, arrays))
+            arrays.update(await copy_rows(session, ix, file, scrape_dir, arrays))
 
         for file in chosen:
-            await verify_rows(session, ix, file, arrays)
+            await verify_rows(session, ix, file, scrape_dir, arrays)
 
-        for name in STAGE_FILES:
-            await ix.execute(read_layout(layout_dir, name, schema))
+        stages = (
+            LayoutFile.STAGE,
+            LayoutFile.NODES,
+            LayoutFile.TREE,
+            LayoutFile.EDGES,
+            LayoutFile.SURFACES,
+        )
+        for name in stages:
+            query = (
+                PgQueryBuilder(schema=sql.Identifier(schema))
+                .read(layout_dir / name)
+                .build()
+            )
+            await ix.execute(query.text, query.params)
 
         return await apply_layout(ix, layout_dir, schema)
 
@@ -578,24 +622,23 @@ class RetryableError(Exception):
 
 
 async def attempt_scrape(
-    database: IxDatabase,
-    source: ScrapeSource,
-    files: Sequence[ScrapeFile],
-    layout_dir: Path,
+    database: IxDatabase, source: ScrapeSource, package_dir: Path
 ) -> list[ApplyRow]:
     """Одна попытка с разбором отказов: временные уходят RetryableError, остальные
     сразу ScrapeWorkerError; сводка apply сверяется по planned и applied."""
     where = source.describe()
     try:
-        rows = await scrape_once(database, source, files, layout_dir)
+        rows = await scrape_once(database, source, package_dir)
     except CatalogChangedError as exc:
         raise RetryableError(f"catalog changed during read: {exc}") from exc
     except (LockNotAvailable, SerializationFailure) as exc:
         raise RetryableError(f"ix busy: {exc}".strip()) from exc
     except ScrapeSourceBusyError as exc:
         raise RetryableError(f"source busy: {exc}") from exc
-    except IxDatabaseError as exc:
-        raise ScrapeWorkerError(f"scrape {where}: {exc}") from exc
+    except PostgresError as exc:
+        raise ScrapeWorkerError(
+            f"scrape {where}: ix {database.postgres.where()}: {exc}"
+        ) from exc
     except ScrapeSourceError as exc:
         raise ScrapeWorkerError(f"scrape {where}: source failed: {exc}") from exc
     except psycopg.Error as exc:
@@ -622,27 +665,19 @@ async def scrape_source(
     attempts: int,
 ) -> ScrapeReport:
     """Прогон одного источника с повторами; каждая попытка на свежих сессиях."""
-    files = load_scrape_files(package_dir)
-    layout_dir = package_dir / LAYOUT_DIR
     where = source.describe()
     last = ""
     for attempt in range(1, attempts + 1):
         try:
-            rows = await attempt_scrape(database, source, files, layout_dir)
+            rows = await attempt_scrape(database, source, package_dir)
         except RetryableError as exc:
             last = str(exc)
             logger.warning("attempt %d/%d: %s", attempt, attempts, last)
             continue
 
-        return ScrapeReport(
-            source=where, rows=rows, attempts=attempt, peak_rss_mib=peak_rss_mib()
-        )
+        return ScrapeReport(source=where, rows=rows, attempts=attempt)
 
     raise ScrapeWorkerError(f"scrape {where}: {attempts} attempts failed, last: {last}")
-
-
-def peak_rss_mib() -> int:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss >> 10
 
 
 class SourceConfigBase(BaseModel):
@@ -685,10 +720,17 @@ class ScraperConfigBase(IxDatabase, Generic[S]):
 
 
 def scrape_in_process(
-    config: ScraperConfigBase[Any], source_name: str, package_dir: Path
+    config: ScraperConfigBase[Any],
+    source_name: str,
+    package_dir: Path,
+    krb: KerberosWorkspaceConfig | None,
 ) -> ScrapeReport:
-    """Вход процесса источника: свой лог, свой event loop, один прогон."""
-    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+    """Вход процесса источника: свой лог, свой каталог kerberos, свой event loop,
+    один прогон."""
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+    if krb is not None:
+        krb.apply()
+
     item = config.find_source(source_name)
     source = config.scrape_source(item)
 
@@ -696,7 +738,10 @@ def scrape_in_process(
 
 
 def run_sources(
-    config: ScraperConfigBase[Any], package_dir: Path, source_name: str = ""
+    config: ScraperConfigBase[Any],
+    package_dir: Path,
+    krb: KerberosWorkspaceConfig | None,
+    source_name: str = "",
 ) -> list[ScrapeReport]:
     """Прогон по источникам: процесс на источник, parallel_sources процессов разом.
     Отчёты в порядке источников."""
@@ -710,7 +755,7 @@ def run_sources(
         futures = []
         for item in selected:
             futures.append(
-                pool.submit(scrape_in_process, config, item.name, package_dir)
+                pool.submit(scrape_in_process, config, item.name, package_dir, krb)
             )
 
         for item, future in zip(selected, futures, strict=True):
@@ -764,19 +809,20 @@ def run_cli(
     config_type: type[ScraperConfigBase[Any]],
 ) -> None:
     """Команда пакета-скрапера: upgrade накатывает schema/, run снимает источники."""
-    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
     try:
         args = parse_args(prog, description, section, None)
+        krb = enter_kerberos(args.config)
         if args.command is Command.UPGRADE:
             database = bind_section(args.config, section, IxDatabase)
-            upgrade = SchemaUpgrade(package_dir / SCHEMA_DIR)
+            upgrade = SchemaUpgrade(package_dir / PackageDir.SCHEMA)
             report = asyncio.run(upgrade.run(database))
             logger.info("schema applied: %s", ", ".join(report.files))
             return
 
         config = bind_section(args.config, section, config_type)
-        for report in run_sources(config, package_dir, args.source):
+        for report in run_sources(config, package_dir, krb, args.source):
             logger.info("done: %s", report.line())
     except (ConfigError, SchemaUpgradeError, ScrapeWorkerError) as exc:
         raise SystemExit(str(exc)) from exc

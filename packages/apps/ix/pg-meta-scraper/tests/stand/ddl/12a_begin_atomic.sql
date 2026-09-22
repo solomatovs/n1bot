@@ -1,4 +1,3 @@
--- @min 140000
 create function dm.customer_orders(p_customer bigint) returns setof dm.orders
 language sql
 begin atomic

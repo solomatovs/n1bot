@@ -23,7 +23,7 @@ from boba.catalog_service import (
     SyncPorts,
 )
 from boba.db.clickhouse.snapshot import ChSnapshot
-from boba.db.postgres import AsyncPostgresPool
+from boba.db.postgres import AsyncPostgresPool, PgQueryBuilder
 from boba.db.postgres.catalog import CatalogStoreConfig
 from boba.db.postgres.profile import PostgresConfig
 from boba.db.postgres.snapshot import PgSnapshot
@@ -86,11 +86,15 @@ class CatalogStand:
         """Обе схемы каталога снесены каскадом."""
         async with pool.connection() as conn:
             for schema in (cfg.db_schema, cfg.app_schema):
-                await conn.execute(
-                    sql.SQL("drop schema if exists {} cascade").format(
-                        sql.Identifier(schema)
+                query = (
+                    PgQueryBuilder()
+                    .add(
+                        "drop schema if exists {schema} cascade",
+                        schema=sql.Identifier(schema),
                     )
+                    .build()
                 )
+                await conn.execute(query.text, query.params)
 
     @classmethod
     async def build(

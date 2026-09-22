@@ -1,5 +1,3 @@
--- @min 100000
--- @max 109999
 create table dm.events (
     ts    timestamptz not null,
     kind  text        not null,

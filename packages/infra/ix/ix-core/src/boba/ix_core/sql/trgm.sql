@@ -1,5 +1,5 @@
 /*
-Триграммы по одной таблице индекса: имя подставляется вместо {index} из реестра.
+Триграммы по таблицам индекса своего вида: вместо {index} подставляется их объединение из реестра.
 Похожесть слова запроса на содержимое строки; префикс отдельно не ищется, его
 покрывает word_similarity. Порог 0.3 задаётся здесь же.
 Поверхности и аспекты задаёт вызывающий списками %(surfaces)s и %(aspects)s; списки
@@ -12,7 +12,7 @@ with hit as (
         t.content,
         word_similarity(%(q)s, t.content) as sim
     from
-        {schema}.{index} t
+        {index} t
     where 1=1
         and t.surface = any(%(surfaces)s::{schema}.surface_e[])
         and t.aspect = any(%(aspects)s::{schema}.aspect_e[])

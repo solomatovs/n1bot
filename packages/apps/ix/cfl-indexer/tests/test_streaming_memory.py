@@ -11,15 +11,20 @@ from __future__ import annotations
 
 import asyncio
 import io
+import multiprocessing
+from collections.abc import Sequence
+from concurrent.futures import ProcessPoolExecutor
 
 import pytest
 from cfl_stand import PACKAGE_DIR, StubIndexer
 from PIL import Image, ImageDraw
 
-from boba.cfl_indexer.worker import IndexerConfig, Report, run_spaces
+from boba.cfl_indexer.worker import IndexerConfig, Report, SpaceJob, index_space
 from boba.doc.config import OcrLanguage, RapidOcrConfig
+from boba.krb import KerberosWorkspaceConfig
 from boba.stand.confluence import ConfluenceStub, StubAttachment, StubPage, StubSpace
 from boba.stand.doc import DocStand
+from boba.stand.ix import IxStand, peak_rss_mib
 
 pytestmark = [pytest.mark.load, pytest.mark.anyio]
 
@@ -111,6 +116,38 @@ def rss_mib() -> int:
     return (int(fields[1]) * 4096) >> 20
 
 
+def index_in_child(
+    cfg: IndexerConfig, key: str, krb: KerberosWorkspaceConfig
+) -> tuple[Report, int]:
+    """Вход процесса спейса: отчёт обхода и пик RSS процесса в MiB."""
+    report = index_space(
+        cfg,
+        SpaceJob(source_name=cfg.sources[0].name, space_key=key, reindex=False),
+        PACKAGE_DIR / "run",
+        krb,
+    )
+
+    return report, peak_rss_mib()
+
+
+def index_apart(
+    cfg: IndexerConfig, keys: Sequence[str], krb: KerberosWorkspaceConfig
+) -> dict[str, tuple[Report, int]]:
+    """Каждый спейс в свежем процессе, parallel_spaces разом; заглушку Confluence
+    обслуживает loop теста, поэтому зовётся из потока."""
+    with ProcessPoolExecutor(
+        max_workers=cfg.parallel_spaces,
+        mp_context=multiprocessing.get_context("spawn"),
+        max_tasks_per_child=1,
+    ) as pool:
+        futures = {key: pool.submit(index_in_child, cfg, key, krb) for key in keys}
+        results: dict[str, tuple[Report, int]] = {}
+        for key, future in futures.items():
+            results[key] = future.result()
+
+    return results
+
+
 def ocr_config(
     stub_indexer: StubIndexer, doc_stand: DocStand, *spaces: str
 ) -> IndexerConfig:
@@ -134,6 +171,7 @@ class TestStreamingMemory:
         self,
         stub: tuple[ConfluenceStub, int],
         stub_indexer: StubIndexer,
+        ix_stand: IxStand,
         doc_stand: DocStand,
     ) -> None:
         fake, _ = stub
@@ -141,29 +179,26 @@ class TestStreamingMemory:
         seed_space(fake, "LARGE", LARGE_PAGES)
         cfg = ocr_config(stub_indexer, doc_stand, "MEDIUM", "LARGE")
 
-        reports = await asyncio.to_thread(run_spaces, cfg, PACKAGE_DIR / "run")
+        results = await asyncio.to_thread(
+            index_apart, cfg, ["MEDIUM", "LARGE"], ix_stand.krb
+        )
 
-        by_key: dict[str, Report] = {}
-        for report in reports:
-            by_key[report.space_key] = report
-
-        medium = by_key["MEDIUM"]
-        large = by_key["LARGE"]
+        medium, medium_peak = results["MEDIUM"]
+        large, large_peak = results["LARGE"]
         assert medium.ok, medium.line()
         assert large.ok, large.line()
         assert medium.seen == 1 + MEDIUM_PAGES * 3
         assert large.seen == 1 + LARGE_PAGES * 3
-        assert (
-            large.peak_rss_mib <= medium.peak_rss_mib * GROWTH_RATIO + RSS_SLACK_MIB
-        ), (
-            f"large space peaked at {large.peak_rss_mib} MiB against "
-            f"{medium.peak_rss_mib} MiB for the medium one"
+        assert large_peak <= medium_peak * GROWTH_RATIO + RSS_SLACK_MIB, (
+            f"large space peaked at {large_peak} MiB against "
+            f"{medium_peak} MiB for the medium one"
         )
 
     async def test_parent_stays_flat_across_many_spaces(
         self,
         stub: tuple[ConfluenceStub, int],
         stub_indexer: StubIndexer,
+        ix_stand: IxStand,
         doc_stand: DocStand,
     ) -> None:
         fake, _ = stub
@@ -176,14 +211,14 @@ class TestStreamingMemory:
         cfg = ocr_config(stub_indexer, doc_stand, *keys)
         before = rss_mib()
 
-        reports = await asyncio.to_thread(run_spaces, cfg, PACKAGE_DIR / "run")
+        results = await asyncio.to_thread(index_apart, cfg, keys, ix_stand.krb)
 
         after = rss_mib()
         peaks: list[int] = []
-        for report in reports:
+        for report, peak in results.values():
             assert report.ok, report.line()
             assert report.seen == 1 + MANY_PAGES * 3
-            peaks.append(report.peak_rss_mib)
+            peaks.append(peak)
 
         assert max(peaks) <= min(peaks) * GROWTH_RATIO + RSS_SLACK_MIB, peaks
         assert after - before <= RSS_SLACK_MIB, f"parent grew {before} -> {after} MiB"

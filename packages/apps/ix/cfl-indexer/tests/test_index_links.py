@@ -10,7 +10,9 @@ from typing import Any
 
 import pytest
 from cfl_stand import StubIndexer
+from psycopg import sql
 
+from boba.db.postgres.query import PgQueryBuilder
 from boba.stand.confluence import ConfluenceStub, StubPage, StubSpace
 from boba.stand.ix import IxStandDatabase
 
@@ -52,7 +54,12 @@ EDGES = """
 
 async def edges(database: IxStandDatabase) -> list[tuple[Any, ...]]:
     async with database.connection() as conn:
-        cur = await conn.execute(database.render(EDGES))
+        query = (
+            PgQueryBuilder(schema=sql.Identifier(database.stand.db_schema))
+            .add(EDGES)
+            .build()
+        )
+        cur = await conn.execute(query.text, query.params)
 
         return [tuple(row) for row in await cur.fetchall()]
 
