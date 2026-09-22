@@ -33,7 +33,7 @@ from omegaconf import DictConfig, OmegaConf
 from psycopg import sql
 from pydantic import SecretStr
 
-from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder
+from boba.agent.graph import GraphSpec, PlainGraphBuilder
 from boba.chainlit.infra.config import AppConfig
 from boba.chainlit.infra.plugins import ChatPlugins
 from boba.chainlit.infra.providers import build_history_view
@@ -412,7 +412,7 @@ def _graph(
         tools=tools,
         system_prompt=settings.system_prompt,
         checkpointer=InMemorySaver(),
-        history=build_history_view(frozenset(names), settings.history_messages),
+        middleware=[build_history_view(frozenset(names), settings.history_messages)],
     )
 
     return PlainGraphBuilder().build(spec)

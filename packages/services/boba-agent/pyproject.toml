@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-agent"
+version = "0.0.21.dev2"
+description = "Boba agent: один ход модели с инструментами поверх langchain — граф хода, история в checkpointer, ответ с протоколом хода."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "pydantic>=2.10,<3",
+    "typing-extensions",
+    "langchain",
+    "langchain-core>=1.4,<1.5",
+    "langgraph",
+    "langgraph-checkpoint>=4.1,<5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "boba-chat==0.0.21.dev2",
+    "boba-config==0.0.21.dev2",
+    "boba-llm[chat,generation]==0.0.21.dev2",
+    "boba-runtime==0.0.21.dev2",
+    "boba-stand==0.0.21.dev2",
+    "boba-stand-core==0.0.21.dev2",
+    "boba-toolkit==0.0.21.dev2",
+    "boba-toolrun==0.0.21.dev2",
+    "boba-tool-shell==0.0.21.dev2",
+    "omegaconf",
+    "pytest>=8",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true

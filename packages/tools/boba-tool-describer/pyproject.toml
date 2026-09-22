@@ -27,6 +27,7 @@ payload = [
 ]
 dev = [
     "boba-chainlit==0.0.21.dev2",
+    "boba-agent==0.0.21.dev2",
     "boba-config==0.0.21.dev2",
     "boba-connection-broker==0.0.21.dev2",
     "boba-db-clickhouse==0.0.21.dev2",

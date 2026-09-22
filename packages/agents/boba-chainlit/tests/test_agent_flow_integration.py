@@ -26,8 +26,8 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from omegaconf import DictConfig
 
+from boba.agent.graph import GraphSpec
 from boba.chainlit.agent.flow import (
-    GraphSpec,
     LlmRephraser,
     PrefetchCall,
     PrefetchGraphBuilder,
@@ -186,7 +186,7 @@ def _graph(
         tools=tools,
         system_prompt=settings.system_prompt,
         checkpointer=InMemorySaver(),
-        history=build_history_view(frozenset(names), settings.history_messages),
+        middleware=[build_history_view(frozenset(names), settings.history_messages)],
     )
 
     generators = rephrase_generators(app_config, clients, _runtimes(app_config))

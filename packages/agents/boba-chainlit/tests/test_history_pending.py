@@ -17,7 +17,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 
-from boba.chainlit.agent.flow import GraphSpec, PlainGraphBuilder
+from boba.agent.graph import GraphSpec, PlainGraphBuilder
 from boba.chainlit.chat.history import CheckpointMessages, TranscriptFeed
 from boba.chainlit.domain.fields import StepField
 from boba.chainlit.infra.providers import build_history_view
@@ -78,7 +78,7 @@ def _graph(saver: InMemorySaver):
         tools=[fast_index, slow_index],
         system_prompt="index everything",
         checkpointer=saver,
-        history=build_history_view(frozenset({"fast_index", "slow_index"}), 30),
+        middleware=[build_history_view(frozenset({"fast_index", "slow_index"}), 30)],
     )
     return PlainGraphBuilder().build(spec)
 
