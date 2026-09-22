@@ -12,6 +12,7 @@ pythonpath = [
     "packages/infra/db/boba-db-postgres/src",
     "packages/infra/db/boba-db-pgvector/src",
     "packages/infra/db/boba-db-clickhouse/src",
+    "packages/infra/db/boba-db-oracle/src",
     "packages/infra/sandbox/boba-sandbox/src",
     "packages/infra/auth/boba-krb/src",
     "packages/infra/auth/boba-ldap/src",
@@ -50,6 +51,7 @@ pythonpath = [
     "packages/tools/boba-tool-confluence/src",
     "packages/apps/ix/ix-core/src",
     "packages/apps/ix/pg-meta-scraper/src",
+    "packages/apps/ix/ora-meta-scraper/src",
     "packages/apps/ix/ix-llm-describer/src",
     "packages/apps/ix/ix-fts/src",
     "packages/apps/ix/ix-trgm/src",
@@ -85,6 +87,7 @@ extraPaths = [
     "packages/infra/db/boba-db-postgres/src",
     "packages/infra/db/boba-db-pgvector/src",
     "packages/infra/db/boba-db-clickhouse/src",
+    "packages/infra/db/boba-db-oracle/src",
     "packages/infra/sandbox/boba-sandbox/src",
     "packages/infra/auth/boba-krb/src",
     "packages/infra/auth/boba-ldap/src",
@@ -124,6 +127,7 @@ extraPaths = [
     "packages/tools/boba-tool-confluence/src",
     "packages/apps/ix/ix-core/src",
     "packages/apps/ix/pg-meta-scraper/src",
+    "packages/apps/ix/ora-meta-scraper/src",
     "packages/apps/ix/ix-llm-describer/src",
     "packages/apps/ix/ix-fts/src",
     "packages/apps/ix/ix-trgm/src",
@@ -232,8 +236,10 @@ boba-transport-http = { workspace = true }
 boba-db-postgres    = { workspace = true }
 boba-db-pgvector    = { workspace = true }
 boba-db-clickhouse  = { workspace = true }
+boba-db-oracle      = { workspace = true }
 boba-ix-core     = { workspace = true }
 boba-pg-meta-scraper= { workspace = true }
+boba-ora-meta-scraper= { workspace = true }
 boba-ix-llm-describer= { workspace = true }
 boba-ix-fts     = { workspace = true }
 boba-ix-trgm    = { workspace = true }

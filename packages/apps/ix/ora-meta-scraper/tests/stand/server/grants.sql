@@ -1,0 +1,23 @@
+set pages 0 feedback off
+grant select on sys.user$ to scraper;
+grant select on sys.obj$ to scraper;
+grant select on sys.tab$ to scraper;
+grant select on sys.col$ to scraper;
+grant select on sys.com$ to scraper;
+grant select on sys.con$ to scraper;
+grant select on sys.cdef$ to scraper;
+grant select on sys.ccol$ to scraper;
+grant select on sys.ind$ to scraper;
+grant select on sys.icol$ to scraper;
+grant select on sys.view$ to scraper;
+grant select on sys.snap$ to scraper;
+grant select on sys.seq$ to scraper;
+grant select on sys.syn$ to scraper;
+grant select on sys.trigger$ to scraper;
+grant select on sys.dependency$ to scraper;
+grant select on sys.partobj$ to scraper;
+grant select on sys.partcol$ to scraper;
+grant select on sys.ts$ to scraper;
+grant select on sys.registry$ to scraper;
+grant select on sys.props$ to scraper;
+select 'granted ' || count(*) from dba_tab_privs where grantee = 'SCRAPER';
