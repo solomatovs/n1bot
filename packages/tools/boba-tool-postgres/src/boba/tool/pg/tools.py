@@ -9,7 +9,7 @@ UnknownConnectionError — имя подключения вне whitelist'а к�
 psycopg.Error — сервер отклонил запрос (синтаксис, права).
 ResultTooLargeError — дамп COPY превысил max_bytes конфига.
 CopyDirectionError — COPY-стейтмент не подходит направлению насоса.
-PgQueryError — сборщик получил один параметр с двумя разными значениями.
+QueryBuildError — сборщик получил один параметр с двумя разными значениями.
 """
 
 from __future__ import annotations
@@ -18,16 +18,16 @@ import codecs
 import sys
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import Annotated, Any, ClassVar, Final, LiteralString, Self
+from typing import Annotated, ClassVar, Final
 
 import psycopg
-from psycopg import sql
 from psycopg.rows import dict_row
 from pydantic import Field
 
 from boba.db.postgres import PayloadPostgres, PostgresError
 from boba.db.postgres.address import PgAddresses
 from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.query import PgQuery, PgQueryBuilder
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, UserConnection, tool
 from boba.toolkit.ports import RawInbound, RawOutbound
@@ -39,7 +39,7 @@ from boba.toolkit.result import (
     TableResult,
 )
 from boba.toolkit.sql import (
-    AbstractQuery,
+    QueryBuildError,
     RowLimit,
     RowOffset,
     RowPage,
@@ -50,12 +50,6 @@ from boba.toolkit.sql import (
 from boba.toolkit.types import SecretRevealing
 
 PgConnection = Annotated[PostgresConfig, UserConnection]
-
-PgParams = dict[str, Any]
-"""Именованные параметры psycopg: %(name)s в тексте, значение в словаре."""
-
-PgQuery = AbstractQuery[sql.Composed, PgParams]
-"""Собранный запрос: композиция psycopg плюс именованные параметры."""
 
 SchemaFilter = Annotated[
     str,
@@ -91,10 +85,6 @@ class CopyDirectionError(Exception):
     """COPY-стейтмент не подходит направлению инструмента-насоса."""
 
 
-class PgQueryError(Exception):
-    """Сборщик запроса получил противоречивые куски."""
-
-
 class CopyStatement:
     """Направление COPY-стейтмента: насос конвейера качает в одну сторону.
 
@@ -126,50 +116,6 @@ class PgToolConfig(SecretRevealing, SqlLimits):
     SECTION: ClassVar[str] = "tool.pg"
     ENGINE: ClassVar[str] = "postgres"
     """Подпись движка в SqlResult."""
-
-
-class PgQueryBuilder:
-    """Запрос кусками, которые инструмент добавляет по ходу своей логики.
-
-    В куске `{name}` это идентификатор и подставляется sql.Identifier через
-    psycopg.sql, `%(name)s` это значение и уезжает параметром драйвера, а
-    литеральные фигурные скобки и проценты пишутся удвоенными. Кусок с
-    условием попадает в запрос только при истинном условии, так инструмент
-    держит весь SQL у себя и решает, какие фильтры включить.
-    """
-
-    def __init__(self) -> None:
-        self._parts: list[sql.Composable] = []
-        self._params: PgParams = {}
-
-    def add(self, text: LiteralString, /, **bind: Any) -> Self:
-        identifiers: dict[str, sql.Composable] = {}
-        for name, value in bind.items():
-            if isinstance(value, sql.Composable):
-                identifiers[name] = value
-                continue
-
-            if name in self._params and self._params[name] != value:
-                msg = (
-                    f"query builder: parameter {name!r} bound twice with different "
-                    f"values: {self._params[name]!r} and {value!r}"
-                )
-                raise PgQueryError(msg)
-
-            self._params[name] = value
-
-        self._parts.append(sql.SQL(text).format(**identifiers))
-
-        return self
-
-    def when(self, condition: bool, text: LiteralString, /, **bind: Any) -> Self:
-        if not condition:
-            return self
-
-        return self.add(text, **bind)
-
-    def build(self) -> PgQuery:
-        return PgQuery(text=sql.SQL("\n").join(self._parts), params=dict(self._params))
 
 
 async def run_and_collect(
@@ -1314,7 +1260,7 @@ async def pg_address(connection: PgConnection) -> TableResult:
 
 EXPECTED: Mapping[type[Exception], SqlErrorKind] = {
     CopyDirectionError: SqlErrorKind.SQL_FAILED,
-    PgQueryError: SqlErrorKind.SQL_FAILED,
+    QueryBuildError: SqlErrorKind.SQL_FAILED,
     PostgresError: SqlErrorKind.DATABASE_UNAVAILABLE,
     psycopg.Error: SqlErrorKind.SQL_FAILED,
     ResultTooLargeError: SqlErrorKind.RESULT_TOO_LARGE,

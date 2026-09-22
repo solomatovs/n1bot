@@ -16,7 +16,6 @@ import asyncio
 import logging
 from collections.abc import Sequence
 from pathlib import Path
-from typing import ClassVar
 
 from boba.config import ConfigError, bind_section
 from boba.ix_core.database import IxDatabase
@@ -30,18 +29,17 @@ SCHEMA_DIR = Path(__file__).resolve().parent / "schema"
 class Cli:
     """Запуск с одним аргументом --config: секция [ix.core] в модель."""
 
-    SECTION: ClassVar[str] = "ix.core"
-    COMMAND: ClassVar[str] = "upgrade"
-
     @classmethod
     def parse(cls, argv: Sequence[str] | None = None) -> IxDatabase:
+        section = "ix.core"
+        command = "upgrade"
         parser = argparse.ArgumentParser(
             prog="boba-ix-core",
             description="Ядро графа ix: схема ix, surface, node, tree, edge.",
         )
         parser.add_argument(
-            cls.COMMAND,
-            choices=[cls.COMMAND],
+            command,
+            choices=[command],
             help="Накатить схему ядра в базу из конфига; команда идемпотентна.",
         )
         parser.add_argument(
@@ -50,12 +48,12 @@ class Cli:
             type=Path,
             help=(
                 "Путь к файлу конфига приложения (toml). База берётся из секции "
-                f"[{cls.SECTION}]."
+                f"[{section}]."
             ),
         )
         args = parser.parse_args(argv)
 
-        return bind_section(args.config, cls.SECTION, IxDatabase)
+        return bind_section(args.config, section, IxDatabase)
 
 
 def main() -> None:

@@ -1,4 +1,3 @@
--- @only gp
 create table dm.customers (
     id          bigserial  primary key,
     email       dm.email_t not null,

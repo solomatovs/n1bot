@@ -18,14 +18,13 @@ from pydantic import BaseModel, ConfigDict
 
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.profile import PostgresConfig
-from boba.ix_core.schema_name import SchemaName
-from boba.ix_core.scrape import ApplyRow, parse_headers, scrape_source
+from boba.db.postgres.query import PgQueryBuilder
+from boba.ix_core.scrape import ApplyRow, VersionGate, scrape_source
 from boba.pg_meta_scraper import worker as scraper
 from boba.pg_meta_scraper.worker import (
     PgSource,
     ServerInfo,
     SourceAddress,
-    VersionGate,
     WorkerConfig,
 )
 from boba.stand.ix import IxStand as SharedIxStand
@@ -96,22 +95,14 @@ class IxStand(SharedIxStand):
         for item in self.sources:
             if item.name == name:
                 return item
-        raise IxStandError(
-            f"ix stand: source {name!r} is not listed in [{self.SECTION}]"
-        )
+        raise IxStandError(f"ix stand: source {name!r} is not listed in [{'ix_stand'}]")
 
 
 class DdlFile(VersionGate):
-    """Файл демонстрационного набора с воротами по версии."""
+    """Файл демонстрационного набора: ровно один statement, ворота по версии
+    объявлены в стенде, текст уходит серверу как есть."""
 
-    path: Path
-    text: str
-
-    @classmethod
-    def parse(cls, path: Path) -> DdlFile:
-        text = path.read_text(encoding="utf-8")
-        gate = cls.gate_of(parse_headers(text))
-        return cls(path=path, text=text, **gate.model_dump())
+    name: str
 
 
 class DemoDataset:
@@ -120,28 +111,66 @@ class DemoDataset:
 
     def __init__(self, source: IxSource) -> None:
         self._source = source
-        self._files = [
-            DdlFile.parse(p)
-            for p in sorted(StandFile.DDL_DIR.under_stand().glob("*.sql"))
-        ]
 
     async def recreate(self) -> ServerInfo:
         async with await AsyncPostgresPool.dedicated(self._source.postgres) as conn:
             server = await self._server(conn)
-            await conn.execute(
-                sql.SQL("drop database if exists {}").format(
-                    sql.Identifier(IxSource.DEMO_DB)
+            query = (
+                PgQueryBuilder()
+                .add(
+                    "drop database if exists {db}", db=sql.Identifier(IxSource.DEMO_DB)
                 )
+                .build()
             )
-            await conn.execute(
-                sql.SQL("create database {}").format(sql.Identifier(IxSource.DEMO_DB))
+            await conn.execute(query.text, query.params)
+            query = (
+                PgQueryBuilder()
+                .add("create database {db}", db=sql.Identifier(IxSource.DEMO_DB))
+                .build()
             )
+            await conn.execute(query.text, query.params)
 
+        files = (
+            DdlFile(name="01_base.sql", min_version=(80300,)),
+            DdlFile(
+                name="02a_customers_identity.sql", min_version=(100000,), unless="gp"
+            ),
+            DdlFile(name="02b_customers_serial.sql", max_version=(99999,), unless="gp"),
+            DdlFile(name="02c_customers_gp.sql", only="gp"),
+            DdlFile(name="03_products.sql", min_version=(80300,), unless="gp"),
+            DdlFile(name="03b_products_gp.sql", only="gp"),
+            DdlFile(name="04_orders.sql", min_version=(80300,)),
+            DdlFile(name="04a_orders_index_include.sql", min_version=(110000,)),
+            DdlFile(name="04b_orders_index_noinclude.sql", max_version=(109999,)),
+            DdlFile(name="04c_orders_statistics.sql", min_version=(100000,)),
+            DdlFile(name="05_order_items.sql", min_version=(80300,)),
+            DdlFile(name="05a_generated_stored.sql", min_version=(120000,)),
+            DdlFile(name="05b_generated_virtual.sql", min_version=(180000,)),
+            DdlFile(name="06a_shipments_setnullcols.sql", min_version=(150000,)),
+            DdlFile(name="06b_shipments_setnull.sql", max_version=(149999,)),
+            DdlFile(name="07a_bookings_range.sql", min_version=(90200,), unless="gp"),
+            DdlFile(name="07b_bookings_box.sql", max_version=(90199,)),
+            DdlFile(name="07c_bookings_gp.sql", only="gp"),
+            DdlFile(name="08_invoices.sql", min_version=(80300,)),
+            DdlFile(name="09a_events_pg11.sql", min_version=(110000,)),
+            DdlFile(
+                name="09b_events_pg10.sql", min_version=(100000,), max_version=(109999,)
+            ),
+            DdlFile(name="09c_events_inherit.sql", max_version=(99999,)),
+            DdlFile(name="10_cities.sql", min_version=(80300,)),
+            DdlFile(name="11_views.sql", min_version=(80300,)),
+            DdlFile(name="11a_matview.sql", min_version=(90300,)),
+            DdlFile(name="12_functions.sql", min_version=(80300,)),
+            DdlFile(name="12a_begin_atomic.sql", min_version=(140000,)),
+            DdlFile(name="90_greenplum.sql", only="gp"),
+        )
         async with await AsyncPostgresPool.dedicated(self._source.demo) as conn:
-            for file in self._files:
-                if not file.applies(server):
+            for file in files:
+                if not file.applies((server.version_num,), server.flavor()):
                     continue
-                await conn.execute(file.text.encode("utf-8"))
+
+                path = StandFile.DDL_DIR.under_stand() / file.name
+                await conn.execute(path.read_text(encoding="utf-8").encode("utf-8"))
 
         return server
 
@@ -210,9 +239,13 @@ class IxStandDatabase(SharedIxStandDatabase):
 
     async def invariants(self) -> dict[str, int]:
         """Инварианты структуры, у которых счётчик не ноль."""
-        query = self._query(StandFile.CONSISTENCY)
+        query = (
+            PgQueryBuilder(schema=sql.Identifier(self._stand.db_schema))
+            .read(StandFile.CONSISTENCY.under_stand())
+            .build()
+        )
         async with await AsyncPostgresPool.dedicated(self._stand.ix_profile) as conn:
-            cur = await conn.execute(query)
+            cur = await conn.execute(query.text, query.params)
             rows = await cur.fetchall()
         broken: dict[str, int] = {}
         for name, count in rows:
@@ -221,9 +254,13 @@ class IxStandDatabase(SharedIxStandDatabase):
         return broken
 
     async def fingerprint(self, host: str) -> Fingerprint:
-        query = self._query(StandFile.CANON)
+        query = (
+            PgQueryBuilder(schema=sql.Identifier(self._stand.db_schema))
+            .read(StandFile.CANON.under_stand(), host=host)
+            .build()
+        )
         async with await AsyncPostgresPool.dedicated(self._stand.ix_profile) as conn:
-            cur = await conn.execute(query, {"host": host})
+            cur = await conn.execute(query.text, query.params)
             row = await cur.fetchone()
         if row is None:
             raise IxStandError(
@@ -232,12 +269,17 @@ class IxStandDatabase(SharedIxStandDatabase):
         return Fingerprint.parse(str(row[0]))
 
     async def scope_nodes(self, host: str) -> int:
-        query = SchemaName.render(
-            "select count(*) from {schema}.node where address->>'host' = %(host)s",
-            self._stand.db_schema,
+        query = (
+            PgQueryBuilder()
+            .add(
+                "select count(*) from {schema}.node where address->>'host' = %(host)s",
+                schema=sql.Identifier(self._stand.db_schema),
+                host=host,
+            )
+            .build()
         )
         async with await AsyncPostgresPool.dedicated(self._stand.ix_profile) as conn:
-            cur = await conn.execute(query, {"host": host})
+            cur = await conn.execute(query.text, query.params)
             row = await cur.fetchone()
         if row is None:
             raise IxStandError(
@@ -245,16 +287,7 @@ class IxStandDatabase(SharedIxStandDatabase):
             )
         return int(row[0])
 
-    def _query(self, name: StandFile) -> sql.Composed:
-        """Запрос стенда под схему графа: в файлах она стоит плейсхолдером."""
-        text = name.under_stand().read_text(encoding="utf-8")
-        return SchemaName.render(text, self._stand.db_schema)
-
-    ATTEMPTS: ClassVar[int] = 3
-
     async def scrape(self, source: IxSource) -> Sequence[ApplyRow]:
         pg = PgSource(WorkerConfig(source=source.demo))
-        report = await scrape_source(
-            self._stand.ix_database, pg, PACKAGE_DIR, self.ATTEMPTS
-        )
+        report = await scrape_source(self._stand.ix_database, pg, PACKAGE_DIR, 3)
         return report.rows

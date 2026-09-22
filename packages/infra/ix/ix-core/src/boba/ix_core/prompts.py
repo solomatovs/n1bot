@@ -17,12 +17,13 @@ SurfacePromptError — строка реестра не годится: пуст
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Sequence
-from typing import Any, ClassVar, LiteralString
+from typing import Any
 
 import psycopg
+from psycopg import sql
 from pydantic import BaseModel, ConfigDict
 
-from boba.ix_core.schema_name import SchemaName
+from boba.db.postgres.query import PgQueryBuilder
 
 __all__ = ["SurfacePrompt", "SurfacePromptError", "SurfacePrompts"]
 
@@ -36,8 +37,6 @@ class SurfacePrompt(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    INPUT: ClassVar[str] = "{input}"
-
     surface: str
     aspect: str
     system_prompt: str
@@ -49,7 +48,7 @@ class SurfacePrompt(BaseModel):
 
     def user(self, material: str) -> str:
         """Запрос к модели: материал объекта вместо подстановки."""
-        return self.user_template.replace(self.INPUT, material)
+        return self.user_template.replace("{input}", material)
 
     def check(self) -> None:
         """Строка годится: есть роль модели и место под материал."""
@@ -60,29 +59,15 @@ class SurfacePrompt(BaseModel):
                 f"{where}: expected a system prompt, got an empty string"
             )
 
-        if self.INPUT not in self.user_template:
+        if "{input}" not in self.user_template:
             raise SurfacePromptError(
-                f"{where}: expected the placeholder {self.INPUT} in the user template, "
+                f"{where}: expected the placeholder {'{input}'} in the user template, "
                 f"got {self.user_template[:80]!r}"
             )
 
 
 class SurfacePrompts:
     """Чтение промптов из реестра и выдача их описателю."""
-
-    ALL: ClassVar[LiteralString] = """
-        select
-            p.surface::varchar,
-            p.aspect::varchar,
-            p.system_prompt,
-            p.user_template,
-            p.owner
-        from
-            {schema}.surface_prompt p
-        order by
-            p.surface,
-            p.aspect
-    """
 
     def __init__(self, prompts: Iterable[SurfacePrompt]) -> None:
         found: dict[tuple[str, str], SurfacePrompt] = {}
@@ -95,7 +80,27 @@ class SurfacePrompts:
     async def load(
         cls, conn: psycopg.AsyncConnection[Any], db_schema: str
     ) -> SurfacePrompts:
-        cur = await conn.execute(SchemaName.render(cls.ALL, db_schema))
+        query = (
+            PgQueryBuilder()
+            .add(
+                """
+                select
+                    p.surface::varchar,
+                    p.aspect::varchar,
+                    p.system_prompt,
+                    p.user_template,
+                    p.owner
+                from
+                    {schema}.surface_prompt p
+                order by
+                    p.surface,
+                    p.aspect
+            """,
+                schema=sql.Identifier(db_schema),
+            )
+            .build()
+        )
+        cur = await conn.execute(query.text, query.params)
         rows = await cur.fetchall()
 
         return cls(cls._rows(rows))

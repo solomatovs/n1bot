@@ -19,6 +19,7 @@ from boba.db.oracle.profile import OracleConfig
 from boba.ix_core.database import IxDatabase
 from boba.ix_core.scrape import scrape_source
 from boba.ora_meta_scraper.worker import OraSource
+from boba.stand.ix import peak_rss_mib
 
 pytestmark = [pytest.mark.load, pytest.mark.anyio]
 
@@ -70,7 +71,7 @@ def scrape_in_child(database: IxDatabase, oracle: OracleConfig) -> tuple[int, in
         scrape_source(database, OraSource(oracle), PACKAGE_DIR, ATTEMPTS)
     )
 
-    return report.applied(), report.peak_rss_mib
+    return report.applied(), peak_rss_mib()
 
 
 def scrape_apart(database: IxDatabase, oracle: OracleConfig) -> tuple[int, int]:

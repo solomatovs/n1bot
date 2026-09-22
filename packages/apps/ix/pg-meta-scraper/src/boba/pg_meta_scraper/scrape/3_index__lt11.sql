@@ -1,8 +1,3 @@
--- @name index
--- @wave 3
--- @params rels
--- @min 90100
--- @max 109999
 select
     indexrelid,
     indrelid,
@@ -18,14 +13,6 @@ select
     array(select unnest(indclass::oid[])) as indclass,
     pg_get_expr(indexprs, indrelid) as indexprs,
     pg_get_expr(indpred, indrelid) as indpred,
-    xmin::text as row_xmin
-from
-    pg_index
-where
-    indrelid = any(%(rels)s::oid[]);
--- @verify
-select
-    indexrelid,
     xmin::text as row_xmin
 from
     pg_index

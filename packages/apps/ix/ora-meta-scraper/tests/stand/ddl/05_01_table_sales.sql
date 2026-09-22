@@ -1,4 +1,3 @@
--- @min 18
 create table edge_demo.sales (
     id        number(12) not null,
     sold_at   date not null,

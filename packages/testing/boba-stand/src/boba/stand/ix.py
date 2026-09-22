@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, ClassVar, Self
+from typing import Any, Self
 
 import psycopg
 import pytest
@@ -24,9 +24,9 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from boba.config import bind
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.query import PgQueryBuilder
 from boba.ix_core.database import IxDatabase
 from boba.ix_core.main import SCHEMA_DIR as CORE_SCHEMA_DIR
-from boba.ix_core.schema_name import SchemaName
 from boba.ix_core.upgrade import SchemaUpgrade
 from boba.ix_core.urls import SurfaceUrls
 from boba.krb import KerberosWorkspaceConfig
@@ -46,8 +46,6 @@ class IxStand(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="ignore")
 
-    SECTION: ClassVar[str] = "ix_stand"
-
     postgres: PostgresConfig
     krb: KerberosWorkspaceConfig
     database: str
@@ -57,6 +55,7 @@ class IxStand(BaseModel):
 
     @classmethod
     def load(cls) -> Self:
+        section = "ix_stand"
         path = ConfigLocator.path()
         stand_path = path.parent / StandLayers.FILE
         if not stand_path.is_file():
@@ -65,11 +64,9 @@ class IxStand(BaseModel):
         raw = StandLayers.compose(path)
 
         try:
-            return bind(raw, path=cls.SECTION, model=cls)
+            return bind(raw, path=section, model=cls)
         except ValidationError as exc:
-            raise IxStandError(
-                f"ix stand: [{cls.SECTION}] in {stand_path}: {exc}"
-            ) from exc
+            raise IxStandError(f"ix stand: [{section}] in {stand_path}: {exc}") from exc
 
     @classmethod
     def required(cls) -> Self:
@@ -104,16 +101,18 @@ class IxStandDatabase:
 
     async def recreate(self, schema_dirs: Sequence[Path]) -> None:
         async with await AsyncPostgresPool.dedicated(self._stand.postgres) as conn:
-            await conn.execute(
-                sql.SQL("drop database if exists {} with (force)").format(
-                    sql.Identifier(self._stand.database)
-                )
+            query = (
+                PgQueryBuilder(db=sql.Identifier(self._stand.database))
+                .add("drop database if exists {db} with (force)")
+                .build()
             )
-            await conn.execute(
-                sql.SQL("create database {}").format(
-                    sql.Identifier(self._stand.database)
-                )
+            await conn.execute(query.text, query.params)
+            query = (
+                PgQueryBuilder(db=sql.Identifier(self._stand.database))
+                .add("create database {db}")
+                .build()
             )
+            await conn.execute(query.text, query.params)
 
         database = self._stand.ix_database
         await SchemaUpgrade(CORE_SCHEMA_DIR, requires_core=False).run(database)
@@ -125,20 +124,6 @@ class IxStandDatabase:
         async with await AsyncPostgresPool.dedicated(self._stand.ix_profile) as conn:
             yield conn
 
-    def render(self, text: str) -> sql.Composed:
-        """Запрос проверки под схему графа: в тексте она стоит плейсхолдером."""
-        return SchemaName.render(text, self._stand.db_schema)
-
-    NODES: ClassVar[str] = """
-        select
-            n.surface::varchar,
-            n.address
-        from
-            {schema}.node n
-        order by
-            n.id
-    """
-
     async def urls(self) -> SurfaceUrls:
         """Формулы ссылок из реестра стенда: тест проверяет ими объявление владельца."""
         async with self.connection() as conn:
@@ -147,7 +132,20 @@ class IxStandDatabase:
     async def nodes(self) -> list[tuple[str, dict[str, Any]]]:
         """Поверхность и адрес каждой node: по ним тест собирает ссылки."""
         async with self.connection() as conn:
-            cur = await conn.execute(self.render(self.NODES))
+            query = (
+                PgQueryBuilder(schema=sql.Identifier(self._stand.db_schema))
+                .add("""
+                    select
+                        n.surface::varchar,
+                        n.address
+                    from
+                        {schema}.node n
+                    order by
+                        n.id
+                """)
+                .build()
+            )
+            cur = await conn.execute(query.text, query.params)
             rows = await cur.fetchall()
 
         found: list[tuple[str, dict[str, Any]]] = []
@@ -159,10 +157,30 @@ class IxStandDatabase:
     async def scalar(self, text: str, params: dict[str, Any]) -> Any:
         """Одно значение запроса проверки; отсутствие строки — ошибка стенда."""
         async with self.connection() as conn:
-            cur = await conn.execute(self.render(text), params)
+            query = (
+                PgQueryBuilder(schema=sql.Identifier(self._stand.db_schema))
+                .add(text, **params)
+                .build()
+            )
+            cur = await conn.execute(query.text, query.params)
             row = await cur.fetchone()
 
         if row is None:
             raise IxStandError(f"ix stand: expected one row from {text!r}, got none")
 
         return row[0]
+
+
+def peak_rss_mib() -> int:
+    """Пик резидентной памяти этого процесса с момента exec, из VmHWM в
+    /proc/self/status: ru_maxrss не годится, spawn-потомок наследует значение
+    родителя на момент fork."""
+    status = Path("/proc/self/status")
+    for line in status.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("VmHWM:"):
+            continue
+
+        kib = int(line.split()[1])
+        return kib >> 10
+
+    raise IxStandError(f"reading {status}: expected a VmHWM line, got none")

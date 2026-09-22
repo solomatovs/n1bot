@@ -1,4 +1,3 @@
--- @min 80300
 create view dm.v_orders_daily as
     select date_trunc('day', created_at) as day, currency, sum(amount) as amount
     from dm.orders

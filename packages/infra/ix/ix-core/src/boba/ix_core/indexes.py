@@ -15,15 +15,15 @@ IndexTableError — зарегистрированная таблица отсу
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from enum import StrEnum
-from typing import Any, ClassVar, LiteralString
+from typing import Any
 
 import psycopg
 from psycopg import sql
 from pydantic import BaseModel, ConfigDict
 
-from boba.ix_core.schema_name import SchemaName
+from boba.db.postgres.query import PgQueryBuilder
 
 __all__ = [
     "IndexCoverage",
@@ -59,19 +59,16 @@ class IndexTable(BaseModel):
         return sql.Identifier(self.name)
 
 
-class IndexColumns:
-    """Колонки, которые обязана нести таблица каждого вида."""
-
-    COMMON: ClassVar[tuple[str, ...]] = ("node_id", "surface", "aspect", "content")
-    BY_KIND: ClassVar[Mapping[IndexKind, tuple[str, ...]]] = {
-        IndexKind.TRGM: COMMON,
-        IndexKind.FTS: (*COMMON, "tsv"),
-        IndexKind.VECTOR: (*COMMON, "chunk_no", "content_hash", "emb"),
+def index_columns(kind: IndexKind) -> tuple[str, ...]:
+    """Колонки, которые обязана нести таблица индекса каждого вида."""
+    common = ("node_id", "surface", "aspect", "content")
+    by_kind = {
+        IndexKind.TRGM: common,
+        IndexKind.FTS: (*common, "tsv"),
+        IndexKind.VECTOR: (*common, "chunk_no", "content_hash", "emb"),
     }
 
-    @classmethod
-    def of(cls, kind: IndexKind) -> tuple[str, ...]:
-        return cls.BY_KIND[kind]
+    return by_kind[kind]
 
 
 class IndexCoverage:
@@ -82,14 +79,6 @@ class IndexCoverage:
     по аспекту не был угадыванием.
     """
 
-    PAIRS: ClassVar[LiteralString] = """
-        select distinct
-            t.surface::varchar,
-            t.aspect::varchar
-        from
-            {schema}.{index} t
-    """
-
     @classmethod
     async def of(
         cls,
@@ -97,8 +86,22 @@ class IndexCoverage:
         db_schema: str,
         table: IndexTable,
     ) -> frozenset[tuple[str, str]]:
-        query = SchemaName.render(cls.PAIRS, db_schema, index=table.ident())
-        cur = await conn.execute(query)
+        query = (
+            PgQueryBuilder()
+            .add(
+                """
+                select distinct
+                    t.surface::varchar,
+                    t.aspect::varchar
+                from
+                    {schema}.{index} t
+                """,
+                schema=sql.Identifier(db_schema),
+                index=table.ident(),
+            )
+            .build()
+        )
+        cur = await conn.execute(query.text, query.params)
 
         pairs: set[tuple[str, str]] = set()
         for surface, aspect in await cur.fetchall():
@@ -110,33 +113,29 @@ class IndexCoverage:
 class IndexTables:
     """Чтение реестра и проверка его строк."""
 
-    ALL: ClassVar[str] = """
-        select
-            t.kind::varchar,
-            t.name,
-            t.owner
-        from
-            {schema}.index_table t
-        order by
-            t.kind,
-            t.name
-    """
-    COLUMNS: ClassVar[LiteralString] = """
-        select
-            c.column_name
-        from
-            information_schema.columns c
-        where
-            c.table_schema = %(schema)s
-            and c.table_name = %(name)s
-    """
-    PROBE: ClassVar[LiteralString] = "select 1 from {schema}.{name} limit 0"
-
     @classmethod
     async def all(
         cls, conn: psycopg.AsyncConnection[Any], db_schema: str
     ) -> list[IndexTable]:
-        cur = await conn.execute(SchemaName.render(cls.ALL, db_schema))
+        query = (
+            PgQueryBuilder()
+            .add(
+                """
+                select
+                    t.kind::varchar,
+                    t.name,
+                    t.owner
+                from
+                    {schema}.index_table t
+                order by
+                    t.kind,
+                    t.name
+                """,
+                schema=sql.Identifier(db_schema),
+            )
+            .build()
+        )
+        cur = await conn.execute(query.text, query.params)
         rows = await cur.fetchall()
 
         return list(cls._rows(rows))
@@ -171,21 +170,38 @@ class IndexTables:
     ) -> None:
         where = f"index table {table.name} of kind {table.kind} (owner {table.owner})"
 
-        probe = sql.SQL(cls.PROBE).format(
-            schema=sql.Identifier(db_schema), name=table.ident()
+        probe = (
+            PgQueryBuilder()
+            .add(
+                "select 1 from {schema}.{name} limit 0",
+                schema=sql.Identifier(db_schema),
+                name=table.ident(),
+            )
+            .build()
         )
         try:
-            await conn.execute(probe)
+            await conn.execute(probe.text, probe.params)
         except psycopg.Error as exc:
             raise IndexTableError(f"{where}: table is not readable: {exc}") from exc
 
-        cur = await conn.execute(cls.COLUMNS, {"schema": db_schema, "name": table.name})
+        cur = await conn.execute(
+            """
+            select
+                c.column_name
+            from
+                information_schema.columns c
+            where 1=1
+                and c.table_schema = %(schema)s
+                and c.table_name = %(name)s
+            """,
+            {"schema": db_schema, "name": table.name},
+        )
         present: set[str] = set()
         for row in await cur.fetchall():
             present.add(str(row[0]))
 
         missing: list[str] = []
-        for column in IndexColumns.of(table.kind):
+        for column in index_columns(table.kind):
             if column not in present:
                 missing.append(column)
 
@@ -193,7 +209,7 @@ class IndexTables:
             return
 
         raise IndexTableError(
-            f"{where}: expected columns {list(IndexColumns.of(table.kind))}, "
+            f"{where}: expected columns {list(index_columns(table.kind))}, "
             f"missing {missing}"
         )
 

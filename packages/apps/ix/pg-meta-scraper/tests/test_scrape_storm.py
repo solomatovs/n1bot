@@ -7,7 +7,6 @@ from __future__ import annotations
 import asyncio
 import random
 from collections.abc import Sequence
-from typing import ClassVar
 
 import pytest
 from pydantic import BaseModel
@@ -33,9 +32,6 @@ class StormOutcome(BaseModel):
 class Killer:
     """Каждые 200 мс обрывает две случайные сессии скрапера на базе ix. Ошибка
     задачи не глотается: поднимается при выходе из контекста."""
-
-    PERIOD_SEC: ClassVar[float] = 0.2
-    VICTIMS: ClassVar[int] = 2
 
     def __init__(self, postgres: PostgresConfig, database: str) -> None:
         self._postgres = postgres
@@ -69,26 +65,23 @@ class Killer:
                     {
                         "app": self._postgres.application_name,
                         "db": self._database,
-                        "n": self.VICTIMS,
+                        "n": 2,
                     },
                 )
                 rows = await cur.fetchall()
                 self.kills += len(rows)
-                await asyncio.sleep(self.PERIOD_SEC)
+                await asyncio.sleep(0.2)
 
 
 class Storm:
     """Пачка задач, каждая гоняет скрапер по случайным целям заданное число раз."""
-
-    TASKS: ClassVar[int] = 60
-    RUNS_PER_TASK: ClassVar[int] = 3
 
     def __init__(self, database: IxStandDatabase, sources: Sequence[IxSource]) -> None:
         self._database = database
         self._sources = list(sources)
 
     async def run(self) -> list[StormOutcome]:
-        runs = [self._task_runs(seed) for seed in range(self.TASKS)]
+        runs = [self._task_runs(seed) for seed in range(60)]
         outcomes: list[StormOutcome] = []
         for batch in await asyncio.gather(*runs):
             outcomes.extend(batch)
@@ -97,7 +90,7 @@ class Storm:
     async def _task_runs(self, seed: int) -> list[StormOutcome]:
         rng = random.Random(seed)  # noqa: S311 — выбор цели шторма, не крипто
         outcomes: list[StormOutcome] = []
-        for _ in range(self.RUNS_PER_TASK):
+        for _ in range(3):
             source = rng.choice(self._sources)
             outcomes.append(await self._one(source))
         return outcomes

@@ -31,7 +31,6 @@ from enum import StrEnum
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import ClassVar
 from urllib.parse import parse_qs, urlparse
 
 import psycopg
@@ -41,11 +40,11 @@ from boba.config import ConfigError, bind_section
 from boba.db.postgres import AsyncPostgresPool, PostgresError
 from boba.ix_core.database import IxDatabase, IxDatabaseError, IxPool
 from boba.ix_core.search import (
+    Hit,
     IxSearch,
     IxSearchError,
     SearchMode,
     SearchRegistry,
-    SearchReply,
     SearchRequest,
 )
 from boba.ix_core.surfaces import Surface
@@ -98,7 +97,7 @@ class Searcher:
 
     def search_from_thread(
         self, mode: SearchMode, query: str, limit: int, surfaces: Sequence[str]
-    ) -> SearchReply:
+    ) -> list[Hit]:
         future = asyncio.run_coroutine_threadsafe(
             self.search(mode, query, limit, surfaces), self._loop
         )
@@ -107,7 +106,7 @@ class Searcher:
 
     async def search(
         self, mode: SearchMode, query: str, limit: int, surfaces: Sequence[str]
-    ) -> SearchReply:
+    ) -> list[Hit]:
         vector: tuple[float, ...] = ()
         if mode is SearchMode.VECTOR:
             vector = tuple(await self._embedder.embed_query(query))
@@ -122,7 +121,11 @@ class Searcher:
 
         try:
             async with self._pool.connection() as conn:
-                return await self._search.search(conn, request)
+                hits: list[Hit] = []
+                async for hit in self._search.search(conn, request):
+                    hits.append(hit)
+
+                return hits
         except (psycopg.Error, PostgresError) as exc:
             raise SearchLabError(
                 f"search {mode} in {self._cfg.postgres.where()}: no connection "
@@ -174,13 +177,17 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             mode = SearchMode(mode_name)
-            reply = self.searcher.search_from_thread(mode, query, limit, surfaces)
+            hits = self.searcher.search_from_thread(mode, query, limit, surfaces)
         except (SearchLabError, IxSearchError, ValueError) as exc:
             logger.error("%s", exc)
             self._json({"mode": mode_name, "hits": [], "error": str(exc)})
             return
 
-        self._json(reply.model_dump(mode="json"))
+        found: list[dict[str, object]] = []
+        for hit in hits:
+            found.append(hit.model_dump(mode="json"))
+
+        self._json({"mode": mode_name, "hits": found})
 
     def _json(self, payload: dict[str, object]) -> None:
         self._send(
@@ -220,7 +227,9 @@ class LabServer:
             names.append(surface.name)
 
         logger.info("surfaces to search over: %s", ", ".join(names))
-        logger.info("url templates for surfaces: %s", ", ".join(registry.urls.surfaces()))
+        logger.info(
+            "url templates for surfaces: %s", ", ".join(registry.urls.surfaces())
+        )
 
         return registry
 
@@ -254,8 +263,6 @@ class LabServer:
 class Cli:
     """Запуск с одним аргументом --config: секция [ix.search_lab] в модель."""
 
-    SECTION: ClassVar[str] = "ix.search_lab"
-
     @classmethod
     def parse(cls, argv: Sequence[str] | None = None) -> LabConfig:
         parser = argparse.ArgumentParser(
@@ -273,7 +280,7 @@ class Cli:
         )
         args = parser.parse_args(argv)
 
-        return bind_section(args.config, cls.SECTION, LabConfig)
+        return bind_section(args.config, "ix.search_lab", LabConfig)
 
 
 def main() -> None:

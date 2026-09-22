@@ -1,4 +1,3 @@
--- @only gp
 create table dm.products (
     id    bigserial,
     sku   text      primary key,

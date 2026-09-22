@@ -1,8 +1,3 @@
--- @name proc
--- @wave 2
--- @params schemas
--- @collect procs oid
--- @max 109999
 select
     oid,
     proname,
@@ -20,14 +15,6 @@ select
     proargmodes,
     pg_get_function_identity_arguments(oid) as identity_args,
     pg_get_function_result(oid) as result_type,
-    xmin::text as row_xmin
-from
-    pg_proc
-where
-    pronamespace = any(%(schemas)s::oid[]);
--- @verify
-select
-    oid,
     xmin::text as row_xmin
 from
     pg_proc

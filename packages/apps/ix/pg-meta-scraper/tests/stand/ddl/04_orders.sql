@@ -1,4 +1,3 @@
--- @min 80300
 create table dm.orders (
     id           bigserial       primary key,
     customer_id  bigint          not null references dm.customers (id),

@@ -62,9 +62,8 @@ from boba.cfl_indexer.store import (
 from boba.config import ConfigError, bind_section
 from boba.confluence.models import AttachmentVerdict
 from boba.confluence.rest import ConfluenceConnection, ContentType
+from boba.db.postgres.names import PostgresSchema
 from boba.ix_core.database import IxDatabase, IxDatabaseError, IxPool
-from boba.ix_core.schema_name import SchemaName
-from boba.ix_core.scrape import peak_rss_mib
 from boba.ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError
 from boba.text.document import LiteParseParams
 
@@ -127,7 +126,6 @@ class Report(BaseModel):
     swept: int = 0
     failed: int = 0
     linked: int = 0
-    peak_rss_mib: int = 0
     """Пик RSS процесса спейса: по нему видно, копит ли обход память."""
     error: str = ""
 
@@ -142,7 +140,7 @@ class Report(BaseModel):
         text = (
             f"{self.space_key}: seen={self.seen} indexed={self.indexed} "
             f"unchanged={self.unchanged} linked={self.linked} swept={self.swept} "
-            f"failed={self.failed} rss={self.peak_rss_mib}MiB"
+            f"failed={self.failed}"
         )
         if self.error:
             text = f"{text} error={self.error}"
@@ -297,7 +295,6 @@ class SpaceWalk:
         await self._store.mark_seen(node_id)
         self._report.seen += 1
         if self._report.seen % self._cfg.progress_every == 0:
-            self._report.peak_rss_mib = peak_rss_mib()
             logger.info("progress: %s", self._report.line())
 
         return node_id
@@ -520,7 +517,6 @@ async def walk_space(
         logger.error("space %s aborted: %s", space_key, exc)
         report.error = str(exc)
 
-    report.peak_rss_mib = peak_rss_mib()
     logger.info("space %s", report.line())
 
     return report
@@ -563,7 +559,7 @@ async def list_targets(
 async def check_fts(cfg: IndexerConfig) -> None:
     """ix_fts накатывает пакет ix-fts; без него текст класть некуда."""
     async with IxPool.session(cfg) as conn:
-        if await SchemaName.exists(conn, cfg.db_schema, FTS_TABLE):
+        if await PostgresSchema.exists(conn, cfg.db_schema, FTS_TABLE):
             return
 
     raise IndexerWorkerError(

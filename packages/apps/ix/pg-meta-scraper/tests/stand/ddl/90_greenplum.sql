@@ -1,4 +1,3 @@
--- @only gp
 create table dm.gp_sales (
     id      bigint,
     region  text,
