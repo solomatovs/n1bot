@@ -9,7 +9,7 @@ import pytest
 
 from boba.sandbox import SandboxToolConfig
 from boba.stand.sandbox import ROOTFS_IMAGE
-from boba.tool.kb.kb import PostgresKnowledgeBaseConfig
+from boba.tool.kb.kb import KbToolConfig
 from boba.tool.kb.tools import TOOLS as KB_TOOLS
 from boba.tool.pg.tools import TOOLS as PG_TOOLS
 from boba.tool.pg.tools import PgToolConfig
@@ -24,15 +24,16 @@ def pg_config() -> PgToolConfig:
     return PgToolConfig.model_validate({"limit": 10, "sandbox": _SANDBOX})
 
 
-def kb_config() -> PostgresKnowledgeBaseConfig:
-    return PostgresKnowledgeBaseConfig.model_validate(
+def kb_config() -> KbToolConfig:
+    return KbToolConfig.model_validate(
         {
             "connection": {
                 "host": "h",
                 "dbname": "d",
                 "auth": {"method": "trust", "user": "u"},
             },
-            "tables": {"pg_schema": "kb"},
+            "db_schema": "ix",
+            "max_result_chars": 1000,
             "embedding": {
                 "kind": "local",
                 "model": "intfloat/multilingual-e5-small",
@@ -97,24 +98,48 @@ class TestPgTools:
 
 
 class TestKbTools:
+    _NAMES: ClassVar[list[str]] = [
+        "kb_vector_search",
+        "kb_fts_search",
+        "kb_catalog2",
+        "kb_fts_search2",
+        "kb_trgm_search2",
+        "kb_vector_search2",
+        "kb_node2",
+    ]
+
     def test_module_declares_the_toolset(self) -> None:
         names = [t.name for t in KB_TOOLS]
-        if not (
-            names
-            == [
-                "kb_vector_search",
-                "kb_fts_search",
-            ]
-        ):
-            raise AssertionError('names == [ "kb_vector_search", "kb_fts_search", ]')
+        if names != self._NAMES:
+            raise AssertionError(f"names == {self._NAMES}, got {names}")
 
     def test_search_arguments_hide_injected(self) -> None:
-        tool = KB_TOOLS[0]
-        llm_fields = set(tool.args_schema.model_fields) - {"cfg"}
-        if llm_fields != {"query", "top_k"}:
-            raise AssertionError(
-                f'llm_fields == {{"query", "top_k"}}, got {llm_fields}'
-            )
+        expected = {"query", "surfaces", "aspects", "top_k"}
+        for tool in KB_TOOLS:
+            if not tool.name.endswith("_search2"):
+                continue
+
+            llm_fields = set(tool.args_schema.model_fields) - {"cfg"}
+            if llm_fields != expected:
+                raise AssertionError(f"{tool.name}: {expected}, got {llm_fields}")
+
+    def test_chunks_search_arguments_hide_injected(self) -> None:
+        by_name = {t.name: t for t in KB_TOOLS}
+        for name in ("kb_vector_search", "kb_fts_search"):
+            llm_fields = set(by_name[name].args_schema.model_fields) - {"cfg"}
+            if llm_fields != {"query", "top_k"}:
+                raise AssertionError(f'{name}: {{"query", "top_k"}}, got {llm_fields}')
+
+    def test_node_arguments_hide_injected(self) -> None:
+        by_name = {t.name: t for t in KB_TOOLS}
+        llm_fields = set(by_name["kb_node2"].args_schema.model_fields) - {"cfg"}
+        if llm_fields != {"node_id", "aspects"}:
+            raise AssertionError(f'{{"node_id", "aspects"}}, got {llm_fields}')
+
+    def test_config_binds_the_section(self) -> None:
+        cfg = kb_config()
+        if cfg.db_schema != "ix":
+            raise AssertionError(f"db_schema == ix, got {cfg.db_schema}")
 
 
 def _bin_dirs() -> list[str]:

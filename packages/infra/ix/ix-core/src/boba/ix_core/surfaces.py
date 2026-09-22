@@ -27,14 +27,15 @@ __all__ = ["Surface", "SurfaceCatalog"]
 
 
 class Surface(BaseModel):
-    """Одна поверхность: значение surface_e, описание из словаря и число аспектов,
-    объявленных её владельцем."""
+    """Одна поверхность: значение surface_e, описание из словаря, число аспектов,
+    объявленных её владельцем, и число node в базе."""
 
     model_config = ConfigDict(frozen=True)
 
     name: str
     description: str
     aspects: int
+    nodes: int
 
 
 class SurfaceCatalog:
@@ -44,7 +45,12 @@ class SurfaceCatalog:
         select
             e.enumlabel::varchar,
             coalesce(max(s.description), ''),
-            count(distinct sa.aspect)
+            count(distinct sa.aspect),
+            (
+                select count(*)
+                from {schema}.node n
+                where n.surface = e.enumlabel::{schema}.surface_e
+            )
         from
             pg_type t
             join pg_namespace ns on ns.oid = t.typnamespace
@@ -106,7 +112,10 @@ class SurfaceCatalog:
 
     @staticmethod
     def _rows(rows: Iterable[Sequence[Any]]) -> Iterator[Surface]:
-        for name, description, aspects in rows:
+        for name, description, aspects, nodes in rows:
             yield Surface(
-                name=str(name), description=str(description), aspects=int(aspects)
+                name=str(name),
+                description=str(description),
+                aspects=int(aspects),
+                nodes=int(nodes),
             )

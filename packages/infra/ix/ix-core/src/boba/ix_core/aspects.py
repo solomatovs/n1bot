@@ -1,10 +1,12 @@
-"""Объявления аспектов: классы, чтение объявлений из базы, проверка контракта тела
-и сборка одного источника для потребителя.
+"""Объявления аспектов: классы, словарь, чтение объявлений из базы, проверка
+контракта тела и сборка одного источника для потребителя.
 
 Потребитель (индексатор, описатель) подписан на классы аспектов. Он читает
 объявления своих классов из {schema}.surface_aspect, а AspectSources склеивает
 их тела в один `union all` с колонками surface, aspect, node_id, content, который
-потребитель подставляет в свои файлы run/ вместо `{sources}`.
+потребитель подставляет в свои файлы run/ вместо `{sources}`. Поиск читает словарь
+{schema}.aspect целиком (AspectCatalog): показать выбор, проверить фильтр запроса,
+узнать класс аспекта строки выдачи.
 
 Ошибки:
 AspectDeclarationError — тело объявления не выполняется на этой базе или
@@ -25,10 +27,12 @@ from pydantic import BaseModel, ConfigDict
 from boba.ix_core.schema_name import SchemaName, SchemaNameError
 
 __all__ = [
+    "AspectCatalog",
     "AspectClass",
     "AspectContract",
     "AspectDeclarationError",
     "AspectDeclarations",
+    "AspectEntry",
     "AspectSources",
     "SurfaceAspect",
 ]
@@ -60,6 +64,108 @@ class ContractType(StrEnum):
     INT8 = "int8"
     TEXT = "text"
     VARCHAR = "varchar"
+
+
+class AspectEntry(BaseModel):
+    """Одна строка словаря {schema}.aspect: имя, класс, описание и владелец."""
+
+    model_config = ConfigDict(frozen=True)
+
+    aspect: str
+    aspect_class: AspectClass
+    description: str
+    owner: str
+
+
+class AspectCatalog:
+    """Словарь аспектов и пары «поверхность, аспект» из объявлений: что вообще есть,
+    какие аспекты у поверхности и какие имена запроса словарю неизвестны."""
+
+    ENTRIES: ClassVar[LiteralString] = """
+        select
+            a.aspect::varchar,
+            a.class::varchar,
+            a.description,
+            a.owner
+        from
+            {schema}.aspect a
+        order by
+            a.class,
+            a.aspect
+    """
+    PAIRS: ClassVar[LiteralString] = """
+        select
+            sa.surface::varchar,
+            sa.aspect::varchar
+        from
+            {schema}.surface_aspect sa
+        order by
+            sa.surface,
+            sa.aspect
+    """
+
+    def __init__(
+        self, entries: Sequence[AspectEntry], pairs: Sequence[tuple[str, str]]
+    ) -> None:
+        self._entries = tuple(entries)
+        self._by_name: dict[str, AspectEntry] = {}
+        for entry in entries:
+            self._by_name[entry.aspect] = entry
+
+        self._of_surface: dict[str, list[AspectEntry]] = {}
+        for surface, aspect in pairs:
+            entry = self._by_name.get(aspect)
+            if entry is None:
+                continue
+
+            self._of_surface.setdefault(surface, []).append(entry)
+
+    @classmethod
+    async def load(
+        cls, conn: psycopg.AsyncConnection[Any], db_schema: str
+    ) -> AspectCatalog:
+        cur = await conn.execute(SchemaName.render(cls.ENTRIES, db_schema))
+        entries = list(cls._parse(await cur.fetchall()))
+
+        cur = await conn.execute(SchemaName.render(cls.PAIRS, db_schema))
+        pairs: list[tuple[str, str]] = []
+        for surface, aspect in await cur.fetchall():
+            pairs.append((str(surface), str(aspect)))
+
+        return cls(entries, pairs)
+
+    def all(self) -> tuple[AspectEntry, ...]:
+        return self._entries
+
+    def names(self) -> tuple[str, ...]:
+        found: list[str] = []
+        for entry in self._entries:
+            found.append(entry.aspect)
+
+        return tuple(found)
+
+    def of_surface(self, surface: str) -> tuple[AspectEntry, ...]:
+        """Аспекты, объявленные для поверхности, в порядке словаря."""
+        return tuple(self._of_surface.get(surface, ()))
+
+    def unknown(self, names: Iterable[str]) -> tuple[str, ...]:
+        """Имена, которых в словаре нет: фильтр по ним ничего не значит."""
+        strange: list[str] = []
+        for name in names:
+            if name not in self._by_name:
+                strange.append(name)
+
+        return tuple(strange)
+
+    @staticmethod
+    def _parse(rows: Iterable[Sequence[Any]]) -> Iterator[AspectEntry]:
+        for aspect, aspect_class, description, owner in rows:
+            yield AspectEntry(
+                aspect=str(aspect),
+                aspect_class=AspectClass(str(aspect_class)),
+                description=str(description),
+                owner=str(owner),
+            )
 
 
 class SurfaceAspect(BaseModel):
