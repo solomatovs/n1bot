@@ -190,7 +190,7 @@ class RapidOcrEngine(OcrEngine):
 
     def __init__(self, config: RapidOcrConfig) -> None:
         self._config = config
-        self._check_models()
+        self.check_models(config)
         try:
             self._ocr = RapidOCR(params=self._params())
         except Exception as exc:
@@ -225,9 +225,12 @@ class RapidOcrEngine(OcrEngine):
 
         return OcrLines.assemble(output.boxes, output.txts)
 
-    def _check_models(self) -> None:
+    @staticmethod
+    def check_models(config: RapidOcrConfig) -> None:
+        """Файлы моделей на месте; проверка без загрузки сессий, годится
+        родителю до раздачи работы процессам."""
         missing: list[str] = []
-        for path in OcrModel.required(self._config.models_dir, self._config.language):
+        for path in OcrModel.required(config.models_dir, config.language):
             if path.is_file():
                 continue
 
@@ -237,8 +240,8 @@ class RapidOcrEngine(OcrEngine):
             return
 
         raise DocumentError(
-            f"ocr: models directory {self._config.models_dir} lacks "
-            f"{', '.join(missing)} for language {self._config.language.value!r}"
+            f"ocr: models directory {config.models_dir} lacks "
+            f"{', '.join(missing)} for language {config.language.value!r}"
         )
 
     def _params(self) -> dict[str, Any]:
@@ -272,3 +275,9 @@ class OcrEngines:
             return RapidOcrEngine(config)
 
         return DisabledOcr()
+
+    @staticmethod
+    def check(config: DisabledOcrConfig | RapidOcrConfig) -> None:
+        """Секция пригодна: у rapidocr все файлы моделей на месте."""
+        if isinstance(config, RapidOcrConfig):
+            RapidOcrEngine.check_models(config)

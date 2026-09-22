@@ -8,10 +8,10 @@
 остальные аспекты выводят общие индексаторы.
 
 Ошибки:
-IndexerWorkerError — база ix, полнотекст, список спейсов, конфиг или процесс спейса,
-    упавший не своей ошибкой. Ошибка Confluence или базы внутри спейса даёт отчёт с
-    error, остальные спейсы идут дальше; файл вложения, который не скачался или не
-    разобрался, считается в failed.
+IndexerWorkerError — база ix, полнотекст, список спейсов, конфиг, модели OCR
+    или процесс спейса, упавший не своей ошибкой. Ошибка Confluence или базы
+    внутри спейса даёт отчёт с error, остальные спейсы идут дальше; файл
+    вложения, который не скачался или не разобрался, считается в failed.
 """
 
 from __future__ import annotations
@@ -62,7 +62,7 @@ from boba.cfl_indexer.store import (
 from boba.config import ConfigError, bind_section
 from boba.confluence.models import AttachmentVerdict
 from boba.confluence.rest import ConfluenceConnection, ContentType
-from boba.doc import DocConfig, DocumentRouter
+from boba.doc import DocConfig, DocumentError, DocumentRouter
 from boba.doc.ocr import OcrConfig, OcrEngines
 from boba.ix_core.database import IxDatabase, IxDatabaseError, IxPool
 from boba.ix_core.schema_name import SchemaName
@@ -570,8 +570,11 @@ def run_spaces(
     """Прогон по спейсам: процесс на спейс, parallel_spaces процессов разом.
     Отчёты в порядке спейсов; спейс с ошибкой — отчёт с error."""
     try:
+        OcrEngines.check(cfg.doc.ocr)
         asyncio.run(check_fts(cfg))
         targets = asyncio.run(list_targets(cfg, source, space))
+    except DocumentError as exc:
+        raise IndexerWorkerError(str(exc)) from exc
     except IxDatabaseError as exc:
         raise IndexerWorkerError(str(exc)) from exc
     except ConfluenceReadError as exc:

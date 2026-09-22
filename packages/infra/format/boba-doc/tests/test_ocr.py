@@ -8,7 +8,7 @@ import pytest
 from samples import NoSeek, Samples
 
 from boba.doc import DocumentError, DocumentHint, DocumentRouter, PageWindow
-from boba.doc.ocr import OcrLanguage, RapidOcrConfig, RapidOcrEngine
+from boba.doc.ocr import OcrEngines, OcrLanguage, RapidOcrConfig, RapidOcrEngine
 from boba.stand.doc import DocStand
 
 LINES = ["Договор поставки от 12 мая", "Quarterly report 2026 total 1250"]
@@ -70,3 +70,6 @@ def test_missing_models_fail_with_names(tmp_path: Path) -> None:
 
     with pytest.raises(DocumentError, match=r"eslav_PP-OCRv5_rec_mobile\.onnx"):
         RapidOcrEngine(config)
+
+    with pytest.raises(DocumentError, match="lacks"):
+        OcrEngines.check(config)

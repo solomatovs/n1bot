@@ -117,7 +117,7 @@ def ocr_config(
     ocr = RapidOcrConfig(
         provider="rapidocr",
         models_dir=doc_stand.ocr_models_dir,
-        language=OcrLanguage.EN,
+        language=OcrLanguage.ESLAV,
         text_score=0.5,
         threads=1,
     )
