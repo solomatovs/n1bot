@@ -1,4 +1,3 @@
--- @min 150000
 create table dm.shipments (
     id           bigserial primary key,
     order_id     bigint,

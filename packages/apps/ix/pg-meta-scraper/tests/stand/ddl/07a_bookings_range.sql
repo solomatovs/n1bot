@@ -1,5 +1,3 @@
--- @min 90200
--- @not gp
 create extension if not exists btree_gist;
 create table dm.bookings (
     id      bigserial primary key,

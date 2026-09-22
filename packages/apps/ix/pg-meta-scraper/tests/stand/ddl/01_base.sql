@@ -1,4 +1,3 @@
--- @min 80300
 create schema ref;
 create schema dm;
 create domain dm.email_t as text check (value ~ '^[^@]+@[^@]+$');

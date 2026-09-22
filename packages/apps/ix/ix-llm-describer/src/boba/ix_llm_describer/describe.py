@@ -28,7 +28,6 @@ import re
 from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
-from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -108,31 +107,28 @@ class PackPrompts:
     дописывается к системному промпту поверхности.
     """
 
-    PARTS: ClassVar[str] = "{parts}"
-    FUNCTION: ClassVar[str] = "{function}"
-
     def __init__(self, prompt_dir: Path) -> None:
         self._dir = prompt_dir
-        self._part = self._text(PromptFile.PART, SurfacePrompt.INPUT)
-        self._reduce = self._text(PromptFile.REDUCE, self.PARTS)
+        self._part = self._text(PromptFile.PART, "{input}")
+        self._reduce = self._text(PromptFile.REDUCE, "{parts}")
         raw = self._read(PromptFile.SCHEMA)
         self.schema = SchemaSpec.model_validate(json.loads(raw))
-        answer = self._text(PromptFile.ANSWER, self.FUNCTION)
-        self._answer = answer.replace(self.FUNCTION, self.schema.name)
+        answer = self._text(PromptFile.ANSWER, "{function}")
+        self._answer = answer.replace("{function}", self.schema.name)
 
     def system(self, surface_system: str) -> str:
         """Системный промпт вызова: роль от владельца поверхности и правило ответа."""
         return f"{surface_system}\n\n{self._answer}"
 
     def part(self, chunk: str) -> str:
-        return self._part.replace(SurfacePrompt.INPUT, chunk)
+        return self._part.replace("{input}", chunk)
 
     def reduce(self, parts: Sequence[str]) -> str:
         lines: list[str] = []
         for number, text in enumerate(parts, start=1):
             lines.append(f"{number}. {text}")
 
-        return self._reduce.replace(self.PARTS, "\n\n".join(lines))
+        return self._reduce.replace("{parts}", "\n\n".join(lines))
 
     def material(self) -> str:
         """То, что пакет добавляет в отпечаток пары: шаблоны и схема ответа."""
@@ -172,10 +168,6 @@ class MarkdownSplit:
     заголовков в тексте.
     """
 
-    HEADING: ClassVar[re.Pattern[str]] = re.compile(r"(?m)^(?=#{1,6} )")
-    PARAGRAPH: ClassVar[str] = "\n\n"
-    GLUE: ClassVar[str] = "\n\n"
-
     def __init__(self, budget: int) -> None:
         if budget <= 0:
             raise DescribeError(f"chunking: expected a positive budget, got {budget}")
@@ -190,7 +182,7 @@ class MarkdownSplit:
 
     def _pieces(self, text: str) -> list[str]:
         pieces: list[str] = []
-        for section in self.HEADING.split(text):
+        for section in re.compile(r"(?m)^(?=#{1,6} )").split(text):
             pieces.extend(self._paragraphs(section))
 
         return pieces
@@ -200,7 +192,7 @@ class MarkdownSplit:
             return [section]
 
         pieces: list[str] = []
-        for paragraph in section.split(self.PARAGRAPH):
+        for paragraph in section.split("\n\n"):
             pieces.extend(self._hard(paragraph))
 
         return pieces
@@ -226,15 +218,15 @@ class MarkdownSplit:
                 continue
 
             if current and size + len(piece) > self._budget:
-                chunks.append(self.GLUE.join(current))
+                chunks.append("\n\n".join(current))
                 current = []
                 size = 0
 
             current.append(piece)
-            size += len(piece) + len(self.GLUE)
+            size += len(piece) + len("\n\n")
 
         if current:
-            chunks.append(self.GLUE.join(current))
+            chunks.append("\n\n".join(current))
 
         return chunks
 

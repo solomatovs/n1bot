@@ -190,17 +190,20 @@ class KbSession:
             await self._conn.execute(self.ITERATIVE_SCAN)
 
         elapsed = Elapsed()
-        reply = await IxSearch(self._cfg.db_schema, self._registry).search(
+        hits: list[Hit] = []
+        async for hit in IxSearch(self._cfg.db_schema, self._registry).search(
             self._conn, request
-        )
+        ):
+            hits.append(hit)
+
         logger.info(
             "ix %s search finished in %dms (%d hits)",
             request.mode,
             elapsed.ms(),
-            len(reply.hits),
+            len(hits),
         )
 
-        return reply.hits
+        return hits
 
     async def node(self, node_id: int, aspects: Sequence[str]) -> NodeCard:
         reader = NodeReader(self._cfg.db_schema, self._registry)

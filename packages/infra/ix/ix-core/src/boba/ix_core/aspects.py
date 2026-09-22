@@ -17,14 +17,15 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Sequence
 from enum import StrEnum
-from typing import Any, ClassVar, LiteralString
+from typing import Any
 
 import psycopg
 from psycopg import sql
 from psycopg.postgres import types as pg_types
 from pydantic import BaseModel, ConfigDict
 
-from boba.ix_core.schema_name import SchemaName, SchemaNameError
+from boba.db.postgres.query import PgQueryBuilder
+from boba.toolkit.sql import QueryBuildError
 
 __all__ = [
     "AspectCatalog",
@@ -81,29 +82,6 @@ class AspectCatalog:
     """Словарь аспектов и пары «поверхность, аспект» из объявлений: что вообще есть,
     какие аспекты у поверхности и какие имена запроса словарю неизвестны."""
 
-    ENTRIES: ClassVar[LiteralString] = """
-        select
-            a.aspect::varchar,
-            a.class::varchar,
-            a.description,
-            a.owner
-        from
-            {schema}.aspect a
-        order by
-            a.class,
-            a.aspect
-    """
-    PAIRS: ClassVar[LiteralString] = """
-        select
-            sa.surface::varchar,
-            sa.aspect::varchar
-        from
-            {schema}.surface_aspect sa
-        order by
-            sa.surface,
-            sa.aspect
-    """
-
     def __init__(
         self, entries: Sequence[AspectEntry], pairs: Sequence[tuple[str, str]]
     ) -> None:
@@ -124,10 +102,46 @@ class AspectCatalog:
     async def load(
         cls, conn: psycopg.AsyncConnection[Any], db_schema: str
     ) -> AspectCatalog:
-        cur = await conn.execute(SchemaName.render(cls.ENTRIES, db_schema))
+        query = (
+            PgQueryBuilder()
+            .add(
+                """
+                select
+                    a.aspect::varchar,
+                    a.class::varchar,
+                    a.description,
+                    a.owner
+                from
+                    {schema}.aspect a
+                order by
+                    a.class,
+                    a.aspect
+                """,
+                schema=sql.Identifier(db_schema),
+            )
+            .build()
+        )
+        cur = await conn.execute(query.text, query.params)
         entries = list(cls._parse(await cur.fetchall()))
 
-        cur = await conn.execute(SchemaName.render(cls.PAIRS, db_schema))
+        query = (
+            PgQueryBuilder()
+            .add(
+                """
+                select
+                    sa.surface::varchar,
+                    sa.aspect::varchar
+                from
+                    {schema}.surface_aspect sa
+                order by
+                    sa.surface,
+                    sa.aspect
+                """,
+                schema=sql.Identifier(db_schema),
+            )
+            .build()
+        )
+        cur = await conn.execute(query.text, query.params)
         pairs: list[tuple[str, str]] = []
         for surface, aspect in await cur.fetchall():
             pairs.append((str(surface), str(aspect)))
@@ -181,52 +195,29 @@ class SurfaceAspect(BaseModel):
 class AspectDeclarations:
     """Чтение объявлений из {schema}.surface_aspect: все или только заданных классов."""
 
-    ALL: ClassVar[str] = """
-        select
-            sa.surface::varchar,
-            sa.aspect::varchar,
-            sa.body
-        from
-            {schema}.surface_aspect sa
-        order by
-            sa.surface,
-            sa.aspect
-    """
-    OF_CLASSES: ClassVar[str] = """
-        select
-            sa.surface::varchar,
-            sa.aspect::varchar,
-            sa.body
-        from
-            {schema}.surface_aspect sa
-            join {schema}.aspect a on a.aspect = sa.aspect
-        where
-            a.class::varchar = any(%(classes)s)
-        order by
-            sa.surface,
-            sa.aspect
-    """
-    OF_SURFACES: ClassVar[str] = """
-        select
-            sa.surface::varchar,
-            sa.aspect::varchar,
-            sa.body
-        from
-            {schema}.surface_aspect sa
-            join {schema}.aspect a on a.aspect = sa.aspect
-        where
-            a.class::varchar = any(%(classes)s)
-            and sa.surface::varchar = any(%(surfaces)s)
-        order by
-            sa.surface,
-            sa.aspect
-    """
-
     @classmethod
     async def all(
         cls, conn: psycopg.AsyncConnection[Any], db_schema: str
     ) -> list[SurfaceAspect]:
-        cur = await conn.execute(SchemaName.render(cls.ALL, db_schema))
+        query = (
+            PgQueryBuilder()
+            .add(
+                """
+                select
+                    sa.surface::varchar,
+                    sa.aspect::varchar,
+                    sa.body
+                from
+                    {schema}.surface_aspect sa
+                order by
+                    sa.surface,
+                    sa.aspect
+                """,
+                schema=sql.Identifier(db_schema),
+            )
+            .build()
+        )
+        cur = await conn.execute(query.text, query.params)
         rows = await cur.fetchall()
 
         return list(cls._rows(rows))
@@ -238,10 +229,29 @@ class AspectDeclarations:
         db_schema: str,
         classes: Sequence[AspectClass],
     ) -> list[SurfaceAspect]:
-        cur = await conn.execute(
-            SchemaName.render(cls.OF_CLASSES, db_schema),
-            {"classes": cls._names(classes)},
+        query = (
+            PgQueryBuilder()
+            .add(
+                """
+                select
+                    sa.surface::varchar,
+                    sa.aspect::varchar,
+                    sa.body
+                from
+                    {schema}.surface_aspect sa
+                    join {schema}.aspect a on a.aspect = sa.aspect
+                where
+                    a.class::varchar = any(%(classes)s)
+                order by
+                    sa.surface,
+                    sa.aspect
+                """,
+                schema=sql.Identifier(db_schema),
+                classes=cls._names(classes),
+            )
+            .build()
         )
+        cur = await conn.execute(query.text, query.params)
         rows = await cur.fetchall()
 
         return list(cls._rows(rows))
@@ -256,10 +266,31 @@ class AspectDeclarations:
     ) -> list[SurfaceAspect]:
         """Объявления своих поверхностей: индексатор-владелец читает только их,
         чтобы не пробовать чужие тела на каждом node."""
-        cur = await conn.execute(
-            SchemaName.render(cls.OF_SURFACES, db_schema),
-            {"classes": cls._names(classes), "surfaces": list(surfaces)},
+        query = (
+            PgQueryBuilder()
+            .add(
+                """
+                select
+                    sa.surface::varchar,
+                    sa.aspect::varchar,
+                    sa.body
+                from
+                    {schema}.surface_aspect sa
+                    join {schema}.aspect a on a.aspect = sa.aspect
+                where
+                    a.class::varchar = any(%(classes)s)
+                    and sa.surface::varchar = any(%(surfaces)s)
+                order by
+                    sa.surface,
+                    sa.aspect
+                """,
+                schema=sql.Identifier(db_schema),
+                classes=cls._names(classes),
+                surfaces=list(surfaces),
+            )
+            .build()
         )
+        cur = await conn.execute(query.text, query.params)
         rows = await cur.fetchall()
 
         return list(cls._rows(rows))
@@ -285,11 +316,6 @@ class AspectDeclarations:
 class AspectContract:
     """Проверка тел объявлений: выполняется ли и те ли колонки отдаёт."""
 
-    PROBE: ClassVar[LiteralString] = "select * from ({body}) s limit 0"
-    CONTENT_TYPES: ClassVar[frozenset[str]] = frozenset(
-        {ContractType.TEXT, ContractType.VARCHAR}
-    )
-
     @classmethod
     async def check(
         cls,
@@ -310,13 +336,21 @@ class AspectContract:
         where = f"aspect {declaration.aspect} of surface {declaration.surface}"
 
         try:
-            body = SchemaName.render(declaration.body, db_schema)
-        except SchemaNameError as exc:
+            body = (
+                PgQueryBuilder()
+                .add(declaration.body, schema=sql.Identifier(db_schema))
+                .build()
+            )
+        except QueryBuildError as exc:
             raise AspectDeclarationError(f"{where}: body: {exc}") from exc
 
-        probe = sql.SQL(cls.PROBE).format(body=body)
+        probe = (
+            PgQueryBuilder()
+            .add("select * from ({body}) s limit 0", body=body.text)
+            .build()
+        )
         try:
-            cur = await conn.execute(probe)
+            cur = await conn.execute(probe.text, probe.params)
         except psycopg.Error as exc:
             raise AspectDeclarationError(f"{where}: body does not run: {exc}") from exc
 
@@ -341,10 +375,11 @@ class AspectContract:
                 f"got {type_names[0]}"
             )
 
-        if type_names[1] not in cls.CONTENT_TYPES:
+        content_types = frozenset({ContractType.TEXT, ContractType.VARCHAR})
+        if type_names[1] not in content_types:
             raise AspectDeclarationError(
                 f"{where}: {ContractColumn.CONTENT} must be one of "
-                f"{sorted(cls.CONTENT_TYPES)}, got {type_names[1]}"
+                f"{sorted(content_types)}, got {type_names[1]}"
             )
 
     @staticmethod
@@ -359,27 +394,6 @@ class AspectContract:
 class AspectSources:
     """Сборка одного источника из объявлений для подстановки вместо `{sources}`."""
 
-    PART: ClassVar[LiteralString] = """
-    select
-        {surface}::{schema}.surface_e as surface,
-        {aspect}::{schema}.aspect_e as aspect,
-        s.node_id::bigint as node_id,
-        s.content::varchar as content
-    from
-        ({body}) s
-    where
-        s.content is not null
-        and s.content <> ''"""
-    EMPTY: ClassVar[LiteralString] = """
-    select
-        null::{schema}.surface_e as surface,
-        null::{schema}.aspect_e as aspect,
-        null::bigint as node_id,
-        null::varchar as content
-    where
-        false"""
-    GLUE: ClassVar[LiteralString] = "\n    union all"
-
     @classmethod
     def union(
         cls, declarations: Sequence[SurfaceAspect], db_schema: str
@@ -387,17 +401,51 @@ class AspectSources:
         schema = sql.Identifier(db_schema)
 
         if not declarations:
-            return sql.SQL(cls.EMPTY).format(schema=schema)
+            return (
+                PgQueryBuilder()
+                .add(
+                    """
+                select
+                    null::{schema}.surface_e as surface,
+                    null::{schema}.aspect_e as aspect,
+                    null::bigint as node_id,
+                    null::varchar as content
+                where
+                    false
+                    """,
+                    schema=schema,
+                )
+                .build()
+                .text
+            )
 
         parts: list[sql.Composed] = []
         for declaration in declarations:
             parts.append(
-                sql.SQL(cls.PART).format(
+                PgQueryBuilder()
+                .add(
+                    """
+                    select
+                        {surface}::{schema}.surface_e as surface,
+                        {aspect}::{schema}.aspect_e as aspect,
+                        s.node_id::bigint as node_id,
+                        s.content::varchar as content
+                    from
+                        ({body}) s
+                    where
+                        s.content is not null
+                        and s.content <> ''
+                    """,
                     schema=schema,
                     surface=sql.Literal(declaration.surface),
                     aspect=sql.Literal(declaration.aspect),
-                    body=SchemaName.render(declaration.body, db_schema),
+                    body=PgQueryBuilder()
+                    .add(declaration.body, schema=sql.Identifier(db_schema))
+                    .build()
+                    .text,
                 )
+                .build()
+                .text
             )
 
-        return sql.SQL(cls.GLUE).join(parts)
+        return sql.SQL("\n    union all").join(parts)

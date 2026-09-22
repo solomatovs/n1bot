@@ -1,8 +1,3 @@
--- @name gp_partition_rule
--- @wave 3
--- @params rels
--- @only gp
--- @max 99999
 select
     oid,
     paroid,
@@ -10,14 +5,6 @@ select
     parparentrule,
     parname,
     parruleord,
-    xmin::text as row_xmin
-from
-    pg_partition_rule
-where
-    parchildrelid = any(%(rels)s::oid[]);
--- @verify
-select
-    oid,
     xmin::text as row_xmin
 from
     pg_partition_rule

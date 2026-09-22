@@ -30,17 +30,17 @@ import logging
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 import psycopg
 from psycopg import sql
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.config import ConfigError, bind_section
+from boba.db.postgres.query import PgQueryBuilder
 from boba.ix_core.aspects import AspectClass, AspectDeclarations, AspectSources
 from boba.ix_core.database import IxDatabase, IxDatabaseError, IxPool
 from boba.ix_core.prompts import SurfacePromptError, SurfacePrompts
-from boba.ix_core.schema_name import SchemaName
 from boba.ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError
 from boba.ix_llm_describer.describe import (
     DescribeError,
@@ -97,30 +97,13 @@ class CycleReport(BaseModel):
     pruned: int
 
 
-class PackageSql:
-    """Файлы цикла из каталога run/ пакета; параметры именованные, в стиле psycopg,
-    плейсхолдеры файла заполняются частями, собранными воркером при старте."""
-
-    def __init__(
-        self, package_dir: Path, db_schema: str, parts: Mapping[str, sql.Composable]
-    ) -> None:
-        self._dir = package_dir
-        self._db_schema = db_schema
-        self._parts = dict(parts)
-
-    def load(self, name: SqlFile) -> sql.Composed:
-        text = (self._dir / name).read_text(encoding="utf-8")
-
-        return SchemaName.render(text, self._db_schema, **self._parts)
-
-
 class Binding(BaseModel):
     """Что воркер собрал при старте цикла: файлы под источник входа, промпты пар и
     отпечаток каждой пары."""
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
-    sql_files: PackageSql
+    names: Mapping[str, sql.Composable]
     prompts: SurfacePrompts
     hashes: Mapping[tuple[str, str], str]
 
@@ -184,8 +167,12 @@ class DescriberWorker:
 
     async def _bind(self, conn: psycopg.AsyncConnection[Any]) -> Binding:
         """Объявить llm_description, собрать источник входа и промпты пар."""
-        declare = PackageSql(self._dir, self._cfg.db_schema, {})
-        await conn.execute(declare.load(SqlFile.DECLARE))
+        query = (
+            PgQueryBuilder(schema=sql.Identifier(self._cfg.db_schema))
+            .read(self._dir / SqlFile.DECLARE)
+            .build()
+        )
+        await conn.execute(query.text, query.params)
 
         declarations = await AspectDeclarations.of_classes(
             conn, self._cfg.db_schema, self._cfg.classes
@@ -217,13 +204,12 @@ class DescriberWorker:
                 ", ".join(skipped),
             )
 
-        sql_files = PackageSql(
-            self._dir,
-            self._cfg.db_schema,
-            {str(Part.SOURCES): AspectSources.union(declarations, self._cfg.db_schema)},
-        )
+        sql_names: dict[str, sql.Composable] = {
+            "schema": sql.Identifier(self._cfg.db_schema),
+            str(Part.SOURCES): AspectSources.union(declarations, self._cfg.db_schema),
+        }
 
-        return Binding(sql_files=sql_files, prompts=prompts, hashes=hashes)
+        return Binding(names=sql_names, prompts=prompts, hashes=hashes)
 
     def _fingerprint(self, system_prompt: str, user_template: str) -> str:
         """Отпечаток пары: модель, бюджет, промпт владельца и шаблоны пакета."""
@@ -283,7 +269,12 @@ class DescriberWorker:
             "aspects": binding.aspects(),
             "hashes": binding.fingerprints(),
         }
-        cur = await conn.execute(binding.sql_files.load(SqlFile.QUEUE), params)
+        query = (
+            PgQueryBuilder(**binding.names)
+            .read(self._dir / SqlFile.QUEUE, **params)
+            .build()
+        )
+        cur = await conn.execute(query.text, query.params)
 
         rows: list[QueueRow] = []
         for node_id, surface, aspect, text, input_hash in await cur.fetchall():
@@ -313,15 +304,22 @@ class DescriberWorker:
             "input_hash": row.input_hash,
             "indexer_hash": binding.hashes[row.pair()],
         }
-        await conn.execute(binding.sql_files.load(SqlFile.WRITE), params)
+        query = (
+            PgQueryBuilder(**binding.names)
+            .read(self._dir / SqlFile.WRITE, **params)
+            .build()
+        )
+        await conn.execute(query.text, query.params)
 
     async def _unlock(
         self, conn: psycopg.AsyncConnection[Any], binding: Binding
     ) -> None:
-        await conn.execute(binding.sql_files.load(SqlFile.UNLOCK))
+        query = PgQueryBuilder(**binding.names).read(self._dir / SqlFile.UNLOCK).build()
+        await conn.execute(query.text, query.params)
 
     async def _prune(self, conn: psycopg.AsyncConnection[Any], binding: Binding) -> int:
-        cur = await conn.execute(binding.sql_files.load(SqlFile.PRUNE))
+        query = PgQueryBuilder(**binding.names).read(self._dir / SqlFile.PRUNE).build()
+        cur = await conn.execute(query.text, query.params)
         record = await cur.fetchone()
         if record is None:
             raise DescriberWorkerError("prune: expected one summary row, got none")
@@ -338,8 +336,6 @@ class Command(StrEnum):
 
 class Cli:
     """Команда и путь к конфигу; настройки берутся из секции [ix.llm_describer]."""
-
-    SECTION: ClassVar[str] = "ix.llm_describer"
 
     @classmethod
     def parse(cls, argv: Sequence[str] | None = None) -> tuple[Command, Path]:
@@ -373,6 +369,7 @@ class Cli:
 
 
 def main() -> None:
+    section = "ix.llm_describer"
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
     package_dir = Path(__file__).resolve().parent
@@ -380,13 +377,13 @@ def main() -> None:
         command, config_path = Cli.parse()
 
         if command is Command.UPGRADE:
-            database = bind_section(config_path, Cli.SECTION, IxDatabase)
+            database = bind_section(config_path, section, IxDatabase)
             upgrade = SchemaUpgrade(package_dir / "schema")
             report = asyncio.run(upgrade.run(database))
             logger.info("schema applied: %s", ", ".join(report.files))
             return
 
-        cfg = bind_section(config_path, Cli.SECTION, WorkerConfig)
+        cfg = bind_section(config_path, section, WorkerConfig)
         pack = PackPrompts(package_dir / "prompt")
         describer = Description(Generators(cfg), pack, cfg.max_input_chars)
         worker = DescriberWorker(cfg, package_dir / "run", pack, describer)

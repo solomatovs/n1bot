@@ -23,17 +23,18 @@ IxSearchError — режим не обслужен ни одной таблиц�
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 import psycopg
+from psycopg import sql
 from pydantic import BaseModel, ConfigDict, Field
 
+from boba.db.postgres.query import PgQueryBuilder
 from boba.ix_core.aspects import AspectCatalog
-from boba.ix_core.indexes import IndexKind, IndexTable, IndexTables
-from boba.ix_core.schema_name import SchemaName
+from boba.ix_core.indexes import IndexKind, IndexTable, IndexTables, index_columns
 from boba.ix_core.surfaces import SurfaceCatalog
 from boba.ix_core.urls import SurfaceUrls
 
@@ -41,10 +42,8 @@ __all__ = [
     "Hit",
     "IxSearch",
     "IxSearchError",
-    "Merge",
     "SearchMode",
     "SearchRegistry",
-    "SearchReply",
     "SearchRequest",
     "VectorText",
 ]
@@ -76,15 +75,6 @@ class SearchMode(StrEnum):
 
         return IndexKind.TRGM
 
-    def ascending(self) -> bool:
-        """Вектор ранжируется расстоянием: меньше — ближе; остальные счётом."""
-        return self is SearchMode.VECTOR
-
-    def merges_by_text(self) -> bool:
-        """Подсказка это текст: одинаковые из разных таблиц складываются в одну
-        строку с суммой объектов."""
-        return self is SearchMode.SUGGEST
-
 
 class Hit(BaseModel):
     """Строка выдачи: объект, его адрес и ссылка, счёт, лучший аспект и сниппет."""
@@ -102,9 +92,6 @@ class Hit(BaseModel):
     url: str = ""
     """Ссылка на объект по формуле его поверхности; пусто — формулы нет."""
 
-    def key(self) -> tuple[str, str]:
-        return (self.aspect, self.snippet)
-
 
 class SearchRequest(BaseModel):
     """Один запрос поиска: режим, текст, окно и фильтры по словарям."""
@@ -120,61 +107,16 @@ class SearchRequest(BaseModel):
     """Вектор запроса для режима vector; остальным режимам не нужен."""
 
 
-class SearchReply(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    mode: SearchMode
-    hits: Sequence[Hit]
-
-
 class VectorText:
     """Вектор запроса строкой литерала pgvector: `[0.1,0.2,...]`."""
-
-    PRECISION: ClassVar[str] = ".6g"
 
     @classmethod
     def render(cls, vector: Sequence[float]) -> str:
         parts: list[str] = []
         for value in vector:
-            parts.append(format(value, cls.PRECISION))
+            parts.append(format(value, ".6g"))
 
         return "[" + ",".join(parts) + "]"
-
-
-class Merge:
-    """Слияние выдач нескольких таблиц в одну: порядок задаёт режим, подсказки
-    схлопываются по тексту со сложением числа объектов."""
-
-    @classmethod
-    def of(
-        cls, mode: SearchMode, parts: Sequence[Sequence[Hit]], limit: int
-    ) -> list[Hit]:
-        hits: list[Hit] = []
-        for part in parts:
-            hits.extend(part)
-
-        if mode.merges_by_text():
-            hits = cls._by_text(hits)
-
-        hits.sort(key=lambda hit: hit.score, reverse=not mode.ascending())
-
-        return hits[:limit]
-
-    @staticmethod
-    def _by_text(hits: Sequence[Hit]) -> list[Hit]:
-        merged: dict[tuple[str, str], Hit] = {}
-        for hit in hits:
-            seen = merged.get(hit.key())
-            if seen is None:
-                merged[hit.key()] = hit
-                continue
-
-            score = max(seen.score, hit.score)
-            merged[hit.key()] = seen.model_copy(
-                update={"score": score, "objects": seen.objects + hit.objects}
-            )
-
-        return list(merged.values())
 
 
 class SearchRegistry:
@@ -237,8 +179,9 @@ class IxSearch:
     """Выполнение запроса выбранного режима на переданном соединении.
 
     Файл sql/<режим>.sql читается на каждый вызов, чтобы ранжирование правилось без
-    перезапуска; имя таблицы подставляется вместо {index}. Таблиц одного вида в
-    реестре может быть несколько, запрос идёт в каждую по очереди.
+    перезапуска. Вместо {index} подставляется объединение всех таблиц этого вида из
+    реестра, поэтому сортировку, окно и схлопывание подсказок между таблицами делает
+    сервер одним запросом, а строки уходят вызывающему потоком по серверному курсору.
     """
 
     def __init__(
@@ -250,7 +193,7 @@ class IxSearch:
 
     async def search(
         self, conn: psycopg.AsyncConnection[Any], request: SearchRequest
-    ) -> SearchReply:
+    ) -> AsyncIterator[Hit]:
         mode = request.mode
         tables = self._registry.tables_of(mode.kind())
         if not tables:
@@ -265,6 +208,10 @@ class IxSearch:
                 "embedder, got none"
             )
 
+        sql_path = self._dir / mode.sql_file()
+        if not sql_path.is_file():
+            raise IxSearchError(f"search {mode}: query file {sql_path} not found")
+
         params: dict[str, object] = {
             "q": request.query,
             "limit": request.limit,
@@ -274,13 +221,46 @@ class IxSearch:
         if mode is SearchMode.VECTOR:
             params["v"] = VectorText.render(request.vector)
 
-        text = self._text(mode)
+        columns: list[sql.Composable] = []
+        for column in index_columns(mode.kind()):
+            columns.append(sql.Identifier(column))
 
-        parts: list[list[Hit]] = []
-        for table in tables:
-            parts.append(await self._one(conn, mode, table, text, params))
+        branches = PgQueryBuilder(
+            schema=sql.Identifier(self._schema), columns=sql.SQL(", ").join(columns)
+        )
+        for position, table in enumerate(tables):
+            branches.when(position > 0, "union all")
+            branches.add("select {columns} from {schema}.{table}", table=table.ident())
 
-        return SearchReply(mode=mode, hits=Merge.of(mode, parts, request.limit))
+        query = (
+            PgQueryBuilder(
+                schema=sql.Identifier(self._schema),
+                index=PgQueryBuilder()
+                .add("({branches})", branches=branches.build().text)
+                .build()
+                .text,
+            )
+            .read(sql_path, **params)
+            .build()
+        )
+
+        try:
+            async with conn.transaction(), conn.cursor(name="ix_search") as cur:
+                await cur.execute(query.text, query.params)
+                async for row in cur:
+                    node_id, surface, address, score, aspect, snippet, objects = row
+                    yield Hit(
+                        node_id=int(node_id),
+                        surface=str(surface),
+                        address=address,
+                        score=float(score),
+                        aspect=str(aspect),
+                        snippet=str(snippet),
+                        objects=int(objects),
+                        url=self._registry.urls.of(str(surface), address),
+                    )
+        except psycopg.Error as exc:
+            raise IxSearchError(f"search {mode} in {self._schema}: {exc}") from exc
 
     def surfaces_of(self, chosen: Sequence[str]) -> list[str]:
         """Поверхности запроса: выбранные или все индексируемые из словаря."""
@@ -315,44 +295,3 @@ class IxSearch:
             return list(chosen)
 
         return list(catalog.names())
-
-    def _text(self, mode: SearchMode) -> str:
-        sql_path = self._dir / mode.sql_file()
-        if not sql_path.exists():
-            raise IxSearchError(f"search {mode}: query file {sql_path} not found")
-
-        return sql_path.read_text(encoding="utf-8")
-
-    async def _one(
-        self,
-        conn: psycopg.AsyncConnection[Any],
-        mode: SearchMode,
-        table: IndexTable,
-        text: str,
-        params: Mapping[str, object],
-    ) -> list[Hit]:
-        query = SchemaName.render(text, self._schema, index=table.ident())
-        try:
-            cur = await conn.execute(query, dict(params))
-            rows = await cur.fetchall()
-        except psycopg.Error as exc:
-            raise IxSearchError(
-                f"search {mode} over {self._schema}.{table.name}: {exc}"
-            ) from exc
-
-        hits: list[Hit] = []
-        for node_id, surface, address, score, aspect, snippet, objects in rows:
-            hits.append(
-                Hit(
-                    node_id=int(node_id),
-                    surface=str(surface),
-                    address=address,
-                    score=float(score),
-                    aspect=str(aspect),
-                    snippet=str(snippet),
-                    objects=int(objects),
-                    url=self._registry.urls.of(str(surface), address),
-                )
-            )
-
-        return hits

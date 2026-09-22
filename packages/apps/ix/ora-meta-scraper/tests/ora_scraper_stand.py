@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
-from typing import ClassVar
 
 from oracledb import AsyncConnection
 from psycopg import sql
@@ -20,13 +19,12 @@ from boba.db.oracle import OracleQueryError
 from boba.db.oracle.payload import PayloadOracle
 from boba.db.oracle.profile import OracleConfig, PasswordAuth
 from boba.db.postgres import AsyncPostgresPool
-from boba.ix_core.schema_name import SchemaName
+from boba.db.postgres.query import PgQueryBuilder
 from boba.ix_core.scrape import (
     ApplyRow,
-    parse_headers,
+    VersionGate,
     parse_version,
     scrape_source,
-    version_applies,
 )
 from boba.ora_meta_scraper import worker as scraper
 from boba.ora_meta_scraper.worker import OraSource, source_address
@@ -107,75 +105,90 @@ class IxStand(SharedIxStand):
                 return item
 
         raise IxStandError(
-            f"ix stand: oracle source {name!r} is not listed in [{self.SECTION}]"
+            f"ix stand: oracle source {name!r} is not listed in [{'ix_stand'}]"
         )
 
 
-class DdlFile(BaseModel):
-    """Файл демонстрационного набора: ровно один statement и ворота по версии
-    в заголовках, текст уходит серверу как есть."""
+class DdlFile(VersionGate):
+    """Файл демонстрационного набора: ровно один statement, ворота по версии
+    объявлены в стенде, текст уходит серверу как есть."""
 
-    model_config = ConfigDict(frozen=True)
-
-    path: Path
-    text: str
-    headers: dict[str, str]
-
-    @classmethod
-    def parse(cls, path: Path) -> DdlFile:
-        text = path.read_text(encoding="utf-8")
-        return cls(path=path, text=text, headers=parse_headers(text))
-
-    def applies(self, server: tuple[int, ...]) -> bool:
-        return version_applies(self.headers, server)
+    name: str
 
 
 class DemoDataset:
     """Пересоздаёт схему EDGE_DEMO на источнике из stand/ddl, выбирая файлы по версии
     сервера: администратор пересоздаёт пользователя, объекты создаёт сам EDGE_DEMO."""
 
-    DROP_USER: ClassVar[str] = f"drop user {DemoUser.NAME} cascade"
-    CREATE_USER: ClassVar[str] = (
-        f"create user {DemoUser.NAME} identified by {DemoUser.PASSWORD} "
-        "default tablespace users quota unlimited on users"
-    )
-    GRANTS: ClassVar[str] = (
-        "grant create session, create table, create view, create materialized view, "
-        "create sequence, create synonym, create trigger, create procedure, "
-        f"create type to {DemoUser.NAME}"
-    )
-    NO_SUCH_USER: ClassVar[str] = "ORA-01918"
-
     def __init__(self, source: IxSource) -> None:
         self._source = source
-        self._files = [
-            DdlFile.parse(p)
-            for p in sorted(StandFile.DDL_DIR.under_stand().glob("*.sql"))
-        ]
 
     async def recreate(self) -> tuple[int, ...]:
         async with PayloadOracle.opened_config(self._source.admin) as admin:
             server = await self._version(admin)
             await self._recreate_user(admin)
 
+        files = (
+            DdlFile(name="01_01_table_customers.sql"),
+            DdlFile(name="01_02_comment_table_customers.sql"),
+            DdlFile(name="01_03_comment_stmt_email.sql"),
+            DdlFile(name="01_04_comment_column_customers_balance.sql"),
+            DdlFile(name="01_05_index_customers_name_ix.sql"),
+            DdlFile(name="01_06_sequence_customer_seq.sql"),
+            DdlFile(name="02_01_table_orders.sql"),
+            DdlFile(name="02_02_comment_table_orders.sql"),
+            DdlFile(name="02_03_comment_column_orders_customer_id.sql"),
+            DdlFile(name="02_04_index_orders_customer_ix.sql"),
+            DdlFile(name="02_05_index_orders_status_bx.sql"),
+            DdlFile(name="02_06_table_order_items.sql"),
+            DdlFile(name="02_07_table_order_staging.sql"),
+            DdlFile(name="03_01_view_customer_orders.sql"),
+            DdlFile(name="03_02_comment_table_customer_orders.sql"),
+            DdlFile(name="03_03_view_open_orders.sql"),
+            DdlFile(name="03_04_view_daily_sales.sql"),
+            DdlFile(name="03_05_comment_view_daily_sales.sql"),
+            DdlFile(name="03_06_index_daily_sales_day_ix.sql"),
+            DdlFile(name="03_07_synonym_cust.sql"),
+            DdlFile(name="03_08_synonym_all_sales.sql"),
+            DdlFile(name="04_01_trigger_orders_biu.sql"),
+            DdlFile(name="04_02_trigger_open_orders_ioi.sql"),
+            DdlFile(name="04_03_function_order_total.sql"),
+            DdlFile(name="04_04_procedure_close_order.sql"),
+            DdlFile(name="04_05_package_order_api.sql"),
+            DdlFile(name="04_06_package_body_order_api.sql"),
+            DdlFile(name="04_07_type_money_t.sql"),
+            DdlFile(name="05_01_table_sales.sql", min_version=(18,)),
+            DdlFile(name="05_02_comment_table_sales.sql", min_version=(18,)),
+            DdlFile(name="05_03_index_sales_region_ix.sql", min_version=(18,)),
+        )
         async with PayloadOracle.opened_config(self._source.demo_owner) as owner:
-            for file in self._files:
-                if not file.applies(server):
+            for file in files:
+                if not file.applies(server, ""):
                     continue
 
-                await self._run(owner, file.text)
+                path = StandFile.DDL_DIR.under_stand() / file.name
+                await self._run(owner, path.read_text(encoding="utf-8"))
 
         return server
 
     async def _recreate_user(self, admin: AsyncConnection) -> None:
         try:
-            await self._run(admin, self.DROP_USER)
+            await self._run(admin, f"drop user {DemoUser.NAME} cascade")
         except OracleQueryError as exc:
-            if self.NO_SUCH_USER not in str(exc):
+            if "ORA-01918" not in str(exc):
                 raise
 
-        await self._run(admin, self.CREATE_USER)
-        await self._run(admin, self.GRANTS)
+        await self._run(
+            admin,
+            f"create user {DemoUser.NAME} identified by {DemoUser.PASSWORD} "
+            "default tablespace users quota unlimited on users",
+        )
+        await self._run(
+            admin,
+            "grant create session, create table, create view, create materialized "
+            "view, create sequence, create synonym, create trigger, create procedure, "
+            f"create type to {DemoUser.NAME}",
+        )
 
     @staticmethod
     async def _run(conn: AsyncConnection, statement: str) -> None:
@@ -233,8 +246,6 @@ class IxStandDatabase(SharedIxStandDatabase):
     """База ix стенда скрапера: общее пересоздание плюс инварианты, отпечатки и
     прогон скрапера."""
 
-    ATTEMPTS: ClassVar[int] = 3
-
     def __init__(self, stand: IxStand) -> None:
         super().__init__(stand)
         self._stand = stand
@@ -244,9 +255,13 @@ class IxStandDatabase(SharedIxStandDatabase):
 
     async def invariants(self) -> dict[str, int]:
         """Инварианты структуры, у которых счётчик не ноль."""
-        query = self._query(StandFile.CONSISTENCY)
+        query = (
+            PgQueryBuilder(schema=sql.Identifier(self._stand.db_schema))
+            .read(StandFile.CONSISTENCY.under_stand())
+            .build()
+        )
         async with await AsyncPostgresPool.dedicated(self._stand.ix_profile) as conn:
-            cur = await conn.execute(query)
+            cur = await conn.execute(query.text, query.params)
             rows = await cur.fetchall()
 
         broken: dict[str, int] = {}
@@ -257,9 +272,13 @@ class IxStandDatabase(SharedIxStandDatabase):
         return broken
 
     async def fingerprint(self, host: str) -> Fingerprint:
-        query = self._query(StandFile.CANON)
+        query = (
+            PgQueryBuilder(schema=sql.Identifier(self._stand.db_schema))
+            .read(StandFile.CANON.under_stand(), host=host)
+            .build()
+        )
         async with await AsyncPostgresPool.dedicated(self._stand.ix_profile) as conn:
-            cur = await conn.execute(query, {"host": host})
+            cur = await conn.execute(query.text, query.params)
             row = await cur.fetchone()
 
         if row is None:
@@ -270,12 +289,17 @@ class IxStandDatabase(SharedIxStandDatabase):
         return Fingerprint.parse(str(row[0]))
 
     async def scope_nodes(self, host: str) -> int:
-        query = SchemaName.render(
-            "select count(*) from {schema}.node where address->>'host' = %(host)s",
-            self._stand.db_schema,
+        query = (
+            PgQueryBuilder()
+            .add(
+                "select count(*) from {schema}.node where address->>'host' = %(host)s",
+                schema=sql.Identifier(self._stand.db_schema),
+                host=host,
+            )
+            .build()
         )
         async with await AsyncPostgresPool.dedicated(self._stand.ix_profile) as conn:
-            cur = await conn.execute(query, {"host": host})
+            cur = await conn.execute(query.text, query.params)
             row = await cur.fetchone()
 
         if row is None:
@@ -285,16 +309,11 @@ class IxStandDatabase(SharedIxStandDatabase):
 
         return int(row[0])
 
-    def _query(self, name: StandFile) -> sql.Composed:
-        """Запрос стенда под схему графа: в файлах она стоит плейсхолдером."""
-        text = name.under_stand().read_text(encoding="utf-8")
-        return SchemaName.render(text, self._stand.db_schema)
-
     async def scrape(self, source: IxSource) -> Sequence[ApplyRow]:
         report = await scrape_source(
             self._stand.ix_database,
             OraSource(source.oracle),
             PACKAGE_DIR,
-            self.ATTEMPTS,
+            3,
         )
         return report.rows

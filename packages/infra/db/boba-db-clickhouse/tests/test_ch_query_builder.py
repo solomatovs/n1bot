@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import pytest
 
-from boba.tool.ch.tools import ChQueryBuilder, ChQueryError
+from boba.db.clickhouse.query import ChQueryBuilder
+from boba.toolkit.sql import QueryBuildError
 
 
 class TestChQueryBuilder:
@@ -48,5 +49,5 @@ class TestChQueryBuilder:
     def test_same_parameter_with_another_value_is_refused(self) -> None:
         builder = ChQueryBuilder().add("where a = {a:UInt8}", a=1)
 
-        with pytest.raises(ChQueryError, match="bound twice"):
+        with pytest.raises(QueryBuildError, match="bound twice"):
             builder.add("or b = {a:UInt8}", a=2)

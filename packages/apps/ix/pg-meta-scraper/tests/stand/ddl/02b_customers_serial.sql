@@ -1,5 +1,3 @@
--- @max 99999
--- @not gp
 create table dm.customers (
     id          bigserial  primary key,
     email       dm.email_t not null unique,

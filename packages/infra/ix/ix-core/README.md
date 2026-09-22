@@ -86,23 +86,27 @@ psycopg (`sql.Identifier`).
 `verify_<name>` и сверяет `except all`, `apply_layout` гонит стадии `layout/` в
 autocommit, под advisory-замком на scope одной транзакцией repeatable read. Повторы
 (`attempt_scrape`) — при изменении каталога, занятом ix и занятом источнике. Итог —
-`ScrapeReport`: строки apply, число попыток и пик RSS процесса. Команды `upgrade`/`run`
-даёт `run_cli`.
+`ScrapeReport`: строки apply и число попыток. Команды `upgrade`/`run` даёт `run_cli`.
 
-Ворота файлов по версии (`parse_version`, `version_applies` по заголовкам `@min`/`@max`
-с длиной сравнения по длине ворот) и адаптер строк `StreamRows` живут в ядре одной
-копией. Пакет источника (`pg-meta-scraper`, `ora-meta-scraper`, `ch-meta-scraper`) даёт
-только реализацию `ScrapeSource`: адрес для `raw_source`, `describe()` для логов,
-`open_session()` с версией сервера и `fetch_rows()` потоком.
+Ядро текст файлов `scrape/` не разбирает: в файле лежит только запрос, сверка рядом в
+`<файл>.verify.sql`, а имя raw-таблицы, волну, массивы параметров и ворота источник
+объявляет моделями `ScrapeFile` (`VersionGate`: `min_version`/`max_version` кортежами со
+сравнением по длине ворот, `only`/`unless` по вкусу сервера). Адаптер строк `StreamRows`
+живёт в ядре одной копией. Пакет источника (`pg-meta-scraper`, `ora-meta-scraper`,
+`ch-meta-scraper`) даёт только реализацию `ScrapeSource`: `files`, адрес для
+`raw_source`, `describe()` для логов, `open_session()` с версией сервера и
+`fetch_rows()`, который читает файл своим билдером и отдаёт строки потоком.
 
 `boba.ix_core.search` — поиск по индексам для любого потребителя. `SearchRegistry.load`
 один раз читает реестры схемы (таблицы индексов по видам, словари поверхностей и аспектов,
 формулы ссылок), `IxSearch.search` выполняет `SearchRequest` — режим (`fts`, `trgm`,
 `vector`, `suggest`), текст, окно, списки поверхностей и аспектов, для вектора ещё вектор
 запроса от эмбеддера вызывающего — на переданном соединении и отдаёт `Hit` с `node_id`,
-адресом, ссылкой, счётом, лучшим аспектом и сниппетом. Пустой список фильтра значит «все из
-словаря», неизвестное имя отвергается с перечнем известных. Запросы лежат в `sql/` и
-читаются на каждый вызов. `boba.ix_core.nodes` — карточка объекта по `node_id`: адрес,
+адресом, ссылкой, счётом, лучшим аспектом и сниппетом потоком по серверному курсору.
+Вместо `{index}` в запрос подставляется объединение всех таблиц вида из реестра, поэтому
+сортировку, окно и схлопывание подсказок делает сервер одним запросом. Пустой список
+фильтра значит «все из словаря», неизвестное имя отвергается с перечнем известных. Запросы
+лежат в `sql/` и читаются на каждый вызов. `boba.ix_core.nodes` — карточка объекта по `node_id`: адрес,
 ссылка, путь по `tree` с подписями из ident-аспектов и тексты аспектов из полнотекстовых
 таблиц реестра.
 
@@ -169,5 +173,10 @@ insert into {schema}.surface_aspect (surface, aspect, body) values
 ```python
 declarations = AspectDeclarations.of_classes(conn, cfg.db_schema, cfg.classes)
 sources = AspectSources.union(declarations, cfg.db_schema)
-query = SchemaName.render(text, cfg.db_schema, sources=sources)
+query = (
+    PgQueryBuilder()
+    .add(text, schema=sql.Identifier(cfg.db_schema), sources=sources)
+    .build()
+    .text
+)
 ```

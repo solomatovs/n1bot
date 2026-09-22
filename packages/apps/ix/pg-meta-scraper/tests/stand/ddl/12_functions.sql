@@ -1,4 +1,3 @@
--- @min 80300
 create function dm.calc_total(p_order bigint, p_rate numeric) returns numeric
 language plpgsql as $$
 begin

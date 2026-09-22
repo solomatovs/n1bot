@@ -18,14 +18,14 @@ import logging
 from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 import psycopg
 from psycopg import sql
 from pydantic import BaseModel, ConfigDict, Field
 from tokenizers import Tokenizer
 
-from boba.ix_core.schema_name import SchemaName
+from boba.db.postgres.query import PgQueryBuilder
 from boba.llm.embedding import EmbedderFactory, EmbeddingError, LocalEmbedding
 
 __all__ = [
@@ -77,8 +77,6 @@ class Chunker:
     берётся из того же кэша fastembed, что и модель, поэтому границы совпадают
     с тем, что видит модель. Текст короче окна остаётся одним чанком."""
 
-    TOKENIZER_GLOB: ClassVar[str] = "models--*/snapshots/*/tokenizer.json"
-
     def __init__(self, cache_dir: str, chunk_tokens: int, overlap: int) -> None:
         if overlap >= chunk_tokens:
             raise AspectEmbeddingError(
@@ -86,10 +84,11 @@ class Chunker:
                 f"{chunk_tokens}"
             )
 
-        found = sorted(Path(cache_dir).glob(self.TOKENIZER_GLOB))
+        pattern = "models--*/snapshots/*/tokenizer.json"
+        found = sorted(Path(cache_dir).glob(pattern))
         if not found:
             raise AspectEmbeddingError(
-                f"chunking: no tokenizer.json under {cache_dir}/{self.TOKENIZER_GLOB}"
+                f"chunking: no tokenizer.json under {cache_dir}/{pattern}"
             )
 
         self._tokenizer = Tokenizer.from_file(str(found[0]))
@@ -206,7 +205,14 @@ class AspectEmbedding:
             "embs": rendered,
         }
         text = (self._dir / WriteFile.WRITE).read_text(encoding="utf-8")
-        query = SchemaName.render(
-            text, self._db_schema, table=sql.Identifier(self._table)
+        query = (
+            PgQueryBuilder()
+            .add(
+                text,
+                schema=sql.Identifier(self._db_schema),
+                table=sql.Identifier(self._table),
+                **params,
+            )
+            .build()
         )
-        await conn.execute(query, params)
+        await conn.execute(query.text, query.params)

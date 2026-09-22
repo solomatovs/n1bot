@@ -24,11 +24,14 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 import psycopg
+from psycopg import sql
 from pydantic import BaseModel, ConfigDict
 
+from boba.db.postgres.names import PostgresSchema
+from boba.db.postgres.query import PgQueryBuilder
 from boba.ix_core.aspects import (
     AspectContract,
     AspectDeclarationError,
@@ -37,11 +40,9 @@ from boba.ix_core.aspects import (
 from boba.ix_core.database import IxDatabase, IxDatabaseError, IxPool
 from boba.ix_core.indexes import IndexTableError, IndexTables
 from boba.ix_core.prompts import SurfacePromptError, SurfacePrompts
-from boba.ix_core.schema_name import SchemaName
 from boba.ix_core.urls import SurfaceUrlError, SurfaceUrls
 
 __all__ = [
-    "CoreTable",
     "SchemaUpgrade",
     "SchemaUpgradeError",
     "UpgradeReport",
@@ -52,17 +53,6 @@ logger = logging.getLogger("ix-upgrade")
 
 class SchemaUpgradeError(Exception):
     """Схему не удалось применить."""
-
-
-class CoreTable:
-    """Таблица ядра, наличием которой пакет проверяет, что ядро уже накачено."""
-
-    NODE: ClassVar[str] = "node"
-    EDGE: ClassVar[str] = "edge"
-    SURFACE_ASPECT: ClassVar[str] = "surface_aspect"
-    INDEX_TABLE: ClassVar[str] = "index_table"
-    SURFACE_URL: ClassVar[str] = "surface_url"
-    SURFACE_PROMPT: ClassVar[str] = "surface_prompt"
 
 
 class UpgradeReport(BaseModel):
@@ -82,12 +72,6 @@ class SchemaUpgrade:
     сессии приходят секцией IxDatabase приложения.
     """
 
-    SUFFIX: ClassVar[str] = "*.sql"
-    MISSING_CORE: ClassVar[str] = (
-        "upgrade: core table {schema}.{table} is missing in the database; "
-        "apply the core first: boba-ix-core upgrade --config <config>"
-    )
-
     def __init__(self, schema_dir: Path, *, requires_core: bool = True) -> None:
         self._schema_dir = schema_dir
         self._requires_core = requires_core
@@ -103,7 +87,12 @@ class SchemaUpgrade:
                 for path in files:
                     logger.info("applying %s", path.name)
                     text = path.read_text(encoding="utf-8")
-                    await conn.execute(SchemaName.render(text, database.db_schema))
+                    query = (
+                        PgQueryBuilder()
+                        .add(text, schema=sql.Identifier(database.db_schema))
+                        .build()
+                    )
+                    await conn.execute(query.text, query.params)
 
                 await self._check_declarations(conn, database.db_schema)
                 await self._check_index_tables(conn, database.db_schema)
@@ -136,9 +125,9 @@ class SchemaUpgrade:
             msg = f"upgrade: schema directory {self._schema_dir} does not exist"
             raise SchemaUpgradeError(msg)
 
-        files = sorted(self._schema_dir.glob(self.SUFFIX))
+        files = sorted(self._schema_dir.glob("*.sql"))
         if not files:
-            msg = f"upgrade: no {self.SUFFIX} files under {self._schema_dir}"
+            msg = f"upgrade: no *.sql files under {self._schema_dir}"
             raise SchemaUpgradeError(msg)
 
         return files
@@ -147,7 +136,7 @@ class SchemaUpgrade:
     async def _check_declarations(
         conn: psycopg.AsyncConnection[Any], db_schema: str
     ) -> None:
-        if not await SchemaName.exists(conn, db_schema, CoreTable.SURFACE_ASPECT):
+        if not await PostgresSchema.exists(conn, db_schema, "surface_aspect"):
             return
 
         declarations = await AspectDeclarations.all(conn, db_schema)
@@ -158,7 +147,7 @@ class SchemaUpgrade:
     async def _check_index_tables(
         conn: psycopg.AsyncConnection[Any], db_schema: str
     ) -> None:
-        if not await SchemaName.exists(conn, db_schema, CoreTable.INDEX_TABLE):
+        if not await PostgresSchema.exists(conn, db_schema, "index_table"):
             return
 
         tables = await IndexTables.all(conn, db_schema)
@@ -167,7 +156,7 @@ class SchemaUpgrade:
 
     @staticmethod
     async def _check_urls(conn: psycopg.AsyncConnection[Any], db_schema: str) -> None:
-        if not await SchemaName.exists(conn, db_schema, CoreTable.SURFACE_URL):
+        if not await PostgresSchema.exists(conn, db_schema, "surface_url"):
             return
 
         urls = await SurfaceUrls.load(conn, db_schema)
@@ -177,7 +166,7 @@ class SchemaUpgrade:
     async def _check_prompts(
         conn: psycopg.AsyncConnection[Any], db_schema: str
     ) -> None:
-        if not await SchemaName.exists(conn, db_schema, CoreTable.SURFACE_PROMPT):
+        if not await PostgresSchema.exists(conn, db_schema, "surface_prompt"):
             return
 
         checked = await SurfacePrompts.check(conn, db_schema)
@@ -187,12 +176,11 @@ class SchemaUpgrade:
     async def _validate_core_layer_exists(
         cls, conn: psycopg.AsyncConnection[Any], db_schema: str
     ) -> None:
-        if not await SchemaName.exists(conn, db_schema, CoreTable.NODE):
-            raise SchemaUpgradeError(
-                cls.MISSING_CORE.format(schema=db_schema, table=CoreTable.NODE)
-            )
+        for table in ("node", "edge"):
+            if await PostgresSchema.exists(conn, db_schema, table):
+                continue
 
-        if not await SchemaName.exists(conn, db_schema, CoreTable.EDGE):
             raise SchemaUpgradeError(
-                cls.MISSING_CORE.format(schema=db_schema, table=CoreTable.EDGE)
+                f"upgrade: core table {db_schema}.{table} is missing in the database; "
+                "apply the core first: boba-ix-core upgrade --config <config>"
             )

@@ -17,7 +17,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 import psycopg
 from psycopg import sql
@@ -26,7 +26,10 @@ from pydantic import BaseModel, ConfigDict
 
 from boba.db.postgres import AsyncPostgresPool, PostgresError
 from boba.db.postgres.profile import PostgresConfig
+from boba.db.postgres.query import PgQueryBuilder
 from boba.ix_core.scrape import (
+    Collect,
+    ScrapeFile,
     ScraperConfigBase,
     ScrapeSession,
     ScrapeSource,
@@ -45,7 +48,6 @@ __all__ = [
     "ServerInfo",
     "SourceAddress",
     "SourceConfig",
-    "VersionGate",
     "WorkerConfig",
 ]
 
@@ -55,15 +57,6 @@ DESCRIPTION = (
     "Снятие каталога PostgreSQL или Greenplum в граф ix: схема пакета, "
     "scrape, раскладка, merge."
 )
-
-
-class GateHeader(StrEnum):
-    """Заголовки ворот файла по серверу."""
-
-    MIN = "min"
-    MAX = "max"
-    ONLY = "only"
-    NOT = "not"
 
 
 class Marker(StrEnum):
@@ -137,8 +130,16 @@ class SourceAddress(SourceAddressBase):
 
 
 class ServerInfo(BaseModel):
+    """Версия сервера и его вкус для ворот файлов: gp у Greenplum, иначе пусто."""
+
     version_num: int
     is_greenplum: bool
+
+    def flavor(self) -> str:
+        if self.is_greenplum:
+            return Marker.GP
+
+        return ""
 
     @classmethod
     async def of(cls, conn: psycopg.AsyncConnection[Any]) -> ServerInfo:
@@ -155,39 +156,6 @@ class ServerInfo(BaseModel):
             version_num=int(record[0]),
             is_greenplum=Marker.GREENPLUM in str(version_record[0]),
         )
-
-
-class VersionGate(BaseModel):
-    """Ворота файла по серверу: заголовки @min, @max, @only gp, @not gp. Базовый класс
-    для DDL стенда в тестах."""
-
-    min_version: int = 0
-    max_version: int = 999999999
-    only_gp: bool = False
-    not_gp: bool = False
-
-    @classmethod
-    def gate_of(cls, headers: Mapping[str, str]) -> VersionGate:
-        return VersionGate(
-            min_version=int(headers.get(GateHeader.MIN, "0")),
-            max_version=int(headers.get(GateHeader.MAX, "999999999")),
-            only_gp=headers.get(GateHeader.ONLY) == Marker.GP,
-            not_gp=headers.get(GateHeader.NOT) == Marker.GP,
-        )
-
-    def applies(self, server: ServerInfo) -> bool:
-        if server.version_num < self.min_version:
-            return False
-
-        if server.version_num > self.max_version:
-            return False
-
-        if self.only_gp and not server.is_greenplum:
-            return False
-
-        gp_excluded = self.not_gp and server.is_greenplum
-
-        return not gp_excluded
 
 
 class PgRows(SourceRows):
@@ -223,8 +191,6 @@ class PgRows(SourceRows):
 class PgSession(ScrapeSession):
     """Сессия источника: соединение только на чтение и версия сервера."""
 
-    ITERSIZE: ClassVar[int] = 2000
-
     def __init__(
         self, conn: psycopg.AsyncConnection[Any], server: ServerInfo, where: str
     ) -> None:
@@ -236,23 +202,24 @@ class PgSession(ScrapeSession):
     def server(self) -> ServerInfo:
         return self._server
 
-    def applies(self, headers: Mapping[str, str]) -> bool:
-        return VersionGate.gate_of(headers).applies(self._server)
+    def applies(self, file: ScrapeFile) -> bool:
+        return file.applies((self._server.version_num,), self._server.flavor())
 
     @asynccontextmanager
     async def fetch_rows(
-        self, name: str, query: str, params: Mapping[str, Sequence[object]]
+        self, name: str, path: Path, params: Mapping[str, Sequence[object]]
     ) -> AsyncGenerator[SourceRows, None]:
+        query = PgQueryBuilder().read(path, **params).build()
         async with self._conn.transaction(), self._conn.cursor(name=name) as cur:
-            cur.itersize = self.ITERSIZE
+            cur.itersize = 2000
             try:
-                await cur.execute(query.encode("utf-8"), dict(params))
+                await cur.execute(query.text, query.params)
             except (LockNotAvailable, SerializationFailure) as exc:
                 raise ScrapeSourceBusyError(f"query on {self._where}: {exc}") from exc
             except psycopg.Error as exc:
                 raise ScrapeSourceError(
-                    f"query on {self._where}: {type(exc).__name__}: {exc}; "
-                    f"query: {query[:200]!r}"
+                    f"query {name} ({path.name}) on {self._where}: "
+                    f"{type(exc).__name__}: {exc}"
                 ) from exc
 
             yield PgRows(cur, name, self._where)
@@ -263,11 +230,323 @@ class PgSource(ScrapeSource):
     autocommit, lock_timeout (с 9.3) и statement_timeout из конфига, транзакции
     только на чтение."""
 
-    LOCK_TIMEOUT_SINCE: ClassVar[int] = 90300
-
     def __init__(self, cfg: WorkerConfig) -> None:
         self._cfg = cfg
         self._address = SourceAddress.of(cfg.source)
+
+    @property
+    def files(self) -> Sequence[ScrapeFile]:
+        return (
+            ScrapeFile(name="am", wave=1, query="1_am.sql"),
+            ScrapeFile(name="database", wave=1, query="1_database.sql"),
+            ScrapeFile(
+                name="foreign_server",
+                wave=1,
+                query="1_foreign_server.sql",
+                min_version=(90100,),
+            ),
+            ScrapeFile(name="language", wave=1, query="1_language.sql"),
+            ScrapeFile(
+                name="namespace",
+                wave=1,
+                query="1_namespace.sql",
+                collect=Collect(name="schemas", column="oid"),
+            ),
+            ScrapeFile(name="opclass", wave=1, query="1_opclass.sql"),
+            ScrapeFile(name="shdescription", wave=1, query="1_shdescription.sql"),
+            ScrapeFile(name="tablespace", wave=1, query="1_tablespace.sql"),
+            ScrapeFile(
+                name="class",
+                wave=2,
+                query="2_class.sql",
+                params=("schemas",),
+                collect=Collect(name="rels", column="oid"),
+                min_version=(100000,),
+                unless="gp",
+            ),
+            ScrapeFile(
+                name="class",
+                wave=2,
+                query="2_class__91_96.sql",
+                params=("schemas",),
+                collect=Collect(name="rels", column="oid"),
+                min_version=(90100,),
+                max_version=(99999,),
+                unless="gp",
+            ),
+            ScrapeFile(
+                name="class",
+                wave=2,
+                query="2_class__gp6.sql",
+                params=("schemas",),
+                collect=Collect(name="rels", column="oid"),
+                max_version=(99999,),
+                only="gp",
+            ),
+            ScrapeFile(
+                name="class",
+                wave=2,
+                query="2_class__gp7.sql",
+                params=("schemas",),
+                collect=Collect(name="rels", column="oid"),
+                min_version=(100000,),
+                only="gp",
+            ),
+            ScrapeFile(
+                name="class",
+                wave=2,
+                query="2_class__lt91.sql",
+                params=("schemas",),
+                collect=Collect(name="rels", column="oid"),
+                max_version=(90099,),
+                unless="gp",
+            ),
+            ScrapeFile(
+                name="proc",
+                wave=2,
+                query="2_proc.sql",
+                params=("schemas",),
+                collect=Collect(name="procs", column="oid"),
+                min_version=(110000,),
+            ),
+            ScrapeFile(
+                name="proc",
+                wave=2,
+                query="2_proc__lt11.sql",
+                params=("schemas",),
+                collect=Collect(name="procs", column="oid"),
+                max_version=(109999,),
+            ),
+            ScrapeFile(
+                name="type",
+                wave=2,
+                query="2_type.sql",
+                params=("schemas",),
+                collect=Collect(name="types", column="oid"),
+            ),
+            ScrapeFile(
+                name="attrdef",
+                wave=3,
+                query="3_attrdef.sql",
+                params=("rels",),
+                collect=Collect(name="attrdefs", column="oid"),
+            ),
+            ScrapeFile(
+                name="attribute",
+                wave=3,
+                query="3_attribute.sql",
+                params=("rels",),
+                min_version=(120000,),
+            ),
+            ScrapeFile(
+                name="attribute",
+                wave=3,
+                query="3_attribute__10_11.sql",
+                params=("rels",),
+                min_version=(100000,),
+                max_version=(119999,),
+            ),
+            ScrapeFile(
+                name="attribute",
+                wave=3,
+                query="3_attribute__lt10.sql",
+                params=("rels",),
+                max_version=(99999,),
+            ),
+            ScrapeFile(
+                name="constraint",
+                wave=3,
+                query="3_constraint.sql",
+                params=("rels", "types"),
+                collect=Collect(name="constraints", column="oid"),
+                min_version=(150000,),
+            ),
+            ScrapeFile(
+                name="constraint",
+                wave=3,
+                query="3_constraint__11_14.sql",
+                params=("rels", "types"),
+                collect=Collect(name="constraints", column="oid"),
+                min_version=(110000,),
+                max_version=(149999,),
+            ),
+            ScrapeFile(
+                name="constraint",
+                wave=3,
+                query="3_constraint__92_10.sql",
+                params=("rels", "types"),
+                collect=Collect(name="constraints", column="oid"),
+                min_version=(90200,),
+                max_version=(109999,),
+            ),
+            ScrapeFile(
+                name="constraint",
+                wave=3,
+                query="3_constraint__lt92.sql",
+                params=("rels", "types"),
+                collect=Collect(name="constraints", column="oid"),
+                max_version=(90199,),
+            ),
+            ScrapeFile(
+                name="enum",
+                wave=3,
+                query="3_enum.sql",
+                params=("types",),
+                min_version=(90100,),
+            ),
+            ScrapeFile(
+                name="enum",
+                wave=3,
+                query="3_enum__lt91.sql",
+                params=("types",),
+                max_version=(90099,),
+            ),
+            ScrapeFile(
+                name="foreign_table",
+                wave=3,
+                query="3_foreign_table.sql",
+                params=("rels",),
+                min_version=(90100,),
+            ),
+            ScrapeFile(
+                name="gp_appendonly",
+                wave=3,
+                query="3_gp_appendonly.sql",
+                params=("rels",),
+                max_version=(99999,),
+                only="gp",
+            ),
+            ScrapeFile(
+                name="gp_distribution_policy",
+                wave=3,
+                query="3_gp_distribution_policy.sql",
+                params=("rels",),
+                only="gp",
+            ),
+            ScrapeFile(
+                name="gp_exttable",
+                wave=3,
+                query="3_gp_exttable.sql",
+                params=("rels",),
+                max_version=(99999,),
+                only="gp",
+            ),
+            ScrapeFile(
+                name="gp_partition",
+                wave=3,
+                query="3_gp_partition.sql",
+                params=("rels",),
+                max_version=(99999,),
+                only="gp",
+            ),
+            ScrapeFile(
+                name="gp_partition_rule",
+                wave=3,
+                query="3_gp_partition_rule.sql",
+                params=("rels",),
+                max_version=(99999,),
+                only="gp",
+            ),
+            ScrapeFile(
+                name="index",
+                wave=3,
+                query="3_index.sql",
+                params=("rels",),
+                min_version=(110000,),
+            ),
+            ScrapeFile(
+                name="index",
+                wave=3,
+                query="3_index__lt11.sql",
+                params=("rels",),
+                min_version=(90100,),
+                max_version=(109999,),
+            ),
+            ScrapeFile(
+                name="index",
+                wave=3,
+                query="3_index__lt91.sql",
+                params=("rels",),
+                max_version=(90099,),
+            ),
+            ScrapeFile(
+                name="inherits", wave=3, query="3_inherits.sql", params=("rels",)
+            ),
+            ScrapeFile(
+                name="partitioned_table",
+                wave=3,
+                query="3_partitioned_table.sql",
+                params=("rels",),
+                min_version=(110000,),
+            ),
+            ScrapeFile(
+                name="partitioned_table",
+                wave=3,
+                query="3_partitioned_table__10.sql",
+                params=("rels",),
+                min_version=(100000,),
+                max_version=(109999,),
+            ),
+            ScrapeFile(
+                name="range",
+                wave=3,
+                query="3_range.sql",
+                params=("types",),
+                min_version=(90200,),
+            ),
+            ScrapeFile(name="rewrite", wave=3, query="3_rewrite.sql", params=("rels",)),
+            ScrapeFile(
+                name="sequence",
+                wave=3,
+                query="3_sequence.sql",
+                params=("rels",),
+                min_version=(100000,),
+            ),
+            ScrapeFile(
+                name="statistic_ext",
+                wave=3,
+                query="3_statistic_ext.sql",
+                params=("rels",),
+                collect=Collect(name="statistics", column="oid"),
+                min_version=(100000,),
+            ),
+            ScrapeFile(
+                name="trigger",
+                wave=3,
+                query="3_trigger.sql",
+                params=("rels",),
+                collect=Collect(name="triggers", column="oid"),
+                min_version=(130000,),
+            ),
+            ScrapeFile(
+                name="trigger",
+                wave=3,
+                query="3_trigger__lt13.sql",
+                params=("rels",),
+                collect=Collect(name="triggers", column="oid"),
+                max_version=(129999,),
+            ),
+            ScrapeFile(
+                name="depend",
+                wave=4,
+                query="4_depend.sql",
+                params=("rels", "attrdefs", "procs", "types"),
+            ),
+            ScrapeFile(
+                name="description",
+                wave=4,
+                query="4_description.sql",
+                params=(
+                    "rels",
+                    "procs",
+                    "types",
+                    "constraints",
+                    "schemas",
+                    "triggers",
+                    "statistics",
+                ),
+            ),
+        )
 
     @property
     def address(self) -> SourceAddress:
@@ -301,18 +580,24 @@ class PgSource(ScrapeSource):
     async def _configure(
         self, conn: psycopg.AsyncConnection[Any], server: ServerInfo
     ) -> None:
-        if server.version_num >= self.LOCK_TIMEOUT_SINCE:
-            await conn.execute(
-                sql.SQL("set lock_timeout = {}").format(
-                    sql.Literal(self._cfg.lock_timeout)
-                )
+        lock_timeout_since = 90300
+        if server.version_num >= lock_timeout_since:
+            query = (
+                PgQueryBuilder()
+                .add("set lock_timeout = {t}", t=sql.Literal(self._cfg.lock_timeout))
+                .build()
             )
+            await conn.execute(query.text, query.params)
 
-        await conn.execute(
-            sql.SQL("set statement_timeout = {}").format(
-                sql.Literal(self._cfg.statement_timeout)
+        query = (
+            PgQueryBuilder()
+            .add(
+                "set statement_timeout = {t}",
+                t=sql.Literal(self._cfg.statement_timeout),
             )
+            .build()
         )
+        await conn.execute(query.text, query.params)
         await conn.execute("set default_transaction_read_only = on")
 
 

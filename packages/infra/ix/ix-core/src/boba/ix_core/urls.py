@@ -24,13 +24,14 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Any, ClassVar, LiteralString
+from typing import Any, ClassVar
 from urllib.parse import quote
 
 import psycopg
+from psycopg import sql
 from pydantic import BaseModel, ConfigDict
 
-from boba.ix_core.schema_name import SchemaName
+from boba.db.postgres.query import PgQueryBuilder
 
 __all__ = [
     "SurfaceUrl",
@@ -48,42 +49,33 @@ class SurfaceUrlError(Exception):
 class AddressPart:
     """Части адреса, из которых собирается origin шаблона."""
 
-    SCHEME: ClassVar[str] = "scheme"
-    HOST: ClassVar[str] = "host"
-    PORT: ClassVar[str] = "port"
-
-    DEFAULT_PORTS: ClassVar[Mapping[str, int]] = {"http": 80, "https": 443}
-
 
 class UrlValue:
     """Значение одной подстановки: часть адреса или собранный origin."""
 
-    ORIGIN: ClassVar[str] = "origin"
-    SAFE: ClassVar[str] = "/"
-
     @classmethod
     def known(cls, name: str, address: Mapping[str, Any]) -> bool:
         """Есть ли подстановка в адресе; origin есть, когда есть сервер."""
-        if name == cls.ORIGIN:
+        if name == "origin":
             return bool(cls._origin(address))
 
         return address.get(name) is not None
 
     @classmethod
     def of(cls, name: str, address: Mapping[str, Any]) -> str:
-        if name == cls.ORIGIN:
+        if name == "origin":
             return cls._origin(address)
 
         found = address.get(name)
         if found is None:
             return ""
 
-        return quote(str(found), safe=cls.SAFE)
+        return quote(str(found), safe="/")
 
     @classmethod
     def _origin(cls, address: Mapping[str, Any]) -> str:
-        scheme = str(address.get(AddressPart.SCHEME) or "")
-        host = str(address.get(AddressPart.HOST) or "")
+        scheme = str(address.get("scheme") or "")
+        host = str(address.get("host") or "")
         if not scheme:
             return ""
 
@@ -91,11 +83,11 @@ class UrlValue:
             return ""
 
         origin = f"{scheme}://{host}"
-        port = address.get(AddressPart.PORT)
+        port = address.get("port")
         if port is None:
             return origin
 
-        if AddressPart.DEFAULT_PORTS.get(scheme) == int(port):
+        if {"http": 80, "https": 443}.get(scheme) == int(port):
             return origin
 
         return f"{origin}:{int(port)}"
@@ -133,14 +125,12 @@ class TemplateSyntax:
     """Разбор строки формулы на куски."""
 
     PLACEHOLDER: ClassVar[re.Pattern[str]] = re.compile(r"\{([a-z_][a-z0-9_]*)\}")
-    GROUP: ClassVar[re.Pattern[str]] = re.compile(r"\[([^\[\]]*)\]")
-    BRACKETS: ClassVar[str] = "{}[]"
 
     @classmethod
     def parse(cls, template: str) -> tuple[UrlFragment, ...]:
         fragments: list[UrlFragment] = []
         position = 0
-        for group in cls.GROUP.finditer(template):
+        for group in re.compile(r"\[([^\[\]]*)\]").finditer(template):
             before = template[position : group.start()]
             if before:
                 fragments.append(cls._fragment(before, optional=False))
@@ -161,7 +151,7 @@ class TemplateSyntax:
             keys.append(match.group(1))
 
         leftover = cls.PLACEHOLDER.sub("", text)
-        for bracket in cls.BRACKETS:
+        for bracket in "{}[]":
             if bracket in leftover:
                 raise SurfaceUrlError(
                     f"url template chunk {text!r}: expected {{name}} with a lowercase "
@@ -216,17 +206,6 @@ class SurfaceUrl(BaseModel):
 class SurfaceUrls:
     """Чтение формул из реестра и их применение к выдаче."""
 
-    ALL: ClassVar[LiteralString] = """
-        select
-            u.surface::varchar,
-            u.template,
-            u.owner
-        from
-            {schema}.surface_url u
-        order by
-            u.surface
-    """
-
     def __init__(self, templates: Mapping[str, UrlTemplate]) -> None:
         self._templates = dict(templates)
 
@@ -234,7 +213,24 @@ class SurfaceUrls:
     async def load(
         cls, conn: psycopg.AsyncConnection[Any], db_schema: str
     ) -> SurfaceUrls:
-        cur = await conn.execute(SchemaName.render(cls.ALL, db_schema))
+        query = (
+            PgQueryBuilder()
+            .add(
+                """
+                select
+                    u.surface::varchar,
+                    u.template,
+                    u.owner
+                from
+                    {schema}.surface_url u
+                order by
+                    u.surface
+            """,
+                schema=sql.Identifier(db_schema),
+            )
+            .build()
+        )
+        cur = await conn.execute(query.text, query.params)
         rows = await cur.fetchall()
 
         templates: dict[str, UrlTemplate] = {}

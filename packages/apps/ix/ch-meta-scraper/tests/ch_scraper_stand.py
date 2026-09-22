@@ -19,14 +19,14 @@ from boba.ch_meta_scraper import worker as scraper
 from boba.ch_meta_scraper.worker import ChSource, source_address
 from boba.db.clickhouse.payload import PayloadClickHouse
 from boba.db.clickhouse.profile import ClickHouseConfig, ClickHouseSettingsConfig
+from boba.db.clickhouse.query import ChQueryBuilder
 from boba.db.postgres import AsyncPostgresPool
-from boba.ix_core.schema_name import SchemaName
+from boba.db.postgres.query import PgQueryBuilder
 from boba.ix_core.scrape import (
     ApplyRow,
-    parse_headers,
+    VersionGate,
     parse_version,
     scrape_source,
-    version_applies,
 )
 from boba.stand.ix import IxStand as SharedIxStand
 from boba.stand.ix import IxStandDatabase as SharedIxStandDatabase
@@ -96,27 +96,15 @@ class IxStand(SharedIxStand):
                 return item
 
         raise IxStandError(
-            f"ix stand: clickhouse source {name!r} is not listed in [{self.SECTION}]"
+            f"ix stand: clickhouse source {name!r} is not listed in [{'ix_stand'}]"
         )
 
 
-class DdlFile(BaseModel):
-    """Файл демонстрационного набора: ровно один statement, как принимает
-    HTTP-интерфейс, и ворота по версии в заголовках."""
+class DdlFile(VersionGate):
+    """Файл демонстрационного набора: ровно один statement, ворота по версии
+    объявлены в стенде, текст уходит серверу как есть."""
 
-    model_config = ConfigDict(frozen=True)
-
-    path: Path
-    text: str
-    headers: dict[str, str]
-
-    @classmethod
-    def parse(cls, path: Path) -> DdlFile:
-        text = path.read_text(encoding="utf-8")
-        return cls(path=path, text=text, headers=parse_headers(text))
-
-    def applies(self, server: tuple[int, ...]) -> bool:
-        return version_applies(self.headers, server)
+    name: str
 
 
 class DemoDataset:
@@ -125,10 +113,6 @@ class DemoDataset:
 
     def __init__(self, source: IxSource) -> None:
         self._source = source
-        self._files = [
-            DdlFile.parse(p)
-            for p in sorted(StandFile.DDL_DIR.under_stand().glob("*.sql"))
-        ]
 
     async def recreate(self) -> tuple[int, ...]:
         async with PayloadClickHouse.opened_config(self._source.admin) as client:
@@ -136,14 +120,39 @@ class DemoDataset:
             first = next(iter(result.result_rows))
             server = parse_version(str(first[0]))
 
-            await client.command(f"drop database if exists {IxSource.DEMO_DB}")
-            await client.command(f"create database {IxSource.DEMO_DB}")
+            drop = (
+                ChQueryBuilder()
+                .add("drop database if exists {db:Identifier}", db=IxSource.DEMO_DB)
+                .build()
+            )
+            await client.command(drop.text, parameters=drop.params)
 
-            for file in self._files:
-                if not file.applies(server):
+            create = (
+                ChQueryBuilder()
+                .add("create database {db:Identifier}", db=IxSource.DEMO_DB)
+                .build()
+            )
+            await client.command(create.text, parameters=create.params)
+
+            files = (
+                DdlFile(name="01_01_table_customers.sql"),
+                DdlFile(name="02_01_table_orders.sql"),
+                DdlFile(name="03_01_table_products.sql"),
+                DdlFile(name="03_02_table_events_log.sql"),
+                DdlFile(name="04_01_view_v_paid.sql"),
+                DdlFile(name="04_02_table_daily_sales.sql"),
+                DdlFile(name="04_03_view_mv_daily_sales.sql"),
+                DdlFile(name="04_04_view_mv_customer_orders.sql"),
+                DdlFile(name="05_01_dictionary_dict_customers.sql"),
+                DdlFile(name="06_01_function_amount_rub.sql"),
+                DdlFile(name="07_01_reload_dictionary_dict_customers.sql"),
+            )
+            for file in files:
+                if not file.applies(server, ""):
                     continue
 
-                await client.command(file.text)
+                path = StandFile.DDL_DIR.under_stand() / file.name
+                await client.command(path.read_text(encoding="utf-8"))
 
         return server
 
@@ -189,8 +198,6 @@ class IxStandDatabase(SharedIxStandDatabase):
     """База ix стенда скрапера: общее пересоздание плюс инварианты, отпечатки и
     прогон скрапера."""
 
-    ATTEMPTS: ClassVar[int] = 3
-
     def __init__(self, stand: IxStand) -> None:
         super().__init__(stand)
         self._stand = stand
@@ -200,9 +207,13 @@ class IxStandDatabase(SharedIxStandDatabase):
 
     async def invariants(self) -> dict[str, int]:
         """Инварианты структуры, у которых счётчик не ноль."""
-        query = self._query(StandFile.CONSISTENCY)
+        query = (
+            PgQueryBuilder(schema=sql.Identifier(self._stand.db_schema))
+            .read(StandFile.CONSISTENCY.under_stand())
+            .build()
+        )
         async with await AsyncPostgresPool.dedicated(self._stand.ix_profile) as conn:
-            cur = await conn.execute(query)
+            cur = await conn.execute(query.text, query.params)
             rows = await cur.fetchall()
 
         broken: dict[str, int] = {}
@@ -213,9 +224,13 @@ class IxStandDatabase(SharedIxStandDatabase):
         return broken
 
     async def fingerprint(self, host: str) -> Fingerprint:
-        query = self._query(StandFile.CANON)
+        query = (
+            PgQueryBuilder(schema=sql.Identifier(self._stand.db_schema))
+            .read(StandFile.CANON.under_stand(), host=host)
+            .build()
+        )
         async with await AsyncPostgresPool.dedicated(self._stand.ix_profile) as conn:
-            cur = await conn.execute(query, {"host": host})
+            cur = await conn.execute(query.text, query.params)
             row = await cur.fetchone()
 
         if row is None:
@@ -226,12 +241,17 @@ class IxStandDatabase(SharedIxStandDatabase):
         return Fingerprint.parse(str(row[0]))
 
     async def scope_nodes(self, host: str) -> int:
-        query = SchemaName.render(
-            "select count(*) from {schema}.node where address->>'host' = %(host)s",
-            self._stand.db_schema,
+        query = (
+            PgQueryBuilder()
+            .add(
+                "select count(*) from {schema}.node where address->>'host' = %(host)s",
+                schema=sql.Identifier(self._stand.db_schema),
+                host=host,
+            )
+            .build()
         )
         async with await AsyncPostgresPool.dedicated(self._stand.ix_profile) as conn:
-            cur = await conn.execute(query, {"host": host})
+            cur = await conn.execute(query.text, query.params)
             row = await cur.fetchone()
 
         if row is None:
@@ -241,16 +261,11 @@ class IxStandDatabase(SharedIxStandDatabase):
 
         return int(row[0])
 
-    def _query(self, name: StandFile) -> sql.Composed:
-        """Запрос стенда под схему графа: в файлах она стоит плейсхолдером."""
-        text = name.under_stand().read_text(encoding="utf-8")
-        return SchemaName.render(text, self._stand.db_schema)
-
     async def scrape(self, source: IxSource) -> Sequence[ApplyRow]:
         report = await scrape_source(
             self._stand.ix_database,
             ChSource(source.clickhouse),
             PACKAGE_DIR,
-            self.ATTEMPTS,
+            3,
         )
         return report.rows

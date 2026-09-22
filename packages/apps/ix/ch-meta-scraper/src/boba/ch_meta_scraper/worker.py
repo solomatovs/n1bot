@@ -19,7 +19,10 @@ from clickhouse_connect.driver.asyncclient import AsyncClient
 from boba.db.clickhouse import ClickHouseError, ClickHouseQueryError
 from boba.db.clickhouse.payload import PayloadClickHouse
 from boba.db.clickhouse.profile import ClickHouseConfig
+from boba.db.clickhouse.query import ChQueryBuilder
 from boba.ix_core.scrape import (
+    Collect,
+    ScrapeFile,
     ScraperConfigBase,
     ScrapeSession,
     ScrapeSource,
@@ -30,7 +33,6 @@ from boba.ix_core.scrape import (
     StreamRows,
     parse_version,
     run_cli,
-    version_applies,
 )
 
 __all__ = [
@@ -42,7 +44,6 @@ __all__ = [
 ]
 
 SCHEME = "clickhouse"
-VERSION_QUERY = "select version()"
 SECTION = "ix.ch_meta_scraper"
 PROG = "boba-ch-meta-scraper"
 DESCRIPTION = (
@@ -79,15 +80,17 @@ def source_address(clickhouse: ClickHouseConfig) -> SourceAddress:
 
 
 async def read_server_version(client: AsyncClient, where: str) -> tuple[int, ...]:
+    query = "select version()"
+
     try:
-        result = await client.query(VERSION_QUERY)
+        result = await client.query(query)
     except ClickHouseQueryError as exc:
-        raise ScrapeSourceError(f"{VERSION_QUERY} on {where}: {exc}") from exc
+        raise ScrapeSourceError(f"{query} on {where}: {exc}") from exc
 
     for row in result.result_rows:
         return parse_version(str(row[0]))
 
-    raise ScrapeSourceError(f"{VERSION_QUERY} on {where}: expected one row, got none")
+    raise ScrapeSourceError(f"{query} on {where}: expected one row, got none")
 
 
 class ChSession(ScrapeSession):
@@ -100,15 +103,19 @@ class ChSession(ScrapeSession):
         self._server = server
         self._where = where
 
-    def applies(self, headers: Mapping[str, str]) -> bool:
-        return version_applies(headers, self._server)
+    def applies(self, file: ScrapeFile) -> bool:
+        return file.applies(self._server, "")
 
     @asynccontextmanager
     async def fetch_rows(
-        self, name: str, query: str, params: Mapping[str, Sequence[object]]
+        self, name: str, path: Path, params: Mapping[str, Sequence[object]]
     ) -> AsyncGenerator[SourceRows, None]:
+        query = ChQueryBuilder().read(path, **params).build()
+
         try:
-            async with PayloadClickHouse.rows(self._client, query, params) as stream:
+            async with PayloadClickHouse.rows(
+                self._client, query.text, query.params
+            ) as stream:
                 yield StreamRows(
                     stream.names,
                     stream.blocks,
@@ -127,6 +134,45 @@ class ChSource(ScrapeSource):
     def __init__(self, cfg: ClickHouseConfig) -> None:
         self._cfg = cfg
         self._address = source_address(cfg)
+
+    @property
+    def files(self) -> Sequence[ScrapeFile]:
+        return (
+            ScrapeFile(
+                name="databases",
+                wave=1,
+                query="1_databases.sql",
+                collect=Collect(name="dbs", column="name"),
+            ),
+            ScrapeFile(name="server", wave=1, query="1_server.sql"),
+            ScrapeFile(name="columns", wave=2, query="2_columns.sql", params=("dbs",)),
+            ScrapeFile(
+                name="dictionaries", wave=2, query="2_dictionaries.sql", params=("dbs",)
+            ),
+            ScrapeFile(name="functions", wave=2, query="2_functions.sql"),
+            ScrapeFile(name="indices", wave=2, query="2_indices.sql", params=("dbs",)),
+            ScrapeFile(
+                name="projections",
+                wave=2,
+                query="2_projections.sql",
+                params=("dbs",),
+                min_version=(24, 4),
+            ),
+            ScrapeFile(
+                name="tables",
+                wave=2,
+                query="2_tables.sql",
+                params=("dbs",),
+                min_version=(26, 6),
+            ),
+            ScrapeFile(
+                name="tables",
+                wave=2,
+                query="2_tables__lt26_6.sql",
+                params=("dbs",),
+                max_version=(26, 5),
+            ),
+        )
 
     @property
     def address(self) -> SourceAddress:

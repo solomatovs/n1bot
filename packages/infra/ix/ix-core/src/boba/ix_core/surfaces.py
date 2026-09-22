@@ -16,12 +16,13 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Sequence
-from typing import Any, ClassVar, LiteralString
+from typing import Any
 
 import psycopg
+from psycopg import sql
 from pydantic import BaseModel, ConfigDict
 
-from boba.ix_core.schema_name import SchemaName
+from boba.db.postgres.query import PgQueryBuilder
 
 __all__ = ["Surface", "SurfaceCatalog"]
 
@@ -41,32 +42,6 @@ class Surface(BaseModel):
 class SurfaceCatalog:
     """Чтение словаря поверхностей."""
 
-    ALL: ClassVar[LiteralString] = """
-        select
-            e.enumlabel::varchar,
-            coalesce(max(s.description), ''),
-            count(distinct sa.aspect),
-            (
-                select count(*)
-                from {schema}.node n
-                where n.surface = e.enumlabel::{schema}.surface_e
-            )
-        from
-            pg_type t
-            join pg_namespace ns on ns.oid = t.typnamespace
-            join pg_enum e on e.enumtypid = t.oid
-            left join {schema}.surface s on s.name::varchar = e.enumlabel::varchar
-            left join {schema}.surface_aspect sa
-                on sa.surface::varchar = e.enumlabel::varchar
-        where 1=1
-            and ns.nspname = %(schema)s
-            and t.typname = 'surface_e'
-        group by
-            e.enumlabel
-        order by
-            e.enumlabel
-    """
-
     def __init__(self, surfaces: Sequence[Surface]) -> None:
         self._surfaces = tuple(surfaces)
 
@@ -74,8 +49,41 @@ class SurfaceCatalog:
     async def load(
         cls, conn: psycopg.AsyncConnection[Any], db_schema: str
     ) -> SurfaceCatalog:
-        query = SchemaName.render(cls.ALL, db_schema)
-        cur = await conn.execute(query, {"schema": db_schema})
+        query = (
+            PgQueryBuilder()
+            .add(
+                """
+                select
+                    e.enumlabel::varchar,
+                    coalesce(max(s.description), ''),
+                    count(distinct sa.aspect),
+                    (
+                        select count(*)
+                        from {schema}.node n
+                        where n.surface = e.enumlabel::{schema}.surface_e
+                    )
+                from
+                    pg_type t
+                    join pg_namespace ns on ns.oid = t.typnamespace
+                    join pg_enum e on e.enumtypid = t.oid
+                    left join {schema}.surface s
+                        on s.name::varchar = e.enumlabel::varchar
+                    left join {schema}.surface_aspect sa
+                        on sa.surface::varchar = e.enumlabel::varchar
+                where 1=1
+                    and ns.nspname = %(schema_name)s
+                    and t.typname = 'surface_e'
+                group by
+                    e.enumlabel
+                order by
+                    e.enumlabel
+            """,
+                schema=sql.Identifier(db_schema),
+                schema_name=db_schema,
+            )
+            .build()
+        )
+        cur = await conn.execute(query.text, query.params)
         rows = await cur.fetchall()
 
         return cls(list(cls._rows(rows)))

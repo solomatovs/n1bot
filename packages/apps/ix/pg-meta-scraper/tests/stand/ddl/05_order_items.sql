@@ -1,4 +1,3 @@
--- @min 80300
 create table dm.order_items (
     order_id    bigint   not null,
     line_no     smallint not null,

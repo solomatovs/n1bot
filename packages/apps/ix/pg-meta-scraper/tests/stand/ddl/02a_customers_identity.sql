@@ -1,5 +1,3 @@
--- @min 100000
--- @not gp
 create table dm.customers (
     id          bigint     generated always as identity primary key,
     email       dm.email_t not null unique,
