@@ -4,19 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boba-ora-meta-scraper"
-version = "0.0.21.dev2"
+version = "0.0.22.dev1"
 description = "Скрапер словаря Oracle в ядро ix: node, tree, edge и поверхности ora_meta_*."
 requires-python = ">=3.11,<4"
 dependencies = [
-    "boba-db-oracle[payload]==0.0.21.dev2",
-    "boba-ix-core==0.0.21.dev2",
+    "boba-db-oracle[payload]==0.0.22.dev1",
+    "boba-ix-core==0.0.22.dev1",
     "pydantic>=2.10,<2.11",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "boba-db-postgres==0.0.21.dev2",
-    "boba-stand==0.0.21.dev2",
+    "boba-db-postgres==0.0.22.dev1",
+    "boba-stand==0.0.22.dev1",
     "psycopg[binary]>=3.2",
     "pytest>=8",
 ]
