@@ -1,15 +1,14 @@
-"""Текст вложения: вердикт по маскам и OCR, декодирование текстовых файлов, разбор
-остальных liteparse прямо в процессе спейса.
+"""Текст вложения: вердикт по маскам и OCR, вид документа по media-type и имени,
+извлечение текста роутером boba-doc прямо из потока скачивания.
 
 Ошибки:
-DocumentTextError — файл не декодирован или не разобран.
+DocumentTextError — файл не распознан роутером или не разобран.
 """
 
 from __future__ import annotations
 
-import os
-from collections.abc import Sequence
-from pathlib import Path
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from typing import BinaryIO
 
 from boba.cfl_indexer.confluence import Attachment
 from boba.cfl_indexer.store import Aspect
@@ -19,20 +18,25 @@ from boba.confluence.models import (
     AttachmentInfo,
     AttachmentVerdict,
 )
-from boba.liteparse.engine import LiteParseEngine
-from boba.text.document import DocumentMedia, LiteParseError, LiteParseParams
-from boba.text.reader import TextMedia
+from boba.doc import (
+    DocumentError,
+    DocumentHint,
+    DocumentKind,
+    DocumentRouter,
+    Formats,
+    PageWindow,
+    ParsedPage,
+)
 
 __all__ = [
     "DocumentTextError",
     "aspect_of",
     "build_gate",
     "decide_attachment",
-    "extract_text",
+    "text_reader",
 ]
 
 PAGE_SEPARATOR = "\n\n"
-IMAGE_PREFIX = "image/"
 
 
 class DocumentTextError(Exception):
@@ -45,12 +49,12 @@ def build_gate(masks: Sequence[str], *, ocr: bool) -> AttachmentGate:
     )
 
 
-def is_supported(media_type: str) -> bool:
-    normalized = DocumentMedia.normalize(media_type)
-    if normalized in TextMedia.DOC_TYPE_BY_MEDIA_TYPE:
-        return True
+def hint_of(attachment: Attachment) -> DocumentHint:
+    return DocumentHint(media_type=attachment.media_type, filename=attachment.title)
 
-    return normalized in DocumentMedia.SUFFIX_BY_MEDIA_TYPE
+
+def kind_of(attachment: Attachment) -> DocumentKind:
+    return Formats.of_hint(hint_of(attachment))
 
 
 def decide_attachment(
@@ -70,67 +74,51 @@ def decide_attachment(
     if verdict is not AttachmentVerdict.TAKE:
         return verdict
 
-    if not is_supported(attachment.media_type):
+    kind = kind_of(attachment)
+    if kind is DocumentKind.UNKNOWN:
         return AttachmentVerdict.NOT_ALLOWED
+
+    if kind is DocumentKind.IMAGE and not gate.ocr:
+        return AttachmentVerdict.IMAGE_WITHOUT_OCR
 
     return AttachmentVerdict.TAKE
 
 
-def aspect_of(media_type: str) -> Aspect:
-    if DocumentMedia.normalize(media_type).startswith(IMAGE_PREFIX):
+def aspect_of(attachment: Attachment) -> Aspect:
+    if kind_of(attachment) is DocumentKind.IMAGE:
         return Aspect.OCR
 
     return Aspect.BODY
 
 
-def extract_text(
-    path: Path,
-    attachment: Attachment,
-    encodings: Sequence[str],
-    parser: LiteParseParams,
-) -> str:
-    """Текст файла: текстовые типы декодируются, остальные разбирает liteparse."""
-    normalized = DocumentMedia.normalize(attachment.media_type)
-    if normalized in TextMedia.DOC_TYPE_BY_MEDIA_TYPE:
-        return decode_text(path, attachment, encodings)
+def text_reader(
+    router: DocumentRouter, attachment: Attachment
+) -> Callable[[BinaryIO], str]:
+    """Потребитель потока скачивания: роутер открывает файл по подсказке
+    вложения, текст страниц склеивается в один."""
+    hint = hint_of(attachment)
 
-    return parse_document(path, attachment, parser)
-
-
-def decode_text(path: Path, attachment: Attachment, encodings: Sequence[str]) -> str:
-    raw = path.read_bytes()
-    for encoding in encodings:
+    def read(source: BinaryIO) -> str:
         try:
-            return raw.decode(encoding).strip()
-        except UnicodeDecodeError:
+            with router.open(source, hint) as document:
+                return join_pages(document.pages(PageWindow.whole()))
+        except DocumentError as exc:
+            raise DocumentTextError(
+                f"attachment {attachment.id} {attachment.title!r} "
+                f"({attachment.media_type}): {exc}"
+            ) from exc
+
+    return read
+
+
+def join_pages(pages: Iterable[ParsedPage]) -> str:
+    return PAGE_SEPARATOR.join(page_texts(pages))
+
+
+def page_texts(pages: Iterable[ParsedPage]) -> Iterator[str]:
+    for page in pages:
+        text = page.text.strip()
+        if not text:
             continue
 
-    raise DocumentTextError(
-        f"attachment {attachment.id} {attachment.title!r}: cannot decode "
-        f"{len(raw)} bytes with any of: {', '.join(encodings)}"
-    )
-
-
-def parse_document(path: Path, attachment: Attachment, parser: LiteParseParams) -> str:
-    """liteparse узнаёт формат по расширению, поэтому файл на время разбора
-    получает жёсткую ссылку с нужным суффиксом."""
-    suffix = DocumentMedia.suffix_for(attachment.media_type)
-    linked = path.with_name(f"{path.stem}-as{suffix}")
-    try:
-        os.link(path, linked)
-        result = LiteParseEngine.parse_native(parser, str(linked))
-    except (LiteParseError, OSError) as exc:
-        raise DocumentTextError(
-            f"attachment {attachment.id} {attachment.title!r} "
-            f"({attachment.media_type}): {exc}"
-        ) from exc
-    finally:
-        linked.unlink(missing_ok=True)
-
-    pages: list[str] = []
-    for page in result.pages:
-        text = str(page.text).strip()
-        if text:
-            pages.append(text)
-
-    return PAGE_SEPARATOR.join(pages)
+        yield text

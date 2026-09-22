@@ -4,6 +4,7 @@
 DocumentError — документ не распознан, не открыт или страница не прочитана.
 """
 
+from boba.doc.bridge import AsyncPipe
 from boba.doc.document import (
     BoxedHit,
     ByteStream,
@@ -24,6 +25,7 @@ from boba.doc.document import (
 from boba.doc.router import DocConfig, DocumentRouter
 
 __all__ = [
+    "AsyncPipe",
     "BoxedHit",
     "ByteStream",
     "DisabledOcr",

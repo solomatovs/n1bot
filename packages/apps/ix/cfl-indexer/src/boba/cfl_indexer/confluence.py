@@ -13,11 +13,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterable, AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
-from pathlib import Path
-from typing import Any, Self
+from typing import Any, BinaryIO, Self, TypeVar
 
 import httpx
 from markdownify import MarkdownConverter
@@ -32,6 +31,7 @@ from boba.confluence.rest import (
     SpaceStatus,
     SpaceType,
 )
+from boba.doc import AsyncPipe
 from boba.transport.http import CancellableHttpTransport, HttpRequest
 
 __all__ = [
@@ -57,6 +57,7 @@ LIST_EXPAND = (
 )
 COMMENT_EXPAND = "body.{body_format},version,history,extensions.location,container"
 GONE_STATUS = 404
+T = TypeVar("T")
 
 
 class ConfluenceReadError(Exception):
@@ -481,18 +482,18 @@ class ConfluenceReader:
         async for raw in self.iter_pages(url, where):
             yield parse_comment(raw, content, body_format)
 
-    async def download_attachment(self, attachment: Attachment, into: Path) -> str:
-        """Файл на диск чанками; возвращает sha256 байтов."""
+    async def read_attachment(
+        self, attachment: Attachment, consume: Callable[[BinaryIO], T]
+    ) -> tuple[str, T]:
+        """Тело файла из http сразу в потребителя через пипу, без файла на
+        диске; sha256 байтов считается по дороге и возвращается с итогом."""
         where = f"attachment {attachment.id} {attachment.title!r}"
         request = HttpRequest(url=attachment.download_path)
         digest = hashlib.sha256()
 
         try:
             async with self._http.fetch(request) as resp:
-                with into.open("wb") as file:
-                    async for chunk in resp.stream:
-                        digest.update(chunk)
-                        file.write(chunk)
+                result = await AsyncPipe.run(self._hashed(resp.stream, digest), consume)
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             msg = (
@@ -509,4 +510,12 @@ class ConfluenceReader:
                 f"{type(exc).__name__}: {exc}"
             ) from exc
 
-        return digest.hexdigest()
+        return digest.hexdigest(), result
+
+    @staticmethod
+    async def _hashed(
+        chunks: AsyncIterable[bytes], digest: hashlib._Hash
+    ) -> AsyncIterator[bytes]:
+        async for chunk in chunks:
+            digest.update(chunk)
+            yield chunk

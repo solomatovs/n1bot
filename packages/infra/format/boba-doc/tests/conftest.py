@@ -24,6 +24,7 @@ def doc_stand() -> DocStand:
 @pytest.fixture(scope="session")
 def ocr_engine(doc_stand: DocStand) -> RapidOcrEngine:
     config = RapidOcrConfig(
+        provider="rapidocr",
         models_dir=doc_stand.ocr_models_dir,
         language=OcrLanguage.ESLAV,
         text_score=0.5,

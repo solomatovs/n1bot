@@ -16,11 +16,13 @@ from boba.cfl_indexer import worker as indexer
 from boba.cfl_indexer.confluence import SpaceSelector
 from boba.cfl_indexer.worker import (
     ConfluenceSource,
+    DocSection,
     IndexerConfig,
     Report,
     run_spaces,
 )
 from boba.confluence.rest import ConfluenceConnection, SpaceType
+from boba.doc.ocr import DisabledOcrConfig
 from boba.ix_core.aspects import AspectClass
 from boba.ix_fts import worker as fts
 from boba.ix_fts.worker import FtsWeight
@@ -33,7 +35,6 @@ from boba.ix_vector import worker as vector
 from boba.ix_vector.worker import VectorWorker
 from boba.ix_vector.worker import WorkerConfig as VectorConfig
 from boba.stand.ix import IxStand
-from boba.text.document import LiteParseParams
 from boba.transport.http.profile import HttpConnection, UrlScheme
 
 __all__ = ["PACKAGE_DIR", "SharedIndexers", "StubIndexer"]
@@ -68,7 +69,11 @@ class StubIndexer:
                 )
             ],
             parallel_spaces=1,
-            parser=LiteParseParams(),
+            doc=DocSection(
+                spool_memory_limit=32 << 20,
+                text_encodings=("utf-8",),
+                ocr=DisabledOcrConfig(provider="off"),
+            ),
         )
 
     async def run(self, *spaces: str) -> list[Report]:

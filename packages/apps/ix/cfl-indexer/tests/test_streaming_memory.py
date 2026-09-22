@@ -1,10 +1,10 @@
-"""Потоковость обхода: спейсы с сотнями pdf и картинок под OCR. liteparse за первую
-сотню разборов набирает свои кэши и выходит на плато, поэтому сравниваются два спейса
-за плато: пик RSS процесса не растёт с объёмом спейса, а RSS теста-родителя — с числом
-спейсов. Всё, что обход набирает, живёт один объект за раз и умирает вместе с
-процессом.
+"""Потоковость обхода: спейсы с сотнями pdf и картинок под OCR. Сравниваются два
+спейса разного объёма: пик RSS процесса не растёт с объёмом спейса, а RSS
+теста-родителя — с числом спейсов. Всё, что обход набирает, живёт один объект за
+раз и умирает вместе с процессом.
 
-Ошибки стенда: IxStandError — секции [ix_stand] нет, модуль пропускается.
+Ошибки стенда: IxStandError — секции [ix_stand] нет, DocStandError — секции
+    [doc_stand] нет; модуль пропускается.
 """
 
 from __future__ import annotations
@@ -17,9 +17,9 @@ from cfl_stand import PACKAGE_DIR, StubIndexer
 from PIL import Image, ImageDraw
 
 from boba.cfl_indexer.worker import IndexerConfig, Report, run_spaces
+from boba.doc.ocr import OcrLanguage, RapidOcrConfig
 from boba.stand.confluence import ConfluenceStub, StubAttachment, StubPage, StubSpace
-from boba.stand.ix import IxStand
-from boba.text.document import LiteParseParams
+from boba.stand.doc import DocStand
 
 pytestmark = [pytest.mark.load, pytest.mark.anyio]
 
@@ -112,15 +112,20 @@ def rss_mib() -> int:
 
 
 def ocr_config(
-    stub_indexer: StubIndexer, ix_stand: IxStand, *spaces: str
+    stub_indexer: StubIndexer, doc_stand: DocStand, *spaces: str
 ) -> IndexerConfig:
-    parser = LiteParseParams(
-        ocr_enabled=True, ocr_language="eng", tessdata_path=ix_stand.tessdata_path
+    ocr = RapidOcrConfig(
+        provider="rapidocr",
+        models_dir=doc_stand.ocr_models_dir,
+        language=OcrLanguage.EN,
+        text_score=0.5,
+        threads=1,
     )
     cfg = stub_indexer.config(*spaces)
+    doc = cfg.doc.model_copy(update={"ocr": ocr})
 
     return cfg.model_copy(
-        update={"parser": parser, "parallel_spaces": 2, "progress_every": 50}
+        update={"doc": doc, "parallel_spaces": 2, "progress_every": 50}
     )
 
 
@@ -129,12 +134,12 @@ class TestStreamingMemory:
         self,
         stub: tuple[ConfluenceStub, int],
         stub_indexer: StubIndexer,
-        ix_stand: IxStand,
+        doc_stand: DocStand,
     ) -> None:
         fake, _ = stub
         seed_space(fake, "MEDIUM", MEDIUM_PAGES)
         seed_space(fake, "LARGE", LARGE_PAGES)
-        cfg = ocr_config(stub_indexer, ix_stand, "MEDIUM", "LARGE")
+        cfg = ocr_config(stub_indexer, doc_stand, "MEDIUM", "LARGE")
 
         reports = await asyncio.to_thread(run_spaces, cfg, PACKAGE_DIR / "run")
 
@@ -159,7 +164,7 @@ class TestStreamingMemory:
         self,
         stub: tuple[ConfluenceStub, int],
         stub_indexer: StubIndexer,
-        ix_stand: IxStand,
+        doc_stand: DocStand,
     ) -> None:
         fake, _ = stub
         keys: list[str] = []
@@ -168,7 +173,7 @@ class TestStreamingMemory:
             keys.append(key)
             seed_space(fake, key, MANY_PAGES)
 
-        cfg = ocr_config(stub_indexer, ix_stand, *keys)
+        cfg = ocr_config(stub_indexer, doc_stand, *keys)
         before = rss_mib()
 
         reports = await asyncio.to_thread(run_spaces, cfg, PACKAGE_DIR / "run")
