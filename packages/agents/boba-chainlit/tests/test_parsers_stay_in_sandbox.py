@@ -15,7 +15,7 @@ class TestParsersStayInSandbox:
     """Приложение не тянет тяжёлые парсеры: они живут в телах инструментов."""
 
     @pytest.mark.parametrize(
-        "module", ["liteparse", "markdownify", "bs4", "lxml", "plotly"]
+        "module", ["pypdfium2", "rapidocr", "markdownify", "bs4", "lxml", "plotly"]
     )
     def test_app_does_not_import(self, module: str) -> None:
         code = (

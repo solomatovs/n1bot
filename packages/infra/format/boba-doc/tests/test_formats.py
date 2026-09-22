@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from samples import Samples
 
-from boba.doc import DocumentHint, DocumentKind, Formats
+from boba.doc.document import DocumentHint, DocumentKind, Formats
 
 
 @pytest.mark.parametrize(

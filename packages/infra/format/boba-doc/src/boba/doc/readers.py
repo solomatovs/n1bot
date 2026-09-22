@@ -176,7 +176,7 @@ class PdfDocument(PagedDocument):
             yield ParsedPage(number=number, text=text)
 
     def search(
-        self, query: str, window: PageWindow, *, case_sensitive: bool
+        self, query: str, window: PageWindow, *, case_sensitive: bool, context: int
     ) -> Iterator[Hit]:
         if not query:
             raise DocumentError("pdf document: search expects a non-empty query")
@@ -184,7 +184,9 @@ class PdfDocument(PagedDocument):
         for number in window.numbers(self.page_count()):
             page = self._pdf[number - 1]
             try:
-                yield from self._search_page(page, number, query, case_sensitive)
+                yield from self._search_page(
+                    page, number, query, case_sensitive, context
+                )
             finally:
                 page.close()
 
@@ -215,7 +217,12 @@ class PdfDocument(PagedDocument):
             textpage.close()
 
     def _search_page(
-        self, page: pdfium.PdfPage, number: int, query: str, case_sensitive: bool
+        self,
+        page: pdfium.PdfPage,
+        number: int,
+        query: str,
+        case_sensitive: bool,
+        context: int,
     ) -> Iterator[Hit]:
         """Текстовый слой ищется pdfium с координатами, распознанная страница —
         по тексту без координат."""
@@ -228,10 +235,14 @@ class PdfDocument(PagedDocument):
             text = textpage.get_text_bounded()
             if not text.strip():
                 parsed = ParsedPage(number=number, text=self._text_of(page, number))
-                yield from TextSearch.hits(parsed, query, case_sensitive=case_sensitive)
+                yield from TextSearch.hits(
+                    parsed, query, case_sensitive=case_sensitive, context=context
+                )
                 return
 
-            yield from self._layer_hits(textpage, number, query, case_sensitive)
+            yield from self._layer_hits(
+                textpage, number, query, case_sensitive, context
+            )
         except DocumentError:
             raise
         except Exception as exc:
@@ -246,13 +257,14 @@ class PdfDocument(PagedDocument):
         number: int,
         query: str,
         case_sensitive: bool,
+        context: int,
     ) -> Iterator[BoxedHit]:
         total = textpage.count_chars()
         searcher = textpage.search(query, match_case=case_sensitive)
         while (found := searcher.get_next()) is not None:
             index, count = found
-            low = max(0, index - TextSearch.CONTEXT)
-            high = min(total, index + count + TextSearch.CONTEXT)
+            low = max(0, index - context)
+            high = min(total, index + count + context)
             snippet = textpage.get_text_range(low, high - low)
             left, bottom, right, top = cls._first_rect(textpage, index, count)
             yield BoxedHit(

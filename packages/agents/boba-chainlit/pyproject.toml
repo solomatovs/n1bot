@@ -45,12 +45,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "boba-doc[readers]==0.0.22.dev1",
     "boba-krb[seal]==0.0.22.dev1",
     "boba-connections==0.0.22.dev1",
     "boba-db-clickhouse==0.0.22.dev1",
     "boba-kerberos==0.0.22.dev1",
     "boba-connection-broker==0.0.22.dev1",
-    "boba-liteparse==0.0.22.dev1",
     "boba-stand==0.0.22.dev1",
     "boba-stand-core==0.0.22.dev1",
     "boba-text==0.0.22.dev1",

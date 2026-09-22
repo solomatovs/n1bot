@@ -1,7 +1,7 @@
 """OCR на моделях PP-OCR: детектор строк, классификатор ориентации и
 распознаватель языка через rapidocr на onnxruntime. Живёт за extra `ocr`;
 файлы моделей лежат в каталоге из конфига, из сети ничего не берётся.
-Секция конфига — union по provider: off либо rapidocr, движок собирает OcrEngines.
+Секции конфига — в boba.doc.config, движок по секции собирает OcrEngines.
 
 Ошибки:
 DocumentError — нет файлов моделей, движок не поднялся или распознавание
@@ -10,115 +10,25 @@ DocumentError — нет файлов моделей, движок не подн
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from enum import StrEnum
-from pathlib import Path
-from typing import Annotated, Any, ClassVar, Literal
+from typing import Any, ClassVar
 
 import numpy as np
 import onnxruntime
 from numpy.typing import NDArray
 from PIL import Image
-from pydantic import BaseModel, ConfigDict, Field
 from rapidocr import EngineType, LangRec, ModelType, OCRVersion, RapidOCR
 from rapidocr.utils.output import RapidOCROutput
 
+from boba.doc.config import (
+    DisabledOcrConfig,
+    OcrModel,
+    RapidOcrConfig,
+)
 from boba.doc.document import DisabledOcr, DocumentError, OcrEngine
 
-__all__ = [
-    "DisabledOcrConfig",
-    "OcrConfig",
-    "OcrEngines",
-    "OcrLanguage",
-    "OcrLines",
-    "OcrModel",
-    "RapidOcrConfig",
-    "RapidOcrEngine",
-]
-
-
-class OcrLanguage(StrEnum):
-    """Языки распознавателя PP-OCRv5; eslav — русский, украинский, белорусский."""
-
-    ESLAV = "eslav"
-    CYRILLIC = "cyrillic"
-    LATIN = "latin"
-    EN = "en"
-    CH = "ch"
-    KOREAN = "korean"
-    ARABIC = "arabic"
-    DEVANAGARI = "devanagari"
-    TH = "th"
-    EL = "el"
-    TA = "ta"
-    TE = "te"
-
-    def lang_rec(self) -> LangRec:
-        return LangRec(self.value)
-
-
-class OcrModel(StrEnum):
-    """Имена файлов моделей в каталоге моделей; распознаватель зависит от языка."""
-
-    DET = "ch_PP-OCRv5_det_mobile.onnx"
-    CLS = "ch_ppocr_mobile_v2.0_cls_mobile.onnx"
-    REC = "{language}_PP-OCRv5_rec_mobile.onnx"
-
-    def path(self, models_dir: Path, language: OcrLanguage) -> Path:
-        return models_dir / self.value.format(language=language.value)
-
-    @classmethod
-    def required(cls, models_dir: Path, language: OcrLanguage) -> Iterator[Path]:
-        for model in cls:
-            yield model.path(models_dir, language)
-
-
-class DisabledOcrConfig(BaseModel):
-    """Секция OCR с provider = off: картинки и сканы дают пустой текст."""
-
-    model_config = ConfigDict(frozen=True)
-
-    provider: Literal["off"]
-
-    @property
-    def enabled(self) -> bool:
-        return False
-
-    def fingerprint(self) -> Mapping[str, object]:
-        """Часть отпечатка индексатора: что влияет на распознанный текст."""
-        return {"provider": self.provider}
-
-
-class RapidOcrConfig(BaseModel):
-    """Секция OCR с provider = rapidocr: каталог моделей, язык, порог
-    уверенности и потоки onnxruntime."""
-
-    model_config = ConfigDict(frozen=True)
-
-    provider: Literal["rapidocr"]
-    models_dir: Path
-    language: OcrLanguage
-    text_score: float = Field(ge=0.0, le=1.0)
-    threads: int = Field(ge=1)
-
-    @property
-    def enabled(self) -> bool:
-        return True
-
-    def fingerprint(self) -> Mapping[str, object]:
-        return {
-            "provider": self.provider,
-            "language": self.language.value,
-            "text_score": self.text_score,
-        }
-
-
-OcrConfig = Annotated[
-    DisabledOcrConfig | RapidOcrConfig,
-    Field(discriminator="provider"),
-]
-"""Discriminated union по provider — точная диагностика ошибок валидации."""
+__all__ = ["OcrEngines", "OcrLines", "RapidOcrEngine"]
 
 
 @dataclass(frozen=True)
@@ -261,7 +171,7 @@ class RapidOcrEngine(OcrEngine):
             "Rec.engine_type": EngineType.ONNXRUNTIME,
             "Rec.ocr_version": OCRVersion.PPOCRV5,
             "Rec.model_type": ModelType.MOBILE,
-            "Rec.lang_type": language.lang_rec(),
+            "Rec.lang_type": LangRec(language.value),
             "Rec.model_path": str(OcrModel.REC.path(models_dir, language)),
         }
 

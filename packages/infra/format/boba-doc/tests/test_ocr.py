@@ -7,8 +7,10 @@ from pathlib import Path
 import pytest
 from samples import NoSeek, Samples
 
-from boba.doc import DocumentError, DocumentHint, DocumentRouter, PageWindow
-from boba.doc.ocr import OcrEngines, OcrLanguage, RapidOcrConfig, RapidOcrEngine
+from boba.doc.config import OcrLanguage, RapidOcrConfig
+from boba.doc.document import DocumentError, DocumentHint, PageWindow
+from boba.doc.ocr import OcrEngines, RapidOcrEngine
+from boba.doc.router import DocumentRouter
 from boba.stand.doc import DocStand
 
 LINES = ["Договор поставки от 12 мая", "Quarterly report 2026 total 1250"]
@@ -53,7 +55,11 @@ def test_scanned_pdf_goes_through_ocr(
         NoSeek(data), DocumentHint(media_type="application/pdf")
     ) as document:
         pages = list(document.pages(PageWindow.whole()))
-        hits = list(document.search("оплату", PageWindow.whole(), case_sensitive=False))
+        hits = list(
+            document.search(
+                "оплату", PageWindow.whole(), case_sensitive=False, context=80
+            )
+        )
 
     assert "оплату" in pages[0].text
     assert hits[0].page == 1

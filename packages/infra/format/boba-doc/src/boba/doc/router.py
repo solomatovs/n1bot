@@ -7,11 +7,10 @@ DocumentError — вид не определён или не поддержан,
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator
 from contextlib import contextmanager
 
-from pydantic import BaseModel, ConfigDict, Field
-
+from boba.doc.config import DocConfig
 from boba.doc.document import (
     ByteStream,
     Document,
@@ -33,17 +32,7 @@ from boba.doc.readers import (
     XlsxDocument,
 )
 
-__all__ = ["DocConfig", "DocumentRouter"]
-
-
-class DocConfig(BaseModel):
-    """Настройки чтения: порог буфера в памяти для форматов с произвольным
-    доступом и кодировки текстовых файлов по порядку перебора."""
-
-    model_config = ConfigDict(frozen=True)
-
-    spool_memory_limit: int = Field(gt=0)
-    text_encodings: Sequence[str] = Field(min_length=1)
+__all__ = ["DocumentRouter"]
 
 
 class DocumentRouter:

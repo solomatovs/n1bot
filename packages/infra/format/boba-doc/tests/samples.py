@@ -18,7 +18,7 @@ from PIL import Image, ImageDraw, ImageFont
 from pptx import Presentation
 from pptx.util import Inches
 
-from boba.doc import ByteStream
+from boba.doc.document import ByteStream
 
 
 class NoSeek(ByteStream):

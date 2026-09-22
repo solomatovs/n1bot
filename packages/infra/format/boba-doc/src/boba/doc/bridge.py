@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import os
 from asyncio.streams import FlowControlMixin
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterable, Callable
 from typing import BinaryIO, TypeVar
 
 __all__ = ["AsyncPipe"]
@@ -31,7 +31,7 @@ class AsyncPipe:
 
     @classmethod
     async def run(
-        cls, chunks: AsyncIterator[bytes], consume: Callable[[BinaryIO], T]
+        cls, chunks: AsyncIterable[bytes], consume: Callable[[BinaryIO], T]
     ) -> T:
         loop = asyncio.get_running_loop()
         read_fd, write_fd = os.pipe()
@@ -54,7 +54,7 @@ class AsyncPipe:
         return await consumer
 
     @staticmethod
-    async def _pump(chunks: AsyncIterator[bytes], writer: asyncio.StreamWriter) -> None:
+    async def _pump(chunks: AsyncIterable[bytes], writer: asyncio.StreamWriter) -> None:
         """Потребитель вправе закрыть свой конец раньше конца данных: пипа
         рвётся, и это не ошибка перекачки — итог решает сам потребитель."""
         try:

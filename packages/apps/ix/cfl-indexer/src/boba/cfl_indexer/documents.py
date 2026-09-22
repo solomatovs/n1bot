@@ -18,15 +18,15 @@ from boba.confluence.models import (
     AttachmentInfo,
     AttachmentVerdict,
 )
-from boba.doc import (
+from boba.doc.document import (
     DocumentError,
     DocumentHint,
     DocumentKind,
-    DocumentRouter,
     Formats,
     PageWindow,
     ParsedPage,
 )
+from boba.doc.router import DocumentRouter
 
 __all__ = [
     "DocumentTextError",

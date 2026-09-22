@@ -16,13 +16,12 @@ from boba.cfl_indexer import worker as indexer
 from boba.cfl_indexer.confluence import SpaceSelector
 from boba.cfl_indexer.worker import (
     ConfluenceSource,
-    DocSection,
     IndexerConfig,
     Report,
     run_spaces,
 )
 from boba.confluence.rest import ConfluenceConnection, SpaceType
-from boba.doc.ocr import DisabledOcrConfig
+from boba.doc.config import DisabledOcrConfig, DocSection
 from boba.ix_core.aspects import AspectClass
 from boba.ix_fts import worker as fts
 from boba.ix_fts.worker import FtsWeight

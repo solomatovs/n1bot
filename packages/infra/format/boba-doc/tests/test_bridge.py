@@ -8,14 +8,11 @@ from typing import BinaryIO
 import pytest
 from samples import Samples
 
-from boba.doc import (
-    AsyncPipe,
-    DocumentError,
-    DocumentHint,
-    DocumentRouter,
-    PageWindow,
-)
-from boba.doc.ocr import DisabledOcrConfig, OcrEngines, OcrLanguage, RapidOcrConfig
+from boba.doc.bridge import AsyncPipe
+from boba.doc.config import DisabledOcrConfig, OcrLanguage, RapidOcrConfig
+from boba.doc.document import DocumentError, DocumentHint, PageWindow
+from boba.doc.ocr import OcrEngines
+from boba.doc.router import DocumentRouter
 
 pytestmark = pytest.mark.anyio
 

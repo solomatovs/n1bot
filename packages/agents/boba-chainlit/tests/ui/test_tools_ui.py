@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import re
 import time
@@ -31,7 +32,9 @@ from boba.config import bind
 from boba.confluence.html import PageOps
 from boba.confluence.parsing import ConfluenceJson
 from boba.confluence.rest import ConfluenceRest
-from boba.liteparse.engine import LiteParseEngine
+from boba.doc.config import DocConfig
+from boba.doc.document import DisabledOcr, DocumentHint, PageWindow
+from boba.doc.router import DocumentRouter
 from boba.runtime.config import AppLayers
 from boba.stand.site import Stand
 from boba.stand.ui.chat_page import ChatPage, StepKind
@@ -47,7 +50,6 @@ from boba.stand.ui.stand import (
     StandUrl,
     free_port,
 )
-from boba.text.document import LiteParseParams
 from boba.text.grep import GrepLimits, TextGrep
 from boba.tool.canvas.tools import CanvasPrompt
 from boba.tool.confluence.tools import ConfluenceToolsConfig, CqlSearch
@@ -168,20 +170,26 @@ class RowWindowArgs:
 
 
 class OcrArgs:
-    """Параметры парсера документов: OCR выключен, как у текстовых pdf."""
+    """Параметры чтения документов: OCR выключен, как у текстовых pdf."""
 
-    TESSDATA: ClassVar[str] = "/usr/share/tessdata"
-    """Как в [tool.doc]/[tool.ingest]: параметр обязателен, OCR не включается."""
+    PAGE_GLUE: ClassVar[str] = "\n\n"
 
     @staticmethod
     def of() -> dict[str, Any]:
-        return {"ocr_enabled": False, "num_workers": 1, "ocr_language": "rus+eng"}
+        return {"ocr_enabled": False}
 
     @classmethod
-    def liteparse(cls) -> LiteParseParams:
-        params = dict(cls.of())
-        params["tessdata_path"] = cls.TESSDATA
-        return LiteParseParams.model_validate(params)
+    def text_of(cls, content: bytes, filename: str) -> str:
+        """Текст документа теми же ридерами boba-doc, что и у инструментов."""
+        config = DocConfig(spool_memory_limit=1 << 24, text_encodings=("utf-8",))
+        router = DocumentRouter(config, DisabledOcr())
+        hint = DocumentHint(filename=filename)
+        with router.open(io.BytesIO(content), hint) as document:
+            texts: list[str] = []
+            for page in document.pages(PageWindow.whole()):
+                texts.append(page.text)
+
+        return cls.PAGE_GLUE.join(texts)
 
 
 class SamplePdf:
@@ -499,7 +507,7 @@ class ConfluencePage:
 
 @dataclass(frozen=True)
 class ConfluenceAttachment:
-    """Вложение живого Confluence и его текст, разобранный тем же liteparse.
+    """Вложение живого Confluence и его текст, разобранный ридерами boba-doc.
 
     Раскладка текста (отступы, переносы) зависит от шрифтов машины, поэтому
     сверяются слова, а не текст целиком.
@@ -637,7 +645,7 @@ class ConfluenceSite:
             )
 
     def find_attachment(self, query: str) -> ConfluenceAttachment:
-        """Вложение .docx из поиска; текст считается тем же liteparse."""
+        """Вложение .docx из поиска; текст считается теми же ридерами boba-doc."""
         cql = CqlSearch.build_cql(query=query, spaces=None)
         path = ConfluenceRest.cql_search_path(cql, limit=self.ATTACHMENT_LIMIT, start=0)
         data = self.get_json(path)
@@ -658,10 +666,8 @@ class ConfluenceSite:
                 continue
 
             content = self.get_bytes(link)
-            parsed = LiteParseEngine.parse_bytes(OcrArgs.liteparse(), content, title)
-            return ConfluenceAttachment(
-                page_id=page_id, filename=title, text=parsed.text
-            )
+            text = OcrArgs.text_of(content, title)
+            return ConfluenceAttachment(page_id=page_id, filename=title, text=text)
 
         pytest.skip("Confluence search returned no .docx attachment")
 
@@ -1005,7 +1011,7 @@ class TestBash:
 
 
 class TestDocTools:
-    """doc: liteparse читает pdf из образа пользователя."""
+    """doc: ридеры boba-doc читают pdf из образа пользователя."""
 
     def test_read_document(self, feed: ToolFeed, probe_pdf: str) -> None:
         call = ToolCall(

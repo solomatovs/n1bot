@@ -1,6 +1,14 @@
 # boba-doc
 
-Чтение документов по форматам окнами страниц. Вход — поток байтов, у которого
+Чтение документов по форматам окнами страниц. Пакет разделён по весу: базовая
+установка даёт секции конфига (`boba.doc.config`) и контракт документа
+(`boba.doc.document`), их импортирует приложение; ридеры, роутер и мост
+(`boba.doc.readers`, `boba.doc.router`, `boba.doc.bridge`) живут за extra
+`readers`, OCR (`boba.doc.ocr`) — за extra `ocr`. В песочницу плагина пакет
+объявляет точку монтирования моделей `/var/cache/rapidocr` и apt-пакеты для
+opencv (`libgl1`, `libglib2.0-0`).
+
+Вход — поток байтов, у которого
 есть только `read`: открытый файл, конец пипы, сокет через `makefile`. Как
 буферизовать байты, решает ридер формата: текст читается с потока, zip-форматы
 и pdf сливаются в спул (до `spool_memory_limit` в памяти, дальше безымянный
@@ -8,6 +16,7 @@
 
 ```python
 router = DocumentRouter(DocConfig(spool_memory_limit=32 << 20, text_encodings=["utf-8"]), ocr)
+# из потока корутины: AsyncPipe.run(chunks, consume) — чанки в пипу, ридер в потоке
 
 with router.open(stream, DocumentHint(media_type=..., filename=...)) as document:
     document.page_count()
@@ -32,5 +41,8 @@ with router.open(stream, DocumentHint(media_type=..., filename=...)) as document
 
 OCR — extra `ocr`: `RapidOcrEngine` на моделях PP-OCRv5 через rapidocr и
 onnxruntime; файлы моделей (`OcrModel`) лежат в `models_dir` конфига, из сети
-ничего не берётся. Без OCR подставляется `DisabledOcr`, картинки и сканы дают
-пустой текст.
+ничего не берётся. Секция `DocSection` несёт `ocr` — union по `provider`
+(`off` | `rapidocr`), движок по ней собирает `OcrEngines.of`, а `for_call(ocr=...)`
+даёт секцию под вызов: без OCR, если вызов его не просил, и `OcrUnavailableError`,
+если просил при `provider = off`. Без OCR подставляется `DisabledOcr`, картинки и
+сканы дают пустой текст. Модели в сборку кладёт `make fetch` (`RAPIDOCR_LANGS`).

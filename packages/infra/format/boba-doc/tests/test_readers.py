@@ -7,18 +7,18 @@ import hashlib
 import pytest
 from samples import NoSeek, PipeSource, Samples
 
-from boba.doc import (
+from boba.doc.config import DocConfig
+from boba.doc.document import (
     BoxedHit,
     DisabledOcr,
-    DocConfig,
     DocumentError,
     DocumentHint,
     DocumentKind,
-    DocumentRouter,
     PageWindow,
     Sha256Stream,
     SizedPageInfo,
 )
+from boba.doc.router import DocumentRouter
 
 PDF_HINT = DocumentHint(media_type="application/pdf")
 
@@ -40,13 +40,19 @@ def test_pdf_pages_window_outline_and_boxed_search(router: DocumentRouter) -> No
         assert outline[0].width == 612.0
         assert outline[0].chars > 0
 
-        hits = list(document.search("PAGE", PageWindow.whole(), case_sensitive=False))
+        hits = list(
+            document.search(
+                "PAGE", PageWindow.whole(), case_sensitive=False, context=80
+            )
+        )
         assert [hit.page for hit in hits] == [1, 2, 3]
         assert isinstance(hits[1], BoxedHit)
         assert hits[1].width > 0
         assert "second page" in hits[1].snippet
 
-        strict = list(document.search("PAGE", PageWindow.whole(), case_sensitive=True))
+        strict = list(
+            document.search("PAGE", PageWindow.whole(), case_sensitive=True, context=80)
+        )
         assert strict == []
 
 
@@ -98,7 +104,9 @@ def test_docx_paragraphs_table_and_block_pages(router: DocumentRouter) -> None:
         assert "name\tvalue\nalpha\t1" in pages[2].text
 
         hits = list(
-            document.search("alpha", PageWindow(start=3, count=1), case_sensitive=True)
+            document.search(
+                "alpha", PageWindow(start=3, count=1), case_sensitive=True, context=80
+            )
         )
         assert len(hits) == 1
         assert hits[0].page == 3
@@ -220,7 +228,7 @@ def test_search_rejects_empty_query(router: DocumentRouter) -> None:
         router.open(NoSeek(data), DocumentHint(filename="a.docx")) as document,
         pytest.raises(DocumentError, match="non-empty query"),
     ):
-        list(document.search("", PageWindow.whole(), case_sensitive=False))
+        list(document.search("", PageWindow.whole(), case_sensitive=False, context=80))
 
 
 def test_window_beyond_document_is_empty(router: DocumentRouter) -> None:
@@ -228,3 +236,18 @@ def test_window_beyond_document_is_empty(router: DocumentRouter) -> None:
 
     with router.open(NoSeek(data), PDF_HINT) as document:
         assert list(document.pages(PageWindow(start=2, count=3))) == []
+
+
+def test_page_window_spec_parsing() -> None:
+    windows = PageWindow.parse_many("1-5, 10,15-20")
+
+    assert [(w.start, w.count) for w in windows] == [(1, 5), (10, 1), (15, 6)]
+
+    with pytest.raises(DocumentError, match="numbers and ranges"):
+        PageWindow.parse_many("1-x")
+
+    with pytest.raises(DocumentError, match="ends before"):
+        PageWindow.parse_many("5-1")
+
+    with pytest.raises(DocumentError, match="start at 1"):
+        PageWindow.parse_many("0")

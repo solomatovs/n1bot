@@ -150,7 +150,8 @@ def t_absent(module):
 
 
 for module in [
-    "liteparse",
+    "pypdfium2",
+    "rapidocr",
     "markdownify",
     "bs4",
     "fastembed",

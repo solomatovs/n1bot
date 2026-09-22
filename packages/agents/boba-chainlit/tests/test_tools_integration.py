@@ -630,7 +630,7 @@ class TestBashTool:
 
 
 class TestDocTools:
-    """doc: liteparse читает документ из образа пользователя."""
+    """doc: ридеры boba-doc читают документ из образа пользователя."""
 
     async def test_read_document_all_pages(self, doc_tools, workspace_pdf) -> None:
         result = await Call.ok(
