@@ -1,4 +1,5 @@
-"""Инструменты стенда для тестов исполнения: зонд контекста, задержка, эхо, отказ."""
+"""Инструменты стенда для тестов исполнения: зонд контекста, задержка, эхо, отказ,
+падение."""
 
 import asyncio
 from typing import Any
@@ -21,7 +22,7 @@ PROBE_ROLE = "wf"
 
 
 class Probe:
-    """Инструменты стенда: задержка, эхо, отказ, зонд контекста."""
+    """Инструменты стенда: задержка, эхо, отказ, падение, зонд контекста."""
 
     def __init__(self) -> None:
         self.contexts: list[CallContext] = []
@@ -46,7 +47,12 @@ class Probe:
             """Отказ результатом."""
             return ErrorResult(message=text, error_kind="probe")
 
-        tools = list(ToolBridge.toolset([slow, echo, fail]))
+        @tool
+        async def boom(text: str) -> MarkdownResult:
+            """Падает исключением с text: проверка guard'а ошибок конвейера."""
+            raise RuntimeError(text)
+
+        tools = list(ToolBridge.toolset([slow, echo, fail, boom]))
         ToolCallIdField.attach_all(tools)
         ToolIntentField.attach_all(tools)
         ToolRunLogger.guard_all(

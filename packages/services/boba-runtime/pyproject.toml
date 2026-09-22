@@ -39,6 +39,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "boba-stand==0.0.21.dev2",
+    "boba-stand-core==0.0.21.dev2",
     "pyjwt>=2.8",
     "pytest>=8",
 ]

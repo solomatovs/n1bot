@@ -18,15 +18,13 @@ import asyncio
 import json
 import logging
 import re
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from collections.abc import Sequence
-from dataclasses import dataclass
 from typing import Any, ClassVar, Protocol
 from uuid import uuid4
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, AgentState
-from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
@@ -35,12 +33,12 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.tools import BaseTool
-from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.runtime import Runtime
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from typing_extensions import override
 
+from boba.agent.graph import AgentGraphBuilder, GraphSpec
 from boba.chat.generation import GenerationError, SchemaSpec, StructuredGenerator
 from boba.llm.chat import ResponseField
 from boba.toolkit.calls import ToolIntent
@@ -51,11 +49,8 @@ from boba.toolkit.timing import Elapsed
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "AgentGraphBuilder",
-    "GraphSpec",
     "LlmRephraser",
     "PassthroughRephraser",
-    "PlainGraphBuilder",
     "PrefetchCall",
     "PrefetchError",
     "PrefetchGraphBuilder",
@@ -509,39 +504,6 @@ class PrefetchMiddleware(AgentMiddleware[AgentState[Any], Any, Any]):
         )
 
 
-@dataclass(frozen=True)
-class GraphSpec:
-    """Общие части графа хода: их собирает инфраструктура, билдер — компонует."""
-
-    chat: BaseChatModel
-    tools: Sequence[BaseTool]
-    system_prompt: str
-    checkpointer: BaseCheckpointSaver
-    history: AgentMiddleware[Any, Any, Any]
-    """Представление истории для модели: обрезка и чистка чужих tool-вызовов."""
-
-
-class AgentGraphBuilder(ABC):
-    """Сборка графа хода; вид графа выбирает flow профиля."""
-
-    @abstractmethod
-    def build(self, spec: GraphSpec) -> CompiledStateGraph: ...
-
-
-class PlainGraphBuilder(AgentGraphBuilder):
-    """Обычный цикл модель-инструменты."""
-
-    @override
-    def build(self, spec: GraphSpec) -> CompiledStateGraph:
-        return create_agent(
-            model=spec.chat,
-            tools=list(spec.tools),
-            system_prompt=spec.system_prompt,
-            checkpointer=spec.checkpointer,
-            middleware=[spec.history],
-        )
-
-
 class PrefetchGraphBuilder(AgentGraphBuilder):
     """Цикл с подготовкой контекста перед каждым обращением к модели."""
 
@@ -560,5 +522,5 @@ class PrefetchGraphBuilder(AgentGraphBuilder):
             tools=list(spec.tools),
             system_prompt=spec.system_prompt,
             checkpointer=spec.checkpointer,
-            middleware=[self._prefetch, spec.history],
+            middleware=[self._prefetch, *spec.middleware],
         )

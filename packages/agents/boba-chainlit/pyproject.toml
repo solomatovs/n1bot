@@ -12,6 +12,7 @@ dependencies = [
     "boba-messaging==0.0.21.dev2",
     "boba-runtime==0.0.21.dev2",
     "boba-toolrun==0.0.21.dev2",
+    "boba-agent==0.0.21.dev2",
     "boba-canvas==0.0.21.dev2",
     "boba-identity==0.0.21.dev2",
     "boba-chat==0.0.21.dev2",

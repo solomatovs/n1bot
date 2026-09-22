@@ -17,12 +17,11 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import Field, ValidationError
 
+from boba.agent.graph import GraphSpec, PlainGraphBuilder
 from boba.cancellation import StopReason, ToolStopped, run_cancellation
 from boba.chainlit.agent.flow import (
-    GraphSpec,
     LlmRephraser,
     PassthroughRephraser,
-    PlainGraphBuilder,
     PrefetchCall,
     PrefetchError,
     PrefetchGraphBuilder,
@@ -233,7 +232,7 @@ def _graph(builder: Any, answers: Sequence[str]) -> CompiledStateGraph:
         tools=tools,
         system_prompt="you are a search assistant",
         checkpointer=InMemorySaver(),
-        history=build_history_view(frozenset({"fts_probe", "vector_probe"}), 30),
+        middleware=[build_history_view(frozenset({"fts_probe", "vector_probe"}), 30)],
     )
     return builder.build(spec)
 

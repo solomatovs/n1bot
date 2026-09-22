@@ -1,9 +1,13 @@
 """Загрузчик tool-плагинов: секция [tool.<name>] -> langchain-инструменты с обвязками.
 
 Плагины обнаруживаются entry points группы boba.tools у установленных пакетов;
-конфиг каждого приходит файлом conf/plugins/<name>.toml (слой AppLayers).
+конфиг каждого приходит файлом conf/plugins/<name>.toml (слой AppLayers). Слои
+конвейера вызова, общие для всех сборок, перечислены в ToolPipeline; реестр чата
+(ToolLoader) добавляет к ним права и контекст пользователя, набор сервиса (ToolSet)
+берёт их как есть для явного списка функций.
 
 Ошибки:
+ToolSetError — в набор сервиса подан инструмент с параметром про пользователя.
 RuntimeError — конфиг противоречит плагину: у установленного плагина нет
     conf/plugins/<name>.toml, entry point отдал не манифест, секции плагинов
     совпали, способ запуска из [tool_launcher] не согласован с секциями
@@ -62,7 +66,10 @@ __all__ = [
     "PluginTable",
     "ToolBridge",
     "ToolLoader",
+    "ToolPipeline",
     "ToolPlugin",
+    "ToolSet",
+    "ToolSetError",
 ]
 
 logger = logging.getLogger(__name__)
@@ -196,6 +203,118 @@ class ToolBridge:
         return tuple(modules)
 
 
+class ToolPipeline:
+    """Общие слои конвейера вызова, одни на все сборки инструментов.
+
+    Конвейер состоит из двух половин. Эта — без пользователя: запуск тела отдельным
+    процессом или песочницей, id вызова, поле намерения, журнал вызова, отмена,
+    перевод исключения в результат и приведение тела к async. Половину про
+    пользователя — права по ролям, значения контекста вызова, соединения и билеты —
+    добавляет ToolLoader между instrument и seal. Слои перечислены здесь один раз,
+    поэтому реестр чата и набор сервиса не расходятся.
+    """
+
+    @staticmethod
+    def launch(functions: Sequence[BaseTool], launcher: ToolLauncher) -> None:
+        """Тело исполняется запускателем: субпроцесс хоста или зигота песочницы."""
+        ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
+
+    @staticmethod
+    def instrument(tools: Sequence[BaseTool]) -> None:
+        """Слои наблюдения вокруг вызова: id, намерение, журнал, отмена."""
+        ToolCallIdField.attach_all(tools)
+        ToolIntentField.attach_all(tools)
+        ToolRunLogger.guard_all(
+            tools, CallSurface.stream_source, CallSurface.tool_call_scope
+        )
+        CancellableTools.guard_all(tools)
+
+    @staticmethod
+    def seal(tools: Sequence[BaseTool]) -> None:
+        """Внешние слои: исключение становится результатом, тело всегда async."""
+        ToolErrorGuard.guard_all(tools)
+        ToolAsyncBody.ensure_all(tools)
+
+
+class ToolSetError(Exception):
+    """Набор инструментов сервиса не собирается."""
+
+
+class ToolSet:
+    """Инструменты сервиса: явный список функций через общий конвейер.
+
+    Для процесса без пользователя — индексатора, описателя, планировщика — реестр с
+    ролями, профилями и плагинами избыточен, а обходить конвейер нельзя. Набор берёт
+    функции с @tool, значения их Injected-параметров готовыми моделями и запускатель,
+    и проводит их теми же слоями ToolPipeline, что и реестр: тело исполняется
+    запускателем, ошибки становятся результатом, вызов ведёт журнал.
+
+    Параметров про пользователя здесь нет: инструмент с Subject, Scope, корнем
+    workspace или соединением субъекта в набор не проходит — ему нужен человек, а
+    значит реестр и контекст вызова.
+    """
+
+    def __init__(self, launcher: ToolLauncher, injected: Sequence[BaseModel]) -> None:
+        self._launcher = launcher
+        values: dict[type, BaseModel] = {}
+        for value in injected:
+            values[type(value)] = value
+
+        self._injected = values
+
+    def build(self, functions: Sequence[ToolLike]) -> list[BaseTool]:
+        tools: list[BaseTool] = []
+        for function in functions:
+            tools.append(ToolBridge.as_structured_tool(function).model_copy())
+
+        for tool in tools:
+            self._refuse_user_bound(tool)
+
+        ToolPipeline.launch(tools, self._launcher)
+        InjectedConfig.bind_all(tools, self._resolve)
+        ToolPipeline.instrument(tools)
+        ToolPipeline.seal(tools)
+
+        return tools
+
+    def _resolve(self, param: str, annotation: Any) -> object:
+        value = self._injected.get(annotation)
+        if value is None:
+            known: list[str] = []
+            for model in self._injected:
+                known.append(model.__name__)
+
+            raise ToolConfigError(
+                f"injected parameter {param!r} expects {annotation!r}, but the tool "
+                f"set was given values only for {known}"
+            )
+
+        return value
+
+    @staticmethod
+    def _refuse_user_bound(tool: BaseTool) -> None:
+        schema = ToolSchema.of(tool)
+        if schema is None:
+            return
+
+        connections = ToolArgv.connection_fields(schema)
+        if connections:
+            raise ToolSetError(
+                f"tool {tool.name}: parameters {sorted(connections)} are user "
+                "connections; the tool needs a subject and belongs in the registry, "
+                "not in a service tool set"
+            )
+
+        for name, annotation in ToolArgv.injected_fields(schema).items():
+            if annotation in CallContextValues.SOURCES:
+                kind = annotation.__name__
+                raise ToolSetError(
+                    f"tool {tool.name}: parameter {name!r} is the {kind} of a call "
+                    "context; the tool needs a subject and belongs in the registry, "
+                    "not in a service tool set"
+                )
+
+
 class ToolLoader:
     """Сборка реестра инструментов из включённых секций [tool.<name>].
 
@@ -255,15 +374,10 @@ class ToolLoader:
         for hooks in self._surface_hooks:
             ToolBody.hook_all(tools, hooks)
 
-        ToolCallIdField.attach_all(tools)
-        ToolIntentField.attach_all(tools)
-        ToolRunLogger.guard_all(
-            tools, CallSurface.stream_source, CallSurface.tool_call_scope
-        )
-        CancellableTools.guard_all(tools)
+        ToolPipeline.instrument(tools)
         ToolAccessGuard.guard_all(tools, access, CallContext.current_subject)
-        ToolErrorGuard.guard_all(tools)
-        ToolAsyncBody.ensure_all(tools)
+        ToolPipeline.seal(tools)
+
         return ToolRegistry(tools=tools, access=access)
 
     def _plugin_tools(
@@ -299,7 +413,7 @@ class ToolLoader:
         if not functions:
             return []
 
-        ToolProcessWrap.guard_all(ToolMain.toolset(*functions), launcher)
+        ToolPipeline.launch(functions, launcher)
         CallContextValues.bind_all(functions)
 
         if self._takes_connections(functions):

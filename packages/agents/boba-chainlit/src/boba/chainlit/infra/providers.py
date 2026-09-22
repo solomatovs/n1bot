@@ -17,13 +17,11 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph.state import CompiledStateGraph
 
+from boba.agent.graph import AgentGraphBuilder, GraphSpec, PlainGraphBuilder
 from boba.auth import JwtTokens
 from boba.chainlit.agent.flow import (
-    AgentGraphBuilder,
-    GraphSpec,
     LlmRephraser,
     PassthroughRephraser,
-    PlainGraphBuilder,
     PrefetchGraphBuilder,
     Rephraser,
 )
@@ -512,7 +510,7 @@ def langchain_agent(
         tools=tools,
         system_prompt=settings.system_prompt,
         checkpointer=saver,
-        history=build_history_view(frozenset(names), settings.history_messages),
+        middleware=[build_history_view(frozenset(names), settings.history_messages)],
     )
 
     return builder.build(spec)
