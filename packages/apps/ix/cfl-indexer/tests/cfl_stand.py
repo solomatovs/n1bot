@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from boba.cfl_indexer import worker as indexer
@@ -16,8 +17,8 @@ from boba.cfl_indexer.confluence import SpaceSelector
 from boba.cfl_indexer.worker import (
     ConfluenceSource,
     IndexerConfig,
-    IndexerWorker,
-    SpaceReport,
+    Report,
+    run_spaces,
 )
 from boba.confluence.rest import ConfluenceConnection, SpaceType
 from boba.ix_core.aspects import AspectClass
@@ -70,10 +71,12 @@ class StubIndexer:
             parser=LiteParseParams(),
         )
 
-    async def run(self, *spaces: str) -> list[SpaceReport]:
+    async def run(self, *spaces: str) -> list[Report]:
+        """Прогон в потоке: процессы спейсов ходят в заглушку, которую обслуживает
+        event loop теста, и блокировать его ожиданием нельзя."""
         cfg = self.config(*spaces)
 
-        return await IndexerWorker(cfg, PACKAGE_DIR / "run").run()
+        return await asyncio.to_thread(run_spaces, cfg, PACKAGE_DIR / "run")
 
 
 class SharedIndexers:
