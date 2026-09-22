@@ -25,7 +25,13 @@ from pydantic import BaseModel, ConfigDict
 
 from boba.ix_core.schema_name import SchemaName
 
-__all__ = ["IndexKind", "IndexTable", "IndexTableError", "IndexTables"]
+__all__ = [
+    "IndexCoverage",
+    "IndexKind",
+    "IndexTable",
+    "IndexTableError",
+    "IndexTables",
+]
 
 
 class IndexTableError(Exception):
@@ -66,6 +72,39 @@ class IndexColumns:
     @classmethod
     def of(cls, kind: IndexKind) -> tuple[str, ...]:
         return cls.BY_KIND[kind]
+
+
+class IndexCoverage:
+    """Пары «поверхность, аспект», которые таблица индекса несёт на самом деле.
+
+    Реестр знает только вид и имя таблицы, а какие аспекты в неё попали, решает
+    подписка её владельца на классы. Поиск показывает покрытие, чтобы выбор режима
+    по аспекту не был угадыванием.
+    """
+
+    PAIRS: ClassVar[LiteralString] = """
+        select distinct
+            t.surface::varchar,
+            t.aspect::varchar
+        from
+            {schema}.{index} t
+    """
+
+    @classmethod
+    async def of(
+        cls,
+        conn: psycopg.AsyncConnection[Any],
+        db_schema: str,
+        table: IndexTable,
+    ) -> frozenset[tuple[str, str]]:
+        query = SchemaName.render(cls.PAIRS, db_schema, index=table.ident())
+        cur = await conn.execute(query)
+
+        pairs: set[tuple[str, str]] = set()
+        for surface, aspect in await cur.fetchall():
+            pairs.add((str(surface), str(aspect)))
+
+        return frozenset(pairs)
 
 
 class IndexTables:

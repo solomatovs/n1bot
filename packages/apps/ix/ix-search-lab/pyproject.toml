@@ -20,7 +20,7 @@ dependencies = [
 boba-ix-search-lab = "boba.ix_search_lab.server:main"
 
 [tool.setuptools.package-data]
-"boba.ix_search_lab" = ["*/*.sql", "*/*.md", "*/*.json", "*.html"]
+"boba.ix_search_lab" = ["*.html"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

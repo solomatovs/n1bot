@@ -6,9 +6,9 @@
 имя: подсказки не знают ни происхождений, ни поверхностей. Префиксные попадания
 получают счёт 1 и идут выше триграммных. Подсказка это текст, а не объект: одинаковые
 имена схлопнуты, число объектов отдаётся колонкой objects и склеивается по таблицам
-на стороне стенда.
-Поверхности задаёт вызывающий списком %(surfaces)s; список никогда не пуст: когда
-на странице не выбрано ничего, стенд подставляет все поверхности словаря.
+на стороне вызывающего; node_id это объект лучшего попадания.
+Поверхности и аспекты задаёт вызывающий списками %(surfaces)s и %(aspects)s; списки
+никогда не пусты: когда выбор не сделан, вызывающий подставляет все имена словаря.
 */
 with q as (
     select lower(%(q)s) as text
@@ -25,6 +25,7 @@ prefix as (
         q
     where 1=1
         and t.surface = any(%(surfaces)s::{schema}.surface_e[])
+        and t.aspect = any(%(aspects)s::{schema}.aspect_e[])
         and a.class = 'ident'
         and lower(t.content) ^@ q.text
 ),
@@ -40,6 +41,7 @@ fuzzy as (
         q
     where 1=1
         and t.surface = any(%(surfaces)s::{schema}.surface_e[])
+        and t.aspect = any(%(aspects)s::{schema}.aspect_e[])
         and a.class = 'words'
         and word_similarity(q.text, t.content) >= 0.4
 ),
@@ -49,6 +51,7 @@ hit as (
     select * from fuzzy
 )
 select
+    (array_agg(n.id order by h.score desc))[1] as node_id,
     (array_agg(n.surface order by h.score desc))[1] as surface,
     (array_agg(n.address order by h.score desc))[1] as address,
     max(h.score) as score,

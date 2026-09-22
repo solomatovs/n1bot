@@ -2,8 +2,8 @@
 Триграммы по одной таблице индекса: имя подставляется вместо {index} из реестра.
 Похожесть слова запроса на содержимое строки; префикс отдельно не ищется, его
 покрывает word_similarity. Порог 0.3 задаётся здесь же.
-Поверхности задаёт вызывающий списком %(surfaces)s; список никогда не пуст: когда
-на странице не выбрано ничего, стенд подставляет все поверхности словаря.
+Поверхности и аспекты задаёт вызывающий списками %(surfaces)s и %(aspects)s; списки
+никогда не пусты: когда выбор не сделан, вызывающий подставляет все имена словаря.
 */
 with hit as (
     select
@@ -15,9 +15,11 @@ with hit as (
         {schema}.{index} t
     where 1=1
         and t.surface = any(%(surfaces)s::{schema}.surface_e[])
+        and t.aspect = any(%(aspects)s::{schema}.aspect_e[])
         and word_similarity(%(q)s, t.content) >= 0.3
 )
 select
+    n.id as node_id,
     n.surface,
     n.address,
     max(h.sim) as score,

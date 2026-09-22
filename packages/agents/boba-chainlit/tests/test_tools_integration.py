@@ -475,6 +475,9 @@ def kb_tools(raw_config, kb_collection: str):
     def resolve(name: str, annotation: Any) -> object:
         sandboxed = ToolSetup.sandbox_raw(raw_config)
         cfg = bind(sandboxed, path=annotation.SECTION, model=annotation)
+        if "collection" not in type(cfg).model_fields:
+            return cfg
+
         return cfg.model_copy(update={"collection": kb_collection})
 
     ServiceTickets.bind_all(functions, _credentials, resolve)
@@ -1252,6 +1255,46 @@ class TestKbTools:
         columns = set(result.rows[0])
         if not {"distance", "format_content", "page_title"} <= columns:
             raise AssertionError(f"в выдаче нет нужных колонок: {sorted(columns)}")
+
+
+class TestKbIxTools:
+    """kb по схеме ix: эмбеддинг и SQL идут в песочнице, ищут по индексам dev-стенда."""
+
+    async def test_catalog_lists_surfaces(self, kb_tools) -> None:
+        result = await Call.ok(kb_tools["kb_catalog2"])
+        if not (isinstance(result, TableResult)):
+            raise AssertionError("isinstance(result, TableResult)")
+        surfaces = []
+        for row in result.rows:
+            surfaces.append(row["surface"])
+        if "cfl_page" not in surfaces:
+            raise AssertionError(f"cfl_page in {surfaces}")
+
+    async def test_fts_search_then_node_reads_the_page(self, kb_tools) -> None:
+        found = await Call.ok(
+            kb_tools["kb_fts_search2"],
+            query="page",
+            surfaces=["cfl_page"],
+            aspects=["title", "body"],
+            top_k=3,
+        )
+        if not (found.rows):
+            raise AssertionError("found.rows")
+        columns = set(found.rows[0])
+        if not {"node_id", "surface", "url", "score", "aspect", "snippet"} <= columns:
+            raise AssertionError(f"в выдаче нет нужных колонок: {sorted(columns)}")
+
+        node_id = int(found.rows[0]["node_id"])
+        card = await Call.ok(kb_tools["kb_node2"], node_id=node_id, aspects=["title"])
+        if f"node {node_id}" not in card.text:
+            raise AssertionError(f"node heading in {card.text[:200]!r}")
+
+    async def test_vector_search_returns_hits(self, kb_tools) -> None:
+        result = await Call.ok(
+            kb_tools["kb_vector_search2"], query="how to configure", top_k=3
+        )
+        if not (result.rows):
+            raise AssertionError("result.rows")
 
 
 class TestPgCopyPipeline:
