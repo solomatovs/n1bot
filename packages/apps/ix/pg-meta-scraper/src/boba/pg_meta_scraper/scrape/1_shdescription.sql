@@ -6,4 +6,4 @@ select
 from
     pg_shdescription
 where
-    objoid = (select oid from pg_database where datname = current_database());
+    objoid = (select oid from pg_database where datname = current_database())

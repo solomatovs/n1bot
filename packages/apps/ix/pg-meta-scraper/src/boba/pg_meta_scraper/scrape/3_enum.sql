@@ -7,4 +7,4 @@ select
 from
     pg_enum
 where
-    enumtypid = any(%(types)s::oid[]);
+    enumtypid = any(%(types)s::oid[])

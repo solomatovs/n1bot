@@ -15,4 +15,4 @@ where
     and objid = any(%(attrdefs)s::oid[])) or (deptype = 'e'
     and objid = any(%(rels)s::oid[])) or (deptype = 'e'
     and objid = any(%(procs)s::oid[])) or (deptype = 'e'
-    and objid = any(%(types)s::oid[]));
+    and objid = any(%(types)s::oid[]))

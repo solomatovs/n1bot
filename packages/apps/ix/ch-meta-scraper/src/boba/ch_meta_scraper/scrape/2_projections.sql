@@ -3,7 +3,7 @@ select
     table as table_name,
     name,
     type,
-    sorting_key,
+    arrayStringConcat(sorting_key, ', ') as sorting_key,
     query,
     hex(sipHash64(tuple(database, table, name, type, sorting_key, query))) as row_version
 from

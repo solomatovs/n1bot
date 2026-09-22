@@ -3,4 +3,4 @@ select
     spcname,
     xmin::text as row_xmin
 from
-    pg_tablespace;
+    pg_tablespace

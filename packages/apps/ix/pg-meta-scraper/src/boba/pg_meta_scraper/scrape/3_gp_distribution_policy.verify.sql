@@ -4,4 +4,4 @@ select
 from
     gp_distribution_policy
 where
-    localoid = any(%(rels)s::oid[]);
+    localoid = any(%(rels)s::oid[])

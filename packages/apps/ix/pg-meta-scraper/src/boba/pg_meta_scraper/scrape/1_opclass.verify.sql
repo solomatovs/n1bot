@@ -2,4 +2,4 @@ select
     oid,
     xmin::text as row_xmin
 from
-    pg_opclass;
+    pg_opclass

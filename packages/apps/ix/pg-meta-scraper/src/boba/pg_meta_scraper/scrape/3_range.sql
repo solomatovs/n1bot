@@ -6,4 +6,4 @@ select
 from
     pg_range
 where
-    rngtypid = any(%(types)s::oid[]);
+    rngtypid = any(%(types)s::oid[])

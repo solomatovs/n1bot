@@ -19,10 +19,11 @@ from clickhouse_connect.driver.query import QueryResult
 
 from boba.db.clickhouse.errors import ClickHouseError, ClickHouseQueryError
 from boba.db.clickhouse.profile import ClickHouseConfig
+from boba.db.clickhouse.query import ChQueryBuilder
 from boba.kerberos import KerberosAuthBase, KerberosError
 from boba.krb import ClientCredentials, SpnegoNegotiate
 
-__all__ = ["PayloadClickHouse", "RowStream", "SpnegoHeaders"]
+__all__ = ["ByteStream", "PayloadClickHouse", "RowStream", "SpnegoHeaders"]
 
 
 class SpnegoHeaders(dict[str, str]):
@@ -76,6 +77,14 @@ class RowStream:
     blocks: AsyncIterator[Sequence[Any]]
 
 
+@dataclass(frozen=True)
+class ByteStream:
+    """Ответ запроса сырыми байтами формата ClickHouse: имена колонок и блоки."""
+
+    names: tuple[str, ...]
+    blocks: AsyncIterator[memoryview]
+
+
 class PayloadClickHouse:
     """Клиент по параметрам запроса; строки приводит SqlRows вызывающей стороны."""
 
@@ -120,8 +129,6 @@ class PayloadClickHouse:
         ):
             yield stream
 
-    DESCRIBE: ClassVar[str] = "describe ({query})"
-
     @staticmethod
     @asynccontextmanager
     async def rows(
@@ -157,16 +164,58 @@ class PayloadClickHouse:
             ) from exc
 
     @staticmethod
+    @asynccontextmanager
+    async def tsv(
+        client: AsyncClient,
+        text: str,
+        parameters: Mapping[str, Any] | None = None,
+        settings: Mapping[str, Any] | None = None,
+    ) -> AsyncGenerator[ByteStream, None]:
+        """Ответ запроса в формате TabSeparated блоками байт HTTP-ответа, без строк
+        на стороне клиента; имена колонок — describe'ом. Экранирование TabSeparated
+        совпадает с текстовым форматом COPY PostgreSQL, NULL это \\N."""
+        values = None
+        if parameters:
+            values = dict(parameters)
+
+        chosen = None
+        if settings:
+            chosen = dict(settings)
+
+        names = await PayloadClickHouse.describe(client, text, values)
+        try:
+            stream = await client.raw_stream(
+                text, parameters=values, settings=chosen, fmt="TabSeparated"
+            )
+            with stream:
+                yield ByteStream(names=names, blocks=PayloadClickHouse._chunks(stream))
+        except DriverError as exc:
+            raise ClickHouseQueryError(
+                f"query on clickhouse failed: {type(exc).__name__}: {exc}; "
+                f"query: {text[:200]!r}"
+            ) from exc
+
+    @staticmethod
+    async def _chunks(stream: Any) -> AsyncIterator[memoryview]:
+        """Куски HTTP-ответа как memoryview без копии. StreamContext не типизирован,
+        поэтому чужой кусок проверяется на входе: raw_stream отдаёт bytes."""
+        async for chunk in stream:
+            yield memoryview(chunk)
+
+    @staticmethod
     async def describe(
         client: AsyncClient,
         text: str,
         parameters: dict[str, Any] | None = None,
     ) -> tuple[str, ...]:
         """Имена колонок результата запроса без его выполнения."""
+        bound: dict[str, Any] = {}
+        if parameters:
+            bound = dict(parameters)
+
+        query = ChQueryBuilder().add("describe (").add(text, **bound).add(")").build()
         try:
-            result = await client.query(
-                PayloadClickHouse.DESCRIBE.format(query=text), parameters=parameters
-            )
+            result = await client.query(query.text, parameters=query.params)
         except DriverError as exc:
             raise ClickHouseQueryError(
                 f"describe on clickhouse failed: {type(exc).__name__}: {exc}; "

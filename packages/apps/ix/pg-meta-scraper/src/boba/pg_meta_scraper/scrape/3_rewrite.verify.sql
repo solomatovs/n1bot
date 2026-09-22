@@ -4,4 +4,4 @@ select
 from
     pg_rewrite
 where
-    ev_class = any(%(rels)s::oid[]);
+    ev_class = any(%(rels)s::oid[])

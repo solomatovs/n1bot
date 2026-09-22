@@ -4,4 +4,4 @@ select
 from
     pg_statistic_ext
 where
-    stxrelid = any(%(rels)s::oid[]);
+    stxrelid = any(%(rels)s::oid[])

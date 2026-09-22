@@ -10,11 +10,13 @@ repeatable read. Каталог изменился во время чтения 
 
 Источник (PostgreSQL, ClickHouse, Oracle) даёт реализацию ScrapeSource: объявить
 свои файлы scrape/ моделями ScrapeFile, открыть сессию, сказать, подходит ли файл
-серверу, прочитать файл своим билдером и отдать строки потоком, назвать свой адрес
-для raw_source. В файле лежит только запрос, сверка лежит рядом в `<файл>.verify.sql`;
-ядро текст файлов не разбирает. Единственное накопление в памяти — массивы collect:
-колонка результата одной волны идёт параметром запросов следующих. Ими пользуется
-pg-скрапер; Oracle и ClickHouse задают границы подзапросом в SQL.
+серверу, прочитать файл своим билдером и отдать результат байтами в формате COPY
+PostgreSQL (text или csv), назвать свой адрес для raw_source. Строки в Python не
+собираются: блок байт от драйвера источника уходит в COPY ix как есть; PostgreSQL
+отдаёт его через `COPY ... TO STDOUT`, ClickHouse через TabSeparated, Oracle через
+Arrow-пачки и CSV. В файле лежит только запрос, сверка лежит рядом в
+`<файл>.verify.sql`; ядро текст файлов не разбирает. Массивы collect для запросов
+следующих волн читаются из raw-таблицы на стороне ix после COPY.
 
 Ошибки:
 ScrapeWorkerError — ix недоступен, контракт файлов нарушен, источник отказал,
@@ -54,8 +56,10 @@ from boba.krb import KerberosWorkspaceConfig
 
 __all__ = [
     "ApplyRow",
+    "BlockStream",
     "CatalogChangedError",
     "Collect",
+    "CopyFormat",
     "LayoutFile",
     "PackageDir",
     "ScrapeFile",
@@ -67,9 +71,8 @@ __all__ = [
     "ScrapeWorkerError",
     "ScraperConfigBase",
     "SourceAddressBase",
+    "SourceBlocks",
     "SourceConfigBase",
-    "SourceRows",
-    "StreamRows",
     "VersionGate",
     "parse_version",
     "run_cli",
@@ -221,15 +224,28 @@ class SourceAddressBase:
         return asdict(self)
 
 
-class SourceRows(Protocol):
-    """Результат одного запроса к источнику: имена колонок и строки потоком."""
+class CopyFormat(StrEnum):
+    """Формат блоков источника для COPY ... FROM STDIN: значение это список опций
+    COPY. NULL в text это `\\N`, в csv — пустое поле без кавычек."""
+
+    TEXT = "format text"
+    CSV = "format csv, null ''"
+
+
+class SourceBlocks(Protocol):
+    """Результат одного запроса к источнику: имена колонок, формат COPY и блоки
+    байт потоком."""
 
     @property
     @abstractmethod
     def columns(self) -> Sequence[str]: ...
 
+    @property
     @abstractmethod
-    def __aiter__(self) -> AsyncIterator[Sequence[object]]: ...
+    def copy_format(self) -> CopyFormat: ...
+
+    @abstractmethod
+    def __aiter__(self) -> AsyncIterator[memoryview]: ...
 
 
 class ScrapeSession(Protocol):
@@ -240,11 +256,11 @@ class ScrapeSession(Protocol):
         """Подходит ли файл серверу этой сессии."""
 
     @abstractmethod
-    def fetch_rows(
+    def fetch_blocks(
         self, name: str, path: Path, params: Mapping[str, Sequence[object]]
-    ) -> AbstractAsyncContextManager[SourceRows]:
-        """Строки запроса из файла path потоком под именем name; массивы по именам
-        params объявления."""
+    ) -> AbstractAsyncContextManager[SourceBlocks]:
+        """Результат запроса из файла path блоками байт под именем name; массивы по
+        именам params объявления."""
 
 
 class ScrapeSource(Protocol):
@@ -266,35 +282,38 @@ class ScrapeSource(Protocol):
     def open_session(self) -> AbstractAsyncContextManager[ScrapeSession]: ...
 
 
-class StreamRows(SourceRows):
-    """Строки потока драйвера; отказ сервера по дороге уходит ScrapeSourceError."""
+class BlockStream(SourceBlocks):
+    """Блоки байт от драйвера источника как memoryview на его буфер, без копии;
+    отказ сервера по дороге уходит ScrapeSourceError."""
 
     def __init__(
         self,
         columns: Sequence[str],
-        blocks: AsyncIterator[Sequence[object]],
-        name: str,
-        where: str,
+        copy_format: CopyFormat,
+        blocks: AsyncIterator[memoryview],
+        label: str,
         errors: tuple[type[Exception], ...],
     ) -> None:
         self._columns = tuple(columns)
+        self._format = copy_format
         self._blocks = blocks
-        self._name = name
-        self._where = where
+        self._label = label
         self._errors = errors
 
     @property
     def columns(self) -> Sequence[str]:
         return self._columns
 
-    async def __aiter__(self) -> AsyncIterator[Sequence[object]]:
+    @property
+    def copy_format(self) -> CopyFormat:
+        return self._format
+
+    async def __aiter__(self) -> AsyncIterator[memoryview]:
         try:
-            async for row in self._blocks:
-                yield row
+            async for block in self._blocks:
+                yield block
         except self._errors as exc:
-            raise ScrapeSourceError(
-                f"reading {self._name} from {self._where}: {exc}"
-            ) from exc
+            raise ScrapeSourceError(f"reading {self._label}: {exc}") from exc
 
 
 def parse_version(raw: str) -> tuple[int, ...]:
@@ -375,6 +394,29 @@ async def register_source(
     await ix.execute(query.text, query.params)
 
 
+async def copy_blocks(
+    ix: psycopg.AsyncConnection[Any], target: str, blocks: SourceBlocks
+) -> None:
+    """Блоки источника в temp-таблицу ix одним COPY, колонки в порядке источника."""
+    names: list[sql.Composable] = []
+    for column in blocks.columns:
+        names.append(sql.Identifier(column))
+
+    statement = (
+        PgQueryBuilder()
+        .add(
+            "copy {target} ({names}) from stdin ({options})",
+            target=sql.Identifier(target),
+            names=sql.SQL(", ").join(names),
+            options=sql.SQL(blocks.copy_format.value),
+        )
+        .build()
+    )
+    async with ix.cursor().copy(statement.text) as copy:
+        async for block in blocks:
+            await copy.write(block)
+
+
 async def copy_rows(
     session: ScrapeSession,
     ix: psycopg.AsyncConnection[Any],
@@ -382,40 +424,41 @@ async def copy_rows(
     scrape_dir: Path,
     arrays: Mapping[str, Sequence[object]],
 ) -> dict[str, Sequence[object]]:
-    """Выборка одного файла потоком в raw_<name>; попутно колонка collect."""
+    """Выборка одного файла блоками в raw_<name>; массив collect читается из неё."""
     values = pick_params(arrays, file.params)
-    collected: list[object] = []
-    count = 0
-    async with session.fetch_rows(file.name, scrape_dir / file.query, values) as rows:
-        columns = list(rows.columns)
-        position = -1
-        if file.collect:
-            position = columns.index(file.collect.column)
+    async with session.fetch_blocks(
+        file.name, scrape_dir / file.query, values
+    ) as blocks:
+        await copy_blocks(ix, file.raw_table(), blocks)
 
-        names: list[sql.Composable] = []
-        for column in columns:
-            names.append(sql.Identifier(column))
+    query = (
+        PgQueryBuilder()
+        .add("select count(*) from {raw}", raw=sql.Identifier(file.raw_table()))
+        .build()
+    )
+    cur = await ix.execute(query.text, query.params)
+    counted = await cur.fetchone()
+    if counted is None:
+        raise ScrapeWorkerError(f"scrape {file.name}: expected a count, got none")
 
-        statement = (
-            PgQueryBuilder()
-            .add(
-                "copy {target} ({names}) from stdin",
-                target=sql.Identifier(file.raw_table()),
-                names=sql.SQL(", ").join(names),
-            )
-            .build()
-        )
-        async with ix.cursor().copy(statement.text) as copy:
-            async for row in rows:
-                await copy.write_row(row)
-                count += 1
-                if position >= 0:
-                    collected.append(row[position])
-
-    logger.info("scrape %s (%s): %d rows", file.name, file.query, count)
+    logger.info("scrape %s (%s): %d rows", file.name, file.query, int(counted[0]))
 
     if file.collect is None:
         return {}
+
+    query = (
+        PgQueryBuilder()
+        .add(
+            "select {column} from {raw}",
+            column=sql.Identifier(file.collect.column),
+            raw=sql.Identifier(file.raw_table()),
+        )
+        .build()
+    )
+    cur = await ix.execute(query.text, query.params)
+    collected: list[object] = []
+    async for row in cur:
+        collected.append(row[0])
 
     return {file.collect.name: collected}
 
@@ -427,17 +470,16 @@ async def verify_rows(
     scrape_dir: Path,
     arrays: Mapping[str, Sequence[object]],
 ) -> None:
-    """Сверка: строки `<файл>.verify.sql` потоком в verify_<name>, затем except all
-    с raw_<name> в обе стороны на стороне ix."""
+    """Сверка: `<файл>.verify.sql` блоками в verify_<name>, затем except all с
+    raw_<name> в обе стороны на стороне ix."""
     values = pick_params(arrays, file.params)
     raw = sql.Identifier(file.raw_table())
     check = sql.Identifier(file.verify_table())
-    async with session.fetch_rows(
+    async with session.fetch_blocks(
         file.verify_table(), scrape_dir / file.verify(), values
-    ) as rows:
-        columns = list(rows.columns)
+    ) as blocks:
         names: list[sql.Composable] = []
-        for column in columns:
+        for column in blocks.columns:
             names.append(sql.Identifier(column))
 
         keys = sql.SQL(", ").join(names)
@@ -452,12 +494,7 @@ async def verify_rows(
             .build()
         )
         await ix.execute(query.text, query.params)
-        statement = (
-            PgQueryBuilder().add("copy {c} ({k}) from stdin", c=check, k=keys).build()
-        )
-        async with ix.cursor().copy(statement.text) as copy:
-            async for row in rows:
-                await copy.write_row(row)
+        await copy_blocks(ix, file.verify_table(), blocks)
 
     query = (
         PgQueryBuilder(k=keys, r=raw, c=check)
@@ -542,6 +579,8 @@ async def scrape_once(
         await AsyncPostgresPool.dedicated(database.postgres) as ix,
         source.open_session() as session,
     ):
+        await ix.execute("set timezone to 'UTC'")
+        await ix.execute("set datestyle to 'ISO, YMD'")
         chosen = choose_files(source.files, session, source.describe())
 
         query = (

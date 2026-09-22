@@ -9,4 +9,4 @@ select
 from
     pg_partition_rule
 where
-    parchildrelid = any(%(rels)s::oid[]);
+    parchildrelid = any(%(rels)s::oid[])

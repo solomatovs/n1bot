@@ -7,4 +7,4 @@ select
 from
     pg_attrdef
 where
-    adrelid = any(%(rels)s::oid[]);
+    adrelid = any(%(rels)s::oid[])
