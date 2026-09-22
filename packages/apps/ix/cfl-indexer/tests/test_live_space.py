@@ -11,11 +11,16 @@ import pytest
 from cfl_stand import PACKAGE_DIR
 
 from boba.cfl_indexer.confluence import SpaceSelector
-from boba.cfl_indexer.worker import ConfluenceSource, IndexerConfig, run_spaces
+from boba.cfl_indexer.worker import (
+    ConfluenceSource,
+    DocSection,
+    IndexerConfig,
+    run_spaces,
+)
 from boba.confluence.rest import ConfluenceConnection, SpaceType
+from boba.doc.ocr import DisabledOcrConfig
 from boba.stand.ix import IxStand, IxStandDatabase
 from boba.stand.site import Stand
-from boba.text.document import LiteParseParams
 from boba.transport.http.profile import BearerAuth, HttpConnection
 
 pytestmark = [pytest.mark.integration, pytest.mark.anyio]
@@ -48,7 +53,11 @@ def _config(ix_stand: IxStand) -> IndexerConfig:
             )
         ],
         parallel_spaces=1,
-        parser=LiteParseParams(),
+        doc=DocSection(
+            spool_memory_limit=32 << 20,
+            text_encodings=("utf-8",),
+            ocr=DisabledOcrConfig(provider="off"),
+        ),
     )
 
 

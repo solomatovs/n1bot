@@ -17,12 +17,18 @@ from boba.ix_fts import worker as fts
 from boba.ix_trgm import worker as trgm
 from boba.ix_vector import worker as vector
 from boba.stand.confluence import ConfluenceStub, LiveServer
+from boba.stand.doc import DocStand
 from boba.stand.ix import IxStand, IxStandDatabase
 
 
 @pytest.fixture(scope="session")
 def ix_stand() -> IxStand:
     return IxStand.required()
+
+
+@pytest.fixture(scope="session")
+def doc_stand() -> DocStand:
+    return DocStand.required()
 
 
 @pytest.fixture(scope="session")

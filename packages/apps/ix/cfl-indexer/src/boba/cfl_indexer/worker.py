@@ -23,7 +23,6 @@ import json
 import logging
 import multiprocessing
 import resource
-import tempfile
 from collections.abc import Sequence
 from concurrent.futures import ProcessPoolExecutor
 from enum import StrEnum
@@ -48,7 +47,7 @@ from boba.cfl_indexer.documents import (
     aspect_of,
     build_gate,
     decide_attachment,
-    extract_text,
+    text_reader,
 )
 from boba.cfl_indexer.store import (
     Aspect,
@@ -63,14 +62,16 @@ from boba.cfl_indexer.store import (
 from boba.config import ConfigError, bind_section
 from boba.confluence.models import AttachmentVerdict
 from boba.confluence.rest import ConfluenceConnection, ContentType
+from boba.doc import DocConfig, DocumentRouter
+from boba.doc.ocr import OcrConfig, OcrEngines
 from boba.ix_core.database import IxDatabase, IxDatabaseError, IxPool
 from boba.ix_core.schema_name import SchemaName
 from boba.ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError
-from boba.text.document import LiteParseParams
 
 __all__ = [
     "CflAddress",
     "ConfluenceSource",
+    "DocSection",
     "IndexerConfig",
     "IndexerWorkerError",
     "Report",
@@ -83,7 +84,7 @@ __all__ = [
 
 logger = logging.getLogger("cfl-indexer")
 
-INDEXER_LAYOUT = 2
+INDEXER_LAYOUT = 3
 """Поднимается при смене преобразования в коде: всё идёт на переиндексацию."""
 FTS_TABLE = "ix_fts"
 CONTENT_KINDS = (ContentType.PAGE, ContentType.BLOGPOST)
@@ -105,16 +106,21 @@ class ConfluenceSource(BaseModel):
     spaces: SpaceSelector
 
 
+class DocSection(DocConfig):
+    """Таблица [ix.cfl_indexer.doc]: чтение вложений роутером boba-doc и OCR."""
+
+    ocr: OcrConfig
+
+
 class IndexerConfig(IxDatabase):
     """Секция [ix.cfl_indexer]."""
 
     sources: Sequence[ConfluenceSource] = Field(min_length=1)
     parallel_spaces: int = Field(ge=1, default=1)
     progress_every: int = Field(ge=1, default=100)
-    parser: LiteParseParams
+    doc: DocSection
     attachments: Sequence[str] = ()
     """Имя файла или media-type со слэшем; пусто — все."""
-    text_encodings: Sequence[str] = Field(min_length=1, default=("utf-8",))
 
 
 class Report(BaseModel):
@@ -184,10 +190,8 @@ def compute_indexer_hash(cfg: IndexerConfig, source: ConfluenceSource) -> str:
         "layout": INDEXER_LAYOUT,
         "body_format": source.confluence.body_format,
         "attachments": list(cfg.attachments),
-        "text_encodings": list(cfg.text_encodings),
-        "ocr_enabled": cfg.parser.ocr_enabled,
-        "ocr_language": cfg.parser.ocr_language,
-        "max_pages": cfg.parser.max_pages,
+        "text_encodings": list(cfg.doc.text_encodings),
+        "ocr": dict(cfg.doc.ocr.fingerprint()),
     }
     encoded = json.dumps(material, sort_keys=True, ensure_ascii=False)
 
@@ -258,7 +262,8 @@ class SpaceWalk:
         self._report = Report(space_key="")
         self._address = CflAddress(source.confluence)
         self._indexer_hash = compute_indexer_hash(cfg, source)
-        self._gate = build_gate(cfg.attachments, ocr=cfg.parser.ocr_enabled)
+        self._gate = build_gate(cfg.attachments, ocr=cfg.doc.ocr.enabled)
+        self._router = DocumentRouter(cfg.doc, OcrEngines.of(cfg.doc.ocr))
 
     @property
     def report(self) -> Report:
@@ -411,49 +416,27 @@ class SpaceWalk:
             await self.write_attachment_text(node_id, attachment, "", Aspect.BODY, "")
             return
 
-        await self.download_and_extract(node_id, attachment, state)
+        await self.download_and_extract(node_id, attachment)
 
-    async def download_and_extract(
-        self, node_id: int, attachment: Attachment, state: State | None
-    ) -> None:
-        """Скачать; при тех же байтах и параметрах текст остаётся, иначе извлечь."""
-        with tempfile.TemporaryDirectory(prefix="cfl-indexer-") as spool:
-            path = Path(spool) / "attachment"
-            try:
-                content_hash = await self._reader.download_attachment(attachment, path)
-            except AttachmentGoneError:
-                logger.info(
-                    "attachment %s skipped: gone before download", attachment.id
-                )
-                return
-            except ConfluenceReadError as exc:
-                logger.error("attachment %s not downloaded: %s", attachment.id, exc)
-                self._report.failed += 1
-                return
+    async def download_and_extract(self, node_id: int, attachment: Attachment) -> None:
+        """Одним проходом: байты из http идут в ридер через пипу, sha256
+        считается по дороге, на диск ничего не ложится."""
+        consume = text_reader(self._router, attachment)
+        try:
+            content_hash, text = await self._reader.read_attachment(attachment, consume)
+        except AttachmentGoneError:
+            logger.info("attachment %s skipped: gone before download", attachment.id)
+            return
+        except ConfluenceReadError as exc:
+            logger.error("attachment %s not downloaded: %s", attachment.id, exc)
+            self._report.failed += 1
+            return
+        except DocumentTextError as exc:
+            logger.error("attachment %s not indexed: %s", attachment.id, exc)
+            self._report.failed += 1
+            return
 
-            if self.same_bytes(state, content_hash):
-                await self._store.write_attachment(
-                    node_id, attachment, content_hash, self._indexer_hash
-                )
-                self._report.indexed += 1
-                logger.info(
-                    "attachment %s %r: version %d, same bytes, text kept",
-                    attachment.id,
-                    attachment.title,
-                    attachment.version,
-                )
-                return
-
-            try:
-                text = extract_text(
-                    path, attachment, self._cfg.text_encodings, self._cfg.parser
-                )
-            except DocumentTextError as exc:
-                logger.error("attachment %s not indexed: %s", attachment.id, exc)
-                self._report.failed += 1
-                return
-
-        aspect = aspect_of(attachment.media_type)
+        aspect = aspect_of(attachment)
         await self.write_attachment_text(
             node_id, attachment, content_hash, aspect, text
         )

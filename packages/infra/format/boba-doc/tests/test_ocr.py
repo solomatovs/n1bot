@@ -61,7 +61,11 @@ def test_scanned_pdf_goes_through_ocr(
 
 def test_missing_models_fail_with_names(tmp_path: Path) -> None:
     config = RapidOcrConfig(
-        models_dir=tmp_path, language=OcrLanguage.ESLAV, text_score=0.5, threads=1
+        provider="rapidocr",
+        models_dir=tmp_path,
+        language=OcrLanguage.ESLAV,
+        text_score=0.5,
+        threads=1,
     )
 
     with pytest.raises(DocumentError, match=r"eslav_PP-OCRv5_rec_mobile\.onnx"):
