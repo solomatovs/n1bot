@@ -5,10 +5,4 @@ create table edge_demo.products (
     version  UInt32
 )
 engine = ReplacingMergeTree(version)
-order by id;
-
-create table edge_demo.events_log (
-    ts   DateTime,
-    msg  String
-)
-engine = Log;
+order by id

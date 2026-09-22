@@ -10,14 +10,3 @@ create table edge_demo.customers (
     constraint customers_email_uk unique (email),
     constraint customers_status_ck check (status in ('A', 'B'))
 )
-/
-comment on table edge_demo.customers is 'Клиенты'
-/
-comment on column edge_demo.customers.email is 'Почта, уникальна'
-/
-comment on column edge_demo.customers.balance is 'Баланс в рублях'
-/
-create index edge_demo.customers_name_ix on edge_demo.customers (lower(full_name))
-/
-create sequence edge_demo.customer_seq start with 1000 increment by 10 cache 50 nocycle
-/

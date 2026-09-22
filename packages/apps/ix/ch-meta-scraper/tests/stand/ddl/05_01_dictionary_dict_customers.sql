@@ -7,4 +7,4 @@ primary key id
 source(clickhouse(table 'customers' db 'edge_demo'))
 layout(hashed())
 lifetime(min 60 max 300)
-comment 'Словарь клиентов';
+comment 'Словарь клиентов'

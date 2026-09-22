@@ -1,0 +1,1 @@
+system reload dictionary edge_demo.dict_customers
