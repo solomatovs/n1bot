@@ -1,5 +1,6 @@
-"""Помощники стенда скрапера: секция [ix_stand] со списком источников, набор
-edge_demo, инварианты, отпечатки и прогон скрапера.
+"""Стенд скрапера PostgreSQL: секция [ix_stand] со списком sources и набор edge_demo
+на источнике. Раскладка стенда, эталоны, база ix, проверка ссылок и шторм — общие,
+в boba.stand.scraper.
 
 Лежит отдельным модулем, а не в conftest: имя conftest у каждого пакета своё, и при
 общем прогоне нескольких пакетов импорт из него достаётся чужому файлу.
@@ -8,8 +9,6 @@ edge_demo, инварианты, отпечатки и прогон скрапе
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -20,7 +19,7 @@ from pydantic import BaseModel, ConfigDict
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.profile import PostgresConfig
 from boba.db.postgres.query import PgQueryBuilder
-from boba.ix_core.scrape import ApplyRow, VersionGate, scrape_source
+from boba.ix_core.scrape import ScrapeSource
 from boba.pg_meta_scraper import worker as scraper
 from boba.pg_meta_scraper.worker import (
     PgSource,
@@ -28,45 +27,20 @@ from boba.pg_meta_scraper.worker import (
     WorkerConfig,
     source_address,
 )
-from boba.stand.ix import IxStand as SharedIxStand
-from boba.stand.ix import IxStandDatabase as SharedIxStandDatabase
 from boba.stand.ix import IxStandError
+from boba.stand.scraper import DdlFile, DemoRecreate, ScraperStand, StandLayout
 
-__all__ = [
-    "PACKAGE_DIR",
-    "DdlFile",
-    "DemoDataset",
-    "Fingerprint",
-    "Golden",
-    "IxSource",
-    "IxStand",
-    "IxStandDatabase",
-    "IxStandError",
-    "StandFile",
-]
+__all__ = ["LAYOUT", "DemoDataset", "IxSource", "IxStand"]
 
-REPO_ROOT = Path(__file__).resolve().parents[5]
-PACKAGE_DIR = Path(scraper.__file__).resolve().parent
-STAND_DIR = Path(__file__).resolve().parent / "stand"
-
-
-class StandFile(StrEnum):
-    CANON = "cons/canon.sql"
-    CONSISTENCY = "cons/consistency.sql"
-    GOLDEN = "cons/golden.txt"
-    DDL_DIR = "ddl"
-    SCHEMA_DIR = "schema"
-
-    def under_repo(self) -> Path:
-        return REPO_ROOT / self.value
-
-    def under_stand(self) -> Path:
-        return STAND_DIR / self.value
+LAYOUT = StandLayout(
+    stand_dir=Path(__file__).resolve().parent / "stand",
+    package_dir=Path(scraper.__file__).resolve().parent,
+)
 
 
 class IxSource(BaseModel):
     """Один источник стенда: имя цели и профиль его служебной базы; демонстрационный
-    набор всегда живёт в edge_demo."""
+    набор всегда живёт в edge_demo. Совместим с boba.stand.scraper.StandSource."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -74,37 +48,33 @@ class IxSource(BaseModel):
 
     name: str
     postgres: PostgresConfig
+    demo: bool = True
 
     def profile_of(self, dbname: str) -> PostgresConfig:
         return self.postgres.model_copy(update={"dbname": dbname})
 
     @property
-    def demo(self) -> PostgresConfig:
+    def demo_profile(self) -> PostgresConfig:
         return self.profile_of(self.DEMO_DB)
 
     @property
     def host(self) -> str:
         return source_address(self.postgres).host
 
+    def scrape_source(self) -> ScrapeSource:
+        return PgSource(WorkerConfig(source=self.demo_profile))
 
-class IxStand(SharedIxStand):
-    """Секция [ix_stand] скрапера: общий стенд ix плюс список источников."""
+    def demo_dataset(self) -> DemoRecreate:
+        return DemoDataset(self)
+
+
+class IxStand(ScraperStand[IxSource]):
+    """Секция [ix_stand] скрапера: общий стенд ix плюс список sources."""
 
     sources: Sequence[IxSource]
 
-    def source(self, name: str) -> IxSource:
-        for item in self.sources:
-            if item.name == name:
-                return item
-        raise IxStandError(f"ix stand: source {name!r} is not listed in [{'ix_stand'}]")
-
-
-@dataclass(frozen=True, kw_only=True)
-class DdlFile(VersionGate):
-    """Файл демонстрационного набора: ровно один statement, ворота по версии
-    объявлены в стенде, текст уходит серверу как есть."""
-
-    name: str
+    def listed(self) -> Sequence[IxSource]:
+        return self.sources
 
 
 class DemoDataset:
@@ -166,12 +136,12 @@ class DemoDataset:
             DdlFile(name="12a_begin_atomic.sql", min_version=(140000,)),
             DdlFile(name="90_greenplum.sql", only="gp"),
         )
-        async with await AsyncPostgresPool.dedicated(self._source.demo) as conn:
+        async with await AsyncPostgresPool.dedicated(self._source.demo_profile) as conn:
             for file in files:
                 if not file.applies((server.version_num,), server.flavor()):
                     continue
 
-                path = StandFile.DDL_DIR.under_stand() / file.name
+                path = LAYOUT.ddl(file.name)
                 await conn.execute(path.read_text(encoding="utf-8").encode("utf-8"))
 
         return server
@@ -186,110 +156,7 @@ class DemoDataset:
             raise IxStandError(
                 "source: expected server_version_num and version(), got none"
             )
+
         return ServerInfo(
             version_num=int(version[0]), is_greenplum="Greenplum" in str(banner[0])
         )
-
-
-@dataclass(frozen=True, kw_only=True)
-class Fingerprint:
-    """Канонический отпечаток одного источника: число строк и md5."""
-
-    rows: int
-    digest: str
-
-    def render(self) -> str:
-        return f"{self.rows} {self.digest}"
-
-
-def parse_fingerprint(raw: str) -> Fingerprint:
-    rows, digest = raw.split()
-
-    return Fingerprint(rows=int(rows), digest=digest)
-
-
-class Golden:
-    """Эталонные отпечатки stand/cons/golden.txt по имени цели."""
-
-    def __init__(self) -> None:
-        self._by_name: dict[str, Fingerprint] = {}
-        for line in (
-            StandFile.GOLDEN.under_stand().read_text(encoding="utf-8").splitlines()
-        ):
-            if not line.strip():
-                continue
-            name, rows, digest = line.split()
-            self._by_name[name] = Fingerprint(rows=int(rows), digest=digest)
-
-    def has(self, name: str) -> bool:
-        return name in self._by_name
-
-    def of(self, name: str) -> Fingerprint:
-        return self._by_name[name]
-
-
-class IxStandDatabase(SharedIxStandDatabase):
-    """База ix стенда скрапера: общее пересоздание плюс инварианты, отпечатки и
-    прогон скрапера."""
-
-    def __init__(self, stand: IxStand) -> None:
-        super().__init__(stand)
-        self._stand = stand
-
-    async def recreate_for_scraper(self) -> None:
-        await self.recreate([PACKAGE_DIR / StandFile.SCHEMA_DIR])
-
-    async def invariants(self) -> dict[str, int]:
-        """Инварианты структуры, у которых счётчик не ноль."""
-        query = (
-            PgQueryBuilder(schema=sql.Identifier(self._stand.db_schema))
-            .read(StandFile.CONSISTENCY.under_stand())
-            .build()
-        )
-        async with await AsyncPostgresPool.dedicated(self._stand.ix_profile) as conn:
-            cur = await conn.execute(query.text, query.params)
-            rows = await cur.fetchall()
-        broken: dict[str, int] = {}
-        for name, count in rows:
-            if int(count) != 0:
-                broken[str(name)] = int(count)
-        return broken
-
-    async def fingerprint(self, host: str) -> Fingerprint:
-        query = (
-            PgQueryBuilder(schema=sql.Identifier(self._stand.db_schema))
-            .read(StandFile.CANON.under_stand(), host=host)
-            .build()
-        )
-        async with await AsyncPostgresPool.dedicated(self._stand.ix_profile) as conn:
-            cur = await conn.execute(query.text, query.params)
-            row = await cur.fetchone()
-        if row is None:
-            raise IxStandError(
-                f"ix stand: fingerprint of {host}: expected one row, got none"
-            )
-        return parse_fingerprint(str(row[0]))
-
-    async def scope_nodes(self, host: str) -> int:
-        query = (
-            PgQueryBuilder()
-            .add(
-                "select count(*) from {schema}.node where address->>'host' = %(host)s",
-                schema=sql.Identifier(self._stand.db_schema),
-                host=host,
-            )
-            .build()
-        )
-        async with await AsyncPostgresPool.dedicated(self._stand.ix_profile) as conn:
-            cur = await conn.execute(query.text, query.params)
-            row = await cur.fetchone()
-        if row is None:
-            raise IxStandError(
-                f"ix stand: node count of {host}: expected one row, got none"
-            )
-        return int(row[0])
-
-    async def scrape(self, source: IxSource) -> Sequence[ApplyRow]:
-        pg = PgSource(WorkerConfig(source=source.demo))
-        report = await scrape_source(self._stand.ix_database, pg, PACKAGE_DIR, 3)
-        return report.rows

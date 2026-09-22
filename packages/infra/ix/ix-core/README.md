@@ -81,9 +81,11 @@ psycopg (`sql.Identifier`).
 `boba.ix_core.scrape` — общий цикл скраперов каталога, функциями по шагам. Каждый
 источник снимается в своём процессе (`run_sources` — spawn, один источник на процесс,
 `scrape_in_process`), внутри процесса последовательно: `scrape_source` открывает
-выделенное соединение ix (`AsyncPostgresPool.dedicated`) и сессию источника, `copy_rows` льёт строки
-каждого файла `scrape/` потоком в temp `raw_<name>` (курсор источника → COPY по одной
-строке, в памяти ничего не копится), `verify_rows` перечитывает запрос в temp
+выделенное соединение ix (`AsyncPostgresPool.dedicated`) и сессию источника, `copy_rows` льёт байты
+каждого файла `scrape/` потоком в temp `raw_<name>`: сессия источника отдаёт ответ
+блоками в формате COPY (`SourceBlocks`: имена колонок, `CopyFormat`, блоки байт),
+ядро пишет их в `COPY ... FROM STDIN` как есть, без разбора строк в Python, а число
+строк и массивы `collect` читает обратно из `raw_<name>`; `verify_rows` перечитывает запрос в temp
 `verify_<name>` и сверяет `except all`, `apply_layout` гонит стадии `layout/` в
 autocommit, под advisory-замком на scope одной транзакцией repeatable read. Повторы
 (`attempt_scrape`) — при изменении каталога, занятом ix и занятом источнике. Итог —

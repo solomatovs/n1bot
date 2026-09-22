@@ -63,7 +63,14 @@ layout/   запросы к своей базе: raw_* -> stage_* -> ix
    версию.
    Волна 1 снимает сервер и базы и собирает массив `dbs` имён баз без `system` и
    `INFORMATION_SCHEMA`; волна 2 снимает таблицы, колонки, индексы, проекции, словари и
-   SQL-функции по этому массиву. Каждый результат целиком уходит в `raw_<name>`.
+   SQL-функции по этому массиву. Ответ клиент отдаёт потоком `TabSeparated`
+   (`raw_stream`), и блоки байт уходят в `COPY ... FROM STDIN (format text)` без разбора
+   строк в Python. Сессия запроса: `session_timezone = 'UTC'` (сервер от 23),
+   `output_format_tsv_crlf_end_of_line = 0`, `prefer_column_name_to_alias = 1` — иначе
+   алиас `toJSONString(col) as col` подменяет колонку внутри `sipHash64`. Массивы
+   (`dependencies_*`, ключи и атрибуты словарей) файлы отдают `toJSONString` в колонки
+   `jsonb`, раскладка читает их `jsonb_array_elements_text`; `arrayStringConcat` для
+   `sorting_key` проекций. Каждый результат целиком уходит в `raw_<name>`.
 3. После последнего файла ещё раз все запросы сверки `<файл>.verify.sql`: ключ строки и
    `row_version`.
    В ClickHouse нет xmin и одного снимка на все system-таблицы, поэтому `row_version`

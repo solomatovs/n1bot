@@ -13,4 +13,4 @@ select
 from
     pg_trigger
 where
-    tgrelid = any(%(rels)s::oid[]) and not tgisinternal;
+    tgrelid = any(%(rels)s::oid[]) and not tgisinternal

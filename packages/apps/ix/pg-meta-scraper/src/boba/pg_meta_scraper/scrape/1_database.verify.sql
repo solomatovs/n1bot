@@ -4,4 +4,4 @@ select
 from
     pg_database
 where
-    datname = current_database();
+    datname = current_database()

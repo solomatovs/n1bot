@@ -6,4 +6,4 @@ select
 from
     pg_inherits
 where
-    inhrelid = any(%(rels)s::oid[]);
+    inhrelid = any(%(rels)s::oid[])

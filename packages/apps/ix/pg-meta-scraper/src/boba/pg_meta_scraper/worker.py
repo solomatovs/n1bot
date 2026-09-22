@@ -29,7 +29,9 @@ from boba.db.postgres import AsyncPostgresPool, PostgresError
 from boba.db.postgres.profile import PostgresConfig
 from boba.db.postgres.query import PgQueryBuilder
 from boba.ix_core.scrape import (
+    BlockStream,
     Collect,
+    CopyFormat,
     ScrapeFile,
     ScraperConfigBase,
     ScrapeSession,
@@ -37,8 +39,8 @@ from boba.ix_core.scrape import (
     ScrapeSourceBusyError,
     ScrapeSourceError,
     SourceAddressBase,
+    SourceBlocks,
     SourceConfigBase,
-    SourceRows,
     run_cli,
 )
 from boba.kerberos import KerberosError
@@ -163,36 +165,6 @@ async def read_server_info(conn: psycopg.AsyncConnection[Any]) -> ServerInfo:
     )
 
 
-class PgRows(SourceRows):
-    """Строки серверного курсора; ошибка чтения уходит ScrapeSourceError."""
-
-    def __init__(self, cur: psycopg.AsyncCursor[Any], name: str, where: str) -> None:
-        self._cur = cur
-        self._name = name
-        self._where = where
-
-    @property
-    def columns(self) -> Sequence[str]:
-        names: list[str] = []
-        for column in self._cur.description or ():
-            names.append(column.name)
-
-        return names
-
-    async def __aiter__(self) -> AsyncIterator[Sequence[object]]:
-        try:
-            async for row in self._cur:
-                yield row
-        except (LockNotAvailable, SerializationFailure) as exc:
-            raise ScrapeSourceBusyError(
-                f"reading {self._name} from {self._where}: {exc}"
-            ) from exc
-        except psycopg.Error as exc:
-            raise ScrapeSourceError(
-                f"reading {self._name} from {self._where}: {type(exc).__name__}: {exc}"
-            ) from exc
-
-
 class PgSession(ScrapeSession):
     """Сессия источника: соединение только на чтение и версия сервера."""
 
@@ -211,23 +183,51 @@ class PgSession(ScrapeSession):
         return file.applies((self._server.version_num,), self._server.flavor())
 
     @asynccontextmanager
-    async def fetch_rows(
+    async def fetch_blocks(
         self, name: str, path: Path, params: Mapping[str, Sequence[object]]
-    ) -> AsyncGenerator[SourceRows, None]:
-        query = PgQueryBuilder().read(path, **params).build()
-        async with self._conn.transaction(), self._conn.cursor(name=name) as cur:
-            cur.itersize = 2000
+    ) -> AsyncGenerator[SourceBlocks, None]:
+        """Имена колонок — из пустой выборки того же запроса, данные — блоками
+        `COPY (запрос) TO STDOUT` в текстовом формате, без строк на стороне Python."""
+        probe = (
+            PgQueryBuilder()
+            .add("select * from (")
+            .read(path, **params)
+            .add(") q limit 0")
+            .build()
+        )
+        query = (
+            PgQueryBuilder()
+            .add("copy (")
+            .read(path, **params)
+            .add(") to stdout (format text)")
+            .build()
+        )
+        label = f"{name} ({path.name}) on {self._where}"
+        async with self._conn.transaction():
             try:
-                await cur.execute(query.text, query.params)
+                cur = await self._conn.execute(probe.text, probe.params)
+                columns: list[str] = []
+                for column in cur.description or ():
+                    columns.append(column.name)
+
+                async with self._conn.cursor().copy(query.text, query.params) as copy:
+                    yield BlockStream(
+                        columns,
+                        CopyFormat.TEXT,
+                        self._blocks(copy),
+                        label,
+                        (psycopg.Error,),
+                    )
             except (LockNotAvailable, SerializationFailure) as exc:
-                raise ScrapeSourceBusyError(f"query on {self._where}: {exc}") from exc
+                raise ScrapeSourceBusyError(f"query {label}: {exc}") from exc
             except psycopg.Error as exc:
                 raise ScrapeSourceError(
-                    f"query {name} ({path.name}) on {self._where}: "
-                    f"{type(exc).__name__}: {exc}"
+                    f"query {label}: {type(exc).__name__}: {exc}"
                 ) from exc
 
-            yield PgRows(cur, name, self._where)
+    async def _blocks(self, copy: psycopg.AsyncCopy) -> AsyncIterator[memoryview]:
+        async for block in copy:
+            yield memoryview(block)
 
 
 class PgSource(ScrapeSource):
@@ -604,6 +604,11 @@ class PgSource(ScrapeSource):
         )
         await conn.execute(query.text, query.params)
         await conn.execute("set default_transaction_read_only = on")
+        await conn.execute("set timezone to 'UTC'")
+        await conn.execute("set datestyle to 'ISO, YMD'")
+        await conn.execute("set intervalstyle to 'postgres'")
+        await conn.execute("set extra_float_digits to 3")
+        await conn.execute("set bytea_output to 'hex'")
 
 
 def main() -> None:

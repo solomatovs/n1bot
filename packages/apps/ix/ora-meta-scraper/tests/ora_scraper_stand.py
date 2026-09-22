@@ -1,5 +1,6 @@
-"""Помощники стенда скрапера Oracle: секция [ix_stand] со списком ora_sources,
-набор EDGE_DEMO, инварианты, отпечатки и прогон скрапера.
+"""Стенд скрапера Oracle: секция [ix_stand] со списком ora_sources и набор EDGE_DEMO
+на источнике. Раскладка стенда, эталоны, база ix, проверка ссылок и шторм — общие,
+в boba.stand.scraper.
 
 Лежит отдельным модулем, а не в conftest: имя conftest у каждого пакета своё, и при
 общем прогоне нескольких пакетов импорт из него достаётся чужому файлу.
@@ -8,57 +9,27 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
 from oracledb import AsyncConnection
-from psycopg import sql
 from pydantic import BaseModel, ConfigDict, SecretStr
 
 from boba.db.oracle import OracleQueryError
 from boba.db.oracle.payload import PayloadOracle
 from boba.db.oracle.profile import OracleConfig, PasswordAuth
-from boba.db.postgres import AsyncPostgresPool
-from boba.db.postgres.query import PgQueryBuilder
-from boba.ix_core.scrape import (
-    ApplyRow,
-    VersionGate,
-    parse_version,
-    scrape_source,
-)
+from boba.ix_core.scrape import ScrapeSource, parse_version
 from boba.ora_meta_scraper import worker as scraper
 from boba.ora_meta_scraper.worker import OraSource, source_address
-from boba.stand.ix import IxStand as SharedIxStand
-from boba.stand.ix import IxStandDatabase as SharedIxStandDatabase
 from boba.stand.ix import IxStandError
+from boba.stand.scraper import DdlFile, DemoRecreate, ScraperStand, StandLayout
 
-__all__ = [
-    "PACKAGE_DIR",
-    "DdlFile",
-    "DemoDataset",
-    "Fingerprint",
-    "Golden",
-    "IxSource",
-    "IxStand",
-    "IxStandDatabase",
-    "IxStandError",
-    "StandFile",
-]
+__all__ = ["LAYOUT", "DemoDataset", "IxSource", "IxStand"]
 
-PACKAGE_DIR = Path(scraper.__file__).resolve().parent
-STAND_DIR = Path(__file__).resolve().parent / "stand"
-
-
-class StandFile(StrEnum):
-    CANON = "cons/canon.sql"
-    CONSISTENCY = "cons/consistency.sql"
-    GOLDEN = "cons/golden.txt"
-    DDL_DIR = "ddl"
-    SCHEMA_DIR = "schema"
-
-    def under_stand(self) -> Path:
-        return STAND_DIR / self.value
+LAYOUT = StandLayout(
+    stand_dir=Path(__file__).resolve().parent / "stand",
+    package_dir=Path(scraper.__file__).resolve().parent,
+)
 
 
 class DemoUser(StrEnum):
@@ -71,7 +42,8 @@ class DemoUser(StrEnum):
 class IxSource(BaseModel):
     """Один источник стенда: имя цели, профиль скрапера и профиль администратора,
     которым пересоздаётся схема EDGE_DEMO. demo говорит, пересоздавать ли набор: у
-    чужого сервера прав на это нет, он снимается как есть."""
+    чужого сервера прав на это нет, он снимается как есть. Совместим с
+    boba.stand.scraper.StandSource."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -94,28 +66,20 @@ class IxSource(BaseModel):
         )
         return self.admin.model_copy(update={"auth": auth})
 
+    def scrape_source(self) -> ScrapeSource:
+        return OraSource(self.oracle)
 
-class IxStand(SharedIxStand):
+    def demo_dataset(self) -> DemoRecreate:
+        return DemoDataset(self)
+
+
+class IxStand(ScraperStand[IxSource]):
     """Секция [ix_stand] скрапера Oracle: общий стенд ix плюс список ora_sources."""
 
     ora_sources: Sequence[IxSource]
 
-    def source(self, name: str) -> IxSource:
-        for item in self.ora_sources:
-            if item.name == name:
-                return item
-
-        raise IxStandError(
-            f"ix stand: oracle source {name!r} is not listed in [{'ix_stand'}]"
-        )
-
-
-@dataclass(frozen=True, kw_only=True)
-class DdlFile(VersionGate):
-    """Файл демонстрационного набора: ровно один statement, ворота по версии
-    объявлены в стенде, текст уходит серверу как есть."""
-
-    name: str
+    def listed(self) -> Sequence[IxSource]:
+        return self.ora_sources
 
 
 class DemoDataset:
@@ -124,9 +88,11 @@ class DemoDataset:
 
     def __init__(self, source: IxSource) -> None:
         self._source = source
+        self._admin = PayloadOracle(source.admin)
+        self._owner = PayloadOracle(source.demo_owner)
 
     async def recreate(self) -> tuple[int, ...]:
-        async with PayloadOracle.opened_config(self._source.admin) as admin:
+        async with self._admin.opened() as admin:
             server = await self._version(admin)
             await self._recreate_user(admin)
 
@@ -163,13 +129,14 @@ class DemoDataset:
             DdlFile(name="05_02_comment_table_sales.sql", min_version=(18,)),
             DdlFile(name="05_03_index_sales_region_ix.sql", min_version=(18,)),
         )
-        async with PayloadOracle.opened_config(self._source.demo_owner) as owner:
+        async with self._owner.opened() as owner:
             for file in files:
                 if not file.applies(server, ""):
                     continue
 
-                path = StandFile.DDL_DIR.under_stand() / file.name
-                await self._run(owner, path.read_text(encoding="utf-8"))
+                path = LAYOUT.ddl(file.name)
+                async with self._owner.rows(owner, path.read_text(encoding="utf-8")):
+                    pass
 
         return server
 
@@ -192,130 +159,14 @@ class DemoDataset:
             f"create type to {DemoUser.NAME}",
         )
 
-    @staticmethod
-    async def _run(conn: AsyncConnection, statement: str) -> None:
-        async with PayloadOracle.rows(conn, statement):
+    async def _run(self, conn: AsyncConnection, statement: str) -> None:
+        async with self._admin.rows(conn, statement):
             pass
 
-    @staticmethod
-    async def _version(conn: AsyncConnection) -> tuple[int, ...]:
+    async def _version(self, conn: AsyncConnection) -> tuple[int, ...]:
         query = "select version from sys.registry$ where cid = 'CATALOG'"
-        async with PayloadOracle.rows(conn, query) as stream:
+        async with self._admin.rows(conn, query) as stream:
             async for row in stream.blocks:
                 return parse_version(str(row[0]))
 
         raise IxStandError(f"ix stand: {query}: expected one row, got none")
-
-
-@dataclass(frozen=True, kw_only=True)
-class Fingerprint:
-    """Канонический отпечаток одного источника: число строк и md5."""
-
-    rows: int
-    digest: str
-
-    def render(self) -> str:
-        return f"{self.rows} {self.digest}"
-
-
-def parse_fingerprint(raw: str) -> Fingerprint:
-    rows, digest = raw.split()
-
-    return Fingerprint(rows=int(rows), digest=digest)
-
-
-class Golden:
-    """Эталонные отпечатки stand/cons/golden.txt по имени цели."""
-
-    def __init__(self) -> None:
-        self._by_name: dict[str, Fingerprint] = {}
-        for line in (
-            StandFile.GOLDEN.under_stand().read_text(encoding="utf-8").splitlines()
-        ):
-            if not line.strip():
-                continue
-            name, rows, digest = line.split()
-            self._by_name[name] = Fingerprint(rows=int(rows), digest=digest)
-
-    def has(self, name: str) -> bool:
-        return name in self._by_name
-
-    def of(self, name: str) -> Fingerprint:
-        return self._by_name[name]
-
-
-class IxStandDatabase(SharedIxStandDatabase):
-    """База ix стенда скрапера: общее пересоздание плюс инварианты, отпечатки и
-    прогон скрапера."""
-
-    def __init__(self, stand: IxStand) -> None:
-        super().__init__(stand)
-        self._stand = stand
-
-    async def recreate_for_scraper(self) -> None:
-        await self.recreate([PACKAGE_DIR / StandFile.SCHEMA_DIR])
-
-    async def invariants(self) -> dict[str, int]:
-        """Инварианты структуры, у которых счётчик не ноль."""
-        query = (
-            PgQueryBuilder(schema=sql.Identifier(self._stand.db_schema))
-            .read(StandFile.CONSISTENCY.under_stand())
-            .build()
-        )
-        async with await AsyncPostgresPool.dedicated(self._stand.ix_profile) as conn:
-            cur = await conn.execute(query.text, query.params)
-            rows = await cur.fetchall()
-
-        broken: dict[str, int] = {}
-        for name, count in rows:
-            if int(count) != 0:
-                broken[str(name)] = int(count)
-
-        return broken
-
-    async def fingerprint(self, host: str) -> Fingerprint:
-        query = (
-            PgQueryBuilder(schema=sql.Identifier(self._stand.db_schema))
-            .read(StandFile.CANON.under_stand(), host=host)
-            .build()
-        )
-        async with await AsyncPostgresPool.dedicated(self._stand.ix_profile) as conn:
-            cur = await conn.execute(query.text, query.params)
-            row = await cur.fetchone()
-
-        if row is None:
-            raise IxStandError(
-                f"ix stand: fingerprint of {host}: expected one row, got none"
-            )
-
-        return parse_fingerprint(str(row[0]))
-
-    async def scope_nodes(self, host: str) -> int:
-        query = (
-            PgQueryBuilder()
-            .add(
-                "select count(*) from {schema}.node where address->>'host' = %(host)s",
-                schema=sql.Identifier(self._stand.db_schema),
-                host=host,
-            )
-            .build()
-        )
-        async with await AsyncPostgresPool.dedicated(self._stand.ix_profile) as conn:
-            cur = await conn.execute(query.text, query.params)
-            row = await cur.fetchone()
-
-        if row is None:
-            raise IxStandError(
-                f"ix stand: node count of {host}: expected one row, got none"
-            )
-
-        return int(row[0])
-
-    async def scrape(self, source: IxSource) -> Sequence[ApplyRow]:
-        report = await scrape_source(
-            self._stand.ix_database,
-            OraSource(source.oracle),
-            PACKAGE_DIR,
-            3,
-        )
-        return report.rows

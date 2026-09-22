@@ -19,4 +19,4 @@ select
 from
     pg_proc
 where
-    pronamespace = any(%(schemas)s::oid[]);
+    pronamespace = any(%(schemas)s::oid[])

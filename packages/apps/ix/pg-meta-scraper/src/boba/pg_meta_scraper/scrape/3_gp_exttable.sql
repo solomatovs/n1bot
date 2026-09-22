@@ -6,4 +6,4 @@ select
 from
     pg_exttable
 where
-    reloid = any(%(rels)s::oid[]);
+    reloid = any(%(rels)s::oid[])

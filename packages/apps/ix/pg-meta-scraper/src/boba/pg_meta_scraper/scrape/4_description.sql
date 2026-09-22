@@ -13,4 +13,4 @@ where
     or objoid = any(%(constraints)s::oid[])
     or objoid = any(%(schemas)s::oid[])
     or objoid = any(%(triggers)s::oid[])
-    or objoid = any(%(statistics)s::oid[]);
+    or objoid = any(%(statistics)s::oid[])

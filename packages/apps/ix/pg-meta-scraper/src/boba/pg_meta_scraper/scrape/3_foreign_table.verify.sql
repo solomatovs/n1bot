@@ -4,4 +4,4 @@ select
 from
     pg_foreign_table
 where
-    ftrelid = any(%(rels)s::oid[]);
+    ftrelid = any(%(rels)s::oid[])

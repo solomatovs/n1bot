@@ -4,4 +4,4 @@ select
 from
     pg_index
 where
-    indrelid = any(%(rels)s::oid[]);
+    indrelid = any(%(rels)s::oid[])

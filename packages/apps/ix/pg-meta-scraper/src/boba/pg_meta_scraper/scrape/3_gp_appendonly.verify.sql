@@ -4,4 +4,4 @@ select
 from
     pg_appendonly
 where
-    relid = any(%(rels)s::oid[]);
+    relid = any(%(rels)s::oid[])

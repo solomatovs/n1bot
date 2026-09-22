@@ -4,4 +4,4 @@ select
 from
     pg_partitioned_table
 where
-    partrelid = any(%(rels)s::oid[]);
+    partrelid = any(%(rels)s::oid[])

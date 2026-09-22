@@ -4,4 +4,4 @@ select
 from
     pg_partition
 where
-    parrelid = any(%(rels)s::oid[]);
+    parrelid = any(%(rels)s::oid[])

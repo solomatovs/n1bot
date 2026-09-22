@@ -12,4 +12,4 @@ select
 from
     pg_sequence
 where
-    seqrelid = any(%(rels)s::oid[]);
+    seqrelid = any(%(rels)s::oid[])

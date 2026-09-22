@@ -12,7 +12,7 @@ import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
 
 import pytest
-from ora_scraper_stand import PACKAGE_DIR, DemoDataset, IxSource, IxStand
+from ora_scraper_stand import LAYOUT, DemoDataset, IxSource, IxStand
 
 from boba.db.oracle.payload import PayloadOracle
 from boba.db.oracle.profile import OracleConfig
@@ -58,17 +58,15 @@ def bulk_columns(count: int) -> str:
 async def create_bulk(source: IxSource, tables: int) -> None:
     """Тысячи таблиц с колонками, ключом, комментарием и индексом одним PL/SQL."""
     statement = BULK_DDL.format(tables=tables, columns=bulk_columns(BULK_COLUMNS))
-    async with (
-        PayloadOracle.opened_config(source.demo_owner) as owner,
-        PayloadOracle.rows(owner, statement),
-    ):
+    payload = PayloadOracle(source.demo_owner)
+    async with payload.opened() as owner, payload.rows(owner, statement):
         pass
 
 
 def scrape_in_child(database: IxDatabase, oracle: OracleConfig) -> tuple[int, int]:
     """Вход процесса прогона: сколько строк применено и пик RSS процесса в MiB."""
     report = asyncio.run(
-        scrape_source(database, OraSource(oracle), PACKAGE_DIR, ATTEMPTS)
+        scrape_source(database, OraSource(oracle), LAYOUT.package_dir, ATTEMPTS)
     )
 
     return report.applied(), peak_rss_mib()

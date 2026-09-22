@@ -14,4 +14,4 @@ select
 from
     pg_type
 where
-    typnamespace = any(%(schemas)s::oid[]);
+    typnamespace = any(%(schemas)s::oid[])

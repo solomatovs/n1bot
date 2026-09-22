@@ -24,15 +24,16 @@ from boba.db.oracle.payload import PayloadOracle
 from boba.db.oracle.profile import OracleConfig
 from boba.db.oracle.query import OraQueryBuilder, OraSql
 from boba.ix_core.scrape import (
+    BlockStream,
+    CopyFormat,
     ScrapeFile,
     ScraperConfigBase,
     ScrapeSession,
     ScrapeSource,
     ScrapeSourceError,
     SourceAddressBase,
+    SourceBlocks,
     SourceConfigBase,
-    SourceRows,
-    StreamRows,
     parse_version,
     run_cli,
 )
@@ -90,11 +91,13 @@ def source_address(oracle: OracleConfig) -> SourceAddress:
     return SourceAddress(host=oracle.host, port=oracle.port, database=oracle.service)
 
 
-async def read_server_version(conn: AsyncConnection, where: str) -> tuple[int, ...]:
+async def read_server_version(
+    payload: PayloadOracle, conn: AsyncConnection, where: str
+) -> tuple[int, ...]:
     query = "select version from sys.registry$ where cid = 'CATALOG'"
 
     try:
-        async with PayloadOracle.rows(conn, query) as stream:
+        async with payload.rows(conn, query) as stream:
             async for row in stream.blocks:
                 return parse_version(str(row[0]))
     except OracleQueryError as exc:
@@ -107,8 +110,13 @@ class OraSession(ScrapeSession):
     """Сессия источника: открытое соединение и версия словаря."""
 
     def __init__(
-        self, conn: AsyncConnection, server: tuple[int, ...], where: str
+        self,
+        payload: PayloadOracle,
+        conn: AsyncConnection,
+        server: tuple[int, ...],
+        where: str,
     ) -> None:
+        self._payload = payload
         self._conn = conn
         self._server = server
         self._where = where
@@ -117,9 +125,10 @@ class OraSession(ScrapeSession):
         return file.applies(self._server, "")
 
     @asynccontextmanager
-    async def fetch_rows(
+    async def fetch_blocks(
         self, name: str, path: Path, params: Mapping[str, Sequence[object]]
-    ) -> AsyncGenerator[SourceRows, None]:
+    ) -> AsyncGenerator[SourceBlocks, None]:
+        """CSV пачек строк драйвера как csv-формат COPY."""
         if params:
             listed = ", ".join(params)
             raise ScrapeSourceError(
@@ -133,13 +142,18 @@ class OraSession(ScrapeSession):
             .build()
         )
 
+        label = f"{name} ({path.name}) on {self._where}"
         try:
-            async with PayloadOracle.rows(self._conn, query.text) as stream:
-                yield StreamRows(
-                    stream.names, stream.blocks, name, self._where, (OracleQueryError,)
+            async with self._payload.csv(self._conn, query.text) as stream:
+                yield BlockStream(
+                    stream.names,
+                    CopyFormat.CSV,
+                    stream.blocks,
+                    label,
+                    (OracleQueryError,),
                 )
         except OracleQueryError as exc:
-            raise ScrapeSourceError(f"query {name} on {self._where}: {exc}") from exc
+            raise ScrapeSourceError(f"query {label}: {exc}") from exc
 
 
 class OraSource(ScrapeSource):
@@ -148,6 +162,7 @@ class OraSource(ScrapeSource):
 
     def __init__(self, cfg: OracleConfig) -> None:
         self._cfg = cfg
+        self._payload = PayloadOracle(cfg)
         self._address = source_address(cfg)
 
     @property
@@ -180,14 +195,25 @@ class OraSource(ScrapeSource):
         return self._address
 
     def describe(self) -> str:
-        return self._cfg.where()
+        return self._cfg.address_prefix()
+
+    async def _configure(self, conn: AsyncConnection) -> None:
+        """Сессия в UTC и с точкой как десятичным разделителем: даты и числа в CSV
+        не должны зависеть от NLS сервера."""
+        for statement in (
+            "alter session set time_zone = 'UTC'",
+            "alter session set nls_numeric_characters = '.,'",
+        ):
+            async with self._payload.rows(conn, statement):
+                pass
 
     @asynccontextmanager
     async def open_session(self) -> AsyncGenerator[ScrapeSession, None]:
         try:
-            async with PayloadOracle.opened_config(self._cfg) as conn:
-                server = await read_server_version(conn, self.describe())
-                yield OraSession(conn, server, self.describe())
+            async with self._payload.opened() as conn:
+                await self._configure(conn)
+                server = await read_server_version(self._payload, conn, self.describe())
+                yield OraSession(self._payload, conn, server, self.describe())
         except OracleError as exc:
             raise ScrapeSourceError(
                 f"connecting to {self.describe()} as {self._cfg.trace()}: {exc}"

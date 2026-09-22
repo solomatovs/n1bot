@@ -4,4 +4,4 @@ select
 from
     pg_constraint
 where
-    conrelid = any(%(rels)s::oid[]) or contypid = any(%(types)s::oid[]);
+    conrelid = any(%(rels)s::oid[]) or contypid = any(%(types)s::oid[])

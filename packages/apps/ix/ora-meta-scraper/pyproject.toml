@@ -16,7 +16,6 @@ dependencies = [
 dev = [
     "boba-db-postgres==0.0.22.dev1",
     "boba-stand==0.0.22.dev1",
-    "psycopg[binary]>=3.2",
     "pydantic>=2.10,<2.11",
     "pytest>=8",
 ]

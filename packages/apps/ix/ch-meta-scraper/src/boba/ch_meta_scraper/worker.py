@@ -14,6 +14,7 @@ from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from clickhouse_connect.driver.asyncclient import AsyncClient
 
@@ -22,16 +23,17 @@ from boba.db.clickhouse.payload import PayloadClickHouse
 from boba.db.clickhouse.profile import ClickHouseConfig
 from boba.db.clickhouse.query import ChQueryBuilder
 from boba.ix_core.scrape import (
+    BlockStream,
     Collect,
+    CopyFormat,
     ScrapeFile,
     ScraperConfigBase,
     ScrapeSession,
     ScrapeSource,
     ScrapeSourceError,
     SourceAddressBase,
+    SourceBlocks,
     SourceConfigBase,
-    SourceRows,
-    StreamRows,
     parse_version,
     run_cli,
 )
@@ -109,24 +111,36 @@ class ChSession(ScrapeSession):
         return file.applies(self._server, "")
 
     @asynccontextmanager
-    async def fetch_rows(
+    async def fetch_blocks(
         self, name: str, path: Path, params: Mapping[str, Sequence[object]]
-    ) -> AsyncGenerator[SourceRows, None]:
+    ) -> AsyncGenerator[SourceBlocks, None]:
+        """TabSeparated сервера как текстовый формат COPY: даты и время в UTC
+        (session_timezone есть с 23.x, раньше действует зона сервера), массивы файлы
+        отдают через toJSONString, потому что `['a']` PostgreSQL не разбирает.
+        prefer_column_name_to_alias: alias с именем колонки не должен подменять её
+        в хэше row_version."""
         query = ChQueryBuilder().read(path, **params).build()
+        settings: dict[str, Any] = {
+            "output_format_tsv_crlf_end_of_line": 0,
+            "prefer_column_name_to_alias": 1,
+        }
+        if self._server >= (23,):
+            settings["session_timezone"] = "UTC"
 
+        label = f"{name} ({path.name}) on {self._where}"
         try:
-            async with PayloadClickHouse.rows(
-                self._client, query.text, query.params
+            async with PayloadClickHouse.tsv(
+                self._client, query.text, query.params, settings
             ) as stream:
-                yield StreamRows(
+                yield BlockStream(
                     stream.names,
+                    CopyFormat.TEXT,
                     stream.blocks,
-                    name,
-                    self._where,
+                    label,
                     (ClickHouseQueryError,),
                 )
         except ClickHouseQueryError as exc:
-            raise ScrapeSourceError(f"query {name} on {self._where}: {exc}") from exc
+            raise ScrapeSourceError(f"query {label}: {exc}") from exc
 
 
 class ChSource(ScrapeSource):
