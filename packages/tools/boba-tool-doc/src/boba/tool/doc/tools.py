@@ -1,23 +1,35 @@
 """Инструменты doc: функции уровня модуля, модуль — обычная программа.
 
-Разбор документов (liteparse, OCR) исполняется в теле — потому оно живёт в
-песочнице: парсер работает с недоверенными файлами workspace.
+Разбор документов (ридеры форматов, OCR) исполняется в теле — потому оно
+живёт в песочнице: ридеры работают с недоверенными файлами workspace.
 
 Ошибки:
-LiteParseError — документ не разобрать (формат, битый файл, нет моделей OCR).
+DocumentError — документ не распознан, не открыт или не прочитан: формат,
+    битый файл, нет файлов моделей OCR.
+OcrUnavailableError — вызов просил OCR, а секция [tool.doc] держит
+    ocr.provider = off (boba.doc.config).
 """
 
 from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from boba.text.document import LiteParseError
+from boba.doc.config import OcrUnavailableError
+from boba.doc.document import (
+    Document,
+    DocumentError,
+    DocumentHint,
+    Hit,
+    PageInfo,
+    PageWindow,
+)
 from boba.tool.doc.config import DocToolsConfig
 from boba.toolkit.entry import ToolMain
 from boba.toolkit.facade import Injected, tool
@@ -31,12 +43,7 @@ _PATH_DESCRIPTION = (
 _OCR_DESCRIPTION = (
     "OCR для сканов и изображений: true распознаёт текст по картинкам, "
     "false — только текстовый слой. Сканам/фото — true, обычным "
-    "pdf/docx — false (OCR дорог: минуты и гигабайты памяти)."
-)
-_WORKERS_DESCRIPTION = "Параллелизм OCR, 1..4; ~50-100 MiB на воркер"
-_LANGUAGE_DESCRIPTION = (
-    "Язык OCR в формате Tesseract: 'rus+eng' для русских документов, "
-    "'eng' для английских."
+    "pdf/docx — false (OCR дорог: секунды на страницу)."
 )
 
 
@@ -44,6 +51,7 @@ class DocErrorKind(StrEnum):
     """Ожидаемые отказы doc-инструментов."""
 
     DOCUMENT_UNREADABLE = "document_unreadable"
+    OCR_UNAVAILABLE = "ocr_unavailable"
 
 
 class DocToolSection(DocToolsConfig):
@@ -52,29 +60,13 @@ class DocToolSection(DocToolsConfig):
     SECTION: ClassVar[str] = "tool.doc"
 
 
-class DocOutlineRow(BaseModel):
-    """Строка карты документа: страница и её метрики."""
+class ReadResult(BaseModel):
+    """Текст прочитанных страниц и их номера."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True)
 
-    page: int
-    width: float
-    height: float
-    chars: int
-    items: int
-
-
-class DocSearchRow(BaseModel):
-    """Совпадение поиска: страница, координаты и сниппет вокруг."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    page: int
-    x: float
-    y: float
-    width: float
-    height: float
-    snippet: str
+    text: str
+    numbers: Sequence[int]
 
 
 class TextClip:
@@ -93,66 +85,85 @@ class TextClip:
         return f"{text}\n\n[truncated to {limit} characters]"
 
 
-class Snippet:
-    """Вырез [lo, hi) с контекстом вокруг и многоточиями по краям."""
+class DocRun:
+    """Открытие файла workspace роутером boba-doc по конфигу вызова.
 
-    ELLIPSIS: ClassVar[str] = "…"
+    Библиотеки форматов тяжёлые и живут в песочнице, поэтому импортируются
+    здесь, а не при загрузке модуля: манифест плагина импортирует модуль в
+    процессе приложения.
+    """
+
+    PAGE_GLUE: ClassVar[str] = "\n\n"
+
+    @staticmethod
+    def router(cfg: DocToolSection, *, ocr_enabled: bool) -> Any:
+        from boba.doc.ocr import OcrEngines  # noqa: PLC0415
+        from boba.doc.router import DocumentRouter  # noqa: PLC0415
+
+        run_cfg = cfg.for_call(ocr=ocr_enabled)
+
+        return DocumentRouter(run_cfg, OcrEngines.of(run_cfg.ocr))
+
+    @staticmethod
+    @contextmanager
+    def open(router: Any, path: str) -> Iterator[Document]:
+        try:
+            source = open(path, "rb")  # noqa: SIM115 — закрывается ниже
+        except OSError as exc:
+            raise DocumentError(
+                f"document {path}: cannot open the file: {exc}"
+            ) from exc
+
+        with source, router.open(source, DocumentHint(filename=path)) as document:
+            yield document
 
     @classmethod
-    def around(cls, text: str, lo: int, hi: int, context: int) -> str:
-        begin = max(0, lo - context)
-        end = min(len(text), hi + context)
+    def read(cls, cfg: DocToolSection, path: str, pages: str, ocr: bool) -> ReadResult:
+        windows = PageWindow.parse_many(pages)
+        router = cls.router(cfg, ocr_enabled=ocr)
+        texts: list[str] = []
+        numbers: list[int] = []
+        with cls.open(router, path) as document:
+            for window in windows:
+                for page in document.pages(window):
+                    texts.append(page.text)
+                    numbers.append(page.number)
 
-        prefix = ""
-        if begin > 0:
-            prefix = cls.ELLIPSIS
+        return ReadResult(text=cls.PAGE_GLUE.join(texts), numbers=numbers)
 
-        suffix = ""
-        if end < len(text):
-            suffix = cls.ELLIPSIS
+    @classmethod
+    def outline(
+        cls, cfg: DocToolSection, path: str, ocr: bool
+    ) -> tuple[int, Sequence[PageInfo]]:
+        router = cls.router(cfg, ocr_enabled=ocr)
+        with cls.open(router, path) as document:
+            return document.page_count(), list(document.outline())
 
-        return f"{prefix}{text[begin:end]}{suffix}"
+    @classmethod
+    def search(
+        cls, cfg: DocToolSection, path: str, query: str, ocr: bool
+    ) -> tuple[list[Hit], bool]:
+        """Совпадения до лимита; второй элемент — лимит достигнут."""
+        router = cls.router(cfg, ocr_enabled=ocr)
+        hits: list[Hit] = []
+        with cls.open(router, path) as document:
+            found = document.search(
+                query,
+                PageWindow.whole(),
+                case_sensitive=False,
+                context=cfg.search_context_chars,
+            )
+            for hit in found:
+                if len(hits) >= cfg.search_max_matches:
+                    return hits, True
 
+                hits.append(hit)
 
-class PageMatchRows:
-    """Строки совпадений одной страницы: hit'ы liteparse плюс сниппеты."""
-
-    def __init__(self, page: Any, query: str, context_chars: int) -> None:
-        self._page = page
-        self._query = query
-        self._context = context_chars
-        self._haystack = page.text.casefold()
-        self._needle = query.casefold()
-        # курсор по casefold-тексту: i-й hit получает i-е вхождение запроса
-        self._cursor = 0
-
-    def rows(self, hits: Any) -> Iterator[DocSearchRow]:
-        for hit in hits:
-            yield self._row(hit)
-
-    def _row(self, hit: Any) -> DocSearchRow:
-        return DocSearchRow(
-            page=self._page.page_num,
-            x=round(hit.x, 1),
-            y=round(hit.y, 1),
-            width=round(hit.width, 1),
-            height=round(hit.height, 1),
-            snippet=self._snippet(hit),
-        )
-
-    def _snippet(self, hit: Any) -> str:
-        index = self._haystack.find(self._needle, self._cursor)
-        if index == -1:
-            return hit.text
-
-        self._cursor = index + len(self._query)
-        return Snippet.around(
-            self._page.text, index, index + len(self._query), self._context
-        )
+        return hits, False
 
 
 @tool
-async def read_document(  # noqa: PLR0913 — фасад LLM, параметры независимы
+async def read_document(
     path: Annotated[str, Field(min_length=1, description=_PATH_DESCRIPTION)],
     pages: Annotated[
         str,
@@ -166,36 +177,24 @@ async def read_document(  # noqa: PLR0913 — фасад LLM, параметры
         ),
     ],
     ocr_enabled: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
-    num_workers: Annotated[
-        int, Field(ge=1, le=4, description=_WORKERS_DESCRIPTION)
-    ] = 1,
-    ocr_language: Annotated[
-        str, Field(min_length=1, description=_LANGUAGE_DESCRIPTION)
-    ] = "rus+eng",
     *,
     cfg: Annotated[DocToolSection, Injected],
 ) -> MarkdownResult:
     """Прочитать текст страниц документа из workspace; основной способ чтения."""
-    # liteparse тяжёлый и нативный: импорт в теле, разбор в потоке (GIL)
-    from boba.liteparse.engine import LiteParseEngine  # noqa: PLC0415
+    # ридеры синхронные и тяжёлые: разбор уходит в поток
+    result = await asyncio.to_thread(DocRun.read, cfg, path, pages, ocr_enabled)
 
-    run_cfg = cfg.with_parser(
-        ocr_enabled=ocr_enabled, num_workers=num_workers, ocr_language=ocr_language
-    )
+    text, truncated = TextClip.clip(result.text, cfg.max_text_chars)
 
-    result = await asyncio.to_thread(LiteParseEngine.parse_pages, run_cfg, path, pages)
-
-    text, truncated = TextClip.clip(result.text, run_cfg.max_text_chars)
-
-    parsed_pages: list[str] = []
-    for page in result.pages:
-        parsed_pages.append(str(page.page_num))
+    numbers: list[str] = []
+    for number in result.numbers:
+        numbers.append(str(number))
 
     return MarkdownResult(
-        text=TextClip.mark(text, truncated, run_cfg.max_text_chars),
+        text=TextClip.mark(text, truncated, cfg.max_text_chars),
         metadata={
             "path": path,
-            "pages": ",".join(parsed_pages),
+            "pages": ",".join(numbers),
             "truncated": str(truncated),
         },
     )
@@ -205,86 +204,41 @@ async def read_document(  # noqa: PLR0913 — фасад LLM, параметры
 async def document_outline(
     path: Annotated[str, Field(min_length=1, description=_PATH_DESCRIPTION)],
     ocr_enabled: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
-    num_workers: Annotated[
-        int, Field(ge=1, le=4, description=_WORKERS_DESCRIPTION)
-    ] = 1,
-    ocr_language: Annotated[
-        str, Field(min_length=1, description=_LANGUAGE_DESCRIPTION)
-    ] = "rus+eng",
     *,
     cfg: Annotated[DocToolSection, Injected],
 ) -> TableResult:
     """Карта документа по страницам: дешёвый обзор перед read_document."""
-    from boba.liteparse.engine import LiteParseEngine  # noqa: PLC0415
-
-    run_cfg = cfg.with_parser(
-        ocr_enabled=ocr_enabled, num_workers=num_workers, ocr_language=ocr_language
-    )
-
-    result = await asyncio.to_thread(LiteParseEngine.parse, run_cfg, path)
+    count, infos = await asyncio.to_thread(DocRun.outline, cfg, path, ocr_enabled)
 
     rows: list[dict[str, Any]] = []
-    for page in result.pages:
-        row = DocOutlineRow(
-            page=page.page_num,
-            width=round(page.width, 1),
-            height=round(page.height, 1),
-            chars=len(page.text),
-            items=len(page.text_items),
-        )
-        rows.append(row.model_dump())
+    for info in infos:
+        rows.append(info.model_dump())
 
     return TableResult(
         rows=rows,
-        note=f"{path}: pages {result.num_pages}",
+        note=f"{path}: pages {count}",
         metadata={"path": path},
     )
 
 
 @tool
-async def search_document(  # noqa: PLR0913 — фасад LLM, параметры независимы
+async def search_document(
     path: Annotated[str, Field(min_length=1, description=_PATH_DESCRIPTION)],
     query: Annotated[
         str, Field(min_length=1, description="Искомая фраза (регистронезависимо).")
     ],
     ocr_enabled: Annotated[bool, Field(description=_OCR_DESCRIPTION)] = False,
-    num_workers: Annotated[
-        int, Field(ge=1, le=4, description=_WORKERS_DESCRIPTION)
-    ] = 1,
-    ocr_language: Annotated[
-        str, Field(min_length=1, description=_LANGUAGE_DESCRIPTION)
-    ] = "rus+eng",
     *,
     cfg: Annotated[DocToolSection, Injected],
 ) -> TableResult:
-    """Найти фразу в документе: страница, координаты совпадения и сниппет."""
-    from boba.liteparse.engine import LiteParseEngine  # noqa: PLC0415
-
-    run_cfg = cfg.with_parser(
-        ocr_enabled=ocr_enabled, num_workers=num_workers, ocr_language=ocr_language
+    """Найти фразу в документе: страница, смещение, сниппет; у pdf — координаты."""
+    hits, limit_reached = await asyncio.to_thread(
+        DocRun.search, cfg, path, query, ocr_enabled
     )
 
-    native = await asyncio.to_thread(LiteParseEngine.parse_native, run_cfg, path)
-
     rows: list[dict[str, Any]] = []
-    limit_reached = False
-    for page in native.pages:
-        hits = LiteParseEngine.search_items(
-            page.text_items, query, case_sensitive=False
-        )
-        if not hits:
-            continue
-
-        matcher = PageMatchRows(page, query, run_cfg.search_context_chars)
-        for row in matcher.rows(hits):
-            if len(rows) >= run_cfg.search_max_matches:
-                limit_reached = True
-                break
-
-            rows.append(row.model_dump())
-
-        if limit_reached:
-            break
+    for hit in hits:
+        rows.append(hit.model_dump())
 
     note = f"{path}: matches {len(rows)}"
     if limit_reached:
@@ -298,7 +252,8 @@ async def search_document(  # noqa: PLR0913 — фасад LLM, параметр
 
 
 EXPECTED: Mapping[type[Exception], DocErrorKind] = {
-    LiteParseError: DocErrorKind.DOCUMENT_UNREADABLE,
+    DocumentError: DocErrorKind.DOCUMENT_UNREADABLE,
+    OcrUnavailableError: DocErrorKind.OCR_UNAVAILABLE,
 }
 
 TOOLS: Final = ToolMain.toolset(read_document, document_outline, search_document)

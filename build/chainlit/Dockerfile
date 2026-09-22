@@ -264,7 +264,7 @@ RUN rm -rf /tmp/plugin-setup.d /tmp/plugin-apt.txt \
            /usr/share/man /usr/share/doc /usr/share/info /usr/share/locale \
            /usr/share/lintian /var/cache/* /var/log/*
 
-# данные (веса эмбеддера, tessdata) монтирует рантайм: образ несёт точки монтирования
+# данные (веса эмбеддера, модели OCR) монтирует рантайм: образ несёт точки монтирования
 RUN for path in $(cat /tmp/plugin-data.txt); do mkdir -p "$path"; done \
     && for path in $(cat /tmp/plugin-data.txt); do test -d "$path"; done \
     && rm -f /tmp/plugin-data.txt

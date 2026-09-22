@@ -62,8 +62,10 @@ from boba.cfl_indexer.store import (
 from boba.config import ConfigError, bind_section
 from boba.confluence.models import AttachmentVerdict
 from boba.confluence.rest import ConfluenceConnection, ContentType
-from boba.doc import DocConfig, DocumentError, DocumentRouter
-from boba.doc.ocr import OcrConfig, OcrEngines
+from boba.doc.config import DocSection
+from boba.doc.document import DocumentError
+from boba.doc.ocr import OcrEngines
+from boba.doc.router import DocumentRouter
 from boba.ix_core.database import IxDatabase, IxDatabaseError, IxPool
 from boba.ix_core.schema_name import SchemaName
 from boba.ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError
@@ -71,7 +73,6 @@ from boba.ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError
 __all__ = [
     "CflAddress",
     "ConfluenceSource",
-    "DocSection",
     "IndexerConfig",
     "IndexerWorkerError",
     "Report",
@@ -106,12 +107,6 @@ class ConfluenceSource(BaseModel):
     spaces: SpaceSelector
 
 
-class DocSection(DocConfig):
-    """Таблица [ix.cfl_indexer.doc]: чтение вложений роутером boba-doc и OCR."""
-
-    ocr: OcrConfig
-
-
 class IndexerConfig(IxDatabase):
     """Секция [ix.cfl_indexer]."""
 
@@ -119,6 +114,7 @@ class IndexerConfig(IxDatabase):
     parallel_spaces: int = Field(ge=1, default=1)
     progress_every: int = Field(ge=1, default=100)
     doc: DocSection
+    """Таблица [ix.cfl_indexer.doc]: чтение вложений роутером boba-doc и OCR."""
     attachments: Sequence[str] = ()
     """Имя файла или media-type со слэшем; пусто — все."""
 

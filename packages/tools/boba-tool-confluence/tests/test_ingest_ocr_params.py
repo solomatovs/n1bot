@@ -29,9 +29,14 @@ def _config() -> IngestToolConfig:
             "confluence": {"host": "confl.example", "port": 443},
             "attachments": ["application/pdf", "*.txt"],
             "text_encodings": ["utf-8"],
-            "tessdata_path": "/usr/share/tessdata",
-            "ocr_language": "rus",
-            "num_workers": 3,
+            "spool_memory_limit": 1048576,
+            "ocr": {
+                "provider": "rapidocr",
+                "models_dir": "/var/cache/rapidocr",
+                "language": "eslav",
+                "text_score": 0.5,
+                "threads": 3,
+            },
             "page_workers": 1,
             "table_shape": {
                 "row_layout_max_columns": 4,
@@ -65,21 +70,18 @@ class TestIngestOcrParams:
         if names != self._NAMES:
             raise AssertionError("names == self._NAMES")
 
-    def test_call_ocr_overrides_config_and_keeps_admin_settings(self) -> None:
+    def test_call_ocr_keeps_admin_settings(self) -> None:
         run_cfg = _config().with_ocr(ocr=True)
 
-        if run_cfg.ocr_enabled is not True:
-            raise AssertionError("run_cfg.ocr_enabled is True")
-        if run_cfg.num_workers != 3:
-            raise AssertionError("ocr workers come from the config")
-        if run_cfg.ocr_language != "rus":
-            raise AssertionError("ocr language comes from the config")
+        assert run_cfg.ocr.enabled is True
+        assert run_cfg.ocr.fingerprint()["language"] == "eslav"
+        assert run_cfg.page_workers == 1
 
-    def test_config_ocr_is_off_until_the_call_asks(self) -> None:
-        cfg = _config()
+    def test_call_without_ocr_turns_the_provider_off(self) -> None:
+        run_cfg = _config().with_ocr(ocr=False)
 
-        if cfg.ocr_enabled is not False:
-            raise AssertionError("cfg.ocr_enabled is False")
+        assert run_cfg.ocr.enabled is False
+        assert _config().ocr.enabled is True
 
     @pytest.mark.parametrize("name", _INDEX_NAMES)
     def test_index_tools_take_only_target_attachments_and_ocr(self, name: str) -> None:

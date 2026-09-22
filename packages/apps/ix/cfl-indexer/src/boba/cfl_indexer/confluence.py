@@ -31,7 +31,7 @@ from boba.confluence.rest import (
     SpaceStatus,
     SpaceType,
 )
-from boba.doc import AsyncPipe
+from boba.doc.bridge import AsyncPipe
 from boba.transport.http import CancellableHttpTransport, HttpRequest
 
 __all__ = [

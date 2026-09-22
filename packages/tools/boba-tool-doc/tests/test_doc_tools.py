@@ -1,4 +1,4 @@
-"""Doc-инструменты: тела зовутся напрямую, документ парсит настоящий liteparse."""
+"""Doc-инструменты: тела зовутся напрямую, документ читают настоящие ридеры boba-doc."""
 
 from __future__ import annotations
 
@@ -7,13 +7,13 @@ from typing import Any
 
 import pytest
 
-from boba.text.document import LiteParseError
+from boba.doc.config import OcrUnavailableError
+from boba.doc.document import BoxedHit, DocumentError
+from boba.stand_core.samples import SamplePdf
 from boba.tool.doc.tools import (
     EXPECTED,
     TOOLS,
     DocErrorKind,
-    DocOutlineRow,
-    DocSearchRow,
     DocToolSection,
 )
 from boba.toolkit.entry import ToolArgv
@@ -25,25 +25,6 @@ pytestmark = pytest.mark.anyio
 @pytest.fixture(scope="module")
 def anyio_backend() -> str:
     return "asyncio"
-
-
-# Двухстраничный PDF: стр.1 "Alpha page one", стр.2 "Beta page two Alpha again".
-_PDF = b"""%PDF-1.4
-1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
-2 0 obj<</Type/Pages/Kids[3 0 R 6 0 R]/Count 2>>endobj
-3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 300]/Contents 4 0 R\
-/Resources<</Font<</F1 5 0 R>>>>>>endobj
-4 0 obj<</Length 50>>stream
-BT /F1 20 Tf 20 200 Td (Alpha page one) Tj ET
-endstream endobj
-5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj
-6 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 300]/Contents 7 0 R\
-/Resources<</Font<</F1 5 0 R>>>>>>endobj
-7 0 obj<</Length 60>>stream
-BT /F1 20 Tf 20 200 Td (Beta page two Alpha again) Tj ET
-endstream endobj
-trailer<</Root 1 0 R/Size 8>>
-%%EOF"""
 
 
 def _body(name: str) -> Any:
@@ -59,145 +40,108 @@ def _body(name: str) -> Any:
 
 
 def _cfg(**kw: Any) -> DocToolSection:
-    fields: dict[str, Any] = {"tessdata_path": "/usr/share/tessdata"}
+    fields: dict[str, Any] = {
+        "spool_memory_limit": 1 << 20,
+        "text_encodings": ["utf-8"],
+        "ocr": {"provider": "off"},
+    }
     fields.update(kw)
     return DocToolSection.model_validate(fields)
 
 
 @pytest.fixture
 def pdf(tmp_path: Path) -> str:
-    path = tmp_path / "doc.pdf"
-    path.write_bytes(_PDF)
-    return str(path)
+    return str(SamplePdf.written(tmp_path))
 
 
 class TestReadDocument:
     async def test_returns_all_pages(self, pdf: str) -> None:
         artifact = await _body("read_document")(path=pdf, pages="1-2", cfg=_cfg())
 
-        content = artifact.llm_view()
-
-        if not (isinstance(artifact, MarkdownResult)):
-            raise AssertionError("isinstance(artifact, MarkdownResult)")
-        if "Alpha page one" not in content:
-            raise AssertionError('"Alpha page one" in content')
-        if "Beta page two" not in content:
-            raise AssertionError('"Beta page two" in content')
-        if artifact.metadata["pages"] != "1,2":
-            raise AssertionError('artifact.metadata["pages"] == "1,2"')
-        if artifact.metadata["truncated"] != "False":
-            raise AssertionError('artifact.metadata["truncated"] == "False"')
+        assert isinstance(artifact, MarkdownResult)
+        assert SamplePdf.FIRST_PAGE in artifact.text
+        assert SamplePdf.SECOND_PAGE in artifact.text
+        assert artifact.metadata["pages"] == "1,2"
 
     async def test_selects_subset(self, pdf: str) -> None:
         artifact = await _body("read_document")(path=pdf, pages="2", cfg=_cfg())
 
-        content = artifact.llm_view()
-
-        if not (isinstance(artifact, MarkdownResult)):
-            raise AssertionError("isinstance(artifact, MarkdownResult)")
-        if "Beta page two" not in content:
-            raise AssertionError('"Beta page two" in content')
-        if "page one" in content:
-            raise AssertionError('"page one" not in content')
-        if artifact.metadata["pages"] != "2":
-            raise AssertionError('artifact.metadata["pages"] == "2"')
+        assert SamplePdf.SECOND_PAGE in artifact.text
+        assert SamplePdf.FIRST_PAGE not in artifact.text
+        assert artifact.metadata["pages"] == "2"
 
     async def test_clips_text_and_marks_for_llm(self, pdf: str) -> None:
         artifact = await _body("read_document")(
-            path=pdf, pages="1-2", cfg=_cfg(max_text_chars=5)
+            path=pdf, pages="1", cfg=_cfg(max_text_chars=5)
         )
 
-        content = artifact.llm_view()
+        assert artifact.metadata["truncated"] == "True"
+        assert "[truncated to 5 characters]" in artifact.text
 
-        if not (isinstance(artifact, MarkdownResult)):
-            raise AssertionError("isinstance(artifact, MarkdownResult)")
-        if artifact.metadata["truncated"] != "True":
-            raise AssertionError('artifact.metadata["truncated"] == "True"')
-        if "[truncated to 5 characters]" not in content:
-            raise AssertionError('"[truncated to 5 characters]" in content')
-
-    async def test_llm_parser_controls_reach_engine(self, pdf: str) -> None:
-        """Настройки вызова перекрывают секцию: без tessdata OCR падает сразу."""
-        body = _body("read_document")
-
-        with pytest.raises(LiteParseError):
-            await body(
-                path=pdf,
-                pages="1",
-                ocr_enabled=True,
-                cfg=_cfg(tessdata_path="/нет-такого-каталога"),
+    async def test_ocr_request_without_provider_is_declared_failure(
+        self, pdf: str
+    ) -> None:
+        with pytest.raises(OcrUnavailableError, match="provider = 'off'"):
+            await _body("read_document")(
+                path=pdf, pages="1", ocr_enabled=True, cfg=_cfg()
             )
+
+    async def test_bad_pages_spec_is_document_error(self, pdf: str) -> None:
+        with pytest.raises(DocumentError, match="numbers and ranges"):
+            await _body("read_document")(path=pdf, pages="a-b", cfg=_cfg())
 
 
 class TestDocumentOutline:
     async def test_row_per_page(self, pdf: str) -> None:
         artifact = await _body("document_outline")(path=pdf, cfg=_cfg())
 
-        if not (isinstance(artifact, TableResult)):
-            raise AssertionError("isinstance(artifact, TableResult)")
-
-        rows: list[DocOutlineRow] = []
-        for raw in artifact.rows:
-            rows.append(DocOutlineRow.model_validate(raw))
-
-        if [row.page for row in rows] != [1, 2]:
-            raise AssertionError("[row.page for row in rows] == [1, 2]")
-        if rows[0].chars <= 0:
-            raise AssertionError("rows[0].chars > 0")
-
-        if artifact.note is None:
-            raise AssertionError("artifact.note is not None")
-        if "pages 2" not in artifact.note:
-            raise AssertionError('"pages 2" in artifact.note')
+        assert isinstance(artifact, TableResult)
+        assert artifact.note is not None
+        assert "pages 2" in artifact.note
+        assert [row["number"] for row in artifact.rows] == [1, 2]
+        assert artifact.rows[0]["width"] > 0
 
 
 class TestSearchDocument:
     async def test_returns_coordinates_and_snippet(self, pdf: str) -> None:
-        artifact = await _body("search_document")(path=pdf, query="Alpha", cfg=_cfg())
+        artifact = await _body("search_document")(
+            path=pdf, query=SamplePdf.WORD.lower(), cfg=_cfg()
+        )
 
-        if not (isinstance(artifact, TableResult)):
-            raise AssertionError("isinstance(artifact, TableResult)")
-
-        rows: list[DocSearchRow] = []
-        for raw in artifact.rows:
-            rows.append(DocSearchRow.model_validate(raw))
-
-        if [row.page for row in rows] != [1, 2]:
-            raise AssertionError("[row.page for row in rows] == [1, 2]")
-        if "Alpha" not in rows[0].snippet:
-            raise AssertionError('"Alpha" in rows[0].snippet')
-        if rows[0].height <= 0:
-            raise AssertionError("rows[0].height > 0")
+        assert isinstance(artifact, TableResult)
+        rows = [BoxedHit.model_validate(raw) for raw in artifact.rows]
+        assert [row.page for row in rows] == [1, 2]
+        assert SamplePdf.WORD in rows[0].snippet
+        assert rows[0].height > 0
 
     async def test_reports_limit(self, pdf: str) -> None:
         artifact = await _body("search_document")(
-            path=pdf, query="Alpha", cfg=_cfg(search_max_matches=1)
+            path=pdf, query=SamplePdf.WORD, cfg=_cfg(search_max_matches=1)
         )
 
-        if not (isinstance(artifact, TableResult)):
-            raise AssertionError("isinstance(artifact, TableResult)")
-        if len(artifact.rows) != 1:
-            raise AssertionError("len(artifact.rows) == 1")
-
-        if artifact.note is None:
-            raise AssertionError("artifact.note is not None")
-        if "limit reached" not in artifact.note:
-            raise AssertionError('"limit reached" in artifact.note')
+        assert isinstance(artifact, TableResult)
+        assert len(artifact.rows) == 1
+        assert artifact.note is not None
+        assert "limit reached" in artifact.note
 
 
 class TestExpectedFailures:
-    async def test_unsupported_format_raises_declared_error(
-        self, tmp_path: Path
-    ) -> None:
-        doc = tmp_path / "notes.md"
-        doc.write_text("# Заметки", encoding="utf-8")
+    async def test_unknown_format_raises_declared_error(self, tmp_path: Path) -> None:
+        doc = tmp_path / "blob.xyz"
+        doc.write_bytes(b"\x00\x01\x02 not a document")
 
-        with pytest.raises(LiteParseError, match=r"\.md"):
+        with pytest.raises(DocumentError, match="format not recognized"):
             await _body("read_document")(path=str(doc), pages="1", cfg=_cfg())
 
-    def test_parse_error_maps_to_document_unreadable(self) -> None:
-        if EXPECTED[LiteParseError] is not DocErrorKind.DOCUMENT_UNREADABLE:
-            raise AssertionError("EXPECTED[LiteParseError] is DocErrorKind.DOCUMENT_U…")
+    async def test_missing_file_raises_declared_error(self, tmp_path: Path) -> None:
+        with pytest.raises(DocumentError, match="cannot open the file"):
+            await _body("read_document")(
+                path=str(tmp_path / "absent.pdf"), pages="1", cfg=_cfg()
+            )
+
+    def test_error_kinds(self) -> None:
+        assert EXPECTED[DocumentError] is DocErrorKind.DOCUMENT_UNREADABLE
+        assert EXPECTED[OcrUnavailableError] is DocErrorKind.OCR_UNAVAILABLE
 
 
 class TestSchemas:
@@ -213,38 +157,27 @@ class TestSchemas:
         return cls._tool(name).args_schema.model_json_schema()
 
     def test_all_tools_registered(self) -> None:
-        if [t.name for t in TOOLS] != list(self._NAMES):
-            raise AssertionError("[t.name for t in TOOLS] == list(self._NAMES)")
+        assert [t.name for t in TOOLS] == list(self._NAMES)
 
     def test_read_document_requires_path_and_pages(self) -> None:
         schema = self._schema("read_document")
 
-        if "path" not in schema["required"]:
-            raise AssertionError('"path" in schema["required"]')
-        if "pages" not in schema["required"]:
-            raise AssertionError('"pages" in schema["required"]')
+        assert "path" in schema["required"]
+        assert "pages" in schema["required"]
 
     @pytest.mark.parametrize("name", _NAMES)
     def test_cfg_is_hidden_from_llm(self, name: str) -> None:
         """cfg объявлен injected: обёртка запуска снимает его со схемы для LLM."""
         injected = ToolArgv.injected_fields(self._tool(name).args_schema)
-        if "cfg" not in injected:
-            raise AssertionError('"cfg" in injected fields of the schema')
+
+        assert "cfg" in injected
 
     @pytest.mark.parametrize("name", _NAMES)
-    def test_ocr_controls_are_optional_with_defaults(self, name: str) -> None:
+    def test_ocr_is_the_only_optional_control(self, name: str) -> None:
         schema = self._schema(name)
         props = schema["properties"]
 
-        if props["ocr_enabled"]["default"] is not False:
-            raise AssertionError('props["ocr_enabled"]["default"] is False')
-        if props["num_workers"]["default"] != 1:
-            raise AssertionError('props["num_workers"]["default"] == 1')
-        if props["num_workers"]["maximum"] != 4:
-            raise AssertionError('props["num_workers"]["maximum"] == 4')
-        if props["ocr_language"]["default"] != "rus+eng":
-            raise AssertionError('props["ocr_language"]["default"] == "rus+eng"')
-
-        for control in ("ocr_enabled", "num_workers", "ocr_language"):
-            if control in schema["required"]:
-                raise AssertionError('control not in schema["required"]')
+        assert props["ocr_enabled"]["default"] is False
+        assert "ocr_enabled" not in schema["required"]
+        assert "num_workers" not in props
+        assert "ocr_language" not in props

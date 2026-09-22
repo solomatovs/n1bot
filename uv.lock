@@ -41,7 +41,6 @@ members = [
     "boba-kerberos",
     "boba-krb",
     "boba-ldap",
-    "boba-liteparse",
     "boba-llm",
     "boba-messaging",
     "boba-ora-meta-scraper",
@@ -74,8 +73,7 @@ members = [
 [manifest.dependency-groups]
 dev = [
     { name = "beautifulsoup4", specifier = ">=4.12" },
-    { name = "boba-doc", extras = ["ocr"], editable = "packages/infra/format/boba-doc" },
-    { name = "boba-liteparse", editable = "packages/infra/format/boba-liteparse" },
+    { name = "boba-doc", extras = ["readers", "ocr"], editable = "packages/infra/format/boba-doc" },
     { name = "clickhouse-connect", extras = ["async"], specifier = ">=1.6,<2" },
     { name = "fastembed", specifier = ">=0.4,<1" },
     { name = "lxml", specifier = ">=5.0" },
@@ -506,7 +504,7 @@ source = { editable = "packages/apps/ix/cfl-indexer" }
 dependencies = [
     { name = "boba-config", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-confluence", extra = ["html"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-doc", extra = ["ocr"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-doc", extra = ["ocr", "readers"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-ix-core", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-transport-http", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "httpx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -528,7 +526,7 @@ dev = [
 requires-dist = [
     { name = "boba-config", editable = "packages/infra/config/boba-config" },
     { name = "boba-confluence", extras = ["html"], editable = "packages/infra/format/boba-confluence" },
-    { name = "boba-doc", extras = ["ocr"], editable = "packages/infra/format/boba-doc" },
+    { name = "boba-doc", extras = ["readers", "ocr"], editable = "packages/infra/format/boba-doc" },
     { name = "boba-ix-core", editable = "packages/infra/ix/ix-core" },
     { name = "boba-ix-fts", marker = "extra == 'dev'", editable = "packages/apps/ix/ix-fts" },
     { name = "boba-ix-trgm", marker = "extra == 'dev'", editable = "packages/apps/ix/ix-trgm" },
@@ -619,9 +617,9 @@ dev = [
     { name = "boba-connection-broker", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-connections", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-db-clickhouse", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-doc", extra = ["readers"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-kerberos", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-krb", extra = ["seal"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-liteparse", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-stand", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-stand-core", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-text", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -658,11 +656,11 @@ requires-dist = [
     { name = "boba-connections", marker = "extra == 'dev'", editable = "packages/core/boba-connections" },
     { name = "boba-db-clickhouse", marker = "extra == 'dev'", editable = "packages/infra/db/boba-db-clickhouse" },
     { name = "boba-db-postgres", editable = "packages/infra/db/boba-db-postgres" },
+    { name = "boba-doc", extras = ["readers"], marker = "extra == 'dev'", editable = "packages/infra/format/boba-doc" },
     { name = "boba-identity", editable = "packages/core/boba-identity" },
     { name = "boba-kerberos", marker = "extra == 'dev'", editable = "packages/core/boba-kerberos" },
     { name = "boba-krb", editable = "packages/infra/auth/boba-krb" },
     { name = "boba-krb", extras = ["seal"], marker = "extra == 'dev'", editable = "packages/infra/auth/boba-krb" },
-    { name = "boba-liteparse", marker = "extra == 'dev'", editable = "packages/infra/format/boba-liteparse" },
     { name = "boba-llm", extras = ["chat"], editable = "packages/infra/llm/boba-llm" },
     { name = "boba-messaging", editable = "packages/core/boba-messaging" },
     { name = "boba-runtime", editable = "packages/services/boba-runtime" },
@@ -1013,20 +1011,17 @@ name = "boba-doc"
 version = "0.0.22.dev1"
 source = { editable = "packages/infra/format/boba-doc" }
 dependencies = [
-    { name = "openpyxl", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pillow", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "pypdfium2", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "python-docx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "python-pptx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "striprtf", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "xlrd", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
 [package.optional-dependencies]
 dev = [
     { name = "boba-stand", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "openpyxl", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "python-docx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "python-pptx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "xlwt", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 ocr = [
@@ -1034,25 +1029,36 @@ ocr = [
     { name = "onnxruntime", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "rapidocr", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
+readers = [
+    { name = "openpyxl", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "pypdfium2", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "python-docx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "python-pptx", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "striprtf", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "xlrd", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "boba-stand", marker = "extra == 'dev'", editable = "packages/testing/boba-stand" },
     { name = "numpy", marker = "extra == 'ocr'", specifier = ">=1.26" },
     { name = "onnxruntime", marker = "extra == 'ocr'", specifier = ">=1.20" },
-    { name = "openpyxl", specifier = ">=3.1,<4" },
+    { name = "openpyxl", marker = "extra == 'dev'", specifier = ">=3.1,<4" },
+    { name = "openpyxl", marker = "extra == 'readers'", specifier = ">=3.1,<4" },
     { name = "pillow", specifier = ">=10" },
     { name = "pydantic", specifier = ">=2.10,<2.11" },
-    { name = "pypdfium2", specifier = ">=5,<6" },
+    { name = "pypdfium2", marker = "extra == 'readers'", specifier = ">=5,<6" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
-    { name = "python-docx", specifier = ">=1.2,<2" },
-    { name = "python-pptx", specifier = ">=1,<2" },
+    { name = "python-docx", marker = "extra == 'dev'", specifier = ">=1.2,<2" },
+    { name = "python-docx", marker = "extra == 'readers'", specifier = ">=1.2,<2" },
+    { name = "python-pptx", marker = "extra == 'dev'", specifier = ">=1,<2" },
+    { name = "python-pptx", marker = "extra == 'readers'", specifier = ">=1,<2" },
     { name = "rapidocr", marker = "extra == 'ocr'", specifier = ">=3.9,<4" },
-    { name = "striprtf", specifier = ">=0.0.29,<1" },
-    { name = "xlrd", specifier = ">=2,<3" },
+    { name = "striprtf", marker = "extra == 'readers'", specifier = ">=0.0.29,<1" },
+    { name = "xlrd", marker = "extra == 'readers'", specifier = ">=2,<3" },
     { name = "xlwt", marker = "extra == 'dev'", specifier = ">=1.3" },
 ]
-provides-extras = ["ocr", "dev"]
+provides-extras = ["readers", "ocr", "dev"]
 
 [[package]]
 name = "boba-identity"
@@ -1324,30 +1330,6 @@ dev = [
 requires-dist = [
     { name = "boba-identity", editable = "packages/core/boba-identity" },
     { name = "ldap3" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
-]
-provides-extras = ["dev"]
-
-[[package]]
-name = "boba-liteparse"
-version = "0.0.22.dev1"
-source = { editable = "packages/infra/format/boba-liteparse" }
-dependencies = [
-    { name = "boba-text", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "liteparse", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "boba-indexing", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "boba-indexing", marker = "extra == 'dev'", editable = "packages/core/boba-indexing" },
-    { name = "boba-text", editable = "packages/infra/format/boba-text" },
-    { name = "liteparse", specifier = ">=2,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
 ]
 provides-extras = ["dev"]
@@ -1802,7 +1784,6 @@ version = "0.0.22.dev1"
 source = { editable = "packages/infra/format/boba-text" }
 dependencies = [
     { name = "boba-indexing", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
 [package.optional-dependencies]
@@ -1813,7 +1794,6 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "boba-indexing", editable = "packages/core/boba-indexing" },
-    { name = "pydantic", specifier = ">=2.10,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
 ]
 provides-extras = ["dev"]
@@ -1915,6 +1895,7 @@ dependencies = [
     { name = "boba-confluence", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-db-pgvector", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-db-postgres", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-doc", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-indexing", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-llm", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-text", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
@@ -1928,20 +1909,17 @@ dependencies = [
 dev = [
     { name = "boba-config", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-confluence", extra = ["html"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-liteparse", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-runtime", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-sandbox", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-stand", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "liteparse", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "omegaconf", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "psycopg", extra = ["binary", "pool"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 payload = [
     { name = "boba-confluence", extra = ["html"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "boba-liteparse", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-doc", extra = ["ocr", "readers"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-llm", extra = ["payload"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "liteparse", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "lxml", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
@@ -1954,9 +1932,9 @@ requires-dist = [
     { name = "boba-confluence", extras = ["html"], marker = "extra == 'payload'", editable = "packages/infra/format/boba-confluence" },
     { name = "boba-db-pgvector", editable = "packages/infra/db/boba-db-pgvector" },
     { name = "boba-db-postgres", editable = "packages/infra/db/boba-db-postgres" },
+    { name = "boba-doc", editable = "packages/infra/format/boba-doc" },
+    { name = "boba-doc", extras = ["readers", "ocr"], marker = "extra == 'payload'", editable = "packages/infra/format/boba-doc" },
     { name = "boba-indexing", editable = "packages/core/boba-indexing" },
-    { name = "boba-liteparse", marker = "extra == 'dev'", editable = "packages/infra/format/boba-liteparse" },
-    { name = "boba-liteparse", marker = "extra == 'payload'", editable = "packages/infra/format/boba-liteparse" },
     { name = "boba-llm", editable = "packages/infra/llm/boba-llm" },
     { name = "boba-llm", extras = ["payload"], marker = "extra == 'payload'", editable = "packages/infra/llm/boba-llm" },
     { name = "boba-runtime", marker = "extra == 'dev'", editable = "packages/services/boba-runtime" },
@@ -1966,8 +1944,6 @@ requires-dist = [
     { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
     { name = "boba-transport-http", editable = "packages/infra/transport/boba-transport-http" },
     { name = "httpx", extras = ["http2"], specifier = ">=0.28,<1" },
-    { name = "liteparse", marker = "extra == 'dev'", specifier = ">=2,<3" },
-    { name = "liteparse", marker = "extra == 'payload'", specifier = ">=2,<3" },
     { name = "lxml", marker = "extra == 'payload'", specifier = ">=5.0" },
     { name = "omegaconf", marker = "extra == 'dev'", specifier = ">=2.3,<3" },
     { name = "psycopg", extras = ["binary", "pool"], marker = "extra == 'dev'", specifier = ">=3.2" },
@@ -2073,7 +2049,7 @@ name = "boba-tool-doc"
 version = "0.0.22.dev1"
 source = { editable = "packages/tools/boba-tool-doc" }
 dependencies = [
-    { name = "boba-text", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-doc", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "boba-toolkit", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
     { name = "pydantic", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
@@ -2085,18 +2061,16 @@ dev = [
     { name = "pytest", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 payload = [
-    { name = "boba-liteparse", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
-    { name = "liteparse", marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
+    { name = "boba-doc", extra = ["ocr", "readers"], marker = "python_full_version < '3.12' and sys_platform == 'linux'" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "boba-config", marker = "extra == 'dev'", editable = "packages/infra/config/boba-config" },
-    { name = "boba-liteparse", marker = "extra == 'payload'", editable = "packages/infra/format/boba-liteparse" },
+    { name = "boba-doc", editable = "packages/infra/format/boba-doc" },
+    { name = "boba-doc", extras = ["readers", "ocr"], marker = "extra == 'payload'", editable = "packages/infra/format/boba-doc" },
     { name = "boba-stand-core", marker = "extra == 'dev'", editable = "packages/core/boba-stand-core" },
-    { name = "boba-text", editable = "packages/infra/format/boba-text" },
     { name = "boba-toolkit", editable = "packages/core/boba-toolkit" },
-    { name = "liteparse", marker = "extra == 'payload'", specifier = ">=2,<3" },
     { name = "pydantic", specifier = ">=2.10,<2.11" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
 ]
@@ -3720,31 +3694,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/43/ac/96bd5464e3edbc61595d0d69989f5d9969ae411866427b2500a8e5b812c0/ldap3-2.9.1.tar.gz", hash = "sha256:f3e7fc4718e3f09dda568b57100095e0ce58633bcabbed8667ce3f8fbaa4229f", size = 398830, upload-time = "2021-07-18T06:34:21.786Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4e/f6/71d6ec9f18da0b2201287ce9db6afb1a1f637dedb3f0703409558981c723/ldap3-2.9.1-py2.py3-none-any.whl", hash = "sha256:5869596fc4948797020d3f03b7939da938778a0f9e2009f7a072ccf92b8e8d70", size = 432192, upload-time = "2021-07-18T06:34:12.905Z" },
-]
-
-[[package]]
-name = "liteparse"
-version = "2.1.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/2f/27/dc57cbed2071f156df07fcee4ff57b3a66da6871b5b7e51a8853d7778f4b/liteparse-2.1.1.tar.gz", hash = "sha256:4599d34efdf10ff2c12c4a81ce7011bc5f95baed5b9b7602d2a7bb255cafe1d4", size = 303171, upload-time = "2026-06-18T18:56:31.229Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/a2/24/efe19e502016c1a39b32bfbcd608222e644701ef4acaefc9d1068c2659a7/liteparse-2.1.1-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:533e8ca323e1272cdd9eb3f052e5430427d825038a0fee42d8dba3727e918344", size = 9226782, upload-time = "2026-06-18T18:55:37.103Z" },
-    { url = "https://files.pythonhosted.org/packages/8e/7f/74ff9abf5539e8b00d12145e158d8ec7bc8a47478a61de46bb55de403c23/liteparse-2.1.1-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:4753defcbc91f82fe0e9af9596171c78096a1d9738c5a06fdb63103adb4f89ee", size = 9561125, upload-time = "2026-06-18T18:55:39.023Z" },
-    { url = "https://files.pythonhosted.org/packages/8b/72/f8fb7485d53e2a079950fd435485845d7521218d0a68689d2ea853427f9d/liteparse-2.1.1-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:1e2ebaef1099d4af1d0cd91e4b8d12bdc6575ded8438228f1f9d8f000db5f198", size = 9222726, upload-time = "2026-06-18T18:55:46.669Z" },
-    { url = "https://files.pythonhosted.org/packages/52/09/d9807b375ad95eae6853f8c0e0e25bc835fecf86d327da604a6003d6bc41/liteparse-2.1.1-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:ac51ba1a0b997eb5a9d36431b40173ad9ceb8d07313cc7f7d110868468b5f942", size = 9559937, upload-time = "2026-06-18T18:55:48.167Z" },
-    { url = "https://files.pythonhosted.org/packages/c5/17/67f9c0b35ccc17b22d81746d67eca6c69beda3dbb9b63c1d362719789e77/liteparse-2.1.1-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:e0d2e6b20be7af9fbc2342771e61013e7255e4234740d7228f28e622784bb95f", size = 12583415, upload-time = "2026-06-18T18:55:50.141Z" },
-    { url = "https://files.pythonhosted.org/packages/92/96/bbabd6f5022d892b3b49b9f795924fb89c9f949cdaa9939aa2150d727788/liteparse-2.1.1-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:100149538a1f2404ceac4fefd1f901c60345d8ebba8354ee4d7468235d6a1884", size = 9222632, upload-time = "2026-06-18T18:55:58.264Z" },
-    { url = "https://files.pythonhosted.org/packages/7d/89/9d1700e2e1133cd527a70a6bd3032c79bfeaac0c42a8afede53bcb4f6d96/liteparse-2.1.1-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:6f6c2564944377ba38fd5f960f26f58807dfef18075f996d1d6d7a222f8b86ca", size = 9558442, upload-time = "2026-06-18T18:56:00.438Z" },
-    { url = "https://files.pythonhosted.org/packages/fe/a0/e9571170a1c22e57dd4a0528ff823c02fffe464990947664ee59be7ff679/liteparse-2.1.1-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:03bfeaa6c1062586c48bed5cff681dda04949f66b09a37969d8433aace2d87f3", size = 9222083, upload-time = "2026-06-18T18:56:09.105Z" },
-    { url = "https://files.pythonhosted.org/packages/3c/ad/e806931555f231f11d1cfd95586f3e15211838067dc535a1aab182a26308/liteparse-2.1.1-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:c945f86671feb544745a8087ca6968eb85d2d665ffd50c0066d5cb1a50aff5db", size = 9555635, upload-time = "2026-06-18T18:56:11.117Z" },
-    { url = "https://files.pythonhosted.org/packages/d8/d1/7c87658466e0a55d0ad791bc52afd757532042271e823c825cfa84a2f634/liteparse-2.1.1-cp314-cp314t-manylinux_2_28_aarch64.whl", hash = "sha256:c8f4335c4d7948ef328716a63affd174a9b5e6ba4c2296f338e47fb28ee391d3", size = 9224999, upload-time = "2026-06-18T18:56:16.207Z" },
-    { url = "https://files.pythonhosted.org/packages/f0/f3/954152fa210d81467ba7880799e694a20a00dae3e9d99e6c361fa1b191bd/liteparse-2.1.1-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:a920a06f04e15115e7ba24d1f6b433426969e16f34283869dd4c7d96c670959a", size = 9562341, upload-time = "2026-06-18T18:56:18.065Z" },
-    { url = "https://files.pythonhosted.org/packages/29/df/b279b54f7bf1de944746b5e0d9b47119a816eeaa62eaa9d7475cfa0dfa09/liteparse-2.1.1-cp315-cp315-manylinux_2_28_aarch64.whl", hash = "sha256:d9e8015abc452b5b5bd44a4b55233875ab5ab6c849d8efaa1822db40d01c7f3d", size = 9224081, upload-time = "2026-06-18T18:56:19.874Z" },
-    { url = "https://files.pythonhosted.org/packages/22/79/ec58c8143ed16b326ec255c009a88cc4d997fb2aaaa709ba525f1b94defc/liteparse-2.1.1-cp315-cp315-manylinux_2_28_x86_64.whl", hash = "sha256:f92c24a8111e517efc50283655b5b6c495988be1eeafa6e0480560e8705213f5", size = 9555811, upload-time = "2026-06-18T18:56:21.88Z" },
-    { url = "https://files.pythonhosted.org/packages/47/c0/889f657c218b16d30f9973f3a8f90b2761be67f082e382ecc657eebbd546/liteparse-2.1.1-cp315-cp315t-manylinux_2_28_aarch64.whl", hash = "sha256:f88a0d5c8af48da244799526feee2b8039a762dd6a80483ccc2c5c7a767d1801", size = 9225351, upload-time = "2026-06-18T18:56:23.776Z" },
-    { url = "https://files.pythonhosted.org/packages/df/98/4f5ec2f2ecc183719f9a2cba517bd2522effefe4ac3e957ac7c71c6dee0d/liteparse-2.1.1-cp315-cp315t-manylinux_2_28_x86_64.whl", hash = "sha256:e937798a893601a999b569390b19f7cf9ec6eba9aa2de3443644949c4b2fdbde", size = 9563274, upload-time = "2026-06-18T18:56:25.682Z" },
-    { url = "https://files.pythonhosted.org/packages/e8/2d/ca22c7dce2eed14051fa47ff61419fa6a763329dda1890b2c7e905a3ac72/liteparse-2.1.1-pp311-pypy311_pp73-manylinux_2_28_aarch64.whl", hash = "sha256:1216faf822d111acf3ee86cf736d5adf1f5ce3c8968fd23620341ca4658ee2b7", size = 9229727, upload-time = "2026-06-18T18:56:27.521Z" },
-    { url = "https://files.pythonhosted.org/packages/54/ce/6b60d15fd0c37c413d358773d6cc4781e8176d1a96b35384854b5957b702/liteparse-2.1.1-pp311-pypy311_pp73-manylinux_2_28_x86_64.whl", hash = "sha256:6d044d3b4c0fe97ecbf3b6f05a2be1169ce250a9c102d5143f2029ab5a280729", size = 9561573, upload-time = "2026-06-18T18:56:29.622Z" },
 ]
 
 [[package]]

@@ -17,7 +17,7 @@ from cfl_stand import PACKAGE_DIR, StubIndexer
 from PIL import Image, ImageDraw
 
 from boba.cfl_indexer.worker import IndexerConfig, Report, run_spaces
-from boba.doc.ocr import OcrLanguage, RapidOcrConfig
+from boba.doc.config import OcrLanguage, RapidOcrConfig
 from boba.stand.confluence import ConfluenceStub, StubAttachment, StubPage, StubSpace
 from boba.stand.doc import DocStand
 

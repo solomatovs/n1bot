@@ -35,6 +35,7 @@ from boba.db.pgvector.store import (
     PostgresCollectionsStore,
     PostgresSourceLedger,
 )
+from boba.doc.config import DocSection
 from boba.indexing import (
     ChunkStore,
     CollectionScopedView,
@@ -53,7 +54,6 @@ from boba.indexing.ports import Chunker, Embedder, ReaderId
 from boba.indexing.values import CollectionId
 from boba.llm.embedding import EmbeddingConfig
 from boba.llm.warm import WarmEmbedder
-from boba.text.document import LiteParseParams
 from boba.tool.confluence.chunking import (
     ChunkerParams,
     StructuralChunkerFactory,
@@ -91,7 +91,7 @@ __all__ = [
 logger = logging.getLogger("boba.tool.confluence.ingest")
 
 
-class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams, LiteParseParams):
+class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams, DocSection):
     """Self-contained конфиг семейства tool'ов confluence_index_*."""
 
     model_config = ConfigDict(extra="ignore")
@@ -119,18 +119,6 @@ class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams, LiteParseParams
             ),
         ),
     ]
-    text_encodings: Annotated[
-        StringList,
-        Field(
-            min_length=1,
-            description=(
-                "Кодировки текстовых вложений (`text/plain`, `text/markdown`, "
-                "`text/csv`) в порядке перебора: первая, которой payload "
-                "декодировался, и выигрывает. Не подошла ни одна — вложение "
-                "уходит в `failed`."
-            ),
-        ),
-    ]
     page_workers: int = Field(
         ge=1,
         description=(
@@ -138,8 +126,8 @@ class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams, LiteParseParams
             "занимает поток разбора, поэтому реальный потолок задают лимиты "
             "песочницы: cpu-квота (`cgroup_cpu_percent`), суммарное cpu-время "
             "(`max_cpu_sec` — оно тратится в page_workers раз быстрее) и память "
-            "(`cgroup_memory_bytes`: OCR берёт `num_workers` × 50-100 MiB на "
-            "документ). Пул соединений postgres должен быть не меньше page_workers."
+            "(`cgroup_memory_bytes`: сессии OCR держат сотни MiB). Пул "
+            "соединений postgres должен быть не меньше page_workers."
         ),
     )
 
@@ -158,8 +146,8 @@ class ConfluenceIngestConfig(PostgresStoreConfig, ChunkerParams, LiteParseParams
         return self
 
     def with_ocr(self, *, ocr: bool) -> Self:
-        """Копия с режимом OCR, выбранным вызовом; язык и воркеры из конфига."""
-        return self.model_copy(update={"ocr_enabled": ocr})
+        """Секция под режим OCR вызова; язык и модели — из конфига."""
+        return self.for_call(ocr=ocr)
 
 
 class IngestLine(BaseModel):
@@ -457,14 +445,14 @@ class ConfluenceIngest:
         gate = AttachmentGate(
             allowed=AttachmentFilter.of_masks(cfg.attachments),
             requested=attachments,
-            ocr=cfg.ocr_enabled,
+            ocr=cfg.ocr.enabled,
         )
-        grade = ParseGrade.of(ocr=cfg.ocr_enabled)
+        grade = ParseGrade.of(ocr=cfg.ocr.enabled)
         logger.info(
             "ingest %s: attachments=%s ocr=%s",
             scope.label(),
             attachments,
-            cfg.ocr_enabled,
+            cfg.ocr.enabled,
         )
         conn = ConfluenceConnection(
             profile=cfg.confluence,

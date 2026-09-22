@@ -11,14 +11,9 @@ import pytest
 from cfl_stand import PACKAGE_DIR
 
 from boba.cfl_indexer.confluence import SpaceSelector
-from boba.cfl_indexer.worker import (
-    ConfluenceSource,
-    DocSection,
-    IndexerConfig,
-    run_spaces,
-)
+from boba.cfl_indexer.worker import ConfluenceSource, IndexerConfig, run_spaces
 from boba.confluence.rest import ConfluenceConnection, SpaceType
-from boba.doc.ocr import DisabledOcrConfig
+from boba.doc.config import DisabledOcrConfig, DocSection
 from boba.stand.ix import IxStand, IxStandDatabase
 from boba.stand.site import Stand
 from boba.transport.http.profile import BearerAuth, HttpConnection

@@ -13,6 +13,7 @@ dependencies = [
     "boba-confluence==0.0.22.dev1",
     "boba-db-postgres==0.0.22.dev1",
     "boba-db-pgvector==0.0.22.dev1",
+    "boba-doc==0.0.22.dev1",
     "boba-indexing==0.0.22.dev1",
     "boba-llm==0.0.22.dev1",
     "boba-text==0.0.22.dev1",
@@ -29,20 +30,17 @@ ingest = "boba.tool.confluence.plugin:INGEST"
 
 [project.optional-dependencies]
 payload = [
-    "boba-liteparse==0.0.22.dev1",
+    "boba-doc[readers,ocr]==0.0.22.dev1",
     "boba-llm[payload]==0.0.22.dev1",
     "boba-confluence[html]==0.0.22.dev1",
     "lxml>=5.0",
-    "liteparse>=2,<3",
 ]
 dev = [
     "boba-runtime==0.0.22.dev1",
-    "boba-liteparse==0.0.22.dev1",
     "boba-sandbox==0.0.22.dev1",
     "boba-config==0.0.22.dev1",
     "boba-confluence[html]==0.0.22.dev1",
     "boba-stand==0.0.22.dev1",
-    "liteparse>=2,<3",
     "omegaconf>=2.3,<3",
     "psycopg[binary,pool]>=3.2",
     "pytest>=8",
@@ -54,4 +52,4 @@ include = ["boba*"]
 namespaces = true
 
 [tool.boba.sandbox]
-imports = ["fastembed", "liteparse"]
+imports = ["fastembed", "pypdfium2", "rapidocr"]

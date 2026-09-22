@@ -85,9 +85,9 @@ class SandboxLayout:
         "boba-tool-knowledge": (("fastembed", "/var/cache/fastembed"),),
         "boba-tool-confluence": (
             ("fastembed", "/var/cache/fastembed"),
-            ("tessdata", "/usr/share/tessdata"),
+            ("rapidocr", "/var/cache/rapidocr"),
         ),
-        "boba-tool-doc": (("tessdata", "/usr/share/tessdata"),),
+        "boba-tool-doc": (("rapidocr", "/var/cache/rapidocr"),),
     }
     """Данные моделей по пакетам: рантайм монтирует их биндами ([sandbox].binds
     секций), образ несёт только пустые точки — и только у пакетов, в замыкании

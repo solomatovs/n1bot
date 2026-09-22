@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from boba.doc import DisabledOcr, DocConfig, DocumentRouter
-from boba.doc.ocr import OcrLanguage, RapidOcrConfig, RapidOcrEngine
+from boba.doc.config import DocConfig, OcrLanguage, RapidOcrConfig
+from boba.doc.document import DisabledOcr
+from boba.doc.ocr import RapidOcrEngine
+from boba.doc.router import DocumentRouter
 from boba.stand.doc import DocStand
 
 

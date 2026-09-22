@@ -10,7 +10,8 @@ httpx.HTTPError — Confluence недоступен или ответил ста
 TransportError — список страниц забрать не удалось.
 ConfluencePayloadError — Confluence ответил не тем JSON, который ждали.
 AttachmentNotFoundError — вложения с таким именем на странице нет.
-LiteParseError — вложение скачалось, но не разбирается.
+DocumentError — вложение скачалось, но не разбирается (boba.doc.document).
+OcrUnavailableError — вызов просил OCR при ocr.provider = off (boba.doc.config).
 EmbeddingError — удалённый эмбеддер недоступен или ответил мусором.
 Сбой отдельной страницы или вложения ingest переживает сам: источник уходит
 в счётчик failed, прогон идёт дальше.
@@ -19,6 +20,7 @@ EmbeddingError — удалённый эмбеддер недоступен ил
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import sys
 from collections.abc import AsyncIterator, Mapping
@@ -41,6 +43,8 @@ from boba.confluence.models import (
 )
 from boba.confluence.rest import ConfluenceUrl
 from boba.db.postgres import PostgresError
+from boba.doc.config import OcrUnavailableError
+from boba.doc.document import DocumentError, DocumentHint, PageWindow
 from boba.indexing import (
     DocumentCardSection,
     IncompatibleContentError,
@@ -58,7 +62,6 @@ from boba.indexing import (
 )
 from boba.llm.embedding import EmbeddingConfig, EmbeddingError
 from boba.llm.warm import WarmEmbedder
-from boba.text.document import LiteParseError, LiteParseParams
 from boba.tool.confluence.indexing_log import IngestProgress, LoggingReader
 from boba.tool.confluence.ingest_base import (
     ConfluenceIngest,
@@ -75,6 +78,8 @@ from boba.toolkit.types import SecretRevealing
 
 logger = logging.getLogger("boba.tool.confluence.ingest")
 
+PAGE_GLUE = "\n\n"
+
 _ATTACHMENTS_DESCRIPTION = (
     "Читать ли вложения страниц: true — все вложения, разрешённые "
     "администратором (документы, таблицы, презентации, текст; картинки только "
@@ -83,7 +88,7 @@ _ATTACHMENTS_DESCRIPTION = (
 )
 _OCR_DESCRIPTION = (
     "OCR вложений: true распознаёт текст по картинкам и сканам, false — только "
-    "текстовый слой. OCR дорог: минуты и гигабайты памяти на документ. "
+    "текстовый слой. OCR дорог: секунды на страницу. "
     "Вложение, уже разобранное с OCR, повторно не разбирается."
 )
 
@@ -99,6 +104,7 @@ class IngestErrorKind(StrEnum):
     REQUEST_FAILED = "ingest_request_failed"
     ATTACHMENT_NOT_FOUND = "attachment_not_found"
     DOCUMENT_UNREADABLE = "document_unreadable"
+    OCR_UNAVAILABLE = "ocr_unavailable"
     EMBEDDING_FAILED = "embedding_failed"
 
 
@@ -269,17 +275,15 @@ class IngestRun:
 
     @staticmethod
     def routes(cfg: IngestToolConfig) -> dict[str, Reader[str]]:
-        """HTML читает bs4-ридер, документы — liteparse, txt/md/csv — decode.
+        """HTML читает bs4-ридер, документы — boba-doc, txt/md/csv — decode.
 
         Каждый роут обёрнут логом: иначе долгий разбор (OCR) молчит до конца.
         """
-        # liteparse тяжёлый: грузится только в процессе прогона
+        # ридеры форматов тяжёлые: грузятся только в процессе прогона
         from boba.text import TextMedia  # noqa: PLC0415
-        from boba.tool.confluence.document_log import (  # noqa: PLC0415
-            LoggingDocumentReader,
-        )
+        from boba.tool.confluence.documents import DocumentReader  # noqa: PLC0415
 
-        documents = LoggingDocumentReader(cfg)
+        documents = DocumentReader(cfg)
         plain: dict[str, Reader[str]] = {}
         for content_type in ConfluenceIngest.HTML_CONTENT_TYPES:
             plain[content_type] = LocalConfluenceReader(cfg.table_shape)
@@ -456,17 +460,24 @@ async def confluence_attachment(
 
     content = await ConfluenceHttp.get(rest_cfg, ConfluenceUrl.link(link))
 
-    from boba.liteparse.engine import LiteParseEngine  # noqa: PLC0415
+    # ридеры синхронные и тяжёлые: разбор уходит в поток
+    text = await asyncio.to_thread(_attachment_text, run_cfg, content, filename)
 
-    params = LiteParseParams.model_validate(
-        run_cfg.model_dump(include=set(LiteParseParams.model_fields))
-    )
-    # парсер нативный и держит GIL: без потока он застопорил бы event loop
-    result = await asyncio.to_thread(
-        LiteParseEngine.parse_bytes, params, content, filename
-    )
+    return MarkdownResult(text=text)
 
-    return MarkdownResult(text=result.text)
+
+def _attachment_text(cfg: IngestToolConfig, content: bytes, filename: str) -> str:
+    from boba.doc.ocr import OcrEngines  # noqa: PLC0415
+    from boba.doc.router import DocumentRouter  # noqa: PLC0415
+
+    router = DocumentRouter(cfg, OcrEngines.of(cfg.ocr))
+    hint = DocumentHint(filename=filename)
+    with router.open(io.BytesIO(content), hint) as document:
+        texts: list[str] = []
+        for page in document.pages(PageWindow.whole()):
+            texts.append(page.text)
+
+    return PAGE_GLUE.join(texts)
 
 
 def _attachment_link(data: dict[str, Any], filename: str) -> str:
@@ -512,7 +523,8 @@ EXPECTED: Mapping[type[Exception], IngestErrorKind] = {
     TransportError: IngestErrorKind.REQUEST_FAILED,
     ConfluencePayloadError: IngestErrorKind.REQUEST_FAILED,
     AttachmentNotFoundError: IngestErrorKind.ATTACHMENT_NOT_FOUND,
-    LiteParseError: IngestErrorKind.DOCUMENT_UNREADABLE,
+    DocumentError: IngestErrorKind.DOCUMENT_UNREADABLE,
+    OcrUnavailableError: IngestErrorKind.OCR_UNAVAILABLE,
     EmbeddingError: IngestErrorKind.EMBEDDING_FAILED,
 }
 

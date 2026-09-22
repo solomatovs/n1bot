@@ -13,7 +13,7 @@ BUILD_CONTEXT   ?= $(SRC_DIR)
 TEST_DIR        := $(BASE_DIR)/test
 SCRIPTS_DIR     := $(BASE_DIR)/scripts
 CONF_DIR        := $(BASE_DIR)/conf
-# артефакты для сборки: tarball'ы, uv, tessdata, модели, webassets, sandbox
+# артефакты для сборки: tarball'ы, uv, модели OCR и эмбеддера, webassets, sandbox
 DEPS_DIR        ?= $(BASE_DIR)/src
 RELEASE_DIR     := $(SRC_DIR)/release
 
@@ -80,11 +80,12 @@ E2FSPROGS_URL   ?= https://www.kernel.org/pub/linux/kernel/people/tytso/e2fsprog
 E2FSPROGS_TARBALL := $(DEPS_DIR)/e2fsprogs-$(E2FSPROGS_VERSION).tar.xz
 SANDBOX_WS_SIZE ?= 1G
 
-TESS_LANGS      ?= eng rus osd
-TESS_PAIRS      ?= rus+eng eng+rus
-TESSDATA_REPO   ?= https://github.com/tesseract-ocr/tessdata_best/raw/main
-TESS_FILES      := $(TESS_LANGS:%=$(DEPS_DIR)/tessdata/%.traineddata) \
-                   $(TESS_PAIRS:%=$(DEPS_DIR)/tessdata/%.traineddata)
+RAPIDOCR_VERSION ?= 3.9.2
+RAPIDOCR_LANGS  ?= eslav
+RAPIDOCR_REPO   ?= https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v$(RAPIDOCR_VERSION)/onnx
+RAPIDOCR_FILES  := $(DEPS_DIR)/rapidocr/ch_PP-OCRv5_det_mobile.onnx \
+                   $(DEPS_DIR)/rapidocr/ch_ppocr_mobile_v2.0_cls_mobile.onnx \
+                   $(RAPIDOCR_LANGS:%=$(DEPS_DIR)/rapidocr/%_PP-OCRv5_rec_mobile.onnx)
 
 # веса эмбеддера: версия качалки фиксируется, иначе приедет произвольный набор моделей
 FASTEMBED_VERSION ?= 0.8.0
@@ -122,7 +123,7 @@ CHAINLIT_SRC_URL ?= https://codeload.github.com/Chainlit/chainlit/tar.gz/refs/ta
 CHAINLIT_TARBALL := $(DEPS_DIR)/chainlit-$(CHAINLIT_VERSION).tar.gz
 
 INPUTS          := $(BWRAP_TARBALL) $(LIBFUSE_TARBALL) $(E2FSPROGS_TARBALL) $(UV_BIN) \
-                   $(TESS_FILES) $(FASTEMBED_STAMPS) $(ONNX_DIRS) $(WEB_FILES) $(CHAINLIT_TARBALL)
+                   $(RAPIDOCR_FILES) $(FASTEMBED_STAMPS) $(ONNX_DIRS) $(WEB_FILES) $(CHAINLIT_TARBALL)
 
 # --- фронт -----------------------------------------------------------------------
 
@@ -146,7 +147,7 @@ SANDBOX_TOOLS   := $(SANDBOX_DIR)/tools/mke2fs $(SANDBOX_DIR)/tools/mke2fs.conf
 RELEASE_PARTS   := sandbox/plugins sandbox/workspace.ext4 third/bin/bwrap third/bin/fuse2fs \
                    app/bin app_root/public app_root/public/page.js app_root/public/vendor \
                    app_root/ui/index.html app_root/ui/index.js \
-                   models/onnx-genai models/fastembed models/tessdata
+                   models/onnx-genai models/fastembed models/rapidocr
 
 # --- docker ---------------------------------------------------------------------
 
@@ -256,7 +257,7 @@ define HELP
 Сборка boba-chainlit $(VERSION)
 
 Сеть (артефакты -> $(DEPS_DIR)):
-  fetch                 tarball'ы bwrap/fuse/e2fsprogs, uv, tessdata, веса fastembed,
+  fetch                 tarball'ы bwrap/fuse/e2fsprogs, uv, модели rapidocr, веса fastembed,
                         модели onnx-genai, katex/Inter/mermaid, исходники chainlit $(CHAINLIT_VERSION)
 
 Сборка (сеть — только реестры pypi/npm; образ один — $(IMAGE), остальное файлами в src/):
@@ -284,7 +285,7 @@ define HELP
 
 Закрытый контур: conf/pip.conf, conf/uv.toml — индексы pypi; npm — npmrc образа nodejs;
 conf/ca-chain.crt — CA; прокси из env уходит в docker. Зеркала артефактов: UV_URL,
-BWRAP_URL, LIBFUSE_URL, E2FSPROGS_URL, TESSDATA_REPO, KATEX_URL, INTER_URL, MERMAID_URL,
+BWRAP_URL, LIBFUSE_URL, E2FSPROGS_URL, RAPIDOCR_REPO, KATEX_URL, INTER_URL, MERMAID_URL,
 ONNX_HUB_URL, CHAINLIT_SRC_URL.
 
 Переменные: BOBA_TAG, NO_CACHE=1, PYTHON_VERSION=$(PYTHON_VERSION), GLIBC_IMAGE, GCC_IMAGE,
@@ -335,16 +336,15 @@ $(UV_BIN):
 	rm -rf /tmp/uv-$(UV_PLATFORM) /tmp/uv-$(UV_VERSION).tar.gz
 	"$@" --version
 
-$(DEPS_DIR)/tessdata/%.traineddata:
-	@$(call fetch,$(TESSDATA_REPO)/$*.traineddata,$@)
+# модели OCR: детектор и классификатор общие, распознаватель — на язык (boba.doc OcrModel)
+$(DEPS_DIR)/rapidocr/ch_PP-OCRv5_det_mobile.onnx:
+	@$(call fetch,$(RAPIDOCR_REPO)/PP-OCRv5/det/$(notdir $@),$@)
 
-# tesseract разбирает "rus+eng" сам, а liteparse ищет комбинацию отдельным файлом:
-# алиас рядом со скачанными; каталог моделей монтируется поверх образа песочницы
-$(DEPS_DIR)/tessdata/rus+eng.traineddata: $(DEPS_DIR)/tessdata/rus.traineddata $(DEPS_DIR)/tessdata/eng.traineddata
-	ln -sf rus.traineddata "$@"
+$(DEPS_DIR)/rapidocr/ch_ppocr_mobile_v2.0_cls_mobile.onnx:
+	@$(call fetch,$(RAPIDOCR_REPO)/PP-OCRv4/cls/$(notdir $@),$@)
 
-$(DEPS_DIR)/tessdata/eng+rus.traineddata: $(DEPS_DIR)/tessdata/eng.traineddata $(DEPS_DIR)/tessdata/rus.traineddata
-	ln -sf eng.traineddata "$@"
+$(DEPS_DIR)/rapidocr/%_PP-OCRv5_rec_mobile.onnx:
+	@$(call fetch,$(RAPIDOCR_REPO)/PP-OCRv5/rec/$(notdir $@),$@)
 
 $(DEPS_DIR)/fastembed/.%: | base
 	@$(call fetch-model,fastembed==$(FASTEMBED_VERSION),$(DEPS_DIR)/fastembed,fastembed "$(subst --,/,$*)" /out)
@@ -493,7 +493,7 @@ test: build
 	docker run --rm -i --env-file "$$env_file" --entrypoint sh                              \
 	    -v "$(DEPS_DIR)/onnx-genai:$(DEST_DIR)/models/onnx-genai:ro"                          \
 	    -v "$(DEPS_DIR)/fastembed:$(DEST_DIR)/models/fastembed:ro"                            \
-	    -v "$(DEPS_DIR)/tessdata:$(DEST_DIR)/models/tessdata:ro"                              \
+	    -v "$(DEPS_DIR)/rapidocr:$(DEST_DIR)/models/rapidocr:ro"                              \
 	    -v "$(SANDBOX_DIR)/plugins:$(DEST_DIR)/sandbox/plugins:ro"                            \
 	    -v "$(SANDBOX_DIR)/workspace.ext4:$(DEST_DIR)/sandbox/workspace.ext4:ro"              \
 	    $(IMAGE)                                                                              \
@@ -515,7 +515,7 @@ release:
 	cp -a "$(SANDBOX_DIR)/workspace.ext4" "$(OUT)/sandbox/workspace.ext4"
 	cp -al "$(DEPS_DIR)/onnx-genai" "$(OUT)/models/onnx-genai"
 	cp -al "$(DEPS_DIR)/fastembed" "$(OUT)/models/fastembed"
-	cp -al "$(DEPS_DIR)/tessdata" "$(OUT)/models/tessdata"
+	cp -al "$(DEPS_DIR)/rapidocr" "$(OUT)/models/rapidocr"
 	sed -i "1s|^#!.*python3.*|#!$(INSTALL_DIR)/third/bin/python3|" "$(OUT)/app/bin"/*
 	export BOBA_BASE="$(INSTALL_DIR)" BOBA_VERSION="$(VERSION)" INSTALL_DIR="$(INSTALL_DIR)" BOBA_DATA="$(DATA_DIR)"
 	envsubst '$${INSTALL_DIR} $${BOBA_DATA}' < "$(CONF_DIR)/boba-$(APP).service" > "$(OUT)/boba-$(APP).service"
@@ -541,7 +541,7 @@ dev: web
 	$(call refill,$(OUT)/models)
 	cp -al "$(DEPS_DIR)/onnx-genai" "$(OUT)/models/onnx-genai"
 	cp -al "$(DEPS_DIR)/fastembed" "$(OUT)/models/fastembed"
-	cp -al "$(DEPS_DIR)/tessdata" "$(OUT)/models/tessdata"
+	cp -al "$(DEPS_DIR)/rapidocr" "$(OUT)/models/rapidocr"
 	install -m 0755 "$(CONF_DIR)/cgroup-init.sh" "$(OUT)/cgroup-init.sh"
 	# dev-хост работает process-режимом: образы песочницы живут только в релизе,
 	# но bwrap и fuse2fs нужны хранилищу приложения (workspace.ext4 канваса)
@@ -591,5 +591,5 @@ prune:
 # модели не трогаем: качаются долго
 .PHONY: clean
 clean:
-	rm -rf $(RELEASE_DIR) $(DEPS_DIR)/uv $(DEPS_DIR)/tessdata $(WEBASSETS_DIR) $(SANDBOX_DIR) \
+	rm -rf $(RELEASE_DIR) $(DEPS_DIR)/uv $(DEPS_DIR)/rapidocr $(WEBASSETS_DIR) $(SANDBOX_DIR) \
 	       $(DEPS_DIR)/*.tar.xz $(DEPS_DIR)/*.tar.gz $(PAGE_JS) $(ASSETS_VENDOR) $(UI_DIST)

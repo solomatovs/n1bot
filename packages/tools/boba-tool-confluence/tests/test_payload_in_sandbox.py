@@ -26,8 +26,6 @@ from boba.stand.shell import ShellRun
 from boba.toolkit.launcher import CollectedCall, LauncherError, ToolOutcome
 from boba.toolkit.protocol import ReplyError, ReplyOk, ToolCommand
 
-_TESSDATA = "/usr/share/tessdata"
-
 # Двухстраничный PDF: стр.1 "Alpha page one", стр.2 "Beta page two Alpha again".
 _PDF = b"""%PDF-1.4
 1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
@@ -75,7 +73,11 @@ def _caller(docs_dir: Path | None = None, **kw: Any) -> ZygoteToolCaller:
 
 
 def _cfg(**kw: Any) -> dict[str, Any]:
-    fields: dict[str, Any] = {"tessdata_path": _TESSDATA}
+    fields: dict[str, Any] = {
+        "spool_memory_limit": 1 << 20,
+        "text_encodings": ["utf-8"],
+        "ocr": {"provider": "off"},
+    }
     fields.update(kw)
     return fields
 
@@ -103,7 +105,7 @@ def docs(tmp_path: Path) -> Path:
 @needs_sandbox
 @needs_userns
 class TestDocumentsInSandbox:
-    """Инструменты doc: файл лежит в песочнице, парсит его liteparse оттуда."""
+    """Инструменты doc: файл лежит в песочнице, читают его ридеры boba-doc оттуда."""
 
     def teardown_method(self) -> None:
         ZygoteRegistry.stop_all()
@@ -189,20 +191,20 @@ class TestDocumentsInSandbox:
         if "pdfium" not in message:
             raise AssertionError(f"stderr тела не в ошибке: {message}")
 
-    def test_ocr_without_tessdata_is_reported(self, docs: Path) -> None:
-        """Без моделей OCR liteparse пошёл бы в сеть; сети в песочнице нет."""
+    def test_ocr_without_provider_is_reported(self, docs: Path) -> None:
+        """OCR просят у секции с provider = off: отказ объявленного вида."""
         outcome = _run_doc(
             _caller(docs),
             "read_document",
             {"path": "/workspace/report.pdf", "pages": "1-2", "ocr-enabled": "true"},
-            _cfg(tessdata_path="/нет-такого-каталога"),
+            _cfg(),
         )
 
         reply = outcome.reply
         if not (isinstance(reply, ReplyError)):
             raise AssertionError("isinstance(reply, ReplyError)")
-        if reply.kind != "document_unreadable":
-            raise AssertionError('reply.kind == "document_unreadable"')
+        if reply.kind != "ocr_unavailable":
+            raise AssertionError('reply.kind == "ocr_unavailable"')
         if "Traceback" in reply.message:
             raise AssertionError('"Traceback" not in reply.message')
 
@@ -294,7 +296,8 @@ class TestRootfsContents:
     @pytest.mark.parametrize(
         "module",
         [
-            "liteparse",
+            "pypdfium2",
+            "rapidocr",
             "bs4",
             "lxml",
             "httpx",

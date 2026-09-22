@@ -151,6 +151,21 @@ class Formats:
         b"ppt/": DocumentKind.PPTX,
     }
 
+    IMAGE_MEDIA_TYPES: ClassVar[tuple[str, ...]] = (
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/bmp",
+        "image/webp",
+        "image/tiff",
+    )
+
+    @classmethod
+    def media_types(cls) -> tuple[str, ...]:
+        """Явные media_type документов для маршрутов по типу: карта плюс
+        картинки; текстовые text/* остаются за текстовыми ридерами."""
+        return tuple(cls.BY_MEDIA_TYPE) + cls.IMAGE_MEDIA_TYPES
+
     @classmethod
     def normalize(cls, media_type: str) -> str:
         """media_type без параметров (`; charset=...`), в нижнем регистре."""
@@ -241,9 +256,49 @@ class PageWindow(BaseModel):
     start: int = Field(ge=1)
     count: int = Field(ge=1)
 
+    RANGE_SEPARATOR: ClassVar[str] = "-"
+    LIST_SEPARATOR: ClassVar[str] = ","
+
     @classmethod
     def whole(cls) -> PageWindow:
         return cls(start=1, count=cls.ALL)
+
+    @classmethod
+    def parse_many(cls, spec: str) -> tuple[PageWindow, ...]:
+        """Окна из строки вида '1-5,10,15-20': диапазон или номер через запятую."""
+        windows: list[PageWindow] = []
+        for part in spec.split(cls.LIST_SEPARATOR):
+            piece = part.strip()
+            if not piece:
+                raise DocumentError(f"pages {spec!r}: empty item in the list")
+
+            windows.append(cls._parse_one(piece, spec))
+
+        return tuple(windows)
+
+    @classmethod
+    def _parse_one(cls, piece: str, spec: str) -> PageWindow:
+        first, separator, last = piece.partition(cls.RANGE_SEPARATOR)
+        try:
+            start = int(first)
+            stop = start
+            if separator:
+                stop = int(last)
+        except ValueError as exc:
+            raise DocumentError(
+                f"pages {spec!r}: expected numbers and ranges like 1-5,10, got "
+                f"{piece!r}"
+            ) from exc
+
+        if start < 1:
+            raise DocumentError(f"pages {spec!r}: page numbers start at 1, got {start}")
+
+        if stop < start:
+            raise DocumentError(
+                f"pages {spec!r}: range {piece!r} ends before it starts"
+            )
+
+        return cls(start=start, count=stop - start + 1)
 
     def numbers(self, page_count: int) -> range:
         """Номера страниц окна, которые есть в документе."""
@@ -335,7 +390,7 @@ class Document(Protocol):
 
     @abstractmethod
     def search(
-        self, query: str, window: PageWindow, *, case_sensitive: bool
+        self, query: str, window: PageWindow, *, case_sensitive: bool, context: int
     ) -> Iterator[Hit]: ...
 
     @abstractmethod
@@ -416,13 +471,11 @@ class Sha256Stream(ByteStream):
 
 
 class TextSearch:
-    """Поиск подстроки в тексте страницы со сниппетом вокруг совпадения."""
-
-    CONTEXT: ClassVar[int] = 80
+    """Поиск подстроки в тексте страницы; сниппет — context знаков вокруг."""
 
     @classmethod
     def hits(
-        cls, page: ParsedPage, query: str, *, case_sensitive: bool
+        cls, page: ParsedPage, query: str, *, case_sensitive: bool, context: int
     ) -> Iterator[Hit]:
         haystack = page.text
         needle = query
@@ -436,14 +489,14 @@ class TextSearch:
                 page=page.number,
                 offset=index,
                 length=len(needle),
-                snippet=cls.snippet(page.text, index, len(needle)),
+                snippet=cls.snippet(page.text, index, len(needle), context),
             )
             start = index + len(needle)
 
-    @classmethod
-    def snippet(cls, text: str, offset: int, length: int) -> str:
-        low = max(0, offset - cls.CONTEXT)
-        high = min(len(text), offset + length + cls.CONTEXT)
+    @staticmethod
+    def snippet(text: str, offset: int, length: int, context: int) -> str:
+        low = max(0, offset - context)
+        high = min(len(text), offset + length + context)
 
         return text[low:high]
 
@@ -469,7 +522,7 @@ class PagedDocument(Document):
         return tuple(infos)
 
     def search(
-        self, query: str, window: PageWindow, *, case_sensitive: bool
+        self, query: str, window: PageWindow, *, case_sensitive: bool, context: int
     ) -> Iterator[Hit]:
         if not query:
             raise DocumentError(
@@ -477,7 +530,9 @@ class PagedDocument(Document):
             )
 
         for page in self.pages(window):
-            yield from TextSearch.hits(page, query, case_sensitive=case_sensitive)
+            yield from TextSearch.hits(
+                page, query, case_sensitive=case_sensitive, context=context
+            )
 
     def failure(self, action: str, exc: Exception) -> DocumentError:
         """Ошибка библиотеки формата в ошибке слоя, с действием и причиной."""

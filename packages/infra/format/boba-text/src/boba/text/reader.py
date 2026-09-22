@@ -4,8 +4,8 @@
 одну Section с этим текстом. Никакого парсинга структуры — для этого есть
 format-specific Reader'ы (MarkdownReader, HtmlHeadingReader, …).
 
-TextMedia — карта текстовых форматов, которые liteparse не читает вовсе
-(.txt, .md он отвергает с `unsupported file format`).
+TextMedia — карта текстовых форматов (.txt, .md, .csv), которые читаются
+декодированием, минуя ридеры документов.
 """
 
 from __future__ import annotations
@@ -75,7 +75,7 @@ class PlainTextReader(Reader[str]):
 
 
 class TextMedia:
-    """media_type -> doc_type: текстовые форматы мимо liteparse."""
+    """media_type -> doc_type: текстовые форматы, читаемые декодированием."""
 
     DOC_TYPE_BY_MEDIA_TYPE: ClassVar[Mapping[str, str]] = {
         "text/plain": "txt",

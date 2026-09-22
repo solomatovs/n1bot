@@ -1,18 +1,19 @@
-"""Конфиг инструментов doc ([tool.doc]): песочница payload'а + лимиты выдачи."""
+"""Конфиг инструментов doc ([tool.doc]): чтение документов boba-doc с OCR плюс
+лимиты выдачи."""
 
 from __future__ import annotations
 
 from pydantic import ConfigDict, Field
 
-from boba.text.document import LiteParseParams
+from boba.doc.config import DocSection
 
 __all__ = ["DocToolsConfig"]
 
 
-class DocToolsConfig(LiteParseParams):
+class DocToolsConfig(DocSection):
     """Чтение документов из workspace; файлы открывает payload в песочнице."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(frozen=True, extra="ignore")
 
     max_text_chars: int = Field(
         default=200_000,
