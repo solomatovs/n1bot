@@ -30,7 +30,6 @@ import asyncio
 import logging
 import multiprocessing
 import re
-import resource
 from abc import abstractmethod
 from collections.abc import AsyncIterator, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
@@ -90,6 +89,8 @@ HEADER_PATTERN = re.compile(r"^-- @(\w+)(?:\s+(.*))?$", re.M)
 LOG_FORMAT = "%(asctime)s %(name)s %(message)s"
 VERSION_FLOOR = (0,)
 VERSION_CEILING = (999999,)
+PROC_STATUS = Path("/proc/self/status")
+HWM_KEY = "VmHWM:"
 
 
 class ScrapeWorkerError(Exception):
@@ -642,7 +643,18 @@ async def scrape_source(
 
 
 def peak_rss_mib() -> int:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss >> 10
+    """Пик резидентной памяти этого процесса с момента exec. ru_maxrss не годится:
+    spawn-потомок наследует значение родителя на момент fork."""
+    for line in PROC_STATUS.read_text(encoding="utf-8").splitlines():
+        if not line.startswith(HWM_KEY):
+            continue
+
+        kib = int(line.split()[1])
+        return kib >> 10
+
+    raise ScrapeWorkerError(
+        f"reading {PROC_STATUS}: expected a {HWM_KEY} line, got none"
+    )
 
 
 class SourceConfigBase(BaseModel):

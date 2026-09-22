@@ -19,4 +19,4 @@ order by (customer_id, intHash32(customer_id), created_at)
 sample by intHash32(customer_id)
 ttl created_at + interval 3 year
 settings index_granularity = 8192
-comment 'Заказы';
+comment 'Заказы'

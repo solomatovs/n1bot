@@ -11,8 +11,3 @@ partition by range (sold_at) (
     partition p2025 values less than (to_date('2026-01-01', 'YYYY-MM-DD')),
     partition pmax values less than (maxvalue)
 )
-/
-comment on table edge_demo.sales is 'Продажи по датам, партиции по годам'
-/
-create index edge_demo.sales_region_ix on edge_demo.sales (region, sold_at) local
-/

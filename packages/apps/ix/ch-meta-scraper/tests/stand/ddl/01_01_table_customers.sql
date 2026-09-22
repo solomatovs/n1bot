@@ -7,4 +7,4 @@ create table edge_demo.customers (
 )
 engine = MergeTree
 order by id
-comment 'Клиенты';
+comment 'Клиенты'

@@ -7,8 +7,7 @@
 
 from __future__ import annotations
 
-import re
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
 from typing import ClassVar
@@ -113,13 +112,10 @@ class IxStand(SharedIxStand):
 
 
 class DdlFile(BaseModel):
-    """Файл демонстрационного набора с воротами по версии в заголовках; statement'ы
-    разделены строкой из одного символа `/`, как в скриптах sqlplus, поэтому блоки
-    PL/SQL с точками с запятой внутри остаются целыми."""
+    """Файл демонстрационного набора: ровно один statement и ворота по версии
+    в заголовках, текст уходит серверу как есть."""
 
     model_config = ConfigDict(frozen=True)
-
-    STATEMENT_END: ClassVar[re.Pattern[str]] = re.compile(r"^/\s*$", re.M)
 
     path: Path
     text: str
@@ -132,12 +128,6 @@ class DdlFile(BaseModel):
 
     def applies(self, server: tuple[int, ...]) -> bool:
         return version_applies(self.headers, server)
-
-    def statements(self) -> Iterator[str]:
-        for piece in self.STATEMENT_END.split(self.text):
-            statement = piece.strip()
-            if statement:
-                yield statement
 
 
 class DemoDataset:
@@ -172,8 +162,8 @@ class DemoDataset:
             for file in self._files:
                 if not file.applies(server):
                     continue
-                for statement in file.statements():
-                    await self._run(owner, statement)
+
+                await self._run(owner, file.text)
 
         return server
 

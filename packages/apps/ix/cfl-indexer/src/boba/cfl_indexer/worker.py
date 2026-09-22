@@ -22,7 +22,6 @@ import hashlib
 import json
 import logging
 import multiprocessing
-import resource
 import tempfile
 from collections.abc import Sequence
 from concurrent.futures import ProcessPoolExecutor
@@ -65,6 +64,7 @@ from boba.confluence.models import AttachmentVerdict
 from boba.confluence.rest import ConfluenceConnection, ContentType
 from boba.ix_core.database import IxDatabase, IxDatabaseError, IxPool
 from boba.ix_core.schema_name import SchemaName
+from boba.ix_core.scrape import peak_rss_mib
 from boba.ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError
 from boba.text.document import LiteParseParams
 
@@ -233,10 +233,6 @@ def default_port(scheme: str) -> int:
         return 443
 
     return 80
-
-
-def peak_rss_mib() -> int:
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss >> 10
 
 
 class SpaceWalk:
