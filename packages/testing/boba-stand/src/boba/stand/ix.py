@@ -53,6 +53,7 @@ class IxStand(BaseModel):
     database: str
     db_schema: str
     embedding_cache_dir: str
+    tessdata_path: str
 
     @classmethod
     def load(cls) -> Self:

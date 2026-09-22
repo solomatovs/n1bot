@@ -5,11 +5,13 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from cfl_stand import PACKAGE_DIR
 
 from boba.cfl_indexer.confluence import SpaceSelector
-from boba.cfl_indexer.worker import ConfluenceSource, IndexerConfig, IndexerWorker
+from boba.cfl_indexer.worker import ConfluenceSource, IndexerConfig, run_spaces
 from boba.confluence.rest import ConfluenceConnection, SpaceType
 from boba.stand.ix import IxStand, IxStandDatabase
 from boba.stand.site import Stand
@@ -57,12 +59,12 @@ class TestLiveSpace:
         if not STAND.confluence_token.get_secret_value():
             pytest.skip("в конфиге стенда нет токена confluence")
 
-        worker = IndexerWorker(_config(ix_stand), PACKAGE_DIR / "run")
+        cfg = _config(ix_stand)
 
-        first = (await worker.run())[0]
+        first = (await asyncio.to_thread(run_spaces, cfg, PACKAGE_DIR / "run"))[0]
         assert first.seen >= 2
         assert first.indexed == first.seen
 
-        second = (await worker.run())[0]
+        second = (await asyncio.to_thread(run_spaces, cfg, PACKAGE_DIR / "run"))[0]
         assert second.indexed == 0
         assert second.unchanged == second.seen

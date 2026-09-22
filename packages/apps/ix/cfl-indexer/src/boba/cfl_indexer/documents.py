@@ -1,26 +1,18 @@
-"""Текст вложения для индекса: решение, брать ли файл, и извлечение текста.
-
-Гейт из boba-confluence решает по маскам конфига и флагу OCR, качать ли вложение;
-существование вложения он не отменяет: node и surface-строка пишутся всегда, текст
-только у взятых. Текстовые типы декодируются перебором кодировок, документы и
-картинки идут в liteparse (OCR по флагу); текст картинки — аспект ocr, остальное —
-body.
+"""Текст вложения: вердикт по маскам и OCR, декодирование текстовых файлов, разбор
+остальных liteparse прямо в процессе спейса.
 
 Ошибки:
-DocumentTextError — файл не разобран: liteparse отказал, кодировка не подошла.
+DocumentTextError — файл не декодирован или не разобран.
 """
 
 from __future__ import annotations
 
-import asyncio
+import os
 from collections.abc import Sequence
 from pathlib import Path
-from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict
-
-from boba.cfl_indexer.confluence import AttachmentSummary
-from boba.cfl_indexer.store import Aspect, PushedText
+from boba.cfl_indexer.confluence import Attachment
+from boba.cfl_indexer.store import Aspect
 from boba.confluence.models import (
     AttachmentFilter,
     AttachmentGate,
@@ -31,117 +23,114 @@ from boba.liteparse.engine import LiteParseEngine
 from boba.text.document import DocumentMedia, LiteParseError, LiteParseParams
 from boba.text.reader import TextMedia
 
-__all__ = ["AttachmentText", "DocumentTextError", "TextParams"]
+__all__ = [
+    "DocumentTextError",
+    "aspect_of",
+    "build_gate",
+    "decide_attachment",
+    "extract_text",
+]
+
+PAGE_SEPARATOR = "\n\n"
+IMAGE_PREFIX = "image/"
 
 
 class DocumentTextError(Exception):
     """Текст из файла вложения не извлечён."""
 
 
-class TextParams(BaseModel):
-    """Что решает и как разбирает вложения: маски, OCR, кодировки текстовых файлов."""
-
-    model_config = ConfigDict(frozen=True)
-
-    masks: Sequence[str]
-    encodings: Sequence[str]
-    liteparse: LiteParseParams
+def build_gate(masks: Sequence[str], *, ocr: bool) -> AttachmentGate:
+    return AttachmentGate(
+        allowed=AttachmentFilter.of_masks(masks), requested=True, ocr=ocr
+    )
 
 
-class AttachmentText:
-    """Вердикт по вложению и текст его файла."""
+def is_supported(media_type: str) -> bool:
+    normalized = DocumentMedia.normalize(media_type)
+    if normalized in TextMedia.DOC_TYPE_BY_MEDIA_TYPE:
+        return True
 
-    PAGE_SEPARATOR: ClassVar[str] = "\n\n"
-    IMAGE_PREFIX: ClassVar[str] = "image/"
+    return normalized in DocumentMedia.SUFFIX_BY_MEDIA_TYPE
 
-    def __init__(self, params: TextParams) -> None:
-        self._params = params
-        self._gate = AttachmentGate(
-            allowed=AttachmentFilter.of_masks(params.masks),
-            requested=True,
-            ocr=params.liteparse.ocr_enabled,
-        )
 
-    def verdict(self, attachment: AttachmentSummary) -> AttachmentVerdict:
-        info = AttachmentInfo(
-            id=attachment.id,
-            title=attachment.title,
-            media_type=attachment.media_type,
-            file_size=attachment.file_size,
-            download_path=attachment.download_path,
-            webui="",
-            version=attachment.version,
-            when="",
-        )
-        verdict = self._gate.verdict(info)
-        if verdict is not AttachmentVerdict.TAKE:
-            return verdict
+def decide_attachment(
+    attachment: Attachment, gate: AttachmentGate
+) -> AttachmentVerdict:
+    info = AttachmentInfo(
+        id=attachment.id,
+        title=attachment.title,
+        media_type=attachment.media_type,
+        file_size=attachment.file_size,
+        download_path=attachment.download_path,
+        webui="",
+        version=attachment.version,
+        when="",
+    )
+    verdict = gate.verdict(info)
+    if verdict is not AttachmentVerdict.TAKE:
+        return verdict
 
-        if not self.supported(attachment.media_type):
-            return AttachmentVerdict.NOT_ALLOWED
+    if not is_supported(attachment.media_type):
+        return AttachmentVerdict.NOT_ALLOWED
 
-        return AttachmentVerdict.TAKE
+    return AttachmentVerdict.TAKE
 
-    @staticmethod
-    def supported(media_type: str) -> bool:
-        normalized = DocumentMedia.normalize(media_type)
-        if normalized in TextMedia.DOC_TYPE_BY_MEDIA_TYPE:
-            return True
 
-        return normalized in DocumentMedia.SUFFIX_BY_MEDIA_TYPE
+def aspect_of(media_type: str) -> Aspect:
+    if DocumentMedia.normalize(media_type).startswith(IMAGE_PREFIX):
+        return Aspect.OCR
 
-    async def extract(
-        self, attachment: AttachmentSummary, path: Path
-    ) -> Sequence[PushedText]:
-        """Текст файла как аспекты индекса; пустой текст не даёт ни одного."""
-        normalized = DocumentMedia.normalize(attachment.media_type)
-        if normalized in TextMedia.DOC_TYPE_BY_MEDIA_TYPE:
-            content = self._decode(path, attachment)
-        else:
-            content = await asyncio.to_thread(self._parse, path, attachment)
+    return Aspect.BODY
 
-        if not content:
-            return ()
 
-        aspect = Aspect.BODY
-        if normalized.startswith(self.IMAGE_PREFIX):
-            aspect = Aspect.OCR
+def extract_text(
+    path: Path,
+    attachment: Attachment,
+    encodings: Sequence[str],
+    parser: LiteParseParams,
+) -> str:
+    """Текст файла: текстовые типы декодируются, остальные разбирает liteparse."""
+    normalized = DocumentMedia.normalize(attachment.media_type)
+    if normalized in TextMedia.DOC_TYPE_BY_MEDIA_TYPE:
+        return decode_text(path, attachment, encodings)
 
-        return (PushedText(aspect=aspect, content=content),)
+    return parse_document(path, attachment, parser)
 
-    def _decode(self, path: Path, attachment: AttachmentSummary) -> str:
-        raw = path.read_bytes()
-        for encoding in self._params.encodings:
-            try:
-                return raw.decode(encoding).strip()
-            except UnicodeDecodeError:
-                continue
 
-        tried = ", ".join(self._params.encodings)
-        raise DocumentTextError(
-            f"attachment {attachment.id} {attachment.title!r}: cannot decode "
-            f"{len(raw)} bytes with any of: {tried}"
-        )
-
-    def _parse(self, path: Path, attachment: AttachmentSummary) -> str:
-        suffix = DocumentMedia.suffix_for(attachment.media_type)
-        filename = DocumentMedia.filename_for(suffix)
+def decode_text(path: Path, attachment: Attachment, encodings: Sequence[str]) -> str:
+    raw = path.read_bytes()
+    for encoding in encodings:
         try:
-            result = LiteParseEngine.parse_file_as(
-                self._params.liteparse, path, filename
-            )
-        except LiteParseError as exc:
-            raise DocumentTextError(
-                f"attachment {attachment.id} {attachment.title!r} "
-                f"({attachment.media_type}): {exc}"
-            ) from exc
+            return raw.decode(encoding).strip()
+        except UnicodeDecodeError:
+            continue
 
-        pages: list[str] = []
-        for page in result.pages:
-            text = str(page.text).strip()
-            if not text:
-                continue
+    raise DocumentTextError(
+        f"attachment {attachment.id} {attachment.title!r}: cannot decode "
+        f"{len(raw)} bytes with any of: {', '.join(encodings)}"
+    )
 
+
+def parse_document(path: Path, attachment: Attachment, parser: LiteParseParams) -> str:
+    """liteparse узнаёт формат по расширению, поэтому файл на время разбора
+    получает жёсткую ссылку с нужным суффиксом."""
+    suffix = DocumentMedia.suffix_for(attachment.media_type)
+    linked = path.with_name(f"{path.stem}-as{suffix}")
+    try:
+        os.link(path, linked)
+        result = LiteParseEngine.parse_native(parser, str(linked))
+    except (LiteParseError, OSError) as exc:
+        raise DocumentTextError(
+            f"attachment {attachment.id} {attachment.title!r} "
+            f"({attachment.media_type}): {exc}"
+        ) from exc
+    finally:
+        linked.unlink(missing_ok=True)
+
+    pages: list[str] = []
+    for page in result.pages:
+        text = str(page.text).strip()
+        if text:
             pages.append(text)
 
-        return self.PAGE_SEPARATOR.join(pages)
+    return PAGE_SEPARATOR.join(pages)
