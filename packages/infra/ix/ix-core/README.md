@@ -77,12 +77,23 @@ psycopg (`sql.Identifier`).
 `ix-vector`, языковая конфигурация полнотекста — в запросах `ix-fts`. Ядру они не
 нужны, а копия чужого конфига здесь только разошлась бы с оригиналом.
 
-`boba.ix_core.scrape` — общий цикл скраперов каталога: файлы `scrape/` источника
-потоком в temp `raw_*` сессии ix, сверка перечитыванием и `except all` на стороне ix,
-стадии `layout/` в autocommit, advisory-замок на scope, apply одной транзакцией
-repeatable read, повторы при изменении каталога и занятом ix, команда `upgrade`/`run`.
-Пакет источника (`pg-meta-scraper`, `ch-meta-scraper`) даёт реализацию `ScrapeSource`:
-сессия, ворота файлов по версии сервера, строки запроса потоком, адрес для `raw_source`.
+`boba.ix_core.scrape` — общий цикл скраперов каталога, функциями по шагам. Каждый
+источник снимается в своём процессе (`run_sources` — spawn, один источник на процесс,
+`scrape_in_process`), внутри процесса последовательно: `scrape_source` открывает
+выделенное соединение ix (`IxPool.dedicated`) и сессию источника, `copy_rows` льёт строки
+каждого файла `scrape/` потоком в temp `raw_<name>` (курсор источника → COPY по одной
+строке, в памяти ничего не копится), `verify_rows` перечитывает запрос в temp
+`verify_<name>` и сверяет `except all`, `apply_layout` гонит стадии `layout/` в
+autocommit, под advisory-замком на scope одной транзакцией repeatable read. Повторы
+(`attempt_scrape`) — при изменении каталога, занятом ix и занятом источнике. Итог —
+`ScrapeReport`: строки apply, число попыток и пик RSS процесса. Команды `upgrade`/`run`
+даёт `run_cli`.
+
+Ворота файлов по версии (`parse_version`, `version_applies` по заголовкам `@min`/`@max`
+с длиной сравнения по длине ворот) и адаптер строк `StreamRows` живут в ядре одной
+копией. Пакет источника (`pg-meta-scraper`, `ora-meta-scraper`, `ch-meta-scraper`) даёт
+только реализацию `ScrapeSource`: адрес для `raw_source`, `describe()` для логов,
+`open_session()` с версией сервера и `fetch_rows()` потоком.
 
 `boba.ix_core.search` — поиск по индексам для любого потребителя. `SearchRegistry.load`
 один раз читает реестры схемы (таблицы индексов по видам, словари поверхностей и аспектов,

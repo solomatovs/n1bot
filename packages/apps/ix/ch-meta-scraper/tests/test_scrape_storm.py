@@ -14,9 +14,9 @@ import pytest
 from ch_scraper_stand import DemoDataset, Golden, IxSource, IxStand, IxStandDatabase
 from pydantic import BaseModel
 
-from boba.ch_meta_scraper.worker import ScrapeWorkerError
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.profile import PostgresConfig
+from boba.ix_core.scrape import ScrapeWorkerError
 
 pytestmark = [pytest.mark.load, pytest.mark.anyio]
 

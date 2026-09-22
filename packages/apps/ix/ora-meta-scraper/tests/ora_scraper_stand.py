@@ -22,16 +22,15 @@ from boba.db.oracle.payload import PayloadOracle
 from boba.db.oracle.profile import OracleConfig, PasswordAuth
 from boba.db.postgres import AsyncPostgresPool
 from boba.ix_core.schema_name import SchemaName
-from boba.ix_core.scrape import ScrapeHeaders
-from boba.ora_meta_scraper import worker as scraper
-from boba.ora_meta_scraper.worker import (
+from boba.ix_core.scrape import (
     ApplyRow,
-    OraSource,
-    ScrapeWorker,
-    ServerVersion,
-    SourceAddress,
-    VersionGate,
+    parse_headers,
+    parse_version,
+    scrape_source,
+    version_applies,
 )
+from boba.ora_meta_scraper import worker as scraper
+from boba.ora_meta_scraper.worker import OraSource, source_address
 from boba.stand.ix import IxStand as SharedIxStand
 from boba.stand.ix import IxStandDatabase as SharedIxStandDatabase
 from boba.stand.ix import IxStandError
@@ -85,7 +84,7 @@ class IxSource(BaseModel):
 
     @property
     def host(self) -> str:
-        return SourceAddress.of(self.oracle).host
+        return source_address(self.oracle).host
 
     @property
     def demo_owner(self) -> OracleConfig:
@@ -113,26 +112,26 @@ class IxStand(SharedIxStand):
         )
 
 
-class DdlFile(VersionGate):
-    """Файл демонстрационного набора с воротами по версии; statement'ы разделены
-    строкой из одного символа `/`, как в скриптах sqlplus, поэтому блоки PL/SQL
-    с точками с запятой внутри остаются целыми."""
+class DdlFile(BaseModel):
+    """Файл демонстрационного набора с воротами по версии в заголовках; statement'ы
+    разделены строкой из одного символа `/`, как в скриптах sqlplus, поэтому блоки
+    PL/SQL с точками с запятой внутри остаются целыми."""
+
+    model_config = ConfigDict(frozen=True)
 
     STATEMENT_END: ClassVar[re.Pattern[str]] = re.compile(r"^/\s*$", re.M)
 
     path: Path
     text: str
+    headers: dict[str, str]
 
     @classmethod
     def parse(cls, path: Path) -> DdlFile:
         text = path.read_text(encoding="utf-8")
-        gate = cls.gate_of(ScrapeHeaders.of(text))
-        return cls(
-            path=path,
-            text=text,
-            min_version=gate.min_version,
-            max_version=gate.max_version,
-        )
+        return cls(path=path, text=text, headers=parse_headers(text))
+
+    def applies(self, server: tuple[int, ...]) -> bool:
+        return version_applies(self.headers, server)
 
     def statements(self) -> Iterator[str]:
         for piece in self.STATEMENT_END.split(self.text):
@@ -164,7 +163,7 @@ class DemoDataset:
             for p in sorted(StandFile.DDL_DIR.under_stand().glob("*.sql"))
         ]
 
-    async def recreate(self) -> ServerVersion:
+    async def recreate(self) -> tuple[int, ...]:
         async with PayloadOracle.opened_config(self._source.admin) as admin:
             server = await self._version(admin)
             await self._recreate_user(admin)
@@ -194,12 +193,13 @@ class DemoDataset:
             pass
 
     @staticmethod
-    async def _version(conn: AsyncConnection) -> ServerVersion:
+    async def _version(conn: AsyncConnection) -> tuple[int, ...]:
         query = "select version from sys.registry$ where cid = 'CATALOG'"
         async with PayloadOracle.rows(conn, query) as stream:
-            rows = [row async for row in stream.blocks]
+            async for row in stream.blocks:
+                return parse_version(str(row[0]))
 
-        return ServerVersion.parse(str(rows[0][0]))
+        raise IxStandError(f"ix stand: {query}: expected one row, got none")
 
 
 class Fingerprint(BaseModel):
@@ -301,10 +301,10 @@ class IxStandDatabase(SharedIxStandDatabase):
         return SchemaName.render(text, self._stand.db_schema)
 
     async def scrape(self, source: IxSource) -> Sequence[ApplyRow]:
-        worker = ScrapeWorker(
+        report = await scrape_source(
             self._stand.ix_database,
             OraSource(source.oracle),
             PACKAGE_DIR,
             self.ATTEMPTS,
         )
-        return await worker.run()
+        return report.rows
