@@ -16,16 +16,16 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import psycopg
 from psycopg import sql
-from pydantic import BaseModel, ConfigDict
 
 from boba.db.postgres.query import PgQueryBuilder
 from boba.ix_core.aspects import AspectClass
 from boba.ix_core.indexes import IndexKind, IndexTable
-from boba.ix_core.search import SearchRegistry
+from boba.ix_core.registry import IxRegistry
 
 __all__ = ["NodeCard", "NodeReadError", "NodeReader", "NodeStep", "NodeText"]
 
@@ -34,30 +34,27 @@ class NodeReadError(Exception):
     """Карточку node не собрать."""
 
 
-class NodeStep(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class NodeStep:
     """Один родитель в пути от корня tree: объект и его подпись."""
-
-    model_config = ConfigDict(frozen=True)
 
     node_id: int
     surface: str
     label: str
 
 
-class NodeText(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class NodeText:
     """Текст одного аспекта объекта."""
-
-    model_config = ConfigDict(frozen=True)
 
     aspect: str
     aspect_class: AspectClass
     content: str
 
 
-class NodeCard(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class NodeCard:
     """Всё, что известно об объекте для чтения."""
-
-    model_config = ConfigDict(frozen=True)
 
     node_id: int
     surface: str
@@ -67,10 +64,9 @@ class NodeCard(BaseModel):
     texts: tuple[NodeText, ...]
 
 
-class NodeRow(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class NodeRow:
     """Строка {schema}.node до сборки карточки."""
-
-    model_config = ConfigDict(frozen=True)
 
     node_id: int
     surface: str
@@ -80,8 +76,8 @@ class NodeRow(BaseModel):
 class NodeReader:
     """Сборка карточки node на переданном соединении по реестрам вызывающего."""
 
-    def __init__(self, db_schema: str, registry: SearchRegistry) -> None:
-        self._schema = db_schema
+    def __init__(self, registry: IxRegistry) -> None:
+        self._schema = registry.db_schema
         self._registry = registry
 
     async def read(
@@ -106,24 +102,24 @@ class NodeReader:
             node_id=node.node_id,
             surface=node.surface,
             address=node.address,
-            url=self._registry.urls.of(node.surface, node.address),
+            url=self._registry.url_of(node.surface, node.address),
             parents=parents,
             texts=texts,
         )
 
     def _aspects_of(self, chosen: Sequence[str]) -> list[str]:
-        catalog = self._registry.aspects
-        unknown = catalog.unknown(chosen)
+        unknown = self._registry.unknown_aspects(chosen)
         if unknown:
             raise NodeReadError(
                 f"node: aspects {list(unknown)} are not declared in "
-                f"{self._schema}.aspect; known are {list(catalog.names())}"
+                f"{self._schema}.aspect; known are "
+                f"{list(self._registry.aspect_names())}"
             )
 
         if chosen:
             return list(chosen)
 
-        return list(catalog.names())
+        return list(self._registry.aspect_names())
 
     def _fts_tables(self) -> tuple[IndexTable, ...]:
         tables = self._registry.tables_of(IndexKind.FTS)
@@ -205,7 +201,7 @@ class NodeReader:
         )
         cur = await conn.execute(query.text, query.params)
         rows: list[NodeRow] = []
-        for found_id, surface, address in await cur.fetchall():
+        async for found_id, surface, address in cur:
             rows.append(
                 NodeRow(node_id=int(found_id), surface=str(surface), address=address)
             )
@@ -261,7 +257,7 @@ class NodeReader:
                 .build()
             )
             cur = await conn.execute(query.text, query.params)
-            for found_id, content in await cur.fetchall():
+            async for found_id, content in cur:
                 if int(found_id) in labels:
                     continue
 
@@ -270,7 +266,7 @@ class NodeReader:
         return labels
 
     def _fallback_label(self, row: NodeRow) -> str:
-        url = self._registry.urls.of(row.surface, row.address)
+        url = self._registry.url_of(row.surface, row.address)
         if url:
             return url
 
@@ -310,7 +306,7 @@ class NodeReader:
                 .build()
             )
             cur = await conn.execute(query.text, query.params)
-            for aspect, aspect_class, content in await cur.fetchall():
+            async for aspect, aspect_class, content in cur:
                 texts.append(
                     NodeText(
                         aspect=str(aspect),

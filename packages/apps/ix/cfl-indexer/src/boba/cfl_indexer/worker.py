@@ -25,6 +25,7 @@ import multiprocessing
 import tempfile
 from collections.abc import Sequence
 from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
@@ -62,9 +63,11 @@ from boba.cfl_indexer.store import (
 from boba.config import ConfigError, bind_section
 from boba.confluence.models import AttachmentVerdict
 from boba.confluence.rest import ConfluenceConnection, ContentType
+from boba.db.postgres import AsyncPostgresPool, PostgresError
 from boba.db.postgres.names import PostgresSchema
-from boba.ix_core.database import IxDatabase, IxDatabaseError, IxPool
+from boba.ix_core.database import IxDatabase, enter_kerberos
 from boba.ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError
+from boba.krb import KerberosWorkspaceConfig
 from boba.text.document import LiteParseParams
 
 __all__ = [
@@ -84,9 +87,6 @@ logger = logging.getLogger("cfl-indexer")
 
 INDEXER_LAYOUT = 2
 """Поднимается при смене преобразования в коде: всё идёт на переиндексацию."""
-FTS_TABLE = "ix_fts"
-CONTENT_KINDS = (ContentType.PAGE, ContentType.BLOGPOST)
-SPACE_ERRORS = (ConfluenceReadError, IxWriteError, psycopg.Error)
 LOG_FORMAT = "%(asctime)s %(name)s %(message)s"
 
 
@@ -116,7 +116,8 @@ class IndexerConfig(IxDatabase):
     text_encodings: Sequence[str] = Field(min_length=1, default=("utf-8",))
 
 
-class Report(BaseModel):
+@dataclass(kw_only=True)
+class Report:
     """Итог обхода спейса; error непустой — обход прерван."""
 
     space_key: str
@@ -260,12 +261,12 @@ class SpaceWalk:
 
     async def walk(self, space_key: str) -> None:
         self._report.space_key = space_key
-        await self._store.create_run_tables()
+        await self._store.create_tables()
         space_node = await self.index_space_row(
             await self._reader.read_space(space_key)
         )
 
-        for kind in CONTENT_KINDS:
+        for kind in (ContentType.PAGE, ContentType.BLOGPOST):
             async for content in self._reader.iter_contents(space_key, kind):
                 await self.index_content(content, space_node)
 
@@ -501,7 +502,7 @@ async def walk_space(
     report = Report(space_key=space_key)
     try:
         async with (
-            IxPool.session(cfg) as conn,
+            await AsyncPostgresPool.dedicated(cfg.postgres) as conn,
             ConfluenceReader(source.confluence) as reader,
         ):
             store = IxStore(package_dir, cfg.db_schema, conn)
@@ -510,10 +511,10 @@ async def walk_space(
                 await walk.walk(space_key)
             finally:
                 report = walk.report
-    except SPACE_ERRORS as exc:
+    except (ConfluenceReadError, IxWriteError, psycopg.Error) as exc:
         logger.error("space %s aborted: %s", space_key, exc)
         report.error = str(exc)
-    except IxDatabaseError as exc:
+    except PostgresError as exc:
         logger.error("space %s aborted: %s", space_key, exc)
         report.error = str(exc)
 
@@ -522,18 +523,32 @@ async def walk_space(
     return report
 
 
+@dataclass(frozen=True, kw_only=True)
+class SpaceJob:
+    """Один спейс для процесса: источник, ключ и нужен ли полный переобход."""
+
+    source_name: str
+    space_key: str
+    reindex: bool
+
+
 def index_space(
     cfg: IndexerConfig,
-    source_name: str,
-    space_key: str,
+    job: SpaceJob,
     package_dir: Path,
-    reindex: bool,
+    krb: KerberosWorkspaceConfig | None,
 ) -> Report:
-    """Вход процесса спейса: свой лог, свой event loop, один спейс."""
+    """Вход процесса спейса: свой лог, свой каталог kerberos, свой event loop,
+    один спейс."""
     logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
-    source = find_source(cfg, source_name)
+    if krb is not None:
+        krb.apply()
 
-    return asyncio.run(walk_space(cfg, source, space_key, package_dir, reindex=reindex))
+    source = find_source(cfg, job.source_name)
+
+    return asyncio.run(
+        walk_space(cfg, source, job.space_key, package_dir, reindex=job.reindex)
+    )
 
 
 async def list_targets(
@@ -558,31 +573,40 @@ async def list_targets(
 
 async def check_fts(cfg: IndexerConfig) -> None:
     """ix_fts накатывает пакет ix-fts; без него текст класть некуда."""
-    async with IxPool.session(cfg) as conn:
-        if await PostgresSchema.exists(conn, cfg.db_schema, FTS_TABLE):
+    fts_table = "ix_fts"
+    async with await AsyncPostgresPool.dedicated(cfg.postgres) as conn:
+        if await PostgresSchema.exists(conn, cfg.db_schema, fts_table):
             return
 
     raise IndexerWorkerError(
-        f"table {cfg.db_schema}.{FTS_TABLE} is missing: apply the full-text index "
+        f"table {cfg.db_schema}.{fts_table} is missing: apply the full-text index "
         "first: boba-ix-fts upgrade --config <config>"
     )
+
+
+@dataclass(frozen=True, kw_only=True)
+class SpaceSelection:
+    """Что обходить: маска источника и спейса из командной строки, полный
+    переобход; пустая маска значит все."""
+
+    source: str = ""
+    space: str = ""
+    reindex: bool = False
 
 
 def run_spaces(
     cfg: IndexerConfig,
     package_dir: Path,
-    *,
-    source: str = "",
-    space: str = "",
-    reindex: bool = False,
+    krb: KerberosWorkspaceConfig | None,
+    selection: SpaceSelection,
 ) -> list[Report]:
     """Прогон по спейсам: процесс на спейс, parallel_spaces процессов разом.
     Отчёты в порядке спейсов; спейс с ошибкой — отчёт с error."""
     try:
         asyncio.run(check_fts(cfg))
-        targets = asyncio.run(list_targets(cfg, source, space))
-    except IxDatabaseError as exc:
-        raise IndexerWorkerError(str(exc)) from exc
+        targets = asyncio.run(list_targets(cfg, selection.source, selection.space))
+    except PostgresError as exc:
+        raise IndexerWorkerError(f"ix database {cfg.postgres.where()}: {exc}") from exc
     except ConfluenceReadError as exc:
         raise IndexerWorkerError(str(exc)) from exc
     except psycopg.Error as exc:
@@ -597,7 +621,15 @@ def run_spaces(
         futures = []
         for found, key in targets:
             futures.append(
-                pool.submit(index_space, cfg, found.name, key, package_dir, reindex)
+                pool.submit(
+                    index_space,
+                    cfg,
+                    SpaceJob(
+                        source_name=found.name, space_key=key, reindex=selection.reindex
+                    ),
+                    package_dir,
+                    krb,
+                )
             )
 
         for (found, key), future in zip(targets, futures, strict=True):
@@ -655,6 +687,7 @@ def main() -> None:
 
     try:
         args = parse_args()
+        krb = enter_kerberos(args.config)
         if args.command is Command.UPGRADE:
             database = bind_section(args.config, section, IxDatabase)
             upgrade = SchemaUpgrade(package_dir / "schema")
@@ -666,9 +699,8 @@ def main() -> None:
         reports = run_spaces(
             cfg,
             package_dir / "run",
-            source=args.source,
-            space=args.space,
-            reindex=args.reindex,
+            krb,
+            SpaceSelection(source=args.source, space=args.space, reindex=args.reindex),
         )
         for report in reports:
             logger.info("done: %s", report.line())

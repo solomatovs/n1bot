@@ -3,7 +3,7 @@ trgm, vector) и подсказки при наборе (suggest) поверх �
 стандартном http.server: отдаёт index.html, /surfaces и /search.
 
 Сам поиск живёт в ядре (boba.ix_core.search): стенд при старте читает реестры схемы
-в SearchRegistry, а на запрос берёт соединение из пула, считает вектор своей
+в IxRegistry, а на запрос берёт соединение из пула, считает вектор своей
 моделью для режима vector и отдаёт SearchRequest в IxSearch. Поэтому новая таблица
 индекса появляется в поиске после перезапуска стенда, а правка ранжирования в
 sql-файлах ядра видна без перезапуска.
@@ -27,6 +27,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Sequence
+from dataclasses import asdict
 from enum import StrEnum
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -38,13 +39,13 @@ from pydantic import Field
 
 from boba.config import ConfigError, bind_section
 from boba.db.postgres import AsyncPostgresPool, PostgresError
-from boba.ix_core.database import IxDatabase, IxDatabaseError, IxPool
+from boba.ix_core.database import IxDatabase, enter_kerberos
+from boba.ix_core.registry import IxRegistry
 from boba.ix_core.search import (
     Hit,
     IxSearch,
     IxSearchError,
     SearchMode,
-    SearchRegistry,
     SearchRequest,
 )
 from boba.ix_core.surfaces import Surface
@@ -81,7 +82,7 @@ class Searcher:
         cfg: LabConfig,
         pool: AsyncPostgresPool,
         embedder: Embedder[str],
-        registry: SearchRegistry,
+        registry: IxRegistry,
         loop: asyncio.AbstractEventLoop,
     ) -> None:
         self._cfg = cfg
@@ -89,11 +90,11 @@ class Searcher:
         self._embedder = embedder
         self._registry = registry
         self._loop = loop
-        self._search = IxSearch(cfg.db_schema, registry)
+        self._search = IxSearch(registry)
 
     def surfaces(self) -> Sequence[Surface]:
         """Что предложить для выбора: поверхности, попадающие в индексы."""
-        return self._registry.surfaces.indexed()
+        return self._registry.indexed_surfaces()
 
     def search_from_thread(
         self, mode: SearchMode, query: str, limit: int, surfaces: Sequence[str]
@@ -162,7 +163,7 @@ class Handler(BaseHTTPRequestHandler):
         """Словарь поверхностей: по нему страница рисует выбор."""
         found: list[dict[str, object]] = []
         for surface in self.searcher.surfaces():
-            found.append(surface.model_dump(mode="json"))
+            found.append(asdict(surface))
 
         self._json({"surfaces": found})
 
@@ -185,7 +186,7 @@ class Handler(BaseHTTPRequestHandler):
 
         found: list[dict[str, object]] = []
         for hit in hits:
-            found.append(hit.model_dump(mode="json"))
+            found.append(asdict(hit))
 
         self._json({"mode": mode_name, "hits": found})
 
@@ -215,21 +216,19 @@ class LabServer:
         self._cfg = cfg
         self._dir = package_dir
 
-    async def _registry(self, pool: AsyncPostgresPool) -> SearchRegistry:
+    async def _registry(self, pool: AsyncPostgresPool) -> IxRegistry:
         async with pool.connection() as conn:
-            registry = await SearchRegistry.load(conn, self._cfg.db_schema)
+            registry = await IxRegistry(self._cfg.db_schema).read(conn)
 
-        for table in registry.all_tables():
+        for table in registry.get_tables():
             logger.info("index table of kind %s: %s", table.kind, table.name)
 
         names: list[str] = []
-        for surface in registry.surfaces.indexed():
+        for surface in registry.indexed_surfaces():
             names.append(surface.name)
 
         logger.info("surfaces to search over: %s", ", ".join(names))
-        logger.info(
-            "url templates for surfaces: %s", ", ".join(registry.urls.surfaces())
-        )
+        logger.info("url templates for surfaces: %s", ", ".join(registry.get_urls()))
 
         return registry
 
@@ -244,7 +243,9 @@ class LabServer:
         )
         embedder = EmbedderFactory.build(embedding)
 
-        async with IxPool.opened(self._cfg) as pool:
+        pool = AsyncPostgresPool(self._cfg.postgres)
+        await pool.open()
+        try:
             registry = await self._registry(pool)
             Handler.searcher = Searcher(
                 self._cfg, pool, embedder, registry, asyncio.get_running_loop()
@@ -258,39 +259,39 @@ class LabServer:
             finally:
                 server.shutdown()
                 server.server_close()
+        finally:
+            await pool.close()
 
 
-class Cli:
+def parse_args(argv: Sequence[str] | None = None) -> LabConfig:
     """Запуск с одним аргументом --config: секция [ix.search_lab] в модель."""
+    parser = argparse.ArgumentParser(
+        prog="boba-ix-search-lab",
+        description="Стенд поисковой выдачи ix: страница и http-сервер.",
+    )
+    parser.add_argument(
+        "--config",
+        required=True,
+        type=Path,
+        help=(
+            "Путь к файлу конфига приложения (toml). Адрес страницы, база ix и "
+            "модель эмбеддингов берутся из секции [ix.search_lab]."
+        ),
+    )
+    args = parser.parse_args(argv)
+    enter_kerberos(args.config)
 
-    @classmethod
-    def parse(cls, argv: Sequence[str] | None = None) -> LabConfig:
-        parser = argparse.ArgumentParser(
-            prog="boba-ix-search-lab",
-            description="Стенд поисковой выдачи ix: страница и http-сервер.",
-        )
-        parser.add_argument(
-            "--config",
-            required=True,
-            type=Path,
-            help=(
-                "Путь к файлу конфига приложения (toml). Адрес страницы, база ix и "
-                "модель эмбеддингов берутся из секции [ix.search_lab]."
-            ),
-        )
-        args = parser.parse_args(argv)
-
-        return bind_section(args.config, "ix.search_lab", LabConfig)
+    return bind_section(args.config, "ix.search_lab", LabConfig)
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
     try:
-        cfg = Cli.parse()
+        cfg = parse_args()
         here = Path(__file__).resolve().parent
         asyncio.run(LabServer(cfg, here).serve())
-    except (ConfigError, SearchLabError, IxDatabaseError) as exc:
+    except (ConfigError, SearchLabError, PostgresError) as exc:
         raise SystemExit(str(exc)) from exc
 
 

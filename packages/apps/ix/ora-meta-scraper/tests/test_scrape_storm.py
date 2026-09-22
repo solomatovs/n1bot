@@ -8,10 +8,10 @@ import asyncio
 import logging
 import random
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import pytest
 from ora_scraper_stand import DemoDataset, Golden, IxSource, IxStand, IxStandDatabase
-from pydantic import BaseModel
 
 from boba.db.postgres import AsyncPostgresPool
 from boba.db.postgres.profile import PostgresConfig
@@ -24,7 +24,8 @@ logger = logging.getLogger("ora-storm")
 STAND = IxStand.required()
 
 
-class StormOutcome(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class StormOutcome:
     """Итог одного прогона внутри шторма."""
 
     source: str

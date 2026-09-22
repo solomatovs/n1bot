@@ -19,7 +19,8 @@ import pytest
 from cfl_stand import PACKAGE_DIR, StubIndexer
 from PIL import Image, ImageDraw
 
-from boba.cfl_indexer.worker import IndexerConfig, Report, index_space
+from boba.cfl_indexer.worker import IndexerConfig, Report, SpaceJob, index_space
+from boba.krb import KerberosWorkspaceConfig
 from boba.stand.confluence import ConfluenceStub, StubAttachment, StubPage, StubSpace
 from boba.stand.ix import IxStand, peak_rss_mib
 from boba.text.document import LiteParseParams
@@ -114,15 +115,22 @@ def rss_mib() -> int:
     return (int(fields[1]) * 4096) >> 20
 
 
-def index_in_child(cfg: IndexerConfig, key: str) -> tuple[Report, int]:
+def index_in_child(
+    cfg: IndexerConfig, key: str, krb: KerberosWorkspaceConfig
+) -> tuple[Report, int]:
     """Вход процесса спейса: отчёт обхода и пик RSS процесса в MiB."""
-    report = index_space(cfg, cfg.sources[0].name, key, PACKAGE_DIR / "run", False)
+    report = index_space(
+        cfg,
+        SpaceJob(source_name=cfg.sources[0].name, space_key=key, reindex=False),
+        PACKAGE_DIR / "run",
+        krb,
+    )
 
     return report, peak_rss_mib()
 
 
 def index_apart(
-    cfg: IndexerConfig, keys: Sequence[str]
+    cfg: IndexerConfig, keys: Sequence[str], krb: KerberosWorkspaceConfig
 ) -> dict[str, tuple[Report, int]]:
     """Каждый спейс в свежем процессе, parallel_spaces разом; заглушку Confluence
     обслуживает loop теста, поэтому зовётся из потока."""
@@ -131,7 +139,7 @@ def index_apart(
         mp_context=multiprocessing.get_context("spawn"),
         max_tasks_per_child=1,
     ) as pool:
-        futures = {key: pool.submit(index_in_child, cfg, key) for key in keys}
+        futures = {key: pool.submit(index_in_child, cfg, key, krb) for key in keys}
         results: dict[str, tuple[Report, int]] = {}
         for key, future in futures.items():
             results[key] = future.result()
@@ -164,7 +172,9 @@ class TestStreamingMemory:
         seed_space(fake, "LARGE", LARGE_PAGES)
         cfg = ocr_config(stub_indexer, ix_stand, "MEDIUM", "LARGE")
 
-        results = await asyncio.to_thread(index_apart, cfg, ["MEDIUM", "LARGE"])
+        results = await asyncio.to_thread(
+            index_apart, cfg, ["MEDIUM", "LARGE"], ix_stand.krb
+        )
 
         medium, medium_peak = results["MEDIUM"]
         large, large_peak = results["LARGE"]
@@ -193,7 +203,7 @@ class TestStreamingMemory:
         cfg = ocr_config(stub_indexer, ix_stand, *keys)
         before = rss_mib()
 
-        results = await asyncio.to_thread(index_apart, cfg, keys)
+        results = await asyncio.to_thread(index_apart, cfg, keys, ix_stand.krb)
 
         after = rss_mib()
         peaks: list[int] = []

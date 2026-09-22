@@ -20,23 +20,20 @@ import argparse
 import asyncio
 import logging
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 import psycopg
 from psycopg import sql
-from pydantic import BaseModel
 
 from boba.config import ConfigError, bind_section
+from boba.db.postgres import AsyncPostgresPool, PostgresError
 from boba.db.postgres.query import PgQueryBuilder
-from boba.ix_core.aspects import (
-    AspectClass,
-    AspectDeclarations,
-    AspectSources,
-    SurfaceAspect,
-)
-from boba.ix_core.database import IxDatabase, IxDatabaseError, IxPool
+from boba.ix_core.aspects import AspectClass, SurfaceAspect
+from boba.ix_core.database import IxDatabase, enter_kerberos
+from boba.ix_core.registry import IxRegistry
 from boba.ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError
 from boba.ix_vector.embedding import (
     AspectEmbedding,
@@ -72,7 +69,8 @@ class WorkerConfig(IxDatabase, EmbeddingParams):
     classes: Sequence[AspectClass]
 
 
-class CycleReport(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class CycleReport:
     rounds: int
     written: int
     pruned: int
@@ -84,13 +82,14 @@ class VectorWorker:
     def __init__(self, cfg: WorkerConfig, package_dir: Path) -> None:
         self._cfg = cfg
         self._dir = package_dir
+        self._registry = IxRegistry(cfg.db_schema)
         self._embedding = AspectEmbedding(cfg, cfg.db_schema, "ix_emb_e5_1024")
 
     async def run(self) -> CycleReport:
         try:
-            async with IxPool.session(self._cfg) as conn:
-                declarations = await AspectDeclarations.of_classes(
-                    conn, self._cfg.db_schema, self._cfg.classes
+            async with await AsyncPostgresPool.dedicated(self._cfg.postgres) as conn:
+                declarations = await self._registry.read_declarations(
+                    conn, self._cfg.classes
                 )
                 logger.info(
                     "aspect sources: %d declarations for classes %s",
@@ -99,9 +98,7 @@ class VectorWorker:
                 )
                 names: dict[str, sql.Composable] = {
                     "schema": sql.Identifier(self._cfg.db_schema),
-                    str(Part.SOURCES): AspectSources.union(
-                        declarations, self._cfg.db_schema
-                    ),
+                    str(Part.SOURCES): self._registry.union_sources(declarations),
                 }
                 await self._ensure_indexes(conn, names, declarations)
 
@@ -113,7 +110,7 @@ class VectorWorker:
                 pruned = await self._prune(conn, names)
 
                 return CycleReport(rounds=rounds, written=written, pruned=pruned)
-        except IxDatabaseError as exc:
+        except PostgresError as exc:
             raise VectorWorkerError(str(exc)) from exc
         except psycopg.Error as exc:
             msg = f"ix database {self._cfg.postgres.where()}: {exc}"
@@ -168,7 +165,7 @@ class VectorWorker:
         )
         cur = await conn.execute(query.text, query.params)
         rows: list[AspectText] = []
-        for node_id, surface, aspect, content, content_hash in await cur.fetchall():
+        async for node_id, surface, aspect, content, content_hash in cur:
             rows.append(
                 AspectText(
                     node_id=node_id,
@@ -204,38 +201,35 @@ class Command(StrEnum):
     RUN = "run"
 
 
-class Cli:
+def parse_args(argv: Sequence[str] | None = None) -> tuple[Command, Path]:
     """Команда и путь к конфигу; настройки берутся из секции [ix.vector]."""
+    parser = argparse.ArgumentParser(
+        prog="boba-ix-vector",
+        description=(
+            "Векторный индексатор ix_emb_e5_1024: схема пакета и цикл чанков."
+        ),
+    )
+    parser.add_argument(
+        "command",
+        type=Command,
+        choices=list(Command),
+        help=(
+            "upgrade — накатить схему пакета в базу ix (идемпотентно, ядро "
+            "должно быть уже накачено пакетом ix-core); run — рабочий цикл."
+        ),
+    )
+    parser.add_argument(
+        "--config",
+        required=True,
+        type=Path,
+        help=(
+            "Путь к файлу конфига приложения (toml). Все настройки, включая "
+            "профиль подключения к базе ix, берутся из секции [ix.vector]."
+        ),
+    )
+    args = parser.parse_args(argv)
 
-    @classmethod
-    def parse(cls, argv: Sequence[str] | None = None) -> tuple[Command, Path]:
-        parser = argparse.ArgumentParser(
-            prog="boba-ix-vector",
-            description=(
-                "Векторный индексатор ix_emb_e5_1024: схема пакета и цикл чанков."
-            ),
-        )
-        parser.add_argument(
-            "command",
-            type=Command,
-            choices=list(Command),
-            help=(
-                "upgrade — накатить схему пакета в базу ix (идемпотентно, ядро "
-                "должно быть уже накачено пакетом ix-core); run — рабочий цикл."
-            ),
-        )
-        parser.add_argument(
-            "--config",
-            required=True,
-            type=Path,
-            help=(
-                "Путь к файлу конфига приложения (toml). Все настройки, включая "
-                "профиль подключения к базе ix, берутся из секции [ix.vector]."
-            ),
-        )
-        args = parser.parse_args(argv)
-
-        return args.command, args.config
+    return args.command, args.config
 
 
 def main() -> None:
@@ -244,7 +238,8 @@ def main() -> None:
 
     package_dir = Path(__file__).resolve().parent
     try:
-        command, config_path = Cli.parse()
+        command, config_path = parse_args()
+        enter_kerberos(config_path)
 
         if command is Command.UPGRADE:
             database = bind_section(config_path, section, IxDatabase)

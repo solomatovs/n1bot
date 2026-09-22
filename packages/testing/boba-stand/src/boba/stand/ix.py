@@ -27,8 +27,8 @@ from boba.db.postgres.profile import PostgresConfig
 from boba.db.postgres.query import PgQueryBuilder
 from boba.ix_core.database import IxDatabase
 from boba.ix_core.main import SCHEMA_DIR as CORE_SCHEMA_DIR
+from boba.ix_core.registry import IxRegistry
 from boba.ix_core.upgrade import SchemaUpgrade
-from boba.ix_core.urls import SurfaceUrls
 from boba.krb import KerberosWorkspaceConfig
 from boba.runtime.config import ConfigLocator
 from boba.stand.site import StandLayers
@@ -64,9 +64,13 @@ class IxStand(BaseModel):
         raw = StandLayers.compose(path)
 
         try:
-            return bind(raw, path=section, model=cls)
+            stand = bind(raw, path=section, model=cls)
         except ValidationError as exc:
             raise IxStandError(f"ix stand: [{section}] in {stand_path}: {exc}") from exc
+
+        stand.krb.apply()
+
+        return stand
 
     @classmethod
     def required(cls) -> Self:
@@ -83,9 +87,7 @@ class IxStand(BaseModel):
     @property
     def ix_database(self) -> IxDatabase:
         """Секция базы ix глазами пакетов: схема, профиль базы прогонов, kerberos."""
-        return IxDatabase(
-            db_schema=self.db_schema, postgres=self.ix_profile, krb=self.krb
-        )
+        return IxDatabase(db_schema=self.db_schema, postgres=self.ix_profile)
 
 
 class IxStandDatabase:
@@ -124,10 +126,13 @@ class IxStandDatabase:
         async with await AsyncPostgresPool.dedicated(self._stand.ix_profile) as conn:
             yield conn
 
-    async def urls(self) -> SurfaceUrls:
+    async def urls(self) -> IxRegistry:
         """Формулы ссылок из реестра стенда: тест проверяет ими объявление владельца."""
+        registry = IxRegistry(self._stand.db_schema)
         async with self.connection() as conn:
-            return await SurfaceUrls.load(conn, self._stand.db_schema)
+            await registry.read_urls(conn)
+
+        return registry
 
     async def nodes(self) -> list[tuple[str, dict[str, Any]]]:
         """Поверхность и адрес каждой node: по ним тест собирает ссылки."""

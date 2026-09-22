@@ -11,7 +11,12 @@ import pytest
 from cfl_stand import PACKAGE_DIR
 
 from boba.cfl_indexer.confluence import SpaceSelector
-from boba.cfl_indexer.worker import ConfluenceSource, IndexerConfig, run_spaces
+from boba.cfl_indexer.worker import (
+    ConfluenceSource,
+    IndexerConfig,
+    SpaceSelection,
+    run_spaces,
+)
 from boba.confluence.rest import ConfluenceConnection, SpaceType
 from boba.stand.ix import IxStand, IxStandDatabase
 from boba.stand.site import Stand
@@ -37,7 +42,6 @@ def _config(ix_stand: IxStand) -> IndexerConfig:
     return IndexerConfig(
         db_schema=database.db_schema,
         postgres=database.postgres,
-        krb=database.krb,
         sources=[
             ConfluenceSource(
                 name="stand",
@@ -61,10 +65,18 @@ class TestLiveSpace:
 
         cfg = _config(ix_stand)
 
-        first = (await asyncio.to_thread(run_spaces, cfg, PACKAGE_DIR / "run"))[0]
+        first = (
+            await asyncio.to_thread(
+                run_spaces, cfg, PACKAGE_DIR / "run", ix_stand.krb, SpaceSelection()
+            )
+        )[0]
         assert first.seen >= 2
         assert first.indexed == first.seen
 
-        second = (await asyncio.to_thread(run_spaces, cfg, PACKAGE_DIR / "run"))[0]
+        second = (
+            await asyncio.to_thread(
+                run_spaces, cfg, PACKAGE_DIR / "run", ix_stand.krb, SpaceSelection()
+            )
+        )[0]
         assert second.indexed == 0
         assert second.unchanged == second.seen

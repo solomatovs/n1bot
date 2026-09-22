@@ -16,13 +16,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import ClassVar, TypeVar
 
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel, ValidationError
 
 from boba.config.bind import bind
 from boba.config.builder import ConfigBuilder
 
-__all__ = ["ConfigBase", "ConfigError", "bind_section"]
+__all__ = ["ConfigBase", "ConfigError", "bind_optional_section", "bind_section"]
 
 M = TypeVar("M", bound=BaseModel)
 
@@ -43,8 +43,8 @@ class ConfigError(Exception):
     """Конфиг недоступен, не разбирается или не сходится с моделью."""
 
 
-def bind_section(path: Path, section: str, model: type[M]) -> M:
-    """Секция section файла path в модель model; интерполяции уже развёрнуты."""
+def compose_file(path: Path) -> DictConfig:
+    """Файл конфига с вычисленным слоем env; интерполяции разворачиваются при bind."""
     if not path.is_file():
         msg = f"config {path}: expected a readable toml file, it does not exist"
         raise ConfigError(msg)
@@ -53,14 +53,31 @@ def bind_section(path: Path, section: str, model: type[M]) -> M:
         builder = ConfigBuilder()
         builder.add_dict(ConfigBase.of(path))
         builder.add_toml(path)
-        raw = builder.build()
+        return builder.build()
     except Exception as exc:
         msg = f"config {path}: reading toml failed: {type(exc).__name__}: {exc}"
         raise ConfigError(msg) from exc
 
+
+def bind_section(path: Path, section: str, model: type[M]) -> M:
+    """Секция section файла path в модель model; интерполяции уже развёрнуты."""
+    raw = compose_file(path)
     if OmegaConf.select(raw, section) is None:
         msg = f"config {path}: section [{section}] is missing"
         raise ConfigError(msg)
+
+    try:
+        return bind(raw, path=section, model=model)
+    except ValidationError as exc:
+        msg = f"config {path}: section [{section}] does not fit {model.__name__}: {exc}"
+        raise ConfigError(msg) from exc
+
+
+def bind_optional_section(path: Path, section: str, model: type[M]) -> M | None:
+    """Секция, которой в файле может не быть: нет — None, есть — модель или ошибка."""
+    raw = compose_file(path)
+    if OmegaConf.select(raw, section) is None:
+        return None
 
     try:
         return bind(raw, path=section, model=model)

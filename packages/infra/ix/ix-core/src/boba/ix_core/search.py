@@ -1,9 +1,10 @@
 """Поиск по индексам ix: режимы, реестры вызывающего, запрос и слияние выдачи.
 
-Вызывающий (стенд, инструмент чата, api) один раз читает реестры схемы в
-SearchRegistry: таблицы индексов по видам, словари поверхностей и аспектов, формулы
-ссылок. Дальше IxSearch выполняет SearchRequest: файл sql/<режим>.sql уходит в
-каждую таблицу нужного вида на переданном соединении, строки становятся Hit со
+Вызывающий (стенд, инструмент чата, api) создаёт IxRegistry и один раз читает им
+реестры схемы: таблицы индексов по видам, словари поверхностей и аспектов, формулы
+ссылок. Дальше IxSearch выполняет SearchRequest: файл sql/<режим>.sql уходит одним
+запросом в объединение таблиц нужного вида на переданном соединении, строки
+становятся Hit со
 ссылкой по формуле владельца, выдачи таблиц сливаются по порядку режима.
 
 Фильтры запроса это списки имён поверхностей и аспектов. Пустой список значит «все
@@ -24,6 +25,7 @@ IxSearchError — режим не обслужен ни одной таблиц�
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -33,19 +35,15 @@ from psycopg import sql
 from pydantic import BaseModel, ConfigDict, Field
 
 from boba.db.postgres.query import PgQueryBuilder
-from boba.ix_core.aspects import AspectCatalog
-from boba.ix_core.indexes import IndexKind, IndexTable, IndexTables, index_columns
-from boba.ix_core.surfaces import SurfaceCatalog
-from boba.ix_core.urls import SurfaceUrls
+from boba.ix_core.indexes import IndexKind, index_columns
+from boba.ix_core.registry import IxRegistry
 
 __all__ = [
     "Hit",
     "IxSearch",
     "IxSearchError",
     "SearchMode",
-    "SearchRegistry",
     "SearchRequest",
-    "VectorText",
 ]
 
 SQL_DIR = Path(__file__).resolve().parent / "sql"
@@ -76,10 +74,9 @@ class SearchMode(StrEnum):
         return IndexKind.TRGM
 
 
-class Hit(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class Hit:
     """Строка выдачи: объект, его адрес и ссылка, счёт, лучший аспект и сниппет."""
-
-    model_config = ConfigDict(frozen=True)
 
     node_id: int
     surface: str
@@ -106,73 +103,13 @@ class SearchRequest(BaseModel):
     vector: tuple[float, ...] = ()
     """Вектор запроса для режима vector; остальным режимам не нужен."""
 
-
-class VectorText:
-    """Вектор запроса строкой литерала pgvector: `[0.1,0.2,...]`."""
-
-    @classmethod
-    def render(cls, vector: Sequence[float]) -> str:
+    def vector_text(self) -> str:
+        """Вектор строкой литерала pgvector: `[0.1,0.2,...]`."""
         parts: list[str] = []
-        for value in vector:
+        for value in self.vector:
             parts.append(format(value, ".6g"))
 
         return "[" + ",".join(parts) + "]"
-
-
-class SearchRegistry:
-    """Реестры схемы, прочитанные один раз: таблицы индексов по видам, словари
-    поверхностей и аспектов, формулы ссылок."""
-
-    def __init__(
-        self,
-        tables: Mapping[IndexKind, Sequence[IndexTable]],
-        surfaces: SurfaceCatalog,
-        aspects: AspectCatalog,
-        urls: SurfaceUrls,
-    ) -> None:
-        self._tables = dict(tables)
-        self._surfaces = surfaces
-        self._aspects = aspects
-        self._urls = urls
-
-    @classmethod
-    async def load(
-        cls, conn: psycopg.AsyncConnection[Any], db_schema: str
-    ) -> SearchRegistry:
-        tables: dict[IndexKind, list[IndexTable]] = {}
-        for kind in IndexKind:
-            tables[kind] = []
-
-        for table in await IndexTables.all(conn, db_schema):
-            tables[table.kind].append(table)
-
-        surfaces = await SurfaceCatalog.load(conn, db_schema)
-        aspects = await AspectCatalog.load(conn, db_schema)
-        urls = await SurfaceUrls.load(conn, db_schema)
-
-        return cls(tables, surfaces, aspects, urls)
-
-    @property
-    def surfaces(self) -> SurfaceCatalog:
-        return self._surfaces
-
-    @property
-    def aspects(self) -> AspectCatalog:
-        return self._aspects
-
-    @property
-    def urls(self) -> SurfaceUrls:
-        return self._urls
-
-    def tables_of(self, kind: IndexKind) -> tuple[IndexTable, ...]:
-        return tuple(self._tables.get(kind, ()))
-
-    def all_tables(self) -> tuple[IndexTable, ...]:
-        found: list[IndexTable] = []
-        for kind in IndexKind:
-            found.extend(self.tables_of(kind))
-
-        return tuple(found)
 
 
 class IxSearch:
@@ -184,10 +121,8 @@ class IxSearch:
     сервер одним запросом, а строки уходят вызывающему потоком по серверному курсору.
     """
 
-    def __init__(
-        self, db_schema: str, registry: SearchRegistry, sql_dir: Path = SQL_DIR
-    ) -> None:
-        self._schema = db_schema
+    def __init__(self, registry: IxRegistry, sql_dir: Path = SQL_DIR) -> None:
+        self._schema = registry.db_schema
         self._registry = registry
         self._dir = sql_dir
 
@@ -219,7 +154,7 @@ class IxSearch:
             "aspects": self.aspects_of(request.aspects),
         }
         if mode is SearchMode.VECTOR:
-            params["v"] = VectorText.render(request.vector)
+            params["v"] = request.vector_text()
 
         columns: list[sql.Composable] = []
         for column in index_columns(mode.kind()):
@@ -257,41 +192,41 @@ class IxSearch:
                         aspect=str(aspect),
                         snippet=str(snippet),
                         objects=int(objects),
-                        url=self._registry.urls.of(str(surface), address),
+                        url=self._registry.url_of(str(surface), address),
                     )
         except psycopg.Error as exc:
             raise IxSearchError(f"search {mode} in {self._schema}: {exc}") from exc
 
     def surfaces_of(self, chosen: Sequence[str]) -> list[str]:
         """Поверхности запроса: выбранные или все индексируемые из словаря."""
-        catalog = self._registry.surfaces
-        unknown = catalog.unknown(chosen)
+        unknown = self._registry.unknown_surfaces(chosen)
         if unknown:
             raise IxSearchError(
                 f"search: surfaces {list(unknown)} are not declared in "
-                f"{self._schema}.surface_e; known are {list(catalog.names())}"
+                f"{self._schema}.surface_e; known are "
+                f"{list(self._registry.surface_names())}"
             )
 
         if chosen:
             return list(chosen)
 
         everywhere: list[str] = []
-        for surface in catalog.indexed():
+        for surface in self._registry.indexed_surfaces():
             everywhere.append(surface.name)
 
         return everywhere
 
     def aspects_of(self, chosen: Sequence[str]) -> list[str]:
         """Аспекты запроса: выбранные или все из словаря."""
-        catalog = self._registry.aspects
-        unknown = catalog.unknown(chosen)
+        unknown = self._registry.unknown_aspects(chosen)
         if unknown:
             raise IxSearchError(
                 f"search: aspects {list(unknown)} are not declared in "
-                f"{self._schema}.aspect; known are {list(catalog.names())}"
+                f"{self._schema}.aspect; known are "
+                f"{list(self._registry.aspect_names())}"
             )
 
         if chosen:
             return list(chosen)
 
-        return list(catalog.names())
+        return list(self._registry.aspect_names())

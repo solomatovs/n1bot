@@ -8,6 +8,7 @@ edge_demo, инварианты, отпечатки и прогон скрапе
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
@@ -24,8 +25,8 @@ from boba.pg_meta_scraper import worker as scraper
 from boba.pg_meta_scraper.worker import (
     PgSource,
     ServerInfo,
-    SourceAddress,
     WorkerConfig,
+    source_address,
 )
 from boba.stand.ix import IxStand as SharedIxStand
 from boba.stand.ix import IxStandDatabase as SharedIxStandDatabase
@@ -83,7 +84,7 @@ class IxSource(BaseModel):
 
     @property
     def host(self) -> str:
-        return SourceAddress.of(self.postgres).host
+        return source_address(self.postgres).host
 
 
 class IxStand(SharedIxStand):
@@ -98,6 +99,7 @@ class IxStand(SharedIxStand):
         raise IxStandError(f"ix stand: source {name!r} is not listed in [{'ix_stand'}]")
 
 
+@dataclass(frozen=True, kw_only=True)
 class DdlFile(VersionGate):
     """Файл демонстрационного набора: ровно один statement, ворота по версии
     объявлены в стенде, текст уходит серверу как есть."""
@@ -189,21 +191,21 @@ class DemoDataset:
         )
 
 
-class Fingerprint(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class Fingerprint:
     """Канонический отпечаток одного источника: число строк и md5."""
-
-    model_config = ConfigDict(frozen=True)
 
     rows: int
     digest: str
 
-    @classmethod
-    def parse(cls, raw: str) -> Fingerprint:
-        rows, digest = raw.split()
-        return cls(rows=int(rows), digest=digest)
-
     def render(self) -> str:
         return f"{self.rows} {self.digest}"
+
+
+def parse_fingerprint(raw: str) -> Fingerprint:
+    rows, digest = raw.split()
+
+    return Fingerprint(rows=int(rows), digest=digest)
 
 
 class Golden:
@@ -266,7 +268,7 @@ class IxStandDatabase(SharedIxStandDatabase):
             raise IxStandError(
                 f"ix stand: fingerprint of {host}: expected one row, got none"
             )
-        return Fingerprint.parse(str(row[0]))
+        return parse_fingerprint(str(row[0]))
 
     async def scope_nodes(self, host: str) -> int:
         query = (

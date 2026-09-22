@@ -13,18 +13,21 @@ import argparse
 import asyncio
 import logging
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 import psycopg
 from psycopg import sql
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from boba.config import ConfigError, bind_section
+from boba.db.postgres import AsyncPostgresPool, PostgresError
 from boba.db.postgres.query import PgQueryBuilder
-from boba.ix_core.aspects import AspectClass, AspectDeclarations, AspectSources
-from boba.ix_core.database import IxDatabase, IxDatabaseError, IxPool
+from boba.ix_core.aspects import AspectClass
+from boba.ix_core.database import IxDatabase, enter_kerberos
+from boba.ix_core.registry import IxRegistry
 from boba.ix_core.upgrade import SchemaUpgrade, SchemaUpgradeError
 
 logger = logging.getLogger("ix-trgm")
@@ -50,12 +53,14 @@ class WorkerConfig(IxDatabase):
     batch: int = Field(gt=0, default=500)
 
 
-class StepResult(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class StepResult:
     planned: int
     applied: int
 
 
-class CycleReport(BaseModel):
+@dataclass(frozen=True, kw_only=True)
+class CycleReport:
     rounds: int
     applied: int
     pruned: int
@@ -67,10 +72,11 @@ class IndexerWorker:
     def __init__(self, cfg: WorkerConfig, package_dir: Path) -> None:
         self._cfg = cfg
         self._dir = package_dir
+        self._registry = IxRegistry(cfg.db_schema)
 
     async def run(self) -> CycleReport:
         try:
-            async with IxPool.session(self._cfg) as conn:
+            async with await AsyncPostgresPool.dedicated(self._cfg.postgres) as conn:
                 parts = await self._parts(conn)
                 names: dict[str, sql.Composable] = {
                     "schema": sql.Identifier(self._cfg.db_schema),
@@ -95,7 +101,7 @@ class IndexerWorker:
                 pruned = await self._prune(conn, names)
 
                 return CycleReport(rounds=rounds, applied=applied, pruned=pruned)
-        except IxDatabaseError as exc:
+        except PostgresError as exc:
             raise IndexerWorkerError(str(exc)) from exc
         except psycopg.Error as exc:
             msg = f"ix database {self._cfg.postgres.where()}: {exc}"
@@ -104,9 +110,7 @@ class IndexerWorker:
     async def _parts(
         self, conn: psycopg.AsyncConnection[Any]
     ) -> dict[str, sql.Composable]:
-        declarations = await AspectDeclarations.of_classes(
-            conn, self._cfg.db_schema, self._cfg.classes
-        )
+        declarations = await self._registry.read_declarations(conn, self._cfg.classes)
         logger.info(
             "aspect sources: %d declarations for classes %s",
             len(declarations),
@@ -114,7 +118,7 @@ class IndexerWorker:
         )
 
         return {
-            str(Part.SOURCES): AspectSources.union(declarations, self._cfg.db_schema),
+            str(Part.SOURCES): self._registry.union_sources(declarations),
         }
 
     async def _upsert(
@@ -151,39 +155,35 @@ class Command(StrEnum):
     RUN = "run"
 
 
-class Cli:
+def parse_args(argv: Sequence[str] | None = None) -> tuple[Command, Path]:
     """Команда и путь к конфигу; настройки берутся из секции [ix.trgm]."""
+    parser = argparse.ArgumentParser(
+        prog="boba-ix-trgm",
+        description=(
+            "Индексатор триграмм и префиксов ix_trgm: схема пакета и цикл upsert/prune."
+        ),
+    )
+    parser.add_argument(
+        "command",
+        type=Command,
+        choices=list(Command),
+        help=(
+            "upgrade — накатить схему пакета в базу ix (идемпотентно, ядро "
+            "должно быть уже накачено пакетом ix-core); run — рабочий цикл."
+        ),
+    )
+    parser.add_argument(
+        "--config",
+        required=True,
+        type=Path,
+        help=(
+            "Путь к файлу конфига приложения (toml). Все настройки, включая "
+            "профиль подключения к базе ix, берутся из секции [ix.trgm]."
+        ),
+    )
+    args = parser.parse_args(argv)
 
-    @classmethod
-    def parse(cls, argv: Sequence[str] | None = None) -> tuple[Command, Path]:
-        parser = argparse.ArgumentParser(
-            prog="boba-ix-trgm",
-            description=(
-                "Индексатор триграмм и префиксов ix_trgm: схема пакета "
-                "и цикл upsert/prune."
-            ),
-        )
-        parser.add_argument(
-            "command",
-            type=Command,
-            choices=list(Command),
-            help=(
-                "upgrade — накатить схему пакета в базу ix (идемпотентно, ядро "
-                "должно быть уже накачено пакетом ix-core); run — рабочий цикл."
-            ),
-        )
-        parser.add_argument(
-            "--config",
-            required=True,
-            type=Path,
-            help=(
-                "Путь к файлу конфига приложения (toml). Все настройки, включая "
-                "профиль подключения к базе ix, берутся из секции [ix.trgm]."
-            ),
-        )
-        args = parser.parse_args(argv)
-
-        return args.command, args.config
+    return args.command, args.config
 
 
 def main() -> None:
@@ -192,7 +192,8 @@ def main() -> None:
 
     package_dir = Path(__file__).resolve().parent
     try:
-        command, config_path = Cli.parse()
+        command, config_path = parse_args()
+        enter_kerberos(config_path)
 
         if command is Command.UPGRADE:
             database = bind_section(config_path, section, IxDatabase)

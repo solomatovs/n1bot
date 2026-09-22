@@ -18,6 +18,7 @@ from boba.cfl_indexer.worker import (
     ConfluenceSource,
     IndexerConfig,
     Report,
+    SpaceSelection,
     run_spaces,
 )
 from boba.confluence.rest import ConfluenceConnection, SpaceType
@@ -57,7 +58,6 @@ class StubIndexer:
         return IndexerConfig(
             db_schema=database.db_schema,
             postgres=database.postgres,
-            krb=database.krb,
             sources=[
                 ConfluenceSource(
                     name="stub",
@@ -76,7 +76,9 @@ class StubIndexer:
         event loop теста, и блокировать его ожиданием нельзя."""
         cfg = self.config(*spaces)
 
-        return await asyncio.to_thread(run_spaces, cfg, PACKAGE_DIR / "run")
+        return await asyncio.to_thread(
+            run_spaces, cfg, PACKAGE_DIR / "run", self._stand.krb, SpaceSelection()
+        )
 
 
 class SharedIndexers:
@@ -102,7 +104,6 @@ class SharedIndexers:
         common = {
             "db_schema": database.db_schema,
             "postgres": database.postgres,
-            "krb": database.krb,
         }
 
         trgm_cfg = TrgmConfig(**common, classes=[AspectClass.IDENT, AspectClass.WORDS])
@@ -121,7 +122,6 @@ class SharedIndexers:
         cfg = VectorConfig(
             db_schema=database.db_schema,
             postgres=database.postgres,
-            krb=database.krb,
             classes=[AspectClass.DESCRIPTION],
             cache_dir=self._stand.embedding_cache_dir,
         )
