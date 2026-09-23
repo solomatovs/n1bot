@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boba-tool-oracle"
+version = "0.0.23.dev1"
+description = "Oracle-инструменты: запрос, описание словаря через all_* и насосы перекачки CSV; соединение и запрос идут из песочницы."
+requires-python = ">=3.11,<4"
+dependencies = [
+    "boba-toolkit==0.0.23.dev1",
+    "boba-db-oracle==0.0.23.dev1",
+    "boba-connections==0.0.23.dev1",
+    "pydantic>=2.10,<2.11",
+]
+
+[project.entry-points."boba.tools"]
+ora = "boba.tool.ora.plugin:MANIFEST"
+
+[project.optional-dependencies]
+payload = [
+    "boba-db-oracle[payload]==0.0.23.dev1",
+]
+dev = [
+    "boba-db-postgres==0.0.23.dev1",
+    "oracledb==26.0.0+boba.1",
+    "boba-stand==0.0.23.dev1",
+    "psycopg[binary]>=3.3",
+    "pytest>=8",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["boba*"]
+namespaces = true
+
+[tool.boba.sandbox]
+imports = ["oracledb", "pyarrow"]
