@@ -5,33 +5,26 @@
 текст запроса один, чтобы брокер (выбор строки под вызов) и плагин
 connection_list/connection_search (каталог для модели) считали выдачу и дубли
 имён одинаково — имя, выданное дважды внутри одного вида, дубль, вызов по
-нему неоднозначен. Домен psycopg не знает: текст несёт плейсхолдеры
-идентификаторов `{...}` и параметров `%(...)s`, идентификаторы подставляет
-исполнитель по картам ConnectionNames.
+нему неоднозначен. Домен psycopg не знает: текст несёт имя схемы
+плейсхолдером `{schema}` и параметры `%(...)s`, исполнитель собирает его
+своим сборщиком запросов.
 
 Ошибки: своих не выпускает.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from enum import StrEnum
 from typing import Any, ClassVar, LiteralString
 
 from pydantic import BaseModel, ConfigDict
 
-from boba.connections.stored import (
-    ConnectionsColumn,
-    ConnectionTable,
-    GrantKind,
-    GrantsColumn,
-    RolesColumn,
-)
+from boba.connections.stored import GrantKind
 from boba.identity.context import Subject
 
 __all__ = [
     "ConnectionFilter",
-    "ConnectionNames",
     "FilterParam",
     "LikePattern",
     "ProfileKey",
@@ -56,37 +49,6 @@ class SubjectRowColumn(StrEnum):
     DATA = "data"
     KIND = "kind"
     COPIES = "copies"
-
-
-class ColumnPrefix(StrEnum):
-    """Префиксы плейсхолдеров колонок: c_ — connections, r_ — roles, g_ — grants."""
-
-    CONNECTIONS = "c_"
-    ROLES = "r_"
-    GRANTS = "g_"
-
-
-class ConnectionNames:
-    """Карты плейсхолдеров SQL таблиц соединений: имя в `{...}` → enum имени."""
-
-    @staticmethod
-    def tables() -> Mapping[str, ConnectionTable]:
-        return {table.value: table for table in ConnectionTable}
-
-    @classmethod
-    def columns(cls) -> Mapping[str, StrEnum]:
-        return dict(cls._columns())
-
-    @staticmethod
-    def _columns() -> Iterator[tuple[str, StrEnum]]:
-        for column in ConnectionsColumn:
-            yield ColumnPrefix.CONNECTIONS.value + column.value, column
-
-        for column in RolesColumn:
-            yield ColumnPrefix.ROLES.value + column.name.lower(), column
-
-        for column in GrantsColumn:
-            yield ColumnPrefix.GRANTS.value + column.value, column
 
 
 class LikePattern(StrEnum):
@@ -129,14 +91,14 @@ class ConnectionFilter(BaseModel):
     unique_only: bool = False
 
     KIND_CLAUSE: ClassVar[LiteralString] = (
-        "and lower(c.{c_data} ->> %(kind_key)s) = %(kind)s"
+        "and lower(c.data ->> %(kind_key)s) = %(kind)s"
     )
-    NAME_CLAUSE: ClassVar[LiteralString] = "and c.{c_name} ilike %(name_pattern)s"
+    NAME_CLAUSE: ClassVar[LiteralString] = "and c.name ilike %(name_pattern)s"
     HOST_CLAUSE: ClassVar[LiteralString] = (
-        "and coalesce(c.{c_data} ->> %(host_key)s, '') ilike %(host_pattern)s"
+        "and coalesce(c.data ->> %(host_key)s, '') ilike %(host_pattern)s"
     )
     DESCRIPTION_CLAUSE: ClassVar[LiteralString] = (
-        "and coalesce(c.{c_data} ->> %(description_key)s, '') "
+        "and coalesce(c.data ->> %(description_key)s, '') "
         "ilike all(%(description_patterns)s)"
     )
     UNIQUE_CLAUSE: ClassVar[LiteralString] = "and cp.copies = 1"
@@ -201,87 +163,90 @@ class SubjectGrantsQuery:
     Выдача — колонки SubjectRowColumn: id, name, data, kind и copies — сколько
     строк субъекта носят это имя внутри вида (copies > 1 — дубль). Дубли
     считаются по всем строкам субъекта, фильтры отбирают строки из них.
+    Исполнитель подставляет схему таблиц именем {schema} и биндит params().
     """
 
     TEXT: ClassVar[LiteralString] = """
         with
         subject_roles as (
             select
-                r.{r_id}
+                r.id
             from
-                {roles} r
+                {schema}.roles r
             where
-                r.{r_role} = any(%(roles)s)
+                r.role = any(%(roles)s)
         ),
         granted as (
             select
-                g.{g_src_kind_id} as connection_id
+                g.src_kind_id as connection_id
             from
-                {grants} g
+                {schema}.grants g
             where 1=1
-                and g.{g_src_kind} = %(src_kind)s
-                and g.{g_tgt_kind} = %(users_kind)s
-                and g.{g_tgt_kind_id} = %(user_id)s
+                and g.src_kind = %(src_kind)s
+                and g.tgt_kind = %(users_kind)s
+                and g.tgt_kind_id = %(user_id)s
             union
             select
-                g.{g_src_kind_id} as connection_id
+                g.src_kind_id as connection_id
             from
-                {grants} g
-                inner join subject_roles sr on g.{g_tgt_kind_id} = sr.{r_id}
+                {schema}.grants g
+                inner join subject_roles sr on g.tgt_kind_id = sr.id
             where 1=1
-                and g.{g_src_kind} = %(src_kind)s
-                and g.{g_tgt_kind} = %(roles_kind)s
+                and g.src_kind = %(src_kind)s
+                and g.tgt_kind = %(roles_kind)s
         ),
         copies as (
             select
-                c.{c_name} as name,
-                c.{c_data} ->> %(kind_key)s as kind,
+                c.name as name,
+                c.data ->> %(kind_key)s as kind,
                 count(*) as copies
             from
-                {connections} c
-                inner join granted on granted.connection_id = c.{c_id}
+                {schema}.connections c
+                inner join granted on granted.connection_id = c.id
             group by
-                c.{c_name},
-                c.{c_data} ->> %(kind_key)s
+                c.name,
+                c.data ->> %(kind_key)s
         )
         select
-            c.{c_id} as id,
-            c.{c_name} as name,
-            c.{c_data} as data,
+            c.id as id,
+            c.name as name,
+            c.data as data,
             cp.kind as kind,
             cp.copies as copies
         from
-            {connections} c
-            inner join granted on granted.connection_id = c.{c_id}
+            {schema}.connections c
+            inner join granted on granted.connection_id = c.id
             inner join copies cp on 1=1
-                and cp.name = c.{c_name}
-                and cp.kind is not distinct from c.{c_data} ->> %(kind_key)s
+                and cp.name = c.name
+                and cp.kind is not distinct from c.data ->> %(kind_key)s
         where 1=1
             {filters}
         order by
             cp.kind,
-            c.{c_name}
+            c.name
     """
 
     FILTERS: ClassVar[LiteralString] = "{filters}"
 
-    @classmethod
-    def text(cls, flt: ConnectionFilter) -> LiteralString:
-        """Текст запроса с условиями фильтра на месте {filters}."""
-        return cls.TEXT.replace(cls.FILTERS, flt.clauses())
+    def __init__(self, subject: Subject, flt: ConnectionFilter) -> None:
+        self._subject = subject
+        self._filter = flt
 
-    @staticmethod
-    def params(subject: Subject, flt: ConnectionFilter) -> dict[str, Any]:
+    def text(self) -> LiteralString:
+        """Текст запроса с условиями фильтра на месте {filters}."""
+        return self.TEXT.replace(self.FILTERS, self._filter.clauses())
+
+    def params(self) -> dict[str, Any]:
         params: dict[str, Any] = {
             "src_kind": GrantKind.CONNECTIONS.value,
             "users_kind": GrantKind.USERS.value,
             "roles_kind": GrantKind.ROLES.value,
-            "user_id": subject.user_id,
-            "roles": sorted(subject.roles),
+            "user_id": self._subject.user_id,
+            "roles": sorted(self._subject.roles),
             "kind_key": ProfileKey.KIND.value,
             "host_key": ProfileKey.HOST.value,
             "description_key": ProfileKey.DESCRIPTION.value,
         }
-        params.update(flt.params())
+        params.update(self._filter.params())
 
         return params

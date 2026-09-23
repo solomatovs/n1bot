@@ -1,128 +1,159 @@
-"""Bootstrap-миграции KB-схемы для CLI: DDL-only, каждый SQL идемпотентен."""
+"""Миграции KB-схемы: DDL из migrations/*.sql, каждый файл идемпотентен, и
+HNSW-индекс под размерность модели.
+
+Ошибки:
+KbMigrationError — каталог миграций пуст или его нет, размерность вектора не
+    положительна.
+"""
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, ClassVar, LiteralString, cast
+from typing import Any, ClassVar
 
 from psycopg import sql
 
-from boba.db.pgvector.store import PostgresStoreSchema
+from boba.db.pgvector.config import PostgresStoreSchema
+from boba.db.postgres import PgQuery, PgQueryBuilder
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["Migrations"]
+__all__ = ["KbMigrationError", "Migrations"]
+
+
+class KbMigrationError(Exception):
+    """Миграции не собрать: нет файлов или негодная размерность."""
 
 
 class Migrations:
-    """DDL-bootstrap KB-схемы: применение migrations/*.sql + HNSW-индекс."""
+    """DDL-bootstrap KB-схемы: имена таблиц и индексов конфига подставляются в
+    файлы migrations/*.sql стоящими именами сборщика; KbSchema применяет
+    их при старте, стенды — напрямую на соединении."""
 
-    _MIGRATIONS_DIR: ClassVar[Path] = Path(__file__).parent / "migrations"
+    DIRECTORY: ClassVar[Path] = Path(__file__).parent / "migrations"
 
-    @staticmethod
-    def _render_migration(
-        text: str,
-        *,
-        schema_cfg: PostgresStoreSchema,
-    ) -> sql.Composable:
-        """Подставляет идентификаторы/литералы schema_cfg в SQL-шаблон; cast до
-        LiteralString безопасен: источник — файл миграции пакета, не user-input."""
-        chunks_name = schema_cfg.chunks_table
-        schema_name = schema_cfg.pg_schema
-        return sql.SQL(cast(LiteralString, text)).format(
-            schema=schema_cfg.schema_ident(),
-            chunks_table=schema_cfg.chunks_ident(),
-            collections_table=schema_cfg.collections_ident(),
-            sources_table=schema_cfg.sources_ident(),
-            schema_name_lit=schema_cfg.schema_name_literal(),
-            chunks_name_lit=schema_cfg.chunks_name_literal(),
-            chunks_tsv_gin_name=sql.Identifier(f"{chunks_name}_tsv_gin"),
-            chunks_collection_idx_name=sql.Identifier(f"{chunks_name}_collection"),
-            chunks_collection_source_idx_name=sql.Identifier(
-                f"{chunks_name}_collection_source",
+    def __init__(self, tables: PostgresStoreSchema) -> None:
+        self._tables = tables
+
+    def _names(self) -> dict[str, sql.Composable]:
+        """Плейсхолдеры файлов: таблицы, литералы имён и имена индексов."""
+        schema = self._tables.pg_schema
+        chunks = self._tables.chunks_table
+        sources = self._tables.sources_table
+
+        return {
+            "schema": sql.Identifier(schema),
+            "chunks_table": sql.Identifier(schema, chunks),
+            "collections_table": sql.Identifier(schema, self._tables.collections_table),
+            "sources_table": sql.Identifier(schema, sources),
+            "schema_name_lit": sql.Literal(schema),
+            "chunks_name_lit": sql.Literal(chunks),
+            "chunks_tsv_gin_name": sql.Identifier(f"{chunks}_tsv_gin"),
+            "chunks_collection_idx_name": sql.Identifier(f"{chunks}_collection"),
+            "chunks_collection_source_idx_name": sql.Identifier(
+                f"{chunks}_collection_source"
             ),
-            chunks_collection_tsv_gin_name=sql.Identifier(
-                f"{chunks_name}_collection_tsv_gin",
+            "chunks_collection_tsv_gin_name": sql.Identifier(
+                f"{chunks}_collection_tsv_gin"
             ),
-            chunks_collection_source_chunk_idx_name=sql.Identifier(
-                f"{chunks_name}_collection_source_chunk",
+            "chunks_collection_source_chunk_idx_name": sql.Identifier(
+                f"{chunks}_collection_source_chunk"
             ),
-            sources_collection_seen_idx_name=sql.Identifier(
-                f"{schema_cfg.sources_table}_collection_seen",
+            "sources_collection_seen_idx_name": sql.Identifier(
+                f"{sources}_collection_seen"
             ),
-            sources_collection_parent_idx_name=sql.Identifier(
-                f"{schema_cfg.sources_table}_collection_parent",
+            "sources_collection_parent_idx_name": sql.Identifier(
+                f"{sources}_collection_parent"
             ),
-            sources_collection_scope_idx_name=sql.Identifier(
-                f"{schema_cfg.sources_table}_collection_scope",
+            "sources_collection_scope_idx_name": sql.Identifier(
+                f"{sources}_collection_scope"
             ),
-            sources_collection_parent_run_idx_name=sql.Identifier(
-                f"{schema_cfg.sources_table}_collection_parent_run",
+            "sources_collection_parent_run_idx_name": sql.Identifier(
+                f"{sources}_collection_parent_run"
             ),
             # drop index требует схему в имени: search_path соединения миграций
             # до схемы KB не расширяется
-            chunks_tsv_gin_qualified=sql.Identifier(
-                schema_name, f"{chunks_name}_tsv_gin"
+            "chunks_tsv_gin_qualified": sql.Identifier(schema, f"{chunks}_tsv_gin"),
+            "chunks_collection_idx_qualified": sql.Identifier(
+                schema, f"{chunks}_collection"
             ),
-            chunks_collection_idx_qualified=sql.Identifier(
-                schema_name, f"{chunks_name}_collection"
+            "chunks_collection_source_idx_qualified": sql.Identifier(
+                schema, f"{chunks}_collection_source"
             ),
-            chunks_collection_source_idx_qualified=sql.Identifier(
-                schema_name, f"{chunks_name}_collection_source"
-            ),
+        }
+
+    def files(self) -> list[Path]:
+        """Файлы миграций в лексикографическом порядке.
+
+        Ошибки:
+        KbMigrationError — каталога нет или он пуст.
+        """
+        if not self.DIRECTORY.is_dir():
+            msg = f"pgvector migrations: {self.DIRECTORY} is not an existing directory"
+            raise KbMigrationError(msg)
+
+        files = sorted(self.DIRECTORY.glob("*.sql"))
+        if not files:
+            msg = f"pgvector migrations: no *.sql files in {self.DIRECTORY}"
+            raise KbMigrationError(msg)
+
+        return files
+
+    def statements(self) -> list[PgQuery]:
+        """DDL каждого файла с подставленными именами, в порядке файлов."""
+        names = self._names()
+        statements: list[PgQuery] = []
+        for path in self.files():
+            statements.append(PgQueryBuilder(**names).read(path).build())
+
+        return statements
+
+    def vector_index(self, dim: int) -> PgQuery:
+        """HNSW-индекс на выражение embedding::vector(dim): pgvector требует
+        фиксированной размерности, поэтому один индекс = одна dim (dim в имени).
+
+        Ошибки:
+        KbMigrationError — dim не положителен.
+        """
+        if dim <= 0:
+            msg = f"pgvector vector index: dim must be positive, got {dim}"
+            raise KbMigrationError(msg)
+
+        schema = self._tables.pg_schema
+        chunks = self._tables.chunks_table
+
+        # vector_cosine_ops = cosine (<=>); для L2 сменить opclass и пересоздать индекс
+        return (
+            PgQueryBuilder(
+                index_name=sql.Identifier(f"{chunks}_embedding_hnsw_{dim}"),
+                chunks_table=sql.Identifier(schema, chunks),
+                dim=sql.Literal(dim),
+            )
+            .add(
+                """
+                create index if not exists {index_name}
+                    on {chunks_table} using hnsw
+                    ((embedding::vector({dim})) vector_cosine_ops)
+                """
+            )
+            .build()
         )
 
-    @staticmethod
-    async def apply_bootstrap(
-        conn: Any,
-        *,
-        schema_cfg: PostgresStoreSchema,
-    ) -> None:
-        """Применяет все миграции из migrations/*.sql в лексикографическом порядке."""
-        migrations_dir = Migrations._MIGRATIONS_DIR
-        if not migrations_dir.is_dir():
-            msg = f"pgvector migrations: {migrations_dir} is not an existing directory"
-            raise RuntimeError(msg)
-        files = sorted(migrations_dir.glob("*.sql"))
-        if not files:
-            logger.warning("no migrations found in %s", migrations_dir)
-            return
-        for f in files:
-            text = f.read_text(encoding="utf-8")
-            rendered = Migrations._render_migration(text, schema_cfg=schema_cfg)
+    async def apply(self, conn: Any) -> None:
+        """Все миграции на соединении; каждая логируется по имени файла."""
+        names = self._names()
+        for path in self.files():
+            statement = PgQueryBuilder(**names).read(path).build()
             logger.info(
                 "applying migration %s (schema=%s, chunks=%s, collections=%s)",
-                f.name,
-                schema_cfg.pg_schema,
-                schema_cfg.chunks_table,
-                schema_cfg.collections_table,
+                path.name,
+                self._tables.pg_schema,
+                self._tables.chunks_table,
+                self._tables.collections_table,
             )
-            await conn.execute(rendered, prepare=False)
+            await conn.execute(statement.text, statement.params, prepare=False)
 
-    @staticmethod
-    async def ensure_vector_index(
-        conn: Any,
-        *,
-        dim: int,
-        schema_cfg: PostgresStoreSchema,
-    ) -> None:
-        """HNSW-индекс на выражение embedding::vector(dim): pgvector требует
-        фиксированной размерности, поэтому один индекс = одна dim (dim в имени)."""
-        if dim <= 0:
-            msg = f"ensure_vector_index: dim must be positive, got {dim}"
-            raise ValueError(msg)
-        index_name = f"{schema_cfg.chunks_table}_embedding_hnsw_{dim}"
-        # vector_cosine_ops = cosine (<=>); для L2 сменить opclass и пересоздать индекс
-        stmt = sql.SQL(
-            """
-            create index if not exists {index_name}
-                on {chunks_table} using hnsw
-                ((embedding::vector({dim})) vector_cosine_ops)
-            """,
-        ).format(
-            index_name=sql.Identifier(index_name),
-            chunks_table=schema_cfg.chunks_ident(),
-            dim=sql.Literal(dim),
-        )
-        await conn.execute(stmt, prepare=False)
+    async def ensure_vector_index(self, conn: Any, dim: int) -> None:
+        statement = self.vector_index(dim)
+        await conn.execute(statement.text, statement.params, prepare=False)

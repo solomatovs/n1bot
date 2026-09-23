@@ -54,8 +54,8 @@ async def store_cfg(raw_config: DictConfig) -> AsyncIterator[PostgresStoreConfig
         async with pool.connection() as conn:
             await _execute(conn, _drop_schema())
             await _execute(conn, sql.SQL("create schema {}").format(_schema()))
-            await Migrations.apply_bootstrap(conn, schema_cfg=tables)
-            await Migrations.ensure_vector_index(conn, dim=DIM, schema_cfg=tables)
+            await Migrations(tables).apply(conn)
+            await Migrations(tables).ensure_vector_index(conn, DIM)
 
         yield cfg
     finally:
@@ -113,7 +113,7 @@ async def test_kb_pool_knows_vector_after_a_plain_pool_is_opened(
 ) -> None:
     """Общий пул, открытый раньше, не отбирает у store соединения с vector."""
     plain = await AsyncPostgresPool.get(store_cfg.connection)
-    kb = await KbPool.open(store_cfg.connection)
+    kb = await KbPool(store_cfg.connection).open()
     value = [0.5, 0.25, 0.125, 0.0625]
 
     try:

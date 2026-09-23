@@ -14,12 +14,8 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from psycopg import sql
-from psycopg.rows import tuple_row
 from psycopg.types.json import Jsonb
 
-from boba.chat.threads import ChatTable, DataUnavailableError
-from boba.db.postgres import SqlNames
 from boba.identity.api import (
     AuthenticatedUser,
     StoredUser,
@@ -38,96 +34,81 @@ __all__ = ["UsersTable"]
 class UsersTable(PgTable, UserRows, UserSettingsStore, UsersUpsert):
     """users приложения: DDL, строки входа и настройки пользователя."""
 
-    def _users(self) -> sql.Identifier:
-        return SqlNames.table(self._schema, ChatTable.USERS)
-
-    def _row_columns(self) -> sql.Composed:
-        return sql.SQL(", ").join(
-            [
-                SqlNames.ident(UsersColumn.ID),
-                SqlNames.ident(UsersColumn.IDENTIFIER),
-                SqlNames.ident(UsersColumn.CREATED_AT),
-                SqlNames.ident(UsersColumn.META),
-            ]
-        )
-
-    @staticmethod
-    def _stored(row: tuple[Any, ...]) -> StoredUser:
-        meta = row[3]
+    def _stored(self, row: Mapping[str, Any]) -> StoredUser:
+        meta = row[UsersColumn.META.value]
         if meta is None:
             meta = {}
 
-        return StoredUser(id=row[0], identifier=row[1], created_at=row[2], meta=meta)
+        return StoredUser(
+            id=row[UsersColumn.ID.value],
+            identifier=row[UsersColumn.IDENTIFIER.value],
+            created_at=row[UsersColumn.CREATED_AT.value],
+            meta=meta,
+        )
 
     async def setup(self) -> None:
         """Создаёт схему и таблицу users; повтор безвреден."""
         ddl = (
-            sql.SQL(
+            self._query()
+            .add(
                 """
-                create table if not exists {users} (
-                    {id}         uuid primary key default gen_random_uuid(),
-                    {identifier} text not null unique,
-                    {created_at} timestamptz not null default now(),
-                    {meta}       jsonb not null default '{{}}'::jsonb
+                create table if not exists {schema}.users (
+                    id         uuid primary key default gen_random_uuid(),
+                    identifier text not null unique,
+                    created_at timestamptz not null default now(),
+                    meta       jsonb not null default '{{}}'::jsonb
                 )
                 """
-            ).format(
-                users=self._users(),
-                id=SqlNames.ident(UsersColumn.ID),
-                identifier=SqlNames.ident(UsersColumn.IDENTIFIER),
-                created_at=SqlNames.ident(UsersColumn.CREATED_AT),
-                meta=SqlNames.ident(UsersColumn.META),
-            ),
+            )
+            .build(),
             # регистр логина не заводит вторую личность: инвариант держит база
-            sql.SQL(
+            self._query()
+            .add(
                 """
                 create unique index if not exists idx_users_identifier_lower
-                    on {users} (lower({identifier}))
+                    on {schema}.users (lower(identifier))
                 """
-            ).format(
-                users=self._users(),
-                identifier=SqlNames.ident(UsersColumn.IDENTIFIER),
-            ),
+            )
+            .build(),
         )
-        await self._run(ddl, "users.setup")
+
+        await self._apply_ddl(ddl)
 
     async def stored(self, identifier: Login) -> StoredUser | None:
-        query = sql.SQL(
-            "select {cols} from {users} where {identifier} = %(identifier)s limit 1"
-        ).format(
-            cols=self._row_columns(),
-            users=self._users(),
-            identifier=SqlNames.ident(UsersColumn.IDENTIFIER),
+        query = (
+            self._query()
+            .add(
+                """
+                select id, identifier, created_at, meta
+                from {schema}.users
+                where identifier = %(identifier)s
+                limit 1
+                """,
+                identifier=identifier,
+            )
+            .build()
         )
+        row = await self._row(query, "get_user")
+        if row is None:
+            return None
 
-        return await self._one(query, {"identifier": identifier}, "get_user")
+        return self._stored(row)
 
     async def stored_by_id(self, user_id: UUID) -> StoredUser | None:
-        query = sql.SQL(
-            "select {cols} from {users} where {id} = %(user_id)s limit 1"
-        ).format(
-            cols=self._row_columns(),
-            users=self._users(),
-            id=SqlNames.ident(UsersColumn.ID),
+        query = (
+            self._query()
+            .add(
+                """
+                select id, identifier, created_at, meta
+                from {schema}.users
+                where id = %(user_id)s
+                limit 1
+                """,
+                user_id=user_id,
+            )
+            .build()
         )
-
-        return await self._one(query, {"user_id": user_id}, "get_user_by_id")
-
-    async def _one(
-        self, query: sql.Composed, params: Mapping[str, Any], operation: str
-    ) -> StoredUser | None:
-        try:
-            pool = await self._pool()
-            async with (
-                pool.connection() as conn,
-                conn.cursor(row_factory=tuple_row) as cur,
-            ):
-                await cur.execute(query, params)
-                row = await cur.fetchone()
-        except Exception as exc:
-            detail = f"query on {self._schema}.users failed: {exc}"
-            raise DataUnavailableError(operation, detail) from exc
-
+        row = await self._row(query, "get_user_by_id")
         if row is None:
             return None
 
@@ -142,45 +123,36 @@ class UsersTable(PgTable, UserRows, UserSettingsStore, UsersUpsert):
 
     async def upsert(self, identifier: Login, meta: Mapping[str, Any]) -> StoredUser:
         """Новая строка либо metadata поверх прежней; что писать — решает вызывающий."""
-        metadata = dict(meta)
-        query = sql.SQL(
-            """
-            insert into {users} (
-                {identifier},
-                {created_at},
-                {meta}
+        query = (
+            self._query()
+            .add(
+                """
+                insert into {schema}.users (
+                    identifier,
+                    created_at,
+                    meta
+                )
+                values (
+                    %(identifier)s,
+                    %(created_at)s,
+                    %(meta)s
+                )
+                on conflict (identifier) do update set
+                    meta = coalesce({schema}.users.meta, '{{}}'::jsonb) || excluded.meta
+                returning
+                    id, identifier, created_at, meta
+                """,
+                identifier=identifier,
+                created_at=datetime.now(UTC),
+                meta=Jsonb(dict(meta)),
             )
-            values (
-                %(identifier)s,
-                %(created_at)s,
-                %(meta)s
-            )
-            on conflict ({identifier}) do update set
-                {meta} = coalesce({users}.{meta}, '{{}}'::jsonb) || excluded.{meta}
-            returning
-                {cols}
-            """
-        ).format(
-            users=self._users(),
-            cols=self._row_columns(),
-            identifier=SqlNames.ident(UsersColumn.IDENTIFIER),
-            created_at=SqlNames.ident(UsersColumn.CREATED_AT),
-            meta=SqlNames.ident(UsersColumn.META),
+            .build()
         )
-        params = {
-            "identifier": identifier,
-            "created_at": datetime.now(UTC),
-            "meta": Jsonb(metadata),
-        }
+        row = self._returning(
+            await self._row(query, "ensure_user"), f"upsert of user {identifier!r}"
+        )
 
-        row = await self._one(query, params, "ensure_user")
-        if row is None:
-            detail = (
-                f"upsert of {identifier!r} into {self._schema}.users returned no row"
-            )
-            raise DataUnavailableError("ensure_user", detail)
-
-        return row
+        return self._stored(row)
 
     async def ensure_user(self, signed: SignedIn) -> AuthenticatedUser:
         stored = await self.upsert(
@@ -190,86 +162,75 @@ class UsersTable(PgTable, UserRows, UserSettingsStore, UsersUpsert):
         return stored.authenticated()
 
     async def set_studio_profile(self, user_id: UUID, profile: str) -> None:
-        query = sql.SQL(
-            """
-            update {users}
-            set
-                {meta} = coalesce({meta}, '{{}}'::jsonb)
-                    || jsonb_build_object(%(key)s::text, %(profile)s::text)
-            where
-                {id} = %(user_id)s
-            """
-        ).format(
-            users=self._users(),
-            meta=SqlNames.ident(UsersColumn.META),
-            id=SqlNames.ident(UsersColumn.ID),
+        query = (
+            self._query()
+            .add(
+                """
+                update {schema}.users
+                set
+                    meta = coalesce(meta, '{{}}'::jsonb)
+                        || jsonb_build_object(%(key)s::text, %(profile)s::text)
+                where
+                    id = %(user_id)s
+                """,
+                key=UserMetadataField.STUDIO_PROFILE,
+                profile=profile,
+                user_id=user_id,
+            )
+            .build()
         )
-        params = {
-            "key": UserMetadataField.STUDIO_PROFILE,
-            "profile": profile,
-            "user_id": user_id,
-        }
 
-        await self._execute(query, params, "set_studio_profile")
+        await self._execute(query, "set_studio_profile")
 
     async def set_llm_settings(
         self, user_id: UUID, profile: str, values: Mapping[str, Any]
     ) -> None:
         path = [UserMetadataField.LLM, profile]
-        if values:
-            query = sql.SQL(
+
+        if not values:
+            query = (
+                self._query()
+                .add(
+                    """
+                    update {schema}.users
+                    set
+                        meta = coalesce(meta, '{{}}'::jsonb) #- %(path)s
+                    where
+                        id = %(user_id)s
+                    """,
+                    user_id=user_id,
+                    path=path,
+                )
+                .build()
+            )
+            await self._execute(query, "set_llm_settings")
+            return
+
+        query = (
+            self._query()
+            .add(
                 """
-                update {users}
+                update {schema}.users
                 set
-                    {meta} = jsonb_set(
+                    meta = jsonb_set(
                         jsonb_set(
-                            coalesce({meta}, '{{}}'::jsonb),
+                            coalesce(meta, '{{}}'::jsonb),
                             %(llm)s,
-                            coalesce({meta} -> %(llm_key)s, '{{}}'::jsonb)
+                            coalesce(meta -> %(llm_key)s, '{{}}'::jsonb)
                         ),
                         %(path)s,
                         %(values)s
                     )
                 where
-                    {id} = %(user_id)s
-                """
-            ).format(
-                users=self._users(),
-                meta=SqlNames.ident(UsersColumn.META),
-                id=SqlNames.ident(UsersColumn.ID),
+                    id = %(user_id)s
+                """,
+                user_id=user_id,
+                llm=[UserMetadataField.LLM],
+                llm_key=UserMetadataField.LLM,
+                path=path,
+                values=Jsonb(dict(values)),
             )
-            params: dict[str, Any] = {
-                "user_id": user_id,
-                "llm": [UserMetadataField.LLM],
-                "llm_key": UserMetadataField.LLM,
-                "path": path,
-                "values": Jsonb(dict(values)),
-            }
-        else:
-            query = sql.SQL(
-                """
-                update {users}
-                set
-                    {meta} = coalesce({meta}, '{{}}'::jsonb) #- %(path)s
-                where
-                    {id} = %(user_id)s
-                """
-            ).format(
-                users=self._users(),
-                meta=SqlNames.ident(UsersColumn.META),
-                id=SqlNames.ident(UsersColumn.ID),
-            )
-            params = {"user_id": user_id, "path": path}
+            .build()
+        )
 
-        await self._execute(query, params, "set_llm_settings")
-
-    async def _execute(
-        self, query: sql.Composed, params: Mapping[str, Any], operation: str
-    ) -> None:
-        try:
-            pool = await self._pool()
-            async with pool.connection() as conn:
-                await conn.execute(query, params)
-        except Exception as exc:
-            detail = f"statement on {self._schema}.users failed: {exc}"
-            raise DataUnavailableError(operation, detail) from exc
+        await self._execute(query, "set_llm_settings")

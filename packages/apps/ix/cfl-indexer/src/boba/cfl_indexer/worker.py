@@ -54,7 +54,7 @@ from boba.config import bind_section
 from boba.confluence.models import AttachmentVerdict
 from boba.confluence.rest import ConfluenceConnection, ContentType
 from boba.db.postgres import AsyncPostgresPool, PostgresError
-from boba.db.postgres.names import PostgresSchema
+from boba.db.postgres.schema import PostgresSchema
 from boba.doc.config import DocSection
 from boba.doc.document import DocumentError
 from boba.doc.ocr import OcrEngines
@@ -594,7 +594,8 @@ class Indexer:
     async def check_fts(self) -> None:
         """ix_fts накатывает пакет ix-fts; без него текст класть некуда."""
         async with await AsyncPostgresPool.dedicated(self._cfg.postgres) as conn:
-            if await PostgresSchema.exists(conn, self._cfg.db_schema, self.FTS_TABLE):
+            schema = PostgresSchema(self._cfg.db_schema)
+            if await schema.has_table(conn, self.FTS_TABLE):
                 return
 
         raise IndexerWorkerError(

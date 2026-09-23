@@ -91,6 +91,18 @@ class Scope(BaseModel):
         """Область одной строкой «kind/id»: журнал, ключи блокировок, сообщения."""
         return f"{self.kind.value}{self.SEPARATOR}{self.id}"
 
+    def uuid(self) -> UUID:
+        """id областью uuid: ключ таблиц шины, блокировок, тел и описаний.
+
+        Ошибки:
+        ValueError — id области не uuid.
+        """
+        try:
+            return UUID(self.id)
+        except ValueError as exc:
+            msg = f"scope {self.kind.value} id must be a uuid, got {self.id!r}: {exc}"
+            raise ValueError(msg) from exc
+
     @classmethod
     def chat(cls, thread_id: str) -> Scope:
         return cls(kind=ScopeKind.CHAT, id=thread_id)

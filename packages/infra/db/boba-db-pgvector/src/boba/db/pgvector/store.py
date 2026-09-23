@@ -1,20 +1,30 @@
-"""KB-store поверх postgres+pgvector; схему создаёт bootstrap-CLI, runtime DDL не
-делает.
+"""KB-store поверх postgres+pgvector; схему создаёт KbSchema при старте,
+runtime DDL не делает.
+
+Ошибки:
+PostgresError — база или пул отказали чанкам и коллекциям.
+LedgerError — база отказала реестру источников.
+UnsupportedFilterError — фильтр поиска не переводится в SQL.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
 from itertools import islice
 from typing import Any, ClassVar, TypeVar
 
-import psycopg
 from psycopg import sql
 
 from boba.db.pgvector.config import PostgresStoreConfig, PostgresStoreSchema
-from boba.db.postgres import AsyncPostgresPool, CancellablePool, PostgresError
+from boba.db.postgres import (
+    AsyncPostgresPool,
+    CancellablePool,
+    PgQueryBuilder,
+    PostgresPool,
+    PostgresTable,
+)
 from boba.db.postgres.connection import PostgresConfig
 from boba.indexing.chunks import Chunk, ChunkId, ChunkSummary, EmbeddedChunk
 from boba.indexing.filter import (
@@ -50,6 +60,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "KbPool",
+    "KbTable",
     "PostgresChunkStore",
     "PostgresCollectionsStore",
     "PostgresSourceLedger",
@@ -61,75 +72,223 @@ _E = TypeVar("_E")
 
 
 class KbPool:
-    """Пул-singleton по конфигу с register_vector: без него INSERT vector падает."""
+    """Пул-singleton по подключению с register_vector: без него INSERT vector
+    падает; соединения отдаются с прерыванием запроса по отмене хода."""
 
-    @staticmethod
-    async def open(connection: PostgresConfig) -> CancellablePool:
+    def __init__(self, connection: PostgresConfig) -> None:
+        self._connection = connection
+
+    async def open(self) -> CancellablePool:
         pool = await AsyncPostgresPool.get(
-            connection,
+            self._connection,
             configure=register_vector_async,
         )
         return CancellablePool(pool)
 
 
-class PostgresChunkStore(ChunkStore[str]):
-    """Postgres-реализация ChunkStore[str]"""
+class KbTable(PostgresTable):
+    """База хранилищ KB: пул с адаптером vector, имена таблиц конфига стоящими
+    именами {chunks}, {collections}, {sources}; наследуют PostgresChunkStore,
+    PostgresSourceLedger и PostgresCollectionsStore."""
 
-    _SYSTEM_FIELDS: ClassVar[frozenset[str]] = frozenset(
+    LABEL: ClassVar[str] = "kb"
+
+    def __init__(self, cfg: PostgresStoreConfig) -> None:
+        super().__init__(cfg.connection, cfg.tables.pg_schema)
+        self._cfg = cfg
+        self._tables = cfg.tables
+
+    async def _open_pool(self) -> PostgresPool:
+        return await KbPool(self._cfg.connection).open()
+
+    def _query(self) -> PgQueryBuilder:
+        schema = self._tables.pg_schema
+
+        return PgQueryBuilder(
+            schema=sql.Identifier(schema),
+            chunks=sql.Identifier(schema, self._tables.chunks_table),
+            collections=sql.Identifier(schema, self._tables.collections_table),
+            sources=sql.Identifier(schema, self._tables.sources_table),
+        )
+
+
+class FilterSql:
+    """Перевод дерева Filter в условие where: поля системных колонок — сами
+    колонки, остальные — ключи jsonb metadata; значения уезжают параметрами
+    f0, f1, … и собираются в params()."""
+
+    SYSTEM_FIELDS: ClassVar[frozenset[str]] = frozenset(
         {"chunk_id", "collection", "source_id", "chunk_index", "content_hash"},
     )
 
-    def __init__(
-        self,
-        *,
-        cfg: PostgresStoreConfig,
-    ) -> None:
-        self._cfg = cfg
-        self._tables = cfg.tables
-        self._pool_ref: CancellablePool | None = None
+    def __init__(self) -> None:
+        self._params: dict[str, Any] = {}
 
-    async def _pool(self) -> CancellablePool:
-        """Пул берётся при первом обращении: __init__ не может await."""
-        if self._pool_ref is None:
-            self._pool_ref = await KbPool.open(self._cfg.connection)
-        return self._pool_ref
+    def params(self) -> dict[str, Any]:
+        return dict(self._params)
+
+    def _bind(self, value: Any) -> sql.Placeholder:
+        name = f"f{len(self._params)}"
+        self._params[name] = value
+
+        return sql.Placeholder(name)
+
+    def compile(self, f: Filter) -> sql.Composable:  # noqa: C901, PLR0911, PLR0912
+        """Ошибки:
+        UnsupportedFilterError — пустой список тегов или фильтров, неизвестный вид.
+        """
+        if isinstance(f, Eq):
+            return self._compare(f.field, sql.SQL("="), f.value)
+
+        if isinstance(f, Ne):
+            return self._compare(f.field, sql.SQL("<>"), f.value)
+
+        if isinstance(f, Lt):
+            return self._compare_numeric(f.field, sql.SQL("<"), f.value)
+
+        if isinstance(f, Lte):
+            return self._compare_numeric(f.field, sql.SQL("<="), f.value)
+
+        if isinstance(f, Gt):
+            return self._compare_numeric(f.field, sql.SQL(">"), f.value)
+
+        if isinstance(f, Gte):
+            return self._compare_numeric(f.field, sql.SQL(">="), f.value)
+
+        if isinstance(f, In):
+            return self._contained(f.field, list(f.values), invert=False)
+
+        if isinstance(f, NotIn):
+            return self._contained(f.field, list(f.values), invert=True)
+
+        if isinstance(f, HasTag):
+            return sql.SQL("({tag} = any(tags))").format(tag=self._bind(f.tag))
+
+        if isinstance(f, HasAnyTag):
+            if not f.tags:
+                raise UnsupportedFilterError(
+                    f, "postgres", "empty tag list in HasAnyTag"
+                )
+
+            return sql.SQL("(tags && {tags})").format(tags=self._bind(list(f.tags)))
+
+        if isinstance(f, HasAllTags):
+            if not f.tags:
+                raise UnsupportedFilterError(
+                    f, "postgres", "empty tag list in HasAllTags"
+                )
+
+            return sql.SQL("(tags @> {tags})").format(tags=self._bind(list(f.tags)))
+
+        if isinstance(f, And):
+            return self._joined(f, f.filters, sql.SQL(" and "))
+
+        if isinstance(f, Or):
+            return self._joined(f, f.filters, sql.SQL(" or "))
+
+        if isinstance(f, Not):
+            return sql.SQL("(not {inner})").format(inner=self.compile(f.filter))
+
+        raise UnsupportedFilterError(
+            f,
+            "postgres",
+            f"unknown filter type {type(f).__name__}",
+        )
+
+    def _joined(
+        self, f: Filter, filters: Sequence[Filter], glue: sql.SQL
+    ) -> sql.Composable:
+        if not filters:
+            raise UnsupportedFilterError(f, "postgres", f"empty {type(f).__name__}")
+
+        if len(filters) == 1:
+            return self.compile(filters[0])
+
+        parts: list[sql.Composable] = []
+        for inner in filters:
+            parts.append(self.compile(inner))
+
+        return sql.SQL("({parts})").format(parts=glue.join(parts))
+
+    def _field(self, field: str) -> sql.Composable:
+        if field in self.SYSTEM_FIELDS:
+            return sql.Identifier(field)
+
+        return sql.SQL("metadata->>{key}").format(key=sql.Literal(field))
+
+    def _compare(self, field: str, op: sql.SQL, value: Any) -> sql.Composable:
+        return sql.SQL("({field} {op} {value})").format(
+            field=self._field(field), op=op, value=self._bind(value)
+        )
+
+    def _compare_numeric(self, field: str, op: sql.SQL, value: Any) -> sql.Composable:
+        return sql.SQL("(({field})::numeric {op} {value}::numeric)").format(
+            field=self._field(field), op=op, value=self._bind(value)
+        )
+
+    def _contained(
+        self, field: str, values: list[Any], *, invert: bool
+    ) -> sql.Composable:
+        if not values and invert:
+            return sql.SQL("true")
+
+        if not values:
+            return sql.SQL("false")
+
+        op = sql.SQL("= any")
+        if invert:
+            op = sql.SQL("<> all")
+
+        return sql.SQL("({field} {op}({values}))").format(
+            field=self._field(field), op=op, values=self._bind(values)
+        )
+
+
+class PostgresChunkStore(KbTable, ChunkStore[str]):
+    """Реализация ChunkStore[str] на таблице чанков postgres."""
+
+    def __init__(self, *, cfg: PostgresStoreConfig) -> None:
+        super().__init__(cfg)
 
     async def get_by_ids(
         self,
         collection: CollectionId,
         chunk_ids: Iterable[ChunkId],
     ) -> Sequence[Chunk[str]]:
-        ids = [str(c) for c in chunk_ids]
+        ids = self._ids(chunk_ids)
         if not ids:
             return []
 
-        query = sql.SQL(
-            """
-            select
-                chunk_id,
-                source_id,
-                chunk_index,
-                content_hash,
-                raw_content,
-                format_content,
-                metadata,
-                tags
-            from
-                {chunks_table}
-            where
-                collection = %s
-                and chunk_id = ANY(%s)
-            """,
-        ).format(chunks_table=self._tables.chunks_ident())
-
-        pool = await self._pool()
-        async with pool.dict_cursor() as cur:
-            await cur.execute(query, (str(collection), ids))
-            rows = await cur.fetchall()
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    chunk_id,
+                    source_id,
+                    chunk_index,
+                    content_hash,
+                    raw_content,
+                    format_content,
+                    metadata,
+                    tags
+                from
+                    {chunks}
+                where
+                    collection = %(collection)s
+                    and chunk_id = any(%(ids)s)
+                """,
+                collection=str(collection),
+                ids=ids,
+            )
+            .build()
+        )
+        rows = await self._rows(query, f"reading {len(ids)} chunks of {collection}")
 
         chunks: list[Chunk[str]] = []
         for row in rows:
             chunks.append(self._row_to_chunk(row))
+
         return chunks
 
     async def peek(
@@ -139,54 +298,42 @@ class PostgresChunkStore(ChunkStore[str]):
         source_id: SourceId | None,
         limit: int,
     ) -> Sequence[ChunkSummary[str]]:
-        pool = await self._pool()
-        async with pool.dict_cursor() as cur:
-            if source_id is None:
-                query = sql.SQL(
-                    """
-                    select
-                        chunk_id,
-                        source_id,
-                        chunk_index,
-                        format_content as snippet,
-                        metadata,
-                        tags
-                    from
-                        {chunks_table}
-                    where
-                        collection = %s
-                    order by
-                        source_id,
-                        chunk_index
-                    limit
-                        %s
-                    """,
-                ).format(chunks_table=self._tables.chunks_ident())
-                await cur.execute(query, (str(collection), limit))
-            else:
-                query = sql.SQL(
-                    """
-                    select
-                        chunk_id,
-                        source_id,
-                        chunk_index,
-                        format_content as snippet,
-                        metadata,
-                        tags
-                    from
-                        {chunks_table}
-                    where
-                        collection = %s
-                        and source_id = %s
-                    order by
-                        chunk_index
-                    limit
-                        %s
-                    """,
-                ).format(chunks_table=self._tables.chunks_ident())
-                await cur.execute(query, (str(collection), str(source_id), limit))
-
-            rows = await cur.fetchall()
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    chunk_id,
+                    source_id,
+                    chunk_index,
+                    format_content as snippet,
+                    metadata,
+                    tags
+                from
+                    {chunks}
+                where
+                    collection = %(collection)s
+                """,
+                collection=str(collection),
+            )
+            .when(
+                source_id is not None,
+                "and source_id = %(source_id)s",
+                source_id=str(source_id),
+            )
+            .add(
+                """
+                order by
+                    source_id,
+                    chunk_index
+                limit
+                    %(limit)s
+                """,
+                limit=limit,
+            )
+            .build()
+        )
+        rows = await self._rows(query, f"peeking {collection}")
 
         return self._to_summaries(rows)
 
@@ -197,42 +344,39 @@ class PostgresChunkStore(ChunkStore[str]):
         where: Filter | None,
         limit: int | None = None,
     ) -> Sequence[ChunkSummary[str]]:
-        where_sql, params = self._compile_filter(where)
-        clauses: list[sql.Composable] = [sql.SQL("collection = %s")]
-        bind_params: list[Any] = [str(collection)]
-        if where_sql is not None:
-            clauses.append(where_sql)
-            bind_params.extend(params)
-        where_clause = sql.SQL(" and ").join(clauses)
-        query = sql.SQL(
-            """
-            select
-                chunk_id,
-                source_id,
-                chunk_index,
-                format_content as snippet,
-                metadata,
-                tags
-            from
-                {chunks_table}
-            where
-                {where}
-            order by
-                source_id,
-                chunk_index
-            """,
-        ).format(chunks_table=self._tables.chunks_ident(), where=where_clause)
+        compiler = FilterSql()
+        condition: sql.Composable = sql.SQL("")
+        if where is not None:
+            condition = sql.SQL("and {where}").format(where=compiler.compile(where))
 
-        if limit is not None:
-            query = sql.SQL("{q} limit {lim}").format(
-                q=query,
-                lim=sql.Literal(limit),
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    chunk_id,
+                    source_id,
+                    chunk_index,
+                    format_content as snippet,
+                    metadata,
+                    tags
+                from
+                    {chunks}
+                where
+                    collection = %(collection)s
+                    {condition}
+                order by
+                    source_id,
+                    chunk_index
+                """,
+                collection=str(collection),
+                condition=condition,
+                **compiler.params(),
             )
-
-        pool = await self._pool()
-        async with pool.dict_cursor() as cur:
-            await cur.execute(query, bind_params)
-            rows = await cur.fetchall()
+            .when(limit is not None, "limit %(limit)s", limit=limit)
+            .build()
+        )
+        rows = await self._rows(query, f"searching {collection}")
 
         return self._to_summaries(rows)
 
@@ -245,27 +389,33 @@ class PostgresChunkStore(ChunkStore[str]):
         if not items:
             return HashDiff(to_upsert=[], unchanged=[])
 
-        ids = [str(cid) for cid, _ in items]
-        query = sql.SQL(
-            """
-            select
-                chunk_id,
-                content_hash
-            from
-                {chunks_table}
-            where 1=1
-                and collection = %s
-                and chunk_id = ANY(%s)
-            """,
-        ).format(chunks_table=self._tables.chunks_ident())
-        pool = await self._pool()
-        async with pool.cursor() as cur:
-            await cur.execute(query, (str(collection), ids))
-            fetched = await cur.fetchall()
+        ids: list[str] = []
+        for chunk_id, _hash in items:
+            ids.append(str(chunk_id))
+
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    chunk_id,
+                    content_hash
+                from
+                    {chunks}
+                where 1=1
+                    and collection = %(collection)s
+                    and chunk_id = any(%(ids)s)
+                """,
+                collection=str(collection),
+                ids=ids,
+            )
+            .build()
+        )
+        rows = await self._rows(query, f"comparing {len(ids)} hashes of {collection}")
 
         stored: dict[str, str] = {}
-        for row in fetched:
-            stored[row[0]] = row[1]
+        for row in rows:
+            stored[row["chunk_id"]] = row["content_hash"]
 
         to_upsert: list[ChunkId] = []
         unchanged: list[ChunkId] = []
@@ -273,10 +423,13 @@ class PostgresChunkStore(ChunkStore[str]):
             stored_wire = stored.get(str(chunk_id))
             if stored_wire is None:
                 to_upsert.append(chunk_id)
-            elif stored_wire == candidate_hash.to_wire():
+                continue
+
+            if stored_wire == candidate_hash.to_wire():
                 unchanged.append(chunk_id)
-            else:
-                to_upsert.append(chunk_id)
+                continue
+
+            to_upsert.append(chunk_id)
 
         return HashDiff(
             to_upsert=to_upsert,
@@ -288,89 +441,104 @@ class PostgresChunkStore(ChunkStore[str]):
         collection: CollectionId,
         chunks: Iterable[EmbeddedChunk[str]],
     ) -> None:
-        upsert_sql = sql.SQL(
-            """
-            insert into {chunks_table} (
-                chunk_id,
-                collection,
-                source_id,
-                chunk_index,
-                content_hash,
-                raw_content,
-                format_content,
-                embedding,
-                metadata,
-                tags,
-                updated_at
+        upsert = (
+            self._query()
+            .add(
+                """
+                insert into {chunks} (
+                    chunk_id,
+                    collection,
+                    source_id,
+                    chunk_index,
+                    content_hash,
+                    raw_content,
+                    format_content,
+                    embedding,
+                    metadata,
+                    tags,
+                    updated_at
+                )
+                values (
+                    %(chunk_id)s,
+                    %(collection)s,
+                    %(source_id)s,
+                    %(chunk_index)s,
+                    %(content_hash)s,
+                    %(raw_content)s,
+                    %(format_content)s,
+                    %(embedding)s::vector,
+                    %(metadata)s::jsonb,
+                    %(tags)s,
+                    now()
+                )
+                on conflict (chunk_id) do update set
+                    collection     = excluded.collection,
+                    source_id      = excluded.source_id,
+                    chunk_index    = excluded.chunk_index,
+                    content_hash   = excluded.content_hash,
+                    raw_content    = excluded.raw_content,
+                    format_content = excluded.format_content,
+                    embedding      = excluded.embedding,
+                    metadata       = excluded.metadata,
+                    tags           = excluded.tags,
+                    updated_at     = now()
+                """
             )
-            values (
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s,
-                %s::vector,
-                %s::jsonb,
-                %s,
-                now()
-            )
-            on conflict (chunk_id) do update set
-                collection     = excluded.collection,
-                source_id      = excluded.source_id,
-                chunk_index    = excluded.chunk_index,
-                content_hash   = excluded.content_hash,
-                raw_content    = excluded.raw_content,
-                format_content = excluded.format_content,
-                embedding      = excluded.embedding,
-                metadata       = excluded.metadata,
-                tags           = excluded.tags,
-                updated_at     = now()
-            """,
-        ).format(chunks_table=self._tables.chunks_ident())
+            .build()
+        )
 
         for batch in self._batched(chunks):
-            rows = [
-                (
-                    str(ec.chunk_id),
-                    str(collection),
-                    str(ec.source_id),
-                    ec.chunk_index,
-                    ec.content_hash.to_wire(),
-                    ec.raw_content,
-                    ec.format_content,
-                    list(ec.embedding),
-                    json.dumps(dict(ec.metadata.to_wire())),
-                    sorted(ec.tags),
-                )
-                for ec in batch
-            ]
+            rows: list[dict[str, Any]] = []
+            for chunk in batch:
+                rows.append(self._chunk_row(collection, chunk))
 
-            pool = await self._pool()
-            async with pool.cursor() as cur:
-                await cur.executemany(upsert_sql, rows)
+            async with self._transaction(
+                f"upserting {len(rows)} chunks into {collection}"
+            ) as cur:
+                await cur.executemany(upsert.text, rows)
+
+    def _chunk_row(
+        self, collection: CollectionId, chunk: EmbeddedChunk[str]
+    ) -> dict[str, Any]:
+        return {
+            "chunk_id": str(chunk.chunk_id),
+            "collection": str(collection),
+            "source_id": str(chunk.source_id),
+            "chunk_index": chunk.chunk_index,
+            "content_hash": chunk.content_hash.to_wire(),
+            "raw_content": chunk.raw_content,
+            "format_content": chunk.format_content,
+            "embedding": list(chunk.embedding),
+            "metadata": json.dumps(dict(chunk.metadata.to_wire())),
+            "tags": sorted(chunk.tags),
+        }
 
     async def delete(
         self,
         collection: CollectionId,
         chunk_ids: Iterable[ChunkId],
     ) -> None:
-        ids = [str(c) for c in chunk_ids]
+        ids = self._ids(chunk_ids)
         if not ids:
             return
-        query = sql.SQL(
-            """
-            delete from
-                {chunks_table}
-            where 1=1
-                and collection = %s
-                and chunk_id = ANY(%s)
-            """,
-        ).format(chunks_table=self._tables.chunks_ident())
-        pool = await self._pool()
-        async with pool.cursor() as cur:
-            await cur.execute(query, (str(collection), ids))
+
+        query = (
+            self._query()
+            .add(
+                """
+                delete from
+                    {chunks}
+                where 1=1
+                    and collection = %(collection)s
+                    and chunk_id = any(%(ids)s)
+                """,
+                collection=str(collection),
+                ids=ids,
+            )
+            .build()
+        )
+
+        await self._execute(query, f"deleting {len(ids)} chunks of {collection}")
 
     async def delete_by_source(
         self,
@@ -379,20 +547,27 @@ class PostgresChunkStore(ChunkStore[str]):
         *,
         from_index: int,
     ) -> int:
-        query = sql.SQL(
-            """
-            delete from
-                {chunks_table}
-            where 1=1
-                and collection = %s
-                and source_id = %s
-                and chunk_index >= %s
-            """,
-        ).format(chunks_table=self._tables.chunks_ident())
-        pool = await self._pool()
-        async with pool.cursor() as cur:
-            await cur.execute(query, (str(collection), str(source_id), from_index))
-            return cur.rowcount
+        query = (
+            self._query()
+            .add(
+                """
+                delete from
+                    {chunks}
+                where 1=1
+                    and collection = %(collection)s
+                    and source_id = %(source_id)s
+                    and chunk_index >= %(from_index)s
+                """,
+                collection=str(collection),
+                source_id=str(source_id),
+                from_index=from_index,
+            )
+            .build()
+        )
+
+        return await self._execute(
+            query, f"deleting chunks of {source_id} in {collection} from {from_index}"
+        )
 
     async def update_metadata(
         self,
@@ -400,23 +575,42 @@ class PostgresChunkStore(ChunkStore[str]):
         chunk_ids: Iterable[ChunkId],
         patch: Mapping[str, str | int | float | bool],
     ) -> None:
-        ids = [str(c) for c in chunk_ids]
+        ids = self._ids(chunk_ids)
         if not ids:
             return
-        wire_patch = {k: str(v) for k, v in patch.items()}
-        query = sql.SQL(
-            """
-            update {chunks_table} set
-                metadata = metadata || %s::jsonb,
-                updated_at = now()
-            where 1=1
-                and collection = %s
-                and chunk_id = ANY(%s)
-            """,
-        ).format(chunks_table=self._tables.chunks_ident())
-        pool = await self._pool()
-        async with pool.cursor() as cur:
-            await cur.execute(query, (json.dumps(wire_patch), str(collection), ids))
+
+        wire_patch: dict[str, str] = {}
+        for key, value in patch.items():
+            wire_patch[key] = str(value)
+
+        query = (
+            self._query()
+            .add(
+                """
+                update {chunks} set
+                    metadata = metadata || %(patch)s::jsonb,
+                    updated_at = now()
+                where 1=1
+                    and collection = %(collection)s
+                    and chunk_id = any(%(ids)s)
+                """,
+                patch=json.dumps(wire_patch),
+                collection=str(collection),
+                ids=ids,
+            )
+            .build()
+        )
+
+        await self._execute(
+            query, f"patching metadata of {len(ids)} chunks in {collection}"
+        )
+
+    def _ids(self, chunk_ids: Iterable[ChunkId]) -> list[str]:
+        ids: list[str] = []
+        for chunk_id in chunk_ids:
+            ids.append(str(chunk_id))
+
+        return ids
 
     def _row_to_chunk(self, row: Mapping[str, Any]) -> Chunk[str]:
         return Chunk(
@@ -437,6 +631,7 @@ class PostgresChunkStore(ChunkStore[str]):
         summaries: list[ChunkSummary[str]] = []
         for row in rows:
             summaries.append(self._row_to_summary(row))
+
         return summaries
 
     def _row_to_summary(self, row: Mapping[str, Any]) -> ChunkSummary[str]:
@@ -449,175 +644,34 @@ class PostgresChunkStore(ChunkStore[str]):
             tags=frozenset(row.get("tags") or ()),
         )
 
-    @staticmethod
-    def _row_to_metadata(row: Mapping[str, Any]) -> Metadata:
+    def _row_to_metadata(self, row: Mapping[str, Any]) -> Metadata:
         raw = row.get("metadata") or {}
         if not isinstance(raw, dict):
             return Metadata.empty()
-        wire: dict[str, str] = {str(k): str(v) for k, v in raw.items() if v is not None}
+
+        wire: dict[str, str] = {}
+        for key, value in raw.items():
+            if value is None:
+                continue
+
+            wire[str(key)] = str(value)
+
         return Metadata.from_wire(wire)
 
     def _batched(
         self,
         items: Iterable[_E],
-    ) -> Iterable[list[_E]]:
+    ) -> Iterator[list[_E]]:
         it = iter(items)
         while True:
             batch = list(islice(it, self._tables.batch_size))
             if not batch:
                 return
+
             yield batch
 
-    @classmethod
-    def _compile_filter(
-        cls,
-        f: Filter | None,
-    ) -> tuple[sql.Composable | None, list[Any]]:
-        if f is None:
-            return None, []
-        params: list[Any] = []
-        composed = cls._filter_to_sql(f, params)
-        return composed, params
 
-    @classmethod
-    def _filter_to_sql(  # noqa: C901, PLR0911, PLR0912
-        cls,
-        f: Filter,
-        params: list[Any],
-    ) -> sql.Composable:
-        if isinstance(f, Eq):
-            return cls._cmp_sql(f.field, "=", f.value, params)
-        if isinstance(f, Ne):
-            return cls._cmp_sql(f.field, "<>", f.value, params)
-        if isinstance(f, Lt):
-            return cls._cmp_sql(f.field, "<", f.value, params)
-        if isinstance(f, Lte):
-            return cls._cmp_sql(f.field, "<=", f.value, params)
-        if isinstance(f, Gt):
-            return cls._cmp_sql(f.field, ">", f.value, params)
-        if isinstance(f, Gte):
-            return cls._cmp_sql(f.field, ">=", f.value, params)
-        if isinstance(f, In):
-            return cls._cmp_in_sql(f.field, list(f.values), invert=False, params=params)
-        if isinstance(f, NotIn):
-            return cls._cmp_in_sql(f.field, list(f.values), invert=True, params=params)
-        if isinstance(f, HasTag):
-            params.append(f.tag)
-            return sql.SQL("(%s = ANY(tags))")
-        if isinstance(f, HasAnyTag):
-            if not f.tags:
-                raise UnsupportedFilterError(
-                    f,
-                    "postgres",
-                    "empty tag list in HasAnyTag",
-                )
-            params.append(list(f.tags))
-            return sql.SQL("(tags && %s)")
-        if isinstance(f, HasAllTags):
-            if not f.tags:
-                raise UnsupportedFilterError(
-                    f,
-                    "postgres",
-                    "empty tag list in HasAllTags",
-                )
-            params.append(list(f.tags))
-            return sql.SQL("(tags @> %s)")
-        if isinstance(f, And):
-            if not f.filters:
-                raise UnsupportedFilterError(f, "postgres", "empty And")
-            if len(f.filters) == 1:
-                return cls._filter_to_sql(f.filters[0], params)
-            parts = [cls._filter_to_sql(s, params) for s in f.filters]
-            return sql.SQL("(") + sql.SQL(" and ").join(parts) + sql.SQL(")")
-        if isinstance(f, Or):
-            if not f.filters:
-                raise UnsupportedFilterError(f, "postgres", "empty Or")
-            if len(f.filters) == 1:
-                return cls._filter_to_sql(f.filters[0], params)
-            parts = [cls._filter_to_sql(s, params) for s in f.filters]
-            return sql.SQL("(") + sql.SQL(" or ").join(parts) + sql.SQL(")")
-        if isinstance(f, Not):
-            inner = cls._filter_to_sql(f.filter, params)
-            return sql.SQL("(not ") + inner + sql.SQL(")")
-        raise UnsupportedFilterError(
-            f,
-            "postgres",
-            f"unknown filter type {type(f).__name__}",
-        )
-
-    @classmethod
-    def _field_expr(cls, field: str) -> sql.Composable:
-        if field in cls._SYSTEM_FIELDS:
-            return sql.Identifier(field)
-        return sql.SQL("metadata->>{key}").format(key=sql.Literal(field))
-
-    _NUMERIC_OPS: ClassVar[dict[str, sql.SQL]] = {
-        "<": sql.SQL("<"),
-        "<=": sql.SQL("<="),
-        ">": sql.SQL(">"),
-        ">=": sql.SQL(">="),
-    }
-    _EQUAL_OPS: ClassVar[dict[str, sql.SQL]] = {
-        "=": sql.SQL("="),
-        "<>": sql.SQL("<>"),
-    }
-
-    @classmethod
-    def _cmp_sql(
-        cls,
-        field: str,
-        op: str,
-        value: Any,
-        params: list[Any],
-    ) -> sql.Composable:
-        expr = cls._field_expr(field)
-        params.append(value)
-        if op in cls._NUMERIC_OPS:
-            return (
-                sql.SQL("((")
-                + expr
-                + sql.SQL(")::numeric ")
-                + cls._NUMERIC_OPS[op]
-                + sql.SQL(" %s::numeric)")
-            )
-        if op in cls._EQUAL_OPS:
-            return (
-                sql.SQL("(")
-                + expr
-                + sql.SQL(" ")
-                + cls._EQUAL_OPS[op]
-                + sql.SQL(" %s)")
-            )
-        known = sorted([*cls._NUMERIC_OPS, *cls._EQUAL_OPS])
-        msg = f"postgres filter: unknown comparison op {op!r}, expected one of {known}"
-        raise ValueError(msg)
-
-    @classmethod
-    def _cmp_in_sql(
-        cls,
-        field: str,
-        values: list[Any],
-        *,
-        invert: bool,
-        params: list[Any],
-    ) -> sql.Composable:
-        if not values and invert:
-            return sql.SQL("true")
-
-        if not values:
-            return sql.SQL("false")
-
-        expr = cls._field_expr(field)
-        params.append(values)
-
-        op = sql.SQL("= any")
-        if invert:
-            op = sql.SQL("<> all")
-
-        return sql.SQL("(") + expr + sql.SQL(" ") + op + sql.SQL("(%s))")
-
-
-class PostgresSourceLedger(SourceLedger):
+class PostgresSourceLedger(KbTable, SourceLedger):
     """Реестр источников одной коллекции в таблице sources_table.
 
     Время хранится timestamptz, наружу и внутрь ходит epoch-float домена.
@@ -625,22 +679,21 @@ class PostgresSourceLedger(SourceLedger):
     отданных строк не сдвигает окно.
     """
 
+    LABEL: ClassVar[str] = "ledger"
+
     PAGE: ClassVar[int] = 200
     """Сколько записей реестра берётся одним запросом при обходе."""
 
     def __init__(self, *, cfg: PostgresStoreConfig, collection: CollectionId) -> None:
-        self._cfg = cfg
-        self._tables = cfg.tables
+        super().__init__(cfg)
         self._collection = str(collection)
-        self._pool_ref: CancellablePool | None = None
 
-    async def _pool(self) -> CancellablePool:
-        if self._pool_ref is None:
-            self._pool_ref = await KbPool.open(self._cfg.connection)
-        return self._pool_ref
+    def _failure(self, action: str, exc: Exception) -> Exception:
+        return LedgerError(self._detail(action, exc))
 
-    async def lookup(self, source_id: SourceId) -> SourceRecord | None:
-        query = sql.SQL(
+    def _record_query(self) -> PgQueryBuilder:
+        """Колонки записи реестра; условие вызывающий добавляет следующим куском."""
+        return self._query().add(
             """
             select
                 source_id,
@@ -649,29 +702,30 @@ class PostgresSourceLedger(SourceLedger):
                 content_hash,
                 grade,
                 stamp,
-                extract(epoch from seen_at),
-                extract(epoch from indexed_at),
+                extract(epoch from seen_at) as seen_at,
+                extract(epoch from indexed_at) as indexed_at,
                 seen_run,
                 scope
             from
-                {sources_table}
-            where 1=1
-                and collection = %s
-                and source_id = %s
-            """,
-        ).format(sources_table=self._tables.sources_ident())
-        try:
-            pool = await self._pool()
-            async with pool.cursor() as cur:
-                await cur.execute(query, (self._collection, str(source_id)))
-                row = await cur.fetchone()
-        except (PostgresError, psycopg.Error) as exc:
-            msg = (
-                f"ledger: looking up {source_id} in "
-                f"{self._tables.sources_table} failed: {exc}"
-            )
-            raise LedgerError(msg) from exc
+                {sources}
+            """
+        )
 
+    async def lookup(self, source_id: SourceId) -> SourceRecord | None:
+        query = (
+            self._record_query()
+            .add(
+                """
+                where 1=1
+                    and collection = %(collection)s
+                    and source_id = %(source_id)s
+                """,
+                collection=self._collection,
+                source_id=str(source_id),
+            )
+            .build()
+        )
+        row = await self._row(query, f"looking up {source_id}")
         if row is None:
             return None
 
@@ -687,363 +741,324 @@ class PostgresSourceLedger(SourceLedger):
         if not ids:
             return
 
-        query = sql.SQL(
-            """
-            update {sources_table} set
-                seen_at  = to_timestamp(%s),
-                seen_run = %s,
-                scope    = case when %s <> '' then %s else scope end
-            where 1=1
-                and collection = %s
-                and source_id = ANY(%s)
-            """,
-        ).format(sources_table=self._tables.sources_ident())
-        params = (at, scope.run, scope.scope, scope.scope, self._collection, ids)
-        try:
-            pool = await self._pool()
-            async with pool.cursor() as cur:
-                await cur.execute(query, params)
-        except (PostgresError, psycopg.Error) as exc:
-            msg = (
-                f"ledger: touching {len(ids)} sources in "
-                f"{self._tables.sources_table} failed: {exc}"
+        query = (
+            self._query()
+            .add(
+                """
+                update {sources} set
+                    seen_at  = to_timestamp(%(at)s),
+                    seen_run = %(run)s,
+                    scope    = case when %(scope)s <> '' then %(scope)s else scope end
+                where 1=1
+                    and collection = %(collection)s
+                    and source_id = any(%(ids)s)
+                """,
+                at=at,
+                run=scope.run,
+                scope=scope.scope,
+                collection=self._collection,
+                ids=ids,
             )
-            raise LedgerError(msg) from exc
+            .build()
+        )
+
+        await self._execute(query, f"touching {len(ids)} sources")
 
     async def record(self, record: SourceRecord) -> None:
         parent = ""
         if record.parent is not None:
             parent = str(record.parent)
 
-        query = sql.SQL(
-            """
-            insert into {sources_table} (
-                collection,
-                source_id,
-                parent_id,
-                fingerprint,
-                content_hash,
-                grade,
-                stamp,
-                seen_at,
-                indexed_at,
-                seen_run,
-                scope
+        query = (
+            self._query()
+            .add(
+                """
+                insert into {sources} (
+                    collection,
+                    source_id,
+                    parent_id,
+                    fingerprint,
+                    content_hash,
+                    grade,
+                    stamp,
+                    seen_at,
+                    indexed_at,
+                    seen_run,
+                    scope
+                )
+                values (
+                    %(collection)s,
+                    %(source_id)s,
+                    %(parent_id)s,
+                    %(fingerprint)s,
+                    %(content_hash)s,
+                    %(grade)s,
+                    %(stamp)s,
+                    to_timestamp(%(seen_at)s),
+                    to_timestamp(%(indexed_at)s),
+                    %(seen_run)s,
+                    %(scope)s
+                )
+                on conflict (collection, source_id) do update set
+                    parent_id    = excluded.parent_id,
+                    fingerprint  = excluded.fingerprint,
+                    content_hash = excluded.content_hash,
+                    grade        = excluded.grade,
+                    stamp        = excluded.stamp,
+                    seen_at      = excluded.seen_at,
+                    indexed_at   = excluded.indexed_at,
+                    seen_run     = excluded.seen_run,
+                    scope        = case
+                        when excluded.scope <> '' then excluded.scope
+                        else {sources}.scope
+                    end
+                """,
+                collection=self._collection,
+                source_id=str(record.source_id),
+                parent_id=parent,
+                fingerprint=record.fingerprint,
+                content_hash=record.content_hash,
+                grade=record.grade,
+                stamp=record.stamp,
+                seen_at=record.seen_at,
+                indexed_at=record.indexed_at,
+                seen_run=record.seen_run,
+                scope=record.scope,
             )
-            values (
-                %s, %s, %s, %s, %s, %s, %s,
-                to_timestamp(%s), to_timestamp(%s), %s, %s
-            )
-            on conflict (collection, source_id) do update set
-                parent_id    = excluded.parent_id,
-                fingerprint  = excluded.fingerprint,
-                content_hash = excluded.content_hash,
-                grade        = excluded.grade,
-                stamp        = excluded.stamp,
-                seen_at      = excluded.seen_at,
-                indexed_at   = excluded.indexed_at,
-                seen_run     = excluded.seen_run,
-                scope        = case
-                    when excluded.scope <> '' then excluded.scope
-                    else {sources_table}.scope
-                end
-            """,
-        ).format(sources_table=self._tables.sources_ident())
-        params = (
-            self._collection,
-            str(record.source_id),
-            parent,
-            record.fingerprint,
-            record.content_hash,
-            record.grade,
-            record.stamp,
-            record.seen_at,
-            record.indexed_at,
-            record.seen_run,
-            record.scope,
+            .build()
         )
-        try:
-            pool = await self._pool()
-            async with pool.cursor() as cur:
-                await cur.execute(query, params)
-        except (PostgresError, psycopg.Error) as exc:
-            msg = (
-                f"ledger: recording {record.source_id} in "
-                f"{self._tables.sources_table} failed: {exc}"
-            )
-            raise LedgerError(msg) from exc
+
+        await self._execute(query, f"recording {record.source_id}")
 
     async def orphans(self, run: str) -> AsyncIterator[SourceRecord]:
-        query = sql.SQL(
-            """
-            select
-                child.source_id,
-                child.parent_id,
-                child.fingerprint,
-                child.content_hash,
-                child.grade,
-                child.stamp,
-                extract(epoch from child.seen_at),
-                extract(epoch from child.indexed_at),
-                child.seen_run,
-                child.scope
-            from
-                {sources_table} as child
-                join {sources_table} as parent
-                    on parent.collection = child.collection
-                    and parent.source_id = child.parent_id
-            where 1=1
-                and child.collection = %s
-                and child.parent_id <> ''
-                and child.seen_run <> %s
-                and parent.seen_run = %s
-                and child.source_id > %s
-            order by
-                child.source_id
-            limit %s
-            """,
-        ).format(sources_table=self._tables.sources_ident())
         after = ""
         while True:
-            params = (self._collection, run, run, after, self.PAGE)
-            rows = await self._page(query, params)
+            query = (
+                self._query()
+                .add(
+                    """
+                    select
+                        child.source_id,
+                        child.parent_id,
+                        child.fingerprint,
+                        child.content_hash,
+                        child.grade,
+                        child.stamp,
+                        extract(epoch from child.seen_at) as seen_at,
+                        extract(epoch from child.indexed_at) as indexed_at,
+                        child.seen_run,
+                        child.scope
+                    from
+                        {sources} as child
+                        join {sources} as parent
+                            on parent.collection = child.collection
+                            and parent.source_id = child.parent_id
+                    where 1=1
+                        and child.collection = %(collection)s
+                        and child.parent_id <> ''
+                        and child.seen_run <> %(run)s
+                        and parent.seen_run = %(run)s
+                        and child.source_id > %(after)s
+                    order by
+                        child.source_id
+                    limit %(page)s
+                    """,
+                    collection=self._collection,
+                    run=run,
+                    after=after,
+                    page=self.PAGE,
+                )
+                .build()
+            )
+            rows = await self._rows(query, "scanning orphans")
             if not rows:
                 return
 
             for row in rows:
                 yield self._row_to_record(row)
 
-            after = str(rows[-1][0])
+            after = str(rows[-1]["source_id"])
 
     async def unseen_roots(self, scope: str, run: str) -> AsyncIterator[SourceRecord]:
-        query = sql.SQL(
-            """
-            select
-                source_id,
-                parent_id,
-                fingerprint,
-                content_hash,
-                grade,
-                stamp,
-                extract(epoch from seen_at),
-                extract(epoch from indexed_at),
-                seen_run,
-                scope
-            from
-                {sources_table}
-            where 1=1
-                and collection = %s
-                and scope = %s
-                and parent_id = ''
-                and seen_run <> %s
-                and source_id > %s
-            order by
-                source_id
-            limit %s
-            """,
-        ).format(sources_table=self._tables.sources_ident())
         after = ""
         while True:
-            rows = await self._page(
-                query, (self._collection, scope, run, after, self.PAGE)
+            query = (
+                self._record_query()
+                .add(
+                    """
+                    where 1=1
+                        and collection = %(collection)s
+                        and scope = %(scope)s
+                        and parent_id = ''
+                        and seen_run <> %(run)s
+                        and source_id > %(after)s
+                    order by
+                        source_id
+                    limit %(page)s
+                    """,
+                    collection=self._collection,
+                    scope=scope,
+                    run=run,
+                    after=after,
+                    page=self.PAGE,
+                )
+                .build()
             )
+            rows = await self._rows(query, "scanning unseen roots")
             if not rows:
                 return
 
             for row in rows:
                 yield self._row_to_record(row)
 
-            after = str(rows[-1][0])
+            after = str(rows[-1]["source_id"])
 
     async def children(self, parent: SourceId) -> AsyncIterator[SourceRecord]:
-        query = sql.SQL(
-            """
-            select
-                source_id,
-                parent_id,
-                fingerprint,
-                content_hash,
-                grade,
-                stamp,
-                extract(epoch from seen_at),
-                extract(epoch from indexed_at),
-                seen_run,
-                scope
-            from
-                {sources_table}
-            where 1=1
-                and collection = %s
-                and parent_id = %s
-                and source_id > %s
-            order by
-                source_id
-            limit %s
-            """,
-        ).format(sources_table=self._tables.sources_ident())
         after = ""
         while True:
-            params = (self._collection, str(parent), after, self.PAGE)
-            rows = await self._page(query, params)
+            query = (
+                self._record_query()
+                .add(
+                    """
+                    where 1=1
+                        and collection = %(collection)s
+                        and parent_id = %(parent_id)s
+                        and source_id > %(after)s
+                    order by
+                        source_id
+                    limit %(page)s
+                    """,
+                    collection=self._collection,
+                    parent_id=str(parent),
+                    after=after,
+                    page=self.PAGE,
+                )
+                .build()
+            )
+            rows = await self._rows(query, f"scanning children of {parent}")
             if not rows:
                 return
 
             for row in rows:
                 yield self._row_to_record(row)
 
-            after = str(rows[-1][0])
+            after = str(rows[-1]["source_id"])
 
     async def forget(self, source_id: SourceId) -> None:
-        query = sql.SQL(
-            """
-            delete from
-                {sources_table}
-            where 1=1
-                and collection = %s
-                and source_id = %s
-            """,
-        ).format(sources_table=self._tables.sources_ident())
-        try:
-            pool = await self._pool()
-            async with pool.cursor() as cur:
-                await cur.execute(query, (self._collection, str(source_id)))
-        except (PostgresError, psycopg.Error) as exc:
-            msg = (
-                f"ledger: forgetting {source_id} in "
-                f"{self._tables.sources_table} failed: {exc}"
+        query = (
+            self._query()
+            .add(
+                """
+                delete from
+                    {sources}
+                where 1=1
+                    and collection = %(collection)s
+                    and source_id = %(source_id)s
+                """,
+                collection=self._collection,
+                source_id=str(source_id),
             )
-            raise LedgerError(msg) from exc
+            .build()
+        )
 
-    async def _page(
-        self,
-        query: sql.Composed,
-        params: tuple[Any, ...],
-    ) -> Sequence[tuple[Any, ...]]:
-        try:
-            pool = await self._pool()
-            async with pool.cursor() as cur:
-                await cur.execute(query, params)
-                return await cur.fetchall()
-        except (PostgresError, psycopg.Error) as exc:
-            msg = f"ledger: scanning {self._tables.sources_table} failed: {exc}"
-            raise LedgerError(msg) from exc
+        await self._execute(query, f"forgetting {source_id}")
 
-    @staticmethod
-    def _row_to_record(row: Sequence[Any]) -> SourceRecord:
+    def _row_to_record(self, row: Mapping[str, Any]) -> SourceRecord:
         parent: SourceId | None = None
-        if row[1]:
-            parent = SourceId(str(row[1]))
+        if row["parent_id"]:
+            parent = SourceId(str(row["parent_id"]))
 
         return SourceRecord(
-            source_id=SourceId(str(row[0])),
+            source_id=SourceId(str(row["source_id"])),
             parent=parent,
-            fingerprint=str(row[2]),
-            content_hash=str(row[3]),
-            grade=int(row[4]),
-            stamp=str(row[5]),
-            seen_at=float(row[6]),
-            indexed_at=float(row[7]),
-            seen_run=str(row[8]),
-            scope=str(row[9]),
+            fingerprint=str(row["fingerprint"]),
+            content_hash=str(row["content_hash"]),
+            grade=int(row["grade"]),
+            stamp=str(row["stamp"]),
+            seen_at=float(row["seen_at"]),
+            indexed_at=float(row["indexed_at"]),
+            seen_run=str(row["seen_run"]),
+            scope=str(row["scope"]),
         )
 
 
-class PostgresCollectionsStore(CollectionsStore):
-    """Postgres-реализация CollectionsStore (только collection-уровень)."""
+class PostgresCollectionsStore(KbTable, CollectionsStore):
+    """Реализация CollectionsStore на таблице коллекций postgres."""
 
-    def __init__(
-        self,
-        *,
-        cfg: PostgresStoreConfig,
-    ) -> None:
-        self._cfg = cfg
-        self._tables = cfg.tables
-        self._pool_ref: CancellablePool | None = None
-
-    async def _pool(self) -> CancellablePool:
-        """Пул берётся при первом обращении: __init__ не может await."""
-        if self._pool_ref is None:
-            self._pool_ref = await KbPool.open(self._cfg.connection)
-        return self._pool_ref
+    def __init__(self, *, cfg: PostgresStoreConfig) -> None:
+        super().__init__(cfg)
 
     async def list_collections(self) -> Sequence[CollectionInfo]:
-        query = sql.SQL(
-            """
-            select
-                c.name,
-                c.description,
-                COALESCE(cnt.count, 0) as count
-            from
-                {collections_table} c
-                left join (
-                    select
-                        collection,
-                        count(*)::int as count
-                    from
-                        {chunks_table}
-                    group by
-                        collection
-                ) cnt on cnt.collection = c.name
-            order by
-                c.name
-            """,
-        ).format(
-            collections_table=self._tables.collections_ident(),
-            chunks_table=self._tables.chunks_ident(),
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    c.name,
+                    c.description,
+                    coalesce(cnt.count, 0) as count
+                from
+                    {collections} c
+                    left join (
+                        select
+                            collection,
+                            count(*)::int as count
+                        from
+                            {chunks}
+                        group by
+                            collection
+                    ) cnt on cnt.collection = c.name
+                order by
+                    c.name
+                """
+            )
+            .build()
         )
-        pool = await self._pool()
-        async with pool.dict_cursor() as cur:
-            await cur.execute(query)
-            rows = await cur.fetchall()
+        rows = await self._rows(query, "listing collections")
 
         collections: list[CollectionInfo] = []
         for row in rows:
-            collections.append(
-                CollectionInfo(
-                    name=CollectionId(row["name"]),
-                    description=row["description"] or "",
-                    count=int(row["count"]),
-                )
-            )
+            collections.append(self._info(row))
+
         return collections
 
     async def collection_info(self, name: CollectionId) -> CollectionInfo:
-        query = sql.SQL(
-            """
-            select
-                c.name,
-                c.description,
-                (
-                    select
-                        count(*)::int
-                    from
-                        {chunks_table}
-                    where
-                        collection = c.name
-                ) as count
-            from
-                {collections_table} c
-            where
-                c.name = %s
-            """,
-        ).format(
-            chunks_table=self._tables.chunks_ident(),
-            collections_table=self._tables.collections_ident(),
-        )
-        pool = await self._pool()
-        async with pool.dict_cursor() as cur:
-            await cur.execute(query, (str(name),))
-            row = await cur.fetchone()
-            if row is None:
-                return CollectionInfo(
-                    name=name,
-                    description="",
-                    count=0,
-                )
-            return CollectionInfo(
-                name=CollectionId(row["name"]),
-                description=row["description"] or "",
-                count=int(row["count"]),
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    c.name,
+                    c.description,
+                    (
+                        select
+                            count(*)::int
+                        from
+                            {chunks}
+                        where
+                            collection = c.name
+                    ) as count
+                from
+                    {collections} c
+                where
+                    c.name = %(name)s
+                """,
+                name=str(name),
             )
+            .build()
+        )
+        row = await self._row(query, f"reading collection {name}")
+        if row is None:
+            return CollectionInfo(name=name, description="", count=0)
+
+        return self._info(row)
+
+    def _info(self, row: Mapping[str, Any]) -> CollectionInfo:
+        return CollectionInfo(
+            name=CollectionId(row["name"]),
+            description=row["description"] or "",
+            count=int(row["count"]),
+        )
 
     async def ensure_collection(
         self,
@@ -1051,44 +1066,50 @@ class PostgresCollectionsStore(CollectionsStore):
         *,
         description: str | None,
     ) -> None:
-        query = sql.SQL(
-            """
-            insert into {collections_table} (
-                name,
-                description
+        text = description
+        if text is None:
+            text = ""
+
+        query = (
+            self._query()
+            .add(
+                """
+                insert into {collections} (
+                    name,
+                    description
+                )
+                values (
+                    %(name)s,
+                    %(description)s
+                )
+                on conflict (name) do nothing
+                """,
+                name=str(name),
+                description=text,
             )
-            values (
-                %s,
-                %s
-            )
-            on conflict (name) do nothing
-            """,
-        ).format(collections_table=self._tables.collections_ident())
-        pool = await self._pool()
-        async with pool.cursor() as cur:
-            await cur.execute(query, (str(name), description or ""))
+            .build()
+        )
+
+        await self._execute(query, f"ensuring collection {name}")
 
     async def delete_collection(self, name: CollectionId) -> None:
-        chunks_query = sql.SQL(
-            """
-            delete from
-                {chunks_table}
-            where
-                collection = %s
-            """,
-        ).format(chunks_table=self._tables.chunks_ident())
-        collection_query = sql.SQL(
-            """
-            delete from
-                {collections_table}
-            where
-                name = %s
-            """,
-        ).format(collections_table=self._tables.collections_ident())
+        chunks = (
+            self._query()
+            .add(
+                "delete from {chunks} where collection = %(name)s",
+                name=str(name),
+            )
+            .build()
+        )
+        collection = (
+            self._query()
+            .add(
+                "delete from {collections} where name = %(name)s",
+                name=str(name),
+            )
+            .build()
+        )
 
-        params = (str(name),)
-
-        pool = await self._pool()
-        async with pool.connection() as conn, conn.transaction():
-            await conn.execute(chunks_query, params)
-            await conn.execute(collection_query, params)
+        async with self._transaction(f"deleting collection {name}") as cur:
+            await cur.execute(chunks.text, chunks.params)
+            await cur.execute(collection.text, collection.params)

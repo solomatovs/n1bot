@@ -5,11 +5,13 @@ ch_*) и связей (link) в схеме домена, их раскладка
 SnapshotTable и SnapshotTables выводят таблицы из объявления частей снимка
 (SourceSnapshot.parts): колонки по полям модели, родной ключ, DDL.
 CatalogDomain даёт DDL и раскладку всей схемы домена тому, кто её создаёт
-(хранилище приложения). SnapshotWriter — путь инструмента снятия: прежние
-staging-таблицы подключения дропаются и создаются заново, порции ложатся
-строками, перенос в таблицы домена новой версией — одна транзакция.
+(хранилище приложения). StagingTables именует и сносит staging-таблицы
+подключения. SnapshotWriter — путь инструмента снятия (стенд fake_sync):
+прежние staging-таблицы подключения дропаются и создаются заново, порции
+ложатся строками, перенос в таблицы домена новой версией — одна транзакция.
 SnapshotOutcome — итог инструмента, по которому приложение записывает
-версию.
+версию. Запросы собираются PgQueryBuilder: имена таблиц и колонок здесь
+динамические, поэтому идут стоящими именами, значения — параметрами.
 
 Ошибки:
 CatalogDomainError — Postgres недоступен или отказал, строки не легли,
@@ -40,6 +42,7 @@ from boba.catalog import (
     TreeScope,
 )
 from boba.db.postgres.connection import PostgresConfig
+from boba.db.postgres.query import PgQuery, PgQueryBuilder
 from boba.toolkit.result import MarkdownResult, ToolResult
 from boba.toolkit.types import SecretRevealing
 
@@ -61,7 +64,7 @@ __all__ = [
     "SnapshotTables",
     "SnapshotWriter",
     "SqlType",
-    "StagingTable",
+    "StagingTables",
 ]
 
 
@@ -242,7 +245,7 @@ class PartTable(BaseModel):
         return sql.SQL(", ").join(marks)
 
 
-class StagingTable:
+class StagingTables:
     """Staging-таблицы снятия одного подключения в схеме домена: по таблице
     на часть снимка той же раскладки, что таблица домена, без id,
     connection_id и version. Живут от старта снятия до переноса; прежние
@@ -250,26 +253,36 @@ class StagingTable:
 
     PREFIX: ClassVar[str] = "snapshot_"
 
-    @classmethod
-    def name_of(cls, connection_id: UUID, part: str) -> str:
-        return f"{cls.PREFIX}{connection_id.hex}_{part}"
+    def __init__(self, schema: str) -> None:
+        self._schema = schema
 
-    @classmethod
-    def pattern_of(cls, connection_id: UUID) -> str:
+    def name_of(self, connection_id: UUID, part: str) -> str:
+        return f"{self.PREFIX}{connection_id.hex}_{part}"
+
+    def ident_of(self, connection_id: UUID, part: str) -> sql.Identifier:
+        return sql.Identifier(self._schema, self.name_of(connection_id, part))
+
+    def pattern_of(self, connection_id: UUID) -> str:
         """Шаблон like для всех staging-таблиц подключения."""
-        return f"{cls.PREFIX}{connection_id.hex}\\_%"
+        return f"{self.PREFIX}{connection_id.hex}\\_%"
 
-    @staticmethod
-    async def names_in(
-        cur: psycopg.AsyncCursor[Any], schema: str, pattern: str
-    ) -> list[str]:
+    async def names_in(self, cur: psycopg.AsyncCursor[Any], pattern: str) -> list[str]:
         """Имена таблиц схемы по шаблону like, по алфавиту."""
-        await cur.execute(
-            "select table_name from information_schema.tables "
-            "where table_schema = %(schema)s and table_name like %(pattern)s "
-            "order by table_name",
-            {"schema": schema, "pattern": pattern},
+        query = (
+            PgQueryBuilder()
+            .add(
+                """
+                select table_name
+                from information_schema.tables
+                where table_schema = %(schema)s and table_name like %(pattern)s
+                order by table_name
+                """,
+                schema=self._schema,
+                pattern=pattern,
+            )
+            .build()
         )
+        await cur.execute(query.text, query.params)
         rows = await cur.fetchall()
 
         names: list[str] = []
@@ -278,15 +291,19 @@ class StagingTable:
 
         return names
 
-    @classmethod
-    async def drop_matching(
-        cls, cur: psycopg.AsyncCursor[Any], schema: str, pattern: str
-    ) -> None:
+    async def drop_matching(self, cur: psycopg.AsyncCursor[Any], pattern: str) -> None:
         """Сносит таблицы схемы по шаблону like."""
-        for name in await cls.names_in(cur, schema, pattern):
-            await cur.execute(
-                sql.SQL("drop table if exists {}").format(sql.Identifier(schema, name))
+        for name in await self.names_in(cur, pattern):
+            drop = (
+                PgQueryBuilder(table=sql.Identifier(self._schema, name))
+                .add("drop table if exists {table}")
+                .build()
             )
+            await cur.execute(drop.text, drop.params)
+
+    async def drop_of(self, cur: psycopg.AsyncCursor[Any], connection_id: UUID) -> None:
+        """Все staging-таблицы подключения."""
+        await self.drop_matching(cur, self.pattern_of(connection_id))
 
 
 class SnapshotTable:
@@ -348,6 +365,9 @@ class SnapshotTable:
 
         return names
 
+    def ident(self, schema: str) -> sql.Identifier:
+        return sql.Identifier(schema, self.table)
+
     def identifiers(self) -> sql.Composed:
         """Колонки записи списком идентификаторов."""
         idents: list[sql.Composable] = []
@@ -361,20 +381,26 @@ class SnapshotTable:
         for record in snapshot.records_of(self.part.name):
             yield self.row_of(record)
 
-    def insert(self, schema: str) -> sql.Composed:
-        """Вставка строки версии подключения именованными плейсхолдерами."""
+    def insert(self, schema: str) -> PgQuery:
+        """Вставка строки версии подключения именованными плейсхолдерами;
+        значения приходят строками executemany."""
         idents: list[sql.Composable] = []
         placeholders: list[sql.Composable] = []
         for column in self.layout():
             if column == SnapshotKey.ID.value:
                 continue
+
             idents.append(sql.Identifier(column))
             placeholders.append(sql.Placeholder(column))
 
-        return sql.SQL("insert into {} ({}) values ({})").format(
-            sql.Identifier(schema, self.table),
-            sql.SQL(", ").join(idents),
-            sql.SQL(", ").join(placeholders),
+        return (
+            PgQueryBuilder(
+                table=self.ident(schema),
+                columns=sql.SQL(", ").join(idents),
+                values=sql.SQL(", ").join(placeholders),
+            )
+            .add("insert into {table} ({columns}) values ({values})")
+            .build()
         )
 
     def native_key(self) -> sql.Composed:
@@ -388,7 +414,7 @@ class SnapshotTable:
 
         return sql.SQL(", ").join(key)
 
-    def domain_ddl(self, schema: str) -> sql.Composed:
+    def domain_ddl(self, schema: str) -> PgQuery:
         """Таблица части снимка в схеме домена: bigserial id первичным
         ключом, родной ключ строки версии — unique; внешних ключей нет —
         таблица только на insert, версии живут у приложения."""
@@ -409,8 +435,13 @@ class SnapshotTable:
                 sql.Identifier(f"{self.table}_key"), self.native_key()
             )
         )
-        return sql.SQL("create table if not exists {} ({})").format(
-            sql.Identifier(schema, self.table), sql.SQL(", ").join(definitions)
+
+        return (
+            PgQueryBuilder(
+                table=self.ident(schema), definitions=sql.SQL(", ").join(definitions)
+            )
+            .add("create table if not exists {table} ({definitions})")
+            .build()
         )
 
     def _column_definitions(self) -> list[sql.Composable]:
@@ -424,29 +455,38 @@ class SnapshotTable:
 
         return definitions
 
-    def select(self, schema: str) -> sql.Composed:
-        """Колонки записи за одну версию подключения."""
-        return sql.SQL(
-            "select {} from {} where {} = %(connection_id)s and {} = %(version)s"
-        ).format(
-            self.identifiers(),
-            sql.Identifier(schema, self.table),
-            sql.Identifier(SnapshotKey.CONNECTION_ID.value),
-            sql.Identifier(SnapshotKey.VERSION.value),
+    def _select(self, schema: str, connection_id: UUID, version: int) -> PgQueryBuilder:
+        """Колонки записи за одну версию подключения; условия области
+        вызывающий добавляет следующими кусками."""
+        return PgQueryBuilder(table=self.ident(schema), columns=self.identifiers()).add(
+            """
+                select {columns}
+                from {table}
+                where connection_id = %(connection_id)s and version = %(version)s
+                """,
+            connection_id=connection_id,
+            version=version,
         )
 
-    def select_where(self, schema: str, part_scope: PartScope) -> sql.Composed:
+    def select(self, schema: str, connection_id: UUID, version: int) -> PgQuery:
+        return self._select(schema, connection_id, version).build()
+
+    def select_where(
+        self, schema: str, connection_id: UUID, version: int, part_scope: PartScope
+    ) -> PgQuery:
         """Выборка части с равенствами области: колонки по полям записи,
-        значения плейсхолдерами w0, w1… по порядку области."""
-        query = self.select(schema)
-        for index, (field, _value) in enumerate(part_scope.where):
-            query = sql.SQL("{} and {} = {}").format(
-                query,
-                sql.Identifier(self.column_of(field)),
-                sql.Placeholder(f"w{index}"),
+        значения параметрами w0, w1… по порядку области."""
+        query = self._select(schema, connection_id, version)
+        for index, (field, value) in enumerate(part_scope.where):
+            name = f"w{index}"
+            query.add(
+                "and {column} = {value}",
+                column=sql.Identifier(self.column_of(field)),
+                value=sql.Placeholder(name),
+                **{name: value},
             )
 
-        return query
+        return query.build()
 
     def record_of(self, row: Mapping[str, Any]) -> SourceRecord:
         """Запись из строки выборки.
@@ -511,8 +551,8 @@ class CatalogDomain:
         self._schema = schema
         self._tables = tables
 
-    def ddl(self) -> tuple[sql.Composed, ...]:
-        statements: list[sql.Composed] = []
+    def ddl(self) -> tuple[PgQuery, ...]:
+        statements: list[PgQuery] = []
         for spec in self._tables.all():
             statements.append(spec.domain_ddl(self._schema))
 
@@ -526,28 +566,24 @@ class CatalogDomain:
 
         return layouts
 
-    def _link_ddl(self) -> sql.Composed:
-        return sql.SQL(
-            """
-            create table if not exists {table} (
-                {id}          bigserial not null primary key,
-                {from_id}     bigint not null,
-                {from_entity} integer not null,
-                {to_id}       bigint not null,
-                {to_entity}   integer not null,
-                {parent_id}   bigint not null default 0,
-                constraint link_unq
-                    unique ({from_id}, {to_id}, {from_entity}, {to_entity})
+    def _link_ddl(self) -> PgQuery:
+        return (
+            PgQueryBuilder(schema=sql.Identifier(self._schema))
+            .add(
+                """
+                create table if not exists {schema}.link (
+                    id          bigserial not null primary key,
+                    from_id     bigint not null,
+                    from_entity integer not null,
+                    to_id       bigint not null,
+                    to_entity   integer not null,
+                    parent_id   bigint not null default 0,
+                    constraint link_unq
+                        unique (from_id, to_id, from_entity, to_entity)
+                )
+                """
             )
-            """
-        ).format(
-            table=sql.Identifier(self._schema, LinkTable.TABLE.value),
-            id=sql.Identifier(LinkTable.ID.value),
-            from_id=sql.Identifier(LinkTable.FROM_ID.value),
-            from_entity=sql.Identifier(LinkTable.FROM_ENTITY.value),
-            to_id=sql.Identifier(LinkTable.TO_ID.value),
-            to_entity=sql.Identifier(LinkTable.TO_ENTITY.value),
-            parent_id=sql.Identifier(LinkTable.PARENT_ID.value),
+            .build()
         )
 
 
@@ -610,7 +646,6 @@ class SnapshotWriter:
 
     open() дропает staging-таблицы подключения от прежнего снятия и создаёт
     новые по образцу таблиц домена (без id, connection_id и version);
-    copy_from() перекачивает строки части из источника потоком COPY → COPY,
     stage() кладёт готовые строки; commit() одной транзакцией заводит
     следующий номер версии подключения, переносит staging в таблицы домена
     и дропает staging. Каждый шаг — своя явная транзакция, режим autocommit
@@ -628,6 +663,7 @@ class SnapshotWriter:
         self._schema = schema
         self._connection_id = connection_id
         self._parts = tuple(parts)
+        self._staging = StagingTables(schema)
 
     def _part(self, part: str) -> PartTable:
         for item in self._parts:
@@ -641,10 +677,8 @@ class SnapshotWriter:
         msg = f"snapshot writer has no part {part!r}, its parts: {known}"
         raise CatalogDomainError(msg)
 
-    def _staging(self, part: PartTable) -> sql.Identifier:
-        return sql.Identifier(
-            self._schema, StagingTable.name_of(self._connection_id, part.part)
-        )
+    def _staging_of(self, part: PartTable) -> sql.Identifier:
+        return self._staging.ident_of(self._connection_id, part.part)
 
     def _domain(self, part: PartTable) -> sql.Identifier:
         return sql.Identifier(self._schema, part.table)
@@ -656,23 +690,27 @@ class SnapshotWriter:
             async with self._conn.transaction(), self._conn.cursor() as cur:
                 await self._drop_staging(cur)
                 for part in self._parts:
-                    staging = self._staging(part)
-                    await cur.execute(
-                        sql.SQL("create table {} (like {} including defaults)").format(
-                            staging, self._domain(part)
-                        )
+                    names = PgQueryBuilder(
+                        staging=self._staging_of(part), domain=self._domain(part)
                     )
-                    await cur.execute(
-                        sql.SQL(
-                            "alter table {} drop column {}, drop column {}, "
-                            "drop column {}"
-                        ).format(
-                            staging,
-                            sql.Identifier(SnapshotKey.ID.value),
-                            sql.Identifier(SnapshotKey.CONNECTION_ID.value),
-                            sql.Identifier(SnapshotKey.VERSION.value),
+                    create = names.add(
+                        "create table {staging} (like {domain} including defaults)"
+                    ).build()
+                    await cur.execute(create.text, create.params)
+
+                    trim = (
+                        PgQueryBuilder(staging=self._staging_of(part))
+                        .add(
+                            """
+                            alter table {staging}
+                                drop column id,
+                                drop column connection_id,
+                                drop column version
+                            """
                         )
+                        .build()
                     )
+                    await cur.execute(trim.text, trim.params)
         except psycopg.Error as exc:
             msg = (
                 f"snapshot of connection {self._connection_id}: preparing staging "
@@ -680,53 +718,21 @@ class SnapshotWriter:
             )
             raise CatalogDomainError(msg) from exc
 
-    async def copy_from(
-        self,
-        source: psycopg.AsyncConnection[Any],
-        part: str,
-        select: sql.Composable,
-        params: Mapping[str, Any],
-    ) -> int:
-        """Строки части из источника в её staging потоком: COPY (select) TO
-        STDOUT у источника перетекает в COPY … FROM STDIN у домена; сколько
-        строк перелилось."""
-        spec = self._part(part)
-        out = sql.SQL("copy ({}) to stdout").format(select)
-        into = sql.SQL("copy {} ({}) from stdin").format(
-            self._staging(spec), spec.identifiers()
-        )
-        try:
-            async with (
-                self._conn.transaction(),
-                source.cursor() as reading,
-                self._conn.cursor() as writing,
-            ):
-                async with (
-                    reading.copy(out, params) as outbound,
-                    writing.copy(into) as inbound,
-                ):
-                    async for chunk in outbound:
-                        await inbound.write(chunk)
-
-                copied = writing.rowcount
-        except psycopg.Error as exc:
-            msg = (
-                f"snapshot of connection {self._connection_id}: copying part "
-                f"{part!r} into staging failed: {exc}"
-            )
-            raise CatalogDomainError(msg) from exc
-
-        return copied
-
     async def stage(self, part: str, rows: Sequence[Mapping[str, Any]]) -> int:
         """Готовые строки части (значения по колонкам) в её staging."""
         spec = self._part(part)
-        insert = sql.SQL("insert into {} ({}) values ({})").format(
-            self._staging(spec), spec.identifiers(), spec.placeholders()
+        insert = (
+            PgQueryBuilder(
+                staging=self._staging_of(spec),
+                columns=spec.identifiers(),
+                values=spec.placeholders(),
+            )
+            .add("insert into {staging} ({columns}) values ({values})")
+            .build()
         )
         try:
             async with self._conn.transaction(), self._conn.cursor() as cur:
-                await cur.executemany(insert, rows)
+                await cur.executemany(insert.text, rows)
         except psycopg.Error as exc:
             msg = (
                 f"snapshot of connection {self._connection_id}: staging "
@@ -746,20 +752,24 @@ class SnapshotWriter:
             ):
                 version = await self._next_version(cur)
                 for part in self._parts:
-                    await cur.execute(
-                        sql.SQL(
-                            "insert into {} ({}, {}, {}) "
-                            "select %(connection_id)s, %(version)s, {} from {}"
-                        ).format(
-                            self._domain(part),
-                            sql.Identifier(SnapshotKey.CONNECTION_ID.value),
-                            sql.Identifier(SnapshotKey.VERSION.value),
-                            part.identifiers(),
-                            part.identifiers(),
-                            self._staging(part),
-                        ),
-                        {"connection_id": self._connection_id, "version": version},
+                    move = (
+                        PgQueryBuilder(
+                            domain=self._domain(part),
+                            staging=self._staging_of(part),
+                            columns=part.identifiers(),
+                        )
+                        .add(
+                            """
+                            insert into {domain} (connection_id, version, {columns})
+                            select %(connection_id)s, %(version)s, {columns}
+                            from {staging}
+                            """,
+                            connection_id=self._connection_id,
+                            version=version,
+                        )
+                        .build()
                     )
+                    await cur.execute(move.text, move.params)
 
                 await self._drop_staging(cur)
         except psycopg.Error as exc:
@@ -780,10 +790,8 @@ class SnapshotWriter:
     async def _next_version(self, cur: psycopg.AsyncCursor[DictRow]) -> int:
         """Номер за последней версией подключения по корневой части."""
         root = self._parts[0]
-        await cur.execute(
-            DomainVersions.latest_of(self._schema, root.table),
-            {"connection_id": self._connection_id},
-        )
+        latest = DomainVersions(self._schema, root.table).latest(self._connection_id)
+        await cur.execute(latest.text, latest.params)
         row = await cur.fetchone()
         if row is None:
             msg = (
@@ -796,9 +804,12 @@ class SnapshotWriter:
 
     async def _drop_staging(self, cur: psycopg.AsyncCursor[Any]) -> None:
         for part in self._parts:
-            await cur.execute(
-                sql.SQL("drop table if exists {}").format(self._staging(part))
+            drop = (
+                PgQueryBuilder(staging=self._staging_of(part))
+                .add("drop table if exists {staging}")
+                .build()
             )
+            await cur.execute(drop.text, drop.params)
 
 
 class SnapshotReader:
@@ -822,10 +833,8 @@ class SnapshotReader:
         """
         fields: dict[str, tuple[SourceRecord, ...]] = {}
         for spec in self._tables.of_kind(kind):
-            await cur.execute(
-                spec.select(self._schema),
-                {"connection_id": connection_id, "version": version},
-            )
+            query = spec.select(self._schema, connection_id, version)
+            await cur.execute(query.text, query.params)
             rows = await cur.fetchall()
             records: list[SourceRecord] = []
             for row in rows:
@@ -857,8 +866,10 @@ class SnapshotReader:
                 if part_scope.part != spec.part.name:
                     continue
 
-                params = self._scope_params(connection_id, version, part_scope)
-                await cur.execute(spec.select_where(self._schema, part_scope), params)
+                query = spec.select_where(
+                    self._schema, connection_id, version, part_scope
+                )
+                await cur.execute(query.text, query.params)
                 rows = await cur.fetchall()
                 for row in rows:
                     record = spec.record_of(row)
@@ -871,16 +882,6 @@ class SnapshotReader:
             fields[spec.part.name] = tuple(records)
 
         return self._snapshot(connection_id, kind, version, fields)
-
-    @staticmethod
-    def _scope_params(
-        connection_id: UUID, version: int, part_scope: PartScope
-    ) -> dict[str, Any]:
-        params: dict[str, Any] = {"connection_id": connection_id, "version": version}
-        for index, (_field, value) in enumerate(part_scope.where):
-            params[f"w{index}"] = value
-
-        return params
 
     def _snapshot(
         self,
@@ -900,53 +901,47 @@ class SnapshotReader:
 
 
 class DomainVersions:
-    """Версии подключения в таблицах домена глазами приложения: последняя
-    версия и число объектов версии по семействам снимка."""
+    """Версии подключения в таблицах домена по их корневой таблице:
+    последняя версия и число объектов версии по таблицам семейств снимка."""
 
-    def __init__(self, schema: str, snapshot: type[SourceSnapshot]) -> None:
+    def __init__(self, schema: str, root_table: str) -> None:
         self._schema = schema
-        self._snapshot = snapshot
-        self._specs = SnapshotTables.of_snapshot(snapshot)
+        self._root = root_table
 
-    def latest_query(self) -> sql.Composed:
-        root = self._specs[0]
-        return self.latest_of(self._schema, root.table)
-
-    @staticmethod
-    def latest_of(schema: str, table: str) -> sql.Composed:
+    def latest(self, connection_id: UUID) -> PgQuery:
         """Последняя версия подключения по корневой таблице (0 — версий нет)."""
-        return sql.SQL(
-            "select coalesce(max({}), 0) as version from {} "
-            "where {} = %(connection_id)s"
-        ).format(
-            sql.Identifier(SnapshotKey.VERSION.value),
-            sql.Identifier(schema, table),
-            sql.Identifier(SnapshotKey.CONNECTION_ID.value),
+        return (
+            PgQueryBuilder(table=sql.Identifier(self._schema, self._root))
+            .add(
+                """
+                select coalesce(max(version), 0) as version
+                from {table}
+                where connection_id = %(connection_id)s
+                """,
+                connection_id=connection_id,
+            )
+            .build()
         )
 
-    def objects_query(self) -> sql.Composed:
-        """Число объектов версии: строки частей семейств одним запросом."""
+    def objects(
+        self, tables: Sequence[str], connection_id: UUID, version: int
+    ) -> PgQuery:
+        """Число объектов версии: строки таблиц семейств одним запросом."""
         counts: list[sql.Composable] = []
-        for family in self._snapshot.families():
+        for table in tables:
             counts.append(
                 sql.SQL(
-                    "(select count(*) from {} where {} = %(connection_id)s "
-                    "and {} = %(version)s)"
-                ).format(
-                    sql.Identifier(self._schema, self._table_of(family.part)),
-                    sql.Identifier(SnapshotKey.CONNECTION_ID.value),
-                    sql.Identifier(SnapshotKey.VERSION.value),
-                )
+                    "(select count(*) from {} where connection_id = %(connection_id)s "
+                    "and version = %(version)s)"
+                ).format(sql.Identifier(self._schema, table))
             )
 
-        return sql.SQL("select {} as objects").format(sql.SQL(" + ").join(counts))
-
-    def _table_of(self, part: str) -> str:
-        for spec in self._specs:
-            if spec.part.name == part:
-                return spec.table
-
-        msg = (
-            f"snapshot of a {self._snapshot.source_kind()} source has no part {part!r}"
+        return (
+            PgQueryBuilder(counts=sql.SQL(" + ").join(counts))
+            .add(
+                "select {counts} as objects",
+                connection_id=connection_id,
+                version=version,
+            )
+            .build()
         )
-        raise CatalogDomainError(msg)

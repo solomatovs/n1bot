@@ -211,8 +211,8 @@ class SyncPorts:
 
 
 class SyncToolArg:
-    """Аргументы инструмента снятия по контракту pg_schema_snapshot и его
-    собратьев других видов."""
+    """Аргументы инструмента снятия: подключение и список схем; имя
+    инструмента объявляет класс снимка вида (SourceSnapshot.SYNC_TOOL)."""
 
     CONNECTION: ClassVar[str] = "connection"
     SCHEMAS: ClassVar[str] = "schemas"

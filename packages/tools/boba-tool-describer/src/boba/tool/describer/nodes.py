@@ -105,90 +105,57 @@ class NodeDelete(BaseModel):
     cascaded_edges: int
 
 
-class NodeSql:
-    """Тексты SQL таблицы node."""
-
-    UPSERT: ClassVar[str] = """
-insert into {node} (
-    scope_kind,
-    scope_id,
-    kind,
-    address,
-    url_address,
-    description
-)
-values (
-    %(scope_kind)s,
-    %(scope_id)s,
-    %(kind)s,
-    %(address)s,
-    %(url)s,
-    %(description)s
-)
-on conflict (scope_id, address) do update set
-    kind        = excluded.kind,
-    url_address = excluded.url_address,
-    description = excluded.description,
-    s__wrt_ts   = now()
-returning
-    (xmax = 0) as inserted
-"""
-    LIST: ClassVar[str] = """
-select
-    id,
-    kind,
-    url_address,
-    description
-from
-    {node}
-where
-    scope_id = %(scope_id)s
-order by
-    id
-"""
-    DELETE: ClassVar[str] = """
-with removed as (
-    delete from {node}
-    where 1=1
-        and scope_id = %(scope_id)s
-        and id = any(%(ids)s)
-    returning id
-)
-select
-    r.id,
-    (
-        select count(*)
-        from {edge} e
-        where
-            e.source_id = any(%(ids)s) or e.target_id = any(%(ids)s)
-    ) as cascaded
-from
-    removed r
-"""
-
-
 class NodeTable:
     """Узлы одной сессии: запись, список и удаление в области."""
 
     def __init__(self, session: DescriberSession) -> None:
         self._conn = session.conn
-        self._names = session.names
+        self._session = session
 
     async def upsert(
         self, scope: ScopeKey, address: Address, description: str
     ) -> NodeWrite:
         url = address.render()
-        params = {
-            "scope_kind": scope.kind.value,
-            "scope_id": scope.id,
-            "kind": type(address).KIND,
-            "address": Jsonb(address.to_json()),
-            "url": url,
-            "description": description,
-        }
+        query = (
+            self._session.query()
+            .add(
+                """
+                insert into {schema}.node (
+                    scope_kind,
+                    scope_id,
+                    kind,
+                    address,
+                    url_address,
+                    description
+                )
+                values (
+                    %(scope_kind)s,
+                    %(scope_id)s,
+                    %(kind)s,
+                    %(address)s,
+                    %(url)s,
+                    %(description)s
+                )
+                on conflict (scope_id, address) do update set
+                    kind        = excluded.kind,
+                    url_address = excluded.url_address,
+                    description = excluded.description,
+                    s__wrt_ts   = now()
+                returning
+                    (xmax = 0) as inserted
+                """,
+                scope_kind=scope.kind.value,
+                scope_id=scope.id,
+                kind=type(address).KIND,
+                address=Jsonb(address.to_json()),
+                url=url,
+                description=description,
+            )
+            .build()
+        )
 
         async with self._conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(self._names.render(NodeSql.UPSERT), params)
+            await cur.execute(query.text, query.params)
             row = await cur.fetchone()
 
         if row is None:
@@ -203,10 +170,30 @@ class NodeTable:
         )
 
     async def list(self, scope: ScopeKey) -> Sequence[NodeRecord]:
-        records: list[NodeRecord] = []
+        query = (
+            self._session.query()
+            .add(
+                """
+                select
+                    id,
+                    kind,
+                    url_address,
+                    description
+                from
+                    {schema}.node
+                where
+                    scope_id = %(scope_id)s
+                order by
+                    id
+                """,
+                scope_id=scope.id,
+            )
+            .build()
+        )
 
+        records: list[NodeRecord] = []
         async with self._conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(self._names.render(NodeSql.LIST), {"scope_id": scope.id})
+            await cur.execute(query.text, query.params)
 
             for row in await cur.fetchall():
                 records.append(
@@ -224,20 +211,46 @@ class NodeTable:
         """Снять узлы области и каскадом их рёбра одним запросом: область —
         условие удаления, нехватка вернувшихся id — откат транзакции."""
         wanted = list(ids)
-        params = {"scope_id": scope.id, "ids": wanted}
+        query = (
+            self._session.query()
+            .add(
+                """
+                with removed as (
+                    delete from {schema}.node
+                    where 1=1
+                        and scope_id = %(scope_id)s
+                        and id = any(%(ids)s)
+                    returning id
+                )
+                select
+                    r.id,
+                    (
+                        select count(*)
+                        from {schema}.edge e
+                        where
+                            e.source_id = any(%(ids)s) or e.target_id = any(%(ids)s)
+                    ) as cascaded
+                from
+                    removed r
+                """,
+                scope_id=scope.id,
+                ids=wanted,
+            )
+            .build()
+        )
 
         async with self._conn.transaction():
             removed: set[int] = set()
             cascaded = 0
 
             async with self._conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute(self._names.render(NodeSql.DELETE), params)
+                await cur.execute(query.text, query.params)
 
                 for row in await cur.fetchall():
                     removed.add(int(row[NodeColumn.ID.value]))
                     cascaded = int(row[NodeColumn.CASCADED.value])
 
-            missing = MissingIds.of(wanted, removed)
+            missing = MissingIds(wanted, removed).ids()
             if missing:
                 raise NodeIdsMissingError(missing)
 

@@ -17,13 +17,10 @@ from __future__ import annotations
 import base64
 import binascii
 import logging
-from collections.abc import AsyncGenerator, Iterable, Iterator, Sequence
-from contextlib import asynccontextmanager
-from typing import Any, ClassVar, LiteralString
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from typing import Any, ClassVar
 from uuid import UUID
 
-import psycopg
-from psycopg import sql
 from psycopg.types.json import Jsonb
 from pydantic import (
     BaseModel,
@@ -33,12 +30,7 @@ from pydantic import (
     field_validator,
 )
 
-from boba.access.grants import (
-    ConnectionFilter,
-    ConnectionNames,
-    SubjectGrantsQuery,
-    SubjectRowColumn,
-)
+from boba.access.grants import ConnectionFilter, SubjectGrantsQuery, SubjectRowColumn
 from boba.connections.manifest import (
     ConnectionTypes,
     ConnectionTypesError,
@@ -51,7 +43,6 @@ from boba.connections.stored import (
     ConnectionRepository,
     ConnectionsColumn,
     ConnectionStoreError,
-    ConnectionTable,
     GrantedConnection,
     GrantKind,
     GrantsColumn,
@@ -62,7 +53,7 @@ from boba.connections.stored import (
     StoredRole,
     SubjectConnections,
 )
-from boba.db.postgres import AsyncPostgresPool, PostgresError, PostgresTable, SqlNames
+from boba.db.postgres import PgQuery, PostgresPool, PostgresTable
 from boba.db.postgres.connection import PostgresConfig
 from boba.identity.context import Subject
 
@@ -156,11 +147,13 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
     без пакета-владельца падает UnknownConnectionKindError при обращении.
     """
 
+    LABEL: ClassVar[str] = "connections"
+
     def __init__(
         self,
         cfg: ConnectionsConfig,
         types: ConnectionTypes,
-        pool: AsyncPostgresPool | None = None,
+        pool: PostgresPool | None = None,
     ) -> None:
         postgres = cfg.connection
         if pool is None:
@@ -171,113 +164,82 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
         self._types = types
         self._cipher = SecretCipher(cfg.key_bytes())
 
-    def _connections(self) -> sql.Identifier:
-        return self._table(ConnectionTable.CONNECTIONS)
-
-    def _roles(self) -> sql.Identifier:
-        return self._table(ConnectionTable.ROLES)
-
-    def _grants(self) -> sql.Identifier:
-        return self._table(ConnectionTable.GRANTS)
-
-    def _sql(self, text: LiteralString) -> sql.Composed:
-        """SQL с именами таблиц и колонок по картам ConnectionNames: c_* —
-        connections, r_* — roles, g_* — grants."""
-        names = SqlNames.mapping(
-            self._cfg.db_schema, ConnectionNames.tables(), ConnectionNames.columns()
-        )
-
-        return sql.SQL(text).format(**names)
-
-    @asynccontextmanager
-    async def _guarded(self, action: str) -> AsyncGenerator[None, None]:
-        """Граница слоя: отказ базы или пула уходит наружу как ConnectionStoreError."""
-        try:
-            yield
-        except (psycopg.Error, PostgresError) as exc:
-            msg = f"connections: {action} in schema {self._cfg.db_schema} failed: {exc}"
-            raise ConnectionStoreError(msg) from exc
+    def _failure(self, action: str, exc: Exception) -> Exception:
+        return ConnectionStoreError(self._detail(action, exc))
 
     async def setup(self) -> None:
         """Схема и три таблицы; повтор безвреден."""
         ddl = (*self._connections_ddl(), *self._roles_ddl(), *self._grants_ddl())
-        async with self._guarded("setup"):
-            await self._apply_ddl(ddl)
+        await self._apply_ddl(ddl)
 
-        logger.info("connections ready: %s", self._cfg.db_schema)
+        logger.info("connections ready: %s", self.schema)
 
-    def _connections_ddl(self) -> tuple[sql.Composed, ...]:
+    def _connections_ddl(self) -> tuple[PgQuery, ...]:
         return (
-            sql.SQL(
+            self._query()
+            .add(
                 """
-                create table if not exists {connections} (
-                    {id}   uuid primary key default gen_random_uuid(),
-                    {name} text not null,
-                    {data} jsonb not null default '{{}}'::jsonb
+                create table if not exists {schema}.connections (
+                    id   uuid primary key default gen_random_uuid(),
+                    name text not null,
+                    data jsonb not null default '{{}}'::jsonb
                 )
                 """
-            ).format(
-                connections=self._connections(), **self._columns(ConnectionsColumn)
-            ),
-            sql.SQL(
+            )
+            .build(),
+            self._query()
+            .add(
                 """
                 create index if not exists idx_connections_kind
-                    on {connections} (({data} ->> 'kind'))
+                    on {schema}.connections ((data ->> 'kind'))
                 """
-            ).format(
-                connections=self._connections(), **self._columns(ConnectionsColumn)
-            ),
+            )
+            .build(),
         )
 
-    def _roles_ddl(self) -> tuple[sql.Composed, ...]:
+    def _roles_ddl(self) -> tuple[PgQuery, ...]:
         return (
-            sql.SQL(
+            self._query()
+            .add(
                 """
-                create table if not exists {roles} (
-                    {id}        uuid primary key default gen_random_uuid(),
-                    {role}      varchar not null unique,
-                    {create_at} timestamptz not null default now()
+                create table if not exists {schema}.roles (
+                    id        uuid primary key default gen_random_uuid(),
+                    role      varchar not null unique,
+                    create_at timestamptz not null default now()
                 )
                 """
-            ).format(roles=self._roles(), **self._columns(RolesColumn)),
+            )
+            .build(),
         )
 
-    def _grants_ddl(self) -> tuple[sql.Composed, ...]:
+    def _grants_ddl(self) -> tuple[PgQuery, ...]:
         return (
-            sql.SQL(
+            self._query()
+            .add(
                 """
-                create table if not exists {grants} (
-                    {id}          uuid primary key default gen_random_uuid(),
-                    {src_kind}    varchar not null,
-                    {src_kind_id} uuid not null,
-                    {tgt_kind}    varchar not null,
-                    {tgt_kind_id} uuid not null,
-                    unique ({src_kind}, {src_kind_id}, {tgt_kind}, {tgt_kind_id})
+                create table if not exists {schema}.grants (
+                    id          uuid primary key default gen_random_uuid(),
+                    src_kind    varchar not null,
+                    src_kind_id uuid not null,
+                    tgt_kind    varchar not null,
+                    tgt_kind_id uuid not null,
+                    unique (src_kind, src_kind_id, tgt_kind, tgt_kind_id)
                 )
                 """
-            ).format(grants=self._grants(), **self._columns(GrantsColumn)),
-            sql.SQL(
+            )
+            .build(),
+            self._query()
+            .add(
                 """
                 create index if not exists idx_grants_target
-                    on {grants} ({tgt_kind}, {tgt_kind_id})
+                    on {schema}.grants (tgt_kind, tgt_kind_id)
                 """
-            ).format(grants=self._grants(), **self._columns(GrantsColumn)),
+            )
+            .build(),
         )
 
     async def sync_roles(self, names: Iterable[str]) -> None:
         """Добавляет в roles имена, которых там ещё нет; ничего не удаляет."""
-        query = self._sql(
-            """
-            insert into {roles} (
-                {r_role}
-            )
-            values (
-                %(role)s
-            )
-            on conflict ({r_role}) do nothing
-            """
-        )
-
         rows: list[dict[str, str]] = []
         for name in names:
             rows.append({"role": name})
@@ -285,95 +247,88 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
         if not rows:
             return
 
-        pool = await self._pool()
-        async with self._guarded("sync roles"), pool.cursor() as cur:
-            await cur.executemany(query, rows)
+        query = (
+            self._query()
+            .add(
+                """
+                insert into {schema}.roles (
+                    role
+                )
+                values (
+                    %(role)s
+                )
+                on conflict (role) do nothing
+                """
+            )
+            .build()
+        )
+
+        async with self._transaction("sync roles") as cur:
+            await cur.executemany(query.text, rows)
 
     async def add(self, name: str, connection: ConnectionBase) -> UUID:
         """Новая строка connections; уникальность имени — забота вызывающего."""
         payload = self._cipher.encrypt(connection)
-        query = self._sql(
-            """
-            insert into {connections} (
-                {c_name},
-                {c_data}
+        query = (
+            self._query()
+            .add(
+                """
+                insert into {schema}.connections (
+                    name,
+                    data
+                )
+                values (
+                    %(name)s,
+                    %(data)s
+                )
+                returning
+                    id
+                """,
+                name=name,
+                data=Jsonb(payload),
             )
-            values (
-                %(name)s,
-                %(data)s
-            )
-            returning
-                {c_id}
-            """
+            .build()
         )
-        params = {"name": name, "data": Jsonb(payload)}
+        row = self._returning(
+            await self._row(query, "add"), f"insert of row {name!r} into connections"
+        )
 
-        pool = await self._pool()
-        async with self._guarded("add"), pool.cursor() as cur:
-            await cur.execute(query, params)
-            row = await cur.fetchone()
-
-        if row is None:
-            msg = (
-                f"connections: insert of row {name!r} into "
-                f"{self._cfg.db_schema}.connections returned no id"
-            )
-            raise ConnectionStoreError(msg)
-
-        return UUID(str(row[0]))
+        return UUID(str(row[ConnectionsColumn.ID.value]))
 
     async def add_owned(
         self, name: str, connection: ConnectionBase, user_id: UUID
     ) -> UUID:
         """Строка и личный грант одной транзакцией: личный грант и есть владение."""
         payload = self._cipher.encrypt(connection)
-        insert_row = self._sql(
-            """
-            insert into {connections} (
-                {c_name},
-                {c_data}
-            )
-            values (
-                %(name)s,
-                %(data)s
-            )
-            returning
-                {c_id}
-            """
-        )
-        insert_grant = self._sql(
-            """
-            insert into {grants} (
-                {g_src_kind},
-                {g_src_kind_id},
-                {g_tgt_kind},
-                {g_tgt_kind_id}
-            )
-            values (
-                %(src_kind)s,
-                %(src_kind_id)s,
-                %(tgt_kind)s,
-                %(tgt_kind_id)s
-            )
-            """
-        )
-
-        pool = await self._pool()
-        async with self._guarded("add_owned"), pool.cursor() as cur:
-            await cur.execute(insert_row, {"name": name, "data": Jsonb(payload)})
-            row = await cur.fetchone()
-            if row is None:
-                msg = (
-                    f"connections: insert of row {name!r} into "
-                    f"{self._cfg.db_schema}.connections returned no id"
+        insert_row = (
+            self._query()
+            .add(
+                """
+                insert into {schema}.connections (
+                    name,
+                    data
                 )
-                raise ConnectionStoreError(msg)
-
-            connection_id = UUID(str(row[0]))
-            await cur.execute(
-                insert_grant,
-                self._grant_params(connection_id, GrantTarget.user(user_id)),
+                values (
+                    %(name)s,
+                    %(data)s
+                )
+                returning
+                    id
+                """,
+                name=name,
+                data=Jsonb(payload),
             )
+            .build()
+        )
+
+        async with self._transaction("add_owned") as cur:
+            await cur.execute(insert_row.text, insert_row.params)
+            row = self._returning(
+                await cur.fetchone(), f"insert of row {name!r} into connections"
+            )
+            connection_id = UUID(str(row[ConnectionsColumn.ID.value]))
+            insert_grant = self._grant_insert(connection_id, GrantTarget.user(user_id))
+            await cur.execute(insert_grant.text, insert_grant.params)
 
         return connection_id
 
@@ -382,78 +337,80 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
     ) -> bool:
         """Полная замена имени и профиля; False — строки не было."""
         payload = self._cipher.encrypt(connection)
-        query = self._sql(
-            """
-            update
-                {connections}
-            set
-                {c_name} = %(name)s,
-                {c_data} = %(data)s
-            where
-                {c_id} = %(id)s
-            """
+        query = (
+            self._query()
+            .add(
+                """
+                update
+                    {schema}.connections
+                set
+                    name = %(name)s,
+                    data = %(data)s
+                where
+                    id = %(id)s
+                """,
+                id=connection_id,
+                name=name,
+                data=Jsonb(payload),
+            )
+            .build()
         )
-        params = {"id": connection_id, "name": name, "data": Jsonb(payload)}
+        touched = await self._execute(query, "update")
 
-        pool = await self._pool()
-        async with self._guarded("update"), pool.cursor() as cur:
-            await cur.execute(query, params)
-            return cur.rowcount > 0
+        return touched > 0
 
     async def owned_ids(self, user_id: UUID) -> frozenset[UUID]:
         """Соединения с личным грантом пользователя: их он правит и удаляет сам."""
-        query = self._sql(
-            """
-            select
-                {g_src_kind_id}
-            from
-                {grants}
-            where 1=1
-                and {g_src_kind} = %(src_kind)s
-                and {g_tgt_kind} = %(tgt_kind)s
-                and {g_tgt_kind_id} = %(user_id)s
-            """
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    src_kind_id
+                from
+                    {schema}.grants
+                where 1=1
+                    and src_kind = %(src_kind)s
+                    and tgt_kind = %(tgt_kind)s
+                    and tgt_kind_id = %(user_id)s
+                """,
+                src_kind=GrantKind.CONNECTIONS.value,
+                tgt_kind=GrantKind.USERS.value,
+                user_id=user_id,
+            )
+            .build()
         )
-        params = {
-            "src_kind": GrantKind.CONNECTIONS.value,
-            "tgt_kind": GrantKind.USERS.value,
-            "user_id": user_id,
-        }
-
-        pool = await self._pool()
-        async with self._guarded("owned_ids"), pool.cursor() as cur:
-            await cur.execute(query, params)
-            rows = await cur.fetchall()
+        rows = await self._rows(query, "owned_ids")
 
         ids: set[UUID] = set()
         for row in rows:
-            ids.add(UUID(str(row[0])))
+            ids.add(UUID(str(row[GrantsColumn.SRC_KIND_ID.value])))
 
         return frozenset(ids)
 
     async def get(self, connection_id: UUID) -> StoredConnection:
-        query = self._sql(
-            """
-            select
-                {c_id},
-                {c_name},
-                {c_data}
-            from
-                {connections}
-            where
-                {c_id} = %(id)s
-            """
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    id,
+                    name,
+                    data
+                from
+                    {schema}.connections
+                where
+                    id = %(id)s
+                """,
+                id=connection_id,
+            )
+            .build()
         )
-
-        pool = await self._pool()
-        async with self._guarded("get"), pool.dict_cursor() as cur:
-            await cur.execute(query, {"id": connection_id})
-            row = await cur.fetchone()
-
+        row = await self._row(query, "get")
         if row is None:
             msg = (
                 f"connections: connection #{connection_id} not found in "
-                f"{self._cfg.db_schema}.connections"
+                f"{self.schema}.connections"
             )
             raise ConnectionNotFoundError(msg)
 
@@ -461,189 +418,209 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
 
     async def name_of(self, connection_id: UUID) -> str:
         """Имя строки без разбора профиля: живёт и у строк без типа."""
-        query = self._sql(
-            """
-            select
-                {c_name}
-            from
-                {connections}
-            where
-                {c_id} = %(id)s
-            """
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    name
+                from
+                    {schema}.connections
+                where
+                    id = %(id)s
+                """,
+                id=connection_id,
+            )
+            .build()
         )
-
-        pool = await self._pool()
-        async with self._guarded("name of"), pool.cursor() as cur:
-            await cur.execute(query, {"id": connection_id})
-            row = await cur.fetchone()
-
+        row = await self._row(query, "name of")
         if row is None:
             msg = (
                 f"connections: connection #{connection_id} not found in "
-                f"{self._cfg.db_schema}.connections"
+                f"{self.schema}.connections"
             )
             raise ConnectionNotFoundError(msg)
 
-        return str(row[0])
+        return str(row[ConnectionsColumn.NAME.value])
 
     async def list_all(self) -> Sequence[StoredConnection]:
-        query = self._sql(
-            """
-            select
-                {c_id},
-                {c_name},
-                {c_data}
-            from
-                {connections}
-            order by
-                {c_name}
-            """
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    id,
+                    name,
+                    data
+                from
+                    {schema}.connections
+                order by
+                    name
+                """
+            )
+            .build()
         )
-
-        pool = await self._pool()
-        async with self._guarded("list"), pool.dict_cursor() as cur:
-            await cur.execute(query)
-            rows = await cur.fetchall()
+        rows = await self._rows(query, "list")
 
         return self._stored_rows(rows)
 
     async def remove(self, connection_id: UUID) -> bool:
         """Удаляет строку вместе с её грантами; False — строки не было."""
-        drop_grants = self._sql(
-            """
-            delete from
-                {grants}
-            where
-                {g_src_kind} = %(src_kind)s
-                and {g_src_kind_id} = %(id)s
-            """
+        drop_grants = (
+            self._query()
+            .add(
+                """
+                delete from
+                    {schema}.grants
+                where
+                    src_kind = %(src_kind)s
+                    and src_kind_id = %(id)s
+                """,
+                id=connection_id,
+                src_kind=GrantKind.CONNECTIONS.value,
+            )
+            .build()
         )
-        drop_row = self._sql(
-            """
-            delete from
-                {connections}
-            where
-                {c_id} = %(id)s
-            """
+        drop_row = (
+            self._query()
+            .add(
+                """
+                delete from
+                    {schema}.connections
+                where
+                    id = %(id)s
+                """,
+                id=connection_id,
+            )
+            .build()
         )
-        params = {"id": connection_id, "src_kind": GrantKind.CONNECTIONS.value}
 
-        pool = await self._pool()
-        async with self._guarded("remove"), pool.cursor() as cur:
-            await cur.execute(drop_grants, params)
-            await cur.execute(drop_row, params)
+        async with self._transaction("remove") as cur:
+            await cur.execute(drop_grants.text, drop_grants.params)
+            await cur.execute(drop_row.text, drop_row.params)
+
             return cur.rowcount > 0
 
     async def roles(self) -> Sequence[StoredRole]:
-        query = self._sql(
-            """
-            select
-                {r_role},
-                {r_id}
-            from
-                {roles}
-            order by
-                {r_role}
-            """
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    role,
+                    id
+                from
+                    {schema}.roles
+                order by
+                    role
+                """
+            )
+            .build()
         )
-
-        pool = await self._pool()
-        async with self._guarded("roles"), pool.cursor() as cur:
-            await cur.execute(query)
-            fetched = await cur.fetchall()
+        rows = await self._rows(query, "roles")
 
         roles: list[StoredRole] = []
-        for row in fetched:
-            roles.append(StoredRole(id=UUID(str(row[1])), name=row[0]))
+        for row in rows:
+            roles.append(
+                StoredRole(
+                    id=UUID(str(row[RolesColumn.ID.value])),
+                    name=row[RolesColumn.ROLE.value],
+                )
+            )
 
         return roles
 
     async def grant(self, connection_id: UUID, target: GrantTarget) -> UUID:
-        query = self._sql(
-            """
-            insert into {grants} (
-                {g_src_kind},
-                {g_src_kind_id},
-                {g_tgt_kind},
-                {g_tgt_kind_id}
-            )
-            values (
-                %(src_kind)s,
-                %(src_kind_id)s,
-                %(tgt_kind)s,
-                %(tgt_kind_id)s
-            )
-            on conflict ({g_src_kind}, {g_src_kind_id}, {g_tgt_kind}, {g_tgt_kind_id})
-                do update set {g_src_kind} = excluded.{g_src_kind}
-            returning
-                {g_id}
-            """
+        query = self._grant_insert(connection_id, target)
+        row = self._returning(
+            await self._row(query, "grant"),
+            f"insert of link connections#{connection_id} -> "
+            f"{target.kind.value}#{target.id} into grants",
         )
-        params = self._grant_params(connection_id, target)
 
-        pool = await self._pool()
-        async with self._guarded("grant"), pool.cursor() as cur:
-            await cur.execute(query, params)
-            row = await cur.fetchone()
+        return UUID(str(row[GrantsColumn.ID.value]))
 
-        if row is None:
-            msg = (
-                f"grants: insert of link connections#{connection_id} -> "
-                f"{target.kind.value}#{target.id} into "
-                f"{self._cfg.db_schema}.grants returned no id"
+    def _grant_insert(self, connection_id: UUID, target: GrantTarget) -> PgQuery:
+        """Грант соединения цели; повтор той же связи ничего не меняет."""
+        return (
+            self._query()
+            .add(
+                """
+                insert into {schema}.grants (
+                    src_kind,
+                    src_kind_id,
+                    tgt_kind,
+                    tgt_kind_id
+                )
+                values (
+                    %(src_kind)s,
+                    %(src_kind_id)s,
+                    %(tgt_kind)s,
+                    %(tgt_kind_id)s
+                )
+                on conflict (src_kind, src_kind_id, tgt_kind, tgt_kind_id)
+                    do update set src_kind = excluded.src_kind
+                returning
+                    id
+                """,
+                **self._grant_params(connection_id, target),
             )
-            raise ConnectionStoreError(msg)
-
-        return UUID(str(row[0]))
+            .build()
+        )
 
     async def revoke(self, connection_id: UUID, target: GrantTarget) -> bool:
-        query = self._sql(
-            """
-            delete from
-                {grants}
-            where
-                {g_src_kind} = %(src_kind)s
-                and {g_src_kind_id} = %(src_kind_id)s
-                and {g_tgt_kind} = %(tgt_kind)s
-                and {g_tgt_kind_id} = %(tgt_kind_id)s
-            """
+        query = (
+            self._query()
+            .add(
+                """
+                delete from
+                    {schema}.grants
+                where
+                    src_kind = %(src_kind)s
+                    and src_kind_id = %(src_kind_id)s
+                    and tgt_kind = %(tgt_kind)s
+                    and tgt_kind_id = %(tgt_kind_id)s
+                """,
+                **self._grant_params(connection_id, target),
+            )
+            .build()
         )
-        params = self._grant_params(connection_id, target)
+        touched = await self._execute(query, "revoke")
 
-        pool = await self._pool()
-        async with self._guarded("revoke"), pool.cursor() as cur:
-            await cur.execute(query, params)
-            return cur.rowcount > 0
+        return touched > 0
 
     async def grants_of(self, connection_id: UUID) -> Sequence[GrantTarget]:
-        query = self._sql(
-            """
-            select
-                {g_tgt_kind},
-                {g_tgt_kind_id}
-            from
-                {grants}
-            where 1=1
-                and {g_src_kind} = %(src_kind)s
-                and {g_src_kind_id} = %(src_kind_id)s
-            order by
-                {g_tgt_kind},
-                {g_tgt_kind_id}
-            """
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    tgt_kind,
+                    tgt_kind_id
+                from
+                    {schema}.grants
+                where 1=1
+                    and src_kind = %(src_kind)s
+                    and src_kind_id = %(src_kind_id)s
+                order by
+                    tgt_kind,
+                    tgt_kind_id
+                """,
+                src_kind=GrantKind.CONNECTIONS.value,
+                src_kind_id=connection_id,
+            )
+            .build()
         )
-        params = {
-            "src_kind": GrantKind.CONNECTIONS.value,
-            "src_kind_id": connection_id,
-        }
-
-        pool = await self._pool()
-        async with self._guarded("grants"), pool.cursor() as cur:
-            await cur.execute(query, params)
-            fetched = await cur.fetchall()
+        rows = await self._rows(query, "grants")
 
         targets: list[GrantTarget] = []
-        for row in fetched:
-            targets.append(GrantTarget(kind=GrantKind(row[0]), id=UUID(str(row[1]))))
+        for row in rows:
+            targets.append(
+                GrantTarget(
+                    kind=GrantKind(row[GrantsColumn.TGT_KIND.value]),
+                    id=UUID(str(row[GrantsColumn.TGT_KIND_ID.value])),
+                )
+            )
 
         return targets
 
@@ -684,16 +661,12 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
         self, subject: Subject, flt: ConnectionFilter
     ) -> list[dict[str, Any]]:
         """Строки SubjectGrantsQuery, прошедшие фильтр."""
-        query = self._sql(SubjectGrantsQuery.text(flt))
-        params = SubjectGrantsQuery.params(subject, flt)
+        grants = SubjectGrantsQuery(subject, flt)
+        query = self._query().add(grants.text(), **grants.params()).build()
 
-        pool = await self._pool()
-        async with self._guarded("for subject"), pool.dict_cursor() as cur:
-            await cur.execute(query, params)
-            return await cur.fetchall()
+        return await self._rows(query, "for subject")
 
-    @staticmethod
-    def _grant_params(connection_id: UUID, target: GrantTarget) -> dict[str, Any]:
+    def _grant_params(self, connection_id: UUID, target: GrantTarget) -> dict[str, Any]:
         return {
             "src_kind": GrantKind.CONNECTIONS.value,
             "src_kind_id": connection_id,
@@ -701,7 +674,7 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
             "tgt_kind_id": target.id,
         }
 
-    def _stored_rows(self, rows: list[dict[str, Any]]) -> list[StoredConnection]:
+    def _stored_rows(self, rows: Sequence[Mapping[str, Any]]) -> list[StoredConnection]:
         """Строки списком: запись типа без установленного пакета пропускается.
 
         Пропуск не молчалив: warning с именем строки и kind; точечный get такой
@@ -721,7 +694,9 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
 
         return stored
 
-    def _granted_rows(self, rows: list[dict[str, Any]]) -> Iterator[GrantedConnection]:
+    def _granted_rows(
+        self, rows: Sequence[Mapping[str, Any]]
+    ) -> Iterator[GrantedConnection]:
         """Строки субъекта с признаком дубля; строка без типа пропускается
         так же, как в _stored_rows."""
         for row in rows:
@@ -740,7 +715,7 @@ class ConnectionStore(PostgresTable, ConnectionRepository):
 
             yield GrantedConnection(row=stored, ambiguous=copies > 1)
 
-    def _stored(self, row: dict[str, Any]) -> StoredConnection:
+    def _stored(self, row: Mapping[str, Any]) -> StoredConnection:
         try:
             connection = self._types.parse(self._cipher.decrypt(row["data"]))
         except UnknownConnectionKindError:

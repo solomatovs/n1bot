@@ -179,7 +179,7 @@ async def langchain_checkpoint_saver(
     """
     pool = await AsyncPostgresPool.get(cp.postgres.with_schema(cp.db_schema))
     try:
-        await PostgresSchema.ensure_with(pool, cp.db_schema)
+        await PostgresSchema(cp.db_schema).ensure_with(pool)
     except PostgresError as e:
         raise InternalServiceError(
             internal_detail=(

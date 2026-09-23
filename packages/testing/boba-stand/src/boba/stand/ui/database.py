@@ -30,7 +30,7 @@ from boba.connections.stored import (
 )
 from boba.db.clickhouse.connection import ClickHouseConfig
 from boba.db.clickhouse.snapshot import ChSourceKind
-from boba.db.postgres import AsyncPostgresPool, PgQuery, PgQueryBuilder, SqlNames
+from boba.db.postgres import AsyncPostgresPool, PgQuery, PgQueryBuilder
 from boba.db.postgres.connection.config import PostgresConfig
 from boba.identity.session import UserMetadataField
 from boba.runtime.config import DataLayerConfig
@@ -260,7 +260,7 @@ class StandDatabase:
             PgQueryBuilder()
             .add(
                 "select count(*) from {table} where draft_id = %(draft_id)s",
-                table=SqlNames.table(catalog.app_schema, CatalogTable.DRAFT_OPS),
+                table=sql.Identifier(catalog.app_schema, CatalogTable.DRAFT_OPS.value),
                 draft_id=draft_id,
             )
             .build()
@@ -305,8 +305,8 @@ class StandDatabase:
                 "update {table} "
                 "set data = jsonb_set(data, '{{kind}}', to_jsonb(%(kind)s::text)) "
                 "where name = %(name)s",
-                table=SqlNames.table(
-                    connections.db_schema, ConnectionTable.CONNECTIONS
+                table=sql.Identifier(
+                    connections.db_schema, ConnectionTable.CONNECTIONS.value
                 ),
                 kind=kind,
                 name=name,
@@ -393,7 +393,7 @@ class StandDatabase:
                         PgQueryBuilder()
                         .add(
                             "delete from {table}",
-                            table=SqlNames.table(connections.db_schema, table),
+                            table=sql.Identifier(connections.db_schema, table.value),
                         )
                         .build()
                     )

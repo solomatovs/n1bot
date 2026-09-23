@@ -67,8 +67,8 @@ async def bench(
                 conn, sql.SQL("drop schema if exists {} cascade").format(_schema())
             )
             await _execute(conn, sql.SQL("create schema {}").format(_schema()))
-            await Migrations.apply_bootstrap(conn, schema_cfg=schema_cfg)
-            await Migrations.ensure_vector_index(conn, dim=DIM, schema_cfg=schema_cfg)
+            await Migrations(schema_cfg).apply(conn)
+            await Migrations(schema_cfg).ensure_vector_index(conn, DIM)
             await _fill(conn, schema_cfg)
 
         yield pool
@@ -78,6 +78,10 @@ async def bench(
                 conn, sql.SQL("drop schema if exists {} cascade").format(_schema())
             )
         await pool.close()
+
+
+def _chunks(schema_cfg: PostgresStoreSchema) -> sql.Identifier:
+    return sql.Identifier(schema_cfg.pg_schema, schema_cfg.chunks_table)
 
 
 def _schema() -> sql.Identifier:
@@ -90,7 +94,7 @@ async def _execute(conn: AsyncConnection, statement: Any, params: Any = None) ->
 
 async def _fill(conn: AsyncConnection, schema_cfg: PostgresStoreSchema) -> None:
     """Строки трёх коллекций: большая, мелкая и редкое слово в части документов."""
-    chunks = schema_cfg.chunks_ident()
+    chunks = _chunks(schema_cfg)
 
     await _execute(
         conn,
@@ -204,7 +208,7 @@ class TestFtsPlan:
         self, bench: AsyncPostgresPool, schema_cfg: PostgresStoreSchema
     ) -> None:
         statement = sql.SQL("explain (analyze, buffers) " + KbSearch.FTS_SQL).format(
-            chunks_table=schema_cfg.chunks_ident(), schema=_schema()
+            chunks_table=_chunks(schema_cfg), schema=_schema()
         )
         async with bench.connection() as conn:
             plan = await _plan(
@@ -239,7 +243,7 @@ class TestFtsPlan:
     ) -> None:
         """Строки чужих коллекций не должны доезжать до Filter'а."""
         statement = sql.SQL("explain (analyze) " + KbSearch.FTS_SQL).format(
-            chunks_table=schema_cfg.chunks_ident(), schema=_schema()
+            chunks_table=_chunks(schema_cfg), schema=_schema()
         )
         async with bench.connection() as conn:
             plan = await _plan(
@@ -269,7 +273,7 @@ class TestVectorPlan:
         self, bench: AsyncPostgresPool, schema_cfg: PostgresStoreSchema
     ) -> None:
         statement = sql.SQL("explain (analyze) " + KbSearch.VECTOR_SQL).format(
-            dim=sql.Literal(DIM), chunks_table=schema_cfg.chunks_ident()
+            dim=sql.Literal(DIM), chunks_table=_chunks(schema_cfg)
         )
         async with bench.connection() as conn:
             probe = await _probe(conn, schema_cfg)
@@ -295,7 +299,7 @@ class TestVectorPlan:
         знает; всё остальное обязано остаться за пределами скана.
         """
         statement = sql.SQL("explain (analyze) " + KbSearch.VECTOR_SQL).format(
-            dim=sql.Literal(DIM), chunks_table=schema_cfg.chunks_ident()
+            dim=sql.Literal(DIM), chunks_table=_chunks(schema_cfg)
         )
         async with bench.connection() as conn:
             probe = await _probe(conn, schema_cfg)
@@ -324,7 +328,7 @@ class TestVectorPlan:
     ) -> None:
         """Сниппет и метаданные обязаны считаться только для выданных строк."""
         statement = sql.SQL("explain (analyze) " + KbSearch.VECTOR_SQL).format(
-            dim=sql.Literal(DIM), chunks_table=schema_cfg.chunks_ident()
+            dim=sql.Literal(DIM), chunks_table=_chunks(schema_cfg)
         )
         async with bench.connection() as conn:
             probe = await _probe(conn, schema_cfg)
@@ -351,7 +355,7 @@ class TestVectorPlan:
         limit доживает лишь часть запрошенного.
         """
         statement = sql.SQL(KbSearch.VECTOR_SQL).format(
-            dim=sql.Literal(DIM), chunks_table=schema_cfg.chunks_ident()
+            dim=sql.Literal(DIM), chunks_table=_chunks(schema_cfg)
         )
         async with bench.connection() as conn:
             probe = await _probe(conn, schema_cfg)
@@ -383,7 +387,7 @@ class TestVectorPlan:
         Иначе тест выше проходил бы и с выключенным режимом, ничего не доказывая.
         """
         statement = sql.SQL(KbSearch.VECTOR_SQL).format(
-            dim=sql.Literal(DIM), chunks_table=schema_cfg.chunks_ident()
+            dim=sql.Literal(DIM), chunks_table=_chunks(schema_cfg)
         )
         async with bench.connection() as conn:
             probe = await _probe(conn, schema_cfg)
@@ -413,7 +417,7 @@ class TestVectorPlan:
     ) -> None:
         """На мелкой коллекции выдача обязана совпасть с точным перебором."""
         statement = sql.SQL(KbSearch.VECTOR_SQL).format(
-            dim=sql.Literal(DIM), chunks_table=schema_cfg.chunks_ident()
+            dim=sql.Literal(DIM), chunks_table=_chunks(schema_cfg)
         )
         params = {
             "collections": [SMALL],
@@ -448,14 +452,14 @@ class TestListingPlan:
             order by chunk_index
             limit 50
             """
-        ).format(chunks=schema_cfg.chunks_ident())
+        ).format(chunks=_chunks(schema_cfg))
 
         async with bench.connection() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     sql.SQL(
                         "select source_id from {} where collection = %s limit 1"
-                    ).format(schema_cfg.chunks_ident()),
+                    ).format(_chunks(schema_cfg)),
                     (BIG,),
                     prepare=False,
                 )
@@ -480,7 +484,7 @@ async def _probe(conn: AsyncConnection, schema_cfg: PostgresStoreSchema) -> str:
     async with conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(
             sql.SQL("select embedding::text as vec from {} limit 1").format(
-                schema_cfg.chunks_ident()
+                _chunks(schema_cfg)
             ),
             prepare=False,
         )

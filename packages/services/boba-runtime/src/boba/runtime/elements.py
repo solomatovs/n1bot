@@ -6,15 +6,13 @@ DataUnavailableError — postgres недоступен или ответил н�
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 from uuid import UUID
 
-from psycopg import sql
 from psycopg.types.json import Jsonb
 
 from boba.chat.threads import (
-    ChatTable,
     ElementsColumn,
     ElementStore,
     FeedbacksColumn,
@@ -22,7 +20,7 @@ from boba.chat.threads import (
     StoredElement,
     StoredFeedback,
 )
-from boba.db.postgres import AsyncPostgresPool, SqlNames
+from boba.db.postgres import AsyncPostgresPool, PgQueryBuilder
 from boba.db.postgres.connection import PostgresConfig
 from boba.runtime.table import PgTable
 from boba.runtime.threads import ThreadsTable
@@ -34,363 +32,359 @@ __all__ = ["ChatTables", "ElementsTable", "FeedbacksTable"]
 class ElementsTable(PgTable, ElementStore):
     """elements треда: строка описания вложения, тело — в хранилище файлов."""
 
-    def _elements(self) -> sql.Identifier:
-        return SqlNames.table(self._schema, ChatTable.ELEMENTS)
-
-    @staticmethod
-    def _columns() -> sql.Composed:
-        return sql.SQL(", ").join([SqlNames.ident(column) for column in ElementsColumn])
-
-    @staticmethod
-    def _stored(row: tuple[Any, ...]) -> StoredElement:
-        names = [column.value for column in ElementsColumn]
-        values = dict(zip(names, row, strict=True))
-        for key in ("chainlit_key", "size", "language", "mime"):
-            if values[key] is None:
-                values[key] = ""
-        if values["props"] is None:
-            values["props"] = {}
-
-        return StoredElement.model_validate(values)
-
-    async def setup(self) -> None:
-        ddl = (
-            sql.SQL(
-                """
-                create table if not exists {elements} (
-                    {id}           uuid primary key,
-                    {name}         text not null,
-                    {type}         text not null,
-                    {display}      text not null,
-                    {thread_id}    uuid,
-                    {for_id}       uuid,
-                    {chainlit_key} text,
-                    {size}         text,
-                    {language}     text,
-                    {page}         integer,
-                    {props}        jsonb,
-                    {mime}         text
-                )
-                """
-            ).format(
-                elements=self._elements(),
-                **{column.value: SqlNames.ident(column) for column in ElementsColumn},
-            ),
-            sql.SQL(
-                """
-                create index if not exists idx_elements_thread_id
-                    on {elements} ({thread_id})
-                """
-            ).format(
-                elements=self._elements(),
-                thread_id=SqlNames.ident(ElementsColumn.THREAD_ID),
-            ),
+    def _query(self) -> PgQueryBuilder:
+        return PgQueryBuilder(
+            schema=self._schema.ident, columns=self._column_list(ElementsColumn)
         )
 
-        await self._run(ddl, "elements.setup")
-
-    async def upsert(self, element: StoredElement) -> None:
-        assignments = sql.SQL(", ").join(
-            [
-                sql.SQL("{0} = excluded.{0}").format(SqlNames.ident(column))
-                for column in ElementsColumn
-                if column is not ElementsColumn.ID
-            ]
-        )
-        query = sql.SQL(
-            """
-            insert into {elements} ({cols})
-            values ({placeholders})
-            on conflict ({id})
-            do update set {assignments}
-            """
-        ).format(
-            elements=self._elements(),
-            cols=self._columns(),
-            placeholders=sql.SQL(", ").join(
-                [sql.Placeholder(column.value) for column in ElementsColumn]
-            ),
-            id=SqlNames.ident(ElementsColumn.ID),
-            assignments=assignments,
-        )
-        params: dict[str, Any] = element.model_dump()
-        params["props"] = Jsonb(dict(element.props))
-        for key in (
+    def _stored(self, row: Mapping[str, Any]) -> StoredElement:
+        values = dict(row)
+        for column in (
             ElementsColumn.CHAINLIT_KEY,
             ElementsColumn.SIZE,
             ElementsColumn.LANGUAGE,
             ElementsColumn.MIME,
         ):
-            if params[key] == "":
-                params[key] = None
+            if values[column.value] is None:
+                values[column.value] = ""
 
-        await self._execute_as(query, params, "create_element")
+        if values[ElementsColumn.PROPS.value] is None:
+            values[ElementsColumn.PROPS.value] = {}
+
+        return StoredElement.model_validate(values)
+
+    async def setup(self) -> None:
+        ddl = (
+            self._query()
+            .add(
+                """
+                create table if not exists {schema}.elements (
+                    id           uuid primary key,
+                    name         text not null,
+                    type         text not null,
+                    display      text not null,
+                    thread_id    uuid,
+                    for_id       uuid,
+                    chainlit_key text,
+                    size         text,
+                    language     text,
+                    page         integer,
+                    props        jsonb,
+                    mime         text
+                )
+                """
+            )
+            .build(),
+            self._query()
+            .add(
+                """
+                create index if not exists idx_elements_thread_id
+                    on {schema}.elements (thread_id)
+                """
+            )
+            .build(),
+        )
+
+        await self._apply_ddl(ddl)
+
+    async def upsert(self, element: StoredElement) -> None:
+        params: dict[str, Any] = element.model_dump()
+        params[ElementsColumn.PROPS.value] = Jsonb(dict(element.props))
+        for column in (
+            ElementsColumn.CHAINLIT_KEY,
+            ElementsColumn.SIZE,
+            ElementsColumn.LANGUAGE,
+            ElementsColumn.MIME,
+        ):
+            if params[column.value] == "":
+                params[column.value] = None
+
+        query = (
+            self._query()
+            .add(
+                """
+                insert into {schema}.elements ({columns})
+                values (
+                    %(id)s, %(name)s, %(type)s, %(display)s, %(thread_id)s,
+                    %(for_id)s, %(chainlit_key)s, %(size)s, %(language)s,
+                    %(page)s, %(props)s, %(mime)s
+                )
+                on conflict (id)
+                do update set
+                    name         = excluded.name,
+                    type         = excluded.type,
+                    display      = excluded.display,
+                    thread_id    = excluded.thread_id,
+                    for_id       = excluded.for_id,
+                    chainlit_key = excluded.chainlit_key,
+                    size         = excluded.size,
+                    language     = excluded.language,
+                    page         = excluded.page,
+                    props        = excluded.props,
+                    mime         = excluded.mime
+                """,
+                **params,
+            )
+            .build()
+        )
+
+        await self._execute(query, "create_element")
 
     async def find(self, element_id: UUID) -> StoredElement | None:
-        query = sql.SQL(
-            """
-            select
-                {cols}
-            from
-                {elements}
-            where
-                {id} = %(id)s
-            """
-        ).format(
-            cols=self._columns(),
-            elements=self._elements(),
-            id=SqlNames.ident(ElementsColumn.ID),
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    {columns}
+                from
+                    {schema}.elements
+                where
+                    id = %(id)s
+                """,
+                id=element_id,
+            )
+            .build()
         )
-        rows = await self._fetch_as(
-            query, {ElementsColumn.ID: element_id}, "get_element"
-        )
-        if not rows:
+        row = await self._row(query, "get_element")
+        if row is None:
             return None
 
-        return self._stored(rows[0])
+        return self._stored(row)
 
     async def get(self, thread_id: UUID, element_id: UUID) -> StoredElement | None:
-        query = sql.SQL(
-            """
-            select
-                {cols}
-            from
-                {elements}
-            where 1=1
-                and {thread_id} = %(thread_id)s
-                and {id} = %(id)s
-            """
-        ).format(
-            cols=self._columns(),
-            elements=self._elements(),
-            thread_id=SqlNames.ident(ElementsColumn.THREAD_ID),
-            id=SqlNames.ident(ElementsColumn.ID),
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    {columns}
+                from
+                    {schema}.elements
+                where 1=1
+                    and thread_id = %(thread_id)s
+                    and id = %(id)s
+                """,
+                thread_id=thread_id,
+                id=element_id,
+            )
+            .build()
         )
-        rows = await self._fetch_as(
-            query,
-            {ElementsColumn.THREAD_ID: thread_id, ElementsColumn.ID: element_id},
-            "get_element",
-        )
-        if not rows:
+        row = await self._row(query, "get_element")
+        if row is None:
             return None
 
-        return self._stored(rows[0])
+        return self._stored(row)
 
     async def delete(self, element_id: UUID) -> StoredElement | None:
-        query = sql.SQL(
-            """
-            delete from {elements}
-            where
-                {id} = %(id)s
-            returning
-                {cols}
-            """
-        ).format(
-            elements=self._elements(),
-            id=SqlNames.ident(ElementsColumn.ID),
-            cols=self._columns(),
+        query = (
+            self._query()
+            .add(
+                """
+                delete from {schema}.elements
+                where
+                    id = %(id)s
+                returning
+                    {columns}
+                """,
+                id=element_id,
+            )
+            .build()
         )
-        rows = await self._fetch_as(
-            query, {ElementsColumn.ID: element_id}, "delete_element"
-        )
-        if not rows:
+        row = await self._row(query, "delete_element")
+        if row is None:
             return None
 
-        return self._stored(rows[0])
+        return self._stored(row)
 
     async def list_of_thread(self, thread_id: UUID) -> Sequence[StoredElement]:
-        query = sql.SQL(
-            """
-            select
-                {cols}
-            from
-                {elements}
-            where
-                {thread_id} = %(thread_id)s
-            """
-        ).format(
-            cols=self._columns(),
-            elements=self._elements(),
-            thread_id=SqlNames.ident(ElementsColumn.THREAD_ID),
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    {columns}
+                from
+                    {schema}.elements
+                where
+                    thread_id = %(thread_id)s
+                """,
+                thread_id=thread_id,
+            )
+            .build()
         )
-        rows = await self._fetch_as(
-            query, {ElementsColumn.THREAD_ID: thread_id}, "get_thread"
-        )
+        rows = await self._rows(query, "get_thread")
 
-        return [self._stored(row) for row in rows]
+        elements: list[StoredElement] = []
+        for row in rows:
+            elements.append(self._stored(row))
+
+        return elements
 
     async def delete_of_thread(self, thread_id: UUID) -> None:
-        query = sql.SQL(
-            """
-            delete from {elements}
-            where
-                {thread_id} = %(thread_id)s
-            """
-        ).format(
-            elements=self._elements(),
-            thread_id=SqlNames.ident(ElementsColumn.THREAD_ID),
+        query = (
+            self._query()
+            .add(
+                "delete from {schema}.elements where thread_id = %(thread_id)s",
+                thread_id=thread_id,
+            )
+            .build()
         )
 
-        await self._execute_as(
-            query, {ElementsColumn.THREAD_ID: thread_id}, "delete_thread"
-        )
+        await self._execute(query, "delete_thread")
 
     async def delete_of_step(self, step_id: UUID) -> None:
-        query = sql.SQL(
-            """
-            delete from {elements}
-            where
-                {for_id} = %(for_id)s
-            """
-        ).format(
-            elements=self._elements(), for_id=SqlNames.ident(ElementsColumn.FOR_ID)
+        query = (
+            self._query()
+            .add(
+                "delete from {schema}.elements where for_id = %(for_id)s",
+                for_id=step_id,
+            )
+            .build()
         )
 
-        await self._execute_as(query, {ElementsColumn.FOR_ID: step_id}, "delete_step")
+        await self._execute(query, "delete_step")
 
 
 class FeedbacksTable(PgTable, FeedbackStore):
     """feedbacks: оценка шага пользователем."""
 
-    def _feedbacks(self) -> sql.Identifier:
-        return SqlNames.table(self._schema, ChatTable.FEEDBACKS)
-
-    @staticmethod
-    def _columns() -> sql.Composed:
-        return sql.SQL(", ").join(
-            [SqlNames.ident(column) for column in FeedbacksColumn]
+    def _query(self) -> PgQueryBuilder:
+        return PgQueryBuilder(
+            schema=self._schema.ident, columns=self._column_list(FeedbacksColumn)
         )
 
-    @staticmethod
-    def _stored(row: tuple[Any, ...]) -> StoredFeedback:
-        comment = row[4]
+    def _stored(self, row: Mapping[str, Any]) -> StoredFeedback:
+        comment = row[FeedbacksColumn.COMMENT.value]
         if comment is None:
             comment = ""
 
         return StoredFeedback(
-            id=row[0], for_id=row[1], value=row[2], thread_id=row[3], comment=comment
+            id=row[FeedbacksColumn.ID.value],
+            for_id=row[FeedbacksColumn.FOR_ID.value],
+            value=row[FeedbacksColumn.VALUE.value],
+            thread_id=row[FeedbacksColumn.THREAD_ID.value],
+            comment=comment,
         )
 
     async def setup(self) -> None:
         ddl = (
-            sql.SQL(
+            self._query()
+            .add(
                 """
-                create table if not exists {feedbacks} (
-                    {id}        uuid primary key,
-                    {for_id}    uuid not null,
-                    {value}     smallint not null,
-                    {thread_id} uuid,
-                    {comment}   text
+                create table if not exists {schema}.feedbacks (
+                    id        uuid primary key,
+                    for_id    uuid not null,
+                    value     smallint not null,
+                    thread_id uuid,
+                    comment   text
                 )
                 """
-            ).format(
-                feedbacks=self._feedbacks(),
-                **{column.value: SqlNames.ident(column) for column in FeedbacksColumn},
-            ),
-            sql.SQL(
+            )
+            .build(),
+            self._query()
+            .add(
                 """
                 create index if not exists idx_feedbacks_for_id
-                    on {feedbacks} ({for_id})
+                    on {schema}.feedbacks (for_id)
                 """
-            ).format(
-                feedbacks=self._feedbacks(),
-                for_id=SqlNames.ident(FeedbacksColumn.FOR_ID),
-            ),
+            )
+            .build(),
         )
 
-        await self._run(ddl, "feedbacks.setup")
+        await self._apply_ddl(ddl)
 
     async def upsert(self, feedback: StoredFeedback) -> None:
-        query = sql.SQL(
-            """
-            insert into {feedbacks} ({id}, {for_id}, {value}, {thread_id}, {comment})
-            values (%(id)s, %(for_id)s, %(value)s, %(thread_id)s, %(comment)s)
-            on conflict ({id}) do update set
-                {for_id}    = excluded.{for_id},
-                {value}     = excluded.{value},
-                {thread_id} = excluded.{thread_id},
-                {comment}   = excluded.{comment}
-            """
-        ).format(
-            feedbacks=self._feedbacks(),
-            **{column.value: SqlNames.ident(column) for column in FeedbacksColumn},
-        )
         params: dict[str, Any] = feedback.model_dump()
-        if params["comment"] == "":
-            params["comment"] = None
+        if params[FeedbacksColumn.COMMENT.value] == "":
+            params[FeedbacksColumn.COMMENT.value] = None
 
-        await self._execute_as(query, params, "upsert_feedback")
+        query = (
+            self._query()
+            .add(
+                """
+                insert into {schema}.feedbacks ({columns})
+                values (%(id)s, %(for_id)s, %(value)s, %(thread_id)s, %(comment)s)
+                on conflict (id) do update set
+                    for_id    = excluded.for_id,
+                    value     = excluded.value,
+                    thread_id = excluded.thread_id,
+                    comment   = excluded.comment
+                """,
+                **params,
+            )
+            .build()
+        )
+
+        await self._execute(query, "upsert_feedback")
 
     async def delete(self, feedback_id: UUID) -> StoredFeedback | None:
-        query = sql.SQL(
-            """
-            delete from {feedbacks}
-            where
-                {id} = %(id)s
-            returning {cols}
-            """
-        ).format(
-            feedbacks=self._feedbacks(),
-            id=SqlNames.ident(FeedbacksColumn.ID),
-            cols=self._columns(),
+        query = (
+            self._query()
+            .add(
+                """
+                delete from {schema}.feedbacks
+                where
+                    id = %(id)s
+                returning {columns}
+                """,
+                id=feedback_id,
+            )
+            .build()
         )
-        rows = await self._fetch_as(
-            query, {FeedbacksColumn.ID: feedback_id}, "delete_feedback"
-        )
-        if not rows:
+        row = await self._row(query, "delete_feedback")
+        if row is None:
             return None
 
-        return self._stored(rows[0])
+        return self._stored(row)
 
     async def list_of_thread(self, thread_id: UUID) -> Sequence[StoredFeedback]:
-        query = sql.SQL(
-            """
-            select
-                {cols}
-            from
-                {feedbacks}
-            where
-                {thread_id} = %(thread_id)s
-            """
-        ).format(
-            cols=self._columns(),
-            feedbacks=self._feedbacks(),
-            thread_id=SqlNames.ident(FeedbacksColumn.THREAD_ID),
+        query = (
+            self._query()
+            .add(
+                """
+                select
+                    {columns}
+                from
+                    {schema}.feedbacks
+                where
+                    thread_id = %(thread_id)s
+                """,
+                thread_id=thread_id,
+            )
+            .build()
         )
-        rows = await self._fetch_as(
-            query, {FeedbacksColumn.THREAD_ID: thread_id}, "get_thread"
-        )
+        rows = await self._rows(query, "get_thread")
 
-        return [self._stored(row) for row in rows]
+        feedbacks: list[StoredFeedback] = []
+        for row in rows:
+            feedbacks.append(self._stored(row))
+
+        return feedbacks
 
     async def delete_of_thread(self, thread_id: UUID) -> None:
-        query = sql.SQL(
-            """
-            delete from {feedbacks}
-            where
-                {thread_id} = %(thread_id)s
-            """
-        ).format(
-            feedbacks=self._feedbacks(),
-            thread_id=SqlNames.ident(FeedbacksColumn.THREAD_ID),
+        query = (
+            self._query()
+            .add(
+                "delete from {schema}.feedbacks where thread_id = %(thread_id)s",
+                thread_id=thread_id,
+            )
+            .build()
         )
 
-        await self._execute_as(
-            query, {FeedbacksColumn.THREAD_ID: thread_id}, "delete_thread"
-        )
+        await self._execute(query, "delete_thread")
 
     async def delete_of_step(self, step_id: UUID) -> None:
-        query = sql.SQL(
-            """
-            delete from {feedbacks}
-            where
-                {for_id} = %(for_id)s
-            """
-        ).format(
-            feedbacks=self._feedbacks(), for_id=SqlNames.ident(FeedbacksColumn.FOR_ID)
+        query = (
+            self._query()
+            .add(
+                "delete from {schema}.feedbacks where for_id = %(for_id)s",
+                for_id=step_id,
+            )
+            .build()
         )
 
-        await self._execute_as(query, {FeedbacksColumn.FOR_ID: step_id}, "delete_step")
+        await self._execute(query, "delete_step")
 
 
 class ChatTables:

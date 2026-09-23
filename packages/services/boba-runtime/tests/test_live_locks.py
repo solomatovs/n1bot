@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 import pytest
 from psycopg import sql
 
-from boba.db.postgres import AsyncPostgresPool, SqlNames
+from boba.db.postgres import AsyncPostgresPool, PgQueryBuilder
 from boba.identity.context import Scope
 from boba.identity.locks import (
     LockBusyError,
@@ -193,11 +193,15 @@ async def test_instance_registration_survives_a_postgres_restart(
     регистрирует инстанс заново, и захват блокировки снова возможен.
     """
     first, _ = stands
-    instances = SqlNames.table(first.locks._schema, LiveTable.INSTANCES)
-    async with pool.cursor() as cur:
-        await cur.execute(
-            sql.SQL("truncate {instances} cascade").format(instances=instances)
+    truncate = (
+        PgQueryBuilder(
+            instances=sql.Identifier(first.locks.schema, LiveTable.INSTANCES.value)
         )
+        .add("truncate {instances} cascade")
+        .build()
+    )
+    async with pool.cursor() as cur:
+        await cur.execute(truncate.text, truncate.params)
 
     async def on_stale(stale: Sequence[StaleLock]) -> None:
         return None

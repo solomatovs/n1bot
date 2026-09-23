@@ -9,8 +9,7 @@ from uuid import UUID, uuid4
 import pytest
 from psycopg import sql
 
-from boba.db.postgres import AsyncPostgresPool
-from boba.db.postgres.names import SqlNames
+from boba.db.postgres import AsyncPostgresPool, PgQueryBuilder
 from boba.identity.context import Scope
 from boba.messaging import (
     BusLimit,
@@ -413,11 +412,12 @@ async def test_neighbour_setup_does_not_deadlock_with_purge(
         )
 
         async with pool.connection() as sweeper, sweeper.transaction():
-            await sweeper.execute(
-                sql.SQL("delete from {events}").format(
-                    events=SqlNames.table(schema, LiveTable.EVENTS)
-                )
+            clear_events = (
+                PgQueryBuilder(events=sql.Identifier(schema, LiveTable.EVENTS.value))
+                .add("delete from {events}")
+                .build()
             )
+            await sweeper.execute(clear_events.text, clear_events.params)
 
             second_task = asyncio.create_task(
                 _bus(runtime_config, test_database, pool, "node2-studio")
@@ -440,11 +440,14 @@ async def test_neighbour_setup_does_not_deadlock_with_purge(
                 blocked = int(row[0])
                 await asyncio.sleep(0.05)
 
-            await sweeper.execute(
-                sql.SQL("delete from {commands}").format(
-                    commands=SqlNames.table(schema, LiveTable.COMMANDS)
+            clear_commands = (
+                PgQueryBuilder(
+                    commands=sql.Identifier(schema, LiveTable.COMMANDS.value)
                 )
+                .add("delete from {commands}")
+                .build()
             )
+            await sweeper.execute(clear_commands.text, clear_commands.params)
 
         second = await asyncio.wait_for(second_task, timeout=WAIT_SEC)
         await second.stop()

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from abc import abstractmethod
 from collections.abc import (
     AsyncGenerator,
     Awaitable,
@@ -16,8 +17,12 @@ from collections.abc import (
     Generator,
     Sequence,
 )
-from contextlib import asynccontextmanager, contextmanager
-from typing import Any, ClassVar
+from contextlib import (
+    AbstractAsyncContextManager,
+    asynccontextmanager,
+    contextmanager,
+)
+from typing import Any, ClassVar, Protocol
 
 import psycopg
 from psycopg.rows import DictRow, dict_row
@@ -32,6 +37,7 @@ __all__ = [
     "CancellablePool",
     "KerberosConnection",
     "PostgresError",
+    "PostgresPool",
     "PostgresPoolClosedError",
     "PostgresPoolLoopError",
 ]
@@ -82,7 +88,20 @@ class KerberosConnection(psycopg.AsyncConnection[Any]):
             return await super().connect(conninfo, **kwargs)  # type: ignore[return-value]
 
 
-class AsyncPostgresPool:
+class PostgresPool(Protocol):
+    """Источник соединений хранилища: пул приложения либо его делегат с
+    прерыванием запроса; PostgresTable берёт соединения только отсюда."""
+
+    @abstractmethod
+    def connection(
+        self,
+    ) -> AbstractAsyncContextManager[psycopg.AsyncConnection[Any]]: ...
+
+    @abstractmethod
+    async def close(self) -> None: ...
+
+
+class AsyncPostgresPool(PostgresPool):
     """
     Единственная точка работы с postgres: async-пул поверх AsyncConnectionPool
     """
@@ -333,7 +352,7 @@ class AsyncPostgresPool:
         logger.info("AsyncPostgresPool closed")
 
 
-class CancellablePool:
+class CancellablePool(PostgresPool):
     """Делегат AsyncPostgresPool: регистрирует conn.cancel как прерыватель.
 
     cancel() у AsyncConnection синхронный и зовётся из чужого потока — это и нужно

@@ -133,8 +133,8 @@ async def store_cfg(raw_config: DictConfig) -> AsyncIterator[PostgresStoreConfig
                 conn, sql.SQL("drop schema if exists {} cascade").format(_schema())
             )
             await _execute(conn, sql.SQL("create schema {}").format(_schema()))
-            await Migrations.apply_bootstrap(conn, schema_cfg=tables)
-            await Migrations.ensure_vector_index(conn, dim=DIM, schema_cfg=tables)
+            await Migrations(tables).apply(conn)
+            await Migrations(tables).ensure_vector_index(conn, DIM)
 
         yield cfg
     finally:
@@ -260,7 +260,11 @@ class IngestStand:
                     sql.SQL(
                         "select count(*) from {} "
                         "where collection = %s and source_id = %s"
-                    ).format(self.cfg.tables.chunks_ident()),
+                    ).format(
+                        sql.Identifier(
+                            self.cfg.tables.pg_schema, self.cfg.tables.chunks_table
+                        )
+                    ),
                     (COLLECTION, str(source_id)),
                 )
                 row = await cur.fetchone()
@@ -324,7 +328,12 @@ async def _wipe(cfg: PostgresStoreConfig) -> None:
     await pool.open()
     try:
         async with pool.connection() as conn:
-            for ident in (cfg.tables.chunks_ident(), cfg.tables.sources_ident()):
+            tables = cfg.tables
+            idents = (
+                sql.Identifier(tables.pg_schema, tables.chunks_table),
+                sql.Identifier(tables.pg_schema, tables.sources_table),
+            )
+            for ident in idents:
                 statement = sql.SQL("delete from {} where collection = %s").format(
                     ident
                 )
