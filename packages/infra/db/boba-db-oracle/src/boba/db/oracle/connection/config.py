@@ -43,6 +43,10 @@ class OracleConfig(ConnectionBase):
 
     model_config = ConfigDict(extra="ignore")
 
+    KIND: ClassVar[str] = "oracle"
+    """Дискриминатор типа: он же имя entry point в реестрах boba.connections и
+    boba.addresses."""
+
     # не аргументы connect(): границы вызова и выборки, способ авторизации
     NOT_CONNECT_FIELDS: ClassVar[frozenset[str]] = frozenset(
         {"call_timeout", "arraysize", "auth"}
@@ -72,7 +76,10 @@ class OracleConfig(ConnectionBase):
     )
 
     auth: OracleAuth = Field(
-        description="Как аутентифицируемся: password. Поля задаёт сам вариант."
+        description=(
+            "Как аутентифицируемся: password (tcp) или wallet (tcps, каталог с "
+            "ewallet.pem). Поля задаёт сам вариант."
+        )
     )
 
     def address_prefix(self) -> str:

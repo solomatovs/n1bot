@@ -50,6 +50,7 @@ pythonpath = [
     "packages/tools/boba-tool-doc/src",
     "packages/tools/boba-tool-postgres/src",
     "packages/tools/boba-tool-clickhouse/src",
+    "packages/tools/boba-tool-oracle/src",
     "packages/tools/boba-tool-knowledge/src",
     "packages/tools/boba-tool-confluence/src",
     "packages/infra/ix/ix-core/src",
@@ -132,6 +133,7 @@ extraPaths = [
     "packages/tools/boba-tool-mail/src",
     "packages/tools/boba-tool-postgres/src",
     "packages/tools/boba-tool-clickhouse/src",
+    "packages/tools/boba-tool-oracle/src",
     "packages/tools/boba-tool-knowledge/src",
     "packages/tools/boba-tool-confluence/src",
     "packages/infra/ix/ix-core/src",
@@ -237,6 +239,7 @@ boba-tool-web       = { workspace = true }
 boba-tool-doc       = { workspace = true }
 boba-tool-postgres  = { workspace = true }
 boba-tool-clickhouse = { workspace = true }
+boba-tool-oracle    = { workspace = true }
 boba-tool-knowledge = { workspace = true }
 boba-tool-confluence = { workspace = true }
 boba-tool-mail       = { workspace = true }
