@@ -114,6 +114,16 @@ MERMAID_VERSION ?= 11.16.1
 MERMAID_URL     ?= https://registry.npmjs.org/mermaid/-/mermaid-$(MERMAID_VERSION).tgz
 WEB_FILES       := $(WEBASSETS_DIR)/katex/katex.min.css $(WEBASSETS_DIR)/inter/inter.css $(WEBASSETS_DIR)/mermaid/mermaid.min.js
 
+# python-oracledb с патчем (build/chainlit/scripts/oracledb-*.patch): sdist ровно этой
+# версии с индекса pypi, sha256 из uv.lock, сборка в образе base; локальный суффикс
+# версии пинится в boba-db-oracle, колесо для .venv хоста лежит в src/oracledb
+ORACLEDB_VERSION ?= 26.0.0
+ORACLEDB_SHA256  ?= d15728bae7546984203ae17f8296153d52d10ffdaf4929bebe46b70d5819d270
+ORACLEDB_LOCAL   ?= boba.1
+CYTHON_VERSION   ?= 3.3.0
+ORACLEDB_DIR     := $(DEPS_DIR)/oracledb
+ORACLEDB_WHEEL   := $(ORACLEDB_DIR)/oracledb-$(ORACLEDB_VERSION)+$(ORACLEDB_LOCAL)-cp$(subst .,,$(PYTHON_VERSION))-cp$(subst .,,$(PYTHON_VERSION))-linux_x86_64.whl
+
 # исходники chainlit: UI собирается из тега, версия — в UPSTREAM рядом с overlay
 WEB_DIR         := $(SRC_DIR)/packages/agents/boba-chainlit
 UI_DIR          := $(WEB_DIR)/web/chainlit-ui
@@ -122,7 +132,8 @@ CHAINLIT_SRC_URL ?= https://codeload.github.com/Chainlit/chainlit/tar.gz/refs/ta
 CHAINLIT_TARBALL := $(DEPS_DIR)/chainlit-$(CHAINLIT_VERSION).tar.gz
 
 INPUTS          := $(BWRAP_TARBALL) $(LIBFUSE_TARBALL) $(E2FSPROGS_TARBALL) $(UV_BIN) \
-                   $(TESS_FILES) $(FASTEMBED_STAMPS) $(ONNX_DIRS) $(WEB_FILES) $(CHAINLIT_TARBALL)
+                   $(TESS_FILES) $(FASTEMBED_STAMPS) $(ONNX_DIRS) $(WEB_FILES) $(CHAINLIT_TARBALL) \
+                   $(ORACLEDB_WHEEL)
 
 # --- фронт -----------------------------------------------------------------------
 
@@ -176,7 +187,11 @@ DOCKER_ARGS      = --build-arg GLIBC_IMAGE=$(GLIBC_IMAGE)              \
     --build-arg LIBFUSE_VERSION=$(LIBFUSE_VERSION)                     \
     --build-arg E2FSPROGS_VERSION=$(E2FSPROGS_VERSION)                 \
     --build-arg NODE_IMAGE=$(NODE_IMAGE)                               \
-    --build-arg CHAINLIT_VERSION=$(CHAINLIT_VERSION)
+    --build-arg CHAINLIT_VERSION=$(CHAINLIT_VERSION)                   \
+    --build-arg ORACLEDB_VERSION=$(ORACLEDB_VERSION)                   \
+    --build-arg ORACLEDB_SHA256=$(ORACLEDB_SHA256)                     \
+    --build-arg ORACLEDB_LOCAL=$(ORACLEDB_LOCAL)                       \
+    --build-arg CYTHON_VERSION=$(CYTHON_VERSION)
 
 # аргументы стадий одного приложения
 APP_ARGS         = --build-arg APP=$(APP)                           \
@@ -257,7 +272,9 @@ define HELP
 
 Сеть (артефакты -> $(DEPS_DIR)):
   fetch                 tarball'ы bwrap/fuse/e2fsprogs, uv, tessdata, веса fastembed,
-                        модели onnx-genai, katex/Inter/mermaid, исходники chainlit $(CHAINLIT_VERSION)
+                        модели onnx-genai, katex/Inter/mermaid, исходники chainlit $(CHAINLIT_VERSION),
+                        колесо python-oracledb $(ORACLEDB_VERSION)+$(ORACLEDB_LOCAL) с патчем
+  oracledb-wheel        только колесо python-oracledb (стадия oracledb-wheel -> src/oracledb)
 
 Сборка (сеть — только реестры pypi/npm; образ один — $(IMAGE), остальное файлами в src/):
   sandbox               bwrap, fuse2fs и шаблон workspace.ext4 -> src/sandbox
@@ -327,6 +344,20 @@ $(E2FSPROGS_TARBALL):
 
 $(CHAINLIT_TARBALL):
 	@$(call fetch,$(CHAINLIT_SRC_URL),$@)
+
+# колесо патченного python-oracledb: стадия oracledb-wheel, наружу для .venv хоста
+.PHONY: oracledb-wheel
+oracledb-wheel: $(ORACLEDB_WHEEL)
+
+$(ORACLEDB_WHEEL): $(SCRIPTS_DIR)/oracledb-$(ORACLEDB_VERSION)-arrow-duplicates.patch $(BASE_DIR)/Dockerfile | base
+	@echo "== python-oracledb $(ORACLEDB_VERSION)+$(ORACLEDB_LOCAL) =="
+	tmp=$$(mktemp -d)
+	trap 'rm -rf "$$tmp"' EXIT
+	$(call docker-image,oracledb-wheel,$$tmp/oracledb.iid)
+	rm -rf "$(ORACLEDB_DIR)"
+	$(call image-copy,$$(cat "$$tmp/oracledb.iid"),/out,$(ORACLEDB_DIR))
+	$(call check,$@,колесо не собралось)
+	ls -l "$(ORACLEDB_DIR)"
 
 $(UV_BIN):
 	@$(call fetch,$(UV_URL),/tmp/uv-$(UV_VERSION).tar.gz)
@@ -591,5 +622,5 @@ prune:
 # модели не трогаем: качаются долго
 .PHONY: clean
 clean:
-	rm -rf $(RELEASE_DIR) $(DEPS_DIR)/uv $(DEPS_DIR)/tessdata $(WEBASSETS_DIR) $(SANDBOX_DIR) \
+	rm -rf $(RELEASE_DIR) $(DEPS_DIR)/uv $(DEPS_DIR)/tessdata $(WEBASSETS_DIR) $(SANDBOX_DIR) $(ORACLEDB_DIR) \
 	       $(DEPS_DIR)/*.tar.xz $(DEPS_DIR)/*.tar.gz $(PAGE_JS) $(ASSETS_VENDOR) $(UI_DIST)

@@ -1,8 +1,9 @@
-"""Сложные типы Oracle через CSV-пачки строк в COPY ix: NUMBER целые и с дробью,
-BINARY_DOUBLE, DATE, TIMESTAMP, CLOB, RAW, строки со спецсимволами и NULL. RAW
-запрос отдаёт `rawtohex`, как в файлах scrape/, остальное идёт как есть. Таблицу
-создаёт EDGE_DEMO, читает её сессия воркера под учёткой скрапера (у неё грант на
-sys.registry$ для версии сервера).
+"""Сложные типы Oracle через пачки Arrow и CSV в COPY ix: NUMBER целые (в том числе
+шире 2^53) и с дробью, BINARY_DOUBLE, DATE, TIMESTAMP, CLOB, RAW, строки со
+спецсимволами и NULL. RAW запрос отдаёт `rawtohex`, дробный NUMBER без точности —
+`to_char`, как в файлах scrape/, остальное идёт как есть. Таблицу создаёт EDGE_DEMO,
+читает её сессия воркера под учёткой скрапера (у неё грант на sys.registry$ для
+версии сервера).
 
 Ошибки стенда: IxStandError — секции [ix_stand] нет, модуль пропускается.
 """
@@ -27,13 +28,14 @@ STAND = IxStand.required()
 
 DDL = """
 create table edge_demo.fmt_probe (
-    i number(10), big number(18), n206 number(20,6), nfree number, fl binary_double,
+    i number(10), big number(18), n206 number(20,6), nfree number, wide number,
+    fl binary_double,
     s varchar2(200), d date, ts timestamp(6), c clob, r raw(4), maybe varchar2(10)
 )
 """
 INSERT = """
 insert into edge_demo.fmt_probe values (
-    1, 9007199254740993, 1/7, 1/7, 1.5,
+    1, 9007199254740993, 1/7, 1/7, 18014398526259208, 1.5,
     'tab' || chr(9) || 'here "q" ''s'' back\\slash' || chr(10) || 'newline ünï',
     date '2024-02-29', timestamp '2024-02-29 13:14:15.123456',
     to_clob('clob text'), hextoraw('00ff'), null
@@ -41,12 +43,14 @@ insert into edge_demo.fmt_probe values (
 """
 QUERY = """
 select
-    i, big, n206, nfree, fl, s, d, ts, c, rawtohex(r) as r, maybe
+    i, big, n206, to_char(nfree) as nfree, wide, fl,
+    s, d, ts, c, rawtohex(r) as r, maybe
 from edge_demo.fmt_probe
 """
 RAW = """
 create temp table raw_fmt (
-    i int, big bigint, n206 numeric(20,6), nfree numeric, fl double precision,
+    i int, big bigint, n206 numeric(20,6), nfree numeric, wide bigint,
+    fl double precision,
     s text, d timestamp, ts timestamp, c text, r text, maybe text
 )
 """
@@ -96,10 +100,11 @@ class TestCopyFormats:
         assert got[1] == 9007199254740993
         assert str(got[2]) == "0.142857"
         assert str(got[3]).startswith("0.1428571428571428571428571428571428571")
-        assert got[4] == 1.5
-        assert got[5] == "tab\there \"q\" 's' back\\slash\nnewline ünï"
-        assert got[6] == datetime.datetime(2024, 2, 29, 0, 0)
-        assert got[7] == datetime.datetime(2024, 2, 29, 13, 14, 15, 123456)
-        assert got[8] == "clob text"
-        assert got[9] == "00FF"
-        assert got[10] is None
+        assert got[4] == 18014398526259208
+        assert got[5] == 1.5
+        assert got[6] == "tab\there \"q\" 's' back\\slash\nnewline ünï"
+        assert got[7] == datetime.datetime(2024, 2, 29, 0, 0)
+        assert got[8] == datetime.datetime(2024, 2, 29, 13, 14, 15, 123456)
+        assert got[9] == "clob text"
+        assert got[10] == "00FF"
+        assert got[11] is None
