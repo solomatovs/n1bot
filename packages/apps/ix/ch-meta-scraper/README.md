@@ -167,8 +167,8 @@ system-таблицах структурно (цель `TO` у представ�
 инварианты и отпечатки в `tests/stand/cons/`.
 
 ```
-pytest packages/apps/ix/ch-meta-scraper/tests/test_scrape_stand.py -m integration
-pytest packages/apps/ix/ch-meta-scraper/tests/test_scrape_storm.py -m load
+pytest packages/apps/ix/ch-meta-scraper/tests/test_ch_scrape_stand.py -m integration
+pytest packages/apps/ix/ch-meta-scraper/tests/test_ch_scrape_storm.py -m load
 ```
 
 Шторм: 60 одновременных задач по 3 прогона по случайным целям (все шесть источников,
