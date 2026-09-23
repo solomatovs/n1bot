@@ -187,7 +187,7 @@ RUN uv export --frozen --all-packages --all-extras --no-emit-workspace --no-hash
 # эмбеддер сюда не попадают — они объявлены как extra payload у tool-пакетов
 FROM base AS app-site
 
-ARG APP_PACKAGES="boba-studio"
+ARG APP_PACKAGES="boba-studio boba-llm-http boba-llm-onnx boba-llm-fastembed"
 ARG APP_IMPORTS="boba.studio"
 
 COPY --from=boba-wheels /tmp/wheels/  /tmp/wheels/

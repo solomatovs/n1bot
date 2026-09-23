@@ -2,6 +2,7 @@
 
 !packages
 !build/studio
+!build/chainlit/scripts
 !pyproject.toml
 !uv.lock
 
