@@ -279,10 +279,10 @@ class TestRefusals:
 
 
 class TestDeclarationIsChecked:
-    def test_parameter_must_be_a_profile_model(self) -> None:
+    def test_parameter_must_be_a_connection_model(self) -> None:
         tool = _tool("broken", {"connection": (Annotated[str, UserConnection], ...)})
 
-        with pytest.raises(ToolConfigError, match="not a connection profile"):
+        with pytest.raises(ToolConfigError, match="not a connection model"):
             _bound(tool, [])
 
     def test_type_package_must_be_installed(self) -> None:

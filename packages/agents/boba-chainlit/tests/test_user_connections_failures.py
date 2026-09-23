@@ -634,7 +634,7 @@ class TestNoConnections:
             Guarded.pg(raw_config, store, None), connection="broken"
         )
 
-        _expect(result, "ConnectionStoreError", "not a valid connection profile")
+        _expect(result, "ConnectionStoreError", "is not a valid connection")
 
     async def test_wrong_encryption_key(
         self, raw_config, store, layer, pool: AsyncPostgresPool, service_pg
@@ -703,7 +703,7 @@ class TestNoConnections:
             Guarded.pg(raw_config, store, None), connection="main"
         )
 
-        _expect(result, "ConnectionStoreError", "not a valid connection profile")
+        _expect(result, "ConnectionStoreError", "is not a valid connection")
 
     async def test_keytab_file_missing(
         self, raw_config, store, layer, service_pg, tmp_path: Path

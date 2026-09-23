@@ -155,14 +155,14 @@ class UserConnections(AsyncInjected):
         if not isinstance(annotation, type):
             msg = (
                 f"tool {tool!r}: {param} must be annotated with a connection "
-                f"profile model, got {annotation!r}"
+                f"model, got {annotation!r}"
             )
             raise ToolConfigError(msg)
 
         if not issubclass(annotation, ConnectionBase):
             msg = (
                 f"tool {tool!r}: {param} is annotated with {annotation.__name__}, "
-                "which is not a connection profile"
+                "which is not a connection model"
             )
             raise ToolConfigError(msg)
 

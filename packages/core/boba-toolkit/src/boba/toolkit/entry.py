@@ -900,6 +900,6 @@ class ToolMain:
             description = field.description or ""
             lines.append(f"  {ToolArgv.flag_of(name)} {description}".rstrip())
 
-        injected_help = "call config as JSON: injected sections and connection profiles"
+        injected_help = "call config as JSON: injected sections and connections"
         lines.append(f"  {EntryFlag.INJECTED} PATH  {injected_help}")
         return "\n".join(lines)
