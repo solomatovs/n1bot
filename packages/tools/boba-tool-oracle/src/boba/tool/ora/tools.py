@@ -244,9 +244,11 @@ async def ora_list_tables(
                 o.object_type as kind,
                 o.status,
                 o.last_ddl_time
-            from all_objects o
-            join all_users u on u.username = o.owner
-            where o.object_type in ({kinds})
+            from
+                all_objects o
+                join all_users u on u.username = o.owner
+            where
+                o.object_type in ({kinds})
             """
         )
         .when(schema_name is None, "and u.oracle_maintained = 'N'")
@@ -295,12 +297,14 @@ async def ora_describe_table(
                 c.nullable,
                 c.data_default,
                 m.comments
-            from all_tab_columns c
-            left join all_col_comments m
-                on m.owner = c.owner
-                and m.table_name = c.table_name
-                and m.column_name = c.column_name
-            where c.table_name = :table_name
+            from
+                all_tab_columns c
+                left join all_col_comments m
+                    on m.owner = c.owner
+                    and m.table_name = c.table_name
+                    and m.column_name = c.column_name
+            where
+                c.table_name = :table_name
             """,
             table_name=table,
         )
@@ -384,8 +388,9 @@ async def ora_schema_describe(
                 u.username as name,
                 u.created,
                 u.oracle_maintained
-            from all_users u
-            where 1 = 1
+            from
+                all_users u
+            where 1=1
             """
         )
         .when(schema_name == "*", "and u.oracle_maintained = 'N'")
@@ -426,11 +431,12 @@ async def ora_table_describe(
                 t.num_rows,
                 t.last_analyzed,
                 m.comments
-            from all_tables t
-            join all_users u on u.username = t.owner
-            left join all_tab_comments m
-                on m.owner = t.owner and m.table_name = t.table_name
-            where 1 = 1
+            from
+                all_tables t
+                join all_users u on u.username = t.owner
+                left join all_tab_comments m
+                    on m.owner = t.owner and m.table_name = t.table_name
+            where 1=1
             """
         )
         .when(schema_name == "*", "and u.oracle_maintained = 'N'")
@@ -474,13 +480,14 @@ async def ora_column_describe(
                 c.nullable,
                 c.data_default,
                 m.comments
-            from all_tab_columns c
-            join all_users u on u.username = c.owner
-            left join all_col_comments m
-                on m.owner = c.owner
-                and m.table_name = c.table_name
-                and m.column_name = c.column_name
-            where 1 = 1
+            from
+                all_tab_columns c
+                join all_users u on u.username = c.owner
+                left join all_col_comments m
+                    on m.owner = c.owner
+                    and m.table_name = c.table_name
+                    and m.column_name = c.column_name
+            where 1=1
             """
         )
         .when(schema_name == "*", "and u.oracle_maintained = 'N'")
@@ -528,9 +535,10 @@ async def ora_constraints_describe(
                 k.r_constraint_name,
                 k.delete_rule,
                 k.status
-            from all_constraints k
-            join all_users u on u.username = k.owner
-            where 1 = 1
+            from
+                all_constraints k
+                join all_users u on u.username = k.owner
+            where 1=1
             """
         )
         .when(schema_name == "*", "and u.oracle_maintained = 'N'")
@@ -577,9 +585,11 @@ async def ora_indexes_describe(
                    and ic.index_name = i.index_name) as columns,
                 i.tablespace_name,
                 i.status
-            from all_indexes i
-            join all_users u on u.username = i.owner
-            where 1 = 1
+            from
+                all_indexes i
+            join
+                all_users u on u.username = i.owner
+            where 1=1
             """
         )
         .when(schema_name == "*", "and u.oracle_maintained = 'N'")
@@ -627,9 +637,11 @@ async def ora_routines_describe(
                 o.status,
                 o.created,
                 o.last_ddl_time
-            from all_objects o
-            join all_users u on u.username = o.owner
-            where o.object_type in ({kinds})
+            from
+                all_objects o
+                join all_users u on u.username = o.owner
+            where
+                o.object_type in ({kinds})
             """
         )
         .when(schema_name == "*", "and u.oracle_maintained = 'N'")
@@ -668,9 +680,10 @@ async def ora_sequences_describe(
                 s.cycle_flag,
                 s.cache_size,
                 s.last_number
-            from all_sequences s
-            join all_users u on u.username = s.sequence_owner
-            where 1 = 1
+            from
+                all_sequences s
+                join all_users u on u.username = s.sequence_owner
+            where 1=1
             """
         )
         .when(schema_name == "*", "and u.oracle_maintained = 'N'")
@@ -705,9 +718,11 @@ async def ora_types_describe(
                 t.typecode,
                 t.attributes,
                 t.methods
-            from all_types t
-            join all_users u on u.username = t.owner
-            where t.owner is not null
+            from
+                all_types t
+                join all_users u on u.username = t.owner
+            where
+                t.owner is not null
             """
         )
         .when(schema_name == "*", "and u.oracle_maintained = 'N'")
